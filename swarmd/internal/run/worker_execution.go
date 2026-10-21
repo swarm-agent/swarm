@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/sandbox"
 	sessions "swarm/packages/swarmd/internal/session"
 	store "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/worktree"
@@ -20,11 +23,20 @@ import (
 // WorkerExecutionService is the shared worker admission and dispatch boundary.
 // It uses the existing V3 session/plan executor, not a second execution engine.
 type WorkerExecutionService struct {
-	host          *AutomationV2ExecutionHost
-	dispatchMu    sync.Mutex
-	scheduleMu    sync.Mutex
-	presetMu      sync.Mutex
-	lastScheduled time.Time
+	watchdogBeforeSettleForTest func()
+	cleanupMu                   sync.Mutex
+	cleanupQueue                map[string]store.WorkerRunRecord
+	cleanupRunning              bool
+	cleanupWG                   sync.WaitGroup
+	cleanupClosed               bool
+	activityMu                  sync.Mutex
+	activity                    sync.Map
+	stallTimeout                atomic.Int64
+	host                        *AutomationV2ExecutionHost
+	dispatchMu                  sync.Mutex
+	presetMu                    sync.Mutex
+	// scheduledDispatchForTest replaces Dispatch for a due scheduled slot.
+	scheduledDispatchForTest func(account, owner string, req store.WorkerRunAdmission) error
 }
 
 func NewWorkerExecutionService(runs *Service, repository *store.SessionStore, trees *worktree.Service, apply func(sessions.SessionMutationInput) (sessions.SessionMutationResult, error), enqueue func(identity.Principal, store.V3SessionRunIntent) bool) (*WorkerExecutionService, error) {
@@ -32,17 +44,15 @@ func NewWorkerExecutionService(runs *Service, repository *store.SessionStore, tr
 	if err != nil {
 		return nil, err
 	}
-	return &WorkerExecutionService{host: h}, nil
-}
-
-// MarkWorkerSweep completes one bounded local sweep; it advances the cursor
-// only after the daemon has visited its scheduled workers.
-func (s *WorkerExecutionService) MarkWorkerSweep(now time.Time) {
-	s.scheduleMu.Lock()
-	if now.After(s.lastScheduled) {
-		s.lastScheduled = now
+	service := &WorkerExecutionService{host: h}
+	if value := strings.TrimSpace(os.Getenv("SWARM_WORKER_STALL_TIMEOUT")); value != "" {
+		timeout, err := time.ParseDuration(value)
+		if err != nil || timeout <= 0 {
+			return nil, errors.New("SWARM_WORKER_STALL_TIMEOUT must be a positive duration")
+		}
+		service.SetStallTimeout(timeout)
 	}
-	s.scheduleMu.Unlock()
+	return service, nil
 }
 
 // WorkerStoreForScheduling is read-only at the runtime wiring boundary; all
@@ -161,6 +171,8 @@ func workerRoleAgentID(role string) string {
 		return agentruntime.DesignerAgentID
 	case store.WorkerRoleFinder:
 		return agentruntime.FinderAgentID
+	case store.WorkerRoleReviewer:
+		return agentruntime.ReviewerAgentID
 	default:
 		return agentruntime.SwarmAgentID
 	}
@@ -256,6 +268,9 @@ func (s *WorkerExecutionService) Dispatch(ctx context.Context, account, user str
 	if w.LifecycleState == store.WorkerLifecycleStatePending {
 		return store.WorkerRunRecord{}, fmt.Errorf("%w: pending worker cannot be dispatched before human acceptance", store.ErrWorkerConflict)
 	}
+	if err := validateReviewRequest(w.Role, req.RequestSource, req.Input); err != nil {
+		return store.WorkerRunRecord{}, err
+	}
 	if w.Provenance != nil && (w.Provenance.MigratedAt != 0 || w.Provenance.SourceProposalID != "") {
 		return store.WorkerRunRecord{}, store.ErrWorkerConflict
 	}
@@ -279,7 +294,16 @@ func (s *WorkerExecutionService) Dispatch(ctx context.Context, account, user str
 	if err != nil {
 		return store.WorkerRunRecord{}, err
 	}
-	req.ResolvedModelProfile, err = s.ResolveRoleModelProfile(account, w.Role, w.ModelProfile)
+	selected := w.ModelProfile
+	req.ModelSource = "pinned"
+	if selected == nil || selected.UseAccountDefault || selected.ActionUseAccountDefault {
+		req.ModelSource = "role default"
+	}
+	if req.ModelOverride != nil {
+		selected = req.ModelOverride
+		req.ModelSource = "job override"
+	}
+	req.ResolvedModelProfile, err = s.ResolveRoleModelProfile(account, w.Role, selected)
 	if err != nil {
 		return store.WorkerRunRecord{}, err
 	}
@@ -297,8 +321,19 @@ func (s *WorkerExecutionService) Dispatch(ctx context.Context, account, user str
 		return store.WorkerRunRecord{}, err
 	}
 	if !replay {
-		candidate := store.WorkerRunRecord{AccountScopeID: account, UserID: user, WorkerID: w.ID, AutomationID: req.AutomationID, Input: req.Input, WorkspaceID: workspaceID, WorkspaceSource: workspaceSource}
-		if _, err := s.resolveWorkerProject(candidate, w); errors.Is(err, errWorkerProjectNotAssociated) {
+		candidate := store.WorkerRunRecord{AccountScopeID: account, UserID: user, WorkerID: w.ID, AutomationID: req.AutomationID, RequestSource: req.RequestSource, Input: req.Input, WorkspaceID: workspaceID, WorkspaceSource: workspaceSource}
+		if w.Role == store.WorkerRoleReviewer {
+			target, err := s.resolveReviewTarget(ctx, candidate, w)
+			if err != nil {
+				return store.WorkerRunRecord{}, err
+			}
+			req.CapturedReviewTarget = target
+		}
+		project, projectErr := s.resolveWorkerProject(candidate, w)
+		if projectErr == nil && project != nil {
+			req.ResolvedProjectID = project.ID
+		}
+		if err := projectErr; errors.Is(err, errWorkerProjectNotAssociated) {
 			return store.WorkerRunRecord{}, workerProjectRequiredError(w.ID, entry.WorkspaceID, entry.Path)
 		} else if err != nil && workspaceSource == store.WorkerRunWorkspaceSourceJob {
 			// A named job workspace must resolve to exactly one project now,
@@ -310,7 +345,7 @@ func (s *WorkerExecutionService) Dispatch(ctx context.Context, account, user str
 	if err != nil {
 		return store.WorkerRunRecord{}, err
 	}
-	if rec.Status == "admitted" {
+	if workerWaiting(rec.Status) {
 		if err := s.Start(ctx, rec); err != nil {
 			return rec, err
 		}
@@ -362,7 +397,7 @@ func (s *WorkerExecutionService) startLocked(ctx context.Context, receipt store.
 	if actual.Status == "running" {
 		return nil
 	}
-	if actual.Status != "admitted" {
+	if !workerWaiting(actual.Status) {
 		return store.ErrWorkerConflict
 	}
 	current, found, err := ws.GetWorker(actual.AccountScopeID, actual.WorkerID)
@@ -430,10 +465,31 @@ func (s *WorkerExecutionService) startLocked(ctx context.Context, receipt store.
 	if len(doc.Checkpoints) == 0 {
 		return errors.New("worker execution requires a checkpoint")
 	}
+	if m := sandbox.Default(); m != nil {
+		admitted, err := ws.ReserveWorkerCapacity(actual, m.MaxWorkerRuns())
+		if err != nil || !admitted {
+			return err
+		}
+		actual.Status, actual.QueueReason = "preparing", ""
+	}
 	return s.startPlan(ctx, actual, w, doc)
 }
 
-func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRunRecord, w store.WorkerRecord, doc store.SessionPlanDocument) error {
+func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRunRecord, w store.WorkerRecord, doc store.SessionPlanDocument) (resultErr error) {
+	reviewAllocated := false
+	defer func() {
+		if resultErr == nil || !reviewAllocated {
+			return
+		}
+		_, hasIntent, err := s.workerRunIntent(r)
+		if err != nil {
+			resultErr = errors.Join(resultErr, err)
+			return
+		}
+		if !hasIntent {
+			resultErr = errors.Join(resultErr, s.cleanupReviewAdmission(r))
+		}
+	}()
 	h := s.host
 	if err := ctx.Err(); err != nil {
 		return err
@@ -562,7 +618,13 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		if w.ExecutionMode == "plan" {
 			selection = *w.ModelProfile.Plan
 		}
-		profile, err := h.runs.agents.ResolveSystemAgent(workerRoleAgentID(role), store.AgentProfile{Provider: selection.Provider, Model: selection.Model, Thinking: selection.Thinking, AutoServiceTier: selection.ServiceTier, ContextMode: selection.ContextMode})
+		profileContext := store.AgentProfile{Provider: selection.Provider, Model: selection.Model, Thinking: selection.Thinking, AutoServiceTier: selection.ServiceTier, ContextMode: selection.ContextMode}
+		if planned {
+			// Legacy Swarm-role workers explicitly retain their accepted-plan workflow.
+			profileContext.DefaultSessionMode = store.AgentDefaultSessionModePlan
+		}
+		agentID, fixes := workerExecutionAgentID(role, r.Input)
+		profile, err := h.runs.agents.ResolveSystemAgent(agentID, profileContext)
 		if err != nil {
 			return err
 		}
@@ -590,6 +652,9 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		// commit as before.
 		base := ""
 		current, branchErr := worktree.CurrentBranch(canonical.SourceWorkspacePath)
+		if role == store.WorkerRoleReviewer {
+			current = ""
+		}
 		if branchErr == nil && current == "" {
 			base = "HEAD"
 		}
@@ -597,7 +662,7 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		// starts from the forge's latest base, so yesterday's merged pull
 		// request is today's starting point and the next one can merge.
 		forgeBranch := ""
-		if h.runs.publishBase != nil {
+		if h.runs.publishBase != nil && role != store.WorkerRoleReviewer {
 			commit, branch, ok, err := h.runs.publishBase(ctx, canonical.SourceWorkspacePath, current)
 			if err != nil {
 				return fmt.Errorf("the folder's publish rule could not bring its forge's base branch: %w", err)
@@ -606,11 +671,25 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 				base, forgeBranch = commit, branch
 			}
 		}
-		allocation, err := h.trees.AllocateDetachedWorkspaceRequestedForPrincipal(p, canonical.SourceWorkspacePath, r.SessionID, base, "agent/worker-"+r.ID[:16])
+		var allocation worktree.Allocation
+		if role == store.WorkerRoleReviewer {
+			allocation, err = allocateReviewerCheckout(h.trees, p, canonical.SourceWorkspacePath, r, fixes)
+		} else {
+			allocation, err = h.trees.AllocateDetachedWorkspaceRequestedForPrincipal(p, canonical.SourceWorkspacePath, r.SessionID, base, "agent/worker-"+r.ID[:16])
+		}
 		if err != nil {
 			return err
 		}
+		reviewAllocated = role == store.WorkerRoleReviewer
+		reviewLaneOwner := ""
+		if role == store.WorkerRoleReviewer && !fixes {
+			if target, _ := r.Input["captured_review_target"].(map[string]any); target != nil {
+				reviewLaneOwner, _ = target["lane_owner"].(string)
+			}
+		}
 		if forgeBranch != "" {
+			// The job's worktree started at the synced forge commit; the
+			// folder's own branches are its refs.
 			allocation.BaseBranch = forgeBranch
 		}
 		available := true
@@ -624,12 +703,20 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		meta["worker_revision"] = r.WorkerRevision
 		meta["worker_execution_mode"] = firstNonEmptyString(w.ExecutionMode, "auto")
 		meta["worker_role"] = role
+		if role == store.WorkerRoleReviewer {
+			pinReviewerMetadata(meta, r.Input, fixes)
+		}
 		meta["worker_workspace_id"] = canonical.SourceWorkspaceID
 		meta["navigation_hidden"] = true
 		meta[store.SessionPurposeMetadataKey] = store.SessionPurposeAutomationExecution
 		meta[store.SessionPurposeWorkspaceMetadataKey] = canonical.SourceWorkspaceID
 		meta["swarm_v3_mandatory_worktree"] = true
 		meta["swarm_v3_worktree_owner_session_id"] = r.SessionID
+		if reviewLaneOwner != "" {
+			// A reviewer reading the job's own worktree in place borrows it:
+			// the worktree stays owned by the job's session.
+			meta["swarm_v3_worktree_owner_session_id"] = reviewLaneOwner
+		}
 		meta["swarm_v3_worktree_base_commit"] = allocation.BaseCommit
 		// The same captured lineage project tasks record, so a reviewed run can
 		// be integrated through the project task integrate route.
@@ -644,7 +731,7 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		meta["worker_run_id"] = r.ID
 		meta["automation_id"] = r.AutomationID
 		snapshot = store.SessionSnapshot{ID: r.SessionID, UserID: r.UserID, AccountScopeID: r.AccountScopeID, WorkspacePath: canonical.SourceWorkspacePath, WorkspaceName: canonical.SourceWorkspaceName, Title: w.Name, Mode: sessionMode, Preference: pref, ModelProfile: model, Metadata: meta, WorkspaceGrants: grants, WorkspaceUsage: store.WorkspaceUsageFromGrants(grants), WorktreeEnabled: true, WorktreeRootPath: allocation.WorkspacePath, WorktreeBaseBranch: allocation.BaseBranch, WorktreeBranch: allocation.BranchName, CreatedAt: r.CreatedAt, UpdatedAt: r.CreatedAt}
-		if err = h.trees.ValidateSessionRepositoryLaneForRead(snapshot.WorkspacePath, snapshot.WorktreeRootPath, r.SessionID, snapshot.WorktreeBranch); err != nil {
+		if err = h.trees.ValidateSessionRepositoryLaneForRead(snapshot.WorkspacePath, snapshot.WorktreeRootPath, sessionLaneOwner(snapshot), snapshot.WorktreeBranch); err != nil {
 			return err
 		}
 		provenance := store.WorkerRunWorkspaceSourceBinding
@@ -664,7 +751,11 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 			return err
 		}
 		request := "worker-create:" + r.ID
-		_, err = h.apply(sessions.SessionMutationInput{SessionID: r.SessionID, UserID: r.UserID, AccountScopeID: r.AccountScopeID, Kind: sessions.SessionMutationCreateSession, ClientRequestID: request, IdempotencyKey: request, PayloadHash: request, RequestHash: request, Session: &snapshot, WorktreeAdmission: &store.WorktreeAdmissionEvidence{Kind: "allocated", Path: snapshot.WorktreeRootPath, SourcePath: snapshot.WorkspacePath, OwnerSessionID: r.SessionID, Branch: snapshot.WorktreeBranch}, NowUnixMs: r.CreatedAt})
+		admission := &store.WorktreeAdmissionEvidence{Kind: "allocated", Path: snapshot.WorktreeRootPath, SourcePath: snapshot.WorkspacePath, OwnerSessionID: r.SessionID, Branch: snapshot.WorktreeBranch}
+		if reviewLaneOwner != "" {
+			admission = nil // a borrowed worktree is never claimed (store: borrowed review lane)
+		}
+		_, err = h.apply(sessions.SessionMutationInput{SessionID: r.SessionID, UserID: r.UserID, AccountScopeID: r.AccountScopeID, Kind: sessions.SessionMutationCreateSession, ClientRequestID: request, IdempotencyKey: request, PayloadHash: request, RequestHash: request, Session: &snapshot, WorktreeAdmission: admission, NowUnixMs: r.CreatedAt})
 		if err != nil {
 			return err
 		}
@@ -735,10 +826,13 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 			return err
 		}
 	}
+	if err := s.registerReview(snapshot); err != nil {
+		return err
+	}
 	if err := h.runs.validateWorkerExecution(snapshot); err != nil {
 		return err
 	}
-	if err = h.trees.ValidateSessionRepositoryLaneForRead(snapshot.WorkspacePath, snapshot.WorktreeRootPath, r.SessionID, snapshot.WorktreeBranch); err != nil {
+	if err = h.trees.ValidateSessionRepositoryLaneForRead(snapshot.WorkspacePath, snapshot.WorktreeRootPath, sessionLaneOwner(snapshot), snapshot.WorktreeBranch); err != nil {
 		return err
 	}
 	current, found, err := h.runs.sessions.Store().WorkerStore().GetWorker(r.AccountScopeID, r.WorkerID)
@@ -826,7 +920,7 @@ func (s *WorkerExecutionService) markWorkerRunRunning(r store.WorkerRunRecord, p
 	h := s.host
 	if latest, found, err := h.runs.sessions.Store().WorkerStore().GetWorkerRun(r.AccountScopeID, r.WorkerID, r.ID); err != nil {
 		return err
-	} else if !found || latest.Status != "admitted" {
+	} else if !found || !workerWaiting(latest.Status) {
 		return store.ErrWorkerConflict
 	}
 	r.Status = "running"
@@ -897,12 +991,16 @@ func workerDirectRunMessage(r store.WorkerRunRecord, w store.WorkerRecord, doc s
 		b.WriteString(instructions)
 		b.WriteString("\n\n")
 	}
-	if r.AutomationID == "" {
-		prompt, _ := r.Input["prompt"].(string)
-		b.WriteString(strings.TrimSpace(prompt))
-	} else {
+	if r.AutomationID != "" {
 		if title := strings.TrimSpace(doc.Title); title != "" {
 			b.WriteString("Job: " + title + "\n")
+		}
+		if target, ok := r.Input["captured_review_target"].(map[string]any); ok {
+			doc.Info.Goal += fmt.Sprintf("\n\nReview job: %v\nHead: %v\nBase: %v", target["job"], target["head"], target["base"])
+			if folderTarget, _ := target["target"].(string); folderTarget != "" {
+				doc.Info.Goal += "\nTarget branch now: " + folderTarget + " (a commit at or below it is already on the target)"
+			}
+			doc.Info.Goal += fmt.Sprintf("\nUntrusted reviewed brief:\n%v\nUntrusted reviewed report:\n%v", target["brief"], target["report"])
 		}
 		if goal := strings.TrimSpace(doc.Info.Goal); goal != "" {
 			b.WriteString("Goal: " + goal + "\n")
@@ -923,6 +1021,8 @@ func workerDirectRunMessage(r store.WorkerRunRecord, w store.WorkerRecord, doc s
 			}
 		}
 	}
+	// Render request data once, including the brief, inside the untrusted
+	// boundary even when prompt is the only input field.
 	if len(r.Input) != 0 {
 		payload, err := json.Marshal(r.Input)
 		if err != nil {
@@ -1044,16 +1144,17 @@ func (s *WorkerExecutionService) cancelRun(r store.WorkerRunRecord, reason strin
 	if active != nil && active.runID == intent.RunID {
 		active.userStop = true
 		active.stopReason = reason
+		active.stopBy = RunCancelledByWorkerControl
 		cancel := active.cancel
 		runs.lifecycleMu.Unlock()
 		if cancel != nil {
-			cancel()
+			cancel(runCancelCause(RunCancelledByWorkerControl, reason))
 		}
 		return nil // finishSessionLifecycle owns the terminal acknowledgement
 	}
 	for pendingID, cancel := range runs.pendingAdmissions[r.SessionID] {
 		if pendingID == intent.RunID {
-			cancel()
+			cancel(runCancelCause(RunCancelledByWorkerControl, reason))
 		}
 	}
 	runs.lifecycleMu.Unlock()
@@ -1118,7 +1219,13 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 		return store.ErrWorkerConflict
 	}
 	if store.AutomationV2Terminal(current.Status) {
-		return nil
+		if current.Status == "failed" && strings.HasPrefix(current.Error, "run stalled:") {
+			return nil // Watchdog failures retain review work for follow-up.
+		}
+		if err := s.recordReviewResult(current); err != nil {
+			return err
+		}
+		return s.retryReviewCleanup(current)
 	}
 	intent, found, err := s.workerRunIntent(r)
 	if err != nil {
@@ -1143,7 +1250,13 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 			}
 			preparing = !exists || !lifecycle.Active
 		}
-		if preparing && current.Status == "admitted" {
+		if preparing && (workerWaiting(current.Status) || current.CancelRequested) {
+			current.Status = "cancelled"
+			current.CompletedAt = time.Now().UnixMilli()
+			if err := s.recordReviewResult(current); err != nil {
+				return err
+			}
+			markReviewCleanupPending(&current)
 			current.Status = "cancelled"
 			current.CompletedAt = time.Now().UnixMilli()
 			_, err = ws.RecordWorkerRun(r.AccountScopeID, current)
@@ -1151,6 +1264,9 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 				if recErr := s.reconcileRunTask(current, "cancelled", "worker run cancelled"); recErr != nil {
 					return recErr
 				}
+			}
+			if err == nil {
+				return s.retryReviewCleanup(current)
 			}
 			return err
 		}
@@ -1192,7 +1308,7 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 		}
 	case sessions.RunIntentFailed, sessions.RunIntentExpired, sessions.RunIntentInterrupted, sessions.RunIntentDispatchBlocked:
 		current.Status = "failed"
-		current.Error = "execution did not complete"
+		current.Error = workerExecutionFailureReason(intent)
 	case sessions.RunIntentCancelled:
 		lifecycle, ok, err := s.host.runs.sessions.GetLifecycle(r.SessionID)
 		if err != nil {
@@ -1206,6 +1322,10 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 		return fmt.Errorf("%w: run remains active", store.ErrWorkerConflict)
 	}
 	current.CompletedAt = time.Now().UnixMilli()
+	if err := s.recordReviewResult(current); err != nil {
+		return err
+	}
+	markReviewCleanupPending(&current)
 	if plan, found, err := s.host.runs.sessions.GetActivePlan(r.SessionID); err != nil {
 		return err
 	} else if found && plan.Document != nil {
@@ -1219,6 +1339,9 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 		if recErr := s.reconcileRunTask(current, current.Status, current.Error); recErr != nil {
 			return recErr
 		}
+	}
+	if err == nil {
+		return s.retryReviewCleanup(current)
 	}
 	return err
 }
@@ -1335,35 +1458,92 @@ func (s *Service) WorkerExecutionService() *WorkerExecutionService {
 // retain the same session and ownership checks; unsafe allocation recovery is
 // reported as failure, never bypassed. Missed scheduled slots are not replayed.
 func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, id string) error {
+	_, _, _, err := s.reconcileWorker(ctx, account, id, true, false)
+	return err
+}
+
+// reconcileWorker reports whether the worker had unfinished runs, so the
+// scheduler keeps observing it until they settle, and the budget hold state
+// it applied. The budget is read only when readBudget is set and there is an
+// unfinished run whose admission it can close; otherwise the caller's
+// knownHeld (from its last event-driven read) is applied. Holds, limit and
+// policy changes and the UTC-day reset all reach the scheduler as events,
+// so a timer-driven re-check never needs to re-read the ledger. budgetKnown
+// reports that the returned hold state is current: the read succeeded, or
+// none was needed because the worker had no runs in flight.
+func (s *WorkerExecutionService) reconcileWorker(ctx context.Context, account, id string, readBudget, knownHeld bool) (busy, budgetHeld, budgetKnown bool, err error) {
 	s.dispatchMu.Lock()
 	defer s.dispatchMu.Unlock()
 	ws, err := s.workerStore()
 	if err != nil {
-		return err
+		return false, knownHeld, false, err
 	}
 	w, found, err := ws.GetWorker(account, id)
 	if err != nil {
-		return err
+		return false, knownHeld, false, err
 	}
 	if !found {
-		return store.ErrWorkerNotFound
+		return false, knownHeld, false, store.ErrWorkerNotFound
 	}
-	budget, err := s.host.runs.sessions.Store().GetWorkerBudgetStatus(account, id)
-	if err != nil {
-		return err
-	}
-	budgetHeld := budget.Hold != nil
 	pending, err := ws.UnfinishedWorkerRuns(account, id, "")
 	if err != nil {
-		return err
+		return false, knownHeld, false, err
 	}
+	busy = len(pending) > 0
+	budgetHeld = busy && knownHeld
+	if busy && readBudget {
+		budget, err := s.host.runs.sessions.Store().GetWorkerBudgetStatus(account, id)
+		if err != nil {
+			return busy, knownHeld, false, err
+		}
+		budgetHeld = budget.Hold != nil
+	}
+	return busy, budgetHeld, readBudget || !busy, s.reconcileWorkerRuns(ctx, ws, w, account, id, pending, budgetHeld)
+}
+
+func (s *WorkerExecutionService) reconcileWorkerRuns(ctx context.Context, ws *store.WorkerStore, w store.WorkerRecord, account, id string, pending []store.WorkerRunRecord, budgetHeld bool) error {
 	var failures []error
 	for _, r := range pending {
+		if r.FollowupRunID != "" {
+			intent, exists, err := s.host.runs.sessions.GetV3SessionRunIntent(r.SessionID, r.FollowupRunID)
+			if err != nil {
+				return err
+			}
+			if !exists || (intent.Status != sessions.RunIntentPendingExecutor && intent.Status != sessions.RunIntentRunning) {
+				if err := ws.ReleaseWorkerFollowup(account, id, r.ID, r.FollowupRunID); err != nil {
+					return err
+				}
+			}
+		}
 		if r.Placement != nil {
 			return store.ErrWorkerRemoteUnavailable
 		}
-		if err = ctx.Err(); err != nil {
+		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if settled, watchdogErr := s.watchdogRun(r, time.Now()); settled || watchdogErr != nil {
+			if watchdogErr != nil {
+				failures = append(failures, watchdogErr)
+			}
+			continue
+		}
+		if r.Role == store.WorkerRoleReviewer {
+			restored, restoreErr := restoreReviewWithBackoff(&r, time.Now(), func(next store.WorkerRunRecord) error {
+				_, err := ws.RecordWorkerRun(account, next)
+				return err
+			}, func() error {
+				snapshot, found, err := s.host.runs.sessions.GetSession(r.SessionID)
+				if err != nil || !found {
+					return err // Admission without a session is handled below.
+				}
+				return s.registerReview(snapshot)
+			})
+			if restoreErr != nil {
+				failures = append(failures, restoreErr)
+			}
+			if !restored {
+				continue
+			}
 		}
 		intent, exists, e := s.workerRunIntent(r)
 		if e != nil {
@@ -1382,7 +1562,7 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 			}
 		}
 		if exists {
-			if !budgetHeld && !r.CancelRequested && workerRunAdmissionOpen(w, r) && workerRunAutomationEnabled(w, r) && r.Status == "admitted" && intent.Status == sessions.RunIntentPendingExecutor {
+			if !budgetHeld && !r.CancelRequested && workerRunAdmissionOpen(w, r) && workerRunAutomationEnabled(w, r) && workerWaiting(r.Status) && intent.Status == sessions.RunIntentPendingExecutor {
 				if e = s.startLocked(ctx, r); e != nil {
 					failures = append(failures, e)
 				}
@@ -1404,7 +1584,7 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 			if e = s.observeRun(r); e != nil {
 				failures = append(failures, e)
 			}
-		} else if r.Status == "admitted" {
+		} else if workerWaiting(r.Status) {
 			// Resume interrupted preparation through the same ownership checks.
 			// If allocation cannot be safely recovered, retain evidence and fail
 			// visibly instead of leaving an admitted receipt stranded forever.
@@ -1419,6 +1599,9 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 					if _, recordErr := ws.RecordWorkerRun(account, r); recordErr != nil {
 						failures = append(failures, recordErr)
 					}
+					if cleanupErr := s.cleanupReviewAdmission(r); cleanupErr != nil {
+						failures = append(failures, cleanupErr)
+					}
 					if recErr := s.reconcileRunTask(r, "failed", r.Error); recErr != nil {
 						failures = append(failures, recErr)
 					}
@@ -1428,15 +1611,26 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 		}
 	}
 	// In addition to unfinished runs, check recent terminal runs to repair any failed task projection updates
-	recentRuns, _, listErr := ws.ListWorkerRuns(account, id, 50, "")
-	if listErr == nil {
+	for cursor := ""; ; {
+		recentRuns, next, listErr := ws.ListWorkerRuns(account, id, 100, cursor)
+		if listErr != nil {
+			failures = append(failures, listErr)
+			break
+		}
 		for _, r := range recentRuns {
 			if store.AutomationV2Terminal(r.Status) {
+				if cleanupErr := s.retryReviewCleanup(r); cleanupErr != nil {
+					failures = append(failures, cleanupErr)
+				}
 				if recErr := s.reconcileRunTask(r, r.Status, r.Error); recErr != nil {
 					failures = append(failures, recErr)
 				}
 			}
 		}
+		if next == "" {
+			break
+		}
+		cursor = next
 	}
 	if w.LifecycleState == store.WorkerLifecycleStateStopping && len(failures) == 0 {
 		_, err := s.ReconcileStop(account, "", id, w.Revision, w.StopTarget)
@@ -1446,6 +1640,10 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 	}
 	return errors.Join(failures...)
 }
+func workerWaiting(status string) bool {
+	return status == "admitted" || status == "queued" || status == "preparing"
+}
+
 func workerRunAdmissionOpen(w store.WorkerRecord, r store.WorkerRunRecord) bool {
 	return w.LifecycleState == store.WorkerLifecycleStateActive || (w.LifecycleState == store.WorkerLifecycleStateIdle && r.RequestSource == "test_run")
 }
@@ -1610,7 +1808,7 @@ func (s *Service) validateWorkerExecution(current store.SessionSnapshot) error {
 	if !reflect.DeepEqual(current.WorkspaceGrants, pinned.WorkspaceGrants) {
 		return store.ErrWorkerConflict
 	}
-	for _, key := range []string{"swarm_v3_runtime_kind", "swarm_v3_runtime_swarm_id", "swarm_v3_authority_host_swarm_id", "swarm_v3_runtime_workspace_path", "worker_revision", "worker_role", "worker_workspace_id", "swarm_v3_worktree_owner_session_id", "swarm_v3_worktree_base_commit"} {
+	for _, key := range []string{"swarm_v3_runtime_kind", "swarm_v3_runtime_swarm_id", "swarm_v3_authority_host_swarm_id", "swarm_v3_runtime_workspace_path", "worker_revision", "worker_role", "worker_review_target", "worker_review_fixes", "worker_review_lane_owner", "worker_workspace_id", "swarm_v3_worktree_owner_session_id", "swarm_v3_worktree_base_commit"} {
 		if !reflect.DeepEqual(current.Metadata[key], pinned.Metadata[key]) {
 			return store.ErrWorkerConflict
 		}
@@ -1625,7 +1823,7 @@ func (s *Service) validateWorkerExecution(current store.SessionSnapshot) error {
 	if err != nil {
 		return err
 	}
-	if !found || r.CancelRequested || r.SessionID != current.ID || r.UserID != current.UserID || (r.Status != "admitted" && r.Status != "running") {
+	if !found || r.CancelRequested || r.SessionID != current.ID || r.UserID != current.UserID {
 		return store.ErrWorkerConflict
 	}
 	intent, hasIntent, intentErr := s.sessions.GetSessionActiveRunIntent(current.ID)
@@ -1633,6 +1831,12 @@ func (s *Service) validateWorkerExecution(current store.SessionSnapshot) error {
 		return intentErr
 	}
 	if hasIntent && intent.Status == sessions.RunIntentCancelled {
+		return store.ErrWorkerConflict
+	}
+	if workerRunSettledForFollowup(r.Status) && sandbox.Default() != nil && (r.FollowupStatus != "running" || r.FollowupRunID != intent.RunID) {
+		return store.ErrWorkerConflict
+	}
+	if !workerRunExecutable(r, intent, hasIntent) {
 		return store.ErrWorkerConflict
 	}
 	w, found, err := ws.GetWorker(r.AccountScopeID, r.WorkerID)
@@ -1665,7 +1869,166 @@ func (s *Service) validateWorkerExecution(current store.SessionSnapshot) error {
 			return store.ErrWorkerConflict
 		}
 	}
+	if current.Metadata["worker_role"] == store.WorkerRoleReviewer {
+		if !reflect.DeepEqual(current.Metadata["worker_review_target"], r.Input["captured_review_target"]) {
+			return store.ErrWorkerConflict
+		}
+		// The session's fixes must be exactly what its receipt admitted.
+		if sessionReviewFixes(current.Metadata) != reviewFixesAllowed(r.Input) {
+			return store.ErrWorkerConflict
+		}
+		execution := &WorkerExecutionService{host: &AutomationV2ExecutionHost{runs: s}}
+		if err := execution.registerReview(current); err != nil {
+			return err
+		}
+		return validateSessionExecutionRepositoryIdentity(current)
+	}
 	return nil
+}
+
+// workerRunSettledForFollowup lists the receipt states a job accepts a
+// follow-up in: it finished its own run, for review (also after declaring a
+// blocker) or as a failure. A cancelled job accepts none.
+func workerRunSettledForFollowup(status string) bool {
+	return status == "succeeded" || status == "failed"
+}
+
+// workerRunExecutable says whether a worker job's session may run now. The
+// job's own run executes while its receipt is admitted or running. Once the
+// receipt settled, the session runs only a follow-up: a later active run of
+// its own (swarm_message_job), never the job's original run or a checkpoint of
+// its plan again.
+func workerRunExecutable(r store.WorkerRunRecord, intent store.V3SessionRunIntent, hasIntent bool) bool {
+	switch {
+	case workerWaiting(r.Status) || r.Status == "running":
+		return true
+	case workerRunSettledForFollowup(r.Status):
+		return hasIntent && intent.RunID != "" && intent.RunID != r.ID && intent.PlanID != r.ID &&
+			(intent.Status == sessions.RunIntentPendingExecutor || intent.Status == sessions.RunIntentRunning)
+	}
+	return false
+}
+
+// PrepareFollowup readies a worker job's session for a follow-up message: the
+// job settled (its own run finished, for review, blocked or failed), it was
+// not cancelled, its worker still admits work, and no other run is active in
+// the session. The follow-up runs with the worker's current model settings:
+// a worker revised since the job started (a role model change, for example)
+// does not block it. It changes nothing when it refuses; the message itself is
+// appended by the caller through the canonical V3 message mutation, where a
+// concurrent second run is refused atomically.
+func (s *WorkerExecutionService) PrepareFollowup(account, user, sessionID string) error {
+	s.dispatchMu.Lock()
+	defer s.dispatchMu.Unlock()
+	if err := s.authorizeWorkerOwner(account, user); err != nil {
+		return err
+	}
+	h := s.host
+	snapshot, found, err := h.runs.sessions.GetSession(sessionID)
+	if err != nil {
+		return err
+	}
+	runID, workerID := mapString(snapshot.Metadata, "worker_execution_run_id"), mapString(snapshot.Metadata, "worker_id")
+	if !found || runID == "" || workerID == "" || snapshot.AccountScopeID != account || snapshot.UserID != user {
+		return fmt.Errorf("%w: the session is not a worker job's session", store.ErrWorkerConflict)
+	}
+	ws, err := s.workerStore()
+	if err != nil {
+		return err
+	}
+	r, found, err := ws.GetWorkerRun(account, workerID, runID)
+	if err != nil {
+		return err
+	}
+	if !found || r.SessionID != sessionID || r.UserID != user {
+		return fmt.Errorf("%w: the job's receipt does not match its session", store.ErrWorkerConflict)
+	}
+	if !store.AutomationV2Terminal(r.Status) && !r.CancelRequested {
+		// The job's own run may have ended without the reconcile loop having
+		// recorded it yet; settle it from its intent, the way the loop does.
+		if err := s.observeRun(r); err != nil && !errors.Is(err, store.ErrWorkerConflict) {
+			return err
+		}
+		if r, _, err = ws.GetWorkerRun(account, workerID, runID); err != nil {
+			return err
+		}
+	}
+	switch {
+	case r.CancelRequested || r.Status == "cancelled":
+		return fmt.Errorf("%w: the job was cancelled; give the worker a new job instead", store.ErrWorkerConflict)
+	case workerWaiting(r.Status) || r.Status == "running":
+		// The job's own run still owns the session: a message joins it as it
+		// always has (the run gate admits it while the receipt runs, and the
+		// run-intent store refuses a second active run atomically).
+		return nil
+	case !workerRunSettledForFollowup(r.Status):
+		return fmt.Errorf("%w: the job is %s and takes no follow-up", store.ErrWorkerConflict, r.Status)
+	case r.Status == "failed" && workerRunPlanID(r) != "":
+		// A message would resume the failed job's own plan, which its settled
+		// receipt no longer runs.
+		return fmt.Errorf("%w: the job's plan failed; give the worker a corrected job instead", store.ErrWorkerConflict)
+	}
+	w, found, err := ws.GetWorker(account, workerID)
+	if err != nil {
+		return err
+	}
+	if !found || !workerRunAdmissionOpen(w, r) {
+		return fmt.Errorf("%w: the worker is %s and takes no more work", store.ErrWorkerConflict, firstNonEmptyString(string(w.LifecycleState), "gone"))
+	}
+	if !workerRunAutomationEnabled(w, r) {
+		return fmt.Errorf("%w: the job's automation is disabled", store.ErrWorkerConflict)
+	}
+	if active, ok, err := h.runs.sessions.GetSessionActiveRunIntent(sessionID); err != nil {
+		return err
+	} else if ok && (active.Status == sessions.RunIntentPendingExecutor || active.Status == sessions.RunIntentRunning) {
+		return fmt.Errorf("%w: a follow-up is already running in this job; send the next one once it settles", store.ErrWorkerConflict)
+	}
+	if projectID, taskID := mapString(snapshot.Metadata, "project_id"), mapString(snapshot.Metadata, "task_id"); projectID != "" && taskID != "" {
+		task, found, err := h.runs.sessions.Store().GetProjectTask(account, projectID, taskID)
+		if err != nil {
+			return err
+		}
+		if found && task != nil && task.Archived {
+			return fmt.Errorf("%w: the job's task is archived", store.ErrWorkerConflict)
+		}
+	}
+	if err := s.refreshFollowupModel(snapshot, w); err != nil {
+		return err
+	}
+	if m := sandbox.Default(); m != nil {
+		_, err := ws.ReserveWorkerFollowup(account, workerID, runID, "", m.MaxWorkerRuns())
+		return err
+	}
+	return nil
+}
+
+// refreshFollowupModel points the job's session at the worker's current
+// model settings before a follow-up run, through the canonical session model
+// mutation. The job's own run already finished, so no run changes model
+// mid-flight; an unchanged selection writes nothing.
+func (s *WorkerExecutionService) refreshFollowupModel(snapshot store.SessionSnapshot, w store.WorkerRecord) error {
+	profile, err := s.ResolveRoleModelProfile(snapshot.AccountScopeID, w.Role, w.ModelProfile)
+	if err != nil {
+		return err
+	}
+	profile.UseAccountDefault, profile.ActionUseAccountDefault, profile.PlanUseAccountDefault = false, false, false
+	if err := store.ValidateWorkerModelProfile(profile); err != nil {
+		return err
+	}
+	current := w
+	current.ModelProfile = profile
+	pref := workerExecutionPreference(current)
+	have := snapshot.Preference
+	if have.Provider == pref.Provider && have.Model == pref.Model && have.Thinking == pref.Thinking && have.ServiceTier == pref.ServiceTier && have.ContextMode == pref.ContextMode {
+		return nil
+	}
+	next := snapshot
+	next.Preference = pref
+	next.ModelProfile = profile
+	now := time.Now().UnixMilli()
+	key := fmt.Sprintf("worker-followup-model:%s:%d", snapshot.ID, now)
+	_, err = s.host.apply(sessions.SessionMutationInput{SessionID: snapshot.ID, UserID: snapshot.UserID, AccountScopeID: snapshot.AccountScopeID, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, Kind: sessions.SessionMutationUpdateModelProfile, Session: &next, NowUnixMs: now})
+	return err
 }
 
 func (s *WorkerExecutionService) Resume(account, user, id string, revision uint64) (store.WorkerRecord, error) {

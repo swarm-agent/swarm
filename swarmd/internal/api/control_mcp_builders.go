@@ -154,15 +154,14 @@ func controlMCPCreateClientKey(c *controlMCPCall, args map[string]any) (any, err
 	if name == "" || len(name) > 64 {
 		return nil, controlMCPToolFailure("name is required (at most 64 characters)")
 	}
-	days := controlMCPInt(args, "days", 30)
-	if !slices.Contains(controlMCPClientKeyDays, days) {
-		return nil, controlMCPToolFailure("days must be one of %v", controlMCPClientKeyDays)
+	body := map[string]any{"name": name, "scopes": controlMCPClientKeyScopes}
+	if days := controlMCPInt(args, "days", 0); days != 0 {
+		if !slices.Contains(controlMCPClientKeyDays, days) {
+			return nil, controlMCPToolFailure("days must be one of %v, or left out (the key then works until 90 days unused)", controlMCPClientKeyDays)
+		}
+		body["expires_in_seconds"] = days * 24 * 60 * 60
 	}
-	response, err := c.dispatch(http.MethodPost, "/v3/auth/tokens", nil, map[string]any{
-		"name":               name,
-		"scopes":             controlMCPClientKeyScopes,
-		"expires_in_seconds": days * 24 * 60 * 60,
-	})
+	response, err := c.dispatch(http.MethodPost, "/v3/auth/tokens", nil, body)
 	if err != nil {
 		return nil, err
 	}
@@ -170,7 +169,7 @@ func controlMCPCreateClientKey(c *controlMCPCall, args map[string]any) (any, err
 	if token == "" {
 		return nil, controlMCPToolFailure("Swarm did not return a key")
 	}
-	record := controlMCPPick(controlMCPMap(response["record"]), "id", "name", "scopes", "expires_at")
+	record := controlMCPPick(controlMCPMap(response["record"]), "id", "name", "scopes", "expires_at", "lapses_at", "lapse_reason")
 	return map[string]any{
 		"key":    token,
 		"record": record,

@@ -1,0 +1,124 @@
+package tool
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"swarm-refactor/swarmtui/pkg/environments"
+	"swarm/packages/swarmd/internal/environments/provider"
+	"swarm/packages/swarmd/internal/identity"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+)
+
+type managedSessionFixture struct {
+	manageSessionService
+	snapshot pebblestore.SessionSnapshot
+}
+
+func (f *managedSessionFixture) GetSession(string) (pebblestore.SessionSnapshot, bool, error) {
+	return f.snapshot, true, nil
+}
+
+type managedExecFixture struct {
+	manageDeploymentLifecycleService
+	lease   environments.DeploymentLease
+	calls   int
+	request provider.ExecRequest
+	failure error
+}
+
+func (f *managedExecFixture) GetLease(string, string, string) (environments.DeploymentLease, bool, error) {
+	return f.lease, true, nil
+}
+func (f *managedExecFixture) ExecTaskLease(_ context.Context, _, _, _ string, _ environments.OperationAttribution, req provider.ExecRequest) (*provider.ExecResult, error) {
+	f.calls++
+	f.request = req
+	if f.failure != nil {
+		return nil, f.failure
+	}
+	return &provider.ExecResult{Stdout: "managed-only", ExitCode: 7}, nil
+}
+func newManagedExecutionFixture(t *testing.T) (*Runtime, WorkspaceScope, *managedSessionFixture, *managedExecFixture) {
+	t.Helper()
+	p := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account", SessionID: "child"}
+	s := &managedSessionFixture{snapshot: pebblestore.SessionSnapshot{ID: "child", UserID: p.UserID, AccountScopeID: p.AccountScopeID, Metadata: map[string]any{ManagedExecutionMetadataKey: ManagedExecutionBinding{WorkspaceID: "workspace", LeaseID: "receipt"}, "project_id": "project", "task_id": "task", "task_attempt_id": "attempt"}}}
+	d := &managedExecFixture{lease: environments.DeploymentLease{ID: "receipt", AccountScopeID: p.AccountScopeID, WorkspaceID: "workspace", DeploymentID: "deployment", ConsumerType: environments.ConsumerTypeSession, ConsumerID: "child", Active: true, ExpiresAt: time.Now().Add(time.Hour).UnixMilli(), TaskBinding: &environments.TaskLeaseBinding{ProjectID: "project", TaskID: "task", AttemptID: "attempt", UserID: p.UserID}, PreparedSource: &environments.PreparedDeploymentSource{}}}
+	r := NewRuntime(0)
+	r.sessions, r.deploymentManager = s, d
+	return r, WorkspaceScope{PrimaryPath: t.TempDir(), SessionID: "child", Principal: p}, s, d
+}
+
+// Requirement: explicit managed selection overrides all local sandbox choices.
+// Threat: invalid/foreign/stale receipts or cwd/source overrides executing on the
+// host. Production executeOne/managedExecutionBinding/executeManagedBash own this
+// dispatch boundary. A recording lifecycle double is the narrowest test of that
+// boundary; it does NOT qualify Podman/provider execution or remote file editing.
+func TestManagedExecutionDispatch(t *testing.T) {
+	for _, name := range []string{"success", "wrong_session", "wrong_account", "wrong_attempt", "wrong_task", "expired", "released", "malformed", "provider_rejected", "override", "host_write", "host_git", "host_artifact", "custom"} {
+		t.Run(name, func(t *testing.T) {
+			r, scope, sessions, deployments := newManagedExecutionFixture(t)
+			marker := filepath.Join(scope.PrimaryPath, "host-marker")
+			args, _ := json.Marshal(map[string]any{"command": "touch " + marker, "category": "write", "critical": false, "explanation": []string{"Create the isolated test marker"}})
+			call := Call{Name: "bash", Arguments: string(args)}
+			switch name {
+			case "wrong_session":
+				deployments.lease.ConsumerID = "another-child"
+			case "wrong_account":
+				deployments.lease.AccountScopeID = "another-account"
+			case "wrong_attempt":
+				deployments.lease.TaskBinding.AttemptID = "previous"
+			case "wrong_task":
+				deployments.lease.TaskBinding.TaskID = "other"
+			case "expired":
+				deployments.lease.ExpiresAt = time.Now().Add(-time.Minute).UnixMilli()
+			case "released":
+				deployments.lease.Active = false
+			case "malformed":
+				sessions.snapshot.Metadata[ManagedExecutionMetadataKey] = "receipt"
+			case "provider_rejected":
+				deployments.failure = errors.New("attachment detached")
+			case "override":
+				call.Arguments = `{"command":"pwd","workspace_path":"."}`
+			case "host_write":
+				call.Name = "write"
+				call.Arguments = `{"path":"host-marker","content":"unauthorized"}`
+			case "host_git":
+				call.Name = "git_init"
+				call.Arguments = `{}`
+			case "custom":
+				call.Name = "custom-shell"
+			case "host_artifact":
+				call.Name = "artifact_v3_author"
+			}
+			output, err := r.executeOne(context.Background(), scope, call, nil)
+			if name == "success" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				var result map[string]any
+				if json.Unmarshal([]byte(output), &result) != nil || result["execution_mode"] != "managed" || result["lease_id"] != "receipt" || result["exit_code"] != float64(7) || result["output"] != "managed-only" {
+					t.Fatalf("wrong managed output: %s", output)
+				}
+				if deployments.calls != 1 || deployments.request.WorkingDir != "" || deployments.request.Timeout <= 0 {
+					t.Fatalf("wrong managed request: %#v", deployments.request)
+				}
+			} else if err == nil {
+				t.Fatalf("expected rejection, got %s", output)
+			}
+			if name != "success" && name != "provider_rejected" && deployments.calls != 0 {
+				t.Fatal("rejected request reached provider")
+			}
+			if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("host marker changed: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(scope.PrimaryPath, ".git")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("host git changed: %v", err)
+			}
+		})
+	}
+}

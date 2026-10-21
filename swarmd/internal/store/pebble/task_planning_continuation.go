@@ -27,7 +27,7 @@ func (s *SessionStore) prepareTaskPlanningContinuation(input V3SessionMutationIn
 		return nil, nil // A project conversation is not a project task attempt.
 	}
 	if current.Mode != "plan" && current.Mode != "plan+bypass_permissions" {
-		return nil, nil
+		return s.prepareTaskExecutionContinuation(input, current, intent, now)
 	}
 	projectID, _ := current.Metadata["project_id"].(string)
 	taskID, _ := current.Metadata["task_id"].(string)

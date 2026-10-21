@@ -23,13 +23,6 @@ func testPrincipal() identity.Principal {
 	return identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-1", AccountScopeID: "account-1"}
 }
 
-func newReadyRepository(t *testing.T) string {
-	t.Helper()
-	path := t.TempDir()
-	makeReadyRepository(t, path)
-	return path
-}
-
 func makeReadyRepository(t *testing.T, path string) {
 	t.Helper()
 	if _, err := runRepositoryGit(path, "init", "--initial-branch=main"); err != nil {

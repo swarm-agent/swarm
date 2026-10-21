@@ -53,7 +53,7 @@ run() {
   printf 'models changed\n' > "$work/body"
   PUBLISH_GITHUB_CONF="$work/publish-github.conf" PUBLISH_GITHUB_API="http://127.0.0.1:$(cat "$work/port")" PUBLISH_GITHUB_GIT="file://$work/git" \
     SWARM_PUBLISH_FOLDER="$work/folder" SWARM_PUBLISH_JOB_ID="worker/w1/r1" SWARM_PUBLISH_BRANCH=agent/worker-r1 \
-    SWARM_PUBLISH_HEAD="$head" SWARM_PUBLISH_BASE_BRANCH=dev SWARM_PUBLISH_TITLE="Refresh models" SWARM_PUBLISH_BODY_FILE="$work/body" \
+    SWARM_PUBLISH_HEAD="$head" SWARM_PUBLISH_BASE_BRANCH="${SWARM_PUBLISH_BASE_BRANCH:-dev}" SWARM_PUBLISH_TITLE="Refresh models" SWARM_PUBLISH_BODY_FILE="$work/body" \
     bash "$here/publish-github.sh"
 }
 
@@ -72,9 +72,9 @@ grep -q "auto-merge on" <<<"$out" || fail "did not turn on auto-merge: $out"
 branch=$(git --git-dir="$work/git/example/models.git" for-each-ref --format='%(refname:short)' refs/heads/)
 [[ $branch == ai/swarm-* ]] || fail "pushed branch $branch is not under ai/swarm-"
 [[ $(git --git-dir="$work/git/example/models.git" rev-parse "$branch") == "$head" ]] || fail "pushed branch is not the job's head"
-jq -e 'select(.url == "/repos/example/models/pulls") | (.body | fromjson | .head | startswith("ai/swarm-")) and (.body | fromjson | .base == "main") and (.body | fromjson | .body | contains("models changed"))' "$work/requests.log" >/dev/null \
+jq -se 'any(.[]; .url == "/repos/example/models/pulls" and (.body | fromjson | .head | startswith("ai/swarm-")) and (.body | fromjson | .base == "main") and (.body | fromjson | .body | contains("models changed")))' "$work/requests.log" >/dev/null \
   || fail "pull request body or branches are wrong"
-jq -e 'select(.url == "/app/installations/7/access_tokens") | .auth | startswith("Bearer ey")' "$work/requests.log" >/dev/null || fail "token call did not use the App JWT"
+jq -se 'any(.[]; .url == "/app/installations/7/access_tokens" and (.auth | startswith("Bearer ey")))' "$work/requests.log" >/dev/null || fail "token call did not use the App JWT"
 
 # The same job again (a follow-up) updates the same pull request.
 out=$(run) || fail "second run failed: $out"
@@ -96,8 +96,14 @@ out=$(PUBLISH_GITHUB_CONF="$work/publish-github.conf" PUBLISH_GITHUB_API="http:/
 [[ $(tail -n1 <<<"$out") == "$merged main" ]] || fail "update did not print the forge's main: $out"
 [[ $(git -C "$work/folder" rev-parse refs/swarm/publish/main) == "$merged" ]] || fail "the forge's main is not in the folder"
 [[ $(git -C "$work/folder" rev-parse HEAD) == "$head" ]] || fail "update moved the owner's checkout"
-jq -e 'select(.url == "/app/installations/7/access_tokens") | .body | fromjson | .permissions == {"contents":"read","metadata":"read"}' "$work/requests.log" >/dev/null \
+jq -se 'any(.[]; .url == "/app/installations/7/access_tokens" and (.body | fromjson | .permissions == {"contents":"read","metadata":"read"}))' "$work/requests.log" >/dev/null \
   || fail "update asked for more than read access"
+
+# The removed land action is refused before any token request or push.
+before=$(wc -l <"$work/requests.log")
+if out=$(SWARM_PUBLISH_ACTION=land run 2>&1); then fail "land action accepted: $out"; fi
+grep -q 'SWARM_PUBLISH_ACTION must be publish or update' <<<"$out" || fail "unclear land refusal: $out"
+[[ $(wc -l <"$work/requests.log") == "$before" ]] || fail "land action reached the API"
 
 # The token only goes to curl on stdin and to git in the environment, never on a
 # command line: its only uses are those two.

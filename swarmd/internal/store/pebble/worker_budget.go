@@ -237,6 +237,21 @@ func (s *SessionStore) CheckWorkerSessionBudgetWithPrice(account, sessionID, pri
 	if !workerOwned {
 		return nil
 	}
+	limits, err := s.GetLimits(account)
+	if err != nil {
+		return err
+	}
+	for _, scope := range scopes {
+		if scope.Kind != "worker_run" {
+			continue
+		}
+		if err := s.store.observeLimit(account, scope.ProjectID+"/"+scope.ID+"/pricing", "job_cost_usd", limits.JobCostUSD, limits.JobCostUSD > 0 && priceStatus != "known" && priceStatus != "free" && priceStatus != "subscription"); err != nil {
+			return err
+		}
+	}
+	if err := s.checkJobLimits(account, scopes); err != nil {
+		return err
+	}
 	date := time.Now().UTC().Format("2006-01-02")
 	// Exhaustion precedes reservations so they cannot hide a genuine day stop.
 	for _, scope := range scopes {
@@ -458,6 +473,38 @@ func (s *SessionStore) CheckWorkerUnmeteredOperation(account, session string) er
 		}
 	}
 	return nil
+}
+
+// WorkerBudgetActive reports whether session is worker-owned (through durable
+// lineage) and a worker or account budget applies to it, so each provider
+// call must reserve and settle one operation before the next may start.
+func (s *SessionStore) WorkerBudgetActive(account, session string) (bool, error) {
+	if s == nil || s.store == nil {
+		return false, errors.New("store is not configured")
+	}
+	unlock := s.store.sessionMutations.lockSessions("account:" + account)
+	defer unlock()
+	scopes, err := s.resolveUsageScopes(account, session)
+	if err != nil {
+		return false, err
+	}
+	for _, scope := range scopes {
+		if scope.Kind != "worker" {
+			continue
+		}
+		policy, err := s.GetWorkerBudget(account, scope.ID)
+		if err != nil {
+			return false, err
+		}
+		_, accountActive, err := s.accountBudgetActive(account)
+		if err != nil {
+			return false, err
+		}
+		if accountActive || policy.DailyCostLimitUSD > 0 || policy.DailyTokensLimit > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func unknownBudgetReceipt(status string) int64 {

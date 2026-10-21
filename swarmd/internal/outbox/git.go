@@ -52,6 +52,7 @@ func (b *Builder) git(ctx context.Context, repo string, stdout io.Writer, args .
 	cmd.Env = append(os.Environ(), "GIT_NO_REPLACE_OBJECTS=1", "GIT_TERMINAL_PROMPT=0")
 	cmd.Stdout, cmd.Stderr = stdout, &limitedBuffer{buf: &stderr, max: 2048}
 	sandbox.Prepare(ctx, cmd)
+	defer sandbox.ReleaseGit(cmd)
 	if err := cmd.Run(); err != nil {
 		if text := strings.TrimSpace(stderr.String()); text != "" {
 			return fmt.Errorf("git %s: %w: %s", args[0], err, truncate(text, 300))

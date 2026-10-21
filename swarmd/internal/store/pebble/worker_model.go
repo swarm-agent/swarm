@@ -27,6 +27,16 @@ func ValidateWorkerModelProfile(p *SessionModelProfileSnapshot) error {
 // InitializeWorkerModelProfile is a one-time migration, never a live model edit.
 // The service must resolve the canonical default before crossing this CAS.
 func (ws *WorkerStore) InitializeWorkerModelProfile(account, user, id string, revision uint64, profile *SessionModelProfileSnapshot) (WorkerRecord, error) {
+	return ws.setWorkerModelProfile(account, user, id, revision, profile, true)
+}
+
+// SetWorkerModelProfile changes only model policy, without staging worker edits.
+// The caller validates the catalog; this boundary enforces account and revision.
+func (ws *WorkerStore) SetWorkerModelProfile(account, user, id string, revision uint64, profile *SessionModelProfileSnapshot) (WorkerRecord, error) {
+	return ws.setWorkerModelProfile(account, user, id, revision, profile, false)
+}
+
+func (ws *WorkerStore) setWorkerModelProfile(account, user, id string, revision uint64, profile *SessionModelProfileSnapshot, initialize bool) (WorkerRecord, error) {
 	if ws == nil || ws.store == nil || ws.store.db == nil {
 		return WorkerRecord{}, fmt.Errorf("worker store is not open")
 	}
@@ -48,14 +58,14 @@ func (ws *WorkerStore) InitializeWorkerModelProfile(account, user, id string, re
 	if !found || w.AccountScopeID != account {
 		return WorkerRecord{}, ErrWorkerNotFound
 	}
-	if revision == 0 || w.Revision != revision || w.ModelProfile != nil || w.LifecycleState == WorkerLifecycleStateDeleted || w.LifecycleState == WorkerLifecycleStateStopping {
+	if revision == 0 || w.Revision != revision || (initialize && w.ModelProfile != nil) || w.LifecycleState == WorkerLifecycleStateDeleted || w.LifecycleState == WorkerLifecycleStateStopping {
 		return WorkerRecord{}, ErrWorkerConflict
 	}
 	w.ModelProfile = CloneSessionModelProfileSnapshot(profile)
 	w.Revision++
 	w.UpdatedAt = time.Now().UnixMilli()
 	m := &workerRealtimeMutation{accountScopeID: account, userID: user, workerID: id}
-	history := WorkerRevisionRecord{WorkerID: id, AccountScopeID: account, Revision: w.Revision, Worker: w, CommittedAt: w.UpdatedAt, CommittedBy: user, ChangeSummary: "initialized worker model"}
+	history := WorkerRevisionRecord{WorkerID: id, AccountScopeID: account, Revision: w.Revision, Worker: w, CommittedAt: w.UpdatedAt, CommittedBy: user, ChangeSummary: "updated worker model policy"}
 	if err = m.put(KeyWorker(account, id), w); err != nil {
 		return WorkerRecord{}, err
 	}

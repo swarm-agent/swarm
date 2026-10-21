@@ -4,99 +4,177 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 )
 
-// Requirement: SDK credential issuance uses private IPC, fixed session scopes,
-// bounded expiry and explicit secret export. runSetup is the authority; a Unix
-// fixture proves exact requests and rejection before any token is minted.
-func TestSetupSDKToken(t *testing.T) {
-	calls := 0
-	socket := setupFixture(t, func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		if r.Method != "POST" {
-			t.Error("wrong method")
-		}
-		if r.URL.Path == "/v3/auth/tokens/token-id/revoke" {
-			fmt.Fprint(w, `{"ok":true}`)
-			return
-		}
-		if r.URL.Path != "/v3/auth/tokens" {
-			t.Error("wrong route")
-		}
-		var body struct {
-			Scopes  []string `json:"scopes"`
-			Seconds int      `json:"expires_in_seconds"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Error(err)
-		}
-		if !reflect.DeepEqual(body.Scopes, []string{"sessions:read", "sessions:write"}) || body.Seconds != 3600 {
-			t.Error("incorrect authority or lifetime")
-		}
-		fmt.Fprint(w, `{"token":"swk_fixture-only","record":{"id":"token-id"},"private":"do-not-export"}`)
-	})
-	var out bytes.Buffer
-	if err := runSetup([]string{"sdk-token", "--socket", socket}, strings.NewReader(""), &out); err != nil {
-		t.Fatal(err)
-	}
-	var exported map[string]string
-	if err := json.Unmarshal(out.Bytes(), &exported); err != nil || len(exported) != 2 || exported["id"] != "token-id" || exported["token"] != "swk_fixture-only" {
-		t.Fatal("invalid export")
-	}
-	out.Reset()
-	if err := runSetup([]string{"revoke-sdk-token", "--socket", socket, "--id", "token-id"}, nil, &out); err != nil {
-		t.Fatal(err)
-	}
-	for _, flags := range [][]string{{"--expires-in-seconds=0"}, {"--expires-in-seconds=86401"}, {"--scopes=admin"}, {"--token=do-not-echo"}} {
-		out.Reset()
-		if err := runSetup(append([]string{"sdk-token", "--socket", socket}, flags...), nil, &out); err == nil || strings.Contains(err.Error(), "do-not-echo") {
-			t.Fatal("unsafe arguments accepted or echoed")
-		}
-		if out.Len() != 0 {
-			t.Fatal("output on validation failure")
-		}
-	}
-	f, err := os.OpenFile(filepath.Join(t.TempDir(), "unsafe.json"), os.O_CREATE|os.O_WRONLY, 0600)
+// setupFixture serves handler on a private Unix socket, the daemon IPC that
+// runSetup talks to, and returns the socket path.
+func setupFixture(t *testing.T, handler http.HandlerFunc) string {
+	t.Helper()
+	// Unix socket names are limited to ~108 bytes; avoid test-name prefixes.
+	dir, err := os.MkdirTemp("", "setup-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
-	if err := f.Chmod(0644); err != nil {
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "api.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := runSetup([]string{"sdk-token", "--socket", socket}, nil, f); err == nil {
-		t.Fatal("accepted public output file")
+	server := httptest.NewUnstartedServer(handler)
+	server.Listener = listener
+	server.Start()
+	t.Cleanup(server.Close)
+	return socket
+}
+
+// Requirement: an operator can find a token's ID to revoke it, without the
+// listing ever exposing a credential, and sees which keys never expire (the
+// daemon's never_expires flag, for keys stored before expiry was required). runSetupSDKTokens is the authority; the
+// fixture returns records carrying a hash and hint that must not be printed.
+func TestSetupSDKTokensListsIDsWithoutSecrets(t *testing.T) {
+	socket := setupFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" || r.URL.Path != "/v3/auth/tokens" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		fmt.Fprint(w, `{"ok":true,"tokens":[
+			{"id":"tok-gw","name":"gateway","token_hash":"HASH-SECRET","token_hint":"swk_HINT","agent_name":"frontdesk","messages_per_minute":30,"sessions_per_hour":100,"max_concurrent_runs":4,"created_at":1,"expires_at":2},
+			{"id":"tok-op","name":"hub","token_hash":"HASH-SECRET-2","token_hint":"swk_HINT2","agent_name":"frontdesk","agent_operator":true,"created_at":1,"expires_at":2,"revoked":true},
+			{"id":"tok-sdk","name":"headless-sdk","token_hash":"HASH-SECRET-3","scopes":["sessions:read"],"created_at":1,"expires_at":2},
+			{"id":"tok-old","name":"old-sdk","token_hash":"HASH-SECRET-4","scopes":["sessions:read"],"created_at":1,"expires_at":0,"never_expires":true}]}`)
+	})
+	var out bytes.Buffer
+	if err := runSetup([]string{"sdk-tokens", "--socket", socket}, strings.NewReader(""), &out); err != nil {
+		t.Fatal(err)
 	}
-	if calls != 2 {
-		t.Fatalf("validation minted credential: calls %d", calls)
+	if strings.Contains(out.String(), "HASH") || strings.Contains(out.String(), "HINT") {
+		t.Fatalf("listing exposed a token hash or hint: %s", out.String())
+	}
+	var listed struct {
+		Tokens []struct {
+			ID, Kind          string
+			MaxConcurrentRuns int  `json:"max_concurrent_runs"`
+			Revoked           bool `json:"revoked"`
+			NeverExpires      bool `json:"never_expires"`
+		} `json:"tokens"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	got := fmt.Sprint(listed.Tokens)
+	want := "[{tok-gw gateway:frontdesk 4 false false} {tok-op operator:frontdesk 0 true false} {tok-sdk scoped 0 false false} {tok-old scoped 0 false true}]"
+	if got != want {
+		t.Fatalf("listed %s, want %s", got, want)
 	}
 }
 
-// Requirement: --ai-access mints an AI key by level only (the daemon derives
-// its scopes), refuses other authority, and allows up to a year.
-func TestSetupSDKTokenAIAccess(t *testing.T) {
-	var got map[string]any
+// Requirement: keys need no lifetime (they work while used and stop after 90
+// days unused), so swarmctl setup sdk-token sends none by default for every
+// kind (session, monitor, AI and bot keys); --expires-in-seconds is an
+// optional fixed end date, the same bound for every kind (60 seconds to 365
+// days), refused before calling the daemon when out of range. Boundary:
+// runSetupSDKToken payload construction. Narrowest layer: the CLI over a
+// socket fixture that records each mint request.
+func TestSetupSDKTokenSendsNoLifetimeUnlessAFixedDateIsAsked(t *testing.T) {
+	var bodies []map[string]any
 	socket := setupFixture(t, func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&got)
-		fmt.Fprint(w, `{"token":"swk_ai","record":{"id":"ai-id"}}`)
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		bodies = append(bodies, body)
+		fmt.Fprint(w, `{"ok":true,"token":"swk_x","record":{"id":"tok_1"}}`)
+	})
+	for _, extra := range [][]string{nil, {"--monitor"}, {"--ai-access", "read"}, {"--agent", "frontdesk"}} {
+		var out bytes.Buffer
+		if err := runSetup(append([]string{"sdk-token", "--socket", socket}, extra...), strings.NewReader(""), &out); err != nil {
+			t.Fatalf("%v: %v", extra, err)
+		}
+	}
+	if len(bodies) != 4 {
+		t.Fatalf("sent %d mint requests, want 4", len(bodies))
+	}
+	for i, body := range bodies {
+		if seconds, _ := body["expires_in_seconds"].(float64); seconds != 0 {
+			t.Fatalf("request %d sent expires_in_seconds=%v, want none: %v", i, body["expires_in_seconds"], body)
+		}
+	}
+	for _, args := range [][]string{
+		{"--expires-in-seconds", "59"},
+		{"--agent", "frontdesk", "--expires-in-seconds", "31536001"},
+		{"--monitor", "--expires-in-seconds", "31536001"},
+		{"--ai-access", "read", "--expires-in-seconds", "-5"},
+	} {
+		var out bytes.Buffer
+		if err := runSetup(append([]string{"sdk-token", "--socket", socket}, args...), strings.NewReader(""), &out); err == nil {
+			t.Fatalf("%v was accepted", args)
+		}
+	}
+	if len(bodies) != 4 {
+		t.Fatalf("an out-of-range date reached the daemon: %v", bodies[4:])
+	}
+	var out bytes.Buffer
+	if err := runSetup([]string{"sdk-token", "--socket", socket, "--agent", "frontdesk", "--expires-in-seconds", "15552000"}, strings.NewReader(""), &out); err != nil {
+		t.Fatalf("a 180-day bot key date was refused: %v", err)
+	}
+	if bodies[4]["expires_in_seconds"] != float64(15552000) {
+		t.Fatalf("fixed date not sent: %v", bodies[4])
+	}
+}
+
+// Requirement: the per-end-user limits are set when a gateway token is minted
+// (sdk-token --end-user-*) and changed in place later (sdk-token-limits),
+// which sends only the limits named, so an edit never resets the others; the
+// flags are refused on non-gateway keys. runSetupSDKToken and
+// runSetupSDKTokenLimits are the authority; the fixture records each body.
+func TestSetupSDKTokenEndUserLimits(t *testing.T) {
+	var bodies []map[string]any
+	var paths []string
+	socket := setupFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		bodies, paths = append(bodies, body), append(paths, r.Method+" "+r.URL.Path)
+		if strings.HasSuffix(r.URL.Path, "/limits") {
+			fmt.Fprint(w, `{"ok":true,"record":{"id":"tok-gw","agent_name":"frontdesk","token_hash":"HASH-SECRET","end_user_messages_per_minute":7}}`)
+			return
+		}
+		fmt.Fprint(w, `{"ok":true,"token":"swk_test","record":{"id":"tok-gw"}}`)
 	})
 	var out bytes.Buffer
-	if err := runSetup([]string{"sdk-token", "--socket", socket, "--name", "claude", "--ai-access", "read", "--expires-in-seconds", "2592000"}, nil, &out); err != nil {
+	if err := runSetup([]string{"sdk-token", "--socket", socket, "--agent", "frontdesk", "--name", "gw", "--expires-in-seconds", "3600",
+		"--end-user-messages-per-minute", "10", "--end-user-sessions-per-hour", "5", "--end-user-max-tokens-per-day", "20000"}, strings.NewReader(""), &out); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(got, map[string]any{"name": "claude", "ai_access": "read", "expires_in_seconds": float64(2592000)}) {
-		t.Fatalf("payload = %v", got)
+	if paths[0] != "POST /v3/auth/tokens" || bodies[0]["end_user_messages_per_minute"] != float64(10) || bodies[0]["end_user_sessions_per_hour"] != float64(5) || bodies[0]["end_user_max_tokens_per_day"] != float64(20000) {
+		t.Fatalf("mint sent %s %v", paths[0], bodies[0])
 	}
-	for _, flags := range [][]string{{"--ai-access", "admin"}, {"--ai-access", "write", "--workers"}, {"--ai-access", "read", "--agent", "frontdesk"}, {"--ai-access", "read", "--expires-in-seconds", "40000000"}} {
-		out.Reset()
-		if err := runSetup(append([]string{"sdk-token", "--socket", socket}, flags...), nil, &out); err == nil {
-			t.Fatalf("accepted %v", flags)
+	out.Reset()
+	if err := runSetup([]string{"sdk-token-limits", "--socket", socket, "--id", "tok-gw", "--end-user-messages-per-minute", "7"}, strings.NewReader(""), &out); err != nil {
+		t.Fatal(err)
+	}
+	if paths[1] != "POST /v3/auth/tokens/tok-gw/limits" || len(bodies[1]) != 1 || bodies[1]["end_user_messages_per_minute"] != float64(7) {
+		t.Fatalf("limits edit sent %s %v (want only the named limit)", paths[1], bodies[1])
+	}
+	if strings.Contains(out.String(), "HASH") {
+		t.Fatalf("limits output exposed the token hash: %s", out.String())
+	}
+	for _, args := range [][]string{
+		{"sdk-token", "--socket", socket, "--name", "gw", "--expires-in-seconds", "3600", "--end-user-messages-per-minute", "10"},
+		{"sdk-token", "--socket", socket, "--agent", "frontdesk", "--operator", "--name", "hub", "--expires-in-seconds", "3600", "--end-user-sessions-per-hour", "5"},
+		{"sdk-token-limits", "--socket", socket, "--id", "tok-gw"},
+		{"sdk-token-limits", "--socket", socket, "--end-user-messages-per-minute", "7"},
+		{"sdk-token-limits", "--socket", socket, "--id", "tok-gw", "--end-user-max-tokens-per-day", "-1"},
+	} {
+		if err := runSetup(args, strings.NewReader(""), &bytes.Buffer{}); err == nil {
+			t.Fatalf("accepted %v", args)
 		}
+	}
+	if len(paths) != 2 {
+		t.Fatalf("a refused command reached the daemon: %v", paths)
 	}
 }

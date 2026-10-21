@@ -104,7 +104,11 @@ func (s *PermissionStore) UpdateSubagentProgramActiveCount(sessionID, runID, cal
 
 func (s *PermissionStore) ListSubagentWaveReservations(sessionID, runID string) ([]SubagentWaveReservation, error) {
 	out := make([]SubagentWaveReservation, 0)
-	err := s.store.IteratePrefix(SubagentWaveReservationRunPrefix(sessionID, runID), 1000, func(_ string, value []byte) error {
+	prefix := SubagentWaveReservationRunPrefix(sessionID, runID)
+	if runID == "" {
+		prefix = "subagent_reservation/" + keyPart(sessionID) + "/"
+	}
+	err := s.store.IteratePrefix(prefix, 0, func(_ string, value []byte) error {
 		var record SubagentWaveReservation
 		if err := json.Unmarshal(value, &record); err != nil {
 			return err

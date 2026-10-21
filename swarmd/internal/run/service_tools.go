@@ -31,6 +31,7 @@ import (
 )
 
 type taskLaunchPrepared struct {
+	RouterAlert             string
 	RecoverySourceDigest    string
 	RecoveryPrincipal       identity.Principal
 	LaunchIndex             int
@@ -92,6 +93,13 @@ func cloneArtifactV3AuthorRunContext(input *tool.ArtifactV3AuthorRunContext) *to
 
 func delegatedSubagentRunStartMeta(launch taskLaunchPrepared, permissionSessionID string, principal identity.Principal, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) RunStartMeta {
 	profile := launch.SubagentProfile
+	child := launch.ChildSession
+	if _, managed := child.Metadata[tool.ManagedExecutionMetadataKey]; managed && child.ID != "" && principal.Valid() && principal.UserID == child.UserID && principal.AccountScopeID == child.AccountScopeID && (principal.SessionID == "" || principal.SessionID == child.ID || principal.SessionID == mapString(child.Metadata, "parent_session_id")) {
+		// The trusted handoff admitted this durable child and its own receipt.
+		// Execute as that consumer while preserving the parent's permission
+		// decision scope below. Never relax the tool's exact-session check.
+		principal.SessionID = child.ID
+	}
 	meta := RunStartMeta{
 		AllowSubagent:           true,
 		TrustedAgentProfile:     &profile,
@@ -151,6 +159,7 @@ func (e taskChildBlockedError) Error() string {
 }
 
 type taskLaunchOutcome struct {
+	RouterAlert            string
 	LaunchIndex            int
 	VirtualTarget          bool
 	RequestedSubagent      string
@@ -819,6 +828,7 @@ func buildTaskLaunchOutcome(launch taskLaunchPrepared) taskLaunchOutcome {
 	requested := strings.TrimSpace(launch.RequestedSubagent)
 	metaPrompt := strings.TrimSpace(launch.MetaPrompt)
 	outcome := taskLaunchOutcome{
+		RouterAlert:            firstNonEmptyString(launch.RouterAlert, mapString(launch.ChildSession.Metadata, "router_alert"), mapString(launch.ChildSession.Metadata, "model_resolution_warning")),
 		LaunchIndex:            launch.LaunchIndex,
 		VirtualTarget:          launch.VirtualTarget,
 		RequestedSubagent:      requested,
@@ -992,6 +1002,7 @@ func buildTaskStreamLaunchPayload(launch taskLaunchOutcome, status, phase string
 		"owned_scope":                append([]string(nil), launch.OwnedScope...),
 		"subagent_provider":          strings.TrimSpace(launch.SubagentProvider),
 		"subagent_model":             strings.TrimSpace(launch.SubagentModel),
+		"router_alert":               strings.TrimSpace(launch.RouterAlert),
 		"child_session_id":           strings.TrimSpace(launch.ChildSessionID),
 		"child_mode":                 strings.TrimSpace(launch.ChildMode),
 		"workspace_path":             strings.TrimSpace(launch.WorkspacePath),
@@ -1068,6 +1079,7 @@ func buildTaskStreamPayload(parentSessionID, action, description string, launchC
 		"assignment_label":  strings.TrimSpace(launch.AssignmentLabel),
 		"subagent_provider": strings.TrimSpace(launch.SubagentProvider),
 		"subagent_model":    strings.TrimSpace(launch.SubagentModel),
+		"router_alert":      strings.TrimSpace(launch.RouterAlert),
 		"path_id":           "tool.task.stream.v1",
 		"summary":           summary,
 		"details_truncated": false,
@@ -1113,6 +1125,7 @@ func buildTaskStreamLaunchPatchPayload(launch taskLaunchOutcome, status, phase s
 		"owned_scope":                append([]string(nil), launch.OwnedScope...),
 		"subagent_provider":          strings.TrimSpace(launch.SubagentProvider),
 		"subagent_model":             strings.TrimSpace(launch.SubagentModel),
+		"router_alert":               strings.TrimSpace(launch.RouterAlert),
 		"child_session_id":           strings.TrimSpace(launch.ChildSessionID),
 		"child_mode":                 strings.TrimSpace(launch.ChildMode),
 		"workspace_path":             strings.TrimSpace(launch.WorkspacePath),
@@ -1238,10 +1251,17 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		subagentProfile, err = cloneTaskAgentProfile(*trustedProfile)
 		launch.SourceAgentName = strings.TrimSpace(sourceAgentName)
 	} else {
-		subagentProfile, launch.VirtualTarget, launch.SourceAgentName, err = s.resolveTaskLaunchProfileForMode(parentSession, requestedSubagent, effectiveTaskChildMode(sessionMode))
+		subagentProfile, launch.VirtualTarget, launch.SourceAgentName, launch.RouterAlert, err = s.resolveTaskLaunchProfileWithFallback(parentSession, requestedSubagent, effectiveTaskChildMode(sessionMode))
 	}
 	if err != nil {
 		return taskLaunchPrepared{}, err
+	}
+	if workerHelperParent(parentSession) {
+		if !agentruntime.IsFinderAgentName(requestedSubagent) {
+			return taskLaunchPrepared{}, errors.New("coder task permits read-only Finder helpers only")
+		}
+		subagentProfile = agentruntime.HelperAgentProfileForParent(subagentProfile)
+		launch.TargetWorkspacePath = firstNonEmptyString(parentSession.WorktreeRootPath, parentSession.WorkspacePath)
 	}
 	if strings.TrimSpace(subagentProfile.Name) == "" {
 		return taskLaunchPrepared{}, errors.New("task resolved empty subagent")
@@ -1296,6 +1316,8 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	isImageTarget := agentruntime.IsImageAgentName(requestedSubagent)
 	isManagedArtifactTarget := isDesignerTarget || isImageTarget
 	childMetadata := map[string]any{
+		"router_alert":             strings.TrimSpace(launch.RouterAlert),
+		"model_resolution_warning": strings.TrimSpace(launch.RouterAlert),
 		"workspace_id":             worktreeruntime.WorkspaceIdentityForSession(childSessionID),
 		"runtime_state":            "standby",
 		"title_pending":            false,
@@ -1324,6 +1346,17 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		"task_program_job_id":      strings.TrimSpace(launch.ProgramJobID),
 		"original_assignment":      strings.TrimSpace(firstNonEmptyString(launch.MetaPrompt, description)),
 	}
+	if selected, managed := parentSession.Metadata[tool.ManagedExecutionMetadataKey]; managed {
+		if !isCoderTarget {
+			return taskLaunchPrepared{}, errors.New("managed execution delegation currently requires Coder")
+		}
+		// Persist a fail-closed selection before the child can ever run. The
+		// trusted handoff replaces this parent receipt with a child receipt.
+		childMetadata[tool.ManagedExecutionMetadataKey] = selected
+		for _, key := range []string{"project_id", "task_id", "task_attempt_id"} {
+			childMetadata[key] = parentSession.Metadata[key]
+		}
+	}
 	if len(launch.OwnedScope) > 0 {
 		childMetadata["owned_scope"] = append([]string(nil), launch.OwnedScope...)
 	}
@@ -1341,11 +1374,11 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 			childMetadata["integration_contract"] = contract
 		}
 	}
-	if isDesignerTarget && strings.TrimSpace(launch.OutputMode) == taskOutputModeManaged && launch.ArtifactV3AuthorContext == nil {
-		return taskLaunchPrepared{}, errors.New("managed Designer launch is missing its trusted Artifact V3 author capability")
+	if isDesignerTarget && strings.TrimSpace(launch.OutputMode) == taskOutputModeManaged {
+		return taskLaunchPrepared{}, errDesignerManagedOutputRemoved
 	}
-	if isDesignerTarget && strings.TrimSpace(launch.OutputMode) != taskOutputModeManaged && launch.ArtifactV3AuthorContext != nil {
-		return taskLaunchPrepared{}, errors.New("workspace Designer launch cannot carry an Artifact V3 author capability")
+	if isDesignerTarget && launch.ArtifactV3AuthorContext != nil {
+		return taskLaunchPrepared{}, errors.New("a Designer launch cannot carry an Artifact V3 author capability: Designer writes HTML designs with swarm_design")
 	}
 	if isDesignerTarget && launch.ArtifactV3AuthorContext != nil {
 		grant := launch.ArtifactV3AuthorContext.Grant
@@ -1628,6 +1661,22 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	if lineage.CurrentGeneration != 1 || lineage.CurrentSessionID != childSession.ID {
 		return taskLaunchPrepared{}, errors.New("delegated child creation did not acquire generation-one ownership")
 	}
+	if _, managed := childMetadata[tool.ManagedExecutionMetadataKey]; managed {
+		if s.tools == nil {
+			return taskLaunchPrepared{}, errors.New("managed execution handoff unavailable")
+		}
+		handoffCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		err := s.tools.BindDelegatedManagedExecution(handoffCtx, parentSession.ID, childSession.ID)
+		cancel()
+		if err != nil {
+			return taskLaunchPrepared{}, fmt.Errorf("managed execution handoff refused: %w", err)
+		}
+		var found bool
+		childSession, found, err = s.sessions.GetSession(childSession.ID)
+		if err != nil || !found {
+			return taskLaunchPrepared{}, errors.New("managed child unavailable after handoff")
+		}
+	}
 
 	launch.RequestedSubagent = requestedSubagent
 	launch.AssignmentLabel = assignmentLabel
@@ -1778,6 +1827,15 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 			}
 		}
 		clientTool, isClientTool := s.clientToolForAccount(accountScopeID, toolCalls[i].Name)
+		if isClientTool && pebblestore.ClientToolRequiresConfirmation(clientTool) {
+			// Confirmed client tools are handled before gating, on the V3
+			// provider path only (requestClientToolConfirmation). Any other path
+			// would hand the call to the client unconfirmed, so it is refused.
+			message := "this tool needs the person's confirmation, which only V3 sessions support"
+			decisions[i].Result.Output = permissionOutputPayload(false, "error", message, toolCalls[i].Name, toolCalls[i].Arguments)
+			decisions[i].Result.Error = message
+			continue
+		}
 		if isClientTool {
 			// Reject before anything is recorded or waited on: the client only
 			// ever sees calls that match the tool's declared schema.
@@ -1824,10 +1882,11 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 					decisions[i].Result.Error = decisions[i].Err.Error()
 					continue
 				}
-				delegated := false
+				delegated, helper := false, false
 				if s.sessions != nil {
 					if session, ok, _ := s.sessions.GetSession(sessionID); ok {
 						delegated = strings.EqualFold(strings.TrimSpace(mapString(session.Metadata, "lineage_kind")), "delegated_subagent")
+						helper = workerHelperParent(session)
 					}
 				}
 				programCap := 0
@@ -1837,7 +1896,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				reserved, reserveErr := s.permissions.ReserveSubagentWave(permission.SubagentReservationRequest{
 					SessionID: sessionID, AccountScopeID: accountScopeID, RunID: runID, CallID: callID,
 					ManifestHash: manifest.ManifestHash, LaunchCount: manifest.LaunchCount, SwarmMode: manifest.TaskMode == taskModeSwarm,
-					Program: manifest.Program != nil, ReadyCount: manifest.ProgramReadyCount, MaxConcurrency: programCap, Delegated: delegated,
+					Program: manifest.Program != nil, ReadyCount: manifest.ProgramReadyCount, MaxConcurrency: programCap, Delegated: delegated, Helper: helper,
 				})
 				if reserveErr != nil {
 					decisions[i].Err = reserveErr
@@ -2248,7 +2307,13 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 		output, err := s.executeManageWorkspaceTool(sessionID, arguments, principal, applySessionMutation)
 		result.Output = output
 		return true, result, err
-	case "manage_design", "manage_actions", "manage_connections", "manage_environments":
+	case tool.SwarmDesignToolName:
+		// Design model calls run inside this run and record usage on this
+		// session; the tool runtime never executes swarm_design itself.
+		output, err := s.executeSwarmDesignTool(ctx, sessionID, call)
+		result.Output = output
+		return true, result, err
+	case "manage_actions", "manage_connections", "manage_environments":
 		return false, tool.Result{}, nil
 	case "manage_todos":
 		output, err := s.executeManageTodosTool(sessionID, call, approvedArguments)
@@ -5196,6 +5261,13 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			return "", err
 		}
 	}
+	if parent, ok, loadErr := s.sessions.GetSession(sessionID); loadErr != nil {
+		return "", loadErr
+	} else if ok {
+		if err := validateHelperTask(parent, parsed); err != nil {
+			return "", err
+		}
+	}
 	parsed, err = s.resolveApprovedCheckpointTaskProgram(sessionID, parsed)
 	if err != nil {
 		return "", err
@@ -5263,8 +5335,8 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	if parsed.Swarm != nil && parsed.Swarm.AgentType == "video" {
 		return s.executeDirectVideoSwarm(ctx, sessionID, sessionMode, step, call, emit, req, parsed, description, prompt)
 	}
-	if parsed.Swarm != nil && parsed.Swarm.AgentType == "designer" && parsed.Swarm.OutputMode != taskOutputModeWorkspace {
-		return s.executeDirectDesignerSwarm(ctx, sessionID, sessionMode, step, call, emit, req, parsed, description, prompt)
+	if parsed.Swarm != nil && parsed.Swarm.AgentType == "designer" && parsed.Swarm.Strategy != taskSwarmStrategyAssembly {
+		return "", errDesignerIterationSwarmReplaced
 	}
 	launchSpecs := append([]taskLaunchSpec(nil), parsed.Launches...)
 	if len(launchSpecs) == 0 {
@@ -5295,6 +5367,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		if !ok {
 			return "", fmt.Errorf("session %q not found", sessionID)
 		}
+	}
+	if err := validateHelperTask(parentSession, parsed); err != nil {
+		return "", err
 	}
 	if err := validatePlanSidechatTaskTargets(parentSession, launchSpecs); err != nil {
 		return "", err
@@ -5554,6 +5629,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	trustedProfiles := make([]*pebblestore.AgentProfile, len(launchSpecs))
 	trustedVirtualTargets := make([]bool, len(launchSpecs))
 	trustedSources := make([]string, len(launchSpecs))
+	trustedRouterAlerts := make([]string, len(launchSpecs))
 	if approved := strings.TrimSpace(req.ApprovedArguments); approved != "" {
 		manifest, manifestErr := parseApprovedTaskLaunchManifest(approved, launchSpecs)
 		if manifestErr != nil {
@@ -5586,6 +5662,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				if err != nil {
 					return "", fmt.Errorf("reconcile compiled Designer launch snapshot: %w", err)
 				}
+				if strings.EqualFold(strings.TrimSpace(launchSpecs[i].OutputMode), taskOutputModeManaged) {
+					return "", fmt.Errorf("approved task manifest launch %d: %w", i, errDesignerManagedOutputRemoved)
+				}
 				if strings.EqualFold(strings.TrimSpace(launchSpecs[i].OutputMode), taskOutputModeWorkspace) {
 					workspaceProfile := agentruntime.DesignerWorkspaceAgentProfileForParent(profile)
 					workspaceProfile.Provider, workspaceProfile.Model, workspaceProfile.Thinking = profile.Provider, profile.Model, profile.Thinking
@@ -5616,6 +5695,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			}
 			trustedProfiles[i] = &profile
 			trustedSources[i] = strings.TrimSpace(row.SourceAgentName)
+			trustedRouterAlerts[i] = strings.TrimSpace(row.RouterAlert)
 		}
 	}
 	if err := s.materializeWorkspaceDesignerSources(ctx, parentSession, launchSpecs); err != nil {
@@ -5742,6 +5822,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			}
 		}
 		launchInput := taskLaunchPrepared{
+			RouterAlert:             trustedRouterAlerts[i],
 			LaunchIndex:             i + 1,
 			VirtualTarget:           trustedVirtualTargets[i],
 			TaskBase:                launchTaskBase,
@@ -5901,6 +5982,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				"owned_scope":             append([]string(nil), launch.OwnedScope...),
 				"subagent_provider":       strings.TrimSpace(launch.SubagentProvider),
 				"subagent_model":          strings.TrimSpace(launch.SubagentModel),
+				"router_alert":            strings.TrimSpace(launch.RouterAlert),
 				"child_session_id":        strings.TrimSpace(launch.ChildSessionID),
 				"child_run_id":            strings.TrimSpace(launch.ChildRunID),
 				"child_mode":              strings.TrimSpace(launch.ChildMode),
@@ -6122,8 +6204,13 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 	}
 
-	outcomes, runErrs := executeTaskLaunchesInParallel(ctx, len(prepared), func(runCtx context.Context, idx int) (taskLaunchOutcome, error) {
+	outcomes, runErrs := executeTaskLaunchesInParallel(ctx, len(prepared), func(runCtx context.Context, idx int) (completed taskLaunchOutcome, completionErr error) {
 		launch := prepared[idx]
+		if _, managed := launch.ChildSession.Metadata[tool.ManagedExecutionMetadataKey]; managed {
+			defer func() {
+				completionErr = errors.Join(completionErr, s.tools.ReleaseManagedCheckout(context.WithoutCancel(runCtx), launch.ChildSession.ID))
+			}()
+		}
 		outcome := buildTaskLaunchOutcome(launch)
 		metaPrompt := strings.TrimSpace(outcome.MetaPrompt)
 		perLaunchPrompt := prompt
@@ -6524,6 +6611,14 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			}
 		}
 		if agentruntime.IsCoderAgentName(launch.RequestedSubagent) && s.worktrees != nil {
+			if _, managed := launch.ChildSession.Metadata[tool.ManagedExecutionMetadataKey]; managed && blockedErr == nil {
+				handoffCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				handoffErr := s.tools.CompleteManagedCheckout(handoffCtx, launch.ChildSession.ID)
+				cancel()
+				if handoffErr != nil {
+					return outcome, fmt.Errorf("managed Coder Git handoff refused: %w", handoffErr)
+				}
+			}
 			state, inspectErr := s.worktrees.InspectTaskWorkspace(outcome.WorkspacePath)
 			if inspectErr != nil {
 				return outcome, fmt.Errorf("inspect Coder handoff Git state: %w", inspectErr)
@@ -7099,7 +7194,8 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 			if agentruntime.IsImageAgentName(config.RequestedSubagent) {
 				b.WriteString("- output mode: managed image; publish exactly one durable ready image with one manage_artifact generate_image call; omit provider, model, collection_id, variant_id, and output_requirements; do not inspect, write, or edit the workspace checkout\n")
 			} else {
-				b.WriteString("- output mode: managed Artifact V3; use only artifact_v3_author to inspect and edit the complete conventional project tree, run repeatable build_preview gates, repair against diagnostics, and call finish_turn exactly once; never call manage_artifact, artifact_v2_author, declare_parts/write_part, or write/edit the repository checkout\n")
+				b.WriteString("- output contract: managed Designer output was removed; fail without mutating anything and tell the parent to launch Designer with an owned_scope for swarm_design\n")
+				break
 			}
 			if config.ArtifactV3Source != nil {
 				encoded, _ := json.Marshal(config.ArtifactV3Source)
@@ -7112,25 +7208,6 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 				encoded, _ := json.Marshal(config.SourceArtifact)
 				b.Write(encoded)
 				b.WriteString("\n- source artifact contract: inspect or derive from this exact authenticated ready reference; never substitute a preview, download, or guessed workspace path. When publishing the derived managed output, copy it as source_session_id/source_collection_id/source_variant_id/source_event_seq so lineage remains exact.\n")
-			}
-			if agentruntime.IsDesignerAgentName(config.RequestedSubagent) {
-				if config.ArtifactV3AuthorContext == nil {
-					b.WriteString("- output contract: trusted Artifact V3 author capability is missing; fail without mutating the checkout or any artifact\n")
-					break
-				}
-				grant := config.ArtifactV3AuthorContext.Grant
-				b.WriteString("- Artifact V3 authoring contract: call inspect_context first. Artifact, repository, turn, candidate branch, exact base commit, policy, build commands, preview destination, and locks are server-bound and absent from model arguments. Target Parts guide intent but do not limit coherent cross-project edits. Use ordinary full-tree create/edit/rename/delete operations, repeat build_preview until ready, then call finish_turn exactly once.\n")
-				if len(grant.TargetPartIDs) != 0 {
-					b.WriteString("- target Part IDs (intent only): ")
-					b.WriteString(strings.Join(grant.TargetPartIDs, ", "))
-					b.WriteString("\n")
-				}
-				if len(grant.LockedPaths) != 0 {
-					b.WriteString("- explicitly locked paths (immutable): ")
-					b.WriteString(strings.Join(grant.LockedPaths, ", "))
-					b.WriteString("\n")
-				}
-				break
 			}
 			if config.ArtifactRunContext == nil {
 				b.WriteString("- output contract: trusted artifact destination is missing; fail without mutating the checkout or managed artifacts\n")
@@ -7152,7 +7229,7 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 			b.WriteString("- shared checkout: use the parent's exact checkout; do not run Git or create a worktree\n")
 			b.WriteString("- owned scope/output target: ")
 			b.WriteString(strings.Join(config.OwnedScope, ", "))
-			b.WriteString("\n- output contract: create or revise ordinary reusable workspace artifacts only within that declared target; do not use manage_artifact; artifacts remain available after this child finishes\n")
+			b.WriteString("\n- output contract: make or edit HTML designs only with swarm_design, with its folder or edit_path inside that declared target; do not use manage_artifact; the files remain available after this child finishes\n")
 			if config.SourceArtifact != nil {
 				b.WriteString("- exact source artifact (backend supplied; immutable input): ")
 				encoded, _ := json.Marshal(config.SourceArtifact)
@@ -7199,11 +7276,9 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 		if strings.EqualFold(strings.TrimSpace(config.OutputMode), taskOutputModeManaged) {
 			if agentruntime.IsImageAgentName(config.RequestedSubagent) {
 				b.WriteString("9. For managed Image work, call manage_artifact exactly once with action=generate_image and finish only after it returns the trusted exact ready reference. Do not call another tool or inspect or mutate the checkout.\n")
-			} else {
-				b.WriteString("9. For managed Designer work, use only artifact_v3_author. Inspect the context-bound complete project, make ordinary coherent full-tree edits, repeat build_preview until the exact whole project is ready, and call finish_turn exactly once. Target Parts express user intent and never forbid necessary shared-code or cross-Part repairs. Never call manage_artifact, artifact_v2_author, write/edit the repository checkout, create legacy placeholders, or choose destination identity.\n")
 			}
 		} else {
-			b.WriteString("9. For workspace Designer work, do not use Git or manage_artifact. Inspect nearby code as needed and create or revise the assigned reusable variant only within the declared owned scope.\n")
+			b.WriteString("9. For Designer work, make or edit designs only with swarm_design inside the declared owned scope; do not use Git or manage_artifact. Report every design's path and status exactly as swarm_design returned it.\n")
 		}
 	}
 	return strings.TrimSpace(b.String())
@@ -7646,6 +7721,20 @@ func parseTaskChildBlockedReport(report string, outcome *taskLaunchOutcome) erro
 	return taskChildBlockedError{code: outcome.BlockerCode, message: message}
 }
 
+// taskChildDisabledTools is taskDisabledTools for one launched child. Only a
+// Designer child keeps swarm_design: it is the Designer's only way to write
+// designs, while every other task child must not start design model calls. A
+// task Designer works in the parent's shared checkout, so it never commits;
+// the parent owns integration.
+func taskChildDisabledTools(requested string, allowBash bool) map[string]bool {
+	disabled := taskDisabledTools(allowBash)
+	if agentruntime.IsDesignerAgentName(requested) {
+		delete(disabled, tool.SwarmDesignToolName)
+		disabled["git_add"], disabled["git_commit"] = true, true
+	}
+	return disabled
+}
+
 func taskDisabledTools(allowBash bool) map[string]bool {
 	disabled := map[string]bool{
 		"ask_user":            true,
@@ -7654,7 +7743,7 @@ func taskDisabledTools(allowBash bool) map[string]bool {
 		"exit-plan-mode":      true,
 		"plan_manage":         true,
 		"plan-manage":         true,
-		"manage_design":       true,
+		"swarm_design":        true,
 		"manage_actions":      true,
 		"manage-actions":      true,
 		"manage_connections":  true,
@@ -7674,6 +7763,7 @@ func taskDisabledTools(allowBash bool) map[string]bool {
 	}
 	if !allowBash {
 		disabled["bash"] = true
+		disabled[tool.LeaseEnvironmentToolName] = true
 	}
 	return disabled
 }
@@ -7870,14 +7960,8 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 			return requirement, true
 		}
 		return toolName, false
-	case "manage_design":
-		var input struct {
-			Action string `json:"action"`
-		}
-		if json.Unmarshal([]byte(arguments), &input) != nil {
-			return "design_change", true
-		}
-		return "design_change", input.Action != "status" && input.Action != "history" && input.Action != "read"
+	case tool.SwarmDesignToolName:
+		return toolName, false
 	case "manage_actions":
 		if isManageActionsMutation(arguments) {
 			return "action_change", true
@@ -7922,6 +8006,14 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 			return "bash", false
 		}
 		return "bash", true
+	case tool.LeaseEnvironmentToolName:
+		// Listing reads only; taking or releasing a lease starts or removes a
+		// container, so it asks like bash unless permissions are bypassed.
+		var args struct {
+			Action string `json:"action"`
+		}
+		_ = json.Unmarshal([]byte(arguments), &args)
+		return toolName, strings.TrimSpace(strings.ToLower(args.Action)) != "list" && !bypass
 	default:
 		if bypass {
 			return toolName, false

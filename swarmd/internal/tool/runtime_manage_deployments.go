@@ -5,8 +5,13 @@ import (
 	"errors"
 )
 
+// ErrEnvironmentToolsRemoved answers a call to a removed environment tool:
+// agents no longer manage environments; bash runs in the folder's environment
+// by itself (lease_environment).
+var ErrEnvironmentToolsRemoved = errors.New("manage_environments, manage_connections and manage_deployments are removed: when your folder has an environment set up, bash runs in it by itself; lease_environment takes extra leases")
+
 // ErrManageDeploymentsObsolete indicates that manage_deployments has been removed.
-var ErrManageDeploymentsObsolete = errors.New("manage_deployments has been removed; use manage_environments instead")
+var ErrManageDeploymentsObsolete = ErrEnvironmentToolsRemoved
 
 func (r *Runtime) executeManageDeployments(_ context.Context, _ WorkspaceScope, _ map[string]any) (string, error) {
 	return "", ErrManageDeploymentsObsolete

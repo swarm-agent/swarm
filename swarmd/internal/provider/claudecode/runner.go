@@ -173,6 +173,11 @@ func (r *Runner) planTurn(ctx context.Context, req provideriface.Request, workDi
 	}
 
 	var extraEnv []string
+	if toolsEnabled {
+		// Without them the CLI ends a long Swarm tool call (bash runs up to
+		// provideriface.MaxToolCallDuration) on its own, shorter timeouts.
+		extraEnv = append(extraEnv, mcpToolTimeoutEnv()...)
+	}
 	effort, disableThinking := effortForThinking(req.Thinking)
 	if effort != "" {
 		args = append(args, "--effort", effort)

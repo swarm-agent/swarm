@@ -175,14 +175,22 @@ type PruneResult struct {
 var errAccountOwnedWorkspaceRequired = errors.New("account-owned workspace path is required")
 
 type Service struct {
-	store     *pebblestore.WorktreeStore
-	workspace *workspaceruntime.Service
-	events    *pebblestore.EventLog
-	mu        sync.Mutex
+	store      *pebblestore.WorktreeStore
+	workspace  *workspaceruntime.Service
+	events     *pebblestore.EventLog
+	mu         sync.Mutex
+	trashStop  chan struct{}
+	trashDone  chan struct{}
+	trashClose sync.Once
 }
 
 func NewService(store *pebblestore.WorktreeStore, workspace *workspaceruntime.Service, events *pebblestore.EventLog) *Service {
-	return &Service{store: store, workspace: workspace, events: events}
+	s := &Service{store: store, workspace: workspace, events: events}
+	root, rootErr := appstorage.WorktreesRoot()
+	if rootErr == nil {
+		s.startTrashRecovery(root, time.Minute)
+	}
+	return s
 }
 
 func (s *Service) IsEnabled(workspacePath string) (bool, error) {
@@ -486,6 +494,7 @@ func (s *Service) TaskCommitDescendsFrom(workspacePath, baseCommit, headCommit s
 	cmd := exec.Command("git", "merge-base", "--is-ancestor", baseCommit, headCommit)
 	cmd.Dir = workspacePath
 	sandbox.Prepare(context.Background(), cmd)
+	defer sandbox.ReleaseGit(cmd)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
@@ -830,6 +839,13 @@ func (s *Service) validateRepositoryLanePath(root, lane, expected, branch string
 		return errors.New("task repository lane Git repository mismatch")
 	}
 	if !requireClean {
+		if branch == "HEAD" {
+			if _, err := runGit(lane, "symbolic-ref", "--quiet", "HEAD"); err == nil {
+				return errors.New("review lane is not detached")
+			}
+			_, err := resolveRepositoryHeadCommit(lane)
+			return err
+		}
 		actualBranch, err := runGit(lane, "symbolic-ref", "--quiet", "--short", "HEAD")
 		if err != nil {
 			return err
@@ -858,7 +874,14 @@ func (s *Service) RemoveIntegratedTaskWorkspace(parentPath, childPath, sessionID
 	if err != nil {
 		return fmt.Errorf("resolve parent repository for integrated worktree cleanup: %w", err)
 	}
-	expectedPath, err := deterministicSessionWorktreePath(parentRoot, sessionWorkspaceID(sessionID))
+	id := sessionWorkspaceID(sessionID)
+	if strings.HasPrefix(sessionID, "worker-execution-") {
+		id, err = workspaceIdentityForRequestedBranch(branchName)
+		if err != nil {
+			return err
+		}
+	}
+	expectedPath, err := deterministicSessionWorktreePath(parentRoot, id)
 	if err != nil {
 		return err
 	}
@@ -906,7 +929,7 @@ func (s *Service) RemoveIntegratedTaskWorkspace(parentPath, childPath, sessionID
 	if !integrated {
 		return errors.New("child commit range is not integrated; worktree remains recoverable")
 	}
-	if _, err := runGit(parentRoot, "worktree", "remove", actualPath); err != nil {
+	if err := removeManagedWorktree(parentRoot, actualPath); err != nil {
 		return fmt.Errorf("remove integrated child worktree: %w", err)
 	}
 	return nil
@@ -1033,6 +1056,7 @@ func preflightCherryPick(parentPath, parentHead string, entries []TaskIntegratio
 	cmd := exec.Command("git", "-C", parentPath, "read-tree", parentHead)
 	cmd.Env = env
 	sandbox.Prepare(context.Background(), cmd)
+	defer sandbox.ReleaseGit(cmd)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("initialize integration preflight: %s", strings.TrimSpace(string(out)))
 	}
@@ -1040,6 +1064,7 @@ func preflightCherryPick(parentPath, parentHead string, entries []TaskIntegratio
 		for _, commit := range entry.Commits {
 			patch := exec.Command("git", "-C", parentPath, "diff-tree", "--binary", "--full-index", "--no-commit-id", "-p", commit+"^", commit)
 			sandbox.Prepare(context.Background(), patch)
+			defer sandbox.ReleaseGit(patch)
 			data, err := patch.Output()
 			if err != nil {
 				return fmt.Errorf("read child %q commit %s patch: %w", entry.SessionID, commit, err)
@@ -1048,6 +1073,7 @@ func preflightCherryPick(parentPath, parentHead string, entries []TaskIntegratio
 			apply.Env = env
 			apply.Stdin = bytes.NewReader(data)
 			sandbox.Prepare(context.Background(), apply)
+			defer sandbox.ReleaseGit(apply)
 			if out, err := apply.CombinedOutput(); err != nil {
 				detail := strings.TrimSpace(string(out))
 				if detail == "" {
@@ -1247,10 +1273,8 @@ func (s *Service) PruneManagedForPrincipal(principal identity.Principal, workspa
 			result.Skipped = append(result.Skipped, path)
 			continue
 		}
-		if _, err := runGit(repoRoot, "worktree", "remove", "--force", path); err != nil {
-			if _, pruneErr := runGit(repoRoot, "worktree", "prune"); pruneErr != nil {
-				return result, fmt.Errorf("remove managed worktree metadata %q: %w", path, err)
-			}
+		if err := removeManagedWorktree(repoRoot, path); err != nil {
+			return result, fmt.Errorf("remove managed worktree metadata %q: %w", path, err)
 		}
 		result.Removed = append(result.Removed, path)
 	}
@@ -1350,11 +1374,12 @@ func (s *Service) resolveWorkspaceConfigPathForPrincipalOptional(principal ident
 			return "", false, fmt.Errorf("resolve workspace scope: %w", err)
 		}
 		if scope.Matched && strings.TrimSpace(scope.WorkspacePath) != "" {
-			requestedIdentity, err := RepositoryIdentity(trimmed)
+			ctx := identity.ContextWithPrincipal(context.Background(), principal)
+			requestedIdentity, err := repositoryIdentityContext(ctx, trimmed)
 			if err != nil {
 				return "", false, err
 			}
-			savedIdentity, err := RepositoryIdentity(scope.WorkspacePath)
+			savedIdentity, err := repositoryIdentityContext(ctx, scope.WorkspacePath)
 			if err != nil {
 				return "", false, err
 			}
@@ -1403,9 +1428,13 @@ func requirePrincipal(principal identity.Principal) error {
 }
 
 func resolveRepositoryRoot(workspacePath string) (string, error) {
+	return resolveRepositoryRootContext(context.Background(), workspacePath)
+}
+
+func resolveRepositoryRootContext(ctx context.Context, workspacePath string) (string, error) {
 	// In linked worktrees, --show-toplevel points at the active worktree path.
 	// Anchor deterministic worktree paths under the shared repository root instead.
-	commonDir, err := runGit(workspacePath, "rev-parse", "--git-common-dir")
+	commonDir, err := runGitContext(ctx, workspacePath, "rev-parse", "--git-common-dir")
 	if err != nil {
 		if isNotGitRepositoryError(err) {
 			return "", errors.New(gitRepositoryRequiredError)
@@ -1424,7 +1453,7 @@ func resolveRepositoryRoot(workspacePath string) (string, error) {
 		return root, nil
 	}
 
-	root, err := runGit(workspacePath, "rev-parse", "--show-toplevel")
+	root, err := runGitContext(ctx, workspacePath, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return "", fmt.Errorf("resolve repository root: %w", err)
 	}
@@ -1443,7 +1472,14 @@ func (s *Service) VerifyTaskIntegrationWorkspace(parentPath, childPath, sessionI
 	if err != nil {
 		return TaskWorkspaceState{}, fmt.Errorf("resolve parent repository: %w", err)
 	}
-	expectedPath, err := deterministicSessionWorktreePath(parentRoot, sessionWorkspaceID(sessionID))
+	id := sessionWorkspaceID(sessionID)
+	if strings.HasPrefix(sessionID, "worker-execution-") {
+		id, err = workspaceIdentityForRequestedBranch(branchName)
+		if err != nil {
+			return TaskWorkspaceState{}, err
+		}
+	}
+	expectedPath, err := deterministicSessionWorktreePath(parentRoot, id)
 	if err != nil {
 		return TaskWorkspaceState{}, err
 	}
@@ -1478,11 +1514,11 @@ func (s *Service) VerifyTaskIntegrationWorkspace(parentPath, childPath, sessionI
 		return TaskWorkspaceState{}, errors.New("child lineage requires full hexadecimal commit ids")
 	}
 	for label, commit := range map[string]string{"base": baseCommit, "head": headCommit} {
-		if _, err := runGit(parentRoot, "cat-file", "-e", commit+"^{commit}"); err != nil {
+		if _, err := runGit(actualPath, "cat-file", "-e", commit+"^{commit}"); err != nil {
 			return TaskWorkspaceState{}, fmt.Errorf("invalid child %s commit: %w", label, err)
 		}
 	}
-	branchHead, err := runGit(parentRoot, "rev-parse", "--verify", "refs/heads/"+branchName+"^{commit}")
+	branchHead, err := runGit(actualPath, "rev-parse", "--verify", "refs/heads/"+branchName+"^{commit}")
 	if err != nil || branchHead != headCommit {
 		return TaskWorkspaceState{}, errors.New("child branch does not resolve to its immutable recorded HEAD")
 	}
@@ -1769,13 +1805,13 @@ func runGit(path string, args ...string) (string, error) {
 
 // runGitRaw returns stdout untrimmed, for formats whose leading spaces matter.
 func runGitRaw(path string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", path}, args...)...)
-	sandbox.Prepare(ctx, cmd)
+	ctx := sandbox.WithGitCommandTimeout(context.Background(), gitCommandTimeout)
+	out, err := sandbox.TimedGitOutput(ctx, path, nil, args...)
 	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		stderr.Write(exitErr.Stderr)
+	}
 	if errors.Is(err, exec.ErrNotFound) {
 		return "", errors.New(gitRequiredForWorktreesError)
 	}
@@ -1790,15 +1826,19 @@ func runGitRaw(path string, args ...string) (string, error) {
 }
 
 func runGitWithEnv(path string, env []string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
-	defer cancel()
-	cmdArgs := append([]string(nil), args...)
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", path}, cmdArgs...)...)
-	if env != nil {
-		cmd.Env = env
+	return runGitWithEnvContext(context.Background(), path, env, args...)
+}
+
+func runGitContext(ctx context.Context, path string, args ...string) (string, error) {
+	return runGitWithEnvContext(ctx, path, nil, args...)
+}
+
+func runGitWithEnvContext(ctx context.Context, path string, env []string, args ...string) (string, error) {
+	ctx = sandbox.WithGitCommandTimeout(ctx, gitCommandTimeout)
+	out, err := sandbox.GitCombinedOutput(ctx, path, env, args...)
+	if errors.Is(err, sandbox.ErrInterrupted) {
+		return "", err
 	}
-	sandbox.Prepare(ctx, cmd)
-	out, err := cmd.CombinedOutput()
 	output := strings.TrimSpace(string(out))
 	if errors.Is(err, exec.ErrNotFound) {
 		return "", errors.New(gitRequiredForWorktreesError)
@@ -1813,11 +1853,8 @@ func runGitWithEnv(path string, env []string, args ...string) (string, error) {
 }
 
 func localBranchExists(repoRoot, branchName string) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "-C", repoRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+branchName)
-	sandbox.Prepare(ctx, cmd)
-	if err := cmd.Run(); err != nil {
+	ctx := sandbox.WithGitCommandTimeout(context.Background(), gitCommandTimeout)
+	if _, err := sandbox.TimedGitOutput(ctx, repoRoot, nil, "show-ref", "--verify", "--quiet", "refs/heads/"+branchName); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 			return false, nil
@@ -1848,20 +1885,15 @@ func cleanupFailedWorktreeAllocation(repoRoot, worktreePath string) error {
 	if err != nil {
 		cleanupErrs = append(cleanupErrs, err)
 	} else if registered {
-		if _, err := runGit(repoRoot, "worktree", "remove", "--force", worktreePath); err != nil {
+		if err := removeManagedWorktree(repoRoot, worktreePath); err != nil {
 			cleanupErrs = append(cleanupErrs, fmt.Errorf("remove partial worktree metadata: %w", err))
-		} else if err := os.RemoveAll(worktreePath); err != nil {
-			cleanupErrs = append(cleanupErrs, fmt.Errorf("remove partial worktree path: %w", err))
 		}
 	} else if owned, ownershipErr := partialWorktreePathOwnedByRepository(repoRoot, worktreePath); ownershipErr != nil {
 		cleanupErrs = append(cleanupErrs, ownershipErr)
 	} else if owned {
-		if err := os.RemoveAll(worktreePath); err != nil {
+		if err := removeManagedWorktree(repoRoot, worktreePath); err != nil {
 			cleanupErrs = append(cleanupErrs, fmt.Errorf("remove partial worktree path: %w", err))
 		}
-	}
-	if _, err := runGit(repoRoot, "worktree", "prune"); err != nil {
-		cleanupErrs = append(cleanupErrs, fmt.Errorf("prune partial worktree metadata: %w", err))
 	}
 	return errors.Join(cleanupErrs...)
 }
@@ -1966,6 +1998,7 @@ func runGitWorktreeAdd(repoRoot, worktreePath, branchName, effectiveBranch strin
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	sandbox.Prepare(ctx, cmd)
+	defer sandbox.ReleaseGit(cmd)
 	err := cmd.Run()
 	stdoutText := strings.TrimSpace(stdout.String())
 	stderrText := strings.TrimSpace(stderr.String())

@@ -42,13 +42,19 @@ export class SwarmSessionsNamespace {
           workspace_path: params.workspace_path,
           mode: params.mode ?? 'auto',
           metadata: params.metadata,
+          ...(params.end_user !== undefined ? { end_user: params.end_user } : {}),
+          ...(params.labels !== undefined ? { labels: params.labels } : {}),
         },
       }
     );
 
-    const data = res.data;
+    const data = res.data as Record<string, any>;
     if (data && typeof data === 'object' && 'session' in data && data.session) {
-      return data.session;
+      return {
+        ...(data.session as SessionRecord),
+        ...(typeof data.end_user === 'string' ? { end_user: data.end_user } : {}),
+        ...(data.labels && typeof data.labels === 'object' ? { labels: data.labels as Record<string, string> } : {}),
+      };
     }
     return data as SessionRecord;
   }
@@ -119,6 +125,8 @@ export class SwarmSessionsNamespace {
         messages: data.messages,
         last_run_id: sessionObj.last_run_id,
         active_plan: data.active_plan,
+        ...(typeof data.end_user === 'string' ? { end_user: data.end_user } : {}),
+        ...(data.labels && typeof data.labels === 'object' ? { labels: data.labels } : {}),
         raw: data,
       };
     }

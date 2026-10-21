@@ -70,7 +70,7 @@ set -euo pipefail
 umask 077
 set -o noclobber
 sudo swarmctl setup sdk-token \
-  --name chatgpt-tunnel --ai-access write --expires-in-seconds 86400 \
+  --name chatgpt-tunnel --ai-access write \
   > "$PRIVATE_STAGING/grant-secret.json"
 jq -er '.token | "Bearer " + .' "$PRIVATE_STAGING/grant-secret.json" \
   > "$PRIVATE_STAGING/swarm-authorization"

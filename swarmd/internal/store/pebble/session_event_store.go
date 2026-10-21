@@ -385,6 +385,7 @@ func v3RealtimeMembershipMetadata(metadata map[string]any) map[string]any {
 	out := map[string]any{}
 	for _, key := range []string{
 		SessionPurposeMetadataKey, SessionPurposeWorkspaceMetadataKey,
+		"project_id", "worker_id", "worker_name", "worker_run_id", "job_id",
 		"navigation_hidden", "system_session", "system_sidechat", "lineage_kind",
 		"swarm_v3_workspace_binding_id", "local_workspace_binding_id", "workspace_id",
 		"swarm_v3_source_workspace_id", "swarm_v3_source_workspace_generation", "swarm_v3_source_workspace_name", "swarm_v3_source_workspace_path",
@@ -733,6 +734,7 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 	defer func() {
 		unlockSession()
 		if budgetReceiptCommitted {
+			s.store.signalScheduling(SchedulingSignal{Kind: SchedulingSignalBudget, AccountScopeID: input.AccountScopeID})
 			s.publishWorkerBudgetHolds(input.AccountScopeID)
 		}
 	}()
@@ -1725,6 +1727,34 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			return V3SessionMutationResult{}, err
 		}
 	}
+	if runIntentProvided && isV3RunIntentTerminal(runIntent.Status) {
+		// Serialize with admission until the intent and reservation commit together.
+		defer func() {
+			if !reservationCommitted || s.store.workerRunObserver == nil {
+				return
+			}
+			snap, found, err := s.GetSession(runIntent.SessionID)
+			if err != nil || !found {
+				return
+			}
+			worker, _ := snap.Metadata["worker_id"].(string)
+			receipt, _ := snap.Metadata["worker_execution_run_id"].(string)
+			ws := NewWorkerStore(s.store)
+			r, found, err := ws.GetWorkerRun(runIntent.AccountScopeID, worker, receipt)
+			if err != nil || !found || r.FollowupRunID != runIntent.RunID || r.FollowupActive() {
+				return
+			}
+			w, found, err := ws.GetWorker(runIntent.AccountScopeID, worker)
+			if err == nil && found {
+				s.store.workerRunObserver(w, r)
+			}
+		}()
+		s.store.workersMu.Lock()
+		defer s.store.workersMu.Unlock()
+		if err := s.releaseWorkerFollowupInBatch(batch, runIntent); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+	}
 	if runIntentProvided {
 		runPayload, err := json.Marshal(runIntent)
 		if err != nil {
@@ -1799,6 +1829,12 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	reservationCommitted = true
 	if err := s.store.sessionMutations.commitOutbox(s.store, reservedOutbox); err != nil {
 		return V3SessionMutationResult{}, err
+	}
+	if runIntentProvided || lifecycleProvided {
+		s.store.signalScheduling(SchedulingSignal{Kind: SchedulingSignalRun, AccountScopeID: input.AccountScopeID, SessionID: input.SessionID})
+	}
+	if input.automationV2 != nil {
+		s.store.signalScheduling(SchedulingSignal{Kind: SchedulingSignalAutomationV2, AccountScopeID: input.AccountScopeID, SessionID: input.SessionID})
 	}
 	if input.designProjectOutbox != nil {
 		*input.designProjectOutbox = pendingDesignProjectOutbox

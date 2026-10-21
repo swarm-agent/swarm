@@ -21,6 +21,10 @@ type sealedAgentFile struct {
 		InputSchema map[string]any `json:"input_schema"`
 		Effect      string         `json:"effect,omitempty"`
 		TimeoutMS   int            `json:"timeout_ms,omitempty"`
+		// Confirm (default: true for write tools) makes each call wait for the
+		// person's approval; ConfirmTimeoutMS bounds that wait (default 15 min).
+		Confirm          *bool `json:"confirm,omitempty"`
+		ConfirmTimeoutMS int   `json:"confirm_timeout_ms,omitempty"`
 	} `json:"tools"`
 	Agent struct {
 		Name        string   `json:"name"`
@@ -36,6 +40,9 @@ type sealedAgentFile struct {
 			MaxOutputTokens    int `json:"max_output_tokens,omitempty"`
 			MaxHistoryMessages int `json:"max_history_messages,omitempty"`
 			RunTimeoutMS       int `json:"run_timeout_ms,omitempty"`
+			// RetentionDays deletes ended or idle conversations after this
+			// many days without activity (0 keeps them, at most 3650).
+			RetentionDays int `json:"retention_days,omitempty"`
 		} `json:"limits,omitempty"`
 	} `json:"agent"`
 }
@@ -74,6 +81,9 @@ func runSetupSealedAgent(args []string, input io.Reader, output io.Writer) error
 	if !sealedName.MatchString(file.Agent.Name) || strings.TrimSpace(file.Agent.Prompt) == "" {
 		return errors.New("agent needs a lowercase name and a prompt")
 	}
+	if limits := file.Agent.Limits; limits != nil && (limits.RetentionDays < 0 || limits.RetentionDays > 3650) {
+		return errors.New("limits.retention_days must be 0 (keep) to 3650")
+	}
 	contract := map[string]any{}
 	for _, name := range file.Agent.Tools {
 		if !declared[name] {
@@ -88,6 +98,12 @@ func runSetupSealedAgent(args []string, input io.Reader, output io.Writer) error
 	defer client.CloseIdleConnections()
 	for _, tool := range file.Tools {
 		body := map[string]any{"kind": "client", "description": tool.Description, "input_schema": tool.InputSchema, "effect": tool.Effect, "timeout_ms": tool.TimeoutMS}
+		if tool.Confirm != nil {
+			body["confirm"] = *tool.Confirm
+		}
+		if tool.ConfirmTimeoutMS > 0 {
+			body["confirm_timeout_ms"] = tool.ConfirmTimeoutMS
+		}
 		if err := setupRequest(client, http.MethodPut, "/v2/custom-tools/"+url.PathEscape(tool.Name), body, &map[string]any{}); err != nil {
 			return fmt.Errorf("tool %s: %w", tool.Name, err)
 		}

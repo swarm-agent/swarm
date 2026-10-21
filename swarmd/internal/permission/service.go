@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"swarm/packages/swarmd/internal/executioncapacity"
 	"swarm/packages/swarmd/internal/notification"
@@ -23,6 +24,9 @@ import (
 )
 
 const (
+	// MaxReplyCharacters bounds user replies without silently shortening them.
+	MaxReplyCharacters = 100000
+
 	defaultPrincipalID = "local"
 
 	ActionAllowOnce   = "allow_once"
@@ -390,6 +394,14 @@ func (s *Service) ListPermissions(sessionID string, limit int) ([]pebblestore.Pe
 	return s.store.ListPermissions(sessionID, limit)
 }
 
+// GetPermission returns one of a session's permission records.
+func (s *Service) GetPermission(sessionID, permissionID string) (pebblestore.PermissionRecord, bool, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.PermissionRecord{}, false, errors.New("permission service is not configured")
+	}
+	return s.store.GetPermission(strings.TrimSpace(sessionID), strings.TrimSpace(permissionID))
+}
+
 func (s *Service) ListPending(sessionID string, limit int) ([]pebblestore.PermissionRecord, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
@@ -634,6 +646,10 @@ func (s *Service) createPendingAuthorization(input AuthorizationInput, sessionID
 		Mode:              input.Mode,
 	})
 	if err != nil {
+		var denied *workerPromptDeniedError
+		if errors.As(err, &denied) {
+			return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: err.Error(), Source: "worker_noninteractive"}, nil
+		}
 		return AuthorizationResult{}, err
 	}
 	result := AuthorizationResult{Decision: AuthorizationPending, Requirement: requirement, Reason: reason, Source: source, RulePreview: rulePreview, Record: &record}
@@ -716,6 +732,9 @@ func parsePermissionJSONMap(raw string) map[string]any {
 }
 
 func (s *Service) CreatePending(input CreateInput) (pebblestore.PermissionRecord, error) {
+	if err := s.rejectWorkerPrompt(input); err != nil {
+		return pebblestore.PermissionRecord{}, err
+	}
 	sessionID := strings.TrimSpace(input.SessionID)
 	if sessionID == "" {
 		return pebblestore.PermissionRecord{}, errors.New("session id is required")
@@ -1139,6 +1158,9 @@ func (s *Service) CancelRunPending(sessionID, runID, reason string) ([]pebblesto
 }
 
 func (s *Service) resolveLocked(sessionID, permissionID, action, reason, approvedArguments string, now int64) (pebblestore.PermissionRecord, bool, error) {
+	if utf8.RuneCountInString(reason) > MaxReplyCharacters {
+		return pebblestore.PermissionRecord{}, false, fmt.Errorf("reply exceeds %d characters; no truncation is performed", MaxReplyCharacters)
+	}
 	record, ok, err := s.store.GetPermission(sessionID, permissionID)
 	if err != nil {
 		return pebblestore.PermissionRecord{}, false, err
@@ -2235,6 +2257,9 @@ func permissionStoredError(raw string) string {
 
 func (s *Service) syncNotification(record pebblestore.PermissionRecord, swarmID, originSwarmID, sourceEventType string) {
 	if strings.EqualFold(strings.TrimSpace(record.Requirement), RequirementClientTool) {
+		if worker, run := s.workerIdentity(record.SessionID); worker != "" && run != "" {
+			s.emitPermissionSignal(record, sourceEventType)
+		}
 		// A client tool call is answered by the session's app, not a person: it is
 		// neither a permission request nor, when the app reports an error, a denial.
 		// Its outcome is the tool's own result or failure in the session.

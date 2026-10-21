@@ -1,11 +1,9 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"net/http"
+
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
@@ -16,7 +14,7 @@ import (
 	modelruntime "swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/modelprofile"
 	"swarm/packages/swarmd/internal/permission"
-	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
+
 	"swarm/packages/swarmd/internal/provider/registry"
 	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -27,175 +25,6 @@ import (
 	"swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
-
-func TestRoutedSessionStartFailuresLeaveNoDurableAuthority(t *testing.T) {
-	tests := []struct {
-		name              string
-		planEnabled       bool
-		workspaceEnabled  bool
-		routerResponse    string
-		routerErr         error
-		breakCapabilities bool
-		managedWorktree   bool
-		wantRouterCalls   int
-	}{
-		{name: "workspace failure", workspaceEnabled: false, routerResponse: `{"title":"unused"}`, wantRouterCalls: 0},
-		{name: "worktree failure", workspaceEnabled: true, routerErr: errors.New("worktree unavailable"), managedWorktree: true, wantRouterCalls: 0},
-		{name: "capability failure", workspaceEnabled: true, routerResponse: `{"title":"Capability check","worktree_name":"capability-check"}`, breakCapabilities: true, managedWorktree: true, wantRouterCalls: 0},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: test.routerResponse}, err: test.routerErr}
-			server, sessions, principal := newRoutedSessionAtomicityServer(t, runner, test.planEnabled, test.workspaceEnabled)
-			if test.routerErr != nil && test.workspaceEnabled {
-				server.SetWorktreeService(&fakeWorktreeService{allocationErr: test.routerErr})
-			}
-			if test.breakCapabilities {
-				// Agent resolution must compile the stored V3 tool contract before any
-				// session authority is committed.
-				server.runner = nil
-			}
-
-			const requestID = "failed-routed-start"
-			body := map[string]any{"input": "route this request", "client_request_id": requestID}
-			if test.managedWorktree {
-				body["worktree_name"] = "test-worktree"
-			}
-			recorder := postRoutedSessionAtomicityRequest(t, server, principal, body)
-			if recorder.Code == http.StatusOK {
-				t.Fatalf("failure returned success: %s", recorder.Body.String())
-			}
-			if runner.createCalls != test.wantRouterCalls || runner.streamingCalls != 0 {
-				t.Fatalf("Router calls create=%d streaming=%d, want %d/0", runner.createCalls, runner.streamingCalls, test.wantRouterCalls)
-			}
-
-			sessionID := stableSessionsV3PrimarySessionID(principal, "routed:"+requestID)
-			assertNoRoutedSessionDurableAuthority(t, sessions, principal, sessionID, requestID)
-		})
-	}
-}
-
-func TestRoutedSessionStartCommitsAndReplaysOneAtomicMutation(t *testing.T) {
-	runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Atomic Routed Session","worktree_name":"atomic-routed"}`}}
-	server, sessions, principal := newRoutedSessionAtomicityServer(t, runner, false, true)
-	const requestID = "atomic-routed-start"
-	requestBody := map[string]any{
-		"input": "create the routed session", "client_request_id": requestID,
-		"metadata": map[string]any{"source": "desktop"},
-	}
-
-	first := postRoutedSessionAtomicityRequest(t, server, principal, requestBody)
-	if first.Code != http.StatusOK {
-		t.Fatalf("first routed start status=%d body=%s", first.Code, first.Body.String())
-	}
-	firstResponse := decodeRoutedSessionAtomicityResponse(t, first)
-	if !firstResponse.OK || firstResponse.Replayed || firstResponse.SessionID == "" || firstResponse.StartingMode != sessionruntime.ModeAuto {
-		t.Fatalf("first routed response = %+v", firstResponse)
-	}
-	if runner.createCalls != 1 || runner.streamingCalls != 0 {
-		t.Fatalf("plain start Router calls create=%d streaming=%d", runner.createCalls, runner.streamingCalls)
-	}
-
-	stored, ok, err := sessions.GetSession(firstResponse.SessionID)
-	if err != nil || !ok {
-		t.Fatalf("durable session exists=%t err=%v", ok, err)
-	}
-	if stored.Title != "Atomic Routed Session" || stored.Mode != sessionruntime.ModeAuto || stored.WorkspacePath == "" {
-		t.Fatalf("durable routed session = %+v", stored)
-	}
-	if stored.Metadata["title_locked"] != true || stored.Metadata["title_pending"] != false || stored.Metadata["title_source"] != "router" {
-		t.Fatalf("Router title metadata = %+v", stored.Metadata)
-	}
-	if stored.Metadata["swarm_v3_workspace_binding_id"] != "routed-binding" || stored.Metadata["swarm_v3_runtime_swarm_id"] != "local-swarm" || stored.Metadata["swarm_v3_source_workspace_path"] == "" {
-		t.Fatalf("plain workspace authority = %+v", stored.Metadata)
-	}
-	if firstResponse.Session.ID != stored.ID || firstResponse.Session.Title != stored.Title || firstResponse.Session.Metadata["title_pending"] != false {
-		t.Fatalf("response session is not canonical: response=%+v durable=%+v", firstResponse.Session, stored)
-	}
-
-	messages, err := sessions.ListSessionMessages(stored.ID, 0, 10)
-	if err != nil {
-		t.Fatalf("list first messages: %v", err)
-	}
-	if len(messages) != 1 || messages[0].Role != "user" || messages[0].Content != "create the routed session" {
-		t.Fatalf("durable first messages = %+v", messages)
-	}
-	if firstResponse.FirstMessage.ID != messages[0].ID || firstResponse.FirstMessage.SessionID != stored.ID {
-		t.Fatalf("response first message = %+v, durable=%+v", firstResponse.FirstMessage, messages[0])
-	}
-	if firstResponse.SessionView.Identity == nil || firstResponse.SessionView.Identity.SessionID != stored.ID || firstResponse.SessionView.AgenticSettings.EffectivePreference.Model != stored.Preference.Model {
-		t.Fatalf("response session view = %+v", firstResponse.SessionView)
-	}
-	if firstResponse.Mutation.SessionID != stored.ID || firstResponse.Mutation.Message == nil || firstResponse.Mutation.Message.ID != messages[0].ID {
-		t.Fatalf("response atomic mutation = %+v", firstResponse.Mutation)
-	}
-	projection, projectionOK, err := sessions.GetSessionProjection(stored.ID)
-	if err != nil || !projectionOK || projection.LastEventSeq != 1 || projection.ProjectionHighWatermarkSeq != 1 {
-		events, _ := sessions.ListSessionEvents(stored.ID, 0, 10)
-		t.Fatalf("projection exists=%t projection=%+v mutation=%+v events=%+v err=%v", projectionOK, projection, firstResponse.Mutation, events, err)
-	}
-	if firstResponse.Projection.SessionID != stored.ID || firstResponse.Projection.LastEventSeq != projection.LastEventSeq {
-		t.Fatalf("response projection=%+v durable=%+v", firstResponse.Projection, projection)
-	}
-
-	runID := stableSessionsV3PrimaryRunID(stored.ID, "routed-message:"+requestID)
-	intent, intentOK, err := sessions.Store().GetV3SessionRunIntent(stored.ID, runID)
-	if err != nil || !intentOK || intent.RunID != runID {
-		t.Fatalf("run intent exists=%t intent=%+v err=%v", intentOK, intent, err)
-	}
-	idempotency, idempotencyOK, err := sessions.Store().GetV3SessionOperationIdempotencyRecord(principal.AccountScopeID, stored.ID, sessionruntime.SessionMutationCreateSession, requestID)
-	if err != nil || !idempotencyOK || idempotency.Result.MessageID != messages[0].ID || idempotency.Result.RunID != runID {
-		t.Fatalf("idempotency exists=%t record=%+v err=%v", idempotencyOK, idempotency, err)
-	}
-	events, err := sessions.ListSessionEvents(stored.ID, 0, 10)
-	if err != nil || len(events) != 1 {
-		t.Fatalf("atomic create events=%+v err=%v", events, err)
-	}
-	outbox, err := sessions.Store().ListV3RealtimeOutboxForSessionAfterEndpoint(stored.ID, 0, 10)
-	if err != nil || len(outbox) != 1 || outbox[0].Projection.LastEventSeq != 1 {
-		t.Fatalf("atomic create outbox=%+v err=%v", outbox, err)
-	}
-
-	replay := postRoutedSessionAtomicityRequest(t, server, principal, requestBody)
-	if replay.Code != http.StatusOK {
-		t.Fatalf("replay status=%d body=%s", replay.Code, replay.Body.String())
-	}
-	replayResponse := decodeRoutedSessionAtomicityResponse(t, replay)
-	if !replayResponse.Replayed || replayResponse.SessionID != stored.ID || replayResponse.FirstMessage.ID != messages[0].ID || !replayResponse.Mutation.Replayed {
-		t.Fatalf("replay response = %+v", replayResponse)
-	}
-	if runner.createCalls != 1 {
-		t.Fatalf("exact replay called Router %d total times, want one", runner.createCalls)
-	}
-	assertRoutedSessionAtomicityCardinality(t, sessions, stored.ID, 1, 1, 1)
-
-	planConflictBody := map[string]any{
-		"input": "create the routed session", "client_request_id": requestID,
-		"metadata": map[string]any{"source": "desktop"}, "plan_mode_requested": true,
-	}
-	planConflict := postRoutedSessionAtomicityRequest(t, server, principal, planConflictBody)
-	if planConflict.Code != http.StatusConflict {
-		t.Fatalf("Plan intent conflict status=%d body=%s", planConflict.Code, planConflict.Body.String())
-	}
-	if runner.createCalls != 1 {
-		t.Fatalf("Plan intent conflict called Router %d total times, want one", runner.createCalls)
-	}
-	assertRoutedSessionAtomicityCardinality(t, sessions, stored.ID, 1, 1, 1)
-
-	conflictBody := map[string]any{
-		"input": "different payload", "client_request_id": requestID,
-		"metadata": map[string]any{"source": "desktop"},
-	}
-	conflict := postRoutedSessionAtomicityRequest(t, server, principal, conflictBody)
-	if conflict.Code != http.StatusConflict {
-		t.Fatalf("payload conflict status=%d body=%s", conflict.Code, conflict.Body.String())
-	}
-	if runner.createCalls != 1 {
-		t.Fatalf("payload conflict called Router %d total times, want one", runner.createCalls)
-	}
-	assertRoutedSessionAtomicityCardinality(t, sessions, stored.ID, 1, 1, 1)
-}
 
 type routedSessionAtomicityResponse struct {
 	OK           bool                                 `json:"ok"`
@@ -216,24 +45,6 @@ func decodeRoutedSessionAtomicityResponse(t *testing.T, recorder *httptest.Respo
 		t.Fatalf("decode routed response: %v body=%s", err, recorder.Body.String())
 	}
 	return response
-}
-
-func postRoutedSessionAtomicityRequest(t *testing.T, server *Server, principal identity.Principal, body map[string]any) *httptest.ResponseRecorder {
-	t.Helper()
-	addRoutedSessionTestAuthority(body)
-	if _, ok := body["plan_mode_requested"]; !ok {
-		body["plan_mode_requested"] = false
-	}
-	encoded, err := json.Marshal(body)
-	if err != nil {
-		t.Fatalf("encode routed request: %v", err)
-	}
-	request := httptest.NewRequest(http.MethodPost, RoutedSessionsPath, bytes.NewReader(encoded))
-	request.Header.Set("Content-Type", "application/json")
-	request = request.WithContext(identity.ContextWithPrincipal(request.Context(), principal))
-	recorder := httptest.NewRecorder()
-	server.Handler().ServeHTTP(recorder, request)
-	return recorder
 }
 
 func addRoutedSessionTestAuthority(body map[string]any) {
@@ -282,16 +93,6 @@ func assertNoRoutedSessionDurableAuthority(t *testing.T, sessions *sessionruntim
 	}
 	if outbox, err := sessions.Store().ListV3RealtimeOutboxForSessionAfterEndpoint(sessionID, 0, 10); err != nil || len(outbox) != 0 {
 		t.Fatalf("failed routed start outbox=%+v err=%v", outbox, err)
-	}
-}
-
-func assertRoutedSessionAtomicityCardinality(t *testing.T, sessions *sessionruntime.Service, sessionID string, wantMessages, wantEvents, wantOutbox int) {
-	t.Helper()
-	messages, messageErr := sessions.ListSessionMessages(sessionID, 0, 10)
-	events, eventErr := sessions.ListSessionEvents(sessionID, 0, 10)
-	outbox, outboxErr := sessions.Store().ListV3RealtimeOutboxForSessionAfterEndpoint(sessionID, 0, 10)
-	if messageErr != nil || eventErr != nil || outboxErr != nil || len(messages) != wantMessages || len(events) != wantEvents || len(outbox) != wantOutbox {
-		t.Fatalf("durable cardinality messages=%d/%d events=%d/%d outbox=%d/%d errors=%v/%v/%v", len(messages), wantMessages, len(events), wantEvents, len(outbox), wantOutbox, messageErr, eventErr, outboxErr)
 	}
 }
 

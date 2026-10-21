@@ -1,10 +1,5 @@
 package api
 
-// Cookie fixture maintenance: protected create routes behind Server.withAuth
-// must reject invalid/incomplete product actors without persisting resources.
-// Negative JWT fixtures now use the request-scoped name to keep testing actor
-// validation rather than accidentally proving only missing-cookie rejection.
-
 import (
 	"bytes"
 	"encoding/json"

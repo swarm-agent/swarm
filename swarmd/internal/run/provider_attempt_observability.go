@@ -15,12 +15,17 @@ import (
 type durableProviderAttemptObserver struct {
 	sessionID string
 	runID     string
+	step      int
 	principal identity.Principal
 	apply     func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
 }
 
 func (o *durableProviderAttemptObserver) AttemptTimedOut(attempt int) {
 	o.record("watchdog_detected", attempt, "provider_activity_timeout")
+}
+
+func (o *durableProviderAttemptObserver) AttemptStreamIncomplete(attempt int) {
+	o.record("stream_incomplete", attempt, "provider_stream_ended_without_finish")
 }
 
 func (o *durableProviderAttemptObserver) AttemptCancelled(attempt int) {
@@ -43,11 +48,12 @@ func (o *durableProviderAttemptObserver) record(state string, attempt int, reaso
 	payload := struct {
 		SessionID string `json:"session_id"`
 		RunID     string `json:"run_id"`
+		Step      int    `json:"step"`
 		State     string `json:"recovery_state"`
 		Reason    string `json:"reason"`
 		Attempt   int    `json:"attempt"`
 		Recorded  int64  `json:"recorded_at"`
-	}{strings.TrimSpace(o.sessionID), strings.TrimSpace(o.runID), state, reason, attempt, now}
+	}{strings.TrimSpace(o.sessionID), strings.TrimSpace(o.runID), o.step, state, reason, attempt, now}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return
@@ -55,7 +61,9 @@ func (o *durableProviderAttemptObserver) record(state string, attempt int, reaso
 	sum := sha256.Sum256(raw)
 	hash := hex.EncodeToString(sum[:])
 	eventType := "session.run.recovery." + state
-	requestID := fmt.Sprintf("run-recovery-%s-%s-%d", strings.ReplaceAll(state, "_", "-"), strings.TrimSpace(o.runID), attempt)
+	// The step keeps a later step's record in the same run from colliding with
+	// this one's idempotency key and being dropped as a conflict.
+	requestID := fmt.Sprintf("run-recovery-%s-%s-%d-%d", strings.ReplaceAll(state, "_", "-"), strings.TrimSpace(o.runID), o.step, attempt)
 	_, _ = o.apply(sessionruntime.SessionMutationInput{
 		SessionID:       o.sessionID,
 		UserID:          o.principal.UserID,

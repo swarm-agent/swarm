@@ -28,23 +28,32 @@ func runSetup(args []string, input io.Reader, output io.Writer) error {
 	if len(args) > 0 && (args[0] == "sdk-token" || args[0] == "revoke-sdk-token") {
 		return runSetupSDKToken(args, output)
 	}
+	if len(args) > 0 && args[0] == "sdk-token-limits" {
+		return runSetupSDKTokenLimits(args, output)
+	}
+	if len(args) > 0 && args[0] == "sdk-tokens" {
+		return runSetupSDKTokens(args, output)
+	}
 	if len(args) > 0 && args[0] == "codex-login" {
 		return runSetupCodexLogin(args, output)
 	}
 	if len(args) > 0 && args[0] == "daily-limit" {
 		return runSetupDailyLimit(args, output)
 	}
+	if len(args) > 0 && (args[0] == "credentials" || args[0] == "add-credential" || args[0] == "remove-credential") {
+		return runSetupCredentials(args, output)
+	}
 	if len(args) > 0 && args[0] == "sealed-agent" {
 		return runSetupSealedAgent(args, input, output)
 	}
 	if len(args) == 0 {
-		return errors.New("usage: swarmctl setup <status|identity|credential|codex-login|model|workspace|complete|sealed-agent|daily-limit|sdk-token|revoke-sdk-token> --help")
+		return errors.New("usage: swarmctl setup <status|identity|credential|credentials|add-credential|remove-credential|codex-login|model|workspace|complete|sealed-agent|daily-limit|sdk-token|sdk-token-limits|sdk-tokens|revoke-sdk-token> --help")
 	}
 	fs := flag.NewFlagSet("setup "+args[0], flag.ContinueOnError)
 	// Do not echo unknown arguments: a mistaken --api-key SECRET must not leak.
 	fs.SetOutput(io.Discard)
 	socket := fs.String("socket", "", "private daemon Unix socket (defaults to canonical data root)")
-	var username, name, provider, model, thinking, role, tier, contextMode, path *string
+	var username, name, provider, model, thinking, role, tier, contextMode, path, project, location *string
 	var stdin *bool
 	switch args[0] {
 	case "status", "complete":
@@ -54,6 +63,8 @@ func runSetup(args []string, input io.Reader, output io.Writer) error {
 	case "credential":
 		provider = fs.String("provider", "", "provider ID")
 		stdin = fs.Bool("api-key-stdin", false, "read first provider API key from redirected stdin, never argv")
+		project = fs.String("project", "", "Google Cloud project, only with --provider vertex (uses this machine's Google identity; no key)")
+		location = fs.String("location", "global", "Vertex AI location, only with --provider vertex: global or a region such as us-central1")
 	case "model":
 		role = fs.String("role", "", "action, plan, compact, finder, coder, designer, or router")
 		provider = fs.String("provider", "", "provider ID (required)")
@@ -81,6 +92,9 @@ func runSetup(args []string, input io.Reader, output io.Writer) error {
 	}
 	method, route := http.MethodPost, "/v1/onboarding"
 	var payload any
+	// Only a request that carries no secret may show the daemon's reason for
+	// refusing it.
+	showRejection := false
 	switch args[0] {
 	case "status":
 		method = http.MethodGet
@@ -90,6 +104,29 @@ func runSetup(args []string, input io.Reader, output io.Writer) error {
 		}
 		payload = map[string]string{"username": strings.TrimSpace(*username), "swarm_name": strings.TrimSpace(*name)}
 	case "credential":
+		vertexFlags := false
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "project" || f.Name == "location" {
+				vertexFlags = true
+			}
+		})
+		if strings.EqualFold(strings.TrimSpace(*provider), "vertex") {
+			// Vertex AI uses the machine's Google identity (attached service
+			// account or GOOGLE_APPLICATION_CREDENTIALS); nothing secret is sent.
+			if *stdin {
+				return errors.New("--provider vertex reads no key: it uses this machine's Google identity; drop --api-key-stdin")
+			}
+			if strings.TrimSpace(*project) == "" {
+				return errors.New("--provider vertex requires --project")
+			}
+			payload = map[string]any{"provider": "vertex", "type": "adc", "google_project": strings.TrimSpace(*project), "google_location": strings.TrimSpace(*location), "active": true}
+			route = "/v1/onboarding/provider/credential"
+			showRejection = true
+			break
+		}
+		if vertexFlags {
+			return errors.New("--project and --location apply only to --provider vertex")
+		}
 		if strings.TrimSpace(*provider) == "" || !*stdin {
 			return errors.New("--provider and --api-key-stdin are required")
 		}
@@ -157,7 +194,11 @@ func runSetup(args []string, input io.Reader, output io.Writer) error {
 	// Never print raw responses, cookies or backend errors (provider failures may
 	// contain credentials). Only a typed, non-secret status is shown.
 	var status setupStatus
-	if err := setupRequest(client, method, route, payload, &status); err != nil {
+	if showRejection {
+		if err := setupRequestShowingRejection(client, method, route, payload, &status); err != nil {
+			return err
+		}
+	} else if err := setupRequest(client, method, route, payload, &status); err != nil {
 		return err
 	}
 	if args[0] == "status" {
@@ -221,6 +262,54 @@ func resolveOwnerSocket(socket string) (string, error) {
 		return "", errors.New("setup socket must be an absolute path")
 	}
 	return socket, nil
+}
+
+// setupRequestShowingRejection is setupRequest for requests that carry no
+// secret (vertex settings): when the daemon refuses, its reason (for example
+// "no GCE metadata server reachable") is shown, bounded and printable only.
+func setupRequestShowingRejection(client *http.Client, method, path string, payload, out any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return errors.New("cannot encode setup request")
+	}
+	req, err := http.NewRequest(method, "http://swarm-local-transport"+path, bytes.NewReader(body))
+	if err != nil {
+		return errors.New("invalid setup request")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return errors.New("cannot reach private daemon socket; start the container and run setup as its daemon user")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var rejected struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(io.LimitReader(resp.Body, 16<<10)).Decode(&rejected)
+		if reason := printableSetupReason(rejected.Error, 600); reason != "" {
+			return fmt.Errorf("setup request rejected (HTTP %d): %s", resp.StatusCode, reason)
+		}
+		return fmt.Errorf("setup request rejected (HTTP %d)", resp.StatusCode)
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out); err != nil {
+		return errors.New("invalid setup response; operation may have been saved, inspect setup status before retrying")
+	}
+	return nil
+}
+
+func printableSetupReason(raw string, limit int) string {
+	var b strings.Builder
+	for _, r := range strings.TrimSpace(raw) {
+		if b.Len() >= limit {
+			break
+		}
+		if r < 0x20 || r == 0x7f {
+			r = ' '
+		}
+		b.WriteRune(r)
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func setupRequest(client *http.Client, method, path string, payload, out any) error {

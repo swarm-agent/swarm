@@ -13,6 +13,11 @@ import (
 // review and Git integration. This projection states that pending review
 // explicitly without changing run status semantics. It is never persisted.
 type WorkerRunReview struct {
+	*store.JobReview
+	// Stale is true when the run's checkout is no longer at the reviewed
+	// head, and always when the verdict depends on a fixing reviewer's
+	// commits (FixHead): the run's own head was not approved on its own.
+	Stale bool `json:"stale"`
 	// State is "awaiting_review" while the task needs review, "completed" once
 	// the task is integrated or accepted, otherwise the task status.
 	State      string `json:"state"`
@@ -31,7 +36,7 @@ func (s *WorkerExecutionService) RunReview(r store.WorkerRunRecord) (*WorkerRunR
 	if s == nil || s.host == nil || s.host.runs == nil || s.host.runs.sessions == nil {
 		return nil, errors.New("sessions service unavailable")
 	}
-	if r.Status != "succeeded" || strings.TrimSpace(r.SessionID) == "" {
+	if strings.TrimSpace(r.SessionID) == "" {
 		return nil, nil
 	}
 	session, found, err := s.host.runs.sessions.GetSession(r.SessionID)
@@ -55,6 +60,17 @@ func (s *WorkerExecutionService) RunReview(r store.WorkerRunRecord) (*WorkerRunR
 		return nil, err
 	}
 	review := &WorkerRunReview{State: task.Status, ProjectID: projectID, TaskID: taskID, TaskStatus: task.Status}
+	review.JobReview, err = db.WorkerStore().GetJobReview(r.AccountScopeID, r.WorkerID, r.ID)
+	if err != nil {
+		return nil, err
+	}
+	if review.JobReview == nil && r.Status != "succeeded" {
+		return nil, nil
+	}
+	if review.JobReview != nil {
+		state, inspectErr := s.host.trees.InspectTaskWorkspace(task.WorkspacePath)
+		review.Stale = inspectErr != nil || state.HeadCommit != review.Head || review.FixHead != ""
+	}
 	switch task.Status {
 	case "needs_review":
 		review.State = WorkerRunReviewStateAwaiting

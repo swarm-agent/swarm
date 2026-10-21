@@ -455,6 +455,7 @@ func projectTaskGit(root string, argv ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", root}, argv...)...)
 	cmd.WaitDelay = time.Second
 	sandbox.Prepare(ctx, cmd)
+	defer sandbox.ReleaseGit(cmd)
 	out, err := cmd.Output()
 	if len(out) > 1<<20 {
 		return "", errors.New("git inspection output too large")

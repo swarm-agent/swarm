@@ -17,6 +17,45 @@ func validateSessionRepositoryIdentity(session pebblestore.SessionSnapshot) erro
 }
 
 func validateSessionExecutionRepositoryIdentity(session pebblestore.SessionSnapshot) error {
+	if mapString(session.Metadata, "worker_role") == pebblestore.WorkerRoleReviewer {
+		if !session.WorktreeEnabled {
+			return errors.New("review session requires its isolated checkout")
+		}
+		if owner := sessionReviewLaneOwner(session.Metadata); owner != "" && !sessionReviewFixes(session.Metadata) {
+			// A reviewer reading the reviewed job's own worktree in place: a
+			// borrowed lane, still owned by the job's session, at exactly the
+			// reviewed head.
+			head := reviewEnvironment(session.Metadata)["SWARM_REVIEW_HEAD"]
+			base := firstNonEmptyString(mapString(session.Metadata, "swarm_v3_worktree_base_commit"), mapString(session.Metadata, "base_commit"))
+			source := mapString(session.Metadata, "swarm_v3_source_workspace_path")
+			if owner == session.ID || mapString(session.Metadata, "swarm_v3_worktree_owner_session_id") != owner || head == "" || base != head || session.WorktreeBaseBranch != head || source == "" || session.WorktreeRootPath == "" || session.WorktreeBranch == "" {
+				return errors.New("review session borrowed worktree identity mismatch")
+			}
+			if runtime := mapString(session.Metadata, "swarm_v3_runtime_workspace_path"); runtime != "" && filepath.Clean(runtime) != filepath.Clean(session.WorktreeRootPath) {
+				return errors.New("session runtime worktree identity mismatch")
+			}
+			return worktreeruntime.ValidateBorrowedReviewExecutionIdentity(source, session.WorktreeRootPath, owner, session.ID, session.WorktreeBranch, head)
+		}
+		if sessionReviewFixes(session.Metadata) {
+			// A reviewer allowed to commit security fixes: its own
+			// agent/review-<run> branch, whose HEAD descends from the
+			// reviewed head (instead of a detached HEAD equal to it).
+			return validateSessionRepositoryIdentityWith(session, func(source, lane, branch, base string) error {
+				head := reviewEnvironment(session.Metadata)["SWARM_REVIEW_HEAD"]
+				if run := mapString(session.Metadata, "worker_execution_run_id"); run == "" || branch != reviewFixBranch(run) || head == "" || base != head || session.WorktreeBaseBranch != head || mapString(session.Metadata, "swarm_v3_worktree_owner_session_id") != session.ID {
+					return errors.New("review fix session worktree identity mismatch")
+				}
+				return worktreeruntime.ValidateReviewFixExecutionIdentity(source, lane, branch, head)
+			})
+		}
+		return validateSessionRepositoryIdentityWith(session, func(source, lane, branch, base string) error {
+			head := reviewEnvironment(session.Metadata)["SWARM_REVIEW_HEAD"]
+			if branch != "HEAD" || base != head || session.WorktreeBaseBranch != head || mapString(session.Metadata, "swarm_v3_worktree_owner_session_id") != session.ID {
+				return errors.New("review session worktree identity mismatch")
+			}
+			return worktreeruntime.ValidateReviewExecutionIdentity(source, lane, session.ID, head)
+		})
+	}
 	return validateSessionRepositoryIdentityWith(session, worktreeruntime.ValidateOwnedExecutionIdentity)
 }
 

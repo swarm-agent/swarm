@@ -1,0 +1,826 @@
+# Workflows
+
+When work ends, Swarm records one **result** for it and runs the **steps the
+person (or their AI) configured** for that end. Work is a task of Swarm's own
+agents (`swarm_run_task`: swarm, coder, finder, designer; its first run and each
+follow-up sent into its session) or a worker job (a worker run or follow-up, a
+media job, a design job). Swarm only provides
+primitives and reports what happened; it has no built-in merge, rebase,
+check, review chain or push.
+
+With no workflow nothing changes: a task or job ends with its branch and
+worktree, and the person integrates it by hand (`swarm_integrate_task`,
+`swarm_deliver_job`, or their own git).
+
+Workflows were called job automations. The MCP tools and the API path are
+named for workflows (`swarm_set_workflow`, `/v3/workflows`); the internal
+names are unchanged: the `automation.*` signals, the `automations:read` and
+`automations:write` scopes, `then` and `automation: true` on the job tools.
+
+## What an automation is
+
+An automation belongs to an account and has:
+
+| Field | Meaning |
+| --- | --- |
+| `name` | Unique per account; setting an existing name updates it. |
+| `scope.folder` | The project folder whose task and job ends it watches (absolute path). |
+| `scope.role` | Optional: only the tasks this one of Swarm's own agents (`swarm`, `coder`, `finder`, `designer`) finished. Not with `scope.worker` or `scope.schedule`. |
+| `scope.worker` | Optional: only this worker's jobs (worker id). |
+| `scope.job` | Optional: only this task or job (`task/<project>/<task>`, `worker/<worker>/<run>`, `media/<project>/<task>`, `design/<project>/<task>`). |
+| `scope.schedule` | Optional: only the jobs of this worker schedule. |
+| `when` | `succeeded` (default), `failed` (failed or cancelled) or `always`. |
+| `enabled` | Default true. |
+| `retries` | 0 to 3 (default 0): automatic retries of a failed step, with backoff. |
+| `result` | Optional: what the work must hand over (`kind`, `path`, `describe`); see [What the work hands over](#what-the-work-hands-over-and-where). |
+| `steps` | Ordered steps, at most 20. |
+
+Every update raises the automation's `revision`. An automation applies only to
+task and job ends after it was created. Tasks and jobs started by a workflow
+(an `agent` step) never trigger workflows; a follow-up of the original work
+(`swarm_send_message` into a task's session, `swarm_message_job` for a job)
+ends again and does.
+
+Each step has an `id`, a `type` (`run`, `agent`, `reopen` or `deliver`),
+`timeout_seconds` (default 600, at most 3600), `continue_on_failure` (default
+false: a failed step stops the steps after it, which are recorded as
+`skipped`) and an optional `if`.
+
+### Conditions (`if`)
+
+`if` is a list of conditions on earlier steps that must all hold for the step
+to run:
+
+```json
+"if": [{ "step": "review", "verdict": "block" }, { "step": "check", "status": "succeeded" }]
+```
+
+- `{"step": "<id>", "status": "succeeded|failed"}`: that step's state. A step
+  that did not run (skipped or stopped) matches neither.
+- `{"step": "<id>", "verdict": "ok|block"}`: for an `agent` step, the verdict
+  of the review the job it started recorded. A job that recorded no review has
+  no verdict, and a missing verdict never matches.
+
+A step whose conditions do not hold is recorded `skipped` with the reason (not
+failed), and the steps after it still run. There is no expression language.
+
+### `run` steps
+
+```json
+{ "id": "push", "type": "run", "command": "/usr/local/libexec/swarm-deliver/push.sh", "args": ["--draft"] }
+```
+
+A `run` step is what the machine's owner does with a job's result after the
+job has ended: merge it locally, push it, upload a file. It is the owner's
+own script, not an agent command, so it runs **on the host as the daemon's
+user**, the same way the publish command does: with the folder as working
+directory, the machine's own credentials (the daemon user's SSH keys, Git
+credential helper, `~/.netrc`) and write access to the folder's repository.
+Swarm ships, installs and suggests no script: it runs only the steps the
+owner configured, and nothing when there are none.
+
+- **Only the machine's owner may set a `run` step**: the local owner (the
+  Desktop or `swarm` on the machine, with no key), or a key with the `admin`
+  scope (a `full` AI key). A `write` AI key, a remote device and any other
+  key without `admin` are refused when they save an automation, or a `then`
+  on `swarm_give_job` or `swarm_schedule_job`, that contains a `run` step
+  (HTTP 403, or a tool error), and nothing is stored or started. They may
+  still save `agent` and `reopen` steps. The root-owned check below does not
+  limit what a step can do on its own: every system interpreter is root-owned,
+  and `args` are free-form, so `{"command": "/bin/sh", "args": ["-c", "..."]}`
+  passes it. Saving a `run` step is running a command as the daemon's user,
+  so it needs the owner.
+- `command` is an **absolute path**, or a path **relative to the folder**
+  (no `..`, not under `.git`). Swarm resolves it, symlinks included, and runs
+  it only when the final file is **owned by root and not writable by group
+  or others** (and executable and readable); otherwise the step is refused
+  with the reason and the fix, and nothing runs. Install a script with:
+
+  ```sh
+  sudo install -o root -m 755 push.sh /usr/local/libexec/swarm-deliver/push.sh
+  ```
+
+- **Prefer an absolute path in a directory only root can write**, such as
+  `/usr/local/libexec/swarm-deliver/`. An absolute path may point anywhere,
+  symlinks included: where it points is the owner's choice.
+- A **relative** command must resolve to a file **inside the folder**. A
+  symlink in the folder (the script, or a directory on its path) that leads
+  out of the folder is refused, even to a root-owned file such as `/bin/sh`.
+  The script must also have exactly one link: a hard link is refused. These
+  rules exist because whoever can write the folder (the folder's user, an
+  agent working in it, or a job commit your merge script checks out) can
+  replace `deliver/push.sh`. They still cannot make a file pass the root-owner
+  check. They can, however, delete or rename a script in the folder, or put
+  another root-owned script from the same folder in its place. A script that
+  holds credentials or must not be swapped belongs outside the folder.
+- The check is made again immediately before the script runs, on the opened
+  file itself. Swarm then runs a private copy of exactly that file (in a
+  folder only the daemon's user can read, removed afterwards), so a file
+  swapped in at the path after the check never runs. The script's `$0` is
+  therefore that copy's path, not the path you installed it at: do not find
+  sibling files through `$0`.
+- `run` steps have no `secrets`: a step that sends them is refused. A host
+  script uses the machine's own credentials, as the publish command does.
+- Before the step, Swarm brings the delivery's head commit (the job's head,
+  or the head an earlier `agent` step moved it to) into the folder as
+  `refs/swarm/jobs/<run-id>`.
+- The script gets the job's result JSON (below) on **stdin**, and `args` as
+  its arguments.
+- Environment: only `PATH` (`/usr/local/bin:/usr/bin:/bin`), `HOME` (the
+  daemon user's), `TMPDIR` (a scratch folder of its own, removed when the
+  step ends) and these:
+
+  ```sh
+  SWARM_JOB_ID=worker/<worker>/<run>
+  SWARM_JOB_STATUS=succeeded          # or failed, cancelled
+  SWARM_HEAD=<sha>                    # the delivery's head
+  SWARM_BASE=<sha>
+  SWARM_BRANCH=agent/...
+  SWARM_JOB_REF=refs/swarm/jobs/<run-id>
+  SWARM_DELIVERY_ID=<delivery id>
+  SWARM_ROUND=0
+  ```
+
+  The git values are empty when the job has no commits. Nothing else of the
+  daemon's environment is passed in.
+- Time limit: `timeout_seconds`. Past it, or when the daemon stops, Swarm
+  kills the script's whole process group (the script and every process it
+  started). A timed-out step fails with exit code 124 and a last line saying
+  it timed out.
+- Output: stdout and stderr together; the last 64 KiB are kept as the step's
+  log tail and the **last non-empty line** is the step's `output` (for
+  example a pull request URL). The exit code is the outcome: a non-zero exit
+  fails the step.
+
+### `agent` steps
+
+```json
+{ "id": "review", "type": "agent", "worker": "reviewer", "brief": "Review this change for security problems." }
+```
+
+- `worker` is one of Swarm's own agents (`swarm`, `coder`, `finder`,
+  `designer`), `reviewer`, or a worker id. One of Swarm's own agents runs as
+  a task in the folder, in the triggering work's project, exactly as
+  `swarm_run_task` would, with the brief and the triggering work's result; a
+  coder's worktree starts at the delivery head, so its commits descend from
+  the work it follows. Its task records the workflow that started it and its
+  end never triggers workflows. `fixes` is refused for it.
+- For a worker, Swarm starts the job through the normal job admission (workspace and worker
+  checks) with request source `automation`, the brief with the triggering
+  job's result attached, and the delivery id and step id as its idempotency
+  key (a restart never starts it twice; an explicit re-run starts a new job).
+- A reviewer reviews the triggering task's or job's exact head (`review_job`:
+  `task/<project>/<task>` or `worker/<worker>/<run>`), in its own session, with the whole picture in its brief (see
+  [What the reviewer receives](#what-the-reviewer-receives)).
+- The step waits, within its timeout, for that job to end; the job's status
+  is the step's status. The step's `outcome` records the job id, its head,
+  its report and, when the job recorded a review (a reviewer's verdict on the
+  job it reviewed), `verdict` (`ok` or `block`) and `findings`. Verdict and
+  findings come from the review record: the reviewer's FINDINGS section in
+  full, up to 16,000 bytes (longer findings are cut at a line boundary and
+  say so), never the job's shortened report. Headings the reviewer wrapped
+  in Markdown bold at the start of their lines (`**VERDICT: BLOCK**`,
+  `**FINDINGS:**`) are read like plain ones, although the reviewer prompt
+  asks for plain headings (see [reviewer](reviewer.md)). A readable `block`
+  review whose FINDINGS section is empty has the record's reason as its
+  findings. A review whose report could not be read (recorded with the reason
+  "missing or malformed review verdict") is **unreadable**: the outcome has
+  `verdict: block`, `review_unreadable: true` and no findings, so a
+  `verdict: block` condition still holds but there is nothing to send.
+- The delivery's **head** starts as the triggering job's head. When the job
+  the step started committed on top of it, Swarm checks with Git that the
+  job's head descends from the current delivery head and moves the delivery
+  head forward (`outcome.moved_head`); later `run` steps get the moved head.
+  A head that does not descend fails the step and the delivery head stays.
+  A reviewer is read-only (by default it reads the job's own worktree in
+  place, below) and so never moves the head, unless its step sets `fixes`
+  (below).
+
+#### Where the agent works (`checkout`)
+
+```json
+{ "id": "review", "type": "agent", "worker": "reviewer", "brief": "Review this change.", "checkout": "same" }
+```
+
+An `agent` step's `checkout` says where its agent works. Leave it out and
+each agent works where it should:
+
+| Agent | Default | Allowed |
+|---|---|---|
+| reviewer | `same` | `same`, `new` |
+| reviewer with `fixes` | `new` | `new` (it commits) |
+| `coder`, any other worker | `new` | `new` |
+| `swarm`, `finder`, `designer` | `none` | `none` |
+
+- `same`: a new reviewer session in the worktree of the job the step
+  follows, where that job did its work. Nothing is copied or allocated, and
+  the worktree stays the job's: it is mounted read-only for the reviewer
+  (its sandbox, not only its Git metadata), only that reviewer session runs
+  in it, and when the reviewer ends nothing in it is removed or cleaned.
+  The reviewer starts only when the worktree is exactly at the head being
+  reviewed with nothing uncommitted; otherwise the step fails with that
+  reason. If the worktree moves or gets uncommitted changes while the
+  review runs (someone sent the job a message), the verdict is recorded as
+  `block` ("the work changed during the review"), so an `ok` never pushes
+  code nobody reviewed.
+- `new`: the agent's own worktree at the job's head (a reviewer's is a
+  detached, disposable checkout removed when it ends).
+- `none`: the folder itself. Swarm, finder and designer tasks always work
+  there; the job's commits are the folder's branches (its branch and head
+  are in the brief).
+
+To have the job's own agent continue in its own worktree, use a `reopen`
+step: it sends a follow-up into the job's own session. The daemon refuses
+any other combination when the workflow is saved (for a worker named by id,
+`same` only when it is a reviewer).
+
+#### Reviewer fixes (`fixes: "security"`)
+
+```json
+{ "id": "review", "type": "agent", "worker": "reviewer", "brief": "Review this job.", "fixes": "security" }
+```
+
+An `agent` step whose worker is a reviewer may set `fixes` to `security`
+(the only value), so that the reviewer may commit small, security-only
+fixes (a missing escape, a path check, a secret in a log line) instead of
+blocking for them. It is opt-in per step and never the default: a reviewer
+started any other way (`swarm_give_job` with `review_job`, or an `agent` step
+without `fixes`) stays read-only, detached and report-only. Swarm never
+decides on its own to let a reviewer write. `swarm_set_workflow`, `then`
+and the API refuse `fixes` on a step whose worker is not a reviewer (a role
+name, a worker id or name that resolves to another role, or one that does
+not resolve); the daemon refuses it again when the job starts and at job
+admission, where only a job automation's request may carry it.
+
+With `fixes`:
+
+- The reviewer job gets a writable branch `agent/review-<run>` started at
+  the reviewed head, in its own worktree of the folder (like a coder's job
+  checkout); its commits are in the folder's repository as they are made. Every tool call checks that the checkout is
+  on that branch and that its `HEAD` descends from the reviewed head.
+- It may edit files and commit (`git_add`, `git_commit`), and run the
+  narrowest test that proves a fix; it cannot start other agents.
+- Its prompt says: commit only small, security-only fixes on top of the
+  reviewed head; list every fix in FINDINGS marked `FIXED`, with what it was,
+  why, and `file:line`; anything that is not a small security fix is a BLOCK
+  finding; run only the narrowest test that proves a fix and list it under
+  TESTS RUN.
+- The limit is enforced in code, after the reviewer job ends: its commits on
+  top of the delivery head may change **at most 80 lines** in total (added
+  plus removed, `git diff --numstat`; a binary file counts as over the
+  limit). Over the limit the step fails with reason `reviewer fixes too
+  large`, is not retried, and the delivery head does not move.
+- Only an `ok` verdict moves the head (after the same ancestry check). A
+  reviewer that committed while its verdict is `block` (or that recorded no
+  verdict) does not move the head; the step keeps its verdict, so a `reopen`
+  step still sends its findings to the coder. A security problem the
+  reviewer fixed is not a reason for it to block.
+- An unreadable report (`review_unreadable: true`, see
+  [Reopen steps](#reopen-steps)) is a `block` too: the fix commits are
+  listed but never applied, the head does not move, an `ok`-gated step does
+  not run, and a `reopen` step sends nothing and ends the delivery `blocked`
+  with `review unreadable: <reviewer job id>`. The fixing reviewer's prompt
+  asks for plain headings, like the read-only reviewer's.
+- An `ok` verdict may mean "I fixed it", so it fails closed: Swarm reads the
+  reviewer's head and fix commits from its own checkout with Git, and when
+  that read fails (or the head moved without readable fix commits) the step
+  fails with `reviewer fixes unreadable`, the delivery head does not move
+  and a later `ok`-gated step does not run.
+- A fixing reviewer branches at the reviewed job's own head, so a fixing
+  `agent` step after another `agent` step that already moved the delivery
+  head is refused without starting its job. Put the fixing review first.
+- The step's `outcome` shows the reviewer's `fix_commits`, `fix_lines`,
+  `fixes_applied` and, when not applied, `fixes_reason`; `swarm_get_job` on
+  the reviewer job shows its fix `commits` and `head` on its
+  `agent/review-<run>` branch (read from its checkout; `fix_error` when that
+  read fails). `swarm_get_job` on the reviewed job and the delivery views
+  show the moved `head` and the applied `fix_commits`.
+- A fixing reviewer's review of the reviewed job is recorded with
+  `fix_head` when it committed: its OK covers the reviewed head only with
+  those fixes, so `swarm_get_job` on the reviewed job shows that review as
+  `stale`, never as a current OK of the unfixed head, whether or not the
+  step applied the fixes. An OK whose fix checkout cannot be read is
+  recorded as BLOCK (`reviewer fixes unreadable`).
+- The reviewer's checkout is kept after the job ends, like a coder's job
+  checkout, so the delivery and later `run` steps can read its head; it is
+  not deleted as a read-only reviewer's checkout is. Reviewer jobs stay
+  undeliverable with `swarm_deliver_job`: their fixes reach a job only
+  through the delivery head.
+
+### `reopen` steps
+
+```json
+{ "id": "fix", "type": "reopen", "from": "review", "message": "The reviewer blocked your work.", "max_rounds": 2,
+  "if": [{ "step": "review", "verdict": "block" }] }
+```
+
+- Sends a follow-up into the **triggering job's own session**, exactly as
+  `swarm_message_job` does: the same session and worktree, never a new job.
+  The text is `message`, then the findings of the `agent` step named by
+  `from`, verbatim and in full (up to 16,000 bytes), then: "Fix these in this
+  worktree, commit, and report what you changed."
+- A step needs `from`, `message` or both. When the `from` step recorded no
+  findings (an `ok` review has none) or `from` is omitted, the follow-up is
+  `message` alone, then the closing line, and it counts as a round like any
+  reopen. With no findings and no `message` the step sends nothing and fails
+  with `step <from> recorded no findings to send and the reopen step has no
+  message`.
+- `message` may hold `{{steps.<id>.output}}`, replaced by the recorded output
+  line of the earlier step `<id>` (a `run` step's last non-empty output
+  line, at most 500 bytes; an `agent` step's job id), or `(no output)` when
+  it recorded none. It must name an earlier step. Nothing else is
+  substituted: other text, including other `{{...}}`, is sent as written, and
+  substituted output is never expanded again.
+- The step succeeds once the follow-up is accepted; it does not wait for the
+  follow-up to finish. The follow-up's end is a new job end, so it triggers
+  the automation again as a new delivery whose `round` is the previous
+  round + 1. The round is counted once, when the follow-up is sent.
+- Rounds count per (automation, job), across deliveries: a delivery's
+  `round` is the number of reopens the automation already sent into that
+  job, so every later delivery of the job continues the count, including one
+  for a turn the person sent after a follow-up failed.
+- A job takes one follow-up at a time. When the job is still running (its run
+  or another follow-up is in flight), the step **waits**, within its
+  `timeout_seconds`, for it to settle, then sends its follow-up. A follow-up
+  that starts just before the step's own send (the send is refused with "a
+  follow-up is already running in this job") is waited for the same way. While it
+  waits the step's state is `waiting` and its `reason` says what it waits for
+  (`waiting: the job ... is still running (in_progress)`), and
+  `automation.step.waiting` is signalled once. It asks again on each new
+  signal (a job end among them) and at least every 2 seconds. It fails only
+  when its timeout expires (`timed out after N seconds waiting for job ... to
+  settle (...); nothing was sent`), when the stop switch is turned on while
+  it waits, or, at once, when the job is cancelled; nothing is sent then.
+- `max_rounds` (default 2, at most 5) bounds the loop: once the job has had
+  `max_rounds` reopens from the automation in total, the step sends nothing, fails with reason
+  `rounds_exhausted`, and the delivery ends `blocked`
+  (`automation.delivery.blocked`). The count is checked again right before
+  each follow-up is sent, so several deliveries of one job that wait for it
+  together never send more than `max_rounds` reopens between them.
+- An unreadable review is never sent: when the `from` step's outcome has
+  `review_unreadable: true`, the step sends nothing into the coder's session,
+  uses no round, fails with `review unreadable: <reviewer job id>`, and the
+  delivery ends `blocked` with that reason (`automation.delivery.blocked`),
+  so the delegating AI can read the reviewer's session (`swarm_get_job`) and
+  send findings by hand or re-run the delivery.
+- A cancelled job is never reopened: the step fails with the reason. A step
+  with neither findings nor a message to send fails too.
+
+## What the work hands over, and where
+
+A workflow says **what** the work hands over and **where** it goes, for any
+kind of work, not only commits:
+
+1. **What.** Every result lists its `deliverables`: the branch, each file the
+   work committed (with its sha256), its media, its report (see
+   [The result JSON](#the-result-json)). The workflow's optional `result`
+   names the one it must hand over: `{kind: file | media | report | branch,
+   path, describe}`. When the work did not produce it (a finder's research
+   ends as a text report, not a file), an `agent` step with `produce: true`
+   writes it: the agent is told the exact path and what it must contain,
+   Swarm checks the file exists (committed at the step job's head, or in the
+   folder for an agent working there), records its sha256 and adds it to the
+   delivery. A reviewer started after a produce step reviews the produced
+   work, in place.
+2. **Where.** A `deliver` step hands it over:
+
+| `to` | What happens |
+| --- | --- |
+| `folder` | Copied into `path`, a directory inside the folder. An equal file there is kept; a different one is never overwritten (the step fails). A path that leaves the folder, symlinks included, is refused. |
+| `merge` | The work's branch is merged into the folder's branch, as `swarm_integrate_task` (a task) or `swarm_deliver_job` (a worker job) do. Refused when the folder has a publish rule (use `publish`). |
+| `publish` | A pull request through the folder's publish rule (`install.sh workspace publish`), as `swarm_deliver_job` does. Worker jobs only. |
+| `outbox` | Exported to the machine's outbox (`SWARM_OUTBOX_URL`: a bucket or a folder): each file as `machines/<machine>/blobs/sha256/<hex>` and a manifest at `machines/<machine>/deliveries/<delivery>/<step>.json`. Refused on a machine without an outbox. |
+
+A deliver step hands over `what` (deliverables by name), else the workflow's
+`result`, else everything that fits its target (files, media and the report
+for `folder` and `outbox`; the branch for `merge` and `publish`). Every
+file's content is checked against the sha256 the work recorded: what was
+reviewed is what is delivered. Its outcome lists each deliverable with its
+sha256 and where it went; its output line is the folder path, the merged
+commit, the pull request or the manifest key. Anything else (push to a
+remote, deploy, alert) is a `run` step: it gets every deliverable on stdin
+and the result's path in `SWARM_RESULT_FILE`.
+
+A workflow that names `reviewer` on a machine without one deploys Swarm's
+reviewer preset first.
+
+### Example: code, reviewed, merged
+
+```json
+{ "name": "coder review merge", "scope": { "folder": "/srv/site", "role": "coder" },
+  "steps": [
+    { "id": "review", "type": "agent", "worker": "reviewer", "brief": "Review this task against its brief." },
+    { "id": "fix", "type": "reopen", "from": "review", "max_rounds": 2, "if": [{ "step": "review", "verdict": "block" }] },
+    { "id": "merge", "type": "deliver", "to": "merge", "if": [{ "step": "review", "verdict": "ok" }] } ] }
+```
+
+### Example: research turned into a report
+
+```json
+{ "name": "audit report", "scope": { "folder": "/srv/site", "role": "finder" },
+  "result": { "kind": "file", "path": "reports/audit.md", "describe": "A one-page audit: findings with file:line, severity, and the fix." },
+  "steps": [
+    { "id": "write", "type": "agent", "worker": "coder", "produce": true, "brief": "Turn the finder's findings into the report." },
+    { "id": "review", "type": "agent", "worker": "reviewer", "brief": "Check the report against the findings and the code." },
+    { "id": "save", "type": "deliver", "to": "folder", "path": "deliverables", "if": [{ "step": "review", "verdict": "ok" }] },
+    { "id": "bucket", "type": "deliver", "to": "outbox", "if": [{ "step": "review", "verdict": "ok" }] } ] }
+```
+
+### Example: a design exported
+
+```json
+{ "name": "designs out", "scope": { "folder": "/srv/site" }, "when": "succeeded",
+  "steps": [ { "id": "bucket", "type": "deliver", "to": "outbox" } ] }
+```
+
+A design job's HTML files are its deliverables, so the deliver step exports
+all of them.
+
+## Deliveries
+
+Each matching (job end, automation) pair is one **delivery** with a stable
+`delivery_id`, made from the job id, the follow-up, the automation id and the
+automation revision. A delivery runs at most once; a replayed job end does
+not deliver again. An automation has at most one delivery per job and head:
+a job end whose head already has a delivery (running or finished) for the
+automation, such as a stopped follow-up or a turn that committed nothing,
+creates none, and `automation.delivery.skipped` records why. A delivery
+keeps the steps of the revision it started with, its `round` (the reopens
+the automation already sent into the job), its `head` and, when it ended
+`blocked`, its `blocked_reason`.
+
+Every delivery and step is recorded durably with its state (`pending`,
+`running`, `waiting` (a reopen step waiting for its job), `succeeded`,
+`failed`, `skipped`, `stopped` or, for a delivery, `blocked`), attempts, start and finish times, exit code, output line, log
+tail and outcome. A daemon restart
+resumes unfinished deliveries at the first step that is not finished; a
+finished step is never run again.
+
+The **stop switch** (`swarm_stop_workflows`, `POST
+/v3/workflows/stop`) is machine-wide: while it is on no new step
+starts; running steps finish, and the next step is recorded as `stopped`.
+`swarm_deliver_job` with `automation: true` re-runs, for each automation,
+only the job's **newest** delivery, and only while that delivery's head is
+still the job's current head; older deliveries are never re-run (they are
+listed under `unchanged` with reason `superseded`, a newest delivery for an
+older head with `stale_head`). To re-run one named delivery explicitly,
+whatever its head, use `POST /v3/job-deliveries/{id}/rerun` (SDK
+`client.workflows.rerun`). Either way only failed or stopped steps (and
+the steps after them that did not run) run again; a succeeded step is never
+re-run. A `blocked` delivery re-runs from its first step with a new round
+budget of `max_rounds` reopens past those the job already had (a `run` step
+that already succeeded is still never re-run).
+
+## The result JSON
+
+```json
+{
+  "v": 1,
+  "job_id": "worker/<worker>/<run>",
+  "kind": "worker",
+  "role": "coder",
+  "worker": { "id": "<worker>", "name": "Coder" },
+  "run_id": "<run>",
+  "followup": "",
+  "project_id": "<project>",
+  "folder": "/srv/site",
+  "status": "succeeded",
+  "job_status": "needs_review",
+  "finished_at": 1760000000000,
+  "brief": "what the job was given",
+  "report": "the worker's report",
+  "request_source": "direct",
+  "schedule_id": "",
+  "git": {
+    "branch": "agent/...",
+    "base_branch": "main",
+    "base_commit": "<sha>",
+    "head": "<sha>",
+    "commits": [{ "sha": "<sha>", "subject": "Add the logo" }],
+    "files": ["logo.png", "index.html"],
+    "worktree": "/path/of/the/job/checkout"
+  },
+  "files": [{ "path": "logo.png", "sha256": "<hex>", "type": "image/png", "size": 1234 }],
+  "cost": { "tokens": 12000, "estimated_usd": 0.12, "model": "<model>" },
+  "review": { "verdict": "...", "findings": [] },
+  "deliverables": [
+    { "name": "branch", "kind": "branch", "branch": "agent/...", "head": "<sha>", "source": "git", "from": "job" },
+    { "name": "index.html", "kind": "file", "path": "index.html", "head": "<sha>", "sha256": "<hex>", "size": 2048, "type": "text/html", "source": "git", "from": "job" },
+    { "name": "report", "kind": "report", "type": "text/markdown", "source": "report", "from": "job" }
+  ]
+}
+```
+
+`deliverables` lists everything the work can hand over: its branch, each file
+its commits left at the head (sha256 read from the folder's repository, at
+most 200), a media or design job's files, and its report. A deliver step
+checks a file against its sha256 before handing it over.
+
+`git` is present only when the job committed. `files` lists the files a media
+or design job produced (path, sha256, type) or the media files a worker's
+commits added. `review` is present for a reviewer job that recorded a verdict.
+A media job's `kind` is `media` (role `image`, `video` or `sound`); a design
+job's is `design`. The result is data written by agents: never run it as
+code.
+
+### The base after a rebase
+
+A job records its target branch's tip (`base_branch`, for example `dev`) as
+its base when it is created. A coder told to rebase onto a newer target, or
+to merge it in, moves its head past that base, and `base..head` would then
+list commits that are already on the target. So `base_commit` (in the result,
+in `swarm_get_job`'s result and in `swarm_get_changes`) is the job's
+**effective base**:
+
+- Swarm takes the merge-base of the job's head and the target's current tip.
+  The tip comes only from the folder's own `<base_branch>`; a
+  `refs/remotes/origin/<base_branch>` (which a rebase fetched) counts only
+  when the folder's branch contains it, and the merge-base itself must be on
+  the folder's branch. Replace refs and grafts are ignored. A commit that is not on the target therefore never
+  becomes the base, and none of the job's own commits can drop out of its
+  range.
+- That merge-base is the base when it descends from the recorded base (the
+  job was rebased onto, or merged, a newer target) or when the head no longer
+  descends from the recorded base at all (the target was rewritten and the
+  job rebased onto it). The commits, files and diff are then listed from it,
+  and the base recorded at creation is reported as `recorded_base_commit`
+  (`recorded_base` in `swarm_get_changes`).
+- Otherwise, including a job that was not rebased while the target moved on
+  and a job the target already contains (delivered by a fast-forward or a
+  merge, where that merge-base would be the head itself), the recorded base
+  stays, so a landed job still lists its commits.
+
+A reviewer reviews `base..head` from the same effective base, so its range
+holds only the job's own commits.
+
+## Signals
+
+Automations report through the machine signal feed (and so to every signal
+sink, such as an operator's monitoring), with refs `job_id`, `delivery_id`
+and `step_id`:
+
+- `automation.step.started`
+- `automation.step.waiting` (a reopen step waits for its still-running job;
+  attrs: `step`, `reason`)
+- `automation.step.succeeded` (attrs: `step`, `output`)
+- `automation.step.failed` (severity warning; attrs: `step`, `reason` and
+  `next`, the next allowed action: `rerun` or `fix the script`; while
+  automatic retries remain, also `will_retry` and `retry_at`)
+- `automation.delivery.finished` (attrs: `state`, step counts)
+- `automation.delivery.skipped` (a job end created no delivery; attrs:
+  `reason` `duplicate_head`, `head`, `followup`, `status`, and
+  `delivery_state` of the delivery, named in `refs.delivery_id`, that
+  already covers that head)
+- `automation.delivery.blocked` (severity warning; attrs: `reason`
+  `rounds_exhausted` or `review unreadable: <reviewer job id>`, `round`,
+  `head`, the last `findings` shortened, and `next`: send the findings by
+  hand with `swarm_message_job`, or after a fix `swarm_deliver_job` with
+  `automation: true`; for an unreadable review, first read the reviewer
+  job's session)
+
+Design jobs now end with `design.job.completed`, `design.job.failed` or
+`design.job.cancelled`, and a stopped media job with `media.job.cancelled`.
+
+## Who controls them
+
+- MCP: `swarm_set_workflow`, `swarm_list_workflows` (every workflow exactly as
+  Swarm runs it), `swarm_delete_workflow`, `swarm_stop_workflows`; `then` on
+  `swarm_give_job` and `swarm_schedule_job`; deliveries in `swarm_get_job`;
+  `automation: true` on `swarm_deliver_job`.
+- API (`automations:read` to read, `automations:write` to change, and
+  `admin` or the local owner to save a `run` step):
+  `GET/POST /v3/workflows`, `GET/DELETE /v3/workflows/{id}`,
+  `GET/POST /v3/workflows/stop`, `GET /v3/job-deliveries`
+  (`job_id`, `automation_id`, `state`, `limit`), `GET
+  /v3/job-deliveries/{id}`, `POST /v3/job-deliveries/{id}/rerun`.
+- SDK: `client.workflows` (`list`, `get`, `set`, `delete`, `stopState`,
+  `setStopped`, `deliveries`, `delivery`, `rerun`).
+
+## Example: merge the job into a local branch
+
+The scripts in these examples are examples for owners to adapt, not
+defaults: Swarm ships none and runs none on its own.
+
+`/usr/local/libexec/swarm-deliver/merge.sh`, installed with
+`sudo install -o root -m 755 merge.sh /usr/local/libexec/swarm-deliver/merge.sh`:
+
+```sh
+#!/bin/sh
+# Merge each finished job into the folder's "integration" branch.
+set -eu
+git checkout -q integration
+git merge -q --no-ff -m "Merge $SWARM_JOB_ID" "$SWARM_JOB_REF"
+git rev-parse HEAD
+```
+
+```json
+{
+  "name": "merge finished jobs",
+  "scope": { "folder": "/srv/site" },
+  "when": "succeeded",
+  "steps": [{ "id": "merge", "type": "run", "command": "/usr/local/libexec/swarm-deliver/merge.sh" }]
+}
+```
+
+The script runs in `/srv/site` as the daemon's user, so it can check out and
+merge there; the step's output is the merge commit. A conflict fails the
+step (`git merge` exits non-zero) and leaves the folder for the owner to
+resolve.
+
+## Example: push the job's commits to a branch
+
+`/usr/local/libexec/swarm-deliver/push.sh`, installed the same way. It
+pushes with the folder's own `origin` remote and the daemon user's Git
+credentials (an SSH key or credential helper), like any push from that
+account:
+
+```sh
+#!/bin/sh
+set -eu
+branch="swarm/$(basename "$SWARM_JOB_ID")"
+git push origin "$SWARM_JOB_REF:refs/heads/$branch"
+echo "https://forge.example.com/acme/site/tree/$branch"
+```
+
+```json
+{
+  "name": "push finished jobs",
+  "scope": { "folder": "/srv/site" },
+  "when": "succeeded",
+  "retries": 1,
+  "steps": [{ "id": "push", "type": "run", "command": "/usr/local/libexec/swarm-deliver/push.sh" }]
+}
+```
+
+The step's output is the branch URL; a failed push signals
+`automation.step.failed` and is retried once.
+
+## Example: Swarm's coder, a reviewer, then push
+
+Work given to the coder that comes with Swarm (`swarm_run_task` with role
+`coder`) is reviewed by the person's reviewer worker; a block goes back into
+the coder's own session, where it fixes its own work in its own worktree, at
+most twice; an ok pushes the head.
+
+```json
+{
+  "tool": "swarm_set_workflow",
+  "arguments": {
+    "name": "coder review push",
+    "scope": { "folder": "/srv/site", "role": "coder" },
+    "steps": [
+      { "id": "review", "type": "agent", "worker": "reviewer",
+        "brief": "Review this task's exact head against its brief." },
+      { "id": "fix", "type": "reopen", "from": "review", "max_rounds": 2,
+        "message": "The reviewer blocked your work. Its findings:",
+        "if": [{ "step": "review", "verdict": "block" }] },
+      { "id": "push", "type": "run", "command": "/usr/local/libexec/swarm-deliver/push.sh",
+        "if": [{ "step": "review", "verdict": "ok" }] }
+    ]
+  }
+}
+```
+
+1. The coder's task ends (`task.run.succeeded`): delivery round 0 of job
+   `task/<project>/<task>` starts.
+2. `review` starts a reviewer job on the task's exact head, as a new session
+   in the coder's own worktree (read-only; `checkout` defaults to `same`).
+3. On `block`, `fix` sends the findings into the task's own session (as
+   `swarm_send_message` does). The coder fixes them in the same worktree; that
+   follow-up's end starts the workflow again (round 1).
+4. On `ok`, `push` runs with `SWARM_HEAD` at the reviewed head. The task's
+   commits are in the folder's repository from the moment they are made.
+
+Any step can be another of Swarm's own agents instead, for example
+`{ "type": "agent", "worker": "finder", "brief": "Write release notes for this change." }`.
+
+## Example: a review loop
+
+A coder's job is reviewed by a reviewer job in its own session, which may
+fix small security problems itself; a block sends the findings back into the
+coder's session until the reviewer says ok, at most twice; an ok pushes the
+head, including the reviewer's fixes, and when that push fails (the target
+branch moved) the job is sent back to rebase. Swarm runs this only because
+the automation says so: there is no built-in review chain.
+
+```json
+{
+  "tool": "swarm_set_workflow",
+  "arguments": {
+    "name": "review loop",
+    "scope": { "folder": "/srv/site", "worker": "<coder worker id>" },
+    "when": "succeeded",
+    "steps": [
+      { "id": "review", "type": "agent", "worker": "reviewer", "fixes": "security",
+        "brief": "Review this job's exact head against its brief." },
+      { "id": "fix", "type": "reopen", "from": "review", "max_rounds": 2,
+        "message": "The reviewer blocked your work. Its findings:",
+        "if": [{ "step": "review", "verdict": "block" }] },
+      { "id": "push", "type": "run", "command": "/usr/local/libexec/swarm-deliver/push.sh",
+        "continue_on_failure": true,
+        "if": [{ "step": "review", "verdict": "ok" }] },
+      { "id": "rebase", "type": "reopen", "from": "review", "max_rounds": 2,
+        "message": "Your work passed review, but it could not be pushed: {{steps.push.output}}. Rebase onto dev, resolve any conflicts, run the checks again and commit.",
+        "if": [{ "step": "review", "verdict": "ok" }, { "step": "push", "status": "failed" }] }
+    ]
+  }
+}
+```
+
+1. The coder's job succeeds: delivery round 0 starts.
+2. `review` starts a reviewer job, in its own session, on a branch at that
+   exact head. It may commit small security fixes (at most 80 changed lines
+   in total) and lists each as `FIXED` in its findings; anything else is a
+   BLOCK finding.
+3. On `block`, `push` is skipped and `fix` sends the findings into the coder
+   job's original session. The coder fixes them in the same worktree; that
+   follow-up's end triggers the automation again (round 1), and a new
+   reviewer job reviews the new head.
+4. After two reopens of the job in total without an `ok`, the next `fix` fails with
+   `rounds_exhausted` and the delivery ends `blocked`. A review whose report
+   could not be read reopens nothing: `fix` fails with
+   `review unreadable: <reviewer job id>`, no round is used and the delivery
+   ends `blocked`.
+5. On `ok`, `fix` is skipped and `push` runs the owner's push script with
+   `SWARM_HEAD` (and `refs/swarm/jobs/<run-id>`) at the reviewed head, or at
+   the reviewer's fix head when it committed fixes within the limit. Fixes
+   over the limit fail `review` (`reviewer fixes too large`): nothing is
+   pushed and the head stays the coder's.
+6. When `push` fails (`continue_on_failure` lets the delivery go on),
+   `rebase` sends its message alone (an `ok` review has no findings), with
+   the push script's last output line in place of `{{steps.push.output}}`,
+   into the coder's session. That follow-up's end is the next round: the
+   rebased head is reviewed and pushed again. `rebase` and `fix` share the
+   job's round count, so `max_rounds` bounds both.
+
+`swarm_get_job` on the coder's job shows each delivery's round, head, state,
+blocked reason and the reviewer's applied fix commits, and each step's
+verdict and findings.
+
+## What the reviewer receives
+
+A reviewer job started by an `agent` step gets, in its brief, after the
+step's own brief:
+
+- the original brief of the reviewed job;
+- the reviewed job's report (what it says it did and tested);
+- the shell commands the job actually ran, with their exit codes, read from
+  its session's tool calls (not from the report);
+- the diff against its base (cut to fit a job's input, with the `git diff`
+  to read the rest). The base is the job's effective base (see
+  [The base after a rebase](#the-base-after-a-rebase)), so a job rebased onto
+  a newer target is reviewed from that target;
+- the folder's target branch at its current tip (`dev is at <sha>`), so the
+  reviewer can tell from evidence whether a commit is already on it. Its
+  checkout is a worktree of the folder (by default the reviewed job's own,
+  see [Where the agent works](#where-the-agent-works-checkout)), so the
+  folder's branches are its own refs.
+
+It reviews the exact head in its own session and judges four things: is every
+requirement of the brief fully done; do the report's claims match the
+evidence (a test the report says passed must appear among the commands run,
+with exit code 0; unbacked claims are findings); are there gaps; are there
+security problems. It answers `VERDICT: OK` or `VERDICT: BLOCK` (plain
+headings at the start of a line; bold-wrapped headings are read too) with
+findings at `file:line`, which a `reopen` step sends to the coder verbatim.
+With `fixes: "security"` it may also commit small security fixes, listed as
+`FIXED` findings (see [Reviewer fixes](#reviewer-fixes-fixes-security)).
+Reviewer jobs started outside automations work as before. See
+[the reviewer](reviewer.md).
+
+## Example: upload a media file
+
+A job that commits images, video or audio (a coder or designer worker making
+assets) lists them in the result's `files` with their sha256. The step reads
+each one from the job's head through `$SWARM_JOB_REF` (no checkout needed),
+checks its hash and uploads it. `/usr/local/libexec/swarm-deliver/upload-media.sh`
+(root-owned, here with `jq`, `sha256sum` and `curl` from the machine, and the
+CDN login from the daemon user's `~/.netrc`):
+
+```sh
+#!/bin/sh
+set -eu
+result=$(cat)
+count=0
+for path in $(echo "$result" | jq -r '.files[].path'); do
+  want=$(echo "$result" | jq -r --arg p "$path" '.files[] | select(.path == $p) | .sha256')
+  git show "$SWARM_JOB_REF:$path" > "$TMPDIR/upload"
+  [ "$(sha256sum < "$TMPDIR/upload" | cut -d' ' -f1)" = "$want" ] || { echo "hash mismatch: $path"; exit 1; }
+  curl -fsS --netrc --data-binary @"$TMPDIR/upload" "https://cdn.example.com/upload/$path"
+  count=$((count + 1))
+done
+echo "uploaded $count file(s)"
+```
+
+```json
+{
+  "name": "upload media",
+  "scope": { "folder": "/srv/site", "worker": "<designer worker id>" },
+  "steps": [{ "id": "upload", "type": "run", "command": "/usr/local/libexec/swarm-deliver/upload-media.sh" }]
+}
+```
+
+A design job's files are already in the folder at the paths its result
+lists. A media job's (`swarm_request_media`) result lists its files' names,
+sha256 and types, but their bytes stay with the job until they are saved
+into a folder (`swarm_save_media`); a step does not receive them.

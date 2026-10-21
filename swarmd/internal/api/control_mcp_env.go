@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+
+	"swarm/packages/swarmd/internal/sandbox"
 )
 
 // Environments: the AI defines what a project folder's sandbox starts from
@@ -48,7 +50,10 @@ func controlMCPEnvironmentView(env map[string]any, place controlMCPJobPlace, inc
 	case "building":
 		out["next"] = "Swarm is building it: swarm_get_environment with wait_seconds waits; jobs in this folder start once it is ready"
 	case "ready":
-		out["next"] = "jobs in this folder now run in this environment"
+		out["next"] = "with max_leases set, every agent in this folder runs its bash in a lease of it, up to max_leases at once"
+		if manager := sandbox.Default(); manager != nil && manager.Active() {
+			out["next"] = "jobs in this folder now run in this environment; with max_leases set, every agent also runs its bash in a lease of it, up to max_leases at once"
+		}
 	case "failed":
 		out["next"] = "the build failed (see error and log): fix the definition with swarm_set_environment, or reset to Swarm's default"
 	}
@@ -85,6 +90,9 @@ func controlMCPSetEnvironment(c *controlMCPCall, args map[string]any) (any, erro
 		env[name] = value
 	}
 	body := map[string]any{"workspace_path": place.path, "base_image": controlMCPString(args, "base_image"), "setup": setup, "env": env}
+	if _, ok := args["max_leases"]; ok {
+		body["max_leases"] = controlMCPInt(args, "max_leases", 0)
+	}
 	response, err := c.dispatch(http.MethodPut, SandboxEnvironmentsPath, nil, body)
 	if err != nil {
 		return nil, err
@@ -141,13 +149,14 @@ func controlMCPEnvironmentTools() []controlMCPTool {
 	return []controlMCPTool{
 		{
 			Name: "swarm_set_environment", Title: "Define the environment a folder's jobs run in",
-			Description: "Define what a project folder's sandbox starts from: base_image (an image name such as ubuntu:24.04, node:22, golang:1.24 or one the person already uses) plus setup commands (run once as root while Swarm builds it, for example apt-get install -y ...) and environment variables (not secrets: those go through the secret system). Swarm builds it in an isolated gVisor container with internet access but no host folders, saves it as an image named after the definition (the same definition is reused, never rebuilt), and checks that bash and git run in it. Jobs in that folder then run on it, with the same sandbox protections. While it builds, and if it fails, jobs in the folder are refused; reset goes back to Swarm's default environment (Ubuntu with git, Python 3, Node.js, build-essential, curl and jq).",
+			Description: "Define what a project folder's sandbox starts from: base_image (an image name such as ubuntu:24.04, node:22, golang:1.24 or one the person already uses) plus setup commands (run once as root while Swarm builds it, for example apt-get install -y ...) and environment variables (not secrets: those go through the secret system). Swarm builds it in an isolated gVisor container with internet access but no host folders, saves it as an image named after the definition (the same definition is reused, never rebuilt), and checks that bash and git run in it. Jobs in that folder then run on it when the sandbox is on, with the same sandbox protections; with max_leases, every agent in the folder runs its bash in an instance of it, whether the sandbox is on or off. While it builds, and if it fails, jobs in the folder are refused; reset goes back to Swarm's default environment (Ubuntu with git, Python 3, Node.js, build-essential, curl and jq).",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"project":      project,
 				"workspace":    workspace,
 				"base_image":   controlMCPStringProp("The image to start from.", 0, 255),
 				"setup":        map[string]any{"type": "array", "maxItems": 40, "items": map[string]any{"type": "string", "maxLength": 4000}, "description": "Shell commands run in order as root while building; each must succeed."},
 				"env":          map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}, "description": "Environment variables for every command in the folder (not secrets)."},
+				"max_leases":   map[string]any{"type": "integer", "minimum": 0, "maximum": 64, "description": "How many instances of this environment may run at once for the folder's agents. With it set, an agent's first bash command takes a lease by itself and its bash runs there (an agent waits for a free one when all are in use; agents may also take extra leases with lease_environment). Each lease is its own container with the folder mounted and the folder's granted secrets as stand-ins; Swarm releases it when the agent's run ends. 0 turns leasing off. Leaving base_image out changes only this."},
 				"reset":        map[string]any{"type": "boolean", "description": "Remove the folder's environment: it runs on Swarm's default again."},
 				"wait_seconds": waitProp,
 			}),

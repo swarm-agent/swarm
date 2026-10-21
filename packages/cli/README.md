@@ -110,7 +110,7 @@ To export a one-hour scoped SDK token, select a **new**, absolute token file in 
 private directory outside the project:
 
 <copy>
-(umask 077; set -C; npx --no-install swarm-headless setup -- sdk-token --expires-in-seconds 3600 > "$SWARM_SDK_TOKEN_FILE")
+(umask 077; set -C; npx --no-install swarm-headless setup -- sdk-token > "$SWARM_SDK_TOKEN_FILE")
 # Revoke using the non-secret ID from the export, never the token itself:
 npx --no-install swarm-headless setup -- revoke-sdk-token --id "$TOKEN_ID"
 </copy>

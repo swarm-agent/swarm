@@ -22,7 +22,8 @@ const (
 	keyWorkerRunTimePrefix   = "worker/runidx/time/"
 	keyWorkerRunActivePrefix = "worker/runidx/active/"
 	keyWorkerRunIndexVersion = "worker/runidx/version"
-	workerRunIndexVersion    = 1
+	// Version 3 adds capacity reservations to the version 2 session index.
+	workerRunIndexVersion = 3
 )
 
 type workerRunIndexEntry struct {
@@ -51,10 +52,12 @@ func keyWorkerRunActive(account, workerID, runID string) string {
 // rewritten identically; its active entry follows its status.
 func indexWorkerRunInBatch(batch *pebble.Batch, account string, data []byte) error {
 	var run struct {
-		ID        string `json:"id"`
-		WorkerID  string `json:"worker_id"`
-		Status    string `json:"status"`
-		CreatedAt int64  `json:"created_at"`
+		SessionID      string `json:"session_id"`
+		ID             string `json:"id"`
+		WorkerID       string `json:"worker_id"`
+		Status         string `json:"status"`
+		CreatedAt      int64  `json:"created_at"`
+		FollowupStatus string `json:"followup_status"`
 	}
 	if err := json.Unmarshal(data, &run); err != nil {
 		return fmt.Errorf("index worker run: %w", err)
@@ -69,8 +72,21 @@ func indexWorkerRunInBatch(batch *pebble.Batch, account string, data []byte) err
 	if err := batch.Set([]byte(keyWorkerRunTime(account, run.CreatedAt, run.WorkerID, run.ID)), entry, nil); err != nil {
 		return err
 	}
+	if run.SessionID != "" {
+		if err := batch.Set([]byte(keyWorkerRunSession(account, run.SessionID)), entry, nil); err != nil {
+			return err
+		}
+	}
+	reservation := keyWorkerReservation(account, run.WorkerID, run.ID)
+	if run.Status == "preparing" || run.Status == "running" || run.FollowupStatus == "running" {
+		if err := batch.Set([]byte(reservation), entry, nil); err != nil {
+			return err
+		}
+	} else if err := batch.Delete([]byte(reservation), nil); err != nil {
+		return err
+	}
 	active := keyWorkerRunActive(account, run.WorkerID, run.ID)
-	if AutomationV2Terminal(run.Status) {
+	if AutomationV2Terminal(run.Status) && run.FollowupStatus != "running" && run.FollowupStatus != "queued" {
 		return batch.Delete([]byte(active), nil)
 	}
 	return batch.Set([]byte(active), entry, nil)
@@ -117,7 +133,7 @@ func RunWorkerRunIndexMigration(store *Store) (int, error) {
 			return nil
 		}
 		if err := indexWorkerRunInBatch(batch, run.AccountScopeID, value); err != nil {
-			return nil
+			return err
 		}
 		indexed++
 		if batch.Count() >= 2000 {

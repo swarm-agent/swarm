@@ -12,10 +12,6 @@ const (
 	testAccountScopeID = "test-account"
 )
 
-func requestWithTestPrincipal(r *http.Request) *http.Request {
-	return requestWithTestPrincipalForAccount(r, testUserID, testAccountScopeID)
-}
-
 func accountTestPrincipal() identity.Principal {
 	return identity.Principal{
 		Type:               identity.PrincipalTypeUser,
@@ -23,10 +19,6 @@ func accountTestPrincipal() identity.Principal {
 		AccountScopeID:     testAccountScopeID,
 		AccountScopeSource: identity.AccountScopeSourceServerState,
 	}
-}
-
-func testPrincipalContext(ctx context.Context) context.Context {
-	return identity.ContextWithPrincipal(ctx, accountTestPrincipal())
 }
 
 func requestWithTestPrincipalForAccount(r *http.Request, userID, accountScopeID string) *http.Request {

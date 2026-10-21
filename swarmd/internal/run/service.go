@@ -19,6 +19,7 @@ import (
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodelsettings"
 	compactruntime "swarm/packages/swarmd/internal/compact"
+	"swarm/packages/swarmd/internal/design"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/executioncapacity"
 	"swarm/packages/swarmd/internal/identity"
@@ -114,7 +115,7 @@ type Service struct {
 	model                        *model.Service
 	modelProfiles                *modelprofile.Service
 	providers                    *registry.Registry
-	designRenderer               DesignRenderer
+	designChecker                design.Checker
 	tools                        *tool.Runtime
 	permissions                  *permission.Service
 	agents                       *agentruntime.Service
@@ -140,7 +141,7 @@ type Service struct {
 	runCounter                   atomic.Uint64
 	lifecycleMu                  sync.Mutex
 	activeRuns                   map[string]*activeSessionRun
-	pendingAdmissions            map[string]map[string]context.CancelFunc
+	pendingAdmissions            map[string]map[string]context.CancelCauseFunc
 }
 
 func (s *Service) LongSessionSnapshot() map[string]any {
@@ -365,6 +366,13 @@ func (s *Service) resolveExecutionMode(requestMode string, agentProfile pebblest
 		return requestMode, "", nil
 	}
 	setting := pebblestore.AgentProfileRuntimeMode(agentProfile)
+	// Regular Coder's compiled contract now includes scoped Bash checks. The
+	// legacy readwrite permission mode forbids all shell execution, even when
+	// the resolved tool contract exposes Bash. Use ordinary auto authorization
+	// for this role; tool filtering, explicit denies and approvals still apply.
+	if agentProfile.Name == agentruntime.CoderAgentID && agentProfile.Mode == agentruntime.ModeSubagent && setting == pebblestore.AgentRuntimeModeReadWrite && profileHasCapability(agentProfile, "bash") {
+		return sessionruntime.ModeAuto, "", nil
+	}
 	if setting == pebblestore.AgentRuntimeModePlanAuto {
 		return requestMode, "", nil
 	}
@@ -1330,6 +1338,17 @@ func forwardTargetedSubagentStreamEvent(emit StreamHandler, event StreamEvent) {
 
 func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOptions, onEvent StreamHandler) (result RunResult, runErr error) {
 	sessionID = strings.TrimSpace(sessionID)
+	// callerCtx is the context the run was started with; cancellationCtx
+	// becomes the run's own context once it exists. A cancelled run returns an
+	// error naming which of the two ended it (see namedRunCancellation).
+	callerCtx := ctx
+	var cancellationCtx context.Context
+	if s.workerExecution != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ctx)
+		defer cancel()
+		defer s.workerExecution.trackExecution(sessionID, cancel)()
+	}
 	emit := func(StreamEvent) {}
 	sessionResolved := false
 	lifecycleClaimed := false
@@ -1341,6 +1360,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				_ = ownedExecutionLease.Release()
 			}
 		}()
+		if cancellationCtx != nil {
+			runErr = namedRunCancellation(callerCtx, cancellationCtx, runErr)
+		}
 		if !sessionResolved || !lifecycleClaimed {
 			return
 		}
@@ -1531,10 +1553,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	if err != nil {
 		return RunResult{}, err
 	}
-	var runCancel context.CancelFunc
-	runCtx, cancelRun := context.WithCancel(ctx)
+	var runCancel context.CancelCauseFunc
+	runCtx, cancelRun := newRunContext(ctx)
 	runCancel = cancelRun
-	defer runCancel()
+	defer runCancel(nil)
+	cancellationCtx = runCtx
 	ctx = runCtx
 	runnerCtx = runCtx
 
@@ -1615,6 +1638,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 
 	var emitMu sync.Mutex
 	emit = func(event StreamEvent) {
+		if s.workerExecution != nil {
+			s.workerExecution.touchExecution(sessionID)
+		}
 		if strings.TrimSpace(event.SessionID) == "" {
 			event.SessionID = sessionID
 		}
@@ -2137,34 +2163,18 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		} else if strings.TrimSpace(instructionPrincipal.SessionID) == "" {
 			instructionPrincipal.SessionID = strings.TrimSpace(sessionSnapshot.ID)
 		}
-		baseInstructions = s.composeInstructionsForScope(tool.WorkspaceScope{
-			PrimaryPath: workspaceCtx.WorkspacePath,
-			Roots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
-			Principal:   instructionPrincipal,
-			SessionID:   strings.TrimSpace(sessionSnapshot.ID),
-		}, agentProfile, options.Instructions)
-		baseInstructions = appendHostRuntimeContext(baseInstructions, workspaceCtx.WorkspacePath, workspaceCtx.WorkspaceRoots)
-		baseInstructions = appendWorktreeRuntimeContext(baseInstructions, instructionScope)
-		baseInstructions = s.appendWorkspaceEnvironmentPromptBlock(baseInstructions, instructionScope)
-		stepInstructions := composeModeAwareInstructions(baseInstructions, executionMode, s.permissions != nil && s.permissions.BypassPermissions(), agentProfile)
 		mediaExecutionMode := requestMode
 		mediaContract := CompileSessionMediaContract(SessionMediaContractInput{
 			ProviderID: providerID, Model: resolvedPreference.Preference.Model, Catalog: catalogRecord, CatalogMeta: catalogMeta,
 			Adapter: ResolveMediaAdapterDeclaration(runnerCtx, providerID, providerRunner), AgentAuthorized: AgentProfileAuthorizesMedia(agentProfile) && !effectiveDisabledTools[mediaInspectToolName],
 			ExecutionMode: mediaExecutionMode, WorkspaceScope: workspaceCtx.WorkspacePath, SessionScope: sessionID,
 		})
-		stepInstructions = AppendSessionMediaInstructions(stepInstructions, mediaContract)
-		runStateInstructions, stateErr := s.durableRunStateInstructions(sessionID, executionMode, runID, options)
-		if stateErr != nil {
-			return RunResult{}, stateErr
-		}
-		stepInstructions = strings.TrimSpace(stepInstructions + "\n\n" + runStateInstructions)
 		stepToolDefinitions := MaterializeSessionMediaTool(toolDefinitions, mediaContract)
 		stepToolDefinitions = MaterializeSessionVideoTool(stepToolDefinitions, sessionSnapshot.Metadata)
+		planWarning := ""
 		if executionMode == sessionruntime.ModePlan && pebblestore.AgentExitPlanModeEnabled(agentProfile) && planContextGuard.beginDecision() {
-			warning := planContextGuard.warningInstructions()
-			stepInstructions = strings.TrimSpace(stepInstructions + "\n\n" + warning)
-			emit(StreamEvent{Type: StreamEventSessionWarning, Step: step, Warning: warning})
+			planWarning = planContextGuard.warningInstructions()
+			emit(StreamEvent{Type: StreamEventSessionWarning, Step: step, Warning: planWarning})
 			if planContextGuard.finalizationOnly {
 				stepToolDefinitions = filterToolDefinitionsExcept(stepToolDefinitions, map[string]struct{}{"exit_plan_mode": {}})
 			} else {
@@ -2172,6 +2182,28 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			}
 		} else {
 			stepToolDefinitions = filterToolDefinitions(stepToolDefinitions, map[string]bool{"compact": true})
+		}
+		instructionProfile := InstructionProfileForTools(agentProfile, stepToolDefinitions)
+		baseInstructions = s.composeInstructionsForScope(tool.WorkspaceScope{
+			PrimaryPath: workspaceCtx.WorkspacePath,
+			Roots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
+			Principal:   instructionPrincipal,
+			SessionID:   strings.TrimSpace(sessionSnapshot.ID),
+		}, instructionProfile, options.Instructions)
+		baseInstructions = appendHostRuntimeContext(baseInstructions, workspaceCtx.WorkspacePath, workspaceCtx.WorkspaceRoots)
+		baseInstructions = appendWorktreeRuntimeContext(baseInstructions, instructionScope)
+		baseInstructions = s.appendWorkspaceEnvironmentPromptBlock(baseInstructions, instructionScope)
+		stepInstructions := composeModeAwareInstructions(baseInstructions, executionMode, s.permissions != nil && s.permissions.BypassPermissions(), instructionProfile)
+		if profileHasCapability(instructionProfile, mediaInspectToolName) {
+			stepInstructions = AppendSessionMediaInstructions(stepInstructions, mediaContract)
+		}
+		runStateInstructions, stateErr := s.durableRunStateInstructions(sessionID, executionMode, runID, options)
+		if stateErr != nil {
+			return RunResult{}, stateErr
+		}
+		stepInstructions = strings.TrimSpace(stepInstructions + "\n\n" + ScopeDurableRunStateInstructions(runStateInstructions, agentProfile, providerToolNames(stepToolDefinitions)...))
+		if planWarning != "" {
+			stepInstructions = strings.TrimSpace(stepInstructions + "\n\n" + planWarning)
 		}
 		stepReasoningSummary := ""
 		stepReasoningMessages := make(map[string]*pebblestore.MessageSnapshot, 4)
@@ -2465,6 +2497,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			runnerCtx = withProviderAttemptObserver(runnerCtx, &durableProviderAttemptObserver{
 				sessionID: sessionID,
 				runID:     runID,
+				step:      step,
 				principal: options.Principal,
 				apply:     options.ApplySessionMutation,
 			})
@@ -2592,6 +2625,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				}
 			}
 			return RunResult{}, err
+		}
+		if budget, ok := ctx.Value(helperTokenBudgetKey{}).(int64); ok && cumulativeBilledTokens >= budget {
+			return RunResult{}, fmt.Errorf("helper_tokens limit %d exhausted", budget)
 		}
 		runRequestDebugEvent("provider_response", map[string]any{
 			"session_id":              sessionID,
@@ -3030,8 +3066,8 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		runtimeScope.Roots = append([]string(nil), workspaceCtx.WorkspaceRoots...)
 		runtimeScope.Principal = options.Principal
 		runtimeScope.SessionID = strings.TrimSpace(sessionSnapshot.ID)
+		runtimeScope.ReadOnlyBash = agentruntime.IsFinderAgentName(agentProfile.Name) || agentProfile.Name == agentruntime.HelperAgentID
 		runtimeCtx := tool.WithWorkspaceScope(ctx, runtimeScope)
-		runtimeCtx = s.withDesignSourcePermission(runtimeCtx, runtimeScope, runID, emit)
 		runtimeCtx = tool.WithArtifactRunContext(runtimeCtx, s.providerManagedArtifactRunContext(providerToolInvokerConfig{
 			sessionID:          sessionID,
 			runID:              runID,
@@ -4548,9 +4584,6 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 			return "", err
 		}
 	}
-	finalErr := errors.New("Compact one-shot returned without a result")
-	finishFailure(finalErr)
-	return "", finalErr
 }
 
 func boundCompactTranscript(transcript string, inputBudgetTokens int, fixedParts ...string) string {

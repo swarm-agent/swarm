@@ -1,0 +1,42 @@
+[Unit]
+Description=Swarm Headless core
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=swarm
+Group=swarm
+UMask=0077
+Environment=SWARM_DISABLE_MINT_REPORT=1
+Environment=LD_LIBRARY_PATH=/opt/swarm/current/lib
+Environment=PATH=/opt/swarm/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+StateDirectory=swarmd
+StateDirectoryMode=0700
+CacheDirectory=swarmd
+CacheDirectoryMode=0700
+RuntimeDirectory=swarmd
+RuntimeDirectoryMode=0700
+ConfigurationDirectory=swarmd
+ConfigurationDirectoryMode=0700
+LogsDirectory=swarmd
+LogsDirectoryMode=0700
+WorkingDirectory=/var/lib/swarm
+# Headless uses Bubblewrap by default; unavailable isolation blocks commands.
+# Setup stays accessible. No container daemon access or bypass is granted.
+ExecStart=/opt/swarm/current/bin/swarmd --cwd=/var/lib/swarm --sandbox=required
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=90
+NoNewPrivileges=yes
+PrivateTmp=yes
+# ProtectKernelTunables masks /proc paths and prevents unprivileged Bubblewrap
+# from mounting its private procfs. The daemon runs as swarm, without host caps;
+# Bubblewrap supplies the agent's private namespaces and drops all capabilities.
+ProtectKernelTunables=no
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

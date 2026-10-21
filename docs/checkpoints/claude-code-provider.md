@@ -4,10 +4,21 @@ Swarm can run turns through the Claude Code CLI installed on the daemon's machin
 
 ## Setup
 
+The CLI and its sign-in belong to the OS user that runs `swarmd`, not to the person's own account. Never copy the person's own Claude login into Swarm's account.
+
+### Headless install (installer and MCP)
+
+1. On the machine, in a terminal: `sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh claude-code`. It finds a `claude` the `swarm` service user can run (or installs one with Anthropic's installer into `/var/lib/swarm/.local/bin`), updates one older than 2.1.248, sets `SWARM_CLAUDE_CODE_CLI_PATH` through `install.sh daemon-env` (one restart, only when the path changes), and runs `claude auth login` as that user. The person opens the link it shows and finishes in their browser. Without a terminal it does everything else and exits non-zero at the sign-in step. Running it again is safe and reports the current state.
+2. The person's AI calls the Swarm Control tool `swarm_connect_claude_code`. Action `status` reports `state` (`not_installed`, `not_working`, `needs_update`, `signed_out` or `signed_in`), the CLI version, `signed_in` and `provider_active`. When the CLI is not ready it also returns the installer command (`run_on_the_machine`). Action `activate` requires `signed_in`. It saves and activates the account's Claude Code CLI login record through the same handler as the setup page's **Save and make active** (`POST /v1/auth/credentials`, type `cli`, active). It needs no owner password: a write AI key (`swarm:write`), or `admin` for a token without Swarm Control levels, the same authority as `swarm_connect_chatgpt`. It is local only and never offered over the relay.
+
+### Other installs
+
 1. Install Claude Code 2.1.248 or later. That version added `--restricted`, which Swarm requires.
 2. As the OS user that runs `swarmd`, sign in with `claude auth login`. For an installed system service, run it as that service account. If that account needs a dedicated config directory, set `CLAUDE_CONFIG_DIR` both for that command and in the daemon's environment.
 3. If `claude` is not on the daemon's `PATH`, set `SWARM_CLAUDE_CODE_CLI_PATH` in the daemon's environment to the executable.
-4. In Settings > Auth, choose **Claude Code**, then **Claude Code CLI login**, then **Save and make active**. This enables the provider for your Swarm account. Each account opts in separately, and the record holds no secrets.
+4. Enable the provider for your Swarm account: `swarm_connect_claude_code` action `activate`, or in Settings > Auth choose **Claude Code**, then **Claude Code CLI login**, then **Save and make active**. Each account opts in separately, and the record holds no secrets.
+
+On a headless box from `install.sh`, the daemon runs as the `swarm` user (home `/var/lib/swarm`), so by hand step 2 is `sudo -u swarm -H claude auth login`, and step 4 on the setup page is provider `claudecode`, key type **Claude Code CLI login** (the key field is not used for this type); the installer command and `swarm_connect_claude_code` above replace both. The person still completes the sign-in themselves. `swarm_list_providers` returns these steps in the provider's `connect` field, with the installer command first and `tool: swarm_connect_claude_code` when the key may call it, next to the other options (ChatGPT sign-in, API keys, Vertex AI).
 
 Swarm checks readiness with `claude --version` and `claude auth status`. The provider status shows the result.
 

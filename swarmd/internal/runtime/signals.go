@@ -10,13 +10,12 @@ import (
 )
 
 // emitStartupSignals records that the daemon started and whether agent
-// commands are confined: sandbox.active, or sandbox.inactive (agents run on
-// this machine and permission bypass is off) with the reason.
-func emitStartupSignals(emitter *signals.Emitter, status sandbox.Status) {
+// commands are confined, blocked by required isolation, or explicitly unconfined.
+func emitStartupSignals(emitter *signals.Emitter, status sandbox.Status, headless bool) {
 	emitter.Emit(pebblestore.Signal{
 		Kind:     "daemon.started",
 		Severity: pebblestore.SignalSeverityInfo,
-		Summary:  "Swarm started",
+		Summary:  "Swarm started; any previous update drain ended; command execution depends on sandbox readiness",
 		DedupKey: "daemon.started",
 	})
 	if status.Active {
@@ -27,9 +26,30 @@ func emitStartupSignals(emitter *signals.Emitter, status sandbox.Status) {
 		emitter.Emit(pebblestore.Signal{
 			Kind:     "sandbox.active",
 			Severity: pebblestore.SignalSeverityInfo,
-			Summary:  "Agent commands run in per-project sandboxes",
+			Summary:  "Agent command isolation is active",
 			DedupKey: "sandbox.state",
 			Attrs:    map[string]string{"runtime": runtimeName, "mode": string(status.Mode)},
+		})
+		return
+	}
+	if status.Mode == sandbox.ModeRequired {
+		emitter.Emit(pebblestore.Signal{
+			Kind:     "sandbox.unavailable",
+			Severity: pebblestore.SignalSeverityWarning,
+			Summary:  "Agent commands blocked: required sandbox unavailable; inspect the sandbox readiness reason and repair the configured isolation backend, then restart",
+			DedupKey: "sandbox.state",
+			Attrs:    map[string]string{"reason": status.Reason, "mode": string(status.Mode)},
+		})
+		return
+	}
+	if headless {
+		// Off is the headless default, not a fault.
+		emitter.Emit(pebblestore.Signal{
+			Kind:     "sandbox.inactive",
+			Severity: pebblestore.SignalSeverityInfo,
+			Summary:  "Agent sandbox is off: agents run on this machine",
+			DedupKey: "sandbox.state",
+			Attrs:    map[string]string{"reason": status.Reason, "mode": string(status.Mode)},
 		})
 		return
 	}
@@ -47,6 +67,18 @@ func emitStartupSignals(emitter *signals.Emitter, status sandbox.Status) {
 // run; the run's input, output and error text stay on the machine.
 func workerRunSignal(emitter *signals.Emitter) func(pebblestore.WorkerRecord, pebblestore.WorkerRunRecord) {
 	return func(worker pebblestore.WorkerRecord, run pebblestore.WorkerRunRecord) {
+		if run.Cleanup != nil && run.Cleanup.FailureReported {
+			kind, severity, summary := "job.cleanup_failed", pebblestore.SignalSeverityWarning, "Job finished but checkout cleanup repeatedly failed"
+			if run.Cleanup.State == "done" {
+				kind, severity, summary = "job.cleanup_recovered", pebblestore.SignalSeverityInfo, "Job checkout cleanup recovered"
+			}
+			emitter.Emit(pebblestore.Signal{Kind: kind, Severity: severity, Account: run.AccountScopeID, Summary: summary, DedupKey: kind + ":" + run.ID, Refs: map[string]string{"worker_id": worker.ID, "run_id": run.ID}, Attrs: map[string]string{"job_id": "worker/" + worker.ID + "/" + run.ID}})
+			return
+		}
+		followup := run.FollowupRunID
+		if run.FollowupStatus == "interrupted" || run.FollowupStatus == "failed" {
+			run.Status = "failed"
+		}
 		severity := pebblestore.SignalSeverityInfo
 		if run.Status == "failed" {
 			severity = pebblestore.SignalSeverityWarning
@@ -62,12 +94,18 @@ func workerRunSignal(emitter *signals.Emitter) func(pebblestore.WorkerRecord, pe
 		if run.AutomationID != "" {
 			refs["automation_id"] = run.AutomationID
 		}
+		if run.Status == "failed" && strings.HasPrefix(run.Error, "run stalled:") {
+			emitter.Emit(pebblestore.Signal{Kind: "job.stalled", Severity: pebblestore.SignalSeverityWarning, Account: run.AccountScopeID, Summary: run.Error, DedupKey: "job.stalled:" + run.ID, Refs: refs, Attrs: map[string]string{"job_id": "worker/" + worker.ID + "/" + run.ID}})
+		}
+		if strings.Contains(run.Error, sandbox.ErrInterrupted.Error()) {
+			emitter.Emit(pebblestore.Signal{Kind: "job.sandbox_interrupted", Severity: pebblestore.SignalSeverityWarning, Account: run.AccountScopeID, Summary: "Job sandbox interrupted (OOM or container restart); uncommitted work preserved; retry with a follow-up", Refs: refs, DedupKey: "job.sandbox:" + run.ID})
+		}
 		emitter.Emit(pebblestore.Signal{
 			Kind:     "worker.run." + run.Status,
 			Severity: severity,
 			Account:  run.AccountScopeID,
 			Summary:  "Worker " + name + " run " + run.Status,
-			DedupKey: "worker.run:" + run.ID,
+			DedupKey: "worker.run:" + run.ID + ":" + followup,
 			Refs:     refs,
 			Attrs:    map[string]string{"source": run.RequestSource},
 		})

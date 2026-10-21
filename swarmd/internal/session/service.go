@@ -793,6 +793,20 @@ func (s *Service) GetSessionLibraryMetric(sessionID string) (pebblestore.V3Sessi
 	return s.store.GetV3SessionLibraryMetric(sessionID)
 }
 
+// ListSessionsMatching returns up to limit sessions include accepts, most
+// recently updated first; include sees every stored session.
+func (s *Service) ListSessionsMatching(limit int, include func(pebblestore.SessionSnapshot) bool) ([]pebblestore.SessionSnapshot, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	sessions, err := s.store.ListSessionsMatching(limit, include)
+	if err != nil {
+		return nil, err
+	}
+	normalizeSessionListModes(sessions)
+	return sessions, nil
+}
+
 func (s *Service) ListSessionsForAccount(accountScopeID string, limit int) ([]pebblestore.SessionSnapshot, error) {
 	sessions, err := s.store.ListSessionsForAccount(accountScopeID, limit)
 	if err != nil {

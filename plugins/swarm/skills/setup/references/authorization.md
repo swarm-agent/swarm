@@ -25,8 +25,9 @@ node bin/authorize.mjs --swarmctl /absolute/path/to/swarmctl
 
 For a service-account installation whose wrapper requires root, add `--sudo`
 only when authorized. It elevates only the owner CLI; the plugin and credential
-file stay owned by the desktop user. Default expiry is one hour. Set
-`--expires-in-seconds` to an approved lifetime between 60 and 86400 seconds.
+file stay owned by the desktop user. The key works while it is used and stops
+after 90 days unused; nothing needs renewing. Add `--expires-in-seconds` (60 to
+31536000) only if the person wants a fixed end date.
 The key allows reading and starting work; it does not approve tool calls or
 grant model/worker administration. Never silently upgrade to full access.
 
@@ -52,8 +53,9 @@ choose a configuration file. For example, the resulting nonsecret metadata is:
 ```
 
 It prints the nonsecret grant record path, access level and lifetime. Refresh
-MCP and verify an actual tool call. Report expiry so a later 401 is diagnosed
-as expired access, not a missing daemon. Renew only with the person's authority.
+MCP and verify an actual tool call. A later 401 saying the key expired means it
+went unused for 90 days (or passed a fixed end date): make a new one only with
+the person's authority.
 
 ## Failures and cleanup
 

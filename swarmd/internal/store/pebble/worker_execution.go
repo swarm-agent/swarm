@@ -14,8 +14,12 @@ import (
 // SessionID is allocated by the store with the run identity and never supplied
 // by callers. Dispatch must use the returned receipt only.
 type WorkerRunAdmission struct {
+	// CapturedReviewTarget is trusted daemon evidence, excluded from request identity.
+	CapturedReviewTarget   map[string]any
 	Placement              *WorkerPlacementAdmission
 	ExpectedWorkerRevision uint64
+	ModelOverride          *SessionModelProfileSnapshot
+	ModelSource            string
 	ResolvedModelProfile   *SessionModelProfileSnapshot
 	WorkerID               string
 	AutomationID           string
@@ -31,6 +35,8 @@ type WorkerRunAdmission struct {
 	// under the worker lock and refuses a mismatch, then pins it on the receipt.
 	WorkspaceID         string
 	ResolvedWorkspaceID string
+	// ResolvedProjectID is supplied only by the execution authority, not run input.
+	ResolvedProjectID string
 }
 
 type workerRunIdempotency struct {
@@ -69,7 +75,7 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 		return WorkerRunRecord{}, fmt.Errorf("%w: use exactly one occurrence or idempotency key", ErrWorkerConflict)
 	}
 	switch req.RequestSource {
-	case "direct", "orchestrator", "test_run":
+	case "direct", "orchestrator", "test_run", "automation":
 		if req.OccurrenceID != "" {
 			return WorkerRunRecord{}, ErrWorkerConflict
 		}
@@ -91,14 +97,21 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 	if err != nil || len(inputBytes) > 64*1024 {
 		return WorkerRunRecord{}, fmt.Errorf("%w: invalid or oversized input: %v", ErrWorkerConflict, err)
 	}
+	if _, exists := req.Input["captured_review_target"]; exists {
+		return WorkerRunRecord{}, fmt.Errorf("%w: review target is daemon-owned", ErrWorkerConflict)
+	}
 	var acceptedInput map[string]any
 	if err := json.Unmarshal(inputBytes, &acceptedInput); err != nil {
 		return WorkerRunRecord{}, err
 	}
+	if req.CapturedReviewTarget != nil {
+		acceptedInput["captured_review_target"] = req.CapturedReviewTarget
+	}
 	hash, err := hashWorkerPayload(struct {
 		Worker, Automation, User, Source, Occurrence string
 		Input                                        json.RawMessage
-	}{req.WorkerID, req.AutomationID, req.UserID, req.RequestSource, req.OccurrenceID, inputBytes})
+		ModelOverride                                *SessionModelProfileSnapshot `json:",omitempty"`
+	}{req.WorkerID, req.AutomationID, req.UserID, req.RequestSource, req.OccurrenceID, inputBytes, req.ModelOverride})
 	if err != nil {
 		return WorkerRunRecord{}, err
 	}
@@ -224,6 +237,17 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 	if err := NewSessionStore(ws.store).checkWorkerBudgetAdmissionLocked(account, req.WorkerID); err != nil {
 		return WorkerRunRecord{}, err
 	}
+	limits, err := ws.store.GetLimits(account)
+	if err != nil {
+		return WorkerRunRecord{}, err
+	}
+	active, err := ws.unfinishedWorkerRuns(account, "", "")
+	if err != nil {
+		return WorkerRunRecord{}, err
+	}
+	if err := ws.store.observeLimit(account, "", "worker_job_concurrency", limits.WorkerJobConcurrency, len(active) >= limits.WorkerJobConcurrency); err != nil {
+		return WorkerRunRecord{}, err
+	}
 	var automationRevision uint64
 	if req.AutomationID != "" {
 		for _, a := range worker.Automations {
@@ -259,7 +283,7 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 	now := time.Now().UnixMilli()
 	runID := GenerateWorkerRunID()
 	req.SessionID = "worker-execution-" + runID
-	receipt := WorkerRunRecord{ModelProfile: model, ID: runID, AccountScopeID: account, UserID: req.UserID, WorkerID: worker.ID, WorkerRevision: worker.Revision, AutomationID: req.AutomationID, AutomationRevision: automationRevision, OccurrenceID: req.OccurrenceID, WorkspaceID: workspaceID, WorkspaceSource: workspaceSource, Role: worker.Role, SessionID: req.SessionID, RequestSource: req.RequestSource, Input: acceptedInput, Status: "admitted", CreatedAt: now}
+	receipt := WorkerRunRecord{ProjectID: req.ResolvedProjectID, ModelSource: req.ModelSource, ModelProfile: model, ID: runID, AccountScopeID: account, UserID: req.UserID, WorkerID: worker.ID, WorkerRevision: worker.Revision, AutomationID: req.AutomationID, AutomationRevision: automationRevision, OccurrenceID: req.OccurrenceID, WorkspaceID: workspaceID, WorkspaceSource: workspaceSource, Role: worker.Role, SessionID: req.SessionID, RequestSource: req.RequestSource, Input: acceptedInput, Status: "admitted", CreatedAt: now}
 	m := &workerRealtimeMutation{accountScopeID: account, userID: req.UserID, workerID: worker.ID}
 	if err := ws.pinWorkerPlacement(account, req, worker, &receipt, m); err != nil {
 		return WorkerRunRecord{}, err
@@ -491,7 +515,10 @@ func (ws *WorkerStore) DisableWorkerAutomation(account, user, id, autoID string,
 
 // unfinishedWorkerRuns is called under workersMu; never truncates an active set.
 func (ws *WorkerStore) unfinishedWorkerRuns(account, id, autoID string) ([]WorkerRunRecord, error) {
-	prefix := WorkerRunPrefix(account, id)
+	prefix := keyWorkerRunActivePrefix + keyPart(account) + "/"
+	if id != "" {
+		prefix += keyPart(id) + "/"
+	}
 	it, err := ws.store.db.NewIter(&pebble.IterOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix + "\xff")})
 	if err != nil {
 		return nil, err
@@ -504,14 +531,21 @@ func (ws *WorkerStore) unfinishedWorkerRuns(account, id, autoID string) ([]Worke
 		if scanned > 10000 {
 			return nil, errors.New("worker active run scan budget exceeded")
 		}
-		var r WorkerRunRecord
-		if err := json.Unmarshal(it.Value(), &r); err != nil {
+		var entry workerRunIndexEntry
+		if err := json.Unmarshal(it.Value(), &entry); err != nil {
 			return nil, err
 		}
-		if r.AccountScopeID != account || r.WorkerID != id {
+		r, found, err := ws.GetWorkerRun(account, entry.WorkerID, entry.RunID)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			continue
+		}
+		if r.AccountScopeID != account || (id != "" && r.WorkerID != id) {
 			return nil, ErrWorkerConflict
 		}
-		if (r.Status == "admitted" || r.Status == "running") && (autoID == "" || r.AutomationID == autoID) {
+		if (r.Status == "admitted" || r.Status == "queued" || r.Status == "preparing" || r.Status == "running") && (autoID == "" || r.AutomationID == autoID) {
 			result = append(result, r)
 		}
 	}

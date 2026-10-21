@@ -21,9 +21,10 @@ key.
 
 ## 2. Install the box
 
-After the person agrees to the system changes (it installs Docker unless a
-working one is there, gVisor, and Swarm as a service), run on that machine, as
-the person, with sudo:
+After the person agrees to the system changes (it downloads Swarm's newest
+release, checks it, and runs it as a service under its own `swarm` user; no
+Docker is installed unless they want environments), run on that machine, as the
+person, with sudo:
 
 ```sh
 curl -fsSL https://swarmagent.dev/install | sudo bash
@@ -32,8 +33,11 @@ curl -fsSL https://swarmagent.dev/install | sudo bash
 Everything it starts listens on 127.0.0.1 only. At the end it creates Swarm's
 owner for the person who ran it, puts an AI key for their AI in
 `~/.config/swarm/ai-key` (only they can read it) and prints the connect lines.
-Workers run in a sandbox per project without permission prompts, and the
-secret gateway is on. `install.sh connect-ai` makes a new key later.
+Agents run on this machine without permission prompts (the sandbox is off by
+default; `install.sh sandbox on` turns it on). Environments, a folder's own
+container for its agents' commands with its secrets, need Docker: add
+`--environments on` to the install, or run `install.sh environments on` later.
+`install.sh connect-ai` makes a new key later.
 
 Add `--tailnet` only if the person wants to reach Swarm from other devices
 (see [remote access](references/remote.md)); it is not needed for a local AI.
@@ -59,22 +63,33 @@ and [remote access](references/remote.md).
 
 ## 4. A model provider
 
-`swarm_list_providers` shows which providers are ready. If none is, first
-offer the person to sign in with their ChatGPT plan: `swarm_connect_chatgpt`
-with action `start` returns a link and a code. Give both to the person at
-once; they finish sign-in in their own browser. Then call it with action
-`status`, the `login_id` and `wait_seconds` until it reports `success`.
+`swarm_list_providers` shows which providers are ready. For each one that is
+not, its `connect` field says exactly how to connect it. If none is ready, ask
+the person which they have, show every option below in one short list with
+what each needs, and follow their choice. No option is the default.
 
-The alternative is an API key, which the person adds in one of two ways;
-never ask for a key in chat, and if one is pasted, tell them to revoke it:
+- **ChatGPT plan** (`codex`): `swarm_connect_chatgpt` with action `start`
+  returns a link and a code. Give both to the person at once; they finish
+  sign-in in their own browser. Then call action `status` with the
+  `login_id` and `wait_seconds` until it reports `success`.
+- **Claude plan through Claude Code** (`claudecode`): the person signs in
+  themselves; Swarm never sees or handles Claude credentials. See
+  [Claude Code](references/local-deployment.md#claude-code) for the three
+  steps (install it, `claude auth login` as Swarm's user, turn it on).
+  `swarm_connect_claude_code` does it from here: action `status` gives the
+  installer command the person runs on the machine, then action `activate`.
+- **API key** for `anthropic`, `openai`, `google`, `openrouter` or
+  `fireworks`: the person adds it on the setup page (`http://127.0.0.1:8443`
+  on the machine; on a server, the installer printed the `ssh -L` line to open
+  it from their computer), or as the first provider by script on the machine:
+  `sudo bash /var/lib/swarm-headless/install.sh key PROVIDER < key-file`.
+- **Vertex AI** (`vertex`), only on a machine with a Google Cloud identity:
+  `sudo swarmctl setup credential --provider vertex --project PROJECT`.
 
-- the setup page: `http://127.0.0.1:8443` on the machine (on a server, the
-  installer printed the `ssh -L` line to open it from their computer);
-- by script on the machine: `sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh key PROVIDER < key-file`.
-
+Never ask for a key in chat; if one is pasted, tell them to revoke it.
 Call `swarm_list_providers` again to confirm it is ready. Swarm then gives
 every role its recommended model: `swarm_list_models` shows what the coder,
-designer and finder workers will use. Do not change models unless the person
+designer and finder agents will use. Do not change models unless the person
 asks (`swarm_set_agent_model` does it, per role).
 
 ## 5. Their project
@@ -87,23 +102,26 @@ those folders. Swarm registers each folder in place and writes the project's
 - `workspace_not_found`: the path is wrong; check it with the person.
 - `workspace_not_visible`: Swarm (its own user) cannot see inside a home
   folder and never changes its host itself. Run, as root on that machine,
-  `sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh workspace add PATH`
+  `sudo swarmctl workspace add PATH`
   (the command the error names), then create the project again.
 
 Use `swarm_create_workspace` (a new, empty repository; advanced tools) only
 when the person asks to start a new project from scratch.
 
-## 6. Prove a first job
+## 6. Prove a first task
 
 Use the person's real task, or agree on a small one in their project. Follow
-the `using-swarm` skill: `swarm_give_job` (coder, designer or finder; the
-project and folder; a brief with acceptance criteria), `swarm_get_job` with
-`wait_seconds` until it settles, check the result yourself (diff, files,
-tests), then `swarm_deliver_job` if the person wants it merged. A timeout
-means it is still working: wait again, never start a duplicate.
+`using-swarm`: `swarm_run_task` with `project_id`, the registered workspace
+and a brief with acceptance criteria. Omit `role` to delegate to Swarm, which
+uses its task tool for regular specialists. No worker preset is required or
+created by this flow. Follow `swarm_wait_task`, read `swarm_task_result` and
+`swarm_get_session`, and handle returned questions/approvals through their
+authorized controls. Check actual files, diffs and validation receipts; use
+`swarm_integrate_task` only when the person wants the reviewed work integrated.
+A timeout means keep waiting, never start a duplicate task.
 
-End with what runs where, which project and folders are set up, which models
-the workers use, what the job did, what it cost, and what you verified.
+End with what runs where, the project/workspace, resolved models without
+secrets, what completed, measured usage, and what was actually verified.
 
 ## Secrets
 

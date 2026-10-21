@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"swarm/packages/swarmd/internal/signals"
@@ -22,6 +24,9 @@ type Service struct {
 	authStore *pebblestore.ClientAuthStore
 	events    *pebblestore.EventLog
 	signals   *signals.Emitter
+	// unexpiringAgentBoundLogged records the agent-bound tokens already logged
+	// as refused for having no expiry, so each is logged once.
+	unexpiringAgentBoundLogged sync.Map
 }
 
 type AttachStatus struct {
@@ -133,54 +138,199 @@ func (s *Service) AuditDenied(method, path, remoteAddr, reason, suppliedToken st
 	_, _ = s.events.Append("system:security", "security.attach.denied", "attach", payload, "", "")
 }
 
-func (s *Service) CreateScopedToken(name string, scopes []string, accountScopeID, userID string, expiresIn time.Duration, workerID, workerName string) (string, pebblestore.ScopedTokenRecord, error) {
-	return s.CreateScopedTokenUnder(nil, name, scopes, accountScopeID, userID, expiresIn, workerID, workerName)
+// checkFixedDate accepts an optional fixed end date: 0 means none (the key
+// lapses only from disuse, KeyIdleLimit); otherwise at most KeyFixedDateMax.
+func checkFixedDate(expiresIn time.Duration) error {
+	if expiresIn < 0 {
+		return errors.New("a fixed end date must be in the future")
+	}
+	if expiresIn > KeyFixedDateMax {
+		return fmt.Errorf("a fixed end date is at most %d days away", int64(KeyFixedDateMax/(24*time.Hour)))
+	}
+	return nil
 }
 
-// CreateScopedTokenUnder mints a token on behalf of the scoped token parent
-// (nil: the owner). A token never outlives its parent: its lifetime is capped
-// at the parent's, and it stops validating once the parent is revoked, expired
-// or deleted.
-func (s *Service) CreateScopedTokenUnder(parent *pebblestore.ScopedTokenRecord, name string, scopes []string, accountScopeID, userID string, expiresIn time.Duration, workerID, workerName string) (string, pebblestore.ScopedTokenRecord, error) {
-	return s.createScopedTokenRecord(parent, name, scopes, accountScopeID, userID, expiresIn, func(record *pebblestore.ScopedTokenRecord) {
-		record.WorkerID = strings.TrimSpace(workerID)
-		record.WorkerName = strings.TrimSpace(workerName)
+// CreateScopedToken mints a key for a resource Swarm makes on the owner's
+// behalf (a trigger worker's key). Like every key it works while used and
+// lapses after KeyIdleLimit unused; expiresIn > 0 adds a fixed end date.
+func (s *Service) CreateScopedToken(name string, scopes []string, accountScopeID, userID string, expiresIn time.Duration, workerID, workerName string) (string, pebblestore.ScopedTokenRecord, error) {
+	if err := checkFixedDate(expiresIn); err != nil {
+		return "", pebblestore.ScopedTokenRecord{}, err
+	}
+	return s.createScopedTokenRecord(nil, name, scopes, accountScopeID, userID, expiresIn, bindWorker(workerID, workerName))
+}
+
+// CreateInternalToken mints one of Swarm's own keys (the remote transport's
+// device key): it never lapses on its own and is revoked with the setup that
+// made it. It is never shown as a person's key.
+func (s *Service) CreateInternalToken(name string, scopes []string, accountScopeID, userID string) (string, pebblestore.ScopedTokenRecord, error) {
+	return s.createScopedTokenRecord(nil, name, scopes, accountScopeID, userID, 0, func(record *pebblestore.ScopedTokenRecord) {
+		record.Kind = KeyKindInternal
 	})
 }
 
-// CreateAgentBoundToken mints a session token limited to one sealed agent's
-// sessions. The caller must have checked the agent is sealed.
-func (s *Service) CreateAgentBoundToken(name, accountScopeID, userID string, expiresIn time.Duration, agentName string, messagesPerMinute, sessionsPerHour int) (string, pebblestore.ScopedTokenRecord, error) {
-	return s.CreateAgentBoundTokenUnder(nil, name, accountScopeID, userID, expiresIn, agentName, messagesPerMinute, sessionsPerHour)
+// CreateScopedTokenUnder mints a key an API caller asked for, on behalf of the
+// scoped token parent (nil: the owner). It works while used and lapses after
+// KeyIdleLimit unused; expiresIn > 0 adds a fixed end date (at most
+// KeyFixedDateMax). A token never outlives its parent: a parent's fixed date
+// caps the child's, and the child stops validating once the parent is
+// revoked, lapsed or deleted.
+func (s *Service) CreateScopedTokenUnder(parent *pebblestore.ScopedTokenRecord, name string, scopes []string, accountScopeID, userID string, expiresIn time.Duration, workerID, workerName string) (string, pebblestore.ScopedTokenRecord, error) {
+	if err := checkFixedDate(expiresIn); err != nil {
+		return "", pebblestore.ScopedTokenRecord{}, err
+	}
+	return s.createScopedTokenRecord(parent, name, scopes, accountScopeID, userID, expiresIn, bindWorker(workerID, workerName))
+}
+
+func bindWorker(workerID, workerName string) func(*pebblestore.ScopedTokenRecord) {
+	return func(record *pebblestore.ScopedTokenRecord) {
+		record.WorkerID = strings.TrimSpace(workerID)
+		record.WorkerName = strings.TrimSpace(workerName)
+	}
+}
+
+// AgentBoundLimits bounds what an agent-bound token may start; zero fields
+// mean the daemon defaults.
+type AgentBoundLimits struct {
+	MessagesPerMinute int
+	SessionsPerHour   int
+	MaxConcurrentRuns int
+	// Per end user (sessions created with an end_user): messages per minute,
+	// new sessions per hour and, when set, model tokens per UTC day.
+	EndUserMessagesPerMinute int
+	EndUserSessionsPerHour   int
+	EndUserMaxTokensPerDay   int64
+	// Operator mints the human-takeover token (read, take over, reply, hand
+	// back) instead of the gateway token; it starts no runs.
+	Operator bool
+}
+
+// CreateAgentBoundToken mints a bot key: a session token limited to one sealed
+// agent's sessions. The caller must have checked the agent is sealed. Like
+// every key it lapses after KeyIdleLimit unused; expiresIn > 0 adds a fixed
+// end date.
+func (s *Service) CreateAgentBoundToken(name, accountScopeID, userID string, expiresIn time.Duration, agentName string, limits AgentBoundLimits) (string, pebblestore.ScopedTokenRecord, error) {
+	return s.CreateAgentBoundTokenUnder(nil, name, accountScopeID, userID, expiresIn, agentName, limits)
 }
 
 // CreateAgentBoundTokenUnder is CreateAgentBoundToken minted on behalf of the
 // scoped token parent (see CreateScopedTokenUnder).
-func (s *Service) CreateAgentBoundTokenUnder(parent *pebblestore.ScopedTokenRecord, name, accountScopeID, userID string, expiresIn time.Duration, agentName string, messagesPerMinute, sessionsPerHour int) (string, pebblestore.ScopedTokenRecord, error) {
+func (s *Service) CreateAgentBoundTokenUnder(parent *pebblestore.ScopedTokenRecord, name, accountScopeID, userID string, expiresIn time.Duration, agentName string, limits AgentBoundLimits) (string, pebblestore.ScopedTokenRecord, error) {
 	if strings.TrimSpace(agentName) == "" {
 		return "", pebblestore.ScopedTokenRecord{}, errors.New("agent name is required")
 	}
-	if messagesPerMinute < 0 || messagesPerMinute > 6000 || sessionsPerHour < 0 || sessionsPerHour > 100000 {
-		return "", pebblestore.ScopedTokenRecord{}, errors.New("rate limits out of range")
+	if err := checkFixedDate(expiresIn); err != nil {
+		return "", pebblestore.ScopedTokenRecord{}, err
+	}
+	if err := limits.validate(); err != nil {
+		return "", pebblestore.ScopedTokenRecord{}, err
 	}
 	return s.createScopedTokenRecord(parent, name, []string{"sessions:read", "sessions:write"}, accountScopeID, userID, expiresIn, func(record *pebblestore.ScopedTokenRecord) {
 		record.AgentName = strings.TrimSpace(agentName)
-		record.MessagesPerMinute = messagesPerMinute
-		record.SessionsPerHour = sessionsPerHour
+		limits.apply(record)
+		record.AgentOperator = limits.Operator
 	})
+}
+
+// Bounds for agent-bound token limits; zero always means the daemon default.
+const (
+	maxAgentBoundMessagesPerMinute = 6000
+	maxAgentBoundSessionsPerHour   = 100000
+	maxAgentBoundConcurrentRuns    = 64
+	maxEndUserTokensPerDay         = 1_000_000_000
+)
+
+func (l AgentBoundLimits) validate() error {
+	if l.MessagesPerMinute < 0 || l.MessagesPerMinute > maxAgentBoundMessagesPerMinute || l.SessionsPerHour < 0 || l.SessionsPerHour > maxAgentBoundSessionsPerHour ||
+		l.MaxConcurrentRuns < 0 || l.MaxConcurrentRuns > maxAgentBoundConcurrentRuns {
+		return errors.New("rate limits out of range")
+	}
+	if l.EndUserMessagesPerMinute < 0 || l.EndUserMessagesPerMinute > maxAgentBoundMessagesPerMinute || l.EndUserSessionsPerHour < 0 || l.EndUserSessionsPerHour > maxAgentBoundSessionsPerHour ||
+		l.EndUserMaxTokensPerDay < 0 || l.EndUserMaxTokensPerDay > maxEndUserTokensPerDay {
+		return errors.New("end-user limits out of range")
+	}
+	return nil
+}
+
+func (l AgentBoundLimits) apply(record *pebblestore.ScopedTokenRecord) {
+	record.MessagesPerMinute = l.MessagesPerMinute
+	record.SessionsPerHour = l.SessionsPerHour
+	record.MaxConcurrentRuns = l.MaxConcurrentRuns
+	record.EndUserMessagesPerMinute = l.EndUserMessagesPerMinute
+	record.EndUserSessionsPerHour = l.EndUserSessionsPerHour
+	record.EndUserMaxTokensPerDay = l.EndUserMaxTokensPerDay
+}
+
+// AgentBoundLimitsUpdate changes the fields that are set and keeps the rest.
+type AgentBoundLimitsUpdate struct {
+	MessagesPerMinute        *int
+	SessionsPerHour          *int
+	MaxConcurrentRuns        *int
+	EndUserMessagesPerMinute *int
+	EndUserSessionsPerHour   *int
+	EndUserMaxTokensPerDay   *int64
+}
+
+// ErrScopedTokenNotFound reports a token ID that is not in the account.
+var ErrScopedTokenNotFound = errors.New("scoped token not found")
+
+// UpdateAgentBoundLimits changes a gateway token's limits; they apply from the
+// token's next request. Operator tokens start no runs and have no limits.
+func (s *Service) UpdateAgentBoundLimits(accountScopeID, tokenID string, update AgentBoundLimitsUpdate) (pebblestore.ScopedTokenRecord, error) {
+	if s == nil || s.authStore == nil {
+		return pebblestore.ScopedTokenRecord{}, errors.New("auth store not configured")
+	}
+	record, found, err := s.authStore.GetScopedToken(accountScopeID, tokenID)
+	if err != nil {
+		return pebblestore.ScopedTokenRecord{}, err
+	}
+	if !found || record.AccountScopeID != accountScopeID {
+		return pebblestore.ScopedTokenRecord{}, ErrScopedTokenNotFound
+	}
+	if strings.TrimSpace(record.AgentName) == "" || record.AgentOperator {
+		return pebblestore.ScopedTokenRecord{}, errors.New("only a gateway token has limits")
+	}
+	if record.Revoked {
+		return pebblestore.ScopedTokenRecord{}, errors.New("the token is revoked")
+	}
+	limits := AgentBoundLimits{MessagesPerMinute: record.MessagesPerMinute, SessionsPerHour: record.SessionsPerHour, MaxConcurrentRuns: record.MaxConcurrentRuns,
+		EndUserMessagesPerMinute: record.EndUserMessagesPerMinute, EndUserSessionsPerHour: record.EndUserSessionsPerHour, EndUserMaxTokensPerDay: record.EndUserMaxTokensPerDay}
+	for dst, src := range map[*int]*int{&limits.MessagesPerMinute: update.MessagesPerMinute, &limits.SessionsPerHour: update.SessionsPerHour, &limits.MaxConcurrentRuns: update.MaxConcurrentRuns,
+		&limits.EndUserMessagesPerMinute: update.EndUserMessagesPerMinute, &limits.EndUserSessionsPerHour: update.EndUserSessionsPerHour} {
+		if src != nil {
+			*dst = *src
+		}
+	}
+	if update.EndUserMaxTokensPerDay != nil {
+		limits.EndUserMaxTokensPerDay = *update.EndUserMaxTokensPerDay
+	}
+	if err := limits.validate(); err != nil {
+		return pebblestore.ScopedTokenRecord{}, err
+	}
+	limits.apply(&record)
+	if err := s.authStore.PutScopedToken(record); err != nil {
+		return pebblestore.ScopedTokenRecord{}, err
+	}
+	s.emitTokenLifecycle("token.limits_updated", record)
+	return record, nil
 }
 
 func (s *Service) createScopedTokenRecord(parent *pebblestore.ScopedTokenRecord, name string, scopes []string, accountScopeID, userID string, expiresIn time.Duration, bind func(*pebblestore.ScopedTokenRecord)) (string, pebblestore.ScopedTokenRecord, error) {
 	if s == nil || s.authStore == nil {
 		return "", pebblestore.ScopedTokenRecord{}, errors.New("auth store not configured")
 	}
-	if parent != nil && parent.ExpiresAt > 0 {
-		remaining := time.Until(time.UnixMilli(parent.ExpiresAt))
-		if remaining <= 0 {
+	if parent != nil {
+		if lapsed, _ := keyLapsed(*parent, time.Now().UnixMilli()); lapsed {
 			return "", pebblestore.ScopedTokenRecord{}, errors.New("the issuing key has expired")
 		}
-		if expiresIn <= 0 || expiresIn > remaining {
-			expiresIn = remaining
+		if date := fixedDate(*parent); date > 0 {
+			remaining := time.Until(time.UnixMilli(date))
+			if remaining <= 0 {
+				return "", pebblestore.ScopedTokenRecord{}, errors.New("the issuing key has expired")
+			}
+			if expiresIn <= 0 || expiresIn > remaining {
+				expiresIn = remaining
+			}
 		}
 	}
 	rawSecret, err := pebblestore.GenerateToken(32)
@@ -226,7 +376,11 @@ func (s *Service) createScopedTokenRecord(parent *pebblestore.ScopedTokenRecord,
 		UserID:         userID,
 		CreatedAt:      now,
 		ExpiresAt:      expiresAt,
+		ExpiryRule:     expiryRuleIdle,
 		Revoked:        false,
+	}
+	if expiresAt > 0 {
+		record.ExpiryRule = expiryRuleDate
 	}
 
 	bind(&record)
@@ -241,7 +395,16 @@ func (s *Service) createScopedTokenRecord(parent *pebblestore.ScopedTokenRecord,
 	return token, record, nil
 }
 
+// ValidateScopedToken checks a presented key without knowing where it came
+// from; see ValidateScopedTokenFrom.
 func (s *Service) ValidateScopedToken(rawToken string) (*pebblestore.ScopedTokenRecord, error) {
+	return s.ValidateScopedTokenFrom(rawToken, "")
+}
+
+// ValidateScopedTokenFrom checks a presented key and records its use from
+// source (where the request came from, KeySource; empty when unknown). A key
+// used from a place it has not been used from before raises key.new_address.
+func (s *Service) ValidateScopedTokenFrom(rawToken, source string) (*pebblestore.ScopedTokenRecord, error) {
 	if s == nil || s.authStore == nil {
 		return nil, nil
 	}
@@ -263,9 +426,24 @@ func (s *Service) ValidateScopedToken(rawToken string) (*pebblestore.ScopedToken
 		s.emitTokenDenied(record, "revoked")
 		return nil, errors.New("token has been revoked")
 	}
-	if record.ExpiresAt > 0 && time.Now().UnixMilli() >= record.ExpiresAt {
-		s.emitTokenDenied(record, "expired")
-		return nil, errors.New("token has expired")
+	now := time.Now().UnixMilli()
+	if lapsed, reason := keyLapsed(record, now); lapsed {
+		why := "expired: unused for 90 days"
+		if reason == "date" {
+			why = "expired: past its fixed end date"
+		}
+		s.emitTokenDenied(record, why)
+		return nil, errors.New("key has " + why + "; make a new one")
+	}
+	if record.ExpiryRule == "" && record.ExpiresAt <= 0 && strings.TrimSpace(record.AgentName) != "" {
+		// A bot key stored without any expiry was minted before bot keys had
+		// to expire (2026-10-16) and has been refused since; it stays refused
+		// rather than coming back to life under the idle rule.
+		if _, logged := s.unexpiringAgentBoundLogged.LoadOrStore(record.ID, true); !logged {
+			log.Printf("swarmd: refusing bot key %s (agent %q): it predates key expiry; make a new one", record.ID, record.AgentName)
+		}
+		s.emitTokenDenied(record, "bot key predates key expiry")
+		return nil, errors.New("bot key predates key expiry; make a new one")
 	}
 	// Every ancestor must still be valid: revoking, deleting or expiring a key
 	// cuts off every key minted beneath it, however deep.
@@ -279,14 +457,24 @@ func (s *Service) ValidateScopedToken(rawToken string) (*pebblestore.ScopedToken
 		if err != nil {
 			return nil, err
 		}
-		if !found || parent.Revoked || (parent.ExpiresAt > 0 && time.Now().UnixMilli() >= parent.ExpiresAt) {
+		// A parent that is revoked, deleted or past its fixed date cuts its
+		// keys off; one that merely went unused does not (its keys keep their
+		// own clocks).
+		parentDate := fixedDate(parent)
+		if !found || parent.Revoked || (parentDate > 0 && now >= parentDate) {
 			s.emitTokenDenied(record, "issuing key no longer valid")
 			return nil, errors.New("the key that issued this token is no longer valid")
 		}
 		parentID = parent.ParentTokenID
 	}
 
-	_ = s.authStore.UpdateScopedTokenLastUsed(record.AccountScopeID, record.ID, time.Now().UnixMilli())
+	if isNew, err := s.authStore.UpdateScopedTokenUse(record.AccountScopeID, record.ID, now, source, maxKeySources); err == nil && isNew {
+		s.emitKeyNewSource(record, source)
+	}
+	record.LastUsedAt = now
+	if source != "" {
+		record.LastUsedFrom = source
+	}
 
 	return &record, nil
 }

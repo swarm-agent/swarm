@@ -30,13 +30,16 @@ import (
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/automation"
 	"swarm/packages/swarmd/internal/config"
+	"swarm/packages/swarmd/internal/design"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/environments/lifecycle"
 	"swarm/packages/swarmd/internal/environments/provider"
+	"swarm/packages/swarmd/internal/gitenv"
 	"swarm/packages/swarmd/internal/htmlcapture"
 	identityruntime "swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	integrationruntime "swarm/packages/swarmd/internal/integration"
+	"swarm/packages/swarmd/internal/jobautomation"
 	"swarm/packages/swarmd/internal/lock"
 	"swarm/packages/swarmd/internal/longsessiondiag"
 	mcpruntime "swarm/packages/swarmd/internal/mcp"
@@ -68,7 +71,6 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
-	"swarm/packages/swarmd/internal/tailscale"
 	"swarm/packages/swarmd/internal/todo"
 	"swarm/packages/swarmd/internal/tool"
 	topologyruntime "swarm/packages/swarmd/internal/topology"
@@ -142,6 +144,7 @@ type Daemon struct {
 	automationClosed          bool
 	automationV2Scheduler     *sessionruntime.AutomationV2Scheduler
 	workerExecution           *run.WorkerExecutionService
+	worktreeService           *worktreeruntime.Service
 	webhookDispatcher         *webhook.Dispatcher
 	automationLoop            *automationLoop
 	automationExecution       *automation.ExecutionService
@@ -155,16 +158,14 @@ type Daemon struct {
 	apiServer                 *api.Server
 	notificationService       *notification.Service
 	httpServer                *http.Server
-	desktopServer             *http.Server
+	clientServers             []*clientHTTPServer
 	localTransportServer      *http.Server
 	peerTransportServer       *http.Server
 	containerSDKServer        *http.Server
 	listener                  net.Listener
-	desktopListener           net.Listener
 	localTransportListener    net.Listener
 	peerTransportListener     net.Listener
 	serveDone                 chan struct{}
-	desktopServeDone          chan struct{}
 	localTransportServeDone   chan struct{}
 	peerTransportServeDone    chan struct{}
 	stopCh                    chan string
@@ -175,7 +176,7 @@ type Daemon struct {
 	remoteTransport           *remote.Service
 	signalForwarder           *signals.Forwarder
 	resultOutbox              *outbox.Exporter
-	autoPublisher             *api.AutoPublisher
+	jobAutomations            *jobautomation.Runner
 	bgCtx                     context.Context
 	bgCancel                  context.CancelFunc
 	memoryDone                <-chan struct{}
@@ -184,7 +185,6 @@ type Daemon struct {
 	toolRuntime               *tool.Runtime
 	videoRenderService        *videorender.Service
 	aiTaskDispatcher          *run.AITaskV2Dispatcher
-	designDispatcher          *run.DesignDispatcher
 	deploymentMgr             *lifecycle.DeploymentManager
 	localTransportRuntimeName string
 	localTransportBaseURL     string
@@ -241,7 +241,7 @@ func htmlCaptureConcurrency() int {
 	return 1
 }
 
-func New(cfg config.Config) (*Daemon, error) {
+func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Server, *pebblestore.Store)) (*Daemon, error) {
 	if err := ensurePrivateDirectory(cfg.DataDir); err != nil {
 		return nil, fmt.Errorf("secure data directory: %w", err)
 	}
@@ -325,6 +325,14 @@ func New(cfg config.Config) (*Daemon, error) {
 		log.Printf("warning: system agent registry validation failed; Plan/AI sidechats will be unavailable until the daemon binary is corrected: %v", err)
 	}
 	modelCatalog := model.NewCatalogService(pebblestore.NewModelCatalogStore(store))
+	switch catalogMode := strings.TrimSpace(os.Getenv(model.CatalogEnv)); catalogMode {
+	case "":
+	case model.CatalogEmbedded:
+		modelCatalog.UseEmbeddedOnly()
+		log.Printf("model catalog: %s=%s, using the snapshot built into this binary; no remote fetch", model.CatalogEnv, catalogMode)
+	default:
+		return nil, fmt.Errorf("%s=%q: the only accepted value is %q", model.CatalogEnv, catalogMode, model.CatalogEmbedded)
+	}
 	modelSvc := model.NewServiceWithFavorites(
 		pebblestore.NewModelStore(store),
 		events,
@@ -450,11 +458,22 @@ func New(cfg config.Config) (*Daemon, error) {
 	}
 	// The machine signal feed: high-level events monitors and forwarders follow.
 	signalStore := pebblestore.NewSignalStore(store)
+	store.SetLimitSignalStore(signalStore)
 	signalEmitter := signals.NewEmitter(signalStore)
 	permissionSvc.SetSignalEmitter(signalEmitter)
 	store.SetWorkerRunObserver(workerRunSignal(signalEmitter))
+	store.SetJobReviewObserver(jobReviewSignal(signalEmitter))
+	// A design job the restart marks failed ends like any other: its
+	// design.job.failed signal feeds the activity feed, outbox and automations.
+	store.SetDesignJobEndObserver(func(task pebblestore.ProjectTaskRecord) {
+		if sig, ok := api.DesignJobEndSignal(task); ok {
+			if _, err := signalStore.AppendOnce(sig); err != nil {
+				log.Printf("swarmd signal %s not recorded: %v", sig.Kind, err)
+			}
+		}
+	})
 	workspaceStore := pebblestore.NewWorkspaceStore(store)
-	sandboxMgr, err := newSandboxManager(context.Background(), cfg, workspaceStore)
+	sandboxMgr, err := newSandboxManager(context.Background(), cfg, workspaceStore, store)
 	if err != nil {
 		_ = secretStore.Close()
 		_ = store.Close()
@@ -462,8 +481,43 @@ func New(cfg config.Config) (*Daemon, error) {
 		return nil, fmt.Errorf("agent sandbox: %w", err)
 	}
 	sandbox.SetDefault(sandboxMgr)
+	leaseMgr, leaseOff := newLeaseManager(context.Background(), cfg, workspaceStore, store)
+	if leaseMgr == nil {
+		log.Printf("swarmd environment leases unavailable (%s)", leaseOff)
+	}
+	sandbox.SetLeases(leaseMgr)
+	emitWorkerRun := workerRunSignal(signalEmitter)
+	store.SetWorkerRunObserver(func(w pebblestore.WorkerRecord, r pebblestore.WorkerRunRecord) {
+		if snap, ok, err := pebblestore.NewSessionStore(store).GetSession(r.SessionID); err == nil && ok {
+			if err := sandboxMgr.EndJob(context.Background(), snap.WorktreeRootPath, func() (bool, error) {
+				current, found, err := pebblestore.NewWorkerStore(store).GetWorkerRun(r.AccountScopeID, r.WorkerID, r.ID)
+				if err != nil || !found {
+					return false, err
+				}
+				if !pebblestore.AutomationV2Terminal(current.Status) || current.FollowupActive() {
+					return false, nil
+				}
+				_, active, err := pebblestore.NewSessionStore(store).GetV3SessionActiveRunIntent(r.SessionID)
+				return !active, err
+			}); err != nil && !errors.Is(err, sandbox.ErrCleanupDeferred) {
+				log.Printf("cleanup terminal worker sandbox: %v", err)
+				if saveErr := pebblestore.NewWorkerStore(store).SetSandboxCleanupError(r, err.Error()); saveErr != nil {
+					log.Printf("record sandbox cleanup: %v", saveErr)
+				}
+			}
+		}
+		if r.Role == pebblestore.WorkerRoleReviewer && pebblestore.AutomationV2Terminal(r.Status) {
+			// Container cleanup is retried by the manager's background sweep.
+		}
+		emitWorkerRun(w, r)
+	})
 	provider.BuildSourceGitRouter = sandbox.RoutedArgv
 	permissionSvc.SetBypassGate(func() (bool, string) {
+		// Headless runs unattended: the owner's bypass setting applies with or
+		// without a sandbox, and worker jobs never wait on a prompt.
+		if headless {
+			return true, ""
+		}
 		status := sandboxMgr.Status()
 		return status.Active, status.Reason
 	})
@@ -472,11 +526,23 @@ func New(cfg config.Config) (*Daemon, error) {
 		if runtimeName == "" {
 			runtimeName = "engine default runtime"
 		}
-		log.Printf("swarmd agent sandbox active (%s); agent commands and Git on projects run inside per-project sandboxes", runtimeName)
+		log.Printf("swarmd agent sandbox active (%s); agent commands and Git on projects use the configured isolation backend", runtimeName)
+	} else if status.Mode == sandbox.ModeRequired {
+		log.Printf("swarmd agent execution blocked: required sandbox unavailable (%s); inspect the readiness reason and repair the configured isolation backend, then restart; setup and diagnostics remain available", status.Reason)
+	} else if headless {
+		log.Printf("swarmd agent sandbox off (%s); agents run on this machine", status.Reason)
 	} else {
 		log.Printf("swarmd agent sandbox inactive (%s); agent commands run on this machine and permission bypass is disabled", status.Reason)
 	}
-	emitStartupSignals(signalEmitter, sandboxMgr.Status())
+	emitStartupSignals(signalEmitter, sandboxMgr.Status(), headless)
+	if err := reconcileWorkerSandboxes(context.Background(), sandboxMgr, store); err != nil {
+		sandboxMgr.Close()
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("recover worker sandboxes: %w", err)
+	}
+	sandboxMgr.SetTerminalCleanup(func(ctx context.Context) { cleanupTerminalSandboxes(ctx, sandboxMgr, store) })
 	sandboxMgr.Start(context.Background())
 	workspaceSvc := workspace.NewService(workspaceStore)
 	workspaceSvc.SetEventPublisher(events, hub.Publish)
@@ -531,6 +597,11 @@ func New(cfg config.Config) (*Daemon, error) {
 	}
 	if err := os.Setenv(providerdiagnostics.EnvName, providerdiagnostics.BoolEnvValue(startupCfg.ProviderAPIDiagnostics)); err != nil {
 		return nil, fmt.Errorf("configure provider api diagnostics: %w", err)
+	}
+	// A person's folder is shared with core.sharedRepository=group, whose
+	// setgid directories the daemon's RestrictSUIDSGID refuses.
+	if err := gitenv.UseUmaskSharing(); err != nil {
+		return nil, fmt.Errorf("configure git sharing: %w", err)
 	}
 	updateSvc := update.NewService(strings.TrimSpace(os.Getenv("SWARM_LANE")), startupCfg.DevMode)
 	if err := seedUISwarmName(cfg.ConfigPath, uiSettingsSvc); err != nil {
@@ -639,6 +710,9 @@ func New(cfg config.Config) (*Daemon, error) {
 	// Claude Code drives the person's own locally signed-in, unmodified CLI;
 	// Swarm never handles Claude credentials (see provider/claudecode).
 	claudeCodeCLI := claudecode.NewCLI()
+	// Vertex AI runs Gemini with the machine's own Google identity (attached
+	// service account or GOOGLE_APPLICATION_CREDENTIALS); no key is stored.
+	vertexCredentials := google.NewApplicationDefaultCredentials()
 	providers := registry.New(
 		anthropic.NewAdapter(authStore),
 		claudecode.NewAdapter(authStore, claudeCodeCLI),
@@ -647,6 +721,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		google.NewAdapter(authStore),
 		openai.NewAdapter(authStore),
 		openrouter.NewAdapter(authStore),
+		google.NewVertexAdapter(authStore, vertexCredentials),
 		exaprovider.NewAdapter(authStore),
 	)
 	providers.RegisterRunner(anthropic.NewRunner(authStore))
@@ -658,6 +733,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	providers.RegisterRunner(google.NewRunner(authStore))
 	providers.RegisterRunner(openai.NewRunner(authStore, codexClient))
 	providers.RegisterRunner(openrouter.NewRunner(authStore))
+	providers.RegisterRunner(google.NewVertexRunner(authStore, vertexCredentials))
 	modelProfileStore := pebblestore.NewModelProfileStore(store)
 	modelProfileSvc := modelprofile.NewService(modelProfileStore)
 	runSvc := run.NewService(sessionSvc, modelSvc, providers, toolRuntime, permissionSvc, agentSvc, discoverySvc, events)
@@ -703,6 +779,14 @@ func New(cfg config.Config) (*Daemon, error) {
 	if err := runSvc.ReconcileActiveLifecycles("daemon restarted"); err != nil {
 		log.Printf("warning: reconcile active session lifecycles: %v", err)
 	}
+	if marked, err := sessionSvc.Store().ReconcileInterruptedDesignJobs(time.Now().UnixMilli()); err != nil {
+		log.Printf("warning: reconcile interrupted design jobs: %v", err)
+	} else if marked > 0 {
+		log.Printf("marked %d design job(s) interrupted by the restart as failed", marked)
+	}
+	if err := pebblestore.NewWorkerStore(store).RecoverClearedWorkerFollowups(); err != nil {
+		return nil, fmt.Errorf("recover follow-up outcomes: %w", err)
+	}
 	if err := permissionSvc.ReconcilePendingRuns("daemon restarted"); err != nil {
 		log.Printf("warning: reconcile pending permissions: %v", err)
 	}
@@ -718,7 +802,10 @@ func New(cfg config.Config) (*Daemon, error) {
 	memorySvc := memory.NewService(pebblestore.NewMemoryStore(store), &memory.RuntimeProvider{Runners: providers, Catalog: pebblestore.NewModelCatalogStore(store), Sessions: sessionSvc.Store()})
 	memoryDone := make(chan struct{})
 	runSvc.SetMemoryStore(memorySvc.Store)
-	apiServer := api.NewServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
+	apiServer := api.NewCoreServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
+	if configureClient != nil {
+		configureClient(apiServer, store)
+	}
 	toolRuntime.SetProjectTaskLifecycleService(apiServer)
 	// Automation mutations always commit through canonical V3 authority before
 	// waking realtime. Wake failures cannot turn a committed execution into retry.
@@ -738,6 +825,10 @@ func New(cfg config.Config) (*Daemon, error) {
 		log.Printf("warning: sandbox environments: %v", err)
 	}
 	sandboxMgr.SetEnvironmentResolver(sandboxEnvironmentResolver{store: sandboxEnvironments})
+	if leaseMgr != nil {
+		leaseMgr.SetEnvironmentResolver(sandboxEnvironmentResolver{store: sandboxEnvironments})
+		leaseMgr.SetLeasePolicy(leaseLimit(sandboxEnvironments), leaseOwnerRunning(pebblestore.NewSessionStore(store)))
+	}
 	apiServer.SetSandboxEnvironmentStore(sandboxEnvironments)
 	secretSlots := pebblestore.NewSecretSlotStore(store)
 	apiServer.SetSecretServices(secretSlots, authStore)
@@ -761,11 +852,25 @@ func New(cfg config.Config) (*Daemon, error) {
 			resultOutbox = outbox.NewExporter(outboxCfg, dest, signalStore, store, apiServer.OutboxAccount, apiServer.OutboxResultBuilder())
 			resultOutbox.SetStatusBuilder(apiServer.OutboxStatusBuilder())
 			apiServer.SetOutboxStatus(resultOutbox.Status)
+			apiServer.SetOutboxDeliveryWriter(resultOutbox.WriteDelivery)
 			log.Printf("swarmd outbox exports to %s as machine %s", outboxCfg.Describe(), outboxCfg.Machine)
 		}
 	}
-	// Jobs in folders whose owner set a publish command (install.sh workspace
-	// publish) are delivered as pull requests; auto rules deliver them unasked.
+	// Job automations (docs/automations.md): when a job ends, run the steps
+	// the owner set for it, and nothing when there are none.
+	jobAutomationRunner := jobautomation.NewRunner(jobautomation.Options{
+		Store: jobautomation.NewStore(store), Feed: signalStore, Account: apiServer.OutboxAccount,
+		Results: apiServer.JobAutomationResults(), Agent: apiServer.JobAutomationAgents(), Reopen: apiServer.JobAutomationReopener(),
+		Head: api.ImportJobRef, Verify: api.VerifyJobHead, Lines: api.JobHeadChangedLines, Emit: signalEmitter.Emit,
+		// Deliver steps hand deliverables over; produce steps' files are found.
+		Deliver: apiServer.JobAutomationDeliverer(),
+		// Run steps are the owner's root-owned scripts, run on the host as the
+		// daemon's user, like the publish command.
+		Run: jobautomation.HostExecutor{},
+	})
+	apiServer.SetJobAutomations(jobAutomationRunner)
+	// Jobs in folders whose owner set a publish command (swarmctl workspace
+	// publish) are delivered as pull requests when swarm_deliver_job asks.
 	apiServer.SetPublishConfig(os.Getenv(publish.ConfigEnv))
 	// A sync rule starts each worker job from the forge's latest base branch.
 	runSvc.SetPublishBaseResolver(func(ctx context.Context, folder, current string) (string, string, bool, error) {
@@ -783,7 +888,6 @@ func New(cfg config.Config) (*Daemon, error) {
 		}
 		return base.Commit, base.Branch, true, nil
 	})
-	autoPublisher := apiServer.NewAutoPublisher(signalStore, store)
 	var secretGatewayStop func()
 	if cfg.SecretsGateway == "on" {
 		broker, stopGateway, err := startSecretGateway(cfg, secretSlots, authStore, signalEmitter)
@@ -795,6 +899,9 @@ func New(cfg config.Config) (*Daemon, error) {
 			return nil, fmt.Errorf("secret gateway: %w", err)
 		}
 		sandboxMgr.SetSecretBroker(broker)
+		if leaseMgr != nil {
+			leaseMgr.SetSecretBroker(broker)
+		}
 		secretGatewayStop = stopGateway
 		log.Printf("swarmd secret gateway enabled; granted secrets inject through the egress gateway without the agent seeing them")
 	}
@@ -804,6 +911,11 @@ func New(cfg config.Config) (*Daemon, error) {
 	go deploymentMgr.RunReviewCleanup(bgCtx, func(err error) {
 		log.Printf("warning: environment review cleanup: %v", err)
 	})
+	if leaseMgr != nil {
+		leaseMgr.Start(bgCtx)
+		leaseMgr.StartLeases(bgCtx)
+		log.Printf("swarmd environment leases ready: agents lease their folder's environment for bash, up to its max_leases; leases end with the agent's run")
+	}
 	apiServer.SetMediaStagingService(mediaStagingSvc)
 	apiServer.SetVideoTranscriptionService(videoTranscriptionSvc)
 	apiServer.SetVideoProjectService(videoProjectSvc)
@@ -843,6 +955,9 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = store.Close()
 		_ = lk.Release()
 		return nil, fmt.Errorf("compose worker execution: %w", err)
+	}
+	if err := workerExecution.SweepReviewAdmissions(bgCtx); err != nil {
+		log.Printf("warning: recover review admissions: %v", err)
 	}
 	runSvc.SetWorkerExecutionService(workerExecution)
 	runSvc.SetAITaskBinder(todoSvc)
@@ -902,32 +1017,23 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetSwarmStore(swarmStore)
 	apiServer.SetUpdateService(updateSvc)
 	apiServer.SetTopologyService(topologySvc)
-	if cfg.DesktopPort > 0 {
-		listenHost, _, err := net.SplitHostPort(cfg.ListenAddr)
-		if err != nil {
-			bgCancel()
-			_ = secretStore.Close()
-			_ = store.Close()
-			_ = lk.Release()
-			return nil, fmt.Errorf("configure tailscale verifier desktop listener: %w", err)
-		}
-		detector, err := tailscale.NewDetector(tailscale.Config{
-			Listener: tailscale.Listener{Host: listenHost, Port: cfg.DesktopPort},
-		})
-		if err != nil {
-			bgCancel()
-			_ = secretStore.Close()
-			_ = store.Close()
-			_ = lk.Release()
-			return nil, fmt.Errorf("configure tailscale verifier: %w", err)
-		}
-		apiServer.SetTailscaleServePolicy(pebblestore.NewTailscaleServeAllowlistStore(store), detector)
-	}
 
+	// Design jobs and in-session swarm_design calls check each design in the
+	// sandboxed headless Chrome; without a renderer every check reports
+	// unavailable (never a pass).
+	designChecker := design.ChromeChecker{}
 	if htmlRenderer != nil {
-		runSvc.SetDesignRenderer(htmlRenderer)
+		designChecker.Browser = htmlRenderer
 	}
-	designDispatcher := runSvc.StartDesignDispatcher(bgCtx)
+	apiServer.SetDesignJobs(designChecker, runSvc)
+	runSvc.SetDesignChecker(designChecker)
+	// manage_design was replaced by swarm_design: its queue is no longer
+	// dispatched, so requests still pending from before are ended once here.
+	if ended, err := sessionSvc.DesignStore().RetirePendingDesignRequests(); err != nil {
+		log.Printf("warning: retire pending manage_design requests: %v", err)
+	} else if ended > 0 {
+		log.Printf("ended %d pending manage_design candidate(s): manage_design was replaced by swarm_design", ended)
+	}
 	localTransportRuntimeName := ""
 
 	d := &Daemon{
@@ -947,14 +1053,14 @@ func New(cfg config.Config) (*Daemon, error) {
 		toolRuntime:               toolRuntime,
 		videoRenderService:        videoRenderSvc,
 		aiTaskDispatcher:          aiTaskDispatcher,
-		designDispatcher:          designDispatcher,
 		workerExecution:           workerExecution,
+		worktreeService:           worktreeSvc,
 		deploymentMgr:             deploymentMgr,
 		localTransportRuntimeName: localTransportRuntimeName,
 		remoteTransport:           remoteSvc,
 		signalForwarder:           signalForwarder,
 		resultOutbox:              resultOutbox,
-		autoPublisher:             autoPublisher,
+		jobAutomations:            jobAutomationRunner,
 	}
 	d.secretGatewayStop = secretGatewayStop
 	apiServer.SetShutdownHandler(func(reason string) {
@@ -1006,22 +1112,6 @@ func New(cfg config.Config) (*Daemon, error) {
 		WriteTimeout:      0,
 		IdleTimeout:       60 * time.Second,
 	}
-	if cfg.DesktopPort > 0 {
-		listenHost, _, err := net.SplitHostPort(cfg.ListenAddr)
-		if err != nil {
-			return nil, fmt.Errorf("resolve desktop listen host from %q: %w", cfg.ListenAddr, err)
-		}
-		desktopMux := http.NewServeMux()
-		desktopMux.Handle("/", apiServer.DesktopHandler())
-		d.desktopServer = &http.Server{
-			Addr:              net.JoinHostPort(listenHost, strconv.Itoa(cfg.DesktopPort)),
-			Handler:           desktopMux,
-			ReadTimeout:       10 * time.Second,
-			ReadHeaderTimeout: 5 * time.Second,
-			WriteTimeout:      0,
-			IdleTimeout:       60 * time.Second,
-		}
-	}
 
 	diagnostics, err := longsessiondiag.Start(longsessiondiag.Options{
 		Enabled:      cfg.LongSessionDiagnostics,
@@ -1051,7 +1141,9 @@ func New(cfg config.Config) (*Daemon, error) {
 	// can close the stores has succeeded. Otherwise a startup error can race an
 	// eager maintenance pass and panic on an already-closed Pebble database.
 	startV3SessionRetention(bgCtx, sessionSvc)
+	startAgentSessionRetention(bgCtx, apiServer)
 	startMediaStagingCleanup(bgCtx, mediaStagingSvc)
+	startKeyExpiryWarnings(bgCtx, securitySvc)
 	startArtifactMaintenance(bgCtx, artifactRegistry)
 	startVideoRenderRecovery(bgCtx, videoRenderSvc)
 	startMintReport(bgCtx, swarmSvc)
@@ -1144,10 +1236,6 @@ func (d *Daemon) cleanup() error {
 			}
 			d.deploymentMgr = nil
 		}
-		if d.designDispatcher != nil {
-			d.designDispatcher.Close()
-			d.designDispatcher = nil
-		}
 		if d.aiTaskDispatcher != nil {
 			d.aiTaskDispatcher.Close()
 			d.aiTaskDispatcher = nil
@@ -1173,6 +1261,12 @@ func (d *Daemon) cleanup() error {
 			d.copilot = nil
 		}
 		if d.store != nil {
+			if d.workerExecution != nil {
+				d.workerExecution.CloseCleanup()
+			}
+			if d.worktreeService != nil {
+				d.worktreeService.Close()
+			}
 			if err := d.store.Close(); err != nil {
 				errs = append(errs, fmt.Errorf("close store: %w", err))
 			}
@@ -1232,7 +1326,7 @@ func (d *Daemon) Run() error {
 	if d.apiServer != nil {
 		d.apiServer.SetProviderKeyPageAddr(d.httpServer.Addr)
 	}
-	log.Printf("swarmd listener topology api_listen=%q desktop_port=%d desktop_assets_enabled=%t desktop_assets_on_api=%t", d.httpServer.Addr, d.cfg.DesktopPort, strings.TrimSpace(os.Getenv("SWARM_WEB_DIST_DIR")) != "", false)
+	log.Printf("swarmd listener topology api_listen=%q", d.httpServer.Addr)
 
 	d.serveDone = make(chan struct{})
 	go func() {
@@ -1242,23 +1336,14 @@ func (d *Daemon) Run() error {
 			d.requestStop("http-serve-error")
 		}
 	}()
-	if d.desktopServer != nil {
-		desktopLn, err := net.Listen("tcp", d.desktopServer.Addr)
-		if err != nil {
+	for _, client := range d.clientServers {
+		if err := d.serveClient(client); err != nil {
 			_ = ln.Close()
+			for _, started := range d.clientServers {
+				_ = started.server.Close()
+			}
 			return err
 		}
-		d.desktopListener = desktopLn
-		d.desktopServer.Addr = desktopLn.Addr().String()
-		log.Printf("swarmd listener topology desktop_listen=%q desktop_assets_on_desktop=%t", d.desktopServer.Addr, true)
-		d.desktopServeDone = make(chan struct{})
-		go func() {
-			defer close(d.desktopServeDone)
-			if err := d.desktopServer.Serve(desktopLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Printf("swarmd desktop serve error: %v", err)
-				d.requestStop("desktop-serve-error")
-			}
-		}()
 	}
 	if d.localTransportServer != nil {
 		socketPath := strings.TrimSpace(d.localTransportSocketPath)
@@ -1337,8 +1422,8 @@ func (d *Daemon) Run() error {
 	if d.resultOutbox != nil && d.bgCtx != nil {
 		go d.resultOutbox.Run(d.bgCtx)
 	}
-	if d.autoPublisher != nil && d.bgCtx != nil {
-		go d.autoPublisher.Run(d.bgCtx)
+	if d.jobAutomations != nil && d.bgCtx != nil {
+		go d.jobAutomations.Run(d.bgCtx)
 	}
 	// Start only V2, after listeners succeed; never migrate or execute V1 records.
 	if d.automationV2Scheduler != nil {
@@ -1388,9 +1473,14 @@ func (d *Daemon) waitForShutdown() error {
 	}{
 		{name: "api", server: d.httpServer},
 		{name: "container SDK", server: d.containerSDKServer},
-		{name: "desktop", server: d.desktopServer},
 		{name: "peer transport", server: d.peerTransportServer},
 		{name: "local transport", server: d.localTransportServer},
+	}
+	for _, client := range d.clientServers {
+		servers = append(servers, struct {
+			name   string
+			server *http.Server
+		}{client.name, client.server})
 	}
 	for _, item := range servers {
 		if item.server == nil {

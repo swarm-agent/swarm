@@ -1,0 +1,134 @@
+package run
+
+import (
+	"errors"
+	"strings"
+	"time"
+
+	store "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/worktree"
+)
+
+func reviewFromResult(r store.WorkerRunRecord, report, head string, at int64) store.JobReview {
+	model := ""
+	if r.ModelProfile != nil {
+		model = r.ModelProfile.Action.Provider + "/" + r.ModelProfile.Action.Model
+	}
+	review := store.ParseJobReview(report, head, "worker/"+r.WorkerID+"/"+r.ID, model, at)
+	if r.Status != "succeeded" {
+		review.Verdict = "block"
+		review.Reason = "reviewer run " + r.Status
+		if r.Error != "" {
+			review.Reason += ": " + r.Error
+		}
+	}
+	return review
+}
+
+// withReviewFixHead binds a fixing reviewer's verdict to its fix commits:
+// when its checkout's head moved past the reviewed head the record carries
+// FixHead, so an OK never reads as a plain OK of the unfixed head. An OK whose
+// checkout cannot be read fails closed as BLOCK: what it approved is unknown.
+func withReviewFixHead(review store.JobReview, snapshot store.SessionSnapshot, runID string) store.JobReview {
+	var head string
+	var err error
+	if !snapshot.WorktreeEnabled || strings.TrimSpace(snapshot.WorktreeRootPath) == "" {
+		err = errors.New("the reviewer's fix checkout is not recorded on its session")
+	} else {
+		head, err = worktree.ReviewFixHead(snapshot.WorktreeRootPath, reviewFixBranch(runID), review.Head)
+	}
+	if err != nil {
+		if review.Verdict == "ok" {
+			review.Verdict, review.Reason = "block", "reviewer fixes unreadable: "+err.Error()
+		}
+		return review
+	}
+	if head != review.Head {
+		review.FixHead = head
+	}
+	return review
+}
+
+// withBorrowedReviewHead binds a verdict given in the reviewed job's own
+// worktree to that worktree as it is when the review ends: if it moved past
+// the reviewed head or holds uncommitted changes, what the reviewer read is
+// not what the verdict names, so the verdict is a block (never an OK of code
+// nobody reviewed).
+func withBorrowedReviewHead(review store.JobReview, snapshot store.SessionSnapshot, trees *worktree.Service) store.JobReview {
+	reason := ""
+	if trees == nil || strings.TrimSpace(snapshot.WorktreeRootPath) == "" {
+		reason = "the reviewed worktree is not recorded on the review session"
+	} else if state, err := trees.InspectTaskWorkspace(snapshot.WorktreeRootPath); err != nil {
+		reason = "the reviewed worktree is unreadable: " + err.Error()
+	} else if state.HeadCommit != review.Head {
+		reason = "the work changed during the review: its worktree moved from " + review.Head + " to " + state.HeadCommit
+	} else if !state.TrackedClean {
+		reason = "the work changed during the review: its worktree has uncommitted changes"
+	}
+	if reason != "" && review.Verdict != "block" {
+		review.Verdict, review.Reason = "block", reason
+	}
+	return review
+}
+
+func (s *WorkerExecutionService) recordReviewResult(r store.WorkerRunRecord) error {
+	if r.Role != store.WorkerRoleReviewer {
+		return nil
+	}
+	snapshot, found, err := s.host.runs.sessions.GetSession(r.SessionID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	} // stopped before admission captured a target
+	if snapshot.AccountScopeID != r.AccountScopeID || snapshot.UserID != r.UserID || mapString(snapshot.Metadata, "worker_execution_run_id") != r.ID {
+		return store.ErrWorkerConflict
+	}
+	env := reviewEnvironment(snapshot.Metadata)
+	parts := strings.Split(env["SWARM_REVIEW_JOB"], "/")
+	if len(parts) != 3 || (parts[0] != "worker" && parts[0] != "task") || env["SWARM_REVIEW_HEAD"] == "" {
+		return errors.New("review result missing captured target")
+	}
+	report := ""
+	var after uint64
+	// Bounded transcript traversal; if the bound is exceeded fail closed rather
+	// than approving an earlier message as the final verdict.
+	for page := 0; page < 100; page++ {
+		messages, err := s.host.runs.sessions.ListMessages(r.SessionID, after, 100)
+		if err != nil {
+			return err
+		}
+		for _, m := range messages {
+			after = m.GlobalSeq
+			if m.Role == "assistant" {
+				report = m.Content
+			}
+		}
+		if len(messages) < 100 {
+			break
+		}
+		if page == 99 {
+			report = ""
+		}
+	}
+	at := r.CompletedAt
+	if at == 0 {
+		at = time.Now().UnixMilli()
+	}
+	review := reviewFromResult(r, report, env["SWARM_REVIEW_HEAD"], at)
+	if sessionReviewFixes(snapshot.Metadata) {
+		review = withReviewFixHead(review, snapshot, r.ID)
+	}
+	if sessionReviewLaneOwner(snapshot.Metadata) != "" {
+		review = withBorrowedReviewHead(review, snapshot, s.host.trees)
+	}
+	ws, err := s.workerStore()
+	if err != nil {
+		return err
+	}
+	if parts[0] == "task" {
+		return ws.RecordTaskReview(r.AccountScopeID, parts[1], parts[2], review)
+	}
+	return ws.RecordJobReview(r.AccountScopeID, parts[1], parts[2], review)
+}

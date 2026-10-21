@@ -1,6 +1,6 @@
 // Package publish delivers a job's commits as a pull request instead of a
 // local merge, for folders whose owner set a publish command on the machine
-// (`install.sh workspace publish PATH COMMAND`). Swarm never pushes by itself
+// (`swarmctl workspace publish PATH COMMAND`). Swarm never pushes by itself
 // and agents never see the command or its credentials: the daemon runs the
 // owner's command on the host with the job's branch, head and report, and
 // records the pull request it prints. Merging stays with the forge's own rules.
@@ -12,8 +12,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -28,9 +28,6 @@ const ConfigEnv = "SWARM_PUBLISH_CONFIG"
 type Rule struct {
 	Folder  string `json:"folder"`
 	Command string `json:"command"`
-	// Auto delivers a scheduled job that finished with commits without
-	// waiting for an AI to call swarm_deliver_job.
-	Auto bool `json:"auto"`
 	// Sync starts each worker job from the forge's latest base branch (the
 	// command's update step) instead of the folder's checked-out branch, so a
 	// pull request merged on the forge is the next job's starting point.
@@ -67,8 +64,12 @@ var (
 	branchPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$`)
 )
 
+// removedOptions are rule options of removed features. A rule file written
+// for an older Swarm still loads: each is ignored with one log line.
+var removedOptions = map[string]bool{"land": true, "auto": true, "require-proof": true, "require-review": true, "pipeline": true}
+
 // Load reads the rules: one per line, `FOLDER<TAB>COMMAND[<TAB>OPTIONS]`, where
-// OPTIONS is a comma-separated list of auto and sync; blank lines and
+// OPTIONS is a comma-separated list; sync is the only option. Blank lines and
 // #comments are ignored. A missing file is no rules. The file must be
 // owned by root and not writable by anyone else, like the commands it names:
 // only the machine's administrator decides what runs.
@@ -99,15 +100,20 @@ func Load(path string) ([]Rule, error) {
 		}
 		rule := Rule{Folder: filepath.Clean(strings.TrimSpace(fields[0])), Command: strings.TrimSpace(fields[1])}
 		if len(fields) == 3 {
+			var ignored []string
 			for _, option := range strings.Split(fields[2], ",") {
-				switch strings.TrimSpace(option) {
-				case "auto":
-					rule.Auto = true
-				case "sync":
+				option = strings.TrimSpace(option)
+				switch {
+				case option == "sync":
 					rule.Sync = true
+				case removedOptions[option]:
+					ignored = append(ignored, option)
 				default:
-					return nil, fmt.Errorf("publish config line %d: options are auto and sync, comma-separated", line)
+					return nil, fmt.Errorf("publish config line %d: the only option is sync", line)
 				}
+			}
+			if len(ignored) > 0 {
+				log.Printf("publish config line %d: ignoring removed options %s", line, strings.Join(ignored, ","))
 			}
 		}
 		if !filepath.IsAbs(rule.Folder) || !filepath.IsAbs(rule.Command) {
@@ -199,22 +205,12 @@ func Update(ctx context.Context, rule Rule, current string) (Base, error) {
 // folder, with a minimal environment, its own scratch folder and a time limit,
 // and returns what it printed.
 func command(ctx context.Context, rule Rule, scratch string, limit time.Duration, action string, env ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, limit)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, rule.Command)
-	cmd.Dir = rule.Folder
-	cmd.Env = append([]string{
-		"PATH=/usr/local/bin:/usr/bin:/bin",
-		"HOME=" + os.Getenv("HOME"),
-		"TMPDIR=" + scratch,
-		"SWARM_PUBLISH_ACTION=" + action,
-		"SWARM_PUBLISH_FOLDER=" + rule.Folder,
-	}, env...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &limited{buf: &stdout, max: 64 << 10}, &limited{buf: &stderr, max: 64 << 10}
-	runErr := cmd.Run()
+	_, runErr := RunScript(ctx, Script{
+		Path: rule.Command, Dir: rule.Folder, Scratch: scratch, Timeout: limit,
+		Env:    append([]string{"SWARM_PUBLISH_ACTION=" + action, "SWARM_PUBLISH_FOLDER=" + rule.Folder}, env...),
+		Stdout: &limited{buf: &stdout, max: 64 << 10}, Stderr: &limited{buf: &stderr, max: 64 << 10},
+	})
 	output := strings.TrimSpace(stdout.String())
 	if runErr != nil {
 		reason := strings.TrimSpace(stderr.String())
@@ -228,7 +224,12 @@ func command(ctx context.Context, rule Rule, scratch string, limit time.Duration
 
 func lastLine(output string) string {
 	lines := strings.Split(output, "\n")
-	return strings.TrimSpace(lines[len(lines)-1])
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 // ownedByRoot refuses a file another user could change. Tests may set
@@ -238,21 +239,26 @@ func ownedByRoot(path string, executable bool) error {
 	if err != nil {
 		return err
 	}
+	return checkOwnedByRoot(info, executable)
+}
+
+// checkOwnedByRoot applies ownedByRoot's rules to a file's own metadata.
+func checkOwnedByRoot(info os.FileInfo, executable bool) error {
 	if !info.Mode().IsRegular() {
-		return errors.New("not a regular file")
+		return ErrNotRegular
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
-		return errors.New("cannot read its owner")
+		return ErrNoOwner
 	}
 	if stat.Uid != 0 && int(stat.Uid) != allowOwner {
-		return errors.New("must be owned by root")
+		return ErrNotRootOwned
 	}
 	if info.Mode().Perm()&0o022 != 0 {
-		return errors.New("must not be writable by group or others")
+		return ErrWritable
 	}
 	if executable && info.Mode().Perm()&0o111 == 0 {
-		return errors.New("is not executable")
+		return ErrNotExecutable
 	}
 	return nil
 }

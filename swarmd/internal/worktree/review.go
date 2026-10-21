@@ -1,0 +1,300 @@
+package worktree
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/sandbox"
+	"time"
+)
+
+// AllocateReviewWorkspace creates no branch or writable publication lineage.
+func (s *Service) AllocateReviewWorkspace(p identity.Principal, source, owner, head string, commits ...string) (Allocation, error) {
+	if len(commits) == 0 {
+		return Allocation{}, errors.New("review requires exact base evidence")
+	}
+	if err := requirePrincipal(p); err != nil {
+		return Allocation{}, err
+	}
+	source, err := s.resolveWorkspaceConfigPathForPrincipal(p, source)
+	if err != nil {
+		return Allocation{}, err
+	}
+	// Preserve the admitted identity through sandbox cache admission.
+	ctx := identity.ContextWithPrincipal(context.Background(), p)
+	return s.allocateReviewWorkspaceContext(ctx, source, owner, head, worktreeAllocationTimeout, commits...)
+}
+
+func (s *Service) allocateReviewWorkspace(source, owner, head string) (Allocation, error) {
+	return s.allocateReviewWorkspaceTimeout(source, owner, head, worktreeAllocationTimeout)
+}
+
+func (s *Service) allocateReviewWorkspaceTimeout(source, owner, head string, timeout time.Duration) (Allocation, error) {
+	return s.allocateReviewWorkspaceContext(context.Background(), source, owner, head, timeout)
+}
+
+func (s *Service) allocateReviewWorkspaceContext(ctx context.Context, source, owner, head string, timeout time.Duration, commits ...string) (Allocation, error) {
+	root, err := resolveRepositoryRootContext(ctx, source)
+	if err != nil {
+		return Allocation{}, err
+	}
+	// A job commits in its worktree of the folder, so the reviewed head and
+	// the evidence commits are in the folder's repository.
+	resolved, err := runGitContext(ctx, root, "rev-parse", "--verify", head+"^{commit}")
+	if err != nil || resolved != head {
+		return Allocation{}, errors.New("review requires an exact commit")
+	}
+	if len(commits) > 4 {
+		return Allocation{}, errors.New("too many review evidence commits")
+	}
+	for _, commit := range commits {
+		if !validCommitID(commit) {
+			return Allocation{}, errors.New("review requires exact base evidence")
+		}
+		if value, err := runGitContext(ctx, root, "rev-parse", "--verify", commit+"^{commit}"); err != nil || value != commit {
+			return Allocation{}, fmt.Errorf("review evidence commit %s unavailable", commit)
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path, err := deterministicSessionWorktreePath(root, sessionWorkspaceID(owner))
+	if err != nil {
+		return Allocation{}, err
+	}
+	if err := ensureWorktreeParent(root); err != nil {
+		return Allocation{}, err
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		return Allocation{}, errors.New("review checkout already exists")
+	}
+	guard := path + ".review-writer"
+	guardFile, err := os.OpenFile(guard, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return Allocation{}, fmt.Errorf("allocation writer guard: %w", err)
+	}
+	if _, err := guardFile.WriteString("not-started"); err != nil {
+		guardFile.Close()
+		return Allocation{}, err
+	}
+	if err := guardFile.Sync(); err != nil {
+		guardFile.Close()
+		return Allocation{}, err
+	}
+	if err := guardFile.Close(); err != nil {
+		return Allocation{}, err
+	}
+	// A detached worktree of the folder at the reviewed head: no branch, and
+	// the folder's branches are the reviewer's own refs, as of now.
+	_, allocationErr := runGitAllocationGuardedContext(ctx, root, nil, timeout, guard, "worktree", "add", "--detach", path, head)
+	if errors.Is(allocationErr, ErrAllocationWriterUnconfirmed) {
+		return Allocation{}, allocationErr
+	}
+	if err := os.Remove(guard); err != nil {
+		return Allocation{}, errors.Join(allocationErr, err)
+	}
+	if err := allocationErr; err != nil {
+		return Allocation{}, errors.Join(fmt.Errorf("review checkout admission: %w", err), s.CleanupReviewAdmission(root, owner))
+	}
+	return Allocation{WorkspacePath: path, RepoRoot: root, BaseCommit: head, BaseBranch: head, BranchName: "HEAD", WorkspaceID: sessionWorkspaceID(owner)}, nil
+}
+
+// RemoveReviewWorkspace discards build outputs only in the verified managed
+// detached lane. No branch or commit is promoted or delivered.
+func (s *Service) RemoveReviewWorkspace(source, path, owner, head string) error {
+	if err := s.ValidateReviewWorkspaceRemoval(source, path, owner, head); err != nil {
+		return err
+	}
+	return s.RemoveValidatedReviewWorkspace(source, path)
+}
+
+// ValidateReviewWorkspaceRemoval runs before terminal sandbox shutdown.
+func (s *Service) ValidateReviewWorkspaceRemoval(source, path, owner, head string) error {
+	root, err := resolveRepositoryRoot(source)
+	if err != nil {
+		return err
+	}
+	expected, err := deterministicSessionWorktreePath(root, sessionWorkspaceID(owner))
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(path) != expected {
+		return errors.New("review checkout owner mismatch")
+	}
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("review checkout must not be a symlink")
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if _, err := os.Lstat(filepath.Join(path, ".git")); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if err := s.ValidateSessionRepositoryLaneForRead(source, path, owner, "HEAD"); err != nil {
+		return err
+	}
+	actual, err := runGit(path, "rev-parse", "HEAD")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(actual) != head {
+		return errors.New("review head changed")
+	}
+	return nil
+}
+
+// RemoveValidatedReviewWorkspace is daemon-only; no Git runs in the closing
+// checkout. Caller must validate before shutdown and retain restrictive scope.
+func (s *Service) RemoveValidatedReviewWorkspace(source, path string) error {
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("review checkout must not be a symlink")
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return removeManagedWorktree(source, path)
+}
+
+// ValidateReviewExecutionIdentity admits only the daemon-registered, owner-bound
+// detached review checkout at its immutable reviewed commit. It grants no branch
+// publication or mutation authority and never substitutes for writable validation.
+func ValidateReviewExecutionIdentity(source, lane, owner, head string) error {
+	// With the sandbox off by the owner's choice nothing is registered: the
+	// checks below still bind the session to its checkout and head.
+	if !sandbox.OwnerTurnedOff() && sandbox.ReviewSessionCheckout(owner) != lane {
+		return errors.New("review session checkout is not registered")
+	}
+	if err := (&Service{}).ValidateSessionRepositoryLaneForRead(source, lane, owner, "HEAD"); err != nil {
+		return err
+	}
+	resolved, err := runGit(lane, "rev-parse", "--verify", "--end-of-options", head+"^{commit}")
+	if err != nil || resolved != head || head == "" {
+		return errors.New("review requires an exact recorded head")
+	}
+	actual, err := resolveRepositoryHeadCommit(lane)
+	if err != nil {
+		return err
+	}
+	if actual != head {
+		return errors.New("review head changed")
+	}
+	return nil
+}
+
+// ValidateBorrowedReviewExecutionIdentity admits a reviewer session that reads
+// the reviewed job's own worktree in place: the daemon registered that
+// worktree as this session's read-only review checkout, it is still the
+// owner session's lane on its branch, and its HEAD is exactly the reviewed
+// head. It grants nothing: the worktree stays the owner's.
+func ValidateBorrowedReviewExecutionIdentity(source, lane, owner, session, branch, head string) error {
+	if owner == "" || owner == session {
+		return errors.New("borrowed review worktree owner required")
+	}
+	if !sandbox.OwnerTurnedOff() && sandbox.ReviewSessionCheckout(session) != lane {
+		return errors.New("review session checkout is not registered")
+	}
+	if err := (&Service{}).ValidateSessionRepositoryLaneForRead(source, lane, owner, branch); err != nil {
+		return err
+	}
+	actual, err := resolveRepositoryHeadCommit(lane)
+	if err != nil {
+		return err
+	}
+	if head == "" || actual != head {
+		return errors.New("review head changed: the reviewed job's worktree moved")
+	}
+	return nil
+}
+
+// CleanupReviewAdmission is daemon-only. The caller must establish review ownership
+// from a durable run receipt and exclude live execution before calling it. Unlike
+// normal removal it tolerates a checkout interrupted before HEAD was written.
+func (s *Service) CleanupReviewAdmission(source, owner string) error {
+	return s.cleanupReviewAdmission(source, owner, false)
+}
+
+// RecoverReviewAdmission is only for the startup sweep before admissions resume.
+func (s *Service) RecoverReviewAdmission(source, owner string) error {
+	return s.cleanupReviewAdmission(source, owner, true)
+}
+
+func (s *Service) cleanupReviewAdmission(source, owner string, startup bool) error {
+	if strings.TrimSpace(owner) == "" {
+		return errors.New("review owner required")
+	}
+	root, err := resolveRepositoryRoot(source)
+	if err != nil {
+		return err
+	}
+	path, err := deterministicSessionWorktreePath(root, sessionWorkspaceID(owner))
+	if err != nil {
+		return err
+	}
+	if err := recoverReviewWriter(path+".review-writer", startup); err != nil {
+		return err
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	if parent != filepath.Dir(path) {
+		return errors.New("review parent is a symlink")
+	}
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("review checkout is a symlink")
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	common, err := runGit(root, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return err
+	}
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(root, common)
+	}
+	registrations := filepath.Join(common, "worktrees")
+	if info, err := os.Lstat(registrations); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("worktree registrations directory is a symlink")
+	}
+	entries, err := os.ReadDir(registrations)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	// Identify only this checkout's registration; a global prune would also
+	// remove unrelated missing user worktrees.
+	var owned []string
+	pointer, _ := os.ReadFile(filepath.Join(path, ".git"))
+	linked := strings.TrimSpace(strings.TrimPrefix(string(pointer), "gitdir: "))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		registration := filepath.Join(registrations, entry.Name())
+		data, err := os.ReadFile(filepath.Join(registration, "gitdir"))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if strings.TrimSpace(string(data)) == filepath.Join(path, ".git") || (errors.Is(err, os.ErrNotExist) && linked == registration && entry.Name() == filepath.Base(path)) {
+			head, err := os.ReadFile(filepath.Join(registration, "HEAD"))
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			if strings.HasPrefix(strings.TrimSpace(string(head)), "ref:") {
+				return errors.New("refusing to remove a branch-backed checkout as a review")
+			}
+			owned = append(owned, registration)
+		}
+	}
+	for _, registration := range owned {
+		if err := os.RemoveAll(registration); err != nil {
+			return fmt.Errorf("prune review registration: %w", err)
+		}
+	}
+	if err := os.RemoveAll(path); err != nil {
+		return fmt.Errorf("remove partial review checkout: %w", err)
+	}
+	return nil
+}

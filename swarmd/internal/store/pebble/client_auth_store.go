@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -105,6 +106,7 @@ func generateToken(size int) (string, error) {
 }
 
 type ScopedTokenRecord struct {
+	Kind           string   `json:"kind,omitempty"`
 	ID             string   `json:"id"`
 	Name           string   `json:"name"`
 	TokenHash      string   `json:"token_hash"`
@@ -117,12 +119,36 @@ type ScopedTokenRecord struct {
 	// AgentName binds the token to one sealed agent's sessions (default-deny).
 	AgentName string `json:"agent_name,omitempty"`
 	// Rate limits for agent-bound tokens; zero means the daemon default.
-	MessagesPerMinute int   `json:"messages_per_minute,omitempty"`
-	SessionsPerHour   int   `json:"sessions_per_hour,omitempty"`
-	CreatedAt         int64 `json:"created_at"`
-	ExpiresAt         int64 `json:"expires_at"` // 0 = never
-	Revoked           bool  `json:"revoked"`
-	LastUsedAt        int64 `json:"last_used_at,omitempty"`
+	MessagesPerMinute int `json:"messages_per_minute,omitempty"`
+	SessionsPerHour   int `json:"sessions_per_hour,omitempty"`
+	MaxConcurrentRuns int `json:"max_concurrent_runs,omitempty"`
+	// Per-end-user limits for a gateway token's sessions that carry an
+	// end_user; zero means the daemon default (no daily token cap).
+	EndUserMessagesPerMinute int   `json:"end_user_messages_per_minute,omitempty"`
+	EndUserSessionsPerHour   int   `json:"end_user_sessions_per_hour,omitempty"`
+	EndUserMaxTokensPerDay   int64 `json:"end_user_max_tokens_per_day,omitempty"`
+	// AgentOperator makes an agent-bound token the human-takeover key for the
+	// agent's conversations instead of the gateway key (see agentOperatorRouteError).
+	AgentOperator bool  `json:"agent_operator,omitempty"`
+	CreatedAt     int64 `json:"created_at"`
+	// ExpiresAt is the owner's fixed end date (0: none). Whether it applies,
+	// and when a key lapses from disuse, is security.KeyLapse.
+	ExpiresAt int64 `json:"expires_at"`
+	// ExpiryRule is "idle" (lapses after going unused) or "date" (idle, plus
+	// the fixed ExpiresAt). Empty on keys minted before the rule.
+	ExpiryRule string `json:"expiry_rule,omitempty"`
+	Revoked    bool   `json:"revoked"`
+	LastUsedAt int64  `json:"last_used_at,omitempty"`
+	// LastUsedFrom is where the key was last used from (security.KeySource),
+	// and SeenFrom every place it has been used from, newest last, bounded.
+	LastUsedFrom string   `json:"last_used_from,omitempty"`
+	SeenFrom     []string `json:"seen_from,omitempty"`
+	// NewSourceAt is when the key was last used from a place it had not been
+	// used from before (after its first place).
+	NewSourceAt int64 `json:"new_source_at,omitempty"`
+	// ExpiringWarnedFor is the lapse time the key.expiring warning was raised
+	// for, so it is raised once per lapse.
+	ExpiringWarnedFor int64 `json:"expiring_warned_for,omitempty"`
 	// ParentTokenID is the scoped token that minted this one; this token is
 	// valid only while that parent is (security.Service.ValidateScopedToken).
 	ParentTokenID string `json:"parent_token_id,omitempty"`
@@ -208,7 +234,19 @@ func (s *ClientAuthStore) ListScopedTokens(accountScopeID string) ([]ScopedToken
 	if s == nil || s.secretStore == nil {
 		return nil, fmt.Errorf("secret store is not configured")
 	}
-	prefix := KeyAuthScopedTokenPrefixForAccount(accountScopeID)
+	return s.listScopedTokensWithPrefix(KeyAuthScopedTokenPrefixForAccount(accountScopeID))
+}
+
+// ListAllScopedTokens lists every account's scoped tokens, for machine-wide
+// startup checks.
+func (s *ClientAuthStore) ListAllScopedTokens() ([]ScopedTokenRecord, error) {
+	if s == nil || s.secretStore == nil {
+		return nil, fmt.Errorf("secret store is not configured")
+	}
+	return s.listScopedTokensWithPrefix(KeyAuthScopedTokenPrefix)
+}
+
+func (s *ClientAuthStore) listScopedTokensWithPrefix(prefix string) ([]ScopedTokenRecord, error) {
 	var records []ScopedTokenRecord
 	err := iteratePrefixFromReader(s.secretStore.db, prefix, 0, func(key string, value []byte) error {
 		var rec ScopedTokenRecord
@@ -255,10 +293,44 @@ func (s *ClientAuthStore) DeleteScopedToken(accountScopeID, tokenID string) erro
 }
 
 func (s *ClientAuthStore) UpdateScopedTokenLastUsed(accountScopeID, tokenID string, usedAt int64) error {
+	_, err := s.UpdateScopedTokenUse(accountScopeID, tokenID, usedAt, "", 0)
+	return err
+}
+
+// UpdateScopedTokenUse records a use of the key at usedAt from source (empty:
+// unknown) and reports whether source is a place the key had not been used
+// from before while it had been used from somewhere. SeenFrom keeps at most
+// maxSeen places, dropping the oldest.
+func (s *ClientAuthStore) UpdateScopedTokenUse(accountScopeID, tokenID string, usedAt int64, source string, maxSeen int) (bool, error) {
 	record, ok, err := s.GetScopedToken(accountScopeID, tokenID)
 	if err != nil || !ok || record.Revoked {
-		return err
+		return false, err
 	}
 	record.LastUsedAt = usedAt
+	isNew := false
+	if source != "" {
+		record.LastUsedFrom = source
+		if !slices.Contains(record.SeenFrom, source) {
+			isNew = len(record.SeenFrom) > 0
+			if isNew {
+				record.NewSourceAt = usedAt
+			}
+			record.SeenFrom = append(record.SeenFrom, source)
+			if maxSeen > 0 && len(record.SeenFrom) > maxSeen {
+				record.SeenFrom = append([]string(nil), record.SeenFrom[len(record.SeenFrom)-maxSeen:]...)
+			}
+		}
+	}
+	return isNew, s.PutScopedToken(record)
+}
+
+// MarkScopedTokenExpiringWarned records that the key.expiring warning was
+// raised for the lapse at lapseAt.
+func (s *ClientAuthStore) MarkScopedTokenExpiringWarned(accountScopeID, tokenID string, lapseAt int64) error {
+	record, ok, err := s.GetScopedToken(accountScopeID, tokenID)
+	if err != nil || !ok {
+		return err
+	}
+	record.ExpiringWarnedFor = lapseAt
 	return s.PutScopedToken(record)
 }

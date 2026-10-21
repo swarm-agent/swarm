@@ -16,6 +16,7 @@ set +e +o pipefail
 set -eu
 
 STATE=$work/state OPT=$work/opt SRC=$work/src CONF=$work/state/install.env
+STARTUP_CONFIG=$work/swarm.conf
 UPDATE_STATE=$OPT/update-state.json UPDATE_BAD=$STATE/update-bad
 mkdir -p "$STATE" "$OPT/releases" "$work/statuses"
 log=$work/log
@@ -61,12 +62,32 @@ reviewed() { echo "[$(status ai-review "$2" swarm-go-ai-review[bot])]" >"$work/s
 busy=false
 local_api() {
   case $1 in
-    /v3/box/busy) printf '{"busy":%s,"sessions":%s,"worker_runs":0,"environment_builds":0}' "$busy" "$([[ $busy == true ]] && echo 1 || echo 0)" ;;
+    /v3/box/drain*)
+      echo "drain $*" >>"$log"
+      if [[ ${drain_http:-200} != 200 ]]; then
+        printf '\n%s' "$drain_http"
+        return "${drain_error:-22}"
+      fi
+      printf '{"generation":"test-boot","draining":true,"ready":%s,"timed_out":%s}' "$([[ $busy == true ]] && echo false || echo true)" "$busy"
+      [[ " $* " != *' -w '* ]] || printf '\n200'
+      ;;
+    /v3/box/busy)
+      echo busy >>"$log"
+      [[ ${busy_error:-0} == 0 ]] || return "$busy_error"
+      printf '{"busy":%s,"sessions":%s,"worker_runs":0,"environment_builds":0}' "$busy" "$([[ $busy == true ]] && echo 1 || echo 0)"
+      ;;
     /v3/box/summary) printf '{"machine":{"commit":"%s"},"sandbox":{"active":true}}' "$(running_commit)" ;;
   esac
 }
 systemctl() { return 0; }
 sleep() { :; }
+# Docker records what it was asked; its help names the flag current Docker has.
+docker() {
+  echo "docker $*" >>"$log"
+  [[ " $* " == *" --help "* ]] && echo "${docker_prune_flag:---max-used-space} bytes"
+  return 0
+}
+stale() { local c; c=$(printf "%s" "$1" | sha1sum | cut -c1-40); mkdir -p "$OPT/releases/$c/bin"; echo "$c"; }
 # The fetched installer: finish-update is recorded, build-release builds.
 INSTALLER=$work/installer
 cat >"$INSTALLER" <<EOF
@@ -78,7 +99,7 @@ esac
 EOF
 # Activation switches the release; a commit listed in $work/broken never comes up.
 activate() { echo "activate $1" >>"$log"; [[ -n $(running_commit) && $(running_commit) != "$1" ]] && ln -sfn "$OPT/releases/$(running_commit)" "$OPT/previous"; ln -sfn "$OPT/releases/$1" "$OPT/current"; }
-came_up() { ! grep -qx "$1" "$work/broken" 2>/dev/null; }
+came_up() { echo "came_up $1 $2" >>"$log"; ! grep -qx "$1" "$work/broken" 2>/dev/null; }
 printf '#!/bin/sh\necho "$SWARM_UPDATE_EVENT $SWARM_UPDATE_COMMIT $SWARM_UPDATE_MACHINE" >>%s\n' "$work/hook-log" >"$work/hook"
 chmod 0755 "$work/hook"
 # The hook must be root-owned; the test runs as its owner, so pretend.
@@ -109,26 +130,105 @@ run_update
 
 # 3. While anything runs, the new build waits next to the running one.
 busy=true
-finish_update
-[[ $(state state) == waiting_idle && $(running_commit) == "$c1" ]] || fail "Swarm was restarted while work ran: $(cat "$UPDATE_STATE")"
+finish_update && fail 'busy drain unexpectedly activated'
+[[ $(state state) == blocked && $(running_commit) == "$c1" ]] || fail "Swarm was restarted while work ran: $(cat "$UPDATE_STATE")"
 grep -q "^activate" "$log" && fail "activated while busy"
 grep -qx "build $c3" "$log" || fail "the update did not build while work ran"
 
-# 4. Once nothing runs, it switches and reports it.
+# Compatibility invariant: finish_update may use the older busy endpoint only
+# after an HTTP 404, and cleanup_update_drain must not touch an unowned drain.
+# These function-level cases are the narrowest layer exercising the real wait,
+# state and shared switch/rollback decisions without services or a release build.
+# Errors, malformed status and timeout must leave the running release unchanged.
+for scenario in idle becomes-idle timeout busy-missing busy-invalid server-error transport-error crash-looping rollback; do
+  (
+    ln -sfn "$OPT/releases/$c1" "$OPT/current"
+    : >"$log"
+    drain_http=404 drain_error=22 busy=false busy_error=0
+    UPDATE_DRAIN_SECONDS=10
+    case $scenario in
+      becomes-idle | timeout) busy=true ;;
+      busy-missing) busy_error=22 ;;
+      busy-invalid) busy=null ;;
+      server-error) drain_http=500 ;;
+      transport-error) drain_http=000 drain_error=7 ;;
+      rollback) echo "$c3" >"$work/broken" ;;
+      crash-looping)
+        drain_http=000 drain_error=7
+        systemctl() { [[ $1 == show && " $* " == *SubState* ]] && echo auto-restart; [[ $1 == show && " $* " == *ActiveState* ]] && echo activating; return 0; } ;;
+    esac
+    sleep() {
+      echo "sleep $1" >>"$log"
+      SECONDS=$((SECONDS + $1))
+      [[ $scenario != becomes-idle ]] || busy=false
+    }
+    rc=0
+    finish_update >"$work/fallback-out" 2>"$work/fallback-err" || rc=$?
+    [[ ! -s $work/fallback-err ]] || fail "$scenario emitted errors: $(cat "$work/fallback-err")"
+    [[ $(grep -c '^drain ' "$log") == 1 ]] || fail "$scenario tried to clean up or reserve a missing drain"
+    case $scenario in
+      idle | becomes-idle)
+        [[ $rc == 0 && $(state state) == installed && $(running_commit) == "$c3" ]] || fail "$scenario did not switch"
+        grep -qx "activate $c3" "$log" || fail "$scenario bypassed shared activation"
+        grep -q 'draining the older way' "$work/fallback-out" || fail "$scenario did not explain legacy draining"
+        [[ $scenario != becomes-idle ]] || { [[ $(grep -c '^busy$' "$log") == 2 ]] && grep -qx 'sleep 5' "$log"; } || fail "did not wait for idle"
+        ;;
+      crash-looping)
+        [[ $rc == 0 && $(state state) == installed && $(running_commit) == "$c3" ]] || fail "a crash-looping Swarm was left on its broken release: $(cat "$UPDATE_STATE")"
+        grep -qx "activate $c3" "$log" || fail "$scenario bypassed shared activation"
+        ! grep -qx busy "$log" || fail "$scenario used the older drain"
+        ;;
+      rollback)
+        [[ $rc == 0 && $(state state) == rolled_back && $(running_commit) == "$c1" ]] || fail "legacy update did not roll back"
+        grep -qx "activate $c3" "$log" && grep -qx "activate $c1" "$log" || fail "legacy rollback bypassed activation"
+        ;;
+      *)
+        [[ $rc != 0 && $(state state) == blocked && $(running_commit) == "$c1" ]] || fail "$scenario did not block safely"
+        ! grep -q '^activate ' "$log" || fail "$scenario activated"
+        case $scenario in
+          server-error | transport-error) ! grep -qx busy "$log" || fail "$scenario used fallback" ;;
+          busy-missing) [[ $(state reason) == *'busy endpoint missing or unavailable; daemon left running'* ]] || fail "missing busy message" ;;
+          timeout) [[ $(state reason) == *'timed out'* ]] || fail "missing timeout message" ;;
+        esac
+        ;;
+    esac
+  )
+done
+rm -f "$work/broken" "$UPDATE_BAD"
+ln -sfn "$OPT/releases/$c1" "$OPT/current"
+
+# 4. Once nothing runs, it switches and reports it. Then old releases and
+# their sandbox images go, the running one and the one before it stay, and
+# Docker's build cache is trimmed.
 busy=false
+old1=$(stale old1) old2=$(stale old2)
+mkdir -p "$OPT/releases/not-a-release"
+: >"$log"
 finish_update
 [[ $(state state) == installed && $(running_commit) == "$c3" ]] || fail "the idle machine did not switch: $(cat "$UPDATE_STATE")"
+# The sandbox was on before, but this install has it off (no SANDBOX=on), so
+# the new build is not required to have it on.
+grep -qx "came_up $c3 false" "$log" || fail "an update with the sandbox off required it on: $(grep came_up "$log")"
 grep -qx "installed $c3 test-box" "$work/hook-log" || fail "the hook was not told of the install"
+[[ ! -e $OPT/releases/$old1 && ! -e $OPT/releases/$old2 ]] || fail "old releases were kept after an update"
+[[ -x $OPT/releases/$c3/bin/swarmd && -x $OPT/releases/$c1/bin/swarmd ]] || fail "the running release or the one before it was removed"
+[[ -d $OPT/releases/not-a-release ]] || fail "a directory that is not a release was removed"
+grep -qx "docker image rm swarm-sandbox:$old1" "$log" || fail "an old release's sandbox image was kept"
+grep -qx "docker builder prune -af --max-used-space 8gb" "$log" || fail "build cache was not trimmed after an update: $(grep docker "$log")"
 finish_update
 [[ $(state state) == current ]] || fail "an up-to-date machine is not current"
 
 # 5. A build that does not come up goes back to the one before, and that
-# commit is never tried again.
+# commit is never tried again. Nothing is cleaned up after a rollback.
 c4=$(commit four)
 reviewed "$c4" success
 echo "$c4" >"$work/broken"
+old3=$(stale old3)
 run_update
+: >"$log"
 finish_update
+[[ -d $OPT/releases/$old3 ]] || fail "releases were removed after a rollback"
+! grep -q "builder prune" "$log" || fail "build cache was trimmed after a rollback"
 [[ $(state state) == rolled_back && $(running_commit) == "$c3" && $(cat "$UPDATE_BAD") == "$c4" ]] || fail "a broken build was not rolled back: $(cat "$UPDATE_STATE")"
 grep -qx "rolled_back $c4 test-box" "$work/hook-log" || fail "the hook was not told of the rollback"
 activations=$(grep -c "^activate" "$log")
@@ -140,8 +240,10 @@ c5=$(commit five)
 reviewed "$c5" success
 touch "$work/build-fails"
 run_update
+: >"$log"
 (finish_update) || true
 [[ $(state state) == failed && $(running_commit) == "$c3" ]] || fail "a failed build changed the running build: $(cat "$UPDATE_STATE")"
+[[ -d $OPT/releases/$old3 ]] && ! grep -q "builder prune" "$log" || fail "something was cleaned up after a failed build"
 rm "$work/build-fails"
 
 # 7. A release merge that adds nothing to a reviewed dev commit counts as it;
@@ -160,10 +262,28 @@ set +e; checks_passed "$changed" >/dev/null; rc=$?; set -e
 [[ $rc == 2 ]] || fail "a release merge that changed the tree passed without its own review ($rc)"
 UPDATE_CHECKS=none checks_passed "$changed" || fail "UPDATE_CHECKS=none still checked"
 
+# 7b. A rewritten branch: while another branch (keep) still has the running
+# build, it waits; once no branch has it, the branch's new reviewed head is taken.
+running=$(git -C "$SRC" rev-parse HEAD)
+git -C "$SRC" push -q origin "$running:refs/heads/keep"
+git -C "$work/dev" push -q "$work/origin.git" :main
+git -C "$work/dev" checkout -q dev
+git -C "$work/dev" reset -q --hard "$c1"
+git -C "$work/dev" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m rewritten
+c5=$(git -C "$work/dev" rev-parse HEAD)
+git -C "$work/dev" push -q -f "$work/origin.git" HEAD:dev
+reviewed "$c5" success
+run_update
+[[ $(state state) == waiting && $(git -C "$SRC" rev-parse HEAD) == "$running" ]] || fail "a build still on another branch was replaced: $(cat "$UPDATE_STATE")"
+git -C "$work/dev" push -q "$work/origin.git" :keep
+: >"$log"
+run_update
+[[ $(git -C "$SRC" rev-parse HEAD) == "$c5" ]] && grep -qx finish-update "$log" || fail "a build left behind by a rewritten branch was not updated: $(cat "$UPDATE_STATE")"
+
 # 8. A hook others can change is not run.
 chmod 0777 "$work/hook"
 : >"$work/hook-log"
-update_state blocked "test" "other-commit" 2>/dev/null
+SWARM_REF=dev UPDATE_HOOK=$work/hook update_state blocked "test" "other-commit" 2>/dev/null
 [[ ! -s $work/hook-log ]] || fail "a world-writable hook was run"
 
 # 9. A setting change (workspace add, daemon-env, tailnet, secret gateway)
@@ -189,5 +309,86 @@ for url in https://github.com/swarm-agent/swarm.git git@github.com:swarm-agent/s
 done
 git -C "$SRC" remote set-url origin https://example.com/swarm.git
 github_repo >/dev/null && fail "a non-GitHub origin was read as GitHub"
+
+# Purpose: exercise the real activation and smoke/rollback boundary when the
+# candidate daemon exits 2, including a failed reservation release. Service and
+# Docker adapters are local stand-ins; no live outage or benchmark is claimed.
+(
+  source <(sed '$d' "$here/install.sh" | sed -n '/^activate() {/,/^}/p; /^came_up() {/,/^}/p')
+  STARTUP_CONFIG=$work/swarm.conf
+  printf '# keep comment\n sandbox_cpu_slots = 0\nport = 7777\n' >"$STARTUP_CONFIG"
+  cp "$STARTUP_CONFIG" "$work/config-before"
+  chmod 0600 "$STARTUP_CONFIG"
+  release "$c5"
+  cat >"$OPT/releases/$c5/bin/swarmd" <<'DAEMON'
+#!/bin/sh
+if [ "$*" = 'config removed-keys' ]; then echo sandbox_cpu_slots; exit 0; fi
+exit 2
+DAEMON
+  INSTALLER=$work/already-built
+  printf '#!/bin/sh\nexit 0\n' >"$INSTALLER"
+  ln -sfn "$OPT/releases/$c3" "$OPT/current"
+  SWARMCTL=$work/swarmctl
+  SERVICE_USER=test SERVICE_HOME=$work
+  firewall() { :; }; register_gvisor() { :; }; choose_runtime() { SANDBOX_RUNTIME=default; }; install_units() { :; }; docker() { :; }
+  systemctl() {
+    if [[ $1 == restart && $2 == "$DAEMON_UNIT" ]]; then
+      ! grep -q 'sandbox_cpu_slots' "$STARTUP_CONFIG" || fail 'removed key present at restart'
+      "$OPT/current/bin/swarmd" || return $?
+    elif [[ $1 == is-active ]]; then
+      [[ $(running_commit) != "$c5" ]]
+    fi
+  }
+  local_api() {
+    if [[ $(running_commit) == "$c5" ]]; then return 7; fi
+    case $1 in
+      /v3/box/drain*)
+        if [[ " $* " == *' -X POST '* ]]; then printf '{"generation":"boot","ready":true}\n200'
+        elif [[ " $* " == *'release'* ]]; then return 7
+        else echo '{"reserved":true}'; fi ;;
+      /v3/box/summary) printf '{"machine":{"commit":"%s"},"sandbox":{"active":true}}' "$(running_commit)" ;;
+    esac
+  }
+  finish_update || fail 'crash-loop update did not complete rollback'
+  [[ $(state state) == rolled_back && $(running_commit) == "$c3" ]] || fail 'crash-loop did not restore previous release'
+  ! grep -q 'sandbox_cpu_slots' "$STARTUP_CONFIG" || fail 'removed key remains'
+  backups=("$STARTUP_CONFIG".removed-keys-*)
+  [[ ${#backups[@]} == 1 ]] && cmp -s "$work/config-before" "${backups[0]}" || fail 'missing exact dated backup'
+  [[ $(command stat -c %a "$STARTUP_CONFIG") == 600 ]] || fail 'config mode changed'
+  [[ $(cat "$STARTUP_CONFIG") == $'# keep comment\nport = 7777' ]] || fail 'unrelated config changed'
+  migrate_removed_startup_keys "$OPT/releases/$c5" || fail 'repeat migration failed'
+  backups=("$STARTUP_CONFIG".removed-keys-*)
+  [[ ${#backups[@]} == 1 ]] || fail 'repeat migration made another backup'
+  cp "$STARTUP_CONFIG" "$work/config-migrated"
+  # Failed candidate introspection must not modify the managed configuration.
+  migrate_removed_startup_keys "$work/missing-release" && fail 'missing candidate accepted'
+  cmp -s "$STARTUP_CONFIG" "$work/config-migrated" || fail 'failed query changed config'
+  # An asynchronously failing service can report restart success; socket smoke
+  # must still reject it within its bounded attempts.
+  ln -sfn "$OPT/releases/$c5" "$OPT/current"
+  systemctl() { return 0; }
+  came_up "$c5" true && fail 'socket-dead daemon passed smoke'
+  systemctl() { return 1; }
+  local_api() { echo '{"machine":{},"sandbox":{"active":true}}'; }
+  came_up "$c5" true && fail 'inactive service passed smoke'
+  true
+)
+
+# 12. Build cache settings: none keeps it, a bad value is refused without
+# failing, older Docker gets its older flag; no running release, no pruning.
+(
+  : >"$log"
+  BUILD_CACHE_MAX=none prune_build_cache
+  ! grep -q "builder prune -af" "$log" || fail "BUILD_CACHE_MAX=none still trimmed"
+  BUILD_CACHE_MAX=lots prune_build_cache 2>/dev/null || fail "a bad BUILD_CACHE_MAX failed the caller"
+  ! grep -q "builder prune -af" "$log" || fail "a bad BUILD_CACHE_MAX still trimmed"
+  docker_prune_flag=--keep-storage BUILD_CACHE_MAX=2gb prune_build_cache
+  grep -qx "docker builder prune -af --keep-storage 2gb" "$log" || fail "older Docker did not get --keep-storage"
+  OPT=$work/empty-opt
+  mkdir -p "$OPT/releases"
+  lone=$(stale lone)
+  prune_releases
+  [[ -d $OPT/releases/$lone ]] || fail "releases were removed with no running release"
+)
 
 echo "install-update: all checks passed"

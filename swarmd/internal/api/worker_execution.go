@@ -33,7 +33,7 @@ func (s *Server) workerRunViews(runs []pebblestore.WorkerRunRecord) ([]workerRun
 	execution, execErr := s.workerExecutionService()
 	for _, run := range runs {
 		view := workerRunView{WorkerRunRecord: run}
-		if execErr == nil && run.Status == "succeeded" {
+		if execErr == nil {
 			review, err := execution.RunReview(run)
 			if err != nil {
 				return nil, err

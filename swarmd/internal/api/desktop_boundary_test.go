@@ -1,9 +1,5 @@
 package api
 
-// Cookie assertion maintenance: withDesktopBoundary must reject a rebinding
-// authority before issuance. Match the entire Desktop-cookie namespace so the
-// HTTP boundary test forbids both retired and origin-scoped session cookies.
-
 import (
 	"context"
 	"errors"

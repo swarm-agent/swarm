@@ -52,9 +52,9 @@ func (c *Client) sendCodexResponsesHTTP(ctx context.Context, record pebblestore.
 	if resp.StatusCode >= http.StatusBadRequest {
 		body, err := io.ReadAll(io.LimitReader(resp.Body, maxCodexResponseBodyBytes))
 		if err != nil {
-			return nil, resp.StatusCode, err
+			return annotateCodexTransportMetadata(map[string]any{providerRetryAfterKey: resp.Header.Get("Retry-After")}, codexTransportResponsesHTTP, false), resp.StatusCode, err
 		}
-		return annotateCodexTransportMetadata(map[string]any{"raw_body": sanitizeDiagnosticText(string(body))}, codexTransportResponsesHTTP, false), resp.StatusCode, nil
+		return annotateCodexTransportMetadata(map[string]any{"raw_body": sanitizeDiagnosticText(string(body)), providerRetryAfterKey: resp.Header.Get("Retry-After")}, codexTransportResponsesHTTP, false), resp.StatusCode, nil
 	}
 	var decoded map[string]any
 	if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
@@ -67,7 +67,7 @@ func (c *Client) sendCodexResponsesHTTP(ctx context.Context, record pebblestore.
 		}
 	}
 	if err != nil {
-		return nil, resp.StatusCode, err
+		return annotateCodexTransportMetadata(map[string]any{providerRetryAfterKey: resp.Header.Get("Retry-After")}, codexTransportResponsesHTTP, false), resp.StatusCode, err
 	}
 	return annotateCodexTransportMetadata(decoded, codexTransportResponsesHTTP, false), resp.StatusCode, nil
 }

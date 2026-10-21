@@ -8,7 +8,7 @@
 #
 # The daemon is built against an older glibc than the server's (Debian
 # bookworm, glibc 2.36; Ubuntu 24.04 has 2.39) so the binaries run there.
-ARG BUILD_IMAGE=docker.io/library/golang:1.26.9-bookworm
+ARG BUILD_IMAGE=docker.io/library/golang:1.26.10-bookworm
 ARG NODE_IMAGE=docker.io/library/node:22.22.0-trixie-slim
 
 FROM ${BUILD_IMAGE} AS daemon
@@ -28,7 +28,8 @@ ARG BUILT_AT=unknown
 RUN --mount=type=cache,target=/root/.cache/go-build \
     mkdir -p /out/bin /out/lib && cd swarmd && \
     flags="-X swarm-refactor/swarmtui/pkg/buildinfo.Version=${VERSION} -X swarm-refactor/swarmtui/pkg/buildinfo.Commit=${COMMIT} -X swarm-refactor/swarmtui/pkg/buildinfo.BuiltAt=${BUILT_AT}" && \
-    for command in swarmd swarmctl swarm-fff-search; do \
+    go build -mod=readonly -p 2 -trimpath -ldflags "$flags" -o /out/bin/swarmd ./cmd/swarm-headless && \
+    for command in swarmctl swarm-fff-search; do \
       go build -mod=readonly -p 2 -trimpath -ldflags "$flags" -o "/out/bin/$command" "./cmd/$command" || exit 1; \
     done && \
     cp internal/fff/lib/linux-amd64-gnu/libfff_c.so /out/lib/

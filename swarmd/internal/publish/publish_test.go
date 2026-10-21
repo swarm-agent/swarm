@@ -1,9 +1,11 @@
 package publish
 
 import (
-	"context"
+	"bytes"
+	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -18,110 +20,36 @@ func writeFile(t *testing.T, path, content string, mode os.FileMode) {
 	}
 }
 
-func TestLoadAndFor(t *testing.T) {
+// Requirement: rule files written before landing was removed still list
+// land, auto, require-review, require-proof and pipeline; they must keep
+// loading (the plain pull-request rule and sync survive), with one log line
+// per rule, while a genuinely unknown option still fails closed. Load is the
+// owner policy boundary the daemon reads, so parsing a real rule file is the
+// narrowest layer that proves it.
+func TestLoadIgnoresRemovedOptions(t *testing.T) {
 	allowOwner = os.Getuid()
 	t.Cleanup(func() { allowOwner = -1 })
-	dir := t.TempDir()
-	config := filepath.Join(dir, "publish")
-	writeFile(t, config, "# rules\n/srv/models\t/usr/local/bin/models-pr\tauto\n\n/srv/site/\t/usr/local/bin/site-pr\n", 0o644)
-	rules, err := Load(config)
-	if err != nil || len(rules) != 2 {
-		t.Fatalf("rules = %+v, %v", rules, err)
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	path := filepath.Join(t.TempDir(), "publish")
+	writeFile(t, path, "/srv/a\t/usr/local/bin/publish\tland,auto,require-review,pipeline\n/srv/b\t/usr/local/bin/publish\tland,require-proof,sync\n/srv/c\t/usr/local/bin/publish\n", 0600)
+	rules, err := Load(path)
+	if err != nil {
+		t.Fatalf("rule file with removed options no longer loads: %v", err)
 	}
-	if rule, ok := For(rules, "/srv/models"); !ok || !rule.Auto || rule.Command != "/usr/local/bin/models-pr" {
-		t.Fatalf("models rule = %+v %v", rule, ok)
+	want := []Rule{{Folder: "/srv/a", Command: "/usr/local/bin/publish"}, {Folder: "/srv/b", Command: "/usr/local/bin/publish", Sync: true}, {Folder: "/srv/c", Command: "/usr/local/bin/publish"}}
+	if !reflect.DeepEqual(rules, want) {
+		t.Fatalf("rules = %+v, want %+v", rules, want)
 	}
-	if rule, ok := For(rules, "/srv/site"); !ok || rule.Auto {
-		t.Fatalf("site rule (trailing slash cleaned, not auto) = %+v %v", rule, ok)
+	if got := strings.Count(logs.String(), "ignoring removed options"); got != 2 {
+		t.Fatalf("want one log line per rule with removed options, got %d: %q", got, logs.String())
 	}
-	if _, ok := For(rules, "/srv/other"); ok {
-		t.Fatal("a folder without a rule has none")
+	if !strings.Contains(logs.String(), "line 1: ignoring removed options land,auto,require-review,pipeline") {
+		t.Fatalf("log does not name the options: %q", logs.String())
 	}
-	if rules, err := Load(filepath.Join(dir, "missing")); err != nil || rules != nil {
-		t.Fatal("a missing file is no rules")
-	}
-	writeFile(t, config, "/srv/models\trelative-command\n", 0o644)
-	if _, err := Load(config); err == nil {
-		t.Fatal("a relative command is refused")
-	}
-	writeFile(t, config, "/srv/models\t/usr/local/bin/models-pr\n", 0o666)
-	if _, err := Load(config); err == nil || !strings.Contains(err.Error(), "writable") {
-		t.Fatalf("a config others can write is refused: %v", err)
-	}
-}
-
-func TestRunPassesTheJobAndReadsTheURL(t *testing.T) {
-	allowOwner = os.Getuid()
-	t.Cleanup(func() { allowOwner = -1 })
-	dir := t.TempDir()
-	out := filepath.Join(dir, "seen")
-	command := filepath.Join(dir, "open-pr")
-	writeFile(t, command, "#!/bin/sh\nset -e\n{ echo \"$SWARM_PUBLISH_BRANCH $SWARM_PUBLISH_HEAD $SWARM_PUBLISH_BASE_BRANCH $SWARM_PUBLISH_TITLE\"; cat \"$SWARM_PUBLISH_BODY_FILE\"; echo; pwd; } > "+out+"\necho pushing\necho https://github.com/example/models/pull/7\n", 0o755)
-	rule := Rule{Folder: dir, Command: command}
-	head := strings.Repeat("a", 40)
-	res, err := Run(context.Background(), rule, Request{Folder: dir, JobID: "worker/w/r", Branch: "agent/worker-r", Head: head, BaseBranch: "main", Title: "Refresh\nmodels", Body: "added two models"})
-	if err != nil || res.URL != "https://github.com/example/models/pull/7" {
-		t.Fatalf("result = %+v, %v", res, err)
-	}
-	seen, _ := os.ReadFile(out)
-	if want := "agent/worker-r " + head + " main Refresh models\nadded two models\n" + dir + "\n"; string(seen) != want {
-		t.Fatalf("command saw %q, want %q", seen, want)
-	}
-
-	writeFile(t, command, "#!/bin/sh\necho done\n", 0o755)
-	if _, err := Run(context.Background(), rule, Request{Branch: "agent/x", Head: head}); err == nil || !strings.Contains(err.Error(), "URL") {
-		t.Fatalf("no URL is an error: %v", err)
-	}
-	writeFile(t, command, "#!/bin/sh\necho 'not allowed' >&2\nexit 3\n", 0o755)
-	if _, err := Run(context.Background(), rule, Request{Branch: "agent/x", Head: head}); err == nil || !strings.Contains(err.Error(), "not allowed") {
-		t.Fatalf("a failing command reports its reason: %v", err)
-	}
-	if _, err := Run(context.Background(), rule, Request{Branch: "agent/x", Head: "HEAD"}); err == nil {
-		t.Fatal("a head that is not a commit id is refused")
-	}
-	writeFile(t, command, "#!/bin/sh\necho https://github.com/x/y/pull/1\n", 0o775)
-	if _, err := Run(context.Background(), rule, Request{Branch: "agent/x", Head: head}); err == nil {
-		t.Fatal("a command others can change is refused")
-	}
-}
-
-func TestLoadOptions(t *testing.T) {
-	allowOwner = os.Getuid()
-	t.Cleanup(func() { allowOwner = -1 })
-	config := filepath.Join(t.TempDir(), "publish")
-	writeFile(t, config, "/srv/models\t/usr/local/bin/models-pr\tauto,sync\n/srv/site\t/usr/local/bin/site-pr\tsync\n", 0o644)
-	rules, err := Load(config)
-	if err != nil || len(rules) != 2 || !rules[0].Auto || !rules[0].Sync || rules[1].Auto || !rules[1].Sync {
-		t.Fatalf("rules = %+v, %v", rules, err)
-	}
-	writeFile(t, config, "/srv/models\t/usr/local/bin/models-pr\tauto,later\n", 0o644)
-	if _, err := Load(config); err == nil {
-		t.Fatal("an unknown option is refused")
-	}
-}
-
-func TestUpdateReadsTheBase(t *testing.T) {
-	allowOwner = os.Getuid()
-	t.Cleanup(func() { allowOwner = -1 })
-	dir := t.TempDir()
-	out := filepath.Join(dir, "seen")
-	command := filepath.Join(dir, "pr")
-	commit := strings.Repeat("b", 40)
-	writeFile(t, command, "#!/bin/sh\nset -e\necho \"$SWARM_PUBLISH_ACTION $SWARM_PUBLISH_BASE_BRANCH $SWARM_PUBLISH_FOLDER\" > "+out+"\ntest -d \"$TMPDIR\"\necho fetched\necho "+commit+" main\n", 0o755)
-	rule := Rule{Folder: dir, Command: command, Sync: true}
-	base, err := Update(context.Background(), rule, "dev")
-	if err != nil || base != (Base{Commit: commit, Branch: "main"}) {
-		t.Fatalf("base = %+v, %v", base, err)
-	}
-	if seen, _ := os.ReadFile(out); string(seen) != "update dev "+dir+"\n" {
-		t.Fatalf("command saw %q", seen)
-	}
-	writeFile(t, command, "#!/bin/sh\necho "+commit+"\n", 0o755)
-	if _, err := Update(context.Background(), rule, "dev"); err == nil || !strings.Contains(err.Error(), "COMMIT BRANCH") {
-		t.Fatalf("a last line without the branch is refused: %v", err)
-	}
-	writeFile(t, command, "#!/bin/sh\necho 'fetch refused' >&2\nexit 1\n", 0o755)
-	if _, err := Update(context.Background(), rule, "dev"); err == nil || !strings.Contains(err.Error(), "fetch refused") {
-		t.Fatalf("a failing update reports its reason: %v", err)
+	writeFile(t, path, "/srv/a\t/usr/local/bin/publish\tland,typo\n", 0600)
+	if rules, err := Load(path); err == nil || len(rules) != 0 {
+		t.Fatalf("unknown option accepted: %+v", rules)
 	}
 }

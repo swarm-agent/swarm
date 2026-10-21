@@ -28,7 +28,7 @@
 #     BASE_BRANCH=main                 (optional: the branch pull requests target;
 #                                       default: the branch the job started from)
 # The App needs Contents read/write and Pull requests read/write on the
-# repository only; branch rules on the base branch keep it from pushing there.
+# repository only; branch rules keep it from pushing to the base.
 set -euo pipefail
 
 conf="${PUBLISH_GITHUB_CONF:-$0.conf}"

@@ -54,6 +54,8 @@ var toolScopes = map[string]string{
 	"swarm_get_project":            ScopeRead,
 	"swarm_list_workers":           ScopeRead,
 	"swarm_get_worker":             ScopeRead,
+	"swarm_get_limits":             ScopeRead,
+	"swarm_set_limits":             ScopeWrite,
 	"swarm_get_usage":              ScopeRead,
 	"swarm_list_models":            ScopeRead,
 	"swarm_list_tasks":             ScopeRead,
@@ -83,7 +85,11 @@ var toolScopes = map[string]string{
 	"swarm_list_agents":            ScopeRead,
 	"swarm_define_agent":           ScopeManage,
 	"swarm_create_client_key":      ScopeManage,
+	"swarm_create_key":             ScopeManage,
+	"swarm_list_keys":              ScopeRead,
+	"swarm_revoke_key":             ScopeWrite,
 	"swarm_connect_chatgpt":        ScopeWrite, // the person signs in in their own browser; local only
+	"swarm_connect_claude_code":    ScopeWrite, // the person signs the CLI in on the machine; local only
 	"swarm_list_providers":         ScopeRead,
 	"swarm_request_provider_key":   ScopeManage,
 	"swarm_read_file":              ScopeRead,
@@ -95,6 +101,8 @@ var toolScopes = map[string]string{
 	// and scheduling jobs is write. Answering covers a worker's questions only,
 	// never a tool-call approval; delivering is a local git merge, or a pull
 	// request where the folder's owner set up publishing; Swarm itself never pushes.
+	"swarm_request_update":  ScopeManage,
+	"swarm_cancel_update":   ScopeManage,
 	"swarm_status":          ScopeRead,
 	"swarm_activity":        ScopeRead,
 	"swarm_list_runs":       ScopeRead,
@@ -112,6 +120,14 @@ var toolScopes = map[string]string{
 	"swarm_request_media":   ScopeWrite,
 	"swarm_media_models":    ScopeRead,
 	"swarm_save_media":      ScopeWrite,
+	"swarm_design":          ScopeWrite,
+	// Job automations: the steps a person sets for when a job ends. Setting
+	// and deleting them is write like scheduling a job; the machine-wide stop
+	// switch is manage.
+	"swarm_set_workflow":    ScopeWrite,
+	"swarm_list_workflows":  ScopeRead,
+	"swarm_delete_workflow": ScopeWrite,
+	"swarm_stop_workflows":  ScopeManage,
 }
 
 // localOnlyTools are box setup that only a key on the machine itself may do
@@ -121,7 +137,9 @@ var toolScopes = map[string]string{
 var localOnlyTools = map[string]bool{
 	"swarm_define_agent":         true,
 	"swarm_create_client_key":    true,
+	"swarm_create_key":           true,
 	"swarm_connect_chatgpt":      true,
+	"swarm_connect_claude_code":  true,
 	"swarm_request_provider_key": true,
 }
 

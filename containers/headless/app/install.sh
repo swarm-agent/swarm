@@ -4,9 +4,14 @@
 # On Ubuntu 24.04 x86_64 (a server or your own PC), from your own account:
 #   curl -fsSL https://swarmagent.dev/install | sudo bash
 #
-# It installs Docker (unless a working one with buildx is already there) and
-# gVisor, builds Swarm and the setup page from source and runs both as
-# services. Everything listens on 127.0.0.1 only: the setup page on
+# It downloads the newest released build of Swarm and its setup page from
+# GitHub, checks it against its published checksum and runs both as services;
+# nothing is compiled and no Docker is installed. Environments (a folder's own
+# container for its agents' commands, with its secrets) and the agent sandbox
+# need Docker: `install.sh environments on` (or --environments on) installs
+# Docker and gVisor then. --ref BRANCH builds that branch from source instead
+# (with Docker), for development machines. Everything listens on 127.0.0.1
+# only: the setup page on
 # http://127.0.0.1:8443 (owner login, provider sign-in, models, workspace) and
 # Swarm's MCP (Swarm Control) on http://127.0.0.1:7783/mcp, which answers only
 # to AI keys (skip it with --no-ai-access). At the end it creates Swarm's owner
@@ -27,15 +32,15 @@
 # swarmagent.dev/cap/swarm (see containers/headless/app/TAILNET.md).
 #
 # Swarm runs as a system service under its own "swarm" user and keeps its keys,
-# login and local socket to itself. Agents' commands, and Swarm's Git on their
-# projects, run in one sandbox per project: a container (under gVisor when it
-# works on this machine) with no capabilities, Swarm's non-root user, memory
-# and process limits, only that project and its worktrees mounted, and a
-# network that reaches the internet but never this server, your tailnet,
-# private networks or cloud metadata. Agents run without permission prompts
-# (so unattended jobs never wait on a person) only while that sandbox is
-# active: Swarm runs with --sandbox=required and fails closed without it;
-# --ask-permissions (or `install.sh permissions ask`) keeps the prompts. The
+# login and local socket to itself. By default the agent sandbox is off:
+# agents run in Swarm on this machine. --sandbox on (or `install.sh sandbox
+# on`) runs agents' commands, and Swarm's Git on their projects, in one
+# sandbox per project: a container (under gVisor when it works on this
+# machine) with no capabilities, Swarm's non-root user, only that project and
+# its worktrees mounted, and a network that reaches the internet but never this
+# server, your tailnet, private networks or cloud metadata. Agents run without
+# permission prompts, sandbox or not (questions and hard denials can still
+# pause jobs); --ask-permissions (or `install.sh permissions ask`) keeps the prompts. The
 # secret gateway is on by default (--secrets-gateway off turns it off).
 #
 # The first visit to the setup page creates your login (username, password
@@ -88,17 +93,21 @@ SANDBOX_BRIDGE=br-swarm-sbx
 SECRETS_GATEWAY_PORT=8080
 DATA_DIRS=(/etc/swarmd /var/lib/swarmd /var/cache/swarmd /var/log/swarmd)
 APP_CONFIG=/etc/swarmd/headless-app
+STARTUP_CONFIG=/etc/swarmd/swarm.conf
 GVISOR_LIST=/etc/apt/sources.list.d/gvisor.list
-# This installer as kept in the checkout, for the commands it prints.
+# This installer as kept in the checkout, for the commands it prints. An
+# install of released builds keeps it at $STATE/install.sh instead (load_conf).
 INSTALLER=$SRC/containers/headless/app/install.sh
+# Released builds: the newest GitHub release of Swarm, and the release (tag and
+# commit) this install was last pointed at.
+RELEASE_REPO=swarm-agent/swarm
+RELEASE_TARGET=$STATE/release-target
 SWARMCTL=/usr/local/bin/swarmctl
 # Everything Swarm serves on this machine listens on loopback.
 LOCAL_APP_ORIGIN=http://127.0.0.1:8443
 LOCAL_MCP_URL=http://127.0.0.1:7783/mcp
 # Revocation IDs of the AI keys connect-ai gave each person (root-only).
 AI_KEY_IDS=$STATE/ai-keys
-# AI keys from connect-ai last a year; run it again to replace one.
-AI_KEY_SECONDS=31536000
 
 # The earlier layout ran Swarm itself inside a container; reinstall/uninstall
 # remove what it left behind.
@@ -112,10 +121,11 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 usage() {
   cat <<'USAGE'
 Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref BRANCH] [--no-ai-access]
-                  [--secrets-gateway on|off] [--ask-permissions] [--auto-update] [--tailnet [--tag TAG] [--lock-ssh]]
+                  [--environments on|off] [--secrets-gateway on|off] [--ask-permissions] [--sandbox on|off] [--auto-update] [--tailnet [--tag TAG] [--lock-ssh]]
        install.sh reinstall [--yes] [--delete-projects] [install options]
        install.sh uninstall [--yes] [--delete-projects]
        install.sh update | up | reset-login | status | check-isolation | check-sandbox
+       swarmctl idle-off MINUTES|off|status
        install.sh auto-update [on|off] [--checks CONTEXT=APP[,...]|none] [--hook PATH]
        install.sh dev-sync /path/to/checkout | off
        install.sh channel [BRANCH]
@@ -124,28 +134,49 @@ Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref
        install.sh secret set NAME [--hosts HOST,...] (the value on stdin)
        install.sh secret grant NAME FOLDER --days N | --hours N
        install.sh daemon-env list | set NAME... | unset NAME...
+       install.sh claude-code
        install.sh tailnet on [--tag TAG] [--lock-ssh] | off
        install.sh tailnet-identity on|off
        install.sh secrets-gateway on|off
        install.sh permissions auto|ask
-       install.sh workspace add PATH [--for-user NAME] | remove PATH | list
-       install.sh workspace publish PATH COMMAND [--auto] [--sync] | publish PATH --off
+       install.sh environments on|off
+       install.sh sandbox on|off
+       swarmctl workspace add PATH [--for-user NAME] | remove PATH | list
+       swarmctl workspace publish PATH COMMAND [--sync] | publish PATH --off
 
   --for-user NAME  the person this install is for (default: the account that
                 ran sudo); used for the AI connection and workspace folders
   --relay URL   your Swarm Control relay (prefills "Connect to Claude")
   --name NAME   Swarm machine name, and tailnet machine name (default: swarm)
-  --ref BRANCH  swarm branch to build (default: main, the released build;
-                dev follows development and changes several times a day)
+  --ref BRANCH  build this branch from source (with Docker) instead of
+                downloading the newest release (the default); for
+                development machines (dev changes several times a day)
+  --release-file ARCHIVE
+                install this release archive (swarm-vX.Y.Z-linux-amd64.tar.gz,
+                its .sha256 next to it) instead of downloading the newest;
+                later updates download releases as usual
+  --environments on|off
+                off (the default): no Docker; agents run every command on
+                this machine. on: installs Docker and gVisor so a folder
+                can have an environment (its own container for its agents'
+                commands, with its secrets)
   --no-ai-access  do not run Swarm's MCP (127.0.0.1:7783, and :8444 on the
                 tailnet); connect-ai then has nothing to connect to
   --secrets-gateway on|off
-                inject granted secrets through the egress gateway (default on;
-                see secrets-gateway below)
+                inject granted secrets through the egress gateway (on with
+                environments, which it needs; see secrets-gateway below)
   --auto-update update by itself (install.sh auto-update below; off by default)
+                Updates drain new runs before activation, never kill running jobs.
+                UPDATE_DRAIN_SECONDS=7200 sets the drain limit (1..86400 seconds).
+Expiry or installer failure reopens admissions; swarm_cancel_update cancels a drain.
+Readiness is generation-bound and checked again immediately before restart.
+                Timeout reports blockers and leaves admission held until restart.
   --ask-permissions
                 agents ask before commands and file changes; by default they
-                run without prompts, which Swarm allows only inside the sandbox
+                run without prompts
+  --sandbox on|off
+                off (the default): agents run in Swarm on this machine; on:
+                their commands run in one sandbox per project
   --tailnet     also reach this machine from your other devices over
                 Tailscale (installs and joins it; TS_AUTHKEY in the
                 environment joins without a login link)
@@ -172,9 +203,16 @@ Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref
                    tailnet and go back to loopback only (Tailscale and ufw
                    stay installed)
   permissions auto|ask
-                   auto: agents run without prompts while the sandbox is
-                   active (the default); ask: they ask first. Applied at
-                   every start of Swarm.
+                   auto (the default): agents run without prompts, sandbox
+                   or not; ask: they ask first. Applied at every start of
+                   Swarm.
+  environments on|off
+                   on: install Docker and gVisor (once) so folders can have
+                   environments with their secrets; turns the secret gateway
+                   on. off: stop using them (Docker stays installed).
+  sandbox on|off   off (the default): agents run in Swarm on this machine;
+                   on: their commands run in one sandbox per project (this
+                   turns environments on).
 
   reinstall / uninstall remove Swarm's services, binaries, sandboxes and state
   (owner, provider sign-in, AI keys, relay pairing, agent worktrees), its
@@ -183,10 +221,11 @@ Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref
   --yes              do not ask for confirmation
   --delete-projects  also delete the project folder (your workspaces)
 
-  update           take the newest commit of the branch this machine follows
-                   that passed its checks (UPDATE_CHECKS, by default Swarm's
-                   AI review on GitHub; a failed check blocks the commit),
-                   build it while work runs, restart Swarm into it only when
+  update           download the newest release (a source install: take the
+                   newest commit of the branch it follows that passed its
+                   checks (UPDATE_CHECKS, by default Swarm's
+                   AI review on GitHub; a failed check blocks the commit,
+                   and build it), while work runs, restart Swarm into it only when
                    nothing runs (no agent run, worker run or environment
                    build), and go back to the build before if it does not
                    come up within two minutes. The machine summary shows the
@@ -207,6 +246,15 @@ Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref
                    applied with one restart: `list` shows names only,
                    `set NAME...` reads one value per name from stdin,
                    `unset NAME...` removes them
+  claude-code      set up the Claude Code CLI for Swarm's own user: find it
+                   (or install it with Anthropic's installer into
+                   ~swarm/.local/bin), point Swarm at it
+                   (SWARM_CLAUDE_CODE_CLI_PATH) and, in a terminal, start
+                   `claude auth login` as that user; you finish the sign-in
+                   in your browser. Swarm never reads or copies Claude
+                   credentials. Safe to run again: it reports what is set
+                   up. Then your AI makes Claude Code Swarm's provider
+                   (swarm_connect_claude_code action activate).
   check-isolation  prove from inside a sandbox that this server, the tailnet,
                    private networks and cloud metadata are unreachable
   check-sandbox    show each running agent sandbox and its hardening
@@ -228,17 +276,17 @@ Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref
                    the machine up runs this as root; Swarm never changes the
                    machine itself. Then register the folder in place with
                    swarm_add_workspace. remove reverses it.
-  workspace publish PATH COMMAND [--auto] [--sync]
+  workspace publish PATH COMMAND [--sync]
                    deliver jobs in PATH as pull requests instead of merging
                    them into the folder: Swarm runs COMMAND (root-owned,
                    outside home folders) on this machine with the job in
                    SWARM_PUBLISH_FOLDER, _JOB_ID, _BRANCH, _HEAD, _BASE_BRANCH,
                    _TITLE and _BODY_FILE; its last output line is the pull
-                   request URL. --auto delivers each finished job with commits
-                   without asking. --sync starts each job from the forge's
-                   latest base branch (COMMAND with SWARM_PUBLISH_ACTION=update
-                   fetches it and prints COMMIT BRANCH). publish PATH --off
-                   goes back to merging.
+                   request URL. A pull request is opened only when a job is
+                   delivered (swarm_deliver_job). --sync starts each job from
+                   the forge's latest base branch (COMMAND with
+                   SWARM_PUBLISH_ACTION=update fetches it and prints COMMIT
+                   BRANCH). publish PATH --off goes back to merging.
 USAGE
 }
 
@@ -246,6 +294,108 @@ load_conf() {
   [[ -f $CONF ]] || die "Swarm is not installed on this machine ($CONF is missing)"
   # shellcheck disable=SC1090
   . "$CONF"
+  if release_install; then INSTALLER=$STATE/install.sh; fi
+}
+
+# Released builds (SOURCE=release, the default for new installs) or a branch
+# built from source (SOURCE=git: --ref, dev machines, installs from before).
+release_install() { [[ ${SOURCE:-git} == release ]]; }
+
+# Environments and the sandbox use Docker (and gVisor); off, Docker is not
+# needed at all. Installs from before this setting had Docker: on.
+environments_on() { [[ ${ENVIRONMENTS:-on} == on ]]; }
+
+# The sandbox image's build context and firewall script: in the checkout, or in
+# a released build (the running one unless RELEASE is given).
+sandbox_dir() {
+  if release_install; then echo "${1:-$OPT/current}/share/sandbox"; else echo "$SRC/containers/sandbox"; fi
+}
+
+# The commit to build or run: the checkout's HEAD, or the release this install
+# was last pointed at (latest_release).
+target_commit() {
+  if release_install; then
+    [[ -f $RELEASE_TARGET ]] || die "no release chosen yet; run: sudo bash $INSTALLER update"
+    awk '{print $2}' "$RELEASE_TARGET"
+  else
+    git -C "$SRC" rev-parse HEAD
+  fi
+}
+
+# Point this install at the newest release on GitHub ("TAG COMMIT").
+latest_release() {
+  local body tag commit
+  body=$(curl -fsS --max-time 30 -H 'Accept: application/vnd.github+json' \
+    "https://api.github.com/repos/$RELEASE_REPO/releases/latest") || return 1
+  tag=$(jq -r '.tag_name // empty' <<<"$body") || return 1
+  commit=$(jq -r '.target_commitish // empty' <<<"$body") || return 1
+  [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && $commit =~ ^[0-9a-f]{40}$ ]] || return 1
+  printf '%s %s\n' "$tag" "$commit" >"$RELEASE_TARGET"
+}
+
+# Docker (with buildx) and gVisor, for environments, the sandbox and source
+# builds. A working Docker already on the machine stays.
+install_docker() {
+  # Snap's Docker is confined: it cannot bind-mount project folders outside
+  # home or take the gVisor runtime, so agent sandboxes cannot run on it, and
+  # installing the distribution's Docker beside it leaves two daemons fighting
+  # over one socket.
+  if command -v snap >/dev/null && snap list docker >/dev/null 2>&1; then
+    die "this machine runs Docker from snap, which cannot run Swarm's environments or sandbox (it cannot mount project folders or use gVisor). Remove it first with: sudo snap remove docker (this deletes the containers, images and volumes it holds), then run this again"
+  fi
+  say "Installing Docker and gVisor"
+  if command -v docker >/dev/null && docker buildx version >/dev/null 2>&1; then
+    echo "Using the Docker already on this machine ($(docker --version))"
+  else
+    apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io docker-buildx >/dev/null
+  fi
+  systemctl enable --now docker >/dev/null
+  install_gvisor
+  register_gvisor
+  if id "$SERVICE_USER" >/dev/null 2>&1; then usermod -aG docker "$SERVICE_USER"; fi
+}
+
+# Build the sandbox image for COMMIT from CONTEXT (environments and sandbox).
+build_sandbox_image() {
+  docker build --platform linux/amd64 -t "swarm-sandbox:$1" "$2"
+}
+
+# Download a released build (its archive and checksum from GitHub), check it,
+# and unpack its headless package as the release for COMMIT. Nothing is
+# compiled. With environments on, also build the sandbox image from it.
+fetch_release() {
+  local tag=$1 commit=$2 release=$OPT/releases/$2 name url dir
+  if [[ ! -f $release/.complete ]]; then
+    name=swarm-$tag-linux-amd64.tar.gz
+    url=https://github.com/$RELEASE_REPO/releases/download/$tag
+    say "Downloading Swarm $tag"
+    rm -rf "$STAGE"
+    install -d -m 0700 "$STAGE"
+    if [[ -n ${RELEASE_FILE:-} && $(basename "$RELEASE_FILE") == "$name" ]]; then
+      # --release-file: the archive and its checksum file are already here.
+      cp "$RELEASE_FILE" "$STAGE/$name" && cp "$RELEASE_FILE.sha256" "$STAGE/$name.sha256" ||
+        die "$RELEASE_FILE needs its checksum file next to it ($name.sha256)"
+    else
+      curl -fsSL --retry 3 -o "$STAGE/$name" "$url/$name" || die "could not download $url/$name"
+      curl -fsSL --retry 3 -o "$STAGE/$name.sha256" "$url/$name.sha256" || die "could not download $url/$name.sha256"
+    fi
+    (cd "$STAGE" && sha256sum --check --quiet "$name.sha256") || die "the download of Swarm $tag does not match its published checksum"
+    tar -C "$STAGE" -xzf "$STAGE/$name" "swarm-$tag-linux-amd64/build-info.txt" "swarm-$tag-linux-amd64/headless" ||
+      die "Swarm $tag has no headless build (it predates downloadable installs); a newer release is needed"
+    dir=$STAGE/swarm-$tag-linux-amd64
+    grep -qx "commit=$commit" "$dir/build-info.txt" || die "the release $tag was not built from ${commit:0:9}"
+    [[ -x $dir/headless/bin/swarmd ]] || die "the release $tag has no headless daemon"
+    install -d -m 0755 "$OPT/releases"
+    rm -rf "$release.new" && mv "$dir/headless" "$release.new"
+    chmod -R u=rwX,go=rX "$release.new"
+    touch "$release.new/.complete"
+    rm -rf "$release" && mv "$release.new" "$release"
+    rm -rf "$STAGE"
+  fi
+  if environments_on && ! docker image inspect "swarm-sandbox:$commit" >/dev/null 2>&1; then
+    build_sandbox_image "$commit" "$(sandbox_dir "$release")"
+  fi
 }
 
 # Replace one setting in install.env.
@@ -276,7 +426,28 @@ conf_migrate() {
   if [[ -z ${PERMISSIONS:-} ]]; then
     PERMISSIONS=auto
     conf_set PERMISSIONS auto
-    echo "swarm: agents now run without permission prompts while the sandbox is active (install.sh permissions ask turns them back on)"
+    echo "swarm: agents now run without permission prompts (install.sh permissions ask turns them back on)"
+  fi
+  # Installs from before released builds built from source with Docker, so
+  # they keep doing that, with environments on.
+  if [[ -z ${SOURCE:-} ]]; then
+    SOURCE=git
+    conf_set SOURCE git
+  fi
+  if [[ -z ${ENVIRONMENTS:-} ]]; then
+    ENVIRONMENTS=on
+    conf_set ENVIRONMENTS on
+  fi
+  if [[ -z ${SANDBOX:-} ]]; then
+    SANDBOX=off
+    conf_set SANDBOX off
+    echo "swarm: the agent sandbox is off: agents run in Swarm on this machine (install.sh sandbox on turns it on)"
+  fi
+  # The removed runner listener's port: units are written without it.
+  if [[ -n ${RUNNER_GATEWAY_PORT+set} ]]; then
+    sed -i '/^RUNNER_GATEWAY_PORT=/d' "$CONF"
+    unset RUNNER_GATEWAY_PORT
+    echo "swarm: dropped the removed RUNNER_GATEWAY_PORT setting"
   fi
   if [[ -z ${AUTO_UPDATE:-} ]]; then
     AUTO_UPDATE=off
@@ -344,7 +515,7 @@ gateway_port() {
 firewall() {
   SWARM_SANDBOX_GATEWAY_PORT=$(gateway_port) \
   SWARM_SANDBOX_NETWORK=$SANDBOX_NETWORK SWARM_SANDBOX_BRIDGE=$SANDBOX_BRIDGE SWARM_SANDBOX_SUBNET=$SANDBOX_SUBNET \
-    bash "$SRC/containers/sandbox/firewall.sh"
+    bash "$(sandbox_dir "${1:-}")/firewall.sh"
 }
 
 # Flags every probe container shares with a real sandbox (see
@@ -379,6 +550,10 @@ choose_runtime() {
 # ranges and cloud metadata must be unreachable; the internet reachable.
 check_isolation() {
   load_conf
+  if ! environments_on; then
+    echo "Environments are off: no sandbox or environment runs here, so there is nothing to isolate (install.sh environments on turns them on)."
+    return 0
+  fi
   docker image inspect "$SANDBOX_IMAGE" >/dev/null 2>&1 || die "the sandbox image is not built"
   local host_ts host_ip gateway secrets target name want got failed=0
   host_ts=$(tailscale ip -4 2>/dev/null | head -n1 || true)
@@ -408,6 +583,10 @@ check_isolation() {
 # Show each agent sandbox as Docker sees it, for checking from outside.
 check_sandbox() {
   local ids
+  if ! command -v docker >/dev/null; then
+    echo "No Docker on this machine: environments and the sandbox are off."
+    return 0
+  fi
   ids=$(docker ps -q --filter label=swarm.sandbox=1)
   if [[ -z $ids ]]; then
     echo "No agent sandbox is running (one starts when an agent runs a command)."
@@ -430,9 +609,10 @@ check_sandbox() {
 up() {
   load_conf
   local commit
-  commit=$(git -C "$SRC" rev-parse HEAD)
+  commit=$(target_commit)
   build_release "$commit"
   activate "$commit"
+  clean_up_after_switch
 }
 
 # The commit the services run (the release $OPT/current points at).
@@ -447,14 +627,19 @@ running_commit() {
 # and nothing switches yet. A release already built is kept.
 build_release() {
   local commit=$1 release=$OPT/releases/$1
-  [[ -f $release/.complete ]] && docker image inspect "swarm-sandbox:$commit" >/dev/null 2>&1 && return 0
+  if release_install; then
+    [[ $(awk '{print $2}' "$RELEASE_TARGET" 2>/dev/null) == "$commit" ]] || die "${commit:0:9} is not the release this install is pointed at"
+    fetch_release "$(awk '{print $1}' "$RELEASE_TARGET")" "$commit"
+    return
+  fi
+  [[ -f $release/.complete ]] && { ! environments_on || docker image inspect "swarm-sandbox:$commit" >/dev/null 2>&1; } && return 0
   say "Building Swarm ${SWARM_REF}@${commit:0:9} (the first build takes several minutes)"
   rm -rf "$STAGE"
   docker build --platform linux/amd64 -f "$SRC/containers/headless/app/Dockerfile.host" \
     --build-arg VERSION="$SWARM_REF" --build-arg COMMIT="$commit" \
     --build-arg BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     -o "type=local,dest=$STAGE" "$SRC"
-  docker build --platform linux/amd64 -t "swarm-sandbox:$commit" "$SRC/containers/sandbox"
+  if environments_on; then build_sandbox_image "$commit" "$SRC/containers/sandbox"; fi
   install -d -m 0755 "$OPT/releases"
   rm -rf "$release.new" && mv "$STAGE" "$release.new"
   # The exporter creates its top directory 0700; Swarm runs as its own user.
@@ -466,51 +651,140 @@ build_release() {
 # Switch the services to a built release and restart them (this stops any
 # agent run in progress). The release that ran before stays as
 # $OPT/previous, so an update that does not come up can go back to it.
+cleanup_update_drain() {
+  [[ -n ${UPDATE_DRAIN_GENERATION:-} ]] || return 0
+  if [[ -n ${UPDATE_DRAIN_CLAIM:-} ]]; then
+    local_api /v3/box/drain -X PUT -H 'Content-Type: application/json' -d "{\"generation\":\"$UPDATE_DRAIN_GENERATION\",\"claim\":\"$UPDATE_DRAIN_CLAIM\",\"release\":true}" >/dev/null || echo 'swarm: reservation cleanup failed; operator intervention required' >&2
+  else
+    local_api "/v3/box/drain?generation=$UPDATE_DRAIN_GENERATION" -X DELETE >/dev/null || echo 'swarm: drain cleanup unavailable' >&2
+  fi
+}
+
+# Query the candidate without loading the installed config. Preserve all other
+# lines and file ownership/mode; retain an exact dated backup before replacement.
+migrate_removed_startup_keys() (
+  local release=$1 keys key tmp backup
+  [[ -f $STARTUP_CONFIG ]] || return 0
+  [[ ! -L $STARTUP_CONFIG ]] || return 1
+  keys=$(LD_LIBRARY_PATH="$release/lib" timeout 20 "$release/bin/swarmd" config removed-keys) || return 1
+  [[ -n $keys ]] || return 0
+  while IFS= read -r key; do
+    [[ $key =~ ^[a-z][a-z0-9_]*$ ]] || return 1
+  done <<<"$keys"
+  tmp=$(mktemp "${STARTUP_CONFIG}.rewrite.XXXXXX") || return 1
+  trap 'rm -f "$tmp"' EXIT
+  cp -p "$STARTUP_CONFIG" "$tmp" || return 1
+  awk -v keys="$keys" 'BEGIN { n=split(keys,a,"\n"); for(i=1;i<=n;i++) removed[a[i]]=1 }
+    { key=$0; sub(/=.*/,"",key); gsub(/^[[:space:]]+|[[:space:]]+$/,"",key) }
+    !($0 ~ /=/ && key in removed) { print }' "$STARTUP_CONFIG" >"$tmp" || return 1
+  cmp -s "$STARTUP_CONFIG" "$tmp" && return 0
+  backup=$(mktemp "${STARTUP_CONFIG}.removed-keys-$(date -u +%Y%m%dT%H%M%SZ).XXXXXX") || return 1
+  cp -p "$STARTUP_CONFIG" "$backup" || return 1
+  mv -f "$tmp" "$STARTUP_CONFIG"
+)
+
 activate() {
   local commit=$1 release=$OPT/releases/$1 old
   [[ -x $release/bin/swarmd ]] || die "release ${commit:0:9} is not built"
-  old=$(running_commit)
+  if [[ -n ${UPDATE_DRAIN_GENERATION:-} ]]; then
+    UPDATE_DRAIN_CLAIM=$(cat /proc/sys/kernel/random/uuid) || return 1
+    local reservation
+    reservation=$(local_api /v3/box/drain -X PUT -H 'Content-Type: application/json' -d "{\"generation\":\"$UPDATE_DRAIN_GENERATION\",\"claim\":\"$UPDATE_DRAIN_CLAIM\"}") || return 1
+    [[ $(json_get reserved <<<"$reservation") == true ]] || return 1
+  fi
+  old=$(running_commit) || return 1
   if [[ -n $old && $old != "$commit" ]]; then
     # Installs from before per-commit sandbox images kept only the :local tag.
-    docker image inspect "swarm-sandbox:$old" >/dev/null 2>&1 ||
-      docker tag "$SANDBOX_IMAGE" "swarm-sandbox:$old" 2>/dev/null || true
-    ln -sfn "$OPT/releases/$old" "$OPT/previous.new" && mv -T "$OPT/previous.new" "$OPT/previous"
+    if environments_on; then
+      docker image inspect "swarm-sandbox:$old" >/dev/null 2>&1 ||
+        docker tag "$SANDBOX_IMAGE" "swarm-sandbox:$old" 2>/dev/null || true
+    fi
+    ln -sfn "$OPT/releases/$old" "$OPT/previous.new" && mv -T "$OPT/previous.new" "$OPT/previous" || return 1
   fi
-  docker tag "swarm-sandbox:$commit" "$SANDBOX_IMAGE"
-  ln -sfn "$release" "$OPT/current.new" && mv -T "$OPT/current.new" "$OPT/current"
-  prune_releases
-  install -m 0755 /dev/stdin "$SWARMCTL" <<WRAPPER
+  if environments_on; then docker tag "swarm-sandbox:$commit" "$SANDBOX_IMAGE" || return 1; fi
+  # Every install keeps its installer at $STATE/install.sh, the one path the
+  # docs and Swarm's own answers name: a released build carries its own (later
+  # updates use that copy); a source install copies the checkout's.
+  if release_install; then
+    install -m 0755 "$release/share/install.sh" "$STATE/install.sh" || return 1
+  elif [[ -f $SRC/containers/headless/app/install.sh ]]; then
+    install -m 0755 "$SRC/containers/headless/app/install.sh" "$STATE/install.sh" || return 1
+  fi
+  # Switch current only after preparation succeeds; never prune rollback data here.
+  install -m 0755 /dev/stdin "$SWARMCTL" <<WRAPPER || return 1
 #!/bin/sh
 # swarmctl talks to Swarm's private socket, so it runs as Swarm's own user.
+# The machine commands (workspace, idle-off) need root itself, so root runs them directly.
 if [ "\$(id -un)" = $SERVICE_USER ]; then exec $OPT/current/bin/swarmctl "\$@"; fi
+if [ "\$(id -u)" = 0 ]; then case "\${1:-}" in workspace|idle-off) exec env LD_LIBRARY_PATH=$OPT/current/lib $OPT/current/bin/swarmctl "\$@" ;; esac; fi
 exec runuser -u $SERVICE_USER -- env HOME=$SERVICE_HOME LD_LIBRARY_PATH=$OPT/current/lib $OPT/current/bin/swarmctl "\$@"
 WRAPPER
 
-  firewall
-  register_gvisor
-  choose_runtime
-  sed -i '/^SANDBOX_RUNTIME=/d' "$CONF" && echo "SANDBOX_RUNTIME=$SANDBOX_RUNTIME" >>"$CONF"
-  install_units
-  systemctl restart "$DAEMON_UNIT"
-  systemctl restart "$APP_UNIT"
-  echo "Swarm is running: ${SWARM_REF}@${commit:0:9}"
+  if environments_on; then
+    firewall "$release" || return 1
+    register_gvisor || return 1
+    choose_runtime || return 1
+  else
+    SANDBOX_RUNTIME=default
+  fi
+  sed -i '/^SANDBOX_RUNTIME=/d' "$CONF" || return 1
+  echo "SANDBOX_RUNTIME=$SANDBOX_RUNTIME" >>"$CONF" || return 1
+  install_units "$release" || return 1
+  ln -sfn "$release" "$OPT/current.new" && mv -T "$OPT/current.new" "$OPT/current" || return 1
+  UPDATE_SWITCHED=true
+  systemctl restart "$DAEMON_UNIT" || return 1
+  systemctl restart "$APP_UNIT" || return 1
+  if release_install; then
+    echo "Swarm is running: $(awk '{print $1}' "$RELEASE_TARGET") (${commit:0:9})"
+  else
+    echo "Swarm is running: ${SWARM_REF}@${commit:0:9}"
+  fi
 }
 
 # Keep the running release, the one before it and any built release waiting
-# to start; remove the others and their sandbox images.
+# to start; remove the others and their sandbox images. Without a running
+# release nothing is removed.
 prune_releases() {
   local keep=() dir commit
+  [[ -n $(running_commit) ]] || return 0
   for dir in "$OPT/current" "$OPT/previous"; do
     [[ -e $dir ]] && keep+=("$(basename "$(readlink -f "$dir")")")
   done
-  commit=$(git -C "$SRC" rev-parse HEAD 2>/dev/null) && keep+=("$commit")
+  commit=$(target_commit 2>/dev/null) && keep+=("$commit")
   for dir in "$OPT/releases"/*; do
     [[ -d $dir ]] || continue
     commit=$(basename "$dir")
+    [[ $commit =~ ^[0-9a-f]{40}$ ]] || continue
     [[ " ${keep[*]} " == *" $commit "* ]] && continue
     rm -rf "$dir"
-    docker image rm "swarm-sandbox:$commit" >/dev/null 2>&1 || true
+    if command -v docker >/dev/null; then docker image rm "swarm-sandbox:$commit" >/dev/null 2>&1 || true; fi
   done
+}
+
+# Trim Docker's build cache to BUILD_CACHE_MAX (install.env; default 8gb,
+# none keeps it all), newest kept first, and remove dangling images. Every
+# build adds cache that nothing else removes.
+prune_build_cache() {
+  local max=${BUILD_CACHE_MAX:-8gb}
+  command -v docker >/dev/null || return 0
+  [[ $max == none ]] && return 0
+  if [[ ! $max =~ ^[0-9]+(b|kb|mb|gb)$ ]]; then
+    echo "BUILD_CACHE_MAX must look like 8gb, or none; Docker build cache left as it is" >&2
+    return 0
+  fi
+  if docker builder prune --help 2>/dev/null | grep -q -- --max-used-space; then
+    docker builder prune -af --max-used-space "$max" >/dev/null 2>&1 || true
+  else
+    docker builder prune -af --keep-storage "$max" >/dev/null 2>&1 || true
+  fi
+  docker image prune -f >/dev/null 2>&1 || true
+}
+
+# After a release has been switched to and came up: remove old releases and
+# trim build cache, so updates cannot fill the disk. Never fails the caller.
+clean_up_after_switch() {
+  prune_releases || true
+  prune_build_cache || true
 }
 
 # Development: build the committed HEAD of a checkout on this machine instead
@@ -519,6 +793,7 @@ prune_releases() {
 # `dev-sync off` returns it to the branch.
 dev_sync() {
   load_conf
+  release_install && die "this machine installs released builds; to build from a checkout, reinstall it from source: sudo bash $INSTALLER reinstall --ref dev"
   local repo=${1:?usage: install.sh dev-sync /path/to/checkout | off}
   if [[ $repo == off ]]; then
     sed -i '/^DEV_SOURCE=/d' "$CONF"
@@ -528,7 +803,12 @@ dev_sync() {
   repo=$(realpath "$repo")
   [[ -d $repo/.git && -f $repo/containers/headless/app/install.sh ]] || die "$repo is not a Swarm checkout"
   # The checkout belongs to another user; trust it for this one fetch only.
-  git -C "$SRC" -c safe.directory="$repo" fetch -q "$repo" HEAD || die "could not read $repo"
+  # A local fetch reads it in a separate `git upload-pack`, which does not see
+  # `-c` given to this git, so the trust goes to upload-pack itself: the git
+  # directory, and the worktree for older git. The command runs in a shell.
+  local upload_pack
+  upload_pack="git -c safe.directory=$(printf %q "$repo/.git") -c safe.directory=$(printf %q "$repo") upload-pack"
+  git -C "$SRC" fetch -q --upload-pack="$upload_pack" "$repo" HEAD || die "could not read $repo"
   sed -i '/^DEV_SOURCE=/d' "$CONF" && echo "DEV_SOURCE=$repo" >>"$CONF"
   git -C "$SRC" reset -q --hard FETCH_HEAD
   echo "swarm: building $(git -C "$SRC" rev-parse --short HEAD) from $repo"
@@ -559,7 +839,16 @@ UPDATE_BAD=$STATE/update-bad
 DEFAULT_UPDATE_CHECKS='ai-review=swarm-go-ai-review[bot]'
 LOCAL_API_SOCKET=/var/lib/swarmd/local-transport/api.sock
 
-local_api() { curl -fsS --max-time 20 --unix-socket "$LOCAL_API_SOCKET" "http://swarm$1"; }
+local_api() { local path=$1; shift; curl -fsS --max-time 20 --unix-socket "$LOCAL_API_SOCKET" "http://swarm$path" "$@"; }
+
+# True when systemd says the daemon keeps exiting: waiting to restart after a
+# crash, or failed. A daemon an operator stopped is not crashing.
+daemon_crashing() {
+  local active sub
+  active=$(systemctl show -p ActiveState --value "$DAEMON_UNIT" 2>/dev/null) || return 1
+  sub=$(systemctl show -p SubState --value "$DAEMON_UNIT" 2>/dev/null) || return 1
+  [[ $active == failed || $sub == auto-restart ]]
+}
 
 # Print one field (a.b.c) of the JSON on stdin, with the node of the running
 # release; nothing when it is absent.
@@ -647,17 +936,12 @@ swarm_busy() {
   local out
   systemctl is-active -q "$DAEMON_UNIT" || return 1
   if out=$(local_api /v3/box/busy 2>/dev/null); then
-    [[ $(json_get busy <<<"$out") == true ]] || return 1
+    [[ $(json_get busy <<<"$out") == false ]] && return 1
     echo "$(json_get sessions <<<"$out") agent runs, $(json_get worker_runs <<<"$out") worker runs and $(json_get environment_builds <<<"$out") environment builds are in progress"
     return 0
   fi
-  # A build from before /v3/box/busy counts unfinished runs in its summary;
-  # one older still (or one not answering) cannot say, and is restarted.
-  out=$(local_api /v3/box/summary 2>/dev/null) || return 1
-  case $(json_get runs.running_now <<<"$out") in
-    '' | 0) return 1 ;;
-    *) echo "$(json_get runs.running_now <<<"$out") runs are in progress"; return 0 ;;
-  esac
+  echo "daemon status unavailable; refusing to assume idle"
+  return 0
 }
 
 # Restart Swarm for a setting change only when nothing runs: a restart ends
@@ -690,18 +974,64 @@ came_up() {
   local commit=$1 sandboxed=$2 out running
   for _ in $(seq 1 60); do
     sleep 2
+    systemctl is-active --quiet "$DAEMON_UNIT" || continue
     out=$(local_api /v3/box/summary 2>/dev/null) || continue
     running=$(json_get machine.commit <<<"$out") || continue
     [[ -z $running || $running == "$commit" ]] || continue
     [[ $sandboxed == true && $(json_get sandbox.active <<<"$out") != true ]] && continue
     curl -fsS -o /dev/null --max-time 5 -H "Host: ${APP_ORIGIN#*://}" http://127.0.0.1:8443/ 2>/dev/null || continue
+    post_update_smoke || return 1
     return 0
   done
   return 1
 }
 
+# Use the authenticated owner transport, never read or copy provider credentials.
+# Failure returns to finish_update's existing rollback path.
+post_update_smoke() {
+  local route
+  for route in /healthz /v1/onboarding /v3/projects /v3/runs; do
+    if ! local_api "$route" >/dev/null; then
+      echo "swarm: post-update smoke failed: $route; restoring previous build" >&2
+      return 1
+    fi
+    echo "swarm: post-update smoke $route: PASS"
+  done
+}
+
+# A running build that no branch on GitHub contains any more was left behind
+# by a rewritten branch: it can never come back, so moving to the branch's new
+# head (once it passes its checks) is not a downgrade. A build still on some
+# branch (an older channel) is not orphaned.
+running_build_orphaned() {
+  git -C "$SRC" fetch -q --prune origin '+refs/heads/*:refs/remotes/origin/*' || return 1
+  [[ -z $(git -C "$SRC" branch -r --contains "$1" 2>/dev/null) ]]
+}
+
 update() {
   load_conf
+  if release_install; then
+    # Released builds: the newest release on GitHub. Releases only move
+    # forward and passed Swarm's release checks, so nothing else is checked.
+    if ! latest_release; then
+      update_state waiting "GitHub did not say which release is newest; Swarm keeps running and asks again at the next update" ""
+      return 0
+    fi
+    local next
+    next=$(target_commit)
+    if [[ $next != "$(running_commit)" && ! ( -f $UPDATE_BAD && $(cat "$UPDATE_BAD") == "$next" ) ]]; then
+      update_state building "downloading $(awk '{print $1}' "$RELEASE_TARGET")" "$next"
+      if ! bash "$INSTALLER" build-release "$next"; then
+        update_state failed "downloading $(awk '{print $1}' "$RELEASE_TARGET") failed; Swarm keeps running and tries again at the next update" "$next"
+        return 1
+      fi
+      # Continue in the new release's own installer, so its changes (units,
+      # run flags) apply now.
+      exec bash "$OPT/releases/$next/share/install.sh" finish-update
+    fi
+    finish_update
+    return 0
+  fi
   if [[ -n ${DEV_SOURCE:-} ]]; then
     echo "swarm: built from $DEV_SOURCE; not following $SWARM_REF (install.sh dev-sync off to resume)"
     finish_update
@@ -720,7 +1050,8 @@ update() {
     if ! git -C "$SRC" merge-base --is-ancestor "$head" "$new" &&
       ! { git -C "$SRC" rev-parse -q --verify "$head^2" >/dev/null &&
         git -C "$SRC" merge-base --is-ancestor "$head^2" "$new" &&
-        git -C "$SRC" diff --quiet "$head^2" "$head"; }; then
+        git -C "$SRC" diff --quiet "$head^2" "$head"; } &&
+      ! running_build_orphaned "$head"; then
       update_state waiting "$SWARM_REF (${new:0:9}) does not contain the build ${head:0:9}; waiting until it does" "$new"
       return 0
     fi
@@ -742,13 +1073,17 @@ update() {
 
 # Bring the services to the checkout's commit: build it, wait until nothing
 # runs, switch, and go back if it does not come up.
-finish_update() {
+finish_update() (
   load_conf
   local commit running why sandboxed
-  commit=$(git -C "$SRC" rev-parse HEAD)
+  commit=$(target_commit)
   running=$(running_commit)
   if [[ $running == "$commit" ]]; then
-    update_state current "running ${commit:0:9}, the newest of $SWARM_REF that passed its checks"
+    if release_install; then
+      update_state current "running $(awk '{print $1}' "$RELEASE_TARGET"), the newest release"
+    else
+      update_state current "running ${commit:0:9}, the newest of $SWARM_REF that passed its checks"
+    fi
     return 0
   fi
   if [[ -f $UPDATE_BAD && $(cat "$UPDATE_BAD") == "$commit" ]]; then
@@ -761,21 +1096,107 @@ finish_update() {
     update_state failed "building ${commit:0:9} failed; Swarm keeps running ${running:0:9} and tries again at the next update" "$commit"
     return 1
   fi
-  if why=$(swarm_busy); then
-    update_state waiting_idle "${commit:0:9} is built and starts once nothing runs: $why" "$commit"
-    return 0
+  local drain drain_rc=0 limit=${UPDATE_DRAIN_SECONDS:-7200}
+  [[ $limit =~ ^[0-9]+$ && $limit -ge 1 && $limit -le 86400 ]] || die "UPDATE_DRAIN_SECONDS must be 1..86400"
+  UPDATE_DRAIN_GENERATION=''
+  UPDATE_DRAIN_CLAIM=''
+  trap 'cleanup_update_drain' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  # Capture HTTP status separately from curl's exit code: only a real 404
+  # permits the older idle check, never a transport/auth/server failure.
+  drain=$(local_api /v3/box/drain -X POST -H 'Content-Type: application/json' -d "{\"max_seconds\":$limit}" -w $'\n%{http_code}' 2>/dev/null) || drain_rc=$?
+  if [[ $drain_rc == 22 && ${drain##*$'\n'} == 404 ]]; then
+    local deadline=$((SECONDS + limit)) remaining pause request_timeout busy_status
+    update_state draining "draining the older way (no drain endpoint on the running daemon)" "$commit"
+    while :; do
+      remaining=$((deadline - SECONDS))
+      if (( remaining <= 0 )); then
+        update_state blocked "older drain timed out; running jobs were not stopped" "$commit"
+        return 1
+      fi
+      request_timeout=20
+      (( remaining >= request_timeout )) || request_timeout=$remaining
+      why=$(local_api /v3/box/busy --max-time "$request_timeout" 2>/dev/null) || {
+        update_state blocked "older drain busy endpoint missing or unavailable; daemon left running" "$commit"
+        return 1
+      }
+      busy_status=$(json_get busy <<<"$why" || true)
+      if [[ $busy_status != true && $busy_status != false ]]; then
+        update_state blocked "older drain busy status invalid; daemon left running" "$commit"
+        return 1
+      fi
+      (( SECONDS < deadline )) || continue
+      [[ $busy_status == false ]] && break
+      remaining=$((deadline - SECONDS))
+      pause=5
+      (( remaining >= pause )) || pause=$remaining
+      sleep "$pause"
+    done
+  elif (( drain_rc != 0 )) && daemon_crashing; then
+    # A daemon that keeps exiting runs nothing and can never answer a drain;
+    # waiting for it would leave the machine down for good (for example when
+    # the running release rejects its own config). Go on: the migration below
+    # and the rollback after activation still apply.
+    update_state draining "Swarm is not running (it keeps exiting); nothing to drain" "$commit"
+  elif (( drain_rc != 0 )); then
+    update_state blocked "cannot establish admission drain; daemon left running" "$commit"
+    return 1
+  else
+    drain=${drain%$'\n'*}
+    UPDATE_DRAIN_GENERATION=$(json_get generation <<<"$drain")
+    [[ -n $UPDATE_DRAIN_GENERATION ]] || return 1
+    while :; do
+      [[ $(json_get generation <<<"$drain") == "$UPDATE_DRAIN_GENERATION" ]] || return 1
+      [[ $(json_get ready <<<"$drain") == true ]] && break
+      if [[ $(json_get timed_out <<<"$drain") == true ]]; then
+        update_state blocked "drain timed out; running jobs were not stopped: $drain" "$commit"
+        return 1
+      fi
+      [[ $(json_get draining <<<"$drain") == true ]] || return 1
+      update_state draining "waiting for existing runs: $drain" "$commit"
+      sleep 5
+      drain=$(local_api /v3/box/drain) || {
+        update_state blocked "drain status unavailable; daemon left running" "$commit"
+        return 1
+      }
+    done
   fi
+  # The new build must have its sandbox on only when this install keeps it on
+  # (SANDBOX=on); turning it off is a setting, not a failed update.
   sandboxed=$(local_api /v3/box/summary 2>/dev/null | json_get sandbox.active || true)
-  activate "$commit"
-  if came_up "$commit" "$sandboxed"; then
+  [[ ${SANDBOX:-off} == on ]] || sandboxed=false
+  if ! migrate_removed_startup_keys "$OPT/releases/$commit"; then
+    update_state failed "cannot migrate startup config; daemon left running" "$commit"
+    return 1
+  fi
+  UPDATE_SWITCHED=false
+  local activation_failed=false
+  if ! activate "$commit"; then
+    [[ $UPDATE_SWITCHED == true ]] || return 1
+    activation_failed=true
+    # Cleanup is best-effort against a potentially dead daemon, never a barrier
+    # to restoring the old release. Its boot-bound reservation is now obsolete.
+    cleanup_update_drain
+  fi
+  UPDATE_DRAIN_GENERATION=''
+  UPDATE_DRAIN_CLAIM=''
+  trap - EXIT INT TERM
+  verify_update_or_rollback "$commit" "$running" "$sandboxed" "$activation_failed"
+)
+
+# Shared acceptance/rollback decision, after activation has completed.
+verify_update_or_rollback() {
+  local commit=$1 running=$2 sandboxed=$3
+  if [[ ${4:-false} != true ]] && came_up "$commit" "$sandboxed"; then
     rm -f "$UPDATE_BAD"
     update_state installed "${running:0:9} -> ${commit:0:9}" "$commit"
+    clean_up_after_switch
     return 0
   fi
   echo "$commit" >"$UPDATE_BAD"
   if [[ -n $running && -x $OPT/releases/$running/bin/swarmd ]]; then
-    activate "$running"
-    if came_up "$running" ''; then
+    if activate "$running" && came_up "$running" ''; then
       update_state rolled_back "${commit:0:9} did not come up; back on ${running:0:9}" "$commit"
       return 0
     fi
@@ -823,6 +1244,11 @@ auto_update() {
 channel() {
   load_conf
   local ref=${1:-}
+  if release_install; then
+    [[ -z $ref ]] || die "this machine installs released builds; to follow a branch, reinstall it from source: sudo bash $INSTALLER reinstall --ref $ref"
+    echo "Installing released builds; running $(awk '{print $1}' "$RELEASE_TARGET" 2>/dev/null || echo unknown)"
+    return 0
+  fi
   if [[ -z $ref ]]; then
     echo "Following ${SWARM_REF:-main}${DEV_SOURCE:+ (built from $DEV_SOURCE for now; install.sh dev-sync off to resume)}; running $(git -C "$SRC" rev-parse --short HEAD)"
     return 0
@@ -840,6 +1266,11 @@ channel() {
 # process list or shell history, and they are never printed.
 daemon_env() {
   [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
+  daemon_env_apply "$@"
+}
+
+# daemon_env without the root check, for commands that already made it.
+daemon_env_apply() {
   local action=${1:-list} name value line keep
   shift || true
   if [[ $action == list ]]; then
@@ -881,23 +1312,38 @@ install_units() {
   conf_migrate
   local sdk_args='' runtime_arg='' secrets_arg='' permissions_arg ai_url='' ai_ip='' release
   # The app starts only when run as the main module, which Node decides on
-  # the symlink-resolved path, so its unit names the release itself.
-  release=$(readlink -f "$OPT/current")
+  # the symlink-resolved path, so its unit names the release itself: the one
+  # being activated (activate passes it, before current points at it; on a
+  # first install current does not exist yet), else the running one.
+  release=${1:-$(readlink -f "$OPT/current")}
   # Swarm's MCP for AI keys, on loopback (and on the tailnet through Serve).
   [[ ${AI_ACCESS:-off} == on ]] && sdk_args='--container-sdk-port=7783 --container-sdk-host=127.0.0.1'
   [[ ${AI_ACCESS:-off} == on && ${TAILNET:-off} == on && ${TAILNET_IDENTITY:-off} == on ]] && sdk_args+=' --tailnet-identity'
   [[ ${AI_ACCESS:-off} == on && ${TAILNET:-off} == on ]] && ai_url=${APP_AI_URL:-} ai_ip=${APP_AI_IP:-}
   [[ ${SANDBOX_RUNTIME:-default} == default ]] && runtime_arg='--sandbox-runtime=runc'
-  [[ ${SECRETS_GATEWAY:-off} == on ]] && secrets_arg=--secrets-gateway=on
-  # Unattended jobs never wait on a person: with --sandbox=required Swarm does
-  # not start without its sandbox, and bypass applies only while it is active.
-  # The installer's choice is applied at every start.
+  # The gateway listens on the sandbox network, which only environments make.
+  [[ ${SECRETS_GATEWAY:-off} == on ]] && environments_on && secrets_arg=--secrets-gateway=on
+  # Jobs skip tool approvals by default (auto), sandbox or not: nobody is
+  # there to answer a prompt on a headless machine. The installer's choice is applied at every start.
   case ${PERMISSIONS:-} in
     auto) permissions_arg=--bypass-permissions ;;
     ask) permissions_arg=--bypass-permissions=false ;;
     *) die "install.env has no valid PERMISSIONS (auto or ask); run install.sh permissions auto|ask" ;;
   esac
+  # Off by default: agents run in Swarm on this machine. On: their commands
+  # run in one Docker sandbox per project.
+  local sandbox_arg
+  case ${SANDBOX:-} in
+    off) sandbox_arg=--sandbox=off ;;
+    on) sandbox_arg="--sandbox=required --sandbox-backend=docker" ;;
+    *) die "install.env has no valid SANDBOX (on or off); run install.sh sandbox on|off" ;;
+  esac
   install -d "$UNITS"
+  # Docker only with environments: the firewall unit, the daemon's Docker
+  # access and the sandbox cgroup slice exist only then.
+  local docker_after='' docker_requires='' docker_groups='' cgroup_arg='--sandbox-cgroup-parent=' cgroup_driver
+  if environments_on; then
+  docker_after="docker.service $FIREWALL_UNIT" docker_requires="Requires=docker.service $FIREWALL_UNIT" docker_groups="SupplementaryGroups=docker"
   cat > "$UNITS/$FIREWALL_UNIT" <<UNIT
 [Unit]
 Description=Keep Swarm's agent sandboxes off this server, the tailnet and private networks
@@ -909,30 +1355,48 @@ PartOf=docker.service
 Type=oneshot
 RemainAfterExit=yes
 Environment=SWARM_SANDBOX_NETWORK=$SANDBOX_NETWORK SWARM_SANDBOX_BRIDGE=$SANDBOX_BRIDGE SWARM_SANDBOX_SUBNET=$SANDBOX_SUBNET SWARM_SANDBOX_GATEWAY_PORT=$(gateway_port)
-ExecStart=/bin/bash $SRC/containers/sandbox/firewall.sh
+ExecStart=/bin/bash $(sandbox_dir)/firewall.sh
 
 [Install]
 WantedBy=multi-user.target docker.service
+UNIT
+  cgroup_driver=$(docker info --format '{{.CgroupDriver}}') || { echo 'Cannot determine Docker cgroup driver' >&2; return 1; }
+  case "$cgroup_driver" in
+    systemd) cgroup_arg='--sandbox-cgroup-parent=swarm-sandbox.slice' ;;
+    cgroupfs) echo 'Docker cgroupfs: using per-container CPU shares instead of systemd slice' >&2 ;;
+    *) echo "Unsupported Docker cgroup driver: $cgroup_driver" >&2; return 1 ;;
+  esac
+  else
+    systemctl disable "$FIREWALL_UNIT" >/dev/null 2>&1 || true
+    rm -f "$UNITS/$FIREWALL_UNIT"
+  fi
+  cat > "$UNITS/swarm-sandbox.slice" <<'UNIT'
+[Unit]
+Description=Low-priority Swarm agent commands
+[Slice]
+# No cap: weights affect contention only, never idle CPU or memory.
+CPUWeight=25
+IOWeight=25
 UNIT
   # Swarm itself: its own user, its own private state directories, and Docker
   # access to start sandboxes. Nothing it holds is mounted into a sandbox.
   cat > "$UNITS/$DAEMON_UNIT" <<UNIT
 [Unit]
-Description=Swarm (headless, agents in sandboxes)
-After=network-online.target docker.service $FIREWALL_UNIT
+Description=Swarm (headless)
+After=network-online.target $docker_after
 Wants=network-online.target
-Requires=docker.service $FIREWALL_UNIT
+$docker_requires
 
 [Service]
 User=$SERVICE_USER
 Group=$SERVICE_USER
-SupplementaryGroups=docker
+$docker_groups
 # 0007, not 0077: a sandbox for a person's folder runs as that person with
 # Swarm's group, so what Swarm writes there must admit its group (Swarm's own
 # state directories are 0700 and nobody else is in its group).
 UMask=0007
 Environment=HOME=$SERVICE_HOME SWARM_DISABLE_MINT_REPORT=1
-# Folders whose jobs are delivered as pull requests (install.sh workspace publish).
+# Folders whose jobs are delivered as pull requests (swarmctl workspace publish).
 Environment=SWARM_PUBLISH_CONFIG=$PUBLISH
 # The installer's update state, shown in the machine summary.
 Environment=SWARM_UPDATE_STATE=$UPDATE_STATE
@@ -951,7 +1415,10 @@ ConfigurationDirectoryMode=0700
 LogsDirectory=swarmd
 LogsDirectoryMode=0700
 WorkingDirectory=$PROJECT
-ExecStart=$OPT/current/bin/swarmd --desktop-port=0 --cwd=$PROJECT --sandbox=required $permissions_arg $runtime_arg $sdk_args $secrets_arg
+Slice=swarm.slice
+CPUWeight=1000
+IOWeight=1000
+ExecStart=$OPT/current/bin/swarmd --cwd=$PROJECT $sandbox_arg $cgroup_arg $permissions_arg $runtime_arg $sdk_args $secrets_arg
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=20
@@ -1002,13 +1469,13 @@ WantedBy=multi-user.target
 UNIT
   cat > "$UNITS/swarm-headless-update.service" <<UNIT
 [Unit]
-Description=Update headless Swarm to the newest checked commit of its branch
-After=network-online.target docker.service
+Description=Update headless Swarm to its newest release (or checked commit of its branch)
+After=network-online.target $docker_after
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash $SRC/containers/headless/app/install.sh update
+ExecStart=/bin/bash $INSTALLER update
 UNIT
   cat > "$UNITS/swarm-headless-update.timer" <<'UNIT'
 [Unit]
@@ -1023,7 +1490,8 @@ WantedBy=timers.target
 UNIT
   install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0700 "${DATA_DIRS[0]}" "$APP_CONFIG"
   systemctl daemon-reload
-  systemctl enable "$FIREWALL_UNIT" "$DAEMON_UNIT" "$APP_UNIT" >/dev/null
+  systemctl enable "$DAEMON_UNIT" "$APP_UNIT" >/dev/null
+  if environments_on; then systemctl enable "$FIREWALL_UNIT" >/dev/null; fi
   # Automatic updates only when the person turned them on (install.sh auto-update on).
   if [[ ${AUTO_UPDATE:-off} == on ]]; then
     systemctl enable --now swarm-headless-update.timer >/dev/null
@@ -1034,99 +1502,23 @@ UNIT
 
 # ---- Workspaces: the person's own folders, made visible to Swarm -------------
 # Swarm runs as its own user with every home folder hidden (ProtectHome=yes),
-# so it cannot see a person's folders. `install.sh workspace add PATH`, run as
+# so it cannot see a person's folders. `swarmctl workspace add PATH`, run as
 # root by the person or by the AI setting this machine up, makes exactly that
 # folder (a Git repository or not) visible and writable to Swarm and its agent
 # sandboxes at its real path: a unit drop-in binds the folder into the
 # service, and Swarm's user gets access to that folder only (the owner keeps
 # full rights on everything Swarm creates inside). Swarm itself never changes
-# the machine; this is the installer's job, done from outside. Afterwards the
-# folder is registered in place with swarm_add_workspace (or
-# `swarmctl workspace add`); nothing is copied.
+# the machine; this is swarmctl's job, done from outside. Afterwards the
+# folder is registered in place with swarm_add_workspace; nothing is copied.
 WORKSPACES=$STATE/workspaces
 # Root-owned: FOLDER<TAB>COMMAND[<TAB>auto,sync] per line; Swarm only reads it.
 PUBLISH=$STATE/publish
 WORKSPACES_DROPIN=$UNITS/$DAEMON_UNIT.d/50-workspaces.conf
 
-# A folder Swarm may work in: absolute, no "..", an existing directory with no
-# link in its path, owned by the person it is added for (never root's, Swarm's
-# or a system account's), not a system or settings folder, not that person's
-# whole home and not inside anyone else's home.
-workspace_check() {
-  local path=$1 who=$2 real owner home top sub other uid other_home dir
-  [[ $path == /* ]] || die "path must be absolute"
-  [[ $path != *..* && $path != *$'\n'* ]] || die "path must not contain .. or newlines"
-  [[ -d $path ]] || die "$path is not a directory"
-  real=$(realpath -e "$path") || die "$path cannot be resolved"
-  [[ $real == "$path" ]] || die "$path goes through a link; use $real"
-  [[ $path != / ]] || die "$path is a system folder"
-  top=${path#/} top=${top%%/*}
-  case $top in
-    bin|boot|dev|etc|lib|lib32|lib64|libx32|proc|root|run|sbin|snap|sys|tmp|usr) die "$path is a system folder" ;;
-  esac
-  if [[ $top == var ]]; then
-    sub=${path#/var} sub=${sub#/} sub=${sub%%/*}
-    case $sub in
-      ''|cache|lib|lock|log|mail|run|spool|tmp) die "$path is a system folder" ;;
-    esac
-  fi
-  for dir in "${DATA_DIRS[@]}" "$SERVICE_HOME" "$STATE" "$OPT"; do
-    [[ $path != "$dir" && $path != "$dir"/* ]] || die "$path is Swarm's own storage"
-  done
-  case /$path/ in
-    */.*/*) die "$path is a settings or credentials folder" ;;
-  esac
-  owner=$(stat -c %U "$path")
-  [[ $owner != root && $owner != "$SERVICE_USER" ]] || die "$path must belong to a person, not $owner"
-  [[ $(id -u "$owner") -ge 1000 ]] || die "$path belongs to a system account"
-  [[ $owner == "$who" ]] || die "$path belongs to $owner, not $who (pass --for-user $owner if it is for them)"
-  home=$(person_home "$who")
-  [[ $path != "$home" && $home != "$path"/* ]] || die "$path is $who's whole home folder (or holds it); add the project folder inside it"
-  while IFS=: read -r other _ uid _ _ other_home _; do
-    [[ $other != "$who" && $uid -ge 1000 && $uid -ne 65534 && $other_home == /?* ]] || continue
-    [[ $path != "$other_home" && $path != "$other_home"/* ]] || die "$path is inside $other's home folder"
-  done < <(getent passwd)
-  WORKSPACE_OWNER=$owner
-}
 
 workspace_listed() { [[ -f $WORKSPACES ]] && grep -v '^\s*$' "$WORKSPACES" || true; }
 
-# The drop-in: ProtectHome=tmpfs hides every home folder except the bound
-# ones, which appear at their real paths, writable.
-workspace_dropin() {
-  local paths p
-  paths=$(workspace_listed)
-  if [[ -z $paths ]]; then
-    rm -f "$WORKSPACES_DROPIN"
-    rmdir "$(dirname "$WORKSPACES_DROPIN")" 2>/dev/null || true
-    return
-  fi
-  install -d -m 0755 "$(dirname "$WORKSPACES_DROPIN")"
-  {
-    echo "# Written by install.sh workspace; each folder was added by this machine's administrator."
-    echo "[Service]"
-    echo "ProtectHome=tmpfs"
-    while IFS= read -r p; do
-      echo "BindPaths=$p"
-      echo "ReadWritePaths=$p"
-    done <<<"$paths"
-  } >"$WORKSPACES_DROPIN.tmp"
-  chmod 0644 "$WORKSPACES_DROPIN.tmp"
-  mv -f "$WORKSPACES_DROPIN.tmp" "$WORKSPACES_DROPIN"
-}
-
-# Swarm's user gets rwx on the folder (and x on the folders above it, where
-# missing); the owner keeps rwx on everything Swarm creates inside.
-workspace_grant() {
-  local path=$1 owner=$2 parent
-  setfacl -R -m "u:$SERVICE_USER:rwX" "$path"
-  setfacl -R -d -m "u:$SERVICE_USER:rwX" -m "u:$owner:rwX" "$path"
-  parent=$(dirname "$path")
-  while [[ $parent != / && $parent != /home ]]; do
-    runuser -u "$SERVICE_USER" -- test -x "$parent" || setfacl -m "u:$SERVICE_USER:--x" "$parent"
-    parent=$(dirname "$parent")
-  done
-}
+# Uninstall still revokes the folder ACLs; normal administration is in swarmctl.
 workspace_revoke() {
   local path=$1 owner=$2
   setfacl -R -x "u:$SERVICE_USER" "$path" 2>/dev/null || true
@@ -1134,92 +1526,7 @@ workspace_revoke() {
   setfacl -R -d -x "u:$owner" "$path" 2>/dev/null || true
 }
 
-workspace_restart() {
-  systemctl daemon-reload
-  if systemctl is-active -q "$DAEMON_UNIT"; then
-    restart_daemon_when_idle
-    wait_daemon
-    echo "Swarm restarted with the new folder list."
-  fi
-}
 
-workspace() {
-  [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
-  command -v setfacl >/dev/null || die "setfacl is missing (apt-get install acl)"
-  case ${1:-} in
-    add)
-      local who=''
-      if [[ $# == 4 && $3 == --for-user ]]; then
-        who=$4
-      else
-        [[ $# == 2 ]] || die "usage: install.sh workspace add PATH [--for-user NAME]"
-      fi
-      who=$(person "$who") || exit 1
-      workspace_check "$2" "$who"
-      install -d -m 0755 "$STATE"
-      if ! workspace_listed | grep -qxF "$2"; then
-        printf '%s\n' "$2" >>"$WORKSPACES"
-        chmod 0644 "$WORKSPACES"
-      fi
-      workspace_grant "$2" "$WORKSPACE_OWNER"
-      workspace_dropin
-      workspace_restart
-      echo "$2 is visible to Swarm (owner $WORKSPACE_OWNER). Register it in place: swarm_add_workspace $2"
-      ;;
-    remove)
-      [[ $# == 2 ]] || die "usage: install.sh workspace remove PATH"
-      [[ $2 == /* && $2 != *..* ]] || die "path must be absolute"
-      workspace_listed | grep -qxF "$2" || die "$2 is not a Swarm workspace folder on this machine"
-      grep -vxF "$2" "$WORKSPACES" >"$WORKSPACES.tmp" || true
-      mv -f "$WORKSPACES.tmp" "$WORKSPACES"
-      [[ ! -d $2 ]] || workspace_revoke "$2" "$(stat -c %U "$2")"
-      workspace_dropin
-      workspace_restart
-      echo "$2 is no longer visible to Swarm."
-      ;;
-    list)
-      [[ $# == 1 ]] || die "usage: install.sh workspace list"
-      workspace_listed
-      [[ ! -s $PUBLISH ]] || { echo "Delivered as pull requests:"; sed 's/^/  /' "$PUBLISH"; }
-      ;;
-    publish)
-      # Jobs in PATH are delivered as pull requests by COMMAND instead of a
-      # local merge; --auto delivers each finished job with commits unasked;
-      # --sync starts each job from the forge's latest base branch.
-      # COMMAND runs on this machine as Swarm's user, never in a sandbox.
-      local usage="usage: install.sh workspace publish PATH COMMAND [--auto] [--sync] | publish PATH --off"
-      (( $# >= 3 && $# <= 5 )) || die "$usage"
-      local path=$2 command=$3 options='' flag line
-      shift 3
-      workspace_listed | grep -qxF "$path" || die "$path is not a Swarm workspace folder on this machine (install.sh workspace add $path)"
-      install -d -m 0755 "$STATE"
-      install -m 0644 -o root -g root /dev/null "$PUBLISH.new"
-      if [[ -f $PUBLISH ]]; then
-        while IFS= read -r line; do [[ ${line%%$'\t'*} == "$path" ]] || printf '%s\n' "$line" >>"$PUBLISH.new"; done <"$PUBLISH"
-      fi
-      if [[ $command == --off ]]; then
-        [[ $# == 0 ]] || { rm -f "$PUBLISH.new"; die "$usage"; }
-        mv -f "$PUBLISH.new" "$PUBLISH"
-        echo "Jobs in $path are merged into the folder again."
-        return
-      fi
-      for flag; do
-        case $flag in
-          --auto) options+=${options:+,}auto ;;
-          --sync) options+=${options:+,}sync ;;
-          *) rm -f "$PUBLISH.new"; die "$usage" ;;
-        esac
-      done
-      [[ $command == /* && $command != *..* && -f $command && -x $command ]] || { rm -f "$PUBLISH.new"; die "COMMAND must be an absolute path to an executable file"; }
-      [[ $command != /home/* && $command != /root/* ]] || { rm -f "$PUBLISH.new"; die "COMMAND must be outside home folders (Swarm cannot see them); /usr/local/lib is a good place"; }
-      [[ $(stat -c %u "$command") == 0 && $(( 8#$(stat -c %a "$command") & 8#022 )) == 0 ]] || { rm -f "$PUBLISH.new"; die "COMMAND must be owned by root and writable only by root"; }
-      printf '%s\t%s%s\n' "$path" "$command" "${options:+$'\t'$options}" >>"$PUBLISH.new"
-      mv -f "$PUBLISH.new" "$PUBLISH"
-      echo "Jobs in $path are delivered as pull requests by $command${options:+ ($options)}."
-      ;;
-    *) die "usage: install.sh workspace add PATH [--for-user NAME] | remove PATH | list | publish PATH COMMAND [--auto] [--sync] | publish PATH --off" ;;
-  esac
-}
 
 # Wait until the app answers on its loopback port (with the Host it accepts).
 wait_ready() {
@@ -1337,19 +1644,22 @@ reinstall_all() {
   done
   if [[ -f $CONF ]]; then
     # shellcheck disable=SC1090
-    mapfile -t saved < <(. "$CONF" && printf '%s\n' "${APP_RELAY_URL:-}" "${APP_DEVICE_NAME:-}" "${SWARM_REF:-}" "${AI_ACCESS:-}" "${SECRETS_GATEWAY:-}" "${PERMISSIONS:-}" "${AUTO_UPDATE:-}" "${UPDATE_CHECKS:-}" "${UPDATE_HOOK:-}")
+    mapfile -t saved < <(. "$CONF" && printf '%s\n' "${APP_RELAY_URL:-}" "${APP_DEVICE_NAME:-}" "${SWARM_REF:-}" "${AI_ACCESS:-}" "${SECRETS_GATEWAY:-}" "${PERMISSIONS:-}" "${AUTO_UPDATE:-}" "${UPDATE_CHECKS:-}" "${UPDATE_HOOK:-}" "${SANDBOX:-}" "${SOURCE:-git}" "${ENVIRONMENTS:-on}")
     saved=("${saved[@]:0:6}" "$(saved_tailnet)" "${saved[@]:6}")
   fi
   [[ -n ${saved[0]:-} ]] && args+=(--relay "${saved[0]}")
   [[ -n ${saved[1]:-} ]] && args+=(--name "${saved[1]}")
-  # The retired container layout's branch: everything it carried is on dev.
-  [[ -n ${saved[2]:-} && ${saved[2]} != swarm-control ]] && args+=(--ref "${saved[2]}")
+  # A source install keeps its branch (the retired container layout's
+  # branch is on dev now); a release install stays on releases.
+  [[ ${saved[11]:-git} == git && -n ${saved[2]:-} && ${saved[2]} != swarm-control ]] && args+=(--ref "${saved[2]}")
+  [[ ${saved[12]:-off} == on ]] && args+=(--environments on)
   [[ ${saved[3]:-} == off ]] && args+=(--no-ai-access)
   [[ -n ${saved[4]:-} ]] && args+=(--secrets-gateway "${saved[4]}")
   [[ ${saved[5]:-} == ask ]] && args+=(--ask-permissions)
   [[ ${saved[7]:-} == on ]] && args+=(--auto-update)
   [[ -n ${saved[8]:-} ]] && args+=(--update-checks "${saved[8]}")
   [[ -n ${saved[9]:-} ]] && args+=(--update-hook "${saved[9]}")
+  [[ ${saved[10]:-} == on ]] && args+=(--sandbox on)
   [[ ${saved[6]:-} == on ]] && args+=(--tailnet)
   # Later options win, so anything passed now overrides the saved settings.
   uninstall_all "${uninstall[@]}"
@@ -1557,7 +1867,74 @@ tailnet_cmd() {
   esac
 }
 
-# Agents without prompts (auto, inside the sandbox only) or asking first.
+# Agents in Swarm on this machine (off, the default) or their commands in one
+# Docker sandbox per project (on).
+set_sandbox() {
+  [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
+  load_conf
+  case ${1:-} in
+    on|off) ;;
+    *) die "usage: install.sh sandbox on|off" ;;
+  esac
+  # The sandbox runs on Docker: it brings environments (Docker, gVisor) with it.
+  if [[ $1 == on ]] && ! environments_on; then set_environments on; load_conf; fi
+  conf_set SANDBOX "$1"
+  install_units
+  restart_swarm
+  if [[ $1 == on ]]; then
+    echo "Agents' commands run in one sandbox per project."
+  else
+    echo "The sandbox is off: agents run in Swarm on this machine."
+  fi
+}
+
+# Environments: a folder's own container for its agents' commands, with its
+# secrets (swarm_set_environment with max_leases). They need Docker: on installs
+# Docker and gVisor, builds the sandbox image and network and turns the secret
+# gateway on; off stops using them (Docker stays installed).
+set_environments() {
+  [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
+  load_conf
+  conf_migrate >/dev/null
+  case ${1:-} in
+    on)
+      install_docker
+      conf_set ENVIRONMENTS on
+      ENVIRONMENTS=on
+      conf_set SECRETS_GATEWAY on
+      SECRETS_GATEWAY=on
+      local commit
+      commit=$(running_commit)
+      [[ -n $commit ]] || die "Swarm is not running yet; install it first"
+      if ! docker image inspect "swarm-sandbox:$commit" >/dev/null 2>&1; then
+        build_sandbox_image "$commit" "$(sandbox_dir)"
+      fi
+      docker tag "swarm-sandbox:$commit" "$SANDBOX_IMAGE"
+      firewall
+      choose_runtime
+      conf_set SANDBOX_RUNTIME "$SANDBOX_RUNTIME"
+      install_units
+      systemctl daemon-reload
+      systemctl enable --now "$FIREWALL_UNIT" >/dev/null
+      restart_swarm
+      echo "Environments are on: a folder with an environment (swarm_set_environment with max_leases) runs its agents' commands in it, with its secrets."
+      ;;
+    off)
+      [[ ${SANDBOX:-off} == off ]] || die "the sandbox needs environments; turn it off first: sudo bash $INSTALLER sandbox off"
+      conf_set ENVIRONMENTS off
+      ENVIRONMENTS=off
+      conf_set SECRETS_GATEWAY off
+      SECRETS_GATEWAY=off
+      install_units
+      systemctl daemon-reload
+      restart_swarm
+      echo "Environments are off: agents run every command on this machine. Docker stays installed."
+      ;;
+    *) die "usage: install.sh environments on|off" ;;
+  esac
+}
+
+# Agents without prompts (auto, the default) or asking first.
 set_permissions() {
   [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
   load_conf
@@ -1569,7 +1946,7 @@ set_permissions() {
   install_units
   restart_swarm
   if [[ $1 == auto ]]; then
-    echo "Agents run without permission prompts, only while their sandbox is active."
+    echo "Agents run without permission prompts."
   else
     echo "Agents ask before commands and file changes."
   fi
@@ -1621,8 +1998,9 @@ mint_ai_key() {
   idfile=$AI_KEY_IDS/$who
   [[ -f $idfile ]] && old_id=$(<"$idfile")
   tmp=$(mktemp "$AI_KEY_IDS/.mint.XXXXXX")
-  if ! "$SWARMCTL" setup sdk-token --ai-access "$access" --name "local-ai-$who" \
-    --expires-in-seconds "$AI_KEY_SECONDS" >"$tmp"; then
+  # The key works while the AI uses it and stops after 90 days unused; nothing
+  # renews it. connect-ai again replaces it.
+  if ! "$SWARMCTL" setup sdk-token --ai-access "$access" --name "local-ai-$who" >"$tmp"; then
     rm -f "$tmp"
     die "no AI key was made; if Swarm made one anyway it shows under AI keys on the setup page"
   fi
@@ -1637,7 +2015,7 @@ mint_ai_key() {
     "$SWARMCTL" setup revoke-sdk-token --id "$old_id" >/dev/null ||
       echo "warning: could not revoke $who's previous AI key (id $old_id); revoke it on the setup page" >&2
   fi
-  echo "Made a $access AI key for $who in ~/.config/swarm/ai-key (only $who can read it; valid for a year)."
+  echo "Made a $access AI key for $who in ~/.config/swarm/ai-key (only $who can read it; it works while used and stops after 90 days unused)."
 }
 
 connect_ai() {
@@ -1671,6 +2049,101 @@ provider_key() {
   read_secret key "Paste the $1 API key"
   printf '%s' "$key" | "$SWARMCTL" setup credential --provider "$1" --api-key-stdin
   key=''
+}
+
+# Claude Code as Swarm's provider (install.sh claude-code). Swarm runs the
+# unmodified `claude` CLI as its own service user, so that user needs the CLI
+# and its own sign-in. Swarm never reads, copies or stores Claude credentials:
+# the person signs that user in through Anthropic's own flow, and their own
+# Claude login is never copied. Making the provider active is then the AI's
+# step (swarm_connect_claude_code action activate).
+CLAUDE_CODE_PATH_ENV=SWARM_CLAUDE_CODE_CLI_PATH
+# Anthropic's installer for the native Claude Code build (~/.local/bin/claude).
+CLAUDE_CODE_INSTALLER=https://claude.ai/install.sh
+# The first Claude Code with --restricted, which Swarm requires.
+CLAUDE_CODE_MIN_VERSION=2.1.248
+
+# Run a command as Swarm's service user. It has no login shell, so this runs
+# the command directly with that user's home.
+service_user_run() {
+  runuser -u "$SERVICE_USER" -- env HOME="$SERVICE_HOME" PATH="$SERVICE_HOME/.local/bin:$PATH" "$@"
+}
+
+# The value of NAME in the daemon's settings file, if set.
+daemon_env_value() {
+  [[ -f $DAEMON_ENV ]] || return 0
+  sed -n "s/^$1=//p" "$DAEMON_ENV" | tail -n 1
+}
+
+# The claude executable Swarm's user can run: the one Swarm is already set to,
+# then Anthropic's per-user install location, then the user's PATH.
+claude_code_locate() {
+  local candidate
+  for candidate in "$(daemon_env_value "$CLAUDE_CODE_PATH_ENV")" "$SERVICE_HOME/.local/bin/claude" \
+    "$(service_user_run sh -c 'command -v claude' 2>/dev/null || true)"; do
+    [[ $candidate == /* ]] || continue
+    service_user_run test -x "$candidate" 2>/dev/null && { printf '%s' "$candidate"; return 0; }
+  done
+  return 1
+}
+
+claude_code_version() {
+  { service_user_run "$1" --version 2>/dev/null || true; } | { grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' || true; } | head -n 1
+}
+
+# True when the first version is at least the second.
+version_at_least() {
+  [[ $(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n 1) == "$2" ]]
+}
+
+claude_code_signed_in() {
+  service_user_run "$1" auth status 2>/dev/null | grep -Eq '"loggedIn"[[:space:]]*:[[:space:]]*true'
+}
+
+stdin_is_terminal() { [[ -t 0 ]]; }
+
+claude_code() {
+  [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
+  claude_code_setup "$@"
+}
+
+claude_code_setup() {
+  (($# == 0)) || die "usage: install.sh claude-code"
+  load_conf
+  id -u "$SERVICE_USER" >/dev/null 2>&1 || die "Swarm's user $SERVICE_USER does not exist; install Swarm first"
+  local cli version
+  if ! cli=$(claude_code_locate); then
+    say "Installing Claude Code for Swarm's user ($SERVICE_USER) with Anthropic's installer"
+    service_user_run bash -c 'set -o pipefail; curl -fsSL "$1" | bash' claude-install "$CLAUDE_CODE_INSTALLER" ||
+      die "the Claude Code installer failed"
+    cli=$(claude_code_locate) || die "Claude Code was installed but $SERVICE_USER cannot run it; expected $SERVICE_HOME/.local/bin/claude"
+  fi
+  version=$(claude_code_version "$cli")
+  [[ -n $version ]] || die "$cli did not report a version"
+  if ! version_at_least "$version" "$CLAUDE_CODE_MIN_VERSION"; then
+    say "Updating Claude Code $version (Swarm needs $CLAUDE_CODE_MIN_VERSION or later)"
+    service_user_run "$cli" update || die "claude update failed"
+    version=$(claude_code_version "$cli")
+    version_at_least "${version:-0.0.0}" "$CLAUDE_CODE_MIN_VERSION" ||
+      die "Claude Code ${version:-unknown} is too old; Swarm needs $CLAUDE_CODE_MIN_VERSION or later"
+  fi
+  echo "Claude Code $version for Swarm's user ($SERVICE_USER): $cli"
+  if [[ $(daemon_env_value "$CLAUDE_CODE_PATH_ENV") == "$cli" ]]; then
+    echo "Swarm already uses it ($CLAUDE_CODE_PATH_ENV)."
+  else
+    printf '%s\n' "$cli" | daemon_env_apply set "$CLAUDE_CODE_PATH_ENV"
+  fi
+  if claude_code_signed_in "$cli"; then
+    echo "Claude Code is signed in for $SERVICE_USER."
+  elif stdin_is_terminal; then
+    say "Sign Claude Code in for Swarm's user: open the link it shows in your browser and finish there"
+    service_user_run "$cli" auth login || die "claude auth login did not finish; run install.sh claude-code again"
+    claude_code_signed_in "$cli" || die "Claude Code is still not signed in for $SERVICE_USER; run install.sh claude-code again"
+    echo "Claude Code is signed in for $SERVICE_USER."
+  else
+    die "Claude Code is installed but not signed in for $SERVICE_USER. Signing in needs the person at a terminal: they run 'sudo bash $INSTALLER claude-code' in their own terminal and finish the sign-in in their browser."
+  fi
+  echo "Next: your AI makes Claude Code Swarm's provider (swarm_connect_claude_code action activate)."
 }
 
 # Secrets agents can use but never see (swarmctl secret, over Swarm's socket).
@@ -1722,13 +2195,15 @@ secret_cmd() {
 }
 
 install_all() {
-  local relay='' name=swarm ref=main lock_ssh=0 ai_access=on tag='' secrets_gateway=on permissions=auto tailnet=off for_user='' auto_update=off update_checks='' update_hook=''
+  local relay='' name=swarm ref=main source=release environments=off lock_ssh=0 ai_access=on tag='' secrets_gateway='' permissions=auto sandbox=off tailnet=off for_user='' auto_update=off update_checks='' update_hook=''
   while (($#)); do
     case $1 in
       --for-user) for_user=${2:?--for-user needs a user name}; shift 2 ;;
       --relay) relay=${2:?--relay needs a URL}; shift 2 ;;
       --name) name=${2:?--name needs a value}; shift 2 ;;
-      --ref) ref=${2:?--ref needs a branch}; shift 2 ;;
+      --ref) ref=${2:?--ref needs a branch}; source=git; shift 2 ;;
+      --release-file) RELEASE_FILE=$(realpath "${2:?--release-file needs an archive}"); shift 2 ;;
+      --environments) environments=${2:?--environments needs on or off}; [[ $environments == on || $environments == off ]] || die "--environments needs on or off"; shift 2 ;;
       --tailnet) tailnet=on; shift ;;
       --no-tailnet) tailnet=off; shift ;;
       --tag) tag=${2:?--tag needs a tag such as tag:swarm}; shift 2 ;;
@@ -1737,6 +2212,7 @@ install_all() {
       --ai-access) ai_access=on; shift ;;
       --secrets-gateway) secrets_gateway=${2:?--secrets-gateway needs on or off}; shift 2 ;;
       --ask-permissions) permissions=ask; shift ;;
+      --sandbox) sandbox=${2:?--sandbox needs on or off}; [[ $sandbox == on || $sandbox == off ]] || die "--sandbox needs on or off"; shift 2 ;;
       --auto-update) auto_update=on; shift ;;
       --update-checks) update_checks=${2:?--update-checks needs CONTEXT=APP[,...] or none}; shift 2 ;;
       --update-hook) update_hook=${2:?--update-hook needs a path}; shift 2 ;;
@@ -1747,7 +2223,12 @@ install_all() {
   [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
   [[ $(uname -m) == x86_64 ]] || die "Swarm's headless build is x86_64 only (this machine is $(uname -m))"
   [[ $name =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || die "--name must be lowercase letters, digits and dashes"
+  # The sandbox runs on Docker, so it brings environments with it; the secret
+  # gateway reaches only environments and the sandbox, so it follows them.
+  [[ $sandbox == on ]] && environments=on
+  [[ -n $secrets_gateway ]] || secrets_gateway=$environments
   [[ $secrets_gateway == on || $secrets_gateway == off ]] || die "--secrets-gateway must be on or off"
+  [[ $secrets_gateway == off || $environments == on ]] || die "--secrets-gateway on needs environments (secrets reach agents only inside them): add --environments on"
   [[ -z $relay || $relay =~ ^https://[A-Za-z0-9.-]+/?$ ]] || die "--relay must be an https origin such as https://swarm-relay.example.workers.dev"
   [[ $ref =~ ^[A-Za-z0-9._/-]+$ ]] || die "--ref must be a branch name"
   [[ -z $tag || $tag =~ ^tag:[a-z0-9][a-z0-9-]{0,40}$ ]] || die "--tag must look like tag:swarm"
@@ -1763,28 +2244,11 @@ install_all() {
     who=$(person "" 2>/dev/null) || who=''
   fi
 
-  # Snap's Docker is confined: it cannot bind-mount project folders outside
-  # home or take the gVisor runtime, so agent sandboxes cannot run on it, and
-  # installing the distribution's Docker beside it leaves two daemons fighting
-  # over one socket.
-  if command -v snap >/dev/null && snap list docker >/dev/null 2>&1; then
-    die "this machine runs Docker from snap, which cannot run Swarm's agent sandboxes (it cannot mount project folders or use gVisor). Remove it first with: sudo snap remove docker (this deletes the containers, images and volumes it holds), then run this again"
-  fi
-
-  say "Installing Docker, gVisor and Git"
-  local packages=(git curl ca-certificates gnupg iproute2 jq acl)
-  # A working Docker with buildx (such as Docker's own docker-ce) stays:
-  # the distribution's packages would conflict with it.
-  if command -v docker >/dev/null && docker buildx version >/dev/null 2>&1; then
-    echo "Using the Docker already on this machine ($(docker --version))"
-  else
-    packages+=(docker.io docker-buildx)
-  fi
+  say "Installing Git and the tools Swarm uses"
   apt-get update -qq
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${packages[@]}" >/dev/null
-  systemctl enable --now docker >/dev/null
-  install_gvisor
-  register_gvisor
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git curl ca-certificates gnupg iproute2 jq acl >/dev/null
+  # Docker only for environments (and the sandbox), or to build from source.
+  if [[ $environments == on || $source == git ]]; then install_docker; fi
 
   local origin=$LOCAL_APP_ORIGIN ai_url='' ai_ip='' tailnet_identity=off
   if [[ $tailnet == on ]]; then
@@ -1792,18 +2256,34 @@ install_all() {
     origin=https://$TS_DNS ai_url=https://$TS_DNS:8444/mcp ai_ip=$TS_IP tailnet_identity=$TS_IDENTITY
   fi
 
-  say "Fetching Swarm ($ref)"
   install -d -m 0755 "$STATE"
-  if [[ -d $SRC/.git ]]; then
-    git -C "$SRC" fetch -q origin "$ref" && git -C "$SRC" checkout -q -B "$ref" FETCH_HEAD
+  if [[ $source == git ]]; then
+    say "Fetching Swarm ($ref) to build it"
+    if [[ -d $SRC/.git ]]; then
+      git -C "$SRC" fetch -q origin "$ref" && git -C "$SRC" checkout -q -B "$ref" FETCH_HEAD
+    else
+      git clone -q --branch "$ref" https://github.com/swarm-agent/swarm.git "$SRC"
+    fi
   else
-    git clone -q --branch "$ref" https://github.com/swarm-agent/swarm.git "$SRC"
+    if [[ -n ${RELEASE_FILE:-} ]]; then
+      local file_tag file_commit
+      file_tag=$(basename "$RELEASE_FILE")
+      [[ $file_tag =~ ^swarm-(v[0-9]+\.[0-9]+\.[0-9]+)-linux-amd64\.tar\.gz$ ]] || die "--release-file must be a release archive (swarm-vX.Y.Z-linux-amd64.tar.gz)"
+      file_tag=${BASH_REMATCH[1]}
+      file_commit=$(tar -xzOf "$RELEASE_FILE" "swarm-$file_tag-linux-amd64/build-info.txt" | sed -n 's/^commit=//p')
+      [[ $file_commit =~ ^[0-9a-f]{40}$ ]] || die "$RELEASE_FILE has no build commit"
+      printf '%s %s\n' "$file_tag" "$file_commit" >"$RELEASE_TARGET"
+    else
+      say "Finding Swarm's newest release"
+      latest_release || die "could not read Swarm's newest release from GitHub (https://github.com/$RELEASE_REPO/releases); check this machine reaches github.com and run this again"
+    fi
+    echo "Swarm $(awk '{print $1}' "$RELEASE_TARGET")"
   fi
 
   say "Creating Swarm's service user"
   id "$SERVICE_USER" >/dev/null 2>&1 ||
     useradd --system --user-group --home-dir "$SERVICE_HOME" --create-home --shell /usr/sbin/nologin "$SERVICE_USER"
-  usermod -aG docker "$SERVICE_USER"
+  if getent group docker >/dev/null; then usermod -aG docker "$SERVICE_USER"; fi
   install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0700 "$SERVICE_HOME"
   install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$PROJECT"
   # Projects from the earlier container layout belong to its uid 10001.
@@ -1826,6 +2306,8 @@ install_all() {
   umask 077
   cat > "$CONF" <<CONF
 SWARM_REF=$ref
+SOURCE=$source
+ENVIRONMENTS=$environments
 TAILNET=$tailnet
 APP_ORIGIN=$origin
 APP_RELAY_URL=${relay:-$previous_relay}
@@ -1834,6 +2316,7 @@ AI_ACCESS=$ai_access
 TAILNET_IDENTITY=$tailnet_identity
 SECRETS_GATEWAY=$secrets_gateway
 PERMISSIONS=$permissions
+SANDBOX=$sandbox
 AUTO_UPDATE=$auto_update
 UPDATE_CHECKS=$update_checks
 UPDATE_HOOK=$update_hook
@@ -1848,8 +2331,10 @@ CONF
   [[ $tailnet == on ]] && serve_tailnet "$ai_access" "$tailnet_identity"
 
   wait_ready
-  say "Checking that agent sandboxes cannot reach this server or your networks"
-  check_isolation
+  if [[ $environments == on ]]; then
+    say "Checking that environments cannot reach this server or your networks"
+    check_isolation
+  fi
 
   # The person's AI on this machine gets its key now (Swarm's owner is
   # created for them). A failure is reported, and the install exits non-zero.
@@ -1878,9 +2363,14 @@ install_done() {
   load_conf
   echo
   echo "Swarm is running on this machine; its services listen on 127.0.0.1 only:"
-  echo "  Swarm          swarm-headless: agents in one sandbox per project ($(
-    [[ $SANDBOX_RUNTIME == runsc ]] && echo gVisor || echo Docker runc)), $(
-    [[ $PERMISSIONS == auto ]] && echo 'no permission prompts inside the sandbox' || echo 'agents ask first'), secret gateway $SECRETS_GATEWAY"
+  echo "  Swarm          $(if release_install; then awk '{print $1}' "$RELEASE_TARGET"; else echo "built from $SWARM_REF"; fi): $(
+    if [[ ${SANDBOX:-off} == on ]]; then echo "agents in one sandbox per project ($([[ $SANDBOX_RUNTIME == runsc ]] && echo gVisor || echo Docker runc))"; else echo "agents run on this machine (sandbox off)"; fi), $(
+    [[ $PERMISSIONS == auto ]] && echo 'no permission prompts' || echo 'agents ask first')"
+  if environments_on; then
+    echo "  Environments   on (Docker): a folder's environment runs its agents' commands, with its secrets"
+  else
+    echo "  Environments   off: no Docker; turn on with: sudo bash $INSTALLER environments on"
+  fi
   if [[ $TAILNET == on ]]; then
     echo "  Setup page     127.0.0.1:8443, opened as $APP_ORIGIN (swarm-headless-app)"
   else
@@ -1926,22 +2416,63 @@ set_secrets_gateway() {
     on|off) ;;
     *) die "usage: install.sh secrets-gateway on|off" ;;
   esac
+  [[ $1 == off ]] || environments_on || die "secrets reach agents only inside environments; turn them on (this also turns the gateway on): sudo bash $INSTALLER environments on"
   sed -i "/^SECRETS_GATEWAY=/d" "$CONF" && echo "SECRETS_GATEWAY=$1" >>"$CONF"
   SECRETS_GATEWAY=$1
   install_units
   systemctl daemon-reload
-  systemctl restart "$FIREWALL_UNIT"
+  if environments_on; then systemctl restart "$FIREWALL_UNIT"; fi
   restart_daemon_when_idle
   wait_ready
   echo "Secret gateway is $1."
 }
 
+
+idle_off_response_is_idle() {
+  "$OPT/current/bin/node" -e '
+    try {
+      const v = JSON.parse(require("fs").readFileSync(0, "utf8"));
+      const counts = ["sessions", "worker_runs", "followups", "reviews"];
+      if (!v || Array.isArray(v) || v.busy !== false ||
+          counts.some(k => v[k] !== 0) ||
+          Object.entries(v).some(([k,n]) => k !== "busy" && n !== 0)) process.exit(1);
+    } catch { process.exit(1); }'
+}
+
+idle_off_check() {
+  local minutes out busy now since boot saved_boot
+  [[ -f $STATE/idle-off-minutes ]] || return 0
+  read -r minutes <"$STATE/idle-off-minutes"
+  [[ $minutes =~ ^[1-9][0-9]{0,5}$ ]] || return 0
+  # Any transport/JSON/contract failure resets the continuous idle interval.
+  if ! out=$(local_api /v3/box/busy) || ! idle_off_response_is_idle <<<"$out"; then
+    rm -f "$STATE/idle-off-since"
+    return 0
+  fi
+  read -r boot </proc/sys/kernel/random/boot_id
+  now=$(cut -d. -f1 /proc/uptime)
+  since=$now saved_boot=$boot
+  if [[ -f $STATE/idle-off-since ]]; then read -r saved_boot since <"$STATE/idle-off-since" || since=$now; fi
+  if [[ $saved_boot != "$boot" || ! $since =~ ^[0-9]+$ || $since -gt $now ]]; then since=$now; fi
+  printf '%s %s\n' "$boot" "$since" >"$STATE/idle-off-since"
+  (( now - since >= minutes * 60 )) || return 0
+  # Do not shut down if the daemon cannot accept the one pre-shutdown signal.
+  curl -fsS --max-time 20 --unix-socket "$LOCAL_API_SOCKET" -H 'Content-Type: application/json' \
+    -d '{"kind":"external.idle_off","severity":"info","summary":"Installer powering off idle host","source":"installer"}' \
+    http://swarm/v3/signals >/dev/null || { rm -f "$STATE/idle-off-since"; return 0; }
+  rm -f "$STATE/idle-off-since"
+  systemctl poweroff
+}
+
 status_cmd() {
+  echo "Idle auto-off: $(cat "$STATE/idle-off-minutes" 2>/dev/null || echo off) (minutes when enabled)"
+  systemctl --no-pager status swarm-idle-off.timer 2>/dev/null | grep -E '●|Active:' || true
   systemctl --no-pager status "$DAEMON_UNIT" "$APP_UNIT" | grep -E '●|Active:' || true
   if [[ -f $CONF ]]; then
     load_conf
     echo "Setup page: $APP_ORIGIN; Swarm MCP: $([[ ${AI_ACCESS:-off} == on ]] && echo "$LOCAL_MCP_URL" || echo off); tailnet: $(saved_tailnet); permissions: ${PERMISSIONS:-auto (after the next update)}; secret gateway: ${SECRETS_GATEWAY:-off}"
-    echo "Automatic updates: ${AUTO_UPDATE:-off} (branch $SWARM_REF)$([[ -f $UPDATE_STATE ]] && printf "; last update: %s" "$(json_get reason <"$UPDATE_STATE" 2>/dev/null || true)")"
+    echo "Environments: ${ENVIRONMENTS:-on}; sandbox: ${SANDBOX:-off}; builds: $(if release_install; then echo "releases (running $(awk '{print $1}' "$RELEASE_TARGET" 2>/dev/null))"; else echo "from source"; fi)"
+    echo "Automatic updates: ${AUTO_UPDATE:-off}$(release_install || echo " (branch $SWARM_REF)")$([[ -f $UPDATE_STATE ]] && printf "; last update: %s" "$(json_get reason <"$UPDATE_STATE" 2>/dev/null || true)")"
   fi
   check_sandbox
   if [[ -f $CONF && $(saved_tailnet) == on ]]; then tailscale serve status; fi
@@ -1956,10 +2487,13 @@ main() {
     update) update ;;
     finish-update) finish_update ;;
     build-release) shift; load_conf; build_release "${1:?build-release needs a commit}" ;;
+    idle-off) shift; exec "$SWARMCTL" idle-off "$@" ;;
+    idle-off-check) idle_off_check ;;
     auto-update) shift; auto_update "$@" ;;
     dev-sync) shift; dev_sync "$@" ;;
     channel) shift; channel "$@" ;;
     daemon-env) shift; daemon_env "$@" ;;
+    claude-code) shift; claude_code "$@" ;;
     up) up ;;
     reset-login) reset_login ;;
     # Installers before gated updates end their update here: finish it the
@@ -1976,7 +2510,9 @@ main() {
     tailnet-identity) shift; set_tailnet_identity "$@" ;;
     secrets-gateway) shift; set_secrets_gateway "$@" ;;
     permissions) shift; set_permissions "$@" ;;
-    workspace) shift; workspace "$@" ;;
+    sandbox) shift; set_sandbox "$@" ;;
+    environments) shift; set_environments "$@" ;;
+    workspace) shift; exec "$SWARMCTL" workspace "$@" ;;
     status) status_cmd ;;
     -h|--help|help) usage ;;
     *) usage >&2; exit 2 ;;

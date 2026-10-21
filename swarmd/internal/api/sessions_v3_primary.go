@@ -14,12 +14,14 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodel"
 	"swarm/packages/swarmd/internal/automation"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/modelpolicy"
+	"swarm/packages/swarmd/internal/permission"
 	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -65,6 +67,10 @@ type sessionsV3CreateRequest struct {
 	WorktreeExistingPath           string                        `json:"worktree_existing_path,omitempty"`
 	Metadata                       map[string]any                `json:"metadata,omitempty"`
 	ModelProfile                   *sessionsV3ModelProfileChoice `json:"model_profile,omitempty"`
+	// EndUser and Labels say whose conversation this is; only a gateway
+	// (agent-bound) token sets them, at create time (sessionsV3EndUserBinding).
+	EndUser string            `json:"end_user,omitempty"`
+	Labels  map[string]string `json:"labels,omitempty"`
 }
 
 type sessionsV3ModelProfileInline struct {
@@ -313,7 +319,12 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 			writeSessionNotFound(w)
 			return
 		}
-		writeJSON(w, http.StatusOK, sessionsV3HydratedResponse(hydrated, gitStatusResponseForSession(hydrated.Session)))
+		response := sessionsV3HydratedResponse(hydrated, gitStatusResponseForSession(hydrated.Session))
+		if err := addSessionEndUserFields(response, hydrated.Session.Metadata); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, response)
 	case "repositories":
 		s.handleSessionV3Repositories(w, r, principal, sessionID)
 	case "archive":
@@ -328,6 +339,16 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3PrimaryEvents(w, r, principal, sessionID)
 	case "run/stop":
 		s.handleSessionV3PrimaryRunStop(w, r, principal, sessionID)
+	case "wait":
+		s.handleSessionV3Wait(w, r, principal, sessionID)
+	case "end":
+		s.handleSessionV3End(w, r, principal, sessionID)
+	case "takeover":
+		s.handleSessionV3Takeover(w, r, principal, sessionID)
+	case "operator-messages":
+		s.handleSessionV3OperatorMessages(w, r, principal, sessionID)
+	case "confirmations":
+		s.handleSessionV3Confirmations(w, r, principal, sessionID, "")
 	case "run/stream":
 		s.handleSessionV3PrimaryRunStreamControl(w, r, sessionID, principal)
 	case "context/clear":
@@ -464,6 +485,10 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 				return
 			}
 			s.handleSessionV3PrimaryPlanMode(w, r, principal, sessionID, strings.TrimPrefix(subpath, "plan-mode/"))
+			return
+		}
+		if strings.HasPrefix(subpath, "confirmations/") {
+			s.handleSessionV3Confirmations(w, r, principal, sessionID, strings.TrimPrefix(subpath, "confirmations/"))
 			return
 		}
 		if strings.HasPrefix(subpath, "permissions/") && strings.HasSuffix(subpath, "/resolve") {
@@ -925,6 +950,9 @@ func (s *Server) createSessionsV3Primary(w http.ResponseWriter, r *http.Request,
 	if strings.TrimSpace(req.Mode) == "" {
 		req.Mode = pebblestore.AgentProfileDefaultSessionMode(resolvedAgent.Profile)
 	}
+	if sessionruntime.NormalizeMode(req.Mode) == sessionruntime.ModePlan {
+		resolvedAgent.Profile = agentruntime.WithAdvancedPlanning(resolvedAgent.Profile)
+	}
 	workspacePath := binding.SourceWorkspacePath
 	workspaceName := binding.SourceWorkspaceName
 	if workspaceName == "" && req.ProjectID == "" {
@@ -1010,6 +1038,14 @@ func (s *Server) createSessionsV3Primary(w http.ResponseWriter, r *http.Request,
 	}
 	if appBinding, ok := r.Context().Value(applicationAgentContextKey{}).(applicationAgentBinding); ok {
 		session.Metadata[applicationAgentBindingKey] = appBinding
+	}
+	if req.EndUser != "" || len(req.Labels) > 0 {
+		binding, err := sessionsV3EndUserBinding(r, resolvedAgent.Name, req.EndUser, req.Labels)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		session.Metadata[pebblestore.SessionEndUserMetadataKey] = binding
 	}
 	if req.ProjectID != "" {
 		session.Metadata["swarm_v3_project_id"] = req.ProjectID
@@ -1550,10 +1586,6 @@ func (s *Server) handleSessionV3PrimaryTombstone(w http.ResponseWriter, r *http.
 			}
 		}
 	}
-	eventType := "session.deleted"
-	if kind == "archived" {
-		eventType = "session.archived"
-	}
 	var event *pebblestore.EventEnvelope
 	if kind == "archived" {
 		event, err = s.sessions.ArchiveSessionWithEvent(session.ID)
@@ -1574,17 +1606,7 @@ func (s *Server) handleSessionV3PrimaryTombstone(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusOK, result)
 		return
 	}
-	if head, headErr := s.sessions.CurrentRealtimeOutboxRevision(); headErr == nil && head > 0 {
-		if record, ok, recordErr := s.sessions.LastRealtimeOutboxForSessionAtOrBeforeEndpoint(session.ID, head); recordErr == nil && ok && record.Event.EventType == eventType {
-			if publishErr := s.publishCommittedV3RealtimeOutbox(record); publishErr != nil {
-				// Durable commit succeeded; realtime wake is an accelerator only.
-				_ = publishErr
-			}
-		}
-	}
-	if event != nil && s.hub != nil {
-		s.hub.Publish(*event)
-	}
+	s.publishSessionV3Deleted(session.ID, event)
 	response := map[string]any{
 		"ok":         true,
 		"session_id": session.ID,
@@ -1597,6 +1619,19 @@ func (s *Server) handleSessionV3PrimaryTombstone(w http.ResponseWriter, r *http.
 		},
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+// publishSessionV3Deleted wakes realtime readers after a committed hard delete.
+// The durable commit already succeeded; these wakes are accelerators only.
+func (s *Server) publishSessionV3Deleted(sessionID string, event *pebblestore.EventEnvelope) {
+	if head, headErr := s.sessions.CurrentRealtimeOutboxRevision(); headErr == nil && head > 0 {
+		if record, ok, recordErr := s.sessions.LastRealtimeOutboxForSessionAtOrBeforeEndpoint(sessionID, head); recordErr == nil && ok && record.Event.EventType == "session.deleted" {
+			_ = s.publishCommittedV3RealtimeOutbox(record)
+		}
+	}
+	if event != nil && s.hub != nil {
+		s.hub.Publish(*event)
+	}
 }
 
 func sessionIDsFromSnapshots(sessions []pebblestore.SessionSnapshot) []string {
@@ -1717,10 +1752,23 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 	}
 	req.ClientRequestID = clientRequestID
 	req.IdempotencyKey = clientRequestID
+	if found, authErr := s.authorizeSessionsV3PrimarySession(principal, sessionID); authErr == nil && found {
+		// Close a confirmation that expired or was answered while no timer ran
+		// (after a restart), so its outcome precedes this message. This
+		// message's run carries it; no extra run is started.
+		if _, _, settleErr := s.advanceClientToolConfirmation(sessionID, false); settleErr != nil {
+			writeError(w, http.StatusInternalServerError, settleErr)
+			return
+		}
+	}
 	result, enqueueJob, err := s.acceptSessionsV3Message(principal, sessionID, req)
 	if err != nil {
 		if errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) {
 			writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error_code": "idempotency_conflict", "error": err.Error()})
+			return
+		}
+		if errors.Is(err, pebblestore.ErrWorkerConflict) || errors.Is(err, errSessionV3Ended) {
+			writeError(w, http.StatusConflict, err)
 			return
 		}
 		if strings.Contains(err.Error(), "not found") {
@@ -1759,6 +1807,16 @@ func cloneSessionsV3PlanDocument(doc *pebblestore.SessionPlanDocument) (*pebbles
 }
 
 func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID string, req sessionsV3MessageRequest) (sessionruntime.SessionMutationResult, *sessionV3ExecutorJob, error) {
+	// Held from the read through the append: POST .../end, takeover and
+	// confirmations write under the same lock, so the ended and takeover state
+	// this message is admitted on are still the session's when it lands.
+	unlock := runruntime.LockClientToolConfirmations(sessionID)
+	locked := true
+	defer func() {
+		if locked {
+			unlock()
+		}
+	}()
 	session, found, err := s.requireSessionV3Access(principal, sessionID)
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, nil, err
@@ -1772,8 +1830,14 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	if !found {
 		return sessionruntime.SessionMutationResult{}, nil, errors.New("session not found")
 	}
+	if sessionEnded(session) {
+		return sessionruntime.SessionMutationResult{}, nil, errSessionV3Ended
+	}
 	if err := validateSessionsV3CreateMetadata(req.Metadata); err != nil {
 		return sessionruntime.SessionMutationResult{}, nil, err
+	}
+	if strings.HasPrefix(sessionID, "worker-execution-") && utf8.RuneCountInString(req.Content) > permission.MaxReplyCharacters {
+		return sessionruntime.SessionMutationResult{}, nil, fmt.Errorf("message exceeds %d characters; no truncation is performed", permission.MaxReplyCharacters)
 	}
 	if err := validateSelectedWorkerMessageMetadata(req.Metadata); err != nil {
 		return sessionruntime.SessionMutationResult{}, nil, err
@@ -1820,6 +1884,9 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	}
 	if runIntent.RunID == "" {
 		runIntent.RunID = stableSessionsV3PrimaryRunID(sessionID, clientRequestID)
+	}
+	if err := s.prepareWorkerJobFollowup(principal, sessionID, clientRequestID); err != nil {
+		return sessionruntime.SessionMutationResult{}, nil, err
 	}
 	payloadHash, err := sessionsV3MessagePayloadHash(sessionID, req, message, runIntent.Status, runIntent.BlockedReason)
 	if err != nil {
@@ -1924,6 +1991,8 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 		mutation.PlanSave = &pebblestore.V3PlanSaveMutation{Plan: prepared.Plan, ArchivedRevision: prepared.ArchivedRevision, Activate: prepared.Activate, ExpectedParentVersion: prepared.Plan.ParentRevision}
 	}
 	result, err = s.applySessionV3PrimaryMutation(mutation)
+	unlock()
+	locked = false
 	if err != nil {
 		return result, nil, err
 	}
@@ -1941,6 +2010,28 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 		}
 	}
 	return result, enqueueJob, nil
+}
+
+// prepareWorkerJobFollowup admits a message into a worker job's session only
+// as a follow-up its run can start: the job settled, was not cancelled, its
+// worker still takes work and nothing else runs in the session. A refusal
+// (ErrWorkerConflict) is returned before anything is appended, so a caller is
+// never told a follow-up was accepted that the run gate would then refuse. A
+// retry of an already appended message replays without re-checking.
+func (s *Server) prepareWorkerJobFollowup(principal identity.Principal, sessionID, clientRequestID string) error {
+	if !strings.HasPrefix(sessionID, "worker-execution-") {
+		return nil
+	}
+	if _, replay, err := s.sessions.Store().GetV3SessionOperationIdempotencyRecord(principal.AccountScopeID, sessionID, sessionruntime.SessionMutationAppendMessage, clientRequestID); err != nil {
+		return err
+	} else if replay {
+		return nil
+	}
+	execution, err := s.workerExecutionService()
+	if err != nil {
+		return err
+	}
+	return execution.PrepareFollowup(principal.AccountScopeID, principal.UserID, sessionID)
 }
 
 func (s *Server) sessionsV3ActiveCheckpointMessageRunJob(principal identity.Principal, sessionID, runID, epochID string) (sessionV3ExecutorJob, bool, error) {
@@ -2479,6 +2570,16 @@ func (s *Server) handleSessionV3PrimaryMetadata(w http.ResponseWriter, r *http.R
 		return
 	}
 	next := session
+	for key := range req.Metadata {
+		if strings.EqualFold(strings.TrimSpace(key), pebblestore.SessionEndUserMetadataKey) {
+			writeError(w, http.StatusBadRequest, errors.New("a session's end user is set when it is created and cannot change"))
+			return
+		}
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(key)), "worker_") && isProtectedSessionsV3MetadataKey(key) {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("metadata key %q is reserved for primary authority state", key))
+			return
+		}
+	}
 	next.Metadata = mergeSessionsV3MetadataUpdate(session.Metadata, req.Metadata)
 	next.UpdatedAt = time.Now().UnixMilli()
 	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationUpdateMetadata, map[string]any{"metadata": req.Metadata})
@@ -2868,7 +2969,19 @@ func (s *Server) handleSessionV3PrimaryPermissions(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "count": len(records), "permissions": records})
+	response := map[string]any{"ok": true, "session_id": sessionID, "count": len(records), "permissions": records}
+	// A gateway answering these calls gets the session's end user with them,
+	// from the stored binding, never from the model's tool arguments.
+	session, found, err := s.sessions.GetSession(sessionID)
+	if err != nil || !found {
+		writeError(w, http.StatusInternalServerError, errors.New("session not readable"))
+		return
+	}
+	if err := addSessionEndUserFields(response, session.Metadata); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleSessionV3PrimaryPermissionResolve(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, permissionID string) {
@@ -2918,6 +3031,7 @@ func (s *Server) handleSessionV3PrimaryPermissionResolve(w http.ResponseWriter, 
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	s.settleClientToolConfirmationAfterAnswer(sessionID, record)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "permission": record, "saved_rule": savedRule, "mutation": mutation, "published": published})
 }
 
@@ -2965,6 +3079,9 @@ func (s *Server) handleSessionV3PrimaryPermissionResolveAll(w http.ResponseWrite
 		if published {
 			mutations = append(mutations, mutation)
 		}
+	}
+	for _, record := range resolved {
+		s.settleClientToolConfirmationAfterAnswer(sessionID, record)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "count": len(resolved), "resolved": resolved, "mutations": mutations})
 }
@@ -3390,14 +3507,18 @@ func sessionV3CreateResultResponse(result sessionruntime.SessionMutationResult) 
 	if strings.TrimSpace(result.SessionID) == "" {
 		return nil, errors.New("created sessions v3 session_id was not returned")
 	}
-	return map[string]any{
+	response := map[string]any{
 		"ok":              true,
 		"session_id":      result.SessionID,
 		"session":         result.Session,
 		"projection":      result.Projection,
 		"mutation":        sessionV3MutationResultResponse(result),
 		"realtime_outbox": result.RealtimeOutbox,
-	}, nil
+	}
+	if err := addSessionEndUserFields(response, result.Session.Metadata); err != nil {
+		return nil, err
+	}
+	return response, nil
 }
 
 func sessionsV3HydratedResponse(hydrated sessionsV3HydratedSession, fields gitStatusResponseFields) map[string]any {
@@ -3420,6 +3541,9 @@ func sessionsV3HydratedResponse(hydrated sessionsV3HydratedSession, fields gitSt
 		"applied_seq":              hydrated.AppliedSeq,
 		"high_watermark":           hydrated.HighWatermark,
 		"snapshot_endpoint_cursor": hydrated.SnapshotEndpointCursor,
+	}
+	if pending := pendingClientToolConfirmationView(hydrated.Session, time.Now().UnixMilli()); pending != nil {
+		response["pending_confirmation"] = pending
 	}
 	if hydrated.HasActivePlan {
 		response["active_plan"] = hydrated.ActivePlan
@@ -4352,6 +4476,10 @@ func sessionsV3PrimaryAuthorityStatus(req sessionsV3MessageRequest) string {
 }
 
 func (s *Server) sessionsV3PrimaryRunIntentStatus(principal identity.Principal, session pebblestore.SessionSnapshot, req sessionsV3MessageRequest) (string, string) {
+	// A person holds the conversation: keep the message, start no model run.
+	if sessionTakeoverActive(session) {
+		return sessionruntime.RunIntentDispatchBlocked, sessionTakeoverBlockedReason
+	}
 	if reason := s.sessionsV3PrimaryDispatchBlockedReason(principal, session, req); reason != "" {
 		return sessionruntime.RunIntentDispatchBlocked, reason
 	}
@@ -4489,12 +4617,15 @@ func sessionsV3AuthorityInt(authority map[string]any, keys ...string) int {
 func isProtectedSessionsV3MetadataKey(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
 	case applicationAgentBindingKey,
+		pebblestore.SessionEndUserMetadataKey,
 		pebblestore.SessionPurposeMetadataKey,
 		pebblestore.SessionPurposeWorkspaceMetadataKey,
 		"swarm_v3_project_id",
 		"agent_name",
 		"agent_profile",
 		"resolved_worker_context",
+		"worker_id", "worker_execution_run_id", "worker_name", "worker_job_title",
+		"worker_revision", "worker_execution_mode", "worker_role", "worker_review_target", "worker_review_fixes", "worker_workspace_id",
 		"model_profile",
 		"resolved_agent_name",
 		"agent_mode",

@@ -168,9 +168,15 @@ func (s *SessionStore) CalculateCostWithStatus(provider, model string, inputToke
 	if provider == "codex" {
 		return 0.0, "subscription"
 	}
+	// Vertex AI runs Google's Gemini models and is priced from google's
+	// catalog records (the catalog keeps no separate vertex entries).
+	catalogProvider := provider
+	if catalogProvider == "vertex" {
+		catalogProvider = "google"
+	}
 	if s != nil && s.store != nil {
 		catalogStore := NewModelCatalogStore(s.store)
-		if rec, found, err := catalogStore.GetRecord(provider, model); err == nil && found && len(rec.Pricing) > 0 {
+		if rec, found, err := catalogStore.GetRecord(catalogProvider, model); err == nil && found && len(rec.Pricing) > 0 {
 			var p struct {
 				InputPricePerMillion       *float64 `json:"input_price_per_million_tokens"`
 				OutputPricePerMillion      *float64 `json:"output_price_per_million_tokens"`
@@ -839,7 +845,11 @@ func (s *SessionStore) PutUsageLimit(record UsageLimitRecord) error {
 	if err := batch.Set([]byte(key), payload, nil); err != nil {
 		return err
 	}
-	return batch.Commit(pebble.Sync)
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return err
+	}
+	s.store.signalScheduling(SchedulingSignal{Kind: SchedulingSignalBudget, AccountScopeID: record.AccountScopeID})
+	return nil
 }
 
 // GetDailyUsageAccumulator retrieves the cached daily spending and token count for a date.
@@ -847,6 +857,7 @@ func (s *SessionStore) GetDailyUsageAccumulator(accountScopeID, date string) (Da
 	if s == nil || s.store == nil {
 		return DailyUsageAccumulator{}, false, errors.New("store is not configured")
 	}
+	s.store.observeBudgetRead(BudgetReadDailyUsageAccumulator)
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	date = strings.TrimSpace(date)
 	key := KeyDailyUsageAccumulator(accountScopeID, date)

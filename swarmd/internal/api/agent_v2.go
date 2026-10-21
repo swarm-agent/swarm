@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -82,6 +83,8 @@ func (s *Server) handleCustomToolByNameV2(w http.ResponseWriter, r *http.Request
 			InputSchema map[string]any `json:"input_schema"`
 			Effect      string         `json:"effect"`
 			TimeoutMS   int            `json:"timeout_ms"`
+			Confirm     *bool          `json:"confirm"`
+			ConfirmMS   int            `json:"confirm_timeout_ms"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -92,13 +95,15 @@ func (s *Server) handleCustomToolByNameV2(w http.ResponseWriter, r *http.Request
 			return
 		}
 		stored, err := s.agents.PutCustomToolForAccount(principal.AccountScopeID, pebblestore.AgentCustomToolDefinition{
-			Name:        name,
-			Kind:        req.Kind,
-			Description: req.Description,
-			Command:     req.Command,
-			InputSchema: req.InputSchema,
-			Effect:      req.Effect,
-			TimeoutMS:   req.TimeoutMS,
+			Name:             name,
+			Kind:             req.Kind,
+			Description:      req.Description,
+			Command:          req.Command,
+			InputSchema:      req.InputSchema,
+			Effect:           req.Effect,
+			TimeoutMS:        req.TimeoutMS,
+			Confirm:          req.Confirm,
+			ConfirmTimeoutMS: req.ConfirmMS,
 		})
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -525,6 +530,12 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		// Retention deletes conversations: an out-of-range value is refused,
+		// never clamped into a different policy.
+		if req.Limits != nil && (req.Limits.RetentionDays < 0 || req.Limits.RetentionDays > pebblestore.AgentRetentionMaxDays) {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("limits.retention_days must be 0 (keep) to %d", pebblestore.AgentRetentionMaxDays))
 			return
 		}
 		provider := ""

@@ -2,13 +2,6 @@ package api
 
 import swarmruntime "swarm/packages/swarmd/internal/swarm"
 
-// setReplicateFakeSwarmState installs the static swarm state used by the
-// workspace bootstrap and CWD resolution tests without restoring a retired
-// runtime or route seam.
-func setReplicateFakeSwarmState(server *Server, state swarmruntime.LocalState) {
-	server.SetSwarmService(replicateFakeSwarmService{state: state})
-}
-
 type replicateFakeSwarmService struct {
 	state swarmruntime.LocalState
 }

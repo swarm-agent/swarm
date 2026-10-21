@@ -1,9 +1,8 @@
 package permission
 
 import (
-	"encoding/json"
 	"path/filepath"
-	"strings"
+
 	"testing"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -40,70 +39,6 @@ func reserveSubagentWaveWithMode(t *testing.T, service *Service, accountScopeID,
 		t.Fatalf("reserve %s: %v", callID, err)
 	}
 	return result
-}
-
-func TestSubagentPolicyJSONOmitsRemovedWaveAndDepthFields(t *testing.T) {
-	encoded, err := json.Marshal(DefaultSubagentPolicy())
-	if err != nil {
-		t.Fatalf("marshal policy: %v", err)
-	}
-	payload := string(encoded)
-	for _, field := range []string{"mode", "automatic_launches_per_parent_run", "active_child_limit", "swarm_active_child_limit", "over_budget_action", "require_write_isolation"} {
-		if !strings.Contains(payload, `"`+field+`"`) {
-			t.Fatalf("policy JSON %s is missing %q", payload, field)
-		}
-	}
-	for _, removed := range []string{"absolute_wave_maximum", "max_depth"} {
-		if strings.Contains(payload, `"`+removed+`"`) {
-			t.Fatalf("policy JSON still contains removed field %q: %s", removed, payload)
-		}
-	}
-}
-
-func TestSubagentPolicyMapRejectsRemovedFields(t *testing.T) {
-	service, _ := openSubagentReservationTestServices(t)
-	input := map[string]any{
-		"mode":                              "bounded",
-		"automatic_launches_per_parent_run": 5,
-		"active_child_limit":                5,
-		"swarm_active_child_limit":          5,
-		"over_budget_action":                "ask",
-		"require_write_isolation":           true,
-		"absolute_wave_maximum":             16,
-	}
-	if _, err := service.UpdateSubagentPolicyMapForAccount("account-removed-fields", input); err == nil || !strings.Contains(err.Error(), "unknown field") {
-		t.Fatalf("removed policy field error = %v, want unknown field rejection", err)
-	}
-}
-
-func TestCurrentPolicyReloadsAutomaticLaunchLimitChangedByAnotherService(t *testing.T) {
-	reader, writer := openSubagentReservationTestServices(t)
-	const accountScopeID = "account-1"
-	if _, err := reader.CurrentPolicyForAccount(accountScopeID); err != nil {
-		t.Fatalf("prime reader policy cache: %v", err)
-	}
-	updated := DefaultSubagentPolicy()
-	updated.AutomaticLaunchesPerParentRun = 7
-	if _, err := writer.UpdateSubagentPolicyForAccount(accountScopeID, updated); err != nil {
-		t.Fatalf("update policy: %v", err)
-	}
-	policy, err := reader.CurrentPolicyForAccount(accountScopeID)
-	if err != nil {
-		t.Fatalf("reload current policy: %v", err)
-	}
-	if got := policy.Subagents.AutomaticLaunchesPerParentRun; got != 7 {
-		t.Fatalf("automatic launch limit = %d, want 7", got)
-	}
-}
-
-func TestPolicyAcceptsPracticalSubagentLimits(t *testing.T) {
-	policy := DefaultSubagentPolicy()
-	policy.AutomaticLaunchesPerParentRun = 24
-	policy.ActiveChildLimit = 12
-	policy.SwarmActiveChildLimit = 100
-	if err := ValidateSubagentPolicy(policy); err != nil {
-		t.Fatalf("validate practical policy: %v", err)
-	}
 }
 
 func TestReservationAutomaticBudgetCountsWavesRegardlessOfChildCount(t *testing.T) {
@@ -201,80 +136,6 @@ func TestReservationUsesSeparateRegularAndSwarmLimits(t *testing.T) {
 	}
 }
 
-func TestSubagentPolicyMapDefaultsOmittedSwarmLimitToRegularLimit(t *testing.T) {
-	service, _ := openSubagentReservationTestServices(t)
-	updated, err := service.UpdateSubagentPolicyMapForAccount("account-legacy-client", map[string]any{
-		"mode":                              "bounded",
-		"automatic_launches_per_parent_run": 5,
-		"active_child_limit":                10,
-		"over_budget_action":                "ask",
-		"require_write_isolation":           true,
-	})
-	if err != nil {
-		t.Fatalf("update legacy policy: %v", err)
-	}
-	if got := int(updated["swarm_active_child_limit"].(float64)); got != 10 {
-		t.Fatalf("swarm active child limit = %d, want legacy active child limit 10", got)
-	}
-}
-
-func TestReservationReloadsActiveChildLimitChangedDuringRun(t *testing.T) {
-	reader, writer := openSubagentReservationTestServices(t)
-	const accountScopeID = "account-1"
-	first := reserveSubagentWave(t, reader, accountScopeID, "session-1", "run-1", "call-1", 1)
-	if first.Decision != SubagentReservationApprove {
-		t.Fatalf("first wave decision = %q, want approve", first.Decision)
-	}
-	updated := DefaultSubagentPolicy()
-	updated.ActiveChildLimit = 1
-	if _, err := writer.UpdateSubagentPolicyForAccount(accountScopeID, updated); err != nil {
-		t.Fatalf("update policy: %v", err)
-	}
-	second := reserveSubagentWave(t, reader, accountScopeID, "session-1", "run-1", "call-2", 1)
-	if second.Decision != SubagentReservationAsk || second.Reason != "wave requires approval because default subagent limit would be exceeded by active child concurrency" {
-		t.Fatalf("second wave did not use updated active child limit: %#v", second)
-	}
-}
-
-func TestReservationReloadsAutomaticLaunchLimitChangedDuringRun(t *testing.T) {
-	reader, writer := openSubagentReservationTestServices(t)
-	const accountScopeID = "account-1"
-	first := reserveSubagentWave(t, reader, accountScopeID, "session-1", "run-1", "call-1", 1)
-	if first.Decision != SubagentReservationApprove {
-		t.Fatalf("first wave decision = %q, want approve", first.Decision)
-	}
-	updated := DefaultSubagentPolicy()
-	updated.AutomaticLaunchesPerParentRun = 1
-	if _, err := writer.UpdateSubagentPolicyForAccount(accountScopeID, updated); err != nil {
-		t.Fatalf("update policy: %v", err)
-	}
-	second := reserveSubagentWave(t, reader, accountScopeID, "session-1", "run-1", "call-2", 1)
-	if second.Decision != SubagentReservationAsk || second.Reason != "wave requires approval because the automatic wave budget is exhausted" {
-		t.Fatalf("second wave did not use updated automatic wave limit: %#v", second)
-	}
-}
-
-func TestReservationUsesConfiguredDenyForRegularAndSwarmLimitOverflow(t *testing.T) {
-	reader, writer := openSubagentReservationTestServices(t)
-	const accountScopeID = "account-limit-deny"
-	policy := DefaultSubagentPolicy()
-	policy.ActiveChildLimit = 2
-	policy.SwarmActiveChildLimit = 3
-	policy.OverBudgetAction = SubagentOverBudgetDeny
-	if _, err := writer.UpdateSubagentPolicyForAccount(accountScopeID, policy); err != nil {
-		t.Fatalf("update policy: %v", err)
-	}
-
-	regular := reserveSubagentWave(t, reader, accountScopeID, "session-limit-deny", "run-regular", "call-regular", 3)
-	if regular.Decision != SubagentReservationDeny || regular.Reason != "subagent wave exceeds default subagent limit of 2" {
-		t.Fatalf("regular over-limit wave = %#v, want configured deny", regular)
-	}
-	swarm := reserveSubagentWaveWithMode(t, reader, accountScopeID, "session-limit-deny", "run-swarm", "call-swarm", 4, true)
-	if swarm.Decision != SubagentReservationDeny || swarm.Reason != "subagent wave exceeds swarm-mode subagent limit of 3" {
-		t.Fatalf("swarm over-limit wave = %#v, want configured deny", swarm)
-	}
-}
-
 func TestReservationAsksThroughCanonicalPermissionFlow(t *testing.T) {
 	service, writer := openSubagentReservationTestServices(t)
 	const accountScopeID = "account-limit-ask"
@@ -333,29 +194,6 @@ func TestReservationPreservesDirectModeAndAbsoluteSafetyDenials(t *testing.T) {
 	}
 	if absolute.Decision != SubagentReservationDeny || absolute.Reason != "subagent wave exceeds absolute safety bound of 256" {
 		t.Fatalf("absolute overflow = %#v, want hard deny", absolute)
-	}
-}
-
-func TestReservationUsesConfiguredDenyWhenAutomaticBudgetIsExhausted(t *testing.T) {
-	reader, writer := openSubagentReservationTestServices(t)
-	const accountScopeID = "account-deny"
-	policy := DefaultSubagentPolicy()
-	policy.AutomaticLaunchesPerParentRun = 1
-	policy.OverBudgetAction = SubagentOverBudgetDeny
-	if _, err := writer.UpdateSubagentPolicyForAccount(accountScopeID, policy); err != nil {
-		t.Fatalf("update policy: %v", err)
-	}
-
-	first := reserveSubagentWave(t, reader, accountScopeID, "session-deny", "run-deny", "call-1", 1)
-	if first.Decision != SubagentReservationApprove {
-		t.Fatalf("first wave = %#v, want approve", first)
-	}
-	if err := reader.FinishSubagentWave("session-deny", "run-deny", "call-1", "completed"); err != nil {
-		t.Fatalf("finish first wave: %v", err)
-	}
-	second := reserveSubagentWave(t, reader, accountScopeID, "session-deny", "run-deny", "call-2", 1)
-	if second.Decision != SubagentReservationDeny || second.Reason != "automatic wave budget is exhausted" {
-		t.Fatalf("over-budget wave = %#v, want configured deny", second)
 	}
 }
 

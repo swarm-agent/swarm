@@ -6,7 +6,7 @@ export interface CreateScopedTokenInput {
   scopes: string[]
   worker_id?: string
   worker_name?: string
-  expires_in_seconds?: number
+  expires_in_seconds: number
 }
 
 export interface CreateScopedTokenOutput {

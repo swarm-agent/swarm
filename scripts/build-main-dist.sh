@@ -15,6 +15,7 @@ Usage:
 Build the same local artifact layout used by .github/workflows/build-main.yml:
   launcher/TUI binaries in <output>/linux-amd64/root
   daemon binaries in <output>/linux-amd64/swarmd
+  the headless host package (what the one-line installer runs) in <output>/headless
   desktop assets in <output>/web
   metadata in <output>/build-info.txt
   installer script at <output>/release-stage/swarm-<version>-linux-amd64/install.sh
@@ -91,8 +92,12 @@ ROOT_ARTIFACT_DIR="${PLATFORM_DIR}/root"
 SWARMD_ARTIFACT_DIR="${PLATFORM_DIR}/swarmd"
 WEB_ARTIFACT_DIR="${OUTPUT_DIR}/web"
 RELEASE_STAGE_DIR="${OUTPUT_DIR}/release-stage"
+HEADLESS_DIR="${OUTPUT_DIR}/headless"
+# The setup page's Node in the headless package: the official build.
+HEADLESS_NODE_VERSION="22.22.0"
+HEADLESS_NODE_SHA256="9aa8e9d2298ab68c600bd6fb86a6c13bce11a4eca1ba9b39d79fa021755d7c37"
 
-rm -rf "${PLATFORM_DIR}" "${WEB_ARTIFACT_DIR}" "${RELEASE_STAGE_DIR}" "${OUTPUT_DIR}/build-info.txt" "${OUTPUT_DIR}"/swarm-*.tar.gz "${OUTPUT_DIR}"/swarm-*.tar.gz.sha256
+rm -rf "${PLATFORM_DIR}" "${WEB_ARTIFACT_DIR}" "${HEADLESS_DIR}" "${RELEASE_STAGE_DIR}" "${OUTPUT_DIR}/build-info.txt" "${OUTPUT_DIR}"/swarm-*.tar.gz "${OUTPUT_DIR}"/swarm-*.tar.gz.sha256
 mkdir -p "${ROOT_ARTIFACT_DIR}" "${SWARMD_ARTIFACT_DIR}"
 
 git_sha="$(git -C "${ROOT_DIR}" rev-parse HEAD 2>/dev/null || printf 'unknown')"
@@ -168,6 +173,81 @@ if [[ "${BUILD_WEB}" == "true" ]]; then
   cp -R "${ROOT_DIR}/web/dist/." "${WEB_ARTIFACT_DIR}/"
 fi
 
+# The headless host package: what the one-line installer
+# (containers/headless/app/install.sh) downloads and runs, so a person's
+# machine never compiles Swarm. Same layout as Dockerfile.host's output: bin
+# (the headless daemon as swarmd, swarmctl, swarm-fff-search, node), lib, app
+# (the SDK and the setup page), doc, plus share (the installer itself and the
+# sandbox image's build context, used only when environments are turned on).
+echo "building the headless host package into ${HEADLESS_DIR}"
+require_cmd node
+require_cmd npm
+require_cmd curl
+require_cmd xz
+node_major="$(node -p 'process.versions.node.split(".")[0]')"
+if (( node_major < 22 )); then
+  echo "the headless package needs Node 22 or newer to bundle; found $(node --version)" >&2
+  exit 1
+fi
+mkdir -p "${HEADLESS_DIR}/bin" "${HEADLESS_DIR}/lib" "${HEADLESS_DIR}/app/packages" "${HEADLESS_DIR}/app/examples" "${HEADLESS_DIR}/doc" "${HEADLESS_DIR}/share"
+(
+  cd "${ROOT_DIR}/swarmd"
+  CGO_ENABLED=1 "${GO_BIN}" build -trimpath -ldflags "${ldflags[*]}" -o "${HEADLESS_DIR}/bin/swarmd" ./cmd/swarm-headless
+)
+cp "${SWARMD_ARTIFACT_DIR}/swarmctl" "${SWARMD_ARTIFACT_DIR}/swarm-fff-search" "${HEADLESS_DIR}/bin/"
+cp "${SWARMD_ARTIFACT_DIR}/libfff_c.so" "${HEADLESS_DIR}/lib/"
+# The official Node.js build, pinned and checked (the same version as
+# Dockerfile.host): a distribution's node can need libraries a fresh machine
+# does not have (libatomic).
+node_archive="node-v${HEADLESS_NODE_VERSION}-linux-x64.tar.xz"
+curl -fsSL --retry 3 -o "${OUTPUT_DIR}/${node_archive}" "https://nodejs.org/dist/v${HEADLESS_NODE_VERSION}/${node_archive}"
+printf '%s  %s\n' "${HEADLESS_NODE_SHA256}" "${OUTPUT_DIR}/${node_archive}" | sha256sum --check --quiet
+tar -xJf "${OUTPUT_DIR}/${node_archive}" -C "${HEADLESS_DIR}/bin" --strip-components=2 "node-v${HEADLESS_NODE_VERSION}-linux-x64/bin/node"
+rm -f "${OUTPUT_DIR}/${node_archive}"
+"${HEADLESS_DIR}/bin/node" --version >/dev/null
+(
+  # Build in a copy so the source checkout stays clean.
+  sdk="${HEADLESS_DIR}/app/packages/sdk"
+  mkdir -p "${sdk}"
+  cp -R "${ROOT_DIR}/packages/sdk/package.json" "${ROOT_DIR}/packages/sdk/package-lock.json" "${ROOT_DIR}/packages/sdk/tsconfig.json" "${ROOT_DIR}/packages/sdk/src" "${ROOT_DIR}/packages/sdk/scripts" "${sdk}/"
+  cd "${sdk}"
+  npm ci --ignore-scripts --no-audit --no-fund
+  npm run build
+  npm prune --omit=dev --ignore-scripts --no-audit --no-fund
+)
+(
+  app="${HEADLESS_DIR}/app/examples/headless-app"
+  mkdir -p "${app}"
+  tar -C "${ROOT_DIR}/examples/headless-app" --exclude=./node_modules -cf - . | tar -C "${app}" -xf -
+  cd "${app}"
+  npm ci --ignore-scripts --no-audit --no-fund
+  # npm links file: dependencies (the SDK); a public release archive holds
+  # only regular files and directories, so each link becomes a real copy of
+  # what it points to.
+  find . -type l -print0 | while IFS= read -r -d '' link; do
+    target="$(readlink -f "${link}")"
+    rm "${link}"
+    cp -R "${target}" "${link}"
+  done
+)
+if links="$(find "${HEADLESS_DIR}" -type l -print -quit)" && [[ -n "${links}" ]]; then
+  echo "the headless package must not contain symbolic links (the release archive check refuses them): ${links}" >&2
+  exit 1
+fi
+cp "${ROOT_DIR}/LICENSE" "${ROOT_DIR}/THIRD_PARTY_NOTICES.md" "${ROOT_DIR}/containers/headless/FFF-LICENSE" "${HEADLESS_DIR}/doc/"
+cp "${ROOT_DIR}/containers/headless/app/install.sh" "${HEADLESS_DIR}/share/install.sh"
+chmod 755 "${HEADLESS_DIR}/share/install.sh"
+mkdir -p "${HEADLESS_DIR}/share/sandbox"
+cp "${ROOT_DIR}/containers/sandbox/Dockerfile" "${ROOT_DIR}/containers/sandbox/firewall.sh" "${HEADLESS_DIR}/share/sandbox/"
+probe="$(mktemp -d "${TMPDIR:-/tmp}/swarm-headless-probe.XXXXXX")"
+CONFIGURATION_DIRECTORY="${probe}" STATE_DIRECTORY="${probe}" CACHE_DIRECTORY="${probe}" LOGS_DIRECTORY="${probe}" RUNTIME_DIRECTORY="${probe}" \
+  "${HEADLESS_DIR}/bin/swarmd" --help 2>&1 | grep -q -- "-sandbox-backend" || {
+  rm -rf "${probe}"
+  echo "the packaged headless daemon does not run" >&2
+  exit 1
+}
+rm -rf "${probe}"
+
 {
   printf 'version=%s\n' "${release_version}"
   printf 'commit=%s\n' "${git_sha}"
@@ -184,6 +264,7 @@ archive_basename="swarm-${release_version}-linux-amd64"
 archive_path="${OUTPUT_DIR}/${archive_basename}.tar.gz"
 mkdir -p "${RELEASE_STAGE_DIR}/${archive_basename}"
 cp -R "${PLATFORM_DIR}" "${RELEASE_STAGE_DIR}/${archive_basename}/linux-amd64"
+cp -R "${HEADLESS_DIR}" "${RELEASE_STAGE_DIR}/${archive_basename}/headless"
 if [[ -d "${WEB_ARTIFACT_DIR}" ]]; then
   cp -R "${WEB_ARTIFACT_DIR}" "${RELEASE_STAGE_DIR}/${archive_basename}/web"
 fi

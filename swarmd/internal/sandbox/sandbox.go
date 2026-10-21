@@ -1,5 +1,5 @@
 // Package sandbox runs agent commands, and the daemon's own Git on
-// agent-writable repositories, inside one hardened container per project.
+// agent-writable repositories, inside hardened project and per-job containers.
 //
 // Swarm stays outside with its storage, credentials and local socket. A
 // project's sandbox mounts only that project's directory and its worktree
@@ -15,8 +15,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -44,8 +44,7 @@ const (
 const (
 	DefaultImage       = "swarm-sandbox:local"
 	DefaultNetwork     = "swarm-sandbox"
-	DefaultMemory      = "4g"
-	DefaultPidsLimit   = 1024
+	DefaultMemory      = "" // no cap unless the owner sets sandbox_memory
 	DefaultIdleTimeout = 30 * time.Minute
 	gvisorRuntime      = "runsc"
 	sandboxHome        = "/home/sandbox"
@@ -73,18 +72,22 @@ func ParseMode(value string) (Mode, error) {
 
 // Config describes how sandboxes are created.
 type Config struct {
+	Backend string // empty preserves the Desktop Docker backend
 	Mode    Mode
 	Engine  string // container engine CLI, default "docker"
 	Image   string
 	Network string
 	// Runtime is the OCI runtime; empty selects gVisor (runsc) when the engine
 	// has it registered and the engine default otherwise.
-	Runtime     string
-	Memory      string
-	PidsLimit   int
-	CPUs        string
-	DNS         []string
-	IdleTimeout time.Duration
+	Runtime           string
+	Memory            string
+	ProjectCacheLimit func(context.Context) (uint64, error)
+	MaxWorkerRuns     int
+	PidsLimit         int
+	CPUs              string
+	CgroupParent      string
+	DNS               []string
+	IdleTimeout       time.Duration
 	// UID and GID the sandbox runs as. They default to the daemon's own ids so
 	// files written in mounted projects keep the daemon user as owner; the
 	// sandbox still cannot reach anything the daemon owns outside its mounts.
@@ -127,31 +130,46 @@ type Status struct {
 	Mode    Mode   `json:"mode"`
 	Active  bool   `json:"active"`
 	Runtime string `json:"runtime,omitempty"`
+	Memory  string `json:"memory,omitempty"`
 	Reason  string `json:"reason,omitempty"`
 }
 
 // Scope is one project's sandbox: Root identifies it and Mounts are the host
 // directories bind-mounted at the same paths.
 type Scope struct {
-	Root   string
-	Mounts []string
+	Root      string
+	daemonGit bool
+	// JobCheckout selects an independent memory cgroup for a managed worktree.
+	JobCheckout string
+	Mounts      []string
+	// ReviewCheckout selects a separate container with read-only project mounts
+	// and only this disposable checkout writable.
+	ReviewCheckout string
+	// Lease selects one leased container of the folder's environment (lease.go).
+	Lease string
 }
 
 // Manager owns the per-project sandbox containers.
 type Manager struct {
-	cfg    Config
-	runner provider.CommandRunner
+	cfg              Config
+	runner           provider.CommandRunner
+	localEmptyConfig string
+	localRuns        map[string]int
 
 	mu      sync.Mutex
 	status  Status
 	imageID string
 	runtime string
 	// envResolver names folders' environment images (environment.go).
-	envResolver EnvironmentResolver
-	boxes       map[string]*box
-	used        map[string]struct{}
-	layout      *layoutCache
-	stop        chan struct{}
+	envResolver     EnvironmentResolver
+	reviewClosing   map[string]bool   // terminal tombstones; never reacquire
+	reviews         map[string]string // checkout -> project root; daemon-owned admission only
+	boxes           map[string]*box
+	used            map[string]struct{}
+	layout          *layoutCache
+	stop            chan struct{}
+	terminalCleanup func(context.Context)
+	reaper          sync.WaitGroup
 	// resolvConf is the sandbox's own /etc/resolv.conf (public resolvers, no
 	// search domain). Docker's embedded resolver (127.0.0.11) does not
 	// answer under gVisor, and the host's search domain names the tailnet.
@@ -162,18 +180,26 @@ type Manager struct {
 	safeMu     sync.Mutex
 	safeDirs   []string
 	safeDirsAt time.Time
+	leases     *leaseState
 }
 
 type box struct {
-	mu       sync.RWMutex // exec holds read; recreate holds write
-	name     string
-	root     string
-	spec     string
-	mounts   []string
-	lastUsed time.Time
-	verified time.Time
-	inflight int
-	secret   SecretSetup
+	// All state is guarded by Manager.mu. changing reserves lifecycle work;
+	// commands hold only an inflight lease, never a mutex.
+	changing   chan struct{}
+	name       string
+	root       string
+	spec       string
+	mounts     []string
+	lastUsed   time.Time
+	verified   time.Time
+	startedAt  string
+	generation uint64
+	invalid    bool // explicit execution failure, not merely periodic staleness
+	inflight   int
+	preparing  int
+	cleanup    func()
+	secret     SecretSetup
 }
 
 // verifyInterval bounds how long a container is trusted to still be running
@@ -185,6 +211,12 @@ var ErrInactive = errors.New("sandbox is not active")
 // NewManager validates cfg and probes the engine. In auto mode the probe
 // result decides, once, whether this process uses sandboxes.
 func NewManager(ctx context.Context, cfg Config, runner provider.CommandRunner) (*Manager, error) {
+	if cfg.Backend == BackendBubblewrap {
+		return newLocalManager(ctx, cfg)
+	}
+	if cfg.Backend != "" && cfg.Backend != BackendDocker {
+		return nil, fmt.Errorf("unsupported sandbox backend %q", cfg.Backend)
+	}
 	if cfg.Engine == "" {
 		cfg.Engine = "docker"
 	}
@@ -194,11 +226,11 @@ func NewManager(ctx context.Context, cfg Config, runner provider.CommandRunner) 
 	if cfg.Network == "" {
 		cfg.Network = DefaultNetwork
 	}
-	if cfg.Memory == "" {
-		cfg.Memory = DefaultMemory
+	if err := ValidateMemory(cfg.Memory); err != nil {
+		return nil, err
 	}
-	if cfg.PidsLimit <= 0 {
-		cfg.PidsLimit = DefaultPidsLimit
+	if err := resolveResources(&cfg); err != nil {
+		return nil, err
 	}
 	if cfg.IdleTimeout <= 0 {
 		cfg.IdleTimeout = DefaultIdleTimeout
@@ -224,7 +256,7 @@ func NewManager(ctx context.Context, cfg Config, runner provider.CommandRunner) 
 	if err := m.writeResolvConf(); err != nil {
 		return nil, err
 	}
-	m.status = Status{Mode: cfg.Mode}
+	m.status = Status{Mode: cfg.Mode, Memory: cfg.Memory}
 	if cfg.Mode == ModeOff {
 		m.status.Reason = "sandbox mode is off"
 		return m, nil
@@ -260,6 +292,12 @@ func (m *Manager) SetSecretBroker(broker SecretBroker) {
 	m.mu.Lock()
 	m.cfg.SecretBroker = broker
 	m.mu.Unlock()
+}
+
+// SecretsGateway reports whether the secret gateway is on, so commands get
+// their folder's secret grants as stand-ins.
+func (m *Manager) SecretsGateway() bool {
+	return m != nil && m.secretBroker() != nil
 }
 
 func (m *Manager) secretBroker() SecretBroker {
@@ -325,10 +363,12 @@ func (m *Manager) probe(ctx context.Context) error {
 
 // Start runs the idle reaper until ctx ends or Close is called.
 func (m *Manager) Start(ctx context.Context) {
-	if m == nil || !m.Active() {
+	if m == nil || m.Local() || !m.Active() {
 		return
 	}
+	m.reaper.Add(1)
 	go func() {
+		defer m.reaper.Done()
 		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()
 		for {
@@ -338,6 +378,9 @@ func (m *Manager) Start(ctx context.Context) {
 			case <-m.stop:
 				return
 			case <-ticker.C:
+				if m.terminalCleanup != nil {
+					m.terminalCleanup(ctx)
+				}
 				m.stopIdle(ctx, time.Now())
 			}
 		}
@@ -349,13 +392,20 @@ func (m *Manager) Close() {
 	if m == nil {
 		return
 	}
+	if m.Local() {
+		if m.localEmptyConfig != "" {
+			_ = os.RemoveAll(filepath.Dir(m.localEmptyConfig))
+		}
+		return
+	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	select {
 	case <-m.stop:
 	default:
 		close(m.stop)
 	}
+	m.mu.Unlock()
+	m.reaper.Wait()
 }
 
 func (m *Manager) stopIdle(ctx context.Context, now time.Time) {
@@ -368,17 +418,23 @@ func (m *Manager) stopIdle(ctx context.Context, now time.Time) {
 	}
 	m.mu.Unlock()
 	for _, b := range idle {
-		if !b.mu.TryLock() {
+		m.mu.Lock()
+		// Re-check after the snapshot, atomically with acquire's lease.
+		if b.inflight != 0 || b.preparing != 0 || b.changing != nil || now.Sub(b.lastUsed) <= m.cfg.IdleTimeout {
+			m.mu.Unlock()
 			continue
 		}
+		b.changing = make(chan struct{})
+		m.mu.Unlock()
 		stopCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		// Idleness is not durable completion: checkpoints may still be live.
 		_, _ = m.runner.Run(stopCtx, m.cfg.Engine, "stop", "--time", "5", b.name)
 		cancel()
+		m.mu.Lock()
 		b.spec = "" // next use re-verifies and restarts it
-		if broker := m.secretBroker(); broker != nil && b.root != "" {
-			broker.ReleaseSandbox(b.root)
-		}
-		b.mu.Unlock()
+		close(b.changing)
+		b.changing = nil
+		m.mu.Unlock()
 	}
 }
 
@@ -533,7 +589,7 @@ func (m *Manager) specHashImage(root string, mounts []string, secretFingerprint,
 	uid, gid := m.sandboxUser(root)
 	m.mu.Lock()
 	parts := []string{
-		"v3", imageID, m.runtime, m.cfg.Network, m.cfg.Memory, strconv.Itoa(m.cfg.PidsLimit), m.cfg.CPUs, m.resolvConf,
+		"v7-project-cache", imageID, m.runtime, m.cfg.Network, m.cfg.Memory, strconv.Itoa(m.cfg.PidsLimit), m.cfg.CPUs, m.cfg.CgroupParent, m.resolvConf,
 		strconv.Itoa(uid), strconv.Itoa(gid), strings.Join(m.cfg.DNS, ","), secretFingerprint,
 	}
 	m.mu.Unlock()
@@ -552,16 +608,19 @@ func (m *Manager) RunArgs(name, root, spec string, mounts []string, secret Secre
 // runArgsImage is RunArgs for the image a folder runs on; only the image and
 // its PATH differ, never the hardening.
 func (m *Manager) runArgsImage(name, root, spec string, mounts []string, secret SecretSetup, image EnvironmentImage) []string {
+	uid, gid, cacheVolume := m.containerUser(name, root)
 	m.mu.Lock()
 	runtime := m.runtime
+	leaseLabels := m.leaseLabelsLocked(name)
 	m.mu.Unlock()
-	uid, gid := m.sandboxUser(root)
 	user := fmt.Sprintf("%d:%d", uid, gid)
 	args := []string{"run", "-d", "--init", "--name", name,
 		"--label", labelSandbox + "=1",
+		"--label", labelInstance + "=" + instanceIdentity(m.cfg.StateDir),
 		"--label", labelRoot + "=" + root,
 		"--label", labelSpec + "=" + spec,
 	}
+	args = append(args, leaseLabels...)
 	if runtime != "" {
 		args = append(args, "--runtime", runtime)
 	}
@@ -569,21 +628,39 @@ func (m *Manager) runArgsImage(name, root, spec string, mounts []string, secret 
 		"--user", user,
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
-		"--memory", m.cfg.Memory, "--memory-swap", m.cfg.Memory,
-		"--pids-limit", strconv.Itoa(m.cfg.PidsLimit),
+	)
+	args = append(args, m.limitArgs()...)
+	args = append(args,
 		"--network", m.cfg.Network,
 		"--hostname", "sandbox",
 		"--ipc", "private",
 		"--tmpfs", "/tmp:rw,nosuid,nodev,exec,size=2g,mode=1777",
 		"--tmpfs", fmt.Sprintf("/run/swarm:rw,nosuid,nodev,noexec,size=16m,uid=%d,gid=%d,mode=0700", uid, gid),
-		"--mount", "type=volume,src="+name+"-home,dst="+sandboxHome,
+		"--mount", "type=volume,src="+homeVolumeName(name, root)+",dst="+sandboxHome,
+		"--mount", "type=volume,src="+cacheVolume+",dst="+projectCachePath,
+		"--env", "GOCACHE="+projectCachePath+"/go-build",
+		"--env", "GOMODCACHE="+projectCachePath+"/go-mod",
+		"--env", "PNPM_HOME="+projectCachePath+"/pnpm-home",
+		"--env", "npm_config_store_dir="+projectCachePath+"/pnpm",
+		"--env", "GOFLAGS=-buildvcs=false -trimpath",
 		"--env", "HOME="+sandboxHome,
+		"--env", "GOTMPDIR="+sandboxHome+"/.cache/go-tmp",
 		"--env", "PATH="+image.Path,
 		"--env", "LANG=C.UTF-8",
 		"--workdir", root,
 	)
-	if m.cfg.CPUs != "" {
-		args = append(args, "--cpus", m.cfg.CPUs)
+	if strings.HasSuffix(name, "-daemon-git") {
+		// Separate cgroup and home: untrusted Git stays confined, but cannot
+		// consume or queue behind an agent container's CPU quota.
+		args = append(args, "--cpu-shares", "2048")
+	} else {
+		if m.cfg.CPUs != "" {
+			args = append(args, "--cpus", m.cfg.CPUs)
+		}
+		args = append(args, "--cpu-shares", "256")
+		if m.cfg.CgroupParent != "" {
+			args = append(args, "--cgroup-parent", m.cfg.CgroupParent)
+		}
 	}
 	for _, dns := range m.cfg.DNS {
 		args = append(args, "--dns", dns)
@@ -619,12 +696,32 @@ func (m *Manager) runArgsImage(name, root, spec string, mounts []string, secret 
 }
 
 // acquire makes sure the project's sandbox is running with the given mounts
-// and returns it read-locked; the caller must call release.
-func (m *Manager) acquire(ctx context.Context, scope Scope) (*box, error) {
+// and returns an inflight lease; the caller must call release.
+func (m *Manager) acquire(ctx context.Context, scope Scope, command ...string) (*box, error) {
+	if m.Local() {
+		return nil, fmt.Errorf("container lifecycle is unavailable with bubblewrap")
+	}
+	nameOnly := "acquire"
+	if len(command) > 0 && command[0] != "" {
+		nameOnly = filepath.Base(command[0])
+	}
+	stopLog := logSlowSandboxWait(nameOnly)
+	defer stopLog()
 	if !m.Active() {
 		return nil, fmt.Errorf("%w: %s", ErrInactive, m.Status().Reason)
 	}
+	m.mu.Lock()
+	closing := scope.ReviewCheckout != "" && m.reviewClosing[scope.ReviewCheckout]
+	m.mu.Unlock()
+	if closing {
+		return nil, errors.New("review sandbox is closing")
+	}
 	root := filepath.Clean(scope.Root)
+	if scope.ReviewCheckout != "" {
+		if _, err := reviewGitMounts(scope.ReviewCheckout, root); err != nil {
+			return nil, err
+		}
+	}
 	mounts, err := m.validateMounts(append([]string{root}, scope.Mounts...))
 	if err != nil {
 		return nil, err
@@ -632,121 +729,193 @@ func (m *Manager) acquire(ctx context.Context, scope Scope) (*box, error) {
 	if err := m.markUsed(root); err != nil {
 		return nil, err
 	}
-	name := ContainerName(root)
+	name := scopeContainerName(scope)
 	secret := SecretSetup{}
-	if broker := m.secretBroker(); broker != nil {
-		if secret, err = broker.PrepareSandbox(root); err != nil {
-			return nil, fmt.Errorf("prepare sandbox secrets: %w", err)
+	// Register this container's project reference before preparing credentials;
+	// removal and preparation serialize so a sibling cannot revoke this token.
+	for {
+		m.mu.Lock()
+		if b := m.boxes[name]; b != nil && b.changing != nil {
+			changing := b.changing
+			m.mu.Unlock()
+			select {
+			case <-changing:
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 		}
+		break
+	}
+	if m.boxes[name] == nil {
+		m.boxes[name] = &box{name: name}
+	}
+	m.boxes[name].root = root
+	m.boxes[name].generation++
+	preparingBox := m.boxes[name]
+	preparingBox.preparing++
+	defer func() { m.mu.Lock(); preparingBox.preparing--; m.mu.Unlock() }()
+	if broker := m.cfg.SecretBroker; broker != nil {
+		secret, err = broker.PrepareSandbox(root)
+	}
+	m.mu.Unlock()
+	if err != nil {
+		return nil, fmt.Errorf("prepare sandbox secrets: %w", err)
 	}
 	image, imageID, err := m.sandboxImage(root)
 	if err != nil {
 		return nil, err
 	}
 	spec := m.specHashImage(root, mounts, secret.Fingerprint, imageID)
-
-	m.mu.Lock()
-	b := m.boxes[name]
-	if b == nil {
-		b = &box{name: name, root: root}
-		m.boxes[name] = b
+	if scope.ReviewCheckout != "" {
+		spec += "-review-" + ContainerName(scope.ReviewCheckout)
 	}
-	b.inflight++
-	m.mu.Unlock()
-	release := func() {
+
+	for {
 		m.mu.Lock()
-		b.inflight--
-		b.lastUsed = time.Now()
+		if scope.ReviewCheckout != "" && m.reviewClosing[scope.ReviewCheckout] {
+			m.mu.Unlock()
+			return nil, errors.New("review sandbox is closing")
+		}
+		b := m.boxes[name]
+		if b == nil {
+			b = &box{name: name, root: root}
+			m.boxes[name] = b
+		}
+		if changing := b.changing; changing != nil {
+			m.mu.Unlock()
+			select {
+			case <-changing:
+				continue
+			case <-ctx.Done():
+				return nil, fmt.Errorf("wait for sandbox lifecycle: %w", ctx.Err())
+			}
+		}
+		// A matching container already in use needs no periodic inspection.
+		// Reserving a lease here also prevents the idle reaper from stopping it.
+		if b.spec == spec && !b.invalid && (b.inflight > 0 || time.Since(b.verified) < verifyInterval) {
+			b.inflight++
+			m.mu.Unlock()
+			return b, nil
+		}
+		if b.inflight > 0 {
+			m.mu.Unlock()
+			// Fail promptly rather than starving reads of the current spec or
+			// destroying the container underneath running commands.
+			return nil, errors.New("sandbox requires recreation or recovery while commands are running; retry after they finish")
+		}
+		b.changing = make(chan struct{})
 		m.mu.Unlock()
-	}
 
-	// Fast path: this process created or verified the container with this
-	// spec and the idle reaper has not stopped it since.
-	b.mu.RLock()
-	if b.spec == spec && time.Since(b.verified) < verifyInterval {
+		// Starting has its own bounded budget, including for Warm callers
+		// whose command deadline has already expired.
+		ensureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ensureTimeout)
+		var startedAt string
+		startedAt, err = m.ensure(ensureCtx, name, root, spec, mounts, secret, image, scope.ReviewCheckout)
+		cancel()
+		m.mu.Lock()
+		if err == nil {
+			b.spec, b.mounts, b.secret = spec, mounts, secret
+			b.verified = time.Now()
+			b.startedAt = startedAt
+			b.invalid = false
+			b.inflight++
+		} else {
+			b.spec = ""
+		}
+		close(b.changing)
+		b.changing = nil
+		m.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
 		return b, nil
 	}
-	b.mu.RUnlock()
+}
 
-	b.mu.Lock()
-	// Starting a sandbox is bounded by its own budget, not by the caller's
-	// deadline: a short command budget must not abort a container start
-	// halfway, and the next command then finds the sandbox ready.
-	ensureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ensureTimeout)
-	err = m.ensure(ensureCtx, name, root, spec, mounts, secret, image)
-	cancel()
-	if err == nil {
-		b.spec = spec
-		b.mounts = mounts
-		b.secret = secret
-		b.verified = time.Now()
-	} else {
-		b.spec = ""
-	}
-	b.mu.Unlock()
-	if err != nil {
-		release()
-		return nil, err
-	}
-	b.mu.RLock()
-	return b, nil
+// logSlowSandboxWait reports a blocked acquisition once, without arguments,
+// paths, environment or output (all may contain private command data).
+func logSlowSandboxWait(command string) func() {
+	timer := time.AfterFunc(2*time.Second, func() {
+		slog.Warn("sandbox acquisition waiting longer than 2s", "command", command)
+	})
+	return func() { timer.Stop() }
 }
 
 func (m *Manager) release(b *box) {
-	b.mu.RUnlock()
 	m.mu.Lock()
 	b.inflight--
 	b.lastUsed = time.Now()
+	var cleanup func()
+	if b.inflight == 0 {
+		cleanup, b.cleanup = b.cleanup, nil
+	}
 	m.mu.Unlock()
+	if cleanup != nil {
+		cleanup()
+	}
 }
 
-func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []string, secret SecretSetup, image EnvironmentImage) error {
-	out, err := m.runner.Run(ctx, m.cfg.Engine, "container", "inspect", "--format", "{{index .Config.Labels \""+labelSpec+"\"}} {{.State.Running}}", name)
+func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []string, secret SecretSetup, image EnvironmentImage, reviewCheckouts ...string) (string, error) {
+	reviewCheckout := ""
+	if len(reviewCheckouts) > 0 {
+		reviewCheckout = reviewCheckouts[0]
+	}
+	out, err := m.runner.Run(ctx, m.cfg.Engine, "container", "inspect", "--format", "{{index .Config.Labels \""+labelSpec+"\"}} {{.State.Running}} {{.State.StartedAt}}", name)
 	if err == nil {
 		fields := strings.Fields(string(out))
-		if len(fields) == 2 && fields[0] == spec {
+		if len(fields) == 3 && fields[0] == spec {
 			if fields[1] == "true" {
-				return nil
+				if err := m.configureGitIdentity(ctx, name); err != nil {
+					return "", err
+				}
+				return fields[2], nil
 			}
 			if _, err := m.runner.Run(ctx, m.cfg.Engine, "start", name); err != nil {
-				return fmt.Errorf("start sandbox: %w", err)
+				return "", fmt.Errorf("start sandbox: %w", err)
 			}
-			return nil
+			if err := m.configureGitIdentity(ctx, name); err != nil {
+				return "", err
+			}
+			state, err := m.inspectState(ctx, name)
+			return state.StartedAt, err
 		}
 		// Different spec (new mounts, image or limits): replace it. The home
 		// volume survives, so caches and tool installs are kept.
 		if _, err := m.runner.Run(ctx, m.cfg.Engine, "rm", "-f", name); err != nil {
-			return fmt.Errorf("replace sandbox: %w", err)
+			return "", fmt.Errorf("replace sandbox: %w", err)
 		}
 	}
-	if _, err := m.runner.Run(ctx, m.cfg.Engine, m.runArgsImage(name, root, spec, mounts, secret, image)...); err != nil {
-		return fmt.Errorf("create sandbox: %w", err)
+	if err := m.initializeContainerCache(ctx, name, root); err != nil {
+		return "", err
 	}
-	return m.configureGitIdentity(ctx, name)
-}
-
-// configureGitIdentity copies the daemon user's global Git author identity
-// into the sandbox home, so commits keep the identity they had on the host
-// while repository configuration still takes precedence.
-func (m *Manager) configureGitIdentity(ctx context.Context, name string) error {
-	for _, key := range []string{"user.name", "user.email"} {
-		value, err := exec.CommandContext(ctx, "git", "config", "--global", "--get", key).Output()
-		v := strings.TrimSpace(string(value))
-		if err != nil || v == "" {
-			continue
-		}
-		if _, err := m.runner.Run(ctx, m.cfg.Engine, "exec", name, "git", "config", "--global", key, v); err != nil {
-			return fmt.Errorf("configure sandbox git identity: %w", err)
-		}
+	args := m.scopeRunArgs(name, root, spec, mounts, secret, image, reviewCheckout)
+	if _, err := m.runner.Run(ctx, m.cfg.Engine, args...); err != nil {
+		return "", fmt.Errorf("create sandbox: %w", err)
 	}
-	return nil
+	m.initializeHome(ctx, name, root, image)
+	m.ensureUserEntry(ctx, name, root)
+	if err := m.trimProjectCache(ctx, name); err != nil {
+		return "", fmt.Errorf("trim project cache: %w", err)
+	}
+	if err := m.prepareGoTemp(ctx, name); err != nil {
+		return "", err
+	}
+	if err := m.configureGitIdentity(ctx, name); err != nil {
+		return "", err
+	}
+	state, err := m.inspectState(ctx, name)
+	return state.StartedAt, err
 }
 
 // ExecRequest is a command for a project's sandbox.
 type ExecRequest struct {
-	Command    []string
-	WorkingDir string
-	Env        map[string]string
+	Command      []string
+	WorkingDir   string
+	Env          map[string]string
+	SecretValues []string
+	// Stdin, when set, is the command's standard input.
+	Stdin      io.Reader
 	Timeout    time.Duration
 	MaxTimeout time.Duration
 	MaxOutput  int
@@ -755,18 +924,49 @@ type ExecRequest struct {
 
 // Exec runs req in the project's sandbox under the supervised exec contract.
 func (m *Manager) Exec(ctx context.Context, scope Scope, req ExecRequest) (*provider.ExecResult, error) {
+	return m.exec(ctx, scope, req, false)
+}
+
+// ExecDaemon runs code-owned maintenance commands outside agent CPU admission.
+// Never expose this method to tool requests or user-configured checks.
+func (m *Manager) ExecDaemon(ctx context.Context, scope Scope, req ExecRequest) (*provider.ExecResult, error) {
+	return m.exec(ctx, scope, req, true)
+}
+
+func (m *Manager) exec(ctx context.Context, scope Scope, req ExecRequest, daemon bool) (*provider.ExecResult, error) {
+	var err error
+	scope = jobScope(ctx, scope)
+	scope, err = m.enforceReviewIdentity(ctx, scope, req.WorkingDir)
+	if err != nil {
+		return nil, err
+	}
+	if daemon {
+		if scope.ReviewCheckout != "" {
+			return nil, errors.New("reviewer cannot execute daemon maintenance")
+		}
+		scope.JobCheckout = ""
+		scope.daemonGit = true
+	}
 	result, err := m.execOnce(ctx, scope, req)
 	if errors.Is(err, provider.ErrSupervisorUnavailable) && ctx.Err() == nil {
 		// The container went away underneath us (stopped or removed outside
 		// Swarm); nothing ran. Re-verify it and try once more.
-		m.invalidate(ContainerName(filepath.Clean(scope.Root)))
-		return m.execOnce(ctx, scope, req)
+		m.invalidate(scopeContainerName(scope))
+		result, err = m.execOnce(ctx, scope, req)
+	}
+	if err != nil || (result != nil && result.ExitCode != 0) {
+		if result != nil && result.ExitCode == 137 {
+			return result, &ErrSandboxDied{Memory: m.cfg.Memory, PossibleOOM: true}
+		}
 	}
 	return result, err
 }
 
 func (m *Manager) execOnce(ctx context.Context, scope Scope, req ExecRequest) (*provider.ExecResult, error) {
-	b, err := m.acquire(ctx, scope)
+	if m.Local() {
+		return m.execLocal(ctx, scope, req)
+	}
+	b, err := m.acquire(ctx, scope, req.Command...)
 	if err != nil {
 		return nil, err
 	}
@@ -777,30 +977,51 @@ func (m *Manager) execOnce(ctx context.Context, scope Scope, req ExecRequest) (*
 	// Agent Git inside the sandbox needs safe.directory for folders the owner
 	// made visible, which belong to another uid.
 	req.Env = safeDirectoryEnvMap(req.Env, m.safeDirectories())
+	if scope.ReviewCheckout != "" {
+		req.Env = safeDirectoryEnvMap(req.Env, []string{scope.ReviewCheckout})
+		req.Env["GIT_OPTIONAL_LOCKS"] = "0"
+		if values, ok := reviewEnvironments.Load(scope.ReviewCheckout); ok {
+			for key, value := range values.(map[string]string) {
+				req.Env[key] = value
+			}
+		}
+	}
 	var progress provider.ExecProgressCallback
 	if req.OnOutput != nil {
 		progress = func(p provider.ExecProgress) { req.OnOutput(p.Data) }
 	}
-	return provider.ExecSupervised(ctx, &transport{m: m}, b.name, provider.ExecRequest{
-		Command:    req.Command,
-		WorkingDir: req.WorkingDir,
-		Env:        req.Env,
-		Timeout:    req.Timeout,
-		MaxOutput:  req.MaxOutput,
-		OnProgress: progress,
+	m.mu.Lock()
+	startedAt := b.startedAt
+	m.mu.Unlock()
+	before := containerState{Running: true, StartedAt: startedAt}
+	result, execErr := provider.ExecSupervised(ctx, &transport{m: m}, b.name, provider.ExecRequest{
+		Command:      withSandboxUmask(req.Command...),
+		WorkingDir:   req.WorkingDir,
+		Env:          req.Env,
+		SecretValues: req.SecretValues,
+		Stdin:        req.Stdin,
+		Timeout:      req.Timeout,
+		MaxOutput:    req.MaxOutput,
+		OnProgress:   progress,
 	}, req.MaxTimeout)
+	if execErr != nil || (result != nil && result.ExitCode != 0) {
+		after, inspectErr := m.inspectState(ctx, b.name)
+		if (inspectErr == nil && sandboxDied(before, after)) || ContainerStopped(fmt.Sprint(execErr)) {
+			m.invalidate(b.name)
+			return nil, &ErrSandboxDied{OOMKilled: after.OOMKilled, Memory: m.cfg.Memory}
+		}
+	}
+	return result, execErr
 }
 
 func (m *Manager) invalidate(name string) {
 	m.mu.Lock()
 	b := m.boxes[name]
-	m.mu.Unlock()
-	if b == nil {
-		return
+	if b != nil {
+		b.verified = time.Time{}
+		b.invalid = true
 	}
-	b.mu.Lock()
-	b.verified = time.Time{}
-	b.mu.Unlock()
+	m.mu.Unlock()
 }
 
 func (m *Manager) requireMounted(b *box, paths ...string) error {
@@ -896,4 +1117,17 @@ func (m *Manager) WasSandboxed(root string) bool {
 	defer m.mu.Unlock()
 	_, ok := m.used[filepath.Clean(root)]
 	return ok
+}
+
+// limitArgs caps a container only with the owner's explicit settings; by
+// default a sandbox has no memory or process cap.
+func (m *Manager) limitArgs() []string {
+	var args []string
+	if m.cfg.Memory != "" {
+		args = append(args, "--memory", m.cfg.Memory, "--memory-swap", m.cfg.Memory)
+	}
+	if m.cfg.PidsLimit > 0 {
+		args = append(args, "--pids-limit", strconv.Itoa(m.cfg.PidsLimit))
+	}
+	return args
 }

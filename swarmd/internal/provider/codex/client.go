@@ -147,6 +147,7 @@ type cachedWebsocketSession struct {
 	lockOnce              sync.Once
 	mu                    chan struct{}
 	conn                  *websocket.Conn
+	lastUsed              time.Time
 	lastPayload           map[string]any
 	lastRequestProperties map[string]any
 	lastInputLen          int
@@ -571,12 +572,46 @@ func closeCachedWebsocketSessionLocked(session *cachedWebsocketSession) {
 		_ = session.conn.Close()
 		session.conn = nil
 	}
+	session.lastUsed = time.Time{}
 	resetCachedWebsocketChainLocked(session)
+}
+
+// No reader runs between turns, so idle pings cannot be answered. Retire sockets
+// after 15 seconds (conservatively below typical keepalive windows), rather than
+// introducing a second concurrent reader. Reactive recovery handles earlier closes.
+const websocketReuseIdleLimit = 15 * time.Second
+
+var errWebsocketStale = errors.New("reused websocket is stale")
+
+func expireIdleWebsocketLocked(session *cachedWebsocketSession) bool {
+	if session != nil && session.conn != nil && !session.lastUsed.IsZero() && time.Since(session.lastUsed) >= websocketReuseIdleLimit {
+		closeCachedWebsocketSessionLocked(session)
+		return true
+	}
+	return false
+}
+
+func isStaleWebsocketClose(err error) bool {
+	if errors.Is(err, errWebsocketStreamStarted) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var closeErr *websocket.CloseError
+	if errors.As(err, &closeErr) {
+		return closeErr.Code == websocket.CloseNormalClosure || closeErr.Code == websocket.CloseGoingAway || closeErr.Code == websocket.CloseAbnormalClosure ||
+			(closeErr.Code == websocket.CloseInternalServerErr && strings.Contains(strings.ToLower(closeErr.Text), "keepalive ping timeout"))
+	}
+	return false
 }
 
 func prepareCachedWebsocketSessionLocked(session *cachedWebsocketSession, transport codexTransportContext, freshContext, payloadPrepared bool, requestPayload map[string]any) (*websocket.Conn, bool, error) {
 	if session == nil {
 		return nil, false, nil
+	}
+	if expireIdleWebsocketLocked(session) && payloadPrepared && asString(requestPayload["previous_response_id"]) != "" {
+		return nil, false, fmt.Errorf("%w: %w", errWebsocketStale, errWebsocketRetryFresh)
 	}
 	if transport.ResetTransport || (freshContext && !transport.ReuseTransport) {
 		closeCachedWebsocketSessionLocked(session)
@@ -1323,7 +1358,7 @@ func reasoningPayloadForRequest(req Request) map[string]any {
 	return map[string]any{"effort": providerValue, "summary": "auto"}
 }
 
-func (c *Client) sendRequest(ctx context.Context, record pebblestore.CodexAuthRecord, req Request, onEvent func(StreamEvent)) (decoded map[string]any, status int, err error) {
+func (c *Client) sendRequestOnce(ctx context.Context, record pebblestore.CodexAuthRecord, req Request, onEvent func(StreamEvent)) (decoded map[string]any, status int, err error) {
 	started := time.Now()
 	defer func() {
 		if c.diagnostics == nil {
@@ -1353,6 +1388,7 @@ func (c *Client) sendRequest(ctx context.Context, record pebblestore.CodexAuthRe
 			streamEmitter.completeAttempt()
 		}
 	}()
+	staleRetried := false
 	for attempt := 1; attempt <= transportRetryAttempts; attempt++ {
 		var wsDecoded map[string]any
 		var wsStatus int
@@ -1369,6 +1405,14 @@ func (c *Client) sendRequest(ctx context.Context, record pebblestore.CodexAuthRe
 			}
 			if wsErr == nil {
 				break
+			}
+			// A stale reused socket is transport maintenance, not a provider
+			// failure. Its cache was cleared, so the next attempt rebuilds full
+			// input. Never replay a started stream through this fast path.
+			if errors.Is(wsErr, errWebsocketStale) && !errors.Is(wsErr, errWebsocketStreamStarted) && !staleRetried {
+				staleRetried = true
+				startedRetry--
+				continue
 			}
 			if errors.Is(wsErr, errWebsocketIdleTimeout) {
 				idleTimeouts++
@@ -1415,7 +1459,7 @@ func (c *Client) sendRequest(ctx context.Context, record pebblestore.CodexAuthRe
 			}
 			continue
 		}
-		if record.Type == pebblestore.CodexAuthTypeOAuth && !streamEmitter.sawEvent && codexHandshakeShouldFallbackHTTP(wsStatus, wsDecoded) {
+		if record.Type == pebblestore.CodexAuthTypeOAuth && !streamEmitter.sawEvent && !providerTurnAlreadyStreamed(ctx) && codexHandshakeShouldFallbackHTTP(wsStatus, wsDecoded) {
 			payload, _, buildErr := buildRequestPayloadWithOptions(req)
 			if buildErr != nil {
 				return nil, 0, buildErr
@@ -1460,6 +1504,7 @@ func (c *Client) send(ctx context.Context, record pebblestore.CodexAuthRecord, p
 		}
 	}()
 
+	staleRetried := false
 	for attempt := 1; attempt <= transportRetryAttempts; attempt++ {
 		var wsDecoded map[string]any
 		var wsStatus int
@@ -1476,6 +1521,14 @@ func (c *Client) send(ctx context.Context, record pebblestore.CodexAuthRecord, p
 			}
 			if wsErr == nil {
 				break
+			}
+			// A stale reused socket is transport maintenance, not a provider
+			// failure. Its cache was cleared, so the next attempt rebuilds full
+			// input. Never replay a started stream through this fast path.
+			if errors.Is(wsErr, errWebsocketStale) && !errors.Is(wsErr, errWebsocketStreamStarted) && !staleRetried {
+				staleRetried = true
+				startedRetry--
+				continue
 			}
 			if errors.Is(wsErr, errWebsocketIdleTimeout) {
 				idleTimeouts++
@@ -1519,7 +1572,7 @@ func (c *Client) send(ctx context.Context, record pebblestore.CodexAuthRecord, p
 			}
 			continue
 		}
-		if !streamEmitter.sawEvent && codexHandshakeShouldFallbackHTTP(wsStatus, wsDecoded) {
+		if !streamEmitter.sawEvent && !providerTurnAlreadyStreamed(ctx) && codexHandshakeShouldFallbackHTTP(wsStatus, wsDecoded) {
 			return c.sendCodexResponsesHTTP(ctx, record, payload, streamEmitter.emit)
 		}
 		return annotateRetryAttempts(annotateCodexTransportMetadata(wsDecoded, codexTransportWebsocket, true), attempt), wsStatus, nil
@@ -1602,7 +1655,8 @@ func (c *Client) sendOpenAIResponses(ctx context.Context, record pebblestore.Cod
 	}
 	if resp.StatusCode >= 400 {
 		return annotateCodexTransportMetadata(map[string]any{
-			"raw_body": sanitizeDiagnosticText(string(body)),
+			"raw_body":            sanitizeDiagnosticText(string(body)),
+			providerRetryAfterKey: resp.Header.Get("Retry-After"),
 		}, codexTransportResponsesHTTP, false), resp.StatusCode, nil
 	}
 
@@ -1672,7 +1726,7 @@ func shouldRetryWebsocketTransportError(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
-	return !errors.Is(err, errWebsocketStreamStarted)
+	return !errors.Is(err, errWebsocketStreamStarted) && transientProviderFailure(0, err)
 }
 
 func annotateRetryAttempts(decoded map[string]any, attempts int) map[string]any {
@@ -1837,6 +1891,7 @@ func (c *Client) codexWebsocketRequestPayload(ctx context.Context, req Request) 
 		return nil, nil, 0, err
 	}
 	defer unlockCachedWebsocketSession(session)
+	expireIdleWebsocketLocked(session)
 	if strings.TrimSpace(session.lastResponseID) == "" || !codexWebsocketRequestPropertiesMatch(session.lastRequestProperties, properties) {
 		payload, err := buildCodexRequestBody(req, req.Input)
 		return payload, properties, requestInputLen, err
@@ -1972,6 +2027,9 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 		}
 		if session != nil {
 			closeCachedWebsocketSessionLocked(session)
+			if websocketReused && (isStaleWebsocketClose(err) || errors.Is(err, websocket.ErrCloseSent) || transientProviderFailure(0, err)) {
+				return nil, 0, fmt.Errorf("%w: %w", errWebsocketStale, err)
+			}
 			if payloadPrepared && asString(requestPayload["previous_response_id"]) != "" {
 				return nil, 0, errWebsocketRetryFresh
 			}
@@ -2029,6 +2087,9 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 			}
 			if state.sawPayload {
 				return nil, 0, newStartedWebsocketStreamError(err)
+			}
+			if websocketReused && isStaleWebsocketClose(err) {
+				return nil, 0, fmt.Errorf("%w: %w", errWebsocketStale, err)
 			}
 			return nil, 0, fmt.Errorf("read websocket response: %w", err)
 		}
@@ -2105,6 +2166,7 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 		return nil, 0, fmt.Errorf("decode codex websocket response stream: %w", err)
 	}
 	if session != nil {
+		session.lastUsed = time.Now()
 		session.lastPayload = cloneMapAny(requestPayload)
 		session.lastRequestProperties = cloneMapAny(requestProperties)
 		session.lastInputLen = requestInputLen
@@ -2313,6 +2375,7 @@ func dialCodexWebsocket(ctx context.Context, wsURL string, headers http.Header) 
 			return nil, map[string]any{
 				"raw_body":                          sanitizeDiagnosticText(string(body)),
 				"_swarm_websocket_handshake_failed": true,
+				providerRetryAfterKey:               resp.Header.Get("Retry-After"),
 			}, resp.StatusCode, nil
 		}
 		return nil, nil, 0, err
@@ -3953,7 +4016,7 @@ func finalizeStreamDecodeState(state *streamDecodeState) (map[string]any, error)
 		return nil, state.decodeErr
 	}
 	if state.completedResponse == nil {
-		return nil, errors.New("codex response stream ended before response.completed")
+		return nil, errResponseStreamIncomplete
 	}
 	reasoningSummary := aggregateReasoningStateText(state)
 	if state.completedResponse != nil {

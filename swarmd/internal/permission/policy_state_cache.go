@@ -56,6 +56,17 @@ func (s *Service) refreshPermissionStatePolicyLocked(accountScopeID string) (per
 	if err != nil {
 		return permissionStateCacheEntry{}, err
 	}
+	if s.store != nil && strings.TrimSpace(accountScopeID) != "" {
+		limits, err := s.store.GetLimits(accountScopeID)
+		if err != nil {
+			return permissionStateCacheEntry{}, err
+		}
+		if limits.Revision > 0 {
+			policy.Subagents.AutomaticLaunchesPerParentRun = limits.DelegationWaves
+			policy.Subagents.ActiveChildLimit = limits.ActiveChildren
+			policy.Subagents.SwarmActiveChildLimit = limits.SwarmChildren
+		}
+	}
 	key := permissionStateCacheKey(accountScopeID)
 	now := time.Now().UnixMilli()
 	bypass := s.bypassPermissions

@@ -60,7 +60,7 @@ CommonJS `require` and non-Node runtimes are not validated by this packaging ste
 
 On the Swarm box, `http://127.0.0.1:7783` is the scoped-token listener. The AI
 key the installer wrote to `~/.config/swarm/ai-key` (a new one:
-`sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh connect-ai`)
+`sudo bash /var/lib/swarm-headless/install.sh connect-ai`)
 works only through its MCP, `http://127.0.0.1:7783/mcp`, with any MCP client;
 it reaches no SDK route. For the session routes there, use a client key (a full
 AI key's `swarm_create_client_key` mints one); **do not** use Desktop bootstrap
@@ -73,9 +73,18 @@ explicit refresh, not timer polling. Live agent verification is a separate step.
 
 ## Quick Start
 
-### Chat Flow vs. Autonomous Orchestration Flow
+### Workers and jobs
 
-Swarm supports two distinct modes of execution depending on your application goals:
+Start with a project and its authorized folders, then give jobs to workers:
+coder for code changes, designer for UI/design, finder for research, or reviewer
+for independent read-only review of another job. Reviewers require `review_job`,
+use detached disposable checkouts, and report without delivering. Worker models
+follow account role settings unless pinned. Read each job's result before
+delivery (local merge, configured pull request, or queued landing).
+
+### Advanced: sessions, plans and orchestration
+
+For conversational interfaces or structured multi-stage work:
 
 1. **Interactive Chat Flow (`client.chat` / `client.sessions`)**:
    - Best for conversational assistants, interactive Q&A, and direct tool calling.
@@ -84,7 +93,7 @@ Swarm supports two distinct modes of execution depending on your application goa
 
 2. **Autonomous Orchestration Flow (`client.projects` / `client.workers` / `client.deploy`)**:
    - Best for multi-agent background tasks, codebase modifications, and durable pipelines.
-   - Deploys specialized subagent fleets (Coder, Finder, Designer, Router, Compact) across bounded repository worktrees with structured checkpoint contracts.
+   - Organizes worker jobs across authorized folders with structured plans and checkpoint contracts.
    - **Project → orchestrator conversations → delegated tasks → task sessions.** Project Markdown and linked workspaces provide high-level context; each deployed task resolves its own authorized execution workspace.
    - Use `client.projects.listConversations(projectId)` and `createConversation(projectId)` for the session picker and New Conversation button. These call canonical `/v3/projects/{id}/sessions`, not generic workspace session creation. `getOrchestratorSession` reuses an existing conversation or creates one; it does not mean there can only be one.
    - Use `client.projects.createTask()` / `listTasks()` for custom task organization. Task-linked sessions must be continued through `reopenTask` with exact revision guards, not ordinary chat messages.
@@ -390,8 +399,11 @@ console.log(`Authenticated as user ${session.user_id}`);
 const { token, record } = await client.auth.createScopedToken({
   name: 'GitHub Actions Trigger',
   scopes: ['automations:trigger'],
-  expires_in_seconds: 86400, // 24 hours
 });
+// Every key works while it is used and stops after 90 days unused; nothing to
+// renew. Pass expires_in_seconds only for a fixed end date (at most 365 days).
+// client.auth.createKey({ kind: 'app' | 'bot' | 'ai', ... }), listKeys() and
+// revokeKey(id) cover all three kinds.
 console.log(`Created deploy token: ${token} (hint: ${record.token_hint})`);
 
 // List active tokens

@@ -301,6 +301,9 @@ func taskProgramStatusPayload(record pebblestore.TaskProgramRecord, created bool
 		if job.ChildHead != "" {
 			row["child_head"] = job.ChildHead
 		}
+		if job.RouterAlert != "" {
+			row["router_alert"] = job.RouterAlert
+		}
 		if job.HandoffRef != nil {
 			row["handoff_ref"] = job.HandoffRef
 		}
@@ -447,7 +450,7 @@ func taskProgramOutcomeTransitions(spec *taskProgramSpec, outcomes []taskLaunchO
 			ArtifactRef: artifactRef,
 			JobID:       spec.Jobs[i].ID, ExpectedState: pebblestore.TaskProgramJobRunning, State: state,
 			ChildSessionID: outcome.ChildSessionID, CurrentSessionID: outcome.ChildSessionID, CurrentRunID: outcome.ChildRunID, WorkspacePath: outcome.WorkspacePath, WorktreeBranch: outcome.WorktreeBranch,
-			ParentBranch: outcome.ParentBranch, ImmutableStageBase: outcome.BaseCommit, ChildHead: outcome.HeadCommit,
+			ParentBranch: outcome.ParentBranch, ImmutableStageBase: outcome.BaseCommit, ChildHead: outcome.HeadCommit, RouterAlert: outcome.RouterAlert,
 			IntegrationState: integration, HandoffRef: handoffRef, Blocker: blocker,
 		})
 	}

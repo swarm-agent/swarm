@@ -8,6 +8,8 @@ export * from './deliverables.js';
 export * from './deploy/index.js';
 export * from './notifications.js';
 export * from './signals.js';
+export * from './job-automations.js';
+export * from './activity.js';
 export * from './box.js';
 export * from './sessions.js';
 export * from './projects.js';
@@ -35,3 +37,6 @@ export * from './websocket.js';
 export * from './browser.js';
 
 export type { ApplicationResults, ApplicationResultsOptions } from './app-results.js';
+
+export { SwarmLimitsNamespace } from './limits.js';
+export type { BoxLimits } from './limits.js';

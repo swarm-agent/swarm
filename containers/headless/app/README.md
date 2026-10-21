@@ -11,16 +11,23 @@ apps, workers, sync, storage or publication APIs.
 
 For Ubuntu 24.04 **x86_64**: a server or your own PC. It works on the one
 machine with your own AI (Claude Code or Codex) and needs no Tailscale.
-Docker from snap cannot run the agent sandboxes; the installer stops and asks
-you to remove it. From your own account (the AI connection is made for you):
+From your own account (the AI connection is made for you):
 
 <copy label="Install">
 curl -fsSL https://swarmagent.dev/install | sudo bash
 </copy>
 
-`install.sh` installs Docker (it keeps a working Docker with buildx, such as
-docker-ce) and gVisor, builds Swarm and this app from source
-(`Dockerfile.host`, exported as files) and starts them. Everything listens on
+`install.sh` downloads the newest release from GitHub
+(`swarm-vX.Y.Z-linux-amd64.tar.gz`, built and signed by the release pipeline),
+checks it against its published `.sha256` and that it was built from the commit
+GitHub names, unpacks its `headless/` package (the daemon, `swarmctl`, this app
+and its Node) and starts them. Nothing is compiled and no Docker is installed.
+`--environments on` (or `install.sh environments on` later) installs Docker and
+gVisor for environments and the sandbox; Docker from snap cannot run them, so
+the installer then asks you to remove it. `--ref BRANCH` builds that branch
+from source with Docker instead (`Dockerfile.host`), for development machines;
+installs made before downloads keep doing that. `--release-file ARCHIVE`
+installs a release archive already on the machine. Everything listens on
 127.0.0.1 only and no firewall rule is opened: the setup page on
 `http://127.0.0.1:8443` and Swarm's MCP (Swarm Control) on
 `http://127.0.0.1:7783/mcp`, which answers only to AI keys. On a server, reach
@@ -38,7 +45,7 @@ with `--for-user NAME`) the installer creates Swarm's owner for that person
 deploy workers, merge results) through `swarmctl setup sdk-token --ai-access`,
 writes it to their `~/.config/swarm/ai-key` (mode 0600, owned by them; never
 printed) and prints the connect lines.
-`sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh connect-ai`
+`sudo bash /var/lib/swarm-headless/install.sh connect-ai`
 does the same later (`--access full` also approves tool calls and manages
 models, providers and workers); running it again replaces the key and revokes
 the old one.
@@ -60,6 +67,26 @@ websites and reads its value the same way (without `--hosts` it only sets the
 value); `install.sh secret grant NAME FOLDER --days N` (or `--hours N`) lets
 that workspace's agents use it.
 
+**Claude Code as the provider.** Swarm can run its agents through the Claude
+Code CLI with your Claude plan. It runs `claude` as its own `swarm` user, which
+needs its own install and sign-in; Swarm never reads, copies or stores Claude
+credentials, and your own Claude login is not copied. In a terminal on the
+machine:
+
+<copy label="Claude Code for Swarm">
+sudo bash /var/lib/swarm-headless/install.sh claude-code
+</copy>
+
+It finds or installs the CLI for that user (Anthropic's installer, into
+`/var/lib/swarm/.local/bin`; an older one than Swarm needs is updated), sets
+`SWARM_CLAUDE_CODE_CLI_PATH` with `daemon-env` and starts `claude auth login`
+as that user: open the link it shows and finish in your browser. Without a
+terminal it does the rest and stops at the sign-in. Running it again is safe
+and reports what is set up. Then your AI makes Claude Code the active provider
+through MCP (`swarm_connect_claude_code`, action `status`, then `activate`); no
+setup-page form or owner password is needed. Details:
+[docs/checkpoints/claude-code-provider.md](../../../docs/checkpoints/claude-code-provider.md).
+
 **Tailscale (optional, for your other devices).** `--tailnet` at install, or
 `install.sh tailnet on` later, installs Tailscale and prints one login link
 (or joins with `TS_AUTHKEY` from the environment; `--tag tag:swarm`), turns on
@@ -71,7 +98,7 @@ MagicDNS and HTTPS certificates must be on. See [TAILNET.md](TAILNET.md).
 Tailscale was optional keep their tailnet setup on update.
 
 **Layout.** Swarm runs on the machine itself as two systemd services under a
-dedicated `swarm` user: `swarm-headless` (the daemon, `--sandbox=required`)
+dedicated `swarm` user: `swarm-headless` (the daemon; `--sandbox=off` by default)
 and `swarm-headless-app` (this app on 127.0.0.1:8443). Binaries live in
 `/opt/swarm/current`; Swarm's state in `/etc/swarmd`, `/var/lib/swarmd`,
 `/var/cache/swarmd` and `/var/log/swarmd` (mode 0700, systemd state
@@ -92,6 +119,15 @@ retries that commit. The machine summary shows the state (`machine.update`)
 and what runs (`busy`); `auto-update on --hook PATH` also tells a root-owned
 command when a commit is installed, blocked or rolled back, and `--checks`
 names other checks (`none` for a fork without them).
+**Disk.** After a build comes up (an update, or `install.sh up`), the installer
+removes older releases under `/opt/swarm/releases` (with their
+`swarm-sandbox:COMMIT` images when environments are on), keeping the running
+build, the one before it (for rollback) and a build waiting to start; a source
+install also trims Docker's build cache to `BUILD_CACHE_MAX` in `install.env`
+(default `8gb`, `none` keeps it all). Nothing
+is removed after a failed or rolled-back update. A trimmed cache can make the
+next build start from scratch and take longer; the running build is not
+affected.
 **Channels.** The installer follows `main`, the released build; `--ref dev`
 follows development, which changes several times a day.
 `install.sh channel` shows the branch and `install.sh channel dev` (or `main`)
@@ -126,17 +162,22 @@ owner (with Swarm's group), so what agents create stays the person's, while
 Swarm keeps running as `swarm`. Then register the folder in place
 (`swarm_add_workspace`, nothing copied), group folders into a project
 (`swarm_create_project`) so Swarm writes its `project.md`, and work through
-the project's orchestrator once it is ready. Agents get worktrees of the
-repository and their commits land in it. Never point work at a freshly
+the project's orchestrator once it is ready. Worker jobs and reviewers get
+independent full clones in the managed checkout directory. These use no shared
+object alternates or hardlinks, so job commits and source garbage collection
+are independent. Desktop and plan sessions still use worktrees. Never point work at a freshly
 initialised, empty repository in place of their code; `swarm_create_workspace`
 is only for a new project started from scratch. System folders, settings
 folders (any `.name` folder), Swarm's storage, the whole home folder and
 other people's folders are refused. `workspace remove PATH` reverses `add`;
 `workspace list` shows the folders.
 
-**Agent sandboxes.** Swarm keeps its keys, login and local socket to itself.
-Agents' commands, and Swarm's own Git on their projects, run in one sandbox
-per project (`swarmd/internal/sandbox`, image `containers/sandbox`): gVisor
+**Environments and the sandbox (optional, need Docker).** Swarm keeps its
+keys, login and local socket to itself. By default agents run their commands on
+the machine as Swarm's user. A folder with an environment (`swarm_set_environment`
+with `max_leases`) runs its agents' bash in leased containers of it, with its
+secrets as stand-ins; with `install.sh sandbox on`, agents' commands, and
+Swarm's own Git on their projects, run in one sandbox per project (`swarmd/internal/sandbox`, image `containers/sandbox`): gVisor
 when it runs correctly on the machine (else Docker's default runtime), all
 capabilities dropped, no-new-privileges, the `swarm` user's uid, memory and
 process limits, only that project and its worktrees mounted at the same paths,
@@ -159,11 +200,16 @@ socket). A granted project's sandbox sees only a stand-in
 (`NAME=swarm-secret://NAME`); the gateway swaps in the real value on requests
 to the allowed websites, scrubs it from responses and logs each use (`swarmctl secret uses`).
 
-**Agent permissions.** Unattended jobs never wait on a person: the installer
-starts Swarm with `--sandbox=required --bypass-permissions`, so agents run
-without ordinary prompts (plans to accept, agent questions and hard denials
-still stop). No sandbox, no autonomy: Swarm does not start without its
-sandbox, and bypass takes effect only while the sandbox is active.
+**Job delivery.** A job ends when its agent has built, tested and committed its
+work; nothing is delivered until `swarm_deliver_job` asks.
+`install.sh workspace publish PATH COMMAND` makes that delivery a pull request.
+`--sync` starts jobs from the forge's latest base. `publish PATH --off` restores
+local merges.
+
+**Agent permissions.** Jobs normally run without tool-approval prompts: the installer
+starts Swarm with `--bypass-permissions`, sandbox or not, so agents run without
+ordinary prompts (plans to accept, agent questions and hard denials still
+stop): a headless machine has nobody to answer a prompt.
 `--ask-permissions` at install, or `install.sh permissions ask`, starts it with
 `--bypass-permissions=false` instead (agents pause before commands and file
 changes); `permissions auto` goes back. The installer's choice applies at every
@@ -190,8 +236,8 @@ Claude Code on the web and routines.
 
 To watch the machine from a dashboard, mint a **monitor key**:
 `sudo -u swarm swarmctl setup sdk-token --monitor --name dashboard
---expires-in-seconds 31536000 > monitor.json` (a private file; the key is never
-printed). It reads `GET /v3/box/summary` (is the machine all right, does
+> monitor.json` (a private file; the key is never printed). Like every key it
+works while it is used and stops after 90 days unused. It reads `GET /v3/box/summary` (is the machine all right, does
 anything need a person) and `GET /v3/signals` (the event feed) on the same
 gateway and nothing else: no sessions, no setup. A key with `signals:write`
 lets a source on the machine, such as a host security monitor, report
@@ -259,3 +305,81 @@ generates no canned content/progress, and does not treat object upload or a
 Cloud Run services/jobs and legacy Compute Engine provisioning helpers now fail
 with migration errors rather than constructing incompatible/public daemons.
 This does not qualify any cloud deployment, live provider run or external post.
+
+### CPU contention controls
+
+Restart after changing these keys in the daemon startup config (`swarm.conf`):
+
+- `worker_max_concurrent_runs`: optional limit on concurrent agents; 0 (the
+  default) is no limit. Sandboxes have no default memory or process cap either.
+- Agents have no default CPU quota or command slot queue. `sandbox_cpus` remains
+  available only as an explicit per-container override; empty means unrestricted.
+- `sandbox_cgroup_parent`: optional Docker cgroup parent. The headless installer
+  supplies `--sandbox-cgroup-parent=swarm-sandbox.slice` on install and update.
+
+The installer gives agent containers a lower-weight slice (CPUWeight/IOWeight 25), versus daemon weights 1000,
+and retains `ProtectControlGroups=yes`. Install/update detects Docker's cgroup
+ driver: systemd uses the slice; cgroupfs explicitly clears the parent override
+and uses per-container CPU shares (256 versus daemon-command containers' 2048).
+Unknown drivers or failed detection stop installation rather than guessing.
+Outside this installer, containers still receive lower CPU shares (256).
+Weights only affect contention; idle CPU remains available to agents.
+
+Ordinary daemon Git runs in a separate confined per-project container (CPU shares
+2048), outside any explicit agent quota; reviewer Git retains its restricted read-only
+container. Worktree Git command budgets start after sandbox acquisition. Cold-start
+and engine failure can still fail explicitly; priority is not a real-time guarantee.
+
+### Optional idle auto-off (cloud VMs)
+
+`sudo bash install.sh idle-off 30` installs a root systemd timer that powers off
+this machine after 30 continuous minutes of verified idle. It is off by default;
+`sudo bash install.sh idle-off off` disables it. `install.sh status` shows the
+configured interval and timer state. Use the saved installer file, not a pipe.
+
+The timer checks `/v3/box/busy`, including follow-ups and reviews.
+An unreachable daemon, malformed response or failed pre-shutdown signal resets
+the idle interval; it never authorizes shutdown. The installer sends an
+`external.idle_off` signal through the daemon before root invokes systemd poweroff.
+The daemon never powers off its host. A stopped cloud VM keeps its disk; start
+it in your cloud console to resume. Disk/storage charges may continue.
+
+### Update admission drain
+
+After building, `install.sh update` requests `POST /v3/box/drain` before
+activation. New V3 run intents remain durably pending; existing execution
+owners, including parked parents, finish without being cancelled. The admission
+fence remains closed until daemon restart. Only the installer installs binaries
+and performs the privileged restart.
+
+`UPDATE_DRAIN_SECONDS` sets the wait budget (default 7200, range 1–86400).
+Timeout reports blocking session/run identifiers and automatically reopens
+admission without interrupting running work. `DELETE /v3/box/drain` or
+`swarm_cancel_update` explicitly cancels the drain; installer exit/failure also
+attempts cancellation. Expiry and cancellation emit end signals. A new request
+after either starts a fresh deadline. Readiness carries a daemon generation;
+the installer verifies that same generation and readiness immediately before restart. An unavailable status endpoint
+never authorizes activation. If the running daemon answers the initial drain POST
+with HTTP 404, the installer records that it is draining the older way and polls
+`/v3/box/busy` within the same `UPDATE_DRAIN_SECONDS` budget. Only an explicit
+`busy: false` permits the shared activation and rollback path. A missing or
+unavailable busy endpoint, invalid status, or timeout blocks the update and leaves
+the daemon running. Other drain errors do not enable this fallback. Older daemons
+cannot fence new admissions, so this compatibility path retains the old idle-check
+race; avoid starting new work during the upgrade. No drain cleanup or reservation
+is attempted when no generation was established.
+
+Owner/admin clients can request the same fence with `swarm_request_update`
+(MCP, optional `max_seconds`) or `POST /v3/box/drain` with JSON
+`{"max_seconds":7200}`. This does not execute the installer: automatic updates
+must be enabled or the operator must run it. `GET /v3/box/drain` reports readiness,
+start/deadline times, timeout and blocking runs/builds; the machine summary exposes
+redacted drain counts. New environment definitions are rejected during drain and
+must be retried after restart. Existing builds remain blockers.
+
+Before changing activation files, the installer atomically reserves a ready drain
+using `PUT /v3/box/drain` with its generation and a private claim. A reservation
+cannot expire or be cancelled by ordinary API/MCP cancellation. Restart replaces
+it with a fresh admission manager; failure cleanup releases it with the same
+claim. If the installer is killed without executing its trap, operator recovery
+is required; the daemon never kills running work or performs host installation.

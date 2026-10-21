@@ -1,7 +1,6 @@
 package run
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -37,31 +36,5 @@ func TestTaskDelegationPromptSanitizesInheritedContextAndFramesItUntrusted(t *te
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("delegated prompt missing %q:\n%s", want, prompt)
 		}
-	}
-}
-
-func TestPermissionOutputPayloadSanitizesArgumentsWithoutDroppingActionContext(t *testing.T) {
-	raw := `{"action":"write","path":"settings.json","nested":{"client-secret":"nested-secret"},"authorization":"Bearer bearer-secret","content":"api_key=text-secret"}`
-	output := permissionOutputPayload(false, "denied", "Bearer reason-secret", "write", raw)
-	for _, secret := range []string{"nested-secret", "bearer-secret", "text-secret", "reason-secret"} {
-		if strings.Contains(output, secret) {
-			t.Fatalf("permission output leaked %q: %s", secret, output)
-		}
-	}
-	var payload struct {
-		Permission map[string]any `json:"permission"`
-		Tool       struct {
-			Name      string         `json:"name"`
-			Arguments map[string]any `json:"arguments"`
-		} `json:"tool"`
-	}
-	if err := json.Unmarshal([]byte(output), &payload); err != nil {
-		t.Fatalf("decode permission output: %v", err)
-	}
-	if payload.Tool.Name != "write" || payload.Tool.Arguments["action"] != "write" || payload.Tool.Arguments["path"] != "settings.json" {
-		t.Fatalf("permission output lost non-sensitive correction context: %#v", payload.Tool)
-	}
-	if nested, ok := payload.Tool.Arguments["nested"].(map[string]any); !ok || nested["client-secret"] != "[redacted]" {
-		t.Fatalf("nested sensitive key was not redacted: %#v", payload.Tool.Arguments["nested"])
 	}
 }

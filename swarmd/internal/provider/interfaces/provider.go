@@ -31,6 +31,10 @@ type AuthCredential struct {
 	RefreshToken string
 	AccountID    string
 	ExpiresAt    int64
+	// GoogleProject and GoogleLocation name the Vertex AI project and location
+	// of an adc credential (not secret).
+	GoogleProject  string
+	GoogleLocation string
 }
 
 type AuthVerification struct {

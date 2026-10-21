@@ -8,6 +8,9 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+// Purpose: BuiltinSystemAgentRegistry is the code-owned identity boundary.
+// Enumerating every ID and checking uniqueness prevents missing or duplicate
+// compiled agents; registry unit tests are the narrowest layer for this invariant.
 func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 	registry, err := BuiltinSystemAgentRegistry()
 	if err != nil {
@@ -16,7 +19,7 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 	if err := registry.Validate(); err != nil {
 		t.Fatalf("validate builtin registry: %v", err)
 	}
-	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CoderAgentID, CompactAgentID, DesignerAgentID, FinderAgentID, IdeaAgentID, ImageAgentID, SwarmOrchestratorAgentID, PlanSidechatAgentID, ReviewCommitAgentID, RouterAgentID, VideoAgentID, WorkerCoderAgentID, WorkspaceDefinitionAgentID, WorkspaceOnboardingAgentID}
+	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CoderAgentID, CompactAgentID, DesignerAgentID, FinderAgentID, IdeaAgentID, ImageAgentID, SwarmOrchestratorAgentID, PlanSidechatAgentID, HelperAgentID, ReviewCommitAgentID, ReviewerAgentID, ReviewerFixerAgentID, RouterAgentID, VideoAgentID, WorkerCoderAgentID, WorkspaceDefinitionAgentID, WorkspaceOnboardingAgentID}
 	if got := registry.IDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("registry IDs = %v, want %v", got, want)
 	}
@@ -68,17 +71,6 @@ func TestCoderIdentityDoesNotAcceptRetiredCloneNames(t *testing.T) {
 	}
 }
 
-func TestBuiltinSystemAgentRegistryUserVisibleIDs(t *testing.T) {
-	registry, err := BuiltinSystemAgentRegistry()
-	if err != nil {
-		t.Fatalf("BuiltinSystemAgentRegistry() error = %v", err)
-	}
-	want := []string{SwarmAgentID, CoderAgentID, CompactAgentID, DesignerAgentID, FinderAgentID}
-	if got := registry.UserVisibleIDs(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("UserVisibleIDs() = %v, want %v", got, want)
-	}
-}
-
 func TestSystemAgentRegistryRejectsMissingDuplicateAndInvalidDefinitions(t *testing.T) {
 	valid := SystemAgentDefinition{
 		ID: "system-future", DisplayName: "Future", SidechatKind: "future",
@@ -123,29 +115,15 @@ func TestSystemAgentRegistryRejectsMissingDuplicateAndInvalidDefinitions(t *test
 	}
 }
 
-func TestSystemAgentRegistrySupportsFutureCompiledDefinition(t *testing.T) {
-	definition := SystemAgentDefinition{
-		ID: "system-future", DisplayName: "Future", SidechatKind: "future",
-		Materialize: func(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
-			return pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{Name: "system-future", Mode: ModeSubagent, Provider: parent.Provider, Model: parent.Model, Prompt: "future", RuntimeMode: pebblestore.AgentRuntimeModeRead, ExitPlanModeEnabled: pebblestore.BoolPtr(false), Enabled: true})
-		},
-		Reconcile: func(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
-			return pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{Name: "system-future", Mode: ModeSubagent, Provider: snapshot.Provider, Model: snapshot.Model, Prompt: "future", RuntimeMode: pebblestore.AgentRuntimeModeRead, ExitPlanModeEnabled: pebblestore.BoolPtr(false), Enabled: true})
-		},
-	}
-	registry, err := NewSystemAgentRegistry(append(append([]SystemAgentDefinition{}, builtinSystemAgentDefinitions...), definition))
-	if err != nil {
-		t.Fatalf("register future definition: %v", err)
-	}
-	profile, err := registry.MaterializeSidechat("future", pebblestore.AgentProfile{Provider: "codex", Model: "future-model"})
-	if err != nil {
-		t.Fatalf("materialize future definition: %v", err)
-	}
-	if profile.Name != "system-future" || profile.Provider != "codex" || profile.Model != "future-model" {
-		t.Fatalf("unexpected future profile: %+v", profile)
-	}
-}
-
+// Requirement: registry reconciliation preserves account model context while
+// restoring immutable role authority; Designer has exactly one contract
+// (read/search, swarm_design, scoped Git) and the primary agents carry
+// swarm_design instead of manage_design. Threat: stale snapshots grant tools,
+// Designer regains checkout write/edit, Bash or artifact authoring, or a
+// retired design tool stays reachable. Owners: SystemAgentRegistry,
+// designerAgentProfileForParent, SwarmAgentToolContract and
+// SwarmOrchestratorAgentToolContract; this direct contract test is the
+// narrowest layer, with malformed/stale snapshots as input.
 func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *testing.T) {
 	registry, err := BuiltinSystemAgentRegistry()
 	if err != nil {
@@ -301,18 +279,25 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	if designer.Name != DesignerAgentID || designer.Mode != ModeSubagent || designer.Prompt != DesignerAgentPrompt() || designer.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || designer.DefaultSessionMode != pebblestore.AgentDefaultSessionModeAuto || !designer.Enabled || !designer.Protected || designer.ExitPlanModeEnabled == nil || *designer.ExitPlanModeEnabled {
 		t.Fatalf("Designer immutable contract was not restored: %+v", designer)
 	}
-	for _, allowed := range []string{"read", "search", "find", "list", "artifact_v3_author"} {
+	// Designer has one contract: read/search, swarm_design and scoped Git; no
+	// checkout write/edit, commands, media, managed artifacts or orchestration.
+	for _, allowed := range []string{"read", "search", "find", "list", "swarm_design", "git_status", "git_diff", "git_add", "git_commit"} {
 		if cfg := designer.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
-			t.Fatalf("managed Designer locked tool %q unavailable: %+v", allowed, designer.ToolContract)
+			t.Fatalf("Designer locked tool %q unavailable: %+v", allowed, designer.ToolContract)
 		}
 	}
-	for _, denied := range []string{"write", "edit", "artifact_v2_author", "bash", "git_status", "git_diff", "git_add", "git_commit", "task", "skill_use", "manage_skill", "manage_agent", "manage_theme", "manage_sessions", "manage_worktree", "manage_todos", "plan_manage", "ask_user", "exit_plan_mode"} {
+	for _, denied := range []string{"write", "edit", "bash", "media_inspect", "manage_artifact", "task", "skill_use", "manage_skill", "manage_agent", "manage_theme", "manage_sessions", "manage_worktree", "manage_todos", "plan_manage", "ask_user", "exit_plan_mode"} {
 		if cfg := designer.ToolContract.Tools[denied]; cfg.Enabled == nil || *cfg.Enabled {
 			t.Fatalf("Designer mandatory denial %q was not restored: %+v", denied, designer.ToolContract)
 		}
 	}
-	if _, exists := designer.ToolContract.Tools["create_file"]; exists || strings.Contains(DesignerAgentPrompt(), "create_file") {
-		t.Fatalf("Designer must not register or reference create_file: %+v", designer.ToolContract)
+	for _, retired := range []string{"artifact_v2_author", "artifact_v3_author", "manage_design", "create_file"} {
+		if cfg, exists := designer.ToolContract.Tools[retired]; exists && cfg.Enabled != nil && *cfg.Enabled {
+			t.Fatalf("Designer enables retired tool %q: %+v", retired, designer.ToolContract)
+		}
+		if strings.Contains(DesignerAgentPrompt(), retired) {
+			t.Fatalf("Designer prompt references retired tool %q", retired)
+		}
 	}
 	imageWorker, err := registry.ReconcileSnapshot(ImageAgentID, pebblestore.AgentProfile{Name: ImageAgentID, Provider: "openai", Model: "utility-model", Thinking: "medium", Prompt: "mutable", ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"}})
 	if err != nil {
@@ -328,20 +313,14 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 		t.Fatalf("Image prompt is missing generation restrictions: %s", ImageAgentPrompt())
 	}
 
+	// The workspace profile name remains for callers but is the same contract.
 	workspaceDesigner := DesignerWorkspaceAgentProfileForParent(designer)
-	for _, allowed := range []string{"read", "search", "find", "list", "write", "edit"} {
-		if cfg := workspaceDesigner.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
-			t.Fatalf("workspace Designer locked tool %q unavailable: %+v", allowed, workspaceDesigner.ToolContract)
-		}
+	if !reflect.DeepEqual(workspaceDesigner.ToolContract, designer.ToolContract) || workspaceDesigner.Prompt != designer.Prompt || DesignerWorkspaceAgentPrompt() != DesignerAgentPrompt() || !reflect.DeepEqual(DesignerWorkspaceAgentToolContract(), DesignerAgentToolContract()) {
+		t.Fatalf("Designer workspace profile diverged from the one Designer contract: %+v vs %+v", workspaceDesigner, designer)
 	}
-	for _, denied := range []string{"media_inspect", "bash", "git_status", "git_diff", "git_add", "git_commit", "manage_artifact"} {
-		if cfg := workspaceDesigner.ToolContract.Tools[denied]; cfg.Enabled == nil || *cfg.Enabled {
-			t.Fatalf("workspace Designer must not authorize %q: %+v", denied, workspaceDesigner.ToolContract)
-		}
-	}
-	for _, want := range []string{"backend-supplied output contract", "Managed output uses only artifact_v3_author", "inspect_context", "complete conventional project tree", "artifact-scoped list/read/write/edit/delete", "Parts are stable navigation and user-intent targets", "shared files", "build_preview repeatedly", "finish_turn exactly once", "base commit", "output policy", "exactly three top-level keys", "non-empty label", "and locator", "Never use shorthand selector", "Do not call manage_artifact or artifact_v2_author", "Workspace output", "Never call artifact_v3_author, artifact_v2_author, or manage_artifact", "safe diagnostic", "Never classify raw errors", "fall back to legacy publication"} {
+	for _, want := range []string{"swarm_design", "count for several designs", "edit_path", "Do not write or edit HTML any other way", "exactly as swarm_design returned it", "never claim a design works", "git_add and git_commit"} {
 		if !strings.Contains(DesignerAgentPrompt(), want) {
-			t.Fatalf("Designer prompt missing immutable output contract %q", want)
+			t.Fatalf("Designer prompt missing %q", want)
 		}
 	}
 
@@ -352,11 +331,27 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if swarm.Name != SwarmAgentID || swarm.Mode != ModePrimary || swarm.Prompt != SwarmAgentPrompt() || swarm.RuntimeMode != pebblestore.AgentRuntimeModePlanAuto || swarm.DefaultSessionMode != pebblestore.AgentDefaultSessionModeAuto || !swarm.Enabled || !swarm.Protected || swarm.ExitPlanModeEnabled == nil || !*swarm.ExitPlanModeEnabled {
+	if swarm.Name != SwarmAgentID || swarm.Mode != ModePrimary || swarm.Prompt != SwarmAgentPrompt() || swarm.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || swarm.DefaultSessionMode != pebblestore.AgentDefaultSessionModeAuto || !swarm.Enabled || !swarm.Protected || swarm.ExitPlanModeEnabled == nil || *swarm.ExitPlanModeEnabled {
 		t.Fatalf("Swarm immutable contract was not restored: %+v", swarm)
 	}
 	if !reflect.DeepEqual(swarm.ToolContract, SwarmAgentToolContract()) {
 		t.Fatalf("Swarm exact tool contract mismatch: got %+v want %+v", swarm.ToolContract, SwarmAgentToolContract())
+	}
+	// swarm_design replaced manage_design: disabled for Swarm (it delegates to
+	// Designer), enabled for the Orchestrator; manage_design is gone from both.
+	if cfg := SwarmAgentToolContract().Tools["swarm_design"]; cfg.Enabled == nil || *cfg.Enabled {
+		t.Fatalf("Swarm swarm_design must be explicitly disabled: %+v", cfg)
+	}
+	if cfg := SwarmOrchestratorAgentToolContract().Tools["swarm_design"]; cfg.Enabled == nil || !*cfg.Enabled {
+		t.Fatalf("Orchestrator swarm_design must be enabled: %+v", cfg)
+	}
+	for _, contract := range []*pebblestore.AgentToolContract{SwarmAgentToolContract(), SwarmOrchestratorAgentToolContract()} {
+		if _, exists := contract.Tools["manage_design"]; exists {
+			t.Fatalf("retired manage_design is still in a primary contract: %+v", contract)
+		}
+	}
+	if strings.Contains(SwarmOrchestratorAgentPrompt(), "manage_design") || !strings.Contains(SwarmOrchestratorAgentPrompt(), "swarm_design") {
+		t.Fatal("Orchestrator prompt still points at manage_design or omits swarm_design")
 	}
 	if swarm.Provider != "" || swarm.Model != "" || swarm.Thinking != "" || swarm.AutoServiceTier != "" {
 		t.Fatalf("Swarm system identity retained model-bearing profile fields: %+v", swarm)
@@ -372,12 +367,12 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	if clone.Name != CoderAgentID || clone.Prompt != CoderAgentPrompt() || clone.Provider != "codex" || clone.Model != "parent-model" || clone.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || !clone.Enabled || clone.ExitPlanModeEnabled == nil || *clone.ExitPlanModeEnabled {
 		t.Fatalf("Clone immutable contract was not restored: %+v", clone)
 	}
-	for _, allowed := range []string{"read", "search", "list", "write", "edit", "websearch", "webfetch", "webdownload", "git_status", "git_diff", "git_add", "git_commit", "task_progress"} {
+	for _, allowed := range []string{"read", "search", "list", "write", "edit", "websearch", "webfetch", "webdownload", "git_status", "git_diff", "git_add", "git_commit", "task_progress", "bash"} {
 		if cfg := clone.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
 			t.Fatalf("Clone locked tool %q unavailable: %+v", allowed, clone.ToolContract)
 		}
 	}
-	for _, denied := range []string{"bash", "task", "manage_sessions", "manage_agent", "manage_todos", "plan_manage", "ask_user", "exit_plan_mode"} {
+	for _, denied := range []string{"task", "manage_sessions", "manage_agent", "manage_todos", "plan_manage", "ask_user", "exit_plan_mode"} {
 		if cfg := clone.ToolContract.Tools[denied]; cfg.Enabled == nil || *cfg.Enabled {
 			t.Fatalf("Clone mandatory denial %q was not restored: %+v", denied, clone.ToolContract)
 		}
@@ -390,161 +385,47 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	}
 }
 
-func TestEnsureSystemAgentRegistryExposesImmutableProfilesWithoutPersistingThem(t *testing.T) {
-	svc, agents := newTestService(t)
-	if err := svc.EnsureSystemAgentRegistry(); err != nil {
-		t.Fatalf("ensure registry: %v", err)
-	}
-	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, ImageAgentID, VideoAgentID, IdeaAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID, SwarmAgentID} {
-		if id != SwarmAgentID {
-			if _, ok, err := agents.GetProfile(id); err != nil || ok {
-				t.Fatalf("system profile %q persisted ok=%v err=%v", id, ok, err)
-			}
-		}
-
-		if _, err := svc.ResolveSystemAgent(id, pebblestore.AgentProfile{}); err != nil {
-			t.Fatalf("resolve %q: %v", id, err)
-		}
-		if _, _, _, err := svc.Upsert(UpsertInput{Name: id, Mode: ModeSubagent, Prompt: "replace"}); err == nil || !strings.Contains(err.Error(), "reserved") {
-			t.Fatalf("system profile %q mutation error = %v, want reserved rejection", id, err)
-		}
-		if _, _, _, err := svc.Delete(id); err == nil || !strings.Contains(err.Error(), "reserved") {
-			t.Fatalf("system profile %q delete error = %v, want immutable-system rejection", id, err)
-		}
-	}
-}
-
-// Requirement: materialized Designers receive the exact canonical manifest
-// version and discoverable example, including on reconciliation of stale prompts.
-// Threat: first-use authors guess versions or treat an example as preview evidence.
-// Registry materialization/reconciliation is the narrowest prompt-delivery layer;
-// schema validity and capability enforcement are tested by the author service.
-func TestDesignerManifestGuidanceUsesCanonicalVersion(t *testing.T) {
+// Requirement: regular Coder may execute its scoped checks but may not acquire
+// orchestration or environment-management authority. Threat: inherited/stale
+// profiles retain enabled management tools after Bash is added. Owners:
+// CoderAgentToolContract, CoderAgentProfileForParent and reconcileCoderAgentProfile.
+// Direct materialization and reconciliation are the narrowest compiled-role
+// boundary; downstream resolved tool rejection is tested in run role contracts.
+func TestCoderBashDoesNotGrantManagementAuthority(t *testing.T) {
 	registry, err := BuiltinSystemAgentRegistry()
 	if err != nil {
 		t.Fatal(err)
 	}
-	materialized, err := registry.Materialize(DesignerAgentID, pebblestore.AgentProfile{})
-	if err != nil {
-		t.Fatal(err)
+	denied := []string{"task", "manage_sessions", "manage_agent", "manage_todos", "plan_manage", "ask_user", "exit_plan_mode", "manage_worktree", "manage_workers", "manage_automation"}
+	injected := &pebblestore.AgentToolContract{Preset: "read_write", Tools: map[string]pebblestore.AgentToolConfig{"bash": {Enabled: pebblestore.BoolPtr(false)}}}
+	for _, name := range denied {
+		injected.Tools[name] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(true)}
 	}
-	reconciled, err := registry.ReconcileSnapshot(DesignerAgentID, pebblestore.AgentProfile{
-		Name: DesignerAgentID, Prompt: "stale manifest guidance",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, profile := range []pebblestore.AgentProfile{materialized, reconciled} {
-		for _, required := range []string{
-			`schema_version must be the exact string "` + pebblestore.ArtifactV3ManifestVersion + `"`,
-			"inspect_context returns ManifestFilename, ManifestVersion",
-			"ManifestExample", "correct the named field", "not build or preview evidence",
-			"call finish_turn exactly once", "never attempt to redirect them",
-		} {
-			if !strings.Contains(profile.Prompt, required) {
-				t.Fatalf("Designer prompt missing %q", required)
-			}
+	parent := pebblestore.AgentProfile{Name: CoderAgentID, Provider: "fixture-provider", Model: "fixture-model", ToolContract: injected}
+	for _, reconcile := range []bool{false, true} {
+		var profile pebblestore.AgentProfile
+		if reconcile {
+			profile, err = registry.ReconcileSnapshot(CoderAgentID, parent)
+		} else {
+			profile, err = registry.Materialize(CoderAgentID, parent)
 		}
-	}
-}
-
-// Requirement: the compiled Orchestrator alone may deploy/commit sessions and
-// promote selected work through the canonical tools. Threat: a persisted old
-// profile silently removes these, native filesystem discovery, or websearch/webfetch
-// capabilities, or a forged snapshot widens a
-// restricted agent. The registry materialization/reconciliation layer is the
-// narrowest authority for the code-owned tool contract; runtime filtering is
-// checked separately in run.
-func TestOrchestratorSessionIntegrationToolContractReconcilesSnapshot(t *testing.T) {
-	registry, err := BuiltinSystemAgentRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
-	compiled := SwarmOrchestratorAgentProfileForContext(pebblestore.AgentProfile{})
-	stale := compiled
-	stale.ToolContract = &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
-		"manage_sessions": {Enabled: pebblestore.BoolPtr(false)},
-		"manage_worktree": {Enabled: pebblestore.BoolPtr(false)},
-		"search":          {Enabled: pebblestore.BoolPtr(false)},
-		"websearch":       {Enabled: pebblestore.BoolPtr(false)},
-		"webfetch":        {Enabled: pebblestore.BoolPtr(false)},
-		"find":            {Enabled: pebblestore.BoolPtr(false)},
-		"read":            {Enabled: pebblestore.BoolPtr(false)},
-		"list":            {Enabled: pebblestore.BoolPtr(false)},
-		"plan_manage":     {Enabled: pebblestore.BoolPtr(true)},
-	}}
-	stale.Provider, stale.Model, stale.Thinking = "test-provider", "test-model", "high"
-	stale.AutoServiceTier = "fast"
-	reconciled, err := registry.ReconcileSnapshot(SwarmOrchestratorAgentID, stale)
-	if err != nil {
-		t.Fatal(err)
-	}
-	delete(stale.ToolContract.Tools, "websearch")
-	delete(stale.ToolContract.Tools, "webfetch")
-	reconciledMissing, err := registry.ReconcileSnapshot(SwarmOrchestratorAgentID, stale)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, profile := range []pebblestore.AgentProfile{compiled, reconciled, reconciledMissing} {
-		if profile.Mode != ModePrimary || profile.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || profile.DefaultSessionMode != pebblestore.AgentDefaultSessionModeAuto {
-			t.Fatalf("Orchestrator mode changed: %+v", profile)
-		}
-		for _, name := range []string{"manage_sessions", "manage_worktree", "search", "websearch", "webfetch", "find", "read", "list"} {
-			cfg, ok := profile.ToolContract.Tools[name]
-			if !ok || cfg.Enabled == nil || !*cfg.Enabled {
-				t.Fatalf("%s missing from compiled Orchestrator contract: %+v", name, profile.ToolContract)
-			}
-		}
-		for _, name := range []string{"plan_manage", "exit_plan_mode"} {
-			cfg := profile.ToolContract.Tools[name]
-			if cfg.Enabled == nil || *cfg.Enabled {
-				t.Fatalf("session planning %s enabled: %+v", name, profile.ToolContract)
-			}
-		}
-	}
-	for _, profile := range []pebblestore.AgentProfile{reconciled, reconciledMissing} {
-		if profile.Provider != stale.Provider || profile.Model != stale.Model || profile.Thinking != stale.Thinking || profile.AutoServiceTier != stale.AutoServiceTier {
-			t.Fatalf("model preference changed during reconciliation: %+v", profile)
-		}
-	}
-	for _, profile := range []pebblestore.AgentProfile{CoderAgentProfileForParent(pebblestore.AgentProfile{}), FinderAgentProfileForParent(pebblestore.AgentProfile{})} {
-		for _, name := range []string{"manage_sessions", "manage_worktree"} {
-			if cfg := profile.ToolContract.Tools[name]; cfg.Enabled != nil && *cfg.Enabled {
-				t.Fatalf("restricted agent %s acquired %s", profile.Name, name)
-			}
-		}
-	}
-}
-
-// Purpose: compiled system profiles and snapshot reconciliation must grant
-// manage_memory only to primary Orchestrator. The registry is the narrowest
-// authority layer proving stale inherited Swarm/worker contracts cannot retain
-// access, without reading private memory or invoking a provider.
-func TestSystemAgentMemoryToolOwnership(t *testing.T) {
-	registry, err := BuiltinSystemAgentRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, id := range registry.IDs() {
-		profile, err := registry.Materialize(id, pebblestore.AgentProfile{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := id == SwarmOrchestratorAgentID
-		if agentToolEnabled(profile.ToolContract, "manage_memory") != want {
-			t.Fatalf("incorrect compiled memory ownership: %s", id)
+		if !agentToolEnabled(profile.ToolContract, "bash") || profile.ToolContract.Preset != "custom" {
+			t.Fatal("Coder did not restore explicit scoped Bash contract")
 		}
-		profile.ToolContract = &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{"manage_memory": {Enabled: pebblestore.BoolPtr(!want)}}}
-		reconciled, err := registry.ReconcileSnapshot(id, profile)
-		if err != nil {
-			t.Fatal(err)
+		// manage_environments is removed: bash runs in the folder's environment by itself.
+		if agentToolEnabled(profile.ToolContract, "manage_environments") {
+			t.Fatalf("reconcile=%v Coder still has the removed manage_environments", reconcile)
 		}
-		if agentToolEnabled(reconciled.ToolContract, "manage_memory") != want {
-			t.Fatalf("stale memory contract survived reconciliation: %s", id)
+		for _, name := range denied {
+			if agentToolEnabled(profile.ToolContract, name) {
+				t.Fatalf("reconcile=%v retained unauthorized %s", reconcile, name)
+			}
 		}
-	}
-	parent := SwarmOrchestratorAgentProfileForContext(pebblestore.AgentProfile{})
-	if worker := AISidechatAgentProfileForParent(parent); agentToolEnabled(worker.ToolContract, "manage_memory") {
-		t.Fatal("AI sidechat inherited executive memory access")
+		if profile.Provider != parent.Provider || profile.Model != parent.Model || !agentToolEnabled(parent.ToolContract, "manage_workers") || agentToolEnabled(parent.ToolContract, "bash") {
+			t.Fatal("materialization changed account model context or mutated input authority")
+		}
 	}
 }

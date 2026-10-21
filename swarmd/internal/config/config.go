@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -34,14 +35,30 @@ type Config struct {
 	LockPath                string
 	StartupCWD              string
 	SandboxMode             string
+	SandboxBackend          string
 	SandboxImage            string
 	SandboxNetwork          string
 	SandboxRuntime          string
+	SandboxMemory           string
+	SandboxCPUs             string
+	SandboxCgroupParent     string
+	WorkerMaxConcurrentRuns int
 	SecretsGateway          string // off (default) | on
 	SecretsGatewayAddr      string // bridge address:port the gateway listens on
 }
 
-func Parse(args []string) (Config, error) {
+func Parse(args []string) (Config, error) { return parse(args, true) }
+
+// removedFlags are command-line flags of removed features (the runner
+// gateway and the landing limit). Service units written by older installers
+// still pass them; they are accepted and ignored.
+var removedFlags = []string{"runner-gateway-port", "landing-max-concurrent"}
+
+// ParseHeadless shares backend configuration but cannot enable a Desktop
+// listener, including through an existing Desktop installation's config file.
+func ParseHeadless(args []string) (Config, error) { return parse(args, false) }
+
+func parse(args []string, desktop bool) (Config, error) {
 	configPath, err := startupconfig.ResolvePath()
 	if err != nil {
 		return Config{}, err
@@ -87,7 +104,20 @@ func Parse(args []string) (Config, error) {
 		LongSessionDiagnostics:  startupCfg.LongSessionDiagnostics,
 	}
 	fs.StringVar(&cfg.ListenAddr, "listen", defaultListenAddr, "HTTP listen address")
-	fs.IntVar(&cfg.DesktopPort, "desktop-port", startupCfg.DesktopPort, "desktop HTTP listen port (0 disables desktop listener)")
+	if desktop {
+		fs.IntVar(&cfg.DesktopPort, "desktop-port", startupCfg.DesktopPort, "desktop HTTP listen port (0 disables desktop listener)")
+	} else {
+		cfg.DesktopPort = 0
+	}
+	// Flags of removed features: existing service units still pass them, so
+	// they are accepted and ignored with one log line.
+	var ignoredFlags []string
+	for _, name := range removedFlags {
+		fs.Func(name, "removed; accepted and ignored", func(string) error {
+			ignoredFlags = append(ignoredFlags, "--"+name)
+			return nil
+		})
+	}
 	fs.IntVar(&cfg.ContainerSDKPort, "container-sdk-port", 0, "opt-in scoped-token SDK listener on container IPv4 interfaces; publish only to host loopback (0 disables)")
 	fs.StringVar(&cfg.ContainerSDKHost, "container-sdk-host", "0.0.0.0", "IPv4 address for the scoped-token SDK listener: 0.0.0.0 inside a container, 127.0.0.1 when Swarm runs as a host service")
 	fs.BoolVar(&cfg.TailnetIdentity, "tailnet-identity", false, "admit Swarm Control (/mcp) on the SDK listener by the tailnet policy's swarmagent.dev/cap/swarm grant, set by Tailscale Serve 1.92+ with --accept-app-caps; needs --container-sdk-host=127.0.0.1")
@@ -95,10 +125,25 @@ func Parse(args []string) (Config, error) {
 	// Never persisted: the lock is a property of how this process was started,
 	// so nothing reachable at runtime (API, agents, config edits) can lift it.
 	fs.BoolVar(&cfg.LockPermissionPolicy, "lock-permission-policy", false, "make permission policy (rules, capability policies, bypass) read-only for this process; bypass stays off. Changing it requires a restart without this flag")
-	fs.StringVar(&cfg.SandboxMode, "sandbox", "auto", "agent sandbox mode: auto (use when Docker, the sandbox image and network are ready at startup), required (fail closed without them), off (no sandbox; permission bypass is disabled)")
+	defaultSandboxMode := "auto"
+	sandboxHelp := "agent sandbox mode: auto (use when Docker, the sandbox image and network are ready at startup), required (fail closed without them), off (no sandbox; permission bypass is disabled)"
+	if !desktop {
+		defaultSandboxMode = "required"
+		sandboxHelp = "agent sandbox mode: required (default; unavailable isolation blocks commands while setup remains accessible), off (agents run on this machine; --bypass-permissions still applies); auto is unsupported"
+	}
+	fs.StringVar(&cfg.SandboxMode, "sandbox", defaultSandboxMode, sandboxHelp)
+	backend := "docker"
+	if !desktop {
+		backend = "bubblewrap"
+	}
+	fs.StringVar(&cfg.SandboxBackend, "sandbox-backend", backend, "execution backend: bubblewrap (Linux, isolated network) or docker")
 	fs.StringVar(&cfg.SandboxImage, "sandbox-image", "swarm-sandbox:local", "image for agent sandboxes")
 	fs.StringVar(&cfg.SandboxNetwork, "sandbox-network", "swarm-sandbox", "isolated container network for agent sandboxes")
 	fs.StringVar(&cfg.SandboxRuntime, "sandbox-runtime", "", "OCI runtime for agent sandboxes (default: gVisor runsc when installed)")
+	fs.StringVar(&cfg.SandboxMemory, "sandbox-memory", startupCfg.SandboxMemory, "Docker memory cap per sandbox (empty: no cap)")
+	fs.StringVar(&cfg.SandboxCPUs, "sandbox-cpus", startupCfg.SandboxCPUs, "CPU quota per agent container (empty: unrestricted)")
+	fs.StringVar(&cfg.SandboxCgroupParent, "sandbox-cgroup-parent", startupCfg.SandboxCgroupParent, "agent container cgroup parent")
+	fs.IntVar(&cfg.WorkerMaxConcurrentRuns, "worker-max-concurrent-runs", startupCfg.WorkerMaxConcurrentRuns, "box-wide worker run limit (0: no limit)")
 	fs.StringVar(&cfg.SecretsGateway, "secrets-gateway", "off", "agent secret gateway: off (default) or on; on starts the egress gateway so granted secrets inject without the agent seeing them")
 	fs.StringVar(&cfg.SecretsGatewayAddr, "secrets-gateway-addr", "172.31.251.1:8080", "address:port the secret gateway listens on (the sandbox bridge gateway)")
 	fs.StringVar(&cfg.DataDir, "data-dir", defaultDataDir, "data directory root")
@@ -113,6 +158,12 @@ func Parse(args []string) (Config, error) {
 	if err := fs.Parse(filteredArgs); err != nil {
 		return Config{}, err
 	}
+	if len(ignoredFlags) > 0 {
+		log.Printf("swarmd: ignoring removed flags %s", strings.Join(ignoredFlags, " "))
+	}
+	if !desktop && fs.NArg() != 0 {
+		return Config{}, fmt.Errorf("unexpected Headless argument %q", fs.Arg(0))
+	}
 
 	if cfg.DesktopPort < 0 || cfg.DesktopPort > 65535 {
 		return Config{}, fmt.Errorf("invalid desktop port %d (expected 0-65535)", cfg.DesktopPort)
@@ -126,7 +177,19 @@ func Parse(args []string) (Config, error) {
 		// startup config file was edited to enable bypass.
 		cfg.BypassPermissions = false
 	}
+	if !desktop {
+		cfg.SandboxMode, err = HeadlessSandboxMode(cfg.SandboxMode)
+		if err != nil {
+			return Config{}, err
+		}
+	}
 	if _, err := sandbox.ParseMode(cfg.SandboxMode); err != nil {
+		return Config{}, err
+	}
+	if cfg.SandboxBackend != sandbox.BackendBubblewrap && cfg.SandboxBackend != sandbox.BackendDocker {
+		return Config{}, fmt.Errorf("sandbox-backend must be bubblewrap or docker")
+	}
+	if err := sandbox.ValidateMemory(cfg.SandboxMemory); err != nil {
 		return Config{}, err
 	}
 	switch strings.ToLower(strings.TrimSpace(cfg.SecretsGateway)) {

@@ -75,6 +75,8 @@ func sessionV3ShouldTrackProviderUsage(providerID string, usage provideriface.To
 		return source == "codex_api_usage" && rawPath == "response.usage"
 	case "google":
 		return source == "google_api_usage" && rawPath == "usageMetadata"
+	case "vertex":
+		return source == "vertex_api_usage" && rawPath == "usageMetadata"
 	case "copilot":
 		return source == "copilot_session_usage" && rawPath == "session.usage_info"
 	case "anthropic":

@@ -14,7 +14,8 @@ import (
 
 // Delegation in one hop: an outside AI (the person's own Claude, ChatGPT or
 // Codex) hands one piece of work to a Swarm role, waits for it and reads what
-// came back, without a Swarm-side orchestrator in between. The task card is
+// came back. The default Swarm role coordinates regular child tasks; explicit
+// specialist roles remain available. The task card is
 // auto-approved because the delegating AI is the gate, under its chat's own
 // permission prompts; media tasks keep the batch threshold.
 
@@ -27,23 +28,45 @@ var controlMCPTaskSettled = map[string]bool{
 
 const controlMCPTaskReportChars = 4000
 
-func controlMCPTaskNext(task map[string]any) string {
-	status, _ := task["status"].(string)
-	switch status {
+func (c *controlMCPCall) taskNext(task map[string]any) string {
+	can := c.advertisedToolAllowed
+	switch controlMCPString(task, "status") {
 	case "needs_review":
-		return "the work is done: read it with task_result (include_diff for the patch), then integrate_task merges it into its target branch"
+		if can("swarm_task_result") && can("swarm_integrate_task") {
+			return "read swarm_task_result (include_diff for the patch), then authorize swarm_integrate_task to merge into the target branch"
+		}
+		if can("swarm_task_result") {
+			return "read swarm_task_result; delivery requires an authorized client"
+		}
 	case "completed":
-		return "the task is finished and integrated"
+		if can("swarm_task_result") {
+			return "the task is finished: read swarm_task_result for its output and actual integration evidence"
+		}
 	case "failed", "blocked", "cancelled", "superseded":
-		return "the task did not finish: see last_error and the report, then run_task again with a corrected brief"
+		if can("swarm_task_result") && can("swarm_get_session") && can("swarm_send_message") && can("swarm_run_task") {
+			return "inspect swarm_task_result and swarm_get_session before continuing with swarm_send_message where supported; swarm_run_task creates a new task receipt"
+		}
+		if can("swarm_task_result") {
+			return "read swarm_task_result; continuation requires an authorized client"
+		}
 	case "needs_input":
-		return "the agent asked something: see action_needed and answer in its session with send_message"
+		if can("swarm_get_session") && can("swarm_resolve_permission") {
+			return "read action_needed and swarm_get_session pending_permissions; swarm_resolve_permission answers the exact question or approval receipt"
+		}
+		if can("swarm_get_session") {
+			return "read swarm_get_session pending_permissions; an authorized client must answer the exact question or approval receipt"
+		}
 	case "pending_approval":
-		return "the task waits for approval (media batch threshold or a plan): approve_task starts it"
+		if can("swarm_approve_task") {
+			return "the task waits for approval: swarm_approve_task approves or rejects it"
+		}
+		return "the task waits for an authorized client to approve or reject it"
 	case "queued", "in_progress", "planning":
-		return "the task is running: wait_task returns when it settles"
+		if can("swarm_wait_task") {
+			return "the task is running: swarm_wait_task returns when it settles"
+		}
 	}
-	return ""
+	return "inspect the task receipt with an authorized client"
 }
 
 func controlMCPRandomID() string {
@@ -64,6 +87,19 @@ func (c *controlMCPCall) task(projectID, taskID string) (map[string]any, error) 
 	if task == nil {
 		return nil, controlMCPToolFailure("task %s not found in project %s (see list_tasks)", taskID, projectID)
 	}
+	// Pending decisions live in the canonical session, not in the task's
+	// execution status. Surface that durable wait without rewriting the task
+	// lifecycle or treating a question as successful completion.
+	if sid, _ := task["session_id"].(string); sid != "" && (task["status"] == "in_progress" || task["status"] == "planning") {
+		state, err := c.dispatch(http.MethodGet, controlMCPSessionPath(sid), url.Values{"message_limit": {"1"}, "event_limit": {"0"}}, nil)
+		if err != nil {
+			return nil, err
+		}
+		if len(controlMCPList(state["pending_permissions"])) > 0 {
+			task["status"] = "needs_input"
+			task["action_needed"] = "Action Needed: Answer the session's pending question or tool approval."
+		}
+	}
 	return task, nil
 }
 
@@ -76,6 +112,9 @@ func controlMCPRunTask(c *controlMCPCall, args map[string]any) (any, error) {
 		return nil, err
 	}
 	role := controlMCPString(args, "role")
+	if role == "" {
+		role = "swarm"
+	}
 	brief := strings.TrimSpace(controlMCPString(args, "brief"))
 	if brief == "" {
 		return nil, controlMCPToolFailure("brief is required: what to do and how to know it is done")
@@ -162,7 +201,7 @@ func controlMCPRunTask(c *controlMCPCall, args map[string]any) (any, error) {
 	for key, value := range wait {
 		out[key] = value
 	}
-	if next := controlMCPTaskNext(task); next != "" {
+	if next := c.taskNext(task); next != "" {
 		out["next"] = next
 	}
 	return out, nil
@@ -259,7 +298,7 @@ func controlMCPWaitTask(c *controlMCPCall, args map[string]any) (any, error) {
 			out[key] = controlMCPTruncate(text, limit)
 		}
 	}
-	if next := controlMCPTaskNext(task); next != "" {
+	if next := c.taskNext(task); next != "" {
 		out["next"] = next
 	}
 	return out, nil
@@ -291,6 +330,13 @@ func controlMCPTaskResult(c *controlMCPCall, args map[string]any) (any, error) {
 	if state, _ := assessment["state"].(string); state != "" {
 		out["delivery_state"] = state
 	}
+	if out["delivery_state"] == "unavailable" {
+		out["delivery_reason_code"] = assessment["reason_code"]
+		out["delivery_reason"] = assessment["reason"]
+	}
+	if dirty, _ := assessment["source_dirty"].(bool); dirty {
+		out["uncommitted_changes"] = controlMCPUncommittedFiles(assessment["source_dirty_files"])
+	}
 	for _, key := range []string{"what_did_do", "what_not_done"} {
 		lines := []string{}
 		for _, raw := range controlMCPList(task[key]) {
@@ -319,8 +365,11 @@ func controlMCPTaskResult(c *controlMCPCall, args map[string]any) (any, error) {
 	if len(deliverables) > 0 {
 		out["deliverables"] = deliverables
 	}
-	if integration := controlMCPPick(controlMCPMap(task["integration"]), "state", "error", "resulting_target_head", "target_branch"); len(integration) > 0 {
+	if integration := controlMCPPick(controlMCPMap(task["integration"]), "state", "error", "resulting_target_head", "target_branch", "pull_request_url"); len(integration) > 0 {
 		out["integration"] = integration
+		if state := taskDeliveredState(controlMCPString(integration, "state"), controlMCPString(integration, "pull_request_url")); state != "" {
+			out["delivery_state"] = state
+		}
 	}
 	if text, ok := task["last_error"].(string); ok && strings.TrimSpace(text) != "" {
 		out["last_error"] = controlMCPTruncate(text, 400)
@@ -341,15 +390,47 @@ func controlMCPTaskResult(c *controlMCPCall, args map[string]any) (any, error) {
 			for key, value := range controlMCPPick(controlMCPMap(changes), keys...) {
 				out[key] = value
 			}
+			// The commits are listed from the job's effective base: after a
+			// rebase onto a newer target, that newer base, which is then the
+			// result's base_commit (the one recorded at creation stays as
+			// recorded_base_commit).
+			if recorded, _ := controlMCPMap(changes)["recorded_base"].(string); recorded != "" {
+				out["recorded_base_commit"] = recorded
+				out["base_commit"] = controlMCPMap(changes)["base"]
+			}
 			controlMCPFillWorktreeHead(out, controlMCPMap(changes))
 		} else {
 			out["changes_error"] = controlMCPTruncate(err.Error(), 300)
 		}
 	}
-	if next := controlMCPTaskNext(task); next != "" {
+	if next := c.taskNext(task); next != "" {
 		out["next"] = next
 	}
 	return out, nil
+}
+
+// controlMCPMaxUncommittedFiles bounds the uncommitted changes a result names.
+const controlMCPMaxUncommittedFiles = 20
+
+// controlMCPUncommittedFiles names the changes the delivery assessment found
+// uncommitted in the task's worktree (staged, unstaged, untracked or
+// conflicted). It is never empty: a dirty worktree whose files were not listed
+// still says so.
+func controlMCPUncommittedFiles(raw any) []string {
+	files := []string{}
+	for _, item := range controlMCPList(raw) {
+		if line, _ := item.(string); strings.TrimSpace(line) != "" {
+			if len(files) == controlMCPMaxUncommittedFiles {
+				files = append(files, "and more")
+				break
+			}
+			files = append(files, controlMCPTruncate(line, 300))
+		}
+	}
+	if len(files) == 0 {
+		files = append(files, "uncommitted changes (files not listed)")
+	}
+	return files
 }
 
 // controlMCPFillWorktreeHead gives a result the head of the job's own worktree

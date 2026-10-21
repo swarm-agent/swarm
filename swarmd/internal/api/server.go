@@ -19,6 +19,8 @@ import (
 	"strconv"
 	"strings"
 	"swarm/packages/swarmd/internal/memory"
+	"swarm/packages/swarmd/internal/publish"
+	"swarm/packages/swarmd/internal/sandbox"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,6 +39,7 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	integrationruntime "swarm/packages/swarmd/internal/integration"
+	"swarm/packages/swarmd/internal/jobautomation"
 	"swarm/packages/swarmd/internal/longsessiondiag"
 	mcpruntime "swarm/packages/swarmd/internal/mcp"
 	"swarm/packages/swarmd/internal/mediastaging"
@@ -100,43 +103,51 @@ const (
 
 type Server struct {
 	automations *automationHTTPServices
+	designJobs  *designJobRuntime
 
-	memory                      *memory.Service
-	auth                        *auth.Service
-	agents                      *agentruntime.Service
-	model                       *model.Service
-	modelProfiles               *modelprofile.Service
-	agentModelSettings          *agentmodelsettings.Service
-	agentModelSettingsStore     *pebblestore.AgentModelSettingsStore // complete-record bootstrap only
-	runner                      runService
-	runStreams                  *runControlAllocator
-	v3RealtimeOutbox            *v3RealtimeOutboxHub
-	v3LiveHub                   *v3LiveHub
-	v3LivePatchEnabled          bool
-	v3SyncCursors               *v3SyncCursorKeyring
-	v3SessionExecutor           *sessionV3Executor
-	planLifecycle               *sessionruntime.PlanLifecycleService
-	sessions                    *sessionruntime.Service
-	workspace                   *workspace.Service
-	discovery                   *discovery.Service
-	worktrees                   worktreeService
-	mcp                         mcpService
-	security                    *security.Service
-	providers                   *registry.Registry
-	codexAccount                codexAccountClient
-	claudeCodeUsage             claudeCodeUsageClient
-	perm                        permissionService
-	notifications               notificationService
-	storageHub                  *storagehub.Service
-	secretSlots                 *pebblestore.SecretSlotStore
-	signals                     *pebblestore.SignalStore
-	secretsGatewayEnabled       bool
-	sandboxEnvironments         *pebblestore.SandboxEnvironmentStore
-	envBuildMu                  sync.Mutex
-	envBuildDone                map[string]chan struct{}
-	signalSinks                 *pebblestore.SignalSinkStore
-	outboxStatus                func() outbox.Status
-	publishConfig               string
+	memory                  *memory.Service
+	auth                    *auth.Service
+	agents                  *agentruntime.Service
+	model                   *model.Service
+	modelProfiles           *modelprofile.Service
+	agentModelSettings      *agentmodelsettings.Service
+	agentModelSettingsStore *pebblestore.AgentModelSettingsStore // complete-record bootstrap only
+	runner                  runService
+	runStreams              *runControlAllocator
+	v3RealtimeOutbox        *v3RealtimeOutboxHub
+	sessionChanges          *sessionChangeNotifier // wakes session long-polls after a V3 change commits
+	activityStreams         atomic.Int64
+	v3LiveHub               *v3LiveHub
+	v3LivePatchEnabled      bool
+	v3SyncCursors           *v3SyncCursorKeyring
+	v3SessionExecutor       *sessionV3Executor
+	planLifecycle           *sessionruntime.PlanLifecycleService
+	sessions                *sessionruntime.Service
+	workspace               *workspace.Service
+	discovery               *discovery.Service
+	worktrees               worktreeService
+	mcp                     mcpService
+	security                *security.Service
+	providers               *registry.Registry
+	codexAccount            codexAccountClient
+	claudeCodeUsage         claudeCodeUsageClient
+	perm                    permissionService
+	notifications           notificationService
+	storageHub              *storagehub.Service
+	agentBoundLimits        *agentBoundRateLimiter // gateway and end-user rate limits, kept in the daemon store; nil refuses them
+	secretSlots             *pebblestore.SecretSlotStore
+	signals                 *pebblestore.SignalStore
+	secretsGatewayEnabled   bool
+	sandboxEnvironments     *pebblestore.SandboxEnvironmentStore
+	envBuildMu              sync.Mutex
+	envBuildDone            map[string]chan struct{}
+	signalSinks             *pebblestore.SignalSinkStore
+	outboxStatus            func() outbox.Status
+	jobAutomations          *jobautomation.Runner
+	jobAutomationCallFn     func(context.Context) (*controlMCPCall, error)
+	publishConfig           string
+	// outboxDelivery writes a workflow deliver step's files to the outbox.
+	outboxDelivery              OutboxDeliveryWriter
 	secretValues                secretValueSetter
 	webPush                     *webpush.Service
 	hub                         *stream.Hub
@@ -174,6 +185,10 @@ type Server struct {
 	artifactV2                  *artifactv2.Service
 	artifactV3                  ArtifactV3Service
 
+	// loadPublishConfig permits hermetic configuration injection; nil uses the
+	// root-owned file loader. It is set only during server construction/tests.
+	loadPublishConfig func(string) ([]publish.Rule, error)
+
 	longSessionDesktopSampleLogOnce sync.Once
 
 	controlMCPRoutesOnce sync.Once
@@ -187,13 +202,16 @@ type Server struct {
 	// so swarm_connect_chatgpt status wait_seconds wakes without polling.
 	codexOAuthChanged chan struct{}
 
-	shuttingDown           atomic.Bool
-	activeRunMu            sync.Mutex
-	runCtx                 context.Context
-	runCancel              context.CancelFunc
-	runWG                  sync.WaitGroup
-	activeRuns             atomic.Int32
-	requestStop            func(reason string)
+	shuttingDown atomic.Bool
+	activeRunMu  sync.Mutex
+	runCtx       context.Context
+	runCancel    context.CancelFunc
+	runWG        sync.WaitGroup
+	activeRuns   atomic.Int32
+	requestStop  func(reason string)
+	// browser is installed only by the Desktop composition. Core servers never
+	// accept browser cookies, bootstrap Desktop sessions or register UI routes.
+	browser                *browserComposition
 	desktopLocalSessions   *desktopLocalSessionManager
 	identityService        *identity.Service
 	identitySessions       *identity.SessionService
@@ -254,6 +272,7 @@ type swarmService interface {
 
 type permissionService interface {
 	ListPermissions(sessionID string, limit int) ([]pebblestore.PermissionRecord, error)
+	GetPermission(sessionID, permissionID string) (pebblestore.PermissionRecord, bool, error)
 	ListPending(sessionID string, limit int) ([]pebblestore.PermissionRecord, error)
 	ListPendingSummaries(accountScopeID, principalID string, limit int) ([]pebblestore.PermissionSummary, error)
 	PendingCount(sessionID string) (int, error)
@@ -327,41 +346,40 @@ type mcpService interface {
 	SetEnabled(id string, enabled bool) (mcpruntime.Server, *pebblestore.EventEnvelope, error)
 }
 
-func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *model.Service, runSvc runService, sessionSvc *sessionruntime.Service, workspaceSvc *workspace.Service, discoverySvc *discovery.Service, securitySvc *security.Service, providers *registry.Registry, permSvc permissionService, notificationSvc notificationService, events *pebblestore.EventLog, hub *stream.Hub) *Server {
+// NewCoreServer composes canonical backend APIs without Desktop routes, assets
+// or browser authentication. NewServer adds the existing Desktop composition.
+func NewCoreServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *model.Service, runSvc runService, sessionSvc *sessionruntime.Service, workspaceSvc *workspace.Service, discoverySvc *discovery.Service, securitySvc *security.Service, providers *registry.Registry, permSvc permissionService, notificationSvc notificationService, events *pebblestore.EventLog, hub *stream.Hub) *Server {
 	runCtx, runCancel := context.WithCancel(context.Background())
 	artifactPreviewKey := make([]byte, 32)
 	if _, err := rand.Read(artifactPreviewKey); err != nil {
 		artifactPreviewKey = nil
 	}
 	server := &Server{
-		auth:                 authSvc,
-		agents:               agentSvc,
-		model:                modelSvc,
-		runner:               runSvc,
-		runStreams:           newRunControlAllocator(),
-		v3RealtimeOutbox:     newV3RealtimeOutboxHub(),
-		v3LiveHub:            newV3LiveHub(),
-		v3LivePatchEnabled:   v3LivePatchDefaultEnabled,
-		sessions:             sessionSvc,
-		workspace:            workspaceSvc,
-		discovery:            discoverySvc,
-		security:             securitySvc,
-		providers:            providers,
-		perm:                 permSvc,
-		notifications:        notificationSvc,
-		hub:                  hub,
-		events:               events,
-		startedAt:            time.Now(),
-		codexOAuthSessions:   make(map[string]*codexOAuthSession),
-		desktopLocalSessions: newDesktopLocalSessionManager(),
-		artifactPreviewKey:   artifactPreviewKey,
-		gitRealtime:          nil,
-		reviewCommitActive:   make(map[string]string),
-		runCtx:               runCtx,
-		runCancel:            runCancel,
-	}
-	if server.desktopLocalSessions != nil {
-		server.desktopLocalSessions.server = server
+		auth:               authSvc,
+		agents:             agentSvc,
+		model:              modelSvc,
+		runner:             runSvc,
+		runStreams:         newRunControlAllocator(),
+		v3RealtimeOutbox:   newV3RealtimeOutboxHub(),
+		sessionChanges:     newSessionChangeNotifier(),
+		v3LiveHub:          newV3LiveHub(),
+		v3LivePatchEnabled: v3LivePatchDefaultEnabled,
+		sessions:           sessionSvc,
+		workspace:          workspaceSvc,
+		discovery:          discoverySvc,
+		security:           securitySvc,
+		providers:          providers,
+		perm:               permSvc,
+		notifications:      notificationSvc,
+		hub:                hub,
+		events:             events,
+		startedAt:          time.Now(),
+		codexOAuthSessions: make(map[string]*codexOAuthSession),
+		artifactPreviewKey: artifactPreviewKey,
+		gitRealtime:        nil,
+		reviewCommitActive: make(map[string]string),
+		runCtx:             runCtx,
+		runCancel:          runCancel,
 	}
 	if workspaceAware, ok := runSvc.(interface{ SetWorkspaceService(*workspace.Service) }); ok && workspaceAware != nil {
 		workspaceAware.SetWorkspaceService(workspaceSvc)
@@ -387,6 +405,7 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 		}
 	}
 	if sessionSvc != nil && sessionSvc.Store() != nil && sessionSvc.Store().Underlying() != nil {
+		server.agentBoundLimits = newAgentBoundRateLimiter(pebblestore.NewRateLimitStore(sessionSvc.Store().Underlying()))
 		if notificationSvc != nil {
 			server.storageHub = storagehub.NewService(sessionSvc.Store().Underlying(), notificationSvc)
 		}
@@ -885,6 +904,9 @@ func (s *Server) apiMux() *http.ServeMux {
 	s.registerProviderRoutes(mux)
 	s.registerWorkspaceRoutes(mux)
 	s.registerRuntimeRoutes(mux)
+	if s.browser != nil {
+		s.browser.registerRoutes(mux)
+	}
 	return mux
 }
 
@@ -918,26 +940,6 @@ func (s *Server) LocalTransportHandler() http.Handler {
 	})
 }
 
-func (s *Server) DesktopHandler() http.Handler {
-	apiHandler := s.withDesktopLocalSession(s.withAuth(s.withVaultGate(s.withJSON(s.apiMux()))))
-	desktopSurface := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if shouldServeDesktopAsset(r) {
-			s.withDesktopLocalSession(s.withDesktopAssets(http.NotFoundHandler())).ServeHTTP(w, r)
-			return
-		}
-		apiHandler.ServeHTTP(w, r)
-	})
-	return s.withDesktopBoundary(desktopSurface)
-}
-
-func (s *Server) handleDesktopStream(w http.ResponseWriter, r *http.Request) {
-	if s.hub == nil {
-		writeError(w, http.StatusInternalServerError, errors.New("stream hub not configured"))
-		return
-	}
-	s.hub.ServeHTTP(w, r)
-}
-
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
@@ -959,14 +961,54 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	if s.isShuttingDown() {
+	if reason := s.readinessProblem(); reason != "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"ok":     false,
-			"reason": "shutting_down",
+			"reason": reason,
 		})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	// HTTP readiness describes the control API, which remains usable for setup.
+	// Fixed execution fields disclose no probe errors or host details.
+	manager := sandbox.Default()
+	status := manager.Status()
+	executionReady := manager != nil && (status.Active || status.Mode == sandbox.ModeOff)
+	reason := ""
+	if !executionReady {
+		reason = "sandbox_unavailable"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true,
+		"agent_execution_ready": executionReady, "agent_execution_mode": status.Mode,
+		"agent_execution_reason": reason})
+}
+
+// readinessProblem reports why the daemon cannot take work right now: it is
+// shutting down, it has no running session executor, or its durable store does
+// not answer a read. Reasons are fixed words; nothing about the store, its data
+// or the error is exposed on this unauthenticated route.
+func (s *Server) readinessProblem() string {
+	if s.isShuttingDown() {
+		return "shutting_down"
+	}
+	if s.sessions == nil || s.v3SessionExecutor == nil || s.v3SessionExecutor.ctx == nil || s.v3SessionExecutor.ctx.Err() != nil {
+		return "executor_unavailable"
+	}
+	if !s.sessionStoreAnswers() {
+		return "store_unavailable"
+	}
+	return ""
+}
+
+// sessionStoreAnswers performs one cheap durable read (a session that does not
+// exist). A closed or failing store returns an error or panics; both mean not ready.
+func (s *Server) sessionStoreAnswers() (ok bool) {
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
+	_, _, err := s.sessions.GetSession("readyz-probe")
+	return err == nil
 }
 
 func (s *Server) handleSystemShutdown(w http.ResponseWriter, r *http.Request) {
@@ -1311,7 +1353,11 @@ func (s *Server) handleAuthCredentials(w http.ResponseWriter, r *http.Request) {
 			RefreshToken string   `json:"refresh_token"`
 			ExpiresAt    int64    `json:"expires_at"`
 			AccountID    string   `json:"account_id"`
-			Active       bool     `json:"active"`
+			// adc (Vertex AI) credentials name a Google Cloud project and
+			// location instead of carrying a secret.
+			GoogleProject  string `json:"google_project"`
+			GoogleLocation string `json:"google_location"`
+			Active         bool   `json:"active"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -1328,15 +1374,17 @@ func (s *Server) handleAuthCredentials(w http.ResponseWriter, r *http.Request) {
 				return
 			} else if firstRun {
 				status, acceptErr := s.acceptFirstOnboardingProviderCredential(r.Context(), principal, onboardingProviderCredentialRequest{
-					Provider:     provider,
-					Type:         req.Type,
-					Label:        req.Label,
-					Tags:         append([]string(nil), req.Tags...),
-					APIKey:       req.APIKey,
-					AccessToken:  req.AccessToken,
-					RefreshToken: req.RefreshToken,
-					ExpiresAt:    req.ExpiresAt,
-					AccountID:    req.AccountID,
+					Provider:       provider,
+					Type:           req.Type,
+					Label:          req.Label,
+					Tags:           append([]string(nil), req.Tags...),
+					APIKey:         req.APIKey,
+					AccessToken:    req.AccessToken,
+					RefreshToken:   req.RefreshToken,
+					ExpiresAt:      req.ExpiresAt,
+					AccountID:      req.AccountID,
+					GoogleProject:  req.GoogleProject,
+					GoogleLocation: req.GoogleLocation,
 				})
 				if acceptErr != nil {
 					writeError(w, http.StatusBadRequest, acceptErr)
@@ -1359,19 +1407,23 @@ func (s *Server) handleAuthCredentials(w http.ResponseWriter, r *http.Request) {
 			RefreshToken:   req.RefreshToken,
 			ExpiresAt:      req.ExpiresAt,
 			AccountID:      req.AccountID,
+			GoogleProject:  req.GoogleProject,
+			GoogleLocation: req.GoogleLocation,
 			Active:         false,
 		}
 		connection, verifyErr := s.verifyCredentialMaterialForAccount(r.Context(), accountScopeID, provideriface.AuthCredential{
-			ID:           strings.ToLower(strings.TrimSpace(input.ID)),
-			Provider:     provider,
-			Type:         input.Type,
-			Label:        input.Label,
-			Tags:         append([]string(nil), input.Tags...),
-			APIKey:       input.APIKey,
-			AccessToken:  input.AccessToken,
-			RefreshToken: input.RefreshToken,
-			ExpiresAt:    input.ExpiresAt,
-			AccountID:    input.AccountID,
+			ID:             strings.ToLower(strings.TrimSpace(input.ID)),
+			Provider:       provider,
+			Type:           input.Type,
+			Label:          input.Label,
+			Tags:           append([]string(nil), input.Tags...),
+			APIKey:         input.APIKey,
+			AccessToken:    input.AccessToken,
+			RefreshToken:   input.RefreshToken,
+			ExpiresAt:      input.ExpiresAt,
+			AccountID:      input.AccountID,
+			GoogleProject:  input.GoogleProject,
+			GoogleLocation: input.GoogleLocation,
 		})
 		if verifyErr != nil {
 			writeError(w, http.StatusInternalServerError, verifyErr)
@@ -2237,7 +2289,7 @@ func (s *Server) handleWorkspaceRepositorySetup(w http.ResponseWriter, r *http.R
 // hidden) with what to do, instead of a dead "no such directory". Swarm never
 // changes its own host: the person, or the AI setting the machine up, makes
 // the folder visible from outside (on a headless install,
-// `install.sh workspace add PATH` as root) and adds it again. Only a missing
+// `swarmctl workspace add PATH` as root) and adds it again. Only a missing
 // or unreadable path outside Swarm's own storage qualifies. A path whose
 // parent Swarm can see and that simply is not there is answered as
 // workspace_not_found, so a typo never sends anyone to change the host.
@@ -2270,7 +2322,7 @@ func (s *Server) writeWorkspaceNotVisible(w http.ResponseWriter, path string) bo
 		"ok":    false,
 		"code":  "workspace_not_visible",
 		"path":  clean,
-		"error": clean + " is not visible to Swarm on this machine: either it does not exist, or it is inside a home folder, which Swarm (its own user) cannot see and never changes its host to reach. If the folder exists, make it visible as root on that machine with `install.sh workspace add " + clean + "`, then try again.",
+		"error": clean + " is not visible to Swarm on this machine: either it does not exist, or it is inside a home folder, which Swarm (its own user) cannot see and never changes its host to reach. If the folder exists, make it visible as root on that machine with `swarmctl workspace add " + clean + "`, then try again.",
 	})
 	return true
 }
@@ -4322,13 +4374,25 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			return
 		}
 
+		// Credentials of the removed runner kind are refused everywhere and
+		// never inherit a cookie or local-owner bypass.
+		if token := extractAttachToken(r); token != "" {
+			rec, err := s.security.ValidateScopedToken(token)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized, err)
+				return
+			}
+			if !refuseRunnerKey(w, rec) {
+				return
+			}
+		}
 		if s.isAuthExemptRequest(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		if s.identitySessions != nil {
-			if actor, err := s.identitySessions.Validate(productSessionTokenFromRequest(r)); err == nil {
+			if actor, err := s.identitySessions.Validate(s.productSessionToken(r)); err == nil {
 				next.ServeHTTP(w, requestWithActorContext(r, actor))
 				return
 			}
@@ -4348,7 +4412,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 						return
 					}
 				}
-				if scopedRec, scopedErr := s.security.ValidateScopedToken(token); scopedErr != nil {
+				if scopedRec, scopedErr := s.security.ValidateScopedTokenFrom(token, keySource(r)); scopedErr != nil {
 					writeError(w, http.StatusUnauthorized, scopedErr)
 					return
 				} else if scopedRec != nil {
@@ -4359,7 +4423,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 					}
 					reqWithAuth := requestWithActorContext(r, actor)
 					reqWithAuth = requestWithScopedToken(reqWithAuth, scopedRec)
-					if !s.gateAgentBoundToken(w, reqWithAuth, scopedRec) || !gateAIKey(w, reqWithAuth, scopedRec) || !gateClientAppKey(w, reqWithAuth, scopedRec) {
+					if !s.gateAgentBoundToken(w, reqWithAuth, scopedRec) || !gateAIKey(w, reqWithAuth, scopedRec) || !gateClientAppKey(w, reqWithAuth, scopedRec) || !refuseRunnerKey(w, scopedRec) {
 						return
 					}
 					next.ServeHTTP(w, reqWithAuth)
@@ -4391,7 +4455,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		if scopedRec, scopedErr := s.security.ValidateScopedToken(token); scopedErr != nil {
+		if scopedRec, scopedErr := s.security.ValidateScopedTokenFrom(token, keySource(r)); scopedErr != nil {
 			writeError(w, http.StatusUnauthorized, scopedErr)
 			return
 		} else if scopedRec != nil {
@@ -4402,7 +4466,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			}
 			reqWithAuth := requestWithActorContext(r, actor)
 			reqWithAuth = requestWithScopedToken(reqWithAuth, scopedRec)
-			if !s.gateAgentBoundToken(w, reqWithAuth, scopedRec) || !gateAIKey(w, reqWithAuth, scopedRec) || !gateClientAppKey(w, reqWithAuth, scopedRec) {
+			if !s.gateAgentBoundToken(w, reqWithAuth, scopedRec) || !gateAIKey(w, reqWithAuth, scopedRec) || !gateClientAppKey(w, reqWithAuth, scopedRec) || !refuseRunnerKey(w, scopedRec) {
 				return
 			}
 			next.ServeHTTP(w, reqWithAuth)
@@ -4438,17 +4502,14 @@ func extractAttachToken(r *http.Request) string {
 }
 
 func (s *Server) isAuthExemptRequest(r *http.Request) bool {
+	if s.browser != nil && s.browser.authExempt(r) {
+		return true
+	}
 	switch r.URL.Path {
 	case "/healthz", "/readyz":
 		return true
-	case "/v1/auth/desktop/session":
-		return r.Method == http.MethodGet && shouldAllowDesktopLocalSessionBootstrapRequest(r)
 	case "/v1/onboarding":
 		return r.Method == http.MethodGet || (r.Method == http.MethodPost && s.allowsUnauthenticatedOnboardingPost(r))
-	case TailscaleOnboardingApprovalPath:
-		_, pending := pendingDesktopOrigin(r)
-		_, admitted := admittedDesktopOrigin(r)
-		return (pending || admitted) && (r.Method == http.MethodGet || (pending && r.Method == http.MethodPost))
 	default:
 		return false
 	}

@@ -128,6 +128,12 @@ func (r *ChromedpRenderer) Capture(parent context.Context, req Request) ([]Resul
 }
 
 func (r *ChromedpRenderer) capture(parent context.Context, req Request, standalone bool) ([]Result, error) {
+	return r.captureObserved(parent, req, standalone, nil)
+}
+
+// captureObserved is capture with an optional extra CDP target listener. The
+// listener only observes; it never changes what capture allows or returns.
+func (r *ChromedpRenderer) captureObserved(parent context.Context, req Request, standalone bool, observe func(any)) ([]Result, error) {
 	if r == nil || r.BinaryPath == "." || r.CacheRoot == "." {
 		return nil, NewError("capture_renderer_unavailable", "trusted HTML capture renderer is not configured")
 	}
@@ -275,6 +281,9 @@ func (r *ChromedpRenderer) capture(parent context.Context, req Request, standalo
 	var standaloneAudit standaloneDiagnostics
 	if standalone {
 		chromedp.ListenTarget(browserCtx, standaloneAudit.observe)
+	}
+	if observe != nil {
+		chromedp.ListenTarget(browserCtx, observe)
 	}
 	initialDocument := false
 	requestGate := make(captureRequestGate, 16)

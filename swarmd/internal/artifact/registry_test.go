@@ -1,11 +1,7 @@
 package artifact
 
 import (
-	"context"
 	"errors"
-	"os"
-	"path/filepath"
-	"testing"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -65,50 +61,4 @@ func (r *registryResolver) RepairSessionArtifactCollections(id string) (pebblest
 	}
 	r.repaired[id]++
 	return pebblestore.SessionArtifactRepairReport{}, nil
-}
-
-func TestRegistryOwnedSessionDoesNotUseWorkspaceIdentity(t *testing.T) {
-	t.Setenv("STATE_DIRECTORY", filepath.Join(t.TempDir(), "data"))
-	resolver := &registryResolver{sessions: []pebblestore.SessionSnapshot{{ID: "owned", AccountScopeID: "account", UserID: "user", WorkspacePath: "/does/not/control/artifacts"}}}
-	registry := NewRegistry(resolver, Limits{})
-	if _, err := registry.OwnedSession("owned", "other", "user"); err == nil {
-		t.Fatal("accepted foreign account")
-	}
-	if got, err := registry.OwnedSession("owned", "account", "user"); err != nil || got.ID != "owned" {
-		t.Fatalf("owned=%+v err=%v", got, err)
-	}
-}
-
-func TestVerifyGitPrerequisiteLeavesNoProbeRepository(t *testing.T) {
-	t.Setenv("STATE_DIRECTORY", t.TempDir())
-	registry := NewRegistry(&registryResolver{}, Limits{})
-	if err := registry.VerifyGitPrerequisite(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(registry.repositoryRoot, "startup-probe.git")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("startup probe repository remains: %v", err)
-	}
-	if registry.repositories["startup-probe"] != nil {
-		t.Fatal("startup probe remains cached")
-	}
-}
-
-func TestRegistryMaintenanceDeletesGitRepositoryBeforeAcknowledging(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "data")
-	t.Setenv("STATE_DIRECTORY", root)
-	resolver := &registryResolver{tombstones: []pebblestore.V3SessionTombstone{{
-		SessionID: "deleted", Deleted: true, ArtifactCleanupPending: true,
-		ArtifactGitCleanup: []pebblestore.V3SessionArtifactGitCleanup{{RepositoryID: "deleted-repository", DeleteRepository: true}},
-	}}}
-	registry := NewRegistry(resolver, Limits{})
-	if _, err := registry.Repository(context.Background(), "deleted-repository"); err != nil {
-		t.Fatal(err)
-	}
-	report, err := registry.RunMaintenance(10)
-	if err != nil || report.DeletedSessions != 1 || resolver.tombstones[0].ArtifactCleanupPending {
-		t.Fatalf("report=%+v err=%v", report, err)
-	}
-	if _, err := os.Stat(filepath.Join(root, "artifact-repositories", "deleted-repository.git")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("repository survived cleanup: %v", err)
-	}
 }

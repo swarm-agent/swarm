@@ -24,9 +24,12 @@ func (s *Server) ContainerSDKHandler() http.Handler {
 			writeError(w, http.StatusUnauthorized, errors.New("scoped bearer token required"))
 			return
 		}
-		rec, err := s.security.ValidateScopedToken(auth[1])
+		rec, err := s.security.ValidateScopedTokenFrom(auth[1], keySource(r))
 		if err != nil || rec == nil || rec.UserID == "" || rec.AccountScopeID == "" {
 			writeError(w, http.StatusUnauthorized, errors.New("invalid scoped bearer token"))
+			return
+		}
+		if !refuseRunnerKey(w, rec) {
 			return
 		}
 		actor, err := s.identitySessions.ActorForUserID(rec.UserID)
@@ -96,6 +99,16 @@ func isClientAppKey(rec *pebblestore.ScopedTokenRecord) bool {
 
 // gateClientAppKey limits a client-app key to start, read, message, stop and
 // resolve permissions in sessions (containerSDKRouteAllowed); never /mcp.
+// refuseRunnerKey refuses a scoped credential of the removed runner kind:
+// such credentials may still exist in a store but grant no route.
+func refuseRunnerKey(w http.ResponseWriter, rec *pebblestore.ScopedTokenRecord) bool {
+	if rec != nil && rec.Kind == "runner" {
+		writeError(w, http.StatusForbidden, errors.New("runner credentials are no longer accepted"))
+		return false
+	}
+	return true
+}
+
 func gateClientAppKey(w http.ResponseWriter, r *http.Request, rec *pebblestore.ScopedTokenRecord) bool {
 	if isClientAppKey(rec) && !containerSDKRouteAllowed(r) {
 		writeError(w, http.StatusForbidden, errors.New("client app keys reach only session routes"))
@@ -149,6 +162,21 @@ func containerSDKRouteAllowed(r *http.Request) bool {
 	}
 	if len(p) == 4 && p[3] == "messages" {
 		return r.Method == http.MethodPost
+	}
+	// Waiting for the session's next assistant message, tool call or run end
+	// (the handler admits only the key's own account and user's sessions).
+	if len(p) == 4 && p[3] == "wait" {
+		return r.Method == http.MethodGet
+	}
+	// Confirmations of client tool calls: read them. Deciding one is for the
+	// agent's gateway token, and takeover and operator replies for its
+	// operator token; agent-bound tokens have their own gate
+	// (agentBoundRequest), so no key that reaches this list gets them.
+	if len(p) == 4 && p[3] == "confirmations" {
+		return r.Method == http.MethodGet
+	}
+	if len(p) == 5 && p[3] == "confirmations" && p[4] != "" && p[4] != "." && p[4] != ".." {
+		return r.Method == http.MethodGet
 	}
 	if len(p) == 5 && p[3] == "run" && p[4] == "stop" {
 		return r.Method == http.MethodPost

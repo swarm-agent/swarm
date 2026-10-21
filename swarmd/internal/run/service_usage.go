@@ -142,9 +142,10 @@ func shouldPersistProviderUsage(providerID string, usage provideriface.TokenUsag
 			return false
 		}
 		return strings.TrimSpace(usage.Transport) != "" || usage.ConnectedViaWS != nil
-	case "google":
+	case "google", "vertex":
+		// Both serve Gemini generateContent: google_api_usage or vertex_api_usage.
 		source := strings.ToLower(strings.TrimSpace(usage.Source))
-		if source != "google_api_usage" {
+		if source != providerID+"_api_usage" {
 			return false
 		}
 		return usage.InputTokens > 0 ||

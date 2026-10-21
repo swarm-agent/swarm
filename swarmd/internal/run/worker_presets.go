@@ -13,7 +13,7 @@ import (
 // the account already has, so it never duplicates or overwrites one.
 const WorkerPresetMetadataKey = "preset"
 
-// WorkerPreset is a code-owned premade worker every box gets. Presets are
+// WorkerPreset is a code-owned worker available for explicit deployment. Presets are
 // box-level: no workspace binding (every job names its workspace), no
 // schedule, and no pinned model (the role's account model setting applies).
 type WorkerPreset struct {
@@ -26,6 +26,7 @@ type WorkerPreset struct {
 
 // WorkerPresets lists the premade workers in their display order.
 var WorkerPresets = []WorkerPreset{
+	{Key: store.WorkerRoleReviewer, Name: "Reviewer", Role: store.WorkerRoleReviewer, Description: "Independent report-only code reviewer.", Instructions: "Review the exact job head against its base and judge four things: is every requirement of the brief fully done; do the report's claims match the evidence (a test the report says passed must appear among the commands the job actually ran, with exit code 0; unbacked claims are findings); are there gaps; are there security problems. Return VERDICT: OK|BLOCK, SUMMARY, FINDINGS (each at file:line, sent to the coder verbatim) and TESTS RUN. Never deliver changes."},
 	{
 		Key:          store.WorkerRoleCoder,
 		Name:         "Coder",
@@ -38,7 +39,7 @@ var WorkerPresets = []WorkerPreset{
 		Name:         "Designer",
 		Role:         store.WorkerRoleDesigner,
 		Description:  "Premade worker that designs interfaces and visuals.",
-		Instructions: "Design the screens, pages and visuals each job asks for, working from the workspace it names, then report what you made.",
+		Instructions: "Make and edit the HTML designs each job asks for with swarm_design, in the workspace it names, then report each design's path and status.",
 	},
 	{
 		Key:          store.WorkerRoleFinder,
@@ -56,6 +57,20 @@ var WorkerPresets = []WorkerPreset{
 // Creation is idempotent per preset generation, so concurrent or retried
 // calls converge on one worker per preset.
 func (s *WorkerExecutionService) EnsurePresets(ctx context.Context, account, user string) ([]store.WorkerRecord, error) {
+	return s.ensurePresets(ctx, account, user, WorkerPresets)
+}
+
+// EnsurePreset provisions one explicitly selected preset, leaving other roles absent.
+func (s *WorkerExecutionService) EnsurePreset(ctx context.Context, account, user, key string) ([]store.WorkerRecord, error) {
+	for _, preset := range WorkerPresets {
+		if preset.Key == key {
+			return s.ensurePresets(ctx, account, user, []WorkerPreset{preset})
+		}
+	}
+	return nil, fmt.Errorf("unknown worker preset %q", key)
+}
+
+func (s *WorkerExecutionService) ensurePresets(ctx context.Context, account, user string, presets []WorkerPreset) ([]store.WorkerRecord, error) {
 	if err := s.authorizeWorkerOwner(account, user); err != nil {
 		return nil, err
 	}
@@ -97,8 +112,8 @@ func (s *WorkerExecutionService) EnsurePresets(ctx context.Context, account, use
 		}
 		cursor = res.NextCursor
 	}
-	out := make([]store.WorkerRecord, 0, len(WorkerPresets))
-	for _, preset := range WorkerPresets {
+	out := make([]store.WorkerRecord, 0, len(presets))
+	for _, preset := range presets {
 		if w, ok := existing[preset.Key]; ok {
 			out = append(out, w)
 			continue

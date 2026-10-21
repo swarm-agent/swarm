@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -53,6 +54,7 @@ var controlMCPAgentModelRoles = map[string][2]string{
 	"swarm":               {"swarm", "action"},
 	"system-orchestrator": {"swarm", "plan"},
 	"system-coder":        {"system_agents", "coder"},
+	"system-reviewer":     {"system_agents", "reviewer"},
 	"system-finder":       {"system_agents", "finder"},
 	"system-designer":     {"system_agents", "designer"},
 	"system-compact":      {"system_agents", "compact"},
@@ -60,7 +62,7 @@ var controlMCPAgentModelRoles = map[string][2]string{
 }
 
 // The roles in a fixed order (set_agent_model role all applies them in turn).
-var controlMCPAgentModelRoleOrder = []string{"swarm", "system-orchestrator", "system-coder", "system-finder", "system-designer", "system-compact", "system-router"}
+var controlMCPAgentModelRoleOrder = []string{"swarm", "system-orchestrator", "system-coder", "system-reviewer", "system-finder", "system-designer", "system-compact", "system-router"}
 
 var controlMCPSessionAgents = []string{"swarm", "system-orchestrator", "system-coder", "system-designer", "system-finder"}
 
@@ -76,6 +78,8 @@ var controlMCPWorkspaceName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
 // minting and ChatGPT sign-in appear only for the box-setup tools, which fix
 // the scopes and the sign-in method themselves.
 var controlMCPRoutes = []string{
+	"POST v3/subagents:stop",
+	"GET v3/limits", "PUT v3/limits",
 	"GET v1/workspace/list",
 	"POST v1/workspace/repository/setup",
 	"POST v1/workspace/add",
@@ -114,6 +118,10 @@ var controlMCPRoutes = []string{
 	// (/accept), which publishes deliverables, stays unreachable.
 	"POST v3/projects/*/tasks/*/approve",
 	"POST v3/projects/*/tasks/*/reject",
+	// Design jobs (control_mcp_design.go): make or edit standalone HTML designs
+	// in a project folder, and stop one.
+	"POST v3/projects/*/design-jobs",
+	"POST v3/projects/*/design-jobs/*/cancel",
 	// Closing a plan review: the Desktop's accept on a needs_review checkpoint.
 	"POST v3/sessions/*/plan-mode/checkpoints/*/accept",
 	"GET v3/workers",
@@ -125,6 +133,7 @@ var controlMCPRoutes = []string{
 	"PUT v3/workers/*",
 	"GET v3/workers/*/summary",
 	"POST v3/workers/*/activate",
+	"PUT v3/workers/*/model",
 	"POST v3/workers/*/automations/*/enable",
 	"POST v3/workers/*/automations/*/disable",
 	"POST v3/workers/*/pause",
@@ -141,9 +150,13 @@ var controlMCPRoutes = []string{
 	// Monitoring: the machine summary and its signal feed (handlers require
 	// signals:read), and which secrets exist where (secrets:read; never values).
 	"GET v3/box/summary",
+	"POST v3/box/drain",
+	"DELETE v3/box/drain",
+	"GET v3/box/drain",
 	// Runs across every worker (swarm_list_runs; signals:read).
 	"GET v3/runs",
 	"GET v3/signals",
+	"GET v3/activity",
 	"GET v3/secrets/status",
 	// A folder's sandbox environment (sandbox_environments.go): read, define
 	// (Swarm builds it under gVisor) or clear.
@@ -159,6 +172,9 @@ var controlMCPRoutes = []string{
 	"POST v3/auth/tokens",
 	"POST v1/auth/codex/oauth/start",
 	"GET v1/auth/codex/oauth/status",
+	// Claude Code activation only: a fixed cli record with no secret
+	// (control_mcp_claude_code.go).
+	"POST v1/auth/credentials",
 }
 
 var controlMCPReservedIDs = map[string]bool{
@@ -513,7 +529,7 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_add_workspace", Title: "Add an existing folder as a workspace",
-			Description: "Register a folder that already holds the person's work (a git repository or any folder of files) so workers can take jobs in it. Ask the person which folders to add, and use the absolute path as the machine running Swarm sees it. workspace_not_found means the path is wrong. workspace_not_visible means Swarm (its own user, home folders hidden) cannot see it and never changes its host itself: if the folder exists, the person, or you if you run on that machine, makes it visible as root with the command the error names (`install.sh workspace add PATH`), then add it again. Empty folders, system and Swarm storage directories and folders inside an already registered workspace are refused. A folder that is already registered is returned as it is. Nothing in the folder is changed: no git init, no commit.",
+			Description: "Register a folder that already holds the person's work (a git repository or any folder of files) so workers can take jobs in it. Ask the person which folders to add, and use the absolute path as the machine running Swarm sees it. workspace_not_found means the path is wrong. workspace_not_visible means Swarm (its own user, home folders hidden) cannot see it and never changes its host itself: if the folder exists, the person, or you if you run on that machine, makes it visible as root with the command the error names (`swarmctl workspace add PATH`), then add it again. Empty folders, system and Swarm storage directories and folders inside an already registered workspace are refused. A folder that is already registered is returned as it is. Nothing in the folder is changed: no git init, no commit.",
 			InputSchema: controlMCPObject([]string{"path"}, map[string]any{
 				"path": controlMCPStringProp("Absolute path of an existing, non-empty folder.", 1, 4096),
 				"name": controlMCPStringProp("Display name; defaults to the folder name.", 0, 100),
@@ -595,7 +611,7 @@ func controlMCPTools() []controlMCPTool {
 				"permission_id": controlMCPStringProp("", 1, 200),
 				"action":        map[string]any{"type": "string", "enum": []string{"allow_once", "deny_once"}},
 				"reason":        controlMCPStringProp("Shown to the agent.", 0, 500),
-				"answer":        controlMCPStringProp("Reply to an ask_user question (allow_once only).", 0, 10000),
+				"answer":        controlMCPStringProp("Reply to an ask_user question (allow_once only).", 0, permission.MaxReplyCharacters),
 			}),
 			Annotations: controlMCPDestructive, call: controlMCPResolvePermission,
 		},
@@ -711,11 +727,11 @@ func controlMCPTools() []controlMCPTool {
 			Annotations: controlMCPDestructive, call: controlMCPIntegrateTask,
 		},
 		{
-			Name: "swarm_run_task", Title: "Delegate one task to a Swarm role",
-			Description: "Hand one piece of work to a Swarm agent in one hop, no orchestrator in between: role coder for code changes (needs workspace: the registered repository; it works on its own branch in a worktree and commits there), finder for research and audits, designer for UI and design work, image/video/sound for media, swarm only for a big feature that needs a plan and several coders. The brief is the whole instruction: what to do, where, and how to know it is done. The task starts at once (you are its approval); media tasks beyond the batch threshold and plans wait in pending_approval. Then wait_task, task_result and integrate_task.",
-			InputSchema: controlMCPObject([]string{"project_id", "role", "brief"}, map[string]any{
+			Name: "swarm_run_task", Title: "Delegate a goal to Swarm",
+			Description: "Delegate a self-contained goal to Swarm (the default role), which coordinates regular specialists and owns review and validation. Ordinary Swarm work does not require a plan. Explicit coder, finder, designer, image, video and sound roles remain available; coder needs a registered repository workspace. No worker presets are created. The brief states what to do, where, and acceptance criteria. The task starts at once under the caller's authority; media batches and explicit plans may require task approval, and tool permissions remain enforced. Follow the task/session receipts with wait_task, task_result and get_session; resolve_permission answers pending questions or approvals, send_message continues the session, stop_run stops it, and integrate_task performs authorized Git delivery.",
+			InputSchema: controlMCPObject([]string{"project_id", "brief"}, map[string]any{
 				"project_id":   controlMCPStringProp("From list_projects or create_project.", 1, 200),
-				"role":         map[string]any{"type": "string", "enum": []string{"coder", "finder", "designer", "image", "video", "sound", "swarm"}, "description": "Which Swarm agent does the work."},
+				"role":         map[string]any{"type": "string", "enum": []string{"coder", "finder", "designer", "image", "video", "sound", "swarm"}, "default": "swarm", "description": "Defaults to swarm for goal delegation; set a specialist role only when explicitly desired."},
 				"brief":        controlMCPStringProp("What to do and the acceptance criteria. Mention branch rules (e.g. commit on the agent branch, do not push) if they matter.", 1, 20000),
 				"title":        controlMCPStringProp("Short task name; defaults to the brief's first line.", 0, 120),
 				"workspace":    controlMCPStringProp("Registered workspace path (absolute, as the machine sees it) or workspace id. Required for coder; otherwise the project's workspace is used.", 0, 4096),
@@ -798,6 +814,8 @@ func controlMCPTools() []controlMCPTool {
 			}),
 			Annotations: controlMCPWrites, call: controlMCPAssignWorkerTask,
 		},
+		{Name: "swarm_get_limits", Title: "Read box limits", Description: "Read revisioned box admission and per-job limits.", InputSchema: controlMCPObject(nil, map[string]any{}), Annotations: controlMCPReadOnly, call: controlMCPGetLimits},
+		{Name: "swarm_set_limits", Title: "Set box limits", Description: "Replace box limits using expected_revision; requires usage:write. Hard ceilings cannot be raised.", InputSchema: controlMCPObject([]string{"expected_revision", "limits"}, map[string]any{"expected_revision": map[string]any{"type": "integer", "minimum": 0}, "limits": controlMCPLimitsSchema()}), Annotations: controlMCPDestructive, call: controlMCPSetLimits},
 		{
 			Name: "swarm_get_usage", Title: "Read usage and limits",
 			Description: "Model spend and tokens for a period, top models, and the account's daily limits. Each model's billing says why its cost is what it is: subscription (a sign-in provider such as ChatGPT: Swarm reports no per-token cost; nominal_cost_usd is the same use at API prices when known), metered (priced per token) or unpriced (no price known, so cost shows 0). A limit of none means no limit.",
@@ -835,10 +853,10 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_create_client_key", Title: "Create a key for a client app",
-			Description: "Mint a key that a client app (for example a UI you build) uses over this box's HTTP API to start sessions, read them, send messages, stop runs and answer permission requests. It reaches those session routes only (never /mcp, settings, agents or keys). Shown once; keep it in a server process, never in browser code.",
+			Description: "Same as swarm_create_key kind app (prefer that): a key a client app (for example a UI you build) uses over this box's HTTP API to start sessions, read them, send messages, stop runs and answer permission requests. It reaches those session routes only (never /mcp, settings, agents or keys). It works while used and stops after 90 days unused. Shown once; keep it in a server process, never in browser code.",
 			InputSchema: controlMCPObject([]string{"name"}, map[string]any{
 				"name": controlMCPStringProp("What the key is for, e.g. my-chat-ui.", 1, 64),
-				"days": map[string]any{"type": "integer", "enum": controlMCPClientKeyDays, "description": "Lifetime in days. Default 30."},
+				"days": map[string]any{"type": "integer", "enum": controlMCPClientKeyDays, "description": "Optional fixed end date in days. Leave it out: the key works until 90 days unused."},
 			}),
 			Annotations: controlMCPWrites, call: controlMCPCreateClientKey,
 		},
@@ -872,7 +890,8 @@ func controlMCPTools() []controlMCPTool {
 			}),
 			Annotations: controlMCPWrites, call: controlMCPRequestProviderKey,
 		},
-	}, append(append(controlMCPReviewTools(sessionID), controlMCPJobTools()...), controlMCPEnvironmentTools()...)...)
+		controlMCPClaudeCodeTool(),
+	}, append(append(append(controlMCPReviewTools(sessionID), controlMCPJobTools()...), controlMCPEnvironmentTools()...), append(controlMCPAutomationTools(), controlMCPKeyTools()...)...)...)
 }
 
 // ---- sessions ------------------------------------------------------------
@@ -1614,6 +1633,17 @@ func controlMCPStopRun(c *controlMCPCall, args map[string]any) (any, error) {
 	}
 	session := controlMCPMap(detail["session"])
 	targetSwarmID, _ := controlMCPMap(session["metadata"])["swarm_v3_runtime_swarm_id"].(string)
+	if strings.TrimSpace(targetSwarmID) == "" && controlMCPMap(session["metadata"])["lineage_kind"] == "delegated_subagent" {
+		// Ordinary task children already have an authenticated V3 stop route.
+		// They do not own the primary-session executor identity used below.
+		if err := c.requireTokenScope("sessions:write"); err != nil {
+			return nil, err
+		}
+		if _, err := c.dispatch(http.MethodPost, "/v3/subagents:stop", nil, map[string]any{"session_id": sessionID}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"session_id": sessionID, "run_status": "stop_requested", "summary": "Stop requested for the delegated agent; inspect swarm_get_session for its final state."}, nil
+	}
 	if strings.TrimSpace(targetSwarmID) == "" {
 		return nil, controlMCPToolFailure("session has no runtime identity to stop")
 	}
@@ -2009,7 +2039,19 @@ func controlMCPGetProject(c *controlMCPCall, args map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]any{"project": controlMCPProjectSummary(project)}
+	summary := controlMCPProjectSummary(project)
+	for _, ws := range summary["workspaces"].([]map[string]any) {
+		path, _ := ws["path"].(string)
+		rule, found, err := c.server.publishRule(path)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			// Expose the command path and sync policy, never credentials.
+			ws["publish"] = map[string]any{"command": rule.Command, "sync": rule.Sync}
+		}
+	}
+	out := map[string]any{"project": summary}
 	if status, err := c.projectStatus(projectID, project); err == nil {
 		out["status"] = status
 	}
@@ -2231,6 +2273,33 @@ func controlMCPListTasks(c *controlMCPCall, args map[string]any) (any, error) {
 // captured target branch, so the integrate route's lineage checks decide; it
 // never picks branches itself.
 func controlMCPIntegrateTask(c *controlMCPCall, args map[string]any) (any, error) {
+	return controlMCPIntegrate(c, args, "swarm_integrate_task", "swarm_list_tasks")
+}
+
+// controlMCPUnobservedDelivery reports a 409 whose delivery assessment could
+// not observe the task's Git state (its reads ran out of time or the heads
+// moved under them): a refusal made before any integration receipt or Git
+// change, so repeating the request is safe.
+func controlMCPUnobservedDelivery(err error) (map[string]any, bool) {
+	var toolErr controlMCPToolError
+	if !errors.As(err, &toolErr) || toolErr.status != http.StatusConflict {
+		return nil, false
+	}
+	var body map[string]any
+	if json.Unmarshal([]byte(toolErr.body), &body) != nil {
+		return nil, false
+	}
+	delivery := controlMCPMap(body["delivery"])
+	if delivery == nil || delivery["freshness"] == "observed" {
+		return nil, false
+	}
+	return delivery, true
+}
+
+// controlMCPIntegrate integrates for the named tool. An unobserved delivery
+// is retried once; if it repeats, the refusal names the tool to call again and
+// the tool that reads the job, never an HTTP route the AI cannot call.
+func controlMCPIntegrate(c *controlMCPCall, args map[string]any, tool, readTool string) (any, error) {
 	projectID, err := controlMCPID(args, "project_id")
 	if err != nil {
 		return nil, err
@@ -2260,7 +2329,21 @@ func controlMCPIntegrateTask(c *controlMCPCall, args map[string]any) (any, error
 		}
 		selection[key] = value
 	}
-	integrated, err := c.dispatch(http.MethodPost, "/v3/projects/"+projectID+"/tasks/"+taskID+"/integrate", nil, selection)
+	path := "/v3/projects/" + projectID + "/tasks/" + taskID + "/integrate"
+	integrated, err := c.dispatch(http.MethodPost, path, nil, selection)
+	if _, unobserved := controlMCPUnobservedDelivery(err); unobserved {
+		integrated, err = c.dispatch(http.MethodPost, path, nil, selection)
+	}
+	if delivery, unobserved := controlMCPUnobservedDelivery(err); unobserved {
+		reason, _ := delivery["reason"].(string)
+		if code, _ := delivery["reason_code"].(string); code != "" {
+			reason = strings.TrimSpace(reason + " (" + code + ")")
+		}
+		if reason == "" {
+			reason = "its delivery state was not observed"
+		}
+		return nil, controlMCPToolFailure("Swarm could not read this task's Git state to merge it (%s); nothing was merged. Call %s again; if it repeats, read %s.", controlMCPTruncate(reason, 200), tool, readTool)
+	}
 	if err != nil {
 		return nil, err
 	}

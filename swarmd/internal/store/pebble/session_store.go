@@ -1382,6 +1382,16 @@ func (s *SessionStore) ListSessions(limit int) ([]SessionSnapshot, error) {
 	return s.listSessions(limit, nil)
 }
 
+// ListSessionsMatching returns up to limit sessions for which include returns
+// true, most recently updated first. include sees every stored session, so a
+// caller looking for old sessions is not limited to the newest ones.
+func (s *SessionStore) ListSessionsMatching(limit int, include func(SessionSnapshot) bool) ([]SessionSnapshot, error) {
+	if include == nil {
+		return nil, errors.New("a session filter is required")
+	}
+	return s.listSessions(limit, include)
+}
+
 func (s *SessionStore) ListSessionsForAccount(accountScopeID string, limit int) ([]SessionSnapshot, error) {
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	if accountScopeID == "" {

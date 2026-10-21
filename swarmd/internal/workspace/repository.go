@@ -616,6 +616,7 @@ func runRepositoryGitInput(path string, env []string, input io.Reader, args ...s
 	var output repositoryOutput
 	cmd.Stdout, cmd.Stderr = &output, &output
 	sandbox.Prepare(ctx, cmd)
+	defer sandbox.ReleaseGit(cmd)
 	err := cmd.Run()
 	if output.exceeded {
 		return "", errors.New("Git output exceeds repository inspection limit")

@@ -35,6 +35,18 @@ filter_allowed_runtime_paths() {
   # The headless installer and the sandbox image name the fixed server and
   # container layout they create; each is one exact declaration. The
   # installer refuses publish commands under home folders by naming them.
+  # The headless core installer, its package test and the isolated package
+  # probe declare that core layout once each; the probe runs only inside the
+  # test's own Bubblewrap filesystem.
+  # The headless installer names the fixed daemon startup config it writes.
+  # The sandbox container layout declares its project cache mount and the
+  # image's prebuilt Go cache once each; the cache scripts reuse the constants.
+  # Sandbox instance matching recognises its own container by the fixed
+  # resolv.conf mount destination.
+  # A container gets a user entry for its uid in its own (never the host's)
+  # passwd and group files, named once each.
+  # `swarmctl machine` refuses Swarm's fixed storage directories as project
+  # folders, and refuses publish commands under home folders by naming them.
   filter_guest_image_paths | grep -Ev \
     -e '^(\./)?scripts/rebuild\.sh:[0-9]+:  for path in /usr/local/share/swarm /etc/swarmd /var/lib/swarmd /var/cache/swarmd /run/swarmd /var/log/swarmd /etc/systemd/system/swarm\.service; do$' \
     -e '^(\./)?(install\.sh|cmd/swarm/main\.go|internal/launcher/service_lifecycle\.go):.*(/etc/swarmd|/etc/systemd/system/swarm\.service|/etc/tmpfiles\.d/swarmd\.conf)' \
@@ -44,11 +56,19 @@ filter_allowed_runtime_paths() {
     -e '^(\./)?packages/swarm-fleet/claude-web-setup\.sh:[0-9]+:DIR=/opt/swarm-fleet$' \
     -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:DATA_DIRS=\(/etc/swarmd /var/lib/swarmd /var/cache/swarmd /var/log/swarmd\)$' \
     -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:APP_CONFIG=/etc/swarmd/headless-app$' \
+    -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:STARTUP_CONFIG=/etc/swarmd/swarm\.conf$' \
+    -e '^(\./)?swarmd/internal/sandbox/cache\.go:[0-9]+:const projectCachePath = "/opt/swarm-cache"$' \
+    -e '^(\./)?swarmd/internal/sandbox/cache\.go:[0-9]+:const imageGoCachePath = "/opt/go/cache"$' \
+    -e '^(\./)?swarmd/internal/sandbox/instance\.go:[0-9]+:[[:space:]]*if mount\.Destination == "/etc/resolv\.conf" && instanceIdentity\(filepath\.Dir\(mount\.Source\)\) == identity && filepath\.Base\(mount\.Source\) == "resolv\.conf" \{$' \
+    -e '^(\./)?swarmd/cmd/swarmctl/machine\.go:[0-9]+:[[:space:]]*for _, dir := range \[\]string\{"/etc/swarmd", "/var/lib/swarmd", "/var/cache/swarmd", "/var/log/swarmd", "/var/lib/swarm", machineState, "/opt/swarm"\} \{$' \
+    -e '^(\./)?swarmd/cmd/swarmctl/machine\.go:[0-9]+:[[:space:]]*if strings\.HasPrefix\(command, "/home/"\) \|\| strings\.HasPrefix\(command, "/root/"\) \{$' \
     -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:GVISOR_LIST=/etc/apt/sources\.list\.d/gvisor\.list$' \
     -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:[[:space:]]*\[\[ \$command != /home/\* && \$command != /root/\* \]\] \|\| \{ rm -f "\$PUBLISH\.new"; die "COMMAND must be outside home folders' \
     -e '^(\./)?swarmd/internal/sandbox/sandbox\.go:[0-9]+:[[:space:]]*sandboxHome[[:space:]]*=[[:space:]]*"/home/sandbox"$' \
     -e '^(\./)?swarmd/internal/sandbox/sandbox\.go:[0-9]+:.*dst=/etc/resolv\.conf' \
     -e '^(\./)?swarmd/internal/sandbox/sandbox\.go:[0-9]+:[[:space:]]*//.*/etc/resolv\.conf' \
+    -e '^(\./)?swarmd/internal/sandbox/git_identity\.go:[0-9]+:const containerPasswd = "/etc/passwd"$' \
+    -e '^(\./)?swarmd/internal/sandbox/git_identity\.go:[0-9]+:const containerGroup = "/etc/group"$' \
     -e '^(\./)?swarmd/internal/sandbox/environment\.go:[0-9]+:const envProfilePath = "/etc/profile\.d/zz-swarm-environment-path\.sh"$' \
     -e '^(\./)?swarmd/internal/sandbox/environment\.go:[0-9]+:[[:space:]]*args = append\(args, "--mount", "type=bind,src="\+m\.resolvConf\+",dst=/etc/resolv\.conf,readonly"\)$' \
     -e '^(\./)?swarmd/internal/runtime/egress\.go:[0-9]+:[[:space:]]*sandboxCADest[[:space:]]*=[[:space:]]*"/etc/swarm/egress-ca\.pem"$' \
@@ -58,6 +78,18 @@ filter_allowed_runtime_paths() {
     -e '^(\./)?swarmd/internal/permission/policy\.go:[0-9]+:[[:space:]]*criticalBashSystemConfigMarker[[:space:]]*=[[:space:]]*"/etc/"[[:space:]]*$' \
     -e '^(\./)?swarmd/internal/permission/policy\.go:[0-9]+:[[:space:]]*criticalBashSystemDataMarker[[:space:]]*=[[:space:]]*"/var/lib/"[[:space:]]*$' \
     -e '^(\./)?swarmd/internal/htmlcapture/renderer\.go:[0-9]+:[[:space:]]*SystemChromePath[[:space:]]*=[[:space:]]*"/opt/google/chrome/chrome"[[:space:]]*$' \
+    -e '^(\./)?containers/headless/core/install\.sh:[0-9]+:OPT=/opt/swarm$' \
+    -e '^(\./)?containers/headless/core/install\.sh:[0-9]+:UNIT=/etc/systemd/system/swarm-headless\.service$' \
+    -e '^(\./)?containers/headless/core/install\.sh:[0-9]+:DATA_DIRS=\(/etc/swarmd /var/lib/swarmd /var/cache/swarmd /var/log/swarmd /run/swarmd\)$' \
+    -e '^(\./)?containers/headless/core/install\.sh:[0-9]+:CA_BUNDLE=/etc/ssl/certs/ca-certificates\.crt$' \
+    -e '^(\./)?scripts/test-headless-core\.sh:[0-9]+:opt_dir=/opt/swarm$' \
+    -e '^(\./)?scripts/test-headless-core\.sh:[0-9]+:unit_path=/etc/systemd/system/swarm-headless\.service$' \
+    -e '^(\./)?scripts/test-headless-core\.sh:[0-9]+:  --tmpfs /tmp --tmpfs /home --dir /home/swarm --dir /project \\$' \
+    -e '^(\./)?tests/headlesscore/main\.go:[0-9]+:[[:space:]]*installedSwarmd[[:space:]]*=[[:space:]]*"/opt/swarm/current/bin/swarmd"$' \
+    -e '^(\./)?tests/headlesscore/main\.go:[0-9]+:[[:space:]]*installedSearch[[:space:]]*=[[:space:]]*"/opt/swarm/current/bin/swarm-fff-search"$' \
+    -e '^(\./)?tests/headlesscore/main\.go:[0-9]+:[[:space:]]*configDir[[:space:]]*=[[:space:]]*"/etc/swarmd"$' \
+    -e '^(\./)?tests/headlesscore/main\.go:[0-9]+:[[:space:]]*isolatedHome[[:space:]]*=[[:space:]]*"/home/swarm"$' \
+    -e '^(\./)?tests/headlesscore/main\.go:[0-9]+:[[:space:]]*isolatedPasswd[[:space:]]*=[[:space:]]*"/etc/passwd"$' \
     || true
 }
 
@@ -87,6 +119,19 @@ if [[ "${1:-}" == "--self-test" ]]; then
     done
   done < <(rg -n "$DISALLOWED_ABS_PATH_PATTERN" containers/headless/inspect.sh containers/headless/app/entrypoint.sh)
   echo '[path-check] self-test PASS'
+fi
+
+# A protected push sets SWARM_CHECK_BASE (scripts/check-prepush.sh): each scan
+# below then runs unchanged over only the lines added since that base, so
+# reviewed content already on the target branch is not judged again.
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib-check-range.sh"
+if swarm_check_range_enabled; then
+  range_tree="$(mktemp -d "${TMPDIR:-/tmp}/swarm-path-check.XXXXXX")"
+  trap 'rm -rf "${range_tree}"' EXIT
+  swarm_check_range_tree "${range_tree}" || exit 1
+  echo "[path-check] judging only lines added in $(swarm_check_range_label)"
+  cd "${range_tree}"
 fi
 
 echo "[path-check] scanning non-test runtime code and scripts for hardcoded absolute paths"

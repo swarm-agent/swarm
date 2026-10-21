@@ -179,21 +179,6 @@ func TestV3SyncCursorCanonicalSelectorAndResourceSet(t *testing.T) {
 	}
 }
 
-func TestV3SyncLegacySnapshotCursorIsRealtimeResumeScope(t *testing.T) {
-	server := &Server{}
-	principal := identity.Principal{UserID: "user-1", AccountScopeID: "account-1"}
-	legacyScope := v3SyncCursorScopeForRealtime(principal, "desktop")
-	cursor, err := server.signV3SyncEndpointCursor(legacyScope, 9)
-	if err != nil {
-		t.Fatalf("sign legacy bridge cursor: %v", err)
-	}
-	if _, _, err := server.parseV3SyncEndpointCursor(cursor, legacyScope); err != nil {
-		t.Fatalf("legacy bridge realtime scope rejected: %v", err)
-	}
-	snapshotScope := v3SyncCursorScopeForSnapshot(principal, "desktop", "snapshot", map[string]any{"surface": "desktop"}, []string{"sessions"})
-	assertV3SyncCursorCode(t, server, cursor, snapshotScope, "endpoint_cursor_scope_mismatch")
-}
-
 func testV3SyncCursorPayload(server *Server, scope v3SyncCursorScope, seq uint64) v3SyncCursorPayload {
 	return v3SyncCursorPayload{
 		Version:            v3SyncCursorVersion,

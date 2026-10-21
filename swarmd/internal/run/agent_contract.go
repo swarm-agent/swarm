@@ -80,6 +80,19 @@ func (s *Service) customAgentToolDefinitionsForAccount(accountScopeID string) []
 		}
 		if customTool.Kind == pebblestore.AgentCustomToolKindClient {
 			parameters = customTool.InputSchema
+			if pebblestore.ClientToolRequiresConfirmation(customTool) {
+				// The model must say, in one sentence, what the person is asked
+				// to approve; Swarm strips it before the client sees the call.
+				confirmed, err := agentruntime.ConfirmedClientToolSchema(customTool.InputSchema)
+				if err != nil {
+					runRequestDebugEvent("custom_tool_inventory_error", map[string]any{
+						"stage":          "confirmed_schema",
+						"error_category": "invalid_confirmed_schema",
+					})
+					continue
+				}
+				parameters = confirmed
+			}
 		}
 		definitions = append(definitions, tool.Definition{
 			Type:        "function",
@@ -296,6 +309,13 @@ func resolveAgentToolStates(profile pebblestore.AgentProfile, knownTools map[str
 		return ResolvedAgentToolContract{}, err
 	}
 	applyExplicitAgentTools(resolved.Tools, contract.Tools, "tool_contract")
+	if _, implemented := knownTools[tool.LeaseEnvironmentToolName]; implemented {
+		// Leasing the folder's environment is part of bash: every agent with
+		// bash may lease, unless its contract turns leasing off explicitly.
+		if _, explicit := contract.Tools[tool.LeaseEnvironmentToolName]; !explicit && resolved.Tools["bash"].Enabled {
+			resolved.Tools[tool.LeaseEnvironmentToolName] = ResolvedAgentTool{Enabled: true, Source: "runtime.bash_lease"}
+		}
+	}
 	if !accountMemoryAgentAllowed(profile) {
 		// Stale snapshots, permissive presets and custom agents cannot expose
 		// private account memory outside the primary Orchestrator boundary.
@@ -332,7 +352,14 @@ func resolveAgentToolStates(profile pebblestore.AgentProfile, knownTools map[str
 		}
 	}
 	if strings.EqualFold(strings.TrimSpace(profile.Mode), "subagent") {
-		resolved.Tools["task"] = ResolvedAgentTool{Enabled: false, Source: "runtime.subagent_boundary"}
+		resolved.Tools["task"] = ResolvedAgentTool{Enabled: profile.Name == agentruntime.WorkerCoderAgentID, Source: "runtime.subagent_boundary"}
+	}
+	if profile.Name == agentruntime.HelperAgentID {
+		resolved.InheritPolicy = false
+		for name := range resolved.Tools {
+			allowed := name == "read" || name == "search" || name == "find" || name == "list" || name == "bash"
+			resolved.Tools[name] = ResolvedAgentTool{Enabled: allowed, Source: "runtime.helper_boundary"}
+		}
 	}
 
 	return resolved, nil
@@ -460,6 +487,9 @@ func validateStoredV3AgentToolContractRuntime(agentName string, contract *pebble
 		if name == "" {
 			return fmt.Errorf("stored v3 agent profile %q tool_contract contains an empty tool name", strings.TrimSpace(agentName))
 		}
+		if retiredAgentTool(name) {
+			continue
+		}
 		if _, ok := knownTools[name]; ok {
 			continue
 		}
@@ -491,8 +521,21 @@ func validateResolvedV3AgentToolRuntime(agentName string, resolved ResolvedAgent
 	return nil
 }
 
+// retiredAgentTool reports a tool that no longer exists. Saved agent
+// profiles may still name it; it is ignored rather than failing the agent.
+func retiredAgentTool(name string) bool {
+	switch strings.ReplaceAll(canonicalToolName(name), "-", "_") {
+	case "manage_environments", "manage_connections", "manage_deployments":
+		return true
+	}
+	return false
+}
+
 func applyExplicitAgentTools(target map[string]ResolvedAgentTool, tools map[string]pebblestore.AgentToolConfig, sourcePrefix string) {
 	for rawName, cfg := range tools {
+		if retiredAgentTool(rawName) {
+			continue
+		}
 		name := resolveExplicitAgentToolName(target, rawName)
 		if name == "" {
 			continue

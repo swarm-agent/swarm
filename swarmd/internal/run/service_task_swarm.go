@@ -461,6 +461,9 @@ func buildTaskSwarmHydrationRequest(parsed taskCallArguments, launchSpecs []task
 	if parsed.Swarm == nil || parsed.Swarm.AgentType == "idea" {
 		return taskSwarmHydrationRequest{}, errors.New("task swarm hydration requires a Coder, Designer, or image swarm")
 	}
+	if parsed.Swarm.AgentType == "designer" && parsed.Swarm.Strategy != taskSwarmStrategyAssembly {
+		return taskSwarmHydrationRequest{}, errDesignerIterationSwarmReplaced
+	}
 	if len(launchSpecs) != parsed.Swarm.Count {
 		return taskSwarmHydrationRequest{}, errors.New("task swarm hydration launch wave does not match its requested count")
 	}
@@ -492,9 +495,6 @@ func buildTaskSwarmHydrationRequest(parsed taskCallArguments, launchSpecs []task
 			}
 			if request.AnimationProfile != nil && request.AgentType != "designer" {
 				return taskSwarmHydrationRequest{}, fmt.Errorf("task swarm hydration launch %d cannot attach an animation profile to %s", i+1, request.AgentType)
-			}
-			if request.SwarmStrategy == taskSwarmStrategyExplore && request.AgentType == "designer" && request.OutputMode != taskOutputModeManaged {
-				return taskSwarmHydrationRequest{}, fmt.Errorf("task Designer Iteration Swarm launch %d must use managed output", i+1)
 			}
 			if request.OutputMode == taskOutputModeManaged && len(launch.OwnedScope) != 0 {
 				return taskSwarmHydrationRequest{}, fmt.Errorf("task swarm hydration managed Designer launch %d must omit owned scope", i+1)

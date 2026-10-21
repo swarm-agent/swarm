@@ -74,8 +74,11 @@ type SandboxEnvironment struct {
 	ReadyHash  string `json:"ready_hash,omitempty"`
 	// ReadyPath is the PATH the ready image declares, so its toolchains are found.
 	ReadyPath string `json:"ready_path,omitempty"`
-	UpdatedAt int64  `json:"updated_at"`
-	BuiltAt   int64  `json:"built_at,omitempty"`
+	// MaxLeases is how many leases of this environment agents may hold at
+	// once (sandbox lease.go); 0 means none. It is not part of the build.
+	MaxLeases int   `json:"max_leases,omitempty"`
+	UpdatedAt int64 `json:"updated_at"`
+	BuiltAt   int64 `json:"built_at,omitempty"`
 }
 
 // NormalizeSandboxEnvironmentDefinition trims and checks a definition.
@@ -201,6 +204,11 @@ func (s *SandboxEnvironmentStore) Define(account, workspacePath string, def Sand
 	}
 	hash := SandboxEnvironmentHash(def)
 	if found && current.Hash == hash && (current.Status == SandboxEnvironmentBuilding || current.Status == SandboxEnvironmentReady) {
+		current.Definition = def
+		current.UpdatedAt = s.now().UnixMilli()
+		if err := s.store.PutJSON(sandboxEnvironmentKey(workspacePath), current); err != nil {
+			return SandboxEnvironment{}, false, err
+		}
 		return current, false, nil
 	}
 	env := current
@@ -302,4 +310,31 @@ func (s *SandboxEnvironmentStore) CountBuilding() (int, error) {
 		return nil
 	})
 	return count, err
+}
+
+// MaxLeasesLimit bounds a folder's lease maximum (a typo guard, not a policy).
+const MaxLeasesLimit = 64
+
+// SetMaxLeases sets how many leases of the folder's environment agents may
+// hold at once (0 turns leasing off). It never changes the build.
+func (s *SandboxEnvironmentStore) SetMaxLeases(account, workspacePath string, max int) (SandboxEnvironment, error) {
+	if max < 0 || max > MaxLeasesLimit {
+		return SandboxEnvironment{}, fmt.Errorf("max_leases must be between 0 and %d", MaxLeasesLimit)
+	}
+	env, found, err := s.Get(workspacePath)
+	if err != nil {
+		return SandboxEnvironment{}, err
+	}
+	if !found {
+		return SandboxEnvironment{}, ErrSandboxEnvironmentNotFound
+	}
+	if env.Account != "" && env.Account != account {
+		return SandboxEnvironment{}, errors.New("this folder's environment belongs to another account")
+	}
+	env.MaxLeases = max
+	env.UpdatedAt = s.now().UnixMilli()
+	if err := s.store.PutJSON(sandboxEnvironmentKey(env.WorkspacePath), env); err != nil {
+		return SandboxEnvironment{}, err
+	}
+	return env, nil
 }

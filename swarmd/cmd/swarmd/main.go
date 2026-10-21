@@ -4,11 +4,20 @@ import (
 	"fmt"
 	"os"
 
+	"swarm-refactor/swarmtui/pkg/startupconfig"
+
 	"swarm/packages/swarmd/internal/config"
 	"swarm/packages/swarmd/internal/runtime"
 )
 
 func main() {
+	// Introspection must work even when the installed config cannot be parsed.
+	if len(os.Args) == 3 && os.Args[1] == "config" && os.Args[2] == "removed-keys" {
+		for _, key := range startupconfig.RemovedKeys() {
+			fmt.Println(key.Name)
+		}
+		return
+	}
 	cfg, err := config.Parse(os.Args[1:])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "swarmd config error: %v\n", err)

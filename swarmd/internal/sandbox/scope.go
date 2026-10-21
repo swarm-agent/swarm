@@ -108,7 +108,15 @@ func (m *Manager) ScopeFor(path string) (Scope, bool, error) {
 		bucket := strings.Split(rel, string(filepath.Separator))[0]
 		for _, root := range roots {
 			if b, err := layout.Bucket(root); err == nil && b == bucket {
-				return m.scopeForRoot(root, layout)
+				scope, ok, err := m.scopeForRoot(root, layout)
+				// The first directory below the project bucket is the durable
+				// managed checkout. Under bubblewrap a command sees only that
+				// checkout. Docker runs one sandbox per project, never one per job.
+				parts := strings.Split(rel, string(filepath.Separator))
+				if m.Local() && len(parts) > 1 && parts[1] != ".swarm-scratch" {
+					scope.JobCheckout = filepath.Join(worktrees, bucket, parts[1])
+				}
+				return m.reviewScope(scope, target), ok, err
 			}
 		}
 		return Scope{}, false, fmt.Errorf("%w: %s", errUnknownWorktree, target)
@@ -122,7 +130,8 @@ func (m *Manager) ScopeFor(path string) (Scope, bool, error) {
 	if best == "" {
 		return Scope{}, false, nil
 	}
-	return m.scopeForRoot(best, layout)
+	scope, ok, err := m.scopeForRoot(best, layout)
+	return m.reviewScope(scope, target), ok, err
 }
 
 // CommandScope is ScopeFor for agent commands: a working directory outside
@@ -145,6 +154,9 @@ func (m *Manager) CommandScope(path string) (Scope, error) {
 }
 
 func (m *Manager) scopeForRoot(root string, layout Layout) (Scope, bool, error) {
+	if m.Local() {
+		return Scope{Root: root, Mounts: []string{root}}, true, nil
+	}
 	scope := Scope{Root: root, Mounts: []string{root}}
 	if layout.Bucket != nil && layout.WorktreesRoot != "" {
 		bucket, err := layout.Bucket(root)

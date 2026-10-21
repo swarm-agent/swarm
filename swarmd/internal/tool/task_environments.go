@@ -17,6 +17,7 @@ type TaskEnvironmentRequest struct {
 	ProjectID                  string            `json:"project_id"`
 	TaskID                     string            `json:"task_id"`
 	AttemptID                  string            `json:"attempt_id,omitempty"`
+	ExecutionSessionID         string            `json:"execution_session_id,omitempty"`
 	AttachmentID               string            `json:"attachment_id,omitempty"`
 	ExpectedTaskRevision       int               `json:"expected_task_revision,omitempty"`
 	ExpectedAttachmentRevision int               `json:"expected_attachment_revision,omitempty"`

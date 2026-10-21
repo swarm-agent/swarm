@@ -1984,6 +1984,8 @@ func (s *Server) signalMediaSettled(p identity.Principal, projectID, taskID stri
 		kind, summary = "media.job.succeeded", fmt.Sprintf("Media job made %d %s file(s)", ready, task.Agent)
 	case "failed":
 		kind, severity, summary = "media.job.failed", pebblestore.SignalSeverityWarning, "Media job failed: "+controlMCPTruncate(task.LastError, 160)
+	case "cancelled":
+		kind, summary = "media.job.cancelled", "Media job cancelled"
 	default:
 		return
 	}
@@ -1997,5 +1999,24 @@ func (s *Server) signalMediaSettled(p identity.Principal, projectID, taskID stri
 		Refs: map[string]string{"project_id": projectID, "task_id": taskID}, Attrs: attrs,
 	}); err != nil {
 		log.Printf("swarmd signal %s not recorded: %v", kind, err)
+	}
+}
+
+// signalMediaCancelled records media.job.cancelled when a media job is
+// stopped (swarm_stop_job), once per job.
+func (s *Server) signalMediaCancelled(p identity.Principal, projectID, taskID, reason string) {
+	if s.signals == nil {
+		return
+	}
+	attrs := map[string]string{"job_id": controlMCPJobID(controlMCPJobMedia, projectID, taskID)}
+	if reason = strings.TrimSpace(reason); reason != "" {
+		attrs["reason"] = controlMCPTruncate(reason, 200)
+	}
+	if _, err := s.signals.AppendOnce(pebblestore.Signal{
+		Kind: "media.job.cancelled", Severity: pebblestore.SignalSeverityInfo, Source: pebblestore.SignalSourceSwarmd, Account: p.AccountScopeID,
+		Summary: "Media job cancelled", DedupKey: "media.job.cancelled:" + taskID,
+		Refs: map[string]string{"project_id": projectID, "task_id": taskID}, Attrs: attrs,
+	}); err != nil {
+		log.Printf("swarmd signal media.job.cancelled not recorded: %v", err)
 	}
 }

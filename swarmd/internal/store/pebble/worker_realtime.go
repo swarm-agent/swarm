@@ -16,6 +16,12 @@ const WorkerUpdatedEventType = "worker.updated"
 
 // WorkerRealtimePayload conveys invalidation metadata for live worker updates.
 type WorkerRealtimePayload struct {
+	RunID          string               `json:"run_id,omitempty"`
+	SessionID      string               `json:"session_id,omitempty"`
+	ProjectID      string               `json:"project_id,omitempty"`
+	WorkerName     string               `json:"worker_name,omitempty"`
+	State          string               `json:"state,omitempty"`
+	ActivityKind   string               `json:"activity_kind,omitempty"`
 	BudgetRevision uint64               `json:"budget_revision,omitempty"`
 	WorkerID       string               `json:"worker_id"`
 	Revision       uint64               `json:"revision,omitempty"`
@@ -84,7 +90,7 @@ func isAllowedWorkerKey(accountScopeID string, key string) bool {
 	runPrefix := KeyWorkerRunAccountPrefix + accountPart + "/"
 	runOccPrefix := KeyWorkerRunOccAccountPrefix + accountPart + "/"
 	idempPrefix := KeyWorkerIdempotencyAccountPrefix + accountPart + "/"
-	return strings.HasPrefix(key, workerControlPrefix+accountPart+"/") ||
+	return strings.HasPrefix(key, "worker_review/"+accountPart+"/") || strings.HasPrefix(key, workerControlPrefix+accountPart+"/") ||
 		strings.HasPrefix(key, workerPrefix) ||
 		strings.HasPrefix(key, historyPrefix) ||
 		strings.HasPrefix(key, automationPrefix) ||
@@ -159,6 +165,51 @@ func (s *Store) commitWorkerRealtime(m *workerRealtimeMutation) error {
 		payload = defaultPayload
 	}
 
+	// Capture run identity in the same durable batch as the lifecycle write.
+	// Never copy inputs, reports, output, or free-form change summaries.
+	for key, raw := range m.writes {
+		if !isWorkerRunRecordKey(m.accountScopeID, key) {
+			continue
+		}
+		var run WorkerRunRecord
+		if err := json.Unmarshal(raw, &run); err != nil {
+			s.sessionMutations.abandonOutbox(reserved)
+			return err
+		}
+		var metadata WorkerRealtimePayload
+		if err := json.Unmarshal(payload, &metadata); err != nil {
+			s.sessionMutations.abandonOutbox(reserved)
+			return err
+		}
+		metadata.RunID, metadata.SessionID, metadata.State = run.ID, run.SessionID, run.Status
+		metadata.ProjectID, err = s.workerActivityProject(run)
+		if err != nil {
+			s.sessionMutations.abandonOutbox(reserved)
+			return err
+		}
+		worker, found, readErr := NewWorkerStore(s).GetWorker(m.accountScopeID, m.workerID)
+		if readErr != nil {
+			s.sessionMutations.abandonOutbox(reserved)
+			return readErr
+		}
+		if found {
+			metadata.WorkerName = worker.Name
+		}
+		metadata.ActivityKind = "job.state_changed"
+		switch run.Status {
+		case "admitted", "running":
+			metadata.ActivityKind = "job.started"
+		case "succeeded":
+			metadata.ActivityKind = "job.finished"
+		case "failed":
+			metadata.ActivityKind = "job.failed"
+		}
+		payload, err = json.Marshal(metadata)
+		if err != nil {
+			s.sessionMutations.abandonOutbox(reserved)
+			return err
+		}
+	}
 	outbox := V3RealtimeOutboxRecord{
 		EndpointSeq:    endpointSeq,
 		EndpointCursor: V3RealtimeOutboxCursor(endpointSeq),
@@ -219,6 +270,7 @@ func (s *Store) commitWorkerRealtime(m *workerRealtimeMutation) error {
 	}
 
 	m.outbox = &outbox
+	s.signalScheduling(SchedulingSignal{Kind: SchedulingSignalWorker, AccountScopeID: m.accountScopeID, WorkerID: m.workerID})
 	return nil
 }
 

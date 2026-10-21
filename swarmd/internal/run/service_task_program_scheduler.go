@@ -515,6 +515,7 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 			job.ParentBranch = firstNonEmptyString(update.ParentBranch, job.ParentBranch)
 			job.ImmutableStageBase = firstNonEmptyString(update.ImmutableStageBase, job.ImmutableStageBase)
 			job.ChildHead = firstNonEmptyString(update.ChildHead, job.ChildHead)
+			job.RouterAlert = firstNonEmptyString(update.RouterAlert, job.RouterAlert)
 			job.IntegrationState = firstNonEmptyString(update.IntegrationState, job.IntegrationState)
 			if update.Blocker != nil {
 				copy := *update.Blocker
@@ -721,6 +722,7 @@ func taskProgramOutcomesFromPayload(payload map[string]any, count int) []taskLau
 	for i := 0; i < count && i < len(rows); i++ {
 		row := rows[i]
 		out[i] = taskLaunchOutcome{
+			RouterAlert:    strings.TrimSpace(mapString(row, "router_alert")),
 			ChildSessionID: mapString(row, "child_session_id"), ChildRunID: firstNonEmptyString(mapString(row, "child_run_id"), mapString(row, "run_id")), WorkspacePath: mapString(row, "workspace_path"),
 			WorktreeBranch: mapString(row, "worktree_branch"), ParentBranch: mapString(row, "parent_branch"),
 			BaseCommit: mapString(row, "base_commit"), HeadCommit: mapString(row, "head_commit"),

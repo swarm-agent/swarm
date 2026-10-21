@@ -28,9 +28,8 @@ scan_paths=(
   "scripts/lib-lane.sh"
   "swarmd/scripts/dev-up.sh"
 )
-if (( "$#" > 0 )); then
-  scan_paths+=("$@")
-fi
+# Explicit paths (self-test fixtures) are always scanned whole.
+extra_paths=("$@")
 
 rg_common=(
   --line-number
@@ -61,8 +60,14 @@ filter_allowed() {
   # exempt the exact lookup, not other home defaults or appended operations.
   # Git recovery uses a disposable private alternate index, removed on return;
   # permit only this exact temporary allocation, never a daemon storage root.
+  # Managed environments stage one file's bytes in a private scratch directory
+  # removed on return, and hand managed Git the process temp root as TMPDIR;
+  # exempt only those exact lines.
   # Setup recovery atomically publishes a synced record in the same trusted
   # directory; this exact call is not a storage migration.
+  # Worktree removal moves a receipted live checkout into its own trash entry
+  # before deletion, and publishes the synced admin-entry receipt in the same
+  # receipt directory; neither call moves daemon storage. Exempt only these lines.
   grep -vFx -f <(printf '%s\n' \
     'swarmd/internal/tool/search_coordinator.go:	home, err := os.UserHomeDir()' \
     'swarmd/internal/run/worker_execution.go:	if w.Provenance != nil && (w.Provenance.MigratedAt != 0 || w.Provenance.SourceProposalID != "") {' \
@@ -71,7 +76,11 @@ filter_allowed() {
     'internal/launcher/system_paths.go:	return filepath.IsAbs(home) && filepath.Clean(home) != "/" && filepath.Clean(home) != "/root" && !strings.ContainsAny(home, "\n\r\"%")' \
     'cmd/swarmsetup/main.go:	fmt.Fprintln(os.Stderr, "OS installation identity is not Swarm authentication. Open Swarm and complete its authenticated account setup or sign in; existing Swarm account/provider/workspace state is retained on retry.")') < <(sed -E 's/^(internal\/launcher\/system_paths\.go|cmd\/swarmsetup\/main\.go|swarmd\/internal\/run\/worker_execution\.go|swarmd\/internal\/tool\/search_coordinator\.go):[0-9]+:/\1:/') | grep -Ev \
     -e '^swarmd/internal/tool/runtime_git_recovery\.go:[0-9]+:[[:blank:]]*tmp, err := os\.MkdirTemp\("", "swarm-recovery-index-"\)$' \
+    -e '^swarmd/internal/tool/runtime_managed_checkout\.go:[0-9]+:[[:blank:]]*temp, err := os\.MkdirTemp\("", "swarm-managed-file-"\)$' \
+    -e '^swarmd/internal/worktree/managed_handoff\.go:[0-9]+:[[:blank:]]*cmd\.Env = \[\]string\{"PATH=" \+ os\.Getenv\("PATH"\), "TMPDIR=" \+ os\.TempDir\(\), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_NO_REPLACE_OBJECTS=1", "GIT_TERMINAL_PROMPT=0"\}$' \
     -e '^internal/launcher/onboarding_recovery\.go:[0-9]+:[[:blank:]]*if err := os\.Rename\(f\.Name\(\), filepath\.Join\(dir, "onboarding\.json"\)\); err != nil \{$' \
+    -e '^swarmd/internal/worktree/removal\.go:[0-9]+:[[:blank:]]*if err := os\.Rename\(receipt\.Path, checkout\); err != nil \{$' \
+    -e '^swarmd/internal/worktree/removal\.go:[0-9]+:[[:blank:]]*if err := os\.Rename\(filepath\.Join\(receiptDir, "admin-entry\.pending"\), filepath\.Join\(receiptDir, "admin-entry"\)\); err != nil \{$' \
     -e '^pkg/storagecontract/storagecontract\.go:.*(HOME|XDG_|\.local|\.config|Library|Desktop|Documents|Downloads|forbidden|reject|~|home-relative|WorkspaceRoots)' \
     -e '^internal/launcher/launcher\.go:.*(legacy|Legacy|XDG_STATE_HOME|XDG_DATA_HOME|UserHomeDir|UserConfigDir|\.local|\.config|resolve legacy|stat legacy|startupCWD|Getwd)' \
     -e '^swarmd/internal/config/config\.go:.*(resolveDefaultStartupCWD|UserHomeDir|user home directory|home = strings\.TrimSpace|return home)' \
@@ -93,9 +102,32 @@ filter_allowed() {
     || true
 }
 
+range_root=""
+# A protected push sets SWARM_CHECK_BASE (scripts/check-prepush.sh): the
+# repository scopes are then searched, unchanged, over only the lines added
+# since that base. Paths passed as arguments (self-test fixtures) are still
+# scanned whole.
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib-check-range.sh"
+if swarm_check_range_enabled; then
+  range_root="$(mktemp -d "${TMPDIR:-/tmp}/swarm-storage-check.XXXXXX")"
+  trap 'rm -rf "${range_root}"' EXIT
+  swarm_check_range_tree "${range_root}" || exit 1
+  echo "[storage-path-check] judging only lines added in $(swarm_check_range_label)"
+fi
+
 run_scan() {
   local pattern="$1"
-  (rg "${rg_common[@]}" "${pattern}" "${scan_paths[@]}" 2>/dev/null || true) | filter_allowed
+  if [[ -z "${range_root}" ]]; then
+    (rg "${rg_common[@]}" "${pattern}" "${scan_paths[@]}" "${extra_paths[@]}" 2>/dev/null || true) | filter_allowed
+    return
+  fi
+  {
+    (cd "${range_root}" && rg "${rg_common[@]}" "${pattern}" "${scan_paths[@]}" 2>/dev/null || true)
+    if (( ${#extra_paths[@]} > 0 )); then
+      rg "${rg_common[@]}" "${pattern}" "${extra_paths[@]}" 2>/dev/null || true
+    fi
+  } | filter_allowed
 }
 
 has_failures=0
@@ -142,6 +174,22 @@ if [[ "${self_test}" == "1" ]]; then
   recovery_hit='internal/launcher/onboarding_recovery.go:113: if err := os.Rename(f.Name(), filepath.Join(dir, "onboarding.json")); err != nil {'
   [[ -z "$(printf '%s\n' "${recovery_hit}" | filter_allowed)" ]] || exit 1
   for rejected_hit in "${recovery_hit/onboarding.json/other.json}" "${recovery_hit} os.Rename(a, b)" "${recovery_hit/onboarding_recovery.go/other.go}"; do
+    [[ -n "$(printf '%s\n' "${rejected_hit}" | filter_allowed)" ]] || exit 1
+  done
+  # Requirement: worktree removal's trash move and receipt publication are the
+  # only exempt renames in removal.go; other destinations, appended code and
+  # other files remain rejected.
+  trash_hit=$'swarmd/internal/worktree/removal.go:145:\t\tif err := os.Rename(receipt.Path, checkout); err != nil {'
+  receipt_hit=$'swarmd/internal/worktree/removal.go:309:\t\tif err := os.Rename(filepath.Join(receiptDir, "admin-entry.pending"), filepath.Join(receiptDir, "admin-entry")); err != nil {'
+  for removal_hit in "${trash_hit}" "${receipt_hit}"; do
+    [[ -z "$(printf '%s\n' "${removal_hit}" | filter_allowed)" ]] || exit 1
+    for rejected_hit in "${removal_hit} os.Rename(a, b)" "${removal_hit/removal.go/other.go}"; do
+      [[ -n "$(printf '%s\n' "${rejected_hit}" | filter_allowed)" ]] || exit 1
+    done
+  done
+  receipt_dst='"admin-entry"))'
+  other_dst='"other"))'
+  for rejected_hit in "${trash_hit/checkout)/storageRoot)}" "${receipt_hit/"${receipt_dst}"/${other_dst}}"; do
     [[ -n "$(printf '%s\n' "${rejected_hit}" | filter_allowed)" ]] || exit 1
   done
   # Requirement: rejecting the root home is not a storage default. Only the
@@ -192,7 +240,7 @@ if [[ "${self_test}" == "1" ]]; then
     [[ -n "$(printf '%s\n' "${rejected_hit}" | filter_allowed)" ]] || exit 1
   done
   tmp_dir="$(mktemp -d -t swarm-storage-gate.XXXXXX)"
-  trap 'rm -rf "${tmp_dir}"' EXIT
+  trap 'rm -rf "${tmp_dir}" ${range_root:+"${range_root}"}' EXIT
   fixture="${tmp_dir}/bad-storage.sh"
   cat >"${fixture}" <<'EOF'
 #!/usr/bin/env bash

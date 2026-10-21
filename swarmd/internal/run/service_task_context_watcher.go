@@ -193,7 +193,7 @@ func taskProviderUsagePathAccepted(source, path string) bool {
 	switch source {
 	case "codex_api_usage":
 		return path == "response.usage" || path == "usage"
-	case "google_api_usage":
+	case "google_api_usage", "vertex_api_usage":
 		return path == "usageMetadata"
 	case "copilot_session_usage":
 		return path == "session.usage_info"
@@ -210,7 +210,7 @@ func taskProviderUsageSourceAccepted(provider, source string) bool {
 	accepted := map[string]string{
 		"codex": "codex_api_usage", "google": "google_api_usage", "copilot": "copilot_session_usage",
 		"anthropic": "anthropic_api_usage", "fireworks": "fireworks_api_usage", "openrouter": "openrouter_api_usage",
-		"claudecode": "claudecode_cli_usage",
+		"claudecode": "claudecode_cli_usage", "vertex": "vertex_api_usage",
 	}
 	return accepted[provider] != "" && source == accepted[provider]
 }

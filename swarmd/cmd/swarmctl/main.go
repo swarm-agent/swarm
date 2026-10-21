@@ -46,6 +46,8 @@ func main() {
 		err = cmdModel(os.Args[2:])
 	case "workspace":
 		err = cmdWorkspace(os.Args[2:])
+	case "idle-off":
+		err = cmdIdleOff(os.Args[2:])
 	case "context":
 		err = cmdContext(os.Args[2:])
 	case "session":
@@ -80,6 +82,9 @@ func usage() {
 	fmt.Println("  swarmctl model set --provider codex --model gpt-5.4 --thinking xhigh [--addr URL]")
 	fmt.Println("  swarmctl model catalog get --provider codex [--model MODEL] [--limit N] [--addr URL]")
 	fmt.Println("  swarmctl workspace resolve [--cwd PATH] [--addr URL]")
+	fmt.Println("  swarmctl workspace add PATH [--for-user NAME] | remove PATH | list  # root")
+	fmt.Println("  swarmctl workspace publish PATH COMMAND [--sync] | publish PATH --off  # root")
+	fmt.Println("  swarmctl idle-off MINUTES|off|status  # root")
 	fmt.Println("  swarmctl context sources [--cwd PATH] [--addr URL]")
 	fmt.Println("  swarmctl session list [--limit N] [--addr URL]")
 	fmt.Println("  swarmctl session create [--title TEXT] [--workspace-path PATH] [--workspace-name NAME] [--addr URL]")
@@ -251,7 +256,7 @@ func cmdModel(args []string) error {
 
 func cmdWorkspace(args []string) error {
 	if len(args) < 1 || args[0] != "resolve" {
-		return fmt.Errorf("usage: swarmctl workspace resolve [--cwd PATH]")
+		return cmdMachineWorkspace(args)
 	}
 	fs := flag.NewFlagSet("workspace resolve", flag.ContinueOnError)
 	addr := fs.String("addr", defaultDaemonURL, "daemon base URL")

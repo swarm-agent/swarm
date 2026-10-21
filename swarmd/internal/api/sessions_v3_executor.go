@@ -23,6 +23,7 @@ import (
 	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	runruntime "swarm/packages/swarmd/internal/run"
+	"swarm/packages/swarmd/internal/sandbox"
 
 	"sync"
 	"time"
@@ -92,10 +93,94 @@ type sessionV3ExecutorJob struct {
 }
 
 type sessionV3ExecutorRunState struct {
-	cancel   context.CancelFunc
+	cancel   context.CancelCauseFunc
 	canceled bool
 	reason   string
+	cause    error
 	job      sessionV3ExecutorJob
+}
+
+// What can end a V3 run. A run is cancelled only by its own stop (CancelRun),
+// its run timeout or the executor's context ending (daemon shutdown); the
+// progress sink also ends its provider stream when progress cannot be
+// recorded. Anything else that returns context.Canceled did not cancel the
+// run's context, and the run's reason says so.
+const (
+	sessionV3CancelledByStop     = "a stop request"
+	sessionV3CancelledByTimeout  = "its run timeout"
+	sessionV3CancelledByShutdown = "the daemon shutting down"
+	sessionV3CancelledBySink     = "its durable progress sink"
+	sessionV3CancelledByWatchdog = "worker execution tracking"
+	sessionV3CancelledUnrecorded = "an unrecorded cancel of the run's context"
+	sessionV3CancelledByOther    = "a context other than the run's own"
+)
+
+// sessionV3RunCancelledError names what cancelled a V3 run. It is the cause
+// recorded on the run's context and the error the run ends with; it unwraps
+// to the context error, so cancellation checks keep working.
+type sessionV3RunCancelledError struct {
+	By     string
+	Reason string
+	Err    error
+}
+
+func (e *sessionV3RunCancelledError) Error() string {
+	reason := strings.TrimSpace(e.Reason)
+	if reason == "" {
+		reason = "no reason given"
+	}
+	return "run cancelled by " + e.By + ": " + reason
+}
+
+func (e *sessionV3RunCancelledError) Unwrap() error {
+	if e.Err != nil {
+		return e.Err
+	}
+	return context.Canceled
+}
+
+func sessionV3StopCause(reason string) error {
+	return &sessionV3RunCancelledError{By: sessionV3CancelledByStop, Reason: strings.TrimSpace(reason)}
+}
+
+// nameRunCancellation returns err naming what cancelled the run when err is a
+// cancellation, and err unchanged otherwise. ctx is the run's context (or a
+// context derived from it); its recorded cause wins.
+func (e *sessionV3Executor) nameRunCancellation(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	canceled := errors.Is(err, context.Canceled)
+	if !canceled && !errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	var named *sessionV3RunCancelledError
+	if errors.As(err, &named) {
+		return err
+	}
+	var runNamed *runruntime.RunCancelledError
+	if errors.As(err, &runNamed) {
+		return err
+	}
+	if ctx != nil && ctx.Err() != nil {
+		cause := context.Cause(ctx)
+		if errors.As(cause, &named) {
+			return &sessionV3RunCancelledError{By: named.By, Reason: named.Reason, Err: err}
+		}
+		if (e != nil && e.ctx != nil && e.ctx.Err() != nil) || (e != nil && e.server != nil && e.server.isShuttingDown()) {
+			reason := "the executor's context ended"
+			if e.ctx != nil && e.ctx.Err() != nil {
+				reason += " (" + context.Cause(e.ctx).Error() + ")"
+			}
+			return &sessionV3RunCancelledError{By: sessionV3CancelledByShutdown, Reason: reason, Err: err}
+		}
+		return &sessionV3RunCancelledError{By: sessionV3CancelledUnrecorded, Reason: cause.Error(), Err: err}
+	}
+	if !canceled {
+		// A deadline that is not the run's: the error already says what.
+		return err
+	}
+	return &sessionV3RunCancelledError{By: sessionV3CancelledByOther, Reason: strings.TrimSpace(err.Error()) + " (the run's own context was not cancelled: it was not stopped, timed out or shut down)", Err: err}
 }
 
 func isSessionArchived(metadata map[string]any) bool {
@@ -182,6 +267,30 @@ func newSessionV3Executor(server *Server) *sessionV3Executor {
 	exec.startStaleRecoveryBackstop(ctx)
 	exec.startDailyUsageLimitWatcher(ctx)
 	return exec
+}
+
+// activeSessionIDs returns the sessions that have a run in flight right now.
+func (e *sessionV3Executor) activeSessionIDs() []string {
+	if e == nil {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	ids := make([]string, 0, len(e.activeBySession))
+	for id := range e.activeBySession {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// activeRunID returns the run in flight for sessionID, or "".
+func (e *sessionV3Executor) activeRunID(sessionID string) string {
+	if e == nil {
+		return ""
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.activeBySession[sessionID]
 }
 
 func (e *sessionV3Executor) diagnosticsSnapshot() map[string]any {
@@ -271,6 +380,23 @@ func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 			return false
 		}
 	}
+	if m := sandbox.Default(); m != nil && strings.HasPrefix(job.SessionID, "worker-execution-") {
+		worker, _ := snapshot.Metadata["worker_id"].(string)
+		receipt, _ := snapshot.Metadata["worker_execution_run_id"].(string)
+		ws := e.server.sessions.Store().WorkerStore()
+		r, ok, lookupErr := ws.GetWorkerRun(job.Principal.AccountScopeID, worker, receipt)
+		if lookupErr != nil || !ok {
+			e.mu.Unlock()
+			return false
+		}
+		if r.Status == "succeeded" || r.Status == "failed" {
+			admitted, reserveErr := ws.ReserveWorkerFollowup(r.AccountScopeID, worker, receipt, job.RunID, m.MaxWorkerRuns())
+			if reserveErr != nil || !admitted {
+				e.mu.Unlock()
+				return reserveErr == nil
+			}
+		}
+	}
 	e.inFlightRuns[runKey] = true
 	e.activeBySession[job.SessionID] = job.RunID
 	if e.runStates == nil {
@@ -291,6 +417,30 @@ func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 }
 
 func (e *sessionV3Executor) finish(job sessionV3ExecutorJob) {
+	if strings.HasPrefix(job.SessionID, "worker-execution-") {
+		if snap, ok, err := e.server.sessions.GetSession(job.SessionID); err == nil && ok {
+			worker, _ := snap.Metadata["worker_id"].(string)
+			receipt, _ := snap.Metadata["worker_execution_run_id"].(string)
+			if err := e.server.sessions.Store().WorkerStore().ReleaseWorkerFollowup(snap.AccountScopeID, worker, receipt, job.RunID); err != nil {
+				log.Printf("release worker follow-up capacity: %v", err)
+			}
+			if m := sandbox.Default(); m != nil {
+				if err := m.EndJob(context.Background(), snap.WorktreeRootPath, func() (bool, error) {
+					current, found, err := e.server.sessions.Store().WorkerStore().GetWorkerRun(snap.AccountScopeID, worker, receipt)
+					if err != nil || !found {
+						return false, err
+					}
+					if !pebblestore.AutomationV2Terminal(current.Status) || current.FollowupActive() {
+						return false, nil
+					}
+					_, active, err := e.server.sessions.Store().GetV3SessionActiveRunIntent(job.SessionID)
+					return !active, err
+				}); err != nil {
+					log.Printf("cleanup terminal worker sandbox: %v", err)
+				}
+			}
+		}
+	}
 	runKey := sessionV3ExecutorRunKey(job.SessionID, job.RunID)
 	e.mu.Lock()
 	delete(e.inFlightRuns, runKey)
@@ -494,7 +644,7 @@ func (e *sessionV3Executor) drainRefillPasses(ctx context.Context) {
 	}
 }
 
-func (e *sessionV3Executor) attachCancel(job sessionV3ExecutorJob, cancel context.CancelFunc) {
+func (e *sessionV3Executor) attachCancel(job sessionV3ExecutorJob, cancel context.CancelCauseFunc) {
 	if e == nil || cancel == nil {
 		return
 	}
@@ -512,9 +662,13 @@ func (e *sessionV3Executor) attachCancel(job sessionV3ExecutorJob, cancel contex
 	state.cancel = cancel
 	state.job = job
 	shouldCancel = state.canceled
+	cause := state.cause
+	if cause == nil {
+		cause = sessionV3StopCause(state.reason)
+	}
 	e.mu.Unlock()
 	if shouldCancel {
-		cancel()
+		cancel(cause)
 	}
 }
 
@@ -558,7 +712,8 @@ func (e *sessionV3Executor) CancelRun(job sessionV3ExecutorJob, reason string) (
 		return sessionruntime.SessionMutationResult{}, false, errors.New("session id and run id are required")
 	}
 	runKey := sessionV3ExecutorRunKey(job.SessionID, job.RunID)
-	var cancel context.CancelFunc
+	var cancel context.CancelCauseFunc
+	cause := sessionV3StopCause(reason)
 	tracked := false
 	e.mu.Lock()
 	if e.runStates == nil {
@@ -569,11 +724,12 @@ func (e *sessionV3Executor) CancelRun(job sessionV3ExecutorJob, reason string) (
 		tracked = true
 		state.canceled = true
 		state.reason = reason
+		state.cause = cause
 		cancel = state.cancel
 	}
 	e.mu.Unlock()
 	if cancel != nil {
-		cancel()
+		cancel(cause)
 	}
 	if e.server != nil && e.server.deployments != nil {
 		wsIDs := make(map[string]bool)
@@ -911,9 +1067,14 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 	if e.server == nil || e.server.sessions == nil {
 		return
 	}
-	runCtx, runCancel := context.WithCancel(ctx)
-	defer runCancel()
+	runCtx, runCancel := context.WithCancelCause(ctx)
+	defer runCancel(nil)
 	e.attachCancel(job, runCancel)
+	if execution, err := e.server.workerExecutionService(); err == nil {
+		defer execution.TrackV3Execution(job.SessionID, func() {
+			runCancel(&sessionV3RunCancelledError{By: sessionV3CancelledByWatchdog, Reason: "the worker's execution was ended"})
+		})()
+	}
 	if e.startDelay > 0 {
 		select {
 		case <-runCtx.Done():
@@ -1054,7 +1215,7 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 	select {
 	case <-runCtx.Done():
 		if !e.isRunCanceled(job) {
-			_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, "executor stopped", "session.run.failed")
+			_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, "executor stopped: "+e.nameRunCancellation(runCtx, runCtx.Err()).Error(), "session.run.failed")
 		}
 		return
 	default:
@@ -1063,7 +1224,7 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 		select {
 		case <-runCtx.Done():
 			if !e.isRunCanceled(job) {
-				_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, "executor stopped", "session.run.failed")
+				_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, "executor stopped: "+e.nameRunCancellation(runCtx, runCtx.Err()).Error(), "session.run.failed")
 			}
 			return
 		case <-time.After(e.modelDelay):
@@ -1080,11 +1241,13 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 	if errors.Is(err, errSessionV3StaleProviderAttempt) {
 		response, job, err = e.staleCompactedAssistantResponse(runCtx, job, err)
 	}
+	err = e.nameRunCancellation(runCtx, err)
 	if err != nil {
 		if !e.isRunCanceled(job) {
 			if e.shouldTriggerContextOverflowCompaction(job, err) {
 				e.recordSessionV3ContextOverflowDecision(job, "assistant_response_error", err)
 				response, job, err = e.contextOverflowCompactedAssistantResponse(runCtx, job, err)
+				err = e.nameRunCancellation(runCtx, err)
 			}
 			if err != nil {
 				classification := sessionV3TerminalClassifier.Classify(TerminalClassifierInput{Err: err})
@@ -1357,10 +1520,15 @@ func (e *sessionV3Executor) recordRunStatusInEpoch(job sessionV3ExecutorJob, mut
 		NowUnixMs:       now,
 	})
 	if err == nil {
+		e.server.signalSessionRunEnded(job, status, result)
 		err = e.server.reconcileAITaskRunLifecycle(job, status, sanitizedReason, "")
 	}
 	if err == nil {
+		prior := e.server.taskStatusBeforeRunEnd(job)
 		err = e.server.reconcileProjectTaskRunLifecycle(job, status, sanitizedReason)
+		if err == nil {
+			e.server.signalTaskRunEnded(job, status, result, prior)
+		}
 	}
 	return result, err
 }
@@ -1955,7 +2123,11 @@ func (e *sessionV3Executor) completeRun(job sessionV3ExecutorJob, response sessi
 		err = e.server.reconcileAITaskRunLifecycle(job, sessionruntime.RunIntentCompleted, "", content)
 	}
 	if err == nil {
+		prior := e.server.taskStatusBeforeRunEnd(job)
 		err = e.server.reconcileProjectTaskRunLifecycle(job, sessionruntime.RunIntentCompleted, "")
+		if err == nil {
+			e.server.signalTaskRunEnded(job, sessionruntime.RunIntentCompleted, result, prior)
+		}
 	}
 	return result, err
 }
@@ -2650,11 +2822,15 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	ctx = providerdiagnostics.ContextWithRecorder(ctx, func(_ context.Context, event providerdiagnostics.Event) {
 		e.recordSessionV3ProviderAPIDiagnostic(job, event)
 	})
-	streamCtx, cancelStream := context.WithCancel(ctx)
-	defer cancelStream()
+	streamCtx, cancelStreamCause := context.WithCancelCause(ctx)
+	defer cancelStreamCause(nil)
+	cancelStream := func() {
+		cancelStreamCause(&sessionV3RunCancelledError{By: sessionV3CancelledBySink, Reason: "the run's progress could not be recorded"})
+	}
 	if timeout := resolved.Limits.RunTimeoutMS; timeout > 0 {
+		limit := time.Duration(timeout) * time.Millisecond
 		var cancelDeadline context.CancelFunc
-		streamCtx, cancelDeadline = context.WithTimeout(streamCtx, time.Duration(timeout)*time.Millisecond)
+		streamCtx, cancelDeadline = context.WithTimeoutCause(streamCtx, limit, &sessionV3RunCancelledError{By: sessionV3CancelledByTimeout, Reason: "the run took longer than " + limit.String(), Err: context.DeadlineExceeded})
 		defer cancelDeadline()
 	}
 	var sink *sessionV3DurableProgressSink
@@ -2664,6 +2840,7 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		sink = newSessionV3DurableProgressSink(e, job, cancelStream)
 	}
 	loopResult, err := e.runProviderToolLoop(streamCtx, job, resolved, runner, baseReq, sink, planContextGuard)
+	err = e.nameRunCancellation(streamCtx, err)
 	flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer flushCancel()
 	closeErr := sink.CloseAndFlush(flushCtx)
@@ -2689,7 +2866,7 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		"model":    modelName,
 		"result":   sessionV3ProviderResponseDiagnostic(response, loopResult.FinalContent, loopResult.DurableFlushCount),
 	})
-	if loopResult.TerminalPlanHandled {
+	if loopResult.TerminalPlanHandled || loopResult.AwaitingConfirmation {
 		return sessionV3AssistantResponse{
 			LifecycleOnly:                 true,
 			StartNextCheckpoint:           loopResult.StartNextCheckpoint,
@@ -3493,6 +3670,9 @@ type sessionV3ProviderLoopResult struct {
 	FinalStartSeq       uint64
 	TerminalPlanHandled bool
 	StartNextCheckpoint bool
+	// AwaitingConfirmation: the run asked the person to confirm a client tool
+	// call and ends here; the outcome starts the next run.
+	AwaitingConfirmation bool
 }
 
 func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, runner provideriface.Runner, baseReq provideriface.Request, sink *sessionV3DurableProgressSink, planContextGuard *runruntime.PlanContextGuard) (sessionV3ProviderLoopResult, error) {
@@ -3527,9 +3707,9 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 
 		stepInstructions := baseReq.Instructions
 		stepTools := baseReq.Tools
+		planWarning := ""
 		if strings.EqualFold(strings.TrimSpace(resolved.Session.Mode), sessionruntime.ModePlan) && pebblestore.AgentExitPlanModeEnabled(resolved.AgentProfile) && planContextGuard.BeginDecision() {
-			warning := planContextGuard.WarningInstructions()
-			stepInstructions = strings.TrimSpace(stepInstructions + "\n\n" + warning)
+			planWarning = planContextGuard.WarningInstructions()
 			if planContextGuard.FinalizationOnly() {
 				stepTools = runruntime.FilterToolDefinitionsExcept(stepTools, map[string]struct{}{"exit_plan_mode": {}})
 			} else {
@@ -3541,6 +3721,16 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		if limit := resolved.Limits.MaxSteps; limit > 0 && step >= limit {
 			// Last allowed model call: no tools, so the model has to answer.
 			stepTools = nil
+		}
+		if len(stepTools) != len(baseReq.Tools) {
+			var instructionErr error
+			stepInstructions, instructionErr = e.composeSessionV3ResolvedInstructions(job, resolved, stepTools)
+			if instructionErr != nil {
+				return sessionV3ProviderLoopResult{}, instructionErr
+			}
+		}
+		if planWarning != "" {
+			stepInstructions = strings.TrimSpace(stepInstructions + "\n\n" + planWarning)
 		}
 		toolsEnabled := len(stepTools) > 0 && !strings.EqualFold(strings.TrimSpace(baseReq.ToolChoice), "none")
 		var toolInvoker provideriface.ToolInvoker
@@ -3602,15 +3792,19 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		streamState := newSessionV3ProviderStreamState(e, job, sink, step)
 		providerStart := time.Now()
 		var firstEventOnce sync.Once
-		response, providerErr := e.runStaleSupervisedProviderAttempt(ctx, job, runner, req, func(event provideriface.StreamEvent) {
-			firstEventOnce.Do(func() {
-				pebblestore.ObserveExecutionEpochFirstEvent(providerStart)
-				if recorder := e.server.longSessionDiagnostics; recorder != nil {
-					recorder.ObserveOperation("v3.provider_first_event", job.SessionID, time.Since(providerStart), false, map[string]int64{"step": int64(step)}, nil)
-				}
+		attemptProvider := func() (provideriface.Response, error) {
+			return e.runStaleSupervisedProviderAttempt(ctx, job, runner, req, func(event provideriface.StreamEvent) {
+				firstEventOnce.Do(func() {
+					pebblestore.ObserveExecutionEpochFirstEvent(providerStart)
+					if recorder := e.server.longSessionDiagnostics; recorder != nil {
+						recorder.ObserveOperation("v3.provider_first_event", job.SessionID, time.Since(providerStart), false, map[string]int64{"step": int64(step)}, nil)
+					}
+				})
+				streamState.Handle(event)
 			})
-			streamState.Handle(event)
-		})
+		}
+		response, providerErr := attemptProvider()
+		response, providerErr = e.replayIncompleteProviderStream(ctx, job, step, streamState, response, providerErr, attemptProvider)
 		pebblestore.ObserveExecutionEpochProviderSend(providerStart)
 		if recorder := e.server.longSessionDiagnostics; recorder != nil {
 			recorder.ObserveOperation("v3.provider_total", job.SessionID, time.Since(providerStart), providerErr != nil, map[string]int64{"step": int64(step), "input_items": int64(len(req.Input)), "tools": int64(len(req.Tools)), "function_calls": int64(len(response.FunctionCalls))}, map[string]bool{"continuation": req.AllowContinuation, "reset_transport": req.ResetTransport, "force_fresh": req.ForceFreshProviderContext})
@@ -3946,6 +4140,11 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		}
 		if len(input) == 0 {
 			return sessionV3ProviderLoopResult{}, errors.New("v3 provider continuation input is empty after tool execution")
+		}
+		if e.sessionV3RunAwaitsClientToolConfirmation(job) {
+			// Nothing more happens until the person decides: no further model
+			// call, so the wait costs no tokens.
+			return sessionV3ProviderLoopResult{Response: provideriface.Response{StopReason: "stop"}, FinalRequest: baseReq, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd(), FinalStartSeq: sink.AssistantStartSeq(streamState.StreamID()), AwaitingConfirmation: true}, nil
 		}
 		if terminal, ok := sessionsV3ProviderTerminalPlanToolResult(toolResults); ok && e.sessionV3TerminalPlanPublished(job, terminal) {
 			return sessionV3ProviderLoopResult{Response: provideriface.Response{StopReason: "stop"}, FinalRequest: baseReq, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd(), FinalStartSeq: sink.AssistantStartSeq(streamState.StreamID()), TerminalPlanHandled: true}, nil
@@ -4582,6 +4781,32 @@ func (e *sessionV3Executor) sessionV3ProviderInitialContextInput(job sessionV3Ex
 		if len(handoffInput) == 0 {
 			return nil, errors.New("v3 provider handoff input is empty")
 		}
+		// The handoff is bounded historical context, not the current instruction.
+		// Replay the latest user turn (and its tool replies) separately so neither
+		// the per-message nor total handoff cap can shorten active input.
+		for i := len(messages) - 1; i >= 0; i-- {
+			if strings.EqualFold(strings.TrimSpace(messages[i].Role), "user") {
+				active := []pebblestore.MessageSnapshot{messages[i]}
+				for _, message := range messages[i+1:] {
+					if !strings.EqualFold(strings.TrimSpace(message.Role), "tool") {
+						continue
+					}
+					record, ok := sessionsV3DecodeProviderToolResultRecord(message.Content)
+					if !ok || record.Error != "" {
+						continue
+					}
+					switch record.ToolName {
+					case "ask_user", "ask-user", "permission":
+						active = append(active, message)
+					}
+				}
+				current, err := e.sessionsV3ProviderInputForLineage(resolved, active, req.ProviderLineageID, false)
+				if err != nil {
+					return nil, err
+				}
+				return append(handoffInput, current...), nil
+			}
+		}
 		return handoffInput, nil
 	}
 	input, err := e.sessionsV3ProviderInputForLineage(resolved, messages, req.ProviderLineageID, req.NativeContinuationAllowed && !req.ForceFreshProviderContext)
@@ -4912,6 +5137,15 @@ func (e *sessionV3Executor) resolveSessionV3Capabilities(job sessionV3ExecutorJo
 	if err != nil {
 		return sessionV3ResolvedRuntime{}, err
 	}
+	// Explicit plan mode and durable plans authorize the advanced surface,
+	// including MCP-attached plans and recovery of pre-existing sessions.
+	activePlan, hasPlan, planErr := e.server.sessions.GetActivePlan(job.SessionID)
+	if planErr != nil {
+		return sessionV3ResolvedRuntime{}, planErr
+	}
+	if session.Mode == sessionruntime.ModePlan || (hasPlan && activePlan.Document != nil) {
+		agentProfile = agentruntime.WithAdvancedPlanning(agentProfile)
+	}
 	if !agentProfile.Enabled {
 		return sessionV3ResolvedRuntime{}, fmt.Errorf("agent %q is disabled", strings.TrimSpace(agentProfile.Name))
 	}
@@ -4959,7 +5193,7 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if err != nil {
 		return sessionV3ResolvedRuntime{}, err
 	}
-	session, agentProfile, pref, scope := resolved.Session, resolved.AgentProfile, resolved.Preference, resolved.Scope
+	session, agentProfile, scope := resolved.Session, resolved.AgentProfile, resolved.Scope
 	tools, err := e.resolveSessionV3ProviderTools(session.AccountScopeID, agentProfile)
 	if err != nil {
 		return sessionV3ResolvedRuntime{}, err
@@ -4968,6 +5202,25 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if err != nil {
 		return sessionV3ResolvedRuntime{}, err
 	}
+	// Task-history overlays may add task tools, but must not change media authority.
+	if runruntime.AgentProfileAuthorizesMedia(agentProfile) != runruntime.AgentProfileAuthorizesMedia(resolved.AgentProfile) {
+		return sessionV3ResolvedRuntime{}, errors.New("task history overlay changed media authorization")
+	}
+	resolved.AgentProfile = agentProfile
+	resolved.Tools = runruntime.MaterializeSessionMediaTool(tools, resolved.MediaContract)
+	resolved.ToolChoice = "none"
+	if len(resolved.Tools) > 0 {
+		resolved.ToolChoice = "auto"
+	}
+	sealed := e.server.sealedAgentError(session.AccountScopeID, agentProfile.Name) == nil
+	resolved.Limits = effectiveAgentRunLimits(agentProfile.Limits, sealed)
+	resolved.Instructions, err = e.composeSessionV3ResolvedInstructions(job, resolved, resolved.Tools)
+	return resolved, err
+}
+
+// Compose against the final provider tool list without re-resolving model or role authority.
+func (e *sessionV3Executor) composeSessionV3ResolvedInstructions(job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, tools []provideriface.ToolDefinition) (string, error) {
+	session, agentProfile, pref, scope := resolved.Session, resolved.AgentProfile, resolved.Preference, resolved.Scope
 	sealed := e.server.sealedAgentError(session.AccountScopeID, agentProfile.Name) == nil
 	var instructions string
 	if sealed {
@@ -4978,28 +5231,25 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	} else {
 		applicationInstructions, err := e.server.applicationAgentInstructions(session)
 		if err != nil {
-			return sessionV3ResolvedRuntime{}, err
+			return "", err
 		}
-		instructions = strings.TrimSpace(e.composeSessionV3Instructions(scope, session.Mode, agentProfile))
+		instructionProfile := runruntime.InstructionProfileForTools(agentProfile, tools)
+		instructions = strings.TrimSpace(e.composeSessionV3Instructions(scope, session.Mode, instructionProfile))
 		if instructions == "" {
-			return sessionV3ResolvedRuntime{}, errors.New("resolved v3 instructions are empty")
+			return "", errors.New("resolved v3 instructions are empty")
 		}
 		instructions += applicationInstructions
 		instructions = runruntime.AppendResolvedModelPolicyInstructions(instructions, session.Mode, pref)
 	}
 	if instructions == "" {
-		return sessionV3ResolvedRuntime{}, errors.New("resolved v3 instructions are empty")
-	}
-	// Task-history overlays may add task tools, but must not change media authority.
-	if runruntime.AgentProfileAuthorizesMedia(agentProfile) != runruntime.AgentProfileAuthorizesMedia(resolved.AgentProfile) {
-		return sessionV3ResolvedRuntime{}, errors.New("task history overlay changed media authorization")
+		return "", errors.New("resolved v3 instructions are empty")
 	}
 	mediaContract := resolved.MediaContract
-	instructions = runruntime.AppendSessionMediaInstructions(instructions, mediaContract)
-	tools = runruntime.MaterializeSessionMediaTool(tools, mediaContract)
-	toolChoice := "none"
-	if len(tools) > 0 {
-		toolChoice = "auto"
+	for _, definition := range tools {
+		if definition.Name == "media_inspect" {
+			instructions = runruntime.AppendSessionMediaInstructions(instructions, mediaContract)
+			break
+		}
 	}
 	if stateCompiler, ok := e.server.runner.(interface {
 		ComposeDurableRunStateInstructions(string, string, string, *runruntime.RunPlanCheckpointContext) (string, error)
@@ -5016,11 +5266,15 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 		}
 		runState, stateErr := stateCompiler.ComposeDurableRunStateInstructions(session.ID, session.Mode, job.RunID, checkpointContext)
 		if stateErr != nil {
-			return sessionV3ResolvedRuntime{}, stateErr
+			return "", stateErr
 		}
-		instructions = strings.TrimSpace(instructions + "\n\n" + runState)
+		enabledToolNames := make([]string, 0, len(tools))
+		for _, definition := range tools {
+			enabledToolNames = append(enabledToolNames, definition.Name)
+		}
+		instructions = strings.TrimSpace(instructions + "\n\n" + runruntime.ScopeDurableRunStateInstructions(runState, agentProfile, enabledToolNames...))
 	}
-	return sessionV3ResolvedRuntime{Session: session, AgentProfile: agentProfile, Preference: pref, ContextWindow: resolved.ContextWindow, ModelCatalog: resolved.ModelCatalog, CatalogMeta: resolved.CatalogMeta, MediaContract: mediaContract, Scope: scope, Instructions: instructions, Tools: tools, ToolChoice: toolChoice, Limits: effectiveAgentRunLimits(agentProfile.Limits, sealed)}, nil
+	return instructions, nil
 }
 
 func (e *sessionV3Executor) resolveSessionV3CurrentAgentToolContract(accountScopeID string, metadata map[string]any, snapshot pebblestore.AgentProfile) (pebblestore.AgentProfile, error) {
@@ -6118,7 +6372,7 @@ func normalizeSessionV3ThinkingWithProvider(providerID, thinking string) string 
 		return normalized
 	}
 	switch strings.ToLower(strings.TrimSpace(providerID)) {
-	case "google":
+	case "google", "vertex":
 		return "xhigh"
 	case "copilot", "fireworks", "openrouter":
 		return "high"

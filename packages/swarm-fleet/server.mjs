@@ -29,6 +29,12 @@ import { homedir } from 'node:os';
 const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26'];
 const CALL_TIMEOUT_MS = 330_000; // Swarm tools wait at most 300 s for a reply.
 const LIST_TIMEOUT_MS = 15_000;
+
+/** A call that asks the machine to wait gets that wait plus 30 s, not the full 330 s. */
+export function callTimeoutMs(args) {
+  const wait = Number(args?.wait_seconds);
+  return Number.isFinite(wait) && wait > 0 ? Math.min(CALL_TIMEOUT_MS, (Math.min(wait, 300) + 30) * 1000) : CALL_TIMEOUT_MS;
+}
 const DISCOVER_EVERY_MS = 20_000;
 const MAX_RESPONSE_BYTES = 8 << 20;
 const MACHINE_PROP = { type: 'string', maxLength: 64, description: 'Machine name from swarm_list_machines. Required when several are configured.' };
@@ -142,6 +148,10 @@ export async function post(machine, message, { proxy = '', timeoutMs = CALL_TIME
       });
     });
     req.once('error', reject);
+    // setTimeout on a request is an idle timer that restarts on every byte; this one is a
+    // total deadline, so a machine that keeps the connection busy cannot hold a call forever.
+    const deadline = setTimeout(() => req.destroy(new Error('machine did not answer in time')), timeoutMs);
+    req.once('close', () => clearTimeout(deadline));
     req.setTimeout(timeoutMs, () => req.destroy(new Error('machine did not answer in time')));
     req.end(body);
   });
@@ -288,6 +298,12 @@ const FLEET_TOOLS = [
   },
 ];
 
+// toolsSignature is what the client was told the tools are: their names,
+// schemas and descriptions. A machine update that changes a tool's schema
+// changes it, so the client re-reads the list (notifications/tools/list_changed)
+// instead of keeping the old schema.
+export const toolsSignature = list => JSON.stringify(list.map(t => [t.name, t.inputSchema, t.description]));
+
 export function createFleet(configured, { proxy = '', notify = () => {}, send = post, discover = null, now = Date.now, statePath = '' } = {}) {
   const state = fleetState(statePath || defaultStatePath());
   let machines = configured.slice();
@@ -296,7 +312,9 @@ export function createFleet(configured, { proxy = '', notify = () => {}, send = 
   const tools = new Map(); // machine name -> tools/list result (array) once reached
   const instructions = new Map(); // machine name -> its initialize instructions
   const errors = new Map();
-  let advertised = 0;
+  // What the client was last told the tools are (names and schemas), so a
+  // changed schema is announced as well as an added or removed tool.
+  let advertised = '';
 
   async function rediscover(force = false) {
     if (!discover || (!force && now() - discoveredAt < DISCOVER_EVERY_MS)) return;
@@ -349,13 +367,13 @@ export function createFleet(configured, { proxy = '', notify = () => {}, send = 
     clearTimeout(retry);
     retry = setTimeout(async () => {
       await refreshAll();
-      const count = union().length;
-      if (count !== advertised) { advertised = count; notify({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' }); }
+      const current = toolsSignature(union());
+      if (current !== advertised) { advertised = current; notify({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' }); }
       watch();
     }, machines.length && machines.every(m => tools.has(m.name)) ? 60_000 : 15_000);
     retry.unref?.();
   }
-  const callOn = (machine, name, args) => send(machine, { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }, { proxy });
+  const callOn = (machine, name, args) => send(machine, { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }, { proxy, timeoutMs: callTimeoutMs(args) });
 
   // A machine's run counts for today, exact (the daemon's run index), with the
   // failed runs' job ids; their reasons stay on the machine (swarm_get_job).
@@ -523,7 +541,7 @@ export function createFleet(configured, { proxy = '', notify = () => {}, send = 
         case 'ping': return rpcResult(id, {});
         case 'tools/list': {
           if (!machines.some(m => tools.has(m.name))) await refreshAll();
-          const list = union(); advertised = list.length; watch();
+          const list = union(); advertised = toolsSignature(list); watch();
           return rpcResult(id, { tools: list });
         }
         case 'tools/call': return rpcResult(id, await callTool(message.params));

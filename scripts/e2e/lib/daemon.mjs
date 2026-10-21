@@ -131,7 +131,8 @@ function httpGetStatus(url, timeoutMs = 2000) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 export class Daemon {
-  constructor({ binDir, runDir, log = () => {} }) {
+  constructor({ binDir, runDir, log = () => {}, sandbox = 'off' }) {
+    this.sandbox = sandbox
     this.binDir = binDir
     this.runDir = runDir
     this.log = log
@@ -167,7 +168,7 @@ export class Daemon {
       '--cwd', path.join(r, 'home'),
       // Agent commands run on this host for the test: no shared Docker
       // sandbox network or image with any other Swarm on the machine.
-      '--sandbox', 'off',
+      '--sandbox', this.sandbox,
     ]
     this.exit = null
     this.child = spawn(path.join(this.binDir, 'swarmd'), args, {

@@ -142,7 +142,20 @@ type WorkerRevisionRecord struct {
 	ChangeSummary  string       `json:"change_summary,omitempty"`
 }
 
+type WorkerRunCleanup struct {
+	State           string `json:"state"`
+	LastError       string `json:"last_error,omitempty"`
+	Attempts        int    `json:"attempts"`
+	NextAttemptAt   int64  `json:"next_attempt_at,omitempty"`
+	FailureReported bool   `json:"failure_reported,omitempty"`
+}
+
 type WorkerRunRecord struct {
+	// ProjectID is the authoritative project resolved at admission.
+	ProjectID          string                       `json:"project_id,omitempty"`
+	Cleanup            *WorkerRunCleanup            `json:"cleanup,omitempty"`
+	ReviewRestore      *WorkerRunCleanup            `json:"review_restore,omitempty"`
+	ModelSource        string                       `json:"model_source,omitempty"`
 	Placement          *WorkerRunPlacement          `json:"placement,omitempty"`
 	ModelProfile       *SessionModelProfileSnapshot `json:"model_profile,omitempty"`
 	CancelRequested    bool                         `json:"cancel_requested,omitempty"`
@@ -162,16 +175,22 @@ type WorkerRunRecord struct {
 	WorkspaceID     string `json:"workspace_id,omitempty"`
 	WorkspaceSource string `json:"workspace_source,omitempty"`
 	// Role is the worker role pinned at admission (empty means swarm).
-	Role          string                         `json:"role,omitempty"`
-	SessionID     string                         `json:"session_id,omitempty"`
-	RequestSource string                         `json:"request_source"` // "direct", "schedule", "trigger", "test_run", "orchestrator"
-	Input         map[string]any                 `json:"input,omitempty"`
-	Status        string                         `json:"status"` // "admitted", "running", "succeeded", "failed", "cancelled"
-	Error         string                         `json:"error,omitempty"`
-	Deliverables  []SessionPlanArtifactReference `json:"deliverables,omitempty"`
-	StartedAt     int64                          `json:"started_at,omitempty"`
-	CompletedAt   int64                          `json:"completed_at,omitempty"`
-	CreatedAt     int64                          `json:"created_at"`
+	Role                string                         `json:"role,omitempty"`
+	SessionID           string                         `json:"session_id,omitempty"`
+	RequestSource       string                         `json:"request_source"` // "direct", "schedule", "trigger", "test_run", "orchestrator", "automation"
+	Input               map[string]any                 `json:"input,omitempty"`
+	Status              string                         `json:"status"` // "admitted", "running", "succeeded", "failed", "cancelled"
+	QueueReason         string                         `json:"queue_reason,omitempty"`
+	FollowupError       string                         `json:"followup_error,omitempty"`
+	SandboxCleanupDone  bool                           `json:"sandbox_cleanup_done,omitempty"`
+	SandboxCleanupError string                         `json:"sandbox_cleanup_error,omitempty"`
+	FollowupStatus      string                         `json:"followup_status,omitempty"`
+	FollowupRunID       string                         `json:"followup_run_id,omitempty"`
+	Error               string                         `json:"error,omitempty"`
+	Deliverables        []SessionPlanArtifactReference `json:"deliverables,omitempty"`
+	StartedAt           int64                          `json:"started_at,omitempty"`
+	CompletedAt         int64                          `json:"completed_at,omitempty"`
+	CreatedAt           int64                          `json:"created_at"`
 }
 
 type WorkerIdempotencyRecord struct {
@@ -1474,7 +1493,7 @@ func (ws *WorkerStore) DeleteWorker(account, user, workerID string, expectedRevi
 		return err
 	}
 	for _, r := range runs {
-		if r.Status == "running" || r.Status == "admitted" {
+		if r.Status == "running" || r.Status == "admitted" || r.Status == "queued" || r.Status == "preparing" {
 			return errors.New("cannot delete worker with active runs")
 		}
 	}
@@ -2384,6 +2403,15 @@ func (ws *WorkerStore) ImportWorkerUpdate(account, user, workerID string, expect
 }
 
 func (ws *WorkerStore) RecordWorkerRun(account string, run WorkerRunRecord) (WorkerRunRecord, error) {
+	return ws.recordWorkerRun(account, run, nil)
+}
+
+// RecordWorkerRunIfRunning never replaces a concurrent terminal outcome.
+func (ws *WorkerStore) RecordWorkerRunIfRunning(account string, run WorkerRunRecord, settle func() error) (WorkerRunRecord, error) {
+	return ws.recordWorkerRun(account, run, settle)
+}
+
+func (ws *WorkerStore) recordWorkerRun(account string, run WorkerRunRecord, settle func() error) (WorkerRunRecord, error) {
 	if ws == nil || ws.store == nil || ws.store.db == nil {
 		return WorkerRunRecord{}, errors.New("store is not open")
 	}
@@ -2482,6 +2510,9 @@ func (ws *WorkerStore) RecordWorkerRun(account string, run WorkerRunRecord) (Wor
 	if runErr != nil {
 		return WorkerRunRecord{}, runErr
 	}
+	if settle != nil && (!existingOk || existingRun.Status != "running" || existingRun.CancelRequested || existingRun.SessionID != run.SessionID || existingRun.StartedAt != run.StartedAt) {
+		return WorkerRunRecord{}, ErrWorkerConflict
+	}
 	if run.Placement != nil || (existingOk && existingRun.Placement != nil) {
 		return WorkerRunRecord{}, fmt.Errorf("%w: remote outcomes require adapter fencing", ErrWorkerConflict)
 	}
@@ -2526,7 +2557,7 @@ func (ws *WorkerStore) RecordWorkerRun(account string, run WorkerRunRecord) (Wor
 			run.RequestSource = "direct"
 		}
 		switch run.RequestSource {
-		case "direct", "schedule", "trigger", "test_run", "orchestrator":
+		case "direct", "schedule", "trigger", "test_run", "orchestrator", "automation":
 		default:
 			return WorkerRunRecord{}, fmt.Errorf("invalid request_source: %q", run.RequestSource)
 		}
@@ -2536,14 +2567,14 @@ func (ws *WorkerStore) RecordWorkerRun(account string, run WorkerRunRecord) (Wor
 		run.Status = "admitted"
 	}
 	switch run.Status {
-	case "admitted", "running", "succeeded", "failed", "cancelled":
+	case "admitted", "queued", "preparing", "running", "succeeded", "failed", "cancelled":
 	default:
 		return WorkerRunRecord{}, fmt.Errorf("invalid run status: %q", run.Status)
 	}
 	// A delayed scheduler observation must never reopen cancelled/completed work
 	// or replace its terminal outcome. Serialize this check with the write.
 	if existingOk && ((AutomationV2Terminal(existingRun.Status) && run.Status != existingRun.Status) ||
-		(existingRun.Status == "running" && run.Status == "admitted")) {
+		(existingRun.Status == "running" && (run.Status == "admitted" || run.Status == "queued" || run.Status == "preparing"))) {
 		return WorkerRunRecord{}, fmt.Errorf("%w: cannot regress run status from %s to %s", ErrWorkerConflict, existingRun.Status, run.Status)
 	}
 	if run.Deliverables == nil {
@@ -2562,11 +2593,16 @@ func (ws *WorkerStore) RecordWorkerRun(account string, run WorkerRunRecord) (Wor
 	if err := m.setPayload(WorkerRealtimePayload{WorkerID: workerID, Revision: w.Revision, LifecycleState: w.LifecycleState, ChangeSummary: "run " + run.Status}); err != nil {
 		return WorkerRunRecord{}, err
 	}
+	if settle != nil {
+		if err := settle(); err != nil {
+			return WorkerRunRecord{}, err
+		}
+	}
 	if err := ws.store.commitWorkerRealtime(m); err != nil {
 		return WorkerRunRecord{}, err
 	}
 	published = m
-	if AutomationV2Terminal(run.Status) && (!existingOk || existingRun.Status != run.Status) {
+	if AutomationV2Terminal(run.Status) && (!existingOk || existingRun.Status != run.Status || cleanupSignalChanged(existingRun.Cleanup, run.Cleanup)) {
 		stored := run
 		finished, finishedWorker = &stored, w
 	}
@@ -2756,6 +2792,7 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 	now := time.Now().UnixMilli()
 	batch := ws.store.NewBatch()
 	defer batch.Close()
+	var createdWorkers []string
 
 	for _, rec := range toMigrate {
 		targetWorkerID := rec.AutomationID
@@ -2911,6 +2948,7 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 			summary.Errors = append(summary.Errors, fmt.Sprintf("batch set worker %s: %v", w.ID, err))
 			continue
 		}
+		createdWorkers = append(createdWorkers, w.ID)
 
 		// Only persist revisions for which legacy data actually contains a snapshot.
 		for _, r := range []uint64{w.Revision} {
@@ -3090,6 +3128,10 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 	if err := batch.Commit(pebble.Sync); err != nil {
 		summary.MigratedCount = 0
 		return summary, err
+	}
+	// Migrated workers are new scheduling inputs, like any other worker write.
+	for _, id := range createdWorkers {
+		ws.store.signalScheduling(SchedulingSignal{Kind: SchedulingSignalWorker, AccountScopeID: account, WorkerID: id})
 	}
 	return summary, nil
 }

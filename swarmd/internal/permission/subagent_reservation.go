@@ -28,6 +28,8 @@ type SubagentReservationRequest struct {
 	ReadyCount     int
 	MaxConcurrency int
 	Delegated      bool
+	// Helper is set only by the authenticated worker-Coder launch boundary.
+	Helper bool
 }
 
 type SubagentReservationResult struct {
@@ -67,6 +69,38 @@ func (s *Service) ReserveSubagentWave(request SubagentReservationRequest) (Subag
 			return SubagentReservationResult{}, errors.New("task call already reserved with a different exact wave or program")
 		}
 		return reservationResult(existing), nil
+	}
+	if request.Helper {
+		if request.Program || request.SwarmMode {
+			return SubagentReservationResult{}, errors.New("helper reservations cannot launch programs or swarms")
+		}
+		limits, err := s.store.GetLimits(request.AccountScopeID)
+		if err != nil {
+			return SubagentReservationResult{}, err
+		}
+		records, err := s.store.ListSubagentWaveReservations(request.SessionID, "")
+		if err != nil {
+			return SubagentReservationResult{}, err
+		}
+		total, active := 0, 0
+		for _, record := range records {
+			if record.Status == "deny" || record.Status == "denied" {
+				continue
+			}
+			total += record.LaunchCount
+			active += record.ActiveCount
+		}
+		if active+request.LaunchCount > limits.HelperConcurrency {
+			return SubagentReservationResult{}, fmt.Errorf("helper_concurrency limit %d exceeded", limits.HelperConcurrency)
+		}
+		if total+request.LaunchCount > limits.HelpersPerJob {
+			return SubagentReservationResult{}, fmt.Errorf("helpers_per_job limit %d exceeded", limits.HelpersPerJob)
+		}
+		record := pebblestore.SubagentWaveReservation{AccountScopeID: request.AccountScopeID, SessionID: request.SessionID, RunID: request.RunID, CallID: request.CallID, ManifestHash: request.ManifestHash, LaunchCount: request.LaunchCount, ActiveCount: request.LaunchCount, Status: string(SubagentReservationApprove)}
+		if err := s.store.PutSubagentWaveReservation(record); err != nil {
+			return SubagentReservationResult{}, err
+		}
+		return reservationResult(record), nil
 	}
 	// Reservation limits must be authoritative at call time. Reload the
 	// account policy so an edit made after this run started immediately applies
@@ -143,6 +177,16 @@ func (s *Service) ReserveSubagentWave(request SubagentReservationRequest) (Subag
 	}
 	if decision == SubagentReservationApprove && automaticWaves >= policy.AutomaticLaunchesPerParentRun {
 		decision, reason = overBudgetSubagentDecision(policy, "the automatic wave budget is exhausted")
+	}
+	if decision != SubagentReservationApprove && s.signals != nil && policy.Mode == SubagentModeBounded && !request.Delegated {
+		name, value := "active_children", launchLimit
+		if request.SwarmMode {
+			name = "swarm_children"
+		}
+		if automaticWaves >= policy.AutomaticLaunchesPerParentRun {
+			name, value = "delegation_waves", policy.AutomaticLaunchesPerParentRun
+		}
+		s.signals.Emit(pebblestore.Signal{Kind: "limit.reached", Account: request.AccountScopeID, Severity: pebblestore.SignalSeverityWarning, Summary: reason, Attrs: map[string]string{"limit": name, "value": fmt.Sprint(value)}})
 	}
 	status := string(decision)
 	record := pebblestore.SubagentWaveReservation{AccountScopeID: request.AccountScopeID, SessionID: request.SessionID, RunID: request.RunID, CallID: request.CallID, ManifestHash: request.ManifestHash, LaunchCount: request.LaunchCount, SwarmMode: request.SwarmMode, Program: request.Program, ReadyCount: request.ReadyCount, MaxConcurrency: request.MaxConcurrency, Status: status}

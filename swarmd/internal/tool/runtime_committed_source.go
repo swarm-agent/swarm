@@ -100,7 +100,14 @@ func parseCommittedSourceBinding(raw any) (CommittedSourceBinding, error) {
 // ResolveCommittedSource authenticates and resolves an immutable binding for a
 // prior committed Coder child session. Source commit C serves as allocation base;
 // inherited base B serves as delivery base; commit H is the final child HEAD.
+// A successful Coder handoff becomes needs_review before the parent validates
+// or requests a correction. Both terminal phases retain the same exact-source
+// authority; active, errored, dirty, stale and unowned children still fail closed.
 func (r *Runtime) ResolveCommittedSource(scope WorkspaceScope, req CommittedSourceRequest) (CommittedSourceBinding, error) {
+	return r.resolveCommittedSource(scope, req, nil)
+}
+
+func (r *Runtime) resolveCommittedSource(scope WorkspaceScope, req CommittedSourceRequest, recovery *recoveredCoderHandoff) (CommittedSourceBinding, error) {
 	if err := req.Validate(); err != nil {
 		return CommittedSourceBinding{}, err
 	}
@@ -111,6 +118,12 @@ func (r *Runtime) ResolveCommittedSource(scope WorkspaceScope, req CommittedSour
 	parent, err := r.manageWorktreeRecoveryParent(scope)
 	if err != nil {
 		return CommittedSourceBinding{}, err
+	}
+	if recovery != nil {
+		parent.Metadata, err = metadataWithRecoveredHandoff(parent.Metadata, *recovery)
+		if err != nil {
+			return CommittedSourceBinding{}, err
+		}
 	}
 
 	child, err := r.manageWorktreeRecoveryChild(parent, map[string]any{"child_session_id": req.ChildSessionID})
@@ -141,8 +154,18 @@ func (r *Runtime) ResolveCommittedSource(scope WorkspaceScope, req CommittedSour
 	if !found {
 		return CommittedSourceBinding{}, errors.New("committed source child lifecycle missing")
 	}
-	if lifecycle.Active || lifecycle.EndedAt == 0 || lifecycle.Phase != "completed" || lifecycle.Error != "" {
-		return CommittedSourceBinding{}, errors.New("committed source requires an inactive ended completed child lifecycle without errors")
+	if continuation, ok := selectedRow["verified_handoff_continuation"].(verifiedHandoffContinuation); ok {
+		// Preserve the native failed-attempt snapshot. The authenticated current
+		// V3 continuation supplies completion authority for this resolution only.
+		lifecycle.RunID = continuation.RunID
+		lifecycle.Active = continuation.Active
+		lifecycle.EndedAt = continuation.CompletedAt
+		lifecycle.Phase = "completed"
+		lifecycle.Error = continuation.BlockedReason
+	}
+	phaseAllowed := lifecycle.Phase == "completed" || lifecycle.Phase == "needs_review"
+	if lifecycle.Active || lifecycle.EndedAt == 0 || !phaseAllowed || lifecycle.Error != "" {
+		return CommittedSourceBinding{}, errors.New("committed source requires an inactive ended completed or needs_review child lifecycle without errors")
 	}
 	if isProgram {
 		jobRunID := strings.TrimSpace(asString(selectedRow["current_run_id"]))
@@ -362,6 +385,10 @@ func (r *Runtime) authenticateCommittedSourceLineage(parent, child pebblestore.S
 	}
 	if selectedRow == nil {
 		return nil, false, "", errors.New("committed source child is not in the selected parent task call")
+	}
+	selectedRow, err := r.recoveredHandoffRow(parent, child, req, selectedRow)
+	if err != nil {
+		return nil, false, "", err
 	}
 	if asString(selectedRow["phase"]) != "completed" {
 		return nil, false, "", errors.New("committed source requires a successfully completed recorded handoff")

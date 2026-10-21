@@ -53,7 +53,7 @@ which would otherwise let throwaway AI devices reach every machine.
      `tag:swarm` (or `tag:swarm-protected` for read only from AI devices).
      The policy's `ssh` rules keep `tailscale ssh` working once it is tagged.
   2. On the machine:
-     `sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh tailnet-identity on`
+     `sudo bash /var/lib/swarm-headless/install.sh tailnet-identity on`
 
 `install.sh status` shows the Serve entry; Swarm's log says
 `tailnet identity on` when it is active. Turn it off with

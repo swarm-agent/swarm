@@ -214,6 +214,20 @@ func (s *Server) authorizeRepositoryItem(principal identity.Principal, item sess
 	} else if err := validator.ValidateSessionRepositoryLaneForRead(item.SourcePath, item.WorkspacePath, laneOwner, item.Branch); err != nil {
 		return err
 	}
+	owner, found, err := s.sessions.GetSession(laneOwner)
+	if err != nil {
+		return err
+	}
+	// A reviewer allowed to commit security fixes owns a branch checkout
+	// (agent/review-<run>) validated like any owned lane below.
+	if found && sessionsV3MetadataString(owner.Metadata, "worker_role") == pebblestore.WorkerRoleReviewer && sessionsV3MetadataString(owner.Metadata, "worker_review_fixes") == "" {
+		target, _ := owner.Metadata["worker_review_target"].(map[string]any)
+		head, _ := target["head"].(string)
+		if owner.AccountScopeID != principal.AccountScopeID || owner.UserID != principal.UserID || !owner.WorktreeEnabled || sessionsV3MetadataString(owner.Metadata, "swarm_v3_worktree_owner_session_id") != owner.ID || item.Branch != "HEAD" || item.BaseCommit != head || item.WorkspacePath != owner.WorktreeRootPath || item.SourcePath != sessionsV3MetadataString(owner.Metadata, "swarm_v3_source_workspace_path") {
+			return errors.New("review repository identity mismatch")
+		}
+		return worktree.ValidateReviewExecutionIdentity(item.SourcePath, item.WorkspacePath, laneOwner, head)
+	}
 	return worktree.ValidateOwnedIdentity(item.SourcePath, item.WorkspacePath, item.Branch, item.BaseCommit)
 }
 

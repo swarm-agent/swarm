@@ -8,6 +8,20 @@ import (
 	"swarm/packages/swarmd/internal/worktree"
 )
 
+// taskDeliveredState reads the durable delivery receipt, not current local Git
+// readiness. A PR without its URL is not a completed delivery.
+func taskDeliveredState(state, prURL string) string {
+	switch state {
+	case "pull_request":
+		if strings.TrimSpace(prURL) != "" {
+			return state
+		}
+	case "merged", "integrated", "already_integrated":
+		return state
+	}
+	return ""
+}
+
 func inspectTaskGitState(task pebblestore.ProjectTaskRecord, db *pebblestore.SessionStore) taskGitState {
 	return inspectTaskGitStateContext(context.Background(), task, db)
 }
@@ -21,6 +35,16 @@ func inspectTaskGitStateContext(ctx context.Context, task pebblestore.ProjectTas
 		State: "unavailable", ReasonCode: "lane_unavailable", Reason: "Authenticated captured task lane is unavailable", Freshness: "unknown", AllowedActions: []string{},
 	}
 	res := taskGitState{worktreeBranch: task.WorktreeBranch, worktreeName: task.WorktreeName, gitStatus: "unknown", deliveryAssessment: a}
+	if task.Agent == pebblestore.WorkerRoleReviewer {
+		a.State, a.ReasonCode, a.Reason, a.Freshness = "report_only", "reviewer_report", "Reviewer jobs return reports; nothing can be delivered", "observed"
+		return res
+	}
+	if receipt := task.Integration; receipt != nil && taskDeliveredState(receipt.State, receipt.PullRequestURL) != "" {
+		// The receipt describes delivery already performed. Do not inspect a
+		// possibly moved or removed checkout as if delivery were still pending.
+		a.State, a.ReasonCode, a.Reason = receipt.State, "delivery_receipt", "Job delivery recorded"
+		return res
+	}
 	if db == nil || task.SessionID == "" || task.Archived || task.Status == "pending_approval" || task.Status == "planning" || task.Status == "queued" || task.Agent == "image" || task.Agent == "video" || task.Agent == "sound" || task.Agent == "audio" {
 		return res
 	}
@@ -40,8 +64,10 @@ func inspectTaskGitStateContext(ctx context.Context, task pebblestore.ProjectTas
 	res.worktreeBranch, res.baseBranch, res.baseCommit = session.WorktreeBranch, session.WorktreeBaseBranch, base
 	res.worktreeName = strings.TrimPrefix(strings.TrimPrefix(res.worktreeBranch, "agent/"), "worktree/")
 	a.BaseOID, a.SourceBranch, a.TargetBranch = base, res.worktreeBranch, res.baseBranch
-	assessment := worktree.AssessTaskDelivery(ctx, worktree.TaskDeliveryInput{Identity: *a, SourcePath: session.WorktreeRootPath, TargetPath: source})
-	assessment = worktree.ObserveTaskDeltaReceipt(ctx, worktree.TaskDeliveryInput{Identity: assessment, SourcePath: session.WorktreeRootPath, TargetPath: source}, task.Integration)
+	in := worktree.TaskDeliveryInput{Identity: *a, SourcePath: session.WorktreeRootPath, TargetPath: source}
+	assessment := worktree.AssessTaskDelivery(ctx, in)
+	in.Identity = assessment
+	assessment = worktree.ObserveTaskDeltaReceipt(ctx, in, task.Integration)
 	if attempt := task.ActiveAttempt(); attempt != nil && attempt.Recovery != nil && attempt.Recovery.PreparedHead != "" && assessment.SourceOID == attempt.Recovery.PreparedHead {
 		assessment.State, assessment.ReasonCode, assessment.Reason = "ambiguous", "unresolved_recovery", "Resolve and commit the retained task-delta conflicts in the repair session before integration"
 		assessment.AllowedActions = []string{}
@@ -93,7 +119,7 @@ func reconcileTaskGitState(db *pebblestore.SessionStore, task *pebblestore.Proje
 }
 
 func reconcileTaskGitStateContext(ctx context.Context, db *pebblestore.SessionStore, task *pebblestore.ProjectTaskRecord) error {
-	if task == nil {
+	if task == nil || task.Design != nil {
 		return nil
 	}
 	state := inspectTaskGitStateContext(ctx, *task, db)

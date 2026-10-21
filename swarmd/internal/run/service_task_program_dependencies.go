@@ -166,6 +166,7 @@ func (p *taskProgramScheduler) boundedLanePatch(lane pebblestore.TaskProgramRepo
 	output := &taskDependencyBuffer{limit: 128 * 1024}
 	cmd.Stdout, cmd.Stderr = output, output
 	sandbox.Prepare(ctx, cmd)
+	defer sandbox.ReleaseGit(cmd)
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("read bounded dependency source: %w", err)
 	}
@@ -218,6 +219,7 @@ func (p *taskProgramScheduler) integratedCoderSourceEvidence(inline bool) (strin
 	output := &taskDependencyBuffer{limit: 128 * 1024}
 	cmd.Stdout, cmd.Stderr = output, output
 	sandbox.Prepare(ctx, cmd)
+	defer sandbox.ReleaseGit(cmd)
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("read bounded integrated Coder source: %w", err)
 	}

@@ -70,6 +70,10 @@ func ResolveModeTransition(session pebblestore.SessionSnapshot, activeProfile pe
 		}
 	}
 
+	if targetMode == sessionruntime.ModePlan || sessionruntime.NormalizeMode(session.Mode) == sessionruntime.ModePlan {
+		profile = agentruntime.WithAdvancedPlanning(profile)
+	}
+
 	agentName := strings.TrimSpace(profile.Name)
 	if agentName == "" {
 		agentName = metadataString(session.Metadata, "agent_name")

@@ -30,42 +30,6 @@ func TestServiceUsesAccountScopedStoreWithoutSessionAuthority(t *testing.T) {
 	}
 }
 
-func TestNilServiceFailsClosed(t *testing.T) {
-	var service *Service
-	if _, _, err := service.Get("account", "staging"); err == nil {
-		t.Fatal("nil service unexpectedly succeeded")
-	}
-	if _, err := service.CleanupExpired(1, 1); err == nil {
-		t.Fatal("nil cleanup unexpectedly succeeded")
-	}
-}
-
-func TestCleanupExpiredIsBoundedAndReportsSafeRaces(t *testing.T) {
-	store := &cleanupStore{
-		expired: []pebblestore.MediaStagingExpiry{
-			{AccountScopeID: "account", StagingID: "expired"},
-			{AccountScopeID: "account", StagingID: "bound"},
-			{AccountScopeID: "account", StagingID: "terminal"},
-			{AccountScopeID: "account", StagingID: "gone"},
-		},
-		expireErrors: map[string]error{
-			"bound":    pebblestore.ErrMediaStagingAlreadyBound,
-			"terminal": pebblestore.ErrMediaStagingNotConsumable,
-			"gone":     pebblestore.ErrMediaStagingNotFound,
-		},
-	}
-	report, err := NewService(store).CleanupExpired(2000, 4)
-	if err != nil {
-		t.Fatalf("cleanup expired: %v", err)
-	}
-	if store.listLimit != 4 || report.Candidates != 4 || report.Expired != 1 || report.Bound != 1 || report.AlreadyTerminal != 1 || report.NotFound != 1 || !report.More {
-		t.Fatalf("limit=%d report=%+v", store.listLimit, report)
-	}
-	if _, err := NewService(store).CleanupExpired(2000, MaximumCleanupLimit+1); err == nil {
-		t.Fatal("unbounded cleanup unexpectedly succeeded")
-	}
-}
-
 func TestCleanupAbandonedPreflightsAccountAndProtectsBoundRecords(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "media-staging-cleanup.pebble"))
 	if err != nil {

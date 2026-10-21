@@ -25,7 +25,7 @@ func (i remoteTokenIssuer) Mint(name string, scopes []string) (string, string, e
 	if actor.UserID == "" || actor.AccountScopeID == "" {
 		return "", "", errors.New("complete Swarm setup before enabling remote access")
 	}
-	token, record, err := i.security.CreateScopedToken(name, scopes, actor.AccountScopeID, actor.UserID, 0, "", "")
+	token, record, err := i.security.CreateInternalToken(name, scopes, actor.AccountScopeID, actor.UserID)
 	if err != nil {
 		return "", "", err
 	}

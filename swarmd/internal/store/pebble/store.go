@@ -12,10 +12,17 @@ import (
 	"sync/atomic"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/cockroachdb/pebble/bloom"
 )
 
 type Store struct {
+	runnerExpiryOnce            sync.Once
+	runnerExpiryCancel          context.CancelFunc
+	runnerExpiryDone            chan struct{}
+	runnerWakeMu                sync.Mutex
+	runnerWake                  chan struct{}
 	db                          *pebble.DB
+	cache                       *pebble.Cache
 	path                        string
 	closed                      atomic.Bool
 	sessionMutations            *sessionMutationCoordinator
@@ -38,22 +45,58 @@ type Store struct {
 	projectPublisher            func(V3RealtimeOutboxRecord)
 	projectTaskStatusObserver   func(ProjectTaskStatusTransition)
 	beforeProjectTaskUpdateHook func(taskID string) error
+	signalsMu                   sync.Mutex
 	workersMu                   sync.Mutex
+	limitSignals                *SignalStore
 	workerRunObserver           func(worker WorkerRecord, run WorkerRunRecord)
+	jobReviewObserver           func(account, worker, run string, review JobReview)
+	designJobEndObserver        func(task ProjectTaskRecord)
 	workerPublisherMu           sync.RWMutex
 	workerPublisher             func(V3RealtimeOutboxRecord)
 	workerBudgetPublisher       func(NotificationRecord)
+	schedulingObserver          atomic.Pointer[func(SchedulingSignal)]
+	budgetReadObserver          atomic.Pointer[func(string)]
 }
 
+// storeBlockCacheBytes sizes the shared sstable block cache. Pebble's 8 MiB
+// default made hot point reads re-read and re-checksum blocks from disk.
+const storeBlockCacheBytes = 64 << 20
+
+// storeBloomBitsPerKey gives about a 1% false-positive rate, so point Gets for
+// absent keys (budget holds, reservations, unset policies) skip the sstable.
+const storeBloomBitsPerKey = 10
+
 func Open(path string) (*Store, error) {
-	return openWithOptions(path, &pebble.Options{})
+	return openWithOptions(path, storeOptions(false))
 }
 
 func OpenReadOnly(path string) (*Store, error) {
-	return openWithOptions(path, &pebble.Options{ReadOnly: true})
+	return openWithOptions(path, storeOptions(true))
 }
 
-func openWithOptions(path string, opts *pebble.Options) (*Store, error) {
+// storeOptions is shared by read-write and read-only opens so both read the
+// same table format: a real block cache and a bloom filter on every level.
+// The caller owns opts.Cache's reference and releases it on Close.
+func storeOptions(readOnly bool) *pebble.Options {
+	opts := &pebble.Options{ReadOnly: readOnly, Cache: pebble.NewCache(storeBlockCacheBytes)}
+	opts.Levels = make([]pebble.LevelOptions, 7)
+	for i := range opts.Levels {
+		opts.Levels[i].FilterPolicy = bloom.FilterPolicy(storeBloomBitsPerKey)
+		opts.Levels[i].FilterType = pebble.TableFilter
+	}
+	return opts.EnsureDefaults()
+}
+
+func openWithOptions(path string, opts *pebble.Options) (store *Store, err error) {
+	if opts.Cache != nil {
+		// Pebble takes its own reference on Open; the store keeps this one
+		// until Close, and a failed open releases it here.
+		defer func() {
+			if err != nil {
+				opts.Cache.Unref()
+			}
+		}()
+	}
 	if err := secureDirectory(filepath.Dir(path)); err != nil {
 		return nil, fmt.Errorf("secure db parent directory: %w", err)
 	}
@@ -75,7 +118,7 @@ func openWithOptions(path string, opts *pebble.Options) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("secure pebble db directory: %w", err)
 	}
-	store := &Store{db: db, path: path, sessionMutations: newSessionMutationCoordinator()}
+	store = &Store{db: db, cache: opts.Cache, path: path, sessionMutations: newSessionMutationCoordinator()}
 	if !opts.ReadOnly {
 		if err := NewSessionStore(store).prepareProjectPreviewCache(); err != nil {
 			_ = db.Close()
@@ -115,8 +158,17 @@ func (s *Store) Close() error {
 	if s == nil || s.db == nil {
 		return nil
 	}
+	if s.runnerExpiryCancel != nil {
+		s.runnerExpiryCancel()
+		<-s.runnerExpiryDone
+	}
 	s.closed.Store(true)
-	return s.db.Close()
+	err := s.db.Close()
+	if s.cache != nil {
+		s.cache.Unref()
+		s.cache = nil
+	}
+	return err
 }
 
 func (s *Store) Path() string {

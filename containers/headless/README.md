@@ -1,5 +1,12 @@
 # Headless distribution image (Linux amd64)
 
+For the independent **core-only host package**, see
+[core/README.md](core/README.md). It builds the dedicated Headless command,
+packages the operational CLI and service without a setup app, and initializes
+through the private CLI. Its local candidate verification and remaining release
+gates are explicit. The image and setup-app distribution below retain their
+existing contracts; they are separate from that new package.
+
 To run Swarm on a machine (a server or your own PC) with its setup page, use
 the one-line installer in [app/README.md](app/README.md): no Tailscale needed,
 everything listens on 127.0.0.1, and your AI on that machine connects to
@@ -12,7 +19,7 @@ This packages the existing daemon, not a workspace container runner. It builds
 `swarmd`, `swarmctl`, and `swarm-fff-search` with CGO using the daemon targets and
 shared buildinfo fields from `scripts/build-main-dist.sh`. The build stage uses
 Debian Trixie and the runtime uses Ubuntu 26.04, both with glibc; Go is pinned to
-the modules' 1.26.9 requirement. Build concurrency is bounded to two. Only
+the modules' 1.26.10 requirement. Build concurrency is bounded to two. Only
 linux/amd64 is supported by the vendored FFF library.
 
 ## Build and inspect (no daemon startup)
@@ -166,6 +173,11 @@ sequence. A rejected model or workspace operation remains an error, and workspac
 registration does not initialize Git, commit files or opt into ignoring dirty
 content. Prepare/review the chosen repository first.
 
+On Google Cloud, `setup credential --provider vertex --project P [--location L]`
+is the key-free alternative. It runs Gemini through Vertex AI as the machine's
+attached service account and reads no stdin. See "Gemini on Vertex (no key)"
+in `containers/sealed/README.md`.
+
 `setup complete` checks persisted identity, credentials, workspace and all seven
 canonical model assignments before setting the existing onboarding-complete flag.
 It does not start agents or claim provider reachability after setup. API failures
@@ -254,7 +266,7 @@ the project**, then run without shell tracing:
 set -eu
 umask 077
 set -C
-docker exec swarm-headless swarmctl setup sdk-token --expires-in-seconds 3600 \
+docker exec swarm-headless swarmctl setup sdk-token \
   > "${SWARM_SDK_TOKEN_FILE:?choose a new private file outside the project}"
 )
 </copy>

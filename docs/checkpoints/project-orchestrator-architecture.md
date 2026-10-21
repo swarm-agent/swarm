@@ -145,7 +145,7 @@ The checked-in tool contract is the authority; this section summarizes it.
 
 * **Delegation is `manage_projects`**, not a `task` tool (the orchestrator has none): `propose_task` (Coder for small work, `coder_assignments` for parallel Coders, Swarm with a structured `plan_document` for big work, `task_program` for dependent stages), `wait_tasks` to durably wait for linked task outcomes, `get_task` / `refine_task` / `edit_requirements` for plan revision, plus `list`, `get`, `create`, `update`, `list_sources`, `inspect_source`. Task cards need the user's approval before launch. `synthesize_context` is retired: Swarm generates `project.md` when a project is created (`POST /v3/projects`), and `POST /v3/projects/{id}/context:retry` reruns a failed generation.
 * **`plan_manage` and `exit_plan_mode` are disabled**: the orchestrator plans on project task cards, not session plans.
-* **Enabled**: `read`, `search`, `find`, `list`, `bash`, `websearch`, `webfetch`, `media_inspect`, `ask_user`, `manage_projects`, `manage_workspace` (register existing folders; never creates directories or runs `git init`), `manage_workers`, `manage_automation`, `manage_sessions`, `manage_worktree`, `manage_memory`, `manage_design`, `manage_artifact`, `manage_video`, `manage_environments`, `manage_connections`, `manage-theme`.
+* **Enabled**: `read`, `search`, `find`, `list`, `bash`, `websearch`, `webfetch`, `media_inspect`, `ask_user`, `manage_projects`, `manage_workspace` (register existing folders; never creates directories or runs `git init`), `manage_workers`, `manage_automation`, `manage_sessions`, `manage_worktree`, `manage_memory`, `swarm_design`, `manage_artifact`, `manage_video`, `manage_environments`, `manage_connections`, `manage-theme`.
 
 ---
 

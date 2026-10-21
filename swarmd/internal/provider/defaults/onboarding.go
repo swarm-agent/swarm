@@ -83,9 +83,11 @@ var providerDefaultsByProvider = map[string]ProviderDefaults{
 
 // providerDefaultsAliases names providers that serve another provider's model
 // catalog and therefore share its onboarding defaults instead of duplicating
-// model identifiers. Claude Code runs Anthropic models through the local CLI.
+// model identifiers. Claude Code runs Anthropic models through the local CLI;
+// Vertex runs Google's Gemini models through Vertex AI.
 var providerDefaultsAliases = map[string]string{
 	"claudecode": "anthropic",
+	"vertex":     "google",
 }
 
 func Lookup(providerID string) (ProviderDefaults, bool) {

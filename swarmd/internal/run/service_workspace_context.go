@@ -119,12 +119,29 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 			readOnlyRoots = mergeSessionWorkspaceRoots(readOnlyRoots, roots)
 			roots = []string{resolvedPath}
 		}
+		reviewCheckout := ""
+		reviewFixes := false
+		if mapString(session.Metadata, "worker_role") == pebblestore.WorkerRoleReviewer {
+			roots = []string{resolvedPath}
+			readOnlyRoots = nil
+			if sessionReviewFixes(session.Metadata) {
+				// Its own writable branch checkout only (a job checkout,
+				// not a read-only review checkout).
+				reviewFixes = true
+			} else if !sandbox.OwnerTurnedOff() {
+				// The sandbox's read-only review checkout. With the sandbox
+				// off by the owner's choice nothing is registered: the
+				// reviewer runs in its checkout like every other agent.
+				reviewCheckout = resolvedPath
+			}
+		}
 		return tool.WorkspaceScope{
+			ReviewCheckout:       reviewCheckout,
 			PrimaryPath:          resolvedPath,
 			Roots:                roots,
 			ReadOnlyRoots:        readOnlyRoots,
 			MutationScopes:       mutationScopes,
-			RejectScopeExpansion: agentruntime.IsCoderAgentName(mapString(session.Metadata, "requested_subagent")),
+			RejectScopeExpansion: reviewCheckout != "" || reviewFixes || agentruntime.IsCoderAgentName(mapString(session.Metadata, "requested_subagent")),
 			Principal:            principal,
 			SessionID:            strings.TrimSpace(session.ID),
 			WorktreeEnabled:      true,
@@ -294,6 +311,7 @@ func linkedWorktreeGitAdminRoot(worktreePath string) (string, error) {
 	}
 	cmd := exec.Command("git", "-C", worktreePath, "rev-parse", "--path-format=absolute", "--git-dir")
 	sandbox.Prepare(context.Background(), cmd)
+	defer sandbox.ReleaseGit(cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("resolve linked worktree Git admin path: %s", strings.TrimSpace(string(output)))
@@ -408,7 +426,7 @@ func appendHostRuntimeContext(base string, workspacePath string, workspaceRoots 
 	base = strings.TrimSpace(base)
 	workspacePath = strings.TrimSpace(workspacePath)
 	if workspacePath == "" {
-		return base + "\n\nProject orchestration runtime policy:\n- No ambient repository checkout is selected; this is not a repository setup failure.\n- Use manage_projects list_sources and inspect_source with the project_id and explicit workspace_id or workspace_path to resolve authorized sources and inspect readiness. Use manage_projects inspect_files with that explicit source and inspection={tool: read|list|search|find, arguments: {...}} for source content. For linked task results supply exact project_id, task_id, attempt_id and source_session_id from wait_tasks/get_task; retain returned target.reference including head_commit. Validate that isolated result via manage_environments project_result=target.reference and the normal ensure/exec/release lease workflow; do not substitute current dev for the selected result. Task status is not testing, acceptance or integration evidence. manage-worktree inspect_source is regular-task recovery, not project-task inspection. Delegate from this project chat; do not ask the user to open a workspace or run git init.\n- Project membership is not filesystem authority. Generic cwd-dependent tools are unavailable here; their failure does not mean the project or target repository is absent. No first-workspace fallback is permitted. Explicit account-authorized Bash workspace_path and Git recovery remain available independently of task inspection and session bookkeeping; inspect exact paths, commits and destination before mutation.\n"
+		return base + "\n\nProject orchestration runtime policy:\n- No ambient repository checkout is selected; this is not a repository setup failure.\n- Use manage_projects list_sources and inspect_source with the project_id and explicit workspace_id or workspace_path to resolve authorized sources and inspect readiness. Use manage_projects inspect_files with that explicit source and inspection={tool: read|list|search|find, arguments: {...}} for source content. For linked task results supply exact project_id, task_id, attempt_id and source_session_id from wait_tasks/get_task; retain returned target.reference including head_commit. Do not substitute current dev for the selected result. Task status is not testing, acceptance or integration evidence. manage-worktree inspect_source is regular-task recovery, not project-task inspection. Delegate from this project chat; do not ask the user to open a workspace or run git init.\n- Project membership is not filesystem authority. Generic cwd-dependent tools are unavailable here; their failure does not mean the project or target repository is absent. No first-workspace fallback is permitted. Explicit account-authorized Bash workspace_path and Git recovery remain available independently of task inspection and session bookkeeping; inspect exact paths, commits and destination before mutation.\n"
 	}
 	workspaceRoots = append([]string(nil), workspaceRoots...)
 	if len(workspaceRoots) == 0 {
@@ -417,7 +435,7 @@ func appendHostRuntimeContext(base string, workspacePath string, workspaceRoots 
 
 	var block strings.Builder
 	block.WriteString("Workspace runtime policy:\n")
-	block.WriteString("- Tools run directly on the host workspace path: ")
+	block.WriteString("- Workspace path (sandbox commands, scoped file tools): ")
 	block.WriteString(workspacePath)
 	block.WriteString("\n")
 	for _, line := range workspaceGitContext(workspacePath) {

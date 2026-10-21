@@ -29,7 +29,9 @@ func taskDeliveryNotActionableMessage(projectID, taskID string, a *pebblestore.T
 	var remedy string
 	switch {
 	case a.Freshness != "observed":
-		remedy = "the task's Git state could not be observed (freshness " + fmt.Sprintf("%q", a.Freshness) + "); reload the task (GET " + taskPath + ") and retry"
+		// Usually transient (a slow Git read or heads moving during it);
+		// nothing was integrated, so repeating the request is safe.
+		remedy = "the task's Git state could not be observed (freshness " + fmt.Sprintf("%q", a.Freshness) + "); nothing was integrated; retry POST " + taskPath + "/integrate, and if it repeats reload the task (GET " + taskPath + ") to see its delivery state"
 	case state == "empty" && a.SourceDirty:
 		remedy = "the task worktree has uncommitted changes but no commits since its base, and only commits are integrated; commit the changes on branch " + fmt.Sprintf("%q", a.SourceBranch) + " (for example ask the task session to commit them), then retry POST " + taskPath + "/integrate"
 	case state == "empty":

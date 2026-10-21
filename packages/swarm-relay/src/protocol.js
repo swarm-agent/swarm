@@ -30,6 +30,8 @@ export const TOOL_SCOPES = {
   swarm_get_project: SCOPE_READ,
   swarm_list_workers: SCOPE_READ,
   swarm_get_worker: SCOPE_READ,
+  swarm_get_limits: SCOPE_READ,
+  swarm_set_limits: SCOPE_WRITE,
   swarm_get_usage: SCOPE_READ,
   swarm_list_models: SCOPE_READ,
   swarm_list_tasks: SCOPE_READ,
@@ -69,6 +71,8 @@ export const TOOL_SCOPES = {
   swarm_approve_task: SCOPE_MANAGE,
   // Workers and jobs (the default surface): reading is read; deploying,
   // giving, answering, merging, stopping and scheduling jobs is write.
+  swarm_request_update: SCOPE_MANAGE,
+  swarm_cancel_update: SCOPE_MANAGE,
   swarm_status: SCOPE_READ,
   swarm_activity: SCOPE_READ,
   swarm_list_runs: SCOPE_READ,

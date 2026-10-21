@@ -43,6 +43,7 @@ import (
 	"swarm/packages/swarmd/internal/htmlcapture"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/taskscope"
@@ -70,7 +71,7 @@ const (
 	maxSearchHelperStdout               = 8 * 1024 * 1024
 	maxSearchHelperStderr               = 64 * 1024
 	defaultBashTimeout                  = 2 * time.Minute
-	maxBashTimeout                      = 30 * time.Minute
+	maxBashTimeout                      = provideriface.MaxToolCallDuration
 	defaultGitTimeout                   = 20 * time.Second
 	defaultGitCommitTimeout             = 5 * time.Minute
 	defaultSearchTimeout                = 8 * time.Second
@@ -172,57 +173,55 @@ var (
 )
 
 type Runtime struct {
-	maxParallel           int
-	httpClient            *http.Client
-	exaConfigResolver     func(context.Context) (ExaRuntimeConfig, error)
-	sessions              manageSessionService
-	publishSessionOutbox  func(pebblestore.V3RealtimeOutboxRecord) error
-	workspace             manageWorktreeWorkspaceService
-	worktrees             manageWorktreeConfigService
-	agents                manageAgentService
-	orchestration         manageOrchestrationPolicyService
-	todos                 manageTodoService
-	automations           *automation.Service
-	automationExecution   *automation.ExecutionService
-	automationPolicy      *automation.PolicyApproval
-	actions               manageActionService
-	uiSettings            manageThemeUISettingsService
-	themeWorkspace        manageThemeWorkspaceService
-	artifacts             *artifact.Registry
-	artifactAuthority     ArtifactAuthority
-	artifactV3Importer    ArtifactV3NativeImporter
-	artifactV2Author      *artifactv2.AuthorService
-	artifactV3Author      *ArtifactV3AuthorService
-	directArtifactV3Mu    sync.Mutex
-	directArtifactV3ByRun map[string]directArtifactV3Publication
-	artifactV2Video       *artifactv2.VideoConversionService
-	artifactV3Video       ArtifactV3VideoConversionService
-	htmlCapture           htmlcapture.Renderer
-	htmlAnimationCapture  htmlcapture.AnimationRenderer
-	svgRasterizer         videogen.SVGRasterizer
-	animationJobsMu       sync.Mutex
-	animationJobs         map[string]context.CancelFunc
-	imageGeneration       ManagedImageGenerationService
-	videoGeneration       ManagedVideoGenerationService
-	audioGeneration       ManagedAudioGenerationService
-	video                 manageVideoService
-	videoSources          *videosource.Service
-	videoProjects         manageVideoProjectService
-	videoRender           manageVideoRenderService
-	searchCoordinator     *SearchCoordinator
-	focusedPartMu         sync.Mutex
-	focusedPartProtocols  map[string]focusedPartProtocolState
-	sessionController     manageSessionController
-	capacityProvider      manageSessionCapacityProvider
-	connections           manageConnectionStore
-	environmentsStore     manageEnvironmentStore
-	deploymentsStore      manageDeploymentStore
-	deploymentManager     manageDeploymentLifecycleService
-	workspaceSettings     manageWorkspaceSettingsStore
-	providerRegistry      *provider.Registry
-	projects              manageProjectStore
-	projectTaskDeployer   ProjectTaskDeployer
-	projectTaskLifecycle  ProjectTaskLifecycleService
+	maxParallel          int
+	httpClient           *http.Client
+	exaConfigResolver    func(context.Context) (ExaRuntimeConfig, error)
+	sessions             manageSessionService
+	publishSessionOutbox func(pebblestore.V3RealtimeOutboxRecord) error
+	workspace            manageWorktreeWorkspaceService
+	worktrees            manageWorktreeConfigService
+	agents               manageAgentService
+	orchestration        manageOrchestrationPolicyService
+	todos                manageTodoService
+	automations          *automation.Service
+	automationExecution  *automation.ExecutionService
+	automationPolicy     *automation.PolicyApproval
+	actions              manageActionService
+	uiSettings           manageThemeUISettingsService
+	themeWorkspace       manageThemeWorkspaceService
+	artifacts            *artifact.Registry
+	artifactAuthority    ArtifactAuthority
+	artifactV3Importer   ArtifactV3NativeImporter
+	artifactV2Author     *artifactv2.AuthorService
+	artifactV3Author     *ArtifactV3AuthorService
+	artifactV2Video      *artifactv2.VideoConversionService
+	artifactV3Video      ArtifactV3VideoConversionService
+	htmlCapture          htmlcapture.Renderer
+	htmlAnimationCapture htmlcapture.AnimationRenderer
+	svgRasterizer        videogen.SVGRasterizer
+	animationJobsMu      sync.Mutex
+	animationJobs        map[string]context.CancelFunc
+	imageGeneration      ManagedImageGenerationService
+	videoGeneration      ManagedVideoGenerationService
+	audioGeneration      ManagedAudioGenerationService
+	video                manageVideoService
+	videoSources         *videosource.Service
+	videoProjects        manageVideoProjectService
+	videoRender          manageVideoRenderService
+	searchCoordinator    *SearchCoordinator
+	focusedPartMu        sync.Mutex
+	focusedPartProtocols map[string]focusedPartProtocolState
+	sessionController    manageSessionController
+	capacityProvider     manageSessionCapacityProvider
+	connections          manageConnectionStore
+	environmentsStore    manageEnvironmentStore
+	deploymentsStore     manageDeploymentStore
+	deploymentManager    manageDeploymentLifecycleService
+	workspaceSettings    manageWorkspaceSettingsStore
+	providerRegistry     *provider.Registry
+	projects             manageProjectStore
+	projectTaskDeployer  ProjectTaskDeployer
+	projectTaskLifecycle ProjectTaskLifecycleService
 }
 
 type manageSessionController interface {
@@ -244,11 +243,15 @@ type ExaRuntimeConfig struct {
 }
 
 type WorkspaceScope struct {
-	PrimaryPath string
-	Roots       []string
+	// ReviewCheckout is immutable daemon-owned execution identity.
+	ReviewCheckout string
+	PrimaryPath    string
+	Roots          []string
 	// ReadOnlyRoots contains narrowly authenticated paths that filesystem reads
 	// may access without treating them as workspace roots or mutation targets.
 	ReadOnlyRoots []string
+	// ReadOnlyBash is set by the compiled agent boundary, never tool arguments.
+	ReadOnlyBash bool
 	// MutationScopes contains the task-owned workspace-relative paths that may
 	// be changed by generic filesystem tools. An empty list preserves the normal
 	// whole-workspace contract; a non-empty list is enforced before mutation.
@@ -472,6 +475,8 @@ func WithWorkspaceScope(parent context.Context, scope WorkspaceScope) context.Co
 	}
 	normalized := normalizeWorkspaceScope(scope.PrimaryPath, scope.Roots)
 	normalized.ReadOnlyRoots = append([]string(nil), scope.ReadOnlyRoots...)
+	normalized.ReadOnlyBash = scope.ReadOnlyBash
+	normalized.ReviewCheckout = strings.TrimSpace(scope.ReviewCheckout)
 	normalized.MutationScopes = append([]string(nil), scope.MutationScopes...)
 	normalized.TaskHistoryOnly = scope.TaskHistoryOnly
 	normalized.RejectScopeExpansion = scope.RejectScopeExpansion
@@ -532,12 +537,20 @@ func workspaceScopeFromContext(ctx context.Context, workspacePath string) Worksp
 		// the durable principal/session identity instead. Preserve that identity
 		// while retaining the caller's normalized path scope.
 		scope.TaskHistoryOnly = override.TaskHistoryOnly
+		scope.ReadOnlyBash = override.ReadOnlyBash
+		scope.ReviewCheckout = strings.TrimSpace(override.ReviewCheckout)
+		scope.ReadOnlyRoots = append([]string(nil), override.ReadOnlyRoots...)
+		scope.MutationScopes = append([]string(nil), override.MutationScopes...)
+		scope.RejectScopeExpansion = override.RejectScopeExpansion
+		scope.ExplicitRepositoryRecovery = override.ExplicitRepositoryRecovery
 		scope.SessionID = strings.TrimSpace(override.SessionID)
 		scope.Principal = override.Principal
 		return scope
 	}
 	normalized := normalizeWorkspaceScope(override.PrimaryPath, override.Roots)
 	normalized.ReadOnlyRoots = append([]string(nil), override.ReadOnlyRoots...)
+	normalized.ReadOnlyBash = normalized.ReadOnlyBash || override.ReadOnlyBash
+	normalized.ReviewCheckout = strings.TrimSpace(override.ReviewCheckout)
 	normalized.MutationScopes = append([]string(nil), override.MutationScopes...)
 	normalized.TaskHistoryOnly = override.TaskHistoryOnly
 	normalized.RejectScopeExpansion = override.RejectScopeExpansion
@@ -762,69 +775,6 @@ func (r *Runtime) GenerateManagedVideoArtifact(ctx context.Context, scope Worksp
 		}
 	}
 	return r.executeManageArtifact(ctx, scope, callID, args)
-}
-
-// CreateManagedHTMLArtifactV3 creates a managed HTML or animation Artifact V3 document directly.
-func (r *Runtime) CreateManagedHTMLArtifactV3(ctx context.Context, scope WorkspaceScope, callID, title, content string, parts []map[string]any, profile *pebblestore.SessionArtifactAnimationProfile, run ArtifactRunContext) (string, error) {
-	if r == nil {
-		return "", errors.New("manage_artifact runtime is not configured")
-	}
-	ctx = WithWorkspaceScope(ctx, scope)
-	ctx = WithArtifactRunContext(ctx, run)
-	args := map[string]any{
-		"action":     "create",
-		"title":      strings.TrimSpace(title),
-		"media_type": "text/html",
-		"content":    content,
-	}
-	if len(parts) > 0 {
-		args["parts"] = parts
-	}
-	if profile != nil {
-		args["animation_profile"] = map[string]any{"profile": profile.ProfileID}
-	}
-	return r.executeManageArtifact(ctx, scope, callID, args)
-}
-
-// ReviseManagedHTMLArtifactV3 performs a targeted revision on an existing Artifact V3 document.
-func (r *Runtime) ReviseManagedHTMLArtifactV3(ctx context.Context, scope WorkspaceScope, callID string, artifactRef map[string]any, targetPartIDs []string, content string, run ArtifactRunContext) (string, error) {
-	if r == nil {
-		return "", errors.New("manage_artifact runtime is not configured")
-	}
-	ctx = WithWorkspaceScope(ctx, scope)
-	ctx = WithArtifactRunContext(ctx, run)
-	args := map[string]any{
-		"action":                "revise_v3",
-		"artifact_v3_reference": artifactRef,
-		"target_part_ids":       targetPartIDs,
-		"content":               content,
-	}
-	return r.executeManageArtifact(ctx, scope, callID, args)
-}
-
-// ReadManagedArtifactV3HTML reads the exact HTML content and parts of a native Artifact V3 document.
-func (r *Runtime) ReadManagedArtifactV3HTML(ctx context.Context, scope WorkspaceScope, artifactRef map[string]any) (string, []pebblestore.ArtifactV3Part, error) {
-	if r == nil {
-		return "", nil, errors.New("manage_artifact runtime is not configured")
-	}
-	ctx = WithWorkspaceScope(ctx, scope)
-	ctx = WithArtifactRunContext(ctx, ArtifactRunContext{SessionID: scope.SessionID, RunID: "direct-read-" + scope.SessionID})
-	args := map[string]any{
-		"action":                "read_v3",
-		"artifact_v3_reference": artifactRef,
-	}
-	raw, err := r.executeManageArtifact(ctx, scope, "direct-read-base", args)
-	if err != nil {
-		return "", nil, err
-	}
-	var resp struct {
-		Content string                       `json:"content"`
-		Parts   []pebblestore.ArtifactV3Part `json:"parts"`
-	}
-	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
-		return "", nil, fmt.Errorf("decode read_v3 response: %w", err)
-	}
-	return resp.Content, resp.Parts, nil
 }
 
 func (r *Runtime) SetArtifactV2VideoConversionService(service *artifactv2.VideoConversionService) {
@@ -1076,8 +1026,10 @@ func (r *Runtime) Definitions() []Definition {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"workspace_path": map[string]any{"type": "string", "description": "Optional explicit account-authorized repository root, including project chats without an ambient checkout. Does not bypass command permissions."},
-					"command":        map[string]any{"type": "string", "description": "Shell command to execute"},
+					"workspace_path":   map[string]any{"type": "string", "description": "Optional explicit account-authorized repository root, including project chats without an ambient checkout. Does not bypass command permissions."},
+					"committed_source": map[string]any{"type": "object", "description": "Parent-owned validation of an exact completed Coder child. Use the committed_source tuple returned by manage-worktree recall; mutually exclusive with workspace_path. Account, lineage, inactive lifecycle and clean exact HEAD are revalidated before and after execution. Inspect validation_receipt.verified; command completion alone is not verified validation.", "properties": map[string]any{"task_call_id": map[string]any{"type": "string"}, "child_session_id": map[string]any{"type": "string"}, "head_commit": map[string]any{"type": "string"}}, "required": []string{"task_call_id", "child_session_id", "head_commit"}, "additionalProperties": false},
+					"command":          map[string]any{"type": "string", "description": "Shell command to execute"},
+					"environment":      map[string]any{"type": "string", "description": "A lease id from lease_environment to run the command in. With one lease held, commands run in it without this; with none, they run as usual."},
 					"explanation": map[string]any{
 						"type":        "array",
 						"items":       map[string]any{"type": "string"},
@@ -1086,7 +1038,7 @@ func (r *Runtime) Definitions() []Definition {
 					},
 					"category":   map[string]any{"type": "string", "enum": []string{"read", "write", "update", "delete"}, "description": "Overall effect category: read only observes state; write creates new state, resources, or processes; update is a non-removal in-place mutation; delete removes state and always requires critical=true. Use the highest-impact applicable category."},
 					"critical":   map[string]any{"type": "boolean", "description": "Set true when the user should pay special attention before execution, including public listeners or network exposure, destructive or privileged operations, security-sensitive changes, or other unusually consequential effects."},
-					"timeout_ms": map[string]any{"type": "integer", "description": "Timeout in milliseconds (default 120000, max 1800000)"},
+					"timeout_ms": map[string]any{"type": "integer", "description": "Timeout in milliseconds (default 120000, max 1800000 = 30 minutes; larger values use the max). The call waits for the command up to this limit for every provider; at the limit the command is stopped and the result reports timed_out."},
 				},
 				"required":             []string{"command", "explanation", "category", "critical"},
 				"additionalProperties": false,
@@ -1516,7 +1468,8 @@ func (r *Runtime) Definitions() []Definition {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":                map[string]any{"type": "string", "description": "Action: inspect|list|recall|inspect_source|retain_source|integrate|promote|help"},
+					"action":                map[string]any{"type": "string", "description": "Action: inspect|list|recall|inspect_source|retain_source|recover_handoff|integrate|promote|help. recover_handoff records a successful resumed regular Coder handoff without changing its failed launch or integrating Git; requires task_call_id, child_session_id, child_run_id and source_head."},
+					"child_run_id":          map[string]any{"type": "string", "description": "Exact completed continuation run for recover_handoff"},
 					"recovery":              map[string]any{"type": "boolean", "description": "integrate: attribution-independent fast-forward of exact reviewed commits between account-authorized worktrees. Requires workspace_path, source_branch/head, target_workspace_path, target_branch/head and commits."},
 					"commits":               map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "string"}},
 					"request_id":            map[string]any{"type": "string", "description": "Stable exact-request identity for recovery integration"},
@@ -1545,12 +1498,10 @@ func (r *Runtime) Definitions() []Definition {
 		},
 		manageActionsDefinition(),
 		manageProjectsDefinition(),
-		manageConnectionsDefinition(),
-		manageEnvironmentsDefinition(),
+		leaseEnvironmentDefinition(),
 		manageWorkersV2Definition(),
 		manageAutomationV2Definition(),
-		artifactV3AuthorDefinition(),
-		manageDesignDefinition(),
+		swarmDesignDefinition(),
 		manageArtifactDefinition(),
 		manageVideoDefinition(),
 		taskProgressDefinition(),
@@ -2081,14 +2032,67 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		}
 	}
 
+	ctx = sandbox.WithJobCheckout(ctx, scope.PrimaryPath)
+	if registered := sandbox.ReviewSessionCheckout(scope.SessionID); registered != "" {
+		if scope.ReviewCheckout != "" && scope.ReviewCheckout != registered {
+			return "", errors.New("reviewer execution identity mismatch")
+		}
+		scope.ReviewCheckout = registered
+	}
+	if scope.ReviewCheckout != "" {
+		if path := stringValue(args["workspace_path"]); path != "" && filepath.Clean(path) != filepath.Clean(scope.ReviewCheckout) {
+			return "", errors.New("reviewer workspace_path retargeting is forbidden")
+		}
+		var err error
+		ctx, err = sandbox.WithReviewSession(ctx, scope.SessionID, scope.ReviewCheckout)
+		if err != nil {
+			return "", err
+		}
+		scope.PrimaryPath = scope.ReviewCheckout
+		scope.Roots = []string{scope.ReviewCheckout}
+		scope.ReadOnlyRoots = nil
+		scope.RejectScopeExpansion = true
+	}
 	name := strings.ToLower(strings.TrimSpace(call.Name))
+	managed, managedErr := r.managedExecutionBinding(scope)
+	if managedErr != nil {
+		return "", managedErr
+	}
+	if managed != nil {
+		switch name {
+		case "read", "write", "edit":
+			return r.executeManagedFile(ctx, scope, *managed, name, args)
+		case "git_status", "git_diff", "git_add", "git_commit":
+			return r.executeManagedGit(ctx, scope, *managed, name, args)
+		}
+		if name == "bash" {
+			return r.executeManagedBash(ctx, scope, *managed, args, func(chunk string) {
+				if onProgress != nil {
+					onProgress(Progress{Stage: "output", Output: chunk})
+				}
+			})
+		}
+		switch name {
+		case "ask-user", "ask_user", "exit_plan_mode", "exit-plan-mode", "plan_manage", "plan-manage", "task_progress", "task-progress", "manage-todos", "manage_todos", "websearch", "webfetch":
+			// Pure conversation/control or HTTP inspection; no host checkout access.
+		default:
+			return "", errors.New("managed execution uses a prepared checkout; this host-bound tool cannot access that checkout; use Bash inside the assigned environment")
+		}
+	}
 	switch name {
 	case "read":
 		return executeRead(scope, args)
 	case "write":
 		return executeWrite(scope, args)
 	case "bash":
-		if path := stringValue(args["workspace_path"]); path != "" {
+		if _, selected := args["committed_source"]; selected {
+			return r.executeCommittedSourceBash(ctx, scope, args, func(chunk string) {
+				if onProgress != nil && strings.TrimSpace(chunk) != "" {
+					onProgress(Progress{Stage: "output", Output: strings.TrimSpace(chunk)})
+				}
+			})
+		}
+		if path := stringValue(args["workspace_path"]); path != "" && scope.ReviewCheckout == "" {
 			repo, err := r.recoveryRepository(scope, path)
 			if err != nil {
 				return "", err
@@ -2172,18 +2176,20 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return r.executeManageActions(scope, args)
 	case "manage-projects", "manage_projects":
 		return r.executeManageProjects(ctx, scope, args)
-	case "manage-connections", "manage_connections":
-		return r.executeManageConnections(ctx, scope, args)
-	case "manage-environments", "manage_environments":
-		return r.executeManageEnvironments(ctx, scope, call.CallID, args)
+	case "manage-connections", "manage_connections", "manage-environments", "manage_environments":
+		return "", ErrEnvironmentToolsRemoved
+	case LeaseEnvironmentToolName:
+		return executeLeaseEnvironment(ctx, scope, args)
 	case "manage-deployments", "manage_deployments":
-		return "", errors.New("manage_deployments has been removed; use manage_environments instead")
+		return "", ErrEnvironmentToolsRemoved
 	case "artifact-v2-author", "artifact_v2_author":
-		return "", errors.New("artifact_v2_author is retired; managed authoring uses the context-bound artifact_v3_author capability")
+		return "", errors.New("artifact_v2_author is retired; standalone HTML designs are made with swarm_design")
 	case "artifact-v3-author", "artifact_v3_author":
-		return r.executeArtifactV3Author(ctx, scope, call.CallID, args)
+		return "", errors.New("artifact_v3_author was removed; standalone HTML designs are made with swarm_design")
 	case "manage_design":
-		return r.executeManageDesign(ctx, scope, args)
+		return "", errors.New("manage_design was replaced by swarm_design")
+	case SwarmDesignToolName:
+		return "", errSwarmDesignRunServiceOnly
 	case "manage-artifact", "manage_artifact":
 		return r.executeManageArtifact(ctx, scope, call.CallID, args)
 	case "manage-video", "manage_video":
@@ -2195,6 +2201,9 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 	case "task":
 		return "", errors.New("task must be handled by run-service control-plane")
 	default:
+		if managed != nil {
+			return "", errors.New("custom tools cannot execute against the host while managed execution is selected")
+		}
 		return r.executeCustomTool(ctx, scope, name, args, onProgress)
 	}
 }
@@ -2615,6 +2624,7 @@ func executeGitCommandWithTimeout(parent context.Context, scope WorkspaceScope, 
 	cmd.Stderr = capture
 
 	sandbox.Prepare(ctx, cmd)
+	defer sandbox.ReleaseGit(cmd)
 	err = cmd.Run()
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 	wasTruncated := capture.Truncated()
@@ -2702,6 +2712,7 @@ func gitOutputForEvidence(dir string, env []string, argv ...string) (string, err
 	cmd.Dir = dir
 	cmd.Env = env
 	sandbox.Prepare(ctx, cmd)
+	defer sandbox.ReleaseGit(cmd)
 	output, err := cmd.Output()
 	return strings.TrimSpace(string(output)), err
 }
@@ -6617,6 +6628,8 @@ func (r *Runtime) executeManageWorktree(scope WorkspaceScope, args map[string]an
 		return r.manageWorktreeRecoverySource(scope, args)
 	case "recall":
 		return r.manageWorktreeRecall(scope, args)
+	case "recover_handoff":
+		return r.manageWorktreeRecoverHandoff(scope, args)
 	case "integrate":
 		if boolValue(args["recovery"]) {
 			return r.recoveryIntegrate(scope, args)
@@ -7434,7 +7447,7 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 							childState = "committed"
 						}
 					}
-					if (childState == "committed" || childState == "integrated") && state.Clean {
+					if state.Clean {
 						req := CommittedSourceRequest{
 							TaskCallID:     callID,
 							ChildSessionID: childSession.ID,
@@ -7442,6 +7455,11 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 						}
 						binding, resolveErr := r.ResolveCommittedSource(scope, req)
 						if resolveErr == nil {
+							// A recovered handoff deliberately leaves the original failed
+							// launch untouched. Resolve its current committed evidence.
+							if childState != "integrated" {
+								childState = "committed"
+							}
 							child["committed_source"] = map[string]any{
 								"task_call_id":     callID,
 								"child_session_id": childSession.ID,
@@ -7544,14 +7562,15 @@ func (r *Runtime) manageWorktreeHelp(args map[string]any) (string, error) {
 		"tool":        "manage-worktree",
 		"description": "Worktree lineage recall, integration, promotion, and source recovery manager. Call action='help' for workflow guidance.",
 		"actions": map[string]any{
-			"inspect":        "Inspect git commit history and integration status for workspace worktrees.",
-			"list":           "Alias for inspect.",
-			"recall":         "Read-only recall of delegated child Coder worktree states. Returns committed_source for eligible validated sources. Distinguishes session-owned lanes from promotion-only captured destinations.",
-			"inspect_source": "Inspect bounded UTF-8 files from an unfinished/blocked Coder child worktree.",
-			"retain_source":  "Retain bounded UTF-8 recovery files in parent metadata.",
-			"integrate":      "Preflight and integrate committed child worktree changes into the session-owned parent lane. Delivers inherited base commits (B..H) for corrected children while validating new handoff (C..H). Rejects captured promotion-only destinations.",
-			"promote":        "Promote committed child or session worktrees into captured workspace checkouts. Delivers full commit stack (B..H for corrected children).",
-			"help":           "Show workflow guidance and supported actions.",
+			"inspect":         "Inspect git commit history and integration status for workspace worktrees.",
+			"list":            "Alias for inspect.",
+			"recall":          "Read-only recall of delegated child Coder worktree states. Returns committed_source for eligible validated sources. Distinguishes session-owned lanes from promotion-only captured destinations.",
+			"inspect_source":  "Inspect bounded UTF-8 files from an unfinished/blocked Coder child worktree.",
+			"retain_source":   "Retain bounded UTF-8 recovery files in parent metadata.",
+			"recover_handoff": "After this parent's resumed regular Coder finishes, record task_call_id, child_session_id, child_run_id and source_head. Preserves the failed launch; returns committed_source for exact-child validation. No Git integration.",
+			"integrate":       "Preflight and integrate committed child worktree changes into the session-owned parent lane. Delivers inherited base commits (B..H) for corrected children while validating new handoff (C..H). Rejects captured promotion-only destinations.",
+			"promote":         "Promote committed child or session worktrees into captured workspace checkouts. Delivers full commit stack (B..H for corrected children).",
+			"help":            "Show workflow guidance and supported actions.",
 		},
 		"path_id": toolPathID("manage-worktree"),
 	}
@@ -10771,8 +10790,8 @@ func toolPathID(name string) string {
 		return "tool.manage-connections.v1"
 	case "manage-environments", "manage_environments":
 		return "tool.manage-environments.v1"
-	case "manage_design":
-		return "tool.manage-design.v1"
+	case SwarmDesignToolName:
+		return "tool.swarm-design.v1"
 	case "manage-artifact", "manage_artifact":
 		return "tool.manage-artifact.v1"
 	case "manage-todos", "manage_todos":

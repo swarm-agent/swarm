@@ -44,9 +44,11 @@ var catalogProviderCanonicalIDs = map[string]string{
 // catalogProviderModelSources names runtime providers that serve another
 // provider's model catalog. Lookups read the source provider's records and
 // recommendations and return them keyed to the requesting provider. Claude Code
-// runs Anthropic models through the local CLI.
+// runs Anthropic models through the local CLI; Vertex runs Google's Gemini
+// models through Vertex AI.
 var catalogProviderModelSources = map[string]string{
 	"claudecode": "anthropic",
+	"vertex":     "google",
 }
 
 // catalogModelSource returns the provider whose records serve providerID and
@@ -71,6 +73,8 @@ type CatalogService struct {
 	versionURL string
 	now        func() time.Time
 	mu         sync.Mutex
+	// embeddedOnly: see UseEmbeddedOnly.
+	embeddedOnly bool
 }
 
 type CatalogLookup struct {
@@ -258,6 +262,23 @@ func NewCatalogService(store *pebblestore.ModelCatalogStore) *CatalogService {
 			Timeout: defaultCatalogFetchTimeout,
 		},
 	}
+}
+
+// CatalogEnv set to CatalogEmbedded makes the daemon use only the model
+// snapshot built into the binary and never fetch one, for boxes with no
+// internet access (a sealed agent on a private network). Any other non-empty
+// value is refused at start.
+const (
+	CatalogEnv      = "SWARM_MODEL_CATALOG"
+	CatalogEmbedded = "embedded"
+)
+
+// UseEmbeddedOnly stops every remote snapshot fetch: refreshes seed and keep
+// the pinned snapshot built into this binary.
+func (s *CatalogService) UseEmbeddedOnly() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.embeddedOnly = true
 }
 
 func (s *CatalogService) EnsureBootDefaults() error {
@@ -479,6 +500,13 @@ func (s *CatalogService) refresh(ctx context.Context, force bool, reason string)
 		}
 	}
 
+	if s.embeddedOnly {
+		result := catalogRefreshResultFromMeta(meta)
+		result.UsedCache = meta.RecordCount > 0
+		result.UsedPinned = meta.Source == catalogSourcePinned
+		result.Manual = force
+		return result, nil
+	}
 	force = force || meta.MaterializationVersion != catalogMaterializationVersion
 	version, err := s.fetchSnapshotVersion(ctx, meta, force)
 	if err != nil {

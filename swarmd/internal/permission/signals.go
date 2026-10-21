@@ -39,6 +39,10 @@ func (s *Service) emitPermissionSignal(record pebblestore.PermissionRecord, sour
 		if sourceEventType != "permission.requested" {
 			return
 		}
+		if worker, run := s.workerIdentity(record.SessionID); worker != "" && run != "" {
+			jobRefs := map[string]string{"session_id": record.SessionID, "worker_id": worker, "run_id": run, "permission_id": record.ID, "tool": tool, "job_id": "worker/" + worker + "/" + run}
+			s.signals.Emit(pebblestore.Signal{Kind: "job.waiting", Severity: pebblestore.SignalSeverityWarning, Account: account, Summary: "Worker job is waiting on " + tool + "; inspect get_job for the required action", DedupKey: "job.waiting:" + record.ID, Refs: jobRefs})
+		}
 		s.signals.Emit(pebblestore.Signal{
 			Kind:     "agent.blocked",
 			Severity: pebblestore.SignalSeverityWarning,

@@ -53,6 +53,9 @@ func (s *Server) verifyAuthCredentialConnectionForAccount(ctx context.Context, a
 		RefreshToken: record.RefreshToken,
 		AccountID:    record.AccountID,
 		ExpiresAt:    record.ExpiresAt,
+
+		GoogleProject:  record.GoogleProject,
+		GoogleLocation: record.GoogleLocation,
 	}
 	status, err := s.verifyCredentialMaterialForAccount(ctx, accountScopeID, credential)
 	if err != nil {
@@ -120,6 +123,12 @@ func (s *Server) verifyCredentialMaterialForAccount(ctx context.Context, account
 			}
 			if credential.ExpiresAt <= 0 {
 				credential.ExpiresAt = record.ExpiresAt
+			}
+			if strings.TrimSpace(credential.GoogleProject) == "" {
+				credential.GoogleProject = record.GoogleProject
+			}
+			if strings.TrimSpace(credential.GoogleLocation) == "" {
+				credential.GoogleLocation = record.GoogleLocation
 			}
 		}
 	}

@@ -1,5 +1,7 @@
 # Managed local systemd test environments
 
+> Agents no longer have `manage_environments` or `manage_connections`: those tools are removed. This page describes the environment lifecycle behind the HTTP API. An agent's bash now runs in its folder's environment by itself (`lease_environment`, `swarm_set_environment` with `max_leases`).
+
 This is an explicit `local_podman` adapter to the existing environment lifecycle,
 not a workspace execution profile. Docker/SSH defaults are unchanged. The
 running daemon must contain these changes before these actions are available.
@@ -153,7 +155,9 @@ The task attachment interface uses `manage_environments` or authenticated
 catalog `workspace_id`; attachment operations deliberately do not accept
 `workspace_path` or `project_result` as alternate source authorities. Orchestrator
 may prepare before assignment. A task-linked Swarm may prepare only its current
-task's clean committed isolated source. Product workspace/generation must match
+task's clean committed source. Coding tasks require an owned isolated worktree;
+a general Swarm coordinator may select its exact catalog source read-only while
+its delegated Coder receives an independent worktree. Product workspace/generation must match
 the task source; product commit must match its current clean checkout. Recipe
 source must also resolve to an authorized project workspace generation.
 
@@ -191,6 +195,27 @@ execution. Commit changes, rebuild the explicit source, select the exact new
 runtime, and CAS reassign; never substitute current dev. Detached attachment IDs
 are permanently retired for that task; create a fresh ID. Mutations are bounded
 at 16 live attachments and 4096 retired identities per task.
+
+### Ordinary delegated Coder execution
+
+Task administration may use `acquire_attachment` with `execution_session_id` to
+select the current parent task session. Ordinary Task launch then binds a direct
+Coder child to its own shared receipt before starting it. Durable current lineage,
+account/user, task attempt, source and worktree ownership must match. The child's
+receipt records the parent receipt; each Bash dispatch and provider boundary
+rechecks the current parent selection, lease and attachment. Approval remains in
+the parent's permission scope while execution uses the child's session identity.
+A Coder can also use `manage_environments` itself for the environments the
+user set up; its calls cross the same durable role, task and receipt checks.
+
+A missing or invalid managed selection never falls back to local execution,
+including with `--sandbox=off`. Binding failures retain a blocked selector and
+release the consumer receipt. This slice supports direct Coder delegation and
+local Podman execution with the bounded delegated file/Git handoff described
+below. Nested delegation and context-rotation rebinding remain unsupported.
+Provider-backed repair-cycle claims require exact-candidate live receipts. Other agent roles are refused while the parent has
+a managed execution selection. The returned source commit is the prepared
+baseline, not an attestation of the current remote filesystem.
 
 ### Lifetime and realtime
 
@@ -269,3 +294,115 @@ emulate local rootless systemd. See [managed SSH test environments](managed-ssh-
 for prerequisites, receipts, stop conditions and uncertain cancellation cleanup.
 Local Podman contracts remain unchanged. Cloud authority acquisition and host
 provisioning remain external operator responsibilities, not Swarm broker APIs.
+
+## Delegated Coder checkout and Git handoff
+
+An admitted direct Coder receives a distinct receipt-derived checkout inside the
+selected deployment. Preparation transfers the exact allocated base commit and
+its tree as a shallow Git repository. It does not copy host Git configuration,
+hooks, credentials, unrelated history or the host working directory. The recipe
+must provide Bash, Git and GNU coreutils, plus the project's test dependencies.
+Configure the intended commit identity/signing inside that environment; host
+signing keys and remotes are never copied automatically.
+
+Bash, `read`, `write`, `edit`, `git_status`, `git_diff`, `git_add` and `git_commit`
+use that checkout. File operations reject path traversal, Git metadata and
+symlinks; edits use content-hash compare-and-swap. Other host-bound tools stay
+refused. File staging is limited to 1 MiB per file. Committed source packs are
+limited to 8 MiB, with the existing 4 MiB encoded operation-output limit also
+bounding returned packs. Oversized transfers are rejected explicitly. Symlinks,
+submodules, special files and protected credential-shaped paths are unsupported.
+These limits are admission constraints, not a general repository compatibility
+claim. No local fallback is allowed.
+
+On successful Coder completion, trusted orchestration obtains the remote commit
+and pack through the lease, checks clean source/ancestry and the still-current
+receipt, then imports only into the allocated child worktree. Each of at most
+256 linear commits must stay within owned scope. A dirty, moved or renamed
+local destination is refused; the committed remote checkout is retained for
+inspection. The exact commit ID is preserved. The normal Coder handoff then
+inspects the returned local Git state independently. The parent source branch is
+not integrated, pushed or deployed. A failed handoff must not be reported as a
+successful implementation.
+
+Every operation revalidates the receipt at admission and provider dispatch.
+While a managed command is active, receipt/task validation repeats at roughly
+one-second intervals; revocation, replacement or expiration requests supervised
+cancellation. Command deadlines and explicit stop use the same provider process
+cleanup. A failed cleanup remains an error. Completion or failure releases the
+child receipt; deployment retention/destruction remains the owner's policy.
+Context rotation and other providers require separate qualification.
+
+## Opt-in Headless service prerequisites
+
+The default Headless installation remains Bubblewrap and does not install or
+activate Podman. For an explicitly selected local Podman managed backend on a
+systemd host, an administrator must provision Podman, crun, slirp4netns, uidmap
+and a user session bus; assign a non-overlapping subordinate UID/GID range to
+the daemon account; and enable its persistent user systemd manager. Do not copy
+another host's numeric range without checking allocations.
+
+For the packaged `swarm-headless.service`, the administrator also installs an
+explicit service drop-in before activation:
+
+```ini
+[Service]
+NoNewPrivileges=no
+RestrictSUIDSGID=no
+ProtectControlGroups=no
+PrivateTmp=no
+```
+
+These exceptions allow rootless UID mapping and user-manager cgroup operations.
+Podman's persistent user namespace must also avoid daemon-private temporary
+mounts that disappear across service restarts. The isolated qualification
+observed a subsequent allocation fail in slirp4netns with `cannot mount tmpfs
+on /tmp` when `PrivateTmp=yes`. Existing state created under that setting may
+require an explicitly authorized, drained Podman namespace reset; never migrate
+a shared account's active containers as an incidental capability check.
+They do not select sandbox-off, change loopback listeners, grant permission
+bypass or mount host directories into managed containers. Keep the installed
+Bubblewrap `ExecStart`. Reload systemd and restart only the intended stopped or
+drained daemon as an authorized installation action. An existing live service
+must not be changed as an incidental environment capability check. Verify the
+connection's actual capabilities and a disposable managed build/exec before
+using it for work. Missing prerequisites remain an actionable refusal; no
+rootful or host execution fallback is provided.
+
+## One definition, independent job instances
+
+A definition and its committed build are reusable recipes, not a running job's
+private environment. Use `deploy` with the same successful `build_operation_id`
+to create a distinct deployment for each independent job, up to the definition's
+`deployment_policy.max_instances`. Attach each job to its own deployment and
+acquire that attachment's receipt. Its delegated Coder borrows that assignment
+with a separate child receipt and checkout; it does not provision another box.
+Acquiring another receipt for one existing deployment does not clone it.
+
+Completed managed Coders sharing a Git repository queue their imports behind
+its existing integration lock for at most 30 seconds, within the completion
+deadline. Agent execution remains concurrent. The receipt, source and clean
+remote commit are revalidated after waiting and before the child ref advances;
+cancellation or revoked authority leaves that ref and its files unchanged.
+
+Use `resources.cpu_limit`, `resources.memory_limit` and the rootless PID limit
+for per-instance ceilings appropriate to the workload. These do not reserve a
+fixed amount of RAM per agent. Capacity exhaustion is an explicit refusal, not
+an implicit host fallback or a promise to queue/provision another cloud host.
+
+Managed builds retain their deployments on receipt release. For a fresh job
+instance, explicitly destroy an unleased deployment and deploy again from the
+same build. `ensure` can reuse an unleased compatible deployment and is not a
+clean-reset guarantee. Active receipts prevent destructive lifecycle operations;
+release the owning parent receipt after its delegated work ends, then destroy
+the instance when retention is no longer wanted. Keep each job's exact source,
+deployment and lease association in its durable task attachment.
+
+A managed selection keeps the Swarm owner's receipt controls available through
+`manage_environments`: release, operation inspection/cancellation, deployment
+inspection and attachment listing. These still cross the existing durable
+role/task/receipt checks. Coders have `manage_environments` too.
+Provisioning, reassignment and alternate execution remain blocked while that
+selection is active. Task receipts must be released through the owning task's
+control path with explicit project, task, attachment, workspace and lease
+references; the generic environment endpoint cannot impersonate that consumer.

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // ManagerConfig configures an account-scoped execution capacity manager.
@@ -22,11 +23,15 @@ type Manager struct {
 	maxQueueWaiters int
 	limitResolver   func(accountScopeID string) (int, error)
 
-	mu       sync.Mutex
-	accounts map[string]*accountState
-	counter  atomic.Uint64
-	closed   bool
-	changed  chan struct{}
+	mu         sync.Mutex
+	accounts   map[string]*accountState
+	counter    atomic.Uint64
+	closed     bool
+	changed    chan struct{}
+	drain      DrainStatus
+	drainTimer *time.Timer
+	drainEnd   func(DrainStatus)
+	generation string
 }
 
 type accountState struct {
@@ -121,7 +126,7 @@ func (m *Manager) Acquire(ctx context.Context, req AcquireRequest) (Lease, error
 
 	// Can we admit immediately?
 	// Must have: no waiters ahead of us, session not busy/parked, and totalActive < limit.
-	if len(acc.waiters) == 0 && acc.sessions[req.SessionID] == nil && acc.totalActive < limit {
+	if !m.drain.Draining && len(acc.waiters) == 0 && acc.sessions[req.SessionID] == nil && acc.totalActive < limit {
 		l := m.newLeaseLocked(acc, req)
 		acc.sessions[req.SessionID] = l
 		acc.totalActive++
@@ -329,6 +334,10 @@ func (m *Manager) Close() {
 		return
 	}
 	m.closed = true
+	if m.drainTimer != nil {
+		m.drainTimer.Stop()
+	}
+	m.drainEnd = nil
 	m.signalChangedLocked()
 	for _, acc := range m.accounts {
 		for _, w := range acc.waiters {
@@ -587,7 +596,7 @@ func (m *Manager) wakeEligibleWaitersLocked(acc *accountState) {
 		}
 
 		// 2. New acquire waiter:
-		if acc.sessions[w.req.SessionID] == nil {
+		if !m.drain.Draining && acc.sessions[w.req.SessionID] == nil {
 			// Session is free and capacity slot is available.
 			w.granted = true
 			l := m.newLeaseLocked(acc, w.req)

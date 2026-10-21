@@ -49,11 +49,57 @@ export interface ScopedTokenRecord {
   scopes: TokenScope[];
   worker_id?: string;
   worker_name?: string;
+  /** The fixed end date, when the key has one (milliseconds; 0 or absent: none). */
   expires_at?: number;
+  /** ai, app, bot or internal (Swarm's own keys). */
+  key_kind?: KeyKind | 'internal';
+  /** An AI key's level (read, write, full); a bot key's gateway or operator; an app key's monitor or trigger. */
+  options?: string[];
+  /** active, expired or revoked. */
+  state?: 'active' | 'expired' | 'revoked';
+  /** When the key stops working on its own (milliseconds): 90 days after its last use, or its fixed end date if sooner. */
+  lapses_at?: number;
+  /** unused (90 days without use) or date (its fixed end date). */
+  lapse_reason?: 'unused' | 'date';
+  /** True when the key carries a fixed end date. */
+  fixed_date?: boolean;
+  /** True only for Swarm's internal keys, which last as long as the setup that made them. */
+  never_expires?: boolean;
   last_used_at?: number;
+  /** Where the key was last used from: "this machine", "tailnet LOGIN" or a network such as 203.0.113.0/24. */
+  last_used_from?: string;
+  /** Every place the key has been used from (newest last, bounded). */
+  seen_from?: string[];
   created_at: number;
   revoked?: boolean;
   revoked_at?: number;
+}
+
+/** The three kinds of key a person or their AI holds. */
+export type KeyKind = 'ai' | 'app' | 'bot';
+
+/**
+ * A key for createKey. Every key works while it is used and stops after 90
+ * days unused; expires_in_seconds adds an optional fixed end date (at most 365
+ * days). kind ai: access read, write or full. kind app: scopes, or monitor for
+ * a status-only key. kind bot: agent_name (a sealed agent), operator for the
+ * staff key, and its limits.
+ */
+export interface CreateKeyParams {
+  kind: KeyKind;
+  name: string;
+  access?: 'read' | 'write' | 'full';
+  scopes?: TokenScope[];
+  monitor?: boolean;
+  agent_name?: string;
+  operator?: boolean;
+  messages_per_minute?: number;
+  sessions_per_hour?: number;
+  max_concurrent_runs?: number;
+  end_user_messages_per_minute?: number;
+  end_user_sessions_per_hour?: number;
+  end_user_max_tokens_per_day?: number;
+  expires_in_seconds?: number;
 }
 
 export interface CreateScopedTokenParams {
@@ -61,6 +107,7 @@ export interface CreateScopedTokenParams {
   scopes: TokenScope[];
   worker_id?: string;
   worker_name?: string;
+  /** Optional fixed end date (at most 365 days). Without it the key works while used and stops after 90 days unused. */
   expires_in_seconds?: number;
 }
 
@@ -321,6 +368,9 @@ export interface SessionRecord {
   archived?: boolean;
   archived_at?: number;
   last_run_id?: string;
+  /** Set when a gateway created the session for an end user. */
+  end_user?: string;
+  labels?: Record<string, string>;
 }
 
 export interface CreateSessionParams {
@@ -333,6 +383,14 @@ export interface CreateSessionParams {
   mode?: 'auto' | 'plan';
   client_request_id?: string;
   metadata?: Record<string, unknown>;
+  /**
+   * Whose conversation this is (your customer or visitor id): 1-128 letters,
+   * digits and `. _ : @ + = -`. Only a gateway token may set it, once; the model
+   * never sees it, and per-end-user limits and usage use it.
+   */
+  end_user?: string;
+  /** Up to 16 labels stored with the session (keys: lowercase identifiers; values: up to 256 characters). */
+  labels?: Record<string, string>;
 }
 
 export interface ListSessionsParams {
@@ -365,6 +423,9 @@ export interface SessionDetail {
   messages?: SessionMessage[];
   last_run_id?: string;
   active_plan?: unknown;
+  /** Set when a gateway created the session for an end user. */
+  end_user?: string;
+  labels?: Record<string, string>;
   raw?: Record<string, unknown>;
 }
 
@@ -704,8 +765,103 @@ export interface ProjectTaskRecord {
   task_program?: any;
   task_program_id?: string;
   task_program_status?: any;
+  /** Present when the task is a design job (createDesignJob). */
+  design?: ProjectTaskDesignJob;
   created_at: number;
   updated_at: number;
+}
+
+/** One check finding kept on a design job item. */
+export interface ProjectTaskDesignDiagnostic {
+  kind: string;
+  message?: string;
+}
+
+/** One design's durable outcome in a design job. */
+export interface ProjectTaskDesignItem {
+  n: number;
+  path?: string;
+  sha256?: string;
+  status:
+    | 'passed'
+    | 'repaired'
+    | 'failed'
+    | 'check_unavailable'
+    | 'generation_failed'
+    | 'skipped_budget'
+    | 'cancelled'
+    | 'stale_base'
+    | 'edit_refused'
+    | string;
+  error?: string;
+  variation?: string;
+  check?: string;
+  diagnostics?: ProjectTaskDesignDiagnostic[];
+  repair_edits?: number;
+  repair_refused?: string;
+  check_after_repair?: string;
+  diagnostics_after_repair?: ProjectTaskDesignDiagnostic[];
+  calls: number;
+  tokens: number;
+  /** Absent when the provider reported no usage or the model has no price. */
+  cost_usd?: number;
+  usage_complete: boolean;
+  duration_ms: number;
+}
+
+/** The request and outcome of a design job. */
+export interface ProjectTaskDesignJob {
+  mode: 'create' | 'edit';
+  brief: string;
+  count: number;
+  style?: string;
+  variations?: string[];
+  batch_name?: string;
+  /** The job's own output folder, relative to the workspace (create). */
+  folder?: string;
+  results_path?: string;
+  edit_path?: string;
+  state: 'running' | 'completed' | 'failed' | 'cancelled';
+  error?: string;
+  provider?: string;
+  model?: string;
+  thinking?: string;
+  items?: ProjectTaskDesignItem[];
+  counts?: Record<string, number>;
+  calls: number;
+  tokens: number;
+  cost_usd: number;
+  cost_complete: boolean;
+  edit_base_sha256?: string;
+  edit_final_sha256?: string;
+  results_error?: string;
+  started_at: number;
+  finished_at?: number;
+}
+
+/** Body of createDesignJob: make count designs, or edit one HTML file. */
+export interface CreateDesignJobParams {
+  /** Absolute folder of the project; required when the project has several. */
+  workspace?: string;
+  brief: string;
+  /** 1 to 50 (default 1); an edit is always 1. */
+  count?: number;
+  style?: string;
+  variations?: string[];
+  batch_name?: string;
+  /** Parent folder for batches, relative to the workspace (default designs). */
+  folder?: string;
+  /** Edit this existing .html file (relative to the workspace) instead. */
+  edit_path?: string;
+}
+
+export interface CreateDesignJobResult {
+  task: ProjectTaskRecord;
+}
+
+export interface CancelDesignJobResult {
+  task_id: string;
+  status: string;
 }
 
 export interface CreateProjectTaskParams {
@@ -1153,7 +1309,20 @@ export interface WorkerRevisionRecord {
   change_summary?: string;
 }
 
+export interface JobReview {
+  verdict: 'ok' | 'block';
+  head: string;
+  reviewer_job_id: string;
+  model: string;
+  at: number;
+  reason?: string;
+  /** Set when a fixing reviewer committed on top of `head`: the verdict covers `head` only with those fixes. */
+  fix_head?: string;
+  stale: boolean;
+}
+
 export interface WorkerRunRecord {
+  review?: Partial<JobReview> & { state?: string; project_id?: string; task_id?: string; task_status?: string; next_action?: string };
   placement?: import('./worker-control.js').WorkerRunPlacement;
   cancel_requested?: boolean;
   id: string;
@@ -1321,6 +1490,8 @@ export interface SetWorkerAutomationEnabledParams {
 }
 
 export interface DirectWorkerRequestParams {
+  /** Required for reviewer workers: worker/<worker>/<run> in the same project, with commits. */
+  review_job?: string;
   worker_id: string;
   prompt?: string;
   input?: Record<string, unknown>;

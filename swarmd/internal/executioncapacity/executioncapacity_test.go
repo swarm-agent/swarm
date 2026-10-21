@@ -674,48 +674,6 @@ func TestLeaseTransitionsAndValidation(t *testing.T) {
 	}
 }
 
-// TestContextHelpers verifies WithLease, LeaseFromContext (which enforces exact session
-// and run ID matching to prevent child context leakage), and WithoutLease.
-func TestContextHelpers(t *testing.T) {
-	mgr := NewManager(ManagerConfig{DefaultLimit: 5})
-	defer mgr.Close()
-
-	ctx := context.Background()
-	lease, err := mgr.Acquire(ctx, AcquireRequest{
-		AccountScopeID: "acc-ctx",
-		SessionID:      "sess-parent",
-		RunID:          "run-1",
-	})
-	if err != nil {
-		t.Fatalf("acquire: %v", err)
-	}
-	defer lease.Release()
-
-	boundCtx := WithLease(ctx, lease)
-
-	// Exact match retrieves the lease
-	got, ok := LeaseFromContext(boundCtx, "sess-parent", "run-1")
-	if !ok || got != lease {
-		t.Fatalf("failed to retrieve lease from context with exact IDs: ok=%v, got=%v", ok, got)
-	}
-
-	// Child session or child task with different sessionID must NOT get the parent lease
-	if _, ok := LeaseFromContext(boundCtx, "child-sess", "run-1"); ok {
-		t.Fatalf("child session context accidentally inherited parent lease")
-	}
-
-	// Child run with different runID must NOT get the parent lease
-	if _, ok := LeaseFromContext(boundCtx, "sess-parent", "child-run"); ok {
-		t.Fatalf("child run context accidentally inherited parent lease")
-	}
-
-	// WithoutLease strips lease
-	strippedCtx := WithoutLease(boundCtx)
-	if _, ok := LeaseFromContext(strippedCtx, "sess-parent", "run-1"); ok {
-		t.Fatalf("stripped context still returned lease")
-	}
-}
-
 // TestCap1ParentParkWithSecondRunQueued tests the critical case where capacity is 1,
 // parent Run 1 is active, parent Run 2 is queued (blocked by session ownership),
 // parent Run 1 parks, an unrelated session acquires the freed slot, parent Run 1

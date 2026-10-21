@@ -20,6 +20,7 @@ import (
 	"swarm/packages/swarmd/internal/gitenv"
 	"swarm/packages/swarmd/internal/sandbox"
 	"swarm/packages/swarmd/internal/tool"
+	"swarm/packages/swarmd/internal/worktree"
 )
 
 // Swarm Control review tools: approve or reject a project task waiting for
@@ -49,7 +50,7 @@ func controlMCPReviewTools(sessionID map[string]any) []controlMCPTool {
 	return []controlMCPTool{
 		{
 			Name: "swarm_approve_task", Title: "Approve or reject a project task waiting for approval",
-			Description: "For a project task in status pending_approval (list_tasks; its action_needed says to click Approve): approve starts it, exactly as the Approve button in Swarm; reject drops it and its plan. Read the task first (list_tasks, and get_session on its session_id for its plan). The task's own session, plan and plan revision are sent as guards, so a plan that changed since you read it is refused. Other statuses are refused: needs_review work is merged with integrate_task instead.",
+			Description: "For a project task in status pending_approval (list_tasks): approve starts it through the canonical task approval API; reject drops it and its plan. Read the task first (list_tasks, and get_session on its session_id for its plan). The task's own session, plan and plan revision are sent as guards, so a plan that changed since you read it is refused. Other statuses are refused: needs_review work is merged with integrate_task instead.",
 			InputSchema: controlMCPObject([]string{"project_id", "task_id", "action"}, map[string]any{
 				"project_id": projectProp,
 				"task_id":    taskProp,
@@ -165,7 +166,7 @@ func controlMCPApproveTask(c *controlMCPCall, args map[string]any) (any, error) 
 	}
 	out := map[string]any{"status": response["status"], "task": controlMCPTaskSummary(controlMCPMap(response["task"]))}
 	if action == "approve" {
-		out["next"] = "The task runs now; follow it with list_tasks or get_session on its session_id."
+		out["next"] = c.taskNext(controlMCPMap(response["task"]))
 	}
 	return out, nil
 }
@@ -442,6 +443,7 @@ func controlMCPGit(ctx context.Context, dir string, limit int, args ...string) (
 	cmd.Env = append(gitenv.FilterIdentityOverrides(os.Environ()), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0")
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	sandbox.Prepare(ctx, cmd)
+	defer sandbox.ReleaseGit(cmd)
 	if err := cmd.Run(); err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return "", false, controlMCPToolFailure("Git took too long in %s", dir)
@@ -496,9 +498,9 @@ func controlMCPGetChanges(c *controlMCPCall, args map[string]any) (any, error) {
 	ctx, cancel := context.WithTimeout(c.request.Context(), controlMCPGitTimeout)
 	defer cancel()
 	out := map[string]any{"session_id": sessionID, "folder": folder}
-	worktree, _ := session["worktree_enabled"].(bool)
+	hasWorktree, _ := session["worktree_enabled"].(bool)
 	base := ""
-	if worktree {
+	if hasWorktree {
 		base = controlMCPMetadataString(controlMCPMap(session["metadata"]), "swarm_v3_worktree_base_commit", "base_commit")
 		if base == "" {
 			if branch, _ := session["worktree_base_branch"].(string); controlMCPGitRevision.MatchString(branch) {
@@ -515,12 +517,23 @@ func controlMCPGetChanges(c *controlMCPCall, args map[string]any) (any, error) {
 	if !controlMCPGitRevision.MatchString(base) {
 		return nil, controlMCPToolFailure("session %q has no usable base revision", sessionID)
 	}
-	out["base"] = base
 	head, _, err := controlMCPGit(ctx, resolved, 200, "rev-parse", "HEAD")
 	if err != nil {
 		return nil, err
 	}
 	out["head"] = strings.TrimSpace(head)
+	if base != "HEAD" {
+		// A job rebased onto (or merged with) a newer target after it was
+		// created lists its commits from that newer base, never from the
+		// recorded one (worktree.EffectiveTaskBase).
+		source := controlMCPMetadataString(controlMCPMap(session["metadata"]), "swarm_v3_source_workspace_path")
+		target, _ := session["worktree_base_branch"].(string)
+		if effective := worktree.EffectiveTaskBase(ctx, resolved, source, target, base, strings.TrimSpace(head)); effective != base {
+			out["recorded_base"] = base
+			base = effective
+		}
+	}
+	out["base"] = base
 	if branch, _ := session["worktree_branch"].(string); branch != "" {
 		out["branch"] = branch
 	}

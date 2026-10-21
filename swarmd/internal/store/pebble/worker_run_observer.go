@@ -8,3 +8,12 @@ func (s *Store) SetWorkerRunObserver(fn func(worker WorkerRecord, run WorkerRunR
 		s.workerRunObserver = fn
 	}
 }
+
+// SetDesignJobEndObserver installs fn, called once for each design job the
+// restart reconcile marks failed, after the write commits. Jobs that end while
+// the daemon runs are reported by their executor.
+func (s *Store) SetDesignJobEndObserver(fn func(task ProjectTaskRecord)) {
+	if s != nil {
+		s.designJobEndObserver = fn
+	}
+}

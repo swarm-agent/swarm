@@ -19,7 +19,7 @@ import (
 // person's AI and built by Swarm under gVisor (sandbox/environment.go).
 //
 //	GET    /v3/sandbox-environments?workspace_path=P[&wait_seconds=N]  (sessions:read)
-//	PUT    /v3/sandbox-environments  {workspace_path, base_image, setup, env}  (sessions:write)
+//	PUT    /v3/sandbox-environments  {workspace_path, base_image, setup, env, max_leases}  (sessions:write)
 //	DELETE /v3/sandbox-environments?workspace_path=P  (sessions:write)
 const (
 	SandboxEnvironmentsPath        = "/v3/sandbox-environments"
@@ -60,7 +60,18 @@ func (s *Server) handleSandboxEnvironments(w http.ResponseWriter, r *http.Reques
 		if found && env.Account != principal.AccountScopeID {
 			found = false
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "environment": sandboxEnvironmentView(root, env, found)})
+		view := sandboxEnvironmentView(root, env, found)
+		if manager := environmentManager(); manager != nil {
+			view["leases_in_use"] = manager.LeasesInUse(root)
+		}
+		if manager := sandbox.Default(); manager != nil && manager.Active() {
+			usage, cacheErr := manager.ProjectCacheUsage(r.Context(), root)
+			view["cache"] = usage
+			if cacheErr != nil {
+				view["cache_error"] = cacheErr.Error()
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "environment": view})
 	case http.MethodPut:
 		if !s.requireScope(w, r, "sessions:write") {
 			return
@@ -70,6 +81,7 @@ func (s *Server) handleSandboxEnvironments(w http.ResponseWriter, r *http.Reques
 			BaseImage     string            `json:"base_image"`
 			Setup         []string          `json:"setup,omitempty"`
 			Env           map[string]string `json:"env,omitempty"`
+			MaxLeases     *int              `json:"max_leases,omitempty"`
 		}
 		if err := decodeJSONStrict(w, r, 256*1024, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -80,17 +92,46 @@ func (s *Server) handleSandboxEnvironments(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		if sandbox.Default() == nil || !sandbox.Default().Active() {
-			writeError(w, http.StatusConflict, errors.New("this machine's sandbox is not active, so no environment can be built or used"))
+		if environmentManager() == nil {
+			writeError(w, http.StatusConflict, errors.New(sandbox.EnvironmentsOffMessage))
+			return
+		}
+		if req.BaseImage == "" {
+			current, found, err := s.sandboxEnvironments.Get(root)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			if !found || current.Account != principal.AccountScopeID {
+				writeError(w, http.StatusBadRequest, errors.New("base_image required for a new environment"))
+				return
+			}
+			req.BaseImage = current.Definition.BaseImage
+			req.Setup = current.Definition.Setup
+			req.Env = current.Definition.Env
+		}
+		// Serialize build creation with the update fence. Environment definitions
+		// are explicit operations, not durable run admissions.
+		s.envBuildMu.Lock()
+		if manager := s.ExecutionCapacity(); manager != nil && manager.DrainStatus().Draining {
+			s.envBuildMu.Unlock()
+			writeError(w, http.StatusConflict, errors.New("daemon is draining; retry environment definition after restart"))
 			return
 		}
 		env, build, err := s.sandboxEnvironments.Define(principal.AccountScopeID, root, pebblestore.SandboxEnvironmentDefinition{BaseImage: req.BaseImage, Setup: req.Setup, Env: req.Env})
+		s.envBuildMu.Unlock()
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
 		if build {
 			s.startSandboxEnvironmentBuild(env)
+		}
+		if req.MaxLeases != nil {
+			if env, err = s.sandboxEnvironments.SetMaxLeases(principal.AccountScopeID, root, *req.MaxLeases); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
 		}
 		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "environment": sandboxEnvironmentView(root, env, true), "build_started": build})
 	case http.MethodDelete:
@@ -110,6 +151,19 @@ func (s *Server) handleSandboxEnvironments(w http.ResponseWriter, r *http.Reques
 	default:
 		methodNotAllowed(w)
 	}
+}
+
+// environmentManager builds and runs folder environments: the machine's Docker
+// sandbox when it is on, otherwise the Docker manager for leases. It is nil
+// when this machine has no working Docker.
+func environmentManager() *sandbox.Manager {
+	if m := sandbox.Leases(); m != nil && m.Active() {
+		return m
+	}
+	if m := sandbox.Default(); m != nil && m.Active() && !m.Local() {
+		return m
+	}
+	return nil
 }
 
 // environmentFolder is the caller's registered folder root at path.
@@ -137,7 +191,7 @@ func (s *Server) startSandboxEnvironmentBuild(env pebblestore.SandboxEnvironment
 		defer s.finishSandboxEnvironmentWaiter(env.WorkspacePath, done)
 		ctx, cancel := context.WithTimeout(context.Background(), sandboxEnvironmentBuildTimeout)
 		defer cancel()
-		result, err := sandbox.Default().BuildEnvironment(ctx, sandbox.EnvironmentBuild{
+		result, err := environmentManager().BuildEnvironment(ctx, sandbox.EnvironmentBuild{
 			Hash:      env.Hash,
 			Image:     pebblestore.SandboxEnvironmentImage(env.Hash),
 			BaseImage: env.Definition.BaseImage,
@@ -224,5 +278,6 @@ func sandboxEnvironmentView(root string, env pebblestore.SandboxEnvironment, fou
 	if env.BuiltAt != 0 {
 		view["built_at"] = env.BuiltAt
 	}
+	view["max_leases"] = env.MaxLeases
 	return view
 }

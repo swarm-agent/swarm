@@ -42,12 +42,12 @@
     "node": ">=22"
   },
   "dependencies": {
-    "ws": "8.18.3"
+    "ws": "8.22.0"
   },
   "devDependencies": {
     "@types/node": "22.19.15",
     "@types/ws": "^8.18.2",
-    "tsx": "4.21.0",
+    "tsx": "4.23.15",
     "typescript": "5.9.3"
   },
   "keywords": [

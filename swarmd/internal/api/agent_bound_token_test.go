@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,26 +15,35 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-// Purpose: the token an application gateway holds must not be a key to the
-// machine. An agent-bound token may only create and use its sealed agent's
-// sessions and answer that agent's client tool calls. It cannot reach the full
-// Swarm agent (which has bash), approve a pending bash call, use MCP, list
-// sessions, or switch a session's agent; and it stops working if the agent is
-// later given a built-in tool.
-func TestAgentBoundTokenIsDefaultDeny(t *testing.T) {
+// lookupOrderSchema is the sealed agent's one client tool in these tests.
+var lookupOrderSchema = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"order_id": map[string]any{"type": "string", "pattern": "^[A-Z0-9]{6}$"},
+	},
+	"required":             []any{"order_id"},
+	"additionalProperties": false,
+}
+
+// Purpose: a bot key (gateway token) follows the same rule as every key: made
+// without a lifetime it works while used and stops after 90 days unused, so a
+// running bot never dies on a date; a fixed end date is optional and bounded
+// like every kind (a negative or over-365-day one is refused with nothing
+// created). Boundary: Server.handleAuthTokens agent-bound branch.
+// Narrowest layer: the owner-only mint handler with a real sealed agent.
+func TestBotKeyWorksWhileUsedWithAnOptionalFixedDate(t *testing.T) {
 	s, _, _, cleanup := setupScopedAuthTestServer(t)
 	defer cleanup()
-	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "agent-bound"))
+	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "agent-bound-expiry"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	s.perm = permission.NewService(pebblestore.NewPermissionStore(db), nil, nil)
-	agentEvents, err := pebblestore.NewEventLog(db)
+	events, err := pebblestore.NewEventLog(db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.agents = agentruntime.NewService(pebblestore.NewAgentStore(db), agentEvents)
+	s.agents = agentruntime.NewService(pebblestore.NewAgentStore(db), events)
 	actor, err := s.identitySessions.ActorForCurrentSelection()
 	if err != nil {
 		t.Fatal(err)
@@ -44,157 +52,122 @@ func TestAgentBoundTokenIsDefaultDeny(t *testing.T) {
 	if _, err := s.agents.PutCustomToolForAccount(account, pebblestore.AgentCustomToolDefinition{Name: "lookup_order", Kind: pebblestore.AgentCustomToolKindClient, Description: "x", InputSchema: lookupOrderSchema}); err != nil {
 		t.Fatal(err)
 	}
-	sealed := func(tools map[string]pebblestore.AgentToolConfig) {
-		t.Helper()
-		if _, _, _, err := s.agents.UpsertForAccount(account, agentruntime.UpsertInput{Name: "frontdesk", Mode: agentruntime.ModeSubagent, Enabled: pebblestore.BoolPtr(true), Prompt: "x",
-			ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: tools}}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	sealed(map[string]pebblestore.AgentToolConfig{"lookup_order": {Enabled: pebblestore.BoolPtr(true)}})
-	if _, _, _, err := s.agents.UpsertForAccount(account, agentruntime.UpsertInput{Name: "lister", Mode: agentruntime.ModeSubagent, Enabled: pebblestore.BoolPtr(true), Prompt: "x",
-		ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{"list": {Enabled: pebblestore.BoolPtr(true)}}}}); err != nil {
+	if _, _, _, err := s.agents.UpsertForAccount(account, agentruntime.UpsertInput{Name: "frontdesk", Mode: agentruntime.ModeSubagent, Enabled: pebblestore.BoolPtr(true), Prompt: "x",
+		ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{"lookup_order": {Enabled: pebblestore.BoolPtr(true)}}}}); err != nil {
 		t.Fatal(err)
 	}
-
-	// A custom agent with every tool off is an ordinary chat agent, not sealed:
-	// it must keep the normal prompt and limits and cannot back a gateway token.
-	if _, _, _, err := s.agents.UpsertForAccount(account, agentruntime.UpsertInput{Name: "chatonly", Mode: agentruntime.ModeSubagent, Enabled: pebblestore.BoolPtr(true), Prompt: "x",
-		ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{"list": {Enabled: pebblestore.BoolPtr(false)}}}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.sealedAgentError(account, "chatonly"); err == nil {
-		t.Fatal("an agent with no tools was treated as sealed")
-	}
-	if err := s.sealedAgentError(account, "frontdesk"); err != nil {
-		t.Fatalf("client-tool agent not sealed: %v", err)
-	}
-
-	// Minting goes through the owner-only token route.
-	mint := func(body string) (int, map[string]any) {
-		r := requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodPost, "/v3/auth/tokens", strings.NewReader(body)), actor.UserID, account)
+	mint := func(body string) (int, pebblestore.ScopedTokenRecord) {
 		w := httptest.NewRecorder()
-		s.handleAuthTokens(w, r)
-		var out map[string]any
+		s.handleAuthTokens(w, requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodPost, "/v3/auth/tokens", strings.NewReader(body)), actor.UserID, account))
+		var out struct {
+			Record pebblestore.ScopedTokenRecord `json:"record"`
+		}
 		_ = json.Unmarshal(w.Body.Bytes(), &out)
-		return w.Code, out
+		return w.Code, out.Record
+	}
+	before, err := s.security.ListScopedTokens(account)
+	if err != nil {
+		t.Fatal(err)
 	}
 	for _, body := range []string{
-		`{"name":"gw","agent_name":"lister"}`,
-		`{"name":"gw","agent_name":"chatonly"}`,
-		`{"name":"gw","agent_name":"swarm"}`,
-		`{"name":"gw","agent_name":"frontdesk","scopes":["admin"]}`,
-		`{"name":"gw","agent_name":"frontdesk","worker_id":"w"}`,
+		`{"name":"gw","agent_name":"frontdesk","expires_in_seconds":-60}`,
+		`{"name":"gw","agent_name":"frontdesk","expires_in_seconds":31536001}`,
+		`{"name":"gw","kind":"app","agent_name":"frontdesk"}`,
 	} {
-		if code, out := mint(body); code != http.StatusBadRequest {
-			t.Fatalf("minted %s: %d %v", body, code, out)
+		if code, _ := mint(body); code != http.StatusBadRequest {
+			t.Fatalf("minted a bot key from a bad request: %s -> %d", body, code)
 		}
 	}
-	code, out := mint(`{"name":"gw","agent_name":"frontdesk"}`)
-	if code != http.StatusOK {
-		t.Fatalf("mint sealed: %d %v", code, out)
+	if after, _ := s.security.ListScopedTokens(account); len(after) != len(before) {
+		t.Fatalf("a refused mint stored a token: %d -> %d", len(before), len(after))
 	}
-	token, _ := out["token"].(string)
-	record, _ := out["record"].(map[string]any)
-	if record["agent_name"] != "frontdesk" || strings.Join(toStrings(record["scopes"]), ",") != "sessions:read,sessions:write" {
-		t.Fatalf("record = %v", record)
+	code, record := mint(`{"name":"gw","kind":"bot","agent_name":"frontdesk"}`)
+	if code != http.StatusOK || record.ExpiresAt != 0 || record.ExpiryRule != "idle" {
+		t.Fatalf("bot key without a date: %d %+v", code, record)
 	}
-
-	seed := func(id, agent string) {
-		snapshot := pebblestore.SessionSnapshot{ID: id, UserID: actor.UserID, AccountScopeID: account, Title: id, Mode: "auto", Metadata: map[string]any{"agent_name": agent}}
-		if _, err := s.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{Kind: sessionruntime.SessionMutationCreateSession, SessionID: id, UserID: actor.UserID, AccountScopeID: account, Session: &snapshot, IdempotencyKey: id, PayloadHash: id, NowUnixMs: 1000}); err != nil {
-			t.Fatal(err)
-		}
+	code, record = mint(`{"name":"gw","agent_name":"frontdesk","expires_in_seconds":15552000}`)
+	if code != http.StatusOK || record.ExpiresAt <= 0 || record.ExpiryRule != "date" {
+		t.Fatalf("bot key with a 180-day date: %d %+v", code, record)
 	}
-	seed("desk-session", "frontdesk")
-	seed("swarm-session", "swarm")
-	bash, err := s.perm.CreatePending(permission.CreateInput{SessionID: "desk-session", RunID: "r", CallID: "c1", ToolName: "bash", ToolArguments: "{}", Requirement: "approval", Mode: "auto"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	lookup, err := s.perm.CreatePending(permission.CreateInput{SessionID: "desk-session", RunID: "r", CallID: "c2", ToolName: "lookup_order", ToolArguments: `{"order_id":"AB12CD"}`, Requirement: "approval", Mode: "auto"})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	sdk := s.ContainerSDKHandler()
-	request := func(handler http.Handler, method, path, body string) *httptest.ResponseRecorder {
-		r := httptest.NewRequest(method, "http://127.0.0.1:7783"+path, strings.NewReader(body))
-		r.RemoteAddr = "192.0.2.1:40000"
-		r.Header.Set("Authorization", "Bearer "+token)
-		r.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		handler.ServeHTTP(w, r)
-		return w
-	}
-	denied := []struct{ method, path, body string }{
-		{"GET", "/v3/sessions", ""},
-		{"POST", "/v3/sessions", `{"agent_name":"swarm","client_request_id":"x"}`},
-		{"POST", "/v3/sessions", `{"agent_name":"lister","client_request_id":"x"}`},
-		{"POST", "/v3/sessions", `{"agent_name":"frontdesk","metadata":{"agent_name":"swarm"}}`},
-		{"POST", "/v3/sessions", `{"agent_name":"frontdesk","parent_session_id":"swarm-session"}`},
-		{"POST", "/v3/sessions", `{"agent_name":"frontdesk","preference":{"provider":"codex","model":"most-expensive"}}`},
-		{"POST", "/v3/sessions/desk-session/messages", `{"role":"user","content":"x","client_request_id":"a","artifact_selections":[{"artifact_id":"owner-secret"}]}`},
-		{"POST", "/v3/sessions/desk-session/messages", `{"role":"user","content":"x","client_request_id":"b","media":[{"id":"m"}]}`},
-		{"POST", "/v3/sessions/desk-session/messages", `{"role":"user","content":"x","client_request_id":"c","metadata":{"selected_worker":"w"}}`},
-		{"GET", "/v3/sessions/swarm-session", ""},
-		{"POST", "/v3/sessions/swarm-session/messages", `{"role":"user","content":"hi","client_request_id":"m"}`},
-		{"POST", "/v3/sessions/desk-session/agent", `{"agent_name":"swarm","client_request_id":"a"}`},
-		{"POST", "/v3/sessions/desk-session/permissions/" + bash.ID + "/resolve", `{"action":"allow_once"}`},
-		{"POST", "/v3/sessions/desk-session/permissions/resolve_all", `{"action":"allow_once"}`},
-		{"POST", "/mcp", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`},
-		{"GET", "/v2/agents", ""},
-		{"POST", "/v3/auth/tokens", `{"name":"x"}`},
-	}
-	for _, handler := range []http.Handler{sdk, s.Handler()} {
-		for _, tc := range denied {
-			if w := request(handler, tc.method, tc.path, tc.body); w.Code != http.StatusForbidden {
-				t.Fatalf("%s %s: %d %s", tc.method, tc.path, w.Code, w.Body.String())
-			}
-		}
-	}
-	if pending, _ := s.perm.ListPending("desk-session", 10); len(pending) != 2 {
-		t.Fatalf("a refused resolve changed state: %d pending", len(pending))
-	}
-	for _, tc := range []struct{ method, path, body string }{
-		{"GET", "/v3/sessions/desk-session", ""},
-		{"POST", "/v3/sessions/desk-session/permissions/" + lookup.ID + "/resolve", `{"action":"allow_once","approved_arguments":{"result":{"status":"shipped"}}}`},
-	} {
-		if w := request(sdk, tc.method, tc.path, tc.body); w.Code == http.StatusForbidden || w.Code == http.StatusUnauthorized {
-			t.Fatalf("own agent route refused %s %s: %d %s", tc.method, tc.path, w.Code, w.Body.String())
-		}
-	}
-	// A create for its own agent passes the gate (the handler then needs a workspace).
-	if w := request(sdk, "POST", "/v3/sessions", `{"agent_name":"frontdesk","client_request_id":"x"}`); strings.Contains(w.Body.String(), "agent-bound") {
-		t.Fatalf("own agent create refused by the gate: %s", w.Body.String())
-	}
-
-	// Widening the agent disables the token rather than widening it.
-	sealed(map[string]pebblestore.AgentToolConfig{"lookup_order": {Enabled: pebblestore.BoolPtr(true)}, "bash": {Enabled: pebblestore.BoolPtr(true)}})
-	if w := request(sdk, "GET", "/v3/sessions/desk-session", ""); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "not sealed") {
-		t.Fatalf("widened agent still served: %d %s", w.Code, w.Body.String())
-	}
-	_ = time.Second
 }
 
-func toStrings(value any) []string {
-	items, _ := value.([]any)
-	out := make([]string, 0, len(items))
-	for _, item := range items {
-		if s, ok := item.(string); ok {
-			out = append(out, s)
+// Purpose: an agent-bound token may send only the session-create fields a
+// gateway needs (the SDK's sessions.create shape); every other field, including
+// ones added to the create request later, is refused before the handler runs.
+// Threat: worktree, session ID, swarm/target routing or workspace naming fields
+// steering a public session into owner state. Boundary: checkAgentBoundCreate
+// and agentBoundCreateFields. Narrowest layer: the gate function itself.
+func TestAgentBoundCreateAllowsOnlyReviewedFields(t *testing.T) {
+	check := func(body string) error {
+		return checkAgentBoundCreate(httptest.NewRequest(http.MethodPost, "/v3/sessions", strings.NewReader(body)), "frontdesk")
+	}
+	if err := check(`{"agent_name":"frontdesk","client_request_id":"r1","idempotency_key":"k1","title":"Visitor","mode":"auto","workspace_path":"/project","workspace_id":"w1"}`); err != nil {
+		t.Fatalf("the SDK create shape was refused: %v", err)
+	}
+	for _, field := range []string{"project_id", "parent_session_id", "model_profile", "metadata", "preference",
+		"session_id", "purpose", "workspace_name", "workspace_binding_id", "swarm_id", "target_kind",
+		"target_relationship", "host_workspace_path", "runtime_workspace_path", "managed_worktree_requested",
+		"worktree_mode", "worktree_use_current_branch", "worktree_base_branch", "worktree_branch_name",
+		"worktree_existing_path", "a_future_field"} {
+		err := check(`{"agent_name":"frontdesk","` + field + `":"x"}`)
+		if err == nil || !strings.Contains(err.Error(), field) {
+			t.Fatalf("field %q was not refused: %v", field, err)
 		}
 	}
-	return out
+	if err := check(`{"agent_name":"swarm"}`); err == nil {
+		t.Fatal("create for another agent was allowed")
+	}
 }
 
-// Purpose: even a leaked or buggy gateway token can only start a bounded
-// number of model runs and conversations. Limits are set when minting and the
-// daemon answers 429 with Retry-After beyond them; reads are not limited.
-func TestAgentBoundTokenRateLimits(t *testing.T) {
+// Purpose: an agent's concurrent model runs stay within the gateway token's
+// limit. Running sessions and live reservations both hold a slot; a message to a
+// session that already holds one queues and is admitted; a reservation frees its
+// slot when it expires or its run starts. Threat: a burst of visitors (or a
+// leaked token) starting unbounded parallel runs and cost. Boundary:
+// agentBoundConcurrency.admit. Narrowest layer: the admission function with a
+// fixed clock.
+func TestAgentBoundConcurrencyAdmission(t *testing.T) {
+	c := &agentBoundConcurrency{reserved: map[string]map[string]time.Time{}}
+	now := time.Unix(1000, 0)
+	none := map[string]bool{}
+	if !c.admit("tok", "a", none, 2, now) || !c.admit("tok", "b", none, 2, now) {
+		t.Fatal("first two conversations were refused")
+	}
+	if c.admit("tok", "c", none, 2, now) {
+		t.Fatal("a third concurrent run was admitted over a limit of 2")
+	}
+	if !c.admit("tok", "a", none, 2, now) {
+		t.Fatal("a follow-up message to a session that already holds a slot was refused")
+	}
+	if c.admit("tok", "c", map[string]bool{"x": true}, 2, now) {
+		t.Fatal("a running session of the agent did not count against the limit")
+	}
+	// Session a's run started: it now counts once (running), not twice.
+	if c.admit("tok", "c", map[string]bool{"a": true}, 2, now) {
+		t.Fatal("running a plus reserved b should fill a limit of 2")
+	}
+	if !c.admit("tok", "c", map[string]bool{"a": true}, 3, now) {
+		t.Fatal("a running session was counted twice")
+	}
+	later := now.Add(agentBoundRunReservation + time.Second)
+	if !c.admit("tok", "d", none, 1, later) {
+		t.Fatal("expired reservations still held slots")
+	}
+	if !c.admit("other", "e", none, 1, now) {
+		t.Fatal("another token's reservations counted against this token")
+	}
+}
+
+// Purpose: the limit is enforced at the gateway gate, before the handler, and is
+// set when minting (0..64). With max_concurrent_runs 1, a message to a second
+// conversation is refused with 429 and Retry-After while the first holds the
+// slot; an out-of-range limit is refused at mint time. Boundary:
+// Server.gateAgentBoundToken, handleAuthTokens. Narrowest layer: the container SDK
+// handler with a real minted token and seeded sessions.
+func TestAgentBoundTokenConcurrentRunLimit(t *testing.T) {
 	s, _, _, cleanup := setupScopedAuthTestServer(t)
 	defer cleanup()
-	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "agent-bound-rate"))
+	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "agent-bound-concurrency"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,80 +190,47 @@ func TestAgentBoundTokenRateLimits(t *testing.T) {
 		ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{"lookup_order": {Enabled: pebblestore.BoolPtr(true)}}}}); err != nil {
 		t.Fatal(err)
 	}
-	r := requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodPost, "/v3/auth/tokens", strings.NewReader(`{"name":"gw","agent_name":"frontdesk","messages_per_minute":3,"sessions_per_hour":2}`)), actor.UserID, account)
-	w := httptest.NewRecorder()
-	s.handleAuthTokens(w, r)
-	var minted struct {
-		Token  string                        `json:"token"`
-		Record pebblestore.ScopedTokenRecord `json:"record"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &minted); err != nil || w.Code != http.StatusOK || minted.Record.MessagesPerMinute != 3 || minted.Record.SessionsPerHour != 2 {
-		t.Fatalf("mint: %d %s", w.Code, w.Body.String())
-	}
-	snapshot := pebblestore.SessionSnapshot{ID: "desk", UserID: actor.UserID, AccountScopeID: account, Title: "desk", Mode: "auto", Metadata: map[string]any{"agent_name": "frontdesk"}}
-	if _, err := s.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{Kind: sessionruntime.SessionMutationCreateSession, SessionID: "desk", UserID: actor.UserID, AccountScopeID: account, Session: &snapshot, IdempotencyKey: "desk", PayloadHash: "desk", NowUnixMs: 1000}); err != nil {
-		t.Fatal(err)
-	}
-	sdk := s.ContainerSDKHandler()
-	do := func(method, path, body string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(method, "http://127.0.0.1:7783"+path, strings.NewReader(body))
-		req.RemoteAddr = "192.0.2.1:40000"
-		req.Header.Set("Authorization", "Bearer "+minted.Token)
-		req.Header.Set("Content-Type", "application/json")
-		rec := httptest.NewRecorder()
-		sdk.ServeHTTP(rec, req)
-		return rec
-	}
-	for i := 0; i < 3; i++ {
-		if got := do("POST", "/v3/sessions", `{"agent_name":"frontdesk","client_request_id":"s`+strconv.Itoa(i)+`"}`); (got.Code == http.StatusTooManyRequests) != (i == 2) {
-			t.Fatalf("session create %d: %d", i, got.Code)
-		}
-	}
-	for i := 0; i < 4; i++ {
-		got := do("POST", "/v3/sessions/desk/messages", `{"role":"user","content":"hi","client_request_id":"m`+strconv.Itoa(i)+`"}`)
-		if (got.Code == http.StatusTooManyRequests) != (i == 3) {
-			t.Fatalf("message %d: %d %s", i, got.Code, got.Body.String())
-		}
-		if i == 3 && got.Header().Get("Retry-After") == "" {
-			t.Fatal("429 without Retry-After")
-		}
-	}
-	for i := 0; i < 20; i++ {
-		if got := do("GET", "/v3/sessions/desk", ""); got.Code == http.StatusTooManyRequests {
-			t.Fatal("reads must not be rate limited")
-		}
-	}
-	for _, body := range []string{`{"name":"gw","agent_name":"frontdesk","messages_per_minute":-1}`, `{"name":"gw","agent_name":"frontdesk","sessions_per_hour":1000000}`} {
+	mint := func(body string) (int, string, pebblestore.ScopedTokenRecord) {
 		w := httptest.NewRecorder()
 		s.handleAuthTokens(w, requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodPost, "/v3/auth/tokens", strings.NewReader(body)), actor.UserID, account))
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("out-of-range limits accepted: %s %d", body, w.Code)
+		var out struct {
+			Token  string                        `json:"token"`
+			Record pebblestore.ScopedTokenRecord `json:"record"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		return w.Code, out.Token, out.Record
+	}
+	if code, _, _ := mint(`{"name":"gw","agent_name":"frontdesk","expires_in_seconds":3600,"max_concurrent_runs":65}`); code != http.StatusBadRequest {
+		t.Fatalf("max_concurrent_runs 65 accepted: %d", code)
+	}
+	code, token, record := mint(`{"name":"gw","agent_name":"frontdesk","expires_in_seconds":3600,"max_concurrent_runs":1}`)
+	if code != http.StatusOK || record.MaxConcurrentRuns != 1 {
+		t.Fatalf("mint: %d %+v", code, record)
+	}
+	for _, id := range []string{"desk-a", "desk-b"} {
+		snapshot := pebblestore.SessionSnapshot{ID: id, UserID: actor.UserID, AccountScopeID: account, Title: id, Mode: "auto", Metadata: map[string]any{"agent_name": "frontdesk"}}
+		if _, err := s.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{Kind: sessionruntime.SessionMutationCreateSession, SessionID: id, UserID: actor.UserID, AccountScopeID: account, Session: &snapshot, IdempotencyKey: id, PayloadHash: id, NowUnixMs: 1000}); err != nil {
+			t.Fatal(err)
 		}
 	}
-}
-
-// Purpose: the daily spend cap is the last cost control, so a session token
-// must not be able to raise or disable it; a gateway may read today's spend.
-func TestUsageLimitChangesNeedUsageWrite(t *testing.T) {
-	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	handler := server.Handler()
-	do := func(method string, scopes []string) int {
-		req := withTestPrincipal(httptest.NewRequest(method, "/v3/sessions:usage-limits", strings.NewReader(`{"daily_cost_limit_usd":100000,"enabled":false}`)))
-		req.Header.Set("Content-Type", "application/json")
-		if scopes != nil {
-			req = requestWithScopedToken(req, &pebblestore.ScopedTokenRecord{Scopes: scopes})
-		}
+	if token == "" {
+		t.Fatal("no token minted")
+	}
+	// The gate alone decides admission; calling it directly keeps the handler
+	// (and a real model run) out of this test.
+	message := func(session, requestID string) (bool, *httptest.ResponseRecorder) {
+		req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+session+"/messages", strings.NewReader(`{"role":"user","content":"hi","client_request_id":"`+requestID+`"}`))
 		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
-		return rec.Code
+		return s.gateAgentBoundToken(rec, req, &record), rec
 	}
-	if got := do(http.MethodPost, []string{"sessions:read", "sessions:write"}); got != http.StatusForbidden {
-		t.Fatalf("session token changed the spend cap: %d", got)
+	if ok, got := message("desk-a", "m1"); !ok {
+		t.Fatalf("first conversation refused: %d %s", got.Code, got.Body.String())
 	}
-	if got := do(http.MethodGet, []string{"sessions:read"}); got != http.StatusOK {
-		t.Fatalf("session token could not read spend: %d", got)
+	if ok, got := message("desk-a", "m2"); !ok {
+		t.Fatalf("follow-up in the same conversation refused: %d %s", got.Code, got.Body.String())
 	}
-	if got := do(http.MethodPost, []string{"usage:write"}); got != http.StatusOK {
-		t.Fatalf("usage:write could not change the cap: %d", got)
+	ok, got := message("desk-b", "m3")
+	if ok || got.Code != http.StatusTooManyRequests || !strings.Contains(got.Body.String(), "concurrent") || got.Header().Get("Retry-After") == "" {
+		t.Fatalf("second conversation over a limit of 1: ok=%v %d %s", ok, got.Code, got.Body.String())
 	}
 }

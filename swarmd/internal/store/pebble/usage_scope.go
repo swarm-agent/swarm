@@ -91,6 +91,13 @@ func (s *SessionStore) resolveUsageScopes(account, sessionID string) ([]UsageSco
 			}
 			return scopes, nil
 		}
+		// The end-user binding is set once by the gateway at create time and is
+		// protected from every metadata write, so it is an attribution authority.
+		if endUser, bound, err := SessionEndUserFromMetadata(snapshot.Metadata); err != nil {
+			return nil, err
+		} else if bound && endUser.EndUser != "" {
+			add(UsageScopeTotal{Kind: UsageScopeKindEndUser, ProjectID: endUser.AgentName, ID: EndUserScopeID(endUser.EndUser)})
+		}
 		text := func(key string) string { value, _ := snapshot.Metadata[key].(string); return strings.TrimSpace(value) }
 		project, taskID := text("project_id"), text("task_id")
 		if project != "" && taskID != "" {

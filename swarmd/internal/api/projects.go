@@ -141,12 +141,14 @@ func inspectTaskGitStateLegacy(task pebblestore.ProjectTaskRecord, db *pebblesto
 	cmdHead := exec.CommandContext(ctx, "git", "-C", targetPath, "rev-parse", "--abbrev-ref", "HEAD")
 	headBranch := ""
 	sandbox.Prepare(ctx, cmdHead)
+	defer sandbox.ReleaseGit(cmdHead)
 	if out, err := cmdHead.Output(); err == nil {
 		headBranch = strings.TrimSpace(string(out))
 	}
 	cmdHeadCommit := exec.CommandContext(ctx, "git", "-C", targetPath, "rev-parse", "HEAD")
 	headCommit := ""
 	sandbox.Prepare(ctx, cmdHeadCommit)
+	defer sandbox.ReleaseGit(cmdHeadCommit)
 	if out, err := cmdHeadCommit.Output(); err == nil {
 		headCommit = strings.TrimSpace(string(out))
 	}
@@ -162,6 +164,7 @@ func inspectTaskGitStateLegacy(task pebblestore.ProjectTaskRecord, db *pebblesto
 	// 6. Dirty status
 	cmdDirty := exec.CommandContext(ctx, "git", "-C", targetPath, "status", "--porcelain")
 	sandbox.Prepare(ctx, cmdDirty)
+	defer sandbox.ReleaseGit(cmdDirty)
 	if out, err := cmdDirty.Output(); err == nil {
 		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 		for _, l := range lines {
@@ -183,6 +186,7 @@ func inspectTaskGitStateLegacy(task pebblestore.ProjectTaskRecord, db *pebblesto
 		// Check reflog to find where the branch was created
 		cmdReflog := exec.CommandContext(ctx, "git", "-C", targetPath, "log", "-g", "--format=%H", "--reverse", fmt.Sprintf("refs/heads/%s", res.worktreeBranch))
 		sandbox.Prepare(ctx, cmdReflog)
+		defer sandbox.ReleaseGit(cmdReflog)
 		if out, err := cmdReflog.Output(); err == nil {
 			fields := strings.Fields(strings.TrimSpace(string(out)))
 			if len(fields) > 0 {
@@ -194,6 +198,7 @@ func inspectTaskGitStateLegacy(task pebblestore.ProjectTaskRecord, db *pebblesto
 		// Fallback to merge-base between baseBranch and HEAD
 		cmdMb := exec.CommandContext(ctx, "git", "-C", targetPath, "merge-base", res.baseBranch, "HEAD")
 		sandbox.Prepare(ctx, cmdMb)
+		defer sandbox.ReleaseGit(cmdMb)
 		if out, err := cmdMb.Output(); err == nil && len(bytes.TrimSpace(out)) > 0 {
 			baseCommit = strings.TrimSpace(string(out))
 		}
@@ -203,6 +208,7 @@ func inspectTaskGitStateLegacy(task pebblestore.ProjectTaskRecord, db *pebblesto
 	// 8. Ahead / behind relative to baseBranch
 	cmdRevList := exec.CommandContext(ctx, "git", "-C", targetPath, "rev-list", "--left-right", "--count", res.baseBranch+"...HEAD")
 	sandbox.Prepare(ctx, cmdRevList)
+	defer sandbox.ReleaseGit(cmdRevList)
 	if out, err := cmdRevList.Output(); err == nil {
 		fields := strings.Fields(strings.TrimSpace(string(out)))
 		if len(fields) >= 2 {
@@ -212,6 +218,7 @@ func inspectTaskGitStateLegacy(task pebblestore.ProjectTaskRecord, db *pebblesto
 	} else {
 		cmdRevOrigin := exec.CommandContext(ctx, "git", "-C", targetPath, "rev-list", "--left-right", "--count", "origin/"+res.baseBranch+"...HEAD")
 		sandbox.Prepare(ctx, cmdRevOrigin)
+		defer sandbox.ReleaseGit(cmdRevOrigin)
 		if out, err := cmdRevOrigin.Output(); err == nil {
 			fields := strings.Fields(strings.TrimSpace(string(out)))
 			if len(fields) >= 2 {
@@ -225,6 +232,7 @@ func inspectTaskGitStateLegacy(task pebblestore.ProjectTaskRecord, db *pebblesto
 	if res.unintegratedCommits > 0 || res.isDirty {
 		cmdDiff := exec.CommandContext(ctx, "git", "-C", targetPath, "diff", "--shortstat", res.baseBranch+"...HEAD")
 		sandbox.Prepare(ctx, cmdDiff)
+		defer sandbox.ReleaseGit(cmdDiff)
 		if out, err := cmdDiff.Output(); err == nil && len(bytes.TrimSpace(out)) > 0 {
 			res.diffSummary = string(bytes.TrimSpace(out))
 		}
@@ -244,6 +252,7 @@ func inspectTaskGitStateLegacy(task pebblestore.ProjectTaskRecord, db *pebblesto
 		// Double check via reflog if commits were made on the branch
 		cmdRefLogCommits := exec.CommandContext(ctx, "git", "-C", targetPath, "log", "-g", "--format=%gs", fmt.Sprintf("refs/heads/%s", res.worktreeBranch))
 		sandbox.Prepare(ctx, cmdRefLogCommits)
+		defer sandbox.ReleaseGit(cmdRefLogCommits)
 		if out, err := cmdRefLogCommits.Output(); err == nil {
 			for _, line := range strings.Split(string(out), "\n") {
 				if strings.HasPrefix(strings.TrimSpace(line), "commit") {
@@ -258,11 +267,13 @@ func inspectTaskGitStateLegacy(task pebblestore.ProjectTaskRecord, db *pebblesto
 		// Verify ancestry: is HEAD an ancestor of baseBranch?
 		cmdAncestor := exec.CommandContext(ctx, "git", "-C", targetPath, "merge-base", "--is-ancestor", headCommit, res.baseBranch)
 		sandbox.Prepare(ctx, cmdAncestor)
+		defer sandbox.ReleaseGit(cmdAncestor)
 		if cmdAncestor.Run() == nil {
 			res.isIntegrated = true
 		} else {
 			cmdAncestorOrigin := exec.CommandContext(ctx, "git", "-C", targetPath, "merge-base", "--is-ancestor", headCommit, "origin/"+res.baseBranch)
 			sandbox.Prepare(ctx, cmdAncestorOrigin)
+			defer sandbox.ReleaseGit(cmdAncestorOrigin)
 			if cmdAncestorOrigin.Run() == nil {
 				res.isIntegrated = true
 			}
@@ -284,6 +295,7 @@ func inspectTaskGitStateLegacy(task pebblestore.ProjectTaskRecord, db *pebblesto
 	if parentWs != "" && parentWs != targetPath {
 		cmdBranchStatus := exec.CommandContext(ctx, "git", "-C", parentWs, "status", "--porcelain=v2", "--branch")
 		sandbox.Prepare(ctx, cmdBranchStatus)
+		defer sandbox.ReleaseGit(cmdBranchStatus)
 		if out, err := cmdBranchStatus.Output(); err == nil {
 			outStr := string(out)
 			for _, line := range strings.Split(outStr, "\n") {
@@ -343,6 +355,11 @@ type projectTaskLifecycleReader interface {
 
 func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db projectTaskLifecycleReader) {
 	if task == nil || db == nil || task.Archived {
+		return
+	}
+	// A design job's record is its own lifecycle authority; its receipt
+	// session never runs.
+	if task.Design != nil {
 		return
 	}
 	// Direct video generation intentionally has no chat session. Its persisted
@@ -1327,7 +1344,9 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 				}
 			}
 		} else {
-			alloc, err = s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(p, wsPath, sessionID, "", worktreeBranch)
+			// A workflow step's coder starts at the delivery head; any other
+			// task at the folder's branch.
+			alloc, err = s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(p, wsPath, sessionID, task.StartCommit, worktreeBranch)
 		}
 		if err != nil {
 			return fmt.Errorf("worktree allocation failed for coder task: %w", err)
@@ -1592,6 +1611,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectDesigns(w, r, p, segments[0])
 		return
 	}
+	if len(segments) >= 2 && segments[1] == "design-jobs" {
+		s.handleProjectDesignJobs(w, r, p, segments[0], segments[2:])
+		return
+	}
 
 	// 2. Synthesize context: POST /v3/projects/synthesize-context
 	if len(segments) == 1 && segments[0] == "synthesize-context" {
@@ -1607,6 +1630,9 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 	}
 
 	projectID := segments[0]
+	if s.refuseDesignTaskMutation(w, r, p, projectID, segments) {
+		return
+	}
 	if len(segments) == 5 && segments[1] == "tasks" && segments[3] == "deliverables" {
 		s.handleProjectDeliverableContent(w, r, p, projectID, segments[2], segments[4])
 		return
@@ -3596,6 +3622,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if task.Agent == pebblestore.WorkerRoleReviewer {
+			writeError(w, http.StatusConflict, errors.New("reviewer jobs are report-only; delivery and integration are refused"))
+			return
+		}
 		// Mutation requests must identify the exact selected session and captured lane.
 		var selection struct {
 			SessionID    string `json:"session_id"`
