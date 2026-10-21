@@ -234,6 +234,13 @@ func (c *controlMCPCall) requireTokenScope(scope string) error {
 
 func controlMCPSessionSummary(session map[string]any) map[string]any {
 	summary := controlMCPPick(session, "id", "title", "workspace_path", "message_count")
+	// When Swarm made, last changed and last messaged it (Unix ms), from the
+	// session's own record, so frontends order and age it without guessing.
+	for _, key := range []string{"created_at", "updated_at", "last_message_at"} {
+		if value, ok := session[key].(float64); ok && value > 0 {
+			summary[key] = value
+		}
+	}
 	if metadata := controlMCPMap(session["metadata"]); metadata != nil {
 		if agent, ok := metadata["agent_name"]; ok {
 			summary["agent"] = agent
@@ -250,6 +257,11 @@ func controlMCPSessionSummary(session map[string]any) map[string]any {
 	if lifecycle := controlMCPMap(session["lifecycle"]); lifecycle != nil {
 		if active, _ := lifecycle["active"].(bool); active {
 			summary["running"] = true
+		}
+		for _, key := range []string{"started_at", "ended_at"} {
+			if value, ok := lifecycle[key].(float64); ok && value > 0 {
+				summary["run_"+key] = value
+			}
 		}
 		for _, key := range []string{"phase", "stop_reason", "error"} {
 			if value, ok := lifecycle[key].(string); ok && value != "" {
@@ -364,7 +376,15 @@ func controlMCPRunIntentSummary(intent map[string]any) map[string]any {
 	if intent == nil {
 		return nil
 	}
-	return controlMCPPick(intent, "run_id", "status", "blocked_reason", "plan_id", "checkpoint_id")
+	summary := controlMCPPick(intent, "run_id", "status", "blocked_reason", "plan_id", "checkpoint_id")
+	// The run's times (Unix ms): time so far is now - started_at, and
+	// cumulative_duration_ms is the session's earlier runs.
+	for _, key := range []string{"created_at", "started_at", "cumulative_duration_ms"} {
+		if value, ok := intent[key].(float64); ok && value > 0 {
+			summary[key] = value
+		}
+	}
+	return summary
 }
 
 // controlMCPPlanProgress reduces a plan snapshot to status and per-checkpoint
@@ -554,9 +574,10 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_list_sessions", Title: "List sessions",
-			Description: "Recent sessions with agent and running state.",
+			Description: "Recent sessions with agent and running state, and when Swarm made, changed and last messaged each (Unix ms). With project_id: that project's orchestrator conversations, each with run (its current or last run: status, active, started_at, completed_at, duration_ms, cumulative_duration_ms) and pending_requests (questions or approvals waiting).",
 			InputSchema: controlMCPObject(nil, map[string]any{
-				"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": controlMCPMaxListItems, "description": "Default 10."},
+				"limit":      map[string]any{"type": "integer", "minimum": 1, "maximum": controlMCPMaxListItems, "description": "Default 10."},
+				"project_id": controlMCPStringProp("From list_projects: list that project's orchestrator conversations.", 0, 200),
 			}),
 			Annotations: controlMCPReadOnly, call: controlMCPListSessions,
 		},
@@ -665,6 +686,14 @@ func controlMCPTools() []controlMCPTool {
 				"transcription":   controlMCPStringProp("Transcription model id, or empty", 0, 200),
 			}),
 			Annotations: controlMCPWrites, call: controlMCPSetMediaModels,
+		},
+		{
+			Name: "swarm_get_theme", Title: "Read a theme's colors",
+			Description: "A theme from Swarm's catalog (builtin themes and custom ones made with manage-theme): id, name and palette (background, panel, element, border, border_active, text, text_muted, primary, secondary, accent, success, warning, error, prompt and code colors, as #RRGGBB). Pass a project's theme_id from list_projects; without one, the account's active theme.",
+			InputSchema: controlMCPObject(nil, map[string]any{
+				"theme_id": controlMCPStringProp("A theme id, e.g. a project's theme_id.", 0, 200),
+			}),
+			Annotations: controlMCPReadOnly, call: controlMCPGetTheme,
 		},
 		{
 			Name: "swarm_list_projects", Title: "List projects",
@@ -1041,17 +1070,53 @@ func (c *controlMCPCall) workspaceID(path string) (string, error) {
 
 func controlMCPListSessions(c *controlMCPCall, args map[string]any) (any, error) {
 	query := url.Values{"limit": {strconv.Itoa(controlMCPInt(args, "limit", 10))}}
+	projectID := controlMCPString(args, "project_id")
+	if projectID != "" {
+		// A project's orchestrator conversations, each with its run state
+		// and pending requests as Swarm records them.
+		query.Set("project_id", projectID)
+		query.Set("view", "summary")
+	}
 	response, err := c.dispatch(http.MethodGet, "/v3/sessions", query, nil)
 	if err != nil {
 		return nil, err
 	}
 	sessions := []map[string]any{}
 	for _, item := range controlMCPList(response["sessions"]) {
-		if session := controlMCPMap(controlMCPMap(item)["session"]); session != nil {
-			sessions = append(sessions, controlMCPSessionSummary(session))
+		entry := controlMCPMap(item)
+		session := controlMCPMap(entry["session"])
+		if session == nil {
+			continue
 		}
+		summary := controlMCPSessionSummary(session)
+		if attention := controlMCPMap(entry["attention"]); attention != nil {
+			if run := controlMCPRunTiming(controlMCPMap(attention["current_run_state"])); run != nil {
+				summary["run"] = run
+			}
+			if pending := controlMCPList(attention["pending_permissions"]); len(pending) > 0 {
+				summary["pending_requests"] = len(pending)
+			}
+		}
+		sessions = append(sessions, summary)
 	}
 	return map[string]any{"sessions": sessions}, nil
+}
+
+// controlMCPRunTiming is a session's current or last run as Swarm records it:
+// status, whether it is active, and its times (Unix ms). While a run is
+// active its time so far is now - started_at; cumulative_duration_ms holds the
+// session's earlier runs, and a finished run's own time is duration_ms.
+func controlMCPRunTiming(state map[string]any) map[string]any {
+	if state == nil {
+		return nil
+	}
+	run := controlMCPPick(state, "run_id", "status", "active", "blocked_reason")
+	for _, key := range []string{"created_at", "started_at", "completed_at", "updated_at", "duration_ms", "cumulative_duration_ms"} {
+		if value, ok := state[key].(float64); ok && value > 0 {
+			run[key] = value
+		}
+	}
+	return run
 }
 
 func controlMCPGetSession(c *controlMCPCall, args map[string]any) (any, error) {
@@ -1867,7 +1932,7 @@ func controlMCPListProjects(c *controlMCPCall, _ map[string]any) (any, error) {
 		if project == nil {
 			continue
 		}
-		summary := controlMCPPick(project, "id", "name")
+		summary := controlMCPPick(project, "id", "name", "theme_id")
 		summary["workspaces"] = controlMCPProjectWorkspaces(project)
 		summary["context_status"] = controlMCPContextStatus(project)
 		projects = append(projects, summary)
@@ -1899,7 +1964,7 @@ func controlMCPContextStatus(project map[string]any) string {
 // controlMCPProjectSummary is one project with its project.md (bounded) and
 // the generation state the orchestrator start waits on.
 func controlMCPProjectSummary(project map[string]any) map[string]any {
-	summary := controlMCPPick(project, "id", "name", "description")
+	summary := controlMCPPick(project, "id", "name", "description", "theme_id")
 	summary["workspaces"] = controlMCPProjectWorkspaces(project)
 	generation := controlMCPPick(controlMCPMap(project["context_generation"]), "status", "attempt", "error", "router_alert")
 	generation["status"] = controlMCPContextStatus(project)
@@ -2785,4 +2850,36 @@ func (c *controlMCPCall) lastRunStatus(sessionID string, detail map[string]any) 
 		return ""
 	}
 	return state.Status
+}
+
+// controlMCPGetTheme reads one theme from Swarm's theme catalog: the given
+// id, else the account's active theme, else Swarm's default.
+func controlMCPGetTheme(c *controlMCPCall, args map[string]any) (any, error) {
+	response, err := c.dispatch(http.MethodGet, "/v1/ui/settings", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	catalog := controlMCPMap(response["theme"])
+	id, source := controlMCPString(args, "theme_id"), "theme_id"
+	if id == "" {
+		id, source = controlMCPMapString(catalog, "active_id"), "active"
+	}
+	if id == "" {
+		id, source = controlMCPMapString(catalog, "default_theme_id"), "default"
+	}
+	for _, list := range []string{"custom_themes", "builtin_themes"} {
+		for _, raw := range controlMCPList(catalog[list]) {
+			theme := controlMCPMap(raw)
+			if theme == nil || controlMCPMapString(theme, "id") != id {
+				continue
+			}
+			return map[string]any{"id": id, "name": theme["name"], "palette": theme["palette"], "custom": list == "custom_themes", "source": source}, nil
+		}
+	}
+	return nil, controlMCPToolFailure("no theme %q in Swarm's catalog", id)
+}
+
+func controlMCPMapString(m map[string]any, key string) string {
+	value, _ := m[key].(string)
+	return value
 }
