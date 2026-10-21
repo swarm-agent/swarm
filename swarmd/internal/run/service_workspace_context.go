@@ -128,7 +128,10 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 				// Its own writable branch checkout only (a job checkout,
 				// not a read-only review checkout).
 				reviewFixes = true
-			} else {
+			} else if !sandbox.OwnerTurnedOff() {
+				// The sandbox's read-only review checkout. With the sandbox
+				// off by the owner's choice nothing is registered: the
+				// reviewer runs in its checkout like every other agent.
 				reviewCheckout = resolvedPath
 			}
 		}
