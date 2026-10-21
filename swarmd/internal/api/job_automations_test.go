@@ -244,6 +244,17 @@ func TestDeliverJobWithoutAutomationsIsUnchanged(t *testing.T) {
 	if len(routes) != 0 {
 		t.Fatalf("a refused automation re-run reached Swarm: %v", routes)
 	}
+	// A task of Swarm's own agents: its workflow steps re-run by its task job
+	// id; a plain delivery is swarm_integrate_task's, never a merge here.
+	if _, err := controlMCPDeliverJob(c, map[string]any{"job_id": "task/proj-1/task-1", "automation": true}); err == nil || !strings.Contains(err.Error(), "job task/proj-1/task-1 has no workflow deliveries") {
+		t.Fatalf("task workflow re-run without deliveries = %v", err)
+	}
+	if _, err := controlMCPDeliverJob(c, map[string]any{"job_id": "task/proj-1/task-1"}); err == nil || !strings.Contains(err.Error(), "swarm_integrate_task") {
+		t.Fatalf("task delivery without automation = %v", err)
+	}
+	if len(routes) != 0 {
+		t.Fatalf("a task re-run or refusal reached Swarm: %v", routes)
+	}
 	if deliveries, ok := c.jobDeliveries("worker/wkr-1/run-1"); ok || deliveries != nil {
 		t.Fatalf("a job without automations lists deliveries: %v", deliveries)
 	}

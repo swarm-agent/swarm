@@ -1359,6 +1359,17 @@ func (c *controlMCPCall) rerunJobAutomations(kind, a, b string) (any, error) {
 // swarm_get_job view; "" for a job without commits (or a media or design
 // job, which has none).
 func (c *controlMCPCall) jobCurrentHead(kind, a, b string) (string, error) {
+	if kind == jobautomation.KindTask {
+		p, ok := PrincipalFromRequest(c.request)
+		if !ok || c.server == nil {
+			return "", errors.New("no principal to read the task")
+		}
+		result, err := c.server.taskJobResult(c.request.Context(), p.AccountScopeID, a, b, "")
+		if err != nil || result == nil || result.Git == nil {
+			return "", err
+		}
+		return result.Git.Head, nil
+	}
 	if kind != controlMCPJobWorker {
 		return "", nil
 	}

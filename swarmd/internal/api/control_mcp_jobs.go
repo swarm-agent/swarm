@@ -1061,6 +1061,15 @@ func controlMCPDeliverJob(c *controlMCPCall, args map[string]any) (any, error) {
 	if err := c.requireTokenScope("sessions:write"); err != nil {
 		return nil, err
 	}
+	// A task of Swarm's own agents (task/<project>/<task>, a workflow's job
+	// id): its workflow steps re-run here; its Git delivery is
+	// swarm_integrate_task.
+	if projectID, taskID, ok := parseTaskJobID(controlMCPString(args, "job_id")); ok {
+		if rerun, _ := args["automation"].(bool); !rerun {
+			return nil, controlMCPToolFailure("a task of Swarm's own agents is integrated with swarm_integrate_task; swarm_deliver_job with automation=true re-runs its workflow's failed or stopped steps")
+		}
+		return c.rerunJobAutomations(jobautomation.KindTask, projectID, taskID)
+	}
 	kind, a, b, err := controlMCPParseJobID(args)
 	if err != nil {
 		return nil, err
