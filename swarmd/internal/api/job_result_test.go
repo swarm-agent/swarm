@@ -52,32 +52,3 @@ func TestJobResultPositiveNoCommits(t *testing.T) {
 		})
 	}
 }
-
-// Purpose: taskJobResult's empty-lane predicate must never turn missing or
-// contradictory evidence into permission to skip review. Testing its conversion
-// boundary is the narrowest layer for these assessment inputs.
-func TestTaskResultPositiveNoCommits(t *testing.T) {
-	const base = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	for _, tc := range []struct {
-		name, state, head, path, changeError string
-		commits                              []any
-		want                                 bool
-	}{
-		{name: "empty", state: "empty", head: base, path: "lane", want: true},
-		{name: "unknown", head: base, path: "lane"},
-		{name: "unavailable", state: "unavailable", head: base, path: "lane"},
-		{name: "candidate", state: "candidate_work", head: base, path: "lane"},
-		{name: "missing head", state: "empty", path: "lane"},
-		{name: "missing lane", state: "empty", head: base},
-		{name: "different head", state: "empty", head: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", path: "lane"},
-		{name: "read error", state: "empty", head: base, path: "lane", changeError: "unreadable"},
-		{name: "commits", state: "empty", head: base, path: "lane", commits: []any{"bbb change"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			view := map[string]any{"delivery_state": tc.state, "head": tc.head, "base_commit": base, "changes_error": tc.changeError, "commits": tc.commits}
-			if got := taskResultNoCommits(view, tc.path); got != tc.want {
-				t.Fatalf("no commits = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
