@@ -231,6 +231,29 @@ func (s *Server) JobAutomationAgents() jobautomation.AgentRunner {
 
 type jobAutomationAgents struct{ s *Server }
 
+// Role resolves a named worker without deploying or starting it. The runner
+// uses this only for positively empty review targets; errors still dispatch
+// through Start so unknown workers never silently become skipped reviews.
+func (a jobAutomationAgents) Role(ctx context.Context, account, name string) (string, error) {
+	if jobautomation.IsBuiltinAgent(name) {
+		return name, nil
+	}
+	c, err := a.s.jobAutomationCall(ctx)
+	if err != nil {
+		return "", err
+	}
+	principal, ok := PrincipalFromRequest(c.request)
+	if !ok || principal.AccountScopeID != account {
+		return "", errors.New("agent steps run only for the machine owner's automations")
+	}
+	worker, err := c.resolveWorker(name)
+	if err != nil {
+		return "", err
+	}
+	role, _ := worker["role"].(string)
+	return role, nil
+}
+
 // maxAgentResultBytes bounds the result attached to an agent step's brief
 // (a run's input is at most 64 KiB).
 const maxAgentResultBytes = 32 << 10

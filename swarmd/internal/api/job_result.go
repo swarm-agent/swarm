@@ -34,7 +34,8 @@ type workerJobResult struct {
 	commits  []map[string]string
 	files    []workerJobResultPath
 	// hasGit is set when the job committed: a head and commits are known.
-	hasGit bool
+	hasGit    bool
+	noCommits bool
 }
 
 type workerJobResultPath struct {
@@ -97,6 +98,9 @@ func workerJobResultFromView(ctx context.Context, git jobResultGit, lastAttempt 
 	if text, _ := result["changes_error"].(string); text != "" {
 		manifest["changes_error"] = text
 	}
+	// Only the observed empty assessment proves no commits since the base.
+	// Unavailable or incomplete candidate work must still reach the reviewer.
+	out.noCommits = state == "empty" && out.repo != "" && out.base != "" && out.head == out.base && len(commits) == 0 && manifest["changes_error"] == nil
 	if out.repo != "" && out.head != "" && len(commits) > 0 {
 		out.hasGit = true
 		out.commits = make([]map[string]string, 0, len(commits))
@@ -170,6 +174,7 @@ func (r *workerJobResult) automationResult(ctx context.Context, git *outbox.Buil
 	if cost := controlMCPMap(r.manifest["cost"]); cost != nil {
 		out.Cost = jobResultCost(cost["total_tokens"], cost["estimated_cost_usd"], cost["model"])
 	}
+	out.NoCommits = r.noCommits
 	if !r.hasGit {
 		return out
 	}
