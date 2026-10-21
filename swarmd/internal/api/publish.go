@@ -98,7 +98,7 @@ func (c *controlMCPCall) publishJob(kind, a, b string, refs controlMCPJobRefs, r
 	}
 	if principal, ok := PrincipalFromRequest(c.request); ok && c.server != nil && c.server.sessions != nil && c.server.sessions.Store() != nil {
 		_, _ = updateProjectTaskWithRetry(c.server.sessions.Store(), principal.AccountScopeID, refs.projectID, refs.taskID, func(t *pebblestore.ProjectTaskRecord) error {
-			t.Integration = &pebblestore.ProjectTaskIntegration{State: "pull_request", SourceBranch: branch, SourceHead: head, TargetBranch: base, TargetWorkspacePath: rule.Folder, PullRequestURL: res.URL}
+			recordPublishedPullRequest(t, &pebblestore.ProjectTaskIntegration{State: "pull_request", SourceBranch: branch, SourceHead: head, TargetBranch: base, TargetWorkspacePath: rule.Folder, PullRequestURL: res.URL})
 			return nil
 		})
 	}
@@ -173,4 +173,10 @@ func (c *controlMCPCall) jobFolder(refs controlMCPJobRefs, result map[string]any
 	}
 	path, _ := result["workspace_path"].(string)
 	return path
+}
+
+// recordPublishedPullRequest runs inside the task mutation after publication succeeds.
+func recordPublishedPullRequest(t *pebblestore.ProjectTaskRecord, receipt *pebblestore.ProjectTaskIntegration) {
+	t.Integration = receipt
+	t.MarkCodeDeliverablesReady("Pull request " + receipt.PullRequestURL)
 }
