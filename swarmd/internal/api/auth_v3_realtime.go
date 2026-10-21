@@ -28,6 +28,10 @@ func (s *Server) publishAuthCredentialV3Realtime(accountScopeID string, event pe
 	if s == nil || s.sessions == nil || accountScopeID == "" || !strings.HasPrefix(strings.TrimSpace(event.EventType), "auth.") {
 		return
 	}
+	switch strings.TrimSpace(event.EventType) {
+	case "auth.credential.upserted", "auth.credential.activated", "auth.codex.updated":
+		s.retryFailedProjectContexts(accountScopeID)
+	}
 	payload := sessionsV3AuthResourcePayload{
 		AccountScopeID: accountScopeID,
 		EventType:      strings.TrimSpace(event.EventType),

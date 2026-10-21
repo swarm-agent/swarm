@@ -207,6 +207,34 @@ func (s *Server) CreateProject(ctx context.Context, p identity.Principal, input 
 	return record, nil
 }
 
+// retryFailedProjectContexts keeps catalog reads and generation off the auth
+// publisher path. Durable attempt fencing arbitrates concurrent credential events.
+func (s *Server) retryFailedProjectContexts(accountScopeID string) {
+	if s.sessions.Store() == nil || !s.beginActiveRun() {
+		return
+	}
+	go func() {
+		defer s.endActiveRun()
+		projects, err := s.sessions.Store().ListProjects(accountScopeID, 1000)
+		if err != nil {
+			log.Printf("project context retry listing failed: %v", err)
+			return
+		}
+		// Projects and provider settings are account-owned; this background
+		// operation does not inherit a request session or its tool authority.
+		p := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "desktop", AccountScopeID: accountScopeID, AccountScopeSource: identity.AccountScopeSourceServerState}
+		for i := range projects {
+			record := &projects[i]
+			if record.ContextGeneration == nil || record.ContextGeneration.Status != "failed" {
+				continue
+			}
+			if _, err := s.startProjectContext(p, record, true); err != nil {
+				log.Printf("project context retry failed: %v", err)
+			}
+		}
+	}()
+}
+
 func (s *Server) startProjectContext(p identity.Principal, record *pebblestore.ProjectRecord, retry bool) (*pebblestore.ProjectRecord, error) {
 	if !s.beginActiveRun() {
 		return nil, errors.New("server is shutting down; retry project context")

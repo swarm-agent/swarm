@@ -17,11 +17,12 @@ import (
 )
 
 // Requirement: external goal delegation exposes every lifecycle control while
-// retaining permission levels. Threat: hidden answer/stop/result tools or widened
+// retaining permission levels and discoverable project recovery. Threat: hidden
+// retry/answer/stop/result tools or widened
 // read keys. Owners: visibleTools, callTool and controlMCPCoreTools. This adapter
 // test is the narrowest layer for discovery and pre-dispatch authorization.
 func TestControlMCPDefaultGoalLifecycle(t *testing.T) {
-	required := []string{"swarm_run_task", "swarm_wait_task", "swarm_task_result", "swarm_list_tasks", "swarm_get_session", "swarm_resolve_permission", "swarm_approve_task", "swarm_stop_run", "swarm_send_message", "swarm_integrate_task", "swarm_get_changes", "swarm_read_file", "swarm_request_media", "swarm_get_job", "swarm_save_media", "swarm_deploy_worker", "swarm_schedule_job"}
+	required := []string{"swarm_run_task", "swarm_wait_task", "swarm_task_result", "swarm_list_tasks", "swarm_get_session", "swarm_resolve_permission", "swarm_approve_task", "swarm_stop_run", "swarm_send_message", "swarm_integrate_task", "swarm_get_changes", "swarm_read_file", "swarm_request_media", "swarm_get_job", "swarm_save_media", "swarm_deploy_worker", "swarm_schedule_job", "swarm_retry_project_context"}
 	c := &controlMCPCall{request: requestWithScopedToken(httptest.NewRequest(http.MethodPost, "/mcp", nil), &pebblestore.ScopedTokenRecord{Scopes: []string{"swarm:read", "swarm:write", "swarm:approve", "swarm:manage", "sessions:read", "sessions:write"}})}
 	names := map[string]bool{}
 	for _, tool := range c.visibleTools() {
@@ -34,13 +35,13 @@ func TestControlMCPDefaultGoalLifecycle(t *testing.T) {
 	}
 	c.request = requestWithScopedToken(c.request, &pebblestore.ScopedTokenRecord{Scopes: []string{"swarm:read", "sessions:read"}})
 	for _, tool := range c.visibleTools() {
-		if slices.Contains([]string{"swarm_run_task", "swarm_resolve_permission", "swarm_stop_run", "swarm_integrate_task"}, tool.Name) {
+		if slices.Contains([]string{"swarm_run_task", "swarm_resolve_permission", "swarm_stop_run", "swarm_integrate_task", "swarm_retry_project_context"}, tool.Name) {
 			t.Errorf("read key advertises %s", tool.Name)
 		}
 	}
 	dispatched := false
 	c.next = http.HandlerFunc(func(http.ResponseWriter, *http.Request) { dispatched = true })
-	for _, name := range []string{"swarm_run_task", "swarm_resolve_permission", "swarm_integrate_task", "swarm_stop_run"} {
+	for _, name := range []string{"swarm_run_task", "swarm_resolve_permission", "swarm_integrate_task", "swarm_stop_run", "swarm_retry_project_context"} {
 		raw, _ := json.Marshal(map[string]any{"name": name, "arguments": map[string]any{}})
 		result, rpcErr := c.callTool(raw)
 		if rpcErr != nil || result["isError"] != true {
