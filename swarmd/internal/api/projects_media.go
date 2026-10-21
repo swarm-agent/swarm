@@ -2020,3 +2020,16 @@ func (s *Server) signalMediaCancelled(p identity.Principal, projectID, taskID, r
 		log.Printf("swarmd signal media.job.cancelled not recorded: %v", err)
 	}
 }
+
+// imageModelListsAspectRatios reports whether the image model (the account's
+// default when empty) names the aspect ratios it takes.
+func (s *Server) imageModelListsAspectRatios(accountScopeID, model string) bool {
+	model = strings.TrimSpace(model)
+	if model == "" && s.uiSettings != nil && accountScopeID != "" {
+		if settings, err := s.uiSettings.GetForAccount(accountScopeID); err == nil {
+			model = strings.TrimSpace(settings.Tools.Image.DefaultModel)
+		}
+	}
+	opts := s.getModelGenerationOptions(model)
+	return opts != nil && len(opts.AspectRatios) > 0
+}
