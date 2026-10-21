@@ -145,6 +145,7 @@ var controlMCPRoutes = []string{
 	"GET v3/workers/*/runs/*",
 	"POST v3/workers/*/runs/*/cancel",
 	"GET v3/usage",
+	"GET v1/codex/account/usage", "GET v1/claudecode/usage",
 	"GET v3/usage/limits",
 	"POST v3/usage/limits",
 	// Monitoring: the machine summary and its signal feed (handlers require
@@ -858,8 +859,15 @@ func controlMCPTools() []controlMCPTool {
 			Description: "Model spend and tokens for a period, top models, and the account's daily limits. Each model's billing says why its cost is what it is: subscription (a sign-in provider such as ChatGPT: Swarm reports no per-token cost; nominal_cost_usd is the same use at API prices when known), metered (priced per token) or unpriced (no price known, so cost shows 0). A limit of none means no limit.",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"period": map[string]any{"type": "string", "enum": []string{"today", "7d", "30d"}, "description": "Default today."},
+				"detail": map[string]any{"type": "boolean", "description": "Also return every provider and model, each day, media and the most active sessions, as a usage page shows them."},
 			}),
 			Annotations: controlMCPReadOnly, call: controlMCPGetUsage,
+		},
+		{
+			Name: "swarm_get_plan_usage", Title: "Read sign-in plan limits",
+			Description: "How much of each sign-in plan's rate limits is used: ChatGPT (asked from ChatGPT on each call) and Claude Code (its latest reading, known only after a Claude Code turn ran since Swarm started). A provider that is not connected says so.",
+			InputSchema: controlMCPObject(nil, map[string]any{}),
+			Annotations: controlMCPReadOnly, call: controlMCPGetPlanUsage,
 		},
 		{
 			Name: "swarm_set_usage_limits", Title: "Set daily usage limits",
@@ -2725,7 +2733,12 @@ func controlMCPGetUsage(c *controlMCPCall, args map[string]any) (any, error) {
 	if period == "" {
 		period = "today"
 	}
-	response, err := c.dispatch(http.MethodGet, "/v3/usage", url.Values{"time_range": {period}, "session_limit": {"1"}}, nil)
+	detail, _ := args["detail"].(bool)
+	sessionLimit := "1"
+	if detail {
+		sessionLimit = "10"
+	}
+	response, err := c.dispatch(http.MethodGet, "/v3/usage", url.Values{"time_range": {period}, "session_limit": {sessionLimit}}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -2762,6 +2775,9 @@ func controlMCPGetUsage(c *controlMCPCall, args map[string]any) (any, error) {
 	out["top_models"] = models
 	if note := controlMCPCostNote(rawSummary, billing); note != "" {
 		summary["cost_note"] = note
+	}
+	if detail {
+		controlMCPUsageDetail(response, subscription, out)
 	}
 	return out, nil
 }
@@ -2882,4 +2898,95 @@ func controlMCPGetTheme(c *controlMCPCall, args map[string]any) (any, error) {
 func controlMCPMapString(m map[string]any, key string) string {
 	value, _ := m[key].(string)
 	return value
+}
+
+// controlMCPUsageDetail adds what a usage page shows to get_usage's answer:
+// the summary's remaining totals, every provider and model, each day, media
+// and the most active sessions, all as Swarm's usage dashboard reports them.
+func controlMCPUsageDetail(response map[string]any, subscription map[string]bool, out map[string]any) {
+	summary, _ := out["summary"].(map[string]any)
+	for key, value := range controlMCPPick(controlMCPMap(response["summary"]), "thinking_tokens", "codex_nominal_cost_usd", "total_sessions", "archived_sessions", "total_media_calls", "media_cost_usd") {
+		summary[key] = value
+	}
+	providers := []map[string]any{}
+	for _, raw := range controlMCPList(response["by_provider"]) {
+		if provider := controlMCPMap(raw); provider != nil {
+			providers = append(providers, controlMCPPick(provider, "provider", "display_name", "total_tokens", "input_tokens", "output_tokens", "cached_tokens", "thinking_tokens", "cost_usd", "codex_nominal_cost_usd", "is_subscription", "turns", "sessions", "models"))
+		}
+	}
+	out["by_provider"] = providers
+	models := []map[string]any{}
+	for _, raw := range controlMCPList(response["by_model"]) {
+		if model := controlMCPMap(raw); model != nil {
+			entry := controlMCPPick(model, "provider", "model", "display_name", "total_tokens", "input_tokens", "output_tokens", "cached_tokens", "thinking_tokens", "cost_usd", "codex_nominal_cost_usd", "turns", "sessions")
+			entry["billing"] = controlMCPBilling(model, subscription)
+			models = append(models, entry)
+		}
+	}
+	out["by_model"] = models
+	days := []map[string]any{}
+	for _, raw := range controlMCPList(response["daily"]) {
+		if day := controlMCPMap(raw); day != nil {
+			days = append(days, controlMCPPick(day, "date", "timestamp", "total_tokens", "input_tokens", "output_tokens", "cached_tokens", "cost_usd", "codex_nominal_cost_usd", "turns", "media_calls", "media_cost_usd"))
+		}
+	}
+	out["daily"] = days
+	if media := controlMCPMap(response["media"]); media != nil {
+		out["media"] = controlMCPPick(media, "total_count", "total_cost_usd", "image_count", "image_cost_usd", "video_count", "video_cost_usd", "audio_count", "audio_cost_usd")
+	}
+	sessions := []map[string]any{}
+	for _, raw := range controlMCPList(response["recent_sessions"]) {
+		if session := controlMCPMap(raw); session != nil {
+			sessions = append(sessions, controlMCPPick(session, "session_id", "title", "provider", "model", "total_tokens", "cost_usd", "turn_count", "last_active_at", "archived"))
+		}
+	}
+	out["sessions"] = sessions
+}
+
+// controlMCPGetPlanUsage reads each sign-in plan's rate limits: ChatGPT's from
+// ChatGPT itself, Claude Code's from its latest reported reading.
+func controlMCPGetPlanUsage(c *controlMCPCall, _ map[string]any) (any, error) {
+	if err := c.requireTokenScope("sessions:read"); err != nil {
+		return nil, err
+	}
+	chatgpt, chatgptErr := c.dispatch(http.MethodGet, "/v1/codex/account/usage", nil, nil)
+	claude, claudeErr := c.dispatch(http.MethodGet, "/v1/claudecode/usage", nil, nil)
+	return controlMCPPlanUsage(chatgpt, chatgptErr, claude, claudeErr), nil
+}
+
+func controlMCPPlanUsage(chatgpt map[string]any, chatgptErr error, claude map[string]any, claudeErr error) map[string]any {
+	out := map[string]any{}
+	if chatgptErr != nil {
+		out["chatgpt"] = map[string]any{"connected": false, "reason": chatgptErr.Error()}
+	} else {
+		plan := map[string]any{"connected": true, "plan_type": chatgpt["plan_type"]}
+		limit := controlMCPMap(chatgpt["rate_limit"])
+		plan["limit_reached"], _ = limit["limit_reached"].(bool)
+		windows := []map[string]any{}
+		for _, key := range []string{"primary_window", "secondary_window"} {
+			if window := controlMCPMap(limit[key]); window != nil {
+				windows = append(windows, controlMCPPick(window, "used_percent", "limit_window_seconds", "reset_at", "reset_after_seconds"))
+			}
+		}
+		plan["windows"] = windows
+		if credits := controlMCPMap(chatgpt["rate_limit_reset_credits"]); credits != nil {
+			plan["reset_credits_available"] = credits["available_count"]
+		}
+		out["chatgpt"] = plan
+	}
+	if claudeErr != nil {
+		out["claude_code"] = map[string]any{"connected": false, "reason": claudeErr.Error()}
+	} else {
+		cli := controlMCPMap(claude["cli"])
+		loggedIn, _ := cli["logged_in"].(bool)
+		plan := map[string]any{"connected": loggedIn, "subscription_type": cli["subscription_type"]}
+		if !loggedIn {
+			plan["reason"] = cli["reason"]
+		}
+		if limits := controlMCPMap(claude["rate_limits"]); limits != nil {
+			plan["rate_limits"] = controlMCPPick(limits, "status", "resets_at", "is_using_overage", "windows", "observed_at")
+		}
+		out["claude_code"] = plan
+	}
+	return out
 }

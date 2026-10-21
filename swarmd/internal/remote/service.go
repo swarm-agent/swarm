@@ -53,6 +53,7 @@ var toolScopes = map[string]string{
 	"swarm_list_projects":          ScopeRead,
 	"swarm_get_project":            ScopeRead,
 	"swarm_get_theme":              ScopeRead,
+	"swarm_get_plan_usage":         ScopeRead,
 	"swarm_list_workers":           ScopeRead,
 	"swarm_get_worker":             ScopeRead,
 	"swarm_get_limits":             ScopeRead,
