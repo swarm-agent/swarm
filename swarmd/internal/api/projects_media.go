@@ -72,6 +72,10 @@ func (s *Server) generateImageMedia(
 		}
 	}
 	if usedModel == "" {
+		// Like a request without a model: the recommended ready model.
+		usedModel = s.defaultMediaModel(ctx, p, "image")
+	}
+	if usedModel == "" {
 		return "", "", "", "", errors.New("configure a default image model or select a model for this generation")
 	}
 
