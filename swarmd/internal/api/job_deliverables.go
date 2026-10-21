@@ -162,7 +162,9 @@ func (s *Server) workResult(ctx context.Context, account, jobID string) (*jobaut
 // deployReviewerPreset deploys Swarm's reviewer preset, as
 // swarm_deploy_worker {preset: reviewer} does.
 func (s *Server) deployReviewerPreset(ctx context.Context) error {
-	c, err := s.jobAutomationWriteCall(ctx)
+	// Deploying a worker is an automations:write action (POST
+	// /v3/workers:ensure-presets); only this call gets that scope.
+	c, err := s.jobAutomationOwnerCall(ctx, "job-automation-reviewer-preset", "Swarm workflow reviewer preset (internal)", "swarm:read", "swarm:write", "automations:read", "automations:write")
 	if err != nil {
 		return err
 	}

@@ -555,6 +555,12 @@ type jobAutomationReopener struct{ s *Server }
 // follow-up with: the machine owner, allowed to read jobs and write to their
 // sessions only.
 func (s *Server) jobAutomationWriteCall(ctx context.Context) (*controlMCPCall, error) {
+	return s.jobAutomationOwnerCall(ctx, "job-automation-reopen", "Swarm job automation reopen (internal)", "swarm:read", "sessions:read", "sessions:write", "automations:read")
+}
+
+// jobAutomationOwnerCall is a Swarm Control call as the machine owner with
+// exactly scopes: each internal workflow action gets only what it needs.
+func (s *Server) jobAutomationOwnerCall(ctx context.Context, tokenID, tokenName string, scopes ...string) (*controlMCPCall, error) {
 	if s.jobAutomationCallFn != nil {
 		return s.jobAutomationCallFn(ctx)
 	}
@@ -572,8 +578,7 @@ func (s *Server) jobAutomationWriteCall(ctx context.Context) (*controlMCPCall, e
 	req.Host, req.RemoteAddr = "127.0.0.1", "127.0.0.1:0"
 	req = requestWithActorContext(req, actor)
 	req = requestWithScopedToken(req, &pebblestore.ScopedTokenRecord{
-		ID: "job-automation-reopen", Name: "Swarm job automation reopen (internal)",
-		Scopes:         []string{"swarm:read", "sessions:read", "sessions:write", "automations:read"},
+		ID: tokenID, Name: tokenName, Scopes: scopes,
 		AccountScopeID: actor.AccountScopeID, UserID: actor.UserID,
 	})
 	return &controlMCPCall{request: req, next: s.internalRouteHandler(), server: s}, nil
