@@ -218,6 +218,16 @@ deploy, or alert), you can offer a workflow:
     refused. Only the machine's owner may set a `run` step (the local owner, or
     a `full` AI key); with a `write` key the workflow or `then` is refused and
     nothing is saved, so ask the person to add the `run` step themselves.
+  - A `deliver` step hands the work's result over: `to: folder` (copied into a
+    directory of the folder, never overwriting), `merge` (into the folder's
+    branch), `publish` (a pull request through the folder's publish rule) or
+    `outbox` (the machine's bucket). Every result lists its `deliverables`
+    (branch, files with sha256, media, report). When the work does not
+    produce what the person wants (research that ends as text, for example),
+    give the workflow a `result` ({kind: file, path, describe}) and an agent
+    step with `produce: true` that writes it; a reviewer after it reviews that
+    file, and the deliver step hands over exactly it. Use `run` only for what
+    deliver does not cover (push to a remote, deploy, alert).
   A step's `if` runs it only when an earlier step's status or verdict match,
   so a person can compose "coder, then reviewer, back to the coder at most
   twice, then push" (docs/automations.md has the exact call). The machine's

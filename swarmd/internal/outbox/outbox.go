@@ -441,3 +441,32 @@ func (e *Exporter) statusLoop(ctx context.Context) {
 		}
 	}
 }
+
+// WriteDelivery writes one workflow delivery's files (under their content
+// hash, like a result's) and its manifest at
+// machines/<machine>/deliveries/<delivery id>/<step>.json, and returns the
+// manifest's key. The caller removes the blob files.
+func (e *Exporter) WriteDelivery(ctx context.Context, deliveryID string, blobs []Blob, manifest map[string]any) (string, error) {
+	step, _ := manifest["step"].(string)
+	if err := checkKey(deliveryID); err != nil || deliveryID == "" || strings.ContainsAny(deliveryID, "/.") {
+		return "", fmt.Errorf("invalid delivery id %q", deliveryID)
+	}
+	if err := checkKey(step); err != nil || step == "" || strings.ContainsAny(step, "/.") {
+		return "", fmt.Errorf("invalid step id %q", step)
+	}
+	for _, blob := range blobs {
+		if err := e.dest.PutFile(ctx, e.cfg.key(e.layoutKey("blobs/sha256/"+blob.SHA256)), blob.Path, blob.Size, blob.SHA256, blob.Type); err != nil {
+			return "", err
+		}
+	}
+	manifest["v"], manifest["machine"], manifest["exported_at"] = Version, e.cfg.Machine, e.now().UnixMilli()
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	key := e.cfg.key(e.layoutKey("deliveries/" + deliveryID + "/" + step + ".json"))
+	if err := e.dest.PutBytes(ctx, key, data, "application/json"); err != nil {
+		return "", err
+	}
+	return key, nil
+}

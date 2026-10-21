@@ -174,6 +174,16 @@ type Step struct {
 	// Checkout is where the step's agent works (CheckoutSame, CheckoutNew or
 	// CheckoutNone); "" is the agent's default (CheckoutFor).
 	Checkout string `json:"checkout,omitempty"`
+	// Produce (agent) makes the step's agent write the workflow's result
+	// file (Automation.Result); its file is then a deliverable of the
+	// delivery.
+	Produce bool `json:"produce,omitempty"`
+	// deliver: To is where (folder, merge, publish, outbox), Path the
+	// directory in the folder for to: folder, What the deliverables by name
+	// (default: the workflow's result, else what fits the target).
+	To   string   `json:"to,omitempty"`
+	Path string   `json:"path,omitempty"`
+	What []string `json:"what,omitempty"`
 	// reopen: From (optional when Message is set) names the earlier agent
 	// step whose findings are sent; Message is placed before them, or sent
 	// alone when there are none, and may hold {{steps.<id>.output}}.
@@ -185,17 +195,19 @@ type Step struct {
 // Automation is a durable, account-owned definition. Revision changes on
 // every update; a delivery keeps the revision it started with.
 type Automation struct {
-	ID        string `json:"id"`
-	Account   string `json:"account"`
-	Name      string `json:"name"`
-	Scope     Scope  `json:"scope"`
-	When      string `json:"when"`
-	Enabled   bool   `json:"enabled"`
-	Retries   int    `json:"retries"`
-	Steps     []Step `json:"steps"`
-	Revision  uint64 `json:"revision"`
-	CreatedAt int64  `json:"created_at"`
-	UpdatedAt int64  `json:"updated_at"`
+	ID      string `json:"id"`
+	Account string `json:"account"`
+	Name    string `json:"name"`
+	Scope   Scope  `json:"scope"`
+	When    string `json:"when"`
+	Enabled bool   `json:"enabled"`
+	Retries int    `json:"retries"`
+	Steps   []Step `json:"steps"`
+	// Result is what the work must hand over (optional): see ResultSpec.
+	Result    *ResultSpec `json:"result,omitempty"`
+	Revision  uint64      `json:"revision"`
+	CreatedAt int64       `json:"created_at"`
+	UpdatedAt int64       `json:"updated_at"`
 }
 
 // ValidationError is a definition Swarm refuses, with the reason.
@@ -235,7 +247,10 @@ func (a *Automation) Normalize() error {
 	if a.Retries < 0 || a.Retries > MaxRetries {
 		return invalid("retries must be 0 to %d", MaxRetries)
 	}
-	return NormalizeSteps(a.Steps)
+	if err := NormalizeSteps(a.Steps); err != nil {
+		return err
+	}
+	return a.normalizeResult()
 }
 
 func (s *Scope) normalize() error {
@@ -320,8 +335,20 @@ func NormalizeSteps(steps []Step) error {
 			if err := step.normalizeReopen(types); err != nil {
 				return err
 			}
+		case StepDeliver:
+			if err := step.normalizeDeliver(); err != nil {
+				return err
+			}
 		default:
-			return invalid("step %s: type must be run, agent or reopen", step.ID)
+			return invalid("step %s: type must be run, agent, reopen or deliver", step.ID)
+		}
+		if step.Type != StepDeliver {
+			if err := step.noDeliverFields(); err != nil {
+				return err
+			}
+		}
+		if step.Produce && step.Type != StepAgent {
+			return invalid("step %s: produce is for an agent step", step.ID)
 		}
 		if err := step.normalizeConditions(types); err != nil {
 			return err

@@ -194,7 +194,7 @@ func (s *Server) startBuiltinAgentStep(ctx context.Context, req jobautomation.Ag
 	if !ok || p.AccountScopeID != req.Account {
 		return "", &jobautomation.RefusedError{Reason: "agent steps run only for the machine owner's automations"}
 	}
-	brief := agentStepBrief(req.Brief, req.Result)
+	brief := agentRequestBrief(req)
 	title := strings.TrimLeft(strings.TrimSpace(strings.SplitN(strings.TrimSpace(req.Brief), "\n", 2)[0]), "#- ")
 	if len(title) > 80 {
 		title = strings.TrimSpace(title[:80])

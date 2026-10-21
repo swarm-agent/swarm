@@ -63,6 +63,14 @@ func (s *Server) JobAutomationResults() jobautomation.ResultSource {
 type jobAutomationResults struct{ s *Server }
 
 func (r jobAutomationResults) Result(ctx context.Context, sig pebblestore.Signal, lastAttempt bool) (*jobautomation.Result, error) {
+	out, err := r.result(ctx, sig, lastAttempt)
+	if err == nil {
+		addResultDeliverables(ctx, out)
+	}
+	return out, err
+}
+
+func (r jobAutomationResults) result(ctx context.Context, sig pebblestore.Signal, lastAttempt bool) (*jobautomation.Result, error) {
 	switch {
 	case strings.HasPrefix(sig.Kind, "worker.run."):
 		return r.s.workerJobAutomationResult(ctx, sig.Refs["worker_id"], sig.Refs["run_id"], strings.TrimPrefix(sig.Kind, "worker.run."), lastAttempt)
@@ -244,6 +252,14 @@ func (a jobAutomationAgents) Start(ctx context.Context, req jobautomation.AgentR
 		return "", &jobautomation.RefusedError{Reason: "agent steps run only for the machine owner's automations"}
 	}
 	worker, err := c.resolveWorker(req.Worker)
+	if err != nil && strings.EqualFold(strings.TrimSpace(req.Worker), pebblestore.WorkerRoleReviewer) {
+		// A workflow that names the reviewer on a machine without one gets
+		// Swarm's reviewer preset, as swarm_deploy_worker would deploy it.
+		if deployErr := s.deployReviewerPreset(ctx); deployErr != nil {
+			return "", &jobautomation.RefusedError{Reason: "this machine has no reviewer and Swarm could not deploy its reviewer preset: " + deployErr.Error()}
+		}
+		worker, err = c.resolveWorker(req.Worker)
+	}
 	if err != nil {
 		return "", &jobautomation.RefusedError{Reason: err.Error()}
 	}
@@ -271,7 +287,7 @@ func (a jobAutomationAgents) Start(ctx context.Context, req jobautomation.AgentR
 	if role != pebblestore.WorkerRoleReviewer && checkout != jobautomation.CheckoutNew {
 		return "", &jobautomation.RefusedError{Reason: "checkout " + checkout + " is only for a reviewer; " + req.Worker + " is a " + firstNonEmptyString(role, "swarm") + " worker and works in its own worktree"}
 	}
-	input := map[string]any{"prompt": agentStepBrief(req.Brief, req.Result), "project_id": req.Result.ProjectID}
+	input := map[string]any{"prompt": agentRequestBrief(req), "project_id": req.Result.ProjectID}
 	if req.Fixes != "" {
 		input["review_fixes"] = req.Fixes
 	}
@@ -279,13 +295,25 @@ func (a jobAutomationAgents) Start(ctx context.Context, req jobautomation.AgentR
 		// same: a new reviewer session in the reviewed job's own worktree,
 		// read-only; new: its own checkout at the reviewed head.
 		input["review_checkout"] = checkout
-		if req.Result.Kind != jobautomation.KindWorker && req.Result.Kind != jobautomation.KindTask {
-			return "", &jobautomation.RefusedError{Reason: "a reviewer reviews a task's or a worker job's commits; " + req.Result.JobID + " is a " + req.Result.Kind + " job"}
+		// It reviews the newest work of the delivery: the job an earlier step
+		// produced the result in (or moved the head with), else the
+		// triggering job.
+		reviewJob := firstNonEmptyString(req.ReviewJob, req.Result.JobID)
+		if kind := strings.SplitN(reviewJob, "/", 2)[0]; kind != jobautomation.KindWorker && kind != jobautomation.KindTask {
+			return "", &jobautomation.RefusedError{Reason: "a reviewer reviews a task's or a worker job's commits; " + reviewJob + " is a " + kind + " job: have an agent step produce the result first"}
 		}
-		input["review_job"] = req.Result.JobID
+		input["review_job"] = reviewJob
+		reviewReq := req
+		if reviewJob != req.Result.JobID {
+			work, err := s.workResult(ctx, req.Account, reviewJob)
+			if err != nil || work == nil {
+				return "", fmt.Errorf("read the work to review (%s): %v", reviewJob, err)
+			}
+			reviewReq.Result = *work
+		}
 		// The reviewer gets the whole picture: the job's brief, its report,
 		// the commands it actually ran and its diff.
-		input["prompt"] = s.automationReviewerBrief(ctx, req)
+		input["prompt"] = s.automationReviewerBrief(ctx, reviewReq) + deliverablesNote(req)
 	}
 	run, err := execution.Dispatch(ctx, principal.AccountScopeID, principal.UserID, pebblestore.WorkerRunAdmission{
 		WorkerID: workerID, RequestSource: jobautomation.RequestSourceAutomation, Input: input, IdempotencyKey: req.IdempotencyKey, WorkspaceID: workspaceID,
@@ -762,7 +790,7 @@ func (s *Server) jobAutomationFixesError(account string, steps []jobautomation.S
 
 func jobAutomationView(a jobautomation.Automation) map[string]any {
 	return map[string]any{
-		"id": a.ID, "name": a.Name, "scope": a.Scope, "when": a.When, "enabled": a.Enabled, "retries": a.Retries,
+		"id": a.ID, "name": a.Name, "scope": a.Scope, "when": a.When, "enabled": a.Enabled, "retries": a.Retries, "result": a.Result,
 		"steps": a.Steps, "revision": a.Revision, "created_at": a.CreatedAt, "updated_at": a.UpdatedAt,
 	}
 }
@@ -1104,7 +1132,7 @@ func controlMCPAutomationSteps(raw any) ([]jobautomation.Step, error) {
 	}
 	var steps []jobautomation.Step
 	if err := json.Unmarshal(encoded, &steps); err != nil {
-		return nil, controlMCPToolFailure("steps must be a list of {id, type: run|agent|reopen, if, command, args, worker, brief, fixes, checkout, from, message, max_rounds, timeout_seconds, continue_on_failure}: %s", err.Error())
+		return nil, controlMCPToolFailure("steps must be a list of {id, type: run|agent|reopen|deliver, if, command, args, worker, brief, fixes, checkout, produce, from, message, max_rounds, to, path, what, timeout_seconds, continue_on_failure}: %s", err.Error())
 	}
 	if err := jobautomation.NormalizeSteps(steps); err != nil {
 		return nil, controlMCPToolFailure("%s", err.Error())
@@ -1153,6 +1181,9 @@ func controlMCPSetAutomation(c *controlMCPCall, args map[string]any) (any, error
 	a := jobautomation.Automation{
 		Name: controlMCPString(args, "name"), When: controlMCPString(args, "when"), Retries: controlMCPInt(args, "retries", 0), Steps: steps, Enabled: true,
 		Scope: jobautomation.Scope{Folder: folder, Role: controlMCPString(scope, "role"), Worker: controlMCPString(scope, "worker"), Job: controlMCPString(scope, "job"), Schedule: controlMCPString(scope, "schedule")},
+	}
+	if raw, ok := args["result"].(map[string]any); ok {
+		a.Result = &jobautomation.ResultSpec{Kind: controlMCPString(raw, "kind"), Path: controlMCPString(raw, "path"), Describe: controlMCPString(raw, "describe")}
 	}
 	if enabled, ok := args["enabled"].(bool); ok {
 		a.Enabled = enabled
@@ -1389,7 +1420,7 @@ func controlMCPAutomationStepsSchema() map[string]any {
 	return map[string]any{"type": "array", "minItems": 1, "maxItems": jobautomation.MaxSteps, "description": "Ordered steps. A failed step stops the rest unless continue_on_failure; a step whose if does not hold is skipped and the rest still run.",
 		"items": map[string]any{"type": "object", "required": []string{"type"}, "properties": map[string]any{
 			"id":   controlMCPStringProp("Step id (lowercase, digits, - or _). Default step-N.", 0, 64),
-			"type": map[string]any{"type": "string", "enum": []string{jobautomation.StepRun, jobautomation.StepAgent, jobautomation.StepReopen}},
+			"type": map[string]any{"type": "string", "enum": []string{jobautomation.StepRun, jobautomation.StepAgent, jobautomation.StepReopen, jobautomation.StepDeliver}},
 			"if": map[string]any{"type": "array", "maxItems": jobautomation.MaxStepConditions, "description": "Conditions that must all hold for the step to run, else it is skipped: {step, status: succeeded|failed} or, for an agent step, {step, verdict: ok|block} (the verdict of the review its job recorded; no verdict never matches).",
 				"items": map[string]any{"type": "object", "required": []string{"step"}, "properties": map[string]any{
 					"step":    controlMCPStringProp("An earlier step's id.", 1, 64),
@@ -1405,6 +1436,10 @@ func controlMCPAutomationStepsSchema() map[string]any {
 			"brief":               controlMCPStringProp("agent: the brief; the triggering task's or job's result is attached.", 0, 20000),
 			"fixes":               map[string]any{"type": "string", "enum": []string{jobautomation.FixesSecurity}, "description": "agent, reviewer worker only: \"security\" lets the reviewer commit small security-only fixes on a branch at the reviewed head instead of blocking for them. Its commits move the delivery head only with an OK verdict and at most " + strconv.Itoa(jobautomation.MaxReviewerFixLines) + " changed lines (else the step fails: reviewer fixes too large). Without it a reviewer is read-only."},
 			"checkout":            map[string]any{"type": "string", "enum": []string{jobautomation.CheckoutSame, jobautomation.CheckoutNew, jobautomation.CheckoutNone}, "description": "agent: where the step's agent works. same: a new session in the worktree of the job it follows, read-only (a reviewer only; the default for a reviewer). new: its own worktree at the job's head (the coder, a reviewer with fixes, any other worker). none: the folder itself (swarm, finder and designer, as their tasks always do). Omit it for the agent's default."},
+			"produce":             map[string]any{"type": "boolean", "description": "agent: the agent writes the workflow's result file (result: {kind: file, path, describe}); Swarm checks it exists, records its sha256 and adds it to what the delivery hands over. Not for finder or reviewer (they do not write files). A reviewer started after it reviews the produced work."},
+			"to":                  map[string]any{"type": "string", "enum": []string{jobautomation.DeliverFolder, jobautomation.DeliverMerge, jobautomation.DeliverPublish, jobautomation.DeliverOutbox}, "description": "deliver: where the deliverables go. folder: copied into path, a directory inside the folder (never overwriting a different file). merge: the work's branch merged into the folder's branch (swarm_integrate_task or swarm_deliver_job). publish: a pull request through the folder's publish rule. outbox: the machine's bucket (SWARM_OUTBOX_URL), with a manifest at machines/<machine>/deliveries/<delivery>/<step>.json."},
+			"path":                controlMCPStringProp("deliver to folder: the directory inside the folder (relative, e.g. reports).", 0, 512),
+			"what":                map[string]any{"type": "array", "maxItems": 50, "items": map[string]any{"type": "string", "maxLength": 512}, "description": "deliver: the deliverables by name, as the work's result lists them (branch, report, a file path). Default: the workflow's result; without one, everything that fits the target (files, media and the report for folder and outbox; the branch for merge and publish)."},
 			"timeout_seconds":     map[string]any{"type": "integer", "minimum": 1, "maximum": jobautomation.MaxStepTimeoutSeconds, "description": "Default 600."},
 			"continue_on_failure": map[string]any{"type": "boolean", "description": "Default false: a failed step stops the rest."},
 		}}}
@@ -1423,7 +1458,7 @@ func controlMCPAutomationTools() []controlMCPTool {
 	return []controlMCPTool{
 		{
 			Name: "swarm_set_workflow", Title: "Set a workflow",
-			Description: "Create or update (by name) a workflow: what Swarm does when work ends in a folder. It starts when a task of Swarm's own agents ends (swarm_run_task: swarm, coder, finder, designer; its first run and each follow-up in its session) or when a worker job ends. Its ordered steps are each: another agent working on the result (agent: swarm, coder, finder or designer as a task in the folder, a coder starting at the work's head; or reviewer, or a worker id), a follow-up that sends its message and/or an agent step's findings back into the work's own session so the same agent fixes its own work (reopen, bounded by max_rounds), or the machine owner's root-owned script run on the host in the folder (run: push, deploy, alert). A step's if runs it only when earlier steps' status or review verdict match. Scope it to every task and job in the folder, one agent's tasks (role), one worker's jobs, one job or one schedule's jobs; when succeeded, failed or always. swarm_list_workflows shows exactly what each one does. Swarm runs only these steps and reports what happened; with no workflow the work just ends with its branch and the person integrates it by hand. Offer it; do not set it up unasked.",
+			Description: "Create or update (by name) a workflow: what Swarm does when work ends in a folder. It starts when a task of Swarm's own agents ends (swarm_run_task: swarm, coder, finder, designer; its first run and each follow-up in its session) or when a worker job ends. Its ordered steps are each: another agent working on the result (agent: swarm, coder, finder or designer as a task in the folder, a coder starting at the work's head; or reviewer, or a worker id), a follow-up that sends its message and/or an agent step's findings back into the work's own session so the same agent fixes its own work (reopen, bounded by max_rounds), handing the work's result over (deliver: to a directory of the folder, merged into the folder's branch, a pull request, or the machine's outbox bucket), or the machine owner's root-owned script run on the host in the folder (run: push, deploy, alert). Every result lists its deliverables (branch, files with sha256, media, report); result names the one the work must hand over, and an agent step with produce: true writes it when the work did not (research turned into a report). A step's if runs it only when earlier steps' status or review verdict match. Scope it to every task and job in the folder, one agent's tasks (role), one worker's jobs, one job or one schedule's jobs; when succeeded, failed or always. swarm_list_workflows shows exactly what each one does. Swarm runs only these steps and reports what happened; with no workflow the work just ends with its branch and the person integrates it by hand. Offer it; do not set it up unasked.",
 			InputSchema: controlMCPObject([]string{"name", "steps"}, map[string]any{
 				"name":      controlMCPStringProp("Unique name; setting an existing name updates it (its revision rises).", 1, 200),
 				"project":   controlMCPStringProp("Project (id or name) whose folder the workflow watches, when scope.folder is not given.", 0, 256),
@@ -1438,7 +1473,12 @@ func controlMCPAutomationTools() []controlMCPTool {
 				"when":    map[string]any{"type": "string", "enum": []string{jobautomation.WhenSucceeded, jobautomation.WhenFailed, jobautomation.WhenAlways}, "description": "Default succeeded."},
 				"retries": map[string]any{"type": "integer", "minimum": 0, "maximum": jobautomation.MaxRetries, "description": "Automatic retries of a failed step, with backoff. Default 0."},
 				"enabled": map[string]any{"type": "boolean", "description": "Default true."},
-				"steps":   controlMCPAutomationStepsSchema(),
+				"result": map[string]any{"type": "object", "required": []string{"kind"}, "description": "What the work must hand over (optional): a file (path, relative to the folder) or media file, the report, or the branch, and describe what it must contain. A deliver step hands it over by default; when the work did not produce it, an agent step with produce: true writes it.", "properties": map[string]any{
+					"kind":     map[string]any{"type": "string", "enum": []string{jobautomation.DeliverableFile, jobautomation.DeliverableMedia, jobautomation.DeliverableReport, jobautomation.DeliverableBranch}},
+					"path":     controlMCPStringProp("file or media: its path relative to the folder (e.g. reports/audit.md).", 0, 512),
+					"describe": controlMCPStringProp("What the result must be or contain, for the agent that produces it and the reviewer that checks it.", 0, 4000),
+				}},
+				"steps": controlMCPAutomationStepsSchema(),
 			}),
 			Annotations: controlMCPWrites, call: controlMCPSetAutomation,
 		},

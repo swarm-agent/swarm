@@ -852,6 +852,7 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 			resultOutbox = outbox.NewExporter(outboxCfg, dest, signalStore, store, apiServer.OutboxAccount, apiServer.OutboxResultBuilder())
 			resultOutbox.SetStatusBuilder(apiServer.OutboxStatusBuilder())
 			apiServer.SetOutboxStatus(resultOutbox.Status)
+			apiServer.SetOutboxDeliveryWriter(resultOutbox.WriteDelivery)
 			log.Printf("swarmd outbox exports to %s as machine %s", outboxCfg.Describe(), outboxCfg.Machine)
 		}
 	}
@@ -861,6 +862,8 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 		Store: jobautomation.NewStore(store), Feed: signalStore, Account: apiServer.OutboxAccount,
 		Results: apiServer.JobAutomationResults(), Agent: apiServer.JobAutomationAgents(), Reopen: apiServer.JobAutomationReopener(),
 		Head: api.ImportJobRef, Verify: api.VerifyJobHead, Lines: api.JobHeadChangedLines, Emit: signalEmitter.Emit,
+		// Deliver steps hand deliverables over; produce steps' files are found.
+		Deliver: apiServer.JobAutomationDeliverer(),
 		// Run steps are the owner's root-owned scripts, run on the host as the
 		// daemon's user, like the publish command.
 		Run: jobautomation.HostExecutor{},

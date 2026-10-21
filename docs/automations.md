@@ -32,6 +32,7 @@ An automation belongs to an account and has:
 | `when` | `succeeded` (default), `failed` (failed or cancelled) or `always`. |
 | `enabled` | Default true. |
 | `retries` | 0 to 3 (default 0): automatic retries of a failed step, with backoff. |
+| `result` | Optional: what the work must hand over (`kind`, `path`, `describe`); see [What the work hands over](#what-the-work-hands-over-and-where). |
 | `steps` | Ordered steps, at most 20. |
 
 Every update raises the automation's `revision`. An automation applies only to
@@ -40,7 +41,7 @@ task and job ends after it was created. Tasks and jobs started by a workflow
 (`swarm_send_message` into a task's session, `swarm_message_job` for a job)
 ends again and does.
 
-Each step has an `id`, a `type` (`run`, `agent` or `reopen`),
+Each step has an `id`, a `type` (`run`, `agent`, `reopen` or `deliver`),
 `timeout_seconds` (default 600, at most 3600), `continue_on_failure` (default
 false: a failed step stops the steps after it, which are recorded as
 `skipped`) and an optional `if`.
@@ -365,6 +366,76 @@ With `fixes`:
 - A cancelled job is never reopened: the step fails with the reason. A step
   with neither findings nor a message to send fails too.
 
+## What the work hands over, and where
+
+A workflow says **what** the work hands over and **where** it goes, for any
+kind of work, not only commits:
+
+1. **What.** Every result lists its `deliverables`: the branch, each file the
+   work committed (with its sha256), its media, its report (see
+   [The result JSON](#the-result-json)). The workflow's optional `result`
+   names the one it must hand over: `{kind: file | media | report | branch,
+   path, describe}`. When the work did not produce it (a finder's research
+   ends as a text report, not a file), an `agent` step with `produce: true`
+   writes it: the agent is told the exact path and what it must contain,
+   Swarm checks the file exists (committed at the step job's head, or in the
+   folder for an agent working there), records its sha256 and adds it to the
+   delivery. A reviewer started after a produce step reviews the produced
+   work, in place.
+2. **Where.** A `deliver` step hands it over:
+
+| `to` | What happens |
+| --- | --- |
+| `folder` | Copied into `path`, a directory inside the folder. An equal file there is kept; a different one is never overwritten (the step fails). A path that leaves the folder, symlinks included, is refused. |
+| `merge` | The work's branch is merged into the folder's branch, as `swarm_integrate_task` (a task) or `swarm_deliver_job` (a worker job) do. Refused when the folder has a publish rule (use `publish`). |
+| `publish` | A pull request through the folder's publish rule (`install.sh workspace publish`), as `swarm_deliver_job` does. Worker jobs only. |
+| `outbox` | Exported to the machine's outbox (`SWARM_OUTBOX_URL`: a bucket or a folder): each file as `machines/<machine>/blobs/sha256/<hex>` and a manifest at `machines/<machine>/deliveries/<delivery>/<step>.json`. Refused on a machine without an outbox. |
+
+A deliver step hands over `what` (deliverables by name), else the workflow's
+`result`, else everything that fits its target (files, media and the report
+for `folder` and `outbox`; the branch for `merge` and `publish`). Every
+file's content is checked against the sha256 the work recorded: what was
+reviewed is what is delivered. Its outcome lists each deliverable with its
+sha256 and where it went; its output line is the folder path, the merged
+commit, the pull request or the manifest key. Anything else (push to a
+remote, deploy, alert) is a `run` step: it gets every deliverable on stdin
+and the result's path in `SWARM_RESULT_FILE`.
+
+A workflow that names `reviewer` on a machine without one deploys Swarm's
+reviewer preset first.
+
+### Example: code, reviewed, merged
+
+```json
+{ "name": "coder review merge", "scope": { "folder": "/srv/site", "role": "coder" },
+  "steps": [
+    { "id": "review", "type": "agent", "worker": "reviewer", "brief": "Review this task against its brief." },
+    { "id": "fix", "type": "reopen", "from": "review", "max_rounds": 2, "if": [{ "step": "review", "verdict": "block" }] },
+    { "id": "merge", "type": "deliver", "to": "merge", "if": [{ "step": "review", "verdict": "ok" }] } ] }
+```
+
+### Example: research turned into a report
+
+```json
+{ "name": "audit report", "scope": { "folder": "/srv/site", "role": "finder" },
+  "result": { "kind": "file", "path": "reports/audit.md", "describe": "A one-page audit: findings with file:line, severity, and the fix." },
+  "steps": [
+    { "id": "write", "type": "agent", "worker": "coder", "produce": true, "brief": "Turn the finder's findings into the report." },
+    { "id": "review", "type": "agent", "worker": "reviewer", "brief": "Check the report against the findings and the code." },
+    { "id": "save", "type": "deliver", "to": "folder", "path": "deliverables", "if": [{ "step": "review", "verdict": "ok" }] },
+    { "id": "bucket", "type": "deliver", "to": "outbox", "if": [{ "step": "review", "verdict": "ok" }] } ] }
+```
+
+### Example: a design exported
+
+```json
+{ "name": "designs out", "scope": { "folder": "/srv/site" }, "when": "succeeded",
+  "steps": [ { "id": "bucket", "type": "deliver", "to": "outbox" } ] }
+```
+
+A design job's HTML files are its deliverables, so the deliver step exports
+all of them.
+
 ## Deliveries
 
 Each matching (job end, automation) pair is one **delivery** with a stable
@@ -431,9 +502,19 @@ that already succeeded is still never re-run).
   },
   "files": [{ "path": "logo.png", "sha256": "<hex>", "type": "image/png", "size": 1234 }],
   "cost": { "tokens": 12000, "estimated_usd": 0.12, "model": "<model>" },
-  "review": { "verdict": "...", "findings": [] }
+  "review": { "verdict": "...", "findings": [] },
+  "deliverables": [
+    { "name": "branch", "kind": "branch", "branch": "agent/...", "head": "<sha>", "source": "git", "from": "job" },
+    { "name": "index.html", "kind": "file", "path": "index.html", "head": "<sha>", "sha256": "<hex>", "size": 2048, "type": "text/html", "source": "git", "from": "job" },
+    { "name": "report", "kind": "report", "type": "text/markdown", "source": "report", "from": "job" }
+  ]
 }
 ```
+
+`deliverables` lists everything the work can hand over: its branch, each file
+its commits left at the head (sha256 read from the folder's repository, at
+most 200), a media or design job's files, and its report. A deliver step
+checks a file against its sha256 before handing it over.
 
 `git` is present only when the job committed. `files` lists the files a media
 or design job produced (path, sha256, type) or the media files a worker's

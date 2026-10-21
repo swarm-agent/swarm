@@ -108,3 +108,33 @@ test('an agent step checkout is typed and sent as given', async () => {
   await new SwarmJobAutomationsNamespace(transport).set({ name: 'review in place', scope: { folder: '/srv/site', role: 'coder' }, steps: [review] });
   assert.deepEqual(bodies, [{ name: 'review in place', scope: { folder: '/srv/site', role: 'coder' }, steps: [review] }]);
 });
+
+// Purpose: a workflow's result, a produce step and deliver steps are typed
+// and sent as given; the daemon owns their checks.
+// Boundary: the JobAutomationStep and SetJobAutomationParams types (checked
+// by the SDK typecheck) and SwarmJobAutomationsNamespace.set over a
+// transport fixture.
+test('a workflow result, produce and deliver steps are typed and sent as given', async () => {
+  const bodies: unknown[] = [];
+  const transport = {
+    request: async (_path: string, options: { body?: unknown } = {}) => {
+      bodies.push(options.body);
+      return { data: { ok: true, automation: { id: 'jauto_5' }, created: true } };
+    },
+  } as unknown as SwarmTransport;
+  const workflow = {
+    name: 'audit report',
+    scope: { folder: '/srv/site', role: 'finder' as const },
+    result: { kind: 'file' as const, path: 'reports/audit.md', describe: 'A one-page audit.' },
+    steps: [
+      { id: 'write', type: 'agent' as const, worker: 'coder', brief: 'Write the report.', produce: true },
+      { id: 'save', type: 'deliver' as const, to: 'folder' as const, path: 'deliverables' },
+      { id: 'bucket', type: 'deliver' as const, to: 'outbox' as const, what: ['reports/audit.md'] },
+    ],
+  };
+  // @ts-expect-error a deliver target is folder, merge, publish or outbox
+  const typo: JobAutomationStep = { id: 'x', type: 'deliver', to: 's3' };
+  assert.equal(typo.to, 's3');
+  await new SwarmJobAutomationsNamespace(transport).set(workflow);
+  assert.deepEqual(bodies, [workflow]);
+});

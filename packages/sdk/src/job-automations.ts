@@ -9,7 +9,46 @@ import type { SwarmTransport } from './transport.js';
  */
 
 export type JobAutomationWhen = 'succeeded' | 'failed' | 'always';
-export type JobAutomationStepType = 'run' | 'agent' | 'reopen';
+export type JobAutomationStepType = 'run' | 'agent' | 'reopen' | 'deliver';
+/**
+ * Where a deliver step hands deliverables over. `folder`: copied into `path`,
+ * a directory inside the folder (a different existing file is never
+ * overwritten). `merge`: the work's branch merged into the folder's branch.
+ * `publish`: a pull request through the folder's publish rule. `outbox`: the
+ * machine's bucket, with a manifest at
+ * `machines/<machine>/deliveries/<delivery>/<step>.json`.
+ */
+export type JobDeliverTarget = 'folder' | 'merge' | 'publish' | 'outbox';
+/** What a deliverable is. */
+export type JobDeliverableKind = 'branch' | 'file' | 'media' | 'report';
+
+/**
+ * What a workflow's work must hand over: a file (`path`, relative to the
+ * folder) or media file, the report, or the branch. When the work did not
+ * produce it, an agent step with `produce: true` writes it.
+ */
+export interface JobResultSpec {
+  kind: JobDeliverableKind;
+  path?: string;
+  /** What it must be or contain, for the producing agent and the reviewer. */
+  describe?: string;
+}
+
+/** One thing a job (or a produce step) made that a deliver step can hand over. */
+export interface JobDeliverable {
+  name: string;
+  kind: JobDeliverableKind;
+  path?: string;
+  branch?: string;
+  head?: string;
+  sha256?: string;
+  size?: number;
+  type?: string;
+  /** Where its content is read from: git (at head), folder, media or report. */
+  source?: 'git' | 'folder' | 'media' | 'report';
+  /** "job" for the work's own output, or the id of the step that produced it. */
+  from?: string;
+}
 export type JobDeliveryState = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'stopped' | 'blocked';
 export type JobReviewVerdict = 'ok' | 'block';
 /**
@@ -114,6 +153,18 @@ export interface JobAutomationStep {
   message?: string;
   /** reopen: reopens allowed before the delivery ends `blocked` (`rounds_exhausted`); 1 to 5, default 2. */
   max_rounds?: number;
+  /**
+   * agent: the agent writes the workflow's `result` file; Swarm checks it
+   * exists, records its sha256 and hands it over. Not for finder or reviewer.
+   * A reviewer started after it reviews the produced work.
+   */
+  produce?: boolean;
+  /** deliver: where. */
+  to?: JobDeliverTarget;
+  /** deliver to a folder: the directory inside the folder. */
+  path?: string;
+  /** deliver: deliverables by name; default the workflow's result, else what fits the target. */
+  what?: string[];
 }
 
 export interface JobAutomation {
@@ -126,6 +177,8 @@ export interface JobAutomation {
   retries: number;
   /** Ordered steps, with their defaults applied (id, timeout_seconds). */
   steps: JobAutomationStep[];
+  /** What the work must hand over, when the workflow names it. */
+  result?: JobResultSpec;
   /** Rises on every update; a delivery keeps the revision it started with. */
   revision: number;
   created_at: number;
@@ -140,6 +193,7 @@ export interface SetJobAutomationParams {
   enabled?: boolean;
   retries?: number;
   steps: JobAutomationStep[];
+  result?: JobResultSpec;
 }
 
 export interface JobDeliveryStep {
@@ -226,6 +280,8 @@ export interface JobResult {
   files?: Array<{ path: string; sha256: string; type: string; size?: number }>;
   cost?: { tokens: number; estimated_usd?: number; model?: string };
   review?: Record<string, unknown>;
+  /** Everything the job made that a deliver step can hand over. */
+  deliverables?: JobDeliverable[];
 }
 
 export interface JobAutomationStop {

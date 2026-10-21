@@ -112,6 +112,11 @@ type Delivery struct {
 	// BlockedReason is why the delivery ended blocked (rounds_exhausted, or
 	// "review unreadable: <reviewer job id>").
 	BlockedReason string `json:"blocked_reason,omitempty"`
+	// Spec is the workflow's result as the delivery started (Automation.Result).
+	Spec *ResultSpec `json:"result_spec,omitempty"`
+	// Produced is what this delivery's produce steps wrote (see
+	// CurrentDeliverables).
+	Produced []Deliverable `json:"produced,omitempty"`
 }
 
 // ReopenRecord is what a reopen step left for the follow-up it sent, so the
@@ -402,7 +407,7 @@ func (s *Store) CreateDelivery(a Automation, result Result) (Delivery, bool, err
 	d := Delivery{
 		ID: id, Account: a.Account, AutomationID: a.ID, AutomationName: a.Name, AutomationRevision: a.Revision,
 		JobID: result.JobID, Followup: result.Followup, State: StatePending, Retries: a.Retries, Folder: a.Scope.Folder,
-		Definition: append([]Step(nil), a.Steps...), Result: result, CreatedAt: createdAt,
+		Definition: append([]Step(nil), a.Steps...), Result: result, CreatedAt: createdAt, Spec: a.Result,
 	}
 	if result.Git != nil {
 		d.Head, d.HeadWorktree = result.Git.Head, result.Git.Worktree

@@ -55,6 +55,50 @@ type Result struct {
 	Cost          *ResultCost   `json:"cost,omitempty"`
 	// Review is a reviewer job's recorded verdict and findings.
 	Review map[string]any `json:"review,omitempty"`
+	// Deliverables is everything the job produced that a workflow can hand
+	// over: its branch, the files it committed or wrote, its media and its
+	// report (see Deliverable).
+	Deliverables []Deliverable `json:"deliverables,omitempty"`
+}
+
+// Deliverable kinds.
+const (
+	DeliverableBranch = "branch"
+	DeliverableFile   = "file"
+	DeliverableMedia  = "media"
+	DeliverableReport = "report"
+)
+
+// Where a deliverable's content is read from.
+const (
+	// SourceGit: the file at Head in the folder's repository (a job's
+	// commits are in it from the moment they are made).
+	SourceGit = "git"
+	// SourceFolder: the file at Path in the folder itself, as long as it
+	// still has SHA256.
+	SourceFolder = "folder"
+	// SourceMedia: a media job's stored file, named by Path.
+	SourceMedia = "media"
+	// SourceReport: the job's report (Result.Report).
+	SourceReport = "report"
+)
+
+// Deliverable is one thing a job (or a workflow step) produced that a
+// deliver step can hand over: a branch (Branch at Head), a file or media file
+// (Path, with its SHA256, Size and Type, read from Source), or the report.
+type Deliverable struct {
+	Name   string `json:"name"`
+	Kind   string `json:"kind"`
+	Path   string `json:"path,omitempty"`
+	Branch string `json:"branch,omitempty"`
+	Head   string `json:"head,omitempty"`
+	SHA256 string `json:"sha256,omitempty"`
+	Size   int64  `json:"size,omitempty"`
+	Type   string `json:"type,omitempty"`
+	Source string `json:"source,omitempty"`
+	// From is "job" for the job's own output, or the id of the workflow step
+	// that produced it.
+	From string `json:"from,omitempty"`
 }
 
 type ResultWorker struct {

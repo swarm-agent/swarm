@@ -105,47 +105,49 @@ type Server struct {
 	automations *automationHTTPServices
 	designJobs  *designJobRuntime
 
-	memory                      *memory.Service
-	auth                        *auth.Service
-	agents                      *agentruntime.Service
-	model                       *model.Service
-	modelProfiles               *modelprofile.Service
-	agentModelSettings          *agentmodelsettings.Service
-	agentModelSettingsStore     *pebblestore.AgentModelSettingsStore // complete-record bootstrap only
-	runner                      runService
-	runStreams                  *runControlAllocator
-	v3RealtimeOutbox            *v3RealtimeOutboxHub
-	sessionChanges              *sessionChangeNotifier // wakes session long-polls after a V3 change commits
-	activityStreams             atomic.Int64
-	v3LiveHub                   *v3LiveHub
-	v3LivePatchEnabled          bool
-	v3SyncCursors               *v3SyncCursorKeyring
-	v3SessionExecutor           *sessionV3Executor
-	planLifecycle               *sessionruntime.PlanLifecycleService
-	sessions                    *sessionruntime.Service
-	workspace                   *workspace.Service
-	discovery                   *discovery.Service
-	worktrees                   worktreeService
-	mcp                         mcpService
-	security                    *security.Service
-	providers                   *registry.Registry
-	codexAccount                codexAccountClient
-	claudeCodeUsage             claudeCodeUsageClient
-	perm                        permissionService
-	notifications               notificationService
-	storageHub                  *storagehub.Service
-	agentBoundLimits            *agentBoundRateLimiter // gateway and end-user rate limits, kept in the daemon store; nil refuses them
-	secretSlots                 *pebblestore.SecretSlotStore
-	signals                     *pebblestore.SignalStore
-	secretsGatewayEnabled       bool
-	sandboxEnvironments         *pebblestore.SandboxEnvironmentStore
-	envBuildMu                  sync.Mutex
-	envBuildDone                map[string]chan struct{}
-	signalSinks                 *pebblestore.SignalSinkStore
-	outboxStatus                func() outbox.Status
-	jobAutomations              *jobautomation.Runner
-	jobAutomationCallFn         func(context.Context) (*controlMCPCall, error)
-	publishConfig               string
+	memory                  *memory.Service
+	auth                    *auth.Service
+	agents                  *agentruntime.Service
+	model                   *model.Service
+	modelProfiles           *modelprofile.Service
+	agentModelSettings      *agentmodelsettings.Service
+	agentModelSettingsStore *pebblestore.AgentModelSettingsStore // complete-record bootstrap only
+	runner                  runService
+	runStreams              *runControlAllocator
+	v3RealtimeOutbox        *v3RealtimeOutboxHub
+	sessionChanges          *sessionChangeNotifier // wakes session long-polls after a V3 change commits
+	activityStreams         atomic.Int64
+	v3LiveHub               *v3LiveHub
+	v3LivePatchEnabled      bool
+	v3SyncCursors           *v3SyncCursorKeyring
+	v3SessionExecutor       *sessionV3Executor
+	planLifecycle           *sessionruntime.PlanLifecycleService
+	sessions                *sessionruntime.Service
+	workspace               *workspace.Service
+	discovery               *discovery.Service
+	worktrees               worktreeService
+	mcp                     mcpService
+	security                *security.Service
+	providers               *registry.Registry
+	codexAccount            codexAccountClient
+	claudeCodeUsage         claudeCodeUsageClient
+	perm                    permissionService
+	notifications           notificationService
+	storageHub              *storagehub.Service
+	agentBoundLimits        *agentBoundRateLimiter // gateway and end-user rate limits, kept in the daemon store; nil refuses them
+	secretSlots             *pebblestore.SecretSlotStore
+	signals                 *pebblestore.SignalStore
+	secretsGatewayEnabled   bool
+	sandboxEnvironments     *pebblestore.SandboxEnvironmentStore
+	envBuildMu              sync.Mutex
+	envBuildDone            map[string]chan struct{}
+	signalSinks             *pebblestore.SignalSinkStore
+	outboxStatus            func() outbox.Status
+	jobAutomations          *jobautomation.Runner
+	jobAutomationCallFn     func(context.Context) (*controlMCPCall, error)
+	publishConfig           string
+	// outboxDelivery writes a workflow deliver step's files to the outbox.
+	outboxDelivery              OutboxDeliveryWriter
 	secretValues                secretValueSetter
 	webPush                     *webpush.Service
 	hub                         *stream.Hub

@@ -87,6 +87,14 @@ type AgentRequest struct {
 	// Checkout is where the agent works: the step's checkout or "" for the
 	// agent's default (CheckoutFor once its role is known).
 	Checkout string
+	// ReviewJob is the job a reviewer reviews: the newest earlier step's job
+	// that produced the result or moved the head, "" for the triggering job.
+	ReviewJob string
+	// Produce is the workflow's result the agent must write (a produce
+	// step), nil otherwise.
+	Produce *ResultSpec
+	// Deliverables is what the delivery can hand over so far.
+	Deliverables []Deliverable
 }
 
 // AgentOutcome is how the job an agent step started ended. Verdict and
@@ -184,6 +192,7 @@ type Runner struct {
 	head    HeadImporter
 	verify  HeadVerifier
 	lines   LineCounter
+	deliver Deliverer
 	emit    func(pebblestore.Signal)
 	now     func() time.Time
 	backoff func(attempt int) time.Duration
@@ -213,13 +222,16 @@ type Options struct {
 	Head    HeadImporter
 	Verify  HeadVerifier
 	Lines   LineCounter
+	// Deliver hands deliverables over (deliver steps) and finds what
+	// produce steps wrote.
+	Deliver Deliverer
 	Emit    func(pebblestore.Signal)
 }
 
 func NewRunner(opts Options) *Runner {
 	return &Runner{
 		store: opts.Store, feed: opts.Feed, account: opts.Account, results: opts.Results, run: opts.Run, agent: opts.Agent, reopen: opts.Reopen,
-		head: opts.Head, verify: opts.Verify, lines: opts.Lines, emit: opts.Emit, now: time.Now, backoff: defaultBackoff, recheck: reopenRecheck,
+		head: opts.Head, verify: opts.Verify, lines: opts.Lines, deliver: opts.Deliver, emit: opts.Emit, now: time.Now, backoff: defaultBackoff, recheck: reopenRecheck,
 		active: map[string]bool{}, attempts: map[uint64]int{}, wake: make(chan struct{}, 1),
 	}
 }
@@ -708,6 +720,8 @@ func (r *Runner) runStep(ctx context.Context, d *Delivery, i int, step Step) boo
 		failure = r.runAgent(stepCtx, d, record, step)
 	case StepReopen:
 		failure = r.runReopen(stepCtx, d, record, step)
+	case StepDeliver:
+		failure = r.runDeliver(stepCtx, d, record, step)
 	default:
 		failure = stepFailure{reason: "unknown step type " + step.Type, next: "fix the script"}
 	}
@@ -787,6 +801,9 @@ func stepEnv(d Delivery, ref string) map[string]string {
 	if d.Head != "" {
 		env["SWARM_HEAD"] = d.Head
 	}
+	if d.Spec != nil && d.Spec.Path != "" {
+		env["SWARM_RESULT_FILE"] = d.Spec.Path
+	}
 	return env
 }
 
@@ -820,7 +837,11 @@ func (r *Runner) runScript(ctx context.Context, d *Delivery, record *StepRecord,
 		}
 		ref = imported
 	}
-	stdin, err := json.Marshal(d.Result)
+	// The script gets every deliverable the delivery has now (the work's own
+	// and what produce steps wrote).
+	stdinResult := d.Result
+	stdinResult.Deliverables = d.CurrentDeliverables()
+	stdin, err := json.Marshal(stdinResult)
 	if err != nil {
 		return stepFailure{reason: "encode the result: " + err.Error(), next: "rerun"}
 	}
@@ -874,8 +895,14 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 		}
 	}
 	if jobID == "" {
-		started, err := r.agent.Start(ctx, AgentRequest{Account: d.Account, Folder: d.Folder, Worker: step.Worker, Brief: step.Brief, Result: d.Result, Head: d.Head,
-			IdempotencyKey: agentIdempotencyKey(*d, step.ID), Fixes: step.Fixes, Checkout: step.Checkout})
+		req := AgentRequest{Account: d.Account, Folder: d.Folder, Worker: step.Worker, Brief: step.Brief, Result: d.Result, Head: d.Head,
+			IdempotencyKey: agentIdempotencyKey(*d, step.ID), Fixes: step.Fixes, Checkout: step.Checkout,
+			ReviewJob: latestWorkJob(*d, step.ID), Deliverables: d.CurrentDeliverables()}
+		if step.Produce && d.Spec != nil {
+			spec := *d.Spec
+			req.Produce = &spec
+		}
+		started, err := r.agent.Start(ctx, req)
 		if err != nil {
 			var refused *RefusedError
 			if errors.As(err, &refused) {
@@ -934,6 +961,9 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 	}
 	if NormalizeStatus(outcome.Status) != StatusSucceeded {
 		return stepFailure{reason: "the job " + jobID + " ended " + outcome.Status, next: "rerun"}
+	}
+	if step.Produce {
+		return r.recordProduced(ctx, d, step, outcome, out)
 	}
 	return stepFailure{}
 }
