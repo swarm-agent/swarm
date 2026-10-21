@@ -34,6 +34,7 @@ import (
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/environments/lifecycle"
 	"swarm/packages/swarmd/internal/environments/provider"
+	"swarm/packages/swarmd/internal/gitenv"
 	"swarm/packages/swarmd/internal/htmlcapture"
 	identityruntime "swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
@@ -596,6 +597,11 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 	}
 	if err := os.Setenv(providerdiagnostics.EnvName, providerdiagnostics.BoolEnvValue(startupCfg.ProviderAPIDiagnostics)); err != nil {
 		return nil, fmt.Errorf("configure provider api diagnostics: %w", err)
+	}
+	// A person's folder is shared with core.sharedRepository=group, whose
+	// setgid directories the daemon's RestrictSUIDSGID refuses.
+	if err := gitenv.UseUmaskSharing(); err != nil {
+		return nil, fmt.Errorf("configure git sharing: %w", err)
 	}
 	updateSvc := update.NewService(strings.TrimSpace(os.Getenv("SWARM_LANE")), startupCfg.DevMode)
 	if err := seedUISwarmName(cfg.ConfigPath, uiSettingsSvc); err != nil {
