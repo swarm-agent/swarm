@@ -292,13 +292,23 @@ func (r *Runner) runDeliver(ctx context.Context, d *Delivery, record *StepRecord
 	if r.deliver == nil {
 		return stepFailure{reason: "deliver steps are not available on this daemon", next: "rerun", refused: true}
 	}
-	items, why := selectDeliverables(d.CurrentDeliverables(), step, d.Spec)
-	if why != "" {
-		return stepFailure{reason: truncate(why, 300), next: "fix the workflow or rerun once the work produced it", refused: true}
-	}
 	head := d.Head
 	if head == "" && d.Result.Git != nil {
 		head = d.Result.Git.Head
+	}
+	items, why := selectDeliverables(d.CurrentDeliverables(), step, d.Spec)
+	if why != "" && len(step.What) == 0 && d.Spec != nil && d.Spec.Path != "" && step.To != DeliverMerge && step.To != DeliverPublish {
+		// The work wrote the result file without committing it (an agent
+		// working in the folder: designer, finder, swarm): find it there, at
+		// its head first, and record it as the work's own.
+		if found, err := r.deliver.Locate(ctx, d.Folder, *d.Spec, AgentOutcome{Head: head, Result: &d.Result}); err == nil {
+			found.Name, found.From = d.Spec.Path, "job"
+			d.Produced = append(d.Produced, found)
+			items, why = []Deliverable{found}, ""
+		}
+	}
+	if why != "" {
+		return stepFailure{reason: truncate(why, 300), next: "fix the workflow or rerun once the work produced it", refused: true}
 	}
 	out, err := r.deliver.Deliver(ctx, DeliverRequest{Account: d.Account, DeliveryID: d.ID, StepID: step.ID, Folder: d.Folder, To: step.To, Path: step.Path,
 		Head: head, Result: d.Result, Deliverables: items})

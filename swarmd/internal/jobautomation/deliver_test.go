@@ -227,3 +227,34 @@ func TestResultProduceAndDeliverValidation(t *testing.T) {
 		}
 	}
 }
+
+// Requirement: when a workflow names its result file and the work wrote it
+// without committing it (an agent working in the folder: designer, finder,
+// swarm), a deliver step finds it in the folder and hands it over, recorded
+// as the work's own; nothing found is still a refusal.
+// Threat: a designer's page in the folder that a workflow can never deliver,
+// or a deliver step that hands over something it did not find.
+// Owners: Runner.runDeliver and the Deliverer's Locate (stubbed).
+func TestDeliverFindsAResultTheWorkWroteInTheFolder(t *testing.T) {
+	h := newHarness(t)
+	deliverer := &recordingDeliverer{produced: Deliverable{Kind: DeliverableFile, Source: SourceFolder, SHA256: strings.Repeat("e", 64)}}
+	h.runner.deliver = deliverer
+	h.process()
+	folder := t.TempDir()
+	h.automation(Automation{Name: "page out", Scope: Scope{Folder: folder, Role: "designer"}, Enabled: true,
+		Result: &ResultSpec{Kind: "file", Path: "site/login.html"},
+		Steps:  []Step{{ID: "save", Type: StepDeliver, To: "folder", Path: "deliverables"}}})
+	result := taskResult(folder, "task-2", "designer")
+	result.Git = nil
+	h.results.results["task-2"] = result
+	h.taskEnd("task-2", "", "succeeded", "task")
+	h.process()
+	list := h.deliveries("task/proj-1/task-2")
+	if len(list) != 1 || list[0].State != StateSucceeded || len(deliverer.delivered) != 1 {
+		t.Fatalf("deliveries = %+v, delivered %d", list, len(deliverer.delivered))
+	}
+	got := deliverer.delivered[0].Deliverables
+	if len(got) != 1 || got[0].Path != "site/login.html" || got[0].From != "job" || got[0].SHA256 != strings.Repeat("e", 64) {
+		t.Fatalf("delivered %+v", got)
+	}
+}
