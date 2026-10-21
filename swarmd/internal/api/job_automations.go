@@ -872,6 +872,8 @@ type jobAutomationBody struct {
 	Enabled *bool                `json:"enabled"`
 	Retries int                  `json:"retries"`
 	Steps   []jobautomation.Step `json:"steps"`
+	// Result is what the work must hand over (optional).
+	Result *jobautomation.ResultSpec `json:"result"`
 }
 
 func (b jobAutomationBody) automation() jobautomation.Automation {
@@ -879,7 +881,7 @@ func (b jobAutomationBody) automation() jobautomation.Automation {
 	if b.Enabled != nil {
 		enabled = *b.Enabled
 	}
-	return jobautomation.Automation{Name: b.Name, Scope: b.Scope, When: b.When, Enabled: enabled, Retries: b.Retries, Steps: b.Steps}
+	return jobautomation.Automation{Name: b.Name, Scope: b.Scope, When: b.When, Enabled: enabled, Retries: b.Retries, Steps: b.Steps, Result: b.Result}
 }
 
 // errRunStepNeedsOwner refuses a run step from a caller without the machine

@@ -446,6 +446,13 @@ func TestJobAutomationRoutesEnforceScopesAndAccounts(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil || created.Automation.ID == "" || created.Automation.Revision != 1 {
 		t.Fatalf("created = %s %v", w.Body, err)
 	}
+	// A workflow's result, produce and deliver steps over the API (a write
+	// key: no run step).
+	report := `{"name":"report","scope":{"folder":"/srv/site","role":"finder"},"result":{"kind":"file","path":"reports/audit.md","describe":"One page."},` +
+		`"steps":[{"id":"write","type":"agent","worker":"coder","brief":"Write it.","produce":true},{"id":"save","type":"deliver","to":"folder","path":"deliverables"}]}`
+	if w := do(owner(http.MethodPost, JobAutomationsPath, report, "automations:write")); w.Code != http.StatusCreated || !strings.Contains(w.Body.String(), `"path":"reports/audit.md"`) || !strings.Contains(w.Body.String(), `"to":"folder"`) {
+		t.Fatalf("result workflow create = %d %s", w.Code, w.Body)
+	}
 	other := requestWithScopedToken(requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodGet, JobAutomationsPath, nil), "other-user", "other-account"),
 		&pebblestore.ScopedTokenRecord{Scopes: []string{"automations:read", "automations:write"}})
 	if w := do(other); w.Code != http.StatusOK || strings.Contains(w.Body.String(), created.Automation.ID) {

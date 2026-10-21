@@ -298,6 +298,12 @@ const FLEET_TOOLS = [
   },
 ];
 
+// toolsSignature is what the client was told the tools are: their names,
+// schemas and descriptions. A machine update that changes a tool's schema
+// changes it, so the client re-reads the list (notifications/tools/list_changed)
+// instead of keeping the old schema.
+export const toolsSignature = list => JSON.stringify(list.map(t => [t.name, t.inputSchema, t.description]));
+
 export function createFleet(configured, { proxy = '', notify = () => {}, send = post, discover = null, now = Date.now, statePath = '' } = {}) {
   const state = fleetState(statePath || defaultStatePath());
   let machines = configured.slice();
@@ -306,7 +312,9 @@ export function createFleet(configured, { proxy = '', notify = () => {}, send = 
   const tools = new Map(); // machine name -> tools/list result (array) once reached
   const instructions = new Map(); // machine name -> its initialize instructions
   const errors = new Map();
-  let advertised = 0;
+  // What the client was last told the tools are (names and schemas), so a
+  // changed schema is announced as well as an added or removed tool.
+  let advertised = '';
 
   async function rediscover(force = false) {
     if (!discover || (!force && now() - discoveredAt < DISCOVER_EVERY_MS)) return;
@@ -359,8 +367,8 @@ export function createFleet(configured, { proxy = '', notify = () => {}, send = 
     clearTimeout(retry);
     retry = setTimeout(async () => {
       await refreshAll();
-      const count = union().length;
-      if (count !== advertised) { advertised = count; notify({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' }); }
+      const current = toolsSignature(union());
+      if (current !== advertised) { advertised = current; notify({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' }); }
       watch();
     }, machines.length && machines.every(m => tools.has(m.name)) ? 60_000 : 15_000);
     retry.unref?.();
@@ -533,7 +541,7 @@ export function createFleet(configured, { proxy = '', notify = () => {}, send = 
         case 'ping': return rpcResult(id, {});
         case 'tools/list': {
           if (!machines.some(m => tools.has(m.name))) await refreshAll();
-          const list = union(); advertised = list.length; watch();
+          const list = union(); advertised = toolsSignature(list); watch();
           return rpcResult(id, { tools: list });
         }
         case 'tools/call': return rpcResult(id, await callTool(message.params));
