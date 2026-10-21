@@ -1400,6 +1400,7 @@ Environment=HOME=$SERVICE_HOME SWARM_DISABLE_MINT_REPORT=1
 Environment=SWARM_PUBLISH_CONFIG=$PUBLISH
 # The installer's update state, shown in the machine summary.
 Environment=SWARM_UPDATE_STATE=$UPDATE_STATE
+Environment=SWARM_INSTALLER=$STATE/install.sh
 Environment=LD_LIBRARY_PATH=$OPT/current/lib
 Environment=PATH=$OPT/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EnvironmentFile=-$DAEMON_ENV

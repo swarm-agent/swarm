@@ -136,3 +136,11 @@ uses it through Swarm's gateway, never seeing the value.
 
 For protocol checks, response parsing or MCP errors, read
 [Swarm's MCP contract](references/mcp-protocol.md).
+
+## Update Swarm
+
+Read `swarm_status` → `machine.update.command`. The standard headless command
+is `sudo bash /var/lib/swarm-headless/install.sh update` (the retained installer,
+not its source checkout). The person, or their AI running as the person with
+sudo, runs it on the machine. It waits until no job runs and Swarm restarts
+by itself. If the field is absent, establish the installation method first.
