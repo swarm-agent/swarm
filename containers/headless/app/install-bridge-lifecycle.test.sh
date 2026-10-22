@@ -39,6 +39,16 @@ for mode in missing failed; do
   grep -q 'warning: MCP bridge packaging unavailable' "$work/$mode.err"
 done
 
+# Purpose: install_mcp_launcher must remove a stale launcher when activating a
+# release without bridge files, while retaining the non-fatal URL fallback.
+# Exercise the actual removal in a temporary directory, not host installation.
+SWARM_MCP=$work/swarm-mcp
+touch "$SWARM_MCP" "$work/unrelated"
+install_mcp_launcher "$OPT/releases/missing" 2>"$work/launcher.err"
+[[ ! -e $SWARM_MCP && -f $work/unrelated ]]
+[[ $(wc -l <"$work/launcher.err") == 1 ]]
+grep -q 'use the URL connection commands' "$work/launcher.err"
+
 # Never run host cleanup: intercept rm, allowing only fixture launcher deletion.
 SWARMCTL=$work/swarmctl
 SWARM_MCP=$work/swarm-mcp

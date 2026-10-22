@@ -2025,7 +2025,11 @@ mcp_payload_available() {
 install_mcp_launcher() {
   local release=$1
   mcp_payload_available "$release" || {
-    echo "Warning: release has no stdio MCP bridge; skipping swarm-mcp (use the URL connection commands)." >&2
+    if rm -f -- "$SWARM_MCP"; then
+      echo "Warning: release has no stdio MCP bridge; skipping swarm-mcp (use the URL connection commands)." >&2
+    else
+      echo "Warning: release has no stdio MCP bridge; could not remove stale swarm-mcp (use the URL connection commands)." >&2
+    fi
     return 0
   }
   # Use the bundled Node, not root's or the calling person's PATH. Do not
