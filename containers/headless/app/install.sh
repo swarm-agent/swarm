@@ -103,6 +103,7 @@ INSTALLER=$SRC/containers/headless/app/install.sh
 RELEASE_REPO=swarm-agent/swarm
 RELEASE_TARGET=$STATE/release-target
 SWARMCTL=/usr/local/bin/swarmctl
+SWARM_MCP=/usr/local/bin/swarm-mcp
 # Everything Swarm serves on this machine listens on loopback.
 LOCAL_APP_ORIGIN=http://127.0.0.1:8443
 LOCAL_MCP_URL=http://127.0.0.1:7783/mcp
@@ -691,6 +692,10 @@ build_release() {
     --build-arg VERSION="$SWARM_REF" --build-arg COMMIT="$commit" \
     --build-arg BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     -o "type=local,dest=$STAGE" "$SRC"
+  # The optional bridge is outside the Docker build context allowlist.
+  if ! bash "$SRC/containers/headless/app/package-mcp.sh" "$STAGE" >/dev/null 2>&1; then
+    echo 'swarm: warning: MCP bridge packaging unavailable; URL-based connections remain available.' >&2
+  fi
   if environments_on; then build_sandbox_image "$commit" "$SRC/containers/sandbox"; fi
   install -d -m 0755 "$OPT/releases"
   rm -rf "$release.new" && mv "$STAGE" "$release.new"
@@ -762,6 +767,7 @@ activate() {
   elif [[ -f $SRC/containers/headless/app/install.sh ]]; then
     install -m 0755 "$SRC/containers/headless/app/install.sh" "$STATE/install.sh" || return 1
   fi
+  install_mcp_launcher "$release" || return 1
   # Switch current only after preparation succeeds; never prune rollback data here.
   install -m 0755 /dev/stdin "$SWARMCTL" <<WRAPPER || return 1
 #!/bin/sh
@@ -769,6 +775,7 @@ activate() {
 # The machine commands (workspace, idle-off) need root itself, so root runs them directly.
 if [ "\$(id -un)" = $SERVICE_USER ]; then exec $OPT/current/bin/swarmctl "\$@"; fi
 if [ "\$(id -u)" = 0 ]; then case "\${1:-}" in workspace|idle-off) exec env LD_LIBRARY_PATH=$OPT/current/lib $OPT/current/bin/swarmctl "\$@" ;; esac; fi
+cd / || exit 1
 exec runuser -u $SERVICE_USER -- env HOME=$SERVICE_HOME LD_LIBRARY_PATH=$OPT/current/lib $OPT/current/bin/swarmctl "\$@"
 WRAPPER
 
@@ -852,6 +859,7 @@ dev_sync() {
     echo "Following $SWARM_REF on GitHub again; the next update brings it back."
     return 0
   fi
+  [[ $repo == /* ]] || repo=${caller_pwd:-$PWD}/$repo
   repo=$(realpath "$repo")
   [[ -d $repo/.git && -f $repo/containers/headless/app/install.sh ]] || die "$repo is not a Swarm checkout"
   # The checkout belongs to another user; trust it for this one fetch only.
@@ -1675,7 +1683,7 @@ uninstall_all() {
     iptables -F SWARM-SANDBOX 2>/dev/null && iptables -X SWARM-SANDBOX 2>/dev/null || true
     iptables -F SWARM-SANDBOX-HOST 2>/dev/null && iptables -X SWARM-SANDBOX-HOST 2>/dev/null || true
   fi
-  rm -rf "${DATA_DIRS[@]}" /run/swarmd "$SERVICE_HOME" "$OPT" "$STAGE" "$SWARMCTL" "$AI_KEY_IDS"
+  rm -rf "${DATA_DIRS[@]}" /run/swarmd "$SERVICE_HOME" "$OPT" "$STAGE" "$SWARMCTL" "$SWARM_MCP" "$AI_KEY_IDS"
   rm -f "$CONF" "$UPDATE_BAD"
   if ((delete_projects)); then
     rm -rf "$PROJECT"
@@ -2005,10 +2013,40 @@ set_permissions() {
   fi
 }
 
-# The lines that connect a person's AI on this machine to Swarm's MCP, reading
-# the key from their private file. They run as that person, not root.
+mcp_payload_available() {
+  local release=$1
+  [[ -x $release/bin/node && -f $release/share/swarm-mcp/swarm-mcp &&
+     -f $release/share/swarm-mcp/swarm-mcp.mjs &&
+     -f $release/share/swarm-mcp/lib/connection.mjs ]]
+}
+
+# Install the shared plugin bridge without changing the calling user's identity.
+# Older releases remain installable through the URL-based connection fallback.
+install_mcp_launcher() {
+  local release=$1
+  mcp_payload_available "$release" || {
+    if rm -f -- "$SWARM_MCP"; then
+      echo "Warning: release has no stdio MCP bridge; skipping swarm-mcp (use the URL connection commands)." >&2
+    else
+      echo "Warning: release has no stdio MCP bridge; could not remove stale swarm-mcp (use the URL connection commands)." >&2
+    fi
+    return 0
+  }
+  # Use the bundled Node, not root's or the calling person's PATH. Do not
+  # change HOME or user: the bridge reads the calling person's private key.
+  if ! install -m 0755 /dev/stdin "$SWARM_MCP" 2>/dev/null <<WRAPPER
+#!/bin/sh
+exec "$OPT/current/bin/node" "$OPT/current/share/swarm-mcp/swarm-mcp.mjs" "\$@"
+WRAPPER
+  then
+    echo "Warning: could not install swarm-mcp; use the URL connection commands." >&2
+  fi
+  return 0
+}
+
 print_connect() {
-  cat <<CONNECT
+  if ! mcp_payload_available "$OPT/current" || [[ ! -x $SWARM_MCP ]]; then
+    cat <<CONNECT
   As $1, connect your AI (the key stays in ~/.config/swarm/ai-key):
     Claude Code, with Swarm's skills (the plugin finds the key by itself):
       claude plugin marketplace add swarm-agent/swarm && claude plugin install swarm@swarm
@@ -2016,6 +2054,22 @@ print_connect() {
       claude mcp add --scope user --transport http swarm $LOCAL_MCP_URL --header "Authorization: Bearer \$(cat ~/.config/swarm/ai-key)"
     Codex (start it with SWARM_AI_KEY="\$(cat ~/.config/swarm/ai-key)" codex):
       codex mcp add swarm --url $LOCAL_MCP_URL --bearer-token-env-var SWARM_AI_KEY
+CONNECT
+    return 0
+  fi
+  cat <<CONNECT
+  As $1, register Swarm with your AI CLI now so later sessions have it:
+    codex mcp add swarm -- swarm-mcp
+    Claude Code, tools only:
+      claude mcp add --scope user --transport stdio swarm -- swarm-mcp
+  Run these as $1, not with sudo. No per-session environment variable is needed.
+  The key stays in ~/.config/swarm/ai-key.
+    Claude Code, with Swarm's skills (the plugin finds the key by itself):
+      claude plugin marketplace add swarm-agent/swarm && claude plugin install swarm@swarm
+  From a remote client, install the plugin's bridge (Node 22+), copy the key
+  privately to ~/.config/swarm/ai-key (mode 0600), and keep an SSH tunnel open:
+    ssh -N -L 7783:127.0.0.1:7783 $1@BOX
+  Register that client's swarm-mcp command once, with the same lines above.
 CONNECT
 }
 
@@ -2198,9 +2252,10 @@ CLAUDE_CODE_MIN_VERSION=2.1.248
 
 # Run a command as Swarm's service user. It has no login shell, so this runs
 # the command directly with that user's home.
-service_user_run() {
+service_user_run() (
+  cd / || exit 1
   runuser -u "$SERVICE_USER" -- env HOME="$SERVICE_HOME" PATH="$SERVICE_HOME/.local/bin:$PATH" "$@"
-}
+)
 
 # The value of NAME in the daemon's settings file, if set.
 daemon_env_value() {
@@ -2335,7 +2390,10 @@ install_all() {
       --relay) relay=${2:?--relay needs a URL}; shift 2 ;;
       --name) name=${2:?--name needs a value}; shift 2 ;;
       --ref) ref=${2:?--ref needs a branch}; source=git; shift 2 ;;
-      --release-file) RELEASE_FILE=$(realpath "${2:?--release-file needs an archive}"); shift 2 ;;
+      --release-file)
+        RELEASE_FILE=${2:?--release-file needs an archive}
+        [[ $RELEASE_FILE == /* ]] || RELEASE_FILE=${caller_pwd:-$PWD}/$RELEASE_FILE
+        RELEASE_FILE=$(realpath "$RELEASE_FILE"); shift 2 ;;
       --environments) environments=${2:?--environments needs on or off}; [[ $environments == on || $environments == off ]] || die "--environments needs on or off"; shift 2 ;;
       --tailnet) tailnet=on; shift ;;
       --no-tailnet) tailnet=off; shift ;;
@@ -2427,8 +2485,8 @@ install_all() {
   # Sandboxes have no account database entry for Swarm's uid, so Git needs a
   # configured identity for agent commits; keep any the owner already set.
   runuser -u "$SERVICE_USER" -- env HOME="$SERVICE_HOME" sh -c \
-    "git config --global user.name >/dev/null || git config --global user.name 'Swarm agent'; \
-     git config --global user.email >/dev/null || git config --global user.email 'swarm@$name.invalid'"
+    "(git -C / config --global user.name >/dev/null || git -C / config --global user.name 'Swarm agent') && \
+     (git -C / config --global user.email >/dev/null || git -C / config --global user.email 'swarm@$name.invalid')"
 
   local previous_relay='' previous_tailnet=off
   # shellcheck disable=SC1090
@@ -2514,6 +2572,7 @@ install_done() {
   local who=$1 key_made=${2:-0}
   load_conf
   echo
+  if [[ -n $who && $key_made == 1 ]]; then print_connect "$who"; fi
   echo "Swarm is running on this machine; its services listen on 127.0.0.1 only:"
   echo "  Swarm          $(if release_install; then awk '{print $1}' "$RELEASE_TARGET"; else echo "built from $SWARM_REF"; fi): $(
     if [[ ${SANDBOX:-off} == on ]]; then echo "agents in one sandbox per project ($([[ $SANDBOX_RUNTIME == runsc ]] && echo gVisor || echo Docker runc))"; else echo "agents run on this machine (sandbox off)"; fi), $(
@@ -2546,13 +2605,11 @@ install_done() {
   echo "Provider key by script instead (the key on stdin, never shown):"
   echo "  sudo bash $INSTALLER key PROVIDER < key-file"
   if [[ $AI_ACCESS == on ]]; then
-    if ((key_made)); then
-      echo "Your AI on this machine:"
-    else
+    if ((!key_made)); then
       echo "Your AI on this machine needs its key first (this also creates Swarm's owner if needed):"
       echo "  sudo bash $INSTALLER connect-ai --for-user ${who:-NAME}"
     fi
-    print_connect "${who:-NAME}"
+    if ((!key_made)); then print_connect "${who:-NAME}"; fi
   fi
   echo
   echo "Then tell your AI: set up Swarm"
@@ -2631,6 +2688,9 @@ status_cmd() {
 }
 
 main() {
+  local caller_pwd=$PWD
+  # Never carry a private caller directory across a user boundary.
+  cd / || die "could not enter /"
   local arg
   local -a rest=()
   for arg in "$@"; do

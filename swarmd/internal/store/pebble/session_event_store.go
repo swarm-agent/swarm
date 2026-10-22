@@ -83,6 +83,7 @@ type V3CheckpointBoundaryMutation struct {
 }
 
 type V3SessionMutationInput struct {
+	completion                   *sessionMutationCompletion
 	accountLockHeld              bool                         // Set only after acquiring the account keyed lock.
 	TaskReport                   *V3ProjectTaskReportMutation `json:"-"`
 	taskUpdate                   *ProjectTaskUpdate
@@ -685,6 +686,27 @@ func (s *SessionStore) SetMediaStagingBindCommitHookForTest(hook func(sessionID 
 // ApplyV3SessionMutation executes the atomic transaction flow for ApplySessionMutation,
 // persisting session events, projections, and outbox records in a single Pebble batch.
 func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3SessionMutationResult, error) {
+	completion := &sessionMutationCompletion{}
+	result, err := s.applyV3SessionMutationLocked(input, completion)
+	if err != nil {
+		return result, err
+	}
+	if completion.needsSync {
+		if err := s.store.syncSessionMutationWAL(input.SessionID); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+	}
+	for _, publish := range completion.publish {
+		if err := publish(); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+	}
+	return result, nil
+}
+
+// The inner call owns every mutation lock, including locks released by nested
+// defers. Its return is the boundary before WAL durability and publication.
+func (s *SessionStore) applyV3SessionMutationLocked(input V3SessionMutationInput, completion *sessionMutationCompletion) (V3SessionMutationResult, error) {
 	if s == nil || s.store == nil {
 		return V3SessionMutationResult{}, errors.New("session store is not configured")
 	}
@@ -694,7 +716,11 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 	var designProjectOutbox []*V3RealtimeOutboxRecord
 	defer func() {
 		for _, outbox := range designProjectOutbox {
-			s.store.publishProjectRealtime(&projectRealtimeMutation{outbox: outbox})
+			outbox := outbox
+			completion.afterDurable(func() error {
+				s.store.publishProjectRealtime(&projectRealtimeMutation{outbox: outbox})
+				return nil
+			})
 		}
 	}()
 	input = normalizeV3SessionMutationInput(input)
@@ -718,7 +744,9 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 		lockIDs = append(lockIDs, input.WorktreeRecovery.OwnerSessionID)
 	}
 	input.accountLockHeld = false
+	input.completion = nil
 	unlockSession := s.store.sessionMutations.lockSessions(lockIDs...)
+	s = s.withMutationSessionCache()
 	plain, err := s.isPlainSessionMutation(input)
 	if err != nil {
 		unlockSession()
@@ -747,14 +775,22 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 			lockIDs = append(lockIDs, "account:"+input.AccountScopeID)
 		}
 		unlockSession = s.store.sessionMutations.lockSessions(lockIDs...)
+		s = s.withMutationSessionCache()
 		input.accountLockHeld = input.AccountScopeID != ""
+	}
+	if input.accountLockHeld {
+		completion.needsSync = true
+		input.completion = completion
 	}
 	budgetReceiptCommitted := false
 	defer func() {
 		unlockSession()
 		if budgetReceiptCommitted {
-			s.store.signalScheduling(SchedulingSignal{Kind: SchedulingSignalBudget, AccountScopeID: input.AccountScopeID})
-			s.publishWorkerBudgetHolds(input.AccountScopeID)
+			completion.afterDurable(func() error {
+				s.store.signalScheduling(SchedulingSignal{Kind: SchedulingSignalBudget, AccountScopeID: input.AccountScopeID})
+				s.publishWorkerBudgetHolds(input.AccountScopeID)
+				return nil
+			})
 		}
 	}()
 	if input.Session != nil || input.WorktreeRecovery != nil || input.AutomationBinding != nil || (input.automationV2 != nil && input.automationV2.accept) {
@@ -832,7 +868,7 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 	s.store.sessionMutations.libraryRepairMu.RLock()
 	defer s.store.sessionMutations.libraryRepairMu.RUnlock()
 	input.designProjectOutbox = &designProjectOutbox
-	result, err := s.applyFreshV3SessionMutation(input, idempotencyKey)
+	result, err := s.applyFreshV3SessionMutationWithReader(input, idempotencyKey)
 	if err == nil && input.TaskReport != nil && result.RealtimeOutbox != nil && !result.Replayed {
 		designProjectOutbox = append(designProjectOutbox, result.RealtimeOutbox)
 	}
@@ -1786,7 +1822,10 @@ func (s *SessionStore) applyFreshV3SessionMutationWithReader(input V3SessionMuta
 			}
 			w, found, err := ws.GetWorker(runIntent.AccountScopeID, worker)
 			if err == nil && found {
-				s.store.workerRunObserver(w, r)
+				input.completion.afterDurable(func() error {
+					s.store.workerRunObserver(w, r)
+					return nil
+				})
 			}
 		}()
 		s.store.workersMu.Lock()
@@ -1863,24 +1902,36 @@ func (s *SessionStore) applyFreshV3SessionMutationWithReader(input V3SessionMuta
 	if hook := s.store.sessionMutations.beforeDurableCommit; hook != nil {
 		hook(input.SessionID)
 	}
-	if err := batch.Commit(pebble.Sync); err != nil {
+	writeOptions := pebble.Sync
+	if input.accountLockHeld && input.completion != nil {
+		writeOptions = pebble.NoSync
+	}
+	if err := s.store.commitSessionBatch(batch, writeOptions); err != nil {
 		return V3SessionMutationResult{}, err
 	}
 	reservationCommitted = true
-	if err := s.store.sessionMutations.commitOutbox(s.store, reservedOutbox); err != nil {
+	if err := input.completion.afterDurable(func() error {
+		if err := s.store.sessionMutations.commitOutbox(s.store, reservedOutbox); err != nil {
+			return err
+		}
+		if runIntentProvided || lifecycleProvided {
+			s.store.signalScheduling(SchedulingSignal{Kind: SchedulingSignalRun, AccountScopeID: input.AccountScopeID, SessionID: input.SessionID})
+		}
+		if input.automationV2 != nil {
+			s.store.signalScheduling(SchedulingSignal{Kind: SchedulingSignalAutomationV2, AccountScopeID: input.AccountScopeID, SessionID: input.SessionID})
+		}
+		return nil
+	}); err != nil {
 		return V3SessionMutationResult{}, err
-	}
-	if runIntentProvided || lifecycleProvided {
-		s.store.signalScheduling(SchedulingSignal{Kind: SchedulingSignalRun, AccountScopeID: input.AccountScopeID, SessionID: input.SessionID})
-	}
-	if input.automationV2 != nil {
-		s.store.signalScheduling(SchedulingSignal{Kind: SchedulingSignalAutomationV2, AccountScopeID: input.AccountScopeID, SessionID: input.SessionID})
 	}
 	if input.designProjectOutbox != nil {
 		*input.designProjectOutbox = pendingDesignProjectOutbox
 	}
-	v3SuccessfulFreshMutations.Add(1)
-	v3EstimatedLogicalBytes.Add(estimatedSetBytes(KeyV3RealtimeOutbox(endpointSeq), realtimeOutboxPayload) + estimatedSetBytes(KeyV3RealtimeOutboxBySessionEndpoint(input.SessionID, endpointSeq), realtimeOutboxReferencePayload) + estimatedSetBytes(KeyV3RealtimeOutboxBySessionSeq(input.SessionID, seq), realtimeOutboxReferencePayload) + estimatedSetBytes(KeyV3RealtimeOutboxByAuthScope(input.AccountScopeID, input.UserID, endpointSeq), realtimeOutboxReferencePayload))
+	input.completion.afterDurable(func() error {
+		v3SuccessfulFreshMutations.Add(1)
+		v3EstimatedLogicalBytes.Add(estimatedSetBytes(KeyV3RealtimeOutbox(endpointSeq), realtimeOutboxPayload) + estimatedSetBytes(KeyV3RealtimeOutboxBySessionEndpoint(input.SessionID, endpointSeq), realtimeOutboxReferencePayload) + estimatedSetBytes(KeyV3RealtimeOutboxBySessionSeq(input.SessionID, seq), realtimeOutboxReferencePayload) + estimatedSetBytes(KeyV3RealtimeOutboxByAuthScope(input.AccountScopeID, input.UserID, endpointSeq), realtimeOutboxReferencePayload))
+		return nil
+	})
 
 	result := V3SessionMutationResult{
 		SessionID:       input.SessionID,

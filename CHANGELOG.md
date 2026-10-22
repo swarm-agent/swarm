@@ -6,6 +6,20 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- MCP: the `worker` argument and `swarm_schedule_job` now say a deployed worker's id is required (deploy one with swarm_deploy_worker first); Swarm's own coder, designer and finder are reached with swarm_run_task. Docs impact: none.
+
+- Repair missing recommended agent models for connected providers on model updates, tolerate catalog refresh failures when complete recommendations are available, and surface setup failures instead of silently leaving roles unset. Lost ChatGPT sign-ins now explain how to start again. Docs impact: none.
+- Fix the headless installer to run from any folder and package a key-free `swarm-mcp` command so Codex and Claude Code can register Swarm once for every later session; older releases retain URL-based connection instructions. Docs impact: containers/headless/app/README.md.
+
+- Instructions for AIs (MCP server instructions, the Claude plugin's using-swarm skill, the relay's instructions) now send code, design and research to Swarm's own agents with swarm_run_task and a role; swarm_give_job is described as the person's own workers only. Docs impact: the using-swarm skill text.
+
+- Removed publish options now warn in `swarm_status`, the matching `swarm_list_workspaces` entry, and a warning signal per affected rule at startup. Logs and warnings point to workflows (including `deliver to: publish` for automatic publication); ignored options still do not enable delivery. Docs impact: migration guidance is included in these warnings.
+
+- Fix the post-unlock sync durability test setup so its simulated crash keeps the synced database directory. Docs impact: none.
+- Cache decoded session records with bounded shared storage, isolated snapshots, and generation-fenced commit invalidation; reuse mutation classification reads. Docs impact: none.
+
+- Release account-scoped V3 mutation locks before syncing the WAL, while keeping durable completion ahead of realtime and scheduling publication. Docs impact: none.
+
 - Let plain V3 session writes bypass account and project locks while retaining serialized accounting and task bookkeeping with fail-closed usage write guards. Docs impact: none.
 
 - Increase Pebble memtables to 32 MiB to reduce flush and compaction frequency. Docs impact: none.

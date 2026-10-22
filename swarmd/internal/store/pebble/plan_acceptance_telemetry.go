@@ -123,7 +123,7 @@ func observeV3SearchAllTokenRekey() {
 func (s *Store) commitV3PlanAcceptanceObserved(batch *pebble.Batch, options *pebble.WriteOptions) error {
 	start := time.Now()
 	logicalBytes := batch.Len()
-	if err := batch.Commit(options); err != nil {
+	if err := s.commitSessionBatch(batch, options); err != nil {
 		return err
 	}
 	observeV3PlanAcceptanceCommit(logicalBytes, time.Since(start))

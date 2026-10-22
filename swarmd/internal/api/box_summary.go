@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -83,6 +84,26 @@ func (s *Server) handleBoxSummary(w http.ResponseWriter, r *http.Request) {
 		reasons = append(reasons, reason)
 		if level == BoxStatusDegraded || status == BoxStatusOK {
 			status = level
+		}
+	}
+
+	if warnings, err := s.publishWarnings(); err != nil {
+		raise(BoxStatusAttention, "publish config could not be loaded; ask the machine owner to check daemon logs")
+	} else if len(warnings) > 0 && s.workspace != nil {
+		// Publish rules are machine-owned; expose paths only after account filtering.
+		entries, err := s.workspace.ListKnownForPrincipal(principal, 100000)
+		if err != nil {
+			raise(BoxStatusAttention, "publish warnings unavailable: workspace lookup failed")
+		} else {
+			visible := make(map[string]bool, len(entries))
+			for _, entry := range entries {
+				visible[filepath.Clean(entry.Path)] = true
+			}
+			for _, warning := range warnings {
+				if visible[warning.Folder] {
+					raise(BoxStatusAttention, warning.Message)
+				}
+			}
 		}
 	}
 

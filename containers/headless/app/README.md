@@ -56,14 +56,21 @@ with `install.sh connect-app NAME [--access read|write|full]`, in
 frontends, discovery (`GET /v3/hello`, no key) and installer progress lines
 (`--progress=json`) is in [docs/frontends.md](../../../docs/frontends.md).
 
-<copy label="Connect Claude Code (as yourself)">
-claude mcp add --scope user --transport http swarm http://127.0.0.1:7783/mcp \
-  --header "Authorization: Bearer $(cat ~/.config/swarm/ai-key)"
-</copy>
+Register once as yourself for every later session:
 
-For Codex: `codex mcp add swarm --url http://127.0.0.1:7783/mcp --bearer-token-env-var SWARM_AI_KEY`,
-started with `SWARM_AI_KEY="$(cat ~/.config/swarm/ai-key)" codex`. Then tell
-your AI: set up Swarm.
+```sh
+codex mcp add swarm -- swarm-mcp
+claude mcp add --scope user --transport stdio swarm -- swarm-mcp
+```
+
+The installed `swarm-mcp` uses the release's bundled Node and reads your private
+AI key or saved plugin connection; no per-session `SWARM_AI_KEY` is needed.
+Then tell your AI: set up Swarm.
+
+For older releases without the bridge only, use the URL fallback:
+`codex mcp add swarm --url http://127.0.0.1:7783/mcp --bearer-token-env-var SWARM_AI_KEY`
+and start each session with `SWARM_AI_KEY="$(cat ~/.config/swarm/ai-key)" codex`.
+For Claude Code: `claude mcp add --scope user --transport http swarm http://127.0.0.1:7783/mcp --header "Authorization: Bearer $(cat ~/.config/swarm/ai-key)"`.
 
 **Keys by script.** `install.sh key PROVIDER` sets the first provider API key
 from stdin (or a hidden prompt) through `swarmctl setup credential

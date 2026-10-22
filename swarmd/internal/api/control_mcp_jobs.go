@@ -186,7 +186,7 @@ func (c *controlMCPCall) deployPreset(preset string) ([]map[string]any, error) {
 func (c *controlMCPCall) resolveWorker(ref string) (map[string]any, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
-		return nil, controlMCPToolFailure("worker is required: an existing deployed worker id or preset name from swarm_list_workers")
+		return nil, controlMCPToolFailure("worker is required: a deployed worker's id or name from swarm_list_workers (deploy one with swarm_deploy_worker first)")
 	}
 	match := func(workers []map[string]any) map[string]any {
 		for _, worker := range workers {
@@ -1489,7 +1489,7 @@ func controlMCPListSecrets(c *controlMCPCall, _ map[string]any) (any, error) {
 
 func controlMCPJobTools() []controlMCPTool {
 	jobID := controlMCPStringProp("From swarm_give_job, swarm_request_media, swarm_design, swarm_list_workers (include_jobs) or swarm_activity.", 1, 700)
-	workerRef := controlMCPStringProp("An existing worker id or deployed preset name from swarm_list_workers.", 1, 200)
+	workerRef := controlMCPStringProp("A deployed worker's id or name from swarm_list_workers (deploy one with swarm_deploy_worker first). Swarm's own coder, designer and finder are not workers: use swarm_run_task with a role.", 1, 200)
 	project := controlMCPStringProp("The project (id or name from swarm_list_projects) the job belongs to. May be left out when there is only one project.", 0, 256)
 	workspace := controlMCPStringProp("Which of the project's folders to work in (an absolute path from swarm_list_projects). May be left out when the project has one folder.", 0, 4096)
 	waitProp := map[string]any{"type": "integer", "minimum": 0, "maximum": controlMCPMaxWaitSeconds, "description": "Wait up to this many seconds (at most 110; keep it under your client's tool timeout, often 60) until the job settles: needs_review (done, ready to merge), completed, failed, needs_input (the worker asked something) or cancelled. waited.timed_out means it is still working: call swarm_get_job again. Default 0."}
@@ -1624,7 +1624,7 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_schedule_job", Title: "Run a job on a schedule",
-			Description: "Deploy a worker that runs one job on a schedule (every N seconds, or cron with a timezone) in one folder of a project, based on a worker (coder, designer, finder or a worker id) for its role and instructions. Every run is a job that shows in swarm_activity and swarm_list_workers; swarm_manage_worker pauses it or switches the schedule.",
+			Description: "Deploy a worker that runs one job on a schedule (every N seconds, or cron with a timezone) in one folder of a project, based on one of the person's deployed workers (its id from swarm_list_workers; deploy one with swarm_deploy_worker first) for its role and instructions. Every run is a job that shows in swarm_activity and swarm_list_workers; swarm_manage_worker pauses it or switches the schedule.",
 			InputSchema: controlMCPObject([]string{"worker", "brief", "schedule"}, map[string]any{
 				"worker":    workerRef,
 				"brief":     controlMCPStringProp("What each run does and how to know it is done.", 1, 2000),

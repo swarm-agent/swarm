@@ -55,6 +55,22 @@ rc=0; (dev_sync "$checkout") >"$work/out" 2>&1 || rc=$?
 [[ $(cat "$work/handed-over" 2>/dev/null) == apply-now ]] || fail "dev_sync did not hand over to the checkout's installer"
 grep -qx "DEV_SOURCE=$(realpath "$checkout")" "$CONF" || fail "DEV_SOURCE not recorded"
 
+# Purpose: main changes to / before dispatching dev_sync; relative checkout
+# arguments must still resolve from the caller. Exercise the real fetch and
+# handover from another folder (and the checkout itself), rather than a path
+# parser spy, to prove DEV_SOURCE and the installed commit identify that checkout.
+mkdir "$work/caller"
+for relative in ../checkout ../caller/../checkout; do
+  rc=0; (cd "$work/caller"; main dev-sync "$relative") >"$work/out" 2>&1 || rc=$?
+  [[ $rc == 0 ]] || { cat "$work/out" >&2; fail "relative dev-sync failed ($rc)"; }
+  [[ $(git -C "$SRC" rev-parse HEAD) == "$want" ]] || fail "relative dev-sync selected the wrong commit"
+  grep -qx "DEV_SOURCE=$(realpath "$checkout")" "$CONF" || fail "relative DEV_SOURCE not resolved from caller"
+  [[ $(cat "$work/handed-over") == apply-now ]] || fail "relative dev-sync did not hand over"
+done
+rc=0; (cd "$checkout"; main dev-sync .) >"$work/out" 2>&1 || rc=$?
+[[ $rc == 0 ]] || { cat "$work/out" >&2; fail "dev-sync . failed ($rc)"; }
+grep -qx "DEV_SOURCE=$(realpath "$checkout")" "$CONF" || fail "dev-sync . selected the wrong checkout"
+
 # The trust is for that fetch only: nothing was written to any config.
 [[ $(git config --file "$GIT_CONFIG_GLOBAL" --get-all safe.directory) == "$SRC" ]] || fail "global safe.directory changed"
 ! git -C "$SRC" config --local --get-all safe.directory >/dev/null || fail "safe.directory written to \$SRC's config"

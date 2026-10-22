@@ -1001,7 +1001,7 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 		}
 	}
 	commitStart := time.Now()
-	err = batch.Commit(pebble.Sync)
+	err = s.store.commitSessionBatch(batch, pebble.Sync)
 	observeExecutionEpochBatchCommit(commitStart)
 	if err != nil {
 		return BeginExecutionEpochResult{}, err

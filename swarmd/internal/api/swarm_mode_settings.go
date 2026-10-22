@@ -78,32 +78,50 @@ func (s *Server) handleAgentModelSettings(w http.ResponseWriter, r *http.Request
 			return
 		}
 
+		if patch.Swarm != nil && patch.Swarm.Action == nil && patch.Swarm.Plan == nil {
+			writeError(w, http.StatusBadRequest, errors.New("swarm patch requires an action or plan assignment"))
+			return
+		}
+		if patch.SystemAgents != nil {
+			if _, _, err := patch.SystemAgents.target(); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+		}
 		var (
 			settings agentmodelsettings.Settings
 			err      error
 		)
-		if patch.Swarm != nil {
-			switch {
-			case patch.Swarm.Action != nil && patch.Swarm.Plan != nil:
-				settings, err = s.agentModelSettings.ReplaceSwarm(ctx, agentmodelsettings.SwarmInput{
-					Action: *patch.Swarm.Action,
-					Plan:   *patch.Swarm.Plan,
-				})
-			case patch.Swarm.Action != nil:
-				settings, err = s.agentModelSettings.UpdateSwarmSlot(ctx, "action", *patch.Swarm.Action)
-			case patch.Swarm.Plan != nil:
-				settings, err = s.agentModelSettings.UpdateSwarmSlot(ctx, "plan", *patch.Swarm.Plan)
-			default:
-				writeError(w, http.StatusBadRequest, errors.New("swarm patch requires an action or plan assignment"))
-				return
+		apply := func() {
+			if patch.Swarm != nil {
+				switch {
+				case patch.Swarm.Action != nil && patch.Swarm.Plan != nil:
+					settings, err = s.agentModelSettings.ReplaceSwarm(ctx, agentmodelsettings.SwarmInput{
+						Action: *patch.Swarm.Action,
+						Plan:   *patch.Swarm.Plan,
+					})
+				case patch.Swarm.Action != nil:
+					settings, err = s.agentModelSettings.UpdateSwarmSlot(ctx, "action", *patch.Swarm.Action)
+				case patch.Swarm.Plan != nil:
+					settings, err = s.agentModelSettings.UpdateSwarmSlot(ctx, "plan", *patch.Swarm.Plan)
+				default:
+					err = errors.New("swarm patch requires an action or plan assignment")
+					return
+				}
+			} else {
+				name, assignment, selectionErr := patch.SystemAgents.target()
+				if selectionErr != nil {
+					err = selectionErr
+					return
+				}
+				settings, err = s.agentModelSettings.UpdateSystemAgent(ctx, name, assignment)
 			}
-		} else {
-			name, assignment, selectionErr := patch.SystemAgents.target()
-			if selectionErr != nil {
-				writeError(w, http.StatusBadRequest, selectionErr)
-				return
+		}
+		apply()
+		if errors.Is(err, agentmodelsettings.ErrNotFound) || errors.Is(err, pebblestore.ErrAgentModelSettingsNotFound) {
+			if _, err = s.ensureRecommendedAgentModels(ctx); err == nil {
+				apply()
 			}
-			settings, err = s.agentModelSettings.UpdateSystemAgent(ctx, name, assignment)
 		}
 		if err != nil {
 			writeAgentModelSettingsError(w, err)
@@ -203,7 +221,10 @@ func writeAgentModelSettingsResponse(w http.ResponseWriter, settings agentmodels
 }
 
 func writeAgentModelSettingsError(w http.ResponseWriter, err error) {
+	var defaultsErr *recommendedAgentModelsError
 	switch {
+	case errors.As(err, &defaultsErr):
+		writeError(w, defaultsErr.status, defaultsErr.err)
 	case errors.Is(err, identity.ErrPrincipalRequired),
 		errors.Is(err, identity.ErrProductIdentityRequired):
 		writeError(w, http.StatusUnauthorized, err)

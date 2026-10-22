@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -209,13 +210,22 @@ func controlMCPConnectChatGPT(c *controlMCPCall, args map[string]any) (any, erro
 			return nil, controlMCPToolFailure("status needs login_id from action start")
 		}
 		response, err = c.chatGPTStatus(loginID, min(controlMCPInt(args, "wait_seconds", 0), controlMCPChatGPTMaxWaitSeconds))
+		var toolErr controlMCPToolError
+		if errors.As(err, &toolErr) && toolErr.status == http.StatusNotFound {
+			return map[string]any{"status": "lost", "message": "this sign-in is gone (Swarm restarted or it expired); start a new one with action start"}, nil
+		}
 	default:
 		return nil, controlMCPToolFailure("action must be start or status")
 	}
 	if err != nil {
 		return nil, err
 	}
-	out := controlMCPPick(response, "status", "verification_url", "user_code", "expires_at", "error")
+	out := controlMCPPick(response, "status", "verification_url", "user_code", "expires_at", "error", "message")
+	if credential, ok := response["credential"].(map[string]any); ok {
+		if defaults, ok := credential["auto_defaults"]; ok {
+			out["auto_defaults"] = defaults
+		}
+	}
 	if id, _ := response["session_id"].(string); id != "" {
 		out["login_id"] = id
 	}

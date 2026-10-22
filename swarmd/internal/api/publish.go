@@ -26,6 +26,30 @@ func (s *Server) SetPublishConfig(path string) {
 	s.publishConfig = strings.TrimSpace(path)
 }
 
+// EmitPublishConfigWarnings is called once during daemon startup. Reads for
+// status never emit events; warnings remain fresh when the owner edits policy.
+func (s *Server) EmitPublishConfigWarnings(emit func(pebblestore.Signal)) {
+	warnings, err := s.publishWarnings()
+	if err != nil {
+		log.Printf("publish config warnings: %v", err)
+		return
+	}
+	for _, warning := range warnings {
+		emit(pebblestore.Signal{Kind: "publish.config.warning", Severity: pebblestore.SignalSeverityWarning,
+			// Machine-wide signals must not disclose account-owned folder paths.
+			Summary: "Removed publish options ignored: " + strings.Join(warning.Options, ",") + "; use swarm_set_workflow with deliver to: publish for auto. Check swarm_status for affected folders visible to your account.",
+			Attrs:   map[string]string{"removed_options": strings.Join(warning.Options, ","), "replacement": "Use swarm_set_workflow for the folder or worker: deliver to: publish for auto, workflow gates for checks/review/pipeline, forge rules for land."}})
+	}
+}
+
+func (s *Server) publishWarnings() ([]publish.Warning, error) {
+	if s == nil {
+		return nil, nil
+	}
+	_, warnings, err := publish.LoadWithWarnings(s.publishConfig)
+	return warnings, err
+}
+
 // publishRule is the publish rule of a folder, read fresh so the owner's
 // change applies without a restart.
 func (s *Server) publishRule(folder string) (publish.Rule, bool, error) {

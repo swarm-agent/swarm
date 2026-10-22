@@ -8,9 +8,10 @@ description: Get work done by the person's Swarm through its MCP tools: delegate
 Swarm runs AI agents on the person's computer or server for their work in
 their folders. Work gets done two ways, both first-class: delegate a goal to
 Swarm (`swarm_run_task`, section 4), which plans it and splits it across its
-coder, finder and designer; or give a job straight to one worker
-(`swarm_give_job`, section 8: coder, designer, finder, reviewer, or the
-person's own workers). Add, when the person wants them: schedules (section 8),
+coder, finder and designer; or run one of Swarm's own agents directly
+(`swarm_run_task` with role coder, designer or finder, section 4; built in,
+nothing to deploy). Workers (`swarm_give_job`, section 8) are only the person's
+own. Add, when the person wants them: schedules (section 8),
 workflows that run when a task or job ends (section 8b) and environments, a folder's
 own container for its agents' commands with its secrets (section 3b).
 Use MCP tools (`swarm_*`; a client may prefix the connection name). Treat
@@ -155,12 +156,14 @@ done. `swarm_list_providers` shows whether a media provider is ready.
 
 ## 8. Jobs for a worker, workers and schedules
 
-- `swarm_give_job` gives one worker a job directly: `coder`, `designer`,
-  `finder`, `reviewer` (with `review_job`) or a worker's id, the project and
-  folder, and a brief that says what to do and how to know it is done.
+- `swarm_give_job` gives one of the person's own workers a job: its id or name
+  from `swarm_list_workers` (coder, designer and finder are Swarm's own agents:
+  use `swarm_run_task` with that role; to review work, use a workflow with a
+  `reviewer` step, section 8b), the project and folder, and a brief that says
+  what to do and how to know it is done.
   `swarm_get_job` waits for it and returns the branch, commits, report and
-  cost; `swarm_deliver_job` merges it. Use this when the person names a worker
-  or the work is one clear job.
+  cost; `swarm_deliver_job` merges it. Use this when the person names one of
+  their own workers.
 - `swarm_list_workers` lists the box's workers (`include_jobs` adds their
   latest jobs). Listing and resolving names create no workers.
 - `swarm_deploy_worker` explicitly creates a requested worker: a name, a role

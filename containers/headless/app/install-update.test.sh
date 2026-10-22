@@ -37,7 +37,8 @@ UPDATE_HOOK=$work/hook
 EOF
 
 # A release per commit: node is the real one (json_get), swarmd a stand-in.
-release() { mkdir -p "$OPT/releases/$1/bin"; ln -sf "$(command -v node)" "$OPT/releases/$1/bin/node"; printf '#!/bin/sh\n' >"$OPT/releases/$1/bin/swarmd"; chmod +x "$OPT/releases/$1/bin/swarmd"; touch "$OPT/releases/$1/.complete"; }
+# activate requires the same shared bridge payload as a real release.
+release() { bash "$here/package-mcp.sh" "$OPT/releases/$1"; mkdir -p "$OPT/releases/$1/bin"; ln -sf "$(command -v node)" "$OPT/releases/$1/bin/node"; printf '#!/bin/sh\n' >"$OPT/releases/$1/bin/swarmd"; chmod +x "$OPT/releases/$1/bin/swarmd"; touch "$OPT/releases/$1/.complete"; }
 # 0. A first install has no release yet: asking which one runs is no error
 # (under errexit it stopped the first install before Swarm started).
 rc=0; first=$(running_commit) || rc=$?
@@ -94,7 +95,7 @@ cat >"$INSTALLER" <<EOF
 #!/usr/bin/env bash
 case \$1 in
   finish-update) echo finish-update >>"$log" ;;
-  build-release) [[ -f "$work/build-fails" ]] && exit 1; mkdir -p "$OPT/releases/\$2/bin"; ln -sf "$(command -v node)" "$OPT/releases/\$2/bin/node"; printf '#!/bin/sh\n' >"$OPT/releases/\$2/bin/swarmd"; chmod +x "$OPT/releases/\$2/bin/swarmd"; echo "build \$2" >>"$log" ;;
+  build-release) [[ -f "$work/build-fails" ]] && exit 1; bash "$here/package-mcp.sh" "$OPT/releases/\$2"; mkdir -p "$OPT/releases/\$2/bin"; ln -sf "$(command -v node)" "$OPT/releases/\$2/bin/node"; printf '#!/bin/sh\n' >"$OPT/releases/\$2/bin/swarmd"; chmod +x "$OPT/releases/\$2/bin/swarmd"; echo "build \$2" >>"$log" ;;
 esac
 EOF
 # Activation switches the release; a commit listed in $work/broken never comes up.
@@ -328,7 +329,7 @@ DAEMON
   INSTALLER=$work/already-built
   printf '#!/bin/sh\nexit 0\n' >"$INSTALLER"
   ln -sfn "$OPT/releases/$c3" "$OPT/current"
-  SWARMCTL=$work/swarmctl
+  SWARMCTL=$work/swarmctl SWARM_MCP=$work/swarm-mcp
   SERVICE_USER=test SERVICE_HOME=$work
   firewall() { :; }; register_gvisor() { :; }; choose_runtime() { SANDBOX_RUNTIME=default; }; install_units() { :; }; docker() { :; }
   systemctl() {

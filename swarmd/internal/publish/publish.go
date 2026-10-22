@@ -74,20 +74,42 @@ var removedOptions = map[string]bool{"land": true, "auto": true, "require-proof"
 // owned by root and not writable by anyone else, like the commands it names:
 // only the machine's administrator decides what runs.
 func Load(path string) ([]Rule, error) {
+	rules, _, err := LoadWithWarnings(path)
+	return rules, err
+}
+
+// Warning describes ignored legacy policy without exposing the publish command.
+type Warning struct {
+	Folder  string   `json:"folder"`
+	Options []string `json:"options"`
+	Message string   `json:"message"`
+}
+
+// LoadWithWarnings returns migration warnings separately from executable rules.
+func LoadWithWarnings(path string) ([]Rule, []Warning, error) {
+	rules, warnings, err := load(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	return rules, warnings, nil
+}
+
+func load(path string) ([]Rule, []Warning, error) {
 	if strings.TrimSpace(path) == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err := ownedByRoot(path, false); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, fmt.Errorf("publish config: %w", err)
+		return nil, nil, fmt.Errorf("publish config: %w", err)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("publish config: %w", err)
+		return nil, nil, fmt.Errorf("publish config: %w", err)
 	}
 	rules := []Rule{}
+	var warnings []Warning
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	for line := 1; scanner.Scan(); line++ {
 		text := strings.TrimSpace(scanner.Text())
@@ -96,7 +118,7 @@ func Load(path string) ([]Rule, error) {
 		}
 		fields := strings.Split(text, "\t")
 		if len(fields) < 2 || len(fields) > 3 {
-			return nil, fmt.Errorf("publish config line %d: want FOLDER<TAB>COMMAND[<TAB>OPTIONS]", line)
+			return nil, nil, fmt.Errorf("publish config line %d: want FOLDER<TAB>COMMAND[<TAB>OPTIONS]", line)
 		}
 		rule := Rule{Folder: filepath.Clean(strings.TrimSpace(fields[0])), Command: strings.TrimSpace(fields[1])}
 		if len(fields) == 3 {
@@ -109,19 +131,21 @@ func Load(path string) ([]Rule, error) {
 				case removedOptions[option]:
 					ignored = append(ignored, option)
 				default:
-					return nil, fmt.Errorf("publish config line %d: the only option is sync", line)
+					return nil, nil, fmt.Errorf("publish config line %d: the only option is sync", line)
 				}
 			}
 			if len(ignored) > 0 {
-				log.Printf("publish config line %d: ignoring removed options %s", line, strings.Join(ignored, ","))
+				message := fmt.Sprintf("folder %s: removed publish options %s ignored; use swarm_set_workflow for the folder or worker: deliver to: publish replaces auto; workflow gates replace checks/review/pipeline; forge rules replace land", rule.Folder, strings.Join(ignored, ","))
+				warnings = append(warnings, Warning{Folder: rule.Folder, Options: ignored, Message: message})
+				log.Printf("publish config line %d: ignoring removed options %s; %s", line, strings.Join(ignored, ","), message)
 			}
 		}
 		if !filepath.IsAbs(rule.Folder) || !filepath.IsAbs(rule.Command) {
-			return nil, fmt.Errorf("publish config line %d: folder and command must be absolute paths", line)
+			return nil, nil, fmt.Errorf("publish config line %d: folder and command must be absolute paths", line)
 		}
 		rules = append(rules, rule)
 	}
-	return rules, scanner.Err()
+	return rules, warnings, scanner.Err()
 }
 
 // For is the rule of the folder a job ran in, if any.
