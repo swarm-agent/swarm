@@ -40,9 +40,13 @@ test('packaged stdio launcher reads a private caller key in fresh sessions', {ti
       res.end(JSON.stringify({jsonrpc: '2.0', id: message.id, result: {tools: [{name: 'fixture_tool', inputSchema: {type: 'object'}}]}}));
     });
   });
-  // Deliberately the documented tunnel port: no URL or token env override.
-  await new Promise((resolve, reject) => {server.once('error', reject); server.listen(7783, '127.0.0.1', resolve);});
+  // Use an isolated loopback endpoint, never the operator's daemon port.
+  await new Promise((resolve, reject) => {server.once('error', reject); server.listen(0, '127.0.0.1', resolve);});
   t.after(() => server.close());
+  env.SWARM_MCP_CONFIG = join(work, 'connection.json');
+  await writeFile(env.SWARM_MCP_CONFIG, JSON.stringify({
+    mode: 'http', url: `http://127.0.0.1:${server.address().port}/mcp`, tokenFile: key,
+  }), {mode: 0o600});
   async function invoke() {
     const child = spawn(join(work, 'swarm-mcp'), [], {env, cwd: '/', timeout: 5000});
     let stdout = '', stderr = '';
