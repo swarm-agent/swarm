@@ -8,6 +8,19 @@ here=$(cd "$(dirname "$0")" && pwd)
 source <(sed '$d' "$here/install.sh")
 work=$(mktemp -d)
 trap 'cd /; rm -rf "$work"' EXIT
+# Purpose: main/install_all must resolve relative --release-file against the
+# caller, not the safe execution cwd. Stop at --help after real option parsing
+# to inspect RELEASE_FILE without root checks or machine installation effects.
+printf 'archive fixture\n' >"$work/release.tar.gz"
+(
+  usage() {
+    [[ $PWD == / ]]
+    [[ $RELEASE_FILE == "$(realpath "$work/release.tar.gz")" ]]
+    [[ $RELEASE_FILE -ef "$work/release.tar.gz" ]]
+  }
+  cd "$work"
+  main install --release-file release.tar.gz --help
+)
 install_all() { [[ $PWD == / ]]; }
 (cd "$work"; main install)
 runuser() { [[ $PWD == / ]]; }

@@ -855,6 +855,7 @@ dev_sync() {
     echo "Following $SWARM_REF on GitHub again; the next update brings it back."
     return 0
   fi
+  [[ $repo == /* ]] || repo=${caller_pwd:-$PWD}/$repo
   repo=$(realpath "$repo")
   [[ -d $repo/.git && -f $repo/containers/headless/app/install.sh ]] || die "$repo is not a Swarm checkout"
   # The checkout belongs to another user; trust it for this one fetch only.
