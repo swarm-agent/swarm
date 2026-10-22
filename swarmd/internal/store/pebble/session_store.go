@@ -454,7 +454,8 @@ type SessionPlanActive struct {
 }
 
 type SessionStore struct {
-	store *Store
+	store            *Store
+	accountLockInput V3SessionMutationInput // Private receiver copy; never set on a shared store.
 	// Only set on a private receiver copy for one fresh mutation, never shared.
 	mutationSessions map[string]cachedMutationSession
 	sessionDecoded   func(string) // Optional per-instance test observer.

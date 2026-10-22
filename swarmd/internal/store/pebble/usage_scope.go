@@ -287,7 +287,10 @@ func applyScopeReceipt(total *UsageScopeTotal, receipt SessionTurnUsageSnapshot,
 	}
 }
 
-func setUsageScopeTotals(batch *pebble.Batch, account string, totals []UsageScopeTotal) error {
+func (s *SessionStore) setUsageScopeTotals(batch *pebble.Batch, account string, totals []UsageScopeTotal) error {
+	if err := s.accountLockInput.requireAccountLock(); err != nil {
+		return err
+	}
 	for _, total := range totals {
 		payload, err := json.Marshal(total)
 		if err != nil {
@@ -359,7 +362,10 @@ func usageBindingKey(account, session string) string {
 	return "usage_scope_binding/" + keyPart(account) + "/" + keyPart(session)
 }
 
-func setUsageBinding(batch *pebble.Batch, account, session string, scopes []UsageScopeTotal) error {
+func (s *SessionStore) setUsageBinding(batch *pebble.Batch, account, session string, scopes []UsageScopeTotal) error {
+	if err := s.accountLockInput.requireAccountLock(); err != nil {
+		return err
+	}
 	if len(scopes) == 0 {
 		return nil
 	}

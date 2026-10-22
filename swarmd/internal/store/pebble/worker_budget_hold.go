@@ -125,6 +125,9 @@ func (s *SessionStore) holdWorkerBudgetLocked(account, worker string, h *WorkerB
 // would fail. The bounded worker catalog is authoritative; ordinary sessions
 // are still never classified or reserved as worker work.
 func (s *SessionStore) setAccountWorkerBudgetHolds(batch *pebble.Batch, acc DailyUsageAccumulator) error {
+	if err := s.accountLockInput.requireAccountLock(); err != nil {
+		return err
+	}
 	policy, _, err := s.GetUsageLimit(acc.AccountScopeID)
 	if err != nil {
 		return err

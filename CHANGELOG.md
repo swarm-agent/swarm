@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Let plain V3 session writes bypass account and project locks while retaining serialized accounting and task bookkeeping with fail-closed usage write guards. Docs impact: none.
+
 - Increase Pebble memtables to 32 MiB to reduce flush and compaction frequency. Docs impact: none.
 
 - Reuse decoded session records within each fresh V3 mutation, with isolated caller copies and batch-write visibility. Docs impact: none.

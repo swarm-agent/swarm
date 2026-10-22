@@ -89,10 +89,31 @@ func (s *SessionStore) RepairUsageScopes(account, cursor string, limit int) (Usa
 }
 
 func (s *SessionStore) repairUsageScopeReceipt(account, key string, value []byte, media bool) (bool, bool, error) {
-	unlock := s.store.sessionMutations.lockSessions("account:" + account)
+	var owner struct {
+		SessionID string `json:"session_id"`
+	}
+	if media {
+		if err := json.Unmarshal(value, &owner); err != nil {
+			return false, false, err
+		}
+	} else {
+		parts := strings.Split(strings.TrimPrefix(key, SessionTurnUsageByAccountPrefix(account, "")), "/")
+		if len(parts) != 2 {
+			return false, false, errors.New("invalid usage receipt index")
+		}
+		found, err := s.store.GetJSON("session_turn_usage/"+parts[0]+"/"+parts[1], &owner)
+		if err != nil || !found {
+			return false, !found, err
+		}
+	}
+	if owner.SessionID == "" {
+		return false, true, errors.New("usage repair receipt has no session")
+	}
+	unlock := s.store.sessionMutations.lockSessions("account:"+account, owner.SessionID)
 	defer unlock()
-	s.store.sessionMutations.libraryRepairMu.RLock()
-	defer s.store.sessionMutations.libraryRepairMu.RUnlock()
+	local := *s
+	local.accountLockInput = V3SessionMutationInput{accountLockHeld: true, AccountScopeID: account}
+	s = &local
 	batch := s.store.NewBatch()
 	defer batch.Close()
 	var scopes []UsageScopeTotal
@@ -184,12 +205,17 @@ func (s *SessionStore) repairUsageScopeReceipt(account, key string, value []byte
 		scopes[i].Coverage = "repaired_receipts_incomplete"
 		scopes[i].HistoryComplete = false
 	}
-	if err := setUsageScopeTotals(batch, account, scopes); err != nil {
+	if err := s.setUsageScopeTotals(batch, account, scopes); err != nil {
 		return false, false, err
 	}
-	if err := setUsageBinding(batch, account, session, scopes); err != nil {
+	if err := s.setUsageBinding(batch, account, session, scopes); err != nil {
 		return false, false, err
 	}
+	if session != owner.SessionID {
+		return false, false, errors.New("usage repair receipt session changed")
+	}
+	s.store.sessionMutations.libraryRepairMu.RLock()
+	defer s.store.sessionMutations.libraryRepairMu.RUnlock()
 	snapshot, found, err := s.GetSession(session)
 	if err != nil || !found {
 		return false, !found, err
@@ -199,7 +225,7 @@ func (s *SessionStore) repairUsageScopeReceipt(account, key string, value []byte
 		return false, false, err
 	}
 	request := uuid.NewString()
-	input := normalizeV3SessionMutationInput(V3SessionMutationInput{SessionID: session, AccountScopeID: account, UserID: snapshot.UserID, Kind: "usage.scope.updated", EventType: "usage.scope.updated", ClientRequestID: request, IdempotencyKey: request, PayloadHash: request, EventPayload: payload, usageScopeRepair: batch})
+	input := normalizeV3SessionMutationInput(V3SessionMutationInput{accountLockHeld: true, SessionID: session, AccountScopeID: account, UserID: snapshot.UserID, Kind: "usage.scope.updated", EventType: "usage.scope.updated", ClientRequestID: request, IdempotencyKey: request, PayloadHash: request, EventPayload: payload, usageScopeRepair: batch})
 	if err := validateV3SessionMutationInput(input); err != nil {
 		return false, false, err
 	}

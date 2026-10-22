@@ -27,6 +27,9 @@ func TestMutationSessionCacheAppendUsage(t *testing.T) {
 		Message:   &MessageSnapshot{ID: "cache-message", Role: "assistant", Content: "answer"},
 		TurnUsage: &SessionTurnUsageSnapshot{RunID: "cache-run", Provider: "test", Model: "test", InputTokens: 10, OutputTokens: 5, TotalTokens: 15, CostProvenance: "provider", PriceStatus: "priced"},
 	}
+	unlock := s.store.sessionMutations.lockSessions(input.SessionID, "account:"+input.AccountScopeID)
+	defer unlock()
+	input.accountLockHeld = true
 	result, err := s.applyFreshV3SessionMutation(input, "cache-idempotency")
 	if err != nil {
 		t.Fatal(err)
@@ -39,6 +42,8 @@ func TestMutationSessionCacheAppendUsage(t *testing.T) {
 	createV3SessionForTest(t, uncached, "cache-session")
 	uncachedDecodes := 0
 	uncached.sessionDecoded = func(string) { uncachedDecodes++ }
+	unlockReference := uncached.store.sessionMutations.lockSessions(input.SessionID, "account:"+input.AccountScopeID)
+	defer unlockReference()
 	want, err := uncached.applyFreshV3SessionMutationWithReader(input, "cache-idempotency")
 	if err != nil {
 		t.Fatal(err)
