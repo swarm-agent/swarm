@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Search uses FFF v0.11.0 (reviewed import): lower indexing memory (upstream reports about 70% less resident memory while indexing) and faster content search. Docs impact: none.
+
 - Mark code PR deliverables ready after successful task integration or pull-request publication, with titles describing the actual delivery; leave media deliverables unchanged. Docs impact: none.
 - Workflow reviewers skip positively assessed no-commit worker jobs with a clear reason instead of failing delivery; unknown commits still take the normal review path. Skipped reviews satisfy neither verdict nor success conditions, and unrelated steps still run. Docs impact: docs/automations.md (agent steps).
 - AI clients can discover headless Swarm updates through `swarm_status` → `machine.update.command`, with on-machine sudo guidance when the installer is configured; MCP initialization points clients there. Docs impact: using-swarm and setup skills, headless installation guidance in docs/checkpoints/claude-code-provider.md.

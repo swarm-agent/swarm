@@ -13,3 +13,12 @@
 # unsigned and release mutable; same-channel release checksums are not the trust basis.
 # C ABI diff is additive (watch callbacks/result getters); existing wrappers unchanged.
 v0.10.6 4c7422ac1fd21898684c622d37358db63798e7fd2d9f7ff69444c9d37ca55377 c2d5b0acd0c86a412fa4c71ef32e0931c84a1f6022858a9b1bde49fba62ec940
+#
+# v0.11.0 reviewed 2026-10-22: annotated tag resolves to source commit
+# 95fd777c2529fc7b4d7572dabff64cc07268f2c5; header fetched by that commit.
+# Library independently matched @ff-labs/fff-bin-linux-x64-gnu@0.11.0 from
+# registry.npmjs.org (SHA-512 tarball integrity matches the registry; npm gitHead
+# matches the source commit). C ABI diff is additive (fff_live_grep_ex,
+# fff_multi_grep_ex, rename watch events); existing wrappers unchanged. Brings
+# the indexing memory cut (upstream PR 859: RSS -70%, peak -30%).
+v0.11.0 a74f5051edf60b4209aad2ded20e67bba85c72e0c1d3bc8e1ad0818e8e8ad6fb 96e0fd5c354223b670de32c85990186fae3387505d6cc5b583e11884aab25d8e
