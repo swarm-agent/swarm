@@ -20,6 +20,8 @@ import (
 // Owners: LoadWithWarnings, handleBoxSummary, controlMCPListWorkspaces and
 // EmitPublishConfigWarnings. Real MCP routes and a temporary signal store are
 // the narrowest boundary proving visibility, fresh removal, and no read events.
+// Cross-account reads must not disclose folders, and invalid publish policy must
+// not disable the independently authorized workspace-list operation.
 func TestPublishConfigWarningsStatusAndSignal(t *testing.T) {
 	s, _, _, cleanup := setupScopedAuthTestServer(t)
 	defer cleanup()
@@ -45,6 +47,8 @@ func TestPublishConfigWarningsStatusAndSignal(t *testing.T) {
 	principal, _ := PrincipalFromRequest(req)
 	folder, other := t.TempDir(), t.TempDir()
 	for _, path := range []string{folder, other} {
+		outboxPinGit(t, path, "init", "-q")
+		outboxPinGit(t, path, "commit", "-q", "--allow-empty", "-m", "base")
 		if _, err := s.workspace.AddForPrincipal(principal, path, "folder", "", false); err != nil {
 			t.Fatal(err)
 		}
@@ -108,9 +112,30 @@ func TestPublishConfigWarningsStatusAndSignal(t *testing.T) {
 		t.Fatalf("startup/read events: %+v", page.Signals)
 	}
 	sig := page.Signals[0]
-	if sig.Kind != "publish.config.warning" || sig.Severity != "warning" || sig.Refs["workspace_path"] != folder || !strings.Contains(sig.Summary, "deliver to: publish") || strings.Contains(sig.Summary, "private-command") {
+	if sig.Kind != "publish.config.warning" || sig.Severity != "warning" || sig.Refs["workspace_path"] != "" || !strings.Contains(sig.Summary, "deliver to: publish") || strings.Contains(sig.Summary, "private-command") {
 		t.Fatalf("signal: %+v", sig)
 	}
+	readScopes, _ := aiKeyScopes("read")
+	_, otherToken, err := s.security.CreateScopedTokenUnder(nil, "other-account", readScopes, "other-account", "other-user", 0, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.request = requestWithScopedToken(requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodPost, "/mcp", nil), "other-user", "other-account"), &otherToken)
+	for _, name := range []string{"swarm_status", "swarm_list_workspaces"} {
+		encoded, _ := json.Marshal(call(name))
+		if strings.Contains(string(encoded), folder) || strings.Contains(string(encoded), "removed publish options") {
+			t.Fatalf("cross-account %s disclosure: %s", name, encoded)
+		}
+	}
+	otherPage, err := feed.ListAfter(0, 100, pebblestore.SignalFilter{Account: "other-account"})
+	if err != nil || len(otherPage.Signals) != 1 {
+		t.Fatalf("machine warning missing: %+v %v", otherPage, err)
+	}
+	encoded, _ := json.Marshal(otherPage.Signals)
+	if strings.Contains(string(encoded), folder) || strings.Contains(string(encoded), "private-command") {
+		t.Fatalf("cross-account signal disclosure: %s", encoded)
+	}
+	c.request = req
 	write("sync")
 	status, _ := json.Marshal(call("swarm_status"))
 	if strings.Contains(string(status), "removed publish options") {
@@ -122,6 +147,16 @@ func TestPublishConfigWarningsStatusAndSignal(t *testing.T) {
 	}
 	s.EmitPublishConfigWarnings(signals.NewEmitter(feed).Emit)
 	write("auto,typo")
+	invalidEntries := call("swarm_list_workspaces")["workspaces"].([]any)
+	if len(invalidEntries) != 2 {
+		t.Fatalf("invalid publish config hid workspaces: %v", invalidEntries)
+	}
+	for _, raw := range invalidEntries {
+		entry := raw.(map[string]any)
+		if entry["path"] != folder && entry["path"] != other {
+			t.Fatalf("unexpected workspace: %v", entry)
+		}
+	}
 	if warnings, err := s.publishWarnings(); err == nil || len(warnings) != 0 {
 		t.Fatalf("invalid policy: %v %v", warnings, err)
 	}

@@ -991,10 +991,7 @@ func controlMCPListWorkspaces(c *controlMCPCall, _ map[string]any) (any, error) 
 	if err != nil {
 		return nil, err
 	}
-	warnings, err := c.server.publishWarnings()
-	if err != nil {
-		return nil, err
-	}
+	warnings, warningErr := c.server.publishWarnings()
 	workspaces := []map[string]any{}
 	for _, raw := range controlMCPList(response["workspaces"]) {
 		if entry := controlMCPMap(raw); entry != nil {
@@ -1011,7 +1008,12 @@ func controlMCPListWorkspaces(c *controlMCPCall, _ map[string]any) (any, error) 
 			workspaces = append(workspaces, entry)
 		}
 	}
-	return map[string]any{"workspaces": workspaces}, nil
+	result := map[string]any{"workspaces": workspaces}
+	if warningErr != nil {
+		// Config errors can contain paths belonging to other accounts.
+		result["warnings"] = []string{"publish config could not be loaded; ask the machine owner to check daemon logs"}
+	}
+	return result, nil
 }
 
 // controlMCPCreateWorkspace creates <root>/<name> as an empty repository with

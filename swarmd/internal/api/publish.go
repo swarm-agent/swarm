@@ -36,8 +36,8 @@ func (s *Server) EmitPublishConfigWarnings(emit func(pebblestore.Signal)) {
 	}
 	for _, warning := range warnings {
 		emit(pebblestore.Signal{Kind: "publish.config.warning", Severity: pebblestore.SignalSeverityWarning,
-			Summary: "Removed publish options ignored; use swarm_set_workflow with deliver to: publish for auto. " + warning.Message,
-			Refs:    map[string]string{"workspace_path": warning.Folder},
+			// Machine-wide signals must not disclose account-owned folder paths.
+			Summary: "Removed publish options ignored: " + strings.Join(warning.Options, ",") + "; use swarm_set_workflow with deliver to: publish for auto. Check swarm_status for affected folders visible to your account.",
 			Attrs:   map[string]string{"removed_options": strings.Join(warning.Options, ","), "replacement": "Use swarm_set_workflow for the folder or worker: deliver to: publish for auto, workflow gates for checks/review/pipeline, forge rules for land."}})
 	}
 }
