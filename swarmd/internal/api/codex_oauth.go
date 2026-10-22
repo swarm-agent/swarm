@@ -146,12 +146,9 @@ func (s *Server) handleCodexOAuthStatus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	session, ok := s.codexOAuthGet(sessionID)
-	if !ok {
-		writeError(w, http.StatusNotFound, errors.New("oauth session not found"))
-		return
-	}
-	if !codexOAuthSessionMatchesPrincipal(session, principal) {
-		writeError(w, http.StatusNotFound, errors.New("oauth session not found"))
+	if !ok || !codexOAuthSessionMatchesPrincipal(session, principal) {
+		// Do not distinguish an absent login from another principal's login.
+		writeJSON(w, http.StatusOK, map[string]any{"status": "lost", "message": "this sign-in is gone (Swarm restarted or it expired); start a new one with action start"})
 		return
 	}
 	writeJSON(w, http.StatusOK, s.codexOAuthResponse(sessionID, session))

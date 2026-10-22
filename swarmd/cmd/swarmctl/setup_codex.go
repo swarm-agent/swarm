@@ -41,6 +41,12 @@ func runSetupCodexLogin(args []string, output io.Writer) error {
 		UserCode        string `json:"user_code"`
 		Status          string `json:"status"`
 		Error           string `json:"error"`
+		Credential      struct {
+			AutoDefaults *struct {
+				Applied bool   `json:"applied"`
+				Error   string `json:"error"`
+			} `json:"auto_defaults"`
+		} `json:"credential"`
 	}
 	var started login
 	if err := setupRequest(client, http.MethodPost, "/v1/auth/codex/oauth/start", map[string]any{"provider": "codex", "method": "device", "label": "Codex", "active": true}, &started); err != nil {
@@ -59,9 +65,17 @@ func runSetupCodexLogin(args []string, output io.Writer) error {
 		}
 		switch strings.ToLower(current.Status) {
 		case "success":
+			if defaults := current.Credential.AutoDefaults; defaults != nil {
+				if defaults.Error != "" {
+					return fmt.Errorf("Codex connected, but recommended agent models were not set up: %s; retry with setup model", defaults.Error)
+				}
+				if _, err := fmt.Fprintf(output, "Recommended agent models applied: %t\n", defaults.Applied); err != nil {
+					return err
+				}
+			}
 			_, err := fmt.Fprintln(output, "Codex connected.")
 			return err
-		case "error", "failed", "expired":
+		case "error", "failed", "expired", "lost":
 			return fmt.Errorf("Codex sign-in %s; run codex-login again", strings.ToLower(current.Status))
 		}
 	}

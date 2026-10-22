@@ -49,11 +49,12 @@ func (s *Server) handleAgentModelSettings(w http.ResponseWriter, r *http.Request
 	case http.MethodGet:
 		settings, err := s.agentModelSettings.Get(ctx)
 		if errors.Is(err, agentmodelsettings.ErrNotFound) || errors.Is(err, pebblestore.ErrAgentModelSettingsNotFound) {
-			// No model was ever set up for this account: that is a normal
-			// onboarding state, not an error. Report every role as unset
-			// (updated_at 0 is the revision restore-defaults expects).
-			principal, _ := identity.PrincipalFromContext(ctx)
-			settings, err = agentmodelsettings.Settings{AccountScopeID: pebblestore.NormalizeAgentModelAccountScopeID(principal.AccountScopeID)}, nil
+			settings, err = s.ensureRecommendedAgentModels(ctx)
+			if errors.Is(err, errNoReadyModelProvider) {
+				// Unconnected accounts remain a normal onboarding state.
+				principal, _ := identity.PrincipalFromContext(ctx)
+				settings, err = agentmodelsettings.Settings{AccountScopeID: pebblestore.NormalizeAgentModelAccountScopeID(principal.AccountScopeID)}, nil
+			}
 		}
 		if err != nil {
 			writeAgentModelSettingsError(w, err)
@@ -78,32 +79,50 @@ func (s *Server) handleAgentModelSettings(w http.ResponseWriter, r *http.Request
 			return
 		}
 
+		if patch.Swarm != nil && patch.Swarm.Action == nil && patch.Swarm.Plan == nil {
+			writeError(w, http.StatusBadRequest, errors.New("swarm patch requires an action or plan assignment"))
+			return
+		}
+		if patch.SystemAgents != nil {
+			if _, _, err := patch.SystemAgents.target(); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+		}
 		var (
 			settings agentmodelsettings.Settings
 			err      error
 		)
-		if patch.Swarm != nil {
-			switch {
-			case patch.Swarm.Action != nil && patch.Swarm.Plan != nil:
-				settings, err = s.agentModelSettings.ReplaceSwarm(ctx, agentmodelsettings.SwarmInput{
-					Action: *patch.Swarm.Action,
-					Plan:   *patch.Swarm.Plan,
-				})
-			case patch.Swarm.Action != nil:
-				settings, err = s.agentModelSettings.UpdateSwarmSlot(ctx, "action", *patch.Swarm.Action)
-			case patch.Swarm.Plan != nil:
-				settings, err = s.agentModelSettings.UpdateSwarmSlot(ctx, "plan", *patch.Swarm.Plan)
-			default:
-				writeError(w, http.StatusBadRequest, errors.New("swarm patch requires an action or plan assignment"))
-				return
+		apply := func() {
+			if patch.Swarm != nil {
+				switch {
+				case patch.Swarm.Action != nil && patch.Swarm.Plan != nil:
+					settings, err = s.agentModelSettings.ReplaceSwarm(ctx, agentmodelsettings.SwarmInput{
+						Action: *patch.Swarm.Action,
+						Plan:   *patch.Swarm.Plan,
+					})
+				case patch.Swarm.Action != nil:
+					settings, err = s.agentModelSettings.UpdateSwarmSlot(ctx, "action", *patch.Swarm.Action)
+				case patch.Swarm.Plan != nil:
+					settings, err = s.agentModelSettings.UpdateSwarmSlot(ctx, "plan", *patch.Swarm.Plan)
+				default:
+					err = errors.New("swarm patch requires an action or plan assignment")
+					return
+				}
+			} else {
+				name, assignment, selectionErr := patch.SystemAgents.target()
+				if selectionErr != nil {
+					err = selectionErr
+					return
+				}
+				settings, err = s.agentModelSettings.UpdateSystemAgent(ctx, name, assignment)
 			}
-		} else {
-			name, assignment, selectionErr := patch.SystemAgents.target()
-			if selectionErr != nil {
-				writeError(w, http.StatusBadRequest, selectionErr)
-				return
+		}
+		apply()
+		if errors.Is(err, agentmodelsettings.ErrNotFound) || errors.Is(err, pebblestore.ErrAgentModelSettingsNotFound) {
+			if _, err = s.ensureRecommendedAgentModels(ctx); err == nil {
+				apply()
 			}
-			settings, err = s.agentModelSettings.UpdateSystemAgent(ctx, name, assignment)
 		}
 		if err != nil {
 			writeAgentModelSettingsError(w, err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -18,7 +19,20 @@ import (
 // hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivationForAccount has one job:
 // after a provider credential has been verified and activated, initialize the
 // account's direct Swarm models and compiled system-agent settings from verified defaults.
+var errOnboardingCatalogChanged = errors.New("catalog changed while resolving onboarding defaults; retry")
+
 func (s *Server) hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivationForAccount(accountScopeID, userID, activatedProvider string) (*auth.AutoDefaultsStatus, error) {
+	result, err := s.hydrateOnboardingProviderDefaultsAttempt(accountScopeID, userID, activatedProvider)
+	if errors.Is(err, errOnboardingCatalogChanged) {
+		result, err = s.hydrateOnboardingProviderDefaultsAttempt(accountScopeID, userID, activatedProvider)
+	}
+	if err != nil {
+		slog.Warn("provider auto-defaults failed", "account", accountScopeID, "provider", activatedProvider, "error", err)
+	}
+	return result, err
+}
+
+func (s *Server) hydrateOnboardingProviderDefaultsAttempt(accountScopeID, userID, activatedProvider string) (*auth.AutoDefaultsStatus, error) {
 	if s == nil || s.model == nil || s.agents == nil || s.providers == nil || s.agentModelSettings == nil || s.agentModelSettingsStore == nil {
 		return nil, errors.New("onboarding provider hydration is not configured")
 	}
@@ -97,7 +111,7 @@ func (s *Server) hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivat
 		return nil, err
 	}
 	if before.SnapshotID != after.SnapshotID || before.SnapshotVersion != after.SnapshotVersion || before.FetchedAt != after.FetchedAt {
-		return nil, errors.New("catalog changed while resolving onboarding defaults; retry")
+		return nil, errOnboardingCatalogChanged
 	}
 	// The complete record is installed in one synced store write so a partial
 	// Action/Plan or system-agent assignment set is never externally visible.
@@ -151,7 +165,9 @@ func (s *Server) refreshModelCatalogForOnboardingDefaults() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if _, err := s.model.RefreshCatalog(ctx); err != nil {
-		return fmt.Errorf("refresh model catalog recommendations: %w", err)
+		// Resolution below still requires every recommendation and a stable
+		// snapshot; an unavailable network must not discard a usable catalog.
+		slog.Warn("model catalog refresh failed; trying stored recommendations", "error", err)
 	}
 	return nil
 }

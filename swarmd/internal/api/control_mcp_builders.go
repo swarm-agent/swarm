@@ -215,7 +215,12 @@ func controlMCPConnectChatGPT(c *controlMCPCall, args map[string]any) (any, erro
 	if err != nil {
 		return nil, err
 	}
-	out := controlMCPPick(response, "status", "verification_url", "user_code", "expires_at", "error")
+	out := controlMCPPick(response, "status", "verification_url", "user_code", "expires_at", "error", "message")
+	if credential, ok := response["credential"].(map[string]any); ok {
+		if defaults, ok := credential["auto_defaults"]; ok {
+			out["auto_defaults"] = defaults
+		}
+	}
 	if id, _ := response["session_id"].(string); id != "" {
 		out["login_id"] = id
 	}
