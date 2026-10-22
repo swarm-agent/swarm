@@ -19,11 +19,38 @@ func SanitizeText(raw string) string {
 	if strings.TrimSpace(raw) == "" {
 		return ""
 	}
-	redacted := redactJSONSecretPattern.ReplaceAllString(raw, `$1[redacted]$3`)
-	redacted = redactQuerySecretPattern.ReplaceAllString(redacted, `$1=[redacted]`)
-	redacted = redactBearerPattern.ReplaceAllString(redacted, `$1[redacted]`)
-	redacted = redactJWTPattern.ReplaceAllString(redacted, `[redacted.jwt]`)
-	redacted = redactSKPattern.ReplaceAllString(redacted, `[redacted.api_key]`)
+	ascii := true
+	for i := 0; i < len(raw); i++ {
+		if raw[i] >= 0x80 {
+			ascii = false
+			break
+		}
+	}
+	// Non-ASCII case folding includes long s and the Kelvin sign. Keep the
+	// original regex path for that text rather than approximating Unicode folding.
+	lower := ""
+	if ascii {
+		lower = strings.ToLower(raw)
+	}
+	secret := !ascii || strings.Contains(lower, "token") || strings.Contains(lower, "secret") ||
+		strings.Contains(lower, "passw") || strings.Contains(lower, "api_key") ||
+		strings.Contains(lower, "private_key") || strings.Contains(lower, "authorization")
+	redacted := raw
+	if !ascii || (secret && strings.Contains(raw, ":")) {
+		redacted = redactJSONSecretPattern.ReplaceAllString(redacted, `$1[redacted]$3`)
+	}
+	if !ascii || (secret && strings.Contains(raw, "=")) {
+		redacted = redactQuerySecretPattern.ReplaceAllString(redacted, `$1=[redacted]`)
+	}
+	if !ascii || strings.Contains(lower, "bearer") {
+		redacted = redactBearerPattern.ReplaceAllString(redacted, `$1[redacted]`)
+	}
+	if !ascii || strings.Count(raw, ".") >= 2 {
+		redacted = redactJWTPattern.ReplaceAllString(redacted, `[redacted.jwt]`)
+	}
+	if !ascii || strings.Contains(raw, "sk-") {
+		redacted = redactSKPattern.ReplaceAllString(redacted, `[redacted.api_key]`)
+	}
 	return redacted
 }
 

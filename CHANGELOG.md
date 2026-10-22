@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Skip credential-redaction regexes whose required literals are absent from ASCII text, preserving Unicode redaction behavior. Docs impact: none.
+
 - Search uses FFF v0.11.0 (reviewed import): lower indexing memory (upstream reports about 70% less resident memory while indexing) and faster content search. Docs impact: none.
 
 - Mark code PR deliverables ready after successful task integration or pull-request publication, with titles describing the actual delivery; leave media deliverables unchanged. Docs impact: none.
