@@ -57,6 +57,13 @@ func newLocalManager(ctx context.Context, cfg Config) (*Manager, error) {
 		m.status.Reason = fmt.Sprintf("bubblewrap namespace protection unavailable: %v: %s", err, strings.TrimSpace(string(out)))
 		return m, nil
 	}
+	// Probe advertised flags rather than assuming a version provides overlays.
+	// Older installations still support readonly execution; writable linked Git
+	// fails closed below. Kernel overlay failures also fail closed in bwrap.
+	help := exec.CommandContext(probe, path, "--help")
+	if out, err := help.Output(); err == nil {
+		m.localOverlay = strings.Contains(string(out), "--overlay-src") && strings.Contains(string(out), "--tmp-overlay")
+	}
 	m.status.Active = true
 	dir, err := os.MkdirTemp("", "swarm-isolation-")
 	if err != nil {
@@ -238,6 +245,29 @@ func (m *Manager) localGitMounts(root, source string, readonly bool) ([]string, 
 	args := []string{"--ro-bind", dot, dot, "--ro-bind", common, common}
 	if readonly {
 		return args, nil
+	}
+	if !m.localOverlay {
+		return nil, fmt.Errorf("writable linked Git requires bubblewrap overlay support (--overlay-src and --tmp-overlay); real common metadata remains read-only")
+	}
+	// Git ref deletions lock/rewrite packed-refs even for loose pseudorefs.
+	// Start with the current common directory in a disposable private layer:
+	// deleting a packed peer ref changes only this invocation's private view,
+	// never the real packed-refs or its lock. No writable common-dir bind.
+	args = append(args, "--overlay-src", common, "--tmp-overlay", common)
+	// Keep shared subdirectories read-only, then restore only the existing
+	// narrow real writable binds below. Validate every additional mount.
+	entries, err := os.ReadDir(common)
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
+		p := filepath.Join(common, entry.Name())
+		if err := m.localMetadataDir(common, p); err != nil {
+			return nil, err
+		}
+		if entry.IsDir() {
+			args = append(args, "--ro-bind", p, p)
+		}
 	}
 	args = append(args, "--bind", gitdir, gitdir)
 	args = append(args, m.localDisabledConfig(common)...)

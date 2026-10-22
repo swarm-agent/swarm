@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Give writable linked-worktree Git a disposable common-metadata overlay so ref deletions can lock packed refs without changing the real shared packed refs; fail closed when bubblewrap lacks overlay support. Docs impact: none.
+
 - Record direct media task costs with retry-safe receipts, use standard size-aware image pricing and Gemini token breakdowns, and expose file totals and compact catalog prices in MCP. Bill each paid story scene even when assembly fails, retain account-only usage in dashboard/MCP totals, and distinguish unrecorded receipts from ready-file pricing. Docs impact: none.
 
 - MCP: the `worker` argument and `swarm_schedule_job` now say a deployed worker's id is required (deploy one with swarm_deploy_worker first); Swarm's own coder, designer and finder are reached with swarm_run_task. Docs impact: none.
