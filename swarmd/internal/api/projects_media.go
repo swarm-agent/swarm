@@ -2072,9 +2072,17 @@ func (s *Server) recordTaskMedia(p identity.Principal, task *pebblestore.Project
 		opts.Provider = "codex"
 	}
 	estimate := s.sessions.EstimateMediaCostWithOptions(opts)
-	sessionID := task.OriginSessionID
-	if sessionID == "" {
-		sessionID = p.SessionID
+	// Principal.SessionID identifies authentication, not a V3 conversation.
+	// Missing or differently owned origins must still charge the task's account.
+	sessionID := ""
+	if task.OriginSessionID != "" {
+		origin, found, err := s.sessions.GetSession(task.OriginSessionID)
+		if err != nil {
+			return estimate, fmt.Errorf("resolve media task origin: %w", err)
+		}
+		if found && origin.AccountScopeID == p.AccountScopeID && origin.UserID == p.UserID {
+			sessionID = task.OriginSessionID
+		}
 	}
 	rec := pebblestore.SessionMediaUsageRecord{ID: fmt.Sprintf("task-media:%s:%s:%d", task.ProjectID, task.ID, slot), ProjectID: task.ProjectID, TaskID: task.ID, SessionID: sessionID, AccountScopeID: p.AccountScopeID, UserID: p.UserID, Provider: opts.Provider, Model: opts.Model, Kind: opts.Kind, MediaType: mediaType, Size: int64(size), CostUSD: estimate.CostUSD, PriceStatus: estimate.PriceStatus, PricingSummary: estimate.PricingSummary, SnapshotID: estimate.SnapshotID, SnapshotVersion: estimate.SnapshotVersion, CreatedAt: time.Now().UnixMilli()}
 	if err := s.sessions.RecordMediaUsage(rec); err != nil {

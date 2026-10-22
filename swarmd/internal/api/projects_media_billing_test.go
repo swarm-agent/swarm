@@ -88,7 +88,8 @@ func (c *billingGeminiClient) GenerateImage(context.Context, imagegen.GeminiImag
 }
 
 // Purpose: executeDirectMediaTask must carry Gemini usage into a single durable
-// receipt and retain paid output on billing failure. A deterministic provider
+// account receipt even with a login session or missing origin, without retry
+// double billing or regeneration. A deterministic provider
 // adapter plus real services/store proves orchestration, not live generation.
 func TestMediaCostDirectImageTask(t *testing.T) {
 	for _, mode := range []string{"origin", "principal", "missing-session"} {
@@ -125,7 +126,7 @@ func TestMediaCostDirectImageTask(t *testing.T) {
 			server := &Server{sessions: session.NewService(store, nil), imageGen: gen}
 			task := &pebblestore.ProjectTaskRecord{ID: "task", ProjectID: "project", AccountID: p.AccountScopeID, Title: "image", Agent: "image", Model: rec.Model, Resolution: "1K", AspectRatio: "1:1", VariantCount: 1, Deliverables: []pebblestore.ProjectTaskDeliverable{{ID: "file", Status: "pending"}}}
 			if mode == "principal" {
-				p.SessionID = "session"
+				p.SessionID = "sid_0123456789abcdef"
 			} else {
 				task.OriginSessionID = "session"
 			}
@@ -154,12 +155,19 @@ func TestMediaCostDirectImageTask(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if mode == "missing-session" {
-				if len(receipts) != 0 || !strings.Contains(saved.Deliverables[0].PricingSummary, "Billing not recorded") {
-					t.Fatalf("failure invisible: %+v", saved.Deliverables[0])
-				}
-			} else if len(receipts) != 1 || receipts[0].SessionID != "session" {
+			wantSession := ""
+			if mode == "origin" {
+				wantSession = "session"
+			}
+			if len(receipts) != 1 || receipts[0].SessionID != wantSession || math.Abs(receipts[0].CostUSD-.0336) > 1e-10 {
 				t.Fatalf("receipts %+v", receipts)
+			}
+			if strings.Contains(saved.Deliverables[0].PricingSummary, "Billing not recorded") {
+				t.Fatal("receipt incorrectly reported missing")
+			}
+			acc, found, err := store.GetDailyUsageAccumulator(p.AccountScopeID, time.Now().UTC().Format("2006-01-02"))
+			if err != nil || !found || acc.ImageCount != 1 || math.Abs(acc.MediaCostUSD-.0336) > 1e-10 {
+				t.Fatalf("account usage %+v found %v err %v", acc, found, err)
 			}
 		})
 	}
