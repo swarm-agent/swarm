@@ -1159,9 +1159,10 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 					var estimate pebblestore.MediaCostEstimate
 					if err == nil {
 						selection, resolveErr := s.imageGen.ResolveModelSelection(usedModel)
-						err = resolveErr
-						if err == nil {
-							estimate, err = s.recordTaskMedia(p, task, i, pebblestore.MediaCostEstimateOptions{Provider: selection.Provider, Model: selection.Model, Kind: "image", Count: 1, ImageSize: resolvedRes, AspectRatio: resolvedAR, OutputTokens: generated.OutputTokens, TextOutputTokens: generated.TextOutputTokens, ThinkingTokens: generated.ThinkingTokens, PromptTokens: generated.PromptTokens, InputImageTokens: generated.InputImageTokens}, generated.MediaType, len(generated.Bytes))
+						if resolveErr != nil {
+							estimate = pebblestore.MediaCostEstimate{PriceStatus: "unknown", PricingSummary: "Billing not recorded: model selection unavailable"}
+						} else {
+							estimate = s.recordGeneratedTaskMedia(p, task, i, pebblestore.MediaCostEstimateOptions{Provider: selection.Provider, Model: selection.Model, Kind: "image", Count: 1, ImageSize: resolvedRes, AspectRatio: resolvedAR, OutputTokens: generated.OutputTokens, TextOutputTokens: generated.TextOutputTokens, ThinkingTokens: generated.ThinkingTokens, PromptTokens: generated.PromptTokens, InputImageTokens: generated.InputImageTokens}, generated.MediaType, len(generated.Bytes))
 						}
 					}
 					slotIndex := i
@@ -1590,7 +1591,7 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 					}
 					var estimate pebblestore.MediaCostEstimate
 					if genErr == nil {
-						estimate, genErr = s.recordTaskMedia(p, task, slotIndex, pebblestore.MediaCostEstimateOptions{Provider: vRes.Provider, Model: vRes.Model, Kind: "video", Count: 1, DurationSeconds: vRes.DurationSeconds, Resolution: vRes.Resolution, AspectRatio: vRes.AspectRatio, IncludesAudio: true}, vRes.MediaType, len(vRes.Bytes))
+						estimate = s.recordGeneratedTaskMedia(p, task, slotIndex, pebblestore.MediaCostEstimateOptions{Provider: vRes.Provider, Model: vRes.Model, Kind: "video", Count: 1, DurationSeconds: vRes.DurationSeconds, Resolution: vRes.Resolution, AspectRatio: vRes.AspectRatio, IncludesAudio: true}, vRes.MediaType, len(vRes.Bytes))
 					}
 					if genErr != nil {
 						errMu.Lock()
@@ -1839,7 +1840,7 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 				if mime == "" {
 					mime = "audio/mp3"
 				}
-				estimate, genErr = s.recordTaskMedia(p, task, 0, pebblestore.MediaCostEstimateOptions{Provider: res.Provider, Model: soundModel, Kind: "audio", Count: 1, DurationSeconds: durSeconds}, mime, len(res.Bytes))
+				estimate = s.recordGeneratedTaskMedia(p, task, 0, pebblestore.MediaCostEstimateOptions{Provider: res.Provider, Model: soundModel, Kind: "audio", Count: 1, DurationSeconds: durSeconds}, mime, len(res.Bytes))
 				mediaURL = fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(res.Bytes))
 			} else {
 				genErr = errors.New("empty audio generation response")
@@ -2080,4 +2081,15 @@ func (s *Server) recordTaskMedia(p identity.Principal, task *pebblestore.Project
 		return estimate, fmt.Errorf("record media usage: %w", err)
 	}
 	return estimate, nil
+}
+
+// Generation has already incurred cost. A receipt failure must remain visible
+// without discarding the output or making a retry regenerate paid media.
+func (s *Server) recordGeneratedTaskMedia(p identity.Principal, task *pebblestore.ProjectTaskRecord, slot int, opts pebblestore.MediaCostEstimateOptions, mediaType string, size int) pebblestore.MediaCostEstimate {
+	estimate, err := s.recordTaskMedia(p, task, slot, opts, mediaType, size)
+	if err != nil {
+		estimate.PricingSummary = "Billing not recorded; estimated cost only. " + estimate.PricingSummary
+		log.Print("media task usage recording failed; generated output retained")
+	}
+	return estimate
 }

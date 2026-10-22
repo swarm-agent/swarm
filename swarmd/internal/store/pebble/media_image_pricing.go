@@ -30,12 +30,10 @@ func estimateImageBilling(rec ModelCatalogRecord, opts MediaCostEstimateOptions,
 				matches = v == "" || strings.EqualFold(v, "standard")
 			case "tier":
 				matches = v == "" || strings.EqualFold(v, "paid")
-			case "resolution", "image_size":
-				matches = strings.EqualFold(v, size)
-			case "aspect_ratio":
-				matches = strings.EqualFold(v, opts.AspectRatio)
 			default:
-				matches = false
+				// Token counts, pixel dimensions and provider provenance describe
+				// catalog lines; only variant selects the requested image size.
+				continue
 			}
 			if !matches {
 				break

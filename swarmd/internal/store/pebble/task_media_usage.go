@@ -19,7 +19,14 @@ func (s *SessionStore) putTaskMediaUsage(rec SessionMediaUsageRecord) error {
 		return errors.New("invalid media cost")
 	}
 	unlock := s.store.sessionMutations.lockSessions("account:" + rec.AccountScopeID)
-	defer unlock()
+	committed := false
+	defer func() {
+		unlock()
+		if committed {
+			s.store.signalScheduling(SchedulingSignal{Kind: SchedulingSignalBudget, AccountScopeID: rec.AccountScopeID})
+			s.publishWorkerBudgetHolds(rec.AccountScopeID)
+		}
+	}()
 	task, found, err := s.GetProjectTask(rec.AccountScopeID, rec.ProjectID, rec.TaskID)
 	if err != nil {
 		return err
@@ -81,11 +88,21 @@ func (s *SessionStore) putTaskMediaUsage(rec SessionMediaUsageRecord) error {
 	}
 	local := *s
 	local.accountLockInput = V3SessionMutationInput{accountLockHeld: true, AccountScopeID: rec.AccountScopeID}
+	if err = local.setMediaUsageDays(batch, rec); err != nil {
+		return err
+	}
+	if err = local.setAccountWorkerBudgetHolds(batch, acc); err != nil {
+		return err
+	}
 	if err = local.setDailyUsageAccumulatorPayload(batch, acc, payload); err != nil {
 		return err
 	}
 	if err = local.updateAccountUsageRollupInBatch(batch, rec.AccountScopeID, date, "", rec.Provider, rec.Model, 0, 0, rec.CostUSD, 0, 0, 0, 0, 0, 0, 1, image, video, audio, int(unknownBudgetReceipt(rec.PriceStatus)), rec.CreatedAt, rec.CreatedAt); err != nil {
 		return err
 	}
-	return batch.Commit(pebble.Sync)
+	if err = batch.Commit(pebble.Sync); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }

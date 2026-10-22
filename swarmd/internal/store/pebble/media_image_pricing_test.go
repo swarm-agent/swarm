@@ -25,7 +25,8 @@ func TestMediaCostCatalogImages(t *testing.T) {
 			lines := []any{
 				map[string]any{"kind": "equivalent_cost", "billable": "image_output", "unit": "image", "price_usd": .001, "variant": tc.variant, "conditions": map[string]any{"service_tier": "batch"}},
 				map[string]any{"kind": "equivalent_cost", "billable": "image_output", "unit": "image", "price_usd": .045, "variant": "0.5K"},
-				map[string]any{"kind": "equivalent_cost", "billable": "image_output", "unit": "image", "price_usd": tc.price, "variant": tc.variant},
+				map[string]any{"kind": "equivalent_cost", "billable": "image_output", "unit": "image", "price_usd": tc.price, "variant": tc.variant, "conditions": map[string]any{"output_tokens": 1120, "service_tier": "standard", "tier": "paid", "resolution": "1024x1024"}},
+				map[string]any{"kind": "equivalent_cost", "billable": "image_output", "unit": "image", "price_usd": tc.price / 2, "variant": "batch_or_flex_" + tc.variant, "conditions": map[string]any{"output_tokens": 1120, "tier": "paid"}},
 				map[string]any{"kind": "billing_rate", "billable": "image_output", "unit": "million_tokens", "price_usd": 15, "variant": "batch", "conditions": map[string]any{"tier": "paid", "service_tier": "batch"}},
 				map[string]any{"kind": "billing_rate", "billable": "image_output", "unit": "million_tokens", "price_usd": 30, "variant": "standard", "conditions": map[string]any{"tier": "paid", "service_tier": "standard"}},
 			}
@@ -57,7 +58,7 @@ func TestMediaCostCatalogImages(t *testing.T) {
 func TestMediaCostTokenBreakdown(t *testing.T) {
 	lines := []any{}
 	for key, rate := range map[string]float64{"image_output": 30, "text_output": 2, "text_input": 1, "image_input": 3} {
-		lines = append(lines, map[string]any{"kind": "billing_rate", "billable": key, "unit": "million_tokens", "price_usd": rate, "conditions": map[string]any{"service_tier": "standard"}})
+		lines = append(lines, map[string]any{"kind": "billing_rate", "billable": key, "unit": "million_tokens", "price_usd": rate, "conditions": map[string]any{"service_tier": "standard", "provider_name": "Google", "provider_model_id": "image", "input_tokens": 100}})
 	}
 	raw, _ := json.Marshal(map[string]any{"billing": map[string]any{"status": "verified", "lines": lines}})
 	got := EstimateMediaCostFromRecord(ModelCatalogRecord{Pricing: raw}, MediaCostEstimateOptions{Kind: "image", OutputTokens: 1120, TextOutputTokens: 10, ThinkingTokens: 20, PromptTokens: 100, InputImageTokens: 200})
