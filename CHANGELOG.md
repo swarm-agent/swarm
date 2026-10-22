@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Instructions for AIs (MCP server instructions, the Claude plugin's using-swarm skill, the relay's instructions) now send code, design and research to Swarm's own agents with swarm_run_task and a role; swarm_give_job is described as the person's own workers only. Docs impact: the using-swarm skill text.
+
 - Removed publish options now warn in `swarm_status`, the matching `swarm_list_workspaces` entry, and a warning signal per affected rule at startup. Logs and warnings point to workflows (including `deliver to: publish` for automatic publication); ignored options still do not enable delivery. Docs impact: migration guidance is included in these warnings.
 
 - Fix the post-unlock sync durability test setup so its simulated crash keeps the synced database directory. Docs impact: none.
