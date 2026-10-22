@@ -16,6 +16,13 @@ import (
 // Open's OS directory permission checks. The store and mutation pipeline are real.
 func openStrictMutationStore(t testing.TB, fs vfs.FS) *Store {
 	t.Helper()
+	if err := fs.MkdirAll("mutation-db", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if root, err := fs.OpenDir(""); err == nil {
+		_ = root.Sync()
+		_ = root.Close()
+	}
 	opts := storeOptions(false)
 	opts.FS = fs
 	db, err := pebble.Open("mutation-db", opts)
