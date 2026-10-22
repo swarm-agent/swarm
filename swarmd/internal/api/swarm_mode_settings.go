@@ -49,12 +49,11 @@ func (s *Server) handleAgentModelSettings(w http.ResponseWriter, r *http.Request
 	case http.MethodGet:
 		settings, err := s.agentModelSettings.Get(ctx)
 		if errors.Is(err, agentmodelsettings.ErrNotFound) || errors.Is(err, pebblestore.ErrAgentModelSettingsNotFound) {
-			settings, err = s.ensureRecommendedAgentModels(ctx)
-			if errors.Is(err, errNoReadyModelProvider) {
-				// Unconnected accounts remain a normal onboarding state.
-				principal, _ := identity.PrincipalFromContext(ctx)
-				settings, err = agentmodelsettings.Settings{AccountScopeID: pebblestore.NormalizeAgentModelAccountScopeID(principal.AccountScopeID)}, nil
-			}
+			// No model was ever set up for this account: that is a normal
+			// onboarding state, not an error. Report every role as unset
+			// (updated_at 0 is the revision restore-defaults expects).
+			principal, _ := identity.PrincipalFromContext(ctx)
+			settings, err = agentmodelsettings.Settings{AccountScopeID: pebblestore.NormalizeAgentModelAccountScopeID(principal.AccountScopeID)}, nil
 		}
 		if err != nil {
 			writeAgentModelSettingsError(w, err)

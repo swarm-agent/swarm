@@ -1,12 +1,15 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
+	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/provider/registry"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -18,8 +21,9 @@ func (defaultsOfflineTransport) RoundTrip(*http.Request) (*http.Response, error)
 	return nil, errors.New("catalog offline")
 }
 
-// Requirement: GET/PATCH repair missing account assignments using complete catalog
-// recommendations even when refresh fails. Threat: a connected account remains
+// Requirement: PATCH repairs missing account assignments using complete catalog
+// recommendations even when refresh fails; GET stays read-only with unset roles.
+// Threat: a read mutates settings, or a connected account remains
 // unusable, or repair overwrites another account or partially installs defaults.
 // Owners: handleAgentModelSettings, ensureRecommendedAgentModels, and onboarding
 // hydration. Real temporary stores and the existing provider fake are the narrowest
@@ -49,7 +53,23 @@ func TestAgentModelMissingRecordRecovery(t *testing.T) {
 				rec := httptest.NewRecorder()
 				s.handleAgentModelSettings(rec, req)
 				got, err := s.agentModelSettings.Get(req.Context())
-				if ready {
+				if method == http.MethodGet {
+					if rec.Code != http.StatusOK || !errors.Is(err, agentmodelsettings.ErrNotFound) {
+						t.Fatalf("GET persisted settings or failed: %d %s, %v", rec.Code, rec.Body.String(), err)
+					}
+					want := httptest.NewRecorder()
+					writeAgentModelSettingsResponse(want, agentmodelsettings.Settings{AccountScopeID: principal.AccountScopeID})
+					var actual, expected any
+					if err := json.Unmarshal(rec.Body.Bytes(), &actual); err != nil {
+						t.Fatal(err)
+					}
+					if err := json.Unmarshal(want.Body.Bytes(), &expected); err != nil {
+						t.Fatal(err)
+					}
+					if !reflect.DeepEqual(actual, expected) {
+						t.Fatalf("GET must return unset roles and revision zero: %s", rec.Body.String())
+					}
+				} else if ready {
 					if rec.Code != http.StatusOK || err != nil {
 						t.Fatalf("repair: %d %s, %v", rec.Code, rec.Body.String(), err)
 					}
@@ -59,20 +79,9 @@ func TestAgentModelMissingRecordRecovery(t *testing.T) {
 					if method == http.MethodPatch && got.SystemAgents.Coder.Model != "requested-model" {
 						t.Fatalf("patch lost: %+v", got)
 					}
-					if method == http.MethodGet {
-						again := httptest.NewRecorder()
-						s.handleAgentModelSettings(again, req.Clone(req.Context()))
-						repeated, repeatErr := s.agentModelSettings.Get(req.Context())
-						if again.Code != http.StatusOK || repeatErr != nil || repeated != got {
-							t.Fatalf("GET was not idempotent: %s, %v", again.Body.String(), repeatErr)
-						}
-					}
 				} else {
 					if err == nil {
 						t.Fatalf("unready provider created record: %+v", got)
-					}
-					if method == http.MethodGet && rec.Code != http.StatusOK {
-						t.Fatal(rec.Body.String())
 					}
 					if method == http.MethodPatch && rec.Code < 400 {
 						t.Fatal("unready PATCH succeeded")

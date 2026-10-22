@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -60,7 +61,7 @@ func runSetupCodexLogin(args []string, output io.Writer) error {
 	for time.Now().Before(deadline) {
 		time.Sleep(3 * time.Second)
 		var current login
-		if err := setupRequest(client, http.MethodGet, "/v1/auth/codex/oauth/status?session_id="+url.QueryEscape(started.SessionID), nil, &current); err != nil {
+		if err := setupCodexStatus(client, started.SessionID, &current); err != nil {
 			return err
 		}
 		switch strings.ToLower(current.Status) {
@@ -75,9 +76,31 @@ func runSetupCodexLogin(args []string, output io.Writer) error {
 			}
 			_, err := fmt.Fprintln(output, "Codex connected.")
 			return err
-		case "error", "failed", "expired", "lost":
+		case "lost":
+			return errors.New("this sign-in is gone (Swarm restarted or it expired); start a new one with swarmctl setup codex-login")
+		case "error", "failed", "expired":
 			return fmt.Errorf("Codex sign-in %s; run codex-login again", strings.ToLower(current.Status))
 		}
 	}
 	return errors.New("Codex sign-in was not approved in time; run codex-login again")
+}
+
+// setupCodexStatus keeps HTTP status handling local to device sign-in: the
+// shared setup request contract deliberately withholds rejection bodies.
+func setupCodexStatus(client *http.Client, sessionID string, out any) error {
+	resp, err := client.Get("http://swarm-local-transport/v1/auth/codex/oauth/status?session_id=" + url.QueryEscape(sessionID))
+	if err != nil {
+		return errors.New("cannot reach private daemon socket; start the container and run setup as its daemon user")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return errors.New("this sign-in is gone (Swarm restarted or it expired); start a new one with swarmctl setup codex-login")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("setup request rejected (HTTP %d); check prerequisites and selected inputs; response withheld to protect credentials", resp.StatusCode)
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out); err != nil {
+		return errors.New("invalid setup response; operation may have been saved, inspect setup status before retrying")
+	}
+	return nil
 }

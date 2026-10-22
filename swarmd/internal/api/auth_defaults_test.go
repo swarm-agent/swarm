@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -14,8 +15,8 @@ import (
 // Requirement: refresh tolerance must never invent defaults without catalog
 // recommendations. Threat: a failed refresh installs an incomplete record.
 // Owners: hydrateOnboardingProviderDefaultsAttempt and ensureRecommendedAgentModels.
-// This service-level negative case complements the offline pinned-catalog handler
-// tests and asserts the durable store remains unchanged on resolution failure.
+// This PATCH handler negative case is the narrowest layer proving repair rejects
+// missing recommendations and leaves the durable store unchanged.
 func TestAgentModelRecoveryWithoutCatalogFailsClosed(t *testing.T) {
 	s, sessions, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	s.agentModelSettingsStore = pebblestore.NewAgentModelSettingsStore(sessions.Store().Underlying())
@@ -23,7 +24,7 @@ func TestAgentModelRecoveryWithoutCatalogFailsClosed(t *testing.T) {
 	s.model = modelruntime.NewService(nil, nil, nil)
 	p := testPrincipal()
 	p.AccountScopeID = "no-catalog-account"
-	req := httptest.NewRequest(http.MethodGet, AgentModelSettingsPath, nil)
+	req := httptest.NewRequest(http.MethodPatch, AgentModelSettingsPath, strings.NewReader(`{"system_agents":{"coder":{"provider":"codex","model":"requested-model","thinking":"high"}}}`))
 	req = req.WithContext(identity.ContextWithPrincipal(req.Context(), p))
 	rec := httptest.NewRecorder()
 	s.handleAgentModelSettings(rec, req)
