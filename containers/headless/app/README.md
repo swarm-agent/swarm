@@ -389,3 +389,27 @@ cannot expire or be cancelled by ordinary API/MCP cancellation. Restart replaces
 it with a fresh admission manager; failure cleanup releases it with the same
 claim. If the installer is killed without executing its trap, operator recovery
 is required; the daemon never kills running work or performs host installation.
+
+### Stdio MCP release payload
+
+The host build includes the existing `plugins/swarm/bin` bridge under
+`share/swarm-mcp`; activation installs `/usr/local/bin/swarm-mcp` using the
+release's bundled Node. It reads the calling user's private AI key or saved
+plugin connection, without a per-session `SWARM_AI_KEY` variable. Register once:
+
+```sh
+codex mcp add swarm -- swarm-mcp
+claude mcp add --scope user --transport stdio swarm -- swarm-mcp
+```
+
+Release archive assembly must also run
+`bash containers/headless/app/package-mcp.sh "$HEADLESS_DIR"` before archiving.
+**Pending integration:** `scripts/build-main-dist.sh` is outside this change's
+scope and does not yet call this helper. Do not ship this installer until that
+call is wired in; activation refuses releases missing the bridge payload.
+
+For an SSH client, install the plugin bridge with its adjacent `.mjs` and `lib`
+files and Node 22+, expose its launcher as `swarm-mcp` on the client's PATH, and
+copy the key privately to `~/.config/swarm/ai-key` (owner-only mode `0600`). Keep
+`ssh -N -L 7783:127.0.0.1:7783 USER@BOX` open. The same registration then uses the
+forwarded loopback endpoint; the key is never part of the registration command.

@@ -53,3 +53,5 @@ COPY --from=app /usr/local/bin/node /bin/node
 COPY --from=app /src/packages/sdk /app/packages/sdk
 COPY --from=app /src/examples/headless-app /app/examples/headless-app
 COPY LICENSE THIRD_PARTY_NOTICES.md containers/headless/FFF-LICENSE /doc/
+COPY plugins/swarm/bin/swarm-mcp plugins/swarm/bin/swarm-mcp.mjs /share/swarm-mcp/
+COPY plugins/swarm/bin/lib/connection.mjs /share/swarm-mcp/lib/connection.mjs
