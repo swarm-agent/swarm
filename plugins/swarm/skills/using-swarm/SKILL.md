@@ -277,8 +277,10 @@ renewing.
 `swarm_list_secrets` shows which secrets exist, the websites each may be sent
 to, whether a value is set, and which folders may use it. Inside the sandbox a
 worker sees a stand-in, and Swarm puts the real value in only on the way to an
-allowed website. The person creates secrets, sets values and grants them to
-folders on the setup page or by script. Never ask for a secret or key in chat;
+allowed website. Have the person run `sudo swarmctl secret set --name NAME --hosts HOST`
+and type the value at its hidden prompt; the AI never enters it. Ask the person
+how long, then have them run `sudo swarmctl secret grant --name NAME --workspace FOLDER --days N`
+(or `--hours N`). Never ask for a secret or key in chat;
 if one is pasted, tell the person to revoke it.
 
 ## Rules

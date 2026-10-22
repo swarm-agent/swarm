@@ -128,8 +128,10 @@ secrets, what completed, measured usage, and what was actually verified.
 If workers need an API token for a website (for example to post or deploy),
 the person sets it on the machine; you never see it:
 
-- `install.sh secret set NAME --hosts api.example.com` (value on stdin),
-- `install.sh secret grant NAME FOLDER --days N`.
+- `sudo swarmctl secret set --name NAME --hosts HOST` (the person types the value at a hidden prompt, never the AI),
+- `sudo swarmctl secret grant --name NAME --workspace FOLDER --days N` (or `--hours N`), after asking the person how long.
+
+Never ask for a secret or key in chat.
 
 `swarm_list_secrets` then shows it granted to that folder; a job in that folder
 uses it through Swarm's gateway, never seeing the value.

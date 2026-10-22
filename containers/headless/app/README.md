@@ -75,10 +75,15 @@ For Claude Code: `claude mcp add --scope user --transport http swarm http://127.
 **Keys by script.** `install.sh key PROVIDER` sets the first provider API key
 from stdin (or a hidden prompt) through `swarmctl setup credential
 --api-key-stdin`; it never appears on a command line or the screen.
-`install.sh secret set NAME --hosts api.example.com` creates a secret for those
-websites and reads its value the same way (without `--hosts` it only sets the
-value); `install.sh secret grant NAME FOLDER --days N` (or `--hours N`) lets
-that workspace's agents use it.
+`sudo swarmctl secret set --name NAME --hosts HOST` creates or updates a secret
+and asks the person for its value at a hidden prompt (piped stdin also works).
+New secrets need `--hosts`; existing secrets accept omitted or matching hosts,
+never a changed allowlist. After asking the person how long,
+`sudo swarmctl secret grant --name NAME --workspace FOLDER --days N` (or `--hours N`)
+lets that workspace's agents use it. The person enters the value, never the AI;
+never ask for a secret or key in chat. `install.sh secret set NAME --hosts HOST`
+and `install.sh secret grant NAME FOLDER --days N` still work; set passes through
+to swarmctl with stdin connected.
 
 **Claude Code as the provider.** Swarm can run its agents through the Claude
 Code CLI with your Claude plan. It runs `claude` as its own `swarm` user, which
@@ -206,10 +211,12 @@ running sandbox's runtime, user, capabilities, limits and mounts.
 **Secrets agents can use but never see** (on by default; `--secrets-gateway
 off` or `install.sh secrets-gateway off` turns it off). The gateway runs on the
 sandbox bridge and only its port is open to sandboxes. The owner then creates a
-secret with the exact websites it may go to, sets its value from stdin and
-grants it to a project for a limited time (`install.sh secret set|grant`, or
-`swarmctl secret create|set-value|grant` run as the `swarm` user over its local
-socket). A granted project's sandbox sees only a stand-in
+secret with the exact websites it may go to using
+`sudo swarmctl secret set --name NAME --hosts HOST`, typing its value at the
+hidden prompt. After asking the person how long, use
+`sudo swarmctl secret grant --name NAME --workspace FOLDER --days N` (or `--hours N`)
+to grant it for a limited time. The value is entered by the person, never the AI;
+`install.sh secret set|grant` still works over the same local socket. A granted project's sandbox sees only a stand-in
 (`NAME=swarm-secret://NAME`); the gateway swaps in the real value on requests
 to the allowed websites, scrubs it from responses and logs each use (`swarmctl secret uses`).
 

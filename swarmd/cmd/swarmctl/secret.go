@@ -21,7 +21,7 @@ func cmdSecret(args []string) error {
 
 func runSecret(args []string, input io.Reader, output io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: swarmctl secret <list|create|set-value|grant|revoke|grants|uses|delete> --help")
+		return errors.New("usage: swarmctl secret <list|create|set|set-value|grant|revoke|grants|uses|delete> --help")
 	}
 	sub, rest := args[0], args[1:]
 	fs := flag.NewFlagSet("secret "+sub, flag.ContinueOnError)
@@ -61,6 +61,14 @@ func runSecret(args []string, input io.Reader, output io.Writer) error {
 		return secretJSON(client, http.MethodPost, "/v1/secrets", map[string]any{
 			"name": *name, "description": *desc, "hosts": hostList,
 		}, output)
+	case "set":
+		hostsGiven := false
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "hosts" {
+				hostsGiven = true
+			}
+		})
+		return setSecret(client, *name, *desc, splitHosts(*hosts), hostsGiven, input, output)
 	case "set-value":
 		if err := requireName(*name); err != nil {
 			return err
