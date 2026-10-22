@@ -25,9 +25,9 @@ import (
 )
 
 const (
-	ProviderCodexOpenAI             = "codex_openai"
-	ProviderGoogleGemini            = "google_gemini"
-	TargetWorkspaceImage            = "workspace_image_session"
+	ProviderCodexOpenAI  = "codex_openai"
+	ProviderGoogleGemini = "google_gemini"
+	TargetWorkspaceImage = "workspace_image_session"
 	// ChatGPT (Codex sign-in) accounts refuse gpt-5.5 now ("not supported when
 	// using Codex with a ChatGPT account").
 	defaultCodexImageModel          = "gpt-6-astra"
