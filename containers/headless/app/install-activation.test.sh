@@ -43,4 +43,25 @@ for failure in claim docker units restart success; do
   fi
  fi
 done
+# Purpose: activate must accept older releases without the optional bridge and
+# print_connect must not advertise a stale launcher. This function-level fixture
+# exercises the real activation boundary without changing host services.
+mv "$OPT/releases/new/share/swarm-mcp" "$work/bridge"
+for launcher in absent stale; do
+ SWARM_MCP=$work/$launcher-mcp
+ if [[ $launcher == stale ]]; then
+  printf '#!/bin/sh\nexit 1\n' >"$SWARM_MCP"
+  chmod +x "$SWARM_MCP"
+ fi
+ failure=success
+ activate new >"$work/output" 2>"$work/warning"
+ [[ $(running_commit) == new ]] || exit 1
+ [[ $(wc -l <"$work/warning") == 1 ]] || exit 1
+ grep -q 'Warning: release has no stdio MCP bridge' "$work/warning"
+ [[ $launcher != absent || ! -e $SWARM_MCP ]] || exit 1
+ print_connect tester >"$work/connect"
+ grep -q 'codex mcp add swarm --url' "$work/connect"
+ grep -q 'claude mcp add --scope user --transport http' "$work/connect"
+ ! grep -q 'mcp add swarm -- swarm-mcp' "$work/connect"
+done
 echo 'activation tests passed'

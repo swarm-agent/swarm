@@ -19,9 +19,13 @@ mkdir "$work/home" "$work/gone"
   HOME=$work/home git -C / config --global user.name 'Fixture agent'
   [[ $(HOME=$work/home git -C / config --global user.name) == 'Fixture agent' ]]
 )
-SWARM_MCP=$work/swarm-mcp
-if install_mcp_launcher "$work/missing" 2>/dev/null; then exit 1; fi
-[[ ! -e $SWARM_MCP ]]
+# Purpose: print_connect advertises persistent registration only when the real
+# packaged bridge and launcher exist; activation tests cover absent payloads.
+SWARM_MCP=$work/swarm-mcp OPT=$work/opt
+mkdir -p "$OPT/current/bin"
+ln -s "$(command -v node)" "$OPT/current/bin/node"
+bash "$here/package-mcp.sh" "$OPT/current"
+install_mcp_launcher "$OPT/current"
 print_connect fixture >"$work/message"
 grep -q 'codex mcp add swarm -- swarm-mcp' "$work/message"
 ! grep -q 'bearer-token-env-var' "$work/message"

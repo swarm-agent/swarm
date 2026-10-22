@@ -230,6 +230,7 @@ rm -f "${OUTPUT_DIR}/${node_archive}"
     cp -R "${target}" "${link}"
   done
 )
+bash "${ROOT_DIR}/containers/headless/app/package-mcp.sh" "${HEADLESS_DIR}"
 if links="$(find "${HEADLESS_DIR}" -type l -print -quit)" && [[ -n "${links}" ]]; then
   echo "the headless package must not contain symbolic links (the release archive check refuses them): ${links}" >&2
   exit 1

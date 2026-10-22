@@ -7,6 +7,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 ## Unreleased
 
 - Repair missing recommended agent models for connected providers on model updates, tolerate catalog refresh failures when complete recommendations are available, and surface setup failures instead of silently leaving roles unset. Lost ChatGPT sign-ins now explain how to start again. Docs impact: none.
+- Fix the headless installer to run from any folder and package a key-free `swarm-mcp` command so Codex and Claude Code can register Swarm once for every later session; older releases retain URL-based connection instructions. Docs impact: containers/headless/app/README.md.
 
 - Instructions for AIs (MCP server instructions, the Claude plugin's using-swarm skill, the relay's instructions) now send code, design and research to Swarm's own agents with swarm_run_task and a role; swarm_give_job is described as the person's own workers only. Docs impact: the using-swarm skill text.
 

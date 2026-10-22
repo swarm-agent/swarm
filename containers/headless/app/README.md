@@ -402,11 +402,11 @@ codex mcp add swarm -- swarm-mcp
 claude mcp add --scope user --transport stdio swarm -- swarm-mcp
 ```
 
-Release archive assembly must also run
+Release archive assembly in `scripts/build-main-dist.sh` runs
 `bash containers/headless/app/package-mcp.sh "$HEADLESS_DIR"` before archiving.
-**Pending integration:** `scripts/build-main-dist.sh` is outside this change's
-scope and does not yet call this helper. Do not ship this installer until that
-call is wired in; activation refuses releases missing the bridge payload.
+Older releases without the bridge still install: activation skips the launcher
+with one warning and prints the URL-based Codex and Claude connection commands.
+That Codex fallback still requires `SWARM_AI_KEY` on each start.
 
 For an SSH client, install the plugin bridge with its adjacent `.mjs` and `lib`
 files and Node 22+, expose its launcher as `swarm-mcp` on the client's PATH, and

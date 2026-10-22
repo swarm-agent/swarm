@@ -771,6 +771,7 @@ activate() {
 # The machine commands (workspace, idle-off) need root itself, so root runs them directly.
 if [ "\$(id -un)" = $SERVICE_USER ]; then exec $OPT/current/bin/swarmctl "\$@"; fi
 if [ "\$(id -u)" = 0 ]; then case "\${1:-}" in workspace|idle-off) exec env LD_LIBRARY_PATH=$OPT/current/lib $OPT/current/bin/swarmctl "\$@" ;; esac; fi
+cd / || exit 1
 exec runuser -u $SERVICE_USER -- env HOME=$SERVICE_HOME LD_LIBRARY_PATH=$OPT/current/lib $OPT/current/bin/swarmctl "\$@"
 WRAPPER
 
@@ -2007,24 +2008,46 @@ set_permissions() {
   fi
 }
 
-# Install the shared plugin bridge without changing the calling user's identity.
-install_mcp_launcher() {
+mcp_payload_available() {
   local release=$1
   [[ -x $release/bin/node && -f $release/share/swarm-mcp/swarm-mcp &&
      -f $release/share/swarm-mcp/swarm-mcp.mjs &&
-     -f $release/share/swarm-mcp/lib/connection.mjs ]] || {
-    echo "Swarm release is missing its stdio MCP bridge; install a release that packages it." >&2
-    return 1
+     -f $release/share/swarm-mcp/lib/connection.mjs ]]
+}
+
+# Install the shared plugin bridge without changing the calling user's identity.
+# Older releases remain installable through the URL-based connection fallback.
+install_mcp_launcher() {
+  local release=$1
+  mcp_payload_available "$release" || {
+    echo "Warning: release has no stdio MCP bridge; skipping swarm-mcp (use the URL connection commands)." >&2
+    return 0
   }
   # Use the bundled Node, not root's or the calling person's PATH. Do not
   # change HOME or user: the bridge reads the calling person's private key.
-  install -m 0755 /dev/stdin "$SWARM_MCP" <<WRAPPER
+  if ! install -m 0755 /dev/stdin "$SWARM_MCP" 2>/dev/null <<WRAPPER
 #!/bin/sh
 exec "$OPT/current/bin/node" "$OPT/current/share/swarm-mcp/swarm-mcp.mjs" "\$@"
 WRAPPER
+  then
+    echo "Warning: could not install swarm-mcp; use the URL connection commands." >&2
+  fi
+  return 0
 }
 
 print_connect() {
+  if ! mcp_payload_available "$OPT/current" || [[ ! -x $SWARM_MCP ]]; then
+    cat <<CONNECT
+  As $1, connect your AI (the key stays in ~/.config/swarm/ai-key):
+    Claude Code, with Swarm's skills (the plugin finds the key by itself):
+      claude plugin marketplace add swarm-agent/swarm && claude plugin install swarm@swarm
+    Claude Code, tools only:
+      claude mcp add --scope user --transport http swarm $LOCAL_MCP_URL --header "Authorization: Bearer \$(cat ~/.config/swarm/ai-key)"
+    Codex (start it with SWARM_AI_KEY="\$(cat ~/.config/swarm/ai-key)" codex):
+      codex mcp add swarm --url $LOCAL_MCP_URL --bearer-token-env-var SWARM_AI_KEY
+CONNECT
+    return 0
+  fi
   cat <<CONNECT
   As $1, register Swarm with your AI CLI now so later sessions have it:
     codex mcp add swarm -- swarm-mcp
