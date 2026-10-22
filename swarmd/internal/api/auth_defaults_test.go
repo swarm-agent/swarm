@@ -16,7 +16,7 @@ import (
 // recommendations. Threat: a failed refresh installs an incomplete record.
 // Owners: hydrateOnboardingProviderDefaultsAttempt and ensureRecommendedAgentModels.
 // This PATCH handler negative case is the narrowest layer proving repair rejects
-// missing recommendations and leaves the durable store unchanged.
+// missing recommendations with 409 (not a server fault) and leaves the durable store unchanged.
 func TestAgentModelRecoveryWithoutCatalogFailsClosed(t *testing.T) {
 	s, sessions, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	s.agentModelSettingsStore = pebblestore.NewAgentModelSettingsStore(sessions.Store().Underlying())
@@ -28,8 +28,8 @@ func TestAgentModelRecoveryWithoutCatalogFailsClosed(t *testing.T) {
 	req = req.WithContext(identity.ContextWithPrincipal(req.Context(), p))
 	rec := httptest.NewRecorder()
 	s.handleAgentModelSettings(rec, req)
-	if rec.Code < 400 {
-		t.Fatalf("missing recommendations succeeded: %s", rec.Body.String())
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("missing recommendations: want 409, got %d: %s", rec.Code, rec.Body.String())
 	}
 	if _, err := s.agentModelSettings.Get(req.Context()); err == nil {
 		t.Fatal("installed defaults without recommendations")

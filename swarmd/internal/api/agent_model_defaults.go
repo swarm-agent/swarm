@@ -20,33 +20,41 @@ import (
 // way to pick models. Set them up from the first ready provider whose catalog
 // has recommendations, the same way a verified first credential does; with
 // none, say a provider must be connected first.
-var errNoReadyModelProvider = errors.New("connect a model provider first: none is ready for this account")
+type recommendedAgentModelsError struct {
+	status int
+	err    error
+}
+
+func (e *recommendedAgentModelsError) Error() string { return e.err.Error() }
+func (e *recommendedAgentModelsError) Unwrap() error { return e.err }
+
+var errNoReadyModelProvider = &recommendedAgentModelsError{http.StatusConflict, errors.New("connect a model provider first: none is ready for this account")}
 
 func (s *Server) setUpRecommendedAgentModels(w http.ResponseWriter, ctx context.Context) {
 	settings, err := s.ensureRecommendedAgentModels(ctx)
 	if err != nil {
-		writeError(w, http.StatusConflict, err)
+		writeAgentModelSettingsError(w, err)
 		return
 	}
 	writeAgentModelSettingsResponse(w, settings)
 }
 
 func (s *Server) ensureRecommendedAgentModels(ctx context.Context) (agentmodelsettings.Settings, error) {
+	principal, ok := identity.PrincipalFromContext(ctx)
+	if !ok || strings.TrimSpace(principal.AccountScopeID) == "" {
+		return agentmodelsettings.Settings{}, identity.ErrProductIdentityRequired
+	}
 	if existing, err := s.agentModelSettings.Get(ctx); err == nil {
 		return existing, nil
 	} else if !errors.Is(err, agentmodelsettings.ErrNotFound) && !errors.Is(err, pebblestore.ErrAgentModelSettingsNotFound) {
 		return agentmodelsettings.Settings{}, err
 	}
-	principal, ok := identity.PrincipalFromContext(ctx)
-	if !ok || strings.TrimSpace(principal.AccountScopeID) == "" {
-		return agentmodelsettings.Settings{}, identity.ErrProductIdentityRequired
-	}
 	if s.providers == nil {
-		return agentmodelsettings.Settings{}, errNoReadyModelProvider
+		return agentmodelsettings.Settings{}, &recommendedAgentModelsError{http.StatusServiceUnavailable, errors.New("model defaults are not configured")}
 	}
 	statuses, err := s.providers.ListStatuses(ctx)
 	if err != nil {
-		return agentmodelsettings.Settings{}, err
+		return agentmodelsettings.Settings{}, &recommendedAgentModelsError{http.StatusBadGateway, err}
 	}
 	var failures []string
 	for _, status := range statuses {
@@ -62,7 +70,7 @@ func (s *Server) ensureRecommendedAgentModels(ctx context.Context) (agentmodelse
 	if len(failures) == 0 {
 		return agentmodelsettings.Settings{}, errNoReadyModelProvider
 	}
-	return agentmodelsettings.Settings{}, fmt.Errorf("no connected provider has recommended models: %s", strings.Join(failures, "; "))
+	return agentmodelsettings.Settings{}, &recommendedAgentModelsError{http.StatusConflict, fmt.Errorf("no connected provider has recommended models: %s", strings.Join(failures, "; "))}
 }
 
 // Restore is explicit and separate from both catalog refresh and legacy profile defaults.

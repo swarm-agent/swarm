@@ -221,7 +221,10 @@ func writeAgentModelSettingsResponse(w http.ResponseWriter, settings agentmodels
 }
 
 func writeAgentModelSettingsError(w http.ResponseWriter, err error) {
+	var defaultsErr *recommendedAgentModelsError
 	switch {
+	case errors.As(err, &defaultsErr):
+		writeError(w, defaultsErr.status, defaultsErr.err)
 	case errors.Is(err, identity.ErrPrincipalRequired),
 		errors.Is(err, identity.ErrProductIdentityRequired):
 		writeError(w, http.StatusUnauthorized, err)
