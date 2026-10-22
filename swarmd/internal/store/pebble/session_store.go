@@ -454,7 +454,11 @@ type SessionPlanActive struct {
 }
 
 type SessionStore struct {
-	store *Store
+	store            *Store
+	accountLockInput V3SessionMutationInput // Private receiver copy; never set on a shared store.
+	// Only set on a private receiver copy for one fresh mutation, never shared.
+	mutationSessions map[string]cachedMutationSession
+	sessionDecoded   func(string) // Optional per-instance test observer.
 }
 
 func NewSessionStore(store *Store) *SessionStore {
@@ -492,6 +496,9 @@ func (s *SessionStore) CreateSession(session SessionSnapshot) error {
 		return err
 	}
 	if err := batch.Set([]byte(KeySession(session.ID)), payload, nil); err != nil {
+		return err
+	}
+	if err := s.cacheMutationSessionWrite(session.ID, payload); err != nil {
 		return err
 	}
 	if session.AccountScopeID != "" {
@@ -560,6 +567,9 @@ func (s *SessionStore) UpdateSession(session SessionSnapshot) error {
 		return err
 	}
 	if err := batch.Set([]byte(KeySession(session.ID)), payload, nil); err != nil {
+		return err
+	}
+	if err := s.cacheMutationSessionWrite(session.ID, payload); err != nil {
 		return err
 	}
 	if session.AccountScopeID != "" {
@@ -962,6 +972,9 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 		if err := batch.Delete([]byte(KeySession(sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
 			return err
 		}
+		if s.mutationSessions != nil {
+			s.mutationSessions[sessionID] = cachedMutationSession{}
+		}
 		if existing.AccountScopeID != "" {
 			if err := batch.Delete([]byte(KeySessionByAccount(existing.AccountScopeID, sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
 				return err
@@ -1358,13 +1371,26 @@ func (s *SessionStore) GetSession(sessionID string) (SessionSnapshot, bool, erro
 }
 
 func (s *SessionStore) getSessionFromReader(reader pebble.Reader, sessionID string) (SessionSnapshot, bool, error) {
-	var session SessionSnapshot
-	ok, err := getJSONFromReader(reader, KeySession(sessionID), &session)
-	if err != nil {
-		return SessionSnapshot{}, false, err
+	entry, cached := s.mutationSessions[sessionID]
+	if !cached {
+		ok, err := getJSONFromReader(reader, KeySession(sessionID), &entry.session)
+		if err != nil {
+			return SessionSnapshot{}, false, err
+		}
+		entry.found = ok
+		if ok && s.sessionDecoded != nil {
+			s.sessionDecoded(sessionID)
+		}
+		if s.mutationSessions != nil {
+			s.mutationSessions[sessionID] = entry
+		}
 	}
-	if !ok {
+	if !entry.found {
 		return SessionSnapshot{}, false, nil
+	}
+	session := entry.session
+	if s.mutationSessions != nil {
+		session = cloneMutationSession(session)
 	}
 	session = normalizeSessionOwnership(session)
 	session.TemporaryWorkspaceRoots = NormalizeSessionTemporaryWorkspaceRoots(session.WorkspacePath, session.TemporaryWorkspaceRoots)

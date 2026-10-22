@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Required qualified release digest; no mutable/local fallback.
 ARG SWARM_RUNTIME
-FROM docker.io/library/node:22.22.0-trixie-slim AS sdk
+FROM docker.io/library/node:22.23.4-trixie-slim AS sdk
 ARG SWARM_RUNTIME
 RUN node -e 'if (!/^ghcr\.io\/swarm-agent\/swarm-headless@sha256:[a-f0-9]{64}$/.test(process.argv[1])) process.exit(1)' "$SWARM_RUNTIME"
 WORKDIR /src/packages/sdk

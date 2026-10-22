@@ -78,7 +78,7 @@ func OpenReadOnly(path string) (*Store, error) {
 // same table format: a real block cache and a bloom filter on every level.
 // The caller owns opts.Cache's reference and releases it on Close.
 func storeOptions(readOnly bool) *pebble.Options {
-	opts := &pebble.Options{ReadOnly: readOnly, Cache: pebble.NewCache(storeBlockCacheBytes)}
+	opts := &pebble.Options{ReadOnly: readOnly, Cache: pebble.NewCache(storeBlockCacheBytes), MemTableSize: 32 << 20}
 	opts.Levels = make([]pebble.LevelOptions, 7)
 	for i := range opts.Levels {
 		opts.Levels[i].FilterPolicy = bloom.FilterPolicy(storeBloomBitsPerKey)

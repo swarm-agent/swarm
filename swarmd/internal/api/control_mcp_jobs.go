@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -1371,6 +1372,25 @@ func controlMCPStatus(c *controlMCPCall, _ map[string]any) (any, error) {
 		return nil, err
 	}
 	out := controlMCPPick(summary, "status", "reasons", "machine", "sandbox", "secrets_gateway", "permissions", "attention", "workers", "runners", "usage", "keys")
+	if installer := os.Getenv("SWARM_INSTALLER"); installer != "" {
+		machine := controlMCPMap(out["machine"])
+		if machine == nil {
+			machine = map[string]any{}
+			out["machine"] = machine
+		}
+		update := controlMCPMap(machine["update"])
+		if update == nil {
+			update = map[string]any{}
+			machine["update"] = update
+		}
+		// Quote custom paths as shell arguments; the standard installer path
+		// stays directly readable and no command is executed by the daemon.
+		if strings.ContainsAny(installer, " \t\r\n'\"\\$`;|&<>()*?[]{}!#~") {
+			installer = "'" + strings.ReplaceAll(installer, "'", "'\"'\"'") + "'"
+		}
+		update["command"] = "sudo bash " + installer + " update"
+		update["how"] = "The person (or their AI running as the person, with sudo) runs it on the machine; it waits until no job runs and Swarm restarts by itself."
+	}
 	if export := controlMCPMap(summary["outbox"]); export != nil && (export["enabled"] == true || export["failing"] == true) {
 		out["outbox"] = export
 	}

@@ -31,6 +31,10 @@ func (s *Server) TailnetGatewayHandler() http.Handler {
 	sdk := s.ContainerSDKHandler()
 	next := s.withVaultGate(s.withJSON(s.apiMux()))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isHelloRequest(r) {
+			s.serveHello(w, r)
+			return
+		}
 		if strings.TrimSpace(r.Header.Get("Authorization")) != "" {
 			sdk.ServeHTTP(w, r)
 			return

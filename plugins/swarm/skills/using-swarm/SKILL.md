@@ -286,3 +286,11 @@ if one is pasted, tell the person to revoke it.
   unless they asked for that exact action.
 - Tell the person what you did and what Swarm reported, including failures,
   in plain words.
+
+## Update Swarm
+
+Read `swarm_status` → `machine.update.command`. On a standard headless install
+this is `sudo bash /var/lib/swarm-headless/install.sh update`. The person (or
+their AI running as the person, with sudo) runs it on that machine; it waits
+until no job runs and Swarm restarts by itself. If the field is absent, ask
+how this Swarm was installed rather than guessing an update command.

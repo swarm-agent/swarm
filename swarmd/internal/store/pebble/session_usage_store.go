@@ -140,6 +140,9 @@ func clampUsageTokenCount(value int64) int64 {
 }
 
 func (s *SessionStore) updateAccountUsageRollupInBatch(batch *pebble.Batch, accountScopeID, date, sessionID, provider, model string, tokenCostDelta, codexNominalDelta, mediaCostDelta float64, tokensDelta, inputTokens, outputTokens, cachedTokens, thinkingTokens int64, turnsDelta, mediaCallsDelta, imageDelta, videoDelta, audioDelta, unknownDelta int, ts, now int64) error {
+	if err := s.accountLockInput.requireAccountLock(); err != nil {
+		return err
+	}
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	sessionID = strings.TrimSpace(sessionID)
 	date = strings.TrimSpace(date)
@@ -293,6 +296,9 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 
 	unlockSession := s.store.sessionMutations.lockSessions(record.SessionID, "account:"+record.AccountScopeID)
 	defer unlockSession()
+	local := *s
+	local.accountLockInput = V3SessionMutationInput{accountLockHeld: true, AccountScopeID: record.AccountScopeID}
+	s = &local
 
 	previous, hadPrevious, err := s.GetTurnUsage(record.SessionID, record.RunID)
 	if err != nil {
@@ -344,10 +350,10 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 	if err := s.setUsageDays(batch, record, previous); err != nil {
 		return err
 	}
-	if err := setUsageBinding(batch, record.AccountScopeID, record.SessionID, record.ScopeTotals); err != nil {
+	if err := s.setUsageBinding(batch, record.AccountScopeID, record.SessionID, record.ScopeTotals); err != nil {
 		return err
 	}
-	if err := setUsageScopeTotals(batch, record.AccountScopeID, record.ScopeTotals); err != nil {
+	if err := s.setUsageScopeTotals(batch, record.AccountScopeID, record.ScopeTotals); err != nil {
 		return err
 	}
 	if err := batch.Set([]byte(KeySessionTurnUsage(record.SessionID, record.RunID)), payload, nil); err != nil {
@@ -414,7 +420,7 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 		if err := s.setAccountWorkerBudgetHolds(batch, acc); err != nil {
 			return err
 		}
-		if err := batch.Set([]byte(KeyDailyUsageAccumulator(acc.AccountScopeID, acc.Date)), accPayload, nil); err != nil {
+		if err := s.setDailyUsageAccumulatorPayload(batch, acc, accPayload); err != nil {
 			return err
 		}
 

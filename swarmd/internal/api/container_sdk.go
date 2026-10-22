@@ -15,6 +15,10 @@ func (s *Server) ContainerSDKHandler() http.Handler {
 	next := s.withVaultGate(s.withJSON(s.apiMux()))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
+		if isHelloRequest(r) {
+			s.serveHello(w, r)
+			return
+		}
 		if s.security == nil || s.identitySessions == nil {
 			writeError(w, http.StatusServiceUnavailable, errors.New("SDK authentication unavailable"))
 			return
@@ -55,9 +59,10 @@ func (s *Server) ContainerSDKHandler() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		if isAIKey(rec) && r.URL.Path != controlMCPPath {
+		if isAIKey(rec) && r.URL.Path != controlMCPPath && !aiKeyFeedRoute(r) {
 			// An AI key's level is enforced per tool in Swarm Control; the raw
 			// routes below would bypass it (a write key could resolve permissions).
+			// The metadata-only activity feed is the one exception (frontend_gateway.go).
 			writeError(w, http.StatusForbidden, errors.New("AI keys work only through Swarm Control (/mcp)"))
 			return
 		}
@@ -70,7 +75,7 @@ func (s *Server) ContainerSDKHandler() http.Handler {
 			s.serveControlMCP(w, requestWithScopedToken(requestWithActorContext(r, actor), rec), next)
 			return
 		}
-		if !containerSDKRouteAllowed(r) && !containerSDKMonitorRouteAllowed(r) {
+		if !containerSDKRouteAllowed(r) && !containerSDKMonitorRouteAllowed(r) && !(isAIKey(rec) && aiKeyFeedRoute(r)) {
 			writeError(w, http.StatusForbidden, errors.New("route unavailable on container SDK listener"))
 			return
 		}

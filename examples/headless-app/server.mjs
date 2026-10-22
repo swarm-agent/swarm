@@ -1,5 +1,6 @@
 import { createServer as createHTTPS } from 'node:https';
 import { createServer as createHTTP } from 'node:http';
+import { realpathSync } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { SwarmClient } from '@swarm-agent/sdk';
@@ -115,7 +116,15 @@ export function appHandler(sdk, { origin, accounts, project = '/project', relayU
   };
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+// Node resolves symlinks for the module itself but not for argv[1], so a unit
+// that names a symlinked path (/opt/swarm/current on a fresh install) must
+// still count as running this file.
+export function isMainModule(argv1, moduleUrl) {
+  if (!argv1) return false;
+  try { return realpathSync(argv1) === realpathSync(fileURLToPath(moduleUrl)); } catch { return false; }
+}
+
+if (isMainModule(process.argv[1], import.meta.url)) {
   try {
     // Installed paths unless set; a native dev run (scripts/headless-dev.sh)
     // points both at its own root. A set but invalid path stops startup

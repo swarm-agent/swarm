@@ -83,6 +83,7 @@ type V3CheckpointBoundaryMutation struct {
 }
 
 type V3SessionMutationInput struct {
+	accountLockHeld              bool                         // Set only after acquiring the account keyed lock.
 	TaskReport                   *V3ProjectTaskReportMutation `json:"-"`
 	taskUpdate                   *ProjectTaskUpdate
 	TaskDelivery                 *V3ProjectTaskDeliveryMutation `json:"-"`
@@ -705,16 +706,6 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 		return s.applyV3PlanAcceptanceMutation(input)
 	}
 
-	// Task chat continuation shares the project lock with reopen/archive. Take it
-	// before session locks, matching project mutation lock ordering.
-	if input.TaskDelivery != nil || input.TaskReport != nil || input.TaskWait != nil || (input.PlanSave != nil && input.PlanSave.TaskPublication != nil) || (input.Kind == V3SessionMutationAppendMessage && input.RunIntent != nil && input.Message != nil && strings.EqualFold(input.Message.Role, "user")) {
-		s.store.projectsMu.Lock()
-		defer s.store.projectsMu.Unlock()
-	}
-	if input.DesignAcceptance != nil || input.DesignAllocation != nil {
-		s.store.designMu.Lock()
-		defer s.store.designMu.Unlock()
-	}
 	lockIDs := []string{input.SessionID}
 	if input.DesignAllocation != nil {
 		r, err := s.store.GetDesignRequest(DesignPrincipal{AccountID: input.AccountScopeID, PrincipalID: input.UserID}, input.DesignAllocation.RequestID)
@@ -726,10 +717,38 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 	if input.WorktreeRecovery != nil {
 		lockIDs = append(lockIDs, input.WorktreeRecovery.OwnerSessionID)
 	}
-	if input.AccountScopeID != "" {
-		lockIDs = append(lockIDs, "account:"+input.AccountScopeID)
-	}
+	input.accountLockHeld = false
 	unlockSession := s.store.sessionMutations.lockSessions(lockIDs...)
+	plain, err := s.isPlainSessionMutation(input)
+	if err != nil {
+		unlockSession()
+		return V3SessionMutationResult{}, err
+	}
+	if !plain {
+		// Never acquire an outer lock while holding session locks. Re-read all
+		// state in the normal mutation pipeline after escalation.
+		unlockSession()
+		if input.TaskDelivery != nil || input.TaskReport != nil || input.TaskWait != nil || (input.PlanSave != nil && input.PlanSave.TaskPublication != nil) || (input.Kind == V3SessionMutationAppendMessage && input.RunIntent != nil && input.Message != nil && strings.EqualFold(input.Message.Role, "user")) {
+			s.store.projectsMu.Lock()
+			defer s.store.projectsMu.Unlock()
+		}
+		if input.DesignAcceptance != nil || input.DesignAllocation != nil {
+			s.store.designMu.Lock()
+			defer s.store.designMu.Unlock()
+		}
+		if input.DesignAllocation != nil {
+			r, err := s.store.GetDesignRequest(DesignPrincipal{AccountID: input.AccountScopeID, PrincipalID: input.UserID}, input.DesignAllocation.RequestID)
+			if err != nil {
+				return V3SessionMutationResult{}, err
+			}
+			lockIDs = append(lockIDs, r.ParentSessionID)
+		}
+		if input.AccountScopeID != "" {
+			lockIDs = append(lockIDs, "account:"+input.AccountScopeID)
+		}
+		unlockSession = s.store.sessionMutations.lockSessions(lockIDs...)
+		input.accountLockHeld = input.AccountScopeID != ""
+	}
 	budgetReceiptCommitted := false
 	defer func() {
 		unlockSession()
@@ -822,6 +841,20 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 }
 
 func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput, idempotencyStoreKey string) (V3SessionMutationResult, error) {
+	return s.withMutationSessionCache().applyFreshV3SessionMutationWithReader(input, idempotencyStoreKey)
+}
+
+// The receiver supplies the session reader; production mutations always use a
+// private cache, while tests can exercise the identical pipeline uncached.
+func (s *SessionStore) applyFreshV3SessionMutationWithReader(input V3SessionMutationInput, idempotencyStoreKey string) (V3SessionMutationResult, error) {
+	local := *s
+	local.accountLockInput = input
+	s = &local
+	if input.TurnUsage != nil || input.MediaUsage != nil || input.usageScopeRepair != nil || input.projectRealtime != nil {
+		if err := input.requireAccountLock(); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+	}
 	if err := s.prepareProjectTaskDelivery(&input); err != nil {
 		return V3SessionMutationResult{}, err
 	}
@@ -1260,6 +1293,13 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		return V3SessionMutationResult{}, fmt.Errorf("marshal v3 session idempotency: %w", err)
 	}
 
+	// Prepared participants may introduce shared writes after classification.
+	// Refuse them before any batch can commit without account-lock evidence.
+	if input.projectRealtime != nil || input.designChange != nil || input.automationRealtime != nil || input.environmentRealtime != nil || input.workspaceCatalog != nil || input.TaskReport != nil || input.TaskDelivery != nil || input.TaskWait != nil || input.DesignAllocation != nil || input.DesignAcceptance != nil || input.automationV2 != nil {
+		if err := input.requireAccountLock(); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+	}
 	batch := s.store.NewBatch()
 	defer batch.Close()
 	taskDeliveryInput := input
@@ -1491,10 +1531,10 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		if err := s.setUsageDays(batch, turnUsage, previousTurnUsage); err != nil {
 			return V3SessionMutationResult{}, err
 		}
-		if err := setUsageBinding(batch, turnUsage.AccountScopeID, turnUsage.SessionID, turnUsage.ScopeTotals); err != nil {
+		if err := s.setUsageBinding(batch, turnUsage.AccountScopeID, turnUsage.SessionID, turnUsage.ScopeTotals); err != nil {
 			return V3SessionMutationResult{}, err
 		}
-		if err := setUsageScopeTotals(batch, turnUsage.AccountScopeID, turnUsage.ScopeTotals); err != nil {
+		if err := s.setUsageScopeTotals(batch, turnUsage.AccountScopeID, turnUsage.ScopeTotals); err != nil {
 			return V3SessionMutationResult{}, err
 		}
 		usagePayload, err := json.Marshal(turnUsage)
@@ -1583,7 +1623,7 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			if err != nil {
 				return V3SessionMutationResult{}, fmt.Errorf("marshal daily accumulator: %w", err)
 			}
-			if err := batch.Set([]byte(KeyDailyUsageAccumulator(acc.AccountScopeID, acc.Date)), accPayload, nil); err != nil {
+			if err := s.setDailyUsageAccumulatorPayload(batch, acc, accPayload); err != nil {
 				return V3SessionMutationResult{}, err
 			}
 			turnsDelta := 0
@@ -1610,7 +1650,7 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			if err := s.setAccountWorkerBudgetHolds(batch, acc); err != nil {
 				return V3SessionMutationResult{}, err
 			}
-			if err := batch.Set([]byte(KeyDailyUsageAccumulator(acc.AccountScopeID, acc.Date)), accPayload, nil); err != nil {
+			if err := s.setDailyUsageAccumulatorPayload(batch, acc, accPayload); err != nil {
 				return V3SessionMutationResult{}, err
 			}
 			if err := s.updateAccountUsageRollupInBatch(batch, turnUsage.AccountScopeID, dateStr, turnUsage.SessionID, turnUsage.Provider, turnUsage.Model, costDelta, codexNominalDelta, 0.0, tokensDelta, inputDelta, outputDelta, cachedDelta, thinkingDelta, turnsDelta, 0, 0, 0, 0, unknownDelta, ts, now); err != nil {
@@ -1629,10 +1669,10 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		if err := s.setMediaUsageDays(batch, media); err != nil {
 			return V3SessionMutationResult{}, err
 		}
-		if err := setUsageBinding(batch, media.AccountScopeID, media.SessionID, media.ScopeTotals); err != nil {
+		if err := s.setUsageBinding(batch, media.AccountScopeID, media.SessionID, media.ScopeTotals); err != nil {
 			return V3SessionMutationResult{}, err
 		}
-		if err := setUsageScopeTotals(batch, media.AccountScopeID, media.ScopeTotals); err != nil {
+		if err := s.setUsageScopeTotals(batch, media.AccountScopeID, media.ScopeTotals); err != nil {
 			return V3SessionMutationResult{}, err
 		}
 		mediaKey := KeySessionMediaUsage(media.AccountScopeID, media.ID)
@@ -1680,7 +1720,7 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		if err := s.setAccountWorkerBudgetHolds(batch, acc); err != nil {
 			return V3SessionMutationResult{}, err
 		}
-		if err := batch.Set([]byte(KeyDailyUsageAccumulator(acc.AccountScopeID, acc.Date)), accPayload, nil); err != nil {
+		if err := s.setDailyUsageAccumulatorPayload(batch, acc, accPayload); err != nil {
 			return V3SessionMutationResult{}, err
 		}
 
@@ -3430,6 +3470,9 @@ func (s *SessionStore) setSessionInBatch(batch *pebble.Batch, session SessionSna
 		return err
 	}
 	if err := batch.Set([]byte(KeySession(session.ID)), payload, nil); err != nil {
+		return err
+	}
+	if err := s.cacheMutationSessionWrite(session.ID, payload); err != nil {
 		return err
 	}
 	if session.AccountScopeID != "" {

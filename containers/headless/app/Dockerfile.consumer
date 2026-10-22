@@ -2,7 +2,7 @@
 # Standalone app build context: package*.json, server.mjs, supervisor.mjs,
 # entrypoint.sh and the app's own files. No daemon source checkout/build.
 ARG SWARM_RUNTIME
-FROM docker.io/library/node:22.22.0-trixie-slim AS app
+FROM docker.io/library/node:22.23.4-trixie-slim AS app
 ARG SWARM_RUNTIME
 RUN node -e 'if (!/^ghcr\.io\/swarm-agent\/swarm-headless@sha256:[a-f0-9]{64}$/.test(process.argv[1])) process.exit(1)' "$SWARM_RUNTIME"
 WORKDIR /app

@@ -86,6 +86,12 @@ environment variable).
 ChatGPT or Claude plan, or an API key), asks which folders your work is in,
 creates a project with them, and gives the first piece of work.
 
+**Building your own frontend** (a console, a dashboard, a setup flow for your
+AI)? [docs/frontends.md](docs/frontends.md) is the path: find Swarm without a
+key (`GET http://127.0.0.1:7783/v3/hello`), install it, give your app its own
+key (`install.sh connect-app NAME`), set up a provider and a project, then
+follow the activity feed.
+
 ## What your AI does with it
 
 | Tool | What it does |

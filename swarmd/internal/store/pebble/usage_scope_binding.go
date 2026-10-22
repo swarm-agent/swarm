@@ -9,6 +9,9 @@ import (
 // in the same batch as the task, so replacements retain late historic receipts.
 // Existing bindings are immutable; metadata is never an association authority.
 func (s *SessionStore) bindTaskUsageInBatch(batch *pebble.Batch, account string, task ProjectTaskRecord) error {
+	if err := s.accountLockInput.requireAccountLock(); err != nil {
+		return err
+	}
 	if task.AccountID != account {
 		return errors.New("usage task account mismatch")
 	}
@@ -51,7 +54,7 @@ func (s *SessionStore) bindTaskUsageInBatch(batch *pebble.Batch, account string,
 			}
 			scopes = append(scopes, UsageScopeTotal{Kind: "worker", ID: task.WorkerID}, UsageScopeTotal{Kind: "worker_run", ProjectID: task.WorkerID, ID: task.WorkerRunID})
 		}
-		if err := setUsageBinding(batch, account, id, scopes); err != nil {
+		if err := s.setUsageBinding(batch, account, id, scopes); err != nil {
 			return err
 		}
 	}

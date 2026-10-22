@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -96,6 +97,8 @@ var controlMCPRoutes = []string{
 	"PUT v3/sessions/*/model-profile",
 	"POST v3/sessions/*/run/stop",
 	"POST v3/sessions/*/permissions/*/resolve",
+	"POST v3/sessions/*/access",
+	"POST v3/sessions/*/media",
 	"POST v3/sessions/*/plans",
 	"GET v3/sessions/*/plans/active",
 	"POST v3/sessions/*/plan-mode/plans/*/start-automatic",
@@ -145,6 +148,7 @@ var controlMCPRoutes = []string{
 	"GET v3/workers/*/runs/*",
 	"POST v3/workers/*/runs/*/cancel",
 	"GET v3/usage",
+	"GET v1/codex/account/usage", "GET v1/claudecode/usage",
 	"GET v3/usage/limits",
 	"POST v3/usage/limits",
 	// Monitoring: the machine summary and its signal feed (handlers require
@@ -234,14 +238,38 @@ func (c *controlMCPCall) requireTokenScope(scope string) error {
 
 func controlMCPSessionSummary(session map[string]any) map[string]any {
 	summary := controlMCPPick(session, "id", "title", "workspace_path", "message_count")
+	// When Swarm made, last changed and last messaged it (Unix ms), from the
+	// session's own record, so frontends order and age it without guessing.
+	for _, key := range []string{"created_at", "updated_at", "last_message_at"} {
+		if value, ok := session[key].(float64); ok && value > 0 {
+			summary[key] = value
+		}
+	}
 	if metadata := controlMCPMap(session["metadata"]); metadata != nil {
 		if agent, ok := metadata["agent_name"]; ok {
 			summary["agent"] = agent
+		}
+		// What the person lets the session's agent do (its shield).
+		if access := pebblestore.SessionAccessFromMetadata(metadata); access != (pebblestore.SessionAccess{}) {
+			summary["access"] = access
+		}
+		// A project's sessions (its orchestrator conversations and task
+		// sessions) name the project and their role in it, so frontends can
+		// list a project's conversations.
+		for _, key := range []string{"project_id", "role"} {
+			if value, ok := metadata[key].(string); ok && value != "" {
+				summary[key] = value
+			}
 		}
 	}
 	if lifecycle := controlMCPMap(session["lifecycle"]); lifecycle != nil {
 		if active, _ := lifecycle["active"].(bool); active {
 			summary["running"] = true
+		}
+		for _, key := range []string{"started_at", "ended_at"} {
+			if value, ok := lifecycle[key].(float64); ok && value > 0 {
+				summary["run_"+key] = value
+			}
 		}
 		for _, key := range []string{"phase", "stop_reason", "error"} {
 			if value, ok := lifecycle[key].(string); ok && value != "" {
@@ -308,12 +336,21 @@ func controlMCPPermissionSummary(record map[string]any) map[string]any {
 	if name, ok := summary["tool_name"].(string); ok {
 		summary["tool_name"] = controlMCPToolName(name)
 	}
-	if summary["tool_name"] == "ask_user" || summary["requirement"] == "ask_user" {
+	switch {
+	case summary["tool_name"] == "ask_user" || summary["requirement"] == "ask_user":
 		summary["kind"] = "question"
-	} else {
+	case summary["requirement"] == permission.RequirementClientTool:
+		// A call the client runs (answered with result): it needs every
+		// argument exactly, within the client tool argument limit.
+		summary["kind"] = "client"
+	default:
 		summary["kind"] = "approval"
 	}
 	if args, ok := record["tool_arguments"].(string); ok && strings.TrimSpace(args) != "" {
+		if summary["kind"] == "client" {
+			summary["tool_arguments"] = controlMCPArguments(args, agentruntime.ClientToolArgumentsMaxBytes)
+			return summary
+		}
 		summary["tool_arguments"] = controlMCPArguments(args, controlMCPArgumentLimit)
 	}
 	return summary
@@ -356,7 +393,15 @@ func controlMCPRunIntentSummary(intent map[string]any) map[string]any {
 	if intent == nil {
 		return nil
 	}
-	return controlMCPPick(intent, "run_id", "status", "blocked_reason", "plan_id", "checkpoint_id")
+	summary := controlMCPPick(intent, "run_id", "status", "blocked_reason", "plan_id", "checkpoint_id")
+	// The run's times (Unix ms): time so far is now - started_at, and
+	// cumulative_duration_ms is the session's earlier runs.
+	for _, key := range []string{"created_at", "started_at", "cumulative_duration_ms"} {
+		if value, ok := intent[key].(float64); ok && value > 0 {
+			summary[key] = value
+		}
+	}
+	return summary
 }
 
 // controlMCPPlanProgress reduces a plan snapshot to status and per-checkpoint
@@ -546,9 +591,10 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_list_sessions", Title: "List sessions",
-			Description: "Recent sessions with agent and running state.",
+			Description: "Recent sessions with agent and running state, and when Swarm made, changed and last messaged each (Unix ms). With project_id: that project's orchestrator conversations, each with run (its current or last run: status, active, started_at, completed_at, duration_ms, cumulative_duration_ms) and pending_requests (questions or approvals waiting).",
 			InputSchema: controlMCPObject(nil, map[string]any{
-				"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": controlMCPMaxListItems, "description": "Default 10."},
+				"limit":      map[string]any{"type": "integer", "minimum": 1, "maximum": controlMCPMaxListItems, "description": "Default 10."},
+				"project_id": controlMCPStringProp("From list_projects: list that project's orchestrator conversations.", 0, 200),
 			}),
 			Annotations: controlMCPReadOnly, call: controlMCPListSessions,
 		},
@@ -577,6 +623,8 @@ func controlMCPTools() []controlMCPTool {
 				"model":          modelProp,
 				"thinking":       thinkingProp,
 				"wait_seconds":   controlMCPWaitProp(),
+				"access":         controlMCPAccessSchema(),
+				"attachments":    controlMCPAttachmentsSchema(),
 			}),
 			Annotations: controlMCPWrites, call: controlMCPStartSession,
 		},
@@ -588,6 +636,7 @@ func controlMCPTools() []controlMCPTool {
 				"content":           controlMCPStringProp("", 1, 100000),
 				"client_request_id": controlMCPStringProp("Idempotency key; reuse when retrying.", 0, 200),
 				"wait_seconds":      controlMCPWaitProp(),
+				"attachments":       controlMCPAttachmentsSchema(),
 			}),
 			Annotations: controlMCPWrites, call: controlMCPSendMessage,
 		},
@@ -604,6 +653,24 @@ func controlMCPTools() []controlMCPTool {
 			Annotations: controlMCPDestructive, call: controlMCPStopRun,
 		},
 		{
+			Name: "swarm_read_media", Title: "Read a generated file",
+			Description: "Part of one file a media job made (image, video or sound), base64, at most 2 MiB a call: read from offset 0 until done. The job is its project_id and task_id (a session's children list its media tasks). Returns the file's media_type, size_bytes, sha256, filename and the bytes.",
+			InputSchema: controlMCPObject([]string{"project_id", "task_id"}, map[string]any{
+				"project_id": controlMCPStringProp("", 1, 200),
+				"task_id":    controlMCPStringProp("", 1, 200),
+				"file":       map[string]any{"type": "integer", "minimum": 1, "description": "Which file of the job, from 1. Default 1."},
+				"offset":     map[string]any{"type": "integer", "minimum": 0, "description": "Byte to start at. Default 0."},
+				"length":     map[string]any{"type": "integer", "minimum": 1, "maximum": controlMCPReadMediaChunk, "description": "Bytes to read, at most 2 MiB (the default)."},
+			}),
+			Annotations: controlMCPReadOnly, call: controlMCPReadMedia,
+		},
+		{
+			Name: "swarm_set_session_access", Title: "Choose what a session's agent may do",
+			Description: "The person's choice for one session, as their app's shield sets it: tasks free (delegated code and audit tasks start at once, nothing to approve; their work still reaches a branch only through merge) or ask (task cards wait for Approve), and machine none, ask or full (the agent's access to the person's own machine through their app). Fields left out keep their value. Needs the approve level. Returns the session's access.",
+			InputSchema: controlMCPObject([]string{"session_id"}, map[string]any{"session_id": sessionID, "tasks": controlMCPAccessSchema()["properties"].(map[string]any)["tasks"], "machine": controlMCPAccessSchema()["properties"].(map[string]any)["machine"]}),
+			Annotations: controlMCPDestructive, call: controlMCPSetSessionAccess,
+		},
+		{
 			Name: "swarm_resolve_permission", Title: "Approve, deny or answer one pending request",
 			Description: "Resolve one pending request from get_session's pending_permissions, once. Read its tool_arguments first. For an agent question (kind question, tool ask_user) use allow_once with answer. Each decision covers that one call: Swarm keeps no session-wide allowance, and lasting allow rules are the machine owner's permission policy in Swarm's settings, never set here. Commands Swarm's policy refuses outright (for example recursive deletes of broad targets) never appear here; they fail in the agent's tool result.",
 			InputSchema: controlMCPObject([]string{"session_id", "permission_id", "action"}, map[string]any{
@@ -612,6 +679,7 @@ func controlMCPTools() []controlMCPTool {
 				"action":        map[string]any{"type": "string", "enum": []string{"allow_once", "deny_once"}},
 				"reason":        controlMCPStringProp("Shown to the agent.", 0, 500),
 				"answer":        controlMCPStringProp("Reply to an ask_user question (allow_once only).", 0, permission.MaxReplyCharacters),
+				"result":        map[string]any{"description": "A client tool's result, from the client that ran it (allow_once only); Swarm passes it to the agent as untrusted data."},
 			}),
 			Annotations: controlMCPDestructive, call: controlMCPResolvePermission,
 		},
@@ -657,6 +725,14 @@ func controlMCPTools() []controlMCPTool {
 				"transcription":   controlMCPStringProp("Transcription model id, or empty", 0, 200),
 			}),
 			Annotations: controlMCPWrites, call: controlMCPSetMediaModels,
+		},
+		{
+			Name: "swarm_get_theme", Title: "Read a theme's colors",
+			Description: "A theme from Swarm's catalog (builtin themes and custom ones made with manage-theme): id, name and palette (background, panel, element, border, border_active, text, text_muted, primary, secondary, accent, success, warning, error, prompt and code colors, as #RRGGBB). Pass a project's theme_id from list_projects; without one, the account's active theme.",
+			InputSchema: controlMCPObject(nil, map[string]any{
+				"theme_id": controlMCPStringProp("A theme id, e.g. a project's theme_id.", 0, 200),
+			}),
+			Annotations: controlMCPReadOnly, call: controlMCPGetTheme,
 		},
 		{
 			Name: "swarm_list_projects", Title: "List projects",
@@ -821,8 +897,15 @@ func controlMCPTools() []controlMCPTool {
 			Description: "Model spend and tokens for a period, top models, and the account's daily limits. Each model's billing says why its cost is what it is: subscription (a sign-in provider such as ChatGPT: Swarm reports no per-token cost; nominal_cost_usd is the same use at API prices when known), metered (priced per token) or unpriced (no price known, so cost shows 0). A limit of none means no limit.",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"period": map[string]any{"type": "string", "enum": []string{"today", "7d", "30d"}, "description": "Default today."},
+				"detail": map[string]any{"type": "boolean", "description": "Also return every provider and model, each day, media and the most active sessions, as a usage page shows them."},
 			}),
 			Annotations: controlMCPReadOnly, call: controlMCPGetUsage,
+		},
+		{
+			Name: "swarm_get_plan_usage", Title: "Read sign-in plan limits",
+			Description: "How much of each sign-in plan's rate limits is used: ChatGPT (asked from ChatGPT on each call) and Claude Code (its latest reading, known only after a Claude Code turn ran since Swarm started). A provider that is not connected says so.",
+			InputSchema: controlMCPObject(nil, map[string]any{}),
+			Annotations: controlMCPReadOnly, call: controlMCPGetPlanUsage,
 		},
 		{
 			Name: "swarm_set_usage_limits", Title: "Set daily usage limits",
@@ -1033,17 +1116,53 @@ func (c *controlMCPCall) workspaceID(path string) (string, error) {
 
 func controlMCPListSessions(c *controlMCPCall, args map[string]any) (any, error) {
 	query := url.Values{"limit": {strconv.Itoa(controlMCPInt(args, "limit", 10))}}
+	projectID := controlMCPString(args, "project_id")
+	if projectID != "" {
+		// A project's orchestrator conversations, each with its run state
+		// and pending requests as Swarm records them.
+		query.Set("project_id", projectID)
+		query.Set("view", "summary")
+	}
 	response, err := c.dispatch(http.MethodGet, "/v3/sessions", query, nil)
 	if err != nil {
 		return nil, err
 	}
 	sessions := []map[string]any{}
 	for _, item := range controlMCPList(response["sessions"]) {
-		if session := controlMCPMap(controlMCPMap(item)["session"]); session != nil {
-			sessions = append(sessions, controlMCPSessionSummary(session))
+		entry := controlMCPMap(item)
+		session := controlMCPMap(entry["session"])
+		if session == nil {
+			continue
 		}
+		summary := controlMCPSessionSummary(session)
+		if attention := controlMCPMap(entry["attention"]); attention != nil {
+			if run := controlMCPRunTiming(controlMCPMap(attention["current_run_state"])); run != nil {
+				summary["run"] = run
+			}
+			if pending := controlMCPList(attention["pending_permissions"]); len(pending) > 0 {
+				summary["pending_requests"] = len(pending)
+			}
+		}
+		sessions = append(sessions, summary)
 	}
 	return map[string]any{"sessions": sessions}, nil
+}
+
+// controlMCPRunTiming is a session's current or last run as Swarm records it:
+// status, whether it is active, and its times (Unix ms). While a run is
+// active its time so far is now - started_at; cumulative_duration_ms holds the
+// session's earlier runs, and a finished run's own time is duration_ms.
+func controlMCPRunTiming(state map[string]any) map[string]any {
+	if state == nil {
+		return nil
+	}
+	run := controlMCPPick(state, "run_id", "status", "active", "blocked_reason")
+	for _, key := range []string{"created_at", "started_at", "completed_at", "updated_at", "duration_ms", "cumulative_duration_ms"} {
+		if value, ok := state[key].(float64); ok && value > 0 {
+			run[key] = value
+		}
+	}
+	return run
 }
 
 func controlMCPGetSession(c *controlMCPCall, args map[string]any) (any, error) {
@@ -1118,6 +1237,17 @@ func (c *controlMCPCall) sessionState(sessionID string, limit, detail int) (map[
 			summary["tool"] = tool
 		} else {
 			summary["content"] = controlMCPTruncate(content, textLimit)
+		}
+		// Files the message carries (its session media), so a client shows them
+		// and an agent can name them by asset_id.
+		media := []map[string]any{}
+		for _, item := range controlMCPList(message["media"]) {
+			if reference := controlMCPMap(item); reference != nil {
+				media = append(media, controlMCPPick(reference, "asset_id", "modality", "mime_type", "file_name", "size"))
+			}
+		}
+		if len(media) > 0 {
+			summary["media"] = media
 		}
 		messages = append(messages, summary)
 	}
@@ -1400,6 +1530,12 @@ func controlMCPStartSession(c *controlMCPCall, args map[string]any) (any, error)
 		}
 		body["workspace_path"] = workspacePath
 	}
+	if access, ok := args["access"].(map[string]any); ok && len(access) > 0 {
+		if err := c.requireTokenScope(sessionAccessScope); err != nil {
+			return nil, err
+		}
+		body["access"] = controlMCPPick(access, "tasks", "machine")
+	}
 	created, err := c.dispatch(http.MethodPost, createPath, nil, body)
 	if err != nil {
 		if workspacePath, ok := body["workspace_path"].(string); ok {
@@ -1416,7 +1552,11 @@ func controlMCPStartSession(c *controlMCPCall, args map[string]any) (any, error)
 		}
 		return c.currentState(map[string]any{"started": started}, sessionID, args)
 	}
-	run, err := c.sendMessage(sessionID, prompt, controlMCPRequestID())
+	media, err := c.uploadAttachments(sessionID, args["attachments"])
+	if err != nil {
+		return nil, controlMCPToolFailure("session %s created but its attachments did not upload: %s", sessionID, err.Error())
+	}
+	run, err := c.sendMessageWithMedia(sessionID, prompt, controlMCPRequestID(), media)
 	if err != nil {
 		return nil, controlMCPToolFailure("session %s created but the prompt was not accepted: %s", sessionID, err.Error())
 	}
@@ -1462,11 +1602,21 @@ func (c *controlMCPCall) currentState(out map[string]any, sessionID string, args
 }
 
 func (c *controlMCPCall) sendMessage(sessionID, content, requestID string) (map[string]any, error) {
-	response, err := c.dispatch(http.MethodPost, controlMCPSessionPath(sessionID, "messages"), nil, map[string]any{
+	return c.sendMessageWithMedia(sessionID, content, requestID, nil)
+}
+
+// sendMessageWithMedia sends a user message carrying uploaded session media
+// (uploadAttachments).
+func (c *controlMCPCall) sendMessageWithMedia(sessionID, content, requestID string, media []map[string]any) (map[string]any, error) {
+	body := map[string]any{
 		"client_request_id": requestID,
 		"role":              "user",
 		"content":           content,
-	})
+	}
+	if len(media) > 0 {
+		body["media"] = media
+	}
+	response, err := c.dispatch(http.MethodPost, controlMCPSessionPath(sessionID, "messages"), nil, body)
 	if err != nil {
 		return nil, err
 	}
@@ -1486,7 +1636,11 @@ func controlMCPSendMessage(c *controlMCPCall, args map[string]any) (any, error) 
 	if requestID == "" {
 		requestID = controlMCPRequestID()
 	}
-	run, err := c.sendMessage(sessionID, controlMCPString(args, "content"), requestID)
+	media, err := c.uploadAttachments(sessionID, args["attachments"])
+	if err != nil {
+		return nil, err
+	}
+	run, err := c.sendMessageWithMedia(sessionID, controlMCPString(args, "content"), requestID, media)
 	if err != nil {
 		return nil, controlMCPNotFound(err, "session", sessionID, "swarm_list_sessions")
 	}
@@ -1736,6 +1890,13 @@ func controlMCPResolvePermission(c *controlMCPCall, args map[string]any) (any, e
 		}
 		body["reason"] = answer
 	}
+	// A client tool's call is answered with its result.
+	if result, given := args["result"]; given && result != nil {
+		if action != "allow_once" {
+			return nil, controlMCPToolFailure("result needs action allow_once")
+		}
+		body["approved_arguments"] = map[string]any{"result": result}
+	}
 	response, err := c.dispatch(http.MethodPost, controlMCPSessionPath(sessionID, "permissions", permissionID, "resolve"), nil, body)
 	if err != nil {
 		var toolErr controlMCPToolError
@@ -1859,7 +2020,7 @@ func controlMCPListProjects(c *controlMCPCall, _ map[string]any) (any, error) {
 		if project == nil {
 			continue
 		}
-		summary := controlMCPPick(project, "id", "name")
+		summary := controlMCPPick(project, "id", "name", "theme_id")
 		summary["workspaces"] = controlMCPProjectWorkspaces(project)
 		summary["context_status"] = controlMCPContextStatus(project)
 		projects = append(projects, summary)
@@ -1891,7 +2052,7 @@ func controlMCPContextStatus(project map[string]any) string {
 // controlMCPProjectSummary is one project with its project.md (bounded) and
 // the generation state the orchestrator start waits on.
 func controlMCPProjectSummary(project map[string]any) map[string]any {
-	summary := controlMCPPick(project, "id", "name", "description")
+	summary := controlMCPPick(project, "id", "name", "description", "theme_id")
 	summary["workspaces"] = controlMCPProjectWorkspaces(project)
 	generation := controlMCPPick(controlMCPMap(project["context_generation"]), "status", "attempt", "error", "router_alert")
 	generation["status"] = controlMCPContextStatus(project)
@@ -2652,7 +2813,12 @@ func controlMCPGetUsage(c *controlMCPCall, args map[string]any) (any, error) {
 	if period == "" {
 		period = "today"
 	}
-	response, err := c.dispatch(http.MethodGet, "/v3/usage", url.Values{"time_range": {period}, "session_limit": {"1"}}, nil)
+	detail, _ := args["detail"].(bool)
+	sessionLimit := "1"
+	if detail {
+		sessionLimit = "10"
+	}
+	response, err := c.dispatch(http.MethodGet, "/v3/usage", url.Values{"time_range": {period}, "session_limit": {sessionLimit}}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -2689,6 +2855,9 @@ func controlMCPGetUsage(c *controlMCPCall, args map[string]any) (any, error) {
 	out["top_models"] = models
 	if note := controlMCPCostNote(rawSummary, billing); note != "" {
 		summary["cost_note"] = note
+	}
+	if detail {
+		controlMCPUsageDetail(response, subscription, out)
 	}
 	return out, nil
 }
@@ -2777,4 +2946,161 @@ func (c *controlMCPCall) lastRunStatus(sessionID string, detail map[string]any) 
 		return ""
 	}
 	return state.Status
+}
+
+// controlMCPGetTheme reads one theme from Swarm's theme catalog: the given
+// id, else the account's active theme, else Swarm's default.
+func controlMCPGetTheme(c *controlMCPCall, args map[string]any) (any, error) {
+	response, err := c.dispatch(http.MethodGet, "/v1/ui/settings", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	catalog := controlMCPMap(response["theme"])
+	id, source := controlMCPString(args, "theme_id"), "theme_id"
+	if id == "" {
+		id, source = controlMCPMapString(catalog, "active_id"), "active"
+	}
+	if id == "" {
+		id, source = controlMCPMapString(catalog, "default_theme_id"), "default"
+	}
+	for _, list := range []string{"custom_themes", "builtin_themes"} {
+		for _, raw := range controlMCPList(catalog[list]) {
+			theme := controlMCPMap(raw)
+			if theme == nil || controlMCPMapString(theme, "id") != id {
+				continue
+			}
+			return map[string]any{"id": id, "name": theme["name"], "palette": theme["palette"], "custom": list == "custom_themes", "source": source}, nil
+		}
+	}
+	return nil, controlMCPToolFailure("no theme %q in Swarm's catalog", id)
+}
+
+func controlMCPMapString(m map[string]any, key string) string {
+	value, _ := m[key].(string)
+	return value
+}
+
+// controlMCPUsageDetail adds what a usage page shows to get_usage's answer:
+// the summary's remaining totals, every provider and model, each day, media
+// and the most active sessions, all as Swarm's usage dashboard reports them.
+func controlMCPUsageDetail(response map[string]any, subscription map[string]bool, out map[string]any) {
+	summary, _ := out["summary"].(map[string]any)
+	for key, value := range controlMCPPick(controlMCPMap(response["summary"]), "thinking_tokens", "codex_nominal_cost_usd", "total_sessions", "archived_sessions", "total_media_calls", "media_cost_usd") {
+		summary[key] = value
+	}
+	providers := []map[string]any{}
+	for _, raw := range controlMCPList(response["by_provider"]) {
+		if provider := controlMCPMap(raw); provider != nil {
+			providers = append(providers, controlMCPPick(provider, "provider", "display_name", "total_tokens", "input_tokens", "output_tokens", "cached_tokens", "thinking_tokens", "cost_usd", "codex_nominal_cost_usd", "is_subscription", "turns", "sessions", "models"))
+		}
+	}
+	out["by_provider"] = providers
+	models := []map[string]any{}
+	for _, raw := range controlMCPList(response["by_model"]) {
+		if model := controlMCPMap(raw); model != nil {
+			entry := controlMCPPick(model, "provider", "model", "display_name", "total_tokens", "input_tokens", "output_tokens", "cached_tokens", "thinking_tokens", "cost_usd", "codex_nominal_cost_usd", "turns", "sessions")
+			entry["billing"] = controlMCPBilling(model, subscription)
+			models = append(models, entry)
+		}
+	}
+	out["by_model"] = models
+	days := []map[string]any{}
+	for _, raw := range controlMCPList(response["daily"]) {
+		if day := controlMCPMap(raw); day != nil {
+			days = append(days, controlMCPPick(day, "date", "timestamp", "total_tokens", "input_tokens", "output_tokens", "cached_tokens", "cost_usd", "codex_nominal_cost_usd", "turns", "media_calls", "media_cost_usd"))
+		}
+	}
+	out["daily"] = days
+	if media := controlMCPMap(response["media"]); media != nil {
+		out["media"] = controlMCPPick(media, "total_count", "total_cost_usd", "image_count", "image_cost_usd", "video_count", "video_cost_usd", "audio_count", "audio_cost_usd")
+	}
+	sessions := []map[string]any{}
+	for _, raw := range controlMCPList(response["recent_sessions"]) {
+		if session := controlMCPMap(raw); session != nil {
+			sessions = append(sessions, controlMCPPick(session, "session_id", "title", "provider", "model", "total_tokens", "cost_usd", "turn_count", "last_active_at", "archived"))
+		}
+	}
+	out["sessions"] = sessions
+}
+
+// controlMCPGetPlanUsage reads each sign-in plan's rate limits: ChatGPT's from
+// ChatGPT itself, Claude Code's from its latest reported reading.
+func controlMCPGetPlanUsage(c *controlMCPCall, _ map[string]any) (any, error) {
+	if err := c.requireTokenScope("sessions:read"); err != nil {
+		return nil, err
+	}
+	chatgpt, chatgptErr := c.dispatch(http.MethodGet, "/v1/codex/account/usage", nil, nil)
+	claude, claudeErr := c.dispatch(http.MethodGet, "/v1/claudecode/usage", nil, nil)
+	return controlMCPPlanUsage(chatgpt, chatgptErr, claude, claudeErr), nil
+}
+
+func controlMCPPlanUsage(chatgpt map[string]any, chatgptErr error, claude map[string]any, claudeErr error) map[string]any {
+	out := map[string]any{}
+	if chatgptErr != nil {
+		out["chatgpt"] = map[string]any{"connected": false, "reason": chatgptErr.Error()}
+	} else {
+		plan := map[string]any{"connected": true, "plan_type": chatgpt["plan_type"]}
+		limit := controlMCPMap(chatgpt["rate_limit"])
+		plan["limit_reached"], _ = limit["limit_reached"].(bool)
+		windows := []map[string]any{}
+		for _, key := range []string{"primary_window", "secondary_window"} {
+			if window := controlMCPMap(limit[key]); window != nil {
+				windows = append(windows, controlMCPPick(window, "used_percent", "limit_window_seconds", "reset_at", "reset_after_seconds"))
+			}
+		}
+		plan["windows"] = windows
+		if credits := controlMCPMap(chatgpt["rate_limit_reset_credits"]); credits != nil {
+			plan["reset_credits_available"] = credits["available_count"]
+		}
+		out["chatgpt"] = plan
+	}
+	if claudeErr != nil {
+		out["claude_code"] = map[string]any{"connected": false, "reason": claudeErr.Error()}
+	} else {
+		cli := controlMCPMap(claude["cli"])
+		loggedIn, _ := cli["logged_in"].(bool)
+		plan := map[string]any{"connected": loggedIn, "subscription_type": cli["subscription_type"]}
+		if !loggedIn {
+			plan["reason"] = cli["reason"]
+		}
+		if limits := controlMCPMap(claude["rate_limits"]); limits != nil {
+			plan["rate_limits"] = controlMCPPick(limits, "status", "resets_at", "is_using_overage", "windows", "observed_at")
+		}
+		out["claude_code"] = plan
+	}
+	return out
+}
+
+// controlMCPAccessSchema is a session's access as the person chooses it.
+func controlMCPAccessSchema() map[string]any {
+	return map[string]any{
+		"type":        "object",
+		"description": "What the person lets the session's agent do (needs the approve level): tasks free or ask, machine none, ask or full.",
+		"properties": map[string]any{
+			"tasks":   map[string]any{"type": "string", "enum": []string{pebblestore.SessionTasksFree, pebblestore.SessionTasksAsk}, "description": "free: delegated tasks start at once; ask: task cards wait for Approve."},
+			"machine": map[string]any{"type": "string", "enum": []string{pebblestore.SessionMachineNone, pebblestore.SessionMachineAsk, pebblestore.SessionMachineFull}, "description": "The agent's access to the person's own machine through their app."},
+		},
+		"additionalProperties": false,
+	}
+}
+
+// controlMCPSetSessionAccess applies the person's shield choice to a session.
+func controlMCPSetSessionAccess(c *controlMCPCall, args map[string]any) (any, error) {
+	if err := c.requireTokenScope(sessionAccessScope); err != nil {
+		return nil, err
+	}
+	sessionID, err := controlMCPID(args, "session_id")
+	if err != nil {
+		return nil, err
+	}
+	body := controlMCPPick(args, "tasks", "machine")
+	if len(body) == 0 {
+		return nil, controlMCPToolFailure("give tasks, machine or both")
+	}
+	body["client_request_id"] = controlMCPRequestID()
+	response, err := c.dispatch(http.MethodPost, controlMCPSessionPath(sessionID, "access"), nil, body)
+	if err != nil {
+		return nil, controlMCPNotFound(err, "session", sessionID, "swarm_list_sessions")
+	}
+	return map[string]any{"session_id": sessionID, "access": response["access"]}, nil
 }

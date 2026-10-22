@@ -153,11 +153,14 @@ func (s *Service) listCustomAgentToolsForRun(accountScopeID string) ([]pebblesto
 	}
 	filtered := tools[:0]
 	for _, customTool := range tools {
-		if pebblestore.IsRemovedAgentToolName(customTool.Name) || IsReservedToolName(customTool.Name) {
+		if pebblestore.IsRemovedAgentToolName(customTool.Name) || IsReservedToolName(customTool.Name) || pebblestore.IsMachineToolName(canonicalToolName(customTool.Name)) {
 			continue
 		}
 		filtered = append(filtered, customTool)
 	}
+	// Swarm's own client tools for the person's machine (gated by each
+	// session's access in the permission service).
+	filtered = append(filtered, pebblestore.MachineClientTools()...)
 	return filtered, nil
 }
 
@@ -327,6 +330,19 @@ func resolveAgentToolStates(profile pebblestore.AgentProfile, knownTools map[str
 		// A persisted or forged snapshot cannot re-enable session-plan tools.
 		for _, name := range []string{"plan_manage", "exit_plan_mode"} {
 			resolved.Tools[name] = ResolvedAgentTool{Enabled: false, Source: "runtime.orchestrator_task_cards"}
+		}
+		// Media goes through media tasks and designs through swarm_design; a
+		// stored profile from before cannot bring the old artifact tools back.
+		for _, name := range []string{"manage_artifact", "manage_video"} {
+			resolved.Tools[name] = ResolvedAgentTool{Enabled: false, Source: "runtime.orchestrator_media_tasks"}
+		}
+		// Its tools for the person's machine are code-owned too: a stored profile
+		// from before them cannot hide them. Each session's access gates every
+		// call in the permission service.
+		for _, definition := range pebblestore.MachineClientTools() {
+			if _, implemented := knownTools[definition.Name]; implemented {
+				resolved.Tools[definition.Name] = ResolvedAgentTool{Enabled: true, Source: "runtime.orchestrator_machine"}
+			}
 		}
 	}
 	workspaceOnboarding := strings.EqualFold(strings.TrimSpace(profile.Name), "system-workspace-onboarding")

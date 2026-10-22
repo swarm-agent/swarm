@@ -593,3 +593,51 @@ func (c *controlMCPCall) projectFolder(projectID string) string {
 	}
 	return ""
 }
+
+// controlMCPReadMediaChunk is the most of a file one swarm_read_media call
+// returns (base64 keeps the answer under the tool size limit).
+const controlMCPReadMediaChunk = 2 << 20
+
+// controlMCPReadMedia returns part of one generated file of a media job, so a
+// client can show or keep files of any size, a piece at a time.
+func controlMCPReadMedia(c *controlMCPCall, args map[string]any) (any, error) {
+	if err := c.requireTokenScope("sessions:read"); err != nil {
+		return nil, err
+	}
+	projectID, err := controlMCPID(args, "project_id")
+	if err != nil {
+		return nil, err
+	}
+	taskID, err := controlMCPID(args, "task_id")
+	if err != nil {
+		return nil, err
+	}
+	task, err := c.mediaTask(projectID, taskID)
+	if err != nil {
+		return nil, err
+	}
+	files := mediaTaskFiles(task)
+	index := controlMCPInt(args, "file", 1)
+	if index < 1 || index > len(files) {
+		return nil, controlMCPToolFailure("job has %d files; file is 1 to %d", len(files), len(files))
+	}
+	file := files[index-1]
+	if len(file.data) == 0 {
+		return nil, controlMCPToolFailure("file %d has no content yet (status %s)", index, file.record.Status)
+	}
+	offset := controlMCPInt(args, "offset", 0)
+	if offset < 0 || offset > len(file.data) {
+		return nil, controlMCPToolFailure("offset is 0 to %d", len(file.data))
+	}
+	length := controlMCPInt(args, "length", controlMCPReadMediaChunk)
+	if length <= 0 || length > controlMCPReadMediaChunk {
+		length = controlMCPReadMediaChunk
+	}
+	end := min(offset+length, len(file.data))
+	out := file.view(index)
+	out["filename"] = file.filename(task.Title, index)
+	out["offset"] = offset
+	out["data_base64"] = base64.StdEncoding.EncodeToString(file.data[offset:end])
+	out["done"] = end == len(file.data)
+	return out, nil
+}

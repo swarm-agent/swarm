@@ -71,6 +71,7 @@ func FinishProjectTaskIntegrationGuarded(db ProjectTaskIntegrationStore, account
 		t.Revision++
 		switch receipt.State {
 		case "integrated", "already_integrated":
+			t.MarkCodeDeliverablesReady("Code merged into " + receipt.TargetBranch)
 			t.IsIntegrated = true
 			t.Status = "completed"
 			t.UnintegratedCommits = 0
@@ -79,6 +80,7 @@ func FinishProjectTaskIntegrationGuarded(db ProjectTaskIntegrationStore, account
 			t.LastError = ""
 			t.WhatDidDo = append(t.WhatDidDo, "Integrated commits into "+receipt.TargetBranch+" (HEAD: "+receipt.ResultingTargetHead+")")
 		case "recovered", "equivalent":
+			t.MarkCodeDeliverablesReady("Code delta delivered to " + receipt.TargetBranch)
 			// Delivery of a net delta is not original-source integration.
 			t.IsIntegrated = false
 			t.Status = "completed"
@@ -94,4 +96,16 @@ func FinishProjectTaskIntegrationGuarded(db ProjectTaskIntegrationStore, account
 		}
 		return nil
 	})
+}
+
+// MarkCodeDeliverablesReady updates code delivery metadata within the caller's
+// task mutation. It does not imply PR approval, test verification, or Git ancestry.
+func (t *ProjectTaskRecord) MarkCodeDeliverablesReady(title string) {
+	for i := range t.Deliverables {
+		d := &t.Deliverables[i]
+		if d.Kind == "pr" || d.Kind == "code_pr" {
+			d.Status = "ready"
+			d.Title = title
+		}
+	}
 }

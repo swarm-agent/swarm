@@ -584,6 +584,14 @@ func (r *Runner) runDelivery(ctx context.Context, account, id string) {
 			}
 			continue
 		}
+		if r.skipEmptyReview(ctx, d, step, *record) {
+			record.State, record.Reason, record.FinishedAt = StateSkipped, "the job made no commits: nothing to review", r.now().UnixMilli()
+			if err := r.store.SaveDelivery(d); err != nil {
+				log.Printf("swarmd job automations: save delivery %s: %v", d.ID, err)
+				return
+			}
+			continue
+		}
 		ok = r.runStep(ctx, &d, i, step)
 		if ctx.Err() != nil {
 			return
@@ -610,6 +618,25 @@ func (r *Runner) runDelivery(ctx context.Context, account, id string) {
 		}
 	}
 	r.finish(&d, state)
+}
+
+// skipEmptyReview never infers emptiness from missing Git. Earlier produced
+// work has its own review target, so the triggering job's signal cannot skip it.
+// A previously started job is resumed, not retroactively skipped.
+func (r *Runner) skipEmptyReview(ctx context.Context, d Delivery, step Step, record StepRecord) bool {
+	if step.Type != StepAgent || !d.Result.NoCommits || d.Result.Git != nil || d.Head != "" || latestWorkJob(d, step.ID) != "" || record.Attempts != 0 {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(step.Worker), "reviewer") {
+		return true
+	}
+	if roles, ok := r.agent.(interface {
+		Role(context.Context, string, string) (string, error)
+	}); ok {
+		role, err := roles.Role(ctx, d.Account, step.Worker)
+		return err == nil && role == "reviewer"
+	}
+	return false // unresolved roles retain the normal dispatch/error path
 }
 
 // conditionsHold reports whether all of a step's conditions hold, and if not,

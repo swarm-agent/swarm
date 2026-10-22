@@ -3034,6 +3034,12 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				TaskProgram:         req.TaskProgram,
 				TaskProgramID:       req.TaskProgramID,
 			}
+			if task.Agent == "image" && strings.TrimSpace(req.AspectRatio) == "" && !s.imageModelListsAspectRatios(p.AccountScopeID, task.Model) {
+				// The Router's guess applies only to a model whose options name its
+				// ratios; for one without that data (codex-image-gen) it would make
+				// the task invalid although the person asked for none.
+				task.AspectRatio = ""
+			}
 			if isDirectVideo {
 				task.Agent = "video"
 				task.OutcomeType = "video_clip"

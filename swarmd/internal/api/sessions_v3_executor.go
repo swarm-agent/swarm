@@ -5239,6 +5239,7 @@ func (e *sessionV3Executor) composeSessionV3ResolvedInstructions(job sessionV3Ex
 			return "", errors.New("resolved v3 instructions are empty")
 		}
 		instructions += applicationInstructions
+		instructions += sessionAccessInstructions(session)
 		instructions = runruntime.AppendResolvedModelPolicyInstructions(instructions, session.Mode, pref)
 	}
 	if instructions == "" {
@@ -5584,7 +5585,13 @@ func (e *sessionV3Executor) sessionsV3ProviderInputWithMedia(resolved sessionV3R
 			content = append(content, map[string]any{"type": "input_text", "text": text})
 		}
 		var unperceived []pebblestore.SessionMediaReference
+		var attached []string
 		for _, reference := range message.Media {
+			name := reference.FileName
+			if name == "" {
+				name = reference.Modality
+			}
+			attached = append(attached, fmt.Sprintf("%s (asset_id: %s, %s)", name, reference.AssetID, reference.MIMEType))
 			if !runruntime.SessionMediaContractAllows(resolved.MediaContract, reference.Modality, reference.MIMEType, reference.FileType) {
 				// Provider input limits apply at invocation: the conversational model cannot directly perceive this modality/media.
 				// Do not send unsupported media to the provider, but preserve session run execution and convey exact references.
@@ -5616,6 +5623,10 @@ func (e *sessionV3Executor) sessionsV3ProviderInputWithMedia(resolved sessionV3R
 				"type": "input_text",
 				"text": fmt.Sprintf("[Attached media input (retained, model perception not supported): %s]", strings.Join(descs, ", ")),
 			})
+		}
+		// The asset_ids let the agent hand the files on, e.g. to a media task.
+		if len(attached) > 0 {
+			content = append(content, map[string]any{"type": "input_text", "text": fmt.Sprintf("[Attached: %s]", strings.Join(attached, ", "))})
 		}
 		if len(content) == 0 && text == "" {
 			content = append(content, map[string]any{"type": "input_text", "text": fmt.Sprintf("[Attached media: %d item(s)]", len(message.Media))})

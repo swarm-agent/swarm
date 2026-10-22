@@ -154,6 +154,15 @@ owner configured, and nothing when there are none.
 
 ### `agent` steps
 
+A reviewer step (`worker: reviewer` or a worker whose role is reviewer) is
+`skipped` with reason **“the job made no commits: nothing to review”** when
+its result has `no_commits: true`: Swarm positively assessed the worker job's
+lane as having no commits since its captured base. Missing `git` alone is
+unknown, not empty, and does not skip review. Earlier work produced by another
+step remains a separate review target. Other agent steps and run steps still run.
+A skipped review has no verdict, so verdict conditions do not match; it also
+**does not match `status: succeeded`**. The delivery succeeds if nothing failed.
+
 ```json
 { "id": "review", "type": "agent", "worker": "reviewer", "brief": "Review this change for security problems." }
 ```

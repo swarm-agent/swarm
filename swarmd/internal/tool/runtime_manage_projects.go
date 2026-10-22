@@ -432,7 +432,7 @@ func manageProjectsDefinition() Definition {
 				},
 				"attached_media": map[string]any{
 					"type":        "array",
-					"description": "Optional array of media items to attach / reference for the task [{id, kind, title, media_url, thumbnail, filename}]",
+					"description": "Optional array of media items to attach / reference for the task [{id, kind, title, media_url, thumbnail, filename}]; a file the person attached to this conversation is {asset_id} (from its Attached line).",
 					"items":       map[string]any{"type": "object"},
 				},
 				"soundtrack": map[string]any{
@@ -854,6 +854,10 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 					if mediaURL == "" {
 						mediaURL = asString(m["media_url"])
 					}
+					// A file the person attached to this conversation, by its asset_id.
+					if assetID := strings.TrimSpace(asString(m["asset_id"])); mediaURL == "" && assetID != "" && scope.SessionID != "" {
+						mediaURL = "/v3/sessions/" + scope.SessionID + "/media/" + assetID
+					}
 					ref := pebblestore.ProjectTaskMediaRef{
 						ID:        asString(m["id"]),
 						Kind:      asString(m["kind"]),
@@ -973,6 +977,19 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		fullPlanMarkdown := strings.TrimSpace(asString(args["full_plan_markdown"]))
 		diffSummary := strings.TrimSpace(asString(args["diff_summary"]))
 		autoApprove, _ := args["auto_approve"].(bool)
+		// When the person let this session start tasks freely, delegated code
+		// and audit work starts at once unless the call asks for a card that
+		// waits (auto_approve false). A plan_document always waits on its card.
+		switch r.sessionTasks(scope.SessionID) {
+		case pebblestore.SessionTasksFree:
+			if _, given := args["auto_approve"]; !given && (ManageProjectsDelegation(args) || ManageProjectsMediaTask(args)) {
+				autoApprove = true
+			}
+		case pebblestore.SessionTasksAsk:
+			// The person reviews each new task first: its card waits for their
+			// Approve whatever the call or the machine's permission mode says.
+			autoApprove = false
+		}
 
 		lifecycle := r.getProjectTaskLifecycleService()
 		if lifecycle == nil {
@@ -1484,4 +1501,17 @@ func parseTaskProgram(rawProg any) (*pebblestore.TaskProgramDefinition, error) {
 		tp.ID = fmt.Sprintf("prog-%d", time.Now().UnixMilli())
 	}
 	return &tp, nil
+}
+
+// sessionTasks is the person's tasks choice for the session (free, ask, or
+// "" when never chosen).
+func (r *Runtime) sessionTasks(sessionID string) string {
+	if r == nil || r.sessions == nil || strings.TrimSpace(sessionID) == "" {
+		return ""
+	}
+	session, found, err := r.sessions.GetSession(sessionID)
+	if err != nil || !found {
+		return ""
+	}
+	return pebblestore.SessionAccessFromMetadata(session.Metadata).Tasks
 }

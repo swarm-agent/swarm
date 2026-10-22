@@ -116,12 +116,53 @@ LEGACY_NETWORK=swarm-net
 LEGACY_BRIDGE=br-swarm
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
-die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+die() {
+  printf 'error: %s\n' "$*" >&2
+  [[ $PROGRESS == json ]] && printf '{"swarm_progress":{"error":%s}}\n' "$(json_str "$*")"
+  exit 1
+}
+
+# --progress=json (any command, any position) adds one JSON line per step on
+# stdout for an app that drives the installer through pkexec or ssh, where
+# extra file descriptors and the environment do not survive:
+#   {"swarm_progress":{"step":"build","text":"Building Swarm ..."}}
+#   {"swarm_progress":{"step":"done","text":"..."}}
+#   {"swarm_progress":{"error":"..."}}
+# Step ids, in install order: prerequisites, fetch, service-user, build, start,
+# isolation, connect-ai, connect-app, done. Texts never carry secrets.
+PROGRESS=off
+json_str() {
+  local s=$1
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\n'/\\n}
+  s=${s//$'\t'/ }
+  s=${s//$'\r'/}
+  printf '"%s"' "$s"
+}
+step() {
+  local id=$1
+  shift
+  say "$*"
+  [[ $PROGRESS == json ]] && printf '{"swarm_progress":{"step":%s,"text":%s}}\n' "$(json_str "$id")" "$(json_str "$*")"
+  return 0
+}
+
+# The account that asked for this: sudo sets SUDO_USER, pkexec (the desktop
+# password prompt an app uses) sets PKEXEC_UID.
+invoking_user() {
+  if [[ -n ${SUDO_USER:-} ]]; then
+    printf '%s' "$SUDO_USER"
+  elif [[ ${PKEXEC_UID:-} =~ ^[0-9]+$ ]]; then
+    id -nu "$PKEXEC_UID" 2>/dev/null || true
+  fi
+}
 
 usage() {
   cat <<'USAGE'
 Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref BRANCH] [--no-ai-access]
                   [--environments on|off] [--secrets-gateway on|off] [--ask-permissions] [--sandbox on|off] [--auto-update] [--tailnet [--tag TAG] [--lock-ssh]]
+                  [--app NAME [--app-access read|write|full]] [--progress=json]
        install.sh reinstall [--yes] [--delete-projects] [install options]
        install.sh uninstall [--yes] [--delete-projects]
        install.sh update | up | reset-login | status | check-isolation | check-sandbox
@@ -130,6 +171,8 @@ Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref
        install.sh dev-sync /path/to/checkout | off
        install.sh channel [BRANCH]
        install.sh connect-ai [--for-user NAME] [--access write|full]
+       install.sh connect-app NAME [--for-user NAME] [--access read|write|full]
+       install.sh disconnect-app NAME [--for-user NAME]
        install.sh key PROVIDER                      (the API key on stdin)
        install.sh secret set NAME [--hosts HOST,...] (the value on stdin)
        install.sh secret grant NAME FOLDER --days N | --hours N
@@ -141,7 +184,7 @@ Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref
        install.sh permissions auto|ask
        install.sh environments on|off
        install.sh sandbox on|off
-       swarmctl workspace add PATH [--for-user NAME] | remove PATH | list
+       swarmctl workspace add PATH [PATH...] [--for-user NAME] | remove PATH | list
        swarmctl workspace publish PATH COMMAND [--sync] | publish PATH --off
 
   --for-user NAME  the person this install is for (default: the account that
@@ -192,6 +235,14 @@ Readiness is generation-bound and checked again immediately before restart.
                    ~/.config/swarm/ai-key (that person only, mode 0600; the
                    value is never printed) and print the Claude Code and Codex
                    connect lines. Running it again replaces the key.
+  connect-app NAME give an app (a console, a dashboard, your own frontend) its
+                   own key in ~/.config/swarm/apps/NAME.key (that person only,
+                   0600; write by default, --access read|write|full), separate
+                   from the AI key. Running it again replaces that app's key.
+  disconnect-app NAME  revoke the app's key and remove its file
+  --app NAME       (install) also connect this app at the end of the install
+  --progress=json  (any command) one JSON line per step on stdout, for apps
+                   driving the installer; see docs/frontends.md
   key PROVIDER     set the first provider API key, read from stdin (or typed
                    at a hidden prompt); never on a command line
   secret set NAME  create the secret for the websites in --hosts (when given)
@@ -266,7 +317,7 @@ Readiness is generation-bound and checked again immediately before restart.
                    inject secrets granted to a project (swarmctl secret) on
                    the way out to their allowed websites; agents only see
                    stand-ins (on by default)
-  workspace add PATH [--for-user NAME] | remove PATH | list
+  workspace add PATH [PATH...] [--for-user NAME] | remove PATH | list
                    make a folder the person owns (a Git repository or not)
                    visible and writable to
                    Swarm and its agent sandboxes at its real path (a unit
@@ -459,8 +510,8 @@ conf_migrate() {
 # The person an install, AI key or workspace is for: --for-user NAME, else the
 # account that ran sudo. Never root, Swarm's own user or a system account.
 person() {
-  local name=${1:-${SUDO_USER:-}}
-  [[ -n $name ]] || die "cannot tell who this is for: run with sudo from your own account, or pass --for-user NAME"
+  local name=${1:-$(invoking_user)}
+  [[ -n $name ]] || die "cannot tell who this is for: run with sudo (or pkexec) from your own account, or pass --for-user NAME"
   [[ $name =~ ^[a-z_][a-z0-9_.-]{0,31}$ ]] || die "--for-user must be a user name"
   id -u "$name" >/dev/null 2>&1 || die "there is no user $name on this machine"
   [[ $name != root && $name != "$SERVICE_USER" ]] || die "$name is not a person's account; pass --for-user NAME"
@@ -629,11 +680,12 @@ build_release() {
   local commit=$1 release=$OPT/releases/$1
   if release_install; then
     [[ $(awk '{print $2}' "$RELEASE_TARGET" 2>/dev/null) == "$commit" ]] || die "${commit:0:9} is not the release this install is pointed at"
+    step build "Downloading Swarm $(awk '{print $1}' "$RELEASE_TARGET")"
     fetch_release "$(awk '{print $1}' "$RELEASE_TARGET")" "$commit"
     return
   fi
   [[ -f $release/.complete ]] && { ! environments_on || docker image inspect "swarm-sandbox:$commit" >/dev/null 2>&1; } && return 0
-  say "Building Swarm ${SWARM_REF}@${commit:0:9} (the first build takes several minutes)"
+  step build "Building Swarm ${SWARM_REF}@${commit:0:9} (the first build takes several minutes)"
   rm -rf "$STAGE"
   docker build --platform linux/amd64 -f "$SRC/containers/headless/app/Dockerfile.host" \
     --build-arg VERSION="$SWARM_REF" --build-arg COMMIT="$commit" \
@@ -1400,6 +1452,7 @@ Environment=HOME=$SERVICE_HOME SWARM_DISABLE_MINT_REPORT=1
 Environment=SWARM_PUBLISH_CONFIG=$PUBLISH
 # The installer's update state, shown in the machine summary.
 Environment=SWARM_UPDATE_STATE=$UPDATE_STATE
+Environment=SWARM_INSTALLER=$STATE/install.sh
 Environment=LD_LIBRARY_PATH=$OPT/current/lib
 Environment=PATH=$OPT/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EnvironmentFile=-$DAEMON_ENV
@@ -1980,42 +2033,62 @@ ensure_owner() {
   echo "Created Swarm's owner ($who)."
 }
 
-# Give a person's AI on this machine its own AI key for Swarm's MCP, in a file
-# only they can read. The key goes from Swarm to that file through a private
-# root-only file and a pipe; it is never printed or put on a command line.
+# Give a person's AI, or one of their apps, on this machine its own key for
+# Swarm's MCP, in a file only they can read. The key goes from Swarm to that
+# file through a private root-only file and a pipe; it is never printed or put
+# on a command line.
+#   mint_ai_key WHO ACCESS          the AI key: ~/.config/swarm/ai-key
+#   mint_ai_key WHO ACCESS APP      an app key: ~/.config/swarm/apps/APP.key
+# Each key replaces (and revokes) only the previous key in the same place, so
+# connecting an app never disconnects the person's AI and the other way round.
 mint_ai_key() {
-  local who=$1 access=$2 home dir keyfile idfile tmp old_id=''
+  local who=$1 access=$2 app=${3:-} home dir keyfile idfile tmp old_id='' token_name shown
   [[ ${AI_ACCESS:-off} == on ]] || die "Swarm's MCP is off on this machine (installed with --no-ai-access); reinstall without it to connect an AI"
   command -v jq >/dev/null || die "jq is missing (apt-get install jq)"
   ensure_owner "$who"
   home=$(person_home "$who")
   dir=$home/.config/swarm
-  keyfile=$dir/ai-key
   # Made as the person, so nothing below writes through a link they placed.
   runuser -u "$who" -- mkdir -p -m 0700 "$dir" || die "could not create $dir"
   [[ -d $dir && ! -L $dir && $(stat -c %U "$dir") == "$who" ]] || die "$dir must be a folder owned by $who"
   install -d -m 0700 -o root -g root "$AI_KEY_IDS"
-  idfile=$AI_KEY_IDS/$who
+  if [[ -n $app ]]; then
+    runuser -u "$who" -- mkdir -p -m 0700 "$dir/apps" || die "could not create $dir/apps"
+    [[ -d $dir/apps && ! -L $dir/apps && $(stat -c %U "$dir/apps") == "$who" ]] || die "$dir/apps must be a folder owned by $who"
+    keyfile=$dir/apps/$app.key
+    idfile=$AI_KEY_IDS/$who.app.$app
+    token_name=app-$app-$who
+    shown="~/.config/swarm/apps/$app.key"
+  else
+    keyfile=$dir/ai-key
+    idfile=$AI_KEY_IDS/$who
+    token_name=local-ai-$who
+    shown="~/.config/swarm/ai-key"
+  fi
   [[ -f $idfile ]] && old_id=$(<"$idfile")
   tmp=$(mktemp "$AI_KEY_IDS/.mint.XXXXXX")
-  # The key works while the AI uses it and stops after 90 days unused; nothing
-  # renews it. connect-ai again replaces it.
-  if ! "$SWARMCTL" setup sdk-token --ai-access "$access" --name "local-ai-$who" >"$tmp"; then
+  # The key works while it is used and stops after 90 days unused; nothing
+  # renews it. connect-ai (or connect-app) again replaces it.
+  if ! "$SWARMCTL" setup sdk-token --ai-access "$access" --name "$token_name" >"$tmp"; then
     rm -f "$tmp"
-    die "no AI key was made; if Swarm made one anyway it shows under AI keys on the setup page"
+    die "no key was made; if Swarm made one anyway it shows under AI keys on the setup page"
   fi
   if ! jq -er '.token | select(startswith("swk_"))' "$tmp" |
     runuser -u "$who" -- sh -c 'umask 077 && cat >"$1.new" && mv -f "$1.new" "$1"' sh "$keyfile"; then
     rm -f "$tmp"
-    die "could not write $keyfile; revoke the new local-ai-$who key on the setup page"
+    die "could not write $keyfile; revoke the new $token_name key on the setup page"
   fi
   jq -er '.id' "$tmp" >"$idfile.new" && mv -f "$idfile.new" "$idfile"
   rm -f "$tmp"
   if [[ -n $old_id ]]; then
     "$SWARMCTL" setup revoke-sdk-token --id "$old_id" >/dev/null ||
-      echo "warning: could not revoke $who's previous AI key (id $old_id); revoke it on the setup page" >&2
+      echo "warning: could not revoke the previous $token_name key (id $old_id); revoke it on the setup page" >&2
   fi
-  echo "Made a $access AI key for $who in ~/.config/swarm/ai-key (only $who can read it; it works while used and stops after 90 days unused)."
+  if [[ -n $app ]]; then
+    echo "Made a $access key for the $app app in $shown (only $who can read it; it works while used and stops after 90 days unused)."
+  else
+    echo "Made a $access AI key for $who in $shown (only $who can read it; it works while used and stops after 90 days unused)."
+  fi
 }
 
 connect_ai() {
@@ -2035,6 +2108,66 @@ connect_ai() {
   print_connect "$who"
   echo
   echo "Then tell your AI: set up Swarm"
+}
+
+# An app name: what the key is for, also its file name.
+app_name() {
+  [[ ${1:-} =~ ^[a-z0-9][a-z0-9-]{0,39}$ ]] || die "the app name must be 1-40 lowercase letters, digits or dashes, e.g. swarm-console"
+  printf '%s' "$1"
+}
+
+# Connect an app (a console, a dashboard, a frontend you build) on this
+# machine: its own key in ~/.config/swarm/apps/NAME.key, separate from the AI
+# key. The key reaches Swarm Control (/mcp) and the activity feed on the AI
+# gateway, at the level given (read, write or full; full approves tool calls
+# and manages models, providers and workers). Running it again replaces that
+# app's key; disconnect-app revokes it. Discovery needs no key:
+# GET http://127.0.0.1:7783/v3/hello. See docs/frontends.md.
+connect_app() {
+  [[ $EUID -eq 0 ]] || die "run as root (sudo bash, or pkexec)"
+  load_conf
+  local app='' who='' access=write
+  while (($#)); do
+    case $1 in
+      --for-user) who=${2:?--for-user needs a user name}; shift 2 ;;
+      --access) access=${2:?--access needs read, write or full}; shift 2 ;;
+      -*) die "usage: install.sh connect-app NAME [--for-user NAME] [--access read|write|full]" ;;
+      *) [[ -z $app ]] || die "usage: install.sh connect-app NAME [--for-user NAME] [--access read|write|full]"; app=$(app_name "$1") || exit 1; shift ;;
+    esac
+  done
+  [[ -n $app ]] || die "usage: install.sh connect-app NAME [--for-user NAME] [--access read|write|full]"
+  [[ $access == read || $access == write || $access == full ]] || die "--access must be read, write or full"
+  who=$(person "$who") || exit 1
+  step connect-app "Connecting the $app app for $who"
+  mint_ai_key "$who" "$access" "$app"
+  echo "The app reads its key from that file and talks to $LOCAL_MCP_URL;"
+  echo "it finds Swarm first, without a key, at ${LOCAL_MCP_URL%/mcp}/v3/hello."
+  [[ $PROGRESS == json ]] && printf '{"swarm_progress":{"step":"done","text":%s}}\n' "$(json_str "The $app app is connected")"
+  return 0
+}
+
+disconnect_app() {
+  [[ $EUID -eq 0 ]] || die "run as root (sudo bash, or pkexec)"
+  load_conf
+  local app='' who='' idfile home
+  while (($#)); do
+    case $1 in
+      --for-user) who=${2:?--for-user needs a user name}; shift 2 ;;
+      -*) die "usage: install.sh disconnect-app NAME [--for-user NAME]" ;;
+      *) [[ -z $app ]] || die "usage: install.sh disconnect-app NAME [--for-user NAME]"; app=$(app_name "$1") || exit 1; shift ;;
+    esac
+  done
+  [[ -n $app ]] || die "usage: install.sh disconnect-app NAME [--for-user NAME]"
+  who=$(person "$who") || exit 1
+  idfile=$AI_KEY_IDS/$who.app.$app
+  if [[ -f $idfile ]]; then
+    "$SWARMCTL" setup revoke-sdk-token --id "$(<"$idfile")" >/dev/null ||
+      die "could not revoke the $app app's key; revoke app-$app-$who on the setup page"
+    rm -f "$idfile"
+  fi
+  home=$(person_home "$who")
+  runuser -u "$who" -- rm -f "$home/.config/swarm/apps/$app.key"
+  echo "The $app app is disconnected: its key is revoked and its key file removed."
 }
 
 # Set the first provider API key by script; the key comes on stdin (or a
@@ -2195,7 +2328,7 @@ secret_cmd() {
 }
 
 install_all() {
-  local relay='' name=swarm ref=main source=release environments=off lock_ssh=0 ai_access=on tag='' secrets_gateway='' permissions=auto sandbox=off tailnet=off for_user='' auto_update=off update_checks='' update_hook=''
+  local relay='' name=swarm ref=main source=release environments=off lock_ssh=0 ai_access=on tag='' secrets_gateway='' permissions=auto sandbox=off tailnet=off for_user='' auto_update=off update_checks='' update_hook='' app='' app_access=write
   while (($#)); do
     case $1 in
       --for-user) for_user=${2:?--for-user needs a user name}; shift 2 ;;
@@ -2216,6 +2349,8 @@ install_all() {
       --auto-update) auto_update=on; shift ;;
       --update-checks) update_checks=${2:?--update-checks needs CONTEXT=APP[,...] or none}; shift 2 ;;
       --update-hook) update_hook=${2:?--update-hook needs a path}; shift 2 ;;
+      --app) app=$(app_name "${2:-}") || exit 1; shift 2 ;;
+      --app-access) app_access=${2:?--app-access needs read, write or full}; shift 2 ;;
       -h|--help) usage; exit 0 ;;
       *) usage >&2; die "unknown option $1" ;;
     esac
@@ -2237,14 +2372,15 @@ install_all() {
   # The person the AI connection is for: --for-user (checked now), else the
   # account that ran sudo when it is a person's. Without one, the final output
   # names the connect-ai step instead.
+  [[ $app_access == read || $app_access == write || $app_access == full ]] || die "--app-access must be read, write or full"
   local who=''
   if [[ -n $for_user ]]; then
     who=$(person "$for_user") || exit 1
-  elif [[ -n ${SUDO_USER:-} ]]; then
+  elif [[ -n $(invoking_user) ]]; then
     who=$(person "" 2>/dev/null) || who=''
   fi
 
-  say "Installing Git and the tools Swarm uses"
+  step prerequisites "Installing Git and the tools Swarm uses"
   apt-get update -qq
   DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git curl ca-certificates gnupg iproute2 jq acl >/dev/null
   # Docker only for environments (and the sandbox), or to build from source.
@@ -2258,7 +2394,7 @@ install_all() {
 
   install -d -m 0755 "$STATE"
   if [[ $source == git ]]; then
-    say "Fetching Swarm ($ref) to build it"
+    step fetch "Fetching Swarm ($ref) to build it"
     if [[ -d $SRC/.git ]]; then
       git -C "$SRC" fetch -q origin "$ref" && git -C "$SRC" checkout -q -B "$ref" FETCH_HEAD
     else
@@ -2274,13 +2410,13 @@ install_all() {
       [[ $file_commit =~ ^[0-9a-f]{40}$ ]] || die "$RELEASE_FILE has no build commit"
       printf '%s %s\n' "$file_tag" "$file_commit" >"$RELEASE_TARGET"
     else
-      say "Finding Swarm's newest release"
+      step fetch "Finding Swarm's newest release"
       latest_release || die "could not read Swarm's newest release from GitHub (https://github.com/$RELEASE_REPO/releases); check this machine reaches github.com and run this again"
     fi
     echo "Swarm $(awk '{print $1}' "$RELEASE_TARGET")"
   fi
 
-  say "Creating Swarm's service user"
+  step service-user "Creating Swarm's service user"
   id "$SERVICE_USER" >/dev/null 2>&1 ||
     useradd --system --user-group --home-dir "$SERVICE_HOME" --create-home --shell /usr/sbin/nologin "$SERVICE_USER"
   if getent group docker >/dev/null; then usermod -aG docker "$SERVICE_USER"; fi
@@ -2330,9 +2466,10 @@ CONF
   up
   [[ $tailnet == on ]] && serve_tailnet "$ai_access" "$tailnet_identity"
 
+  step start "Starting Swarm"
   wait_ready
   if [[ $environments == on ]]; then
-    say "Checking that environments cannot reach this server or your networks"
+    step isolation "Checking that environments cannot reach this server or your networks"
     check_isolation
   fi
 
@@ -2340,7 +2477,7 @@ CONF
   # created for them). A failure is reported, and the install exits non-zero.
   local key_made=0 rc=0
   if [[ -n $who && $ai_access == on ]]; then
-    say "Connecting $who's AI on this machine"
+    step connect-ai "Connecting $who's AI on this machine"
     set +e
     (
       set -e
@@ -2351,10 +2488,25 @@ CONF
     set -e
     ((rc == 0)) && key_made=1
   fi
+  # An app that drove this install (--app NAME) gets its own key the same way.
+  if ((rc == 0)) && [[ -n $app && -n $who && $ai_access == on ]]; then
+    step connect-app "Connecting the $app app for $who"
+    set +e
+    (
+      set -e
+      load_conf
+      mint_ai_key "$who" "$app_access" "$app"
+    )
+    rc=$?
+    set -e
+    ((rc == 0)) || die "Swarm is running, but the $app app's key could not be made (see above); run: sudo bash $INSTALLER connect-app $app --for-user $who"
+  fi
   install_done "$who" "$key_made"
   if ((rc != 0)); then
     die "Swarm is running, but the AI key for $who could not be made (see above); run: sudo bash $INSTALLER connect-ai --for-user $who"
   fi
+  [[ $PROGRESS == json ]] && printf '{"swarm_progress":{"step":"done","text":%s}}\n' "$(json_str "Swarm is running")"
+  return 0
 }
 
 # What runs, where, and the next steps.
@@ -2479,6 +2631,12 @@ status_cmd() {
 }
 
 main() {
+  local arg
+  local -a rest=()
+  for arg in "$@"; do
+    if [[ $arg == --progress=json ]]; then PROGRESS=json; else rest+=("$arg"); fi
+  done
+  set -- "${rest[@]+"${rest[@]}"}"
   case ${1:-install} in
     install) shift || true; install_all "$@" ;;
     -*) install_all "$@" ;;
@@ -2504,6 +2662,8 @@ main() {
     check-isolation) check_isolation ;;
     check-sandbox) check_sandbox ;;
     connect-ai) shift; connect_ai "$@" ;;
+    connect-app) shift; connect_app "$@" ;;
+    disconnect-app) shift; disconnect_app "$@" ;;
     key) shift; provider_key "$@" ;;
     secret) shift; secret_cmd "$@" ;;
     tailnet) shift; tailnet_cmd "$@" ;;

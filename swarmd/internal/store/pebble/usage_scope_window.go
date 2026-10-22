@@ -26,6 +26,9 @@ func (s *SessionStore) GetUsageScopeDay(account, kind, project, id, date string)
 }
 
 func (s *SessionStore) setUsageDays(batch *pebble.Batch, current, previous SessionTurnUsageSnapshot) error {
+	if err := s.accountLockInput.requireAccountLock(); err != nil {
+		return err
+	}
 	if err := s.setWorkerBudgetOperationReceipt(batch, current.AccountScopeID, current.SessionID, current.BudgetOperationID); err != nil {
 		return err
 	}
@@ -67,6 +70,9 @@ func (s *SessionStore) setUsageDays(batch *pebble.Batch, current, previous Sessi
 }
 
 func (s *SessionStore) setMediaUsageDays(batch *pebble.Batch, media SessionMediaUsageRecord) error {
+	if err := s.accountLockInput.requireAccountLock(); err != nil {
+		return err
+	}
 	if err := s.setWorkerBudgetOperationReceipt(batch, media.AccountScopeID, media.SessionID, media.BudgetOperationID); err != nil {
 		return err
 	}

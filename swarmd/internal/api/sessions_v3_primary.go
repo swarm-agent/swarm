@@ -41,32 +41,35 @@ const (
 // V3 primary write handlers delegate through the ApplySessionMutation boundary.
 
 type sessionsV3CreateRequest struct {
-	ProjectID                      string                        `json:"project_id,omitempty"`
-	Purpose                        string                        `json:"purpose,omitempty"`
-	SessionID                      string                        `json:"session_id,omitempty"`
-	ClientRequestID                string                        `json:"client_request_id,omitempty"`
-	IdempotencyKey                 string                        `json:"idempotency_key,omitempty"`
-	Title                          string                        `json:"title,omitempty"`
-	WorkspacePath                  string                        `json:"workspace_path"`
-	WorkspaceName                  string                        `json:"workspace_name,omitempty"`
-	WorkspaceBindingID             string                        `json:"workspace_binding_id,omitempty"`
-	WorkspaceID                    string                        `json:"workspace_id,omitempty"`
-	SwarmID                        string                        `json:"swarm_id,omitempty"`
-	TargetKind                     string                        `json:"target_kind,omitempty"`
-	TargetRelationship             string                        `json:"target_relationship,omitempty"`
-	HostWorkspacePath              string                        `json:"host_workspace_path,omitempty"`
-	RuntimeWorkspacePath           string                        `json:"runtime_workspace_path,omitempty"`
-	Mode                           string                        `json:"mode,omitempty"`
-	AgentName                      string                        `json:"agent_name"`
-	Preference                     pebblestore.ModelPreference   `json:"preference,omitempty"`
-	LegacyManagedWorktreeRequested json.RawMessage               `json:"managed_worktree_requested,omitempty"` // rolling decode only
-	WorktreeMode                   string                        `json:"worktree_mode,omitempty"`
-	WorktreeUseCurrentBranch       *bool                         `json:"worktree_use_current_branch,omitempty"`
-	WorktreeBaseBranch             string                        `json:"worktree_base_branch,omitempty"`
-	WorktreeBranchName             string                        `json:"worktree_branch_name,omitempty"`
-	WorktreeExistingPath           string                        `json:"worktree_existing_path,omitempty"`
-	Metadata                       map[string]any                `json:"metadata,omitempty"`
-	ModelProfile                   *sessionsV3ModelProfileChoice `json:"model_profile,omitempty"`
+	ProjectID                      string                      `json:"project_id,omitempty"`
+	Purpose                        string                      `json:"purpose,omitempty"`
+	SessionID                      string                      `json:"session_id,omitempty"`
+	ClientRequestID                string                      `json:"client_request_id,omitempty"`
+	IdempotencyKey                 string                      `json:"idempotency_key,omitempty"`
+	Title                          string                      `json:"title,omitempty"`
+	WorkspacePath                  string                      `json:"workspace_path"`
+	WorkspaceName                  string                      `json:"workspace_name,omitempty"`
+	WorkspaceBindingID             string                      `json:"workspace_binding_id,omitempty"`
+	WorkspaceID                    string                      `json:"workspace_id,omitempty"`
+	SwarmID                        string                      `json:"swarm_id,omitempty"`
+	TargetKind                     string                      `json:"target_kind,omitempty"`
+	TargetRelationship             string                      `json:"target_relationship,omitempty"`
+	HostWorkspacePath              string                      `json:"host_workspace_path,omitempty"`
+	RuntimeWorkspacePath           string                      `json:"runtime_workspace_path,omitempty"`
+	Mode                           string                      `json:"mode,omitempty"`
+	AgentName                      string                      `json:"agent_name"`
+	Preference                     pebblestore.ModelPreference `json:"preference,omitempty"`
+	LegacyManagedWorktreeRequested json.RawMessage             `json:"managed_worktree_requested,omitempty"` // rolling decode only
+	WorktreeMode                   string                      `json:"worktree_mode,omitempty"`
+	WorktreeUseCurrentBranch       *bool                       `json:"worktree_use_current_branch,omitempty"`
+	WorktreeBaseBranch             string                      `json:"worktree_base_branch,omitempty"`
+	WorktreeBranchName             string                      `json:"worktree_branch_name,omitempty"`
+	WorktreeExistingPath           string                      `json:"worktree_existing_path,omitempty"`
+	Metadata                       map[string]any              `json:"metadata,omitempty"`
+	// Access is what the person lets the agent do (sessionsV3AccessRequest);
+	// only a caller that may choose it (sessionAccessAuthority) can set it.
+	Access       *pebblestore.SessionAccess    `json:"access,omitempty"`
+	ModelProfile *sessionsV3ModelProfileChoice `json:"model_profile,omitempty"`
 	// EndUser and Labels say whose conversation this is; only a gateway
 	// (agent-bound) token sets them, at create time (sessionsV3EndUserBinding).
 	EndUser string            `json:"end_user,omitempty"`
@@ -485,6 +488,10 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 				return
 			}
 			s.handleSessionV3PrimaryPlanMode(w, r, principal, sessionID, strings.TrimPrefix(subpath, "plan-mode/"))
+			return
+		}
+		if subpath == "access" {
+			s.handleSessionV3Access(w, r, principal, sessionID)
 			return
 		}
 		if strings.HasPrefix(subpath, "confirmations/") {
@@ -921,6 +928,19 @@ func (s *Server) createSessionsV3Primary(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	var access pebblestore.SessionAccess
+	if req.Access != nil {
+		if err := sessionAccessAuthority(r); err != nil {
+			writeError(w, http.StatusForbidden, err)
+			return
+		}
+		normalized, err := pebblestore.NormalizeSessionAccess(*req.Access)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		access = normalized
+	}
 	// managed_worktree_requested is a tolerated rolling-client field only. The
 	// canonical request uses worktree_mode and never echoes the retired toggle.
 	var requestedWorktreeMode string
@@ -1035,6 +1055,9 @@ func (s *Server) createSessionsV3Primary(w http.ResponseWriter, r *http.Request,
 		Metadata:        sessionsV3ModelProfileMetadata(sessionsV3CreateServerMetadata(req.Metadata, resolvedAgent, binding), modelProfileSnapshot),
 		CreatedAt:       now,
 		UpdatedAt:       now,
+	}
+	if access != (pebblestore.SessionAccess{}) {
+		session.Metadata[pebblestore.SessionAccessMetadataKey] = pebblestore.SessionAccessMetadata(access)
 	}
 	if appBinding, ok := r.Context().Value(applicationAgentContextKey{}).(applicationAgentBinding); ok {
 		session.Metadata[applicationAgentBindingKey] = appBinding
@@ -4618,6 +4641,7 @@ func isProtectedSessionsV3MetadataKey(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
 	case applicationAgentBindingKey,
 		pebblestore.SessionEndUserMetadataKey,
+		pebblestore.SessionAccessMetadataKey,
 		pebblestore.SessionPurposeMetadataKey,
 		pebblestore.SessionPurposeWorkspaceMetadataKey,
 		"swarm_v3_project_id",

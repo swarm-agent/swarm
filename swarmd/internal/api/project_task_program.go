@@ -349,7 +349,9 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		tier = routed.Tier
 	}
 	aspectRatio := input.AspectRatio
-	if aspectRatio == "" {
+	// The Router's guess applies only to an image model that names its ratios
+	// (see imageModelListsAspectRatios).
+	if aspectRatio == "" && (!isImage || s.imageModelListsAspectRatios(p.AccountScopeID, input.Model)) {
 		aspectRatio = routed.AspectRatio
 	}
 	variantCount := input.VariantCount

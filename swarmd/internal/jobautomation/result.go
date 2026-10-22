@@ -53,6 +53,9 @@ type Result struct {
 	Git           *ResultGit    `json:"git,omitempty"`
 	Files         []ResultFile  `json:"files,omitempty"`
 	Cost          *ResultCost   `json:"cost,omitempty"`
+	// NoCommits means the lane was positively assessed as having no commits
+	// since its captured base. Missing Git alone means unknown, not empty.
+	NoCommits bool `json:"no_commits,omitempty"`
 	// Review is a reviewer job's recorded verdict and findings.
 	Review map[string]any `json:"review,omitempty"`
 	// Deliverables is everything the job produced that a workflow can hand

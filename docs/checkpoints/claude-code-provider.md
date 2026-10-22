@@ -8,6 +8,18 @@ The CLI and its sign-in belong to the OS user that runs `swarmd`, not to the per
 
 ### Headless install (installer and MCP)
 
+#### Update Swarm
+
+Read `swarm_status` → `machine.update.command`: on a standard headless install,
+`sudo bash /var/lib/swarm-headless/install.sh update`. The person (or their AI
+running as the person, with sudo) runs this on the machine; it waits until no
+job runs and Swarm restarts by itself. The installer is retained at
+`$STATE/install.sh`; the generated daemon unit sets `SWARM_INSTALLER` to it.
+Without that variable, status omits the command and instructions rather than
+guessing an installation method.
+
+#### Connect Claude Code
+
 1. On the machine, in a terminal: `sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh claude-code`. It finds a `claude` the `swarm` service user can run (or installs one with Anthropic's installer into `/var/lib/swarm/.local/bin`), updates one older than 2.1.248, sets `SWARM_CLAUDE_CODE_CLI_PATH` through `install.sh daemon-env` (one restart, only when the path changes), and runs `claude auth login` as that user. The person opens the link it shows and finishes in their browser. Without a terminal it does everything else and exits non-zero at the sign-in step. Running it again is safe and reports the current state.
 2. The person's AI calls the Swarm Control tool `swarm_connect_claude_code`. Action `status` reports `state` (`not_installed`, `not_working`, `needs_update`, `signed_out` or `signed_in`), the CLI version, `signed_in` and `provider_active`. When the CLI is not ready it also returns the installer command (`run_on_the_machine`). Action `activate` requires `signed_in`. It saves and activates the account's Claude Code CLI login record through the same handler as the setup page's **Save and make active** (`POST /v1/auth/credentials`, type `cli`, active). It needs no owner password: a write AI key (`swarm:write`), or `admin` for a token without Swarm Control levels, the same authority as `swarm_connect_chatgpt`. It is local only and never offered over the relay.
 

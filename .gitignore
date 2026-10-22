@@ -91,6 +91,7 @@ secrets.env
 !/docs/managed-host-launch-gate.md
 !/docs/managed-local-systemd-environments.md
 !/docs/permissions-defaults.md
+!/docs/frontends.md
 !/docs/task-program-probes/
 !/docs/task-program-probes/**
 /REPO_SHIP_READINESS_CHECKLIST.md
