@@ -692,6 +692,10 @@ build_release() {
     --build-arg VERSION="$SWARM_REF" --build-arg COMMIT="$commit" \
     --build-arg BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     -o "type=local,dest=$STAGE" "$SRC"
+  # The optional bridge is outside the Docker build context allowlist.
+  if ! bash "$SRC/containers/headless/app/package-mcp.sh" "$STAGE" >/dev/null 2>&1; then
+    echo 'swarm: warning: MCP bridge packaging unavailable; URL-based connections remain available.' >&2
+  fi
   if environments_on; then build_sandbox_image "$commit" "$SRC/containers/sandbox"; fi
   install -d -m 0755 "$OPT/releases"
   rm -rf "$release.new" && mv "$STAGE" "$release.new"
@@ -1679,7 +1683,7 @@ uninstall_all() {
     iptables -F SWARM-SANDBOX 2>/dev/null && iptables -X SWARM-SANDBOX 2>/dev/null || true
     iptables -F SWARM-SANDBOX-HOST 2>/dev/null && iptables -X SWARM-SANDBOX-HOST 2>/dev/null || true
   fi
-  rm -rf "${DATA_DIRS[@]}" /run/swarmd "$SERVICE_HOME" "$OPT" "$STAGE" "$SWARMCTL" "$AI_KEY_IDS"
+  rm -rf "${DATA_DIRS[@]}" /run/swarmd "$SERVICE_HOME" "$OPT" "$STAGE" "$SWARMCTL" "$SWARM_MCP" "$AI_KEY_IDS"
   rm -f "$CONF" "$UPDATE_BAD"
   if ((delete_projects)); then
     rm -rf "$PROJECT"
