@@ -872,6 +872,7 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 	// Jobs in folders whose owner set a publish command (swarmctl workspace
 	// publish) are delivered as pull requests when swarm_deliver_job asks.
 	apiServer.SetPublishConfig(os.Getenv(publish.ConfigEnv))
+	apiServer.EmitPublishConfigWarnings(signalEmitter.Emit)
 	// A sync rule starts each worker job from the forge's latest base branch.
 	runSvc.SetPublishBaseResolver(func(ctx context.Context, folder, current string) (string, string, bool, error) {
 		rules, err := publish.Load(os.Getenv(publish.ConfigEnv))

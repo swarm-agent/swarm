@@ -991,10 +991,24 @@ func controlMCPListWorkspaces(c *controlMCPCall, _ map[string]any) (any, error) 
 	if err != nil {
 		return nil, err
 	}
+	warnings, err := c.server.publishWarnings()
+	if err != nil {
+		return nil, err
+	}
 	workspaces := []map[string]any{}
 	for _, raw := range controlMCPList(response["workspaces"]) {
 		if entry := controlMCPMap(raw); entry != nil {
-			workspaces = append(workspaces, controlMCPPick(entry, "path", "workspace_name", "workspace_id", "is_git_repo"))
+			entry = controlMCPPick(entry, "path", "workspace_name", "workspace_id", "is_git_repo")
+			var messages []string
+			for _, warning := range warnings {
+				if path, _ := entry["path"].(string); filepath.Clean(path) == warning.Folder {
+					messages = append(messages, warning.Message)
+				}
+			}
+			if len(messages) > 0 {
+				entry["warnings"] = messages
+			}
+			workspaces = append(workspaces, entry)
 		}
 	}
 	return map[string]any{"workspaces": workspaces}, nil

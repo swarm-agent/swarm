@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Removed publish options now warn in `swarm_status`, the matching `swarm_list_workspaces` entry, and a warning signal per affected rule at startup. Logs and warnings point to workflows (including `deliver to: publish` for automatic publication); ignored options still do not enable delivery. Docs impact: migration guidance is included in these warnings.
+
 - Fix the post-unlock sync durability test setup so its simulated crash keeps the synced database directory. Docs impact: none.
 - Cache decoded session records with bounded shared storage, isolated snapshots, and generation-fenced commit invalidation; reuse mutation classification reads. Docs impact: none.
 

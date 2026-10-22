@@ -86,6 +86,14 @@ func (s *Server) handleBoxSummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if warnings, err := s.publishWarnings(); err != nil {
+		raise(BoxStatusAttention, "publish config: "+err.Error())
+	} else {
+		for _, warning := range warnings {
+			raise(BoxStatusAttention, warning.Message)
+		}
+	}
+
 	machine := map[string]any{"uptime_ms": now.Sub(s.startedAt).Milliseconds(), "version": strings.TrimSpace(buildinfo.Version), "commit": strings.TrimSpace(buildinfo.Commit)}
 	if cfg, err := s.loadStartupConfig(); err == nil && strings.TrimSpace(cfg.SwarmName) != "" {
 		machine["name"] = strings.TrimSpace(cfg.SwarmName)
