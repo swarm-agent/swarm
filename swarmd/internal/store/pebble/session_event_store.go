@@ -822,6 +822,12 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 }
 
 func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput, idempotencyStoreKey string) (V3SessionMutationResult, error) {
+	return s.withMutationSessionCache().applyFreshV3SessionMutationWithReader(input, idempotencyStoreKey)
+}
+
+// The receiver supplies the session reader; production mutations always use a
+// private cache, while tests can exercise the identical pipeline uncached.
+func (s *SessionStore) applyFreshV3SessionMutationWithReader(input V3SessionMutationInput, idempotencyStoreKey string) (V3SessionMutationResult, error) {
 	if err := s.prepareProjectTaskDelivery(&input); err != nil {
 		return V3SessionMutationResult{}, err
 	}
@@ -3430,6 +3436,9 @@ func (s *SessionStore) setSessionInBatch(batch *pebble.Batch, session SessionSna
 		return err
 	}
 	if err := batch.Set([]byte(KeySession(session.ID)), payload, nil); err != nil {
+		return err
+	}
+	if err := s.cacheMutationSessionWrite(session.ID, payload); err != nil {
 		return err
 	}
 	if session.AccountScopeID != "" {
