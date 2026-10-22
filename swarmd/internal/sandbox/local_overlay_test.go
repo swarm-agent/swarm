@@ -75,12 +75,39 @@ func TestLocalLinkedOverlayMounts(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(args, want) {
 		t.Fatalf("readonly mounts changed: %v %v", args, err)
 	}
-	if err := os.Symlink(filepath.Join(source, "A"), filepath.Join(common, "external")); err != nil {
+}
+
+func TestLocalLinkedOverlayUnboundSymlinks(t *testing.T) {
+	// Purpose: localGitMounts must tolerate unmounted file/directory symlinks
+	// without binding their targets. Argument checks directly prove this mount
+	// boundary, while objects still must reject a symlink before a real bind.
+	source, checkout, _, _ := overlayFixture(t)
+	common := filepath.Join(source, ".git")
+	m := &Manager{localOverlay: true}
+	for _, target := range []string{filepath.Join(source, "A"), source} {
+		name := filepath.Join(common, "linked-"+filepath.Base(target))
+		if err := os.Symlink(target, name); err != nil {
+			t.Fatal(err)
+		}
+		args, err := m.localGitMounts(checkout, source, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, arg := range args {
+			if arg == name {
+				t.Fatalf("symlink bind: %v", args)
+			}
+		}
+	}
+	objects := filepath.Join(common, "objects")
+	if err := os.Rename(objects, objects+"-saved"); err != nil {
 		t.Fatal(err)
 	}
-	m.localOverlay = true
+	if err := os.Symlink(objects+"-saved", objects); err != nil {
+		t.Fatal(err)
+	}
 	if args, err := m.localGitMounts(checkout, source, false); err == nil || args != nil {
-		t.Fatalf("symlink metadata accepted: %v %v", args, err)
+		t.Fatalf("symlinked real objects bind accepted: %v %v", args, err)
 	}
 }
 
@@ -151,6 +178,70 @@ printf private > "$common/packed-refs.lock"
 	for _, name := range []string{"A", "B", "C"} {
 		if read(filepath.Join(checkout, name)) != name {
 			t.Fatalf("pick %s missing", name)
+		}
+	}
+}
+
+func TestLocalLinkedGitPackingPolicy(t *testing.T) {
+	// Purpose: routeLocalGit's argument policy must reject explicit ref packing
+	// and override caller auto-maintenance settings. This pure policy test needs
+	// no namespaces and proves rejection before any command can mutate refs.
+	for _, args := range [][]string{{"pack-refs", "--all", "--prune"}, {"-c", "gc.auto=1", "gc", "--auto"}, {"--no-pager", "maintenance", "run", "--task=pack-refs"}, {"--git-dir=x", "pack-refs"}} {
+		if got, err := localLinkedGitArgs(args); err == nil || got != nil {
+			t.Fatalf("accepted packing %v: %v %v", args, got, err)
+		}
+	}
+	args, err := localLinkedGitArgs([]string{"-c", "gc.auto=1", "-c", "maintenance.auto=true", "-c", "gc.packRefs=true", "commit", "--allow-empty", "-m", "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"-c", "gc.auto=1", "-c", "maintenance.auto=true", "-c", "gc.packRefs=true", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "gc.packRefs=false", "commit", "--allow-empty", "-m", "test"}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("policy precedence: %v", args)
+	}
+}
+
+func TestLocalLinkedGitPackingPreservesBranch(t *testing.T) {
+	// Purpose: routeLocalGit must preserve the real own loose ref after a commit
+	// and explicit pack/gc attempts. Real routing is the narrowest integration
+	// layer proving policy wiring and unchanged durable refs on rejection.
+	m := localTestManager(t)
+	if !m.localOverlay {
+		t.Skip("bubblewrap overlay support unavailable")
+	}
+	source, checkout, _, _ := overlayFixture(t)
+	m.SetLayout(Layout{Projects: func() ([]string, error) { return []string{source}, nil }})
+	localRoutedGit(t, m, checkout, "-c", "gc.auto=1", "-c", "maintenance.auto=true", "commit", "--allow-empty", "-m", "keep loose branch")
+	own := filepath.Join(source, ".git", "refs", "heads", "agent", "job")
+	before, err := os.ReadFile(own)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := localFixtureGit(t, checkout, "rev-parse", "HEAD")
+	if strings.TrimSpace(string(before)) != head {
+		t.Fatal("own loose ref does not match committed HEAD")
+	}
+	packed := filepath.Join(source, ".git", "packed-refs")
+	packedBefore, err := os.ReadFile(packed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, argv := range [][]string{{"pack-refs", "--all", "--prune"}, {"gc", "--auto"}, {"maintenance", "run", "--task=pack-refs"}} {
+		cmd := exec.Command("git", argv...)
+		cmd.Dir = checkout
+		if err := m.RouteGit(context.Background(), cmd); err == nil {
+			ReleaseGit(cmd)
+			t.Fatalf("packing admitted: %v", argv)
+		} else if !strings.Contains(err.Error(), "private packed refs") {
+			t.Fatal(err)
+		}
+		after, err := os.ReadFile(own)
+		if err != nil || string(after) != string(before) {
+			t.Fatalf("own loose ref changed: %q %v", after, err)
+		}
+		after, err = os.ReadFile(packed)
+		if err != nil || string(after) != string(packedBefore) {
+			t.Fatalf("real packed refs changed: %v", err)
 		}
 	}
 }
