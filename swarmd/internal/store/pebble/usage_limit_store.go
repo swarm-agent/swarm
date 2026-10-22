@@ -1021,9 +1021,6 @@ func (s *SessionStore) ListAccountUsageRollups(accountScopeID string) ([]Account
 		if err := json.Unmarshal(value, &rollup); err != nil {
 			return err
 		}
-		if rollup.SessionID == "" {
-			return nil
-		}
 		out = append(out, rollup)
 		return nil
 	})

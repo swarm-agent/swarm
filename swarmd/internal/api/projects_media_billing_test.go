@@ -7,11 +7,16 @@ import (
 	"image"
 	"image/png"
 	"math"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	"swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/videogen"
 	"testing"
 	"time"
 )
@@ -20,6 +25,8 @@ import (
 // A generated file must produce one durable account receipt despite retries;
 // another principal must not charge that task. A real temporary Pebble store
 // is the narrowest layer proving both receipt and rollup atomic postconditions.
+// The usage handler and controlMCPGetUsage must expose this account-only charge
+// without inventing a conversation in either per-session list.
 func TestMediaCostTaskReceipt(t *testing.T) {
 	db, err := pebblestore.Open(t.TempDir())
 	if err != nil {
@@ -51,6 +58,28 @@ func TestMediaCostTaskReceipt(t *testing.T) {
 	acc, found, err := store.GetDailyUsageAccumulator("account", time.Now().UTC().Format("2006-01-02"))
 	if err != nil || !found || acc.ImageCount != 1 || math.Abs(acc.MediaCostUSD-.0336) > 1e-10 {
 		t.Fatalf("acc %+v found %v err %v", acc, found, err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/v3/usage?time_range=today", nil)
+	p.Type = identity.PrincipalTypeUser
+	request = request.WithContext(identity.ContextWithPrincipal(request.Context(), p))
+	request = requestWithScopedToken(request, &pebblestore.ScopedTokenRecord{Scopes: []string{"sessions:read"}})
+	call := &controlMCPCall{request: request, server: server, next: http.HandlerFunc(server.handleSessionsV3Usage)}
+	dashboard, err := call.dispatch(http.MethodGet, "/v3/usage", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := controlMCPGetUsage(call, map[string]any{"detail": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, response := range []map[string]any{dashboard, result.(map[string]any)} {
+		media := response["media"].(map[string]any)
+		if media["image_count"] != float64(1) || math.Abs(media["image_cost_usd"].(float64)-.0336) > 1e-10 {
+			t.Fatalf("media %+v", media)
+		}
+		if len(controlMCPList(response["recent_sessions"])) != 0 || len(controlMCPList(response["sessions"])) != 0 {
+			t.Fatalf("unexpected sessions %+v", response)
+		}
 	}
 	p.AccountScopeID = "other"
 	if _, err := server.recordTaskMedia(p, task, 0, opts, "image/png", 100); err == nil {
@@ -179,4 +208,112 @@ type billingCatalog struct {
 
 func (c billingCatalog) ListCatalog(string, int) ([]pebblestore.ModelCatalogRecord, error) {
 	return []pebblestore.ModelCatalogRecord{c.record}, nil
+}
+
+// Purpose: generateProjectVideoStory must bill paid clips before assembly can
+// reject them. Real receipt persistence and assembly with an injected failing
+// probe prove failure retains both charges without an external provider.
+func TestMediaUsageStoryAssemblyFailure(t *testing.T) {
+	// Inject a failing local probe, not a live encoding dependency.
+	bin := t.TempDir()
+	for _, binary := range []string{"ffmpeg", "ffprobe"} {
+		if err := os.WriteFile(filepath.Join(bin, binary), []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin)
+	db, err := pebblestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store := pebblestore.NewSessionStore(db)
+	task := &pebblestore.ProjectTaskRecord{ID: "story", ProjectID: "project", AccountID: "account", Title: "story", Agent: "video"}
+	if err := store.PutProjectTask("account", task); err != nil {
+		t.Fatal(err)
+	}
+	if err := pebblestore.NewModelCatalogStore(db).SetRecord(pebblestore.ModelCatalogRecord{Provider: "google", Model: "video", Pricing: json.RawMessage(`{"billing":{"status":"verified","lines":[{"kind":"billing_rate","billable":"video_output","unit":"second","price_usd":0.1}]}}`)}); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{sessions: session.NewService(store, nil)}
+	generator := &paidStoryGenerator{}
+	_, err = generateProjectVideoStory(context.Background(), generator, videogen.ManagedVideoRequest{}, []pebblestore.ProjectTaskScene{{Prompt: "one"}, {Prompt: "two"}}, func(scene int, clip videogen.ManagedVideoResult) {
+		estimate := server.recordGeneratedTaskMedia(identity.Principal{AccountScopeID: "account", UserID: "user"}, task, 0, pebblestore.MediaCostEstimateOptions{Provider: "google", Model: "video", Kind: "video", Count: 1, DurationSeconds: 5}, clip.MediaType, len(clip.Bytes), scene)
+		if estimate.PriceStatus != "known" {
+			t.Fatalf("estimate %+v", estimate)
+		}
+	})
+	if err == nil || !strings.Contains(err.Error(), "probe scene 1") || generator.calls != 2 {
+		t.Fatalf("calls %d error %v", generator.calls, err)
+	}
+	receipts, err := store.ListMediaUsage("account", 10)
+	if err != nil || len(receipts) != 2 {
+		t.Fatalf("receipts %+v %v", receipts, err)
+	}
+	ids := map[string]bool{}
+	for _, receipt := range receipts {
+		ids[receipt.ID] = true
+	}
+	if !ids["task-media:project:story:0:scene1"] || !ids["task-media:project:story:0:scene2"] {
+		t.Fatal(ids)
+	}
+	acc, found, err := store.GetDailyUsageAccumulator("account", time.Now().UTC().Format("2006-01-02"))
+	if err != nil || !found || acc.VideoCount != 2 || math.Abs(acc.MediaCostUSD-1) > 1e-10 {
+		t.Fatalf("acc %+v %v", acc, err)
+	}
+}
+
+type paidStoryGenerator struct{ calls int }
+
+func (g *paidStoryGenerator) GenerateManagedVideo(context.Context, videogen.ManagedVideoRequest) (videogen.ManagedVideoResult, error) {
+	g.calls++
+	return videogen.ManagedVideoResult{Bytes: []byte("invalid mp4"), MediaType: "video/mp4", Provider: "google", Model: "video", DurationSeconds: 5}, nil
+}
+
+// Purpose: the post-generation receipt boundary must not label a rejected
+// charge as known; a principal mismatch exercises the failure without writes.
+func TestMediaCostUnrecorded(t *testing.T) {
+	estimate := (&Server{}).recordGeneratedTaskMedia(identity.Principal{AccountScopeID: "other"}, &pebblestore.ProjectTaskRecord{AccountID: "account"}, 0, pebblestore.MediaCostEstimateOptions{}, "image/png", 1)
+	if estimate.PriceStatus != "unrecorded" {
+		t.Fatal(estimate)
+	}
+}
+
+// Purpose: controlMCPMediaJobFiles must aggregate only ready deliverables;
+// unfinished slots cannot erase subscription/free pricing or inflate totals.
+// The stored-task view boundary proves the actual MCP response shape.
+func TestMediaCostJobReadyPrices(t *testing.T) {
+	for _, status := range []string{"known", "subscription", "free", "unknown", "unrecorded", ""} {
+		t.Run(status, func(t *testing.T) {
+			db, err := pebblestore.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			store := pebblestore.NewSessionStore(db)
+			task := &pebblestore.ProjectTaskRecord{ID: "task", ProjectID: "project", AccountID: "account", Title: "media", Agent: "image", Deliverables: []pebblestore.ProjectTaskDeliverable{
+				{ID: "ready", Status: "ready", MediaCostEstimate: pebblestore.MediaCostEstimate{PriceStatus: status, CostUSD: .1}},
+				{ID: "pending", Status: "pending", MediaCostEstimate: pebblestore.MediaCostEstimate{CostUSD: 99}},
+				{ID: "failed", Status: "failed"},
+			}}
+			if err := store.PutProjectTask("account", task); err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+			request = request.WithContext(identity.ContextWithPrincipal(request.Context(), identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "user"}))
+			call := &controlMCPCall{request: request, server: &Server{sessions: session.NewService(store, nil)}}
+			result, err := call.controlMCPMediaJobFiles(map[string]any{}, "project", "task", map[string]any{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := status
+			if want == "" || want == "unrecorded" {
+				want = "unknown"
+			}
+			out := result.(map[string]any)
+			if out["price_status"] != want || out["cost_usd"] != .1 {
+				t.Fatal(out)
+			}
+		})
+	}
 }

@@ -42,7 +42,7 @@ func validateVideoScenes(scenes []pebblestore.ProjectTaskScene, operation string
 // generateProjectVideoStory never publishes a successful partial story. Scene
 // results remain private until every generation and final measured assembly
 // succeeds; the ordinary task acceptance gate owns the single returned cut.
-func generateProjectVideoStory(ctx context.Context, vg managedVideoService, req videogen.ManagedVideoRequest, scenes []pebblestore.ProjectTaskScene) (videogen.ManagedVideoResult, error) {
+func generateProjectVideoStory(ctx context.Context, vg managedVideoService, req videogen.ManagedVideoRequest, scenes []pebblestore.ProjectTaskScene, recordScene ...func(int, videogen.ManagedVideoResult)) (videogen.ManagedVideoResult, error) {
 	// Fail before paid generation when the local assembly runtime is absent.
 	for _, binary := range []string{"ffmpeg", "ffprobe"} {
 		if _, err := exec.LookPath(binary); err != nil {
@@ -69,6 +69,9 @@ func generateProjectVideoStory(ctx context.Context, vg managedVideoService, req 
 		clip, err := vg.GenerateManagedVideo(ctx, sceneReq)
 		if err != nil {
 			return videogen.ManagedVideoResult{}, fmt.Errorf("scene %d: %w", i+1, err)
+		}
+		for _, record := range recordScene {
+			record(i+1, clip)
 		}
 		if len(clip.Bytes) == 0 || clip.MediaType != "video/mp4" {
 			return videogen.ManagedVideoResult{}, fmt.Errorf("scene %d returned no MP4", i+1)

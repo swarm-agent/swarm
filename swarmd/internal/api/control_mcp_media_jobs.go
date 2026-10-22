@@ -150,12 +150,24 @@ func (c *controlMCPCall) controlMCPMediaJobFiles(out map[string]any, projectID, 
 	}
 	out["files"] = views
 	var total float64
-	priceStatus := "known"
+	priceStatus := ""
 	for _, file := range files {
-		total += file.record.CostUSD
-		if file.record.PriceStatus == "" || file.record.PriceStatus == "unknown" {
-			priceStatus = "unknown"
+		if file.record.Status != "ready" {
+			continue
 		}
+		total += file.record.CostUSD
+		status := file.record.PriceStatus
+		if status == "" || status == "unrecorded" {
+			status = "unknown"
+		}
+		if priceStatus == "" || status == "unknown" {
+			priceStatus = status
+		} else if priceStatus != "unknown" && priceStatus != status {
+			priceStatus = "known"
+		}
+	}
+	if priceStatus == "" {
+		priceStatus = "known"
 	}
 	out["cost_usd"] = total
 	out["price_status"] = priceStatus
