@@ -5,7 +5,7 @@
 #   docker build -f containers/headless/app/Dockerfile.local -t swarm-app:local .
 # Dockerfile (the release recipe) accepts only a published, qualified digest.
 ARG SWARM_RUNTIME=swarm-headless:local
-FROM docker.io/library/node:22.22.0-trixie-slim AS sdk
+FROM docker.io/library/node:22.23.4-trixie-slim AS sdk
 WORKDIR /src/packages/sdk
 COPY packages/sdk/package.json packages/sdk/package-lock.json packages/sdk/tsconfig.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund

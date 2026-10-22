@@ -11,6 +11,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Reuse decoded session records within each fresh V3 mutation, with isolated caller copies and batch-write visibility. Docs impact: none.
 
 - Skip credential-redaction regexes whose required literals are absent from ASCII text, preserving Unicode redaction behavior. Docs impact: none.
+- Security: the headless package's bundled Node.js and the headless container images move from 22.22.0 to 22.23.4, the 2026-10-21 Node.js security release (four high-severity fixes, including a Brotli decoder out-of-bounds write and two TLS hostname-verification bypasses). The release archive's Node build stays pinned to the official checksum. Docs impact: none.
 
 - Search uses FFF v0.11.0 (reviewed import): lower indexing memory (upstream reports about 70% less resident memory while indexing) and faster content search. Docs impact: none.
 

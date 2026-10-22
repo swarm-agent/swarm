@@ -94,8 +94,8 @@ WEB_ARTIFACT_DIR="${OUTPUT_DIR}/web"
 RELEASE_STAGE_DIR="${OUTPUT_DIR}/release-stage"
 HEADLESS_DIR="${OUTPUT_DIR}/headless"
 # The setup page's Node in the headless package: the official build.
-HEADLESS_NODE_VERSION="22.22.0"
-HEADLESS_NODE_SHA256="9aa8e9d2298ab68c600bd6fb86a6c13bce11a4eca1ba9b39d79fa021755d7c37"
+HEADLESS_NODE_VERSION="22.23.4"
+HEADLESS_NODE_SHA256="1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce"
 
 rm -rf "${PLATFORM_DIR}" "${WEB_ARTIFACT_DIR}" "${HEADLESS_DIR}" "${RELEASE_STAGE_DIR}" "${OUTPUT_DIR}/build-info.txt" "${OUTPUT_DIR}"/swarm-*.tar.gz "${OUTPUT_DIR}"/swarm-*.tar.gz.sha256
 mkdir -p "${ROOT_ARTIFACT_DIR}" "${SWARMD_ARTIFACT_DIR}"
