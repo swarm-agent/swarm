@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Increase Pebble memtables to 32 MiB to reduce flush and compaction frequency. Docs impact: none.
+
 - Reuse decoded session records within each fresh V3 mutation, with isolated caller copies and batch-write visibility. Docs impact: none.
 
 - Skip credential-redaction regexes whose required literals are absent from ASCII text, preserving Unicode redaction behavior. Docs impact: none.
