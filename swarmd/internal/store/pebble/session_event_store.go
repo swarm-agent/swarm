@@ -746,6 +746,7 @@ func (s *SessionStore) applyV3SessionMutationLocked(input V3SessionMutationInput
 	input.accountLockHeld = false
 	input.completion = nil
 	unlockSession := s.store.sessionMutations.lockSessions(lockIDs...)
+	s = s.withMutationSessionCache()
 	plain, err := s.isPlainSessionMutation(input)
 	if err != nil {
 		unlockSession()
@@ -774,6 +775,7 @@ func (s *SessionStore) applyV3SessionMutationLocked(input V3SessionMutationInput
 			lockIDs = append(lockIDs, "account:"+input.AccountScopeID)
 		}
 		unlockSession = s.store.sessionMutations.lockSessions(lockIDs...)
+		s = s.withMutationSessionCache()
 		input.accountLockHeld = input.AccountScopeID != ""
 	}
 	if input.accountLockHeld {
@@ -866,7 +868,7 @@ func (s *SessionStore) applyV3SessionMutationLocked(input V3SessionMutationInput
 	s.store.sessionMutations.libraryRepairMu.RLock()
 	defer s.store.sessionMutations.libraryRepairMu.RUnlock()
 	input.designProjectOutbox = &designProjectOutbox
-	result, err := s.applyFreshV3SessionMutation(input, idempotencyKey)
+	result, err := s.applyFreshV3SessionMutationWithReader(input, idempotencyKey)
 	if err == nil && input.TaskReport != nil && result.RealtimeOutbox != nil && !result.Replayed {
 		designProjectOutbox = append(designProjectOutbox, result.RealtimeOutbox)
 	}
@@ -1904,7 +1906,7 @@ func (s *SessionStore) applyFreshV3SessionMutationWithReader(input V3SessionMuta
 	if input.accountLockHeld && input.completion != nil {
 		writeOptions = pebble.NoSync
 	}
-	if err := batch.Commit(writeOptions); err != nil {
+	if err := s.store.commitSessionBatch(batch, writeOptions); err != nil {
 		return V3SessionMutationResult{}, err
 	}
 	reservationCommitted = true

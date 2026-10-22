@@ -459,6 +459,7 @@ type SessionStore struct {
 	// Only set on a private receiver copy for one fresh mutation, never shared.
 	mutationSessions map[string]cachedMutationSession
 	sessionDecoded   func(string) // Optional per-instance test observer.
+	sessionCacheRead func(string) // Test hook after a shared-cache miss reads the record.
 }
 
 func NewSessionStore(store *Store) *SessionStore {
@@ -518,7 +519,7 @@ func (s *SessionStore) CreateSession(session SessionSnapshot) error {
 	if err := s.updateV3SessionLibraryMetricInBatch(batch, session, nil, false, false); err != nil {
 		return err
 	}
-	return batch.Commit(pebble.Sync)
+	return s.store.commitSessionBatch(batch, pebble.Sync)
 }
 
 func (s *SessionStore) CreateSessionForAccount(session SessionSnapshot, userID, accountScopeID string) error {
@@ -588,7 +589,7 @@ func (s *SessionStore) UpdateSession(session SessionSnapshot) error {
 			return err
 		}
 	}
-	return batch.Commit(pebble.Sync)
+	return s.store.commitSessionBatch(batch, pebble.Sync)
 }
 
 func (s *SessionStore) DeleteSession(sessionID string) error {
@@ -750,7 +751,7 @@ func (s *SessionStore) ReactivateArchivedSessions(sessionIDs []string, expectedU
 			return err
 		}
 	}
-	if err := batch.Commit(pebble.Sync); err != nil {
+	if err := s.store.commitSessionBatch(batch, pebble.Sync); err != nil {
 		return err
 	}
 	reservationCommitted = true
@@ -1005,7 +1006,7 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 			}
 		}
 	}
-	if err := batch.Commit(pebble.Sync); err != nil {
+	if err := s.store.commitSessionBatch(batch, pebble.Sync); err != nil {
 		return err
 	}
 	reservationCommitted = true
@@ -1367,7 +1368,26 @@ func (s *SessionStore) ListV3SessionTombstonesForAccount(accountScopeID string, 
 }
 
 func (s *SessionStore) GetSession(sessionID string) (SessionSnapshot, bool, error) {
-	return s.getSessionFromReader(s.store.db, sessionID)
+	if s.mutationSessions != nil || s.sessionDecoded != nil {
+		return s.getSessionFromReader(s.store.db, sessionID)
+	}
+	entry, generation, cached := s.store.sessionReads.begin(KeySession(sessionID))
+	var record SessionSnapshot
+	if cached == nil {
+		ok, err := getJSONFromReader(s.store.db, KeySession(sessionID), &record)
+		if err != nil || !ok {
+			return SessionSnapshot{}, false, err
+		}
+		if s.sessionCacheRead != nil {
+			s.sessionCacheRead(sessionID)
+		}
+		s.store.sessionReads.fill(entry, generation, record)
+	} else {
+		record = *cached
+	}
+	local := *s
+	local.mutationSessions = map[string]cachedMutationSession{sessionID: {session: record, found: true}}
+	return local.getSessionFromReader(s.store.db, sessionID)
 }
 
 func (s *SessionStore) getSessionFromReader(reader pebble.Reader, sessionID string) (SessionSnapshot, bool, error) {

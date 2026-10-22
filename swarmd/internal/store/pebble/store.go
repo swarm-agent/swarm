@@ -16,6 +16,7 @@ import (
 )
 
 type Store struct {
+	sessionReads                sessionReadCache
 	runnerExpiryOnce            sync.Once
 	runnerExpiryCancel          context.CancelFunc
 	runnerExpiryDone            chan struct{}

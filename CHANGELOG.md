@@ -7,6 +7,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 ## Unreleased
 
 - Fix the post-unlock sync durability test setup so its simulated crash keeps the synced database directory. Docs impact: none.
+- Cache decoded session records with bounded shared storage, isolated snapshots, and generation-fenced commit invalidation; reuse mutation classification reads. Docs impact: none.
 
 - Release account-scoped V3 mutation locks before syncing the WAL, while keeping durable completion ahead of realtime and scheduling publication. Docs impact: none.
 
