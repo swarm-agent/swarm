@@ -12,12 +12,12 @@ const PAIRABLE_DEVICE_ID = /^[A-Za-z0-9_-]{8,64}$/;
 const PAIR_CODE = /^[A-Z0-9]{4}-[A-Z0-9]{4}$/;
 
 const INSTRUCTIONS =
-  'Swarm is a box you deploy AI workers to; this relay reaches your Swarm machines. ' +
+  'Swarm runs AI agents on your machines; this relay reaches your Swarm machines. ' +
   'Call swarm_list_machines first; pass `machine` to every other tool when more than one machine is online. ' +
-  'Every machine comes with three workers: a coder (code changes), a designer (UI and design work) and a finder (research and audits). ' +
+  'Every machine has Swarm\'s own agents built in: a coder (code changes), a designer (UI and design work) and a finder (research and audits); run one with swarm_run_task and its role, nothing to deploy. ' +
   'Workers need a model provider: swarm_list_providers shows which are ready; the person adds a key on the setup page or by script, never in chat. ' +
   'Work happens in projects: ask which folders the user\'s work is in and create a project with swarm_create_project (a name and those folders); nothing in them is changed. ' +
-  'Give a worker a job with swarm_give_job (worker, project, folder when the project has several, and a brief that says what to do and how to know it is done); ' +
+  'Give one of the person\'s own workers a job with swarm_give_job (worker, project, folder when the project has several, and a brief that says what to do and how to know it is done); ' +
   'each job runs in Swarm\'s sandbox on its own branch with only that folder\'s secrets and never waits on a person. ' +
   'swarm_get_job waits until it settles and returns the result (branch, commits, files, report, cost, and the diff on request); ' +
   'swarm_message_job sends a follow-up in the same job; swarm_answer_job replies to a worker\'s question; swarm_deliver_job merges a finished job into its folder (a local git merge, never a push). ' +
