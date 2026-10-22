@@ -140,7 +140,7 @@ The onboarding a frontend runs, in order:
    `workspace_not_visible`, run once, for all folders:
 
    ```sh
-   pkexec swarmctl workspace add /home/me/app /home/me/docs
+   pkexec swarmctl workspace add ~/app ~/docs
    ```
 
    It restarts Swarm once; wait for `/v3/hello` to answer again, then create
