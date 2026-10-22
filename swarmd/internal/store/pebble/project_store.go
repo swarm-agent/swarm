@@ -295,6 +295,7 @@ func (s *SessionStore) UpdateProject(accountScopeID, id string, mutate func(*Pro
 
 // ProjectTaskDeliverable represents an artifact, video, code diff, or report produced by a task.
 type ProjectTaskDeliverable struct {
+	MediaCostEstimate
 	ID                  string           `json:"id"`
 	Title               string           `json:"title"`
 	Kind                string           `json:"kind"`   // "video" | "code_diff" | "artifact" | "report"

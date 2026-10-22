@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"mime"
@@ -87,7 +88,7 @@ func decodeMediaDataURL(value string) (string, []byte, bool) {
 // view is what an AI reads about one file.
 func (f controlMCPMediaFile) view(index int) map[string]any {
 	d := f.record
-	out := map[string]any{"file": index, "id": d.ID, "kind": d.Kind, "status": d.Status}
+	out := map[string]any{"file": index, "id": d.ID, "kind": d.Kind, "status": d.Status, "cost_usd": d.CostUSD, "price_status": d.PriceStatus, "pricing_summary": d.PricingSummary}
 	if d.Title != "" {
 		out["title"] = controlMCPTruncate(d.Title, 160)
 	}
@@ -148,6 +149,16 @@ func (c *controlMCPCall) controlMCPMediaJobFiles(out map[string]any, projectID, 
 		views = append(views, file.view(i+1))
 	}
 	out["files"] = views
+	var total float64
+	priceStatus := "known"
+	for _, file := range files {
+		total += file.record.CostUSD
+		if file.record.PriceStatus == "" || file.record.PriceStatus == "unknown" {
+			priceStatus = "unknown"
+		}
+	}
+	out["cost_usd"] = total
+	out["price_status"] = priceStatus
 	if task.Model != "" {
 		out["model"] = task.Model
 	}
@@ -461,6 +472,7 @@ func controlMCPListMediaModels(c *controlMCPCall, args map[string]any) (any, err
 
 func controlMCPMediaModelView(option mediaCatalogOption) map[string]any {
 	view := map[string]any{"model": option.ID, "provider": option.Provider}
+	view["pricing"] = conciseMediaPricing(option.Pricing)
 	if option.DisplayName != "" && option.DisplayName != option.ID {
 		view["name"] = option.DisplayName
 	}
@@ -504,9 +516,6 @@ func controlMCPMediaModelView(option mediaCatalogOption) map[string]any {
 	}
 	if c := opts.Constraints; c != nil {
 		view["operations"] = controlMCPVideoOperations(c)
-	}
-	if len(option.Pricing) > 0 && len(option.Pricing) <= 400 {
-		view["pricing"] = option.Pricing
 	}
 	return view
 }
@@ -640,4 +649,56 @@ func controlMCPReadMedia(c *controlMCPCall, args map[string]any) (any, error) {
 	out["data_base64"] = base64.StdEncoding.EncodeToString(file.data[offset:end])
 	out["done"] = end == len(file.data)
 	return out, nil
+}
+
+// conciseMediaPricing exposes catalog prices, never a raw catalog payload.
+func conciseMediaPricing(raw json.RawMessage) map[string]any {
+	var catalog struct {
+		Billing struct {
+			Status string `json:"status"`
+			Lines  []struct {
+				Billable   string  `json:"billable"`
+				Unit       string  `json:"unit"`
+				Variant    string  `json:"variant"`
+				Price      float64 `json:"price_usd"`
+				Conditions struct {
+					ServiceTier string `json:"service_tier"`
+					Resolution  string `json:"resolution"`
+				} `json:"conditions"`
+			} `json:"lines"`
+		} `json:"billing"`
+	}
+	out := map[string]any{"billing_status": "unknown"}
+	if json.Unmarshal(raw, &catalog) != nil {
+		return out
+	}
+	if catalog.Billing.Status != "" {
+		out["billing_status"] = catalog.Billing.Status
+	}
+	prices := []map[string]any{}
+	for _, line := range catalog.Billing.Lines {
+		if line.Conditions.ServiceTier != "" && line.Conditions.ServiceTier != "standard" {
+			continue
+		}
+		variant := strings.ToLower(line.Variant)
+		if strings.HasPrefix(variant, "batch") || strings.HasPrefix(variant, "flex") || strings.HasPrefix(variant, "priority") {
+			continue
+		}
+		if line.Unit != "image" && !(line.Unit == "million_tokens" && line.Billable == "image_output") && line.Unit != "second" {
+			continue
+		}
+		item := map[string]any{"unit": line.Unit, "price_usd": line.Price, "billable": line.Billable}
+		if line.Variant != "" {
+			item["variant"] = line.Variant
+		}
+		if line.Conditions.Resolution != "" {
+			item["resolution"] = line.Conditions.Resolution
+		}
+		prices = append(prices, item)
+		if len(prices) == 12 {
+			break
+		}
+	}
+	out["prices"] = prices
+	return out
 }

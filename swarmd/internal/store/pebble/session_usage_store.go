@@ -81,6 +81,8 @@ type SessionUsageSummary struct {
 }
 
 type SessionMediaUsageRecord struct {
+	ProjectID         string            `json:"project_id,omitempty"`
+	TaskID            string            `json:"task_id,omitempty"`
 	BudgetOperationID string            `json:"budget_operation_id,omitempty"`
 	ScopeTotals       []UsageScopeTotal `json:"scope_totals,omitempty"`
 	ID                string            `json:"id"`
@@ -146,7 +148,7 @@ func (s *SessionStore) updateAccountUsageRollupInBatch(batch *pebble.Batch, acco
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	sessionID = strings.TrimSpace(sessionID)
 	date = strings.TrimSpace(date)
-	if accountScopeID == "" || sessionID == "" || date == "" {
+	if accountScopeID == "" || date == "" {
 		return nil
 	}
 	provider = strings.ToLower(strings.TrimSpace(provider))
@@ -708,7 +710,7 @@ func (s *SessionStore) PutMediaUsage(rec SessionMediaUsageRecord) error {
 	}
 	rec.SessionID = strings.TrimSpace(rec.SessionID)
 	if rec.SessionID == "" {
-		return errors.New("media usage session_id is required")
+		return s.putTaskMediaUsage(rec)
 	}
 	rec.AccountScopeID = strings.TrimSpace(rec.AccountScopeID)
 	if rec.AccountScopeID == "" {

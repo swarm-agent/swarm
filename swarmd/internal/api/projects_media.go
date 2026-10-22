@@ -60,6 +60,7 @@ func (s *Server) generateImageMedia(
 	modelOverride string,
 	resolution string,
 	sourceImage *imagegen.ManagedImageSource,
+	generated ...*imagegen.ManagedImage,
 ) (string, string, string, string, error) {
 	if s == nil || s.imageGen == nil {
 		return "", "", "", "", errors.New("image generation service is not configured")
@@ -139,6 +140,9 @@ func (s *Server) generateImageMedia(
 		return "", actualModel, ar, resTag, errors.New("image generation returned empty image data")
 	}
 
+	if len(generated) > 0 && generated[0] != nil {
+		*generated[0] = res
+	}
 	mime := res.MediaType
 	if mime == "" {
 		mime = "image/png"
@@ -1150,7 +1154,16 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 					if len(task.ImagePrompts) > 0 {
 						reqPrompt = task.ImagePrompts[i]
 					}
-					mediaURL, usedModel, resolvedAR, resolvedRes, err := s.generateImageMedia(ctx, p, reqPrompt, ar, variantIdx, task.Model, task.Resolution, sourceImage)
+					var generated imagegen.ManagedImage
+					mediaURL, usedModel, resolvedAR, resolvedRes, err := s.generateImageMedia(ctx, p, reqPrompt, ar, variantIdx, task.Model, task.Resolution, sourceImage, &generated)
+					var estimate pebblestore.MediaCostEstimate
+					if err == nil {
+						selection, resolveErr := s.imageGen.ResolveModelSelection(usedModel)
+						err = resolveErr
+						if err == nil {
+							estimate, err = s.recordTaskMedia(p, task, i, pebblestore.MediaCostEstimateOptions{Provider: selection.Provider, Model: selection.Model, Kind: "image", Count: 1, ImageSize: resolvedRes, AspectRatio: resolvedAR, OutputTokens: generated.OutputTokens, TextOutputTokens: generated.TextOutputTokens, ThinkingTokens: generated.ThinkingTokens, PromptTokens: generated.PromptTokens, InputImageTokens: generated.InputImageTokens}, generated.MediaType, len(generated.Bytes))
+						}
+					}
 					slotIndex := i
 					_, persistErr := updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
 						if slotIndex < len(t.Deliverables) {
@@ -1166,6 +1179,7 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 								t.Deliverables[slotIndex].Description = errMsg
 							} else {
 								t.Deliverables[slotIndex].Status = "ready"
+								t.Deliverables[slotIndex].MediaCostEstimate = estimate
 								t.Deliverables[slotIndex].MediaURL = mediaURL
 								t.Deliverables[slotIndex].Thumbnail = mediaURL
 								t.Deliverables[slotIndex].ParentDeliverableID = sourceMediaID
@@ -1574,6 +1588,10 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 					if genErr == nil && (len(vRes.Bytes) == 0 || !strings.HasPrefix(vRes.MediaType, "video/")) {
 						genErr = errors.New("video provider returned no playable video")
 					}
+					var estimate pebblestore.MediaCostEstimate
+					if genErr == nil {
+						estimate, genErr = s.recordTaskMedia(p, task, slotIndex, pebblestore.MediaCostEstimateOptions{Provider: vRes.Provider, Model: vRes.Model, Kind: "video", Count: 1, DurationSeconds: vRes.DurationSeconds, Resolution: vRes.Resolution, AspectRatio: vRes.AspectRatio, IncludesAudio: true}, vRes.MediaType, len(vRes.Bytes))
+					}
 					if genErr != nil {
 						errMu.Lock()
 						if firstGenErr == nil {
@@ -1611,6 +1629,7 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 								}
 
 								t.Deliverables[slotIndex].Status = "ready"
+								t.Deliverables[slotIndex].MediaCostEstimate = estimate
 								t.Deliverables[slotIndex].MediaURL = mediaURL
 								t.Deliverables[slotIndex].Thumbnail = mediaURL
 								t.Deliverables[slotIndex].Duration = durationStr
@@ -1799,6 +1818,7 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 		}
 		var genErr error
 		var mediaURL string
+		var estimate pebblestore.MediaCostEstimate
 		if s.audioGen != nil {
 			res, err := s.audioGen.GenerateManagedAudio(ctx, audiogen.ManagedAudioRequest{
 				Prompt:          prompt,
@@ -1819,6 +1839,7 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 				if mime == "" {
 					mime = "audio/mp3"
 				}
+				estimate, genErr = s.recordTaskMedia(p, task, 0, pebblestore.MediaCostEstimateOptions{Provider: res.Provider, Model: soundModel, Kind: "audio", Count: 1, DurationSeconds: durSeconds}, mime, len(res.Bytes))
 				mediaURL = fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(res.Bytes))
 			} else {
 				genErr = errors.New("empty audio generation response")
@@ -1829,6 +1850,7 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 		_, _ = updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
 			if len(t.Deliverables) > 0 {
 				t.Deliverables[0].Status = "ready"
+				t.Deliverables[0].MediaCostEstimate = estimate
 				t.Deliverables[0].MediaURL = mediaURL
 				if genErr != nil || mediaURL == "" {
 					t.Deliverables[0].Status = "failed"
@@ -2036,4 +2058,26 @@ func (s *Server) imageModelListsAspectRatios(accountScopeID, model string) bool 
 	}
 	opts := s.getModelGenerationOptions(model)
 	return opts != nil && len(opts.AspectRatios) > 0
+}
+
+func (s *Server) recordTaskMedia(p identity.Principal, task *pebblestore.ProjectTaskRecord, slot int, opts pebblestore.MediaCostEstimateOptions, mediaType string, size int) (pebblestore.MediaCostEstimate, error) {
+	if task == nil || task.AccountID != p.AccountScopeID {
+		return pebblestore.MediaCostEstimate{}, errors.New("media task principal mismatch")
+	}
+	if opts.Provider == imagegen.ProviderGoogleGemini {
+		opts.Provider = "google"
+	}
+	if opts.Provider == imagegen.ProviderCodexOpenAI {
+		opts.Provider = "codex"
+	}
+	estimate := s.sessions.EstimateMediaCostWithOptions(opts)
+	sessionID := task.OriginSessionID
+	if sessionID == "" {
+		sessionID = p.SessionID
+	}
+	rec := pebblestore.SessionMediaUsageRecord{ID: fmt.Sprintf("task-media:%s:%s:%d", task.ProjectID, task.ID, slot), ProjectID: task.ProjectID, TaskID: task.ID, SessionID: sessionID, AccountScopeID: p.AccountScopeID, UserID: p.UserID, Provider: opts.Provider, Model: opts.Model, Kind: opts.Kind, MediaType: mediaType, Size: int64(size), CostUSD: estimate.CostUSD, PriceStatus: estimate.PriceStatus, PricingSummary: estimate.PricingSummary, SnapshotID: estimate.SnapshotID, SnapshotVersion: estimate.SnapshotVersion, CreatedAt: time.Now().UnixMilli()}
+	if err := s.sessions.RecordMediaUsage(rec); err != nil {
+		return estimate, fmt.Errorf("record media usage: %w", err)
+	}
+	return estimate, nil
 }

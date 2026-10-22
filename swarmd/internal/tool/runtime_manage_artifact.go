@@ -1758,15 +1758,19 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 		}
 
 		estimate = r.sessions.EstimateMediaCostWithOptions(pebblestore.MediaCostEstimateOptions{
-			Provider:     imageProvider,
-			Model:        imageModel,
-			Kind:         "image",
-			Count:        1,
-			OutputTokens: generated.OutputTokens,
-			Resolution:   effectiveImageResolution,
-			ImageSize:    requestedImageSize,
-			AspectRatio:  requestedAspectRatio,
-			IsIteration:  sourceRef != nil,
+			Provider:         imageProvider,
+			Model:            imageModel,
+			Kind:             "image",
+			Count:            1,
+			OutputTokens:     generated.OutputTokens,
+			TextOutputTokens: generated.TextOutputTokens,
+			ThinkingTokens:   generated.ThinkingTokens,
+			PromptTokens:     generated.PromptTokens,
+			InputImageTokens: generated.InputImageTokens,
+			Resolution:       effectiveImageResolution,
+			ImageSize:        requestedImageSize,
+			AspectRatio:      requestedAspectRatio,
+			IsIteration:      sourceRef != nil,
 		})
 	}
 
