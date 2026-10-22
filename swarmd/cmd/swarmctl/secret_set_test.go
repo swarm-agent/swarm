@@ -11,9 +11,10 @@ import (
 )
 
 // Purpose: runSecret/setSecret must create missing slots only with an explicit
-// allowlist, refuse host changes without any mutation, and keep piped values and
-// server bodies out of output/errors. A fixture daemon socket is the narrowest
-// layer that proves the CLI's requests and refusal postconditions together.
+// canonical allowlist, accept equivalent host spellings, refuse host changes
+// without any mutation, and keep piped values and value response bodies out of
+// output/errors. A fixture daemon socket is the narrowest layer that proves the
+// CLI's requests and refusal postconditions together.
 func TestSecretSet(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -23,6 +24,10 @@ func TestSecretSet(t *testing.T) {
 		reject   bool
 	}{
 		{name: "create", hosts: "api.example.com"},
+		{name: "create canonical hosts", hosts: " API.Example.com.,api.example.com "},
+		{name: "matching case", existing: true, hosts: "API.Example.com"},
+		{name: "matching trailing dot", existing: true, hosts: " api.example.com. "},
+		{name: "extra trailing dot is not equivalent", existing: true, hosts: "api.example.com..", wantErr: "--hosts differs"},
 		{name: "missing hosts", wantErr: "a new secret needs --hosts: the websites it may be sent to"},
 		{name: "mismatch", existing: true, hosts: "other.example.com", wantErr: "--hosts differs"},
 		{name: "matching", existing: true, hosts: "api.example.com"},
@@ -49,7 +54,7 @@ func TestSecretSet(t *testing.T) {
 					if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 						t.Error(err)
 					}
-					if got.Name != "KEY" || got.Description != "test key" || len(got.Hosts) != 1 || got.Hosts[0] != "api.example.com" {
+					if got.Name != "KEY" || got.Description != "test key" || strings.Join(normalizeSecretHosts(got.Hosts), ",") != "api.example.com" {
 						t.Errorf("unexpected create metadata: %+v", got)
 					}
 					io.WriteString(w, value)
@@ -110,5 +115,67 @@ func TestSecretSet(t *testing.T) {
 				t.Fatalf("requests = %v, want %s", requests, want)
 			}
 		})
+	}
+}
+
+// Purpose: runSecret/setSecret must surface metadata rejection reasons before
+// reading private input. The fixture socket and a recording reader prove both
+// the request sequence (no value PUT) and that rejected setup never reads stdin.
+func TestSecretSetMetadataRejection(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		t.Run(method, func(t *testing.T) {
+			const reason = "name must use uppercase letters"
+			var requests []string
+			socket := setupFixture(t, func(w http.ResponseWriter, r *http.Request) {
+				requests = append(requests, r.Method+" "+r.URL.Path)
+				if r.Method == method {
+					http.Error(w, reason, http.StatusBadRequest)
+					return
+				}
+				if r.Method != http.MethodGet {
+					t.Errorf("unexpected request: %s", r.Method)
+				}
+				io.WriteString(w, `{"secrets":[]}`)
+			})
+			input := &secretRecordingReader{}
+			var output bytes.Buffer
+			err := runSecret([]string{"set", "--socket", socket, "--name", "my_key", "--hosts", "api.example.com"}, input, &output)
+			if err == nil || !strings.Contains(err.Error(), reason) {
+				t.Fatalf("error = %v, want daemon reason", err)
+			}
+			if input.read || output.Len() != 0 {
+				t.Fatal("rejected metadata read private input or printed output")
+			}
+			want := "GET /v1/secrets"
+			if method == http.MethodPost {
+				want += ",POST /v1/secrets"
+			}
+			if strings.Join(requests, ",") != want {
+				t.Fatalf("requests = %v, want %s", requests, want)
+			}
+		})
+	}
+}
+
+type secretRecordingReader struct{ read bool }
+
+func (r *secretRecordingReader) Read(p []byte) (int, error) {
+	r.read = true
+	return 0, io.EOF
+}
+
+// Purpose: normalization used by setSecret must match the daemon's canonical
+// allowlist representation on both sides; this helper-level test isolates sort,
+// deduplication, empty entries, whitespace, case and trailing-dot handling.
+func TestSecretHostNormalization(t *testing.T) {
+	got := normalizeSecretHosts([]string{" Z.Example.com. ", "api.example.com", "API.EXAMPLE.COM.", " "})
+	if strings.Join(got, ",") != "api.example.com,z.example.com" {
+		t.Fatalf("hosts = %v", got)
+	}
+	if !sameSecretHosts(got, []string{"Z.Example.Com.", " API.Example.Com "}) {
+		t.Fatal("equivalent allowlists differ")
+	}
+	if sameSecretHosts(got, []string{"other.example.com"}) {
+		t.Fatal("different allowlists match")
 	}
 }

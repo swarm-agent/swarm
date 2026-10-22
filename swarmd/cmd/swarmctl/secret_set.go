@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
+	"sort"
 	"strings"
 )
 
@@ -37,15 +39,11 @@ func setSecret(client *http.Client, name, description string, hosts []string, ho
 		if hostsGiven && !sameSecretHosts(hosts, slot.Hosts) {
 			return errors.New("--hosts differs from the secret's stored hosts; refusing to change where it may be sent")
 		}
-		hosts = slot.Hosts
+		hosts = normalizeSecretHosts(slot.Hosts)
 		break
 	}
-	if !found && len(hosts) == 0 {
+	if !found && len(normalizeSecretHosts(hosts)) == 0 {
 		return errors.New("a new secret needs --hosts: the websites it may be sent to")
-	}
-	value, err := readSecretValue(input, name)
-	if err != nil {
-		return err
 	}
 	if !found {
 		body, err := json.Marshal(map[string]any{"name": name, "description": description, "hosts": hosts})
@@ -55,6 +53,11 @@ func setSecret(client *http.Client, name, description string, hosts []string, ho
 		if _, err := secretSetRequest(client, http.MethodPost, "/v1/secrets", "application/json", body); err != nil {
 			return err
 		}
+		hosts = normalizeSecretHosts(hosts)
+	}
+	value, err := readSecretValue(input, name)
+	if err != nil {
+		return err
 	}
 	if _, err := secretSetRequest(client, http.MethodPut, "/v1/secrets/"+url.PathEscape(name)+"/value", "application/octet-stream", value); err != nil {
 		return err
@@ -63,29 +66,28 @@ func setSecret(client *http.Client, name, description string, hosts []string, ho
 	return err
 }
 
-// Hosts are an allowlist, so ordering and repeated entries do not change it.
-func sameSecretHosts(a, b []string) bool {
-	set := func(hosts []string) map[string]bool {
-		m := make(map[string]bool)
-		for _, h := range hosts {
-			m[h] = true
-		}
-		return m
-	}
-	x, y := set(a), set(b)
-	if len(x) != len(y) {
-		return false
-	}
-	for h := range x {
-		if !y[h] {
-			return false
+// Match NormalizeSecretSlotHosts canonicalization; validation remains owned by
+// the daemon's create boundary, before we ask for the value.
+func normalizeSecretHosts(hosts []string) []string {
+	seen := make(map[string]bool)
+	out := make([]string, 0, len(hosts))
+	for _, h := range hosts {
+		h = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(h)), ".")
+		if h != "" && !seen[h] {
+			seen[h] = true
+			out = append(out, h)
 		}
 	}
-	return true
+	sort.Strings(out)
+	return out
 }
 
-// Unlike the legacy metadata commands, set never exposes a response body,
-// including on rejection: an upstream error could echo the submitted value.
+func sameSecretHosts(a, b []string) bool {
+	return slices.Equal(normalizeSecretHosts(a), normalizeSecretHosts(b))
+}
+
+// Value responses must never be exposed: an upstream error could echo the
+// submitted value. Metadata rejections retain their actionable daemon reason.
 func secretSetRequest(client *http.Client, method, path, contentType string, body []byte) ([]byte, error) {
 	req, err := http.NewRequest(method, "http://swarm-local-transport"+path, bytes.NewReader(body))
 	if err != nil {
@@ -100,6 +102,12 @@ func secretSetRequest(client *http.Client, method, path, contentType string, bod
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if method != http.MethodPut {
+			reason, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			if err == nil && len(bytes.TrimSpace(reason)) > 0 {
+				return nil, fmt.Errorf("secret request rejected (HTTP %d): %s", resp.StatusCode, bytes.TrimSpace(reason))
+			}
+		}
 		return nil, fmt.Errorf("secret request rejected (HTTP %d)", resp.StatusCode)
 	}
 	if method != http.MethodGet {
