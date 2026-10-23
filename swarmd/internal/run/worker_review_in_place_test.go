@@ -278,6 +278,7 @@ func TestReviewerReadsTheJobsOwnWorktreeInPlace(t *testing.T) {
 			a := *native
 			a.ID, a.SessionID = "cleanup-"+status, "session-"+status
 			a.Title, a.Agent, a.Status, a.StartCommit = "Review", "reviewer", status, head
+			a.AutomationID = "workflow:review"
 			if err := db2.PutProjectTask(account, &a); err != nil {
 				t.Fatal(err)
 			}
@@ -285,6 +286,12 @@ func TestReviewerReadsTheJobsOwnWorktreeInPlace(t *testing.T) {
 			if err := service.PrepareTaskReviewSession(&snapshot, &a); err != nil {
 				t.Fatal(err)
 			}
+			snapshot.Metadata["swarm_v3_source_workspace_path"] = repo
+			snapshot.WorktreeBaseBranch = head
+			snapshot.Metadata["swarm_v3_worktree_base_commit"] = head
+			snapshot.Metadata["swarm_v3_worktree_owner_session_id"] = sessionReviewLaneOwner(snapshot.Metadata)
+			snapshot.Metadata["project_id"] = a.ProjectID
+			snapshot.Metadata["task_id"] = a.ID
 			if err := db2.CreateSession(snapshot); err != nil {
 				t.Fatal(err)
 			}
@@ -306,12 +313,45 @@ func TestReviewerReadsTheJobsOwnWorktreeInPlace(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			// Cleanup must reject mismatched durable identity without releasing A.
+			identity, _, err := db2.GetReviewCleanup(account, a.SessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			badSnapshot := snapshot
+			badSnapshot.WorktreeRootPath += "-mismatch"
+			if reviewIdentityMatches(identity, badSnapshot) {
+				t.Fatal("mismatched cleanup identity accepted")
+			}
+			if err := service.PrepareTaskReviewSession(&next, &b); err == nil {
+				t.Fatal("mismatched cleanup released lane")
+			}
+			if err := db2.PutReviewCleanup(account, identity); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := service.FinishTaskReview(&a, pebblestore.JobReview{Verdict: "block", Head: head}); err != nil {
 				t.Fatal(err)
 			}
 			saved, _, err := db2.GetProjectTask(account, a.ProjectID, a.ID)
 			if err != nil || saved.ReviewCleanup == nil || saved.ReviewCleanup.State != "done" {
 				t.Fatalf("native cleanup did not finish %+v %v", saved.ReviewCleanup, err)
+			}
+			// Runtime scope resolution must not resurrect A's completed lease.
+			resolvedSnapshot, _, err := service.host.runs.sessions.GetSession(a.SessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The fixture engine cannot execute routed Git; scope resolution must
+			// get past registration to that separate Git validation boundary.
+			if err := service.host.runs.validateRunRepositoryIdentity(resolvedSnapshot, p); err == nil || !strings.Contains(err.Error(), "resolve git common dir") {
+				t.Fatalf("unexpected scope validation result %v", err)
+			}
+			state, _, err := db2.GetReviewCleanup(account, a.SessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := manager.RestoreReviewIdentity(state); err != nil {
+				t.Fatal(err)
 			}
 			if err := service.PrepareTaskReviewSession(&next, &b); err != nil {
 				t.Fatalf("next review could not borrow lane %v", err)

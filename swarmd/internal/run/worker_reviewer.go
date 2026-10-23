@@ -388,6 +388,10 @@ func reviewEnvironment(meta map[string]any) map[string]string {
 	return env
 }
 
+func reviewIdentityMatches(state sandbox.ReviewCleanupState, snapshot store.SessionSnapshot) bool {
+	return state.Checkout == snapshot.WorktreeRootPath && state.Session == snapshot.ID && state.Borrowed == (sessionReviewLaneOwner(snapshot.Metadata) != "")
+}
+
 func (s *WorkerExecutionService) registerReview(snapshot store.SessionSnapshot) error {
 	if snapshot.Metadata["worker_role"] != store.WorkerRoleReviewer {
 		return nil
@@ -413,8 +417,11 @@ func (s *WorkerExecutionService) registerReview(snapshot store.SessionSnapshot) 
 		return err
 	}
 	if found {
-		if state.Checkout != snapshot.WorktreeRootPath || state.Session != snapshot.ID || state.Borrowed != (sessionReviewLaneOwner(snapshot.Metadata) != "") {
+		if !reviewIdentityMatches(state, snapshot) {
 			return fmt.Errorf("review identity mismatch")
+		}
+		if state.Phase == "volume_removed" {
+			return nil
 		}
 		if err := m.RestoreReviewIdentity(state); err != nil {
 			return err
@@ -502,6 +509,9 @@ func (s *WorkerExecutionService) cleanupReview(r store.WorkerRunRecord) error {
 		}
 		if !found {
 			return fmt.Errorf("missing durable review identity")
+		}
+		if !reviewIdentityMatches(state, snapshot) {
+			return fmt.Errorf("review identity mismatch")
 		}
 		return m.CleanupReviewDurable(ctx, &state, func(next sandbox.ReviewCleanupState) error {
 			return db.PutReviewCleanup(snapshot.AccountScopeID, next)

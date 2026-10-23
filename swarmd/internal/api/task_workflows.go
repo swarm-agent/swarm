@@ -296,7 +296,9 @@ func (s *Server) waitTaskJob(ctx context.Context, account, jobID string) (jobaut
 			if task.Agent == "reviewer" {
 				review, err := s.repairTaskReview(task)
 				if err != nil {
-					return out, err
+					// Cleanup is durable and retried with backoff. Do not fail
+					// the delivery or hand off to reopen while it is pending.
+					goto waitForChange
 				}
 				if review != nil {
 					out.Verdict, out.Findings, out.ReviewUnreadable = normalizedAutomationReview(review)
@@ -304,6 +306,7 @@ func (s *Server) waitTaskJob(ctx context.Context, account, jobID string) (jobaut
 			}
 			return out, nil
 		}
+	waitForChange:
 		timer := time.NewTimer(time.Minute)
 		select {
 		case <-ctx.Done():

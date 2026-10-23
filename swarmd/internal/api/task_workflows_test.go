@@ -473,8 +473,25 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if _, err := newSessionV3Executor(server).recordRunStatus(sessionV3ExecutorJob{Principal: principal, SessionID: reviewTask.SessionID, RunID: intent.RunID, EpochID: intent.EpochID}, sessionruntime.RunIntentCompleted, "", "session.assistant.completed"); err != nil {
+		// Exercise the real terminal hook, including unsuccessful review runs.
+		terminal := sessionruntime.RunIntentCompleted
+		if i == 1 {
+			terminal = sessionruntime.RunIntentFailed
+		}
+		if i == 2 {
+			terminal = sessionruntime.RunIntentCancelled
+		}
+		if _, err := newSessionV3Executor(server).recordRunStatus(sessionV3ExecutorJob{Principal: principal, SessionID: reviewTask.SessionID, RunID: intent.RunID, EpochID: intent.EpochID}, terminal, "", "session.run."+terminal); err != nil {
 			t.Fatal(err)
+		}
+		settledTask, _, err := sessions.Store().GetProjectTask(principal.AccountScopeID, project.ID, reviewTaskID)
+		if err != nil || settledTask.ReviewCleanup == nil || settledTask.ReviewCleanup.State != "done" {
+			t.Fatalf("terminal hook did not release review before workflow handoff %+v %v", settledTask, err)
+		}
+		if i == 1 || i == 2 {
+			if settledTask.Review == nil || settledTask.Review.Verdict != "block" {
+				t.Fatal("unsuccessful terminal hook did not block review")
+			}
 		}
 		if i == 4 {
 			// Recreate interrupted persistence without overwriting a saved verdict:
@@ -801,11 +818,13 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	cleanupOutcome, err := server.waitTaskJob(context.Background(), principal.AccountScopeID, taskRunJobID(project.ID, cleanupTask.ID))
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancelWait()
+	cleanupOutcome, err := server.waitTaskJob(waitCtx, principal.AccountScopeID, taskRunJobID(project.ID, cleanupTask.ID))
 	// waitTaskJob must not advance a workflow while shared review cleanup is
 	// pending; its durable verdict remains available for recovery.
-	if err == nil {
-		t.Fatalf("unfinished cleanup advanced waiter %+v", cleanupOutcome)
+	if err != context.DeadlineExceeded {
+		t.Fatalf("unfinished cleanup did not keep waiting %+v %v", cleanupOutcome, err)
 	}
 	cleanupSaved, _, err := sessions.Store().GetProjectTask(principal.AccountScopeID, project.ID, cleanupTask.ID)
 	if err != nil || cleanupSaved.ReviewCleanup == nil || cleanupSaved.ReviewCleanup.State != "failed" {

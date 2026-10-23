@@ -37,7 +37,9 @@ func (m *Manager) RestoreReviewIdentity(s ReviewCleanupState) error {
 		return fmt.Errorf("invalid durable review identity")
 	}
 	switch s.Phase {
-	case "active", "closing", "container_removed", "checkout_removed", "volume_removed":
+	case "volume_removed":
+		return nil // A completed identity must never reserve the checkout again.
+	case "active", "closing", "container_removed", "checkout_removed":
 	default:
 		return fmt.Errorf("invalid review cleanup phase")
 	}
@@ -68,6 +70,9 @@ func (m *Manager) RestoreReviewIdentity(s ReviewCleanupState) error {
 func (m *Manager) CleanupReviewDurable(ctx context.Context, s *ReviewCleanupState, save func(ReviewCleanupState) error, validate, remove func() error) error {
 	if err := m.RestoreReviewIdentity(*s); err != nil {
 		return err
+	}
+	if s.Phase == "volume_removed" {
+		return nil
 	}
 	advance := func(phase string) error {
 		next := *s
