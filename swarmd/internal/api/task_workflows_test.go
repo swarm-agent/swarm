@@ -473,6 +473,15 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+		// Purpose: CleanupTaskReview must persist retryable failures without handing
+		// the verdict to waitTaskJob. Temporarily unavailable source storage exercises
+		// real cleanup validation, backoff marking and the API waiter together.
+		if i == 3 {
+			if err := os.Rename(folder, folder+"-unavailable"); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Rename(folder+"-unavailable", folder) })
+		}
 		// Exercise the real terminal hook, including unsuccessful review runs.
 		terminal := sessionruntime.RunIntentCompleted
 		if i == 1 {
@@ -483,6 +492,92 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 		}
 		if _, err := newSessionV3Executor(server).recordRunStatus(sessionV3ExecutorJob{Principal: principal, SessionID: reviewTask.SessionID, RunID: intent.RunID, EpochID: intent.EpochID}, terminal, "", "session.run."+terminal); err != nil {
 			t.Fatal(err)
+		}
+		if i == 3 {
+			failed, _, err := sessions.Store().GetProjectTask(principal.AccountScopeID, project.ID, reviewTaskID)
+			if err != nil || failed.Review == nil || failed.ReviewCleanup == nil {
+				t.Fatalf("missing retry state %+v %v", failed, err)
+			}
+			c := failed.ReviewCleanup
+			if c.State != "failed" || c.Attempts != 1 || c.NextAttemptAt <= time.Now().UnixMilli() || c.FailureReported || c.LastError == "" {
+				t.Fatalf("temporary cleanup failure not marked retryable %+v", c)
+			}
+			if err := execution.CleanupTaskReview(failed); !errors.Is(err, runruntime.ErrTaskReviewCleanupPending) {
+				t.Fatalf("backoff not pending %v", err)
+			}
+			// Force the next attempt due without waiting through production backoff.
+			if _, err := sessions.Store().UpdateProjectTask(principal.AccountScopeID, project.ID, reviewTaskID, func(current *pebblestore.ProjectTaskRecord) error {
+				current.ReviewCleanup.NextAttemptAt = 1
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			server.SetSignalStore(pebblestore.NewSignalStore(sessions.Store().Underlying()))
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			type waitResult struct {
+				outcome jobautomation.AgentOutcome
+				err     error
+			}
+			finished := make(chan waitResult, 1)
+			go func() {
+				out, err := server.waitTaskJob(ctx, principal.AccountScopeID, reviewID)
+				finished <- waitResult{out, err}
+			}()
+			// Observe the waiter's own failed attempt, not merely a pre-seeded state.
+			deadline := time.NewTimer(3 * time.Second)
+			defer deadline.Stop()
+			tick := time.NewTicker(10 * time.Millisecond)
+			defer tick.Stop()
+		waiting:
+			for {
+				select {
+				case result := <-finished:
+					t.Fatalf("retryable cleanup handed off %+v %v", result.outcome, result.err)
+				case <-deadline.C:
+					t.Fatal("waiter did not attempt cleanup")
+				case <-tick.C:
+					current, _, err := sessions.Store().GetProjectTask(principal.AccountScopeID, project.ID, reviewTaskID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if c := current.ReviewCleanup; c.State == "failed" && c.Attempts == 2 {
+						if c.NextAttemptAt <= time.Now().UnixMilli() || c.FailureReported {
+							t.Fatalf("retry not scheduled %+v", c)
+						}
+						break waiting
+					}
+				}
+			}
+			select {
+			case result := <-finished:
+				t.Fatalf("waiter returned during backoff %+v %v", result.outcome, result.err)
+			case <-time.After(50 * time.Millisecond):
+			}
+			if err := os.Rename(folder+"-unavailable", folder); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sessions.Store().UpdateProjectTask(principal.AccountScopeID, project.ID, reviewTaskID, func(current *pebblestore.ProjectTaskRecord) error {
+				current.ReviewCleanup.NextAttemptAt = 1
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := server.signals.Append(pebblestore.Signal{Account: principal.AccountScopeID, Source: "test", Kind: "task.run.completed", Summary: "Cleanup retry due"}); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case result := <-finished:
+				if result.err != nil || result.outcome.Verdict != failed.Review.Verdict {
+					t.Fatalf("retry outcome %+v %v", result.outcome, result.err)
+				}
+			case <-ctx.Done():
+				t.Fatal("waiter did not return after cleanup recovered")
+			}
+			current, _, err := sessions.Store().GetProjectTask(principal.AccountScopeID, project.ID, reviewTaskID)
+			if err != nil || current.ReviewCleanup.State != "done" || current.ReviewCleanup.Attempts != 3 || *current.Review != *failed.Review {
+				t.Fatalf("recovery changed verdict or missed cleanup %+v %v", current, err)
+			}
 		}
 		settledTask, _, err := sessions.Store().GetProjectTask(principal.AccountScopeID, project.ID, reviewTaskID)
 		if err != nil || settledTask.ReviewCleanup == nil || settledTask.ReviewCleanup.State != "done" {
