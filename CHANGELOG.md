@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Plugin README: names `sudo swarmctl setup credential --provider PROVIDER --api-key-stdin` for adding a provider API key by script. Docs impact: plugins/swarm/README.md.
+
 - swarmctl secret set creates or updates a secret and asks for its value at a hidden prompt; Swarm's MCP text, skills and the headless README name `sudo swarmctl secret set --name NAME --hosts HOST` and `secret grant` instead of 'setup page or by script'; `install.sh secret set` passes through to it. Docs impact: containers/headless/app/README.md, plugins/swarm skills.
 
 - Give writable linked-worktree Git a disposable common-metadata overlay so ref deletions can lock packed refs without changing the real shared packed refs; fail closed when bubblewrap lacks overlay support. Docs impact: none.
