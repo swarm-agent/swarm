@@ -235,7 +235,8 @@ func TestControlMCPListProvidersReturnsConnectMethodForEveryUnconnectedProvider(
 		keyTool  bool
 		chatTool bool
 	}{
-		{name: "write key", scopes: []string{"sessions:read", "swarm:read", "swarm:write"}, chatTool: true},
+		// Write may request a human-entered key; levelAllows must keep read clients out.
+		{name: "write key", scopes: []string{"sessions:read", "swarm:read", "swarm:write"}, chatTool: true, keyTool: true},
 		{name: "read key", scopes: []string{"sessions:read", "swarm:read"}},
 		{name: "full key", scopes: []string{"sessions:read", "swarm:read", "swarm:write", "swarm:approve", "swarm:manage"}, chatTool: true, keyTool: true},
 	} {

@@ -6,6 +6,9 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Let write clients request human-only provider-key links over the tailnet, with same-tailnet browser fan-out and per-machine fleet outcomes; keep relay clients excluded.
+  Docs impact: packages/swarm-fleet/README.md and containers/headless/app/TAILNET.md.
+
 - Record native task reviews with the reviewer session's resolved provider/model during settlement and repair; leave unavailable model identity empty. Docs impact: none.
 
 - Correct headless provider connection guidance to Settings > Providers, expose `runs_agents` in provider status and the SDK, and use that capability for setup-page labels.

@@ -40,6 +40,7 @@ const MAX_RESPONSE_BYTES = 8 << 20;
 const MACHINE_PROP = { type: 'string', maxLength: 64, description: 'Machine name from swarm_list_machines. Required when several are configured.' };
 const INSTRUCTIONS = 'swarm-fleet reaches your Swarm machines over your private tailnet. ' +
   'Call swarm_list_machines (or swarm_fleet_status for one view of every machine) first; pass `machine` to every other tool when more than one machine is configured. ' +
+  'For provider API keys, first call swarm_fleet_request_provider_key with the named machines, give its link to the person, then swarm_fleet_wait_provider_key. Never ask for a key in chat. ' +
   'Each machine allows only what your tailnet policy (or its AI key) grants this device: read only, or read and write. ' +
   'Every machine runs its roles (coder, reviewer, finder, designer, compact, router; advanced action and plan) on Swarm\'s recommended models; swarm_fleet_set_models overrides them fleet-wide (advanced, only when the person asks).';
 
@@ -171,9 +172,9 @@ export function accessLevel(names) {
   if (!names) return 'none';
   // A machine lists its default tools unless asked for all of them, so the
   // worker and job tools count as much as the advanced ones.
-  if (names.includes('swarm_request_provider_key') || names.includes('swarm_create_worker') || names.includes('swarm_manage_worker')) return 'full control';
+  if (names.includes('swarm_create_worker') || names.includes('swarm_manage_worker')) return 'full control';
   if (names.includes('swarm_resolve_permission')) return 'read, write and approve';
-  return names.includes('swarm_start_session') || names.includes('swarm_give_job') ? 'read and write' : 'read only';
+  return names.includes('swarm_request_provider_key') || names.includes('swarm_start_session') || names.includes('swarm_give_job') ? 'read and write' : 'read only';
 }
 
 /** The JSON a Swarm tool returned as text, or null. */
@@ -261,6 +262,16 @@ export function roleState(desired, actual, overridden) {
 }
 
 const FLEET_TOOLS = [
+  {
+    name: 'swarm_fleet_request_provider_key', title: 'Add a provider across machines',
+    description: 'First step to add a provider API key across named machines. Returns one browser link; the person opens it on a device in their tailnet and pastes the key once, never in chat. The browser sends it directly to each machine. Then call swarm_fleet_wait_provider_key for per-machine outcomes.',
+    inputSchema: {type:'object', additionalProperties:false, required:['provider','machines'], properties:{provider:{type:'string',maxLength:100}, machines:{type:'array',minItems:1,maxItems:50,uniqueItems:true,items:{type:'string',maxLength:64}}, label:{type:'string',maxLength:64}}},
+  },
+  {
+    name: 'swarm_fleet_wait_provider_key', title: 'Wait for fleet provider key',
+    description: 'After giving the person the fleet key link, wait on every named machine and report its provider status. Repeat if still waiting; never request the key in chat.',
+    inputSchema: {type:'object',additionalProperties:false,required:['provider','machines'],properties:{provider:{type:'string',maxLength:100},machines:{type:'array',minItems:1,maxItems:50,uniqueItems:true,items:{type:'string',maxLength:64}},wait_seconds:{type:'integer',minimum:1,maximum:300}}},
+  },
   {
     name: 'swarm_list_machines', title: 'List Swarm machines',
     description: 'List the Swarm machines in this fleet (found on your tailnet by tag, plus any configured), whether each is reachable now, and what this device may do there. Call first; pass `machine` to other tools when several are listed.',
@@ -490,9 +501,41 @@ export function createFleet(configured, { proxy = '', notify = () => {}, send = 
     return toolText({ models: saved.models, overrides: saved.overrides, applied });
   }
 
+  async function providerKeyFleet(name, args) {
+    if (typeof args.provider !== 'string' || !args.provider || !Array.isArray(args.machines) || !args.machines.length || args.machines.length > 50 || new Set(args.machines).size !== args.machines.length) return toolText('Give provider and 1–50 unique machine names.', true);
+    await rediscover();
+    const targets = args.machines.map(n => machines.find(m => m.name === n));
+    if (targets.some(m => !m)) return toolText('Unknown machine; see swarm_list_machines.', true);
+    if (name === 'swarm_fleet_wait_provider_key') {
+      const results = await Promise.all(targets.map(async m => {
+        try {
+          const result = toolJSON((await callOn(m, 'swarm_list_providers', {provider:args.provider, wait_seconds:Math.min(300, Math.max(1, Number(args.wait_seconds) || 300))})).result);
+          return result ? {machine:m.name, ...result} : {machine:m.name,error:'Provider status refused'};
+        } catch { return {machine:m.name,error:'Machine unavailable'}; }
+      }));
+      return toolText({machines:results});
+    }
+    const results = [];
+    for (const machine of targets) {
+      try {
+        const result = toolJSON((await callOn(machine, 'swarm_request_provider_key', {provider:args.provider, ...(args.label === undefined ? {} : {label:args.label})})).result);
+        const u = new URL(result?.url);
+        // Only the named machine can receive the secret; never trust an arbitrary returned URL.
+        if (u.origin !== machine.url.origin || u.protocol !== 'https:' || u.port !== '8444' || !/^[a-z0-9][a-z0-9-]*\.[a-z0-9][a-z0-9-]*\.ts\.net$/.test(u.hostname) || u.username || u.password || u.search || u.hash || !/^\/keys\/[A-Za-z0-9_-]{43}$/.test(u.pathname)) throw Error();
+        results.push({machine:machine.name,url:u.href});
+      } catch { results.push({machine:machine.name,error:'Key link unavailable; check write access and the tailnet gateway.'}); }
+    }
+    if (results.some(r => r.error)) return toolText({machines:results.map(({machine,error}) => ({machine,error:error || 'Link issued but fleet incomplete; request again.'}))}, true);
+    const pages = results.map(r => new URL(r.url));
+    if (new Set(pages.map(u => u.hostname.split('.').slice(1).join('.'))).size !== 1 || new Set(pages.map(u => u.origin)).size !== pages.length) return toolText('Machines must be distinct gateways in the same tailnet.', true);
+    const url = pages[0].href + '#also=' + Buffer.from(JSON.stringify(pages.slice(1).map(u => u.href))).toString('base64url');
+    return toolText({url, machines:results.map(r => ({machine:r.machine,status:'waiting'})), tell_the_person:'Open this link on a device in your tailnet and paste the provider key once. Never paste it into chat.', next:{tool:'swarm_fleet_wait_provider_key',arguments:{provider:args.provider,machines:args.machines,wait_seconds:300}}});
+  }
+
   async function callTool(params) {
     const name = String(params?.name || '');
     const args = params?.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments) ? { ...params.arguments } : {};
+    if (name === 'swarm_fleet_request_provider_key' || name === 'swarm_fleet_wait_provider_key') return providerKeyFleet(name, args);
     if (name === 'swarm_list_machines' || name === 'swarm_fleet_status') {
       await refreshAll(true);
       const note = machines.length ? {} : { note: discoveryError || 'No Swarm machines found: tag them (default tag:swarm) in the Tailscale admin console, or set SWARM_FLEET.' };

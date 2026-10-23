@@ -50,8 +50,10 @@ func (s *Server) acceptFirstOnboardingProviderCredential(ctx context.Context, pr
 		Active:         false,
 	}
 
-	var connection *auth.ConnectionStatus
-	if provider != "openai" {
+	// A human key page has already verified even OpenAI before entering this
+	// route. Preserve that result instead of marking its first key unverified.
+	connection, _ := ctx.Value(providerKeyVerifiedContext{}).(*auth.ConnectionStatus)
+	if connection == nil && provider != "openai" {
 		var verifyErr error
 		connection, verifyErr = s.verifyCredentialMaterialForAccount(ctx, accountScopeID, provideriface.AuthCredential{
 			Provider:       provider,

@@ -966,7 +966,7 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_request_provider_key", Title: "Ask the person for a provider API key",
-			Description: "Set or replace a provider's API key without seeing it: returns a one-time link to a Swarm page on this machine (expires in 10 minutes). Give the person tell_the_person; they paste the key on that page, never in the chat. Swarm verifies the key, saves it and makes it active. Then call list_providers with provider and wait_seconds to wait for the outcome.",
+			Description: "Set or replace a provider's API key without seeing it: returns a one-time link to a Swarm page on this machine (expires in 10 minutes). Give the person tell_the_person; for a tailnet HTTPS link they open it on any device in their tailnet, otherwise on this machine. They paste the key on that page, never in the chat. Swarm verifies the key, saves it and makes it active. Then call list_providers with provider and wait_seconds to wait for the outcome.",
 			InputSchema: controlMCPObject([]string{"provider"}, map[string]any{
 				"provider": controlMCPStringProp("A provider that takes an API key (see list_providers).", 1, 100),
 				"label":    controlMCPStringProp("Optional name for the stored key.", 0, providerKeyMaxLabel),

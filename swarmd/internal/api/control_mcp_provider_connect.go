@@ -84,7 +84,7 @@ func controlMCPProviderConnectMethod(provider string, credentialTypes []string, 
 		steps := []string{}
 		if allows("swarm_request_provider_key") {
 			connect["tool"] = "swarm_request_provider_key"
-			steps = append(steps, fmt.Sprintf("Call swarm_request_provider_key with provider %s; the person pastes the key on the one-time page it links to.", provider))
+			steps = append(steps, fmt.Sprintf("First call swarm_request_provider_key with provider %s; the person opens a tailnet link on a device in their tailnet (a loopback link on this machine) and pastes the key on that one-time page. Fleet clients use swarm_fleet_request_provider_key with the named machines.", provider))
 		}
 		steps = append(steps,
 			"The person adds it on Swarm's setup page, under Settings > Providers (in the desktop app: Settings > Auth).",

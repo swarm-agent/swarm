@@ -95,7 +95,7 @@ var toolScopes = map[string]string{
 	"swarm_connect_chatgpt":        ScopeWrite, // the person signs in in their own browser; local only
 	"swarm_connect_claude_code":    ScopeWrite, // the person signs the CLI in on the machine; local only
 	"swarm_list_providers":         ScopeRead,
-	"swarm_request_provider_key":   ScopeManage,
+	"swarm_request_provider_key":   ScopeWrite, // the person types the key on Swarm's own page, never the AI; local only
 	"swarm_read_file":              ScopeRead,
 	"swarm_get_changes":            ScopeRead,
 	"swarm_accept_review":          ScopeApprove,

@@ -234,9 +234,8 @@ func controlMCPKeyLabel(label string) (string, error) {
 }
 
 func controlMCPRequestProviderKey(c *controlMCPCall, args map[string]any) (any, error) {
-	// Saving a provider credential is an owner surface (ownerOnlyScope), so
-	// the link is offered only to a connection that could save it itself.
-	if err := c.requireTokenScope("admin"); err != nil {
+	// Write clients may ask; only the person supplies the secret on our page.
+	if err := c.requireTokenScope("sessions:write"); err != nil {
 		return nil, err
 	}
 	record, ok := ScopedTokenFromRequest(c.request)
@@ -264,6 +263,7 @@ func controlMCPRequestProviderKey(c *controlMCPCall, args map[string]any) (any, 
 		return nil, err
 	}
 	_, link, err := c.server.providerKeys.issue(providerKeyRequest{
+		tailnet:        providerKeyTailnetRequest(c.request),
 		provider:       provider,
 		label:          label,
 		accountScopeID: principal.AccountScopeID,
@@ -274,12 +274,16 @@ func controlMCPRequestProviderKey(c *controlMCPCall, args map[string]any) (any, 
 		return nil, controlMCPToolFailure("%s", err.Error())
 	}
 	minutes := int(providerKeyCodeTTL.Minutes())
+	device := "this machine"
+	if strings.HasPrefix(link, "https://") {
+		device = "a device in your tailnet"
+	}
 	return map[string]any{
 		"provider":           provider,
 		"url":                link,
 		"expires_in_seconds": int(providerKeyCodeTTL.Seconds()),
-		"tell_the_person": fmt.Sprintf("Open %s in a browser on this machine and paste your %s API key there. Do not paste the key into this chat. The link works once and expires in %d minutes.",
-			link, provider, minutes),
+		"tell_the_person": fmt.Sprintf("Open %s in a browser on %s and paste your %s API key there. Do not paste the key into this chat. The link works once and expires in %d minutes.",
+			link, device, provider, minutes),
 		"next": "Call swarm_list_providers with provider and wait_seconds to wait until the person saves the key (or it fails or the link expires).",
 	}, nil
 }

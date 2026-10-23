@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"os/exec"
@@ -32,6 +33,11 @@ func sdkListenerHandler(cfg config.Config, apiServer *api.Server) http.Handler {
 		log.Printf("swarmd tailnet identity off: Tailscale %d.%d or newer is required (found %q, %v); AI keys still work",
 			minServeAppCapsVersion[0], minServeAppCapsVersion[1], strings.TrimSpace(firstLine(string(out))), err)
 		return apiServer.ContainerSDKHandler()
+	}
+	status, statusErr := exec.CommandContext(ctx, "tailscale", "status", "--json").Output()
+	var node struct{ Self struct{ DNSName string } }
+	if statusErr != nil || json.Unmarshal(status, &node) != nil || !apiServer.SetProviderKeyTailnetOrigin("https://"+strings.TrimSuffix(node.Self.DNSName, ".")+":8444") {
+		log.Printf("swarmd tailnet key page unavailable: local Tailscale DNS name unavailable")
 	}
 	log.Printf("swarmd tailnet identity on: Swarm Control admits devices granted %s", api.SwarmTailnetCapability)
 	return apiServer.TailnetGatewayHandler()
