@@ -261,16 +261,13 @@ func (m *Manager) localGitMounts(root, source string, readonly bool) ([]string, 
 		return nil, err
 	}
 	for _, entry := range entries {
-		// Non-directories (including symlinks) remain in the private view.
-		// Never follow a symlink to create an additional host bind.
-		if !entry.IsDir() {
-			continue
-		}
 		p := filepath.Join(common, entry.Name())
 		if err := m.localMetadataDir(common, p); err != nil {
 			return nil, err
 		}
-		args = append(args, "--ro-bind", p, p)
+		if entry.IsDir() {
+			args = append(args, "--ro-bind", p, p)
+		}
 	}
 	args = append(args, "--bind", gitdir, gitdir)
 	args = append(args, m.localDisabledConfig(common)...)
@@ -460,18 +457,11 @@ func (m *Manager) routeLocalGit(ctx context.Context, cmd *exec.Cmd, target strin
 			values[k] = v
 		}
 	}
-	gitArgs := cmd.Args[1:]
-	if st, err := os.Lstat(filepath.Join(root, ".git")); err == nil && !st.IsDir() && scope.daemonGit {
-		gitArgs, err = localLinkedGitArgs(gitArgs)
-		if err != nil {
-			return err
-		}
-	}
-	lifecycleMounts, err := m.localWorktreeMounts(scope, target, gitArgs)
+	lifecycleMounts, err := m.localWorktreeMounts(scope, target, cmd.Args[1:])
 	if err != nil {
 		return err
 	}
-	args, err := m.localArgv(scope, ExecRequest{WorkingDir: target, Command: append([]string{"git", "-c", "safe.directory=" + target, "-c", "user.name=Swarm", "-c", "user.email=swarm@localhost", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "credential.helper="}, gitArgs...), Env: values})
+	args, err := m.localArgv(scope, ExecRequest{WorkingDir: target, Command: append([]string{"git", "-c", "safe.directory=" + target, "-c", "user.name=Swarm", "-c", "user.email=swarm@localhost", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "credential.helper="}, cmd.Args[1:]...), Env: values})
 	if err != nil {
 		return err
 	}
@@ -492,39 +482,6 @@ func (m *Manager) routeLocalGit(ctx context.Context, cmd *exec.Cmd, target strin
 	cmd.Dir = "/"
 	cmd.Env = []string{}
 	return nil
-}
-
-// Packing into the private packed-refs followed by pruning a real loose ref
-// would lose the job branch when the overlay disappears. Disable automatic
-// maintenance and refuse explicit packing, including maintenance's pack-refs task.
-func localLinkedGitArgs(args []string) ([]string, error) {
-	i := 0
-	for i < len(args) && strings.HasPrefix(args[i], "-") {
-		a := args[i]
-		switch {
-		case a == "-c" || a == "-C" || a == "--git-dir" || a == "--work-tree" || a == "--namespace" || a == "--config-env":
-			if i+1 >= len(args) {
-				return nil, fmt.Errorf("incomplete Git global option")
-			}
-			i += 2
-		case strings.HasPrefix(a, "--git-dir=") || strings.HasPrefix(a, "--work-tree=") || strings.HasPrefix(a, "--namespace=") || strings.HasPrefix(a, "--config-env=") || strings.HasPrefix(a, "-c") || strings.HasPrefix(a, "-C"):
-			i++
-		case a == "--no-pager" || a == "--paginate" || a == "--no-optional-locks" || a == "--literal-pathspecs" || a == "--no-replace-objects":
-			i++
-		default:
-			return nil, fmt.Errorf("unsupported linked Git global option %q", a)
-		}
-	}
-	if i < len(args) {
-		switch args[i] {
-		case "pack-refs", "gc", "maintenance":
-			return nil, fmt.Errorf("Git %s is disabled for writable linked checkouts: private packed refs cannot safely prune real loose refs", args[i])
-		}
-	}
-	// Place policy after caller globals so caller configuration cannot enable it.
-	out := append([]string{}, args[:i]...)
-	out = append(out, "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "gc.packRefs=false")
-	return append(out, args[i:]...), nil
 }
 
 func (m *Manager) localAdmit(scope Scope) (func(), error) {
