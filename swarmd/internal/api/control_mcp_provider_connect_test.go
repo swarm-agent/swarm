@@ -350,3 +350,69 @@ func controlMCPProviderTestJSON(t *testing.T, value any) string {
 	}
 	return string(encoded)
 }
+
+// Purpose: controlMCPProviderConnectMethod and controlMCPProviderOptionsText must
+// distinguish headless Providers from desktop Auth. Pure output tests are the
+// narrowest layer to catch misleading navigation in every settings-based method.
+func TestProviderConnectSettingsNavigation(t *testing.T) {
+	const want = "Swarm's setup page, under Settings > Providers (in the desktop app: Settings > Auth)"
+	for _, tc := range []struct {
+		id    string
+		types []string
+	}{
+		{"openai", []string{"api"}},
+		{"codex", []string{"oauth"}},
+		{"claudecode", []string{"cli"}},
+		{"unknown", nil},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			connect := controlMCPProviderConnectMethod(tc.id, tc.types, func(string) bool { return false })
+			steps := strings.Join(connect["steps"].([]string), "\n")
+			if !strings.Contains(steps, want) || strings.Contains(steps, "setup page or") {
+				t.Fatalf("incorrect settings navigation: %s", steps)
+			}
+		})
+	}
+	if text := controlMCPProviderOptionsText("sign in"); strings.Count(text, want) != 2 {
+		t.Fatalf("overview lacks headless and desktop navigation: %s", text)
+	}
+}
+
+// Purpose: handleProviders and Registry.ListStatuses must serialize an explicit
+// runs_agents capability, including false for search-only providers, independently
+// of readiness. The HTTP handler with real adapters is the narrowest layer that
+// catches omitted JSON fields and prevents unconnected model providers being
+// mislabeled as search providers; no provider calls or credentials are needed.
+func TestProvidersReturnsRunsAgents(t *testing.T) {
+	server, _ := newControlMCPProviderConnectServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/v1/providers", nil)
+	req = requestWithTestPrincipalForAccount(req, testUserID, testAccountScopeID)
+	response := httptest.NewRecorder()
+	server.handleProviders(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Providers []map[string]any `json:"providers"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, status := range body.Providers {
+		id := status["id"].(string)
+		seen[id] = true
+		runs, present := status["runs_agents"].(bool)
+		if !present || runs != (id != "exa") {
+			t.Fatalf("%s runs_agents = %v (boolean present: %v)", id, status["runs_agents"], present)
+		}
+		if status["ready"] != false || status["runnable"] != false {
+			t.Fatalf("unconnected provider unexpectedly ready/runnable: %v", status)
+		}
+	}
+	for _, id := range append(controlMCPAgentProviders(), "exa") {
+		if !seen[id] {
+			t.Fatalf("provider %s missing", id)
+		}
+	}
+}

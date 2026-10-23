@@ -6,6 +6,7 @@ type Status struct {
 	ID              string       `json:"id"`
 	Ready           bool         `json:"ready"`
 	Runnable        bool         `json:"runnable"`
+	RunsAgents      bool         `json:"runs_agents"`
 	Reason          string       `json:"reason,omitempty"`
 	RunReason       string       `json:"run_reason,omitempty"`
 	DefaultModel    string       `json:"default_model,omitempty"`

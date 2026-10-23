@@ -8,7 +8,7 @@ import { operations, providerKeyRedact } from '../operations.mjs';
 function fixture() {
   const calls = [];
   const providers = [{ id: 'exa', runs_agents: false, ready: true, runnable: false, auth_methods: [{ credential_type: 'api', description: 'Search the web' }] },
-    ...['vertex', 'claudecode', 'codex'].map(id => ({ id, auth_methods: [{ credential_type: id === 'vertex' ? 'adc' : id === 'codex' ? 'oauth' : 'cli' }] }))];
+    ...['vertex', 'claudecode', 'codex'].map(id => ({ id, runs_agents: true, auth_methods: [{ credential_type: id === 'vertex' ? 'adc' : id === 'codex' ? 'oauth' : 'cli' }] }))];
   const credential = { id: 'one', provider: 'exa', label: 'Search', active: true, auth_type: 'api', connection: { connected: true, verified_at: 1000 }, last4: '1234' };
   const sdk = { onboarding: { get: async () => ({ identity: { bootstrapped: true } }) },
     settings: { providers: async () => providers, agentModels: async () => ({}) },
@@ -47,6 +47,7 @@ test('provider operations preserve targets, reject invalid mutations and redact 
 // Purpose: execute the real shared renderer and its handlers through operations
 // with a fake SDK. This proves Exa discovery, non-key connect actions, clearing
 // secret inputs on failure, and confirmed mutations without a browser dependency.
+// Capability labels must follow runs_agents, not provider IDs or readiness.
 test('shared Settings provider UI handles Exa, failed saves and credential actions', async () => {
   const { sdk, ops, calls } = fixture();
   class Element {
@@ -66,6 +67,18 @@ test('shared Settings provider UI handles Exa, failed saves and credential actio
   await vm.runInContext('loadProviders()', context);
   const rows = get('provider-rows').children;
   assert.equal(rows[0].children[0].textContent, 'Exa · web search for agents');
+  assert.ok(rows[0].children.some(c => c.textContent === 'Web search for agents'));
+  for (const row of rows.slice(1, 4)) assert.ok(row.children.some(c => c.textContent === 'Model provider · runs agents'));
+  // Deliberately invert capabilities to catch an ID fallback masking the field.
+  const statuses = await sdk.settings.providers();
+  statuses[0].runs_agents = true;
+  statuses[1].runs_agents = false;
+  await vm.runInContext('loadProviders()', context);
+  const changedRows = get('provider-rows').children;
+  assert.ok(changedRows[0].children.some(c => c.textContent === 'Model provider · runs agents'));
+  assert.ok(changedRows[1].children.some(c => c.textContent === 'Web search for agents'));
+  statuses[0].runs_agents = false;
+  statuses[1].runs_agents = true;
   for (const row of rows.slice(1, 4)) assert.equal(row.children.some(c => c.tagName === 'form'), false);
   assert.match(rows[1].children.find(c => c.tagName === 'code').textContent, /--provider vertex/);
   assert.match(rows[2].children.find(c => c.tagName === 'code').textContent, /install.sh claude-code/);

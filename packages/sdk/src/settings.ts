@@ -2,6 +2,7 @@ import type { SwarmTransport } from './transport.js';
 import { SwarmNotFoundError } from './errors.js';
 
 export interface ProviderStatus {
+  runs_agents: boolean;
   id: string;
   ready: boolean;
   runnable: boolean;

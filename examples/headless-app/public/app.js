@@ -165,7 +165,7 @@ function renderProviders(settings) {
     const status = active?.failed ? `Key failed: ${active.message || 'Verification failed'}` : p.ready ? 'Ready'
       : active?.connected ? (active.auth_type === 'api' ? 'Key verified' : 'Signed in') : `Not connected${p.reason ? ': ' + p.reason : ''}`;
     const row = el('section', {}, el('h3', { textContent: providerName(p.id) }),
-      el('p', { textContent: p.id === 'exa' || p.runs_agents === false ? 'Web search for agents' : 'Model provider · runs agents' }), el('p', { textContent: status }));
+      el('p', { textContent: p.runs_agents === false ? 'Web search for agents' : 'Model provider · runs agents' }), el('p', { textContent: status }));
     const feedback = el('p', { role: 'status' });
     const action = (label, fn) => {
       const button = el('button', { type: 'button', textContent: label });

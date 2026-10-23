@@ -6,6 +6,9 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Correct headless provider connection guidance to Settings > Providers, expose `runs_agents` in provider status and the SDK, and use that capability for setup-page labels.
+  Docs impact: none.
+
 - Use shared catalog review defaults for unconfigured native reviewers, expose effective reviewer models and their source, and include reviewer assignments in the fleet model table. Docs impact: none.
 
 - Wait for native reviewer sandbox cleanup before workflow follow-up, surface non-pending failures, recover interrupted review admission, and prevent completed review identities from borrowing the worktree again. Docs impact: none.
