@@ -431,13 +431,13 @@ type ProjectTaskRecord struct {
 	WorkerName                      string                  `json:"worker_name,omitempty"`
 	WorkerRunID                     string                  `json:"worker_run_id,omitempty"`
 	AutomationID                    string                  `json:"automation_id,omitempty"`
+	Review                          *JobReview              `json:"review,omitempty"`
+	ReviewJob                       string                  `json:"review_job,omitempty"`
+	ReviewCheckout                  string                  `json:"review_checkout,omitempty"`
+	ReviewTarget                    map[string]any          `json:"review_target,omitempty"`
 	// StartCommit is the commit the task's worktree starts at, set only by a
 	// workflow's agent step (the delivery head); "" starts at the folder's
 	// branch.
-	Review              *JobReview                   `json:"review,omitempty"`
-	ReviewJob           string                       `json:"review_job,omitempty"`
-	ReviewCheckout      string                       `json:"review_checkout,omitempty"`
-	ReviewTarget        map[string]any               `json:"review_target,omitempty"`
 	StartCommit         string                       `json:"start_commit,omitempty"`
 	OutcomeType         string                       `json:"outcome_type,omitempty"` // "code_pr" | "media_bundle" | "bug_patch" | "audit_report" | "video_story"
 	WorkspacePath       string                       `json:"workspace_path,omitempty"`

@@ -544,6 +544,11 @@ func (s *Server) automationAgentReview(account, workerID, runID string) (verdict
 	if err != nil || review == nil || (review.Verdict != jobautomation.VerdictOK && review.Verdict != jobautomation.VerdictBlock) {
 		return "", "", false
 	}
+	return normalizedAutomationReview(review)
+}
+
+// normalizedAutomationReview keeps native and custom reviewer outcomes identical.
+func normalizedAutomationReview(review *pebblestore.JobReview) (verdict, findings string, unreadable bool) {
 	if review.Verdict == jobautomation.VerdictBlock && review.Reason == pebblestore.JobReviewMalformedReason {
 		return jobautomation.VerdictBlock, "", true
 	}

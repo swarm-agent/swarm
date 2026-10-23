@@ -285,13 +285,12 @@ func (s *Server) waitTaskJob(ctx context.Context, account, jobID string) (jobaut
 				out.Head = out.Result.Git.Head
 			}
 			if task.Agent == "reviewer" {
-				review, err := s.taskReview(task)
+				review, err := s.repairTaskReview(task)
 				if err != nil {
 					return out, err
 				}
 				if review != nil {
-					out.Verdict, out.Findings = review.Verdict, review.Findings
-					out.ReviewUnreadable = review.Reason == pebblestore.JobReviewMalformedReason
+					out.Verdict, out.Findings, out.ReviewUnreadable = normalizedAutomationReview(review)
 				}
 			}
 			return out, nil

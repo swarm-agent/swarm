@@ -417,7 +417,7 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 	runner.SetWorkerExecutionService(execution)
 	outboxPinGit(t, task.WorkspacePath, "commit", "-q", "--allow-empty", "-m", "delivery")
 	reviewHead := outboxPinGit(t, task.WorkspacePath, "rev-parse", "HEAD")
-	for i, report := range []string{"VERDICT: OK\nSUMMARY: Checked.\nFINDINGS: None.\nTESTS RUN: None.", "VERDICT: BLOCK\nSUMMARY: Unsafe.\nFINDINGS: Fix the unchecked input.\nTESTS RUN: None.", "not a review", ""} {
+	for i, report := range []string{"VERDICT: OK\nSUMMARY: Checked.\nFINDINGS: None.\nTESTS RUN: None.", "VERDICT: BLOCK\nSUMMARY: Unsafe.\nFINDINGS: Fix the unchecked input.\nTESTS RUN: None.", "not a review", "", "VERDICT: OK\nSUMMARY: Checked.\nFINDINGS: None.\nTESTS RUN: None."} {
 		checkout := "same"
 		if i == 3 {
 			checkout = "new"
@@ -471,6 +471,24 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 		if _, err := newSessionV3Executor(server).recordRunStatus(sessionV3ExecutorJob{Principal: principal, SessionID: reviewTask.SessionID, RunID: intent.RunID, EpochID: intent.EpochID}, sessionruntime.RunIntentCompleted, "", "session.assistant.completed"); err != nil {
 			t.Fatal(err)
 		}
+		if i == 4 {
+			// Recreate interrupted persistence without overwriting a saved verdict:
+			// use an independent task pointing at the still-borrowed session.
+			repair := *reviewTask
+			repair.ID = "moved-repair"
+			repair.Review = nil
+			repair.Status = "needs_review"
+			if err := sessions.Store().PutProjectTask(principal.AccountScopeID, &repair); err != nil {
+				t.Fatal(err)
+			}
+			outboxPinGit(t, task.WorkspacePath, "commit", "-q", "--allow-empty", "-m", "moved")
+			checked, err := server.repairTaskReview(&repair)
+			if err != nil || checked == nil || checked.Verdict != "block" {
+				t.Fatalf("moved repair %+v %v", checked, err)
+			}
+			outboxPinGit(t, task.WorkspacePath, "reset", "--hard", reviewHead)
+			continue
+		}
 		if checkout == "new" {
 			// An unread reviewer settles and removes its disposable checkout at
 			// run termination, rather than relying on an MCP result read.
@@ -510,13 +528,13 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 				t.Fatalf("review claims commits: %+v", view)
 			}
 			visible, ok := controlMCPMap(view)["review"].(*pebblestore.JobReview)
-			if !ok || visible.Verdict != outcome.Verdict || visible.Findings != outcome.Findings {
+			if !ok || visible.Verdict != outcome.Verdict || visible.Findings != pebblestore.ParseJobReview(report, reviewHead, reviewID, "", 0).Findings {
 				t.Fatalf("task result review = %+v", visible)
 			}
 			stored, _, _ := sessions.Store().GetProjectTask(principal.AccountScopeID, project.ID, reviewTaskID)
 			// Repeated observation must preserve the stored review.
 			rederived, err := server.taskReview(stored)
-			if err != nil || rederived.Verdict != outcome.Verdict || rederived.Findings != outcome.Findings {
+			if err != nil || rederived.Verdict != outcome.Verdict || rederived.Findings != visible.Findings {
 				t.Fatalf("rederived: %+v %v", rederived, err)
 			}
 		}
@@ -728,9 +746,7 @@ func TestNativeReviewWaitRepairsSettlementGap(t *testing.T) {
 				t.Fatal(err)
 			}
 			want := "block"
-			if strings.Contains(report, "VERDICT: OK") {
-				want = "ok"
-			}
+			// This fixture has no execution authority, so repair must fail closed.
 			if outcome.Verdict != want || outcome.ReviewUnreadable != (report == "" || report == "not a review") {
 				messages, _ := f.server.sessions.ListMessages(task.SessionID, 0, 100)
 				t.Fatalf("outcome %+v messages %+v", outcome, messages)
@@ -739,7 +755,7 @@ func TestNativeReviewWaitRepairsSettlementGap(t *testing.T) {
 			if err != nil || stored.Review == nil || stored.Review.Verdict != want {
 				t.Fatalf("saved review %+v %v", stored, err)
 			}
-			again, err := f.server.taskReview(&task)
+			again, err := f.server.taskReview(stored)
 			if err != nil || *again != *stored.Review {
 				t.Fatalf("replay %+v %v", again, err)
 			}
@@ -770,15 +786,58 @@ func TestNativeReviewWaitAfterStoreReopen(t *testing.T) {
 	t.Run("recover", func(t *testing.T) {
 		server, _, _, _, _ := newRoutedSessionTestServerAt(t, path, false)
 		outcome, err := server.waitTaskJob(context.Background(), p.AccountScopeID, taskRunJobID(task.ProjectID, task.ID))
-		if err != nil || outcome.Verdict != "ok" || outcome.ReviewUnreadable {
+		if err != nil || outcome.Verdict != "block" || outcome.ReviewUnreadable {
 			t.Fatalf("recovered outcome %+v %v", outcome, err)
 		}
 	})
 	t.Run("replay", func(t *testing.T) {
 		server, _, _, _, _ := newRoutedSessionTestServerAt(t, path, false)
 		outcome, err := server.waitTaskJob(context.Background(), p.AccountScopeID, taskRunJobID(task.ProjectID, task.ID))
-		if err != nil || outcome.Verdict != "ok" || outcome.ReviewUnreadable {
+		if err != nil || outcome.Verdict != "block" || outcome.ReviewUnreadable {
 			t.Fatalf("replayed outcome %+v %v", outcome, err)
 		}
 	})
+}
+
+// Purpose: native outcomes must use the worker normalization boundary, never
+// reopen with a placeholder or hide failed execution behind a readable approval.
+// The store-backed waiter is the narrowest layer proving parsing and dispatch data.
+func TestNativeReviewOutcomeNormalization(t *testing.T) {
+	for _, status := range []string{"needs_review", "failed"} {
+		t.Run(status, func(t *testing.T) {
+			f := newReopenFixture(t)
+			p := testPrincipal()
+			task := taskSessionFixture(t, f.server, f.session, pebblestore.ProjectTaskRecord{ID: "normalize", ProjectID: "normalize-project", Agent: "reviewer", StartCommit: strings.Repeat("a", 40), Status: "running"})
+			report := "VERDICT: BLOCK\nSUMMARY: Unsafe input.\nFINDINGS: None.\nTESTS RUN: None."
+			if status == "failed" {
+				report = "VERDICT: OK\nSUMMARY: Checked.\nFINDINGS: None.\nTESTS RUN: None."
+			}
+			_, err := f.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: task.SessionID, UserID: p.UserID, AccountScopeID: p.AccountScopeID, Kind: sessionruntime.SessionMutationAppendMessage, ClientRequestID: "report", IdempotencyKey: "report", PayloadHash: "report", RequestHash: "report", Message: &pebblestore.MessageSnapshot{ID: "report", SessionID: task.SessionID, UserID: p.UserID, AccountScopeID: p.AccountScopeID, Role: "assistant", Content: report, CreatedAt: 100}, NowUnixMs: 100})
+			if err != nil {
+				t.Fatal(err)
+			}
+			settled, err := f.server.sessions.Store().UpdateProjectTask(p.AccountScopeID, task.ProjectID, task.ID, func(current *pebblestore.ProjectTaskRecord) error { current.Status = status; return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if review, err := f.server.taskReview(settled); err != nil || review != nil {
+				t.Fatalf("read repaired review %+v %v", review, err)
+			}
+			unchanged, _, _ := f.server.sessions.Store().GetProjectTask(p.AccountScopeID, task.ProjectID, task.ID)
+			if unchanged.Review != nil {
+				t.Fatal("read mutated task")
+			}
+			outcome, err := f.server.waitTaskJob(context.Background(), p.AccountScopeID, taskRunJobID(task.ProjectID, task.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			stored, _, _ := f.server.sessions.Store().GetProjectTask(p.AccountScopeID, task.ProjectID, task.ID)
+			if outcome.Verdict != "block" || outcome.ReviewUnreadable || outcome.Findings == "None." || outcome.Findings == "" || outcome.Findings != stored.Review.Reason {
+				t.Fatalf("outcome %+v review %+v", outcome, stored.Review)
+			}
+			if status == "failed" && outcome.Findings != "reviewer task failed" {
+				t.Fatalf("failed reason %q", outcome.Findings)
+			}
+		})
+	}
 }

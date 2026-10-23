@@ -140,7 +140,7 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) (TaskRouteResult, 
 			outcomeType = "code_pr"
 		case "finder", "reviewer":
 			if intent != "" && intent != "audit" {
-				return TaskRouteResult{}, fmt.Errorf("conflicting task configuration: intent %q cannot use finder agent", opts.Intent)
+				return TaskRouteResult{}, fmt.Errorf("conflicting task configuration: intent %q cannot use read-only agent", opts.Intent)
 			}
 			agent = explicitAgent
 			tier = "discovery"
@@ -255,7 +255,7 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) (TaskRouteResult, 
 			}
 		case "finder", "reviewer":
 			if explicitOutcome != "audit_report" && explicitOutcome != "audit" && explicitOutcome != "report" {
-				return TaskRouteResult{}, fmt.Errorf("incoherent task contract: finder agent cannot have outcome %q", opts.OutcomeType)
+				return TaskRouteResult{}, fmt.Errorf("incoherent task contract: read-only agent cannot have outcome %q", opts.OutcomeType)
 			}
 		case "plan":
 			if explicitOutcome != "plan_spec" && explicitOutcome != "plan" && explicitOutcome != "general" {
