@@ -93,10 +93,16 @@ page URLs live in the `#also=` fragment, not an HTTP request. Only gateways in
 the same tailnet are accepted. Links expire after ten minutes, allow five failed
 attempts and are consumed on success. Keep the link private too.
 
-The tool publishes the link through an MCP notification before waiting on
-`swarm_list_providers` on every named machine (`wait_seconds: 300`). Clients must
-display this notification immediately so the person can open it while the call
-is pending. Clients supplying a progress token also receive the link as an MCP
-progress message. The same tool call returns the link and per-machine results.
+This is a two-step flow:
+
+1. The tool returns as soon as every machine issues its page, with `url`,
+   `tell_the_person`, `expires_in_seconds`, and each machine's `waiting` status.
+   The AI gives the person the link and repeats `tell_the_person`, which names
+   the destinations so they can match them against the hostnames on the page.
+   No MCP notification or progress message is needed or sent.
+2. Call `swarm_list_providers` with `machine`, `provider`, and `wait_seconds`
+   (at most **110**) for each named machine to wait for its outcome.
+   If still waiting, call again; the initial request does not wait for saves.
+
 Failures are not atomic across machines: keep successful results and request a
 new link only for failed machines. A restart forgets outstanding links.

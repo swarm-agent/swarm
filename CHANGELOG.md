@@ -6,6 +6,9 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Return fleet provider-key links immediately after page issuance, with named destinations and waiting statuses, instead of notifying and blocking; wait for outcomes separately per machine with a 110-second maximum.
+  Docs impact: packages/swarm-fleet/README.md and containers/headless/app/TAILNET.md.
+
 - Let write clients request human-only provider-key links over the tailnet, with same-tailnet browser fan-out and per-machine fleet outcomes; keep relay clients excluded.
   Docs impact: packages/swarm-fleet/README.md and containers/headless/app/TAILNET.md.
 

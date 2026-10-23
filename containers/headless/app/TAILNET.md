@@ -117,11 +117,17 @@ link on a device in the same tailnet, check the machine list, and paste once.
 The browser submits directly to each machine; no daemon forwards the key and
 neither swarm-fleet nor the AI sees it. The additional URLs are in a browser-only
 fragment. CORS permits only HTTPS port 8444 gateways in the same tailnet with a
-pending capability. The tool publishes the link through an MCP notification
-(and a progress message when requested) before waiting on every machine with
-`swarm_list_providers` and `wait_seconds: 300`. Clients must display that link
-while the call is pending. The page shows each result, and the same tool call
-returns per-machine outcomes; no follow-up tool is needed.
+pending capability. This is a two-step flow:
+
+1. The tool returns the single `url` as soon as every machine issues its page,
+   together with `tell_the_person`, `expires_in_seconds`, and per-machine
+   `waiting` statuses. The AI gives the person the link and repeats
+   `tell_the_person`, naming the destinations to match against the hostnames
+   on the page. It sends no MCP notification or progress message.
+2. Call `swarm_list_providers` with `machine`, `provider`, and `wait_seconds`
+   (at most **110**) for each machine to wait for its outcome. If still waiting,
+   call again. The page also shows each result; the initial call never waits
+   for the person to save the key.
 
 Each link expires in ten minutes, allows five failed attempts and is single-use
 on success. Partial fleet failure does not undo successful saves: ask for a new

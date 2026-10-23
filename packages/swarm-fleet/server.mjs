@@ -40,7 +40,7 @@ const MAX_RESPONSE_BYTES = 8 << 20;
 const MACHINE_PROP = { type: 'string', maxLength: 64, description: 'Machine name from swarm_list_machines. Required when several are configured.' };
 const INSTRUCTIONS = 'swarm-fleet reaches your Swarm machines over your private tailnet. ' +
   'Call swarm_list_machines (or swarm_fleet_status for one view of every machine) first; pass `machine` to every other tool when more than one machine is configured. ' +
-  'For provider API keys, call swarm_fleet_request_provider_key with the named machines; display its link notification immediately while it waits for per-machine outcomes. Never ask for a key in chat. ' +
+  'For provider API keys, call swarm_fleet_request_provider_key with the named machines; give the person its returned link and repeat tell_the_person, then call swarm_list_providers with machine, provider and wait_seconds (at most 110) for each machine to wait for the outcome. Never ask for a key in chat. ' +
   'Each machine allows only what your tailnet policy (or its AI key) grants this device: read only, or read and write. ' +
   'Every machine runs its roles (coder, reviewer, finder, designer, compact, router; advanced action and plan) on Swarm\'s recommended models; swarm_fleet_set_models overrides them fleet-wide (advanced, only when the person asks).';
 
@@ -264,7 +264,7 @@ export function roleState(desired, actual, overridden) {
 const FLEET_TOOLS = [
   {
     name: 'swarm_fleet_request_provider_key', title: 'Add a provider across machines',
-    description: 'Add a provider API key across named machines. Publishes one browser link via notifications before waiting up to 300 seconds on every machine and returning per-machine outcomes. Display the link notification immediately: the person opens it on a device in their tailnet and pastes once, never in chat. The browser sends the key directly to each machine.',
+    description: 'Add a provider API key across named machines. Returns one browser link as soon as every machine issues its page, without waiting for saves. Give the person the link and repeat tell_the_person, then call swarm_list_providers with machine, provider and wait_seconds (at most 110) for each machine to wait for the outcome: the person opens it on a device in their tailnet and pastes once, never in chat. The browser sends the key directly to each machine.',
     inputSchema: {type:'object', additionalProperties:false, required:['provider','machines'], properties:{provider:{type:'string',maxLength:100}, machines:{type:'array',minItems:1,maxItems:50,uniqueItems:true,items:{type:'string',maxLength:64}}, label:{type:'string',maxLength:64}}},
   },
   {
@@ -496,7 +496,7 @@ export function createFleet(configured, { proxy = '', notify = () => {}, send = 
     return toolText({ models: saved.models, overrides: saved.overrides, applied });
   }
 
-  async function providerKeyFleet(args, progressToken) {
+  async function providerKeyFleet(args) {
     if (typeof args.provider !== 'string' || !args.provider || !Array.isArray(args.machines) || !args.machines.length || args.machines.length > 50 || new Set(args.machines).size !== args.machines.length) return toolText('Give provider and 1–50 unique machine names.', true);
     await rediscover();
     const targets = args.machines.map(n => machines.find(m => m.name === n));
@@ -508,32 +508,27 @@ export function createFleet(configured, { proxy = '', notify = () => {}, send = 
         const u = new URL(result?.url);
         // Only the named machine can receive the secret; never trust an arbitrary returned URL.
         if (u.origin !== machine.url.origin || u.protocol !== 'https:' || u.port !== '8444' || !/^[a-z0-9][a-z0-9-]*\.[a-z0-9][a-z0-9-]*\.ts\.net$/.test(u.hostname) || u.username || u.password || u.search || u.hash || !/^\/keys\/[A-Za-z0-9_-]{43}$/.test(u.pathname)) throw Error();
-        results.push({machine:machine.name,url:u.href});
+        if (!Number.isFinite(result.expires_in_seconds) || result.expires_in_seconds <= 0) throw Error();
+        results.push({machine:machine.name,url:u.href,expires_in_seconds:result.expires_in_seconds});
       } catch { results.push({machine:machine.name,error:'Key link unavailable; check write access and the tailnet gateway.'}); }
     }
     if (results.some(r => r.error)) return toolText({machines:results.map(({machine,error}) => ({machine,error:error || 'Link issued but fleet incomplete; request again.'}))}, true);
     const pages = results.map(r => new URL(r.url));
     if (new Set(pages.map(u => u.hostname.split('.').slice(1).join('.'))).size !== 1 || new Set(pages.map(u => u.origin)).size !== pages.length) return toolText('Machines must be distinct gateways in the same tailnet.', true);
     const url = pages[0].href + '#also=' + Buffer.from(JSON.stringify(pages.slice(1).map(u => u.href))).toString('base64url');
-    const link = {url, tell_the_person:'Open this link on a device in your tailnet and paste the provider key once. Never paste it into chat.'};
-    // Deliver the capability before blocking for human input, never the key.
-    await notify({jsonrpc:'2.0', method:'notifications/message', params:{level:'info', logger:'swarm-fleet', data:link}});
-    if (typeof progressToken === 'string' || typeof progressToken === 'number') {
-      await notify({jsonrpc:'2.0', method:'notifications/progress', params:{progressToken, progress:0, total:targets.length, message:JSON.stringify(link)}});
-    }
-    const outcomes = await Promise.all(targets.map(async m => {
-      try {
-        const result = toolJSON((await callOn(m, 'swarm_list_providers', {provider:args.provider, wait_seconds:300})).result);
-        return result ? {...result, machine:m.name} : {machine:m.name,error:'Provider status refused'};
-      } catch { return {machine:m.name,error:'Machine unavailable'}; }
-    }));
-    return toolText({...link, machines:outcomes});
+    return toolText({
+      url,
+      tell_the_person:`Open this link on a device in your tailnet to save the provider key to these machines: ${targets.map(m => m.name).join(', ')}; check them against the hostnames on the page, then paste the key once, never into chat.`,
+      expires_in_seconds:Math.min(...results.map(r => r.expires_in_seconds)),
+      machines:targets.map(m => ({machine:m.name,status:'waiting'})),
+      next:'call swarm_list_providers with machine, provider and wait_seconds (at most 110) for each machine to wait for the outcome',
+    });
   }
 
   async function callTool(params) {
     const name = String(params?.name || '');
     const args = params?.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments) ? { ...params.arguments } : {};
-    if (name === 'swarm_fleet_request_provider_key') return providerKeyFleet(args, params?._meta?.progressToken);
+    if (name === 'swarm_fleet_request_provider_key') return providerKeyFleet(args);
     if (name === 'swarm_list_machines' || name === 'swarm_fleet_status') {
       await refreshAll(true);
       const note = machines.length ? {} : { note: discoveryError || 'No Swarm machines found: tag them (default tag:swarm) in the Tailscale admin console, or set SWARM_FLEET.' };
