@@ -1481,7 +1481,7 @@ func controlMCPListSecrets(c *controlMCPCall, _ map[string]any) (any, error) {
 	return map[string]any{
 		"gateway_enabled": response["gateway_enabled"],
 		"secrets":         response["secrets"],
-		"note":            "Values are never shown. The person creates secrets, sets values and grants them to folders on the setup page or by script; a job uses the secrets granted to its folder.",
+		"note":            "Values are never shown. The person runs sudo swarmctl secret set --name NAME --hosts HOST and types the value at its hidden prompt, never the AI. Never ask for a secret or key in chat. After asking the person how long, have them run sudo swarmctl secret grant --name NAME --workspace FOLDER --days N (or --hours N); a job uses the secrets granted to its folder.",
 	}, nil
 }
 

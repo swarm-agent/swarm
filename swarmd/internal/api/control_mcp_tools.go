@@ -2841,6 +2841,9 @@ func controlMCPGetUsage(c *controlMCPCall, args map[string]any) (any, error) {
 	rawSummary := controlMCPMap(response["summary"])
 	summary := controlMCPPick(rawSummary, "total_cost_usd", "total_tokens", "input_tokens", "output_tokens", "cached_tokens", "total_turns", "active_sessions")
 	out := map[string]any{"period": period, "summary": summary}
+	if media := controlMCPMap(response["media"]); media != nil {
+		out["media"] = controlMCPPick(media, "total_count", "total_cost_usd", "image_count", "image_cost_usd", "video_count", "video_cost_usd", "audio_count", "audio_cost_usd", "has_unknown_pricing")
+	}
 	if limits := controlMCPMap(response["limits"]); limits != nil {
 		out["limits"] = controlMCPLimits(limits)
 	}

@@ -326,16 +326,22 @@ func (s *Server) handleSessionsV3UsageAt(w http.ResponseWriter, r *http.Request,
 			continue
 		}
 
-		uniqueSessions[row.SessionID] = struct{}{}
+		if row.SessionID != "" {
+			uniqueSessions[row.SessionID] = struct{}{}
+		}
 		if providerSessions[provID] == nil {
 			providerSessions[provID] = make(map[string]struct{})
 		}
-		providerSessions[provID][row.SessionID] = struct{}{}
+		if row.SessionID != "" {
+			providerSessions[provID][row.SessionID] = struct{}{}
+		}
 		modelKey := provID + ":" + modelID
 		if modelSessions[modelKey] == nil {
 			modelSessions[modelKey] = make(map[string]struct{})
 		}
-		modelSessions[modelKey][row.SessionID] = struct{}{}
+		if row.SessionID != "" {
+			modelSessions[modelKey][row.SessionID] = struct{}{}
+		}
 
 		// Summary
 		summary.TotalTokens += row.TotalTokens
@@ -438,6 +444,10 @@ func (s *Server) handleSessionsV3UsageAt(w http.ResponseWriter, r *http.Request,
 		mItem.CodexNominalCostUSD += row.CodexNominalCostUSD
 		mItem.Turns += row.Turns
 
+		// Principal-owned media tasks contribute costs but are not conversations.
+		if row.SessionID == "" {
+			continue
+		}
 		// Session usage fold (period billing only, no lifetime substitution!)
 		sessItem, exists := sessionUsageMap[row.SessionID]
 		if !exists {

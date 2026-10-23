@@ -255,20 +255,24 @@ func toFloat64(v any) (float64, bool) {
 
 // MediaCostEstimateOptions holds concrete dimensions for media pricing without guessing.
 type MediaCostEstimateOptions struct {
-	Provider        string
-	Model           string
-	Kind            string // "image", "video", "audio"
-	Count           int
-	DurationSeconds int
-	Resolution      string
-	ImageSize       string
-	AspectRatio     string
-	IncludesAudio   bool
-	IsIteration     bool
-	OutputTokens    int64
-	ServiceTier     string
-	Variant         string
-	SKU             string
+	Provider         string
+	Model            string
+	Kind             string // "image", "video", "audio"
+	Count            int
+	DurationSeconds  int
+	Resolution       string
+	ImageSize        string
+	AspectRatio      string
+	IncludesAudio    bool
+	IsIteration      bool
+	OutputTokens     int64 // image output tokens
+	TextOutputTokens int64
+	ThinkingTokens   int64
+	PromptTokens     int64 // text prompt tokens, excluding input images
+	InputImageTokens int64
+	ServiceTier      string
+	Variant          string
+	SKU              string
 }
 
 // EstimateMediaCostWithOptions resolves snapshot-backed media pricing for images, videos, and audio.
@@ -729,49 +733,7 @@ func EstimateMediaCostFromRecord(rec ModelCatalogRecord, opts MediaCostEstimateO
 		}
 
 	case "image":
-		for _, lineMap := range verifiedLines {
-			billable, _ := lineMap["billable"].(string)
-			if billable != "image_output" && billable != "image" && billable != "image_generation" {
-				continue
-			}
-			pUSD, ok := toFloat64(lineMap["price_usd"])
-			if !ok || pUSD < 0 {
-				continue
-			}
-			if conds, ok := lineMap["conditions"].(map[string]any); ok {
-				if res, ok := conds["resolution"].(string); ok && res != "" {
-					if !strings.EqualFold(res, opts.Resolution) && !strings.EqualFold(res, opts.ImageSize) {
-						continue
-					}
-				}
-				if imgSize, ok := conds["image_size"].(string); ok && imgSize != "" {
-					if !strings.EqualFold(imgSize, opts.ImageSize) && !strings.EqualFold(imgSize, opts.Resolution) {
-						continue
-					}
-				}
-				if ar, ok := conds["aspect_ratio"].(string); ok && ar != "" {
-					if opts.AspectRatio == "" || !strings.EqualFold(ar, opts.AspectRatio) {
-						continue
-					}
-				}
-			}
-			unit, _ := lineMap["unit"].(string)
-			switch strings.ToLower(unit) {
-			case "token":
-				if opts.OutputTokens > 0 {
-					unitPrice = pUSD * float64(opts.OutputTokens)
-					foundPrice = true
-					summaryText = fmt.Sprintf("$%.6f/token (%d tokens: $%.4f) (catalog %s)", pUSD, opts.OutputTokens, unitPrice, snapID)
-				}
-			case "image", "generation":
-				unitPrice = pUSD
-				foundPrice = true
-				summaryText = fmt.Sprintf("$%.4f per image (catalog %s)", unitPrice, snapID)
-			}
-			if foundPrice {
-				break
-			}
-		}
+		return estimateImageBilling(rec, opts, verifiedLines)
 	}
 
 	if !foundPrice {
@@ -1058,9 +1020,6 @@ func (s *SessionStore) ListAccountUsageRollups(accountScopeID string) ([]Account
 		var rollup AccountUsageRollup
 		if err := json.Unmarshal(value, &rollup); err != nil {
 			return err
-		}
-		if rollup.SessionID == "" {
-			return nil
 		}
 		out = append(out, rollup)
 		return nil

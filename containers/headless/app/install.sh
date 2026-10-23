@@ -2345,7 +2345,8 @@ secret_cmd() {
   require_owner
   case $action in
     set)
-      local hosts='' value
+      local hosts=''
+      local -a set_args=()
       while (($#)); do
         case $1 in
           --hosts) hosts=${2:?--hosts needs HOST,...}; shift 2 ;;
@@ -2354,12 +2355,9 @@ secret_cmd() {
       done
       [[ -z $hosts || $hosts =~ ^[A-Za-z0-9.,*:-]+$ ]] || die "--hosts must be website names separated by commas"
       if [[ -n $hosts ]]; then
-        "$SWARMCTL" secret create --name "$name" --hosts "$hosts" ||
-          die "could not create the secret $name (if it exists, run without --hosts to set its value)"
+        set_args+=(--hosts "$hosts")
       fi
-      read_secret value "Paste the value for $name"
-      printf '%s' "$value" | "$SWARMCTL" secret set-value --name "$name" --value-stdin
-      value=''
+      "$SWARMCTL" secret set --name "$name" "${set_args[@]}"
       ;;
     grant)
       local folder=${1:-} days=0 hours=0

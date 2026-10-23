@@ -147,10 +147,14 @@ type ManagedImageSource struct {
 // ManagedImage is an in-memory provider result ready for direct publication by
 // the artifact authority. It intentionally contains no workspace or storage path.
 type ManagedImage struct {
-	Bytes         []byte
-	MediaType     string
-	RevisedPrompt string
-	OutputTokens  int64
+	Bytes            []byte
+	MediaType        string
+	RevisedPrompt    string
+	OutputTokens     int64
+	TextOutputTokens int64
+	ThinkingTokens   int64
+	PromptTokens     int64
+	InputImageTokens int64
 }
 
 type ModelSelection struct {
@@ -671,6 +675,11 @@ func (s *Service) GenerateManagedImage(ctx context.Context, req ManagedGenerateR
 			return ManagedImage{}, err
 		}
 		img.OutputTokens = tokens
+		img.TextOutputTokens = modalityTokens(generated.Usage, "candidatesTokensDetails", "TEXT")
+		img.ThinkingTokens, _ = toInt64(generated.Usage["thoughtsTokenCount"])
+		img.InputImageTokens = modalityTokens(generated.Usage, "promptTokensDetails", "IMAGE")
+		img.PromptTokens, _ = toInt64(generated.Usage["promptTokenCount"])
+		img.PromptTokens = max(0, img.PromptTokens-img.InputImageTokens)
 		return img, nil
 	default:
 		return ManagedImage{}, fmt.Errorf("unsupported image provider %q", selection.Provider)
