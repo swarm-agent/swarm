@@ -609,7 +609,10 @@ func runRepositoryGitInput(path string, env []string, input io.Reader, args ...s
 	cancelWarm()
 	ctx, cancel := context.WithTimeout(context.Background(), repositoryCommandTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", path, "-c", "core.fsmonitor=false"}, args...)...)
+	// The folder is the person's (another uid than the daemon's): Git must
+	// trust it by its exact path, as it does inside the sandbox. A -c value
+	// is protected configuration, which safe.directory requires.
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", path, "-c", "core.fsmonitor=false", "-c", "safe.directory=" + path}, args...)...)
 	cmd.Env = repositoryEnvironment(env)
 	cmd.Stdin = input
 	cmd.WaitDelay = time.Second
