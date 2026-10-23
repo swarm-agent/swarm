@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -71,7 +72,7 @@ func executeBashCommand(parent context.Context, scope WorkspaceScope, args map[s
 
 	cmd := exec.CommandContext(ctx, "bash", "-lc", command)
 	cmd.Dir = scope.PrimaryPath
-	cmd.Env = commandEnvironment(os.Environ(), tempDir)
+	cmd.Env = hostCommandEnvironment(scope, commandEnvironment(os.Environ(), tempDir))
 	cmd.WaitDelay = time.Second
 	prepareCommandForCancellation(cmd)
 
@@ -336,4 +337,26 @@ func sensitiveCommandEnvironment(name string) bool {
 		}
 	}
 	return false
+}
+
+// hostCommandEnvironment is the host-mode command environment: Git in the
+// command trusts the folders the command is authorized to run in, by exact
+// path, which belong to the person and not to the daemon's user (the
+// sandboxed path does the same for its mounts). Nothing else is added.
+func hostCommandEnvironment(scope WorkspaceScope, env []string) []string {
+	seen := map[string]struct{}{}
+	dirs := make([]string, 0, 1+len(scope.Roots))
+	for _, dir := range append([]string{scope.PrimaryPath}, scope.Roots...) {
+		dir = strings.TrimSpace(dir)
+		if dir == "" || !filepath.IsAbs(dir) {
+			continue
+		}
+		dir = filepath.Clean(dir)
+		if _, ok := seen[dir]; ok {
+			continue
+		}
+		seen[dir] = struct{}{}
+		dirs = append(dirs, dir)
+	}
+	return sandbox.AppendSafeDirectoryEnv(env, dirs)
 }
