@@ -1,8 +1,10 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"log"
+	"swarm/packages/swarmd/internal/run"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -89,7 +91,7 @@ func (s *Server) repairTaskReview(task *pebblestore.ProjectTaskRecord) (*pebbles
 // settleTaskReview also retries cleanup after an earlier successful persistence.
 func (s *Server) settleTaskReview(task *pebblestore.ProjectTaskRecord) (*pebblestore.JobReview, error) {
 	review, err := s.repairTaskReview(task)
-	if err != nil && review != nil {
+	if errors.Is(err, run.ErrTaskReviewCleanupPending) {
 		// Preserve the terminal run signal even when cleanup must be retried.
 		// Workflow waiters call repairTaskReview and cannot advance until it
 		// succeeds; the saved verdict is not proof that cleanup has finished.

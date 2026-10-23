@@ -508,7 +508,18 @@ func (s *WorkerExecutionService) cleanupReview(r store.WorkerRunRecord) error {
 			return err
 		}
 		if !found {
-			return fmt.Errorf("missing durable review identity")
+			// Admission may have allocated the checkout before persisting its
+			// identity. Recover through the same registration path as admission.
+			if err := s.registerReview(snapshot); err != nil {
+				return err
+			}
+			state, found, err = db.GetReviewCleanup(snapshot.AccountScopeID, snapshot.ID)
+			if err != nil {
+				return err
+			}
+			if !found {
+				return fmt.Errorf("missing durable review identity")
+			}
 		}
 		if !reviewIdentityMatches(state, snapshot) {
 			return fmt.Errorf("review identity mismatch")
@@ -581,6 +592,10 @@ func (s *WorkerExecutionService) FinishTaskReview(task *store.ProjectTaskRecord,
 	return review, nil
 }
 
+// ErrTaskReviewCleanupPending indicates a scheduled cleanup retry, not a
+// persistence or cleanup failure. Callers may wait only for this condition.
+var ErrTaskReviewCleanupPending = errors.New("task review cleanup pending")
+
 func (s *WorkerExecutionService) CleanupTaskReview(task *store.ProjectTaskRecord) error {
 	// Settlement and workflow recovery can arrive together. Neither may report
 	// completion while the other's shared sandbox cleanup is still running.
@@ -594,7 +609,7 @@ func (s *WorkerExecutionService) CleanupTaskReview(task *store.ProjectTaskRecord
 				return nil
 			}
 			if current.ReviewCleanup.NextAttemptAt > now.UnixMilli() {
-				return fmt.Errorf("task review cleanup pending: %s", current.ReviewCleanup.LastError)
+				return fmt.Errorf("%w: %s", ErrTaskReviewCleanupPending, current.ReviewCleanup.LastError)
 			}
 		}
 		if current.ReviewCleanup == nil {

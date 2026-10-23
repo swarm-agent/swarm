@@ -800,8 +800,9 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 	if nativeCount(afterTasks) != nativeCount(beforeTasks) {
 		t.Fatal("custom reviewer created native task")
 	}
-	// A missing cleanup head is a filesystem-cleanup failure, not a lost result
-	// or a reason to suppress the run-end signal.
+	// Purpose: settlement must surface real cleanup failures while backoff
+	// alone keeps waitTaskJob pending. The terminal executor boundary proves
+	// errors are not mistaken for a successful review handoff.
 	server.CancelInFlightRuns()
 	if !server.WaitForInFlightRuns(2 * time.Second) {
 		t.Fatal("executor did not stop")
@@ -814,7 +815,12 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 	cleanupTask := taskSessionFixture(t, server, cleanupSnapshot, pebblestore.ProjectTaskRecord{ID: "cleanup-signal", ProjectID: project.ID, Agent: "reviewer", Status: "in_progress", StartCommit: reviewHead})
 	cleanupJob := sessionV3ExecutorJob{Principal: principal, SessionID: cleanupSnapshot.ID, RunID: "cleanup-followup", EpochID: "epoch-00000000000000000001"}
 	for _, status := range []string{sessionruntime.RunIntentPendingExecutor, sessionruntime.RunIntentRunning, sessionruntime.RunIntentCompleted} {
-		if _, err := newSessionV3Executor(server).recordRunStatus(cleanupJob, status, "", "session.run."+status); err != nil {
+		_, err := newSessionV3Executor(server).recordRunStatus(cleanupJob, status, "", "session.run."+status)
+		if status == sessionruntime.RunIntentCompleted {
+			if err == nil || !strings.Contains(err.Error(), "review cleanup missing captured head") {
+				t.Fatalf("terminal cleanup error hidden %v", err)
+			}
+		} else if err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -840,8 +846,44 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 			signalled = true
 		}
 	}
-	if !signalled {
-		t.Fatal("cleanup suppressed run-end signal")
+	if signalled {
+		t.Fatal("failed settlement emitted successful run-end signal")
+	}
+	// A verdict persistence conflict must reach settlement and end a waiter,
+	// rather than being downgraded to cleanup backoff merely because a parsed
+	// review was returned. Use the real FinishTaskReview identity guard.
+	staleTask := *cleanupSaved
+	staleTask.StartCommit = strings.Repeat("b", 40)
+	if _, err := sessions.Store().UpdateProjectTask(principal.AccountScopeID, project.ID, cleanupTask.ID, func(current *pebblestore.ProjectTaskRecord) error {
+		current.Review = nil
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.settleTaskReview(&staleTask); err == nil || !strings.Contains(err.Error(), "review task changed") {
+		t.Fatalf("persistence conflict hidden %v", err)
+	}
+	// Removing the captured head makes cleanup fail immediately, not back off.
+	if _, err := sessions.Store().UpdateProjectTask(principal.AccountScopeID, project.ID, cleanupTask.ID, func(current *pebblestore.ProjectTaskRecord) error {
+		current.ReviewCleanup = nil
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	failureCtx, cancelFailure := context.WithTimeout(context.Background(), time.Second)
+	defer cancelFailure()
+	if _, err := server.waitTaskJob(failureCtx, principal.AccountScopeID, taskRunJobID(project.ID, cleanupTask.ID)); err == nil || !strings.Contains(err.Error(), "review cleanup missing captured head") {
+		t.Fatalf("non-pending error did not end wait %v", err)
+	}
+	// Missing session authority is not a cleanup retry and must end the wait.
+	missingTask := *cleanupSaved
+	missingTask.ID, missingTask.SessionID = "missing-review-session", "absent-review-session"
+	missingTask.Review, missingTask.ReviewCleanup = nil, nil
+	if err := sessions.Store().PutProjectTask(principal.AccountScopeID, &missingTask); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.waitTaskJob(failureCtx, principal.AccountScopeID, taskRunJobID(project.ID, missingTask.ID)); err == nil || err == context.DeadlineExceeded {
+		t.Fatalf("missing session failure did not end wait %v", err)
 	}
 	// Close the actual store after normal settlement, then use a fresh server.
 	closeStore.(func())()

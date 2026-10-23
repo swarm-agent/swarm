@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -319,9 +320,18 @@ func TestReviewerReadsTheJobsOwnWorktreeInPlace(t *testing.T) {
 				t.Fatal(err)
 			}
 			badSnapshot := snapshot
-			badSnapshot.WorktreeRootPath += "-mismatch"
-			if reviewIdentityMatches(identity, badSnapshot) {
-				t.Fatal("mismatched cleanup identity accepted")
+			badSnapshot.ID += "-mismatch"
+			if err := db2.CreateSession(badSnapshot); err != nil {
+				t.Fatal(err)
+			}
+			badIdentity := identity
+			badIdentity.Session = badSnapshot.ID
+			badIdentity.Checkout += "-mismatch"
+			if err := db2.PutReviewCleanup(account, badIdentity); err != nil {
+				t.Fatal(err)
+			}
+			if err := service.cleanupReview(pebblestore.WorkerRunRecord{SessionID: badSnapshot.ID, Role: pebblestore.WorkerRoleReviewer}); err == nil || !strings.Contains(err.Error(), "review identity mismatch") {
+				t.Fatalf("mismatched cleanup identity accepted %v", err)
 			}
 			if err := service.PrepareTaskReviewSession(&next, &b); err == nil {
 				t.Fatal("mismatched cleanup released lane")
@@ -360,6 +370,33 @@ func TestReviewerReadsTheJobsOwnWorktreeInPlace(t *testing.T) {
 				t.Fatal(err)
 			}
 			manager.ForgetReview(coder.WorkspacePath)
+			// Purpose: interrupted admission without a durable identity must
+			// recover via registerReview and release the lane on both entry paths.
+			for _, nativeCleanup := range []bool{false, true} {
+				recovery := snapshot
+				recovery.ID = fmt.Sprintf("%s-recovery-%t", snapshot.ID, nativeCleanup)
+				if err := db2.CreateSession(recovery); err != nil {
+					t.Fatal(err)
+				}
+				var cleanupErr error
+				if nativeCleanup {
+					recoveryTask := a
+					recoveryTask.ID, recoveryTask.SessionID = recovery.ID, recovery.ID
+					if err := db2.PutProjectTask(account, &recoveryTask); err != nil {
+						t.Fatal(err)
+					}
+					cleanupErr = service.CleanupTaskReview(&recoveryTask)
+				} else {
+					cleanupErr = service.cleanupReview(pebblestore.WorkerRunRecord{SessionID: recovery.ID, Role: pebblestore.WorkerRoleReviewer})
+				}
+				if cleanupErr != nil {
+					t.Fatal(cleanupErr)
+				}
+				recovered, found, err := db2.GetReviewCleanup(account, recovery.ID)
+				if err != nil || !found || recovered.Phase != "volume_removed" {
+					t.Fatalf("admission recovery not cleaned %+v %v", recovered, err)
+				}
+			}
 		})
 	}
 	sandbox.SetDefault(previous)

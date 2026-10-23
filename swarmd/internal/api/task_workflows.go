@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/jobautomation"
+	"swarm/packages/swarmd/internal/run"
 	"swarm/packages/swarmd/internal/sandbox"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -296,9 +297,10 @@ func (s *Server) waitTaskJob(ctx context.Context, account, jobID string) (jobaut
 			if task.Agent == "reviewer" {
 				review, err := s.repairTaskReview(task)
 				if err != nil {
-					// Cleanup is durable and retried with backoff. Do not fail
-					// the delivery or hand off to reopen while it is pending.
-					goto waitForChange
+					if errors.Is(err, run.ErrTaskReviewCleanupPending) {
+						goto waitForChange
+					}
+					return out, err
 				}
 				if review != nil {
 					out.Verdict, out.Findings, out.ReviewUnreadable = normalizedAutomationReview(review)
