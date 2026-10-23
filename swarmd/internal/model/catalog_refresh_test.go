@@ -97,7 +97,7 @@ func TestCatalogRefreshSnapshotGeneration(t *testing.T) {
 			} else {
 				result, err = s.RefreshManual(ctx)
 			}
-			const refusal = "advertised snapshot is not newer than the verified catalog"
+			const refusal = "advertised snapshot is older than the verified catalog"
 			if tc.wantError {
 				if err == nil || err.Error() != refusal {
 					t.Fatalf("expected rollback refusal, got %v", err)
