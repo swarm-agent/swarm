@@ -292,6 +292,9 @@ func TestTaskResultGitListsTheTasksOwnCommits(t *testing.T) {
 // reviewer extension also proves exact-head same/new admission with zero
 // workers and persisted OK/BLOCK/malformed findings through waitTaskJob;
 // the same API service reads the identical persisted verdict after settlement.
+// Fix-enabled cases exercise the real Runner and native admission with real Git
+// commits to prevent oversized, blocked or unreadable fixes moving delivery heads.
+// This service-level harness is the narrowest layer spanning those boundaries.
 func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "native-review.pebble")
 	server, sessions, _, closeStore, _ := newRoutedSessionTestServerAt(t, storePath, false)
@@ -549,18 +552,22 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 	// The Runner uses the real API agent adapter; only provider output and run
 	// completion are supplied by this harness. Conditions and reopen dispatch
 	// cross their production boundaries against zero reviewer workers.
-	for i, report := range []string{"VERDICT: OK\nSUMMARY: Checked.\nFINDINGS: None.\nTESTS RUN: None.", "VERDICT: BLOCK\nSUMMARY: Unsafe.\nFINDINGS: Fix input.\nTESTS RUN: None.", "not a review"} {
+	for i, report := range []string{"VERDICT: OK\nSUMMARY: Checked.\nFINDINGS: None.\nTESTS RUN: None.", "VERDICT: BLOCK\nSUMMARY: Unsafe.\nFINDINGS: Fix input.\nTESTS RUN: None.", "not a review", "VERDICT: OK\nSUMMARY: Fixed.\nFINDINGS: None.\nTESTS RUN: None.", "VERDICT: OK\nSUMMARY: Fixed.\nFINDINGS: None.\nTESTS RUN: None.", "VERDICT: BLOCK\nSUMMARY: Unsafe.\nFINDINGS: Fix input.\nTESTS RUN: None.", "VERDICT: OK\nSUMMARY: Fixed.\nFINDINGS: None.\nTESTS RUN: None."} {
+		fixes, fixHead := "", ""
+		if i >= 3 {
+			fixes = jobautomation.FixesSecurity
+		}
 		feed := pebblestore.NewSignalStore(store)
 		server.SetSignalStore(feed)
 		automationStore := jobautomation.NewStore(store)
 		result := &jobautomation.Result{V: 1, JobID: jobID, Kind: jobautomation.KindTask, Role: "coder", ProjectID: project.ID, Folder: folder, Status: jobautomation.StatusSucceeded, Brief: task.Description, Report: "Delivered", Git: &jobautomation.ResultGit{Head: reviewHead, BaseCommit: head, Commits: []jobautomation.ResultCommit{{SHA: reviewHead}}}}
-		workflow := jobautomation.NewRunner(jobautomation.Options{Store: automationStore, Feed: feed, Account: func() string { return principal.AccountScopeID }, Results: reviewLoopResults{result: result}, Agent: agents, Reopen: server.JobAutomationReopener()})
+		workflow := jobautomation.NewRunner(jobautomation.Options{Store: automationStore, Feed: feed, Account: func() string { return principal.AccountScopeID }, Results: reviewLoopResults{result: result}, Agent: agents, Reopen: server.JobAutomationReopener(), Head: ImportJobRef, Verify: VerifyJobHead, Lines: JobHeadChangedLines})
 		if err := workflow.ProcessOnce(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 		name := fmt.Sprintf("native-loop-%d", i)
 		_, _, err := automationStore.Put(principal.AccountScopeID, jobautomation.Automation{Name: name, Scope: jobautomation.Scope{Folder: folder, Role: "coder"}, When: jobautomation.WhenSucceeded, Enabled: true, Steps: []jobautomation.Step{
-			{ID: "review", Type: jobautomation.StepAgent, Worker: "reviewer", Brief: "Review delivery."},
+			{ID: "review", Type: jobautomation.StepAgent, Worker: "reviewer", Brief: "Review delivery.", Fixes: fixes},
 			{ID: "fix", Type: jobautomation.StepReopen, From: "review", MaxRounds: 2, Message: "Fix these", If: []jobautomation.Condition{{Step: "review", Verdict: jobautomation.VerdictBlock}}},
 			{ID: "after", Type: jobautomation.StepAgent, Worker: "finder", Brief: "Check delivery.", If: []jobautomation.Condition{{Step: "review", Verdict: jobautomation.VerdictOK}}},
 		}})
@@ -612,11 +619,35 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 						continue
 					}
 					if record.Agent == "reviewer" {
+						if fixes != "" {
+							snap, _, _ := sessions.Store().GetSession(record.SessionID)
+							if snap.Metadata["agent_name"] != "system-reviewer-fixer" || snap.Metadata["runtime_mode"] != "readwrite" {
+								t.Fatalf("fix profile %+v", snap.Metadata)
+							}
+							lines := 2
+							if i == 4 {
+								lines = 81
+							}
+							if err := os.WriteFile(filepath.Join(record.WorkspacePath, "security.txt"), []byte(strings.Repeat("checked\n", lines)), 0600); err != nil {
+								t.Fatal(err)
+							}
+							outboxPinGit(t, record.WorkspacePath, "add", "security.txt")
+							outboxPinGit(t, record.WorkspacePath, "commit", "-qm", "security fix")
+							fixHead = outboxPinGit(t, record.WorkspacePath, "rev-parse", "HEAD")
+						}
 						key := "native-report-" + record.ID
 						_, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: record.SessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, Kind: sessionruntime.SessionMutationAppendMessage, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, Message: &pebblestore.MessageSnapshot{ID: key, SessionID: record.SessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, Role: "assistant", Content: report, CreatedAt: 200}, NowUnixMs: 200})
 						if err != nil {
 							t.Fatal(err)
 						}
+					}
+					if i == 6 && record.Agent == "reviewer" {
+						// Persist the OK binding, then lose the readable branch before
+						// the waiter consumes it, matching worker fix-result failure.
+						if _, err := execution.FinishTaskReview(&record, pebblestore.ParseJobReview(report, reviewHead, taskRunJobID(project.ID, record.ID), "", 200)); err != nil {
+							t.Fatal(err)
+						}
+						outboxPinGit(t, record.WorkspacePath, "checkout", "--detach")
 					}
 					if _, err := newSessionV3Executor(server).recordRunStatus(sessionV3ExecutorJob{Principal: principal, SessionID: record.SessionID, RunID: intent.RunID, EpochID: intent.EpochID}, sessionruntime.RunIntentCompleted, "", "session.assistant.completed"); err != nil {
 						t.Fatal(err)
@@ -638,15 +669,36 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 		if delivery == nil {
 			t.Fatalf("missing native delivery: %+v", deliveries)
 		}
+		if fixes != "" {
+			wantHead := reviewHead
+			if i == 3 {
+				wantHead = fixHead
+			}
+			if delivery.Head != wantHead {
+				t.Fatalf("fix case %d head %s want %s", i, delivery.Head, wantHead)
+			}
+			if i == 4 && delivery.Steps[0].Reason != jobautomation.ReasonFixesTooLarge {
+				t.Fatalf("oversized %+v", delivery.Steps[0])
+			}
+			if i == 6 && delivery.Steps[0].Reason != jobautomation.ReasonFixesUnreadable {
+				t.Fatalf("unreadable %+v", delivery.Steps[0])
+			}
+			id, _ := delivery.Steps[0].Outcome["job_id"].(string)
+			_, tid, _ := parseTaskJobID(id)
+			saved, _, _ := sessions.Store().GetProjectTask(principal.AccountScopeID, project.ID, tid)
+			if i != 6 && (saved.Review == nil || saved.Review.FixHead != fixHead) {
+				t.Fatalf("fix binding %+v", saved.Review)
+			}
+		}
 		want := "block"
-		if i == 0 {
+		if i == 0 || i == 3 || i == 4 || i == 6 {
 			want = "ok"
 		}
 		if delivery.Steps[0].Outcome["verdict"] != want {
 			t.Fatalf("native outcome %+v", delivery)
 		}
 		after, _ := sessions.ListMessages(task.SessionID, 0, 100)
-		if i == 1 {
+		if i == 1 || i == 5 {
 			if len(after) != len(before)+1 || after[len(after)-1].Content != "Fix these\n\nFix input.\n\n"+jobautomation.ReopenClosing {
 				t.Fatalf("native reopen messages %+v", after)
 			}

@@ -461,11 +461,23 @@ func (s *Server) reviewFixCheckout(ctx context.Context, account, workerID, runID
 		return nil, false, nil
 	}
 	target, _ := run.Input["captured_review_target"].(map[string]any)
+	return s.readReviewFixCheckout(ctx, run.SessionID, runID, target)
+}
+
+func (s *Server) taskReviewFixCheckout(ctx context.Context, account string, task *pebblestore.ProjectTaskRecord) (*jobautomation.ResultGit, bool, error) {
+	if task.AccountID != account || task.Agent != "reviewer" || task.ReviewFixes != jobautomation.FixesSecurity {
+		return nil, false, nil
+	}
+	return s.readReviewFixCheckout(ctx, task.SessionID, task.ID, task.ReviewTarget)
+}
+
+// readReviewFixCheckout is shared by worker and native reviewer tasks.
+func (s *Server) readReviewFixCheckout(ctx context.Context, sessionID, runID string, target map[string]any) (*jobautomation.ResultGit, bool, error) {
 	reviewed, _ := target["head"].(string)
 	if !controlMCPCommitID.MatchString(reviewed) {
 		return nil, true, errors.New("the reviewer's captured review head is missing")
 	}
-	session, found, err := s.sessions.Store().GetSession(run.SessionID)
+	session, found, err := s.sessions.Store().GetSession(sessionID)
 	if err != nil {
 		return nil, true, fmt.Errorf("read the reviewer's session: %w", err)
 	}
@@ -1456,9 +1468,9 @@ func controlMCPAutomationStepsSchema() map[string]any {
 			"max_rounds":          map[string]any{"type": "integer", "minimum": 1, "maximum": jobautomation.MaxRounds, "description": "reopen: how many times this loop may reopen the job; past it the delivery ends blocked (rounds_exhausted). Default 2."},
 			"command":             controlMCPStringProp("run: the machine owner's script, as an absolute path or a path relative to the folder (e.g. deliver/push.sh). It runs on the host as the daemon's user, in the folder, with the machine's own credentials, and only if the file (symlinks resolved) is owned by root and not writable by group or others; a relative path must resolve to a singly linked file inside the folder (prefer an absolute path in a directory only root can write). It gets the job's result JSON on stdin and SWARM_* variables; its last output line is the step's output. Only the machine's owner may set a run step (a full AI key); a write key is refused.", 0, 1024),
 			"args":                map[string]any{"type": "array", "maxItems": jobautomation.MaxStepArgs, "items": map[string]any{"type": "string"}},
-			"worker":              controlMCPStringProp("agent: one of Swarm's own agents (swarm, coder, finder, designer, reviewer), run as a task; reviewer is Swarm's native read-only reviewer at the triggering job's exact head. Any worker, including a custom reviewer, can be named by its worker id; no worker is deployed automatically.", 0, 200),
+			"worker":              controlMCPStringProp("agent: one of Swarm's own agents (swarm, coder, finder, designer, reviewer), run as a task; reviewer is Swarm's native reviewer at the triggering job's exact head, read-only unless fixes is security. Any worker, including a custom reviewer, can be named by its worker id; no worker is deployed automatically.", 0, 200),
 			"brief":               controlMCPStringProp("agent: the brief; the triggering task's or job's result is attached.", 0, 20000),
-			"fixes":               map[string]any{"type": "string", "enum": []string{jobautomation.FixesSecurity}, "description": "agent, reviewer worker named by its id only (not the native reviewer): \"security\" lets the reviewer commit small security-only fixes on a branch at the reviewed head instead of blocking for them. Its commits move the delivery head only with an OK verdict and at most " + strconv.Itoa(jobautomation.MaxReviewerFixLines) + " changed lines (else the step fails: reviewer fixes too large). Without it a reviewer is read-only."},
+			"fixes":               map[string]any{"type": "string", "enum": []string{jobautomation.FixesSecurity}, "description": "agent, reviewer or a reviewer worker named by its id: \"security\" lets the reviewer commit small security-only fixes on a branch at the reviewed head instead of blocking for them. Its commits move the delivery head only with an OK verdict and at most " + strconv.Itoa(jobautomation.MaxReviewerFixLines) + " changed lines (else the step fails: reviewer fixes too large). Without it a reviewer is read-only."},
 			"checkout":            map[string]any{"type": "string", "enum": []string{jobautomation.CheckoutSame, jobautomation.CheckoutNew, jobautomation.CheckoutNone}, "description": "agent: where the step's agent works. same: a new session in the worktree of the job it follows, read-only (a reviewer only; the default for a reviewer). new: its own worktree at the job's head (the coder, a reviewer with fixes, any other worker). none: the folder itself (swarm, finder and designer, as their tasks always do). Omit it for the agent's default."},
 			"produce":             map[string]any{"type": "boolean", "description": "agent: the agent writes the workflow's result file (result: {kind: file, path, describe}); Swarm checks it exists, records its sha256 and adds it to what the delivery hands over. Not for finder or reviewer (they do not write files). A reviewer started after it reviews the produced work."},
 			"to":                  map[string]any{"type": "string", "enum": []string{jobautomation.DeliverFolder, jobautomation.DeliverMerge, jobautomation.DeliverPublish, jobautomation.DeliverOutbox}, "description": "deliver: where the deliverables go. folder: copied into path, a directory inside the folder (never overwriting a different file). merge: the work's branch merged into the folder's branch (swarm_integrate_task or swarm_deliver_job). publish: a pull request through the folder's publish rule. outbox: the machine's bucket (SWARM_OUTBOX_URL), with a manifest at machines/<machine>/deliveries/<delivery>/<step>.json."},

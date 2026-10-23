@@ -455,13 +455,10 @@ func (s *Step) normalizeAgent() error {
 	}
 	s.Fixes = strings.ToLower(strings.TrimSpace(s.Fixes))
 	if s.Fixes != "" {
-		if strings.EqualFold(s.Worker, "reviewer") {
-			return invalid("fixes needs a reviewer worker named by its id for now")
-		}
 		if s.Fixes != FixesSecurity {
 			return invalid("step %s: fixes must be %q (the only value)", s.ID, FixesSecurity)
 		}
-		if IsBuiltinAgent(s.Worker) {
+		if IsBuiltinAgent(s.Worker) && !strings.EqualFold(s.Worker, "reviewer") {
 			return invalid("step %s: fixes is only for a reviewer worker; %s is not a reviewer", s.ID, s.Worker)
 		}
 	}

@@ -524,6 +524,7 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		task.AutomationID = start.AutomationID
 		task.StartCommit = start.StartCommit
 		task.ReviewJob, task.ReviewCheckout = start.ReviewJob, start.ReviewCheckout
+		task.ReviewFixes = start.ReviewFixes
 	}
 	if task.Agent == "reviewer" {
 		execution, err := s.workerExecutionService()

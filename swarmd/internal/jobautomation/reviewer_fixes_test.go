@@ -169,9 +169,12 @@ func TestReviewerFixesMoveTheHeadOnlyWithOKAndWithinTheLimit(t *testing.T) {
 // a writable reviewer.
 // Owner: NormalizeSteps (normalizeAgent, normalizeRun, normalizeReopen).
 func TestFixesIsOnlyForAReviewerAgentStep(t *testing.T) {
-	// Native reviewer tasks stay read-only; only explicit worker IDs may fix.
-	if err := NormalizeSteps([]Step{{ID: "review", Type: StepAgent, Worker: "reviewer", Brief: "review", Fixes: FixesSecurity}}); err == nil || !strings.Contains(err.Error(), "fixes needs a reviewer worker named by its id for now") {
+	// Native reviewers and explicit reviewer worker IDs may opt into fixes.
+	if err := NormalizeSteps([]Step{{ID: "review", Type: StepAgent, Worker: "reviewer", Brief: "review", Fixes: FixesSecurity}}); err != nil {
 		t.Fatalf("native reviewer fixes = %v", err)
+	}
+	if err := NormalizeSteps([]Step{{ID: "review", Type: StepAgent, Worker: "reviewer", Brief: "review", Fixes: FixesSecurity, Checkout: CheckoutSame}}); err == nil {
+		t.Fatal("fixes accepted in a borrowed checkout")
 	}
 	ok := []Step{{ID: "review", Type: StepAgent, Worker: "wkr_reviewer", Brief: "review", Fixes: " Security "}}
 	if err := NormalizeSteps(ok); err != nil || ok[0].Fixes != FixesSecurity {

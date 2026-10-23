@@ -34,6 +34,7 @@ type workflowTaskStart struct {
 	StartCommit    string
 	ReviewJob      string
 	ReviewCheckout string
+	ReviewFixes    string
 }
 
 type workflowTaskStartKey struct{}
@@ -126,6 +127,10 @@ func (s *Server) taskJobResult(ctx context.Context, account, projectID, taskID, 
 	if cost := controlMCPMap(view["cost"]); len(cost) > 0 {
 		out.Cost = jobResultCost(cost["total_tokens"], cost["estimated_cost_usd"], cost["model"])
 	}
+	if task.ReviewFixes == jobautomation.FixesSecurity {
+		out.Git, _, err = s.taskReviewFixCheckout(ctx, account, task)
+		return out, err
+	}
 	head, base := controlMCPString(view, "head"), controlMCPString(view, "base_commit")
 	worktree := strings.TrimSpace(task.WorkspacePath)
 	if !controlMCPCommitID.MatchString(head) || !controlMCPCommitID.MatchString(base) || worktree == "" || filepath.Clean(worktree) == filepath.Clean(out.Folder) {
@@ -184,8 +189,8 @@ func taskResultGit(ctx context.Context, worktree, base, head string) (*jobautoma
 // the work it follows. The task records the workflow that started it, so its
 // end never triggers workflows.
 func (s *Server) startBuiltinAgentStep(ctx context.Context, req jobautomation.AgentRequest) (string, error) {
-	if req.Fixes != "" {
-		return "", &jobautomation.RefusedError{Reason: "fixes is only for a reviewer worker; " + req.Worker + " is one of Swarm's own agents"}
+	if err := jobautomation.NormalizeSteps([]jobautomation.Step{{ID: "agent", Type: jobautomation.StepAgent, Worker: req.Worker, Brief: req.Brief, Fixes: req.Fixes, Checkout: req.Checkout}}); err != nil {
+		return "", &jobautomation.RefusedError{Reason: err.Error()}
 	}
 	if req.Result.ProjectID == "" {
 		return "", &jobautomation.RefusedError{Reason: "job " + req.Result.JobID + " has no project, so " + req.Worker + " cannot be given a task for it"}
@@ -226,7 +231,8 @@ func (s *Server) startBuiltinAgentStep(ctx context.Context, req jobautomation.Ag
 	}
 	if strings.EqualFold(req.Worker, "reviewer") {
 		start.ReviewJob, start.StartCommit = firstNonEmptyString(req.ReviewJob, req.Result.JobID), req.Head
-		start.ReviewCheckout = jobautomation.CheckoutFor(jobautomation.Step{Worker: req.Worker, Checkout: req.Checkout}, "")
+		start.ReviewFixes = req.Fixes
+		start.ReviewCheckout = jobautomation.CheckoutFor(jobautomation.Step{Worker: req.Worker, Checkout: req.Checkout, Fixes: req.Fixes}, "")
 	}
 	sum := sha256.Sum256([]byte(req.Account + "\x00" + req.IdempotencyKey))
 	taskID := "task_wf_" + hex.EncodeToString(sum[:12])

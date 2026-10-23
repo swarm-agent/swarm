@@ -147,13 +147,13 @@ func (s *WorkerExecutionService) AllocateTaskReviewCheckout(p identity.Principal
 	if task == nil || task.ReviewTarget == nil {
 		return worktree.Allocation{}, errors.New("review target required")
 	}
-	return allocateReviewerCheckout(s.host.trees, p, task.SourceWorkspace.Path, store.WorkerRunRecord{SessionID: task.SessionID, Input: map[string]any{"captured_review_target": task.ReviewTarget}}, false)
+	return allocateReviewerCheckout(s.host.trees, p, task.SourceWorkspace.Path, store.WorkerRunRecord{ID: task.ID, SessionID: task.SessionID, Input: map[string]any{"captured_review_target": task.ReviewTarget}}, task.ReviewFixes == ReviewFixesSecurity)
 }
 
 // PrepareTaskReviewSession pins the read-only review identity and registers its sandbox.
 func (s *WorkerExecutionService) PrepareTaskReviewSession(snapshot *store.SessionSnapshot, task *store.ProjectTaskRecord) error {
 	snapshot.Metadata["worker_role"] = store.WorkerRoleReviewer
-	pinReviewerMetadata(snapshot.Metadata, map[string]any{"captured_review_target": task.ReviewTarget}, false)
+	pinReviewerMetadata(snapshot.Metadata, map[string]any{"captured_review_target": task.ReviewTarget}, task.ReviewFixes == ReviewFixesSecurity)
 	if owner := sessionReviewLaneOwner(snapshot.Metadata); owner != "" {
 		snapshot.Metadata["swarm_v3_worktree_owner_session_id"] = owner
 	}
@@ -238,6 +238,9 @@ func (s *WorkerExecutionService) resolveReviewTarget(ctx context.Context, r stor
 // ResolveTaskReviewTarget captures a task review without resolving or creating a reviewer worker.
 func (s *WorkerExecutionService) ResolveTaskReviewTarget(ctx context.Context, p identity.Principal, task *store.ProjectTaskRecord, job, checkout, head string) (map[string]any, error) {
 	input := map[string]any{"review_job": job, "review_checkout": checkout}
+	if task.ReviewFixes != "" {
+		input["review_fixes"] = task.ReviewFixes
+	}
 	if err := validateReviewRequest(store.WorkerRoleReviewer, "automation", input); err != nil {
 		return nil, err
 	}
@@ -544,6 +547,9 @@ func (s *WorkerExecutionService) FinishTaskReview(task *store.ProjectTaskRecord,
 	}
 	if !found {
 		return review, errors.New("review session missing")
+	}
+	if task.ReviewFixes == ReviewFixesSecurity {
+		review = withReviewFixHead(review, snapshot, task.ID)
 	}
 	if sessionReviewLaneOwner(snapshot.Metadata) != "" {
 		review = withBorrowedReviewHead(review, snapshot, s.host.trees)

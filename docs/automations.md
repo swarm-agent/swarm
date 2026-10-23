@@ -173,7 +173,7 @@ A skipped review has no verdict, so verdict conditions do not match; it also
   `swarm_run_task` would, with the brief and the triggering work's result; a
   coder's worktree starts at the delivery head, so its commits descend from
   the work it follows. Its task records the workflow that started it and its
-  end never triggers workflows. `fixes` is refused for it.
+  end never triggers workflows. Only `reviewer` may opt into `fixes: security`.
 - For a worker, Swarm starts the job through the normal job admission (workspace and worker
   checks) with request source `automation`, the brief with the triggering
   job's result attached, and the delivery id and step id as its idempotency
@@ -249,7 +249,7 @@ any other combination when the workflow is saved (for a worker named by id,
 { "id": "review", "type": "agent", "worker": "wkr_custom_reviewer", "brief": "Review this job.", "fixes": "security" }
 ```
 
-An `agent` step naming a reviewer worker by its id may set `fixes` to `security`
+An `agent` step naming `reviewer` or a reviewer worker by its id may set `fixes` to `security`
 (the only value), so that the reviewer may commit small, security-only
 fixes (a missing escape, a path check, a secret in a log line) instead of
 blocking for them. It is opt-in per step and never the default: a reviewer
@@ -412,8 +412,10 @@ and the result's path in `SWARM_RESULT_FILE`.
 
 A workflow that names `reviewer` runs Swarm's native `system-reviewer` as a
 task. It never resolves or deploys a reviewer worker. Name a custom reviewer
-by its worker id. `reviewer` with `fixes: security` is refused: fixes needs a
-reviewer worker named by its id for now.
+by its worker id. Either may opt into `fixes: security`: the reviewer runs
+`system-reviewer-fixer` in its own fix branch at the reviewed head (`checkout: new`).
+Only OK with at most 80 changed lines advances the delivery head; oversized or
+unreadable fixes fail closed, and BLOCK never advances it.
 
 ### Example: code, reviewed, merged
 

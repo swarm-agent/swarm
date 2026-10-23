@@ -27,7 +27,7 @@ A review is report-only and never commits. By default the reviewer is a new sess
 
 ## Security fixes (automation opt-in)
 
-One exception, opt-in per automation step and never the default: an automation `agent` step naming a reviewer worker by its id may set `fixes: "security"` (see [automations](automations.md#reviewer-fixes-fixes-security)). Only that reviewer may commit small, security-only fixes (a missing escape, a path check, a secret in a log line) instead of blocking for them. A reviewer started any other way (`swarm_give_job` with `review_job`, or an `agent` step without `fixes`) stays read-only as above; Swarm never decides on its own to let a reviewer write.
+One exception, opt-in per automation step and never the default: an automation `agent` step naming `reviewer` or a reviewer worker by its id may set `fixes: "security"` (see [automations](automations.md#reviewer-fixes-fixes-security)). Only that reviewer may commit small, security-only fixes (a missing escape, a path check, a secret in a log line) instead of blocking for them. A reviewer started any other way (`swarm_give_job` with `review_job`, or an `agent` step without `fixes`) stays read-only as above; Swarm never decides on its own to let a reviewer write.
 
 With `fixes`:
 
