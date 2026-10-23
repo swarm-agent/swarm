@@ -800,9 +800,9 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 	if nativeCount(afterTasks) != nativeCount(beforeTasks) {
 		t.Fatal("custom reviewer created native task")
 	}
-	// Purpose: settlement must surface real cleanup failures while backoff
-	// alone keeps waitTaskJob pending. The terminal executor boundary proves
-	// errors are not mistaken for a successful review handoff.
+	// Purpose: executor completion must preserve the verdict and run-end signal while cleanup
+	// fails permanently. The executor boundary proves cleanup cannot fail the
+	// completed run, while the waiter still rejects an unsafe handoff.
 	server.CancelInFlightRuns()
 	if !server.WaitForInFlightRuns(2 * time.Second) {
 		t.Fatal("executor did not stop")
@@ -815,22 +815,22 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 	cleanupTask := taskSessionFixture(t, server, cleanupSnapshot, pebblestore.ProjectTaskRecord{ID: "cleanup-signal", ProjectID: project.ID, Agent: "reviewer", Status: "in_progress", StartCommit: reviewHead})
 	cleanupJob := sessionV3ExecutorJob{Principal: principal, SessionID: cleanupSnapshot.ID, RunID: "cleanup-followup", EpochID: "epoch-00000000000000000001"}
 	for _, status := range []string{sessionruntime.RunIntentPendingExecutor, sessionruntime.RunIntentRunning, sessionruntime.RunIntentCompleted} {
-		_, err := newSessionV3Executor(server).recordRunStatus(cleanupJob, status, "", "session.run."+status)
+		var err error
 		if status == sessionruntime.RunIntentCompleted {
-			if err == nil || !strings.Contains(err.Error(), "review cleanup missing captured head") {
-				t.Fatalf("terminal cleanup error hidden %v", err)
-			}
-		} else if err != nil {
+			_, err = newSessionV3Executor(server).completeRun(cleanupJob, sessionV3AssistantResponse{Content: "Review finished"})
+		} else {
+			_, err = newSessionV3Executor(server).recordRunStatus(cleanupJob, status, "", "session.run."+status)
+		}
+		if err != nil {
 			t.Fatal(err)
 		}
 	}
 	waitCtx, cancelWait := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancelWait()
 	cleanupOutcome, err := server.waitTaskJob(waitCtx, principal.AccountScopeID, taskRunJobID(project.ID, cleanupTask.ID))
-	// waitTaskJob must not advance a workflow while shared review cleanup is
-	// pending; its durable verdict remains available for recovery.
-	if err != context.DeadlineExceeded {
-		t.Fatalf("unfinished cleanup did not keep waiting %+v %v", cleanupOutcome, err)
+	// A permanent cleanup failure ends the wait without losing the verdict.
+	if err == nil || !strings.Contains(err.Error(), "review cleanup missing captured head") {
+		t.Fatalf("permanent cleanup did not end wait %+v %v", cleanupOutcome, err)
 	}
 	cleanupSaved, _, err := sessions.Store().GetProjectTask(principal.AccountScopeID, project.ID, cleanupTask.ID)
 	if err != nil || cleanupSaved.ReviewCleanup == nil || cleanupSaved.ReviewCleanup.State != "failed" {
@@ -846,8 +846,8 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 			signalled = true
 		}
 	}
-	if signalled {
-		t.Fatal("failed settlement emitted successful run-end signal")
+	if !signalled {
+		t.Fatal("cleanup failure suppressed run-end signal")
 	}
 	// A verdict persistence conflict must reach settlement and end a waiter,
 	// rather than being downgraded to cleanup backoff merely because a parsed

@@ -596,7 +596,24 @@ func (s *WorkerExecutionService) FinishTaskReview(task *store.ProjectTaskRecord,
 // persistence or cleanup failure. Callers may wait only for this condition.
 var ErrTaskReviewCleanupPending = errors.New("task review cleanup pending")
 
-func (s *WorkerExecutionService) CleanupTaskReview(task *store.ProjectTaskRecord) error {
+// ErrTaskReviewCleanup distinguishes cleanup from verdict persistence failures.
+var ErrTaskReviewCleanup = errors.New("task review cleanup failed")
+
+func permanentTaskReviewCleanup(message string) bool {
+	for _, reason := range []string{"missing captured head", "identity mismatch", "missing durable review identity", sandbox.ErrSandboxRequired.Error()} {
+		if strings.Contains(message, reason) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *WorkerExecutionService) CleanupTaskReview(task *store.ProjectTaskRecord) (resultErr error) {
+	defer func() {
+		if resultErr != nil {
+			resultErr = errors.Join(ErrTaskReviewCleanup, resultErr)
+		}
+	}()
 	// Settlement and workflow recovery can arrive together. Neither may report
 	// completion while the other's shared sandbox cleanup is still running.
 	s.taskReviewCleanupMu.Lock()
@@ -607,6 +624,9 @@ func (s *WorkerExecutionService) CleanupTaskReview(task *store.ProjectTaskRecord
 		if current.ReviewCleanup != nil {
 			if current.ReviewCleanup.State == "done" {
 				return nil
+			}
+			if c := current.ReviewCleanup; c.State == "failed" && (c.Attempts >= 5 || c.NextAttemptAt == 0 || permanentTaskReviewCleanup(c.LastError)) {
+				return errors.New(c.LastError)
 			}
 			if current.ReviewCleanup.NextAttemptAt > now.UnixMilli() {
 				return fmt.Errorf("%w: %s", ErrTaskReviewCleanupPending, current.ReviewCleanup.LastError)
@@ -630,10 +650,19 @@ func (s *WorkerExecutionService) CleanupTaskReview(task *store.ProjectTaskRecord
 		c := current.ReviewCleanup
 		if cleanupErr != nil {
 			c.State, c.LastError = "failed", cleanupErr.Error()
+			c.FailureReported = c.Attempts >= 5
+			if permanentTaskReviewCleanup(c.LastError) {
+				c.NextAttemptAt = 0
+			} else if c.Attempts < 5 {
+				cleanupErr = fmt.Errorf("%w: %v", ErrTaskReviewCleanupPending, cleanupErr)
+			}
 		} else {
 			c.State, c.LastError, c.NextAttemptAt = "done", "", 0
 		}
 		return nil
 	})
-	return errors.Join(cleanupErr, err)
+	if err != nil {
+		return err
+	}
+	return cleanupErr
 }

@@ -114,7 +114,7 @@ func TestReviewerReadsTheJobsOwnWorktreeInPlace(t *testing.T) {
 	if _, err := service.AllocateTaskReviewCheckout(p, &pebblestore.ProjectTaskRecord{}); err == nil || !strings.Contains(err.Error(), "review target required") {
 		t.Fatalf("missing target accepted: %v", err)
 	}
-	// Cleanup failure must preserve the verdict and prevent successful settlement.
+	// Permanent cleanup failure preserves the verdict and stops further attempts.
 	cleanupSession := reviewRun("cleanup-fixture", nil).SessionID
 	cleanupTask := &pebblestore.ProjectTaskRecord{ID: "cleanup-failure", Title: "Cleanup retry", ProjectID: "project-a", AccountID: account, SessionID: cleanupSession, Agent: "reviewer", Status: "needs_review", StartCommit: head}
 	if err := db2.PutProjectTask(account, cleanupTask); err != nil {
@@ -125,7 +125,7 @@ func TestReviewerReadsTheJobsOwnWorktreeInPlace(t *testing.T) {
 		t.Fatalf("cleanup failure not returned with review %+v %v", checked, err)
 	}
 	savedCleanup, _, err := db2.GetProjectTask(account, "project-a", cleanupTask.ID)
-	if err != nil || savedCleanup.ReviewCleanup == nil || savedCleanup.ReviewCleanup.State != "failed" || savedCleanup.ReviewCleanup.NextAttemptAt == 0 {
+	if err != nil || savedCleanup.ReviewCleanup == nil || savedCleanup.ReviewCleanup.State != "failed" || savedCleanup.ReviewCleanup.NextAttemptAt != 0 {
 		t.Fatalf("cleanup retry missing %+v %v", savedCleanup, err)
 	}
 	if err := service.CleanupTaskReview(cleanupTask); err == nil {
@@ -145,7 +145,7 @@ func TestReviewerReadsTheJobsOwnWorktreeInPlace(t *testing.T) {
 		t.Fatal("unfinished cleanup reported success")
 	}
 	retriedCleanup, _, _ := db2.GetProjectTask(account, "project-a", cleanupTask.ID)
-	if retriedCleanup.ReviewCleanup.Attempts != 2 || retriedCleanup.Review.Verdict != "ok" {
+	if retriedCleanup.ReviewCleanup.Attempts != 1 || retriedCleanup.Review.Verdict != "ok" {
 		t.Fatal("cleanup retry lost saved verdict")
 	}
 	// Native task review must use the same worker-job target resolver and reject

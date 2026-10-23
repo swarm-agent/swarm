@@ -91,11 +91,11 @@ func (s *Server) repairTaskReview(task *pebblestore.ProjectTaskRecord) (*pebbles
 // settleTaskReview also retries cleanup after an earlier successful persistence.
 func (s *Server) settleTaskReview(task *pebblestore.ProjectTaskRecord) (*pebblestore.JobReview, error) {
 	review, err := s.repairTaskReview(task)
-	if errors.Is(err, run.ErrTaskReviewCleanupPending) {
+	if errors.Is(err, run.ErrTaskReviewCleanup) {
 		// Preserve the terminal run signal even when cleanup must be retried.
 		// Workflow waiters call repairTaskReview and cannot advance until it
 		// succeeds; the saved verdict is not proof that cleanup has finished.
-		log.Printf("task review cleanup pending: %v", err)
+		log.Printf("task review cleanup deferred: %v", err)
 		return review, nil
 	}
 	return review, err
