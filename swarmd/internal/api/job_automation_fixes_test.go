@@ -40,7 +40,10 @@ func TestAgentStepFixesIsRefusedForNonReviewerWorkers(t *testing.T) {
 		}
 		return steps
 	}
-	for _, worker := range []string{"reviewer", reviewer.ID, "Security reviewer"} {
+	if err := jobautomation.NormalizeSteps([]jobautomation.Step{{ID: "review", Type: jobautomation.StepAgent, Worker: "reviewer", Brief: "Review.", Fixes: "security"}}); err == nil || !strings.Contains(err.Error(), "fixes needs a reviewer worker named by its id for now") {
+		t.Fatalf("native reviewer fixes = %v", err)
+	}
+	for _, worker := range []string{reviewer.ID, "Security reviewer"} {
 		if err := f.server.jobAutomationFixesError(p.AccountScopeID, step(worker)); err != nil {
 			t.Fatalf("fixes on reviewer %q refused: %v", worker, err)
 		}

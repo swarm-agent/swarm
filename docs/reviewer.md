@@ -2,8 +2,7 @@
 
 Workflow steps naming `reviewer` run Swarm's native `system-reviewer` as a task,
 without a reviewer worker. Custom reviewers are named by worker id. Native
-reviewer tasks expose their durable verdict and findings in `swarm_task_result`
-and `swarm_get_job`.
+reviewer tasks expose their durable verdict and findings in `swarm_task_result`.
 
 The system reviewer reviews one job's exact committed head against its base, in its own session. It reads `git diff BASE...HEAD` and the changed files and judges four things:
 

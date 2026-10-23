@@ -387,7 +387,8 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 
 	// Native reviewer admission uses the real execution host and Git target,
 	// but never invokes a model. Explicit sandbox-off is the existing harness
-	// pattern; read-only profile and exact-head allocation are asserted below.
+	// pattern; read runtime mode, detached checkout and exact head are asserted below.
+	// This does not qualify sandbox-on enforcement.
 	previous := sandbox.Default()
 	manager, err := sandbox.NewManager(context.Background(), sandbox.Config{Mode: sandbox.ModeOff, Backend: sandbox.BackendBubblewrap}, nil)
 	if err != nil {
@@ -420,6 +421,12 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 		if err != nil || !found || snapshot.Metadata["agent_name"] != "system-reviewer" || reviewTask.WorkerID != "" {
 			t.Fatalf("native reviewer: %+v %v", snapshot, err)
 		}
+		if snapshot.Metadata["runtime_mode"] != "read" {
+			t.Fatalf("review runtime mode = %v", snapshot.Metadata["runtime_mode"])
+		}
+		if checkout == "new" && outboxPinGit(t, reviewTask.WorkspacePath, "rev-parse", "--abbrev-ref", "HEAD") != "HEAD" {
+			t.Fatal("review checkout is not detached")
+		}
 		if checkout == "same" && reviewTask.WorkspacePath != task.WorkspacePath {
 			t.Fatal("review did not borrow the job's worktree")
 		}
@@ -440,6 +447,18 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 			t.Fatal(err)
 		}
 		if checkout == "new" {
+			// An unread reviewer settles and removes its disposable checkout at
+			// run termination, rather than relying on an MCP result read.
+			settled, _, err := sessions.Store().GetProjectTask(principal.AccountScopeID, project.ID, reviewTaskID)
+			if err != nil || settled.Review == nil || settled.Review.Verdict != "block" {
+				t.Fatalf("unread review settlement: %+v %v", settled, err)
+			}
+			if _, err := os.Stat(reviewTask.WorkspacePath); !os.IsNotExist(err) {
+				t.Fatalf("review checkout retained: %v", err)
+			}
+			if _, err := server.settleTaskReview(settled); err != nil {
+				t.Fatalf("settlement retry: %v", err)
+			}
 			continue
 		}
 		for i, report := range []string{"VERDICT: OK\nSUMMARY: Checked.\nFINDINGS: None.\nTESTS RUN: None.", "VERDICT: BLOCK\nSUMMARY: Unsafe.\nFINDINGS: Fix the unchecked input.\nTESTS RUN: None.", "not a review"} {
@@ -454,6 +473,9 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 			if err := sessions.Store().PutProjectTask(principal.AccountScopeID, reviewTask); err != nil {
 				t.Fatal(err)
 			}
+			if _, err := server.settleTaskReview(reviewTask); err != nil {
+				t.Fatal(err)
+			}
 			outcome, err := server.waitTaskJob(context.Background(), principal.AccountScopeID, reviewID)
 			if err != nil {
 				t.Fatal(err)
@@ -464,6 +486,21 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 			}
 			if outcome.Verdict != want || outcome.ReviewUnreadable != (i == 2) || (i == 1 && outcome.Findings != "Fix the unchecked input.") || (i == 2 && outcome.Findings != "") {
 				t.Fatalf("review outcome: %+v", outcome)
+			}
+			call, err := server.jobAutomationCall(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			view, err := controlMCPTaskResult(call, map[string]any{"project_id": project.ID, "task_id": reviewTaskID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if controlMCPMap(view)["unintegrated_commits"] != 0 {
+				t.Fatalf("review claims commits: %+v", view)
+			}
+			visible, ok := controlMCPMap(view)["review"].(*pebblestore.JobReview)
+			if !ok || visible.Verdict != outcome.Verdict || visible.Findings != outcome.Findings {
+				t.Fatalf("task result review = %+v", visible)
 			}
 			stored, _, _ := sessions.Store().GetProjectTask(principal.AccountScopeID, project.ID, reviewTaskID)
 			// A fresh API service reconstructs exclusively from durable task/messages.

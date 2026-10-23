@@ -768,9 +768,6 @@ func (s *Server) jobAutomationFixesError(account string, steps []jobautomation.S
 		if step.Fixes == "" {
 			refuse = jobautomation.NonReviewerCheckoutError
 		}
-		if strings.EqualFold(step.Worker, pebblestore.WorkerRoleReviewer) {
-			continue
-		}
 		if s.sessions == nil || s.sessions.Store() == nil {
 			return errors.New("workers are not available to check the fixes option")
 		}
@@ -1454,7 +1451,7 @@ func controlMCPAutomationStepsSchema() map[string]any {
 			"max_rounds":          map[string]any{"type": "integer", "minimum": 1, "maximum": jobautomation.MaxRounds, "description": "reopen: how many times this loop may reopen the job; past it the delivery ends blocked (rounds_exhausted). Default 2."},
 			"command":             controlMCPStringProp("run: the machine owner's script, as an absolute path or a path relative to the folder (e.g. deliver/push.sh). It runs on the host as the daemon's user, in the folder, with the machine's own credentials, and only if the file (symlinks resolved) is owned by root and not writable by group or others; a relative path must resolve to a singly linked file inside the folder (prefer an absolute path in a directory only root can write). It gets the job's result JSON on stdin and SWARM_* variables; its last output line is the step's output. Only the machine's owner may set a run step (a full AI key); a write key is refused.", 0, 1024),
 			"args":                map[string]any{"type": "array", "maxItems": jobautomation.MaxStepArgs, "items": map[string]any{"type": "string"}},
-			"worker":              controlMCPStringProp("agent: one of Swarm's own agents (swarm, coder, finder, designer, reviewer), run as a task; reviewer is Swarm's native read-only reviewer at the triggering job's exact head. A custom reviewer is named by its worker id; no worker is deployed automatically.", 0, 200),
+			"worker":              controlMCPStringProp("agent: one of Swarm's own agents (swarm, coder, finder, designer, reviewer), run as a task; reviewer is Swarm's native read-only reviewer at the triggering job's exact head. Any worker, including a custom reviewer, can be named by its worker id; no worker is deployed automatically.", 0, 200),
 			"brief":               controlMCPStringProp("agent: the brief; the triggering task's or job's result is attached.", 0, 20000),
 			"fixes":               map[string]any{"type": "string", "enum": []string{jobautomation.FixesSecurity}, "description": "agent, reviewer worker named by its id only (not the native reviewer): \"security\" lets the reviewer commit small security-only fixes on a branch at the reviewed head instead of blocking for them. Its commits move the delivery head only with an OK verdict and at most " + strconv.Itoa(jobautomation.MaxReviewerFixLines) + " changed lines (else the step fails: reviewer fixes too large). Without it a reviewer is read-only."},
 			"checkout":            map[string]any{"type": "string", "enum": []string{jobautomation.CheckoutSame, jobautomation.CheckoutNew, jobautomation.CheckoutNone}, "description": "agent: where the step's agent works. same: a new session in the worktree of the job it follows, read-only (a reviewer only; the default for a reviewer). new: its own worktree at the job's head (the coder, a reviewer with fixes, any other worker). none: the folder itself (swarm, finder and designer, as their tasks always do). Omit it for the agent's default."},

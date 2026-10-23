@@ -6,9 +6,14 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-// taskReview reads the durable final assistant report, never a truncated card
-// summary. Re-reading after restart produces the same verdict and timestamp.
+// taskReview is read-only: settlement, not observation, owns persistence and cleanup.
 func (s *Server) taskReview(task *pebblestore.ProjectTaskRecord) (*pebblestore.JobReview, error) {
+	return task.Review, nil
+}
+
+// settleTaskReview parses the durable final report and retries cleanup even when
+// an earlier settlement saved the verdict before cleanup failed.
+func (s *Server) settleTaskReview(task *pebblestore.ProjectTaskRecord) (*pebblestore.JobReview, error) {
 	if task.Agent != "reviewer" || task.WorkerID != "" || !controlMCPTaskSettled[task.Status] {
 		return nil, nil
 	}
@@ -22,7 +27,11 @@ func (s *Server) taskReview(task *pebblestore.ProjectTaskRecord) (*pebblestore.J
 		return nil, err
 	}
 	if found && stored.Review != nil {
-		return stored.Review, nil
+		execution, err := s.workerExecutionService()
+		if err != nil {
+			return nil, err
+		}
+		return stored.Review, execution.CleanupTaskReview(stored)
 	}
 	var after uint64
 	report := ""

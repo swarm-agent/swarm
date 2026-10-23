@@ -108,10 +108,42 @@ func TestReviewerReadsTheJobsOwnWorktreeInPlace(t *testing.T) {
 			SessionID: "worker-execution-" + id, Role: pebblestore.WorkerRoleReviewer, RequestSource: "automation", Input: in}
 	}
 	service := &WorkerExecutionService{host: &AutomationV2ExecutionHost{runs: &Service{sessions: sessions}, trees: trees}}
+	// Native task review must use the same worker-job target resolver and reject
+	// another principal before allocating anything. This real-store/Git layer
+	// is the narrowest boundary proving ResolveTaskReviewTarget's authorization.
+	worker, err := ws.CreateWorker(account, user, pebblestore.CreateWorkerRequest{Role: "coder", Name: "Coder", IdempotencyKey: "coder"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.RecordWorkerRun(account, pebblestore.WorkerRunRecord{ID: "native-target", WorkerID: worker.ID, UserID: user, SessionID: taskSession, Status: "succeeded"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db2.PutProjectTask(account, &pebblestore.ProjectTaskRecord{ID: "task_native-target", Title: "Worker delivery", ProjectID: "project-a", AccountID: account, WorkerID: worker.ID, WorkerRunID: "native-target", SessionID: taskSession, Agent: "coder", Status: "needs_review", WorkspacePath: coder.WorkspacePath, WorktreeBranch: coder.BranchName, BaseBranch: "dev", BaseCommit: base, SourceWorkspace: sourceRef}); err != nil {
+		t.Fatal(err)
+	}
+	native := &pebblestore.ProjectTaskRecord{SessionID: "native-review", ProjectID: "project-a", SourceWorkspace: sourceRef}
+	job := "worker/" + worker.ID + "/native-target"
+	target, err := service.ResolveTaskReviewTarget(context.Background(), p, native, job, "same", head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	native.ReviewTarget = target
+	allocation, err := service.AllocateTaskReviewCheckout(p, native)
+	if err != nil || allocation.WorkspacePath != coder.WorkspacePath || git(allocation.WorkspacePath, "rev-parse", "HEAD") != head {
+		t.Fatalf("native worker review: %+v %v", allocation, err)
+	}
+	other := p
+	other.UserID = "other-user"
+	if _, err := service.ResolveTaskReviewTarget(context.Background(), other, native, job, "same", head); err == nil || !strings.Contains(err.Error(), "review job not found") {
+		t.Fatalf("cross-user review = %v", err)
+	}
+	if got := git(repo, "worktree", "list", "--porcelain"); got != worktreesBefore {
+		t.Fatal("target resolution allocated an unauthorized worktree")
+	}
 	ctx := context.Background()
 	// Native task reviews share target capture/allocation, without consulting
 	// the reviewer worker. A stale delivery head must be rejected.
-	native := &pebblestore.ProjectTaskRecord{ID: "native-review", ProjectID: "project-a", AccountID: account, SessionID: "native-session", SourceWorkspace: sourceRef}
+	native = &pebblestore.ProjectTaskRecord{ID: "native-review", ProjectID: "project-a", AccountID: account, SessionID: "native-session", SourceWorkspace: sourceRef}
 	native.ReviewTarget, err = service.ResolveTaskReviewTarget(ctx, p, native, "task/project-a/task_coder", ReviewCheckoutSame, head)
 	if err != nil {
 		t.Fatal(err)

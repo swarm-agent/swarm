@@ -125,7 +125,7 @@ func newReviewLoop(t *testing.T, message string) reviewLoop {
 	}
 	if _, _, err := store.Put(p.AccountScopeID, jobautomation.Automation{Name: "review loop", Scope: jobautomation.Scope{Folder: folder, Worker: f.workerID}, When: jobautomation.WhenSucceeded, Enabled: true,
 		Steps: []jobautomation.Step{
-			{ID: "review", Type: jobautomation.StepAgent, Worker: "reviewer", Brief: "Review this job's exact head against its brief."},
+			{ID: "review", Type: jobautomation.StepAgent, Worker: reviewer.ID, Brief: "Review this job's exact head against its brief."},
 			{ID: "fix", Type: jobautomation.StepReopen, From: "review", MaxRounds: 2, Message: "The reviewer blocked your work. Its findings:", If: []jobautomation.Condition{{Step: "review", Verdict: jobautomation.VerdictBlock}}},
 			{ID: "after", Type: jobautomation.StepAgent, Worker: "finder", Brief: "Runs only after an ok.", If: []jobautomation.Condition{{Step: "review", Verdict: jobautomation.VerdictOK}}},
 		}}); err != nil {

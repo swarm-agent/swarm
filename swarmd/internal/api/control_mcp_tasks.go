@@ -343,6 +343,12 @@ func controlMCPTaskResult(c *controlMCPCall, args map[string]any) (any, error) {
 		}
 	}
 	assessment := controlMCPMap(task["delivery_assessment"])
+	if task["agent"] == "reviewer" {
+		// Borrowing a lane does not make its later commits the reviewer's work.
+		out["unintegrated_commits"] = 0
+		delete(out, "diff_summary")
+		assessment = nil
+	}
 	if head, _ := assessment["source_oid"].(string); head != "" {
 		out["head"] = head
 	}
