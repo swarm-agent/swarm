@@ -11,6 +11,12 @@ const (
 	MachineToolRun           = "machine_run"
 	MachineToolRead          = "machine_read"
 	MachineToolWrite         = "machine_write"
+	// WorkspaceToolSetup asks the person's app to ready a project folder for
+	// agents (a Git repository with a first commit). It is a client tool like
+	// the machine tools, delivered the same way, but no machine access gates
+	// it: the folder is on this machine, and the app readies it through
+	// Swarm's own repository routes.
+	WorkspaceToolSetup = "request_workspace_setup"
 )
 
 // IsMachineToolName reports whether name is one of the machine tools.
@@ -22,7 +28,8 @@ func IsMachineToolName(name string) bool {
 	return false
 }
 
-// MachineClientTools are the machine tools' definitions. Each waits up to the
+// MachineClientTools are the machine tools' definitions, and the workspace
+// setup request, which travels the same way. Each waits up to the
 // client tool maximum for the person's app: with access "ask", the person
 // decides each call in that time.
 func MachineClientTools() []AgentCustomToolDefinition {
@@ -58,6 +65,17 @@ func MachineClientTools() []AgentCustomToolDefinition {
 			InputSchema: object([]string{"path", "content"}, map[string]any{
 				"path":    text("Absolute path, or ~/ for their home folder.", 1000),
 				"content": map[string]any{"type": "string", "maxLength": 30000, "description": "The whole new content (at most 30000 characters)."},
+			}),
+		},
+		{
+			// Not a machine tool: it concerns a project folder on this machine,
+			// which the person readies through their app, so no machine access
+			// gates it (IsMachineToolName leaves it out).
+			Name: WorkspaceToolSetup, Kind: AgentCustomToolKindClient, Effect: AgentCustomToolEffectWrite, Confirm: never, TimeoutMS: AgentClientToolMaxTimeoutMS,
+			Description: "Ask the person, through their app, to ready one of the project's folders for agents when inspect_source reports it is not ready (not_repository, needs_assisted_setup or needs_initial_commit: no Git repository with a first commit yet). Their app has Swarm make an empty first commit in an empty folder, or shows the folder's files so the person picks the first commit. Never hand the person Git commands instead. The result says the folder's state afterwards: ready with head_commit, or declined. Then inspect the source again and go on.",
+			InputSchema: object([]string{"workspace_path", "reason"}, map[string]any{
+				"workspace_path": text("The folder's absolute path, as list_sources or inspect_source gives it.", 1000),
+				"reason":         text("One sentence: what you want to do in the folder once it is ready.", 500),
 			}),
 		},
 	}

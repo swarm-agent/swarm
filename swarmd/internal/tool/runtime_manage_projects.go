@@ -587,6 +587,16 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		for key, value := range result {
 			response[key] = value
 		}
+		// A source without a Git repository and first commit is readied by the
+		// person through their app, on the agent's request; never by the agent.
+		if ready, has := result["ready"].(bool); has && !ready {
+			if repo, ok := result["repository"].(map[string]any); ok {
+				switch state, _ := repo["state"].(string); state {
+				case "not_repository", "needs_assisted_setup", "needs_initial_commit":
+					response["next_step"] = "This folder has no Git repository with a first commit, so no agent can work in it yet. Call request_workspace_setup with its workspace_path: the person readies it in their app, and the result says when it is ready. Do not give the person Git commands."
+				}
+			}
+		}
 
 	case "list_media":
 		projectID := strings.TrimSpace(asString(args["project_id"]))
