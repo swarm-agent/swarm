@@ -294,7 +294,9 @@ func TestControlMCPListProvidersReturnsConnectMethodForEveryUnconnectedProvider(
 					if want := map[bool]string{true: "swarm_request_provider_key", false: ""}[tc.keyTool]; tool != want {
 						t.Fatalf("%s tool = %q, want %q", id, tool, want)
 					}
-					if !strings.Contains(steps, "--provider "+id+" --api-key-stdin") || !strings.Contains(steps, "install.sh key "+id) {
+					// The provider-connect boundary must offer both first-run and
+					// additional-key routes, without asking for secrets in chat.
+					if !strings.Contains(steps, "setup credential --provider "+id+" --api-key-stdin") || !strings.Contains(steps, "Next to another provider: sudo swarmctl setup add-credential --provider "+id+" --api-key-stdin < key-file (on a box from install.sh: install.sh key "+id+").") {
 						t.Fatalf("%s steps lack the person's own on-machine key entry: %s", id, steps)
 					}
 				}

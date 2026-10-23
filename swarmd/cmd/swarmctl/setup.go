@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -41,7 +42,7 @@ func runSetup(args []string, input io.Reader, output io.Writer) error {
 		return runSetupDailyLimit(args, output)
 	}
 	if len(args) > 0 && (args[0] == "credentials" || args[0] == "add-credential" || args[0] == "remove-credential") {
-		return runSetupCredentials(args, output)
+		return runSetupCredentials(args, input, output)
 	}
 	if len(args) > 0 && args[0] == "sealed-agent" {
 		return runSetupSealedAgent(args, input, output)
@@ -264,14 +265,14 @@ func resolveOwnerSocket(socket string) (string, error) {
 	return socket, nil
 }
 
-// setupRequestShowingRejection is setupRequest for requests that carry no
-// secret (vertex settings): when the daemon refuses, its reason (for example
-// "no GCE metadata server reachable") is shown, bounded and printable only.
+// setupRequestShowingRejection shows bounded, printable daemon rejection reasons.
+// API key material is redacted before displaying a rejection.
 func setupRequestShowingRejection(client *http.Client, method, path string, payload, out any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return errors.New("cannot encode setup request")
 	}
+	defer clear(body)
 	req, err := http.NewRequest(method, "http://swarm-local-transport"+path, bytes.NewReader(body))
 	if err != nil {
 		return errors.New("invalid setup request")
@@ -287,7 +288,22 @@ func setupRequestShowingRejection(client *http.Client, method, path string, payl
 			Error string `json:"error"`
 		}
 		_ = json.NewDecoder(io.LimitReader(resp.Body, 16<<10)).Decode(&rejected)
-		if reason := printableSetupReason(rejected.Error, 600); reason != "" {
+		limit := 600
+		if fields, ok := payload.(map[string]any); ok {
+			if key, ok := fields["api_key"].(string); ok {
+				if key != "" {
+					rejected.Error = strings.ReplaceAll(rejected.Error, key, "[redacted]")
+				}
+				rejected.Error = setupKeySecretish.ReplaceAllStringFunc(rejected.Error, func(word string) string {
+					if strings.ContainsAny(word, "*0123456789") && !strings.HasPrefix(word, "http") && !strings.Contains(word, "//") {
+						return "[redacted]"
+					}
+					return word
+				})
+				limit = 300
+			}
+		}
+		if reason := printableSetupReason(rejected.Error, limit); reason != "" {
 			return fmt.Errorf("setup request rejected (HTTP %d): %s", resp.StatusCode, reason)
 		}
 		return fmt.Errorf("setup request rejected (HTTP %d)", resp.StatusCode)
@@ -297,6 +313,10 @@ func setupRequestShowingRejection(client *http.Client, method, path string, payl
 	}
 	return nil
 }
+
+// Match provider_key_entry.go's token-like redaction, including partially masked
+// keys echoed by providers. Keep ordinary prose and URLs readable.
+var setupKeySecretish = regexp.MustCompile(`[A-Za-z0-9_\-.*+/=]{12,}`)
 
 func printableSetupReason(raw string, limit int) string {
 	var b strings.Builder
@@ -317,6 +337,7 @@ func setupRequest(client *http.Client, method, path string, payload, out any) er
 	if err != nil {
 		return errors.New("cannot encode setup request")
 	}
+	defer clear(body)
 	req, err := http.NewRequest(method, "http://swarm-local-transport"+path, bytes.NewReader(body))
 	if err != nil {
 		return errors.New("invalid setup request")

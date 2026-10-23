@@ -7,6 +7,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 ## Unreleased
 
 - Wait for native reviewer sandbox cleanup before workflow follow-up, surface non-pending failures, recover interrupted review admission, and prevent completed review identities from borrowing the worktree again. Docs impact: none.
+- Allow scripted API keys alongside existing providers with `swarmctl setup add-credential --api-key-stdin`; `install.sh key` always uses the owner credential route, which also handles first-provider onboarding on a new machine. Update provider connect guidance. Docs impact: docs/frontends.md.
 
 - Allow native workflow reviewers to opt into security fixes using the shared fix checkout and verdict binding, with the same 80-line and fail-closed delivery rules as reviewer workers. Docs impact: docs/automations.md and docs/reviewer.md.
 

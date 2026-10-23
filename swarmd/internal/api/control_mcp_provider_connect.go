@@ -88,7 +88,8 @@ func controlMCPProviderConnectMethod(provider string, credentialTypes []string, 
 		}
 		steps = append(steps,
 			"The person adds it on Swarm's setup page or in Settings > Auth.",
-			fmt.Sprintf("Or, as the first provider, by script on the machine: sudo swarmctl setup credential --provider %s --api-key-stdin < key-file (on a box from install.sh: install.sh key %s).", provider, provider))
+			fmt.Sprintf("Or, as the first provider, by script on the machine: sudo swarmctl setup credential --provider %s --api-key-stdin < key-file (on a box from install.sh: install.sh key %s).", provider, provider),
+			fmt.Sprintf("Next to another provider: sudo swarmctl setup add-credential --provider %s --api-key-stdin < key-file (on a box from install.sh: install.sh key %s).", provider, provider))
 		connect["steps"] = steps
 		return connect
 	default:

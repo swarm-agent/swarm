@@ -4,14 +4,17 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"reflect"
 	"strings"
 	"testing"
 )
 
 // Requirement: on a box with no shell a second provider can be added and the
 // old one removed after first setup. The listing never prints key material,
-// add-credential only takes Vertex (no secret), and remove sends exactly the
+// Vertex addition carries no secret, and remove sends exactly the
 // provider and ID. runSetupCredentials over a socket fixture is the boundary.
 func TestSetupCredentialsListAddRemove(t *testing.T) {
 	var paths []string
@@ -84,5 +87,124 @@ func TestSetupDailyLimitWithoutUSDOnlyReads(t *testing.T) {
 	}
 	if err := runSetup([]string{"daily-limit", "--socket", socket, "--usd", "0"}, strings.NewReader(""), &bytes.Buffer{}); err != nil || methods[1] != http.MethodPost {
 		t.Fatalf("explicit --usd 0: err=%v methods=%v", err, methods)
+	}
+}
+
+// Requirement: runSetupCredentials must send additional API keys only in the
+// owner credential request body, never argv, URLs or output. A Unix socket
+// fixture is the narrowest layer exercising CLI parsing and actual transport;
+// failures must be actionable without disclosing an echoed key.
+func TestSetupAddCredentialAPIKey(t *testing.T) {
+	const key = "fixture-api-key"
+	for _, rejected := range []bool{false, true} {
+		t.Run(fmt.Sprint(rejected), func(t *testing.T) {
+			calls := 0
+			socket := setupFixture(t, func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if r.Method != http.MethodPost || r.URL.RequestURI() != "/v1/auth/credentials" || strings.Contains(fmt.Sprint(r.Header), key) {
+					t.Errorf("unexpected request metadata")
+				}
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				if !reflect.DeepEqual(body, map[string]any{"provider": "exa", "type": "api", "api_key": key, "active": true}) {
+					t.Error("unexpected request body")
+				}
+				if rejected {
+					w.WriteHeader(http.StatusBadRequest)
+					_ = json.NewEncoder(w).Encode(map[string]string{"error": "verification failed: " + key})
+				} else {
+					fmt.Fprint(w, `{"id":"cred_api"}`)
+				}
+			})
+			reader, writer, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reader.Close()
+			if _, err := io.WriteString(writer, "  "+key+"\n"); err != nil {
+				t.Fatal(err)
+			}
+			writer.Close()
+			var out bytes.Buffer
+			err = runSetup([]string{"add-credential", "--socket", socket, "--provider", "exa", "--api-key-stdin"}, reader, &out)
+			if rejected {
+				if err == nil || !strings.Contains(err.Error(), "verification failed") || strings.Contains(err.Error(), key) {
+					t.Fatalf("unsafe or missing rejection: %v", err)
+				}
+			} else if err != nil || !strings.Contains(out.String(), "credential saved") {
+				t.Fatalf("result: %v %s", err, &out)
+			}
+			if calls != 1 || strings.Contains(out.String(), key) {
+				t.Fatal("wrong request count or secret output")
+			}
+		})
+	}
+}
+
+// Requirement: runSetupCredentials rejects unsafe stdin and incompatible flags
+// before contacting the daemon. This CLI/socket layer proves both rejection and
+// absence of mutation; os.DevNull exercises the same character-device guard as
+// terminal stdin without requiring an ambient interactive terminal.
+func TestSetupAddCredentialRejectsUnsafeInput(t *testing.T) {
+	calls := 0
+	socket := setupFixture(t, func(w http.ResponseWriter, r *http.Request) { calls++; fmt.Fprint(w, `{}`) })
+	terminal, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer terminal.Close()
+	for _, tc := range []struct {
+		name  string
+		flags []string
+		input io.Reader
+		want  string
+	}{
+		{"terminal", []string{"--provider", "exa", "--api-key-stdin"}, terminal, "redirect"},
+		{"empty", []string{"--provider", "exa", "--api-key-stdin"}, strings.NewReader(" \n"), "nonempty"},
+		{"oversize", []string{"--provider", "exa", "--api-key-stdin"}, strings.NewReader(strings.Repeat("x", 16385)), "16384"},
+		{"vertex-key", []string{"--provider", "vertex", "--project", "p", "--api-key-stdin"}, strings.NewReader("key"), "reads no key"},
+		{"api-project", []string{"--provider", "exa", "--project", "", "--api-key-stdin"}, strings.NewReader("key"), "only"},
+		{"api-location", []string{"--provider", "exa", "--location", "global", "--api-key-stdin"}, strings.NewReader("key"), "only"},
+		{"missing-flag", []string{"--provider", "exa"}, strings.NewReader("key"), "required"},
+		{"argv", []string{"--provider", "exa", "--api-key", "fixture-secret"}, strings.NewReader(""), "invalid setup flags"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := runSetup(append([]string{"add-credential", "--socket", socket}, tc.flags...), tc.input, &out)
+			if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "fixture-secret") || out.Len() != 0 {
+				t.Fatalf("unexpected rejection: %v %s", err, &out)
+			}
+		})
+	}
+	if calls != 0 {
+		t.Fatalf("rejected inputs reached daemon %d times", calls)
+	}
+}
+
+// Requirement: setupRequestShowingRejection must not expose provider-echoed
+// partial API keys or unbounded messages. The CLI/socket boundary exercises the
+// real additional-key rejection path without a live provider or vault.
+func TestSetupCredentialRedactsPartialKey(t *testing.T) {
+	for _, command := range []string{"add-credential"} {
+		t.Run(command, func(t *testing.T) {
+			const key = "fixture-secret-key"
+			const masked = "sk-example****1234"
+			socket := setupFixture(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "verification failed: " + masked + " " + key + " " + strings.Repeat("reason ", 100) + "tail-marker"})
+			})
+			var out bytes.Buffer
+			err := runSetup([]string{command, "--socket", socket, "--provider", "exa", "--api-key-stdin"}, strings.NewReader(key), &out)
+			if err == nil {
+				t.Fatal("expected rejection")
+			}
+			const prefix = "setup request rejected (HTTP 400): "
+			message := err.Error()
+			if !strings.HasPrefix(message, prefix+"verification failed: [redacted] [redacted]") || strings.Contains(message, "1234") || strings.Contains(message, key) || strings.Contains(message, "tail-marker") || len(strings.TrimPrefix(message, prefix)) > 300 || out.Len() != 0 {
+				t.Fatalf("unsafe rejection: %q, output %q", message, out.String())
+			}
+		})
 	}
 }

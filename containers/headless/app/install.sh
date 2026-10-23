@@ -244,7 +244,7 @@ Readiness is generation-bound and checked again immediately before restart.
   --app NAME       (install) also connect this app at the end of the install
   --progress=json  (any command) one JSON line per step on stdout, for apps
                    driving the installer; see docs/frontends.md
-  key PROVIDER     set the first provider API key, read from stdin (or typed
+  key PROVIDER     set a first or additional provider API key, read from stdin (or typed
                    at a hidden prompt); never on a command line
   secret set NAME  create the secret for the websites in --hosts (when given)
                    and set its value from stdin (or a hidden prompt)
@@ -2224,7 +2224,7 @@ disconnect_app() {
   echo "The $app app is disconnected: its key is revoked and its key file removed."
 }
 
-# Set the first provider API key by script; the key comes on stdin (or a
+# Set a first or additional provider API key; the key comes on stdin (or a
 # hidden prompt) and reaches Swarm only through a pipe.
 provider_key() {
   [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
@@ -2232,10 +2232,12 @@ provider_key() {
     die "usage: install.sh key PROVIDER (the API key on stdin, or typed at a hidden prompt)"
   load_conf
   require_owner
-  local key
+  local key result=0
+  # The owner credential route also initializes defaults on a true first run.
   read_secret key "Paste the $1 API key"
-  printf '%s' "$key" | "$SWARMCTL" setup credential --provider "$1" --api-key-stdin
+  printf '%s' "$key" | "$SWARMCTL" setup add-credential --provider "$1" --api-key-stdin || result=$?
   key=''
+  return "$result"
 }
 
 # Claude Code as Swarm's provider (install.sh claude-code). Swarm runs the
