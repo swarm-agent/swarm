@@ -60,21 +60,17 @@
   <div id="step-provider" class="step" hidden>
     <h1>Connect an AI provider</h1>
     <p class="muted">Swarm's agents need a model provider. The easiest is your ChatGPT account.</p>
-    <button id="codex-start" type="button" class="primary">Sign in with ChatGPT</button>
+    <div id="provider-manager">
+    <div id="provider-rows"></div>
+    <button id="providers-refresh" type="button">Refresh providers</button>
+    <button id="codex-start" type="button" class="primary" hidden>Sign in with ChatGPT</button>
     <div id="codex-login" class="callout" hidden>
       <p>1. Open <a id="codex-link" target="_blank" rel="noopener noreferrer">this sign-in page</a></p>
       <p>2. Enter this code: <strong id="codex-code" class="code"></strong></p>
       <p id="codex-wait" class="muted">Waiting for you to finish… this page updates by itself.</p>
     </div>
-    <details>
-      <summary>Use an API key instead</summary>
-      <form id="credential-form">
-        <label>Provider<select id="provider" required></select></label>
-        <label>Key type<select id="credential-type" required></select></label>
-        <label>API key<input name="key" type="password" required maxlength="16000" autocomplete="off"></label>
-        <button class="primary">Save key</button>
-      </form>
-    </details>
+    </div>
+    <button id="provider-continue" type="button">Continue setup</button>
   </div>
 
   <div id="step-models" class="step" hidden>
@@ -191,6 +187,8 @@
 <!-- Settings. -->
 <section id="settings" class="card" hidden>
   <h1>Settings</h1>
+  <h2>Providers</h2>
+  <div id="settings-providers"></div>
 
   <h2>Login</h2>
   <p id="account-status" class="muted"></p>
@@ -220,6 +218,7 @@
 
   <h2>Claude</h2>
   <p id="settings-claude" class="muted"></p>
+  <button id="claude-connect" type="button">Connect or pair with Claude</button>
   <button id="claude-disable" type="button" hidden>Disconnect</button>
   <button id="claude-reset" type="button" hidden>Forget relay key</button>
 

@@ -56,7 +56,7 @@ connect. Add `--environments on` (or run `install.sh environments on` later)
 for environments, which need Docker; add `--tailnet` only to reach this
 machine from your other devices. Details: `containers/headless/app/README.md`.
 
-Your model provider key goes on the setup page (`http://127.0.0.1:8443`) or in
+Your model provider key goes in **Settings > Providers** on the setup page (`http://127.0.0.1:8443`) or in
 by script, never through chat:
 
 ```bash
