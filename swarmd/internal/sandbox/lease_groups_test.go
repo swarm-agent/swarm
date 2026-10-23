@@ -140,3 +140,21 @@ func TestLeaseGitGroupRecreates(t *testing.T) {
 		t.Fatal("replacement did not receive Git group")
 	}
 }
+
+// Purpose: leaseSpec must preserve pre-upgrade owner lease labels so acquire
+// does not recreate containers and kill background processes. This unit boundary
+// directly proves spec identity, with a daemon lease as the negative control.
+func TestLeaseOwnerSpecUnchanged(t *testing.T) {
+	m, _, root := newLeaseTestManager(t, 1, nil)
+	name := leaseContainerName(root, "owner")
+	lease := &Lease{Container: name}
+	m.leaseTable().byID["owner"] = lease
+	const spec = "existing-owner-spec"
+	if got := m.leaseSpec(name, root, spec); got != spec {
+		t.Fatalf("owner spec changed: got %q, want %q", got, spec)
+	}
+	lease.asDaemon = true
+	if got := m.leaseSpec(name, root, spec); got == spec {
+		t.Fatal("daemon lease credentials missing from spec")
+	}
+}

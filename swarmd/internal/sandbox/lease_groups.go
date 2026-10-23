@@ -8,7 +8,7 @@ import (
 	"syscall"
 )
 
-func (m *Manager) leaseGroupArgs(name, root string) []string {
+func (m *Manager) leaseContainerAsDaemon(name string) bool {
 	t := m.leaseTable()
 	t.mu.Lock()
 	daemon := false
@@ -19,7 +19,11 @@ func (m *Manager) leaseGroupArgs(name, root string) []string {
 		}
 	}
 	t.mu.Unlock()
-	if !daemon {
+	return daemon
+}
+
+func (m *Manager) leaseGroupArgs(name, root string) []string {
+	if !m.leaseContainerAsDaemon(name) {
 		return nil
 	}
 	// gVisor ignores POSIX ACLs; the ACL already grants this user the folder,
@@ -69,9 +73,13 @@ func (m *Manager) leaseGroupArgs(name, root string) []string {
 	return []string{"--group-add", strconv.FormatUint(uint64(stat.Gid), 10)}
 }
 
-// Include actual lease credentials in the persisted spec so existing containers
-// (including recovered leases) are recreated before reuse when arguments change.
+// Include daemon lease credentials so recovered containers are recreated when
+// arguments change. Owner credentials are already hashed by specHashImage; keep
+// their existing spec unchanged to avoid disrupting running owner containers.
 func (m *Manager) leaseSpec(name, root, spec string) string {
+	if !m.leaseContainerAsDaemon(name) {
+		return spec
+	}
 	uid, gid, _ := m.containerUser(name, root)
 	return spec + "-user-" + strconv.Itoa(uid) + "-" + strconv.Itoa(gid) + "-groups-" + strings.Join(m.leaseGroupArgs(name, root), "-")
 }
