@@ -154,7 +154,6 @@ type Manager struct {
 	cfg              Config
 	runner           provider.CommandRunner
 	localEmptyConfig string
-	localOverlay     bool
 	localRuns        map[string]int
 
 	mu      sync.Mutex
