@@ -596,6 +596,12 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 					response["next_step"] = "This folder has no Git repository with a first commit, so no agent can work in it yet. Call request_workspace_setup with its workspace_path: the person readies it in their app, and the result says when it is ready. Do not give the person Git commands."
 				}
 			}
+		} else if has && ready {
+			if repo, ok := result["repository"].(map[string]any); ok {
+				if contentReady, _ := repo["content_ready"].(bool); !contentReady {
+					response["next_step"] = "The repository is ready: agents work from its committed HEAD in their own worktrees. Uncommitted or untracked files in the folder stay out of their worktrees and do not block a launch; go on."
+				}
+			}
 		}
 
 	case "list_media":
