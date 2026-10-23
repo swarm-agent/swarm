@@ -98,7 +98,7 @@ func TestReviewerFixesMoveTheHeadOnlyWithOKAndWithinTheLimit(t *testing.T) {
 	}
 	h.process()
 	h.automation(Automation{Name: "review then push", Scope: Scope{Folder: folder}, Enabled: true, Steps: []Step{
-		{ID: "review", Type: StepAgent, Worker: "reviewer", Brief: "review", Fixes: FixesSecurity},
+		{ID: "review", Type: StepAgent, Worker: "wkr_custom_reviewer", Brief: "review", Fixes: FixesSecurity},
 		{ID: "push", Type: StepRun, Command: "deliver/push.sh", If: []Condition{{Step: "review", Verdict: VerdictOK}}},
 	}})
 	end := func(runID string) Delivery {
@@ -169,7 +169,11 @@ func TestReviewerFixesMoveTheHeadOnlyWithOKAndWithinTheLimit(t *testing.T) {
 // a writable reviewer.
 // Owner: NormalizeSteps (normalizeAgent, normalizeRun, normalizeReopen).
 func TestFixesIsOnlyForAReviewerAgentStep(t *testing.T) {
-	ok := []Step{{ID: "review", Type: StepAgent, Worker: "Reviewer", Brief: "review", Fixes: " Security "}}
+	// Native reviewer tasks stay read-only; only explicit worker IDs may fix.
+	if err := NormalizeSteps([]Step{{ID: "review", Type: StepAgent, Worker: "reviewer", Brief: "review", Fixes: FixesSecurity}}); err == nil || !strings.Contains(err.Error(), "fixes needs a reviewer worker named by its id for now") {
+		t.Fatalf("native reviewer fixes = %v", err)
+	}
+	ok := []Step{{ID: "review", Type: StepAgent, Worker: "wkr_reviewer", Brief: "review", Fixes: " Security "}}
 	if err := NormalizeSteps(ok); err != nil || ok[0].Fixes != FixesSecurity {
 		t.Fatalf("reviewer fixes = %q %v", ok[0].Fixes, err)
 	}
@@ -248,7 +252,7 @@ func TestReviewerOKWithUnreadableFixesFailsClosed(t *testing.T) {
 	h.agents.outcomes = append(h.agents.outcomes, AgentOutcome{Verdict: VerdictOK, Result: git(jobHead, jobHead)})
 	h.process()
 	h.automation(Automation{Name: "review then push", Scope: Scope{Folder: folder}, Enabled: true, Steps: []Step{
-		{ID: "review", Type: StepAgent, Worker: "reviewer", Brief: "review", Fixes: FixesSecurity},
+		{ID: "review", Type: StepAgent, Worker: "wkr_custom_reviewer", Brief: "review", Fixes: FixesSecurity},
 		{ID: "push", Type: StepRun, Command: "deliver/push.sh", If: []Condition{{Step: "review", Verdict: VerdictOK}}},
 	}})
 	end := func(runID string) Delivery {
@@ -310,7 +314,7 @@ func TestFixingReviewerAfterAMovedHeadIsNotStarted(t *testing.T) {
 	h.process()
 	h.automation(Automation{Name: "format then review", Scope: Scope{Folder: folder}, Enabled: true, Steps: []Step{
 		{ID: "format", Type: StepAgent, Worker: "coder", Brief: "format"},
-		{ID: "review", Type: StepAgent, Worker: "reviewer", Brief: "review", Fixes: FixesSecurity},
+		{ID: "review", Type: StepAgent, Worker: "wkr_custom_reviewer", Brief: "review", Fixes: FixesSecurity},
 	}})
 	result := workerResult(folder, "run-moved")
 	result.Git.Head = jobHead

@@ -109,6 +109,19 @@ func TestReviewerReadsTheJobsOwnWorktreeInPlace(t *testing.T) {
 	}
 	service := &WorkerExecutionService{host: &AutomationV2ExecutionHost{runs: &Service{sessions: sessions}, trees: trees}}
 	ctx := context.Background()
+	// Native task reviews share target capture/allocation, without consulting
+	// the reviewer worker. A stale delivery head must be rejected.
+	native := &pebblestore.ProjectTaskRecord{ID: "native-review", ProjectID: "project-a", AccountID: account, SessionID: "native-session", SourceWorkspace: sourceRef}
+	native.ReviewTarget, err = service.ResolveTaskReviewTarget(ctx, p, native, "task/project-a/task_coder", ReviewCheckoutSame, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alloc, err := service.AllocateTaskReviewCheckout(p, native); err != nil || alloc.WorkspacePath != coder.WorkspacePath || alloc.BaseCommit != head {
+		t.Fatalf("native allocation: %+v %v", alloc, err)
+	}
+	if _, err := service.ResolveTaskReviewTarget(ctx, p, native, "task/project-a/task_coder", ReviewCheckoutSame, base); err == nil {
+		t.Fatal("accepted stale review head")
+	}
 
 	// Default: the coder's own worktree, its session and branch.
 	r := reviewRun("inplace", nil)

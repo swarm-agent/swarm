@@ -523,6 +523,17 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	if start, ok := workflowTaskStartFrom(ctx); ok {
 		task.AutomationID = start.AutomationID
 		task.StartCommit = start.StartCommit
+		task.ReviewJob, task.ReviewCheckout = start.ReviewJob, start.ReviewCheckout
+	}
+	if task.Agent == "reviewer" {
+		execution, err := s.workerExecutionService()
+		if err != nil {
+			return nil, err
+		}
+		task.ReviewTarget, err = execution.ResolveTaskReviewTarget(ctx, p, &task, task.ReviewJob, task.ReviewCheckout, task.StartCommit)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if len(task.CoderAssignments) > 0 {
 		// The assignment list, not router boilerplate, is the executable small-task

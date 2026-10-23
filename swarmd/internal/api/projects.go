@@ -701,6 +701,9 @@ func (s *Server) resolveTaskModelPreference(p identity.Principal, task *pebblest
 		targetAgent = "swarm"
 	}
 	isPlan := targetAgent == "plan"
+	if targetAgent == "reviewer" {
+		targetAgent = "system-reviewer"
+	}
 
 	// Resolve default Swarm preference for account
 	var defaultSwarmPref pebblestore.ModelPreference
@@ -1302,13 +1305,19 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 	}
 
 	var admission *pebblestore.WorktreeAdmissionEvidence
-	if targetAgent == "coder" || mode == sessionruntime.ModePlan || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" || task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
+	if task.Agent == "reviewer" || targetAgent == "coder" || mode == sessionruntime.ModePlan || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" || task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
 		if s.worktrees == nil {
 			return errors.New("worktree service is not configured; coding task requires worktree isolation")
 		}
 		var alloc worktreeruntime.Allocation
 		var err error
-		if task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
+		if task.Agent == "reviewer" {
+			execution, executionErr := s.workerExecutionService()
+			if executionErr != nil {
+				return executionErr
+			}
+			alloc, err = execution.AllocateTaskReviewCheckout(p, task)
+		} else if task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
 			allocator, ok := s.worktrees.(interface {
 				AllocateProjectTaskFollowup(identity.Principal, string, string, string, string, string) (worktreeruntime.Allocation, error)
 			})
@@ -1389,6 +1398,18 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		}
 	}
 
+	if task.Agent == "reviewer" {
+		execution, err := s.workerExecutionService()
+		if err != nil {
+			return err
+		}
+		if err := execution.PrepareTaskReviewSession(&sessionSnapshot, task); err != nil {
+			return err
+		}
+		if task.ReviewTarget["lane_owner"] != nil {
+			admission = nil
+		}
+	}
 	if err := s.allocateTaskRepositoryContinuations(p, task, &sessionSnapshot); err != nil {
 		return fmt.Errorf("repository continuation allocation: %w", err)
 	}

@@ -7,6 +7,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 ## Unreleased
 
 - Keep quoted headings and closed code fences inside review sections readable without weakening verdict or section validation. Docs impact: none.
+- Run workflow `reviewer` steps as native read-only reviewer tasks instead of deploying workers; retain parsed verdicts and require explicit reviewer worker IDs for security fixes. Docs impact: updated docs/automations.md and docs/reviewer.md.
 
 - Accept changed model catalog snapshots with an equal generation timestamp so recommendation-only releases reach installs, while still rejecting older snapshots. Docs impact: none.
 

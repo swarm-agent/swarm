@@ -323,6 +323,25 @@ func controlMCPTaskResult(c *controlMCPCall, args map[string]any) (any, error) {
 	out := controlMCPPick(task, "title", "status", "session_id", "workspace_path", "worktree_branch", "base_branch", "base_commit", "diff_summary", "is_integrated", "unintegrated_commits")
 	out["task_id"] = taskID
 	out["role"] = task["agent"]
+	if task["agent"] == "reviewer" && c.server != nil {
+		p, ok := PrincipalFromRequest(c.request)
+		if !ok {
+			return nil, controlMCPToolFailure("review principal unavailable")
+		}
+		record, found, err := c.server.sessions.Store().GetProjectTask(p.AccountScopeID, projectID, taskID)
+		if err != nil {
+			return nil, err
+		}
+		if found && record != nil {
+			review, err := c.server.taskReview(record)
+			if err != nil {
+				return nil, err
+			}
+			if review != nil {
+				out["review"] = review
+			}
+		}
+	}
 	assessment := controlMCPMap(task["delivery_assessment"])
 	if head, _ := assessment["source_oid"].(string); head != "" {
 		out["head"] = head

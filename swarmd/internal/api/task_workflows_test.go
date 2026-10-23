@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,7 +12,10 @@ import (
 	"strings"
 	"testing"
 
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/jobautomation"
+	runruntime "swarm/packages/swarmd/internal/run"
+	"swarm/packages/swarmd/internal/sandbox"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/workspace"
@@ -283,7 +287,10 @@ func TestTaskResultGitListsTheTasksOwnCommits(t *testing.T) {
 // after a restart.
 // Owners: jobAutomationAgents.Start -> Server.startBuiltinAgentStep ->
 // Server.CreateProjectTask (the internal workflow marker) over the real
-// project store; the task's run is not executed (no provider).
+// project store; the task's run is not executed (no provider). The native
+// reviewer extension also proves exact-head same/new admission with zero
+// workers and persisted OK/BLOCK/malformed findings through waitTaskJob;
+// a fresh API service reads the identical persisted verdict after settlement.
 func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 	server, sessions, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	store := sessions.Store().Underlying()
@@ -376,5 +383,99 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 	tasks, err := sessions.Store().ListProjectTasks(principal.AccountScopeID, project.ID, 10)
 	if err != nil || len(tasks) != 1 {
 		t.Fatalf("tasks = %d %v, want only the step's task", len(tasks), err)
+	}
+
+	// Native reviewer admission uses the real execution host and Git target,
+	// but never invokes a model. Explicit sandbox-off is the existing harness
+	// pattern; read-only profile and exact-head allocation are asserted below.
+	previous := sandbox.Default()
+	manager, err := sandbox.NewManager(context.Background(), sandbox.Config{Mode: sandbox.ModeOff, Backend: sandbox.BackendBubblewrap}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sandbox.SetDefault(manager)
+	t.Cleanup(func() { sandbox.SetDefault(previous) })
+	runner := server.runner.(*runruntime.Service)
+	runner.SetWorkspaceService(workspaces)
+	execution, err := runruntime.NewWorkerExecutionService(runner, sessions.Store(), trees, server.applySessionV3PrimaryMutation, func(identity.Principal, pebblestore.V3SessionRunIntent) bool { return false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.SetWorkerExecutionService(execution)
+	outboxPinGit(t, task.WorkspacePath, "commit", "-q", "--allow-empty", "-m", "delivery")
+	reviewHead := outboxPinGit(t, task.WorkspacePath, "rev-parse", "HEAD")
+	for _, checkout := range []string{"same", "new"} {
+		reviewStep := jobautomation.AgentRequest{Account: step.Account, Folder: step.Folder, Worker: "reviewer", Brief: "Review the limit.", Checkout: checkout, Head: reviewHead, IdempotencyKey: "review-" + checkout,
+			Result: jobautomation.Result{V: 1, JobID: jobID, ProjectID: project.ID, Brief: task.Description, Report: "Implemented the limit."}}
+		reviewID, err := agents.Start(context.Background(), reviewStep)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, reviewTaskID, _ := parseTaskJobID(reviewID)
+		reviewTask, found, err := sessions.Store().GetProjectTask(principal.AccountScopeID, project.ID, reviewTaskID)
+		if err != nil || !found {
+			t.Fatalf("review task: %v %v", found, err)
+		}
+		snapshot, found, err := sessions.Store().GetSession(reviewTask.SessionID)
+		if err != nil || !found || snapshot.Metadata["agent_name"] != "system-reviewer" || reviewTask.WorkerID != "" {
+			t.Fatalf("native reviewer: %+v %v", snapshot, err)
+		}
+		if checkout == "same" && reviewTask.WorkspacePath != task.WorkspacePath {
+			t.Fatal("review did not borrow the job's worktree")
+		}
+		if checkout == "new" && reviewTask.WorkspacePath == task.WorkspacePath {
+			t.Fatal("review did not allocate its own checkout")
+		}
+		if got := outboxPinGit(t, reviewTask.WorkspacePath, "rev-parse", "HEAD"); got != reviewHead {
+			t.Fatalf("review head = %s", got)
+		}
+		if again, err := agents.Start(context.Background(), reviewStep); err != nil || again != reviewID {
+			t.Fatalf("review replay: %s %v", again, err)
+		}
+		intent, found, err := sessions.Store().GetV3SessionActiveRunIntent(reviewTask.SessionID)
+		if err != nil || !found {
+			t.Fatalf("review intent: %v %v", found, err)
+		}
+		if _, err := newSessionV3Executor(server).recordRunStatus(sessionV3ExecutorJob{Principal: principal, SessionID: reviewTask.SessionID, RunID: intent.RunID, EpochID: intent.EpochID}, sessionruntime.RunIntentCompleted, "", "session.assistant.completed"); err != nil {
+			t.Fatal(err)
+		}
+		if checkout == "new" {
+			continue
+		}
+		for i, report := range []string{"VERDICT: OK\nSUMMARY: Checked.\nFINDINGS: None.\nTESTS RUN: None.", "VERDICT: BLOCK\nSUMMARY: Unsafe.\nFINDINGS: Fix the unchecked input.\nTESTS RUN: None.", "not a review"} {
+			key := fmt.Sprintf("review-report-%s-%d", checkout, i)
+			_, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: reviewTask.SessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID,
+				Kind: sessionruntime.SessionMutationAppendMessage, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key,
+				Message: &pebblestore.MessageSnapshot{ID: key, SessionID: reviewTask.SessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, Role: "assistant", Content: report, CreatedAt: int64(100 + i)}, NowUnixMs: int64(100 + i)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			reviewTask.Status = "needs_review"
+			if err := sessions.Store().PutProjectTask(principal.AccountScopeID, reviewTask); err != nil {
+				t.Fatal(err)
+			}
+			outcome, err := server.waitTaskJob(context.Background(), principal.AccountScopeID, reviewID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "block"
+			if i == 0 {
+				want = "ok"
+			}
+			if outcome.Verdict != want || outcome.ReviewUnreadable != (i == 2) || (i == 1 && outcome.Findings != "Fix the unchecked input.") || (i == 2 && outcome.Findings != "") {
+				t.Fatalf("review outcome: %+v", outcome)
+			}
+			stored, _, _ := sessions.Store().GetProjectTask(principal.AccountScopeID, project.ID, reviewTaskID)
+			// A fresh API service reconstructs exclusively from durable task/messages.
+			restarted := &Server{sessions: sessions}
+			rederived, err := restarted.taskReview(stored)
+			if err != nil || rederived.Verdict != outcome.Verdict || rederived.Findings != outcome.Findings {
+				t.Fatalf("rederived: %+v %v", rederived, err)
+			}
+		}
+	}
+	workers, err = sessions.Store().WorkerStore().ListWorkers(principal.AccountScopeID, pebblestore.ListWorkersQuery{Limit: 10})
+	if err != nil || len(workers.Workers) != 0 {
+		t.Fatalf("reviewer created workers: %+v %v", workers, err)
 	}
 }

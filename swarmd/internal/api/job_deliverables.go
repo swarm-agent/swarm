@@ -8,7 +8,6 @@ import (
 
 	"swarm/packages/swarmd/internal/jobautomation"
 	"swarm/packages/swarmd/internal/outbox"
-	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // Bounds on the deliverables a result lists: past them only the branch (and
@@ -157,17 +156,4 @@ func (s *Server) workResult(ctx context.Context, account, jobID string) (*jobaut
 		addResultDeliverables(ctx, out)
 	}
 	return out, err
-}
-
-// deployReviewerPreset deploys Swarm's reviewer preset, as
-// swarm_deploy_worker {preset: reviewer} does.
-func (s *Server) deployReviewerPreset(ctx context.Context) error {
-	// Deploying a worker is an automations:write action (POST
-	// /v3/workers:ensure-presets); only this call gets that scope.
-	c, err := s.jobAutomationOwnerCall(ctx, "job-automation-reviewer-preset", "Swarm workflow reviewer preset (internal)", "swarm:read", "swarm:write", "automations:read", "automations:write")
-	if err != nil {
-		return err
-	}
-	_, err = controlMCPDeployWorker(c, map[string]any{"preset": pebblestore.WorkerRoleReviewer})
-	return err
 }

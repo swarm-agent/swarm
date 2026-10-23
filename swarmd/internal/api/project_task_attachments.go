@@ -79,6 +79,9 @@ func projectTaskExecutionAgent(task *pebblestore.ProjectTaskRecord) (string, str
 			mode = "auto"
 		}
 	}
+	if task.Agent == "reviewer" {
+		return "system-reviewer", "auto"
+	}
 	return name, mode
 }
 

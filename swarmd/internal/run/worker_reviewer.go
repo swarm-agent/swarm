@@ -141,6 +141,21 @@ func allocateReviewerCheckout(trees *worktree.Service, p identity.Principal, sou
 	return trees.AllocateReviewWorkspace(p, source, r.SessionID, head, commits...)
 }
 
+// AllocateTaskReviewCheckout reuses the same captured-target allocation as worker reviews.
+func (s *WorkerExecutionService) AllocateTaskReviewCheckout(p identity.Principal, task *store.ProjectTaskRecord) (worktree.Allocation, error) {
+	return allocateReviewerCheckout(s.host.trees, p, task.SourceWorkspace.Path, store.WorkerRunRecord{SessionID: task.SessionID, Input: map[string]any{"captured_review_target": task.ReviewTarget}}, false)
+}
+
+// PrepareTaskReviewSession pins the read-only review identity and registers its sandbox.
+func (s *WorkerExecutionService) PrepareTaskReviewSession(snapshot *store.SessionSnapshot, task *store.ProjectTaskRecord) error {
+	snapshot.Metadata["worker_role"] = store.WorkerRoleReviewer
+	pinReviewerMetadata(snapshot.Metadata, map[string]any{"captured_review_target": task.ReviewTarget}, false)
+	if owner := sessionReviewLaneOwner(snapshot.Metadata); owner != "" {
+		snapshot.Metadata["swarm_v3_worktree_owner_session_id"] = owner
+	}
+	return s.registerReview(*snapshot)
+}
+
 // pinReviewerMetadata pins a reviewer session's review target and, only for
 // the reviewer allowed to fix, worker_review_fixes (what the sandbox, the
 // per-call identity check and cleanup read).
@@ -213,16 +228,36 @@ func (s *WorkerExecutionService) resolveReviewTarget(ctx context.Context, r stor
 	if err != nil {
 		return nil, err
 	}
+	return s.resolveJobReviewTarget(ctx, r, project.ID)
+}
+
+// ResolveTaskReviewTarget captures a task review without resolving or creating a reviewer worker.
+func (s *WorkerExecutionService) ResolveTaskReviewTarget(ctx context.Context, p identity.Principal, task *store.ProjectTaskRecord, job, checkout, head string) (map[string]any, error) {
+	input := map[string]any{"review_job": job, "review_checkout": checkout}
+	if err := validateReviewRequest(store.WorkerRoleReviewer, "automation", input); err != nil {
+		return nil, err
+	}
+	target, err := s.resolveJobReviewTarget(ctx, store.WorkerRunRecord{AccountScopeID: p.AccountScopeID, UserID: p.UserID, SessionID: task.SessionID, WorkspaceID: task.SourceWorkspace.WorkspaceID, Input: input}, task.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	if target["head"] != head {
+		return nil, errors.New("review job moved past the delivery head")
+	}
+	return target, nil
+}
+
+func (s *WorkerExecutionService) resolveJobReviewTarget(ctx context.Context, r store.WorkerRunRecord, projectID string) (map[string]any, error) {
 	parts := strings.Split(r.Input["review_job"].(string), "/")
 	var task *store.ProjectTaskRecord
 	laneOwner := ""
 	if parts[0] == "task" {
 		// A task of Swarm's own agents (swarm_run_task): it is in the
 		// reviewer's project and folder, worked in its own session's worktree.
-		if parts[1] != project.ID {
+		if parts[1] != projectID {
 			return nil, errors.New("review job must exist in the same project and workspace")
 		}
-		target, found, err := s.host.runs.sessions.Store().GetProjectTask(r.AccountScopeID, project.ID, parts[2])
+		target, found, err := s.host.runs.sessions.Store().GetProjectTask(r.AccountScopeID, projectID, parts[2])
 		if err != nil {
 			return nil, err
 		}
@@ -242,7 +277,7 @@ func (s *WorkerExecutionService) resolveReviewTarget(ctx context.Context, r stor
 		if !found || target.UserID != r.UserID {
 			return nil, errors.New("review job not found")
 		}
-		jobTask, found, err := s.host.runs.sessions.Store().GetProjectTask(r.AccountScopeID, project.ID, "task_"+target.ID)
+		jobTask, found, err := s.host.runs.sessions.Store().GetProjectTask(r.AccountScopeID, projectID, "task_"+target.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -424,11 +459,15 @@ func (s *WorkerExecutionService) cleanupReview(r store.WorkerRunRecord) error {
 	if head == "" {
 		return fmt.Errorf("review cleanup missing captured head")
 	}
+	source := snapshot.WorkspacePath
+	if mapString(snapshot.Metadata, "worker_execution_run_id") == "" {
+		source = mapString(snapshot.Metadata, "swarm_v3_source_workspace_path")
+	}
 	validate := func() error {
-		return s.host.trees.ValidateReviewWorkspaceRemoval(snapshot.WorkspacePath, snapshot.WorktreeRootPath, r.SessionID, head)
+		return s.host.trees.ValidateReviewWorkspaceRemoval(source, snapshot.WorktreeRootPath, r.SessionID, head)
 	}
 	remove := func() error {
-		return s.host.trees.RemoveValidatedReviewWorkspace(snapshot.WorkspacePath, snapshot.WorktreeRootPath)
+		return s.host.trees.RemoveValidatedReviewWorkspace(source, snapshot.WorktreeRootPath)
 	}
 	if sessionReviewLaneOwner(snapshot.Metadata) != "" {
 		// A reviewer that read the job's own worktree in place leaves it as
@@ -490,4 +529,37 @@ func reviewComparisonCommits(base string, input map[string]any) (string, []strin
 		}
 	}
 	return base, commits, nil
+}
+
+// FinishTaskReview checks the borrowed head before persisting the verdict, then
+// uses the existing review cleanup protocol without any reviewer worker record.
+func (s *WorkerExecutionService) FinishTaskReview(task *store.ProjectTaskRecord, review store.JobReview) (store.JobReview, error) {
+	snapshot, found, err := s.host.runs.sessions.GetSession(task.SessionID)
+	if err != nil {
+		return review, err
+	}
+	if !found {
+		return review, errors.New("review session missing")
+	}
+	if sessionReviewLaneOwner(snapshot.Metadata) != "" {
+		review = withBorrowedReviewHead(review, snapshot, s.host.trees)
+	}
+	updated, err := s.host.runs.sessions.Store().UpdateProjectTask(task.AccountID, task.ProjectID, task.ID, func(current *store.ProjectTaskRecord) error {
+		if current.SessionID != task.SessionID || current.StartCommit != review.Head {
+			return errors.New("review task changed")
+		}
+		if current.Review == nil {
+			current.Review = &review
+		}
+		return nil
+	})
+	if err != nil {
+		return review, err
+	}
+	review = *updated.Review
+	return review, s.CleanupTaskReview(task)
+}
+
+func (s *WorkerExecutionService) CleanupTaskReview(task *store.ProjectTaskRecord) error {
+	return s.cleanupReview(store.WorkerRunRecord{AccountScopeID: task.AccountID, SessionID: task.SessionID, Role: store.WorkerRoleReviewer})
 }

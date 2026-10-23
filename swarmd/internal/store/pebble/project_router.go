@@ -138,11 +138,11 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) (TaskRouteResult, 
 			agent = "coder"
 			tier = "direct"
 			outcomeType = "code_pr"
-		case "finder":
+		case "finder", "reviewer":
 			if intent != "" && intent != "audit" {
 				return TaskRouteResult{}, fmt.Errorf("conflicting task configuration: intent %q cannot use finder agent", opts.Intent)
 			}
-			agent = "finder"
+			agent = explicitAgent
 			tier = "discovery"
 			outcomeType = "audit_report"
 		case "plan":
@@ -253,7 +253,7 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) (TaskRouteResult, 
 			if explicitOutcome != "code_pr" && explicitOutcome != "bug_patch" && explicitOutcome != "code" {
 				return TaskRouteResult{}, fmt.Errorf("incoherent task contract: coder agent cannot have outcome %q", opts.OutcomeType)
 			}
-		case "finder":
+		case "finder", "reviewer":
 			if explicitOutcome != "audit_report" && explicitOutcome != "audit" && explicitOutcome != "report" {
 				return TaskRouteResult{}, fmt.Errorf("incoherent task contract: finder agent cannot have outcome %q", opts.OutcomeType)
 			}
@@ -429,7 +429,7 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) (TaskRouteResult, 
 				{ID: "deliv_design", Title: fmt.Sprintf("%s (Interactive Artifact)", title), Kind: "artifact", Status: "pending", Description: fmt.Sprintf("Interactive UI artifact for %s", prompt)},
 			}
 		}
-	case "finder":
+	case "finder", "reviewer":
 		stages = []string{"Codebase Investigation", "Audit Report Synthesis"}
 		deliverables = []ProjectTaskDeliverable{
 			{ID: "deliv_audit", Title: "Comprehensive Audit Report", Kind: "report", Status: "pending"},

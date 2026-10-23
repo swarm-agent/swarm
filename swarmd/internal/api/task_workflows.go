@@ -30,8 +30,10 @@ import (
 // never triggers workflows itself) and the commit a coder's worktree starts
 // at (the delivery head). An API client cannot set either.
 type workflowTaskStart struct {
-	AutomationID string
-	StartCommit  string
+	AutomationID   string
+	StartCommit    string
+	ReviewJob      string
+	ReviewCheckout string
 }
 
 type workflowTaskStartKey struct{}
@@ -112,6 +114,11 @@ func (s *Server) taskJobResult(ctx context.Context, account, projectID, taskID, 
 	}
 	out.Folder = firstNonEmptyString(task.SourceWorkspace.Path, task.WorkspacePath)
 	out.Report = controlMCPString(view, "report")
+	if review, err := s.taskReview(task); err != nil {
+		return nil, err
+	} else if review != nil {
+		out.Review = map[string]any{"verdict": review.Verdict, "findings": review.Findings, "reason": review.Reason, "head": review.Head}
+	}
 	out.Error = controlMCPString(view, "last_error")
 	if task.AutomationID != "" {
 		out.RequestSource = jobautomation.RequestSourceAutomation
@@ -183,7 +190,7 @@ func (s *Server) startBuiltinAgentStep(ctx context.Context, req jobautomation.Ag
 	if req.Result.ProjectID == "" {
 		return "", &jobautomation.RefusedError{Reason: "job " + req.Result.JobID + " has no project, so " + req.Worker + " cannot be given a task for it"}
 	}
-	if want := jobautomation.CheckoutFor(jobautomation.Step{Worker: req.Worker}, ""); req.Checkout != "" && req.Checkout != want {
+	if want := jobautomation.CheckoutFor(jobautomation.Step{Worker: req.Worker}, ""); !strings.EqualFold(req.Worker, "reviewer") && req.Checkout != "" && req.Checkout != want {
 		return "", &jobautomation.RefusedError{Reason: req.Worker + " works with checkout " + want + ", not " + req.Checkout}
 	}
 	c, err := s.jobAutomationWriteCall(ctx)
@@ -195,6 +202,17 @@ func (s *Server) startBuiltinAgentStep(ctx context.Context, req jobautomation.Ag
 		return "", &jobautomation.RefusedError{Reason: "agent steps run only for the machine owner's automations"}
 	}
 	brief := agentRequestBrief(req)
+	if strings.EqualFold(req.Worker, "reviewer") {
+		reviewReq := req
+		if req.ReviewJob != "" && req.ReviewJob != req.Result.JobID {
+			work, err := s.workResult(ctx, req.Account, req.ReviewJob)
+			if err != nil || work == nil {
+				return "", fmt.Errorf("read review job %s: %v", req.ReviewJob, err)
+			}
+			reviewReq.Result = *work
+		}
+		brief = s.automationReviewerBrief(ctx, reviewReq) + deliverablesNote(req)
+	}
 	title := strings.TrimLeft(strings.TrimSpace(strings.SplitN(strings.TrimSpace(req.Brief), "\n", 2)[0]), "#- ")
 	if len(title) > 80 {
 		title = strings.TrimSpace(title[:80])
@@ -205,6 +223,10 @@ func (s *Server) startBuiltinAgentStep(ctx context.Context, req jobautomation.Ag
 	start := workflowTaskStart{AutomationID: "workflow:" + req.IdempotencyKey}
 	if strings.EqualFold(req.Worker, "coder") && req.Result.Git != nil && controlMCPCommitID.MatchString(req.Head) {
 		start.StartCommit = req.Head
+	}
+	if strings.EqualFold(req.Worker, "reviewer") {
+		start.ReviewJob, start.StartCommit = firstNonEmptyString(req.ReviewJob, req.Result.JobID), req.Head
+		start.ReviewCheckout = jobautomation.CheckoutFor(jobautomation.Step{Worker: req.Worker, Checkout: req.Checkout}, "")
 	}
 	sum := sha256.Sum256([]byte(req.Account + "\x00" + req.IdempotencyKey))
 	taskID := "task_wf_" + hex.EncodeToString(sum[:12])
@@ -220,8 +242,8 @@ func (s *Server) startBuiltinAgentStep(ctx context.Context, req jobautomation.Ag
 
 // waitTaskJob waits until a task an agent step started settles (see
 // controlMCPTaskSettled), waking on each new signal and re-reading the task
-// at most every minute, then returns its outcome. A task has no review
-// verdict.
+// at most every minute, then returns its outcome, including a native
+// reviewer's durable parsed verdict.
 func (s *Server) waitTaskJob(ctx context.Context, account, jobID string) (jobautomation.AgentOutcome, error) {
 	projectID, taskID, ok := parseTaskJobID(jobID)
 	if !ok {
@@ -261,6 +283,16 @@ func (s *Server) waitTaskJob(ctx context.Context, account, jobID string) (jobaut
 			}
 			if out.Result != nil && out.Result.Git != nil && len(out.Result.Git.Commits) > 0 {
 				out.Head = out.Result.Git.Head
+			}
+			if task.Agent == "reviewer" {
+				review, err := s.taskReview(task)
+				if err != nil {
+					return out, err
+				}
+				if review != nil {
+					out.Verdict, out.Findings = review.Verdict, review.Findings
+					out.ReviewUnreadable = review.Reason == pebblestore.JobReviewMalformedReason
+				}
 			}
 			return out, nil
 		}

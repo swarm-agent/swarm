@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strconv"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -88,6 +89,19 @@ func validateSessionRepositoryIdentityWith(session pebblestore.SessionSnapshot, 
 // validation used by workspace transitions deliberately remains unchanged.
 func (s *Service) validateRunRepositoryIdentity(session pebblestore.SessionSnapshot, principal identity.Principal) error {
 	if mapString(session.Metadata, "lineage_kind") != "system_sidechat" {
+		if mapString(session.Metadata, "worker_role") == pebblestore.WorkerRoleReviewer && mapString(session.Metadata, "worker_execution_run_id") == "" {
+			task, found, err := s.sessions.Store().GetProjectTask(session.AccountScopeID, mapString(session.Metadata, "project_id"), mapString(session.Metadata, "task_id"))
+			if err != nil {
+				return err
+			}
+			if !found || task == nil || task.Agent != "reviewer" || task.WorkerID != "" || task.SessionID != session.ID || task.AutomationID == "" || task.ReviewTarget == nil || !reflect.DeepEqual(task.ReviewTarget, session.Metadata["worker_review_target"]) || sessionReviewFixes(session.Metadata) {
+				return errors.New("native review identity does not match its admitted task")
+			}
+			execution := &WorkerExecutionService{host: &AutomationV2ExecutionHost{runs: s}}
+			if err := execution.registerReview(session); err != nil {
+				return err
+			}
+		}
 		return validateSessionExecutionRepositoryIdentity(session)
 	}
 	kind := mapString(session.Metadata, "system_sidechat_kind")
