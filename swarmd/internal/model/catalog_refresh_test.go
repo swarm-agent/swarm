@@ -80,7 +80,7 @@ func TestCatalogRefreshSnapshotGeneration(t *testing.T) {
 				case "/snapshot-version.json":
 					versionCalls.Add(1)
 					_ = json.NewEncoder(w).Encode(next.version())
-				case "/snapshot.json":
+				case "/v1/snapshot.json":
 					snapshotCalls.Add(1)
 					_ = json.NewEncoder(w).Encode(next)
 				default:
@@ -88,7 +88,7 @@ func TestCatalogRefreshSnapshotGeneration(t *testing.T) {
 				}
 			}))
 			defer remote.Close()
-			s.sourceURL, s.versionURL = remote.URL+"/snapshot.json", remote.URL+"/snapshot-version.json"
+			s.sourceURL, s.versionURL = remote.URL+"/v1/snapshot.json", remote.URL+"/snapshot-version.json"
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			var result CatalogRefreshResult
