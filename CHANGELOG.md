@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Give daemon-user leases the folder Git directory's group for gVisor ACL compatibility, recreate leases when credentials change, report actual sandbox and folder lease status, and revert the bubblewrap packed-ref overlay changes. Docs impact: none.
+
 - Renew the Trivy exception for GO-2026-5932 (x/crypto openpgp, no fixed version) to 2027-01-23 after reassessment: no openpgp import, govulncheck finds nothing reachable. Docs impact: none.
 - Plugin README: names `sudo swarmctl setup credential --provider PROVIDER --api-key-stdin` for adding a provider API key by script. Docs impact: plugins/swarm/README.md.
 

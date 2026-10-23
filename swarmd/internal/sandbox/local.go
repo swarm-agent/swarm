@@ -28,8 +28,9 @@ func newLocalManager(ctx context.Context, cfg Config) (*Manager, error) {
 		return nil, fmt.Errorf("worker_max_concurrent_runs must be non-negative")
 	}
 	m := &Manager{cfg: cfg, boxes: map[string]*box{}, used: map[string]struct{}{}, stop: make(chan struct{}), localRuns: map[string]int{}}
-	m.status = Status{Mode: cfg.Mode, Runtime: BackendBubblewrap}
+	m.status = Status{Mode: cfg.Mode}
 	if cfg.Mode == ModeOff {
+		m.status.Runtime = "host"
 		m.status.Reason = "sandbox mode is off"
 		return m, nil
 	}
@@ -58,6 +59,7 @@ func newLocalManager(ctx context.Context, cfg Config) (*Manager, error) {
 		return m, nil
 	}
 	m.status.Active = true
+	m.status.Runtime = BackendBubblewrap
 	dir, err := os.MkdirTemp("", "swarm-isolation-")
 	if err != nil {
 		return nil, fmt.Errorf("create isolated Git config: %w", err)

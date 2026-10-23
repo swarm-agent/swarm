@@ -258,6 +258,7 @@ func NewManager(ctx context.Context, cfg Config, runner provider.CommandRunner) 
 	}
 	m.status = Status{Mode: cfg.Mode, Memory: cfg.Memory}
 	if cfg.Mode == ModeOff {
+		m.status.Runtime = "host"
 		m.status.Reason = "sandbox mode is off"
 		return m, nil
 	}
@@ -271,6 +272,7 @@ func NewManager(ctx context.Context, cfg Config, runner provider.CommandRunner) 
 			// permissions enforced.
 			m.cfg.Mode = ModeOff
 			m.status.Mode = ModeOff
+			m.status.Runtime = "host"
 		}
 		return m, nil
 	}
@@ -621,6 +623,7 @@ func (m *Manager) runArgsImage(name, root, spec string, mounts []string, secret 
 		"--label", labelSpec + "=" + spec,
 	}
 	args = append(args, leaseLabels...)
+	args = append(args, m.leaseGroupArgs(name, root)...)
 	if runtime != "" {
 		args = append(args, "--runtime", runtime)
 	}
@@ -767,6 +770,9 @@ func (m *Manager) acquire(ctx context.Context, scope Scope, command ...string) (
 		return nil, err
 	}
 	spec := m.specHashImage(root, mounts, secret.Fingerprint, imageID)
+	if scope.Lease != "" {
+		spec = m.leaseSpec(name, root, spec)
+	}
 	if scope.ReviewCheckout != "" {
 		spec += "-review-" + ContainerName(scope.ReviewCheckout)
 	}
