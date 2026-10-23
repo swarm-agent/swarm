@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -494,9 +493,8 @@ func (s *WorkerExecutionService) cleanupReview(r store.WorkerRunRecord) error {
 	if m := sandbox.Default(); m != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := s.registerReview(snapshot); err != nil {
-			return err
-		}
+		// Cleanup restores the captured identity itself. Do not re-admit an
+		// active review or rebuild its execution environment during recovery.
 		db := s.host.runs.sessions.Store()
 		state, found, err := db.GetReviewCleanup(snapshot.AccountScopeID, snapshot.ID)
 		if err != nil {
@@ -568,17 +566,26 @@ func (s *WorkerExecutionService) FinishTaskReview(task *store.ProjectTaskRecord,
 	}
 	review = *updated.Review
 	if err := s.CleanupTaskReview(task); err != nil {
-		log.Printf("task review cleanup pending: %v", err)
+		return review, err
 	}
 	return review, nil
 }
 
 func (s *WorkerExecutionService) CleanupTaskReview(task *store.ProjectTaskRecord) error {
+	// Settlement and workflow recovery can arrive together. Neither may report
+	// completion while the other's shared sandbox cleanup is still running.
+	s.taskReviewCleanupMu.Lock()
+	defer s.taskReviewCleanupMu.Unlock()
 	now := time.Now()
 	attempt := false
 	_, err := s.host.runs.sessions.Store().UpdateProjectTask(task.AccountID, task.ProjectID, task.ID, func(current *store.ProjectTaskRecord) error {
-		if current.ReviewCleanup != nil && (current.ReviewCleanup.State == "done" || current.ReviewCleanup.NextAttemptAt > now.UnixMilli()) {
-			return nil
+		if current.ReviewCleanup != nil {
+			if current.ReviewCleanup.State == "done" {
+				return nil
+			}
+			if current.ReviewCleanup.NextAttemptAt > now.UnixMilli() {
+				return fmt.Errorf("task review cleanup pending: %s", current.ReviewCleanup.LastError)
+			}
 		}
 		if current.ReviewCleanup == nil {
 			current.ReviewCleanup = &store.WorkerRunCleanup{}
@@ -603,5 +610,5 @@ func (s *WorkerExecutionService) CleanupTaskReview(task *store.ProjectTaskRecord
 		}
 		return nil
 	})
-	return err
+	return errors.Join(cleanupErr, err)
 }

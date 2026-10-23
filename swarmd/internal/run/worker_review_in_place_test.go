@@ -31,7 +31,7 @@ import (
 // Owners: validateReviewRequest, WorkerExecutionService.resolveReviewTarget,
 // allocateReviewerCheckout and withBorrowedReviewHead over a real Pebble
 // store, the real workspace and worktree services and real Git; no model
-// provider or sandbox is used (the sandbox side has its own test).
+// provider is used; a real sandbox Manager checks native cleanup and exclusion.
 func TestReviewerReadsTheJobsOwnWorktreeInPlace(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
@@ -113,22 +113,22 @@ func TestReviewerReadsTheJobsOwnWorktreeInPlace(t *testing.T) {
 	if _, err := service.AllocateTaskReviewCheckout(p, &pebblestore.ProjectTaskRecord{}); err == nil || !strings.Contains(err.Error(), "review target required") {
 		t.Fatalf("missing target accepted: %v", err)
 	}
-	// Cleanup failure must remain durable retry state, not hide a saved verdict.
+	// Cleanup failure must preserve the verdict and prevent successful settlement.
 	cleanupSession := reviewRun("cleanup-fixture", nil).SessionID
 	cleanupTask := &pebblestore.ProjectTaskRecord{ID: "cleanup-failure", Title: "Cleanup retry", ProjectID: "project-a", AccountID: account, SessionID: cleanupSession, Agent: "reviewer", Status: "needs_review", StartCommit: head}
 	if err := db2.PutProjectTask(account, cleanupTask); err != nil {
 		t.Fatal(err)
 	}
 	checked, err := service.FinishTaskReview(cleanupTask, pebblestore.JobReview{Verdict: "ok", Head: head})
-	if err != nil || checked.Verdict != "ok" {
-		t.Fatalf("cleanup hid review %+v %v", checked, err)
+	if err == nil || checked.Verdict != "ok" {
+		t.Fatalf("cleanup failure not returned with review %+v %v", checked, err)
 	}
 	savedCleanup, _, err := db2.GetProjectTask(account, "project-a", cleanupTask.ID)
 	if err != nil || savedCleanup.ReviewCleanup == nil || savedCleanup.ReviewCleanup.State != "failed" || savedCleanup.ReviewCleanup.NextAttemptAt == 0 {
 		t.Fatalf("cleanup retry missing %+v %v", savedCleanup, err)
 	}
-	if err := service.CleanupTaskReview(cleanupTask); err != nil {
-		t.Fatal(err)
+	if err := service.CleanupTaskReview(cleanupTask); err == nil {
+		t.Fatal("unfinished cleanup reported success")
 	}
 	afterCleanup, _, _ := db2.GetProjectTask(account, "project-a", cleanupTask.ID)
 	if afterCleanup.ReviewCleanup.Attempts != 1 {
@@ -140,8 +140,8 @@ func TestReviewerReadsTheJobsOwnWorktreeInPlace(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.CleanupTaskReview(cleanupTask); err != nil {
-		t.Fatal(err)
+	if err := service.CleanupTaskReview(cleanupTask); err == nil {
+		t.Fatal("unfinished cleanup reported success")
 	}
 	retriedCleanup, _, _ := db2.GetProjectTask(account, "project-a", cleanupTask.ID)
 	if retriedCleanup.ReviewCleanup.Attempts != 2 || retriedCleanup.Review.Verdict != "ok" {
@@ -266,6 +266,65 @@ func TestReviewerReadsTheJobsOwnWorktreeInPlace(t *testing.T) {
 	}
 	if _, err := service.ResolveTaskReviewTarget(ctx, p, native, "task/project-a/task_coder", ReviewCheckoutSame, base); err == nil {
 		t.Fatal("accepted stale review head")
+	}
+
+	// Native task settlement must release a borrowed coder lane through
+	// CleanupTaskReview and the shared durable Manager cleanup. This real-store
+	// boundary catches leaked registrations without launching a provider. A
+	// competing live reviewer must be rejected without changing A's identity.
+	sandbox.SetDefault(manager)
+	for _, status := range []string{"needs_review", "failed", "cancelled"} {
+		t.Run("native-cleanup-"+status, func(t *testing.T) {
+			a := *native
+			a.ID, a.SessionID = "cleanup-"+status, "session-"+status
+			a.Title, a.Agent, a.Status, a.StartCommit = "Review", "reviewer", status, head
+			if err := db2.PutProjectTask(account, &a); err != nil {
+				t.Fatal(err)
+			}
+			snapshot := pebblestore.SessionSnapshot{ID: a.SessionID, AccountScopeID: account, UserID: user, WorkspacePath: coder.WorkspacePath, WorktreeEnabled: true, WorktreeBranch: coder.BranchName, WorktreeRootPath: coder.WorkspacePath, Metadata: map[string]any{}}
+			if err := service.PrepareTaskReviewSession(&snapshot, &a); err != nil {
+				t.Fatal(err)
+			}
+			if err := db2.CreateSession(snapshot); err != nil {
+				t.Fatal(err)
+			}
+			b := a
+			b.SessionID += "-next"
+			next := pebblestore.SessionSnapshot{ID: b.SessionID, AccountScopeID: account, WorktreeRootPath: coder.WorkspacePath, Metadata: map[string]any{}}
+			if err := service.PrepareTaskReviewSession(&next, &b); err == nil || !strings.Contains(err.Error(), "the worktree is being reviewed by another session") {
+				t.Fatalf("live reviewer exclusion failed %v", err)
+			}
+			if status == "cancelled" {
+				// Resume durable closing state without re-registering an active
+				// review or requiring its execution environment to be rebuilt.
+				state, found, err := db2.GetReviewCleanup(account, a.SessionID)
+				if err != nil || !found {
+					t.Fatalf("missing recovery identity %v", err)
+				}
+				state.Phase = "closing"
+				if err := db2.PutReviewCleanup(account, state); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := service.FinishTaskReview(&a, pebblestore.JobReview{Verdict: "block", Head: head}); err != nil {
+				t.Fatal(err)
+			}
+			saved, _, err := db2.GetProjectTask(account, a.ProjectID, a.ID)
+			if err != nil || saved.ReviewCleanup == nil || saved.ReviewCleanup.State != "done" {
+				t.Fatalf("native cleanup did not finish %+v %v", saved.ReviewCleanup, err)
+			}
+			if err := service.PrepareTaskReviewSession(&next, &b); err != nil {
+				t.Fatalf("next review could not borrow lane %v", err)
+			}
+			if err := manager.EndReview(ctx, coder.WorkspacePath); err != nil {
+				t.Fatal(err)
+			}
+			manager.ForgetReview(coder.WorkspacePath)
+		})
+	}
+	sandbox.SetDefault(previous)
+	if got := git(repo, "worktree", "list", "--porcelain"); got != worktreesBefore || git(coder.WorkspacePath, "rev-parse", "HEAD") != head {
+		t.Fatal("native cleanup changed the coder worktree")
 	}
 
 	// Default: the coder's own worktree, its session and branch.

@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Require native reviewer settlement to finish shared durable sandbox cleanup before workflow follow-up, preserving borrowed-worktree exclusion while cleanup is pending. Docs impact: none.
+
 - Allow native workflow reviewers to opt into security fixes using the shared fix checkout and verdict binding, with the same 80-line and fail-closed delivery rules as reviewer workers. Docs impact: docs/automations.md and docs/reviewer.md.
 
 - Keep quoted headings and closed code fences inside review sections readable without weakening verdict or section validation. Docs impact: none.

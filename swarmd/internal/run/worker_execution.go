@@ -24,6 +24,7 @@ import (
 // It uses the existing V3 session/plan executor, not a second execution engine.
 type WorkerExecutionService struct {
 	watchdogBeforeSettleForTest func()
+	taskReviewCleanupMu         sync.Mutex
 	cleanupMu                   sync.Mutex
 	cleanupQueue                map[string]store.WorkerRunRecord
 	cleanupRunning              bool

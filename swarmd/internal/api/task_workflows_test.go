@@ -802,8 +802,10 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 		}
 	}
 	cleanupOutcome, err := server.waitTaskJob(context.Background(), principal.AccountScopeID, taskRunJobID(project.ID, cleanupTask.ID))
-	if err != nil || cleanupOutcome.Verdict != "block" {
-		t.Fatalf("cleanup hid waiter result %+v %v", cleanupOutcome, err)
+	// waitTaskJob must not advance a workflow while shared review cleanup is
+	// pending; its durable verdict remains available for recovery.
+	if err == nil {
+		t.Fatalf("unfinished cleanup advanced waiter %+v", cleanupOutcome)
 	}
 	cleanupSaved, _, err := sessions.Store().GetProjectTask(principal.AccountScopeID, project.ID, cleanupTask.ID)
 	if err != nil || cleanupSaved.ReviewCleanup == nil || cleanupSaved.ReviewCleanup.State != "failed" {

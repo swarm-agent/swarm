@@ -30,7 +30,7 @@ func (s *Server) repairTaskReview(task *pebblestore.ProjectTaskRecord) (*pebbles
 	if found && stored.Review != nil {
 		if executionErr == nil {
 			if err := execution.CleanupTaskReview(stored); err != nil {
-				log.Printf("task review cleanup pending: %v", err)
+				return stored.Review, err
 			}
 		}
 		return stored.Review, nil
@@ -88,5 +88,13 @@ func (s *Server) repairTaskReview(task *pebblestore.ProjectTaskRecord) (*pebbles
 
 // settleTaskReview also retries cleanup after an earlier successful persistence.
 func (s *Server) settleTaskReview(task *pebblestore.ProjectTaskRecord) (*pebblestore.JobReview, error) {
-	return s.repairTaskReview(task)
+	review, err := s.repairTaskReview(task)
+	if err != nil && review != nil {
+		// Preserve the terminal run signal even when cleanup must be retried.
+		// Workflow waiters call repairTaskReview and cannot advance until it
+		// succeeds; the saved verdict is not proof that cleanup has finished.
+		log.Printf("task review cleanup pending: %v", err)
+		return review, nil
+	}
+	return review, err
 }
