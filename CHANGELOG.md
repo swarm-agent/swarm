@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Record native task reviews with the reviewer session's resolved provider/model during settlement and repair; leave unavailable model identity empty. Docs impact: none.
+
 - Correct headless provider connection guidance to Settings > Providers, expose `runs_agents` in provider status and the SDK, and use that capability for setup-page labels.
   Docs impact: none.
 

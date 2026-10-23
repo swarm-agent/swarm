@@ -57,7 +57,15 @@ func (s *Server) repairTaskReview(task *pebblestore.ProjectTaskRecord) (*pebbles
 			report = ""
 		}
 	}
-	review := pebblestore.ParseJobReview(report, task.StartCommit, taskRunJobID(task.ProjectID, task.ID), task.Provider+"/"+task.Model, task.UpdatedAt)
+	snapshot, found, err := s.sessions.GetSession(task.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	model := ""
+	if found {
+		model = run.TaskReviewModel(snapshot)
+	}
+	review := pebblestore.ParseJobReview(report, task.StartCommit, taskRunJobID(task.ProjectID, task.ID), model, task.UpdatedAt)
 	switch task.Status {
 	case "failed", "blocked", "rejected", "cancelled", "superseded", "needs_input", "pending_approval":
 		review.Verdict = "block"

@@ -764,6 +764,18 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 					if _, err := newSessionV3Executor(server).recordRunStatus(sessionV3ExecutorJob{Principal: principal, SessionID: record.SessionID, RunID: intent.RunID, EpochID: intent.EpochID}, sessionruntime.RunIntentCompleted, "", "session.assistant.completed"); err != nil {
 						t.Fatal(err)
 					}
+					// Normal settlement through FinishTaskReview must persist the
+					// executing session model, not empty task submission overrides.
+					if record.Agent == "reviewer" {
+						snap, _, err := sessions.GetSession(record.SessionID)
+						if err != nil || snap.Preference.Provider == "" || snap.Preference.Model == "" {
+							t.Fatalf("review session preference %+v %v", snap.Preference, err)
+						}
+						saved, _, err := sessions.Store().GetProjectTask(principal.AccountScopeID, project.ID, record.ID)
+						if err != nil || saved.Review == nil || saved.Review.Model != snap.Preference.Provider+"/"+snap.Preference.Model {
+							t.Fatalf("settled review model %+v %v", saved, err)
+						}
+					}
 				}
 			}
 		}
@@ -1034,13 +1046,20 @@ func TestNativeReviewWaitRepairsSettlementGap(t *testing.T) {
 // Purpose: a process stopping between task settlement and review persistence
 // must not lose the condition outcome. Reopen the real Pebble store and API
 // service; waitTaskJob reconstructs the review without an execution host.
+// repairTaskReview must also retain the session's resolved model after restart,
+// rather than formatting the task's absent submission overrides.
 func TestNativeReviewWaitAfterStoreReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "restart.pebble")
 	p := testPrincipal()
 	var task pebblestore.ProjectTaskRecord
+	var wantModel string
 	t.Run("write", func(t *testing.T) {
 		server, _, _, _, _ := newRoutedSessionTestServerAt(t, path, false)
 		snapshot := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "restart-review", "Review", t.TempDir(), pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model"})
+		if snapshot.Preference.Provider == "" || snapshot.Preference.Model == "" {
+			t.Fatalf("missing resolved preference %+v", snapshot.Preference)
+		}
+		wantModel = snapshot.Preference.Provider + "/" + snapshot.Preference.Model
 		task = taskSessionFixture(t, server, snapshot, pebblestore.ProjectTaskRecord{ID: "restart-review", ProjectID: "restart-project", Agent: "reviewer", Status: "running", StartCommit: strings.Repeat("a", 40)})
 		_, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: task.SessionID, UserID: p.UserID, AccountScopeID: p.AccountScopeID, Kind: sessionruntime.SessionMutationAppendMessage, ClientRequestID: "report", IdempotencyKey: "report", PayloadHash: "report", RequestHash: "report", Message: &pebblestore.MessageSnapshot{ID: "report", SessionID: task.SessionID, UserID: p.UserID, AccountScopeID: p.AccountScopeID, Role: "assistant", Content: "VERDICT: OK\nSUMMARY: Checked.\nFINDINGS: None.\nTESTS RUN: None.", CreatedAt: 100}, NowUnixMs: 100})
 		if err != nil {
@@ -1056,6 +1075,10 @@ func TestNativeReviewWaitAfterStoreReopen(t *testing.T) {
 		outcome, err := server.waitTaskJob(context.Background(), p.AccountScopeID, taskRunJobID(task.ProjectID, task.ID))
 		if err != nil || outcome.Verdict != "block" || outcome.ReviewUnreadable {
 			t.Fatalf("recovered outcome %+v %v", outcome, err)
+		}
+		stored, _, err := server.sessions.Store().GetProjectTask(p.AccountScopeID, task.ProjectID, task.ID)
+		if err != nil || stored.Review == nil || stored.Review.Model != wantModel {
+			t.Fatalf("repaired review model %+v %v", stored, err)
 		}
 	})
 	t.Run("replay", func(t *testing.T) {

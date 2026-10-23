@@ -557,6 +557,16 @@ func reviewComparisonCommits(base string, input map[string]any) (string, []strin
 	return base, commits, nil
 }
 
+// TaskReviewModel identifies the resolved session model, not the task's optional
+// submission override. Incomplete preferences must not produce a slash sentinel.
+func TaskReviewModel(snapshot store.SessionSnapshot) string {
+	provider, model := strings.TrimSpace(snapshot.Preference.Provider), strings.TrimSpace(snapshot.Preference.Model)
+	if provider == "" || model == "" {
+		return ""
+	}
+	return provider + "/" + model
+}
+
 // FinishTaskReview checks the borrowed head before persisting the verdict, then
 // uses the existing review cleanup protocol without any reviewer worker record.
 func (s *WorkerExecutionService) FinishTaskReview(task *store.ProjectTaskRecord, review store.JobReview) (store.JobReview, error) {
@@ -567,6 +577,7 @@ func (s *WorkerExecutionService) FinishTaskReview(task *store.ProjectTaskRecord,
 	if !found {
 		return review, errors.New("review session missing")
 	}
+	review.Model = TaskReviewModel(snapshot)
 	if task.ReviewFixes == ReviewFixesSecurity {
 		review = withReviewFixHead(review, snapshot, task.ID)
 	}
