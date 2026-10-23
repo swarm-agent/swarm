@@ -64,9 +64,35 @@ func (s *Server) InspectProjectSources(ctx context.Context, p identity.Principal
 	if err != nil {
 		return nil, fmt.Errorf("inspect source branch: %w", err)
 	}
-	result["clean"] = strings.TrimSpace(string(status)) == ""
-	result["ready"] = result["clean"]
+	clean, untracked := sourceCleanliness(string(status))
+	result["clean"] = clean
+	// Agents work from the committed HEAD in their own worktrees: a change
+	// to a tracked file is the person's work in progress (not clean), an
+	// untracked file simply stays out of the worktrees.
+	result["ready"] = true
+	result["untracked"] = untracked
+	if len(untracked) > 0 {
+		result["untracked_note"] = "Untracked files stay out of agents' worktrees and do not block a launch."
+	}
 	result["branch"] = strings.TrimSpace(string(branch))
 	result["admission_note"] = "Inspection is not a launch receipt. Deployment revalidates source readiness and allocates an isolated execution; prerequisite ancestry must still be verified."
 	return result, nil
+}
+
+// sourceCleanliness reads `git status --porcelain=v1`: clean when no tracked
+// file is changed or staged; untracked lists the files Git does not track.
+func sourceCleanliness(status string) (bool, []string) {
+	clean := true
+	untracked := []string{}
+	for _, line := range strings.Split(status, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "?? ") {
+			untracked = append(untracked, strings.TrimPrefix(line, "?? "))
+			continue
+		}
+		clean = false
+	}
+	return clean, untracked
 }
