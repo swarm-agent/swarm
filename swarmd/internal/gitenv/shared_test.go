@@ -71,3 +71,32 @@ func TestDaemonGitCreatesNoSetgidDirectories(t *testing.T) {
 		t.Fatalf("%s: this Git did not make a shared worktree setgid, so the fixture proves nothing", shared)
 	}
 }
+
+// Purpose: the daemon's own core.sharedRepository=umask entry is never
+// mistaken for an inherited Git config, while any other GIT_CONFIG entry is
+// reported as foreign.
+// Threat: every bash and git_commit with a workspace_path in a project chat
+// refused with "explicit recovery refuses inherited GIT_CONFIG_COUNT" because
+// the daemon set that variable itself at startup.
+func TestForeignConfigKnowsTheDaemonsOwnEntries(t *testing.T) {
+	ownMu.Lock()
+	own = map[string]string{"core.sharedrepository": "umask"}
+	ownMu.Unlock()
+	daemon := AppendConfig([]string{"PATH=/bin"}, "core.sharedRepository", "umask")
+	if got := ForeignConfig(daemon); got != "" {
+		t.Fatalf("the daemon's own entry reported foreign: %q", got)
+	}
+	if got := ForeignConfig([]string{"PATH=/bin"}); got != "" {
+		t.Fatalf("no entries reported foreign: %q", got)
+	}
+	for _, env := range [][]string{
+		AppendConfig(daemon, "core.worktree", "/elsewhere"),
+		{"GIT_CONFIG_COUNT=1"},
+		{"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.sharedRepository", "GIT_CONFIG_VALUE_0=group"},
+		{"GIT_CONFIG_KEY_0=core.worktree", "GIT_CONFIG_VALUE_0=/elsewhere"},
+	} {
+		if ForeignConfig(env) == "" {
+			t.Fatalf("foreign entry accepted: %v", env)
+		}
+	}
+}

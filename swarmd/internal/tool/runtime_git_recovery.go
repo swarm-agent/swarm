@@ -394,11 +394,22 @@ func (r *Runtime) recoveryIntegrate(scope WorkspaceScope, args map[string]any) (
 }
 
 // An inherited Git selector must not redirect an explicitly authorized target.
+// The daemon's own GIT_CONFIG entries (gitenv.UseUmaskSharing) are not a
+// redirect; any other GIT_CONFIG entry is.
 func recoveryEnvironment() error {
-	for _, key := range []string{"GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_NAMESPACE", "GIT_SHALLOW_FILE", "GIT_REPLACE_REF_BASE"} {
-		if os.Getenv(key) != "" {
-			return fmt.Errorf("explicit recovery refuses inherited %s", key)
+	return recoveryEnvironmentOf(os.Environ())
+}
+
+func recoveryEnvironmentOf(env []string) error {
+	for _, key := range []string{"GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_NAMESPACE", "GIT_SHALLOW_FILE", "GIT_REPLACE_REF_BASE"} {
+		for _, kv := range env {
+			if k, v, _ := strings.Cut(kv, "="); k == key && v != "" {
+				return fmt.Errorf("explicit recovery refuses inherited %s", key)
+			}
 		}
+	}
+	if foreign := gitenv.ForeignConfig(env); foreign != "" {
+		return fmt.Errorf("explicit recovery refuses inherited GIT_CONFIG_COUNT entry %s", foreign)
 	}
 	return nil
 }
