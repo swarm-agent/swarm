@@ -6,6 +6,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Renew the Trivy exception for GO-2026-5932 (x/crypto openpgp, no fixed version) to 2027-01-23 after reassessment: no openpgp import, govulncheck finds nothing reachable. Docs impact: none.
 - Plugin README: names `sudo swarmctl setup credential --provider PROVIDER --api-key-stdin` for adding a provider API key by script. Docs impact: plugins/swarm/README.md.
 
 - swarmctl secret set creates or updates a secret and asks for its value at a hidden prompt; Swarm's MCP text, skills and the headless README name `sudo swarmctl secret set --name NAME --hosts HOST` and `secret grant` instead of 'setup page or by script'; `install.sh secret set` passes through to it. Docs impact: containers/headless/app/README.md, plugins/swarm skills.
