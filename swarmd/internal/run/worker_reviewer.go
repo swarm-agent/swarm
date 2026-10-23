@@ -593,7 +593,7 @@ func (s *WorkerExecutionService) CleanupTaskReview(task *store.ProjectTaskRecord
 	if err != nil || !attempt {
 		return err
 	}
-	cleanupErr := s.cleanupReview(store.WorkerRunRecord{AccountScopeID: task.AccountID, SessionID: task.SessionID, Role: store.WorkerRoleReviewer})
+	cleanupErr := s.cleanupReview(store.WorkerRunRecord{AccountScopeID: task.AccountID, SessionID: task.SessionID, Role: store.WorkerRoleReviewer, Input: map[string]any{"review_fixes": task.ReviewFixes}})
 	_, err = s.host.runs.sessions.Store().UpdateProjectTask(task.AccountID, task.ProjectID, task.ID, func(current *store.ProjectTaskRecord) error {
 		c := current.ReviewCleanup
 		if cleanupErr != nil {

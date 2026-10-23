@@ -171,6 +171,54 @@ func TestReviewerReadsTheJobsOwnWorktreeInPlace(t *testing.T) {
 	if err != nil || allocation.WorkspacePath != coder.WorkspacePath || git(allocation.WorkspacePath, "rev-parse", "HEAD") != head {
 		t.Fatalf("native worker review: %+v %v", allocation, err)
 	}
+	// Purpose: resolveRunWorkspaceScope must admit a task-bound fixing reviewer
+	// without permitting a different branch, task, or unadmitted fix capability.
+	// Real allocation and durable task lookup are the narrowest admission boundary;
+	// cleanup must retain the writable lane and settle without retrying forever.
+	fixTask := &pebblestore.ProjectTaskRecord{ID: "native-fixer", Title: "Security review", ProjectID: "project-a", AccountID: account, SessionID: "native-fixer-session", Agent: "reviewer", AutomationID: "workflow", ReviewFixes: ReviewFixesSecurity, ReviewTarget: map[string]any{"head": head}, SourceWorkspace: sourceRef}
+	fixAllocation, err := service.AllocateTaskReviewCheckout(p, fixTask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db2.PutProjectTask(account, fixTask); err != nil {
+		t.Fatal(err)
+	}
+	fixSession := pebblestore.SessionSnapshot{ID: fixTask.SessionID, UserID: user, AccountScopeID: account, WorkspacePath: fixAllocation.WorkspacePath, WorktreeEnabled: true, WorktreeRootPath: fixAllocation.WorkspacePath, WorktreeBranch: fixAllocation.BranchName, WorktreeBaseBranch: head, Metadata: map[string]any{"project_id": fixTask.ProjectID, "task_id": fixTask.ID, "swarm_v3_source_workspace_path": source, "swarm_v3_worktree_base_commit": head, "swarm_v3_worktree_owner_session_id": fixTask.SessionID}}
+	if err := service.PrepareTaskReviewSession(&fixSession, fixTask); err != nil {
+		t.Fatal(err)
+	}
+	if scope, err := service.host.runs.resolveRunWorkspaceScope(fixSession, p); err != nil || scope.PrimaryPath != fixAllocation.WorkspacePath {
+		t.Fatalf("native fix scope rejected: %+v %v", scope, err)
+	}
+	for _, field := range []string{"branch", "task", "fixes"} {
+		bad := fixSession
+		bad.Metadata = make(map[string]any)
+		for k, v := range fixSession.Metadata {
+			bad.Metadata[k] = v
+		}
+		switch field {
+		case "branch":
+			bad.WorktreeBranch = reviewFixBranch("other-task")
+		case "task":
+			bad.Metadata["task_id"] = "other-task"
+		case "fixes":
+			delete(bad.Metadata, "worker_review_fixes")
+		}
+		if _, err := service.host.runs.resolveRunWorkspaceScope(bad, p); err == nil {
+			t.Fatalf("accepted mismatched native fix %s", field)
+		}
+	}
+	if err := service.CleanupTaskReview(fixTask); err != nil {
+		t.Fatal(err)
+	}
+	savedFix, _, err := db2.GetProjectTask(account, fixTask.ProjectID, fixTask.ID)
+	if err != nil || savedFix.ReviewCleanup == nil || savedFix.ReviewCleanup.State != "done" || savedFix.ReviewCleanup.NextAttemptAt != 0 {
+		t.Fatalf("fix cleanup did not settle: %+v %v", savedFix, err)
+	}
+	if git(fixAllocation.WorkspacePath, "rev-parse", "HEAD") != head || git(fixAllocation.WorkspacePath, "branch", "--show-current") != fixAllocation.BranchName {
+		t.Fatal("admission rejection or cleanup changed the fix lane")
+	}
+	worktreesBefore = git(repo, "worktree", "list", "--porcelain")
 	// PrepareTaskReviewSession must register the worker-job review as a
 	// borrowed read-only identity, never as a security-fix checkout.
 	manager, err := sandbox.NewManager(context.Background(), sandbox.Config{Mode: sandbox.ModeRequired, Backend: sandbox.BackendDocker, StateDir: t.TempDir(), Memory: "4g", MaxWorkerRuns: 2, UID: 10001, GID: 10001}, reviewRegistrationEngine{})

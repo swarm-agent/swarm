@@ -689,6 +689,15 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 			if i != 6 && (saved.Review == nil || saved.Review.FixHead != fixHead) {
 				t.Fatalf("fix binding %+v", saved.Review)
 			}
+			// Purpose: taskJobResult must expose the saved fix binding to later
+			// workflow steps, not misrepresent OK as applying to the original head.
+			// The real API result boundary is the narrowest serialization proof.
+			if i == 3 || i == 4 {
+				result, err := server.taskJobResult(context.WithoutCancel(ctx), principal.AccountScopeID, project.ID, tid, jobautomation.StatusSucceeded)
+				if err != nil || result == nil || result.Review["fix_head"] != fixHead || result.Review["head"] != reviewHead {
+					t.Fatalf("task result lost fix binding: %+v %v", result, err)
+				}
+			}
 		}
 		want := "block"
 		if i == 0 || i == 3 || i == 4 || i == 6 {

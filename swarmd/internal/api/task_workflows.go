@@ -119,6 +119,9 @@ func (s *Server) taskJobResult(ctx context.Context, account, projectID, taskID, 
 		return nil, err
 	} else if review != nil {
 		out.Review = map[string]any{"verdict": review.Verdict, "findings": review.Findings, "reason": review.Reason, "head": review.Head}
+		if review.FixHead != "" {
+			out.Review["fix_head"] = review.FixHead
+		}
 	}
 	out.Error = controlMCPString(view, "last_error")
 	if task.AutomationID != "" {
