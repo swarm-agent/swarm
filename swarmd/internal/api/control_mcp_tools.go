@@ -1975,6 +1975,10 @@ func controlMCPListModels(c *controlMCPCall, args map[string]any) (any, error) {
 				continue
 			}
 			entry := controlMCPRoleModel(controlMCPMap(controlMCPMap(assignments[slot[0]])[slot[1]]))
+			if effective := controlMCPMap(controlMCPMap(settings["effective_roles"])[id]); len(effective) > 0 {
+				entry = controlMCPRoleModel(controlMCPMap(effective["assignment"]))
+				entry["source"] = effective["source"]
+			}
 			entry["role"] = id
 			roles = append(roles, entry)
 		}

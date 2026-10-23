@@ -41,7 +41,7 @@ const MACHINE_PROP = { type: 'string', maxLength: 64, description: 'Machine name
 const INSTRUCTIONS = 'swarm-fleet reaches your Swarm machines over your private tailnet. ' +
   'Call swarm_list_machines (or swarm_fleet_status for one view of every machine) first; pass `machine` to every other tool when more than one machine is configured. ' +
   'Each machine allows only what your tailnet policy (or its AI key) grants this device: read only, or read and write. ' +
-  'Every machine runs its roles on Swarm\'s recommended models; swarm_fleet_set_models overrides them fleet-wide (advanced, only when the person asks).';
+  'Every machine runs its roles (coder, reviewer, finder, designer, compact, router; advanced action and plan) on Swarm\'s recommended models; swarm_fleet_set_models overrides them fleet-wide (advanced, only when the person asks).';
 
 // machineInstructions joins the fleet's own text with what a machine says
 // about itself (its initialize instructions), so an AI on the fleet is told
@@ -187,7 +187,7 @@ function toolJSON(result) {
 // Every machine runs the same role → provider/model/thinking table; a machine
 // differs only by an explicit override. The table is the fleet's only state.
 const FLEET_ROLES = {
-  coder: 'system-coder', finder: 'system-finder', designer: 'system-designer',
+  coder: 'system-coder', reviewer: 'system-reviewer', finder: 'system-finder', designer: 'system-designer',
   compact: 'system-compact', router: 'system-router',
   action: 'swarm', plan: 'system-orchestrator', // advanced; the defaults are the point
 };
@@ -275,13 +275,13 @@ const FLEET_TOOLS = [
   },
   {
     name: 'swarm_fleet_models', title: 'The fleet\'s model table',
-    description: 'The one agent model table every machine follows (role → provider, model, thinking for coder, finder, designer, compact, router; action and plan are advanced), the per-machine overrides, and per machine what it actually runs: in_sync, override, drift (differs from the table), unset (nothing in the table) or unknown (not reachable). Start here before changing models.',
+    description: 'The one agent model table every machine follows (role → provider, model, thinking for coder, reviewer, finder, designer, compact, router; action and plan are advanced), the per-machine overrides, and per machine what it actually runs: in_sync, override, drift (differs from the table), unset (nothing in the table) or unknown (not reachable). Start here before changing models.',
     inputSchema: { type: 'object', additionalProperties: false, properties: {} },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   {
     name: 'swarm_fleet_set_models', title: 'Set the fleet\'s model table',
-    description: 'Change the model table for the whole fleet and apply it to every machine, one role at a time. Without `machine`, `models` merges into the table and goes to every machine (a machine keeps its own override for a role). With `machine`, `models` becomes that machine\'s override for those roles only, or `clear_override` removes its override and the table applies again. Overrides are the exception: everything should run the same table unless there is a reason. A machine admitted only by a tailnet read/write grant cannot be managed; it needs a full AI key (`token`) in SWARM_FLEET. Machines that refuse are listed in `applied` with ok:false, nothing is thrown. thinking may be left out: the machine then uses its catalog default. fast: true runs a role on priority serving (faster, costs more) where the model offers it.',
+    description: 'Change the model table for the whole fleet and apply it to every machine, one role at a time (coder, reviewer, finder, designer, compact, router; action and plan are advanced). Without `machine`, `models` merges into the table and goes to every machine (a machine keeps its own override for a role). With `machine`, `models` becomes that machine\'s override for those roles only, or `clear_override` removes its override and the table applies again. Overrides are the exception: everything should run the same table unless there is a reason. A machine admitted only by a tailnet read/write grant cannot be managed; it needs a full AI key (`token`) in SWARM_FLEET. Machines that refuse are listed in `applied` with ok:false, nothing is thrown. thinking may be left out: the machine then uses its catalog default. fast: true runs a role on priority serving (faster, costs more) where the model offers it.',
     inputSchema: {
       type: 'object', additionalProperties: false,
       properties: {

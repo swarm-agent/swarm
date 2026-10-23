@@ -35,7 +35,10 @@ func ResolveSystemAgent(
 	if err != nil {
 		return model.ResolvedPreference{}, pebblestore.AgentProfile{}, fmt.Errorf("read %s model settings: %w", systemAgentLabel(canonicalID), err)
 	}
-	configured, ok := configuredAgentSettingsForID(settings, canonicalID)
+	configured, ok, err := configuredAgentSettingsForID(modelService, settings, canonicalID)
+	if err != nil {
+		return model.ResolvedPreference{}, pebblestore.AgentProfile{}, err
+	}
 	if !ok {
 		return model.ResolvedPreference{}, pebblestore.AgentProfile{}, fmt.Errorf("system agent %q does not use onboarding model settings", canonicalID)
 	}
@@ -68,28 +71,26 @@ func ResolveSystemAgent(
 	return resolved, profile, nil
 }
 
-func configuredAgentSettingsForID(settings agentmodelsettings.Settings, agentID string) (agentmodelsettings.Assignment, bool) {
+func configuredAgentSettingsForID(modelService *model.Service, settings agentmodelsettings.Settings, agentID string) (agentmodelsettings.Assignment, bool, error) {
 	switch agentID {
 	case agentruntime.CompactAgentID:
-		return settings.SystemAgents.Compact, true
+		return settings.SystemAgents.Compact, true, nil
 	case agentruntime.FinderAgentID:
-		return settings.SystemAgents.Finder, true
+		return settings.SystemAgents.Finder, true, nil
 	case agentruntime.CoderAgentID:
-		return settings.SystemAgents.Coder, true
+		return settings.SystemAgents.Coder, true, nil
 	case agentruntime.ReviewerAgentID, agentruntime.ReviewerFixerAgentID:
-		if settings.SystemAgents.Reviewer.Model != "" {
-			return settings.SystemAgents.Reviewer, true
-		}
-		return settings.SystemAgents.Coder, true
+		assignment, _, err := EffectiveReviewerAssignment(modelService, settings)
+		return assignment, true, err
 	case agentruntime.DesignerAgentID, agentruntime.ImageAgentID:
 		// Image workers use the configured Designer reasoning model only to compose
 		// one provider-neutral image prompt. The billed image model remains the
 		// canonical UI image setting resolved by manage_artifact.
-		return settings.SystemAgents.Designer, true
+		return settings.SystemAgents.Designer, true, nil
 	case agentruntime.RouterAgentID:
-		return settings.SystemAgents.Router, true
+		return settings.SystemAgents.Router, true, nil
 	default:
-		return agentmodelsettings.Assignment{}, false
+		return agentmodelsettings.Assignment{}, false, nil
 	}
 }
 
