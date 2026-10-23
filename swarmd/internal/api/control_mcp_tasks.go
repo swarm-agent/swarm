@@ -323,7 +323,7 @@ func controlMCPTaskResult(c *controlMCPCall, args map[string]any) (any, error) {
 	out := controlMCPPick(task, "title", "status", "session_id", "workspace_path", "worktree_branch", "base_branch", "base_commit", "diff_summary", "is_integrated", "unintegrated_commits")
 	out["task_id"] = taskID
 	out["role"] = task["agent"]
-	if task["agent"] == "reviewer" && c.server != nil && c.server.sessions != nil && c.server.sessions.Store() != nil {
+	if task["agent"] == "reviewer" && controlMCPString(task, "worker_id") == "" && c.server != nil && c.server.sessions != nil && c.server.sessions.Store() != nil {
 		p, ok := PrincipalFromRequest(c.request)
 		if !ok {
 			return nil, controlMCPToolFailure("review principal unavailable")
@@ -343,7 +343,7 @@ func controlMCPTaskResult(c *controlMCPCall, args map[string]any) (any, error) {
 		}
 	}
 	assessment := controlMCPMap(task["delivery_assessment"])
-	if task["agent"] == "reviewer" {
+	if task["agent"] == "reviewer" && controlMCPString(task, "worker_id") == "" {
 		// Borrowing a lane does not make its later commits the reviewer's work.
 		out["unintegrated_commits"] = 0
 		delete(out, "diff_summary")

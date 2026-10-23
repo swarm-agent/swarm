@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"log"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -28,7 +29,9 @@ func (s *Server) repairTaskReview(task *pebblestore.ProjectTaskRecord) (*pebbles
 	execution, executionErr := s.workerExecutionService()
 	if found && stored.Review != nil {
 		if executionErr == nil {
-			return stored.Review, execution.CleanupTaskReview(stored)
+			if err := execution.CleanupTaskReview(stored); err != nil {
+				log.Printf("task review cleanup pending: %v", err)
+			}
 		}
 		return stored.Review, nil
 	}
@@ -37,8 +40,7 @@ func (s *Server) repairTaskReview(task *pebblestore.ProjectTaskRecord) (*pebbles
 	for page := 0; page < 100; page++ {
 		messages, err := s.sessions.ListMessages(task.SessionID, after, 100)
 		if err != nil {
-			report = ""
-			break
+			return nil, err
 		}
 		for _, message := range messages {
 			after = message.GlobalSeq

@@ -291,9 +291,11 @@ func TestTaskResultGitListsTheTasksOwnCommits(t *testing.T) {
 // project store; the task's run is not executed (no provider). The native
 // reviewer extension also proves exact-head same/new admission with zero
 // workers and persisted OK/BLOCK/malformed findings through waitTaskJob;
-// a fresh API service reads the identical persisted verdict after settlement.
+// the same API service reads the identical persisted verdict after settlement.
 func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
-	server, sessions, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	storePath := filepath.Join(t.TempDir(), "native-review.pebble")
+	server, sessions, _, closeStore, _ := newRoutedSessionTestServerAt(t, storePath, false)
+	var savedOKTaskID string
 	store := sessions.Store().Underlying()
 	principal := testPrincipal()
 	ids := pebblestore.NewIdentityStore(store)
@@ -512,6 +514,7 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 			want := "block"
 			if i == 0 {
 				want = "ok"
+				savedOKTaskID = reviewTaskID
 			}
 			if outcome.Verdict != want || outcome.ReviewUnreadable != (i == 2) || (i == 1 && outcome.Findings != "Fix the unchecked input.") || (i == 2 && outcome.Findings != "") {
 				t.Fatalf("review outcome: %+v", outcome)
@@ -719,6 +722,52 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 	if nativeCount(afterTasks) != nativeCount(beforeTasks) {
 		t.Fatal("custom reviewer created native task")
 	}
+	// A missing cleanup head is a filesystem-cleanup failure, not a lost result
+	// or a reason to suppress the run-end signal.
+	server.CancelInFlightRuns()
+	if !server.WaitForInFlightRuns(2 * time.Second) {
+		t.Fatal("executor did not stop")
+	}
+	server.SetSignalStore(pebblestore.NewSignalStore(store))
+	cleanupSnapshot, foundCleanup, err := sessions.GetSession(task.SessionID)
+	if err != nil || !foundCleanup {
+		t.Fatalf("cleanup session %v", err)
+	}
+	cleanupTask := taskSessionFixture(t, server, cleanupSnapshot, pebblestore.ProjectTaskRecord{ID: "cleanup-signal", ProjectID: project.ID, Agent: "reviewer", Status: "in_progress", StartCommit: reviewHead})
+	cleanupJob := sessionV3ExecutorJob{Principal: principal, SessionID: cleanupSnapshot.ID, RunID: "cleanup-followup", EpochID: "epoch-00000000000000000001"}
+	for _, status := range []string{sessionruntime.RunIntentPendingExecutor, sessionruntime.RunIntentRunning, sessionruntime.RunIntentCompleted} {
+		if _, err := newSessionV3Executor(server).recordRunStatus(cleanupJob, status, "", "session.run."+status); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cleanupOutcome, err := server.waitTaskJob(context.Background(), principal.AccountScopeID, taskRunJobID(project.ID, cleanupTask.ID))
+	if err != nil || cleanupOutcome.Verdict != "block" {
+		t.Fatalf("cleanup hid waiter result %+v %v", cleanupOutcome, err)
+	}
+	cleanupSaved, _, err := sessions.Store().GetProjectTask(principal.AccountScopeID, project.ID, cleanupTask.ID)
+	if err != nil || cleanupSaved.ReviewCleanup == nil || cleanupSaved.ReviewCleanup.State != "failed" {
+		t.Fatalf("cleanup failure not recorded %+v %v", cleanupSaved, err)
+	}
+	signalPage, err := server.signals.ListAfter(0, 100, pebblestore.SignalFilter{Account: principal.AccountScopeID, KindPrefixes: []string{"task.run"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signalled := false
+	for _, signal := range signalPage.Signals {
+		if signal.Refs["task_id"] == cleanupTask.ID {
+			signalled = true
+		}
+	}
+	if !signalled {
+		t.Fatal("cleanup suppressed run-end signal")
+	}
+	// Close the actual store after normal settlement, then use a fresh server.
+	closeStore.(func())()
+	restarted, _, _, _, _ := newRoutedSessionTestServerAt(t, storePath, false)
+	recovered, err := restarted.waitTaskJob(context.Background(), principal.AccountScopeID, taskRunJobID(project.ID, savedOKTaskID))
+	if err != nil || recovered.Verdict != "ok" || recovered.ReviewUnreadable {
+		t.Fatalf("saved approval after restart %+v %v", recovered, err)
+	}
 }
 
 // Purpose: waitTaskJob must repair a settled native review lacking its durable
@@ -839,5 +888,43 @@ func TestNativeReviewOutcomeNormalization(t *testing.T) {
 				t.Fatalf("failed reason %q", outcome.Findings)
 			}
 		})
+	}
+}
+
+// Purpose: role alone must not hide a reviewer worker's delivery. The real MCP
+// projection over a fixed HTTP task response isolates the native/worker boundary.
+func TestReviewerWorkerResultPreservesDelivery(t *testing.T) {
+	req := requestWithScopedToken(withTestPrincipal(httptest.NewRequest(http.MethodPost, "/mcp", nil)), &pebblestore.ScopedTokenRecord{Scopes: []string{"sessions:read"}})
+	call := &controlMCPCall{request: req, next: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"task":{"id":"review","agent":"reviewer","worker_id":"custom-reviewer","status":"needs_review","unintegrated_commits":2,"diff_summary":"security fix","delivery_assessment":{"source_oid":"abc","state":"ready"}}}`)
+	})}
+	result, err := controlMCPTaskResult(call, map[string]any{"project_id": "project", "task_id": "review"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := controlMCPMap(result)
+	if view["head"] != "abc" || view["delivery_state"] != "ready" || view["diff_summary"] != "security fix" || fmt.Sprint(view["unintegrated_commits"]) != "2" {
+		t.Fatalf("worker delivery changed %+v", view)
+	}
+}
+
+// Purpose: a transcript read failure must not become a permanent verdict.
+// Corrupt only the message record in an isolated real store to exercise the
+// service error boundary while leaving task persistence available.
+func TestNativeReviewMessageReadFailureDoesNotSave(t *testing.T) {
+	f := newReopenFixture(t)
+	p := testPrincipal()
+	task := taskSessionFixture(t, f.server, f.session, pebblestore.ProjectTaskRecord{ID: "read-error", ProjectID: "read-error-project", Agent: "reviewer", Status: "needs_review"})
+	key := pebblestore.MessagePrefix(task.SessionID) + "00000000000000000001"
+	if err := f.server.sessions.Store().Underlying().PutBytes(key, []byte("invalid json")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.server.repairTaskReview(&task); err == nil {
+		t.Fatal("message read failure was hidden")
+	}
+	stored, _, err := f.server.sessions.Store().GetProjectTask(p.AccountScopeID, task.ProjectID, task.ID)
+	if err != nil || stored.Review != nil {
+		t.Fatalf("read failure saved review %+v %v", stored, err)
 	}
 }

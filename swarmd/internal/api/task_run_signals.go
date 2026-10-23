@@ -12,7 +12,7 @@ import (
 // taskRunAgents are the agents whose tasks end as workflow job ends: the ones
 // that come with Swarm. A worker job's task ends as worker.run.*, a design
 // job as design.job.* and a media task as media.job.*.
-var taskRunAgents = map[string]bool{"swarm": true, "coder": true, "finder": true, "designer": true}
+var taskRunAgents = map[string]bool{"swarm": true, "coder": true, "finder": true, "designer": true, "reviewer": true}
 
 // taskRunJobID is the job id workflows use for a task: task/<project>/<task>.
 func taskRunJobID(projectID, taskID string) string {

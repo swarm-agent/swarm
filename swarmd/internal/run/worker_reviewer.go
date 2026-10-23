@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -143,6 +144,9 @@ func allocateReviewerCheckout(trees *worktree.Service, p identity.Principal, sou
 
 // AllocateTaskReviewCheckout reuses the same captured-target allocation as worker reviews.
 func (s *WorkerExecutionService) AllocateTaskReviewCheckout(p identity.Principal, task *store.ProjectTaskRecord) (worktree.Allocation, error) {
+	if task == nil || task.ReviewTarget == nil {
+		return worktree.Allocation{}, errors.New("review target required")
+	}
 	return allocateReviewerCheckout(s.host.trees, p, task.SourceWorkspace.Path, store.WorkerRunRecord{SessionID: task.SessionID, Input: map[string]any{"captured_review_target": task.ReviewTarget}}, false)
 }
 
@@ -557,9 +561,41 @@ func (s *WorkerExecutionService) FinishTaskReview(task *store.ProjectTaskRecord,
 		return review, err
 	}
 	review = *updated.Review
-	return review, s.CleanupTaskReview(task)
+	if err := s.CleanupTaskReview(task); err != nil {
+		log.Printf("task review cleanup pending: %v", err)
+	}
+	return review, nil
 }
 
 func (s *WorkerExecutionService) CleanupTaskReview(task *store.ProjectTaskRecord) error {
-	return s.cleanupReview(store.WorkerRunRecord{AccountScopeID: task.AccountID, SessionID: task.SessionID, Role: store.WorkerRoleReviewer})
+	now := time.Now()
+	attempt := false
+	_, err := s.host.runs.sessions.Store().UpdateProjectTask(task.AccountID, task.ProjectID, task.ID, func(current *store.ProjectTaskRecord) error {
+		if current.ReviewCleanup != nil && (current.ReviewCleanup.State == "done" || current.ReviewCleanup.NextAttemptAt > now.UnixMilli()) {
+			return nil
+		}
+		if current.ReviewCleanup == nil {
+			current.ReviewCleanup = &store.WorkerRunCleanup{}
+		}
+		c := current.ReviewCleanup
+		c.State = "pending"
+		c.Attempts++
+		c.NextAttemptAt = now.Add(time.Minute << min(c.Attempts-1, 6)).UnixMilli()
+		attempt = true
+		return nil
+	})
+	if err != nil || !attempt {
+		return err
+	}
+	cleanupErr := s.cleanupReview(store.WorkerRunRecord{AccountScopeID: task.AccountID, SessionID: task.SessionID, Role: store.WorkerRoleReviewer})
+	_, err = s.host.runs.sessions.Store().UpdateProjectTask(task.AccountID, task.ProjectID, task.ID, func(current *store.ProjectTaskRecord) error {
+		c := current.ReviewCleanup
+		if cleanupErr != nil {
+			c.State, c.LastError = "failed", cleanupErr.Error()
+		} else {
+			c.State, c.LastError, c.NextAttemptAt = "done", "", 0
+		}
+		return nil
+	})
+	return err
 }

@@ -434,6 +434,7 @@ type ProjectTaskRecord struct {
 	Review                          *JobReview              `json:"review,omitempty"`
 	ReviewJob                       string                  `json:"review_job,omitempty"`
 	ReviewCheckout                  string                  `json:"review_checkout,omitempty"`
+	ReviewCleanup                   *WorkerRunCleanup       `json:"review_cleanup,omitempty"`
 	ReviewTarget                    map[string]any          `json:"review_target,omitempty"`
 	// StartCommit is the commit the task's worktree starts at, set only by a
 	// workflow's agent step (the delivery head); "" starts at the folder's

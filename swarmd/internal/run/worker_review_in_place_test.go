@@ -110,6 +110,43 @@ func TestReviewerReadsTheJobsOwnWorktreeInPlace(t *testing.T) {
 			SessionID: "worker-execution-" + id, Role: pebblestore.WorkerRoleReviewer, RequestSource: "automation", Input: in}
 	}
 	service := &WorkerExecutionService{host: &AutomationV2ExecutionHost{runs: &Service{sessions: sessions}, trees: trees}}
+	if _, err := service.AllocateTaskReviewCheckout(p, &pebblestore.ProjectTaskRecord{}); err == nil || !strings.Contains(err.Error(), "review target required") {
+		t.Fatalf("missing target accepted: %v", err)
+	}
+	// Cleanup failure must remain durable retry state, not hide a saved verdict.
+	cleanupSession := reviewRun("cleanup-fixture", nil).SessionID
+	cleanupTask := &pebblestore.ProjectTaskRecord{ID: "cleanup-failure", Title: "Cleanup retry", ProjectID: "project-a", AccountID: account, SessionID: cleanupSession, Agent: "reviewer", Status: "needs_review", StartCommit: head}
+	if err := db2.PutProjectTask(account, cleanupTask); err != nil {
+		t.Fatal(err)
+	}
+	checked, err := service.FinishTaskReview(cleanupTask, pebblestore.JobReview{Verdict: "ok", Head: head})
+	if err != nil || checked.Verdict != "ok" {
+		t.Fatalf("cleanup hid review %+v %v", checked, err)
+	}
+	savedCleanup, _, err := db2.GetProjectTask(account, "project-a", cleanupTask.ID)
+	if err != nil || savedCleanup.ReviewCleanup == nil || savedCleanup.ReviewCleanup.State != "failed" || savedCleanup.ReviewCleanup.NextAttemptAt == 0 {
+		t.Fatalf("cleanup retry missing %+v %v", savedCleanup, err)
+	}
+	if err := service.CleanupTaskReview(cleanupTask); err != nil {
+		t.Fatal(err)
+	}
+	afterCleanup, _, _ := db2.GetProjectTask(account, "project-a", cleanupTask.ID)
+	if afterCleanup.ReviewCleanup.Attempts != 1 {
+		t.Fatal("cleanup ignored backoff")
+	}
+	if _, err := db2.UpdateProjectTask(account, "project-a", cleanupTask.ID, func(current *pebblestore.ProjectTaskRecord) error {
+		current.ReviewCleanup.NextAttemptAt = 0
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.CleanupTaskReview(cleanupTask); err != nil {
+		t.Fatal(err)
+	}
+	retriedCleanup, _, _ := db2.GetProjectTask(account, "project-a", cleanupTask.ID)
+	if retriedCleanup.ReviewCleanup.Attempts != 2 || retriedCleanup.Review.Verdict != "ok" {
+		t.Fatal("cleanup retry lost saved verdict")
+	}
 	// Native task review must use the same worker-job target resolver and reject
 	// another principal before allocating anything. This real-store/Git layer
 	// is the narrowest boundary proving ResolveTaskReviewTarget's authorization.
