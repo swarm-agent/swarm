@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"golang.org/x/sys/unix"
+
+	"swarm/packages/swarmd/internal/gitenv"
 )
 
 // Access uses the effective daemon identity and ACL-aware kernel checks, not
@@ -114,6 +116,11 @@ func repositoryEnvironment(extra []string) []string {
 		}
 	}
 	env = append(env, "LC_ALL=C", "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0")
+	// The daemon's own sharing override comes back: a person's folder set to
+	// core.sharedRepository=group would otherwise have Git here set the setgid
+	// bit on every directory it creates, which the daemon's RestrictSUIDSGID
+	// refuses, and the first commit in such a repository fails.
+	env = gitenv.AppendOwn(env)
 	return append(env, extra...)
 }
 

@@ -100,3 +100,17 @@ func TestForeignConfigKnowsTheDaemonsOwnEntries(t *testing.T) {
 		}
 	}
 }
+
+// AppendOwn restores the daemon's own entries to an environment built
+// without them, once each.
+func TestAppendOwnRestoresDaemonEntries(t *testing.T) {
+	if err := UseUmaskSharing(); err != nil {
+		t.Fatal(err)
+	}
+	env := AppendOwn([]string{"PATH=/usr/bin"})
+	env = AppendOwn(env)
+	want := []string{"PATH=/usr/bin", "GIT_CONFIG_KEY_0=core.sharedrepository", "GIT_CONFIG_VALUE_0=umask", "GIT_CONFIG_COUNT=1"}
+	if strings.Join(env, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("got\n%s\nwant\n%s", strings.Join(env, "\n"), strings.Join(want, "\n"))
+	}
+}

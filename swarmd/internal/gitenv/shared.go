@@ -2,6 +2,7 @@ package gitenv
 
 import (
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -113,4 +114,26 @@ func AppendConfig(env []string, key, value string) []string {
 	}
 	n := strconv.Itoa(count)
 	return append(out, "GIT_CONFIG_KEY_"+n+"="+key, "GIT_CONFIG_VALUE_"+n+"="+value, "GIT_CONFIG_COUNT="+strconv.Itoa(count+1))
+}
+
+// AppendOwn adds the daemon's own Git config entries (UseUmaskSharing's) to
+// env, for a command whose environment is built without the daemon's GIT_*
+// variables: Git in the daemon must never set a folder's shared mode, whatever
+// the environment it starts from.
+func AppendOwn(env []string) []string {
+	ownMu.Lock()
+	keys := make([]string, 0, len(own))
+	for key := range own {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	entries := make([][2]string, 0, len(keys))
+	for _, key := range keys {
+		entries = append(entries, [2]string{key, own[key]})
+	}
+	ownMu.Unlock()
+	for _, entry := range entries {
+		env = AppendConfig(env, entry[0], entry[1])
+	}
+	return env
 }
