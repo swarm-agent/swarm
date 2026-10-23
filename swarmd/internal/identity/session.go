@@ -24,6 +24,7 @@ var (
 	ErrSessionServiceNotConfigured = errors.New("identity session service is not configured")
 	ErrProductIdentityRequired     = errors.New("product identity has not been bootstrapped")
 	ErrInvalidProductSession       = errors.New("invalid product session")
+	ErrClientSessionNotFound       = errors.New("no client session with that id")
 )
 
 type SessionService struct {
@@ -90,6 +91,70 @@ func (s *SessionService) IssueForCurrentSelection() (IssuedSession, error) {
 	if err := s.configured(); err != nil {
 		return IssuedSession{}, err
 	}
+	return s.issueForCurrentSelection()
+}
+
+// IssueClientSession is an owner session for a client app the person runs,
+// named so they can see and revoke it. The token is the same kind the
+// desktop UI holds; the record is what Validate checks for revocation.
+func (s *SessionService) IssueClientSession(name string) (IssuedSession, error) {
+	if err := s.configured(); err != nil {
+		return IssuedSession{}, err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return IssuedSession{}, errors.New("a client session needs a name")
+	}
+	issued, err := s.issueForCurrentSelection()
+	if err != nil {
+		return IssuedSession{}, err
+	}
+	record := pebblestore.ClientSessionRecord{
+		SessionID:      issued.SessionID,
+		Name:           name,
+		UserID:         issued.Actor.UserID,
+		AccountScopeID: issued.Actor.AccountScopeID,
+		CreatedAt:      issued.IssuedAt.UnixMilli(),
+		ExpiresAt:      issued.ExpiresAt.UnixMilli(),
+	}
+	if err := s.sessionStore.PutClientSession(record); err != nil {
+		return IssuedSession{}, err
+	}
+	return issued, nil
+}
+
+// ListClientSessions is every client session, revoked ones included, so the
+// person sees what was handed out and when it was last used.
+func (s *SessionService) ListClientSessions() ([]pebblestore.ClientSessionRecord, error) {
+	if err := s.configured(); err != nil {
+		return nil, err
+	}
+	return s.sessionStore.ListClientSessions()
+}
+
+// RevokeClientSession ends a client session: its token stops validating at
+// once. The record stays, marked, so the list still shows it.
+func (s *SessionService) RevokeClientSession(sessionID string) (pebblestore.ClientSessionRecord, error) {
+	if err := s.configured(); err != nil {
+		return pebblestore.ClientSessionRecord{}, err
+	}
+	record, ok, err := s.sessionStore.GetClientSession(strings.TrimSpace(sessionID))
+	if err != nil {
+		return pebblestore.ClientSessionRecord{}, err
+	}
+	if !ok {
+		return pebblestore.ClientSessionRecord{}, ErrClientSessionNotFound
+	}
+	if record.RevokedAt == 0 {
+		record.RevokedAt = s.currentTime().UnixMilli()
+		if err := s.sessionStore.PutClientSession(record); err != nil {
+			return pebblestore.ClientSessionRecord{}, err
+		}
+	}
+	return record, nil
+}
+
+func (s *SessionService) issueForCurrentSelection() (IssuedSession, error) {
 	now := s.currentTime()
 	actor, err := s.actorForCurrentSelection()
 	if err != nil {
@@ -171,6 +236,19 @@ func (s *SessionService) Validate(token string) (ActorContext, error) {
 	}
 	if now >= claims.ExpiresAt {
 		return ActorContext{}, ErrInvalidProductSession
+	}
+	// A client session can be revoked; a revoked one is invalid from then on.
+	// Its last use is noted at most once a minute.
+	if record, ok, err := s.sessionStore.GetClientSession(claims.SessionID); err != nil {
+		return ActorContext{}, err
+	} else if ok {
+		if record.RevokedAt != 0 {
+			return ActorContext{}, ErrInvalidProductSession
+		}
+		if nowMillis := s.currentTime().UnixMilli(); nowMillis-record.LastSeenAt > int64(time.Minute/time.Millisecond) {
+			record.LastSeenAt = nowMillis
+			_ = s.sessionStore.PutClientSession(record)
+		}
 	}
 	actor, err := s.actorForAuthSubject(claims.Issuer, claims.Subject)
 	if err != nil {

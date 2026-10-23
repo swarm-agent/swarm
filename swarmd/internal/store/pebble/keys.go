@@ -52,7 +52,8 @@ const (
 	KeyIdentityCurrentSelectionDefault             = "identity/current_selection/default"
 	KeyIdentityCurrentSelectionPrefix              = "identity/current_selection/"
 	KeyIdentityLocalProductJWTSigningKeyDefault    = "identity/session/local_product_jwt_signing_key"
-	KeyVoiceConfigDefault                          = "voice/config/default" // legacy global key; retained for explicit migration only.
+	KeyIdentityClientSessionPrefix                 = "identity/client_session/"
+	KeyVoiceConfigDefault                         = "voice/config/default" // legacy global key; retained for explicit migration only.
 	KeyVoiceConfigAccountPrefix                    = "voice/config_by_account/"
 	KeyVoiceProfilePrefix                          = "voice/profile/" // legacy global prefix; retained for explicit migration only.
 	KeyVoiceProfileAccountPrefix                   = "voice/profile_by_account/"
@@ -362,6 +363,10 @@ func IdentityCurrentSelectionPrefix() string {
 
 func KeyIdentityLocalProductJWTSigningKey() string {
 	return KeyIdentityLocalProductJWTSigningKeyDefault
+}
+
+func KeyIdentityClientSession(sessionID string) string {
+	return KeyIdentityClientSessionPrefix + keyPart(sessionID)
 }
 
 func KeySession(sessionID string) string {

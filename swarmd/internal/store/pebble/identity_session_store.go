@@ -3,6 +3,7 @@ package pebblestore
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -81,6 +82,66 @@ func decodeIdentitySessionSigningKey(record IdentitySessionSigningKeyRecord) ([]
 		return nil, fmt.Errorf("local product jwt signing key has %d bytes, want %d", len(key), localProductJWTSigningKeyLength)
 	}
 	return key, nil
+}
+
+// ClientSessionRecord is one owner session handed to a client app the person
+// runs (their console on this machine or on their own PC). The token itself
+// is a signed identity session; this record is what makes it listable and
+// revocable, by its session id.
+type ClientSessionRecord struct {
+	SessionID      string `json:"session_id"`
+	Name           string `json:"name"`
+	UserID         string `json:"user_id"`
+	AccountScopeID string `json:"account_scope_id"`
+	CreatedAt      int64  `json:"created_at"`
+	ExpiresAt      int64  `json:"expires_at"`
+	LastSeenAt     int64  `json:"last_seen_at,omitempty"`
+	RevokedAt      int64  `json:"revoked_at,omitempty"`
+}
+
+func (s *IdentitySessionStore) PutClientSession(record ClientSessionRecord) error {
+	if err := s.configured(); err != nil {
+		return err
+	}
+	if record.SessionID == "" {
+		return errors.New("client session id required")
+	}
+	return s.store.PutJSON(KeyIdentityClientSession(record.SessionID), record)
+}
+
+func (s *IdentitySessionStore) GetClientSession(sessionID string) (ClientSessionRecord, bool, error) {
+	if err := s.configured(); err != nil {
+		return ClientSessionRecord{}, false, err
+	}
+	var record ClientSessionRecord
+	ok, err := s.store.GetJSON(KeyIdentityClientSession(sessionID), &record)
+	if err != nil || !ok {
+		return ClientSessionRecord{}, false, err
+	}
+	return record, true, nil
+}
+
+func (s *IdentitySessionStore) ListClientSessions() ([]ClientSessionRecord, error) {
+	if err := s.configured(); err != nil {
+		return nil, err
+	}
+	var records []ClientSessionRecord
+	err := s.store.IteratePrefix(KeyIdentityClientSessionPrefix, 0, func(_ string, value []byte) error {
+		var record ClientSessionRecord
+		if err := json.Unmarshal(value, &record); err != nil {
+			return err
+		}
+		records = append(records, record)
+		return nil
+	})
+	return records, err
+}
+
+func (s *IdentitySessionStore) DeleteClientSession(sessionID string) error {
+	if err := s.configured(); err != nil {
+		return err
+	}
+	return s.store.Delete(KeyIdentityClientSession(sessionID))
 }
 
 func (s *IdentitySessionStore) configured() error {
