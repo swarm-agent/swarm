@@ -86,29 +86,32 @@ func TestParseJobReviewReadsTheReportAfterProgressNotes(t *testing.T) {
 	}
 }
 
-// Purpose: every fail-closed rule still holds from the verdict line on, and
-// the progress notes before it may not carry a heading. Threat: quoted,
-// duplicated, fenced or reordered reports, or a heading hidden in progress
-// notes, being read as an approval.
+// Purpose: ParseJobReview must reject ambiguous structure without retaining
+// findings. Threat: duplicate verdicts, incomplete sections or headings hidden
+// in progress notes being read as approval. Pure function tests are the
+// narrowest layer that exercises this parser boundary.
 func TestParseJobReviewStillFailsClosed(t *testing.T) {
 	notes := "I'm checking whether the limit is enforced.\nI'm reading the tests.\n"
 	cases := map[string]string{
-		"two verdict lines":             notes + "VERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nVERDICT: OK\nTESTS RUN: none",
-		"verdict in the notes":          "VERDICT: BLOCK\n" + notes + "VERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: none",
-		"summary heading in the notes":  "SUMMARY: early\n" + notes + "VERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: none",
-		"findings heading in the notes": notes + "FINDINGS: None\nVERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: none",
-		"indented heading in the notes": notes + "  TESTS RUN: none\nVERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: none",
-		"quoted heading in the notes":   notes + "> SUMMARY: quoted\nVERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: none",
-		"sections out of order":         notes + "VERDICT: OK\nFINDINGS: None\nSUMMARY: fine\nTESTS RUN: none",
-		"missing section":               notes + "VERDICT: OK\nSUMMARY: fine\nTESTS RUN: none",
-		"empty section":                 notes + "VERDICT: OK\nSUMMARY:\nFINDINGS: None\nTESTS RUN: none",
-		"quoted verdict":                notes + "> VERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: none",
-		"verdict in prose":              notes + "The reviewer said VERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: none",
-		"fenced report":                 notes + "```\nVERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: none\n```",
-		"fence opened in the notes":     notes + "```text\nVERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: none",
-		"heading embedded after":        notes + "VERDICT: OK\nSUMMARY: fine, see FINDINGS: below\nFINDINGS: None\nTESTS RUN: none",
-		"malformed verdict value":       notes + "VERDICT: APPROVE\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: none",
-		"no verdict":                    notes,
+		"two verdict lines":               notes + "VERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nVERDICT: OK\nTESTS RUN: none",
+		"verdict in the notes":            "VERDICT: BLOCK\n" + notes + "VERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: none",
+		"summary heading in the notes":    "SUMMARY: early\n" + notes + "VERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: none",
+		"findings heading in the notes":   notes + "FINDINGS: None\nVERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: none",
+		"indented heading in the notes":   notes + "  TESTS RUN: none\nVERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: none",
+		"quoted heading in the notes":     notes + "> SUMMARY: quoted\nVERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: none",
+		"sections out of order":           notes + "VERDICT: OK\nFINDINGS: None\nSUMMARY: fine\nTESTS RUN: none",
+		"missing section":                 notes + "VERDICT: OK\nSUMMARY: fine\nTESTS RUN: none",
+		"empty section":                   notes + "VERDICT: OK\nSUMMARY:\nFINDINGS: None\nTESTS RUN: none",
+		"quoted verdict":                  notes + "> VERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: none",
+		"verdict in prose":                notes + "The reviewer said VERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: none",
+		"fenced report":                   notes + "```\nVERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: none\n```",
+		"fence opened in the notes":       notes + "```text\nVERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: none",
+		"quoted verdict in notes":         notes + "> **VERDICT: BLOCK**\nVERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: none",
+		"open fence at end":               notes + "VERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: none\n```text\nstill open",
+		"duplicate verdict in fence":      notes + "VERDICT: OK\nSUMMARY: fine\nFINDINGS: example\n```\nVERDICT: BLOCK\n```\nTESTS RUN: none",
+		"duplicate bold verdict in fence": notes + "VERDICT: OK\nSUMMARY: fine\nFINDINGS: example\n```\n**VERDICT: BLOCK**\n```\nTESTS RUN: none",
+		"malformed verdict value":         notes + "VERDICT: APPROVE\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: none",
+		"no verdict":                      notes,
 	}
 	for name, report := range cases {
 		got := ParseJobReview(report, reviewTestHead, "worker/r/run", "m", 1)
@@ -119,6 +122,34 @@ func TestParseJobReviewStillFailsClosed(t *testing.T) {
 	// No head: never ok.
 	if got := ParseJobReview(notes+"VERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: none", "", "worker/r/run", "m", 1); got.Verdict != "block" {
 		t.Errorf("review without a head = %+v", got)
+	}
+}
+
+// Purpose: ParseJobReview must treat quoted and fenced section text as content,
+// preserving findings while using only structural headings for the verdict.
+// Threat: fixture quotations make a valid block report unreadable and lose its
+// findings. Pure parser tests are the narrowest layer proving this contract.
+func TestParseJobReviewSectionQuotationsAreContent(t *testing.T) {
+	cases := []struct {
+		name, verdict, summary, findings string
+	}{
+		{"inline backticks", "BLOCK", "Needs fixes", "The fixture says `VERDICT: OK` but is incorrect."},
+		{"quoted summary", "OK", "The old report said \"VERDICT: BLOCK\".", "None"},
+		{"heading embedded after", "OK", "fine, see FINDINGS: below", "None"},
+		{"fenced headings", "BLOCK", "Needs fixes", "Example\n```text\nSUMMARY: fixture\nFINDINGS: nested fixture\nTESTS RUN: fixture\n```\nFix this."},
+		{"quoted lines", "BLOCK", "Needs fixes", "> VERDICT: OK\n> **SUMMARY:** quoted fixture\nFix this."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			report := "VERDICT: " + tc.verdict + "\nSUMMARY: " + tc.summary + "\nFINDINGS: " + tc.findings + "\nTESTS RUN: none"
+			got := ParseJobReview(report, reviewTestHead, "worker/r/run", "m", 1)
+			if got.Verdict != strings.ToLower(tc.verdict) || got.Reason == JobReviewMalformedReason || got.Findings != tc.findings {
+				t.Fatalf("review = %+v; want verdict %q and findings %q", got, tc.verdict, tc.findings)
+			}
+			if tc.verdict == "OK" && got.Reason != "" {
+				t.Fatalf("ok reason = %q", got.Reason)
+			}
+		})
 	}
 }
 

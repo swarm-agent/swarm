@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Keep quoted headings and closed code fences inside review sections readable without weakening verdict or section validation. Docs impact: none.
+
 - Accept changed model catalog snapshots with an equal generation timestamp so recommendation-only releases reach installs, while still rejecting older snapshots. Docs impact: none.
 
 - Give daemon-user leases the folder Git directory's group for gVisor ACL compatibility, recreate leases when credentials change, report actual sandbox and folder lease status, and revert the bubblewrap packed-ref overlay changes. Docs impact: none.

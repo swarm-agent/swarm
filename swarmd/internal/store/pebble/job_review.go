@@ -73,11 +73,10 @@ func unwrapJobReviewHeading(line string) string {
 // "VERDICT: BLOCK"; text before it (a reviewer's progress notes) is ignored.
 // A heading may be wrapped in Markdown bold at the start of its line
 // (unwrapJobReviewHeading); only that wrapper is removed. It fails closed on
-// absent, duplicate (in any form) or malformed verdicts, missing, empty or
-// reordered sections, and headings that are quoted, fenced, indented or
-// embedded in prose, including a heading (plain or emphasised) at the start
-// of a line in the text before the verdict. It never interprets quoted prose
-// as an approval.
+// absent, duplicate line-start or malformed verdicts, missing, empty or
+// reordered sections, open fences, and headings behind markup in the notes
+// before the verdict. Within sections, quoted text and fenced lines are
+// content, not structure. It never interprets quoted prose as an approval.
 func ParseJobReview(report, head, reviewerJobID, model string, now int64) JobReview {
 	r := JobReview{Verdict: "block", Head: head, ReviewerJobID: reviewerJobID, Model: model, RecordedAt: now, Reason: JobReviewMalformedReason}
 	raw := strings.Split(strings.TrimSpace(report), "\n")
@@ -121,22 +120,13 @@ func ParseJobReview(report, head, reviewerJobID, model string, now int64) JobRev
 	var findings []string
 	for _, line := range lines[start+1:] {
 		trimmed := strings.TrimSpace(line)
-		// Structural headings may not appear quoted, fenced, indented,
-		// duplicated or embedded in prose: ambiguous reports fail closed.
-		for _, heading := range jobReviewHeadings {
-			if strings.Contains(line, heading) && !strings.HasPrefix(line, heading) {
-				return r
-			}
-		}
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, ">") {
-			return r
-		}
-		if strings.HasPrefix(line, "VERDICT:") {
-			return r
+		fenceLine := strings.HasPrefix(trimmed, "```")
+		if fenceLine {
+			fences++
 		}
 		structural := false
 		for _, heading := range sections {
-			if strings.HasPrefix(line, heading) {
+			if !fenceLine && fences%2 == 0 && strings.HasPrefix(line, heading) {
 				if next >= len(sections) || heading != sections[next] || (next > 0 && !nonempty) {
 					return r
 				}
@@ -160,7 +150,7 @@ func ParseJobReview(report, head, reviewerJobID, model string, now int64) JobRev
 			findings = append(findings, line)
 		}
 	}
-	if next != len(sections) || !nonempty || head == "" {
+	if next != len(sections) || !nonempty || fences%2 != 0 || head == "" {
 		return r
 	}
 	r.Findings = boundJobReviewFindings(strings.TrimSpace(strings.Join(findings, "\n")))
