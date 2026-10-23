@@ -774,7 +774,7 @@ activate() {
 # swarmctl talks to Swarm's private socket, so it runs as Swarm's own user.
 # The machine commands (workspace, idle-off) need root itself, so root runs them directly.
 if [ "\$(id -un)" = $SERVICE_USER ]; then exec $OPT/current/bin/swarmctl "\$@"; fi
-if [ "\$(id -u)" = 0 ]; then case "\${1:-}" in workspace|idle-off) exec env LD_LIBRARY_PATH=$OPT/current/lib $OPT/current/bin/swarmctl "\$@" ;; esac; fi
+if [ "\$(id -u)" = 0 ]; then case "\${1:-}" in workspace|idle-off|client) exec env LD_LIBRARY_PATH=$OPT/current/lib $OPT/current/bin/swarmctl "\$@" ;; esac; fi
 cd / || exit 1
 exec runuser -u $SERVICE_USER -- env HOME=$SERVICE_HOME LD_LIBRARY_PATH=$OPT/current/lib $OPT/current/bin/swarmctl "\$@"
 WRAPPER
