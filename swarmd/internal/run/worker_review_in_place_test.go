@@ -2,10 +2,12 @@ package run
 
 import (
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"swarm/packages/swarmd/internal/sandbox"
 	"testing"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -132,6 +134,32 @@ func TestReviewerReadsTheJobsOwnWorktreeInPlace(t *testing.T) {
 	if err != nil || allocation.WorkspacePath != coder.WorkspacePath || git(allocation.WorkspacePath, "rev-parse", "HEAD") != head {
 		t.Fatalf("native worker review: %+v %v", allocation, err)
 	}
+	// PrepareTaskReviewSession must register the worker-job review as a
+	// borrowed read-only identity, never as a security-fix checkout.
+	manager, err := sandbox.NewManager(context.Background(), sandbox.Config{Mode: sandbox.ModeRequired, Backend: sandbox.BackendDocker, StateDir: t.TempDir(), Memory: "4g", MaxWorkerRuns: 2, UID: 10001, GID: 10001}, reviewRegistrationEngine{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := sandbox.Default()
+	sandbox.SetDefault(manager)
+	t.Cleanup(func() { sandbox.SetDefault(previous) })
+	manager.SetLayout(sandbox.Layout{Projects: func() ([]string, error) { return []string{source}, nil }, WorktreesRoot: filepath.Dir(filepath.Dir(coder.WorkspacePath)), Bucket: func(string) (string, error) { return filepath.Base(filepath.Dir(coder.WorkspacePath)), nil }})
+	nativeSnapshot := pebblestore.SessionSnapshot{ID: native.SessionID, AccountScopeID: account, UserID: user, WorktreeRootPath: allocation.WorkspacePath, Metadata: map[string]any{"runtime_mode": "read"}}
+	if err := service.PrepareTaskReviewSession(&nativeSnapshot, native); err != nil {
+		t.Fatal(err)
+	}
+	if nativeSnapshot.Metadata["runtime_mode"] != "read" || sessionReviewFixes(nativeSnapshot.Metadata) || sandbox.ReviewSessionCheckout(native.SessionID) != allocation.WorkspacePath {
+		t.Fatal("worker-job review not registered read-only")
+	}
+	cleanup, found, err := db2.GetReviewCleanup(account, native.SessionID)
+	if err != nil || !found || !cleanup.Borrowed {
+		t.Fatalf("review registration %+v %v", cleanup, err)
+	}
+	if err := manager.EndReview(context.Background(), allocation.WorkspacePath); err != nil {
+		t.Fatal(err)
+	}
+	manager.ForgetReview(allocation.WorkspacePath)
+	sandbox.SetDefault(previous)
 	other := p
 	other.UserID = "other-user"
 	if _, err := service.ResolveTaskReviewTarget(context.Background(), other, native, job, "same", head); err == nil || !strings.Contains(err.Error(), "review job not found") {
@@ -233,4 +261,24 @@ func TestReviewerReadsTheJobsOwnWorktreeInPlace(t *testing.T) {
 	if reviewSharesCheckout(map[string]any{"review_fixes": "security"}) {
 		t.Fatal("a reviewer with fixes reads in place")
 	}
+}
+
+// Only the container engine boundary is replaced, matching sandbox package
+// fixtures. Review target resolution and identity registration remain real.
+type reviewRegistrationEngine struct{}
+
+func (reviewRegistrationEngine) Run(_ context.Context, _ string, args ...string) ([]byte, error) {
+	if len(args) > 1 && args[0] == "image" && args[1] == "inspect" {
+		return []byte("sha256:img\n"), nil
+	}
+	if len(args) > 1 && args[0] == "info" {
+		return []byte(`{"runc":{}}`), nil
+	}
+	return nil, nil
+}
+func (r reviewRegistrationEngine) RunCombined(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return r.Run(ctx, name, args...)
+}
+func (reviewRegistrationEngine) RunWithIO(context.Context, io.Reader, io.Writer, io.Writer, string, ...string) error {
+	return nil
 }

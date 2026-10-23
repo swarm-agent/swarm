@@ -6,9 +6,51 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-// taskReview is read-only: settlement, not observation, owns persistence and cleanup.
+// taskReview repairs the settlement gap from durable messages. The guarded
+// update preserves the first verdict even when settlement and a waiter race.
 func (s *Server) taskReview(task *pebblestore.ProjectTaskRecord) (*pebblestore.JobReview, error) {
-	return task.Review, nil
+	if task.Review != nil || task.Agent != "reviewer" || task.WorkerID != "" || !controlMCPTaskSettled[task.Status] {
+		return task.Review, nil
+	}
+	report := ""
+	var after uint64
+	for page := 0; page < 100; page++ {
+		messages, err := s.sessions.ListMessages(task.SessionID, after, 100)
+		if err != nil {
+			report = ""
+			break
+		}
+		for _, message := range messages {
+			after = message.GlobalSeq
+			if message.Role == "assistant" {
+				report = message.Content
+			}
+		}
+		if len(messages) < 100 {
+			break
+		}
+		if page == 99 {
+			report = ""
+		}
+	}
+	review := pebblestore.ParseJobReview(report, task.StartCommit, taskRunJobID(task.ProjectID, task.ID), task.Provider+"/"+task.Model, task.UpdatedAt)
+	switch task.Status {
+	case "failed", "blocked", "rejected", "cancelled", "superseded", "needs_input", "pending_approval":
+		review.Verdict = "block"
+	}
+	stored, err := s.sessions.Store().UpdateProjectTask(task.AccountID, task.ProjectID, task.ID, func(current *pebblestore.ProjectTaskRecord) error {
+		if current.SessionID != task.SessionID || current.StartCommit != task.StartCommit || !controlMCPTaskSettled[current.Status] {
+			return fmt.Errorf("review task changed")
+		}
+		if current.Review == nil {
+			current.Review = &review
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return stored.Review, nil
 }
 
 // settleTaskReview parses the durable final report and retries cleanup even when
