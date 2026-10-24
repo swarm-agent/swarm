@@ -2887,6 +2887,10 @@ func controlMCPGetUsage(c *controlMCPCall, args map[string]any) (any, error) {
 	}
 	if detail {
 		controlMCPUsageDetail(response, subscription, out)
+		if token, ok := ScopedTokenFromRequest(c.request); ok && token != nil && token.WorkerID != "" {
+			out["workers_note"] = "Worker breakdown omitted: worker-bound tokens cannot enumerate workers."
+			return out, nil
+		}
 		sortPeriod := "all_time"
 		if period == "today" {
 			sortPeriod = "today"

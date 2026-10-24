@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -131,14 +132,31 @@ func TestControlMCPWorkerUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Worker binding must not be bypassed by direct usage-store reads. Exercise
-	// the MCP entry point and both helpers: rejection must return no partial
-	// result (including other workers' IDs, names or spend), and leave receipts
-	// unchanged. This store-backed test covers the worker collection boundary
-	// preserved by workerUsageDetail and workerUsage without a live server.
+	// Preserve the existing detailed usage response for worker-bound tokens,
+	// without exposing worker identities or per-worker spend. The MCP boundary
+	// omits the breakdown; direct store helpers still reject enumeration.
+	baseline, err := controlMCPGetUsage(c, map[string]any{"detail": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDetail := baseline.(map[string]any)
+	delete(wantDetail, "workers")
+	delete(wantDetail, "workers_note")
 	c.request = requestWithScopedToken(c.request, &pebblestore.ScopedTokenRecord{WorkerID: low, Scopes: []string{"sessions:read"}})
-	if result, err := controlMCPGetUsage(c, map[string]any{"detail": true}); err == nil || result != nil {
-		t.Fatalf("worker-bound detail must fail without data: result=%v err=%v", result, err)
+	boundResult, err := controlMCPGetUsage(c, map[string]any{"detail": true})
+	if err != nil {
+		t.Fatalf("worker-bound detail failed: %v", err)
+	}
+	boundDetail := boundResult.(map[string]any)
+	if _, exists := boundDetail["workers"]; exists {
+		t.Fatalf("worker-bound response exposed worker identities or spend: %v", boundDetail)
+	}
+	if note, _ := boundDetail["workers_note"].(string); note != "Worker breakdown omitted: worker-bound tokens cannot enumerate workers." {
+		t.Fatalf("missing omission explanation: %v", boundDetail)
+	}
+	delete(boundDetail, "workers_note")
+	if !reflect.DeepEqual(boundDetail, wantDetail) {
+		t.Fatalf("worker binding changed normal detail: got=%v want=%v", boundDetail, wantDetail)
 	}
 	if result, err := c.workerUsageDetail("today"); err == nil || result != nil {
 		t.Fatalf("worker-bound enumeration must fail without data: result=%v err=%v", result, err)
