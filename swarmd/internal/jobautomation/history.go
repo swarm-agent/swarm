@@ -1,8 +1,8 @@
 package jobautomation
 
 import (
+	"bytes"
 	"encoding/json"
-	"reflect"
 	"sort"
 
 	"github.com/cockroachdb/pebble"
@@ -46,7 +46,12 @@ func changedFields(a, b *Automation) []string {
 	}
 	out := []string{}
 	for k := range keys {
-		if !reflect.DeepEqual(before[k], after[k]) {
+		// Compare the persisted representation: omitempty makes empty and nil
+		// step lists equivalent after a store round trip. Failed encoding must
+		// never suppress a write (and its eventual persistence error).
+		beforeJSON, beforeErr := json.Marshal(before[k])
+		afterJSON, afterErr := json.Marshal(after[k])
+		if beforeErr != nil || afterErr != nil || !bytes.Equal(beforeJSON, afterJSON) {
 			out = append(out, k)
 		}
 	}

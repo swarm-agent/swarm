@@ -58,3 +58,54 @@ func TestWorkflowHistoryLifecycleAndCap(t *testing.T) {
 		t.Fatalf("cap: %d %v", len(h), err)
 	}
 }
+
+// Purpose: Store.PutChange must compare persisted definitions canonically so
+// omitted empty step lists do not consume revisions or evict real history.
+// Real Pebble round trips are the narrowest layer proving the no-op decision
+// against decoded snapshots; a subsequent real change must still be recorded.
+func TestWorkflowHistoryEmptyStepListsAreNoOp(t *testing.T) {
+	for _, field := range []string{"args", "if", "what", "all"} {
+		t.Run(field, func(t *testing.T) {
+			db, store := openTestStore(t)
+			input := testAutomation(t.TempDir())
+			if field == "args" || field == "all" {
+				input.Steps[0].Args = []string{}
+			}
+			if field == "if" || field == "all" {
+				input.Steps[0].If = []Condition{}
+			}
+			if field == "what" || field == "all" {
+				input.Steps[0].What = []string{}
+			}
+			first, _, err := store.Put("a", input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store = NewStore(db)
+			saved, err := store.Get("a", first.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if saved.Steps[0].Args != nil || saved.Steps[0].If != nil || saved.Steps[0].What != nil {
+				t.Fatal("expected omitted lists to decode as nil")
+			}
+			repeated, created, err := store.Put("a", input)
+			if err != nil || created || repeated.Revision != first.Revision {
+				t.Fatalf("repeat: %+v %v %v", repeated, created, err)
+			}
+			history, err := store.History("a", first.ID, "")
+			if err != nil || len(history) != 1 {
+				t.Fatalf("no-op history: %+v %v", history, err)
+			}
+			input.Steps[0].Args = []string{"--check"}
+			updated, _, err := store.Put("a", input)
+			if err != nil || updated.Revision != first.Revision+1 {
+				t.Fatalf("update: %+v %v", updated, err)
+			}
+			history, err = store.History("a", first.ID, "")
+			if err != nil || len(history) != 2 || len(history[0].ChangedFields) != 1 || history[0].ChangedFields[0] != "steps" {
+				t.Fatalf("real change history: %+v %v", history, err)
+			}
+		})
+	}
+}
