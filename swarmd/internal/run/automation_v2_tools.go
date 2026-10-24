@@ -423,7 +423,7 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 			RequestedCapabilities: requestedCaps,
 			WorkspaceRequirements: workspaceReqs,
 			ProposedBindings:      proposedBindings,
-			ChangeSummary:         "updated worker proposal",
+			ChangeSummary:         "updated worker",
 		}
 		if hasExplicitAutomations || len(automations) > 0 {
 			updateReq.Automations = automations

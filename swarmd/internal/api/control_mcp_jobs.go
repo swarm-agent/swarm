@@ -1547,7 +1547,7 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_deploy_worker", Title: "Deploy a worker",
-			Description: "Make a worker ready on this box: an explicitly selected preset coder, designer, finder or reviewer, or a custom worker with a name, a role (coder, designer, finder, reviewer or swarm: what it can do) and standing instructions that apply to every job. Workers work in any project; each job names its project and folder. Optional model pins this worker; pass worker id or its existing name to update only the pin, or model: null to clear it (no staged review).",
+			Description: "Make a worker ready on this box: an explicitly selected preset coder, designer, finder or reviewer, or a custom worker with a name, a role (coder, designer, finder, reviewer or swarm: what it can do) and standing instructions that apply to every job. Workers work in any project; each job names its project and folder. Optional model pins this worker; pass worker id or its existing name to save supplied instructions, description, agent and model immediately; role changes are refused. Use model: null to clear the pin.",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"preset":       map[string]any{"type": "string", "enum": controlMCPPresetWorkers},
 				"worker":       workerRef,

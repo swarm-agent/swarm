@@ -112,6 +112,7 @@ type WorkerRecord struct {
 	// (WorkerRoles). Empty behaves as WorkerRoleSwarm.
 	Role                  string                       `json:"role,omitempty"`
 	ExecutionMode         string                       `json:"execution_mode,omitempty"`
+	PendingReviewStale    bool                         `json:"pending_review_stale,omitempty"`
 	PendingReview         *WorkerRecord                `json:"pending_review,omitempty"`
 	ModelProfile          *SessionModelProfileSnapshot `json:"model_profile,omitempty"`
 	StopTarget            WorkerLifecycleState         `json:"stop_target,omitempty"`
@@ -1373,7 +1374,7 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 		updated.Automations = kept
 	}
 
-	if len(updated.RequestedCapabilities) != 0 {
+	if established && len(updated.RequestedCapabilities) != 0 {
 		return WorkerRecord{}, fmt.Errorf("%w: capability approvals unsupported", ErrWorkerConflict)
 	}
 	if established {
@@ -1395,7 +1396,11 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 		if len(approved.LocalBindings) != 0 && !reflect.DeepEqual(updated.ProposedBindings, approved.LocalBindings) {
 			return WorkerRecord{}, fmt.Errorf("%w: changing approved workspace requires explicit rebind", ErrWorkerConflict)
 		}
-		// Preserve legacy proposals for explicit acceptance, but never stage new edits.
+		// Retain legacy proposals, but fence acceptance after a direct save so
+		// the old snapshot cannot overwrite newer instructions or jobs.
+		if updated.PendingReview != nil {
+			updated.PendingReviewStale = true
+		}
 		encoded, err := json.Marshal(updated)
 		if err != nil {
 			return WorkerRecord{}, err
@@ -1757,13 +1762,12 @@ func (ws *WorkerStore) UpdateWorkerAutomation(account, user, workerID, automatio
 	if w, found, err := ws.GetWorker(account, workerID); err != nil {
 		return WorkerRecord{}, err
 	} else if found && w.LifecycleState != WorkerLifecycleStatePending {
-		// An approved worker's job changes are staged for review, like
-		// attaching one; the approved job keeps running unchanged.
+		// Job edits apply immediately; admitted runs retain their pinned revision.
 		if !workerProposalHasAutomation(w, automationID) {
 			return WorkerRecord{}, ErrWorkerNotFound
 		}
 		auto.ID = strings.TrimSpace(automationID)
-		return ws.UpdateWorker(account, user, workerID, expectedWorkerRevision, UpdateWorkerRequest{Automations: []WorkerAutomationDefinition{auto}, ChangeSummary: "proposed job change"}, validate)
+		return ws.UpdateWorker(account, user, workerID, expectedWorkerRevision, UpdateWorkerRequest{Automations: []WorkerAutomationDefinition{auto}, ChangeSummary: "updated job"}, validate)
 	}
 	if ws == nil || ws.store == nil || ws.store.db == nil {
 		return WorkerRecord{}, errors.New("store is not open")
@@ -1887,11 +1891,11 @@ func (ws *WorkerStore) RemoveWorkerAutomation(account, user, workerID, automatio
 	if w, found, err := ws.GetWorker(account, workerID); err != nil {
 		return WorkerRecord{}, err
 	} else if found && w.LifecycleState != WorkerLifecycleStatePending {
-		// Removing an approved worker's job is staged for review too.
+		// Job removal shares the direct versioned update boundary.
 		if !workerProposalHasAutomation(w, automationID) {
 			return WorkerRecord{}, ErrWorkerNotFound
 		}
-		return ws.UpdateWorker(account, user, workerID, expectedWorkerRevision, UpdateWorkerRequest{RemoveAutomationIDs: []string{strings.TrimSpace(automationID)}, ChangeSummary: "proposed job removal"}, nil)
+		return ws.UpdateWorker(account, user, workerID, expectedWorkerRevision, UpdateWorkerRequest{RemoveAutomationIDs: []string{strings.TrimSpace(automationID)}, ChangeSummary: "removed job"}, nil)
 	}
 	if ws == nil || ws.store == nil || ws.store.db == nil {
 		return WorkerRecord{}, errors.New("store is not open")

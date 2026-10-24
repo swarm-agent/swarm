@@ -2662,7 +2662,7 @@ func controlMCPAutomation(args map[string]any) (map[string]any, error) {
 
 // controlMCPWorkerCreateBody is the POST /v3/workers body. A schedule is part
 // of the created worker, so it is approved with it; attaching one later to an
-// existing worker is staged for owner review, which Swarm Control cannot accept.
+// established worker applies immediately through the versioned update boundary.
 func controlMCPWorkerCreateBody(args map[string]any) (map[string]any, map[string]any, error) {
 	automation, err := controlMCPAutomation(args)
 	if err != nil {
