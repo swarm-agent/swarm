@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -79,6 +80,22 @@ func workflowPath(path string) error {
 	return nil
 }
 
+func (c *controlMCPCall) workflowExportFolder(folder string) (string, error) {
+	response, err := c.dispatch(http.MethodGet, "/v3/projects", url.Values{"limit": {"200"}}, nil)
+	if err != nil {
+		return "", err
+	}
+	for _, raw := range controlMCPList(response["projects"]) {
+		for _, workspace := range controlMCPProjectWorkspaces(controlMCPMap(raw)) {
+			path, _ := workspace["path"].(string)
+			if filepath.IsAbs(path) && filepath.Clean(path) == filepath.Clean(folder) {
+				return path, nil
+			}
+		}
+	}
+	return "", errors.New("workflow export folder is not an account project folder")
+}
+
 func controlMCPExportWorkflow(c *controlMCPCall, args map[string]any) (any, error) {
 	store, account, err := c.jobAutomationAccount("automations:read")
 	if err != nil {
@@ -110,7 +127,13 @@ func controlMCPExportWorkflow(c *controlMCPCall, args map[string]any) (any, erro
 	if err := workflowPath(path); err != nil {
 		return nil, err
 	}
-	root, err := os.OpenRoot(a.Scope.Folder)
+	// A workflow's explicit scope is not filesystem authority. Resolve it
+	// against the account-visible project folders before creating anything.
+	folder, err := c.workflowExportFolder(a.Scope.Folder)
+	if err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(folder)
 	if err != nil {
 		return nil, err
 	}

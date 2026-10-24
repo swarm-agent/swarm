@@ -26,7 +26,7 @@ func TestWorkflowTransfer(t *testing.T) {
 		if r.URL.Path != "/v3/projects" {
 			t.Errorf("unexpected route %s", r.URL.Path)
 		}
-		writeJSON(w, 200, map[string]any{"projects": []any{map[string]any{"id": "proj-1", "name": "Site", "workspaces": []any{map[string]any{"path": target, "workspace_id": "ws-1", "role": "primary_code"}}}}})
+		writeJSON(w, 200, map[string]any{"projects": []any{map[string]any{"id": "proj-source", "name": "Source", "workspaces": []any{map[string]any{"path": folder, "workspace_id": "ws-source", "role": "primary_code"}}}, map[string]any{"id": "proj-1", "name": "Site", "workspaces": []any{map[string]any{"path": target, "workspace_id": "ws-1", "role": "primary_code"}}}}})
 	})
 	if _, err := controlMCPSetAutomation(c, map[string]any{"name": "review", "scope": map[string]any{"folder": folder}, "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "review"}}}); err != nil {
 		t.Fatal(err)
@@ -158,5 +158,48 @@ func TestWorkflowImportRunOwnerHTTP(t *testing.T) {
 	server.handleJobAutomations(w, owner)
 	if w.Code != 200 || len(storedAutomations(t, store)) != 1 {
 		t.Fatalf("local owner: %d %s", w.Code, w.Body)
+	}
+}
+
+// Requirement: export writes belong only to account project folders, not any
+// absolute scope accepted by set. Prevent write keys from creating directories
+// or replacing host files. controlMCPExportWorkflow/workflowExportFolder own
+// this boundary; real-store MCP calls prove rejection and filesystem postconditions.
+func TestWorkflowExportRequiresProjectFolder(t *testing.T) {
+	server, _ := newRunOwnerServer(t)
+	outside, project := t.TempDir(), t.TempDir()
+	c := &controlMCPCall{server: server, request: requestWithScopedToken(withTestPrincipal(httptest.NewRequest("POST", "/mcp", nil)), &pebblestore.ScopedTokenRecord{Scopes: scopesForLevel(t, "write")})}
+	c.next = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v3/projects" {
+			t.Fatalf("unexpected route %s", r.URL.Path)
+		}
+		writeJSON(w, 200, map[string]any{"projects": []any{map[string]any{"id": "proj-1", "workspaces": []any{map[string]any{"path": project}}}}})
+	})
+	if _, err := controlMCPSetAutomation(c, map[string]any{"name": "outside", "scope": map[string]any{"folder": outside}, "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "review"}}}); err != nil {
+		t.Fatal(err)
+	}
+	existing := filepath.Join(outside, "existing.json")
+	if err := os.WriteFile(existing, []byte("preserve"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"", "new/nested/workflow.json", "existing.json"} {
+		if _, err := controlMCPExportWorkflow(c, map[string]any{"name": "outside", "path": path, "overwrite": true}); err == nil || !strings.Contains(err.Error(), "not an account project folder") {
+			t.Fatalf("path %q: %v", path, err)
+		}
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "existing.json" {
+		t.Fatalf("export created files or directories: %v", entries)
+	}
+	data, err := os.ReadFile(existing)
+	if err != nil || string(data) != "preserve" {
+		t.Fatalf("export changed existing file: %q, %v", data, err)
+	}
+	// Returning JSON alone does not grant filesystem access and remains allowed.
+	if _, err := controlMCPExportWorkflow(c, map[string]any{"name": "outside"}); err != nil {
+		t.Fatal(err)
 	}
 }
