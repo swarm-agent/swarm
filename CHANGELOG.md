@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Remove an accidentally tracked Vitest results cache and ignore root node_modules dependencies. Docs impact: none
+
 - Export and import portable workflow JSON through API, MCP and SDK, including repository directories with per-file results and confined file paths. Docs impact: none.
 
 - Make the README easier to discover with a self-hosted agent fleet introduction, verified use cases, AI setup links, project disambiguation and updated GitHub metadata; place License last. Docs impact: README only.
