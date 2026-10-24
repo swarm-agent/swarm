@@ -45,7 +45,7 @@ func TestWorkflowHistoryRestoreAuthorization(t *testing.T) {
 	principal := testPrincipal()
 	principal.AccountScopeID = "other-account"
 	other.request = other.request.WithContext(context.WithValue(other.request.Context(), productPrincipalRequestContextKey, principal))
-	if _, err := controlMCPWorkflowHistory(other, lookup); err != jobautomation.ErrNotFound {
+	if _, err := controlMCPWorkflowHistory(other, lookup); err == nil || !strings.Contains(err.Error(), "workflow history was not found") {
 		t.Fatalf("cross-account history: %v", err)
 	}
 	out, err := controlMCPWorkflowHistory(call("read"), lookup)
@@ -96,5 +96,95 @@ func TestWorkflowHistoryRestoreAuthorization(t *testing.T) {
 	view := out.(map[string]any)["automations"].([]map[string]any)[0]
 	if view["history_count"] != 4 || view["last_change"] == nil {
 		t.Fatal(view)
+	}
+}
+
+// Purpose: history/restore client mistakes must remain actionable through MCP
+// serialization and HTTP, without changing saved definitions or history. Real
+// handler/store tests are the narrowest boundary proving error mapping and the
+// absence of writes, including restore's shared fixes validation.
+func TestWorkflowHistoryClientErrors(t *testing.T) {
+	server, store := newRunOwnerServer(t)
+	account := testPrincipal().AccountScopeID
+	a, _, err := store.Put(account, jobautomation.Automation{Name: "deleted", Scope: jobautomation.Scope{Folder: t.TempDir()}, Enabled: true, Steps: []jobautomation.Step{{Type: jobautomation.StepRun, Command: "deliver/push.sh"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Delete(account, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Store accepts the structurally valid snapshot; restore must re-check the
+	// API-owned worker authorization even when its worker service is unavailable.
+	_, _, err = store.Put(account, jobautomation.Automation{Name: "fixes", Scope: jobautomation.Scope{Folder: t.TempDir()}, Enabled: true, Steps: []jobautomation.Step{{Type: jobautomation.StepAgent, Worker: "missing-worker", Brief: "Review", Fixes: "security"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := func() string {
+		defs, err := store.List(account)
+		if err != nil {
+			t.Fatal(err)
+		}
+		deleted, err := store.History(account, "", "deleted")
+		if err != nil {
+			t.Fatal(err)
+		}
+		fixes, err := store.History(account, "", "fixes")
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := json.Marshal([]any{defs, deleted, fixes})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	before := snapshot()
+	for _, tc := range []struct {
+		action, args, query, want string
+		status                    int
+	}{
+		{"history", `{"name":"deleted","revision":"abc"}`, "name=deleted&revision=abc", "revision must be a positive integer", 400},
+		{"restore", `{"name":"deleted"}`, "", "revision is required", 400},
+		{"restore", `{"name":"deleted","revision":0}`, "", "revision must be a positive integer", 400},
+		{"history", `{"name":"unknown"}`, "name=unknown", "workflow history was not found", 404},
+		{"restore", `{"name":"unknown","revision":1}`, "", "workflow history was not found", 404},
+		{"history", `{"name":"deleted","revision":99}`, "name=deleted&revision=99", "revision 99 was not found", 404},
+		{"restore", `{"name":"deleted","revision":99}`, "", "revision 99 was not found", 404},
+		{"restore", `{"name":"deleted","revision":2}`, "", "deleted marker", 400},
+		{"restore", `{"name":"fixes","revision":1}`, "", "fixes option", 400},
+	} {
+		t.Run(tc.action+tc.args, func(t *testing.T) {
+			var args map[string]any
+			if err := json.Unmarshal([]byte(tc.args), &args); err != nil {
+				t.Fatal(err)
+			}
+			r := requestWithScopedToken(withTestPrincipal(httptest.NewRequest("POST", "/mcp", nil)), &pebblestore.ScopedTokenRecord{Scopes: scopesForLevel(t, "full")})
+			c := &controlMCPCall{server: server, request: r}
+			var out any
+			var err error
+			if tc.action == "history" {
+				out, err = controlMCPWorkflowHistory(c, args)
+			} else {
+				out, err = controlMCPRestoreWorkflow(c, args)
+			}
+			result := controlMCPToolResult(out, err)
+			text := result["content"].([]map[string]any)[0]["text"].(string)
+			if result["isError"] != true || !strings.Contains(text, tc.want) {
+				t.Fatalf("MCP: %#v", result)
+			}
+			method := "POST"
+			if tc.action == "history" {
+				method = "GET"
+			}
+			r = withTestPrincipal(httptest.NewRequest(method, JobAutomationsPath+"/"+tc.action+"?"+tc.query, strings.NewReader(tc.args)))
+			w := httptest.NewRecorder()
+			server.handleJobAutomations(w, r)
+			if w.Code != tc.status || !strings.Contains(w.Body.String(), tc.want) {
+				t.Fatalf("HTTP: %d %s", w.Code, w.Body)
+			}
+			if after := snapshot(); after != before {
+				t.Fatal("rejected request changed definitions or history")
+			}
+		})
 	}
 }

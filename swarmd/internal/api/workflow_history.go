@@ -34,17 +34,23 @@ func workflowHistorySummary(store *jobautomation.Store, account, id string, view
 	}
 	return nil
 }
+func workflowHistoryNotFound(format string, args ...any) error {
+	err := controlMCPToolFailure(format, args...).(controlMCPToolError)
+	err.status = http.StatusNotFound
+	return err
+}
+
 func workflowRevision(args map[string]any, required bool) (uint64, error) {
 	raw, ok := args["revision"]
 	if !ok {
 		if required {
-			return 0, errors.New("revision is required")
+			return 0, controlMCPToolFailure("revision is required")
 		}
 		return 0, nil
 	}
 	n, err := strconv.ParseUint(fmt.Sprint(raw), 10, 64)
 	if err != nil || n == 0 {
-		return 0, errors.New("revision must be a positive integer")
+		return 0, controlMCPToolFailure("revision must be a positive integer")
 	}
 	return n, nil
 }
@@ -58,6 +64,9 @@ func controlMCPWorkflowHistory(c *controlMCPCall, args map[string]any) (any, err
 		return nil, err
 	}
 	records, err := store.History(account, controlMCPString(args, "id"), controlMCPString(args, "name"))
+	if errors.Is(err, jobautomation.ErrNotFound) {
+		return nil, workflowHistoryNotFound("workflow history was not found for id %q or name %q", controlMCPString(args, "id"), controlMCPString(args, "name"))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +79,7 @@ func controlMCPWorkflowHistory(c *controlMCPCall, args map[string]any) (any, err
 				return portableWorkflow(*record.Definition, record.Definition.Scope.Folder), nil
 			}
 		}
-		return nil, jobautomation.ErrNotFound
+		return nil, workflowHistoryNotFound("revision %d was not found in retained workflow history", revision)
 	}
 	for i := range records {
 		records[i].Definition = nil
@@ -87,13 +96,16 @@ func controlMCPRestoreWorkflow(c *controlMCPCall, args map[string]any) (any, err
 		return nil, err
 	}
 	records, err := store.History(account, controlMCPString(args, "id"), controlMCPString(args, "name"))
+	if errors.Is(err, jobautomation.ErrNotFound) {
+		return nil, workflowHistoryNotFound("workflow history was not found for id %q or name %q", controlMCPString(args, "id"), controlMCPString(args, "name"))
+	}
 	if err != nil {
 		return nil, err
 	}
 	for _, record := range records {
 		if record.Revision == revision {
 			if record.Definition == nil {
-				return nil, errors.New("a deleted marker cannot be restored")
+				return nil, controlMCPToolFailure("revision %d is a deleted marker and cannot be restored", revision)
 			}
 			data, err := json.Marshal(portableWorkflow(*record.Definition, ""))
 			if err != nil {
@@ -106,7 +118,7 @@ func controlMCPRestoreWorkflow(c *controlMCPCall, args map[string]any) (any, err
 			return controlMCPSaveAutomationChange(c, save, false, "restore")
 		}
 	}
-	return nil, jobautomation.ErrNotFound
+	return nil, workflowHistoryNotFound("revision %d was not found in retained workflow history", revision)
 }
 func (s *Server) handleWorkflowHistory(w http.ResponseWriter, r *http.Request, action string) {
 	args := map[string]any{}
@@ -118,15 +130,18 @@ func (s *Server) handleWorkflowHistory(w http.ResponseWriter, r *http.Request, a
 		}
 	} else {
 		var body struct {
-			ID       string `json:"id,omitempty"`
-			Name     string `json:"name,omitempty"`
-			Revision uint64 `json:"revision"`
+			ID       string  `json:"id,omitempty"`
+			Name     string  `json:"name,omitempty"`
+			Revision *uint64 `json:"revision"`
 		}
 		if err := decodeJSONStrict(w, r, 4096, &body); err != nil {
 			writeError(w, 400, err)
 			return
 		}
-		args = map[string]any{"id": body.ID, "name": body.Name, "revision": body.Revision}
+		args = map[string]any{"id": body.ID, "name": body.Name}
+		if body.Revision != nil {
+			args["revision"] = *body.Revision
+		}
 	}
 	if _, ok := ScopedTokenFromRequest(r); !ok {
 		r = requestWithScopedToken(r, &pebblestore.ScopedTokenRecord{Scopes: []string{"admin"}})
@@ -140,8 +155,15 @@ func (s *Server) handleWorkflowHistory(w http.ResponseWriter, r *http.Request, a
 		out, err = controlMCPRestoreWorkflow(c, args)
 	}
 	if err != nil {
+		var toolErr controlMCPToolError
 		if strings.Contains(err.Error(), errRunStepNeedsOwner.Error()) {
 			writeError(w, 403, err)
+		} else if errors.As(err, &toolErr) {
+			status := toolErr.status
+			if status == 0 {
+				status = http.StatusBadRequest
+			}
+			writeError(w, status, err)
 		} else {
 			jobAutomationHTTPError(w, err)
 		}
