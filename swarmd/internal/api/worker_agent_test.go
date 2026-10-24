@@ -27,7 +27,7 @@ func TestMCPWorkerCustomAgentSave(t *testing.T) {
 		args := map[string]any{"name": "custom-tools", "instructions": "Custom worker guidance", "tools": "build"}
 		if off {
 			args["tools_off"] = []any{"bash"}
-			args["tools_on"] = []any{"websearch"}
+			args["tools_on"] = []any{"manage_todos"}
 		}
 		if _, err := controlMCPDefineAgent(c, args); err != nil {
 			t.Fatal(err)
@@ -42,7 +42,13 @@ func TestMCPWorkerCustomAgentSave(t *testing.T) {
 	if baseline.ToolContract.Tools["bash"].Enabled == nil || !*baseline.ToolContract.Tools["bash"].Enabled {
 		t.Fatal("legacy build contract changed")
 	}
+	if enabled := baseline.ToolContract.Tools["manage_todos"].Enabled; enabled != nil && *enabled {
+		t.Fatal("build preset already enables additional tool")
+	}
 	narrowed := define(true)
+	if enabled := narrowed.ToolContract.Tools["manage_todos"].Enabled; enabled == nil || !*enabled {
+		t.Fatal("tools_on did not persist additional tool")
+	}
 	if narrowed.ToolContract.Tools["bash"].Enabled == nil || *narrowed.ToolContract.Tools["bash"].Enabled {
 		t.Fatal("bash switch not persisted")
 	}
@@ -84,6 +90,19 @@ func TestMCPWorkerCustomAgentSave(t *testing.T) {
 		t.Fatal(err)
 	}
 	executor := &sessionV3Executor{server: c.server}
+	// The additional tool must be absent from the actual default worker offer,
+	// so this assertion detects an ignored tools_on switch or role-only policy.
+	defaultWorker, err := executor.resolveSessionV3CurrentAgentToolContract(account, nil, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultDefinitions, err := executor.resolveSessionV3ProviderTools(account, defaultWorker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(sessionV3OfferedToolNames(defaultDefinitions), "manage_todos") {
+		t.Fatal("default worker unexpectedly offers additional tool")
+	}
 	metadata := map[string]any{"worker_id": saved.ID, "worker_revision": saved.Revision, "worker_execution_run_id": "fixture-run"}
 	current, err := executor.resolveSessionV3CurrentAgentToolContract(account, metadata, base)
 	if err != nil {
@@ -99,7 +118,7 @@ func TestMCPWorkerCustomAgentSave(t *testing.T) {
 		t.Fatal(err)
 	}
 	offered := sessionV3OfferedToolNames(definitions)
-	if slices.Contains(offered, "bash") || !slices.Contains(offered, "websearch") {
+	if slices.Contains(offered, "bash") || !slices.Contains(offered, "manage_todos") {
 		t.Fatalf("offered tools %v", offered)
 	}
 	session, _, err := c.server.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{Preference: &store.ModelPreference{Provider: "fixture-provider", Model: "fixture-model", Thinking: "high"}, SessionID: "worker-tools-fixture", UserID: testPrincipal().UserID, AccountScopeID: account, WorkspacePath: t.TempDir()})

@@ -25,7 +25,7 @@ func TestWorkerCustomAgentContract(t *testing.T) {
 	agents := store.NewAgentStore(db)
 	svc := NewService(nil, nil, nil, tool.NewRuntime(1), nil, nil, nil, nil)
 	svc.agents = agentruntime.NewService(agents, nil)
-	custom := store.AgentProfile{Name: "custom-worker", Enabled: true, Mode: "subagent", Prompt: "Custom instructions", ToolContract: &store.AgentToolContract{Preset: "custom", Tools: map[string]store.AgentToolConfig{"bash": {Enabled: store.BoolPtr(false)}, "websearch": {Enabled: store.BoolPtr(true)}}}}
+	custom := store.AgentProfile{Name: "custom-worker", Enabled: true, Mode: "subagent", Prompt: "Custom instructions", ToolContract: &store.AgentToolContract{Preset: "custom", Tools: map[string]store.AgentToolConfig{"bash": {Enabled: store.BoolPtr(false)}, "manage_todos": {Enabled: store.BoolPtr(true)}}}}
 	save := func() {
 		t.Helper()
 		if err := agents.PutProfileForAccount("account-a", custom); err != nil {
@@ -46,7 +46,7 @@ func TestWorkerCustomAgentContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.Tools["bash"].Enabled || !disabled["bash"] || !resolved.Tools["websearch"].Enabled || !resolved.Tools["task"].Enabled {
+	if resolved.Tools["bash"].Enabled || !disabled["bash"] || !resolved.Tools["manage_todos"].Enabled || !resolved.Tools["task"].Enabled {
 		t.Fatalf("incorrect tool overlay %+v", resolved)
 	}
 	if profile.Name != base.Name || !strings.Contains(profile.Prompt, custom.Prompt) {
@@ -65,6 +65,10 @@ func TestWorkerCustomAgentContract(t *testing.T) {
 	unchanged, err := svc.ApplyWorkerAgent("account-a", store.WorkerRecord{Role: worker.Role}, base)
 	if err != nil || !reflect.DeepEqual(unchanged, base) {
 		t.Fatal("default worker changed")
+	}
+	defaultTools, _, err := svc.CompileStoredV3AgentToolContract("account-a", unchanged)
+	if err != nil || defaultTools.Tools["manage_todos"].Enabled {
+		t.Fatalf("default worker enables additional tool %v", err)
 	}
 	if _, err := svc.ApplyWorkerAgent("account-b", worker, base); err == nil {
 		t.Fatal("cross-account profile accepted")
@@ -142,6 +146,30 @@ func TestReviewerCustomAgentAdmission(t *testing.T) {
 			}
 			if _, found, err := sessions.GetSession(run.SessionID); err != nil || found {
 				t.Fatalf("rejected session exists %v %v", found, err)
+			}
+		})
+	}
+}
+
+// Purpose: ValidateWorkerAgent must fail closed rather than panic when save or
+// admission lacks agent authority. Direct boundary calls are the narrowest
+// layer proving both nil receiver and nil authority handling and the unchanged
+// no-custom-agent path, without needing store or provider infrastructure.
+func TestValidateWorkerAgentMissingAuthority(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		service *Service
+	}{
+		{name: "nil service"}, {name: "nil agents", service: &Service{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			worker := store.WorkerRecord{Role: store.WorkerRoleCoder, Agent: "custom-worker"}
+			if err := tc.service.ValidateWorkerAgent("account-a", worker); err == nil || err.Error() != "agent service is not configured" {
+				t.Fatalf("expected missing authority error, got %v", err)
+			}
+			worker.Agent = ""
+			if err := tc.service.ValidateWorkerAgent("account-a", worker); err != nil {
+				t.Fatalf("default worker changed %v", err)
 			}
 		})
 	}

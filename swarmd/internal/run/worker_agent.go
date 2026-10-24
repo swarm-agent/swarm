@@ -90,6 +90,9 @@ func (s *Service) ValidateWorkerAgent(account string, w store.WorkerRecord) erro
 	if strings.TrimSpace(w.Agent) == "" {
 		return nil
 	}
+	if s == nil || s.agents == nil {
+		return fmt.Errorf("agent service is not configured")
+	}
 	profile, err := s.agents.ResolveSystemAgent(workerRoleAgentID(w.Role), store.AgentProfile{})
 	if err != nil {
 		return err
