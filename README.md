@@ -4,12 +4,18 @@
 
 # Swarm
 
-**A self-hosted, headless agent fleet for your AI: Claude Code, Codex or ChatGPT delegates work over MCP to coding, research, design and media agents on your own Linux machines.**
+**Swarm is a headless AI agent platform you self-host on Linux. It runs coding, research, design and media agents, workflows, schedules and monitoring across your machines. Drive it from your AI over MCP, or from your own code with the SDK, HTTP API or CLI.**
 
 [Website](https://swarmagent.dev) · [Docs](https://swarmagent.dev/docs) · [AI setup playbook](https://swarmagent.dev/llms.txt)
 
-Install it on your Linux PC or server. Your AI connects to Swarm's MCP server
-and gets work done in your folders two ways:
+Install it on your Linux PC or server. Choose how to use it:
+
+- **MCP tools** for your AI: Claude Code, Codex or ChatGPT.
+- **SDK** for your own code: [`@swarm-agent/sdk`](packages/sdk).
+- **HTTP API** for apps and scripts: [frontend integration guide](docs/frontends.md).
+- **CLI** for command-line setup and control: [`swarmctl`](swarmd/cmd/swarmctl).
+
+Through MCP, your AI can get work done in your folders two ways:
 
 - **Delegate a goal to Swarm.** It plans the work and splits it across its
   coder, finder and designer.
@@ -35,9 +41,9 @@ return reports or files instead. When you want more:
 
 By default agents run on the machine as Swarm's own user, without permission
 prompts and without a sandbox; `install.sh sandbox on` runs every command in
-one container per project. There is no dashboard to learn: you talk to your
-AI, it talks to Swarm through its MCP tools. The only page is the setup page
-where you type your keys (or a script does it).
+one container per project. No dashboard is required: use your AI over MCP,
+or integrate Swarm into your own apps and scripts. The headless setup page
+lets you enter provider keys; scripted setup is available too.
 
 This repository is under active development; this README describes what the
 current code does.
@@ -54,6 +60,9 @@ Docker Swarm, or kyegomez/swarms.
   checkouts stay there; configured model providers still receive model requests.
 - Let Claude Code, Codex or ChatGPT delegate work through MCP tools, wait for
   the result, and read reported token usage and estimated cost.
+- Build apps and scripts that call Swarm directly through the SDK or HTTP API,
+  including [sealed agents](containers/sealed/README.md) whose tools are
+  answered by your own application.
 - Use your ChatGPT plan, your Claude plan through Claude Code, or provider
   API keys to run agents.
 - Reach agents across several machines as one fleet through the
@@ -211,7 +220,7 @@ These fields must be set in the GitHub repository UI by a maintainer:
 
 **About description**
 
-> A self-hosted agent fleet for your AI: Claude Code, Codex and ChatGPT delegate over MCP to coding, research, design and media agents on your own Linux machines.
+> Swarm is a headless AI agent platform you self-host on Linux. It runs coding, research, design and media agents, workflows, schedules and monitoring across your machines. Drive it from your AI over MCP, or from your own code with the SDK, HTTP API or CLI.
 
 **Topics**
 
