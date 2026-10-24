@@ -71,7 +71,7 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 		})
 		jobs := []map[string]any{}
 		for _, task := range tasks {
-			if task.OriginSessionID != session.ID || !isDirectMediaTask(&task) || (controlMCPString(args, "status") != "" && task.Status != controlMCPString(args, "status")) {
+			if task.OriginSessionID != session.ID || !isGeneratableMediaAgent(task.Agent) || (controlMCPString(args, "status") != "" && task.Status != controlMCPString(args, "status")) {
 				continue
 			}
 			view, err := mediaJobFileView(map[string]any{"job_id": controlMCPJobID(controlMCPJobMedia, projectID, task.ID), "kind": task.Agent, "status": task.Status, "created_at": task.CreatedAt, "file_count": len(task.Deliverables)}, &task, nil, func(map[string]any, []controlMCPMediaFile) {})

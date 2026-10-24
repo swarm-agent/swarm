@@ -53,6 +53,9 @@ func (s *Server) retryMedia(ctx context.Context, p identity.Principal, project s
 	if err != nil {
 		return nil, err
 	}
+	if !isGeneratableMediaAgent(source.Agent) {
+		return nil, fmt.Errorf("retry: unsupported source kind %q", source.Agent)
+	}
 	if source.Operation == "speech" {
 		return nil, errors.New("retry: does not support speech jobs; create a new speech request instead")
 	}
@@ -104,4 +107,14 @@ func (s *Server) createManagedMedia(ctx context.Context, p identity.Principal, p
 		}
 	}
 	return s.CreateProjectTask(ctx, p, project, input)
+}
+
+// Only generate's stored kinds may enter the priced media creation path.
+func isGeneratableMediaAgent(agent string) bool {
+	for _, kind := range controlMCPMediaKinds {
+		if agent == kind {
+			return true
+		}
+	}
+	return false
 }

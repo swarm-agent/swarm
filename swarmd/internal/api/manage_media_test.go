@@ -388,6 +388,40 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"projects": []map[string]any{{"id": project, "name": "Media project", "workspaces": []map[string]any{{"path": root}}}}})
 	})}
+	// Purpose: retryMedia must never turn media permission into a Designer
+	// session or misprice audio. Both transport boundaries must reject stored
+	// non-generation kinds without creating tasks; list must hide them too.
+	for _, agent := range []string{"designer", "audio"} {
+		source := &pebblestore.ProjectTaskRecord{ID: "unsupported-" + agent, ProjectID: project, AccountID: p.AccountScopeID, OriginSessionID: "session", Agent: agent, Tier: "swarm", Title: "unsupported", Status: "failed"}
+		if err := store.PutProjectTask(p.AccountScopeID, source); err != nil {
+			t.Fatal(err)
+		}
+		before, err := store.ListProjectTasks(p.AccountScopeID, project, 1000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		job := controlMCPJobID(controlMCPJobMedia, project, source.ID)
+		_, internalErr := server.ManageMedia(context.Background(), scope, map[string]any{"action": "retry", "job_id": job})
+		_, mcpErr := controlMCPRequestMedia(call, map[string]any{"project": project, "retry_of": job})
+		for _, failure := range []error{internalErr, mcpErr} {
+			if failure == nil || !strings.Contains(failure.Error(), "unsupported source kind") {
+				t.Fatalf("%s retry refusal: %v", agent, failure)
+			}
+		}
+		after, err := store.ListProjectTasks(p.AccountScopeID, project, 1000)
+		if err != nil || len(after) != len(before) {
+			t.Fatalf("rejection created work: %d -> %d: %v", len(before), len(after), err)
+		}
+		listed, err := server.ManageMedia(context.Background(), scope, map[string]any{"action": "list"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range listed.(map[string]any)["jobs"].([]map[string]any) {
+			if entry["job_id"] == job {
+				t.Fatalf("listed unsupported %s", agent)
+			}
+		}
+	}
 	// Purpose: MCP must expose actionable refusal text, not generic tool failed,
 	// while rejecting before task creation. Exercise the transport boundary.
 	for _, job := range []string{"media/project/missing", "media/other/missing"} {
