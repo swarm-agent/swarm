@@ -13,9 +13,11 @@ import (
 // swarmctl fleet: link Swarms one way. On a machine, `invite` makes a
 // one-time code (and listens for homes on the address given); on the home,
 // `link CODE` redeems it. The home then uses the machine's own API as its
-// owner; the machine gets nothing that reaches the home. `homes` and `drop`
-// are the machine's view and control of who controls it; `list`, `check`,
-// `unlink` and `call` are the home's view of its machines.
+// owner; the machine gets nothing that reaches the home. `list` shows both
+// sides; `drop` and `cancel` are the machine's control of who controls it;
+// `check`, `unlink` and `call` are the home's use of its machines. Like most
+// commands it runs as Swarm's own user on the owner socket (sudo swarmctl,
+// through the wrapper).
 
 const fleetUsage = `usage:
   swarmctl fleet invite [ADDRESS[:PORT]] [--name NAME]   # on a machine: a code for its home
@@ -30,9 +32,6 @@ const fleetUsage = `usage:
 func cmdFleet(args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("%s", fleetUsage)
-	}
-	if err := machineRoot(append([]string{"fleet"}, args...)); err != nil {
-		return err
 	}
 	name := func(rest []string) (string, []string, error) {
 		var flagName string
