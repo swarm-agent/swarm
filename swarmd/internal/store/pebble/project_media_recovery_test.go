@@ -14,8 +14,10 @@ import (
 // generation or billing. A real store close/reopen exercises the startup boundary
 // and durable files, signals and receipts; missing files and non-media records
 // prove recovery does not manufacture success or change unrelated task state.
+// Existing provider failures must retain their diagnostics rather than being
+// falsely attributed to restart; this durable test checks both reopen cycles.
 func TestProjectMediaRecoveryOnOpen(t *testing.T) {
-	for _, state := range []string{"ready", "accepted", "generating", "partial", "empty", "non-media", "terminal"} {
+	for _, state := range []string{"ready", "accepted", "generating", "pending", "partial", "already-failed", "empty", "non-media", "terminal"} {
 		t.Run(state, func(t *testing.T) {
 			path := t.TempDir()
 			db, err := Open(path)
@@ -28,12 +30,15 @@ func TestProjectMediaRecoveryOnOpen(t *testing.T) {
 			switch state {
 			case "accepted":
 				task.Deliverables[0].Status = "accepted"
-			case "generating":
-				task.Deliverables[0].Status = "generating"
+			case "generating", "pending":
+				task.Deliverables[0].Status = state
 				task.Deliverables[0].MediaURL = ""
 				want = "failed"
 			case "partial":
 				task.Deliverables = append(task.Deliverables, ProjectTaskDeliverable{ID: "missing", Status: "generating"})
+				want = "failed"
+			case "already-failed":
+				task.Deliverables = append(task.Deliverables, ProjectTaskDeliverable{ID: "failed", Status: "failed", Description: "Video generation failed: provider rejected request"})
 				want = "failed"
 			case "empty":
 				task.Deliverables = nil
@@ -89,9 +94,12 @@ func TestProjectMediaRecoveryOnOpen(t *testing.T) {
 				if err != nil || !found || got.Status != want {
 					t.Fatalf("recovered=%+v found=%v err=%v", got, found, err)
 				}
-				if state == "generating" || state == "partial" {
+				if state == "already-failed" && !reflect.DeepEqual(got.Deliverables[1], task.Deliverables[1]) {
+					t.Fatalf("existing failure changed: %+v", got.Deliverables[1])
+				}
+				if state == "generating" || state == "pending" || state == "partial" {
 					missing := got.Deliverables[len(got.Deliverables)-1]
-					if missing.Status != "failed" || missing.MediaURL != "" {
+					if missing.Status != "failed" || missing.MediaURL != "" || missing.Description != "daemon restarted during generation; file did not finish" {
 						t.Fatalf("missing file manufactured: %+v", missing)
 					}
 				}

@@ -55,8 +55,11 @@ func (s *SessionStore) recoverInterruptedProjectMedia() error {
 				ready++
 				continue
 			}
-			d.Status = "failed"
-			d.Description = "daemon restarted during generation; file did not finish"
+			// Preserve terminal failures and their original provider diagnostics.
+			if d.Status == "generating" || d.Status == "pending" {
+				d.Status = "failed"
+				d.Description = "daemon restarted during generation; file did not finish"
+			}
 		}
 		kind, severity := "media.job.failed", SignalSeverityWarning
 		task.Status = "failed"
