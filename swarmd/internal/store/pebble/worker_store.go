@@ -107,6 +107,7 @@ type WorkerAutomationDefinition struct {
 }
 
 type WorkerRecord struct {
+	Agent string `json:"agent,omitempty"`
 	// Role is the code-owned system agent that runs this worker's jobs
 	// (WorkerRoles). Empty behaves as WorkerRoleSwarm.
 	Role                  string                       `json:"role,omitempty"`
@@ -245,6 +246,7 @@ type ListWorkersResult struct {
 }
 
 type CreateWorkerRequest struct {
+	Agent                 string                       `json:"agent,omitempty"`
 	Role                  string                       `json:"role,omitempty"`
 	ModelProfile          *SessionModelProfileSnapshot `json:"model_profile,omitempty"`
 	ID                    string                       `json:"id,omitempty"`
@@ -262,6 +264,7 @@ type CreateWorkerRequest struct {
 }
 
 type UpdateWorkerRequest struct {
+	Agent                 *string                      `json:"agent,omitempty"`
 	Role                  *string                      `json:"role,omitempty"`
 	ExecutionMode         *string                      `json:"execution_mode,omitempty"`
 	ModelProfile          *SessionModelProfileSnapshot `json:"model_profile,omitempty"`
@@ -991,6 +994,7 @@ func (ws *WorkerStore) CreateWorker(account, user string, req CreateWorkerReques
 		return WorkerRecord{}, err
 	}
 	w := WorkerRecord{
+		Agent:                 strings.TrimSpace(req.Agent),
 		Role:                  role,
 		ID:                    workerID,
 		AccountScopeID:        account,
@@ -1233,6 +1237,9 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 
 	now := time.Now().UnixMilli()
 	updated := current
+	if req.Agent != nil {
+		updated.Agent = strings.TrimSpace(*req.Agent)
+	}
 	if req.Role != nil {
 		role, err := NormalizeWorkerRole(*req.Role)
 		if err != nil {

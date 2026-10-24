@@ -266,6 +266,9 @@ func controlMCPListWorkerJobs(c *controlMCPCall, args map[string]any) (any, erro
 }
 
 func controlMCPDeployWorker(c *controlMCPCall, args map[string]any) (any, error) {
+	if _, hasAgent := args["agent"]; hasAgent && (controlMCPString(args, "worker") != "" || controlMCPString(args, "preset") != "") {
+		return nil, controlMCPToolFailure("agent is for custom worker creation; use swarm_update_worker to change an existing worker's agent")
+	}
 	if raw, exists := args["model"]; exists && raw != nil {
 		if _, err := c.workerModel(raw); err != nil {
 			return nil, err
@@ -293,6 +296,9 @@ func controlMCPDeployWorker(c *controlMCPCall, args map[string]any) (any, error)
 			}
 		}
 		if match != nil {
+			if _, hasAgent := args["agent"]; hasAgent {
+				return nil, controlMCPToolFailure("use swarm_update_worker to change an existing worker's agent")
+			}
 			return c.deployWorkerModel(match, args)
 		}
 	}
@@ -318,6 +324,7 @@ func controlMCPDeployWorker(c *controlMCPCall, args map[string]any) (any, error)
 	body := map[string]any{
 		"name":            name,
 		"role":            role,
+		"agent":           controlMCPString(args, "agent"),
 		"instructions":    instructions,
 		"idempotency_key": controlMCPRequestID(),
 	}
@@ -1549,6 +1556,7 @@ func controlMCPJobTools() []controlMCPTool {
 				"worker":       workerRef,
 				"model":        controlMCPWorkerModelSchema(true),
 				"name":         controlMCPStringProp("Custom worker name.", 0, 256),
+				"agent":        controlMCPStringProp("Optional custom agent whose current tools and additional instructions this worker uses, retaining its system role. Reviewers reject write tools.", 0, 63),
 				"role":         map[string]any{"type": "string", "enum": controlMCPPresetWorkers, "description": "Custom worker's role."},
 				"instructions": controlMCPStringProp("Custom worker's standing instructions.", 0, 20000),
 				"description":  controlMCPStringProp("", 0, 1000),

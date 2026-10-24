@@ -860,9 +860,10 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_update_worker", Title: "Update a worker",
-			Description: "Change a worker's name, description or instructions. Runs already started keep their revision.",
+			Description: "Change a worker's name, description, instructions or custom agent tools. Runs already started keep their worker revision.",
 			InputSchema: controlMCPObject([]string{"worker_id"}, map[string]any{
 				"worker_id":    workerID,
+				"agent":        controlMCPStringProp("Custom agent whose current tools and instructions this worker uses; empty clears it.", 0, 63),
 				"name":         controlMCPStringProp("", 0, 256),
 				"description":  controlMCPStringProp("", 0, 1000),
 				"instructions": controlMCPStringProp("", 0, 20000),
@@ -928,7 +929,9 @@ func controlMCPTools() []controlMCPTool {
 			InputSchema: controlMCPObject([]string{"name", "instructions", "tools"}, map[string]any{
 				"name":         controlMCPStringProp("Lowercase letters, digits and dashes, starting with a letter, e.g. reviewer.", 1, 63),
 				"description":  controlMCPStringProp("One line shown by list_agents.", 0, 200),
-				"instructions": controlMCPStringProp("The agent's instructions (its system prompt).", 1, 20000),
+				"instructions": controlMCPStringProp("The agent's instructions (its system prompt). Workers can select this agent for its tools and added instructions.", 1, 20000),
+				"tools_on":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Enable individual tools on top of the preset."},
+				"tools_off":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Disable individual tools on top of the preset; wins over tools_on."},
 				"tools": map[string]any{"type": "string", "enum": controlMCPAgentToolSets,
 					"description": "read_only: read and search files and the web. read_write: also write and edit files, no commands. build: read, write and edit files, run commands and commit with git."},
 			}),
@@ -2746,6 +2749,9 @@ func controlMCPUpdateWorker(c *controlMCPCall, args map[string]any) (any, error)
 		return nil, err
 	}
 	body := map[string]any{"expected_revision": controlMCPRevision(worker)}
+	if value, present := args["agent"]; present {
+		body["agent"] = value
+	}
 	for _, key := range []string{"name", "description", "instructions"} {
 		if value := controlMCPString(args, key); value != "" {
 			body[key] = value

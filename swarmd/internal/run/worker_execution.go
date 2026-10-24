@@ -629,6 +629,10 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		if err != nil {
 			return err
 		}
+		profile, err = h.runs.ApplyWorkerAgent(r.AccountScopeID, w, profile)
+		if err != nil {
+			return err
+		}
 		if _, _, err = h.runs.CompileStoredV3AgentToolContract(r.AccountScopeID, profile); err != nil {
 			return err
 		}

@@ -346,6 +346,7 @@ func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
 }
 
 type createWorkerRequestBody struct {
+	Agent                 string                                   `json:"agent,omitempty"`
 	Role                  string                                   `json:"role,omitempty"`
 	Name                  string                                   `json:"name"`
 	Description           string                                   `json:"description,omitempty"`
@@ -511,7 +512,12 @@ func (s *Server) handleWorkerCollection(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 
+		if err := s.validateWorkerAgent(p.AccountScopeID, pebblestore.WorkerRecord{Agent: req.Agent, Role: req.Role}); err != nil {
+			workerHTTPError(w, err)
+			return
+		}
 		created, err := s.sessions.CreateWorker(r.Context(), p.AccountScopeID, p.UserID, pebblestore.CreateWorkerRequest{
+			Agent:                 req.Agent,
 			Role:                  req.Role,
 			Name:                  req.Name,
 			Description:           req.Description,
@@ -537,6 +543,7 @@ func (s *Server) handleWorkerCollection(w http.ResponseWriter, r *http.Request, 
 }
 
 type updateWorkerRequestBody struct {
+	Agent                 *string                                  `json:"agent,omitempty"`
 	Role                  *string                                  `json:"role,omitempty"`
 	ExecutionMode         *string                                  `json:"execution_mode,omitempty"`
 	ModelProfile          *pebblestore.SessionModelProfileSnapshot `json:"model_profile,omitempty"`
@@ -643,7 +650,30 @@ func (s *Server) handleWorkerByID(w http.ResponseWriter, r *http.Request, p iden
 			}
 			req.ModelProfile = resolved
 		}
+		candidate, found, err := pebblestore.NewWorkerStore(s.sessions.Store().Underlying()).GetWorker(p.AccountScopeID, workerID)
+		if err != nil {
+			workerHTTPError(w, err)
+			return
+		}
+		if !found {
+			workerHTTPError(w, pebblestore.ErrWorkerNotFound)
+			return
+		}
+		if candidate.PendingReview != nil {
+			candidate = *candidate.PendingReview
+		}
+		if req.Agent != nil {
+			candidate.Agent = *req.Agent
+		}
+		if req.Role != nil {
+			candidate.Role = *req.Role
+		}
+		if err := s.validateWorkerAgent(p.AccountScopeID, candidate); err != nil {
+			workerHTTPError(w, err)
+			return
+		}
 		updated, err := s.sessions.UpdateWorker(p.AccountScopeID, p.UserID, workerID, req.ExpectedRevision, pebblestore.UpdateWorkerRequest{
+			Agent:                 req.Agent,
 			Role:                  req.Role,
 			ExecutionMode:         req.ExecutionMode,
 			ModelProfile:          req.ModelProfile,
@@ -2194,4 +2224,22 @@ func (s *Server) validateWorkerAutomationWorkspaces(p identity.Principal, automa
 		}
 	}
 	return nil
+}
+
+func (s *Server) validateWorkerAgent(account string, worker pebblestore.WorkerRecord) error {
+	if strings.TrimSpace(worker.Agent) == "" {
+		return nil
+	}
+	validator, ok := s.runner.(interface {
+		ValidateWorkerAgent(string, pebblestore.WorkerRecord) error
+	})
+	if !ok {
+		return errors.New("worker agent validation is unavailable")
+	}
+	role, err := pebblestore.NormalizeWorkerRole(worker.Role)
+	if err != nil {
+		return err
+	}
+	worker.Role = role
+	return validator.ValidateWorkerAgent(account, worker)
 }

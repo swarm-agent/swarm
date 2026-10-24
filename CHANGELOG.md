@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Let workers use a custom agent's current tools and added instructions while retaining their system role; reject writable reviewer contracts and support explicit MCP agent tool switches. Docs impact: docs/automations.md.
+
 - Return fleet provider-key links immediately after page issuance, with named destinations and waiting statuses, instead of notifying and blocking; wait for outcomes separately per machine with a 110-second maximum.
   Docs impact: packages/swarm-fleet/README.md and containers/headless/app/TAILNET.md.
 

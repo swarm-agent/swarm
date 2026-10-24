@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
@@ -130,6 +131,23 @@ func controlMCPDefineAgent(c *controlMCPCall, args map[string]any) (any, error) 
 			return nil, controlMCPToolFailure("%q is a built-in agent; choose another name", name)
 		}
 	}
+	contract := controlMCPAgentToolContract(toolSet)
+	for _, switchKey := range []string{"tools_on", "tools_off"} {
+		if values, ok := args[switchKey].([]any); ok {
+			tools, _ := contract["tools"].(map[string]any)
+			if tools == nil {
+				tools = map[string]any{}
+				contract["tools"] = tools
+			}
+			for _, value := range values {
+				name, ok := value.(string)
+				if !ok || strings.TrimSpace(name) == "" {
+					return nil, controlMCPToolFailure("%s requires tool names", switchKey)
+				}
+				tools[name] = map[string]any{"enabled": switchKey == "tools_on"}
+			}
+		}
+	}
 	// Empty provider/model/thinking clear any pin left on an earlier agent of
 	// this name, so custom agents always run on the account default model.
 	response, err := c.dispatch(http.MethodPut, "/v2/agents/"+name, nil, map[string]any{
@@ -139,7 +157,7 @@ func controlMCPDefineAgent(c *controlMCPCall, args map[string]any) (any, error) 
 		"provider":      "",
 		"model":         "",
 		"thinking":      "",
-		"tool_contract": controlMCPAgentToolContract(toolSet),
+		"tool_contract": contract,
 		"enabled":       true,
 	})
 	if err != nil {

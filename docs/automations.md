@@ -837,3 +837,13 @@ A design job's files are already in the folder at the paths its result
 lists. A media job's (`swarm_request_media`) result lists its files' names,
 sha256 and types, but their bytes stay with the job until they are saved
 into a folder (`swarm_save_media`); a step does not receive them.
+
+## Custom agent tools for workers
+
+A worker can set optional `agent` to an enabled, non-system custom agent in the same account through `POST /v3/workers`, `PUT /v3/workers/{id}`, `swarm_deploy_worker` (custom worker creation), or `swarm_update_worker`. An empty string on update restores the role's default tools.
+
+The worker retains its system role, model selection, prompts and checkout behavior. The custom agent supplies its current saved tool contract, including assigned custom tools, and additional prompt instructions. Tool edits apply on the next run without editing the worker. Code-owned tool restrictions still win. Workers without `agent` and custom agents' own sessions keep their existing behavior.
+
+Reviewer saves and run admission reject `write`, `edit`, `git_add`, `git_commit`, `task`, and custom tools with effect `write`; `bash` remains allowed. The workflow fixes option keeps its code-owned reviewer-fixer tools.
+
+`swarm_define_agent` accepts optional `tools_on` and `tools_off` arrays on top of the required `tools` preset (`read_only`, `read_write`, or `build`). For example, `tools: "build", tools_off: ["bash"], tools_on: ["websearch"]` persists explicit switches in the existing contract. Off wins for names in both arrays. Omitting both arrays preserves existing behavior. Permission policy still applies.
