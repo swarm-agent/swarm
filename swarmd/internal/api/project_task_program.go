@@ -144,6 +144,26 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	if err != nil {
 		return nil, err
 	}
+	if requested := strings.TrimSpace(input.OriginSessionID); requested != "" {
+		parent, found, err := s.sessions.GetSession(requested)
+		if err != nil {
+			return nil, err
+		}
+		if !found || parent.AccountScopeID != p.AccountScopeID || parent.UserID != p.UserID {
+			return nil, errors.New("task origin session ownership mismatch")
+		}
+		if origin != "" && origin != requested {
+			return nil, errors.New("task origin session mismatch")
+		}
+		tomb, found, err := db.GetV3SessionTombstone(requested)
+		if err != nil {
+			return nil, err
+		}
+		if found && (tomb.Archived || tomb.Deleted) {
+			return nil, errors.New("task origin archived or deleted")
+		}
+		origin = requested
+	}
 	prompt := strings.TrimSpace(input.Prompt)
 	if prompt == "" {
 		prompt = strings.TrimSpace(input.Description)
@@ -237,6 +257,11 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		a.SourceWorkspace = bound
 	}
 	wsPath := source.Path
+	if isDirectSimpleMedia && input.OriginSessionID != "" {
+		// Media carries no source execution authority; retain the caller's
+		// workspace as output context rather than a repository binding.
+		wsPath = strings.TrimSpace(input.WorkspacePath)
+	}
 	agentName := strings.TrimSpace(input.Agent)
 	if isDirectVideo {
 		agentName = "video"

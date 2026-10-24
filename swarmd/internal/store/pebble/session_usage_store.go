@@ -57,6 +57,10 @@ type SessionTurnUsageSnapshot struct {
 }
 
 type SessionUsageSummary struct {
+	ImageCount         int64   `json:"image_count"`
+	VideoCount         int64   `json:"video_count"`
+	SoundCount         int64   `json:"sound_count"`
+	MediaCostUSD       float64 `json:"media_cost_usd"`
 	SessionID          string  `json:"session_id"`
 	UserID             string  `json:"user_id,omitempty"`
 	AccountScopeID     string  `json:"account_scope_id,omitempty"`
@@ -624,6 +628,8 @@ func (s *SessionStore) prepareUsageReset(sessionID string, summary SessionUsageS
 		}
 		summary.TurnCount = previous.TurnCount
 		summary.EstimatedCostUSD = previous.EstimatedCostUSD
+		summary.ImageCount, summary.VideoCount, summary.SoundCount = previous.ImageCount, previous.VideoCount, previous.SoundCount
+		summary.MediaCostUSD = previous.MediaCostUSD
 		summary.LastRunID = previous.LastRunID
 		summary.LastTransport = previous.LastTransport
 		summary.LastConnectedViaWS = previous.LastConnectedViaWS

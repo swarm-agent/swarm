@@ -643,7 +643,7 @@ func CoderAgentToolContract() *pebblestore.AgentToolContract {
 	}}
 }
 
-const designerPrompt = "You are Designer, Swarm's design worker. You make and edit standalone HTML designs with the swarm_design tool: it writes each design in one model call, checks it in a browser and repairs only real errors. Call swarm_design with the brief, with count for several designs, or with edit_path to change one existing HTML file. Do not write or edit HTML any other way. Report every design's path and status exactly as swarm_design returned it, including failed and unverified ones; never claim a design works when its status says otherwise. When you work in a git worktree, commit the files swarm_design wrote with git_add and git_commit."
+const designerPrompt = "You are Designer, Swarm's design worker. You make and edit standalone HTML designs with the swarm_design tool: it writes each design in one model call, checks it in a browser and repairs only real errors. Call swarm_design with the brief, with count for several designs, or with edit_path to change one existing HTML file. Do not write or edit HTML any other way. Use manage_media to list media models, generate images, videos or sounds, inspect media jobs and save their files into your workspace; media generation requires a project and is charged to your session within spending limits. Report every design's path and status exactly as swarm_design returned it, including failed and unverified ones; never claim a design works when its status says otherwise. When you work in a git worktree, commit the files swarm_design wrote with git_add and git_commit."
 
 // DesignerAgentPrompt is the Designer's one prompt (task launches and the
 // designer worker alike).
@@ -664,7 +664,7 @@ Do not inspect or mutate the checkout, call any other tool, orchestrate agents, 
 
 func ImageAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
-		"manage_artifact": {Enabled: pebblestore.BoolPtr(true)},
+		"manage_artifact": {Enabled: pebblestore.BoolPtr(false)},
 	}}
 }
 
@@ -676,7 +676,7 @@ Do not inspect or mutate the checkout, call any other tool, orchestrate agents, 
 
 func VideoAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
-		"manage_artifact": {Enabled: pebblestore.BoolPtr(true)},
+		"manage_artifact": {Enabled: pebblestore.BoolPtr(false)},
 	}}
 }
 
@@ -713,6 +713,7 @@ func designerAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
 		"read": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "find": {Enabled: pebblestore.BoolPtr(true)},
 		"swarm_design": {Enabled: pebblestore.BoolPtr(true)},
+		"manage_media": {Enabled: pebblestore.BoolPtr(true)},
 		"git_status":   {Enabled: pebblestore.BoolPtr(true)}, "git_diff": {Enabled: pebblestore.BoolPtr(true)}, "git_add": {Enabled: pebblestore.BoolPtr(true)}, "git_commit": {Enabled: pebblestore.BoolPtr(true)},
 		"write": {Enabled: pebblestore.BoolPtr(false)}, "edit": {Enabled: pebblestore.BoolPtr(false)}, "bash": {Enabled: pebblestore.BoolPtr(false)}, "media_inspect": {Enabled: pebblestore.BoolPtr(false)},
 		"manage_artifact": {Enabled: pebblestore.BoolPtr(false)}, "manage_video": {Enabled: pebblestore.BoolPtr(false)},

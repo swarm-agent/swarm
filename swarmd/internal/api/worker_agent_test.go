@@ -27,7 +27,7 @@ func TestMCPWorkerCustomAgentSave(t *testing.T) {
 		args := map[string]any{"name": "custom-tools", "instructions": "Custom worker guidance", "tools": "build"}
 		if off {
 			args["tools_off"] = []any{"bash"}
-			args["tools_on"] = []any{"manage_todos"}
+			args["tools_on"] = []any{"manage_media"}
 		}
 		if _, err := controlMCPDefineAgent(c, args); err != nil {
 			t.Fatal(err)
@@ -42,11 +42,11 @@ func TestMCPWorkerCustomAgentSave(t *testing.T) {
 	if baseline.ToolContract.Tools["bash"].Enabled == nil || !*baseline.ToolContract.Tools["bash"].Enabled {
 		t.Fatal("legacy build contract changed")
 	}
-	if enabled := baseline.ToolContract.Tools["manage_todos"].Enabled; enabled != nil && *enabled {
+	if enabled := baseline.ToolContract.Tools["manage_media"].Enabled; enabled != nil && *enabled {
 		t.Fatal("build preset already enables additional tool")
 	}
 	narrowed := define(true)
-	if enabled := narrowed.ToolContract.Tools["manage_todos"].Enabled; enabled == nil || !*enabled {
+	if enabled := narrowed.ToolContract.Tools["manage_media"].Enabled; enabled == nil || !*enabled {
 		t.Fatal("tools_on did not persist additional tool")
 	}
 	if narrowed.ToolContract.Tools["bash"].Enabled == nil || *narrowed.ToolContract.Tools["bash"].Enabled {
@@ -100,7 +100,7 @@ func TestMCPWorkerCustomAgentSave(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if slices.Contains(sessionV3OfferedToolNames(defaultDefinitions), "manage_todos") {
+	if slices.Contains(sessionV3OfferedToolNames(defaultDefinitions), "manage_media") {
 		t.Fatal("default worker unexpectedly offers additional tool")
 	}
 	metadata := map[string]any{"worker_id": saved.ID, "worker_revision": saved.Revision, "worker_execution_run_id": "fixture-run"}
@@ -118,7 +118,7 @@ func TestMCPWorkerCustomAgentSave(t *testing.T) {
 		t.Fatal(err)
 	}
 	offered := sessionV3OfferedToolNames(definitions)
-	if slices.Contains(offered, "bash") || !slices.Contains(offered, "manage_todos") {
+	if slices.Contains(offered, "bash") || !slices.Contains(offered, "manage_media") {
 		t.Fatalf("offered tools %v", offered)
 	}
 	session, _, err := c.server.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{Preference: &store.ModelPreference{Provider: "fixture-provider", Model: "fixture-model", Thinking: "high"}, SessionID: "worker-tools-fixture", UserID: testPrincipal().UserID, AccountScopeID: account, WorkspacePath: t.TempDir()})

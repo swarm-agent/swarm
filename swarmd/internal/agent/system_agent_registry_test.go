@@ -281,7 +281,7 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	}
 	// Designer has one contract: read/search, swarm_design and scoped Git; no
 	// checkout write/edit, commands, media, managed artifacts or orchestration.
-	for _, allowed := range []string{"read", "search", "find", "list", "swarm_design", "git_status", "git_diff", "git_add", "git_commit"} {
+	for _, allowed := range []string{"read", "search", "find", "list", "swarm_design", "manage_media", "git_status", "git_diff", "git_add", "git_commit"} {
 		if cfg := designer.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
 			t.Fatalf("Designer locked tool %q unavailable: %+v", allowed, designer.ToolContract)
 		}
@@ -306,8 +306,8 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	if imageWorker.Name != ImageAgentID || imageWorker.Prompt != ImageAgentPrompt() || !imageWorker.Protected || imageWorker.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || imageWorker.ToolContract == nil || len(imageWorker.ToolContract.Tools) != 1 {
 		t.Fatalf("Image immutable contract was not restored: %+v", imageWorker)
 	}
-	if cfg := imageWorker.ToolContract.Tools["manage_artifact"]; cfg.Enabled == nil || !*cfg.Enabled {
-		t.Fatalf("Image worker must allow only manage_artifact: %+v", imageWorker.ToolContract)
+	if cfg := imageWorker.ToolContract.Tools["manage_artifact"]; cfg.Enabled == nil || *cfg.Enabled {
+		t.Fatalf("Image worker must disable manage_artifact: %+v", imageWorker.ToolContract)
 	}
 	if !strings.Contains(ImageAgentPrompt(), "generate_image") || !strings.Contains(ImageAgentPrompt(), "Omit provider, model") {
 		t.Fatalf("Image prompt is missing generation restrictions: %s", ImageAgentPrompt())
@@ -426,6 +426,32 @@ func TestCoderBashDoesNotGrantManagementAuthority(t *testing.T) {
 		}
 		if profile.Provider != parent.Provider || profile.Model != parent.Model || !agentToolEnabled(parent.ToolContract, "manage_workers") || agentToolEnabled(parent.ToolContract, "bash") {
 			t.Fatal("materialization changed account model context or mutated input authority")
+		}
+	}
+}
+
+// Purpose: compiled contracts must grant manage_media only to Designer and
+// never grant manage_artifact. Materializing every registry entry is the
+// narrowest test of these defaults, preventing stale creative tool grants.
+func TestManageMediaBuiltinDefaults(t *testing.T) {
+	registry, err := BuiltinSystemAgentRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range registry.IDs() {
+		def, _ := registry.DefinitionByID(id)
+		profile := def.Materialize(pebblestore.AgentProfile{})
+		if profile.ToolContract == nil {
+			continue
+		}
+		media := profile.ToolContract.Tools["manage_media"].Enabled
+		enabled := media != nil && *media
+		if enabled != (id == DesignerAgentID) {
+			t.Fatalf("%s manage_media enabled=%v", id, enabled)
+		}
+		artifact := profile.ToolContract.Tools["manage_artifact"].Enabled
+		if artifact != nil && *artifact {
+			t.Fatalf("%s enables manage_artifact", id)
 		}
 	}
 }

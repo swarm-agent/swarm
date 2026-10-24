@@ -22,3 +22,21 @@ func TestSwarmDesignPolicyAutoApprovesUnlessDeniedOrReadOnly(t *testing.T) {
 		t.Fatalf("explicit deny rule = %s, want deny", got)
 	}
 }
+
+// Purpose: manage_media must use the design permission default without
+// overriding read-only or explicit deny rules. ExplainPolicy is the narrowest
+// boundary proving that new media access cannot bypass owner policy.
+func TestManageMediaPolicy(t *testing.T) {
+	args := `{"action":"generate","kind":"image","brief":"a circle"}`
+	if got := ExplainPolicy("auto", "manage_media", args, DefaultPolicy()).Decision; got != PolicyDecisionAllow {
+		t.Fatalf("auto %s", got)
+	}
+	if got := ExplainPolicy("read", "manage_media", args, DefaultPolicy()).Decision; got != PolicyDecisionDeny {
+		t.Fatalf("read %s", got)
+	}
+	deny := DefaultPolicy()
+	deny.Rules = append(deny.Rules, PolicyRule{ID: "deny-media", Kind: PolicyRuleKindTool, Decision: PolicyDecisionDeny, Tool: "manage_media"})
+	if got := ExplainPolicy("auto", "manage_media", args, deny).Decision; got != PolicyDecisionDeny {
+		t.Fatalf("deny %s", got)
+	}
+}

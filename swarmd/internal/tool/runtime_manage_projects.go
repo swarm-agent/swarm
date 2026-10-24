@@ -29,6 +29,7 @@ type manageProjectStore interface {
 
 // ProjectTaskCreateInput specifies arguments for canonical project task creation.
 type ProjectTaskCreateInput struct {
+	OriginSessionID     string                                   `json:"origin_session_id,omitempty"`
 	ID                  string                                   `json:"id,omitempty"`
 	SessionID           string                                   `json:"session_id,omitempty"`
 	Title               string                                   `json:"title"`

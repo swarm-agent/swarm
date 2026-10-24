@@ -401,7 +401,7 @@ func controlMCPTaskResult(c *controlMCPCall, args map[string]any) (any, error) {
 	}
 	if sessionID, _ := task["session_id"].(string); sessionID != "" {
 		if detail, err := c.dispatch(http.MethodGet, controlMCPSessionPath(sessionID), url.Values{"message_limit": {"0"}, "event_limit": {"0"}}, nil); err == nil {
-			if usage := controlMCPPick(controlMCPMap(detail["usage_summary"]), "estimated_cost_usd", "total_tokens", "turn_count", "provider", "model"); len(usage) > 0 {
+			if usage := controlMCPPick(controlMCPMap(detail["usage_summary"]), "estimated_cost_usd", "media_cost_usd", "image_count", "video_count", "sound_count", "total_tokens", "turn_count", "provider", "model"); len(usage) > 0 {
 				out["cost"] = usage
 			}
 		}

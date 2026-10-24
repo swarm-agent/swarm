@@ -1772,6 +1772,15 @@ func (s *SessionStore) applyFreshV3SessionMutationWithReader(input V3SessionMuta
 			}
 		}
 		summary.EstimatedCostUSD += media.CostUSD
+		summary.MediaCostUSD += media.CostUSD
+		switch media.Kind {
+		case "image":
+			summary.ImageCount++
+		case "video":
+			summary.VideoCount++
+		case "audio", "sound":
+			summary.SoundCount++
+		}
 		summary.UpdatedAt = now
 		summaryPayload, err := json.Marshal(summary)
 		if err != nil {

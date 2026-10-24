@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -15,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"swarm/packages/swarmd/internal/audiogen"
+	"swarm/packages/swarmd/internal/identity"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/videogen"
@@ -144,6 +146,10 @@ func (c *controlMCPCall) controlMCPMediaJobFiles(out map[string]any, projectID, 
 	if err != nil {
 		return nil, err
 	}
+	return mediaJobFileView(out, task, args)
+}
+
+func mediaJobFileView(out map[string]any, task *pebblestore.ProjectTaskRecord, args map[string]any) (any, error) {
 	files := mediaTaskFiles(task)
 	views := make([]map[string]any, 0, len(files))
 	for i, file := range files {
@@ -242,6 +248,10 @@ func (c *controlMCPCall) saveMediaFiles(task *pebblestore.ProjectTaskRecord, fil
 	if err != nil {
 		return nil, err
 	}
+	return saveMediaFiles(task, files, dir)
+}
+
+func saveMediaFiles(task *pebblestore.ProjectTaskRecord, files []controlMCPMediaFile, dir string) ([]map[string]any, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create %s: %w", dir, err)
 	}
@@ -285,12 +295,16 @@ func (c *controlMCPCall) mediaSaveDir(task *pebblestore.ProjectTaskRecord, saveT
 	if err != nil {
 		return "", err
 	}
+	base := strings.TrimSpace(task.WorkspacePath)
+	if base == "" {
+		base = c.projectFolder(task.ProjectID)
+	}
+	return mediaSaveDir(roots, base, saveTo)
+}
+
+func mediaSaveDir(roots []string, base, saveTo string) (string, error) {
 	target := saveTo
 	if !filepath.IsAbs(target) {
-		base := strings.TrimSpace(task.WorkspacePath)
-		if base == "" {
-			base = c.projectFolder(task.ProjectID)
-		}
 		if base == "" {
 			return "", errors.New("folder must be an absolute path inside a registered workspace: this job's project has no folder")
 		}
@@ -356,6 +370,10 @@ func controlMCPWorkspaceRootOf(roots []string, path string) string {
 // attached media: a file of an earlier media job, or a file in a registered
 // workspace. Bytes are read here, so the request carries exactly them.
 func (c *controlMCPCall) controlMCPMediaInputs(raw any) ([]map[string]any, error) {
+	return mediaInputs(raw, c.workspaceRoots, c.mediaTask)
+}
+
+func mediaInputs(raw any, workspaceRoots func() ([]string, error), mediaTask func(string, string) (*pebblestore.ProjectTaskRecord, error)) ([]map[string]any, error) {
 	inputs := controlMCPList(raw)
 	if len(inputs) == 0 {
 		return nil, nil
@@ -380,7 +398,7 @@ func (c *controlMCPCall) controlMCPMediaInputs(raw any) ([]map[string]any, error
 			if kind != controlMCPJobMedia {
 				return nil, controlMCPToolFailure("input %d: job %s is not a media job; give a file with path instead", i+1, jobID)
 			}
-			task, err := c.mediaTask(projectID, taskID)
+			task, err := mediaTask(projectID, taskID)
 			if err != nil {
 				return nil, err
 			}
@@ -394,7 +412,7 @@ func (c *controlMCPCall) controlMCPMediaInputs(raw any) ([]map[string]any, error
 		case path != "":
 			if roots == nil {
 				var err error
-				if roots, err = c.workspaceRoots(); err != nil {
+				if roots, err = workspaceRoots(); err != nil {
 					return nil, err
 				}
 			}
@@ -444,11 +462,18 @@ func controlMCPListMediaModels(c *controlMCPCall, args map[string]any) (any, err
 	if !ok || c.server == nil || c.server.imageGen == nil || c.server.model == nil {
 		return nil, controlMCPToolFailure("media models are not available on this machine")
 	}
-	catalog, err := c.server.mediaCatalogFor(c.request.Context(), principal)
+	return c.server.mediaModels(c.request.Context(), principal, args)
+}
+
+func (s *Server) mediaModels(ctx context.Context, principal identity.Principal, args map[string]any) (any, error) {
+	if s.imageGen == nil || s.model == nil {
+		return nil, errors.New("media models are not available on this machine")
+	}
+	catalog, err := s.mediaCatalogFor(ctx, principal)
 	if err != nil {
 		return nil, err
 	}
-	image, video, audio := c.server.mediaDefaults(principal, catalog)
+	image, video, audio := s.mediaDefaults(principal, catalog)
 	wanted := controlMCPString(args, "kind")
 	all, _ := args["include_unready"].(bool)
 	out := map[string]any{}
