@@ -285,14 +285,52 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 	// create independent pending jobs and reject over-budget retries before writes.
 	// This existing real-store fixture is the narrowest admission integration layer.
 	beforeRetry, _ := json.Marshal(task)
-	retried, err := server.ManageMedia(context.Background(), scope, map[string]any{"action": "retry", "job_id": result.(map[string]any)["job_id"], "model": rec.Model})
+	// A distinct catalog entry with a higher price proves both model selection
+	// and estimate admission use the override, rather than the source model.
+	alternate := rec
+	alternate.Model = "retry-image-fixture"
+	alternate.Pricing = bytes.ReplaceAll(rec.Pricing, []byte(`"price_usd":0.03`), []byte(`"price_usd":0.06`))
+	if err := pebblestore.NewModelCatalogStore(db).SetRecord(alternate); err != nil {
+		t.Fatal(err)
+	}
+	server.imageGen = imagegen.NewService(nil, pebblestore.NewAuthStore(db), nil, retryCatalog{rec, alternate})
+	if err := store.PutUsageLimit(pebblestore.UsageLimitRecord{AccountScopeID: p.AccountScopeID, Enabled: true, DailyCostLimitUSD: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.ManageMedia(context.Background(), scope, map[string]any{"action": "retry", "job_id": result.(map[string]any)["job_id"], "model": alternate.Model}); err == nil || !strings.Contains(err.Error(), "daily account usage limit exceeded") {
+		t.Fatalf("override price admission: %v", err)
+	}
+	if err := store.PutUsageLimit(pebblestore.UsageLimitRecord{AccountScopeID: p.AccountScopeID, Enabled: true, DailyCostLimitUSD: 100}); err != nil {
+		t.Fatal(err)
+	}
+	retried, err := server.ManageMedia(context.Background(), scope, map[string]any{"action": "retry", "job_id": result.(map[string]any)["job_id"], "model": alternate.Model})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, _, retryID, _ := controlMCPParseJobID(retried.(map[string]any))
 	retryTask, _, err := store.GetProjectTask(p.AccountScopeID, project, retryID)
-	if err != nil || retryTask.RetryOf != result.(map[string]any)["job_id"] || retryTask.Status != "pending_approval" || retryTask.Description != task.Description || retryTask.Model != rec.Model || retryTask.AspectRatio != task.AspectRatio || retryTask.Resolution != task.Resolution || retryTask.VariantCount != task.VariantCount || len(retryTask.AttachedMedia) != 2 || retryTask.AttachedMedia[0] != task.AttachedMedia[0] {
+	if err != nil || retryTask.RetryOf != result.(map[string]any)["job_id"] || retryTask.Status != "pending_approval" || retryTask.Description != task.Description || retryTask.Model != alternate.Model || retryTask.AspectRatio != task.AspectRatio || retryTask.Resolution != task.Resolution || retryTask.VariantCount != task.VariantCount || len(retryTask.AttachedMedia) != 2 || retryTask.AttachedMedia[0] != task.AttachedMedia[0] {
 		t.Fatalf("retry %+v %v", retryTask, err)
+	}
+	// Purpose: real generate and retry records must both attribute receipts to
+	// their origin session; receipt replay must not double count either job.
+	checkRetryUsage := func() {
+		totalCost := 0.0
+		for _, created := range []*pebblestore.ProjectTaskRecord{task, retryTask} {
+			opts := pebblestore.MediaCostEstimateOptions{Kind: "image", Count: 1, Provider: "google", Model: created.Model, OutputTokens: 1120}
+			estimate, err := server.recordTaskMedia(p, created, 0, opts, "image/png", 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			totalCost += estimate.CostUSD
+			if _, err := server.recordTaskMedia(p, created, 0, opts, "image/png", 10); err != nil {
+				t.Fatal(err)
+			}
+		}
+		summary, found, err := store.GetUsageSummary(scope.SessionID)
+		if err != nil || !found || summary.ImageCount != 2 || totalCost <= 0 || math.Abs(summary.MediaCostUSD-totalCost) > 1e-10 {
+			t.Fatalf("generate/retry usage %+v %v", summary, err)
+		}
 	}
 	unchanged, _, _ := store.GetProjectTask(p.AccountScopeID, project, id)
 	afterRetry, _ := json.Marshal(unchanged)
@@ -313,6 +351,7 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 	if err := store.PutUsageLimit(pebblestore.UsageLimitRecord{AccountScopeID: p.AccountScopeID, Enabled: true, DailyCostLimitUSD: 100}); err != nil {
 		t.Fatal(err)
 	}
+	checkRetryUsage()
 	if err := store.CreateSessionForAccount(pebblestore.SessionSnapshot{ID: "ask-session", WorkspacePath: root, Metadata: map[string]any{"project_id": project, pebblestore.SessionAccessMetadataKey: map[string]any{"tasks": "ask"}}}, p.UserID, p.AccountScopeID); err != nil {
 		t.Fatal(err)
 	}
@@ -332,6 +371,19 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"projects": []map[string]any{{"id": project, "name": "Media project", "workspaces": []map[string]any{{"path": root}}}}})
 	})}
+	// Purpose: MCP must expose actionable refusal text, not generic tool failed,
+	// while rejecting before task creation. Exercise the transport boundary.
+	for _, job := range []string{"media/project/missing", "media/other/missing"} {
+		_, failure := controlMCPRequestMedia(call, map[string]any{"project": project, "retry_of": job})
+		if _, ok := failure.(controlMCPToolError); !ok {
+			t.Fatalf("MCP refusal not actionable: %T %v", failure, failure)
+		}
+	}
+	if _, failure := call.mediaTask(project, "missing"); failure == nil {
+		t.Fatal("missing media accepted")
+	} else if _, ok := failure.(controlMCPToolError); !ok {
+		t.Fatalf("media lookup refusal: %T", failure)
+	}
 	mcpResult, err := controlMCPRequestMedia(call, map[string]any{"project": project, "retry_of": result.(map[string]any)["job_id"], "brief": "A green circle"})
 	if err != nil {
 		t.Fatal(err)

@@ -1330,7 +1330,7 @@ func controlMCPRequestMedia(c *controlMCPCall, args map[string]any) (any, error)
 		}
 		task, err := c.server.retryMedia(c.request.Context(), p, place.projectID, input, retry, args)
 		if err != nil {
-			return nil, err
+			return nil, controlMCPToolFailure("%s", err)
 		}
 		return mediaJobFileView(map[string]any{"job_id": controlMCPJobID(controlMCPJobMedia, place.projectID, task.ID), "status": task.Status, "kind": task.Agent}, task, nil, controlMCPMediaJobGuidance)
 	}

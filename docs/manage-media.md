@@ -59,3 +59,5 @@ Specifically, `swarmd/internal/run/service_task_launch.go` resolves
 `swarmd/internal/run/service_tools.go` reconciles those agents through
 `ReconcileSystemAgentSnapshot`. Both launch paths remain unable to produce
 artifacts with `manage_artifact` disabled.
+
+Retry `operation` overrides are accepted only for video jobs; supplying one for an image or sound job is refused. Speech jobs cannot currently be retried: create a new speech request with its speech settings instead. This restriction applies to both `manage_media` and MCP retries.

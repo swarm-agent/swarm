@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -78,5 +79,54 @@ func TestManageMediaListAndRetryIsolation(t *testing.T) {
 	tasks, err := store.ListProjectTasks(p.AccountScopeID, "project", 100)
 	if err != nil || len(tasks) != 4 {
 		t.Fatalf("rejection changed tasks: %d %v", len(tasks), err)
+	}
+}
+
+type retryCatalog []pebblestore.ModelCatalogRecord
+
+func (c retryCatalog) ListCatalog(string, int) ([]pebblestore.ModelCatalogRecord, error) {
+	return c, nil
+}
+
+// Purpose: retryMedia must reject non-video operation overrides before pricing
+// or creation can change the kind, and explicitly refuse unsupported speech
+// copies. Real stored sources prove rejection leaves the source and task set intact.
+func TestManageMediaRetryOperationRefusal(t *testing.T) {
+	db, err := pebblestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store := pebblestore.NewSessionStore(db)
+	p := identity.Principal{AccountScopeID: "account", UserID: "user"}
+	server := &Server{sessions: session.NewService(store, nil)}
+	for _, agent := range []string{"image", "sound"} {
+		for _, operation := range []string{"edit", "extend", "speech"} {
+			source := &pebblestore.ProjectTaskRecord{ID: "source", ProjectID: "project", AccountID: p.AccountScopeID, Agent: agent, Title: "source", Status: "failed"}
+			args := map[string]any{"operation": operation}
+			if operation == "speech" {
+				if agent != "sound" {
+					continue
+				}
+				source.Speech = &pebblestore.ProjectSpeechSettings{}
+				source.Operation = "speech"
+				args = map[string]any{}
+			}
+			if err := store.PutProjectTask(p.AccountScopeID, source); err != nil {
+				t.Fatal(err)
+			}
+			_, err := server.retryMedia(context.Background(), p, "project", tool.ProjectTaskCreateInput{}, "media/project/source", args)
+			want := "operation override is only supported for video"
+			if operation == "speech" {
+				want = "does not support speech jobs"
+			}
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("refusal for %s %s: %v", agent, operation, err)
+			}
+			tasks, err := store.ListProjectTasks(p.AccountScopeID, "project", 100)
+			if err != nil || len(tasks) != 1 || tasks[0].Agent != agent || tasks[0].Operation != source.Operation {
+				t.Fatalf("refusal changed state: %+v %v", tasks, err)
+			}
+		}
 	}
 }

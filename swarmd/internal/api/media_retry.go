@@ -47,6 +47,12 @@ func (s *Server) retryMedia(ctx context.Context, p identity.Principal, project s
 	if err != nil {
 		return nil, err
 	}
+	if source.Operation == "speech" {
+		return nil, errors.New("manage_media retry does not support speech jobs; create a new speech request instead")
+	}
+	if _, ok := args["operation"]; ok && source.Agent != "video" {
+		return nil, errors.New("manage_media retry operation override is only supported for video jobs")
+	}
 	input.Agent = source.Agent
 	input.Title, input.Prompt, input.Description = source.Description, source.Description, source.Description
 	if input.Prompt == "" {
