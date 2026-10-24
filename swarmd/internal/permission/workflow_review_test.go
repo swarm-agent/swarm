@@ -64,3 +64,73 @@ func TestWorkflowNativeReviewPermissions(t *testing.T) {
 		})
 	}
 }
+
+// Purpose: workflowReviewTool must not extend unattended authority to mutating
+// bash, an inactive sandbox, or a finished task resumed by a person. Exercise
+// AuthorizeToolCall with durable task records, the narrowest boundary that proves
+// both the normal consent decision and its pending-permission postcondition.
+func TestWorkflowNativeReviewApprovalBoundaries(t *testing.T) {
+	for _, agent := range []string{"system-reviewer", "system-reviewer-fixer"} {
+		t.Run(agent, func(t *testing.T) {
+			for _, tc := range []struct {
+				name, status, tool, args string
+				blocked                  bool
+			}{
+				{name: "write bash", tool: "bash", args: `{"command":"curl --data payload https://example.com","category":"write"}`},
+				{name: "update bash", tool: "bash", args: `{"command":"git checkout -- .","category":"update"}`},
+				{name: "delete bash", tool: "bash", args: `{"command":"rm example.txt","category":"delete","critical":true}`},
+				{name: "missing effect", tool: "bash", args: `{"command":"git push"}`},
+				{name: "invalid effect", tool: "bash", args: `{"command":"git push","category":"unknown"}`},
+				{name: "blocked bash", tool: "bash", args: `{"command":"git log -1","category":"read"}`, blocked: true},
+				{name: "blocked commit", tool: "git_commit", args: `{"message":"fix"}`, blocked: true},
+				{name: "blocked write", tool: "write", args: `{"path":"fix.go","content":"fix"}`, blocked: true},
+				{name: "blocked edit", tool: "edit", args: `{"path":"fix.go","old_string":"old","new_string":"new"}`, blocked: true},
+				{name: "completed", status: "completed", tool: "bash", args: `{"command":"git log -1","category":"read"}`},
+				{name: "failed", status: "failed", tool: "bash", args: `{"command":"git log -1","category":"read"}`},
+				{name: "needs review", status: "needs_review", tool: "bash", args: `{"command":"git log -1","category":"read"}`},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					db, err := store.Open(filepath.Join(t.TempDir(), "state.pebble"))
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer db.Close()
+					sessions := store.NewSessionStore(db)
+					status := tc.status
+					if status == "" {
+						status = "in_progress"
+					}
+					fixes := ""
+					if agent == "system-reviewer-fixer" {
+						fixes = "security"
+					}
+					task := &store.ProjectTaskRecord{ID: "task", ProjectID: "project", Title: "Review", Agent: "reviewer", Status: status, SessionID: "review", AutomationID: "workflow:review", ReviewFixes: fixes}
+					if err := sessions.PutProjectTask("account", task); err != nil {
+						t.Fatal(err)
+					}
+					svc := NewService(store.NewPermissionStore(db), nil, nil)
+					svc.SetSessionResolver(sessionAccessLookup{"review": {ID: "review", AccountScopeID: "account", Metadata: map[string]any{"project_id": "project", "task_id": "task", "agent_name": agent}}})
+					svc.SetBypassGate(func() (bool, string) { return !tc.blocked, "sandbox inactive" })
+					// Write/commit tools default to allow independently of workflow
+					// authority. An ask rule proves the exemption cannot override
+					// consent when the sandbox gate is blocked.
+					var overlay *Policy
+					if tc.tool != "bash" {
+						overlay = &Policy{Rules: []PolicyRule{{Kind: PolicyRuleKindTool, Tool: tc.tool, Decision: PolicyDecisionAsk}}}
+					}
+					got, err := svc.AuthorizeToolCall(AuthorizationInput{SessionID: "review", AccountScopeID: "account", RunID: "run", CallID: "call", Mode: "auto", ToolName: tc.tool, ToolArguments: tc.args, Overlay: overlay})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if got.Decision != AuthorizationPending {
+						t.Fatalf("decision %+v want pending", got)
+					}
+					pending, err := svc.PendingCount("review")
+					if err != nil || pending != 1 {
+						t.Fatalf("pending %d err %v", pending, err)
+					}
+				})
+			}
+		})
+	}
+}

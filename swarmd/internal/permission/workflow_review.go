@@ -1,11 +1,14 @@
 package permission
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // Workflow review approvals are unattended, but only for the native contract's
 // ordinary tools. Policy denials and all execution/worktree guards still apply.
 func (s *Service) workflowReviewTool(input AuthorizationInput) (bool, error) {
-	if s.sessions == nil {
+	if s.sessions == nil || s.BypassBlocked() != "" {
 		return false, nil
 	}
 	session, found, err := s.sessions.GetSession(input.SessionID)
@@ -23,13 +26,21 @@ func (s *Service) workflowReviewTool(input AuthorizationInput) (bool, error) {
 	if err != nil || !found {
 		return false, err
 	}
+	if task.Status != "in_progress" {
+		return false, nil
+	}
 	fixer := task.ReviewFixes == "security"
 	if (agent == "system-reviewer-fixer") != fixer {
 		return false, nil
 	}
 	switch strings.TrimSpace(input.ToolName) {
-	case "read", "search", "find", "list", "git_status", "git_diff", "bash", "websearch", "webfetch", "webdownload":
+	case "read", "search", "find", "list", "git_status", "git_diff", "websearch", "webfetch", "webdownload":
 		return true, nil
+	case "bash":
+		var args struct {
+			Category string `json:"category"`
+		}
+		return json.Unmarshal([]byte(input.ToolArguments), &args) == nil && args.Category == "read", nil
 	case "write", "edit", "git_add", "git_commit":
 		return fixer, nil
 	}
