@@ -1009,6 +1009,13 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 		_ = recover() // Gracefully recover if store is closed during daemon shutdown or test teardown
 	}()
 	db := s.sessions.Store()
+	defer func() {
+		if task.OriginSessionID != "" {
+			if err := db.ReleaseWorkerBudgetReservation(p.AccountScopeID, task.OriginSessionID, mediaBudgetOperation(task.ProjectID, task.ID)); err != nil {
+				log.Print("media task budget settlement failed; reservation retained")
+			}
+		}
+	}()
 
 	if valErr := validateProjectMediaTaskSettings(s, task, p); valErr != nil {
 		_, _ = updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
@@ -2104,6 +2111,7 @@ func (s *Server) recordTaskMedia(p identity.Principal, task *pebblestore.Project
 		}
 	}
 	rec := pebblestore.SessionMediaUsageRecord{ID: fmt.Sprintf("task-media:%s:%s:%d", task.ProjectID, task.ID, slot), ProjectID: task.ProjectID, TaskID: task.ID, SessionID: sessionID, AccountScopeID: p.AccountScopeID, UserID: p.UserID, Provider: opts.Provider, Model: opts.Model, Kind: opts.Kind, MediaType: mediaType, Size: int64(size), CostUSD: estimate.CostUSD, PriceStatus: estimate.PriceStatus, PricingSummary: estimate.PricingSummary, SnapshotID: estimate.SnapshotID, SnapshotVersion: estimate.SnapshotVersion, CreatedAt: time.Now().UnixMilli()}
+	rec.BudgetOperationID = mediaBudgetOperation(task.ProjectID, task.ID)
 	if len(scene) > 0 {
 		rec.ID += fmt.Sprintf(":scene%d", scene[0])
 	}

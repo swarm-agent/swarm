@@ -23,8 +23,12 @@ Media receipts belong to the calling session. Session usage exposes
 `estimated_cost_usd` including model and media costs. Newly recorded receipts
 populate these counters; historical receipts are not backfilled by this change.
 Existing account spending limits and media batch confirmation still apply.
-Cost-capped workers refuse generation when the existing budget guard cannot
-quote its cost before spending; they never treat unknown pricing as free.
+Generation resolves and pins the selected model, then uses the existing media
+cost estimator for worker budget admission. Unknown pricing is not treated as
+free under a cost cap. Daily-budget reservations remain held during asynchronous
+generation and settle only after execution terminates and a matching durable
+media receipt exists. Pending approval and failures without receipts retain the
+reservation, including across restart; there is no timed reset.
 
 `manage_artifact` remains implemented but is disabled for all agents.
 The legacy system-image/system-video task launches still require that tool and

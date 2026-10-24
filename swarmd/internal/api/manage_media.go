@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/imagegen"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
@@ -103,13 +105,19 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 		if err := json.Unmarshal(raw, &input.AttachedMedia); err != nil {
 			return nil, err
 		}
-		operation := uuid.NewString()
-		if err := s.sessions.Store().CheckWorkerSessionBudgetWithPrice(p.AccountScopeID, session.ID, "unknown", operation); err != nil {
+		input.ID = "task_" + uuid.NewString()
+		estimate, err := s.estimateManagedMedia(ctx, p, &input)
+		if err != nil {
 			return nil, err
 		}
-		task, createErr := s.CreateProjectTask(ctx, p, projectID, input)
-		releaseErr := s.sessions.Store().ReleaseWorkerBudgetReservation(p.AccountScopeID, session.ID, operation)
-		if err := errors.Join(createErr, releaseErr); err != nil {
+		operation := mediaBudgetOperation(projectID, input.ID)
+		if err := s.sessions.Store().CheckWorkerSessionBudgetWithPrice(p.AccountScopeID, session.ID, estimate.PriceStatus, operation); err != nil {
+			return nil, err
+		}
+		task, err := s.CreateProjectTask(ctx, p, projectID, input)
+		// Only execution termination plus a matching durable receipt settles the
+		// reservation. Creation, pending approval and uncertain failures do not.
+		if err != nil {
 			return nil, err
 		}
 		return map[string]any{"job_id": controlMCPJobID(controlMCPJobMedia, projectID, task.ID), "status": task.Status}, nil
@@ -167,4 +175,56 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 	default:
 		return nil, errors.New("action must be models, generate, get or save")
 	}
+}
+
+func mediaBudgetOperation(project, task string) string { return "media-task:" + project + ":" + task }
+
+// Pin the selected model before admission so pricing and execution agree.
+func (s *Server) estimateManagedMedia(ctx context.Context, p identity.Principal, input *tool.ProjectTaskCreateInput) (pebblestore.MediaCostEstimate, error) {
+	if input.Model == "" {
+		input.Model = s.defaultMediaModel(ctx, p, input.Agent)
+	}
+	opts := pebblestore.MediaCostEstimateOptions{Model: input.Model, Kind: input.Agent, Count: max(1, input.VariantCount), ImageSize: input.Resolution, Resolution: input.Resolution, AspectRatio: input.AspectRatio, DurationSeconds: input.DurationSeconds, IncludesAudio: input.Agent == "video"}
+	if input.Agent == "image" && s.imageGen != nil {
+		selection, err := s.imageGen.ResolveModelSelection(input.Model)
+		if err != nil {
+			return pebblestore.MediaCostEstimate{}, err
+		}
+		input.Model = selection.ID
+		if defaults := s.getModelGenerationOptions(input.Model); defaults != nil {
+			if input.Resolution == "" {
+				input.Resolution = defaults.DefaultRes
+				opts.ImageSize = input.Resolution
+				opts.Resolution = input.Resolution
+			}
+			if input.AspectRatio == "" {
+				input.AspectRatio = defaults.DefaultRatio
+				opts.AspectRatio = input.AspectRatio
+			}
+		}
+		opts.Provider, opts.Model = selection.Provider, selection.Model
+	} else {
+		catalog, err := s.mediaCatalogFor(ctx, p)
+		if err != nil {
+			return pebblestore.MediaCostEstimate{}, err
+		}
+		options := catalog.VideoGenerationModels
+		if input.Agent == "sound" {
+			options = catalog.AudioModels
+			opts.Kind = "audio"
+		}
+		for _, option := range options {
+			if option.ID == input.Model {
+				opts.Provider = option.Provider
+				break
+			}
+		}
+	}
+	if opts.Provider == imagegen.ProviderGoogleGemini {
+		opts.Provider = "google"
+	}
+	if opts.Provider == imagegen.ProviderCodexOpenAI {
+		opts.Provider = "codex"
+	}
+	return s.sessions.EstimateMediaCostWithOptions(opts), nil
 }
