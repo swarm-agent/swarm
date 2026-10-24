@@ -2,6 +2,7 @@ package permission
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	store "swarm/packages/swarmd/internal/store/pebble"
@@ -22,7 +23,7 @@ func TestWorkflowNativeReviewPermissions(t *testing.T) {
 		{"fix add", "system-reviewer-fixer", "security", "workflow:review", "review", "account", "git_add", `{"pathspec":["fix.go"]}`, AuthorizationApprove},
 		{"interactive", "system-reviewer", "", "", "review", "account", "bash", `{"command":"git log -1","category":"read"}`, AuthorizationPending},
 		{"stale session", "system-reviewer", "", "workflow:review", "other", "account", "bash", `{"command":"git log -1","category":"read"}`, AuthorizationPending},
-		{"cross account", "system-reviewer", "", "workflow:review", "review", "other", "bash", `{"command":"git log -1","category":"read"}`, AuthorizationPending},
+		{"cross account", "system-reviewer", "", "workflow:review", "review", "other", "bash", `{"command":"git log -1","category":"read"}`, AuthorizationDeny},
 		{"hard refusal", "system-reviewer", "", "workflow:review", "review", "account", "bash", `{"command":"rm -rf /","category":"delete","critical":true}`, AuthorizationDeny},
 		{"deny", "system-reviewer", "", "workflow:review", "review", "account", "bash", `{"command":"git log -1","category":"read"}`, AuthorizationDeny},
 	} {
@@ -122,12 +123,30 @@ func TestWorkflowNativeReviewApprovalBoundaries(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if got.Decision != AuthorizationPending {
-						t.Fatalf("decision %+v want pending", got)
+					want, wantPending := AuthorizationDeny, 0
+					if status != "in_progress" {
+						want, wantPending = AuthorizationPending, 1
+					}
+					if got.Decision != want {
+						t.Fatalf("decision %+v want %s", got, want)
+					}
+					if tc.blocked && !strings.Contains(got.Reason, "retry the tool call after sandbox readiness") {
+						t.Fatalf("missing retry guidance: %+v", got)
 					}
 					pending, err := svc.PendingCount("review")
-					if err != nil || pending != 1 {
+					if err != nil || pending != wantPending {
 						t.Fatalf("pending %d err %v", pending, err)
+					}
+					if tc.name == "blocked bash" {
+						svc.SetBypassGate(func() (bool, string) { return true, "" })
+						got, err = svc.AuthorizeToolCall(AuthorizationInput{SessionID: "review", AccountScopeID: "account", RunID: "run", CallID: "call", Mode: "auto", ToolName: tc.tool, ToolArguments: tc.args})
+						if err != nil || got.Decision != AuthorizationApprove {
+							t.Fatalf("ready retry %+v err %v", got, err)
+						}
+						pending, err = svc.PendingCount("review")
+						if err != nil || pending != 0 {
+							t.Fatalf("ready pending %d err %v", pending, err)
+						}
 					}
 				})
 			}
