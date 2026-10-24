@@ -216,6 +216,19 @@ func (s *SessionStore) CheckWorkerSessionBudget(account, sessionID, provider, mo
 
 // Media callers supply the canonical dimension-specific pricing status.
 func (s *SessionStore) CheckWorkerSessionBudgetWithPrice(account, sessionID, priceStatus string, operationIDs ...string) error {
+	return s.checkWorkerSessionBudget(account, sessionID, priceStatus, nil, operationIDs...)
+}
+
+// CheckWorkerMediaAdmission checks current usage plus the estimate without holding
+// allowance. Concurrent background media may overshoot before receipts arrive.
+func (s *SessionStore) CheckWorkerMediaAdmission(account, sessionID string, estimate MediaCostEstimate) error {
+	if math.IsNaN(estimate.CostUSD) || math.IsInf(estimate.CostUSD, 0) || estimate.CostUSD < 0 {
+		return errors.New("invalid media cost estimate")
+	}
+	return s.checkWorkerSessionBudget(account, sessionID, estimate.PriceStatus, &estimate.CostUSD)
+}
+
+func (s *SessionStore) checkWorkerSessionBudget(account, sessionID, priceStatus string, estimatedCost *float64, operationIDs ...string) error {
 	if s == nil || s.store == nil {
 		return errors.New("store is not configured")
 	}
@@ -286,6 +299,9 @@ func (s *SessionStore) CheckWorkerSessionBudgetWithPrice(account, sessionID, pri
 		if accountPolicy.DailyCostLimitUSD > 0 && priceStatus != "known" && priceStatus != "free" && priceStatus != "subscription" {
 			return fmt.Errorf("%w: account-capped provider pricing is unknown", ErrWorkerBudget)
 		}
+		if estimatedCost != nil && accountPolicy.DailyCostLimitUSD > 0 && usage.TotalCostUSD+*estimatedCost > accountPolicy.DailyCostLimitUSD {
+			return fmt.Errorf("%w: daily account usage limit exceeded", ErrWorkerBudget)
+		}
 		keys = append(keys, accountBudgetReservationKey(account))
 	}
 	for _, scope := range scopes {
@@ -312,7 +328,25 @@ func (s *SessionStore) CheckWorkerSessionBudgetWithPrice(account, sessionID, pri
 				return fmt.Errorf("%w: provider pricing is unknown", ErrWorkerBudget)
 			}
 		}
+		if estimatedCost != nil && policy.DailyCostLimitUSD > 0 && total.CatalogCostUSD+total.ProviderCostUSD+total.ProviderEstimateCostUSD+*estimatedCost > policy.DailyCostLimitUSD {
+			return fmt.Errorf("%w: daily worker usage limit exceeded", ErrWorkerBudget)
+		}
 		keys = append(keys, workerBudgetKey(account, scope.ID)+"/reservation")
+	}
+	if estimatedCost != nil {
+		for _, scope := range scopes {
+			if scope.Kind != "worker_run" || limits.JobCostUSD <= 0 {
+				continue
+			}
+			total, _, err := s.GetUsageScope(account, scope.Kind, scope.ProjectID, scope.ID)
+			if err != nil {
+				return err
+			}
+			if err := s.store.observeLimit(account, scope.ProjectID+"/"+scope.ID, "job_cost_usd", limits.JobCostUSD, total.CatalogCostUSD+total.ProviderCostUSD+total.ProviderEstimateCostUSD+*estimatedCost > limits.JobCostUSD); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	if len(keys) == 0 {
 		return nil

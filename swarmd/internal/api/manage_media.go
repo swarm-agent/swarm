@@ -106,12 +106,15 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 			return nil, err
 		}
 		input.ID = "task_" + uuid.NewString()
-		_, err = s.estimateManagedMedia(ctx, p, &input)
+		estimate, err := s.estimateManagedMedia(ctx, p, &input)
 		if err != nil {
 			return nil, err
 		}
-		// Admission and approval do not spend media allowance. Execution reserves
-		// immediately before generation and completes before this call returns.
+		// Check current usage plus the estimate once without reserving allowance.
+		// Background generation records actual usage when its receipts arrive.
+		if err := s.sessions.Store().CheckWorkerMediaAdmission(p.AccountScopeID, session.ID, estimate); err != nil {
+			return nil, err
+		}
 		task, err := s.CreateProjectTask(ctx, p, projectID, input)
 		if err != nil {
 			return nil, err
@@ -172,8 +175,6 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 		return nil, errors.New("action must be models, generate, get or save")
 	}
 }
-
-func mediaBudgetOperation(project, task string) string { return "media-task:" + project + ":" + task }
 
 // Pin the selected model before admission so pricing and execution agree.
 func (s *Server) estimateManagedMedia(ctx context.Context, p identity.Principal, input *tool.ProjectTaskCreateInput) (pebblestore.MediaCostEstimate, error) {

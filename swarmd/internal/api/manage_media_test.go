@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"image"
 	"image/png"
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"swarm/packages/swarmd/internal/imagegen"
 	"sync/atomic"
 	"testing"
@@ -139,12 +141,10 @@ func TestManageMediaSessionUsage(t *testing.T) {
 }
 
 // Purpose: ManageMedia generate must use CreateProjectTask with owned origin,
-// explicit options and attached input bytes, rejecting unowned origins before
-// reservation. A 25-image batch stays pending under existing admission, so the
-// real creation path is tested without provider calls or goroutine races.
-// Durable worker bindings and account caps additionally prove unknown-price
-// refusal, priced admission, exclusion before settlement, and receipt-plus-
-// termination release through CheckWorkerSessionBudgetWithPrice/recordTaskMedia.
+// explicit options and attached inputs. Real task/store boundaries with a blocked
+// deterministic provider prove CheckWorkerMediaAdmission rejects unknown pricing
+// and excessive estimates without reserving allowance, while background media
+// permits model turns in the caller and other workers. Receipts retain attribution.
 func TestManageMediaGenerateOrigin(t *testing.T) {
 	db, err := pebblestore.Open(t.TempDir())
 	if err != nil {
@@ -190,12 +190,47 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := map[string]any{"inputs": []any{map[string]any{"path": "input.png"}, map[string]any{"job_id": "media/project/prior", "file": float64(1)}}, "action": "generate", "kind": "image", "brief": "A blue circle", "model": rec.Model, "aspect_ratio": "1:1", "resolution": "1K", "count": float64(25)}
-	// Pending approval never starts a provider or reserves allowance.
-	if _, err := server.ManageMedia(context.Background(), scope, args); err != nil {
-		t.Fatal(err)
+	// Even pending batches require known pricing under a cap.
+	if _, err := server.ManageMedia(context.Background(), scope, args); err == nil {
+		t.Fatal("unknown price accepted")
 	}
 	rec.Pricing = json.RawMessage(`{"billing":{"status":"verified","lines":[{"kind":"billing_rate","billable":"image_output","unit":"image","price_usd":0.03,"variant":"1K","conditions":{"tier":"paid","service_tier":"standard"}},{"kind":"billing_rate","billable":"image_output","unit":"million_tokens","price_usd":30,"conditions":{"tier":"paid","service_tier":"standard"}}]}}`)
 	if err := pebblestore.NewModelCatalogStore(db).SetRecord(rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutUsageLimit(pebblestore.UsageLimitRecord{AccountScopeID: p.AccountScopeID, Enabled: true, DailyCostLimitUSD: 0.001}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.ManageMedia(context.Background(), scope, args); err == nil || !strings.Contains(err.Error(), "daily account usage limit exceeded") {
+		t.Fatalf("estimate limit: %v", err)
+	}
+	if err := store.PutUsageLimit(pebblestore.UsageLimitRecord{AccountScopeID: p.AccountScopeID, Enabled: true, DailyCostLimitUSD: 100}); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := store.SetWorkerBudget(p.AccountScopeID, "worker", 0, 0.001, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.ManageMedia(context.Background(), scope, args); err == nil || !strings.Contains(err.Error(), "daily worker") {
+		t.Fatalf("worker estimate limit: %v", err)
+	}
+	if _, err := store.SetWorkerBudget(p.AccountScopeID, "worker", policy.Revision, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	limits, err := store.GetLimits(p.AccountScopeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limits.JobCostUSD = 0.001
+	limits, err = store.SetLimits(p.AccountScopeID, limits.Revision, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.ManageMedia(context.Background(), scope, args); err == nil || !strings.Contains(err.Error(), "job_cost_usd") {
+		t.Fatalf("job estimate limit: %v", err)
+	}
+	limits.JobCostUSD = 0
+	if _, err := store.SetLimits(p.AccountScopeID, limits.Revision, limits); err != nil {
 		t.Fatal(err)
 	}
 	result, err := server.ManageMedia(context.Background(), scope, args)
@@ -258,11 +293,9 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 	if err := pebblestore.NewModelCatalogStore(db).SetRecord(rec); err != nil {
 		t.Fatal(err)
 	}
-	unknown, err := server.ManageMedia(context.Background(), scope, args)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := server.ManageMedia(context.Background(), scope, args); err == nil {
+		t.Fatal("unknown price accepted")
 	}
-	waitMediaTask(t, server, scope, unknown.(map[string]any)["job_id"].(string))
 	if client.calls.Load() != 0 {
 		t.Fatal("unknown-priced capped generation reached provider")
 	}
@@ -284,6 +317,28 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("provider not entered")
 	}
+	assertUnreserved()
+	// Model admission must succeed for both the originating worker and another
+	// worker in the same capped account while the media provider is blocked.
+	if err := db.PutJSON(pebblestore.KeyWorker("account", "other-worker"), pebblestore.WorkerRecord{ID: "other-worker", AccountScopeID: "account"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateSessionForAccount(pebblestore.SessionSnapshot{ID: "other-session"}, p.UserID, p.AccountScopeID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.PutJSON("usage_scope_binding/account/other-session", []pebblestore.UsageScopeTotal{{Kind: "worker", ID: "other-worker"}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, sid := range []string{scope.SessionID, "other-session"} {
+		if err := store.CheckWorkerSessionBudgetWithPrice(p.AccountScopeID, sid, "known", "model-turn"); err != nil {
+			t.Fatalf("model admission %s: %v", sid, err)
+		}
+		// Remove only this test's model reservation; media must never own it.
+		if err := db.Delete("worker_budget_account/account/reservation"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertUnreserved()
 	// A second creation must return while the first provider remains blocked.
 	created := make(chan error, 1)
 	go func() {
@@ -315,6 +370,31 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 		t.Fatalf("generation not complete %+v calls=%d err=%v", saved, client.calls.Load(), err)
 	}
 	assertUnreserved()
+	// Failure after entering a provider, without a receipt, leaves no held state.
+	failureGate := make(chan struct{})
+	close(failureGate)
+	failedClient := &blockingMediaClient{entered: make(chan struct{}, 100), release: failureGate, fail: true}
+	server.imageGen.SetGeminiImageClient(failedClient)
+	failedJob, err := server.ManageMedia(context.Background(), scope, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitMediaTask(t, server, scope, failedJob.(map[string]any)["job_id"].(string))
+	assertUnreserved()
+	if err := store.CheckWorkerMediaAdmission(p.AccountScopeID, scope.SessionID, pebblestore.MediaCostEstimate{PriceStatus: "known", CostUSD: 0.03}); err != nil {
+		t.Fatalf("failure left held state: %v", err)
+	}
+	// Already-recorded spend must refuse subsequent generation at admission.
+	if err := store.PutUsageLimit(pebblestore.UsageLimitRecord{AccountScopeID: p.AccountScopeID, Enabled: true, DailyCostLimitUSD: 0.001}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.ManageMedia(context.Background(), scope, args); err == nil || !strings.Contains(err.Error(), "worker budget blocked") {
+		t.Fatalf("over-limit generation: %v", err)
+	}
+	assertUnreserved()
+	if err := store.PutUsageLimit(pebblestore.UsageLimitRecord{AccountScopeID: p.AccountScopeID, Enabled: true, DailyCostLimitUSD: 100}); err != nil {
+		t.Fatal(err)
+	}
 	// Unmarked orchestrator-origin tasks and approved batches bypass the new
 	// worker gate even with unknown pricing, and approval never waits on providers.
 	rec.Pricing = nil
@@ -365,6 +445,7 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 }
 
 type blockingMediaClient struct {
+	fail    bool
 	calls   atomic.Int32
 	png     []byte
 	entered chan struct{}
@@ -378,6 +459,9 @@ func (c *blockingMediaClient) GenerateImage(ctx context.Context, _ imagegen.Gemi
 	case <-c.release:
 	case <-ctx.Done():
 		return imagegen.GeminiImageGenerationResult{}, ctx.Err()
+	}
+	if c.fail {
+		return imagegen.GeminiImageGenerationResult{}, errors.New("provider rejected fixture")
 	}
 	return imagegen.GeminiImageGenerationResult{Images: []imagegen.GeminiGeneratedImage{{DecodedPNG: c.png, MIMEType: "image/png"}}, Usage: map[string]any{"candidatesTokensDetails": []any{map[string]any{"modality": "IMAGE", "tokenCount": 1120}}}}, nil
 }

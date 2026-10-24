@@ -29,11 +29,12 @@ free under a cost cap. This worker gate applies only to tasks explicitly created
 by `manage_media`, not ordinary project-conversation or approval tasks.
 All generation runs in the background; `generate` returns the job ID immediately.
 Use `get` with `wait_seconds` to wait. Cancelling the tool context ends only the
-wait with a still-generating result, not generation. Reservations begin at
-the generation boundary, not at task creation or while waiting for approval.
-Creation errors, rejected/cancelled pending batches and settings failures before
-generation do not reserve allowance. Once a generation call starts, uncertain
-failures without receipts remain fail-closed. MCP tasks remain asynchronous.
+wait with a still-generating result, not generation. At creation, current usage
+plus estimated cost is checked once against worker, job and account limits.
+No allowance is reserved, so background generation never blocks model turns.
+Actual receipts charge the originating session and its worker/job scopes;
+failures without receipts leave no held state. Concurrent admitted generations
+can exceed a cap before receipts arrive. MCP tasks remain asynchronous.
 
 `manage_artifact` remains implemented but is disabled for all agents.
 The legacy system-image/system-video task launches still require that tool and
