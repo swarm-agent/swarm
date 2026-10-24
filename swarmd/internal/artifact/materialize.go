@@ -14,7 +14,7 @@ import (
 	"sort"
 	"strings"
 
-	"swarm/packages/swarmd/internal/appstorage"
+	"swarm/packages/swarmd/internal/projectfiles"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -156,7 +156,7 @@ func MaterializeBatch(ctx context.Context, limits Limits, inputs []BatchMaterial
 	}
 	stagePath := filepath.Join(filepath.Dir(target), ".swarm-artifact-batch-"+token)
 	backupPath := filepath.Join(filepath.Dir(target), ".swarm-artifact-backup-"+token)
-	if err := os.Mkdir(stagePath, 0o755); err != nil {
+	if err := os.Mkdir(stagePath, projectfiles.DirMode); err != nil {
 		return nil, fmt.Errorf("create artifact batch staging directory: %w", err)
 	}
 	defer func() { _ = removeDirectoryTreeIfPresent(stagePath) }()
@@ -284,7 +284,7 @@ func materializePackage(ctx context.Context, limits Limits, source io.ReaderAt, 
 				return Materialized{}, closeErr
 			}
 		}
-		if err := os.Mkdir(target, 0o755); err != nil {
+		if err := os.Mkdir(target, projectfiles.DirMode); err != nil {
 			if _, conflictErr := os.Lstat(target); conflictErr == nil {
 				return Materialized{}, ErrDestinationConflict
 			}
@@ -307,7 +307,7 @@ func materializePackage(ctx context.Context, limits Limits, source io.ReaderAt, 
 	}
 	stagePath := filepath.Join(filepath.Dir(target), ".swarm-artifact-package-"+token)
 	backupPath := filepath.Join(filepath.Dir(target), ".swarm-artifact-backup-"+token)
-	if err := os.Mkdir(stagePath, 0o755); err != nil {
+	if err := os.Mkdir(stagePath, projectfiles.DirMode); err != nil {
 		return Materialized{}, fmt.Errorf("create artifact package staging directory: %w", err)
 	}
 	defer func() { _ = removeDirectoryTreeIfPresent(stagePath) }()
@@ -441,7 +441,7 @@ func materializeWorkspaceFile(ctx context.Context, workspaceRoot, destination st
 		return err
 	}
 	temp := filepath.Join(filepath.Dir(target), ".swarm-artifact-"+token)
-	file, err := os.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, appstorage.PrivateFilePerm)
+	file, err := os.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, projectfiles.FileMode)
 	if err != nil {
 		return fmt.Errorf("create artifact materialization staging file: %w", err)
 	}
@@ -465,10 +465,6 @@ func materializeWorkspaceFile(ctx context.Context, workspaceRoot, destination st
 	if expectedDigest != "" && hex.EncodeToString(hash.Sum(nil)) != strings.ToLower(expectedDigest) {
 		_ = os.Remove(temp)
 		return errors.New("artifact materialization digest changed while copying")
-	}
-	if err := os.Chmod(temp, 0o644); err != nil {
-		_ = os.Remove(temp)
-		return err
 	}
 	if err := ensureWorkspaceDirectory(workspaceRoot, parent, false); err != nil {
 		_ = os.Remove(temp)
@@ -513,7 +509,7 @@ func ensureWorkspaceDirectory(workspaceRoot, relative string, create bool) error
 		current = filepath.Join(current, part)
 		info, err := os.Lstat(current)
 		if errors.Is(err, os.ErrNotExist) && create {
-			if err := os.Mkdir(current, 0o755); err != nil && !errors.Is(err, os.ErrExist) {
+			if err := os.Mkdir(current, projectfiles.DirMode); err != nil && !errors.Is(err, os.ErrExist) {
 				return err
 			}
 			info, err = os.Lstat(current)

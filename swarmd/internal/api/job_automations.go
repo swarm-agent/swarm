@@ -1260,6 +1260,9 @@ func controlMCPSaveAutomationChange(c *controlMCPCall, args map[string]any, skip
 	}
 	if skipUnchanged {
 		if err := a.Normalize(); err != nil {
+			if jobautomation.IsValidationError(err) {
+				return nil, controlMCPToolFailure("%s", err.Error())
+			}
 			return nil, err
 		}
 		previous, err := store.FindByName(account, a.Name)

@@ -85,8 +85,8 @@ func designReadNoFollow(p *rootedWorkspacePath) ([]byte, error) {
 
 // designWriteNew writes data to a new file name in dir (O_EXCL, never
 // following a symlink) and syncs it. A partial file is removed.
-func designWriteNew(dir *os.File, name string, data []byte, mode os.FileMode) error {
-	fd, err := unix.Openat(int(dir.Fd()), name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, uint32(sharedFileMode(mode)))
+func designWriteNew(dir *os.File, name string, data []byte, mode os.FileMode, preserveMode bool) error {
+	fd, err := unix.Openat(int(dir.Fd()), name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, uint32(mode))
 	if err != nil {
 		if errors.Is(err, unix.EEXIST) {
 			return fmt.Errorf("design files: %s already exists", name)
@@ -95,6 +95,11 @@ func designWriteNew(dir *os.File, name string, data []byte, mode os.FileMode) er
 	}
 	file := os.NewFile(uintptr(fd), name)
 	_, writeErr := file.Write(data)
+	// Only replacement staging files restore an existing user's exact mode.
+	// New outputs retain the inherited ACL/umask instead.
+	if writeErr == nil && preserveMode {
+		writeErr = file.Chmod(mode)
+	}
 	if writeErr == nil {
 		writeErr = file.Sync()
 	}
@@ -114,7 +119,7 @@ func designCreateExclusive(p *rootedWorkspacePath, data []byte) error {
 		return designNoFollowError(p.relative, err)
 	}
 	defer dir.Close()
-	return designWriteNew(dir, name, data, designFileMode)
+	return designWriteNew(dir, name, data, sharedFileMode(designFileMode), false)
 }
 
 func designTempName(name string) (string, error) {
@@ -136,7 +141,8 @@ func designReplace(p *rootedWorkspacePath, wantSHA256 string, data []byte) error
 		return designNoFollowError(p.relative, err)
 	}
 	defer dir.Close()
-	mode := os.FileMode(designFileMode)
+	mode := sharedFileMode(designFileMode)
+	preserveMode := false
 	current := func() (string, os.FileInfo, error) {
 		file, info, err := designOpenRegular(dir, name)
 		if err != nil {
@@ -158,6 +164,7 @@ func designReplace(p *rootedWorkspacePath, wantSHA256 string, data []byte) error
 			return design.ErrStaleBase
 		}
 		mode = info.Mode().Perm()
+		preserveMode = true
 	} else {
 		var st unix.Stat_t
 		switch err := unix.Fstatat(int(dir.Fd()), name, &st, unix.AT_SYMLINK_NOFOLLOW); {
@@ -166,13 +173,16 @@ func designReplace(p *rootedWorkspacePath, wantSHA256 string, data []byte) error
 			return err
 		case st.Mode&unix.S_IFMT != unix.S_IFREG:
 			return fmt.Errorf("design files: %s is not a regular file", name)
+		default:
+			mode = os.FileMode(st.Mode).Perm()
+			preserveMode = true
 		}
 	}
 	tmp, err := designTempName(name)
 	if err != nil {
 		return err
 	}
-	if err := designWriteNew(dir, tmp, data, mode); err != nil {
+	if err := designWriteNew(dir, tmp, data, mode, preserveMode); err != nil {
 		return err
 	}
 	removeTmp := func() { _ = unix.Unlinkat(int(dir.Fd()), tmp, 0) }

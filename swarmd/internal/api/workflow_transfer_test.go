@@ -69,6 +69,42 @@ func TestWorkflowTransfer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Normalize refusals must survive both directory and inline MCP boundaries,
+	// without changing the stored workflow (controlMCPSaveAutomationChange).
+	var invalid map[string]any
+	if err := json.Unmarshal(data, &invalid); err != nil {
+		t.Fatal(err)
+	}
+	invalid["name"] = ""
+	badData, err := json.Marshal(invalid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "invalid.json"), badData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	value, refusal := controlMCPImportWorkflow(c, map[string]any{"definition": invalid, "project": "Site"})
+	mcp := controlMCPToolResult(value, refusal)
+	text := mcp["content"].([]map[string]any)[0]["text"].(string)
+	if mcp["isError"] != true || !strings.HasPrefix(text, "name is required") {
+		t.Fatal(mcp)
+	}
+	result, err = controlMCPImportWorkflow(c, map[string]any{"path": ".", "project": "Site"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range result.(map[string]any)["files"].([]map[string]any) {
+		if f["path"] == "invalid.json" {
+			found = true
+			if f["status"] != "refused" || f["error"] != text {
+				t.Fatal(f)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("missing invalid file result")
+	}
 	statuses := map[string]string{}
 	for _, f := range result.(map[string]any)["files"].([]map[string]any) {
 		statuses[f["path"].(string)] = f["status"].(string)

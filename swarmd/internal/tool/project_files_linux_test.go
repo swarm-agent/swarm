@@ -71,3 +71,45 @@ func TestProjectFileModes(t *testing.T) {
 		})
 	}
 }
+
+// Requirement: designReplace preserves existing permissions rather than widening
+// private files. Direct replacement tests both digest-guarded and results writes;
+// stale digests must leave both bytes and permissions unchanged.
+func TestDesignReplacementPreservesMode(t *testing.T) {
+	for _, guarded := range []bool{false, true} {
+		t.Run(fmt.Sprint(guarded), func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "page.html")
+			if err := os.WriteFile(path, []byte("original"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			root, err := os.OpenRoot(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			p := &rootedWorkspacePath{root: root, relative: "page.html", mutable: true, localConfined: true}
+			digest := ""
+			if guarded {
+				digest = designDigest([]byte("original"))
+			}
+			if err := designReplace(p, digest, []byte("updated")); err != nil {
+				t.Fatal(err)
+			}
+			if err := designReplace(p, designDigest([]byte("stale")), []byte("bad")); err == nil {
+				t.Fatal("accepted stale replacement")
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode().Perm() != 0600 || string(body) != "updated" {
+				t.Fatalf("mode %o bytes %q", info.Mode().Perm(), body)
+			}
+		})
+	}
+}
