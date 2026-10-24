@@ -48,30 +48,49 @@ func (s *SessionStore) recoverInterruptedProjectMedia() error {
 			return fmt.Errorf("media recovery task mismatch")
 		}
 		task = *full
-		ready := 0
+		ready, failed, interrupted := 0, 0, 0
+		providerError := ""
 		for i := range task.Deliverables {
 			d := &task.Deliverables[i]
 			if d.Status == "ready" || d.Status == "accepted" {
 				ready++
 				continue
 			}
+			if d.Status == "failed" {
+				failed++
+				if providerError == "" {
+					providerError = d.Description
+				}
+			}
 			// Preserve terminal failures and their original provider diagnostics.
 			if d.Status == "generating" || d.Status == "pending" {
+				interrupted++
 				d.Status = "failed"
 				d.Description = "daemon restarted during generation; file did not finish"
 			}
 		}
 		kind, severity := "media.job.failed", SignalSeverityWarning
 		task.Status = "failed"
-		task.LastError = "daemon restarted during generation; one or more files did not finish"
-		task.ActionNeeded = "Review interrupted media generation. No generation was retried."
+		task.LastError = providerError
+		if task.LastError == "" {
+			task.LastError = "no media deliverables finished generation"
+		}
+		task.ActionNeeded = "Action Needed: " + task.LastError
+		if interrupted > 0 {
+			task.LastError = "daemon restarted during generation; one or more files did not finish"
+			task.ActionNeeded = "Review interrupted media generation. No generation was retried."
+		}
 		task.WhatNotDone = []string{task.LastError}
 		summary := "Media job failed: " + task.LastError
-		if ready > 0 && ready == len(task.Deliverables) {
+		if interrupted == 0 && ready > 0 && ready+failed == len(task.Deliverables) {
 			task.Status = "needs_review"
 			task.LastError = ""
 			task.WhatNotDone = nil
 			task.ActionNeeded = fmt.Sprintf("Action Needed: %d media deliverable(s) ready for review.", ready)
+			if failed > 0 {
+				task.LastError = fmt.Sprintf("%d of %d deliverables failed generation", failed, len(task.Deliverables))
+				task.ActionNeeded = fmt.Sprintf("Action Needed: %d of %d %s variation(s) ready for review (%d failed).", ready, len(task.Deliverables), task.Agent, failed)
+			}
 			kind, severity = "media.job.succeeded", SignalSeverityInfo
 			summary = fmt.Sprintf("Media job made %d %s file(s)", ready, task.Agent)
 		}

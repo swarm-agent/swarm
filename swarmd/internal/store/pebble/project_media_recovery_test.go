@@ -17,7 +17,7 @@ import (
 // Existing provider failures must retain their diagnostics rather than being
 // falsely attributed to restart; this durable test checks both reopen cycles.
 func TestProjectMediaRecoveryOnOpen(t *testing.T) {
-	for _, state := range []string{"ready", "accepted", "generating", "pending", "partial", "already-failed", "empty", "non-media", "terminal"} {
+	for _, state := range []string{"ready", "accepted", "generating", "pending", "partial", "already-failed", "all-provider-failed", "empty", "non-media", "terminal"} {
 		t.Run(state, func(t *testing.T) {
 			path := t.TempDir()
 			db, err := Open(path)
@@ -38,7 +38,10 @@ func TestProjectMediaRecoveryOnOpen(t *testing.T) {
 				task.Deliverables = append(task.Deliverables, ProjectTaskDeliverable{ID: "missing", Status: "generating"})
 				want = "failed"
 			case "already-failed":
-				task.Deliverables = append(task.Deliverables, ProjectTaskDeliverable{ID: "failed", Status: "failed", Description: "Video generation failed: provider rejected request"})
+				task.Agent = "image"
+				task.Deliverables = append(task.Deliverables, ProjectTaskDeliverable{ID: "failed", Status: "failed", Description: "Image generation failed: provider rejected request"})
+			case "all-provider-failed":
+				task.Deliverables = []ProjectTaskDeliverable{{ID: "failed", Status: "failed", Description: "Video generation failed: provider rejected request"}}
 				want = "failed"
 			case "empty":
 				task.Deliverables = nil
@@ -107,8 +110,15 @@ func TestProjectMediaRecoveryOnOpen(t *testing.T) {
 				if err != nil || len(foreign.Signals) != 0 {
 					t.Fatalf("cross-account signal: %+v %v", foreign, err)
 				}
-				if want == "failed" && !strings.Contains(got.LastError, "daemon restarted during generation") {
-					t.Fatalf("missing restart reason: %s", got.LastError)
+				interrupted := state == "generating" || state == "pending" || state == "partial"
+				if strings.Contains(got.LastError, "daemon restarted during generation") != interrupted {
+					t.Fatalf("incorrect restart attribution: %s", got.LastError)
+				}
+				if state == "already-failed" && (got.LastError != "1 of 2 deliverables failed generation" || got.ActionNeeded != "Action Needed: 1 of 2 image variation(s) ready for review (1 failed).") {
+					t.Fatalf("incorrect partial finish: %+v", got)
+				}
+				if state == "all-provider-failed" && (got.LastError != task.Deliverables[0].Description || !reflect.DeepEqual(got.Deliverables, task.Deliverables) || !reflect.DeepEqual(got.WhatNotDone, []string{task.Deliverables[0].Description})) {
+					t.Fatalf("provider failure lost: %+v", got)
 				}
 				if len(task.Deliverables) > 0 && task.Deliverables[0].MediaURL != "" && got.Deliverables[0].MediaURL != task.Deliverables[0].MediaURL {
 					t.Fatal("ready file changed")
