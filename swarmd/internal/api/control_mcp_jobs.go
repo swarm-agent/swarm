@@ -17,6 +17,7 @@ import (
 	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 )
 
 // Workers and jobs are explicit persistent application operations, separate
@@ -1300,6 +1301,39 @@ func controlMCPScheduleJob(c *controlMCPCall, args map[string]any) (any, error) 
 }
 
 func controlMCPRequestMedia(c *controlMCPCall, args map[string]any) (any, error) {
+	if retry := controlMCPString(args, "retry_of"); retry != "" {
+		if err := c.requireTokenScope("sessions:write"); err != nil {
+			return nil, err
+		}
+		p, ok := PrincipalFromRequest(c.request)
+		if !ok {
+			return nil, errors.New("media requires authentication")
+		}
+		place, err := c.place(controlMCPString(args, "project"), controlMCPString(args, "workspace"))
+		if err != nil {
+			return nil, err
+		}
+		origin, err := c.server.projectTaskOrigin(c.request.Context(), p, place.projectID)
+		if err != nil {
+			return nil, err
+		}
+		input := tool.ProjectTaskCreateInput{OriginSessionID: origin, WorkspacePath: place.path, AutoApprove: true}
+		if origin != "" {
+			parent, found, err := c.server.sessions.GetSession(origin)
+			if err != nil {
+				return nil, err
+			}
+			if !found {
+				return nil, errors.New("media origin not found")
+			}
+			input.AutoApprove = pebblestore.SessionAccessFromMetadata(parent.Metadata).Tasks != pebblestore.SessionTasksAsk
+		}
+		task, err := c.server.retryMedia(c.request.Context(), p, place.projectID, input, retry, args)
+		if err != nil {
+			return nil, err
+		}
+		return mediaJobFileView(map[string]any{"job_id": controlMCPJobID(controlMCPJobMedia, place.projectID, task.ID), "status": task.Status, "kind": task.Agent}, task, nil, controlMCPMediaJobGuidance)
+	}
 	kind := controlMCPMediaKinds[controlMCPString(args, "kind")]
 	if kind == "" {
 		return nil, controlMCPToolFailure("kind must be image, video or sound")
@@ -1671,7 +1705,8 @@ func controlMCPJobTools() []controlMCPTool {
 		{
 			Name: "swarm_request_media", Title: "Make an image, video or sound",
 			Description: "Make media with the machine's media models. For narration use kind sound, operation speech, explicit TTS model, text and voice; optional style, language and format. Returns audio and timing JSON (granularity word or segment), with generation and transcription costs. Generation only; no cloning or live voice. Otherwise: kind and a detailed brief (for music, the style and any lyrics), optionally model and its options (swarm_media_models lists them; without a model the default for the kind is used). inputs are images or videos to start from: an earlier media job's file (job_id and file number) or a file in a registered workspace (absolute path): an image to edit, the first frame of a video, references, or a video to extend or edit with operation. Returns a job_id; swarm_get_job lists the files when it is done (include_media shows images), swarm_save_media writes them into a workspace. Every result costs money with the provider.",
-			InputSchema: controlMCPObject([]string{"kind"}, map[string]any{
+			InputSchema: controlMCPObject(nil, map[string]any{
+				"retry_of":         controlMCPStringProp("Earlier media job_id in the same project; reuse kind, brief, inputs and options, optionally overriding model, brief or generation options.", 0, 300),
 				"kind":             map[string]any{"type": "string", "enum": []string{"image", "video", "sound"}},
 				"brief":            controlMCPStringProp("What to make, in detail.", 1, 20000),
 				"model":            controlMCPStringProp("Model id from swarm_media_models. Default: the kind's default.", 0, 200),

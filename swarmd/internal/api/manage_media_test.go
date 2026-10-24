@@ -9,6 +9,8 @@ import (
 	"image"
 	"image/png"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -131,7 +133,11 @@ func TestManageMediaSessionUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	total := 2.0
-	for i, kind := range []string{"image", "video", "audio"} {
+	for i, kind := range []string{"image", "video", "audio", "image"} {
+		if i == 3 {
+			task.ID = "retry"
+			task.RetryOf = "media/project/task"
+		}
 		opts := pebblestore.MediaCostEstimateOptions{Kind: kind, Count: 1, Provider: "google", Model: "gemini-nano-banana-2.1", OutputTokens: 1120}
 		estimate, err := server.recordTaskMedia(p, task, i, opts, kind+"/test", 10)
 		if err != nil {
@@ -143,7 +149,7 @@ func TestManageMediaSessionUsage(t *testing.T) {
 		}
 	}
 	summary, found, err := store.GetUsageSummary("session")
-	if err != nil || !found || summary.ImageCount != 1 || summary.VideoCount != 1 || summary.SoundCount != 1 || summary.EstimatedCostUSD != total || math.Abs(summary.MediaCostUSD-(total-2)) > 1e-10 || summary.MediaCostUSD <= 0 {
+	if err != nil || !found || summary.ImageCount != 2 || summary.VideoCount != 1 || summary.SoundCount != 1 || summary.EstimatedCostUSD != total || math.Abs(summary.MediaCostUSD-(total-2)) > 1e-10 || summary.MediaCostUSD <= 0 {
 		t.Fatalf("summary %+v %v", summary, err)
 	}
 }
@@ -274,6 +280,69 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 	task, found, err := store.GetProjectTask(p.AccountScopeID, project, id)
 	if err != nil || !found || task.OriginSessionID != "session" || !task.ManageMediaSource || task.Model != rec.Model || task.AspectRatio != "1:1" || task.Resolution != "1K" || task.VariantCount != 25 || task.WorkspacePath != root || task.Status != "pending_approval" || len(task.AttachedMedia) != 2 {
 		t.Fatalf("task %+v %v", task, err)
+	}
+	// Purpose: the retryMedia/CreateProjectTask boundary must preserve inputs,
+	// create independent pending jobs and reject over-budget retries before writes.
+	// This existing real-store fixture is the narrowest admission integration layer.
+	beforeRetry, _ := json.Marshal(task)
+	retried, err := server.ManageMedia(context.Background(), scope, map[string]any{"action": "retry", "job_id": result.(map[string]any)["job_id"], "model": rec.Model})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, retryID, _ := controlMCPParseJobID(retried.(map[string]any))
+	retryTask, _, err := store.GetProjectTask(p.AccountScopeID, project, retryID)
+	if err != nil || retryTask.RetryOf != result.(map[string]any)["job_id"] || retryTask.Status != "pending_approval" || retryTask.Description != task.Description || retryTask.Model != rec.Model || retryTask.AspectRatio != task.AspectRatio || retryTask.Resolution != task.Resolution || retryTask.VariantCount != task.VariantCount || len(retryTask.AttachedMedia) != 2 || retryTask.AttachedMedia[0] != task.AttachedMedia[0] {
+		t.Fatalf("retry %+v %v", retryTask, err)
+	}
+	unchanged, _, _ := store.GetProjectTask(p.AccountScopeID, project, id)
+	afterRetry, _ := json.Marshal(unchanged)
+	if !bytes.Equal(beforeRetry, afterRetry) {
+		t.Fatal("retry changed source")
+	}
+	if err := store.PutUsageLimit(pebblestore.UsageLimitRecord{AccountScopeID: p.AccountScopeID, Enabled: true, DailyCostLimitUSD: 0.001}); err != nil {
+		t.Fatal(err)
+	}
+	beforeTasks, _ := store.ListProjectTasks(p.AccountScopeID, project, 100)
+	if _, err := server.ManageMedia(context.Background(), scope, map[string]any{"action": "retry", "job_id": result.(map[string]any)["job_id"]}); err == nil {
+		t.Fatal("over-limit retry accepted")
+	}
+	afterTasks, _ := store.ListProjectTasks(p.AccountScopeID, project, 100)
+	if len(beforeTasks) != len(afterTasks) {
+		t.Fatal("rejected retry persisted a task")
+	}
+	if err := store.PutUsageLimit(pebblestore.UsageLimitRecord{AccountScopeID: p.AccountScopeID, Enabled: true, DailyCostLimitUSD: 100}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateSessionForAccount(pebblestore.SessionSnapshot{ID: "ask-session", WorkspacePath: root, Metadata: map[string]any{"project_id": project, pebblestore.SessionAccessMetadataKey: map[string]any{"tasks": "ask"}}}, p.UserID, p.AccountScopeID); err != nil {
+		t.Fatal(err)
+	}
+	askScope := scope
+	askScope.SessionID = "ask-session"
+	askResult, err := server.ManageMedia(context.Background(), askScope, map[string]any{"action": "retry", "job_id": result.(map[string]any)["job_id"], "count": float64(1)})
+	if err != nil || askResult.(map[string]any)["status"] != "pending_approval" {
+		t.Fatalf("ask retry %v %v", askResult, err)
+	}
+	// The MCP transport must reach the same retry helper, not an independent copy.
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req = req.WithContext(context.WithValue(req.Context(), productPrincipalRequestContextKey, p))
+	req = requestWithScopedToken(req, &pebblestore.ScopedTokenRecord{Scopes: []string{"sessions:write", "sessions:read"}})
+	call := &controlMCPCall{server: server, request: req, next: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v3/projects" {
+			t.Errorf("unexpected route %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"projects": []map[string]any{{"id": project, "name": "Media project", "workspaces": []map[string]any{{"path": root}}}}})
+	})}
+	mcpResult, err := controlMCPRequestMedia(call, map[string]any{"project": project, "retry_of": result.(map[string]any)["job_id"], "brief": "A green circle"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, mcpID, err := controlMCPParseJobID(mcpResult.(map[string]any))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcpTask, _, err := store.GetProjectTask(p.AccountScopeID, project, mcpID)
+	if err != nil || mcpTask.RetryOf != retryTask.RetryOf || mcpTask.Description != "A green circle" || mcpTask.Agent != task.Agent || mcpTask.Status != "pending_approval" || len(mcpTask.AttachedMedia) != 2 {
+		t.Fatalf("MCP retry %+v %v", mcpTask, err)
 	}
 	// Rejected pending tasks cannot start execution or consume allowance.
 	for _, status := range []string{"rejected", "cancelled"} {

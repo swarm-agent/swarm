@@ -421,6 +421,7 @@ type ProjectSpeechSettings struct {
 }
 
 type ProjectTaskRecord struct {
+	RetryOf                string                                   `json:"retry_of,omitempty"`
 	Speech                 *ProjectSpeechSettings                   `json:"speech,omitempty"`
 	EnvironmentAttachments []environments.TaskEnvironmentAttachment `json:"environment_attachments,omitempty"`
 	// Retired IDs cannot be reused: old attachment-bound receipts stay revoked.

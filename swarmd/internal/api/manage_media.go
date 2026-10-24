@@ -8,10 +8,10 @@ import (
 	"mime"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -46,17 +46,52 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 		if project != projectID {
 			return nil, errors.New("media job belongs to another project")
 		}
-		task, found, err := s.sessions.Store().GetProjectTask(p.AccountScopeID, project, id)
-		if err != nil {
-			return nil, err
-		}
-		if !found || task == nil || !isDirectMediaTask(task) {
-			return nil, errors.New("media job not found")
-		}
-		return task, nil
+		return s.readableMediaTask(p, project, id)
 	}
 	root := scope.PrimaryPath
 	switch action {
+	case "list":
+		limit := controlMCPInt(args, "limit", 20)
+		if limit < 1 || limit > 100 {
+			return nil, errors.New("list limit must be between 1 and 100")
+		}
+		tasks := []pebblestore.ProjectTaskRecord{}
+		for _, archived := range []bool{false, true} {
+			items, err := s.sessions.Store().ListProjectTasksByArchive(p.AccountScopeID, projectID, archived)
+			if err != nil {
+				return nil, err
+			}
+			tasks = append(tasks, items...)
+		}
+		sort.Slice(tasks, func(i, j int) bool {
+			if tasks[i].CreatedAt == tasks[j].CreatedAt {
+				return tasks[i].ID > tasks[j].ID
+			}
+			return tasks[i].CreatedAt > tasks[j].CreatedAt
+		})
+		jobs := []map[string]any{}
+		for _, task := range tasks {
+			if task.OriginSessionID != session.ID || !isDirectMediaTask(&task) || (controlMCPString(args, "status") != "" && task.Status != controlMCPString(args, "status")) {
+				continue
+			}
+			view, err := mediaJobFileView(map[string]any{"job_id": controlMCPJobID(controlMCPJobMedia, projectID, task.ID), "kind": task.Agent, "status": task.Status, "created_at": task.CreatedAt, "file_count": len(task.Deliverables)}, &task, nil, func(map[string]any, []controlMCPMediaFile) {})
+			if err != nil {
+				return nil, err
+			}
+			entry := view.(map[string]any)
+			delete(entry, "files")
+			jobs = append(jobs, entry)
+			if len(jobs) == limit {
+				break
+			}
+		}
+		return map[string]any{"jobs": jobs}, nil
+	case "retry":
+		task, err := s.retryMedia(ctx, p, projectID, tool.ProjectTaskCreateInput{ManageMediaSource: true, OriginSessionID: session.ID, WorkspacePath: root, AutoApprove: pebblestore.SessionAccessFromMetadata(session.Metadata).Tasks != pebblestore.SessionTasksAsk}, controlMCPString(args, "job_id"), args)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"job_id": controlMCPJobID(controlMCPJobMedia, projectID, task.ID), "status": task.Status, "retry_of": task.RetryOf}, nil
 	case "generate":
 		kind := controlMCPMediaKinds[controlMCPString(args, "kind")]
 		brief := strings.TrimSpace(controlMCPString(args, "brief"))
@@ -106,17 +141,7 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 		if err := json.Unmarshal(raw, &input.AttachedMedia); err != nil {
 			return nil, err
 		}
-		input.ID = "task_" + uuid.NewString()
-		estimate, err := s.estimateManagedMedia(ctx, p, &input)
-		if err != nil {
-			return nil, err
-		}
-		// Check current usage plus the estimate once without reserving allowance.
-		// Background generation records actual usage when its receipts arrive.
-		if err := s.sessions.Store().CheckWorkerMediaAdmission(p.AccountScopeID, session.ID, estimate); err != nil {
-			return nil, err
-		}
-		task, err := s.CreateProjectTask(ctx, p, projectID, input)
+		task, err := s.createManagedMedia(ctx, p, projectID, input)
 		if err != nil {
 			return nil, err
 		}
@@ -128,7 +153,7 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 	case "get", "save":
 		kind, project, id, err := controlMCPParseJobID(args)
 		if err != nil {
-			return nil, err
+			return nil, errors.New("manage_media get and save require a valid media job_id")
 		}
 		if kind != controlMCPJobMedia {
 			return nil, errors.New("job_id must identify a media job")
@@ -182,7 +207,7 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 		}
 		return mediaJobFileView(map[string]any{"job_id": controlMCPJobID(controlMCPJobMedia, project, id), "status": task.Status}, task, nil, manageMediaJobGuidance)
 	default:
-		return nil, errors.New("action must be models, generate, get or save")
+		return nil, errors.New("action must be models, generate, list, retry, get or save")
 	}
 }
 
@@ -250,7 +275,7 @@ func manageMediaJobGuidance(out map[string]any, _ []controlMCPMediaFile) {
 	case "needs_review", "completed":
 		out["next"] = "The files are ready; use manage_media save to write them into the workspace."
 	case "failed", "blocked", "cancelled", "rejected":
-		out["next"] = "Read each file's error, consult manage_media models for supported options, then use manage_media generate for a corrected new job."
+		out["next"] = "Read each file's error, consult manage_media models for supported options, then use manage_media retry for a corrected new job."
 	default:
 		out["next"] = "Use manage_media get with wait_seconds to wait for the job, then manage_media save when its files are ready."
 	}

@@ -49,14 +49,7 @@ func (c *controlMCPCall) mediaTask(projectID, taskID string) (*pebblestore.Proje
 	if !ok || c.server == nil || c.server.sessions == nil || c.server.sessions.Store() == nil {
 		return nil, controlMCPToolFailure("media files are not available on this machine")
 	}
-	task, found, err := c.server.sessions.Store().GetProjectTask(principal.AccountScopeID, projectID, taskID)
-	if err != nil {
-		return nil, err
-	}
-	if !found || task == nil {
-		return nil, controlMCPToolFailure("job media/%s/%s not found (see swarm_activity)", projectID, taskID)
-	}
-	return task, nil
+	return c.server.readableMediaTask(principal, projectID, taskID)
 }
 
 // mediaFiles decodes a media job's generated files, in order.
@@ -177,6 +170,10 @@ func mediaJobFileView(out map[string]any, task *pebblestore.ProjectTaskRecord, a
 	if priceStatus == "" {
 		priceStatus = "known"
 	}
+	if task.RetryOf != "" {
+		out["retry_of"] = task.RetryOf
+	}
+	out["media_cost_usd"] = total
 	out["cost_usd"] = total
 	out["price_status"] = priceStatus
 	if task.Model != "" {

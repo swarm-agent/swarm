@@ -11,6 +11,18 @@ other built-ins, and can be enabled on custom agents with
   (video), and `inputs`. Inputs are `{path}` within the session workspace or
   `{job_id, file}` from an earlier media job in the same project; file numbers
   start at 1. Video defaults to one clip. The result contains `job_id`.
+- `list` returns only this session's media jobs in its project, newest first,
+  with `job_id`, kind, model, status, `created_at`, `media_cost_usd`, `file_count`
+  and optional `retry_of`. Filter by `status`; `limit` defaults to 20 (1–100).
+  It reads the existing bounded project task listing; no new index is used.
+- `retry` accepts an earlier `job_id` in the same project, at any status. It
+  copies kind, brief, attached inputs and options without changing the earlier
+  task. Override `model`, `brief`, `aspect_ratio`, `resolution`,
+  `duration_seconds`, `count` or video `operation`. The new job records
+  `retry_of`, also returned by `get`. Ownership, model validation, admission,
+  approval and session usage accounting apply just as for generation.
+  Managing clients can pass `retry_of` to MCP `swarm_request_media` with the
+  same overrides; both transports use the shared retry helper.
 - `get` accepts `job_id` and optional `wait_seconds` (0–30), returning status,
   files, model, settings, errors and cost.
 - `save` accepts `job_id` and `folder` within the session workspace. Existing

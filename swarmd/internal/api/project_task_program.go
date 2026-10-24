@@ -494,6 +494,7 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 
 	task := pebblestore.ProjectTaskRecord{
 		OriginSessionID:    origin,
+		RetryOf:            input.MediaRetryOf,
 		ManageMediaSource:  input.ManageMediaSource,
 		ID:                 taskID,
 		ProjectID:          projectID,
