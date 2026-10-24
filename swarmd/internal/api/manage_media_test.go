@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"swarm/packages/swarmd/internal/imagegen"
+	modelruntime "swarm/packages/swarmd/internal/model"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -516,5 +517,46 @@ func TestManageMediaGenerateWithoutProject(t *testing.T) {
 		if err != nil || len(tasks) != 0 {
 			t.Fatalf("project %q tasks %+v error %v", project, tasks, err)
 		}
+	}
+}
+
+// Purpose: internal media results must guide agents through manage_media, not
+// MCP tools. The session bridge and real catalog/file views are the narrowest
+// layer proving caller-selected guidance for models and all job states.
+func TestManageMediaGuidance(t *testing.T) {
+	db, err := pebblestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store := pebblestore.NewSessionStore(db)
+	p := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "user"}
+	if err := store.CreateSessionForAccount(pebblestore.SessionSnapshot{ID: "session", Metadata: map[string]any{"project_id": "project"}}, p.UserID, p.AccountScopeID); err != nil {
+		t.Fatal(err)
+	}
+	catalog := pebblestore.NewModelCatalogStore(db)
+	server := &Server{sessions: session.NewService(store, nil), imageGen: imagegen.NewService(nil, pebblestore.NewAuthStore(db), nil, billingCatalog{}), model: modelruntime.NewService(pebblestore.NewModelStore(db), nil, modelruntime.NewCatalogService(catalog))}
+	scope := tool.WorkspaceScope{SessionID: "session", Principal: p}
+	check := func(args map[string]any) {
+		t.Helper()
+		result, err := server.ManageMedia(context.Background(), scope, args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := json.Marshal(result)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), "swarm_") || strings.Contains(string(data), "include_media") || !strings.Contains(string(data), "manage_media") {
+			t.Fatalf("incorrect guidance %s", data)
+		}
+	}
+	check(map[string]any{"action": "models"})
+	for _, status := range []string{"completed", "needs_review", "failed", "blocked", "cancelled", "rejected", "running", "queued"} {
+		task := &pebblestore.ProjectTaskRecord{ID: "task", ProjectID: "project", AccountID: p.AccountScopeID, Agent: "image", Title: "Guidance fixture", Status: status, Deliverables: []pebblestore.ProjectTaskDeliverable{{Kind: "image", Status: "ready", MediaURL: "data:image/png;base64,aW1hZ2U="}}}
+		if err := store.PutProjectTask(p.AccountScopeID, task); err != nil {
+			t.Fatal(err)
+		}
+		check(map[string]any{"action": "get", "job_id": "media/project/task"})
 	}
 }

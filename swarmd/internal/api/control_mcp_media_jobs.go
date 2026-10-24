@@ -146,10 +146,10 @@ func (c *controlMCPCall) controlMCPMediaJobFiles(out map[string]any, projectID, 
 	if err != nil {
 		return nil, err
 	}
-	return mediaJobFileView(out, task, args)
+	return mediaJobFileView(out, task, args, controlMCPMediaJobGuidance)
 }
 
-func mediaJobFileView(out map[string]any, task *pebblestore.ProjectTaskRecord, args map[string]any) (any, error) {
+func mediaJobFileView(out map[string]any, task *pebblestore.ProjectTaskRecord, args map[string]any, guidance func(map[string]any, []controlMCPMediaFile)) (any, error) {
 	files := mediaTaskFiles(task)
 	views := make([]map[string]any, 0, len(files))
 	for i, file := range files {
@@ -181,7 +181,7 @@ func mediaJobFileView(out map[string]any, task *pebblestore.ProjectTaskRecord, a
 	if task.Model != "" {
 		out["model"] = task.Model
 	}
-	controlMCPMediaJobGuidance(out, files)
+	guidance(out, files)
 	show, _ := args["include_media"].(bool)
 	if !show {
 		return out, nil
@@ -462,10 +462,12 @@ func controlMCPListMediaModels(c *controlMCPCall, args map[string]any) (any, err
 	if !ok || c.server == nil || c.server.imageGen == nil || c.server.model == nil {
 		return nil, controlMCPToolFailure("media models are not available on this machine")
 	}
-	return c.server.mediaModels(c.request.Context(), principal, args)
+	return c.server.mediaModels(c.request.Context(), principal, args, controlMCPMediaModelsGuidance, "%d more need a provider key (include_unready lists them; swarm_list_providers)")
 }
 
-func (s *Server) mediaModels(ctx context.Context, principal identity.Principal, args map[string]any) (any, error) {
+const controlMCPMediaModelsGuidance = "Pass model and its options to swarm_request_media; a value the model does not take is refused before anything is spent. The default is used when no model is named; swarm_set_media_models changes it when the person asks."
+
+func (s *Server) mediaModels(ctx context.Context, principal identity.Principal, args map[string]any, guidance, unreadyGuidance string) (any, error) {
 	if s.imageGen == nil || s.model == nil {
 		return nil, errors.New("media models are not available on this machine")
 	}
@@ -497,14 +499,14 @@ func (s *Server) mediaModels(ctx context.Context, principal identity.Principal, 
 		}
 		entry := map[string]any{"default": def, "models": models}
 		if hidden > 0 {
-			entry["not_ready"] = fmt.Sprintf("%d more need a provider key (include_unready lists them; swarm_list_providers)", hidden)
+			entry["not_ready"] = fmt.Sprintf(unreadyGuidance, hidden)
 		}
 		out[kind] = entry
 	}
 	add("image", image, catalog.ImageModels)
 	add("video", video, catalog.VideoGenerationModels)
 	add("sound", audio, catalog.AudioModels)
-	out["next"] = "Pass model and its options to swarm_request_media; a value the model does not take is refused before anything is spent. The default is used when no model is named; swarm_set_media_models changes it when the person asks."
+	out["next"] = guidance
 	return out, nil
 }
 

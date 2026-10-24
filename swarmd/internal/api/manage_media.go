@@ -30,7 +30,7 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 	}
 	action := controlMCPString(args, "action")
 	if action == "models" {
-		return s.mediaModels(ctx, p, args)
+		return s.mediaModels(ctx, p, args, manageMediaModelsGuidance, "%d more need a provider key; configure credentials before using manage_media models again")
 	}
 	projectID, _ := session.Metadata["project_id"].(string)
 	if projectID == "" {
@@ -170,7 +170,7 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 				}
 			}
 		}
-		return mediaJobFileView(map[string]any{"job_id": controlMCPJobID(controlMCPJobMedia, project, id), "status": task.Status}, task, nil)
+		return mediaJobFileView(map[string]any{"job_id": controlMCPJobID(controlMCPJobMedia, project, id), "status": task.Status}, task, nil, manageMediaJobGuidance)
 	default:
 		return nil, errors.New("action must be models, generate, get or save")
 	}
@@ -224,4 +224,17 @@ func (s *Server) estimateManagedMedia(ctx context.Context, p identity.Principal,
 		opts.Provider = "codex"
 	}
 	return s.sessions.EstimateMediaCostWithOptions(opts), nil
+}
+
+const manageMediaModelsGuidance = "Use manage_media generate with a model and its supported options; manage_media models lists those options. Use manage_media get with wait_seconds to wait, then manage_media save to write files into the workspace."
+
+func manageMediaJobGuidance(out map[string]any, _ []controlMCPMediaFile) {
+	switch out["status"] {
+	case "needs_review", "completed":
+		out["next"] = "The files are ready; use manage_media save to write them into the workspace."
+	case "failed", "blocked", "cancelled", "rejected":
+		out["next"] = "Read each file's error, consult manage_media models for supported options, then use manage_media generate for a corrected new job."
+	default:
+		out["next"] = "Use manage_media get with wait_seconds to wait for the job, then manage_media save when its files are ready."
+	}
 }
