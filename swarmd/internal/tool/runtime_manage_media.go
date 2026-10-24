@@ -41,8 +41,8 @@ func (r *Runtime) executeManageMedia(ctx context.Context, scope WorkspaceScope, 
 	return string(data), err
 }
 
-// ValidateMediaWorkspacePath applies the same protected-path and ownership
-// checks as ordinary workspace file tools before the daemon reads or saves.
+// OpenMediaWorkspacePath applies workspace protection and ownership checks.
+// The caller must retain and close the root and perform all I/O relative to it.
 func OpenMediaWorkspacePath(scope WorkspaceScope, path string, write bool) (*os.Root, string, error) {
 	rooted, err := openRootedWorkspacePath(scope, path)
 	if err != nil {
