@@ -227,12 +227,20 @@ func readWorkflowFile(root *os.Root, path string) ([]byte, error) {
 	if err := workflowNoSymlinks(root, path); err != nil {
 		return nil, err
 	}
+	// Inspect before opening: opening a FIFO can block before f.Stat runs.
+	info, err := root.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("workflow must be a regular file")
+	}
 	f, err := root.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	info, err := f.Stat()
+	info, err = f.Stat()
 	if err != nil {
 		return nil, err
 	}
