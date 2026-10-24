@@ -49,9 +49,12 @@ func (c *controlMCPCall) mediaTask(projectID, taskID string) (*pebblestore.Proje
 	if !ok || c.server == nil || c.server.sessions == nil || c.server.sessions.Store() == nil {
 		return nil, controlMCPToolFailure("media files are not available on this machine")
 	}
-	task, err := c.server.readableMediaTask(principal, projectID, taskID)
+	task, found, err := c.server.sessions.Store().GetProjectTask(principal.AccountScopeID, projectID, taskID)
 	if err != nil {
 		return nil, controlMCPToolFailure("job media/%s/%s: %s (see swarm_activity)", projectID, taskID, err)
+	}
+	if !found || task == nil {
+		return nil, controlMCPToolFailure("job media/%s/%s not found (see swarm_activity)", projectID, taskID)
 	}
 	return task, nil
 }

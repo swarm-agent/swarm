@@ -39,7 +39,7 @@ func TestManageMediaFilesAndInputs(t *testing.T) {
 	store := pebblestore.NewSessionStore(db)
 	p := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "user"}
 	root := t.TempDir()
-	if err := store.CreateSessionForAccount(pebblestore.SessionSnapshot{ID: "session", WorkspacePath: root, Metadata: map[string]any{"project_id": "project"}}, p.UserID, p.AccountScopeID); err != nil {
+	if err := store.CreateSessionForAccount(pebblestore.SessionSnapshot{ID: "session", WorkspacePath: root, Metadata: map[string]any{"project_id": "project", pebblestore.SessionAccessMetadataKey: map[string]any{"tasks": "free"}}}, p.UserID, p.AccountScopeID); err != nil {
 		t.Fatal(err)
 	}
 	task := &pebblestore.ProjectTaskRecord{ID: "task", ProjectID: "project", AccountID: p.AccountScopeID, Agent: "image", Title: "sample", Status: "completed", Deliverables: []pebblestore.ProjectTaskDeliverable{{ID: "file", Kind: "image", Status: "ready", MediaURL: "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("image bytes"))}}}
@@ -168,7 +168,7 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 	store := pebblestore.NewSessionStore(db)
 	p := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "user"}
 	root := t.TempDir()
-	if err := store.CreateSessionForAccount(pebblestore.SessionSnapshot{ID: "session", WorkspacePath: root, Metadata: map[string]any{"project_id": "project"}}, p.UserID, p.AccountScopeID); err != nil {
+	if err := store.CreateSessionForAccount(pebblestore.SessionSnapshot{ID: "session", WorkspacePath: root, Metadata: map[string]any{"project_id": "project", pebblestore.SessionAccessMetadataKey: map[string]any{"tasks": "free"}}}, p.UserID, p.AccountScopeID); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.PutProject(p.AccountScopeID, &pebblestore.ProjectRecord{ID: "project", Name: "Media project", AccountID: p.AccountScopeID}); err != nil {
@@ -361,6 +361,23 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 	if err != nil || askResult.(map[string]any)["status"] != "pending_approval" {
 		t.Fatalf("ask retry %v %v", askResult, err)
 	}
+	// Purpose: below the batch-confirmation threshold, approval intent must
+	// distinguish the session's ask setting from automatic retry approval.
+	autoResult, err := server.ManageMedia(context.Background(), scope, map[string]any{"action": "retry", "job_id": result.(map[string]any)["job_id"], "count": float64(1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, autoID, _ := controlMCPParseJobID(autoResult.(map[string]any))
+	autoTask, autoFound, err := store.GetProjectTask(p.AccountScopeID, project, autoID)
+	if err != nil || !autoFound || !autoTask.AutoApprove {
+		t.Fatalf("auto retry intent: %+v %v", autoTask, err)
+	}
+	// Approval intent, unlike fixture status, distinguishes ask from auto approval.
+	_, _, askID, _ := controlMCPParseJobID(askResult.(map[string]any))
+	askTask, found, err := store.GetProjectTask(p.AccountScopeID, project, askID)
+	if err != nil || !found || askTask.AutoApprove {
+		t.Fatalf("ask retry approval intent: %+v %v", askTask, err)
+	}
 	// The MCP transport must reach the same retry helper, not an independent copy.
 	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 	req = req.WithContext(context.WithValue(req.Context(), productPrincipalRequestContextKey, p))
@@ -384,7 +401,7 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 	} else if _, ok := failure.(controlMCPToolError); !ok {
 		t.Fatalf("media lookup refusal: %T", failure)
 	}
-	mcpResult, err := controlMCPRequestMedia(call, map[string]any{"project": project, "retry_of": result.(map[string]any)["job_id"], "brief": "A green circle"})
+	mcpResult, err := controlMCPRequestMedia(call, map[string]any{"project": project, "retry_of": result.(map[string]any)["job_id"], "brief": "A green circle", "count": float64(1)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -393,7 +410,7 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 		t.Fatal(err)
 	}
 	mcpTask, _, err := store.GetProjectTask(p.AccountScopeID, project, mcpID)
-	if err != nil || mcpTask.RetryOf != retryTask.RetryOf || mcpTask.Description != "A green circle" || mcpTask.Agent != task.Agent || mcpTask.Status != "pending_approval" || len(mcpTask.AttachedMedia) != 2 {
+	if err != nil || !mcpTask.AutoApprove || mcpTask.RetryOf != retryTask.RetryOf || mcpTask.Description != "A green circle" || mcpTask.Agent != task.Agent || len(mcpTask.AttachedMedia) != 2 {
 		t.Fatalf("MCP retry %+v %v", mcpTask, err)
 	}
 	// Rejected pending tasks cannot start execution or consume allowance.
