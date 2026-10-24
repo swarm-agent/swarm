@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Make the README easier to discover with a self-hosted agent fleet introduction, verified use cases, AI setup links, project disambiguation and updated GitHub metadata; place License last. Docs impact: README only.
+
 - Give active workflow-native reviewer and reviewer-fixer tasks worker-style permission handling: only owner bypass or existing policy allows authorize tools; calls requiring consent are refused without pending prompts, with retry guidance during sandbox startup. Interactive and finished-task sessions retain normal approval behavior. Docs impact: none.
 - Add session-scoped `manage_media list` and shared media retries with provenance, ownership and spending checks, including MCP `retry_of`. Docs impact: updated `docs/manage-media.md`.
 

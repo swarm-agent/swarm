@@ -4,19 +4,23 @@
 
 # Swarm
 
-**Swarm runs AI agents on your own machine, and your AI tells them what to do.**
+**A self-hosted, headless agent fleet for your AI: Claude Code, Codex or ChatGPT delegates work over MCP to coding, research, design and media agents on your own Linux machines.**
 
-Install it on a Linux machine (your own PC or a server). Your AI (Claude Code,
-Codex, ChatGPT) connects to it and gets work done in your folders two ways:
+[Website](https://swarmagent.dev) · [Docs](https://swarmagent.dev/docs) · [AI setup playbook](https://swarmagent.dev/llms.txt)
+
+Install it on your Linux PC or server. Your AI connects to Swarm's MCP server
+and gets work done in your folders two ways:
 
 - **Delegate a goal to Swarm.** It plans the work and splits it across its
   coder, finder and designer.
-- **Give a job straight to a worker:** the **coder** (code), **designer** (UI
-  and HTML designs), **finder** (research and audits), **reviewer** (reviews
-  another job), **media** (images, video, sound), or your own workers.
+- **Give work directly to an agent:** the **coder** (code), **designer** (UI
+  and HTML designs), **finder** (research and audits), or **media** (images,
+  video, sound). Use your own workers for jobs with standing instructions,
+  and add a reviewer step to a workflow to review completed work.
 
-Every job works on its own branch and comes back with a report and its cost;
-your AI reviews it and merges it. When you want more:
+Coding tasks use isolated branches and return a report and cost information;
+your AI reviews the changes before authorizing a merge. Research and media
+return reports or files instead. When you want more:
 
 - **Workers:** your own named workers with standing instructions.
 - **Schedules:** a worker runs a job every N minutes or on cron.
@@ -33,13 +37,34 @@ By default agents run on the machine as Swarm's own user, without permission
 prompts and without a sandbox; `install.sh sandbox on` runs every command in
 one container per project. There is no dashboard to learn: you talk to your
 AI, it talks to Swarm through its MCP tools. The only page is the setup page
-where you type your keys (or a script does it). A desktop app comes later, on
-top of this.
+where you type your keys (or a script does it).
 
 This repository is under active development; this README describes what the
 current code does.
 
+This is [swarm-agent/swarm](https://github.com/swarm-agent/swarm) at
+[swarmagent.dev](https://swarmagent.dev), not OpenAI's Swarm framework,
+Docker Swarm, or kyegomez/swarms.
+
+## When to use Swarm
+
+- Run coding agents in parallel in the background while you keep working,
+  within your configured concurrency and approval limits.
+- Run a self-hosted agent fleet on your own Linux machines. Commands and
+  checkouts stay there; configured model providers still receive model requests.
+- Let Claude Code, Codex or ChatGPT delegate work through MCP tools, wait for
+  the result, and read reported token usage and estimated cost.
+- Use your ChatGPT plan, your Claude plan through Claude Code, or provider
+  API keys to run agents.
+- Reach agents across several machines as one fleet through the
+  [tailnet MCP server](packages/swarm-fleet/README.md).
+- Give agents folder-scoped secrets through environments: agents see stand-ins,
+  and real values are sent only to allowed websites.
+
 ## Install
+
+**For AI assistants:** when asked to set up Swarm, read
+[the AI setup playbook](https://swarmagent.dev/llms.txt) and follow it.
 
 Ubuntu 24.04, x86_64. From your own account:
 
@@ -101,7 +126,7 @@ follow the activity feed.
 | `swarm_set_agent_model` | change a role's model (only when you ask) |
 | `swarm_create_project` | a project: a name and your folders (nothing in them is changed) |
 | `swarm_run_task`, `swarm_wait_task`, `swarm_task_result` | delegate a goal to Swarm, which splits it across its coder, finder and designer |
-| `swarm_give_job` | give one worker (coder, designer, finder, reviewer or your own) a job in a project's folder |
+| `swarm_give_job` | give one of your own workers a job in a project's folder; use `swarm_run_task` with a role for built-in agents |
 | `swarm_get_job` | wait for it; the result: branch, commits, files, report, cost, diff, transcript |
 | `swarm_message_job` | a follow-up in the same job: more to do, a correction, a redo |
 | `swarm_answer_job` | reply when a worker asks something |
@@ -167,7 +192,7 @@ Run the repository pre-commit gate before committing changes:
 
 That gate includes repository policy checks, secret checks, hardcoded-path checks, and vulnerability scanning. Additional development scripts live under `scripts/`.
 
-Live candidate testing runs in the release pipeline, not from this checkout. The host Swarm service and host ports `5555/7781` are not a live candidate-test target.
+Live candidate testing runs in the release pipeline, not from this checkout. The host Swarm service and its ports are not a live candidate-test target.
 
 Common source-checkout commands:
 
@@ -182,19 +207,17 @@ swarm dev info
 
 These fields must be set in the GitHub repository UI by a maintainer:
 
+**Website:** https://swarmagent.dev
+
 **About description**
 
-> Swarm runs AI agents on your own machine for your AI (Claude Code, Codex, ChatGPT): workers, jobs, schedules, automations, environments and monitoring over MCP.
+> A self-hosted agent fleet for your AI: Claude Code, Codex and ChatGPT delegate over MCP to coding, research, design and media agents on your own Linux machines.
 
 **Topics**
 
-`ai-coding-agent`, `developer-tools`, `terminal-ui`, `tui`, `desktop-app`, `go`, `golang`, `local-first`, `multi-agent`, `coding-assistant`, `llm`, `ai-tools`, `workspace-management`, `permissions`, `websocket`, `react`, `vite`, `pebble`, `cli`, `open-source`
+`ai-agents`, `coding-agent`, `mcp`, `mcp-server`, `self-hosted`, `agent-orchestration`, `multi-agent`, `claude-code`, `codex`, `chatgpt`, `background-agents`, `agent-fleet`, `llm`, `ai-tools`, `developer-tools`, `golang`, `linux`, `open-source`
 
-## License
-
-Apache License 2.0. See [`LICENSE`](LICENSE).
-
-### Sandbox build caches
+## Sandbox build caches
 
 Installed sandboxes share a project-local Go build/module cache and pnpm store
 across jobs and reviewers, including custom environments. `-trimpath` enables
@@ -203,3 +226,7 @@ reuse across checkout paths. Configure the per-project soft limit with
 10 GiB; read live at trimming time). The image's warm pnpm store is seeded too.
 See [sandbox resources](docs/sandbox-resources.md) for seeding, concurrency,
 size reporting, and trimming limitations.
+
+## License
+
+Apache License 2.0. See [`LICENSE`](LICENSE).
