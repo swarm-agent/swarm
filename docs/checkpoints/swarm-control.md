@@ -145,9 +145,9 @@ Disabling a schedule cancels its runs still in flight.
 
 **Schedules.** A worker's schedule is part of the create request, so it is
 approved with the worker, and is enabled only after the workspace binding. The
-scheduled plan is a template without plan identity. Later schedule changes to
-an existing worker are staged for owner review, which Swarm Control cannot
-accept.
+scheduled plan is a template without plan identity. Later worker and schedule edits apply when saved, without owner acceptance.
+Already admitted jobs retain their pinned revision; subsequent jobs use the new
+revision. Legacy pending reviews remain available for explicit acceptance.
 
 **No plan mode.** Callers author the plan (goal, constraints, checkpoints with
 acceptance criteria). The tool validates it with Swarm's strict executable-plan

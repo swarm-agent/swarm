@@ -639,9 +639,6 @@ func (s *Server) handleWorkerByID(w http.ResponseWriter, r *http.Request, p iden
 				return
 			} else if found {
 				role = current.Role
-				if current.PendingReview != nil {
-					role = current.PendingReview.Role
-				}
 			}
 			resolved, err := execution.ResolveRoleModelProfile(p.AccountScopeID, role, req.ModelProfile)
 			if err != nil {
@@ -658,9 +655,6 @@ func (s *Server) handleWorkerByID(w http.ResponseWriter, r *http.Request, p iden
 		if !found {
 			workerHTTPError(w, pebblestore.ErrWorkerNotFound)
 			return
-		}
-		if candidate.PendingReview != nil {
-			candidate = *candidate.PendingReview
 		}
 		if req.Agent != nil {
 			candidate.Agent = *req.Agent

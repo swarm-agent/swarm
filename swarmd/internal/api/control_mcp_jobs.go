@@ -266,7 +266,7 @@ func controlMCPListWorkerJobs(c *controlMCPCall, args map[string]any) (any, erro
 }
 
 func controlMCPDeployWorker(c *controlMCPCall, args map[string]any) (any, error) {
-	if _, hasAgent := args["agent"]; hasAgent && (controlMCPString(args, "worker") != "" || controlMCPString(args, "preset") != "") {
+	if _, hasAgent := args["agent"]; hasAgent && controlMCPString(args, "preset") != "" {
 		return nil, controlMCPToolFailure("agent is for custom worker creation; use swarm_update_worker to change an existing worker's agent")
 	}
 	if raw, exists := args["model"]; exists && raw != nil {
@@ -296,9 +296,6 @@ func controlMCPDeployWorker(c *controlMCPCall, args map[string]any) (any, error)
 			}
 		}
 		if match != nil {
-			if _, hasAgent := args["agent"]; hasAgent {
-				return nil, controlMCPToolFailure("use swarm_update_worker to change an existing worker's agent")
-			}
 			return c.deployWorkerModel(match, args)
 		}
 	}

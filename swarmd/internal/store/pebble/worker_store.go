@@ -1228,12 +1228,8 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 	if current.LifecycleState != WorkerLifecycleStateIdle && current.LifecycleState != WorkerLifecycleStatePending && current.LifecycleState != WorkerLifecycleStateActive && current.LifecycleState != WorkerLifecycleStatePaused {
 		return WorkerRecord{}, ErrActiveScheduleUpdateRejected
 	}
-	staged := current.LifecycleState != WorkerLifecycleStatePending
+	established := current.LifecycleState != WorkerLifecycleStatePending
 	approved := current
-	if current.PendingReview != nil {
-		current = *current.PendingReview
-	}
-	current.PendingReview = nil
 
 	now := time.Now().UnixMilli()
 	updated := current
@@ -1296,7 +1292,7 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 			aCopy := a
 			autoID := strings.TrimSpace(aCopy.ID)
 			var prior *WorkerAutomationDefinition
-			if autoID == "" && staged {
+			if autoID == "" && established {
 				for _, priorAuto := range current.Automations {
 					if strings.TrimSpace(priorAuto.Name) == name {
 						autoID = priorAuto.ID
@@ -1331,7 +1327,7 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 				aCopy.CreatedAt = now
 			}
 			aCopy.UpdatedAt = now
-			if staged && prior != nil {
+			if established && prior != nil {
 				comparison := aCopy
 				comparison.Revision, comparison.UpdatedAt = prior.Revision, prior.UpdatedAt
 				if reflect.DeepEqual(comparison, *prior) {
@@ -1340,7 +1336,7 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 			}
 			automations[i] = aCopy
 		}
-		if staged {
+		if established {
 			merged := append([]WorkerAutomationDefinition(nil), current.Automations...)
 			for _, a := range automations {
 				replaced := false
@@ -1377,6 +1373,14 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 		updated.Automations = kept
 	}
 
+	if len(updated.RequestedCapabilities) != 0 {
+		return WorkerRecord{}, fmt.Errorf("%w: capability approvals unsupported", ErrWorkerConflict)
+	}
+	if established {
+		if _, err := WorkerPrimaryBinding(updated.WorkspaceRequirements, updated.LocalBindings); err != nil {
+			return WorkerRecord{}, fmt.Errorf("%w: %v", ErrWorkerConflict, err)
+		}
+	}
 	updated.Revision = approved.Revision + 1
 	updated.UpdatedAt = now
 	validation := updated
@@ -1384,19 +1388,14 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 	if err := ValidateWorkerRecord(&validation, validate); err != nil {
 		return WorkerRecord{}, err
 	}
-	if staged {
+	if established {
 		if len(updated.ProposedBindings) == 0 {
 			updated.ProposedBindings = approved.LocalBindings
 		}
 		if len(approved.LocalBindings) != 0 && !reflect.DeepEqual(updated.ProposedBindings, approved.LocalBindings) {
 			return WorkerRecord{}, fmt.Errorf("%w: changing approved workspace requires explicit rebind", ErrWorkerConflict)
 		}
-		updated.LocalBindings = nil
-		updated.LifecycleState = WorkerLifecycleStatePending
-		candidate := updated
-		updated = approved
-		updated.Revision, updated.UpdatedAt = candidate.Revision, now
-		updated.PendingReview = &candidate
+		// Preserve legacy proposals for explicit acceptance, but never stage new edits.
 		encoded, err := json.Marshal(updated)
 		if err != nil {
 			return WorkerRecord{}, err
@@ -1405,7 +1404,7 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 			return WorkerRecord{}, errors.New("worker and pending review exceed maximum size of 1 MiB")
 		}
 		if req.ChangeSummary == "" {
-			req.ChangeSummary = "proposed worker changes; approved work unchanged"
+			req.ChangeSummary = "updated worker"
 		}
 	}
 
@@ -1645,7 +1644,7 @@ func (ws *WorkerStore) AttachWorkerAutomation(account, user, workerID string, ex
 		if auto.ID != "" {
 			return WorkerRecord{}, ErrWorkerConflict
 		}
-		return ws.UpdateWorker(account, user, workerID, expectedWorkerRevision, UpdateWorkerRequest{Automations: []WorkerAutomationDefinition{auto}, ChangeSummary: "proposed attached job"}, validate)
+		return ws.UpdateWorker(account, user, workerID, expectedWorkerRevision, UpdateWorkerRequest{Automations: []WorkerAutomationDefinition{auto}, ChangeSummary: "attached job"}, validate)
 	}
 	if ws == nil || ws.store == nil || ws.store.db == nil {
 		return WorkerRecord{}, errors.New("store is not open")
@@ -3214,14 +3213,9 @@ func legacyWorkerSnapshot(account string, rec AutomationV2Record, now int64) (Wo
 	return w, nil
 }
 
-// workerProposalHasAutomation reports whether the worker's pending proposal
-// (or, without one, the approved worker) has the automation.
+// workerProposalHasAutomation reports whether the current worker has the automation.
 func workerProposalHasAutomation(w WorkerRecord, automationID string) bool {
-	effective := w
-	if w.PendingReview != nil {
-		effective = *w.PendingReview
-	}
-	for _, a := range effective.Automations {
+	for _, a := range w.Automations {
 		if a.ID == strings.TrimSpace(automationID) {
 			return true
 		}

@@ -121,6 +121,23 @@ func controlMCPRunModel(run map[string]any) map[string]any {
 }
 
 func (c *controlMCPCall) deployWorkerModel(worker map[string]any, args map[string]any) (any, error) {
+	if role := controlMCPString(args, "role"); role != "" && role != worker["role"] {
+		return nil, controlMCPToolFailure("changing an existing worker's role is not supported; create a new worker")
+	}
+	body := map[string]any{"expected_revision": controlMCPRevision(worker)}
+	for _, key := range []string{"instructions", "description", "agent"} {
+		if value, present := args[key]; present {
+			body[key] = value
+		}
+	}
+	if len(body) > 1 {
+		id, _ := worker["id"].(string)
+		response, err := c.dispatch(http.MethodPut, "/v3/workers/"+id, nil, body)
+		if err != nil {
+			return nil, err
+		}
+		worker = controlMCPMap(response["worker"])
+	}
 	if raw, exists := args["model"]; exists {
 		id, _ := worker["id"].(string)
 		response, err := c.dispatch(http.MethodPut, "/v3/workers/"+id+"/model", nil, map[string]any{"expected_revision": controlMCPRevision(worker), "model": raw})

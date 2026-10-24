@@ -175,10 +175,10 @@ func TestWorkerSchedulerEditReschedules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if proposed.PendingReview != nil {
-		if proposed, err = fx.ws.AcceptWorker(schedulerAccount, schedulerUser, w.ID, proposed.Revision, nil); err != nil {
-			t.Fatal(err)
-		}
+	// UpdateWorkerAutomation must publish the new schedule directly; requiring
+	// acceptance here would conceal a regression to staged worker edits.
+	if proposed.PendingReview != nil || proposed.Revision != w.Revision+1 {
+		t.Fatal("schedule edit was not applied directly")
 	}
 	select {
 	case <-h.sch.wake:

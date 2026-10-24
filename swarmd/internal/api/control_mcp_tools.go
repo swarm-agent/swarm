@@ -860,7 +860,7 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_update_worker", Title: "Update a worker",
-			Description: "Change a worker's name, description, instructions or custom agent tools. Runs already started keep their worker revision.",
+			Description: "Save a worker's name, description, instructions or custom agent tools immediately, without an edit approval step. Runs already started keep their worker revision.",
 			InputSchema: controlMCPObject([]string{"worker_id"}, map[string]any{
 				"worker_id":    workerID,
 				"agent":        controlMCPStringProp("Custom agent whose current tools and instructions this worker uses; empty clears it.", 0, 63),
