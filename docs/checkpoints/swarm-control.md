@@ -342,3 +342,25 @@ machine, ChatGPT, Claude Code routines, and long-running reconnect behaviour.
 `swarm_deliver_job` merges a job into its folder, or opens its pull request
 when the folder's owner set a publish command. Nothing is delivered without
 that call: a job ends when its agent has built, tested and committed its work.
+
+### Speech narration
+
+`swarm_media_models` now lists supported Gemini TTS voices, WAV format, catalog prices and the conservative 8,000-UTF-8-byte complete-prompt limit. Use `kind: "sound"`, `operation: "speech"`, an explicit model, `text` and `voice`; optional `style`, `language` and `format` supply direction. No cloning, live voice, media inputs, duration selection or multiple outputs.
+
+```json
+{"kind":"sound","operation":"speech","model":"gemini-2.5-flash-preview-tts","text":"Welcome to the demonstration.","voice":"Kore","style":"Calm narrator","language":"English","format":"wav"}
+```
+
+HTTP project-task creation and SDK `CreateProjectTaskParams` use `agent: "sound"`, `operation: "speech"`, `model`, and nested `speech: {text, voice, style?, language?, format?}`. Existing authentication/project ownership rules apply.
+
+The job lists WAV audio and timing JSON as separate files; `swarm_save_media` saves both side by side. Each file exposes `cost_usd`, `price_status` and `pricing_summary`, backed by separate idempotent generation/transcription receipts. Missing catalog rates or usage stay explicitly `unknown`, not free. Retained audio avoids repeating synthesis after alignment failure. A failed alignment that already incurred usage requires a new job to authorize another paid attempt.
+
+Gemini has no native alignment. Swarm transcribes generated audio through the structured-transcript primitive and shared normalizer, requesting word timestamps with the account's configured Google audio-input transcription model. These are semantic estimates, not forced alignment. The provider-neutral interface permits native alignment later. If only segments are returned, the result explicitly uses `granularity: "segment"` and `segments`; no word times are fabricated.
+
+Illustrative timing JSON (seconds from audio start):
+
+```json
+{"granularity":"word","source":"transcription","words":[{"word":"Welcome","start":0.12,"end":0.54}]}
+```
+
+Segment entries have the same shape, with `word` containing the segment text. Configure the existing account Google key and transcription model before requesting speech. Invalid transcription fails visibly while preserving generated audio. No live-provider qualification is implied by unit tests.

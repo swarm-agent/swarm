@@ -1309,7 +1309,11 @@ func controlMCPRequestMedia(c *controlMCPCall, args map[string]any) (any, error)
 		return nil, err
 	}
 	projectID, path := place.projectID, place.path
-	taskArgs := map[string]any{"project_id": projectID, "role": kind, "brief": controlMCPString(args, "brief"), "workspace": path}
+	brief := controlMCPString(args, "brief")
+	if brief == "" && controlMCPString(args, "operation") == "speech" {
+		brief = "Generate speech narration"
+	}
+	taskArgs := map[string]any{"project_id": projectID, "role": kind, "brief": brief, "workspace": path}
 	if title := controlMCPString(args, "title"); title != "" {
 		taskArgs["title"] = title
 	}
@@ -1319,6 +1323,20 @@ func controlMCPRequestMedia(c *controlMCPCall, args map[string]any) (any, error)
 	for _, arg := range []string{"model", "aspect_ratio", "resolution"} {
 		if value := strings.TrimSpace(controlMCPString(args, arg)); value != "" {
 			body[arg] = value
+		}
+	}
+	if operation := controlMCPString(args, "operation"); operation == "speech" {
+		body["operation"] = operation
+		speech := map[string]string{}
+		for _, key := range []string{"text", "voice", "style", "language", "format"} {
+			speech[key] = controlMCPString(args, key)
+		}
+		body["speech"] = speech
+	} else {
+		for _, key := range []string{"text", "voice", "style", "language", "format"} {
+			if controlMCPString(args, key) != "" {
+				return nil, controlMCPToolFailure("%s requires operation speech", key)
+			}
 		}
 	}
 	if kind == "video" {
@@ -1643,7 +1661,7 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_media_models", Title: "Media models and their options",
-			Description: "The image, video and sound models this machine can use: the default per kind, and for each model its aspect ratios, resolutions, lengths (by resolution), how many at once, whether it takes an input image, its operations (create, extend, edit) and pricing. Read it before swarm_request_media to pick a model and values it takes; anything else is refused before anything is spent.",
+			Description: "The image, video and sound models this machine can use: the default per kind, and for each model its aspect ratios, resolutions, lengths (by resolution), how many at once, whether it takes an input image, its operations (create, extend, edit, speech), speech voices/formats/input limits and pricing. Read it before swarm_request_media to pick a model and values it takes; anything else is refused before anything is spent.",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"kind":            map[string]any{"type": "string", "enum": []string{"image", "video", "sound"}, "description": "Only this kind. Default: all."},
 				"include_unready": map[string]any{"type": "boolean", "description": "Also list models whose provider has no key yet."},
@@ -1652,16 +1670,21 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_request_media", Title: "Make an image, video or sound",
-			Description: "Make media with the machine's media models: kind and a detailed brief (for music, the style and any lyrics), optionally model and its options (swarm_media_models lists them; without a model the default for the kind is used). inputs are images or videos to start from: an earlier media job's file (job_id and file number) or a file in a registered workspace (absolute path): an image to edit, the first frame of a video, references, or a video to extend or edit with operation. Returns a job_id; swarm_get_job lists the files when it is done (include_media shows images), swarm_save_media writes them into a workspace. Every result costs money with the provider.",
-			InputSchema: controlMCPObject([]string{"kind", "brief"}, map[string]any{
+			Description: "Make media with the machine's media models. For narration use kind sound, operation speech, explicit TTS model, text and voice; optional style, language and format. Returns audio and timing JSON (granularity word or segment), with generation and transcription costs. Generation only; no cloning or live voice. Otherwise: kind and a detailed brief (for music, the style and any lyrics), optionally model and its options (swarm_media_models lists them; without a model the default for the kind is used). inputs are images or videos to start from: an earlier media job's file (job_id and file number) or a file in a registered workspace (absolute path): an image to edit, the first frame of a video, references, or a video to extend or edit with operation. Returns a job_id; swarm_get_job lists the files when it is done (include_media shows images), swarm_save_media writes them into a workspace. Every result costs money with the provider.",
+			InputSchema: controlMCPObject([]string{"kind"}, map[string]any{
 				"kind":             map[string]any{"type": "string", "enum": []string{"image", "video", "sound"}},
 				"brief":            controlMCPStringProp("What to make, in detail.", 1, 20000),
 				"model":            controlMCPStringProp("Model id from swarm_media_models. Default: the kind's default.", 0, 200),
 				"aspect_ratio":     controlMCPStringProp("Image or video aspect ratio the model takes, e.g. 16:9.", 0, 20),
 				"resolution":       controlMCPStringProp("Image size (e.g. 1K, 2K, 4K) or video resolution (e.g. 720p, 1080p, 4k) the model takes.", 0, 20),
+				"text":             map[string]any{"type": "string", "description": "Speech script. Complete script plus style/language direction must fit the model limit."},
+				"voice":            map[string]any{"type": "string", "description": "Speech provider voice name from swarm_media_models."},
+				"style":            map[string]any{"type": "string", "description": "Optional speech direction."},
+				"language":         map[string]any{"type": "string", "description": "Optional spoken language direction."},
+				"format":           map[string]any{"type": "string", "description": "Speech output format, currently wav."},
 				"duration_seconds": map[string]any{"type": "integer", "minimum": 0, "maximum": 300, "description": "Video or sound length in seconds, one the model takes."},
 				"count":            map[string]any{"type": "integer", "minimum": 0, "maximum": 8, "description": "How many results (variants). Default 1."},
-				"operation":        map[string]any{"type": "string", "enum": []string{"create", "extend", "edit"}, "description": "Video only: extend or edit the video given in inputs (see the model's operations). An image with an input image is an edit of it. Default create."},
+				"operation":        map[string]any{"type": "string", "enum": []string{"create", "extend", "edit", "speech"}, "description": "Sound: speech generates narration with text and voice. Video: extend or edit the video given in inputs (see the model's operations). An image with an input image is an edit of it. Default create."},
 				"inputs": map[string]any{"type": "array", "maxItems": 14, "description": "Files to start from.", "items": map[string]any{"type": "object", "properties": map[string]any{
 					"job_id": map[string]any{"type": "string", "description": "An earlier media job (media/…)."},
 					"file":   map[string]any{"type": "integer", "minimum": 1, "description": "Its file number (swarm_get_job lists them). Default 1."},

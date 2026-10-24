@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"swarm/packages/swarmd/internal/audiogen"
 
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
@@ -57,6 +58,10 @@ type MediaInitialImageOption struct {
 }
 
 type mediaCatalogGenerationOptions struct {
+	Speech              bool                                `json:"speech,omitempty"`
+	Voices              []string                            `json:"voices,omitempty"`
+	Formats             []string                            `json:"formats,omitempty"`
+	MaxPromptBytes      int                                 `json:"max_prompt_bytes,omitempty"`
 	AspectRatios        []string                            `json:"aspect_ratios,omitempty"`
 	Resolutions         []string                            `json:"resolutions,omitempty"`
 	Durations           []int                               `json:"durations,omitempty"`
@@ -485,6 +490,9 @@ func containsAnyStringFold(slice []any, val string) bool {
 }
 
 func extractModelGenerationOptions(record pebblestore.ModelCatalogRecord) *mediaCatalogGenerationOptions {
+	if record.Provider == "google" && audiogen.SpeechModel(record.Model) {
+		return &mediaCatalogGenerationOptions{Speech: true, Voices: audiogen.SpeechVoices(), Formats: []string{"wav"}, MaxPromptBytes: audiogen.SpeechMaxPromptBytes, MaxOutputs: 1}
+	}
 	if len(record.ProviderSpecific) == 0 {
 		return nil
 	}

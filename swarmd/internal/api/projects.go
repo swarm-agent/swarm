@@ -1011,6 +1011,12 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 				task.Status = "in_progress"
 				task.ActionNeeded = fmt.Sprintf("Rendering %d video deliverable(s)...", count)
 				task.WhatDidDo = []string{"Approved mission", fmt.Sprintf("Rendering %d video clip(s) with %s", count, videoModel)}
+			} else if task.Operation == "speech" {
+				if err := validateSpeechTask(task); err != nil {
+					return err
+				}
+				task.Status = "in_progress"
+				task.ActionNeeded = "Generating speech and timings..."
 			} else if task.Agent == "sound" || task.Agent == "audio" {
 				soundModel := strings.TrimSpace(task.Model)
 				if soundModel == "" {
@@ -2352,6 +2358,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			var req struct {
+				Speech              *pebblestore.ProjectSpeechSettings       `json:"speech,omitempty"`
 				ID                  string                                   `json:"id,omitempty"`
 				Title               string                                   `json:"title"`
 				Description         string                                   `json:"description,omitempty"`
@@ -2420,6 +2427,29 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
+			if req.Speech != nil || req.Operation == "speech" {
+				preflight := &pebblestore.ProjectTaskRecord{Agent: req.Agent, Operation: req.Operation, Speech: req.Speech, Model: req.Model, DurationSeconds: req.DurationSeconds, AspectRatio: req.AspectRatio, Resolution: req.Resolution, VariantCount: req.VariantCount, AttachedMedia: req.AttachedMedia}
+				if preflight.Agent == "" {
+					preflight.Agent = req.Intent
+				}
+				if err := validateSpeechTask(preflight); err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+				if s.audioGen == nil {
+					writeError(w, http.StatusBadRequest, errors.New("speech service unavailable"))
+					return
+				}
+				if _, err := s.audioGen.SpeechAlignmentModel(p.AccountScopeID); err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+				if req.TaskProgram != nil || req.Document != nil || req.PlanDocument != nil || len(req.CoderAssignments) > 0 || len(req.Deliverables) > 0 || req.EnhancePrompt != nil && *req.EnhancePrompt {
+					writeError(w, http.StatusBadRequest, errors.New("speech cannot carry source execution, deliverables or prompt enhancement"))
+					return
+				}
+				req.Intent = "sound"
+			}
 			isMediaRequest := req.Agent == "image" || req.Agent == "video" || req.Agent == "sound" || req.Agent == "audio" || req.Intent == "image" || req.Intent == "video" || req.Intent == "sound" || req.Intent == "audio" || req.Operation != ""
 			if isMediaRequest {
 				count, err := projectMediaBatchCount(req.VariantCount, req.DeliverableCount, len(req.Deliverables))
@@ -2540,7 +2570,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			}
 
 			reqOp := strings.ToLower(strings.TrimSpace(req.Operation))
-			if reqOp != "" && reqOp != pebblestore.VideoOperationCreate && reqOp != pebblestore.VideoOperationEdit && reqOp != pebblestore.VideoOperationExtend {
+			if reqOp != "" && reqOp != pebblestore.VideoOperationCreate && reqOp != pebblestore.VideoOperationEdit && reqOp != pebblestore.VideoOperationExtend && reqOp != "speech" {
 				writeError(w, http.StatusBadRequest, fmt.Errorf("task operation %q is invalid; must be create, edit, or extend", req.Operation))
 				return
 			}
@@ -2742,7 +2772,13 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				return res.Text, nil
 			})
 			var routed pebblestore.TaskRouteResult
-			if isDirectSound {
+			if reqOp == "speech" {
+				title := strings.TrimSpace(req.Title)
+				if title == "" {
+					title = "Speech narration"
+				}
+				routed = pebblestore.TaskRouteResult{Title: title, Agent: "sound", OutcomeType: "audio_clip", Tier: "direct", VariantCount: 1, Stages: []string{"Speech generation", "Speech alignment"}, Deliverables: []pebblestore.ProjectTaskDeliverable{{ID: "deliv_speech", Title: title, Kind: "audio", Status: "pending"}}}
+			} else if isDirectSound {
 				soundModel := strings.TrimSpace(req.Model)
 				if soundModel == "" && s.uiSettings != nil && strings.TrimSpace(p.AccountScopeID) != "" {
 					if uiSet, err := s.uiSettings.GetForAccount(p.AccountScopeID); err == nil {
@@ -3016,6 +3052,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				AutomationID:        "",
 				OutcomeType:         outcomeType,
 				Operation:           reqOp,
+				Speech:              req.Speech,
 				WorkspacePath:       strings.TrimSpace(req.WorkspacePath),
 				WorktreeBranch:      worktreeBranch,
 				WorktreeName:        worktreeName,

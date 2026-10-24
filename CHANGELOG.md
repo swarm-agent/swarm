@@ -7,6 +7,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 ## Unreleased
 
 - Recover interrupted media jobs from persisted files on daemon startup: completed files settle for review, missing files fail with a restart reason, and generation and billing are not replayed. Recovery uses compact summaries, preserves normal task notifications, and isolates unrecoverable records without blocking startup. Docs impact: none
+- Add generation-only Gemini speech requests to sound media jobs, with voice/format validation, timing JSON, catalog-backed generation/transcription receipts and SDK speech settings. Docs impact: docs/checkpoints/swarm-control.md and MCP media tool descriptions.
 
 - Apply worker and attached-job edits immediately while retaining pinned run revisions and legacy review acceptance; MCP deployment updates existing worker instructions, description and agent. Docs impact: `docs/checkpoints/swarm-control.md`, `docs/swarm-atlas.md`.
 

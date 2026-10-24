@@ -696,6 +696,7 @@ export interface ProjectTaskAttempt {
 }
 
 export interface ProjectTaskRecord {
+  speech?: SpeechSettings;
   id: string;
   project_id: string;
   account_id?: string;
@@ -864,7 +865,17 @@ export interface CancelDesignJobResult {
   status: string;
 }
 
+export interface SpeechSettings {
+  text: string;
+  voice: string;
+  style?: string;
+  language?: string;
+  format?: 'wav';
+}
+
 export interface CreateProjectTaskParams {
+  operation?: 'create' | 'edit' | 'extend' | 'speech';
+  speech?: SpeechSettings;
   id?: string;
   title: string;
   description?: string;

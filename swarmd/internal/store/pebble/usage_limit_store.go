@@ -255,24 +255,29 @@ func toFloat64(v any) (float64, bool) {
 
 // MediaCostEstimateOptions holds concrete dimensions for media pricing without guessing.
 type MediaCostEstimateOptions struct {
-	Provider         string
-	Model            string
-	Kind             string // "image", "video", "audio"
-	Count            int
-	DurationSeconds  int
-	Resolution       string
-	ImageSize        string
-	AspectRatio      string
-	IncludesAudio    bool
-	IsIteration      bool
-	OutputTokens     int64 // image output tokens
-	TextOutputTokens int64
-	ThinkingTokens   int64
-	PromptTokens     int64 // text prompt tokens, excluding input images
-	InputImageTokens int64
-	ServiceTier      string
-	Variant          string
-	SKU              string
+	Speech            bool
+	Transcription     bool
+	InputCharacters   int64
+	AudioInputTokens  int64
+	AudioOutputTokens int64
+	Provider          string
+	Model             string
+	Kind              string // "image", "video", "audio"
+	Count             int
+	DurationSeconds   int
+	Resolution        string
+	ImageSize         string
+	AspectRatio       string
+	IncludesAudio     bool
+	IsIteration       bool
+	OutputTokens      int64 // image output tokens
+	TextOutputTokens  int64
+	ThinkingTokens    int64
+	PromptTokens      int64 // text prompt tokens, excluding input images
+	InputImageTokens  int64
+	ServiceTier       string
+	Variant           string
+	SKU               string
 }
 
 // EstimateMediaCostWithOptions resolves snapshot-backed media pricing for images, videos, and audio.
@@ -440,6 +445,9 @@ func EstimateMediaCostFromRecord(rec ModelCatalogRecord, opts MediaCostEstimateO
 		}
 	}
 
+	if opts.Speech || opts.Transcription {
+		return estimateSpeechBilling(rec, opts, verifiedLines)
+	}
 	unitPrice := 0.0
 	foundPrice := false
 	summaryText := ""

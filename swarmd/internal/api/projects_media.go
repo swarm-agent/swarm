@@ -361,6 +361,12 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 		principal.AccountScopeID = task.AccountID
 	}
 	agent := strings.TrimSpace(task.Agent)
+	if task.Operation == "speech" || task.Speech != nil {
+		return validateSpeechTask(task)
+	}
+	if audiogen.SpeechModel(task.Model) {
+		return errors.New("TTS models require operation speech")
+	}
 	if isOrdinaryMediaAgent(agent) {
 		count, err := projectMediaBatchCount(task.VariantCount, 0, len(task.Deliverables))
 		if err != nil {
@@ -1810,6 +1816,10 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 			return nil
 		})
 	} else if task.Agent == "sound" || task.Agent == "audio" {
+		if task.Operation == "speech" {
+			s.generateTaskSpeech(p, task)
+			return
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 		// The requested model, else the account's default; without either,

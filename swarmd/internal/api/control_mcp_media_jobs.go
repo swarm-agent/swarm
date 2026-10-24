@@ -462,8 +462,8 @@ func controlMCPListMediaModels(c *controlMCPCall, args map[string]any) (any, err
 				hidden++
 				continue
 			}
-			// Speech and live models are listed by the catalog as sound but
-			// carry no generation settings: Swarm cannot make sound with them.
+			// Live and unsupported sound models remain unavailable without
+			// a generation contract; supported speech models carry options.
 			if kind == "sound" && option.GenerationOptions == nil {
 				continue
 			}
@@ -500,6 +500,10 @@ func controlMCPMediaModelView(option mediaCatalogOption) map[string]any {
 		if len(value) > 0 {
 			view[key] = value
 		}
+	}
+	if opts.Speech {
+		view["operations"] = []string{"speech"}
+		view["voices"], view["formats"], view["max_prompt_bytes"] = opts.Voices, opts.Formats, opts.MaxPromptBytes
 	}
 	if len(opts.Durations) > 0 {
 		view["durations_seconds"] = opts.Durations
