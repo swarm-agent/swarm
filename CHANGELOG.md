@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Run workflow-started native reviewer and reviewer-fixer tools without ordinary approval prompts, while retaining policy refusals and checkout restrictions; interactive sessions remain unchanged. Docs impact: none.
+
 - Recover interrupted media jobs from persisted files on daemon startup: completed files settle for review, missing files fail with a restart reason, and generation and billing are not replayed. Recovery uses compact summaries, preserves normal task notifications, and isolates unrecoverable records without blocking startup. Docs impact: none
 - Add generation-only Gemini speech requests to sound media jobs, with voice/format validation, timing JSON, catalog-backed generation/transcription receipts and SDK speech settings. Docs impact: docs/checkpoints/swarm-control.md and MCP media tool descriptions.
 - Add Designer's in-session `manage_media` tool using existing media tasks, session media counts/costs and spending guards; disable agent artifact generation. When the session tasks setting is `ask`, `generate` creates a task waiting for approval and returns its pending status. Docs impact: `docs/manage-media.md`.

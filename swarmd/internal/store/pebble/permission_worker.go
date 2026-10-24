@@ -25,6 +25,24 @@ func (s *PermissionStore) WorkerRunForSession(account, session string) (WorkerRu
 	return workerRunForSessionFromReader(snap, account, session)
 }
 
+// WorkflowReviewTaskForSession verifies the canonical task receipt, not metadata
+// alone, before granting unattended native review approval behavior.
+func (s *PermissionStore) WorkflowReviewTaskForSession(session SessionSnapshot) (ProjectTaskRecord, bool, error) {
+	project, _ := session.Metadata["project_id"].(string)
+	taskID, _ := session.Metadata["task_id"].(string)
+	if project == "" || taskID == "" || session.AccountScopeID == "" {
+		return ProjectTaskRecord{}, false, nil
+	}
+	task, found, err := NewSessionStore(s.store).GetProjectTask(session.AccountScopeID, project, taskID)
+	if err != nil || !found {
+		return ProjectTaskRecord{}, false, err
+	}
+	valid := task.AccountID == session.AccountScopeID && task.SessionID == session.ID &&
+		task.Agent == "reviewer" && task.WorkerID == "" &&
+		strings.HasPrefix(task.AutomationID, "workflow:") && len(task.AutomationID) > len("workflow:")
+	return *task, valid, nil
+}
+
 func workerRunForSessionFromReader(snap pebble.Reader, account, session string) (WorkerRunRecord, bool, error) {
 	var entry workerRunIndexEntry
 	found, err := getJSONFromReader(snap, keyWorkerRunSession(account, session), &entry)

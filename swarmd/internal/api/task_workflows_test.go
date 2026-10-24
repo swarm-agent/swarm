@@ -15,6 +15,7 @@ import (
 
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/jobautomation"
+	"swarm/packages/swarmd/internal/permission"
 	runruntime "swarm/packages/swarmd/internal/run"
 	"swarm/packages/swarmd/internal/sandbox"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -295,6 +296,10 @@ func TestTaskResultGitListsTheTasksOwnCommits(t *testing.T) {
 // Fix-enabled cases exercise the real Runner and native admission with real Git
 // commits to prevent oversized, blocked or unreadable fixes moving delivery heads.
 // This service-level harness is the narrowest layer spanning those boundaries.
+// Purpose: workflow agent admission and native review settlement must preserve
+// the delivery checkout and unattended permission authority. This integration
+// fixture exercises taskWorkflowAgents and AuthorizeToolCall against real task
+// receipts; it catches provenance wiring gaps that permission unit tests cannot.
 func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "native-review.pebble")
 	server, sessions, _, closeStore, _ := newRoutedSessionTestServerAt(t, storePath, false)
@@ -442,6 +447,7 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 		if err != nil || !found || snapshot.Metadata["agent_name"] != "system-reviewer" || reviewTask.WorkerID != "" {
 			t.Fatalf("native reviewer: %+v %v", snapshot, err)
 		}
+		assertWorkflowReviewApproval(t, sessions.Store(), snapshot, "bash", `{"command":"git log -1; git diff --stat","category":"read"}`)
 		if snapshot.Metadata["runtime_mode"] != "read" {
 			t.Fatalf("review runtime mode = %v", snapshot.Metadata["runtime_mode"])
 		}
@@ -736,6 +742,8 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 							if snap.Metadata["agent_name"] != "system-reviewer-fixer" || snap.Metadata["runtime_mode"] != "readwrite" {
 								t.Fatalf("fix profile %+v", snap.Metadata)
 							}
+							assertWorkflowReviewApproval(t, sessions.Store(), snap, "git_add", `{"pathspec":["security.txt"]}`)
+							assertWorkflowReviewApproval(t, sessions.Store(), snap, "git_commit", `{"message":"security fix"}`)
 							lines := 2
 							if i == 4 {
 								lines = 81
@@ -1168,5 +1176,19 @@ func TestNativeReviewMessageReadFailureDoesNotSave(t *testing.T) {
 	stored, _, err := f.server.sessions.Store().GetProjectTask(p.AccountScopeID, task.ProjectID, task.ID)
 	if err != nil || stored.Review != nil {
 		t.Fatalf("read failure saved review %+v %v", stored, err)
+	}
+}
+
+func assertWorkflowReviewApproval(t *testing.T, sessions *pebblestore.SessionStore, snapshot pebblestore.SessionSnapshot, tool, args string) {
+	t.Helper()
+	svc := permission.NewService(pebblestore.NewPermissionStore(sessions.Underlying()), nil, nil)
+	svc.SetSessionResolver(sessions)
+	result, err := svc.AuthorizeToolCall(permission.AuthorizationInput{SessionID: snapshot.ID, AccountScopeID: snapshot.AccountScopeID, RunID: "permission-check", CallID: tool, Mode: snapshot.Mode, ToolName: tool, ToolArguments: args})
+	if err != nil || result.Decision != permission.AuthorizationApprove || result.Source != "workflow_review" {
+		t.Fatalf("workflow approval %+v err %v", result, err)
+	}
+	count, err := svc.PendingCount(snapshot.ID)
+	if err != nil || count != 0 {
+		t.Fatalf("pending permissions %d err %v", count, err)
 	}
 }
