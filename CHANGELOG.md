@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Recover interrupted media jobs from persisted files on daemon startup: completed files settle for review, missing files fail with a restart reason, and generation and billing are not replayed. Docs impact: none
+
 - Apply worker and attached-job edits immediately while retaining pinned run revisions and legacy review acceptance; MCP deployment updates existing worker instructions, description and agent. Docs impact: `docs/checkpoints/swarm-control.md`, `docs/swarm-atlas.md`.
 
 - Let workers use a custom agent's current tools and added instructions while retaining their system role; reject writable reviewer contracts and support explicit MCP agent tool switches. Docs impact: docs/automations.md.
