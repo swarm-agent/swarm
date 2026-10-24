@@ -61,13 +61,13 @@ func (s *SessionStore) recoverInterruptedProjectMedia() error {
 				if providerError == "" {
 					providerError = d.Description
 				}
+				continue
 			}
-			// Preserve terminal failures and their original provider diagnostics.
-			if d.Status == "generating" || d.Status == "pending" {
-				interrupted++
-				d.Status = "failed"
-				d.Description = "daemon restarted during generation; file did not finish"
-			}
+			// Only ready, accepted and failed are terminal. Queued files and
+			// unrecognized states also represent unfinished generation.
+			interrupted++
+			d.Status = "failed"
+			d.Description = "daemon restarted during generation; file did not finish"
 		}
 		kind, severity := "media.job.failed", SignalSeverityWarning
 		task.Status = "failed"

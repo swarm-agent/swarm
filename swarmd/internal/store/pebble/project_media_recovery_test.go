@@ -15,9 +15,10 @@ import (
 // and durable files, signals and receipts; missing files and non-media records
 // prove recovery does not manufacture success or change unrelated task state.
 // Existing provider failures must retain their diagnostics rather than being
-// falsely attributed to restart; this durable test checks both reopen cycles.
+// falsely attributed to restart; queued, empty and unknown file states must be
+// failed as interrupted. This durable test checks both reopen cycles.
 func TestProjectMediaRecoveryOnOpen(t *testing.T) {
-	for _, state := range []string{"ready", "accepted", "generating", "pending", "partial", "already-failed", "all-provider-failed", "empty", "non-media", "terminal"} {
+	for _, state := range []string{"ready", "accepted", "generating", "pending", "queued", "empty-status", "unknown", "partial", "ready-plus-queued", "already-failed", "all-provider-failed", "empty", "non-media", "terminal"} {
 		t.Run(state, func(t *testing.T) {
 			path := t.TempDir()
 			db, err := Open(path)
@@ -27,15 +28,27 @@ func TestProjectMediaRecoveryOnOpen(t *testing.T) {
 			s := NewSessionStore(db)
 			task := &ProjectTaskRecord{ID: "task", ProjectID: "project", AccountID: "account", Title: "media", Agent: "video", Status: "in_progress", Deliverables: []ProjectTaskDeliverable{{ID: "file", Status: "ready", MediaURL: "data:video/mp4;base64,Ynl0ZXM="}}}
 			want := "needs_review"
+			interrupted := false
 			switch state {
 			case "accepted":
 				task.Deliverables[0].Status = "accepted"
-			case "generating", "pending":
+			case "generating", "pending", "queued", "empty-status", "unknown":
+				interrupted = true
+				task.Agent = "image"
 				task.Deliverables[0].Status = state
+				if state == "empty-status" {
+					task.Deliverables[0].Status = ""
+				}
 				task.Deliverables[0].MediaURL = ""
 				want = "failed"
-			case "partial":
-				task.Deliverables = append(task.Deliverables, ProjectTaskDeliverable{ID: "missing", Status: "generating"})
+			case "partial", "ready-plus-queued":
+				interrupted = true
+				status := "generating"
+				if state == "ready-plus-queued" {
+					task.Agent = "image"
+					status = "queued"
+				}
+				task.Deliverables = append(task.Deliverables, ProjectTaskDeliverable{ID: "missing", Status: status})
 				want = "failed"
 			case "already-failed":
 				task.Agent = "image"
@@ -100,7 +113,7 @@ func TestProjectMediaRecoveryOnOpen(t *testing.T) {
 				if state == "already-failed" && !reflect.DeepEqual(got.Deliverables[1], task.Deliverables[1]) {
 					t.Fatalf("existing failure changed: %+v", got.Deliverables[1])
 				}
-				if state == "generating" || state == "pending" || state == "partial" {
+				if interrupted {
 					missing := got.Deliverables[len(got.Deliverables)-1]
 					if missing.Status != "failed" || missing.MediaURL != "" || missing.Description != "daemon restarted during generation; file did not finish" {
 						t.Fatalf("missing file manufactured: %+v", missing)
@@ -110,7 +123,6 @@ func TestProjectMediaRecoveryOnOpen(t *testing.T) {
 				if err != nil || len(foreign.Signals) != 0 {
 					t.Fatalf("cross-account signal: %+v %v", foreign, err)
 				}
-				interrupted := state == "generating" || state == "pending" || state == "partial"
 				if strings.Contains(got.LastError, "daemon restarted during generation") != interrupted {
 					t.Fatalf("incorrect restart attribution: %s", got.LastError)
 				}
