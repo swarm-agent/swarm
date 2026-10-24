@@ -71,13 +71,20 @@ func TestManageMediaFilesAndInputs(t *testing.T) {
 	if err != nil || string(data) != "keep me" {
 		t.Fatalf("overwritten %q %v", data, err)
 	}
-	inputs, err := mediaInputs([]any{map[string]any{"path": path}, map[string]any{"job_id": "media/project/task", "file": 1}}, func() ([]string, error) { return []string{root}, nil }, func(string, string) (*pebblestore.ProjectTaskRecord, error) { return task, nil })
+	inputs, err := mediaInputs([]any{map[string]any{"path": path}, map[string]any{"job_id": "media/project/task", "file": 1}}, func() ([]string, error) { return []string{root}, nil }, func(string, string) (*pebblestore.ProjectTaskRecord, error) { return task, nil }, manageMediaErrors)
 	if err != nil || len(inputs) != 2 || inputs[0]["url"] != "data:image/png;base64,"+base64.StdEncoding.EncodeToString([]byte("keep me")) || inputs[1]["url"] != task.Deliverables[0].MediaURL {
 		t.Fatalf("inputs %+v %v", inputs, err)
+	}
+	// Caller-specific errors must not direct internal agents to MCP tools.
+	_, err = server.ManageMedia(context.Background(), scope, map[string]any{"action": "generate", "kind": "image", "brief": "circle", "inputs": []any{map[string]any{"job_id": "media/project/task", "file": float64(99)}}})
+	if err == nil || strings.Contains(err.Error(), "swarm_") || !strings.Contains(err.Error(), "manage_media get") {
+		t.Fatalf("internal input error %v", err)
 	}
 	args["folder"] = "../escape"
 	if _, err := server.ManageMedia(context.Background(), scope, args); err == nil {
 		t.Fatal("traversal allowed")
+	} else if strings.Contains(err.Error(), "swarm_") {
+		t.Fatalf("internal save error %v", err)
 	}
 	outside := t.TempDir()
 	if err := os.Symlink(outside, filepath.Join(root, "outside")); err != nil {

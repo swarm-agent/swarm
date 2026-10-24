@@ -89,7 +89,7 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 			}
 			input["path"] = path
 		}
-		inputs, err := mediaInputs(args["inputs"], func() ([]string, error) { return []string{root}, nil }, load)
+		inputs, err := mediaInputs(args["inputs"], func() ([]string, error) { return []string{root}, nil }, load, manageMediaErrors)
 		if err != nil {
 			return nil, err
 		}
@@ -140,7 +140,7 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 			if root == "" {
 				return nil, errors.New("save requires a session workspace")
 			}
-			dir, err := mediaSaveDir([]string{root}, root, controlMCPString(args, "folder"))
+			dir, err := mediaSaveDir([]string{root}, root, controlMCPString(args, "folder"), manageMediaErrors)
 			if err != nil {
 				return nil, err
 			}
@@ -228,6 +228,13 @@ func (s *Server) estimateManagedMedia(ctx context.Context, p identity.Principal,
 		opts.Provider = "codex"
 	}
 	return s.sessions.EstimateMediaCostWithOptions(opts), nil
+}
+
+var manageMediaErrors = mediaErrorWording{
+	missingBase:      "save requires a session workspace",
+	outsideWorkspace: "folder %s is not inside the session workspace",
+	missingFile:      "input %d: job %s has no ready file %d (manage_media get lists its files)",
+	invalidPath:      "input %d: %s must be inside the session workspace (relative workspace paths are accepted)",
 }
 
 const manageMediaModelsGuidance = "Use manage_media generate with a model and its supported options; manage_media models lists those options. Use manage_media get with wait_seconds to wait, then manage_media save to write files into the workspace."

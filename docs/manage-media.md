@@ -27,7 +27,9 @@ Generation resolves and pins the selected model, then uses the existing media
 cost estimator for worker budget admission. Unknown pricing is not treated as
 free under a cost cap. This worker gate applies only to tasks explicitly created
 by `manage_media`, not ordinary project-conversation or approval tasks.
-All generation runs in the background; `generate` returns the job ID immediately.
+In a session whose tasks setting is `ask`, `generate` creates a task that waits
+for approval and returns its pending status. Otherwise, generation runs in the
+background; `generate` returns the job ID immediately.
 Use `get` with `wait_seconds` to wait. Cancelling the tool context ends only the
 wait with a still-generating result, not generation. At creation, current usage
 plus estimated cost is checked once against worker, job and account limits.

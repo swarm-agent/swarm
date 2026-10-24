@@ -299,21 +299,32 @@ func (c *controlMCPCall) mediaSaveDir(task *pebblestore.ProjectTaskRecord, saveT
 	if base == "" {
 		base = c.projectFolder(task.ProjectID)
 	}
-	return mediaSaveDir(roots, base, saveTo)
+	return mediaSaveDir(roots, base, saveTo, mcpMediaErrors)
 }
 
-func mediaSaveDir(roots []string, base, saveTo string) (string, error) {
+type mediaErrorWording struct {
+	missingBase, outsideWorkspace, missingFile, invalidPath string
+}
+
+var mcpMediaErrors = mediaErrorWording{
+	missingBase:      "folder must be an absolute path inside a registered workspace: this job's project has no folder",
+	outsideWorkspace: "folder %s is not inside a registered workspace (see swarm_list_projects)",
+	missingFile:      "input %d: job %s has no ready file %d (swarm_get_job lists its files)",
+	invalidPath:      "input %d: %s must be an absolute path inside a registered workspace",
+}
+
+func mediaSaveDir(roots []string, base, saveTo string, wording mediaErrorWording) (string, error) {
 	target := saveTo
 	if !filepath.IsAbs(target) {
 		if base == "" {
-			return "", errors.New("folder must be an absolute path inside a registered workspace: this job's project has no folder")
+			return "", errors.New(wording.missingBase)
 		}
 		target = filepath.Join(base, target)
 	}
 	target = filepath.Clean(target)
 	root := controlMCPWorkspaceRootOf(roots, target)
 	if root == "" {
-		return "", fmt.Errorf("folder %s is not inside a registered workspace (see swarm_list_projects)", target)
+		return "", fmt.Errorf(wording.outsideWorkspace, target)
 	}
 	// The deepest existing folder must still be inside the workspace once
 	// symlinks are resolved.
@@ -370,10 +381,10 @@ func controlMCPWorkspaceRootOf(roots []string, path string) string {
 // attached media: a file of an earlier media job, or a file in a registered
 // workspace. Bytes are read here, so the request carries exactly them.
 func (c *controlMCPCall) controlMCPMediaInputs(raw any) ([]map[string]any, error) {
-	return mediaInputs(raw, c.workspaceRoots, c.mediaTask)
+	return mediaInputs(raw, c.workspaceRoots, c.mediaTask, mcpMediaErrors)
 }
 
-func mediaInputs(raw any, workspaceRoots func() ([]string, error), mediaTask func(string, string) (*pebblestore.ProjectTaskRecord, error)) ([]map[string]any, error) {
+func mediaInputs(raw any, workspaceRoots func() ([]string, error), mediaTask func(string, string) (*pebblestore.ProjectTaskRecord, error), wording mediaErrorWording) ([]map[string]any, error) {
 	inputs := controlMCPList(raw)
 	if len(inputs) == 0 {
 		return nil, nil
@@ -405,7 +416,7 @@ func mediaInputs(raw any, workspaceRoots func() ([]string, error), mediaTask fun
 			files := mediaTaskFiles(task)
 			index := controlMCPInt(input, "file", 1)
 			if index < 1 || index > len(files) || len(files[index-1].data) == 0 {
-				return nil, controlMCPToolFailure("input %d: job %s has no ready file %d (swarm_get_job lists its files)", i+1, jobID, index)
+				return nil, controlMCPToolFailure(wording.missingFile, i+1, jobID, index)
 			}
 			data, mediaType = files[index-1].data, files[index-1].mediaType
 			name = files[index-1].filename(task.Title, index)
@@ -418,7 +429,7 @@ func mediaInputs(raw any, workspaceRoots func() ([]string, error), mediaTask fun
 			}
 			clean := filepath.Clean(path)
 			if !filepath.IsAbs(clean) || controlMCPWorkspaceRootOf(roots, clean) == "" {
-				return nil, controlMCPToolFailure("input %d: %s must be an absolute path inside a registered workspace", i+1, path)
+				return nil, controlMCPToolFailure(wording.invalidPath, i+1, path)
 			}
 			info, err := os.Stat(clean)
 			if err != nil || !info.Mode().IsRegular() {
