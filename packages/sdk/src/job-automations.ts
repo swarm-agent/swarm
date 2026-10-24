@@ -183,6 +183,8 @@ export interface JobAutomation {
   revision: number;
   created_at: number;
   updated_at: number;
+  history_count?: number;
+  last_change?: { time: number; who: string };
   latest_deliveries?: JobDelivery[];
 }
 
@@ -306,6 +308,16 @@ export type WorkflowImportResult =
   | { automation: JobAutomation; created: boolean; unchanged?: boolean }
   | { files: { path: string; status: 'created' | 'updated' | 'unchanged' | 'refused'; error?: string }[] };
 
+export interface WorkflowHistoryRecord {
+  revision: number;
+  time: number;
+  kind: 'created' | 'updated' | 'deleted' | 'restored';
+  source: 'set' | 'import' | 'restore' | 'delete';
+  who: string;
+  changed_fields: string[];
+  deleted?: boolean;
+}
+
 /** Workflows and their deliveries (`/v3/workflows`, `/v3/job-deliveries`). */
 export class SwarmJobAutomationsNamespace {
   constructor(private readonly transport: SwarmTransport) {}
@@ -338,6 +350,20 @@ export class SwarmJobAutomationsNamespace {
   /** Import one definition/file or every *.json in a directory; run steps require a full key. */
   async importWorkflow(params: { definition?: WorkflowDefinition; path?: string; project?: string; workspace?: string }): Promise<WorkflowImportResult> {
     return (await this.transport.request<WorkflowImportResult>('/v3/workflows/import', { method: 'POST', body: params })).data;
+  }
+
+  /** Retained changes newest first, also for deleted workflows; a revision returns portable JSON. */
+  async history(params: { name?: string; id?: string; revision?: number }): Promise<{ history: WorkflowHistoryRecord[] } | WorkflowDefinition | { revision: number; deleted: true }> {
+    const q = new URLSearchParams();
+    if (params.name) q.set('name', params.name);
+    if (params.id) q.set('id', params.id);
+    if (params.revision !== undefined) q.set('revision', String(params.revision));
+    return (await this.transport.request<{ history: WorkflowHistoryRecord[] } | WorkflowDefinition | { revision: number; deleted: true }>(`/v3/workflows/history?${q}`, { method: 'GET' })).data;
+  }
+
+  /** Save an old definition as a new revision. Run steps require the owner's full key. */
+  async restore(params: { name?: string; id?: string; revision: number }): Promise<{ automation: JobAutomation; created: boolean }> {
+    return (await this.transport.request<{ automation: JobAutomation; created: boolean }>('/v3/workflows/restore', { method: 'POST', body: params })).data;
   }
 
   async delete(id: string): Promise<void> {

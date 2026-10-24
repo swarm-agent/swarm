@@ -7,6 +7,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 ## Unreleased
 
 - Remove an accidentally tracked Vitest results cache and ignore root node_modules dependencies. Docs impact: none
+- Keep account-scoped workflow change history with portable revision reads and permission-checked restore through MCP, API and SDK. Docs impact: none.
 
 - Export and import portable workflow JSON through API, MCP and SDK, including repository directories with per-file results and confined file paths. Docs impact: none.
 

@@ -138,3 +138,21 @@ test('a workflow result, produce and deliver steps are typed and sent as given',
   await new SwarmJobAutomationsNamespace(transport).set(workflow);
   assert.deepEqual(bodies, [workflow]);
 });
+
+// Purpose: history selectors must be encoded without changing the requested
+// revision; restore must POST the exact selector rather than a caller-supplied
+// definition. The namespace transport boundary is the narrowest SDK proof.
+test('workflow history and restore preserve selectors', async () => {
+  const calls: Array<[string, unknown]> = [];
+  const transport = { request: async (path: string, options: unknown) => {
+    calls.push([path, options]);
+    return { data: { history: [] } };
+  } } as unknown as SwarmTransport;
+  const ns = new SwarmJobAutomationsNamespace(transport);
+  assert.deepEqual(await ns.history({ name: 'review & push', revision: 1 }), { history: [] });
+  await ns.restore({ id: 'jauto_1', revision: 1 });
+  assert.deepEqual(calls, [
+    ['/v3/workflows/history?name=review+%26+push&revision=1', { method: 'GET' }],
+    ['/v3/workflows/restore', { method: 'POST', body: { id: 'jauto_1', revision: 1 } }],
+  ]);
+});
