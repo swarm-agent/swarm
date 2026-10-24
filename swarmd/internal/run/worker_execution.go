@@ -1302,6 +1302,18 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 		if !found || plan.ID != r.ID || plan.Document == nil || len(plan.Document.Checkpoints) == 0 {
 			return store.ErrWorkerConflict
 		}
+		// A plan that stopped short (blocked or failed) ends its run: waiting for
+		// checkpoints that will never complete left it "running" for good, and
+		// refused its cancel.
+		if why := workerPlanStopped(plan.Document); why != "" {
+			if current.CancelRequested {
+				current.Status = "cancelled"
+			} else {
+				current.Status = "failed"
+				current.Error = why
+			}
+			break
+		}
 		for _, cp := range plan.Document.Checkpoints {
 			if cp.Status != "completed" {
 				return store.ErrWorkerConflict

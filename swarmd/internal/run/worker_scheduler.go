@@ -110,6 +110,15 @@ func (s *WorkerExecutionService) TickWorker(ctx context.Context, account, id str
 			return err
 		}
 		a := slot.automation
+		// One run at a time per schedule: a slot that falls due while the
+		// last run of the same automation is unfinished is skipped, the way a
+		// missed slot is. Overlapping runs piled up every interval before.
+		if open, e := ws.UnfinishedWorkerRuns(account, id, a.ID); e != nil {
+			failures = append(failures, e)
+			continue
+		} else if len(open) > 0 {
+			continue
+		}
 		occurrence := fmt.Sprintf("wocc_%s_%d_%d", a.ID, a.Revision, slot.at)
 		req := store.WorkerRunAdmission{WorkerID: id, AutomationID: a.ID, OccurrenceID: occurrence, RequestSource: "schedule", Input: map[string]any{"due_at": slot.at}}
 		if s.scheduledDispatchForTest != nil {

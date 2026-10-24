@@ -38,7 +38,7 @@ func manageWorkersV2Definition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_workers",
-		Description: "Manage durable background workers using stable worker IDs. Inspect, create, update, attach automations, run tests, dispatch requests, pause, resume, archive, delete workers, and disable automations. Deployment and activation require explicit user acceptance; AI cannot self-approve activation or capabilities. Exclusive to Swarm Orchestrator in Swarm mode. Call action='help' for syntax and lifecycle workflows.",
+		Description: "Manage durable background workers using stable worker IDs. Inspect, create, update, attach automations, run tests, dispatch requests, pause, resume, archive, delete workers, and disable automations. Deployment and activation require explicit user acceptance; AI cannot self-approve activation or capabilities. Exclusive to Swarm Orchestrator in Swarm mode. A worker's own runs have no manage_workers: a worker cannot pause, stop, change or delete itself or another worker, so never plan or promise that it will (\"then turn itself off\"). For a limited test, say the person pauses it from their app, or you pause it here when they ask. A schedule runs one run at a time: a slot that falls due while its last run is unfinished is skipped. Call action='help' for syntax and lifecycle workflows.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
