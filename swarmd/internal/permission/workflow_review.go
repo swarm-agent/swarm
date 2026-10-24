@@ -1,9 +1,6 @@
 package permission
 
-import (
-	"encoding/json"
-	"strings"
-)
+import "strings"
 
 // Workflow review approvals are unattended, but only for the native contract's
 // ordinary tools. Policy denials and all execution/worktree guards still apply.
@@ -37,10 +34,15 @@ func (s *Service) workflowReviewTool(input AuthorizationInput) (bool, error) {
 	case "read", "search", "find", "list", "git_status", "git_diff", "websearch", "webfetch", "webdownload":
 		return true, nil
 	case "bash":
-		var args struct {
-			Category string `json:"category"`
+		// Match explainBuiltinAllow's effect guards, including backend
+		// promotions: a model's read label alone cannot grant authority.
+		// The effect assessor does not classify every Git subcommand (notably
+		// push). Require the existing Git read-only classification as well.
+		if cmd, simple := parseBashSimpleCommand(input.ToolArguments); simple && cmd.Words[0] == "git" && !bashReadOnlyGitArgs(cmd.Words[1:]) {
+			return false, nil
 		}
-		return json.Unmarshal([]byte(input.ToolArguments), &args) == nil && args.Category == "read", nil
+		effect := buildPolicyEvalContext(input.ToolName, input.ToolArguments).BashEffect
+		return effect.Valid && effect.DeclaredCategory == BashEffectRead && effect.Category == BashEffectRead && !effect.Critical && !effect.Promoted, nil
 	case "write", "edit", "git_add", "git_commit":
 		return fixer, nil
 	}

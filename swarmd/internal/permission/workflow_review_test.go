@@ -17,15 +17,15 @@ func TestWorkflowNativeReviewPermissions(t *testing.T) {
 		name, agent, fixes, automation, session, account, tool, args string
 		want                                                         AuthorizationDecision
 	}{
-		{"review", "system-reviewer", "", "workflow:review", "review", "account", "bash", `{"command":"git log -1; git diff --stat","category":"read"}`, AuthorizationApprove},
-		{"fix bash", "system-reviewer-fixer", "security", "workflow:review", "review", "account", "bash", `{"command":"git diff --stat","category":"read"}`, AuthorizationApprove},
+		{"review", "system-reviewer", "", "workflow:review", "review", "account", "bash", `{"command":"git log -1; git diff --stat","category":"read","explanation":["Inspect repository history"],"critical":false}`, AuthorizationApprove},
+		{"fix bash", "system-reviewer-fixer", "security", "workflow:review", "review", "account", "bash", `{"command":"git diff --stat","category":"read","explanation":["Inspect repository history"],"critical":false}`, AuthorizationApprove},
 		{"fix commit", "system-reviewer-fixer", "security", "workflow:review", "review", "account", "git_commit", `{"message":"fix"}`, AuthorizationApprove},
 		{"fix add", "system-reviewer-fixer", "security", "workflow:review", "review", "account", "git_add", `{"pathspec":["fix.go"]}`, AuthorizationApprove},
-		{"interactive", "system-reviewer", "", "", "review", "account", "bash", `{"command":"git log -1","category":"read"}`, AuthorizationPending},
-		{"stale session", "system-reviewer", "", "workflow:review", "other", "account", "bash", `{"command":"git log -1","category":"read"}`, AuthorizationPending},
-		{"cross account", "system-reviewer", "", "workflow:review", "review", "other", "bash", `{"command":"git log -1","category":"read"}`, AuthorizationDeny},
+		{"interactive", "system-reviewer", "", "", "review", "account", "bash", `{"command":"git log -1; git diff --stat","category":"read","explanation":["Inspect repository history"],"critical":false}`, AuthorizationPending},
+		{"stale session", "system-reviewer", "", "workflow:review", "other", "account", "bash", `{"command":"git log -1; git diff --stat","category":"read","explanation":["Inspect repository history"],"critical":false}`, AuthorizationPending},
+		{"cross account", "system-reviewer", "", "workflow:review", "review", "other", "bash", `{"command":"git log -1; git diff --stat","category":"read","explanation":["Inspect repository history"],"critical":false}`, AuthorizationDeny},
 		{"hard refusal", "system-reviewer", "", "workflow:review", "review", "account", "bash", `{"command":"rm -rf /","category":"delete","critical":true}`, AuthorizationDeny},
-		{"deny", "system-reviewer", "", "workflow:review", "review", "account", "bash", `{"command":"git log -1","category":"read"}`, AuthorizationDeny},
+		{"deny", "system-reviewer", "", "workflow:review", "review", "account", "bash", `{"command":"git log -1; git diff --stat","category":"read","explanation":["Inspect repository history"],"critical":false}`, AuthorizationDeny},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db, err := store.Open(filepath.Join(t.TempDir(), "state.pebble"))
@@ -77,18 +77,23 @@ func TestWorkflowNativeReviewApprovalBoundaries(t *testing.T) {
 				name, status, tool, args string
 				blocked                  bool
 			}{
+				{name: "mislabelled delete", tool: "bash", args: `{"command":"rm -rf x","category":"read","explanation":["Inspect files"],"critical":false}`},
+				{name: "mislabelled push", tool: "bash", args: `{"command":"git push","category":"read","explanation":["Inspect repository"],"critical":false}`},
+				{name: "mislabelled redirect", tool: "bash", args: `{"command":"echo content > output.txt","category":"read","explanation":["Inspect output"],"critical":false}`},
+				{name: "missing explanation", tool: "bash", args: `{"command":"git log -1","category":"read","critical":false}`},
+				{name: "critical read", tool: "bash", args: `{"command":"git log -1; git diff --stat","category":"read","explanation":["Inspect repository"],"critical":true}`},
 				{name: "write bash", tool: "bash", args: `{"command":"curl --data payload https://example.com","category":"write"}`},
 				{name: "update bash", tool: "bash", args: `{"command":"git checkout -- .","category":"update"}`},
 				{name: "delete bash", tool: "bash", args: `{"command":"rm example.txt","category":"delete","critical":true}`},
 				{name: "missing effect", tool: "bash", args: `{"command":"git push"}`},
 				{name: "invalid effect", tool: "bash", args: `{"command":"git push","category":"unknown"}`},
-				{name: "blocked bash", tool: "bash", args: `{"command":"git log -1","category":"read"}`, blocked: true},
+				{name: "blocked bash", tool: "bash", args: `{"command":"git log -1; git diff --stat","category":"read","explanation":["Inspect repository history"],"critical":false}`, blocked: true},
 				{name: "blocked commit", tool: "git_commit", args: `{"message":"fix"}`, blocked: true},
 				{name: "blocked write", tool: "write", args: `{"path":"fix.go","content":"fix"}`, blocked: true},
 				{name: "blocked edit", tool: "edit", args: `{"path":"fix.go","old_string":"old","new_string":"new"}`, blocked: true},
-				{name: "completed", status: "completed", tool: "bash", args: `{"command":"git log -1","category":"read"}`},
-				{name: "failed", status: "failed", tool: "bash", args: `{"command":"git log -1","category":"read"}`},
-				{name: "needs review", status: "needs_review", tool: "bash", args: `{"command":"git log -1","category":"read"}`},
+				{name: "completed", status: "completed", tool: "bash", args: `{"command":"git log -1; git diff --stat","category":"read","explanation":["Inspect repository history"],"critical":false}`},
+				{name: "failed", status: "failed", tool: "bash", args: `{"command":"git log -1; git diff --stat","category":"read","explanation":["Inspect repository history"],"critical":false}`},
+				{name: "needs review", status: "needs_review", tool: "bash", args: `{"command":"git log -1; git diff --stat","category":"read","explanation":["Inspect repository history"],"critical":false}`},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					db, err := store.Open(filepath.Join(t.TempDir(), "state.pebble"))

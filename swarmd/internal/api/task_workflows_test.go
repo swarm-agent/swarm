@@ -447,7 +447,7 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 		if err != nil || !found || snapshot.Metadata["agent_name"] != "system-reviewer" || reviewTask.WorkerID != "" {
 			t.Fatalf("native reviewer: %+v %v", snapshot, err)
 		}
-		assertWorkflowReviewApproval(t, sessions.Store(), snapshot, "bash", `{"command":"git log -1; git diff --stat","category":"read"}`)
+		assertWorkflowReviewApproval(t, sessions.Store(), snapshot, "bash", `{"command":"git log -1; git diff --stat","category":"read","explanation":["Inspect repository history and changes"],"critical":false}`)
 		if snapshot.Metadata["runtime_mode"] != "read" {
 			t.Fatalf("review runtime mode = %v", snapshot.Metadata["runtime_mode"])
 		}
