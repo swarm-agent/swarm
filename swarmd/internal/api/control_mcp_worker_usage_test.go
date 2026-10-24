@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,7 +14,8 @@ import (
 // double-counting media, disguising rolling windows, or adding write authority.
 // Owners: controlMCPListWorkerJobs, controlMCPGetUsage, GetUsageScope/Day and
 // CountWorkerRuns. A temporary Pebble store plus real handlers is the narrowest
-// layer proving attribution, time boundaries, ordering and permission rejection.
+// layer proving attribution, time boundaries, period-specific ordering and that
+// automations-only callers retain listing access without receiving usage data.
 func TestControlMCPWorkerUsage(t *testing.T) {
 	c, ws := newMCPPresetTestCall(t)
 	p := testPrincipal()
@@ -38,6 +40,9 @@ func TestControlMCPWorkerUsage(t *testing.T) {
 			provenance := "provider"
 			if i == 1 {
 				provenance = "provider_estimate"
+				if name == "low" {
+					cost = 10
+				}
 			}
 			if err := store.PutTurnUsage(pebblestore.SessionTurnUsageSnapshot{SessionID: session, RunID: provenance, AccountScopeID: account, UserID: p.UserID, Provider: "fixture", Model: "fixture", TotalTokens: tokens, InputTokens: tokens, EstimatedCostUSD: cost, CostProvenance: provenance, PriceStatus: "known", CreatedAt: when.UnixMilli()}); err != nil {
 				t.Fatal(err)
@@ -65,11 +70,16 @@ func TestControlMCPWorkerUsage(t *testing.T) {
 			if period == "all_time" {
 				multiplier = 2
 			}
-			if v["total_tokens"] != tokens*multiplier || v["cost_usd"] != cost*float64(multiplier)+3*float64(media) || v["media_cost_usd"] != 3*float64(media) || v["media_count"] != media || v["coverage"] != "observed_receipts_only" || v["history_complete"] != false {
+			expectedCost := cost*float64(multiplier) + 3*float64(media)
+			if id == low && period == "all_time" {
+				expectedCost = 11
+			}
+			if v["total_tokens"] != tokens*multiplier || v["cost_usd"] != expectedCost || v["media_cost_usd"] != 3*float64(media) || v["media_count"] != media || v["coverage"] != "observed_receipts_only" || v["history_complete"] != false {
 				t.Fatalf("%s %s: %#v", id, period, v)
 			}
 		}
 	}
+	c.request = requestWithScopedToken(c.request, &pebblestore.ScopedTokenRecord{Scopes: []string{"automations:read", "sessions:read"}})
 	listed, err := controlMCPListWorkerJobs(c, map[string]any{})
 	if err != nil {
 		t.Fatal(err)
@@ -91,14 +101,18 @@ func TestControlMCPWorkerUsage(t *testing.T) {
 	}
 	// Detailed usage needs only its existing sessions:read permission.
 	c.request = requestWithScopedToken(c.request, &pebblestore.ScopedTokenRecord{Scopes: []string{"sessions:read"}})
-	for _, period := range []string{"today", "7d", "30d"} {
+	for _, period := range []string{"", "today", "7d", "30d"} {
 		result, err := controlMCPGetUsage(c, map[string]any{"detail": true, "period": period})
 		if err != nil {
 			t.Fatal(err)
 		}
 		out := result.(map[string]any)
 		rows := out["workers"].([]map[string]any)
-		if len(rows) != 2 || rows[0]["id"] != high || rows[1]["id"] != low || rows[0]["name"] != "high" || out["workers_note"] == nil {
+		first, second, sortPeriod := low, high, "all_time"
+		if period == "" || period == "today" {
+			first, second, sortPeriod = high, low, "today"
+		}
+		if len(rows) != 2 || rows[0]["id"] != first || rows[1]["id"] != second || !strings.Contains(out["workers_note"].(string), "sorted by "+sortPeriod+".cost_usd descending") {
 			t.Fatalf("detail: %v", out)
 		}
 		for _, row := range rows {
@@ -118,10 +132,23 @@ func TestControlMCPWorkerUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.request = requestWithScopedToken(c.request, &pebblestore.ScopedTokenRecord{Scopes: []string{"automations:read"}})
-	c.next = http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("denied call dispatched") })
-	if _, err := controlMCPListWorkerJobs(c, nil); err == nil {
-		t.Fatal("list accepted missing read scope")
+	listed, err = controlMCPListWorkerJobs(c, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
+	rows = listed.(map[string]any)["workers"].([]map[string]any)
+	if len(rows) != 2 {
+		t.Fatalf("listing lost workers: %v", rows)
+	}
+	for _, row := range rows {
+		if row["id"] != low && row["id"] != high {
+			t.Fatalf("foreign worker: %v", row)
+		}
+		if _, exists := row["usage"]; exists {
+			t.Fatalf("usage leaked without sessions:read: %v", row)
+		}
+	}
+	c.next = http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("denied call dispatched") })
 	if _, err := controlMCPGetUsage(c, map[string]any{"detail": true}); err == nil {
 		t.Fatal("usage accepted missing read scope")
 	}

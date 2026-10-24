@@ -895,7 +895,7 @@ func controlMCPTools() []controlMCPTool {
 		{Name: "swarm_set_limits", Title: "Set box limits", Description: "Replace box limits using expected_revision; requires usage:write. Hard ceilings cannot be raised.", InputSchema: controlMCPObject([]string{"expected_revision", "limits"}, map[string]any{"expected_revision": map[string]any{"type": "integer", "minimum": 0}, "limits": controlMCPLimitsSchema()}), Annotations: controlMCPDestructive, call: controlMCPSetLimits},
 		{
 			Name: "swarm_get_usage", Title: "Read usage and limits",
-			Description: "Model spend and tokens for a period, top models, and the account's daily limits. Each model's billing says why its cost is what it is: subscription (a sign-in provider such as ChatGPT: Swarm reports no per-token cost; nominal_cost_usd is the same use at API prices when known), metered (priced per token) or unpriced (no price known, so cost shows 0). A limit of none means no limit. detail adds workers with id, name, today (UTC) and all_time tokens, cost_usd (including media), media_cost_usd, media_count (receipts) and coverage, sorted by all_time.cost_usd descending; worker rolling-period totals are unavailable.",
+			Description: "Model spend and tokens for a period, top models, and the account's daily limits. Each model's billing says why its cost is what it is: subscription (a sign-in provider such as ChatGPT: Swarm reports no per-token cost; nominal_cost_usd is the same use at API prices when known), metered (priced per token) or unpriced (no price known, so cost shows 0). A limit of none means no limit. detail adds workers with id, name, today (UTC) and all_time tokens, cost_usd (including media), media_cost_usd, media_count (receipts) and coverage, sorted by today.cost_usd for period=today (the default), otherwise all_time.cost_usd descending; worker rolling-period totals are unavailable.",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"period": map[string]any{"type": "string", "enum": []string{"today", "7d", "30d"}, "description": "Default today."},
 				"detail": map[string]any{"type": "boolean", "description": "Also return every provider and model, each day, media, the most active sessions, and workers (today and all_time, not the requested rolling period)."},
@@ -2887,12 +2887,16 @@ func controlMCPGetUsage(c *controlMCPCall, args map[string]any) (any, error) {
 	}
 	if detail {
 		controlMCPUsageDetail(response, subscription, out)
-		workers, err := c.workerUsageDetail()
+		sortPeriod := "all_time"
+		if period == "today" {
+			sortPeriod = "today"
+		}
+		workers, err := c.workerUsageDetail(sortPeriod)
 		if err != nil {
 			return nil, err
 		}
 		out["workers"] = workers
-		out["workers_note"] = "Worker totals are today (UTC) and all_time observed receipts, not rolling-period totals; sorted by all_time.cost_usd descending. Unknown pricing is not free."
+		out["workers_note"] = "Worker totals are today (UTC) and all_time observed receipts, not rolling-period totals; sorted by " + sortPeriod + ".cost_usd descending. Unknown pricing is not free."
 	}
 	return out, nil
 }

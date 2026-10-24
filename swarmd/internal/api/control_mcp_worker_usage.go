@@ -42,7 +42,7 @@ func (c *controlMCPCall) workerUsage(id, date string) (map[string]any, error) {
 	return map[string]any{"all_time": controlMCPUsageScopeView(all), "today": controlMCPUsageScopeView(today), "today_date": date}, nil
 }
 
-func (c *controlMCPCall) workerUsageDetail() ([]map[string]any, error) {
+func (c *controlMCPCall) workerUsageDetail(sortPeriod string) ([]map[string]any, error) {
 	if err := c.requireTokenScope("sessions:read"); err != nil {
 		return nil, err
 	}
@@ -75,8 +75,8 @@ func (c *controlMCPCall) workerUsageDetail() ([]map[string]any, error) {
 		after = page.NextCursor
 	}
 	sort.Slice(out, func(i, j int) bool {
-		a := out[i]["all_time"].(map[string]any)["cost_usd"].(float64)
-		b := out[j]["all_time"].(map[string]any)["cost_usd"].(float64)
+		a := out[i][sortPeriod].(map[string]any)["cost_usd"].(float64)
+		b := out[j][sortPeriod].(map[string]any)["cost_usd"].(float64)
 		if a == b {
 			return out[i]["id"].(string) < out[j]["id"].(string)
 		}

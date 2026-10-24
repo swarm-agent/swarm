@@ -235,35 +235,41 @@ func controlMCPWorkerView(worker map[string]any) map[string]any {
 }
 
 func controlMCPListWorkerJobs(c *controlMCPCall, args map[string]any) (any, error) {
-	if err := c.requireTokenScope("sessions:read"); err != nil {
-		return nil, err
-	}
+	includeUsage := c.requireTokenScope("sessions:read") == nil
 	workers, err := c.listWorkers()
 	if err != nil {
 		return nil, err
 	}
-	p, ok := PrincipalFromRequest(c.request)
-	if !ok {
-		return nil, controlMCPToolFailure("authenticated principal required")
-	}
-	if c.server == nil || c.server.sessions == nil {
-		return nil, controlMCPToolFailure("usage store unavailable")
-	}
-	counts, err := c.server.sessions.Store().WorkerStore().CountWorkerRuns(p.AccountScopeID, 0, 0)
-	if err != nil {
-		return nil, err
+	jobCounts := map[string]int{}
+	if includeUsage {
+		p, ok := PrincipalFromRequest(c.request)
+		if !ok {
+			return nil, controlMCPToolFailure("authenticated principal required")
+		}
+		if c.server == nil || c.server.sessions == nil {
+			return nil, controlMCPToolFailure("usage store unavailable")
+		}
+		counts, err := c.server.sessions.Store().WorkerStore().CountWorkerRuns(p.AccountScopeID, 0, 0)
+		if err != nil {
+			return nil, err
+		}
+		for id, count := range counts.ByWorker {
+			jobCounts[id] = count.Runs
+		}
 	}
 	date := time.Now().UTC().Format("2006-01-02")
 	out := []map[string]any{}
 	for _, worker := range workers {
 		view := controlMCPWorkerView(worker)
-		id, _ := worker["id"].(string)
-		usage, err := c.workerUsage(id, date)
-		if err != nil {
-			return nil, err
+		if includeUsage {
+			id, _ := worker["id"].(string)
+			usage, err := c.workerUsage(id, date)
+			if err != nil {
+				return nil, err
+			}
+			usage["jobs"] = jobCounts[id]
+			view["usage"] = usage
 		}
-		usage["jobs"] = counts.ByWorker[id].Runs
-		view["usage"] = usage
 		if model := c.workerModelSummary(worker); model != nil {
 			view["model"] = model
 		}
@@ -1613,7 +1619,7 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_list_workers", Title: "List workers",
-			Description: "Existing explicitly deployed workers (listing never creates presets), with role, state and the model their next job uses (their role's model unless pinned). usage includes all_time and today (UTC) tokens, cost_usd (including media), media_cost_usd, media_count (receipts), coverage and jobs (all-time run count); requires sessions:read. include_jobs adds each worker's latest jobs.",
+			Description: "Existing explicitly deployed workers (listing never creates presets), with role, state and the model their next job uses (their role's model unless pinned). With sessions:read, usage includes all_time and today (UTC) tokens, cost_usd (including media), media_cost_usd, media_count (receipts), coverage and jobs (all-time run count); otherwise usage is omitted. include_jobs adds each worker's latest jobs.",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"include_jobs": map[string]any{"type": "boolean", "description": "Also list each worker's 5 latest jobs with job_id and status."},
 			}),
