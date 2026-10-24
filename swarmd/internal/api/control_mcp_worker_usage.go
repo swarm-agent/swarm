@@ -23,6 +23,10 @@ func (c *controlMCPCall) workerUsage(id, date string) (map[string]any, error) {
 	if err := c.requireTokenScope("sessions:read"); err != nil {
 		return nil, err
 	}
+	// Match the worker collection's binding restriction before any store read.
+	if token, ok := ScopedTokenFromRequest(c.request); ok && token != nil && token.WorkerID != "" {
+		return nil, controlMCPToolFailure("scoped trigger token cannot enumerate workers")
+	}
 	p, ok := PrincipalFromRequest(c.request)
 	if !ok {
 		return nil, controlMCPToolFailure("authenticated principal required")
@@ -45,6 +49,10 @@ func (c *controlMCPCall) workerUsage(id, date string) (map[string]any, error) {
 func (c *controlMCPCall) workerUsageDetail(sortPeriod string) ([]map[string]any, error) {
 	if err := c.requireTokenScope("sessions:read"); err != nil {
 		return nil, err
+	}
+	// Match the worker collection's binding restriction before any store read.
+	if token, ok := ScopedTokenFromRequest(c.request); ok && token != nil && token.WorkerID != "" {
+		return nil, controlMCPToolFailure("scoped trigger token cannot enumerate workers")
 	}
 	p, ok := PrincipalFromRequest(c.request)
 	if !ok {

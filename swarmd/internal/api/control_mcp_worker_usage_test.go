@@ -131,6 +131,27 @@ func TestControlMCPWorkerUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Worker binding must not be bypassed by direct usage-store reads. Exercise
+	// the MCP entry point and both helpers: rejection must return no partial
+	// result (including other workers' IDs, names or spend), and leave receipts
+	// unchanged. This store-backed test covers the worker collection boundary
+	// preserved by workerUsageDetail and workerUsage without a live server.
+	c.request = requestWithScopedToken(c.request, &pebblestore.ScopedTokenRecord{WorkerID: low, Scopes: []string{"sessions:read"}})
+	if result, err := controlMCPGetUsage(c, map[string]any{"detail": true}); err == nil || result != nil {
+		t.Fatalf("worker-bound detail must fail without data: result=%v err=%v", result, err)
+	}
+	if result, err := c.workerUsageDetail("today"); err == nil || result != nil {
+		t.Fatalf("worker-bound enumeration must fail without data: result=%v err=%v", result, err)
+	}
+	for _, id := range []string{low, high} {
+		if result, err := c.workerUsage(id, today.Format("2006-01-02")); err == nil || result != nil {
+			t.Fatalf("worker-bound usage must fail without data: result=%v err=%v", result, err)
+		}
+	}
+	afterBound, _, err := store.GetUsageScope(p.AccountScopeID, "worker", "", high)
+	if err != nil || before != afterBound {
+		t.Fatalf("worker-bound read mutated usage: %v", err)
+	}
 	c.request = requestWithScopedToken(c.request, &pebblestore.ScopedTokenRecord{Scopes: []string{"automations:read"}})
 	listed, err = controlMCPListWorkerJobs(c, nil)
 	if err != nil {
