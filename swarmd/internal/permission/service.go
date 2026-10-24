@@ -2640,7 +2640,8 @@ func (s *Service) machineToolRefusal(sessionID, name string) string {
 }
 
 // browserToolRefusal is why a browser tool call may not reach the person's
-// app: manage_browser without a live lease, or a request while one is live.
+// app: manage_browser without a live lease. A request while one is live is
+// how the agent asks for more sites or more time, so it goes through.
 // The lease is the session's access record; past its end it counts as none.
 func (s *Service) browserToolRefusal(sessionID, name string, now int64) string {
 	var access pebblestore.SessionAccess
@@ -2651,8 +2652,6 @@ func (s *Service) browserToolRefusal(sessionID, name string, now int64) string {
 	}
 	live := access.BrowserLeaseLive(now)
 	switch {
-	case name == pebblestore.BrowserToolRequestAccess && live:
-		return fmt.Sprintf("you already have a %s lease on the person's browser for %s; use manage_browser", access.Browser, access.BrowserSites)
 	case name == pebblestore.BrowserToolManage && !live && access.Browser != "" && access.Browser != pebblestore.SessionBrowserNone:
 		return "the lease on the person's browser has ended; when they still want the work done, call request_browser_access again with your reason and the sites"
 	case name == pebblestore.BrowserToolManage && !live:
