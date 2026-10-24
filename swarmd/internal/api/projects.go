@@ -1066,20 +1066,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 			if len(task.WhatNotDone) > 0 {
 				taskCopy.WhatNotDone = append([]string(nil), task.WhatNotDone...)
 			}
-			if task.OriginSessionID != "" {
-				// Session tools must finish spending before the caller's next turn.
-				s.executeDirectMediaTask(p, proj, &taskCopy)
-				fresh, found, err := s.sessions.Store().GetProjectTask(p.AccountScopeID, task.ProjectID, task.ID)
-				if err != nil {
-					return err
-				}
-				if !found {
-					return errors.New("media task disappeared during execution")
-				}
-				*task = *fresh
-			} else {
-				go s.executeDirectMediaTask(p, proj, &taskCopy)
-			}
+			go s.executeDirectMediaTask(p, proj, &taskCopy)
 		}
 		return nil
 	}

@@ -25,8 +25,11 @@ populate these counters; historical receipts are not backfilled by this change.
 Existing account spending limits and media batch confirmation still apply.
 Generation resolves and pins the selected model, then uses the existing media
 cost estimator for worker budget admission. Unknown pricing is not treated as
-free under a cost cap. Session-origin generation runs synchronously, so its
-reservation settles before the caller's next model turn. Reservations begin at
+free under a cost cap. This worker gate applies only to tasks explicitly created
+by `manage_media`, not ordinary project-conversation or approval tasks.
+All generation runs in the background; `generate` returns the job ID immediately.
+Use `get` with `wait_seconds` to wait. Cancelling the tool context ends only the
+wait with a still-generating result, not generation. Reservations begin at
 the generation boundary, not at task creation or while waiting for approval.
 Creation errors, rejected/cancelled pending batches and settings failures before
 generation do not reserve allowance. Once a generation call starts, uncertain

@@ -257,7 +257,7 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		a.SourceWorkspace = bound
 	}
 	wsPath := source.Path
-	if isDirectSimpleMedia && input.OriginSessionID != "" {
+	if isDirectSimpleMedia && input.ManageMediaSource {
 		// Media carries no source execution authority; retain the caller's
 		// workspace as output context rather than a repository binding.
 		wsPath = strings.TrimSpace(input.WorkspacePath)
@@ -494,6 +494,7 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 
 	task := pebblestore.ProjectTaskRecord{
 		OriginSessionID:    origin,
+		ManageMediaSource:  input.ManageMediaSource,
 		ID:                 taskID,
 		ProjectID:          projectID,
 		AccountID:          p.AccountScopeID,

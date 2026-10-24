@@ -425,6 +425,7 @@ type ProjectTaskRecord struct {
 	EnvironmentAttachments []environments.TaskEnvironmentAttachment `json:"environment_attachments,omitempty"`
 	// Retired IDs cannot be reused: old attachment-bound receipts stay revoked.
 	RetiredEnvironmentAttachmentIDs []string                `json:"retired_environment_attachment_ids,omitempty"`
+	ManageMediaSource               bool                    `json:"manage_media_source,omitempty"`
 	OriginSessionID                 string                  `json:"origin_session_id,omitempty"` // authenticated conversation; never the project primary pointer
 	DeliveryAssessment              *TaskDeliveryAssessment `json:"delivery_assessment,omitempty"`
 	ID                              string                  `json:"id"`

@@ -1022,7 +1022,7 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 	beforeSpend := func() error {
 		budgetMu.Lock()
 		defer budgetMu.Unlock()
-		if reserved || task.OriginSessionID == "" {
+		if reserved || !task.ManageMediaSource || task.OriginSessionID == "" {
 			return nil
 		}
 		input := tool.ProjectTaskCreateInput{Agent: task.Agent, Model: task.Model, VariantCount: task.VariantCount, Resolution: task.Resolution, AspectRatio: task.AspectRatio, DurationSeconds: task.DurationSeconds}

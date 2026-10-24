@@ -93,7 +93,7 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 		if err != nil {
 			return nil, err
 		}
-		input := tool.ProjectTaskCreateInput{OriginSessionID: session.ID, Title: brief, Prompt: brief, Description: brief, Agent: kind, WorkspacePath: root, AutoApprove: true, Model: controlMCPString(args, "model"), AspectRatio: controlMCPString(args, "aspect_ratio"), Resolution: controlMCPString(args, "resolution"), DurationSeconds: controlMCPInt(args, "duration_seconds", 0), VariantCount: controlMCPInt(args, "count", 0)}
+		input := tool.ProjectTaskCreateInput{ManageMediaSource: true, OriginSessionID: session.ID, Title: brief, Prompt: brief, Description: brief, Agent: kind, WorkspacePath: root, AutoApprove: true, Model: controlMCPString(args, "model"), AspectRatio: controlMCPString(args, "aspect_ratio"), Resolution: controlMCPString(args, "resolution"), DurationSeconds: controlMCPInt(args, "duration_seconds", 0), VariantCount: controlMCPInt(args, "count", 0)}
 		if kind == "video" {
 			input.VideoType = "single"
 			input.Operation = controlMCPString(args, "operation")
@@ -156,7 +156,7 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 			for task.Status == "running" || task.Status == "in_progress" || task.Status == "queued" || task.Status == "pending_approval" {
 				select {
 				case <-ctx.Done():
-					return nil, ctx.Err()
+					return map[string]any{"job_id": controlMCPJobID(controlMCPJobMedia, project, id), "status": task.Status, "message": "still generating; wait cancelled", "wait_error": ctx.Err().Error()}, nil
 				case <-deadline.C:
 					break waiting
 				case <-ticker.C:

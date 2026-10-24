@@ -11,7 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"swarm/packages/swarmd/internal/imagegen"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/session"
@@ -215,7 +217,7 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 		t.Fatal(err)
 	}
 	task, found, err := store.GetProjectTask(p.AccountScopeID, project, id)
-	if err != nil || !found || task.OriginSessionID != "session" || task.Model != rec.Model || task.AspectRatio != "1:1" || task.Resolution != "1K" || task.VariantCount != 25 || task.WorkspacePath != root || task.Status != "pending_approval" || len(task.AttachedMedia) != 2 {
+	if err != nil || !found || task.OriginSessionID != "session" || !task.ManageMediaSource || task.Model != rec.Model || task.AspectRatio != "1:1" || task.Resolution != "1K" || task.VariantCount != 25 || task.WorkspacePath != root || task.Status != "pending_approval" || len(task.AttachedMedia) != 2 {
 		t.Fatalf("task %+v %v", task, err)
 	}
 	// Rejected pending tasks cannot start execution or consume allowance.
@@ -239,13 +241,14 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 		t.Fatal("invalid creation accepted")
 	}
 	assertUnreserved()
-	// Real generation service with a deterministic provider proves synchronous
-	// completion and receipt settlement before the caller's next turn.
+	// Real generation service with a deterministic provider proves background
+	// execution without holding creation locks, and cancellable observation.
 	auth := pebblestore.NewAuthStore(db)
 	if _, err := auth.UpsertCredential(pebblestore.AuthCredentialInput{Provider: "google", AccountScopeID: p.AccountScopeID, ID: "fixture", Type: "api_key", APIKey: "test-only", SetActive: true}); err != nil {
 		t.Fatal(err)
 	}
-	client := &billingGeminiClient{png: imageData.Bytes()}
+	release := make(chan struct{})
+	client := &blockingMediaClient{png: imageData.Bytes(), release: release, entered: make(chan struct{}, 100)}
 	server.imageGen = imagegen.NewService(nil, auth, nil, billingCatalog{rec})
 	server.imageGen.SetGeminiImageClient(client)
 	args["resolution"], args["count"] = "1K", float64(1)
@@ -255,10 +258,12 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 	if err := pebblestore.NewModelCatalogStore(db).SetRecord(rec); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := server.ManageMedia(context.Background(), scope, args); err != nil {
+	unknown, err := server.ManageMedia(context.Background(), scope, args)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if client.calls != 0 {
+	waitMediaTask(t, server, scope, unknown.(map[string]any)["job_id"].(string))
+	if client.calls.Load() != 0 {
 		t.Fatal("unknown-priced capped generation reached provider")
 	}
 	assertUnreserved()
@@ -274,19 +279,116 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	select {
+	case <-client.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider not entered")
+	}
+	// A second creation must return while the first provider remains blocked.
+	created := make(chan error, 1)
+	go func() {
+		_, err := server.CreateProjectTask(context.Background(), p, project, tool.ProjectTaskCreateInput{Title: "second", Agent: "image", Model: rec.Model, VariantCount: 25})
+		created <- err
+	}()
+	select {
+	case err := <-created:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("creation blocked by generation")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	view, err := server.ManageMedia(ctx, scope, map[string]any{"action": "get", "job_id": completed.(map[string]any)["job_id"], "wait_seconds": float64(30)})
+	if err != nil || view.(map[string]any)["message"] != "still generating; wait cancelled" {
+		t.Fatalf("cancelled wait %v %v", view, err)
+	}
+	current, _, err := store.GetProjectTask(p.AccountScopeID, project, completedID)
+	if err != nil || current.Status != "in_progress" {
+		t.Fatalf("wait changed task %+v %v", current, err)
+	}
+	close(release)
+	waitMediaTask(t, server, scope, completed.(map[string]any)["job_id"].(string))
 	saved, _, err := store.GetProjectTask(p.AccountScopeID, project, completedID)
-	if err != nil || client.calls != 1 || len(saved.Deliverables) != 1 || saved.Deliverables[0].Status != "ready" {
-		t.Fatalf("generation not complete %+v calls=%d err=%v", saved, client.calls, err)
+	if err != nil || client.calls.Load() != 1 || len(saved.Deliverables) != 1 || saved.Deliverables[0].Status != "ready" {
+		t.Fatalf("generation not complete %+v calls=%d err=%v", saved, client.calls.Load(), err)
 	}
 	assertUnreserved()
-	// The next model operation remains admissible after all non-spending paths.
-	if err := store.CheckWorkerSessionBudgetWithPrice(p.AccountScopeID, scope.SessionID, "known", "next-model-turn"); err != nil {
-		t.Fatalf("next model turn blocked: %v", err)
+	// Unmarked orchestrator-origin tasks and approved batches bypass the new
+	// worker gate even with unknown pricing, and approval never waits on providers.
+	rec.Pricing = nil
+	if err := pebblestore.NewModelCatalogStore(db).SetRecord(rec); err != nil {
+		t.Fatal(err)
+	}
+	for _, count := range []int{1, 25} {
+		gate := make(chan struct{})
+		legacyClient := &blockingMediaClient{png: imageData.Bytes(), entered: make(chan struct{}, 100), release: gate}
+		server.imageGen.SetGeminiImageClient(legacyClient)
+		legacy, err := server.CreateProjectTask(context.Background(), p, project, tool.ProjectTaskCreateInput{Title: "orchestrator", Agent: "image", OriginSessionID: scope.SessionID, Model: rec.Model, AspectRatio: "1:1", Resolution: "1K", VariantCount: count, AutoApprove: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if legacy.ManageMediaSource {
+			t.Fatal("ordinary task marked manage_media")
+		}
+		if count == 25 {
+			approved := make(chan error, 1)
+			go func() {
+				_, err := server.ApproveProjectTask(context.Background(), p, project, legacy.ID)
+				approved <- err
+			}()
+			select {
+			case err := <-approved:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("approval blocked")
+			}
+		}
+		select {
+		case <-legacyClient.entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("legacy task blocked by budget gate")
+		}
+		assertUnreserved()
+		close(gate)
+		waitMediaTask(t, server, scope, controlMCPJobID(controlMCPJobMedia, project, legacy.ID))
 	}
 	if _, err := server.CreateProjectTask(context.Background(), p, project, tool.ProjectTaskCreateInput{ID: "rejected", Title: "bad", Agent: "image", OriginSessionID: "missing"}); err == nil {
 		t.Fatal("missing origin accepted")
 	}
 	if _, found, err := store.GetProjectTask(p.AccountScopeID, project, "rejected"); err != nil || found {
 		t.Fatalf("rejected task persisted %v", err)
+	}
+}
+
+type blockingMediaClient struct {
+	calls   atomic.Int32
+	png     []byte
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (c *blockingMediaClient) GenerateImage(ctx context.Context, _ imagegen.GeminiImageGenerationRequest) (imagegen.GeminiImageGenerationResult, error) {
+	c.calls.Add(1)
+	c.entered <- struct{}{}
+	select {
+	case <-c.release:
+	case <-ctx.Done():
+		return imagegen.GeminiImageGenerationResult{}, ctx.Err()
+	}
+	return imagegen.GeminiImageGenerationResult{Images: []imagegen.GeminiGeneratedImage{{DecodedPNG: c.png, MIMEType: "image/png"}}, Usage: map[string]any{"candidatesTokensDetails": []any{map[string]any{"modality": "IMAGE", "tokenCount": 1120}}}}, nil
+}
+func waitMediaTask(t *testing.T, s *Server, scope tool.WorkspaceScope, job string) {
+	t.Helper()
+	result, err := s.ManageMedia(context.Background(), scope, map[string]any{"action": "get", "job_id": job, "wait_seconds": float64(30)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := result.(map[string]any)["status"]
+	if status != "completed" && status != "failed" && status != "needs_review" {
+		t.Fatalf("task not terminal %v", result)
 	}
 }
