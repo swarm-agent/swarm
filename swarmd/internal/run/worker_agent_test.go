@@ -1,9 +1,11 @@
 package run
 
 import (
+	"context"
 	"path/filepath"
 	"reflect"
 	"strings"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	"testing"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
@@ -86,5 +88,61 @@ func TestWorkerCustomAgentContract(t *testing.T) {
 	save()
 	if _, err := svc.ApplyWorkerAgent("account-a", store.WorkerRecord{Role: store.WorkerRoleCoder, Agent: custom.Name}, base); err == nil {
 		t.Fatal("disabled agent accepted")
+	}
+}
+
+// Purpose: startPlan must revalidate mutable tools before any session is
+// created. Real profile/session stores prove both built-in and custom write
+// effects reject admission after a previously valid reviewer configuration.
+func TestReviewerCustomAgentAdmission(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "admission"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	events, err := store.NewEventLog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := sessionruntime.NewService(store.NewSessionStore(db), events)
+	agents := store.NewAgentStore(db)
+	svc := NewService(nil, nil, nil, tool.NewRuntime(1), nil, nil, nil, nil)
+	svc.agents = agentruntime.NewService(agents, events)
+	svc.sessions = sessions
+	execution := &WorkerExecutionService{host: &AutomationV2ExecutionHost{runs: svc}}
+	for _, name := range []string{"write", "publish_fixture"} {
+		t.Run(name, func(t *testing.T) {
+			custom := store.AgentProfile{Name: "review-tools", Enabled: true, ToolContract: &store.AgentToolContract{Preset: "custom", Tools: map[string]store.AgentToolConfig{}}}
+			if err := agents.PutProfileForAccount("account-a", custom); err != nil {
+				t.Fatal(err)
+			}
+			worker := store.WorkerRecord{Role: store.WorkerRoleReviewer, Agent: custom.Name}
+			if err := svc.ValidateWorkerAgent("account-a", worker); err != nil {
+				t.Fatal(err)
+			}
+			saved, err := store.NewWorkerStore(db).CreateWorker("account-a", "user-a", store.CreateWorkerRequest{Role: worker.Role, Agent: worker.Agent, Name: "Reviewer " + name, IdempotencyKey: name}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			worker = saved
+			if name != "write" {
+				if _, err := svc.agents.PutCustomToolForAccount("account-a", store.AgentCustomToolDefinition{Name: name, Kind: store.AgentCustomToolKindClient, Effect: store.AgentCustomToolEffectWrite, InputSchema: map[string]any{"type": "object"}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			custom.ToolContract.Tools[name] = store.AgentToolConfig{Enabled: store.BoolPtr(true)}
+			if err := agents.PutProfileForAccount("account-a", custom); err != nil {
+				t.Fatal(err)
+			}
+			saveErr := svc.ValidateWorkerAgent("account-a", worker)
+			run := store.WorkerRunRecord{ID: "admission-fixture", AccountScopeID: "account-a", SessionID: "review-fixture", Role: store.WorkerRoleReviewer}
+			err = execution.startPlan(context.Background(), run, worker, store.SessionPlanDocument{})
+			if saveErr == nil || err == nil || err.Error() != saveErr.Error() || !strings.Contains(err.Error(), name) {
+				t.Fatalf("save=%v admission=%v", saveErr, err)
+			}
+			if _, found, err := sessions.GetSession(run.SessionID); err != nil || found {
+				t.Fatalf("rejected session exists %v %v", found, err)
+			}
+		})
 	}
 }

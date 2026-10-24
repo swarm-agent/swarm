@@ -495,6 +495,10 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// Revalidate mutable agent tools before creating project tasks or sessions.
+	if err := h.runs.ValidateWorkerAgent(r.AccountScopeID, w); err != nil {
+		return err
+	}
 	if w.ModelProfile != nil && (w.ModelProfile.UseAccountDefault || w.ModelProfile.ActionUseAccountDefault || w.ModelProfile.PlanUseAccountDefault) {
 		return errors.New("admitted worker run has unresolved model policy")
 	}
