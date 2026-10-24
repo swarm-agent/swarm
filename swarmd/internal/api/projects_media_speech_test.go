@@ -141,3 +141,57 @@ func TestSpeechHTTPAdmission(t *testing.T) {
 		}
 	}
 }
+
+// Purpose: generateTaskSpeech must persist a receipt for paid rejected output
+// and refuse a retry before dispatch. A real temporary store plus fake HTTP
+// exercises the orchestration/receipt boundary and durable postconditions.
+func TestSpeechRejectedGenerationReceipt(t *testing.T) {
+	db, err := pebblestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store := pebblestore.NewSessionStore(db)
+	auth := pebblestore.NewAuthStore(db)
+	if _, err := auth.UpsertCredential(pebblestore.AuthCredentialInput{Provider: "google", AccountScopeID: "account", Type: "api_key", APIKey: "test-key", SetActive: true}); err != nil {
+		t.Fatal(err)
+	}
+	settings := uisettings.NewService(pebblestore.NewUISettingsStore(db))
+	ui, err := settings.GetForAccount("account")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ui.Media.TranscriptionModel = "transcription-test"
+	if _, err := settings.SetForAccount("account", ui); err != nil {
+		t.Fatal(err)
+	}
+	var record pebblestore.ModelCatalogRecord
+	if err := json.Unmarshal([]byte(`{"provider":"google","model":"transcription-test","catalog_modalities":{"inputs":["audio"],"outputs":["text"]}}`), &record); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"finishReason":"MAX_TOKENS"}],"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":25}}`))
+	}))
+	defer provider.Close()
+	audio := audiogen.NewService(auth, settings, billingCatalog{record})
+	audio.SetBaseURL(provider.URL)
+	server := &Server{sessions: session.NewService(store, nil), audioGen: audio}
+	task := &pebblestore.ProjectTaskRecord{ID: "speech-task", ProjectID: "project", AccountID: "account", Title: "Speech", Agent: "sound", Operation: "speech", Model: "gemini-2.5-flash-preview-tts", Speech: &pebblestore.ProjectSpeechSettings{Text: "Hello", Voice: "Kore"}}
+	if err := store.PutProjectTask("account", task); err != nil {
+		t.Fatal(err)
+	}
+	p := identity.Principal{AccountScopeID: "account", UserID: "user"}
+	server.generateTaskSpeech(p, task)
+	saved, found, err := store.GetProjectTask("account", "project", task.ID)
+	if err != nil || !found || saved.Status != "failed" || len(saved.Deliverables) != 1 || saved.Deliverables[0].PriceStatus == "" {
+		t.Fatalf("task %+v %v", saved, err)
+	}
+	server.generateTaskSpeech(p, saved)
+	receipts, err := store.ListMediaUsage("account", 10)
+	if err != nil || len(receipts) != 1 || calls != 1 {
+		t.Fatalf("receipts=%+v calls=%d err=%v", receipts, calls, err)
+	}
+}

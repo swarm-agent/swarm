@@ -137,9 +137,12 @@ func (s *Service) generateGoogleSpeech(ctx context.Context, key string, r Speech
 	if response.StatusCode != http.StatusOK {
 		return SpeechResult{}, fmt.Errorf("speech provider returned HTTP %d", response.StatusCode)
 	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, (32<<20)+1))
-	if err != nil || len(data) > 32<<20 {
-		return SpeechResult{}, errors.New("speech response exceeds limit or could not be read")
+	// 16,384 output tokens at 25 tokens/s produce ~42 MB of base64 PCM.
+	// Leave room for the JSON envelope while retaining a bounded read.
+	result := SpeechResult{Model: model, MediaType: "audio/wav"}
+	data, err := io.ReadAll(io.LimitReader(response.Body, (48<<20)+1))
+	if err != nil || len(data) > 48<<20 {
+		return result, errors.New("speech response exceeds limit or could not be read; usage unknown")
 	}
 	var wire struct {
 		Candidates []struct {
@@ -159,10 +162,11 @@ func (s *Service) generateGoogleSpeech(ctx context.Context, key string, r Speech
 		} `json:"usageMetadata"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
-		return SpeechResult{}, errors.New("invalid speech response")
+		return result, errors.New("invalid speech response; usage unknown")
 	}
+	result.PromptTokens, result.AudioTokens = wire.Usage.Prompt, wire.Usage.Output
 	if len(wire.Candidates) != 1 || wire.Candidates[0].FinishReason != "STOP" {
-		return SpeechResult{}, errors.New("speech generation incomplete or blocked")
+		return result, errors.New("speech generation incomplete or blocked")
 	}
 	var pcm []byte
 	for _, part := range wire.Candidates[0].Content.Parts {
@@ -170,16 +174,16 @@ func (s *Service) generateGoogleSpeech(ctx context.Context, key string, r Speech
 			continue
 		}
 		if !strings.EqualFold(part.InlineData.MIMEType, "audio/L16;codec=pcm;rate=24000") {
-			return SpeechResult{}, errors.New("unsupported speech PCM format")
+			return result, errors.New("unsupported speech PCM format")
 		}
 		chunk, err := base64.StdEncoding.DecodeString(part.InlineData.Data)
 		if err != nil {
-			return SpeechResult{}, errors.New("invalid speech audio encoding")
+			return result, errors.New("invalid speech audio encoding")
 		}
 		pcm = append(pcm, chunk...)
 	}
 	if len(pcm) == 0 || len(pcm)%2 != 0 {
-		return SpeechResult{}, errors.New("empty or invalid speech PCM")
+		return result, errors.New("empty or invalid speech PCM")
 	}
 	wav := make([]byte, 44+len(pcm))
 	copy(wav, "RIFF")

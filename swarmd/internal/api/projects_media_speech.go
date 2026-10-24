@@ -66,13 +66,30 @@ func (s *Server) generateTaskSpeech(p identity.Principal, task *pebblestore.Proj
 		}
 	}
 	if len(audio.Bytes) == 0 {
-		generated, err := s.audioGen.GenerateSpeech(ctx, request)
-		if err != nil {
-			fail(err)
+		if len(task.Deliverables) > 0 && task.Deliverables[0].PriceStatus != "" {
+			fail(errors.New("speech generation already incurred usage; create a new job to authorize another paid attempt"))
 			return
 		}
+		generated, generationErr := s.audioGen.GenerateSpeech(ctx, request)
 		audio = generated
-		estimate := s.recordGeneratedTaskMedia(p, task, 0, pebblestore.MediaCostEstimateOptions{Provider: "google", Model: audio.Model, Kind: "audio", Count: 1, Speech: true, PromptTokens: audio.PromptTokens, AudioOutputTokens: audio.AudioTokens, InputCharacters: int64(utf8.RuneCountInString(request.Text)), DurationSeconds: int(audio.DurationSeconds)}, audio.MediaType, len(audio.Bytes))
+		var estimate pebblestore.MediaCostEstimate
+		if audio.Model != "" {
+			estimate = s.recordGeneratedTaskMedia(p, task, 0, pebblestore.MediaCostEstimateOptions{Provider: "google", Model: audio.Model, Kind: "audio", Count: 1, Speech: true, PromptTokens: audio.PromptTokens, AudioOutputTokens: audio.AudioTokens, InputCharacters: int64(utf8.RuneCountInString(request.Text)), DurationSeconds: int(audio.DurationSeconds)}, audio.MediaType, len(audio.Bytes))
+		}
+		if generationErr != nil {
+			if audio.Model != "" {
+				_, err := updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
+					t.Deliverables = []pebblestore.ProjectTaskDeliverable{{ID: "deliv_speech", Kind: "audio", Status: "failed", Model: audio.Model, MediaCostEstimate: estimate}}
+					return nil
+				})
+				if err != nil {
+					fail(err)
+					return
+				}
+			}
+			fail(generationErr)
+			return
+		}
 		saved, err := updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
 			t.Deliverables = []pebblestore.ProjectTaskDeliverable{{ID: "deliv_speech", Title: t.Title, Kind: "audio", Status: "ready", Model: audio.Model, MediaURL: "data:" + audio.MediaType + ";base64," + base64.StdEncoding.EncodeToString(audio.Bytes), MediaCostEstimate: estimate}, {ID: "deliv_timings", Title: "Speech timings", Kind: "json", Status: "pending"}}
 			return nil

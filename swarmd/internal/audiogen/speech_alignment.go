@@ -76,6 +76,10 @@ func (s *Service) AlignSpeech(ctx context.Context, r SpeechRequest, audio Speech
 	if err := provideriface.CheckBillableDispatch(ctx); err != nil {
 		return SpeechAlignmentResult{}, err
 	}
+	return s.alignGoogleSpeech(ctx, key, model, audio)
+}
+
+func (s *Service) alignGoogleSpeech(ctx context.Context, key, model string, audio SpeechResult) (SpeechAlignmentResult, error) {
 	schema := videotranscription.StructuredTranscriptJSONSchema()
 	schema["properties"].(map[string]any)["words"] = map[string]any{"type": "array", "items": map[string]any{"type": "object", "required": []string{"text", "start_ms", "end_ms"}, "properties": map[string]any{"text": map[string]string{"type": "string"}, "start_ms": map[string]string{"type": "integer"}, "end_ms": map[string]string{"type": "integer"}}}}
 	body := map[string]any{
@@ -83,7 +87,7 @@ func (s *Service) AlignSpeech(ctx context.Context, r SpeechRequest, audio Speech
 			map[string]any{"inlineData": map[string]string{"mimeType": audio.MediaType, "data": base64.StdEncoding.EncodeToString(audio.Bytes)}},
 			map[string]string{"text": "Transcribe the supplied audio accurately. Return chronological speech segments and individual words with text, start_ms and end_ms measured from the audio. If word timestamps cannot be determined, omit words rather than inventing them. Use empty strings for visual and on_screen_text. Do not infer words from any external script."},
 		}}},
-		"generationConfig": map[string]any{"responseMimeType": "application/json", "responseSchema": schema, "temperature": 0},
+		"generationConfig": map[string]any{"responseMimeType": "application/json", "responseJsonSchema": schema, "temperature": 0},
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -124,13 +128,14 @@ func (s *Service) AlignSpeech(ctx context.Context, r SpeechRequest, audio Speech
 				Modality string `json:"modality"`
 				Count    int64  `json:"tokenCount"`
 			} `json:"promptTokensDetails"`
-			Output int64 `json:"candidatesTokenCount"`
+			Output   int64 `json:"candidatesTokenCount"`
+			Thoughts int64 `json:"thoughtsTokenCount"`
 		} `json:"usageMetadata"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return SpeechAlignmentResult{}, errors.New("invalid timing response")
 	}
-	result := SpeechAlignmentResult{Model: model, OutputTokens: wire.Usage.Output}
+	result := SpeechAlignmentResult{Model: model, OutputTokens: wire.Usage.Output + wire.Usage.Thoughts}
 	for _, detail := range wire.Usage.Details {
 		switch detail.Modality {
 		case "AUDIO":
