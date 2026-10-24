@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"swarm/packages/swarmd/internal/videogen"
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -257,6 +258,18 @@ func (s *Server) estimateManagedMedia(ctx context.Context, p identity.Principal,
 	}
 	if opts.Provider == imagegen.ProviderCodexOpenAI {
 		opts.Provider = "codex"
+	}
+	if input.Agent == "video" {
+		var videoOpts *videogen.ParsedVideoOptions
+		if s.model != nil {
+			if lookup, err := s.model.GetCatalog(opts.Provider, input.Model); err == nil && lookup.Found {
+				videoOpts = videogen.ExtractVideoOptions(lookup.Record)
+			}
+		}
+		opts.MeasuredDurationSeconds = videogen.AdmissionOperationDurationSeconds(input.Model, strings.ToLower(strings.TrimSpace(input.Operation)), input.DurationSeconds, videoOpts)
+		if videoOpts != nil && opts.Resolution == "" {
+			opts.Resolution = videoOpts.DefaultRes
+		}
 	}
 	return s.sessions.EstimateMediaCostWithOptions(opts), nil
 }

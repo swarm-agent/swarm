@@ -75,29 +75,31 @@ type ManagedVideoSource struct {
 }
 
 type ManagedVideoResult struct {
-	Bytes            []byte
-	MediaType        string
-	InteractionID    string
-	ProviderResource string // e.g. Veo video URI
-	Model            string
-	Provider         string
-	Transport        string
-	Operation        string
-	DurationMs       int
-	Width            int
-	Height           int
-	Resolution       string
-	DurationSeconds  int
-	AspectRatio      string
-	PriceStatus      string
-	PricingSummary   string
-	SnapshotID       string
-	SnapshotVersion  string
-	EstimatedCostUSD float64
-	Provenance       *pebblestore.VideoProvenance
-	IsCombinedOutput bool
-	ExtensionCount   int
-	AdvisoryWarnings []string
+	MeasuredDurationSeconds float64
+	SourceDurationSeconds   float64
+	Bytes                   []byte
+	MediaType               string
+	InteractionID           string
+	ProviderResource        string // e.g. Veo video URI
+	Model                   string
+	Provider                string
+	Transport               string
+	Operation               string
+	DurationMs              int
+	Width                   int
+	Height                  int
+	Resolution              string
+	DurationSeconds         int
+	AspectRatio             string
+	PriceStatus             string
+	PricingSummary          string
+	SnapshotID              string
+	SnapshotVersion         string
+	EstimatedCostUSD        float64
+	Provenance              *pebblestore.VideoProvenance
+	IsCombinedOutput        bool
+	ExtensionCount          int
+	AdvisoryWarnings        []string
 }
 
 type Service struct {
@@ -387,8 +389,12 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 	}
 	result.Width = outMeta.Width
 	result.Height = outMeta.Height
+	result.MeasuredDurationSeconds = outMeta.DurationSeconds
 	result.DurationMs = int(outMeta.DurationSeconds * 1000)
 	result.DurationSeconds = int(math.Round(outMeta.DurationSeconds))
+	if IsVeoModel(modelID) && durationSeconds > 0 {
+		result.DurationSeconds = durationSeconds // Preserve provider-requested billing seconds.
+	}
 
 	// Enforce output bounds and deltas for extensions
 	if operation == pebblestore.VideoOperationExtend {
@@ -411,7 +417,7 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 			// truncation when only a retained handle is available. This is a total
 			// allowance, not per-input or proportional to the number of extensions.
 			// Keep the raw measurement in the result; never clamp it to the limit.
-			const timingToleranceSec = 0.050
+			const timingToleranceSec = omniTimingToleranceSeconds
 			delta := outMeta.DurationSeconds - srcDurationSec
 			if outMeta.DurationSeconds > 40.0+timingToleranceSec {
 				return ManagedVideoResult{}, fmt.Errorf("extended Omni video duration exceeds maximum allowed ceiling (40s; tolerance %.6fs): source=%.9fs output=%.9fs delta=%.9fs", timingToleranceSec, srcDurationSec, outMeta.DurationSeconds, delta)
@@ -429,11 +435,17 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 	if result.DurationSeconds == 0 {
 		result.DurationSeconds = durationSeconds
 	}
-	result.EstimatedCostUSD = preflight.EstimatedCostUSD
-	result.PriceStatus = preflight.PriceStatus
-	result.PricingSummary = preflight.PricingSummary
-	result.SnapshotID = preflight.SnapshotID
-	result.SnapshotVersion = preflight.SnapshotVersion
+	result.Operation = operation
+	result.SourceDurationSeconds = srcDurationSec
+	billing := result.BillingOptions()
+	result.Resolution = billing.Resolution
+	record, _ := s.resolveModelRecord(providerID, modelID)
+	actual := pebblestore.EstimateMediaCostFromRecord(record, billing)
+	result.EstimatedCostUSD = actual.CostUSD
+	result.PriceStatus = actual.PriceStatus
+	result.PricingSummary = actual.PricingSummary
+	result.SnapshotID = actual.SnapshotID
+	result.SnapshotVersion = actual.SnapshotVersion
 	result.AdvisoryWarnings = preflight.AdvisoryWarnings
 	result.Operation = operation
 	result.Transport = preflight.ResolvedTransport

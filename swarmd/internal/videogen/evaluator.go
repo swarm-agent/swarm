@@ -457,16 +457,16 @@ func (s *Service) PreflightVideoOperation(ctx context.Context, req VideoPrefligh
 
 	// 12. Cost estimation
 	estimate := pebblestore.EstimateMediaCostFromRecord(modelRecord, pebblestore.MediaCostEstimateOptions{
-		Provider:        providerID,
-		Model:           targetModel,
-		Kind:            "video",
-		Count:           1,
-		DurationSeconds: resolvedDurationSeconds,
-		Resolution:      resolvedResolution,
-		AspectRatio:     resolvedAspectRatio,
-		IncludesAudio:   true,
-		IsIteration:     op != pebblestore.VideoOperationCreate,
-		ServiceTier:     "standard",
+		Provider:                providerID,
+		Model:                   targetModel,
+		Kind:                    "video",
+		Count:                   1,
+		MeasuredDurationSeconds: AdmissionOperationDurationSeconds(targetModel, op, resolvedDurationSeconds, opts),
+		Resolution:              resolvedResolution,
+		AspectRatio:             resolvedAspectRatio,
+		IncludesAudio:           true,
+		IsIteration:             op != pebblestore.VideoOperationCreate,
+		ServiceTier:             "standard",
 	})
 
 	var sourceLink *pebblestore.VideoSourceLink
