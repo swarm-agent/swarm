@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 )
 
 const ManageMediaToolName = "manage_media"
@@ -42,14 +43,14 @@ func (r *Runtime) executeManageMedia(ctx context.Context, scope WorkspaceScope, 
 
 // ValidateMediaWorkspacePath applies the same protected-path and ownership
 // checks as ordinary workspace file tools before the daemon reads or saves.
-func ValidateMediaWorkspacePath(scope WorkspaceScope, path string, write bool) error {
+func OpenMediaWorkspacePath(scope WorkspaceScope, path string, write bool) (*os.Root, string, error) {
 	rooted, err := openRootedWorkspacePath(scope, path)
 	if err != nil {
-		return err
+		return nil, "", err
 	}
-	defer rooted.root.Close()
 	if write && !rooted.mutable {
-		return errors.New("media save is outside the owned mutation scope")
+		rooted.root.Close()
+		return nil, "", errors.New("media save is outside the owned mutation scope")
 	}
-	return nil
+	return rooted.root, rooted.relative, nil
 }

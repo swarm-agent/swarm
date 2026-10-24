@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"time"
@@ -73,9 +75,7 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 			if !filepath.IsAbs(path) {
 				path = filepath.Join(root, path)
 			}
-			if err := tool.ValidateMediaWorkspacePath(scope, path, false); err != nil {
-				return nil, err
-			}
+
 			resolved, err := filepath.EvalSymlinks(path)
 			if err != nil {
 				return nil, err
@@ -89,7 +89,7 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 			}
 			input["path"] = path
 		}
-		inputs, err := mediaInputs(args["inputs"], func() ([]string, error) { return []string{root}, nil }, load, manageMediaErrors)
+		inputs, err := mediaInputs(args["inputs"], func() ([]string, error) { return []string{root}, nil }, load, manageMediaErrors, func(path string) ([]byte, string, error) { return readManagedMediaInput(scope, path) })
 		if err != nil {
 			return nil, err
 		}
@@ -144,10 +144,15 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 			if err != nil {
 				return nil, err
 			}
-			if err := tool.ValidateMediaWorkspacePath(scope, dir, true); err != nil {
+			opened, relative, err := tool.OpenMediaWorkspacePath(scope, dir, true)
+			if err != nil {
 				return nil, err
 			}
-			paths, err := saveMediaFiles(task, mediaTaskFiles(task), dir)
+			defer opened.Close()
+			paths, err := saveMediaFiles(task, mediaTaskFiles(task), relative, opened)
+			for _, saved := range paths {
+				saved["path"] = filepath.Join(dir, filepath.Base(saved["path"].(string)))
+			}
 			return map[string]any{"files": paths}, err
 		}
 		wait := controlMCPInt(args, "wait_seconds", 0)
@@ -248,4 +253,33 @@ func manageMediaJobGuidance(out map[string]any, _ []controlMCPMediaFile) {
 	default:
 		out["next"] = "Use manage_media get with wait_seconds to wait for the job, then manage_media save when its files are ready."
 	}
+}
+
+// Read and inspect the same opened file; never reopen a checked pathname.
+func readManagedMediaInput(scope tool.WorkspaceScope, path string) ([]byte, string, error) {
+	root, relative, err := tool.OpenMediaWorkspacePath(scope, path, false)
+	if err != nil {
+		return nil, "", err
+	}
+	defer root.Close()
+	f, err := root.Open(relative)
+	if err != nil {
+		return nil, "", err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, "", err
+	}
+	if !info.Mode().IsRegular() || info.Size() > controlMCPMediaInputMaxBytes {
+		return nil, "", errors.New("media input must be a bounded regular file")
+	}
+	data, err := io.ReadAll(io.LimitReader(f, controlMCPMediaInputMaxBytes+1))
+	if err != nil {
+		return nil, "", err
+	}
+	if len(data) > controlMCPMediaInputMaxBytes {
+		return nil, "", errors.New("media input exceeds size limit")
+	}
+	return data, strings.SplitN(http.DetectContentType(data), ";", 2)[0], nil
 }

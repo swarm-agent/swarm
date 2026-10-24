@@ -642,3 +642,50 @@ func TestManageMediaTaskApproval(t *testing.T) {
 		})
 	}
 }
+
+// Purpose: retained media roots must reject external symlinks, including a
+// directory swapped after authorization. Real filesystem operations prove no
+// external input bytes are returned and no external output is created.
+func TestManageMediaRootedSymlinkEscape(t *testing.T) {
+	workspace, outside := t.TempDir(), t.TempDir()
+	scope := tool.WorkspaceScope{PrimaryPath: workspace}
+	secret := filepath.Join(outside, "secret.png")
+	if err := os.WriteFile(secret, []byte("private bytes"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(workspace, "input.png")); err != nil {
+		t.Fatal(err)
+	}
+	data, _, err := readManagedMediaInput(scope, "input.png")
+	if err == nil || len(data) != 0 {
+		t.Fatalf("external input returned %q, %v", data, err)
+	}
+	dir := filepath.Join(workspace, "assets")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	root, relative, err := tool.OpenMediaWorkspacePath(scope, dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if err := os.Rename(dir, dir+"-old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, dir); err != nil {
+		t.Fatal(err)
+	}
+	task := &pebblestore.ProjectTaskRecord{ID: "task", Title: "sample"}
+	_, err = saveMediaFiles(task, []controlMCPMediaFile{{data: []byte("output"), mediaType: "image/png"}}, relative, root)
+	if err == nil {
+		t.Fatal("external save accepted")
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "secret.png" {
+		t.Fatalf("external directory changed %v %v", entries, err)
+	}
+	after, err := os.ReadFile(secret)
+	if err != nil || string(after) != "private bytes" {
+		t.Fatalf("external file changed %q %v", after, err)
+	}
+}

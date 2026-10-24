@@ -251,8 +251,12 @@ func (c *controlMCPCall) saveMediaFiles(task *pebblestore.ProjectTaskRecord, fil
 	return saveMediaFiles(task, files, dir)
 }
 
-func saveMediaFiles(task *pebblestore.ProjectTaskRecord, files []controlMCPMediaFile, dir string) ([]map[string]any, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+func saveMediaFiles(task *pebblestore.ProjectTaskRecord, files []controlMCPMediaFile, dir string, roots ...*os.Root) ([]map[string]any, error) {
+	mkdirAll, readFile, openFile := os.MkdirAll, os.ReadFile, os.OpenFile
+	if len(roots) > 0 {
+		mkdirAll, readFile, openFile = roots[0].MkdirAll, roots[0].ReadFile, roots[0].OpenFile
+	}
+	if err := mkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create %s: %w", dir, err)
 	}
 	saved := []map[string]any{}
@@ -262,7 +266,7 @@ func saveMediaFiles(task *pebblestore.ProjectTaskRecord, files []controlMCPMedia
 		}
 		name := file.filename(task.Title, i+1)
 		path := filepath.Join(dir, name)
-		if existing, err := os.ReadFile(path); err == nil {
+		if existing, err := readFile(path); err == nil {
 			if string(existing) == string(file.data) {
 				saved = append(saved, map[string]any{"file": i + 1, "path": path, "unchanged": true})
 				continue
@@ -273,14 +277,16 @@ func saveMediaFiles(task *pebblestore.ProjectTaskRecord, files []controlMCPMedia
 			}
 			path = filepath.Join(dir, strings.TrimSuffix(name, filepath.Ext(name))+"-"+suffix+filepath.Ext(name))
 		}
-		handle, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		handle, err := openFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 		if err != nil {
 			return saved, fmt.Errorf("write %s: %w", path, err)
 		}
 		_, writeErr := handle.Write(file.data)
 		closeErr := handle.Close()
 		if writeErr != nil || closeErr != nil {
-			_ = os.Remove(path)
+			if len(roots) == 0 {
+				_ = os.Remove(path)
+			}
 			return saved, fmt.Errorf("write %s: %w", path, errors.Join(writeErr, closeErr))
 		}
 		saved = append(saved, map[string]any{"file": i + 1, "path": path, "size_bytes": len(file.data)})
@@ -384,7 +390,7 @@ func (c *controlMCPCall) controlMCPMediaInputs(raw any) ([]map[string]any, error
 	return mediaInputs(raw, c.workspaceRoots, c.mediaTask, mcpMediaErrors)
 }
 
-func mediaInputs(raw any, workspaceRoots func() ([]string, error), mediaTask func(string, string) (*pebblestore.ProjectTaskRecord, error), wording mediaErrorWording) ([]map[string]any, error) {
+func mediaInputs(raw any, workspaceRoots func() ([]string, error), mediaTask func(string, string) (*pebblestore.ProjectTaskRecord, error), wording mediaErrorWording, readInput ...func(string) ([]byte, string, error)) ([]map[string]any, error) {
 	inputs := controlMCPList(raw)
 	if len(inputs) == 0 {
 		return nil, nil
@@ -421,6 +427,15 @@ func mediaInputs(raw any, workspaceRoots func() ([]string, error), mediaTask fun
 			data, mediaType = files[index-1].data, files[index-1].mediaType
 			name = files[index-1].filename(task.Title, index)
 		case path != "":
+			if len(readInput) > 0 {
+				var err error
+				data, mediaType, err = readInput[0](path)
+				if err != nil {
+					return nil, err
+				}
+				name = filepath.Base(path)
+				break
+			}
 			if roots == nil {
 				var err error
 				if roots, err = workspaceRoots(); err != nil {
