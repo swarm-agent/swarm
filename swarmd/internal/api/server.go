@@ -149,6 +149,9 @@ type Server struct {
 	// outboxDelivery writes a workflow deliver step's files to the outbox.
 	outboxDelivery              OutboxDeliveryWriter
 	secretValues                secretValueSetter
+	fleet                       *pebblestore.FleetStore // the links of this Swarm (fleet.go)
+	fleetTokens                 fleetTokenStore
+	fleetListen                 fleetListener // where this Swarm listens for its homes
 	webPush                     *webpush.Service
 	hub                         *stream.Hub
 	events                      *pebblestore.EventLog
@@ -904,6 +907,7 @@ func (s *Server) apiMux() *http.ServeMux {
 	s.registerProviderRoutes(mux)
 	s.registerWorkspaceRoutes(mux)
 	s.registerRuntimeRoutes(mux)
+	s.registerFleetRoutes(mux)
 	if s.browser != nil {
 		s.browser.registerRoutes(mux)
 	}

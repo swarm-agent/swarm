@@ -832,6 +832,7 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 	apiServer.SetSandboxEnvironmentStore(sandboxEnvironments)
 	secretSlots := pebblestore.NewSecretSlotStore(store)
 	apiServer.SetSecretServices(secretSlots, authStore)
+	apiServer.SetFleet(pebblestore.NewFleetStore(store), authStore)
 	apiServer.SetSignalStore(signalStore)
 	apiServer.SetSecretsGatewayEnabled(cfg.SecretsGateway == "on")
 	signalSinks := pebblestore.NewSignalSinkStore(store)
@@ -1326,6 +1327,10 @@ func (d *Daemon) Run() error {
 	d.httpServer.Addr = ln.Addr().String()
 	if d.apiServer != nil {
 		d.apiServer.SetProviderKeyPageAddr(d.httpServer.Addr)
+		// The fleet: listen for the homes this Swarm invited, if it did.
+		if err := d.apiServer.StartFleetListener(); err != nil {
+			log.Printf("swarmd fleet: %v", err)
+		}
 	}
 	log.Printf("swarmd listener topology api_listen=%q", d.httpServer.Addr)
 
@@ -1461,6 +1466,7 @@ func (d *Daemon) waitForShutdown() error {
 	d.automationMu.Unlock()
 	if d.apiServer != nil {
 		d.apiServer.BeginShutdown()
+		d.apiServer.CloseFleetListener()
 		d.apiServer.CancelInFlightRuns()
 		if !d.apiServer.WaitForInFlightRuns(shutdownTimeout) {
 			errs = append(errs, fmt.Errorf("timed out draining %d active run(s)", d.apiServer.ActiveRunCount()))
