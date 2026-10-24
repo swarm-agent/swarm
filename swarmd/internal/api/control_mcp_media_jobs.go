@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"swarm/packages/swarmd/internal/audiogen"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/videogen"
@@ -484,7 +485,7 @@ func controlMCPListMediaModels(c *controlMCPCall, args map[string]any) (any, err
 
 func controlMCPMediaModelView(option mediaCatalogOption) map[string]any {
 	view := map[string]any{"model": option.ID, "provider": option.Provider}
-	view["pricing"] = conciseMediaPricing(option.Pricing)
+	view["pricing"] = conciseMediaPricing(option.Pricing, audiogen.SpeechModel(option.ID))
 	if option.DisplayName != "" && option.DisplayName != option.ID {
 		view["name"] = option.DisplayName
 	}
@@ -668,7 +669,7 @@ func controlMCPReadMedia(c *controlMCPCall, args map[string]any) (any, error) {
 }
 
 // conciseMediaPricing exposes catalog prices, never a raw catalog payload.
-func conciseMediaPricing(raw json.RawMessage) map[string]any {
+func conciseMediaPricing(raw json.RawMessage, speech ...bool) map[string]any {
 	var catalog struct {
 		Billing struct {
 			Status string `json:"status"`
@@ -700,7 +701,8 @@ func conciseMediaPricing(raw json.RawMessage) map[string]any {
 		if strings.HasPrefix(variant, "batch") || strings.HasPrefix(variant, "flex") || strings.HasPrefix(variant, "priority") {
 			continue
 		}
-		if line.Unit != "image" && !(line.Unit == "million_tokens" && line.Billable == "image_output") && line.Unit != "second" {
+		speechTokens := len(speech) > 0 && speech[0] && line.Unit == "million_tokens" && (line.Billable == "text_input" || line.Billable == "audio_output")
+		if !speechTokens && line.Unit != "image" && !(line.Unit == "million_tokens" && line.Billable == "image_output") && line.Unit != "second" {
 			continue
 		}
 		item := map[string]any{"unit": line.Unit, "price_usd": line.Price, "billable": line.Billable}

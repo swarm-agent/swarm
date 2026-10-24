@@ -355,7 +355,7 @@ HTTP project-task creation and SDK `CreateProjectTaskParams` use `agent: "sound"
 
 The job lists WAV audio and timing JSON as separate files; `swarm_save_media` saves both side by side. Each file exposes `cost_usd`, `price_status` and `pricing_summary`, backed by separate idempotent generation/transcription receipts. Missing catalog rates or usage stay explicitly `unknown`, not free. Retained audio avoids repeating synthesis after alignment failure. A failed alignment that already incurred usage requires a new job to authorize another paid attempt.
 
-Gemini has no native alignment. Swarm transcribes generated audio through the structured-transcript primitive and shared normalizer, requesting word timestamps with the account's configured Google audio-input transcription model. These are semantic estimates, not forced alignment. The provider-neutral interface permits native alignment later. If only segments are returned, the result explicitly uses `granularity: "segment"` and `segments`; no word times are fabricated.
+Gemini has no native alignment. Audio above 14 MiB uses a temporary Gemini Files upload rather than exceeding the inline request ceiling; Swarm requests deletion after transcription, including failures. Smaller audio remains inline. Swarm transcribes generated audio through the structured-transcript primitive and shared normalizer, requesting word timestamps with the account's configured Google audio-input transcription model. These are semantic estimates, not forced alignment. The provider-neutral interface permits native alignment later. If only segments are returned, the result explicitly uses `granularity: "segment"` and `segments`; no word times are fabricated.
 
 Illustrative timing JSON (seconds from audio start):
 

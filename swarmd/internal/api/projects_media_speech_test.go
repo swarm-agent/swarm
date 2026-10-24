@@ -14,7 +14,8 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-// Purpose: speech discovery and admission must agree on voice and format.
+// Purpose: speech discovery must retain catalog token rates (without leaking
+// batch pricing), and admission must agree on voice and format.
 // The MCP model view and HTTP task preflight are the narrowest shared boundaries
 // proving supported speech is listed/accepted and unsupported voices refused.
 func TestSpeechModelAdmission(t *testing.T) {
@@ -23,7 +24,15 @@ func TestSpeechModelAdmission(t *testing.T) {
 	if options == nil {
 		t.Fatal("speech hidden")
 	}
-	view := controlMCPMediaModelView(mediaCatalogOption{ID: record.Model, Provider: "google", Ready: true, GenerationOptions: options})
+	pricing := json.RawMessage(`{"billing":{"status":"verified","lines":[{"billable":"text_input","unit":"million_tokens","price_usd":0.5},{"billable":"audio_output","unit":"million_tokens","price_usd":10},{"billable":"audio_output","unit":"million_tokens","price_usd":5,"variant":"batch"}]}}`)
+	view := controlMCPMediaModelView(mediaCatalogOption{ID: record.Model, Provider: "google", Ready: true, GenerationOptions: options, Pricing: pricing})
+	prices := view["pricing"].(map[string]any)["prices"].([]map[string]any)
+	if len(prices) != 2 || prices[0]["billable"] != "text_input" || prices[0]["price_usd"] != 0.5 || prices[1]["billable"] != "audio_output" || prices[1]["price_usd"] != float64(10) {
+		t.Fatalf("prices: %+v", prices)
+	}
+	if len(conciseMediaPricing(pricing)["prices"].([]map[string]any)) != 0 {
+		t.Fatal("speech prices leaked into non-speech view")
+	}
 	if len(view["voices"].([]string)) == 0 || view["formats"].([]string)[0] != "wav" {
 		t.Fatalf("%+v", view)
 	}
