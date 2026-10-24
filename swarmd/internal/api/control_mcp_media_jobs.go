@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"os"
@@ -281,13 +282,12 @@ func saveMediaFiles(task *pebblestore.ProjectTaskRecord, files []controlMCPMedia
 		if err != nil {
 			return saved, fmt.Errorf("write %s: %w", path, err)
 		}
-		_, writeErr := handle.Write(file.data)
-		closeErr := handle.Close()
-		if writeErr != nil || closeErr != nil {
-			if len(roots) == 0 {
-				_ = os.Remove(path)
-			}
-			return saved, fmt.Errorf("write %s: %w", path, errors.Join(writeErr, closeErr))
+		remove := os.Remove
+		if len(roots) > 0 {
+			remove = roots[0].Remove
+		}
+		if err := finishMediaSave(handle, file.data, func() error { return remove(path) }); err != nil {
+			return saved, fmt.Errorf("write %s: %w", path, err)
 		}
 		saved = append(saved, map[string]any{"file": i + 1, "path": path, "size_bytes": len(file.data)})
 	}
@@ -772,4 +772,19 @@ func conciseMediaPricing(raw json.RawMessage, speech ...bool) map[string]any {
 	}
 	out["prices"] = prices
 	return out
+}
+
+func finishMediaSave(handle interface {
+	Write([]byte) (int, error)
+	Close() error
+}, data []byte, remove func() error) error {
+	n, writeErr := handle.Write(data)
+	if writeErr == nil && n != len(data) {
+		writeErr = io.ErrShortWrite
+	}
+	closeErr := handle.Close()
+	if writeErr != nil || closeErr != nil {
+		return errors.Join(writeErr, closeErr, remove())
+	}
+	return nil
 }

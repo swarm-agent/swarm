@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -281,5 +282,9 @@ func readManagedMediaInput(scope tool.WorkspaceScope, path string) ([]byte, stri
 	if len(data) > controlMCPMediaInputMaxBytes {
 		return nil, "", errors.New("media input exceeds size limit")
 	}
-	return data, strings.SplitN(http.DetectContentType(data), ";", 2)[0], nil
+	mediaType := mime.TypeByExtension(filepath.Ext(path))
+	if mediaType == "" {
+		mediaType = http.DetectContentType(data)
+	}
+	return data, strings.SplitN(mediaType, ";", 2)[0], nil
 }

@@ -1773,13 +1773,16 @@ func (s *SessionStore) applyFreshV3SessionMutationWithReader(input V3SessionMuta
 		}
 		summary.EstimatedCostUSD += media.CostUSD
 		summary.MediaCostUSD += media.CostUSD
-		switch media.Kind {
-		case "image":
-			summary.ImageCount++
-		case "video":
-			summary.VideoCount++
-		case "audio", "sound":
-			summary.SoundCount++
+		// Timing/transcription JSON is billable but is not a generated media output.
+		if !strings.EqualFold(strings.TrimSpace(strings.SplitN(media.MediaType, ";", 2)[0]), "application/json") {
+			switch media.Kind {
+			case "image":
+				summary.ImageCount++
+			case "video":
+				summary.VideoCount++
+			case "audio", "sound":
+				summary.SoundCount++
+			}
 		}
 		summary.UpdatedAt = now
 		summaryPayload, err := json.Marshal(summary)

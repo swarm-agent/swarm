@@ -689,3 +689,62 @@ func TestManageMediaRootedSymlinkEscape(t *testing.T) {
 		t.Fatalf("external file changed %q %v", after, err)
 	}
 }
+
+// Purpose: rooted input reads must preserve MCP extension-first type handling
+// without accepting non-regular inputs; this filesystem test exercises the reader.
+func TestManageMediaInputExtension(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "clip.mp3"), []byte{0xff, 0xfb, 0x90, 0x64}, 0600); err != nil {
+		t.Fatal(err)
+	}
+	data, typ, err := readManagedMediaInput(tool.WorkspaceScope{PrimaryPath: dir}, "clip.mp3")
+	if err != nil || typ != "audio/mpeg" || len(data) != 4 {
+		t.Fatalf("type %s bytes %v error %v", typ, data, err)
+	}
+	if _, _, err := readManagedMediaInput(tool.WorkspaceScope{PrimaryPath: dir}, "."); err == nil {
+		t.Fatal("directory accepted")
+	}
+}
+
+type failingMediaSave struct {
+	*os.File
+	failWrite bool
+}
+
+func (f failingMediaSave) Write(b []byte) (int, error) {
+	if f.failWrite {
+		n, _ := f.File.Write(b[:1])
+		return n, os.ErrPermission
+	}
+	return f.File.Write(b)
+}
+func (f failingMediaSave) Close() error {
+	err := f.File.Close()
+	if !f.failWrite {
+		return os.ErrPermission
+	}
+	return err
+}
+
+// Purpose: the save finalizer must remove partial rooted files on write or close
+// failure. Injected failures after real writes prove cleanup without disk exhaustion.
+func TestManageMediaSaveFailureCleanup(t *testing.T) {
+	for _, failWrite := range []bool{true, false} {
+		root, err := os.OpenRoot(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		f, err := root.OpenFile("partial", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = finishMediaSave(failingMediaSave{f, failWrite}, []byte("media"), func() error { return root.Remove("partial") })
+		if err == nil {
+			t.Fatal("failure hidden")
+		}
+		if _, err := root.Stat("partial"); !os.IsNotExist(err) {
+			t.Fatalf("partial remains: %v", err)
+		}
+		root.Close()
+	}
+}
