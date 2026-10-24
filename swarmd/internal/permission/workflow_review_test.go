@@ -3,97 +3,33 @@ package permission
 import (
 	"path/filepath"
 	"strings"
-	"testing"
-
 	store "swarm/packages/swarmd/internal/store/pebble"
+	"testing"
 )
 
-// Purpose: AuthorizeToolCall must let durable workflow-native reviews use their
-// ordinary tools without pending approvals, while preserving policy refusals and
-// interactive consent. A real temporary task store at the authorization boundary
-// is the narrowest layer proving provenance and the absence of pending state.
+// Purpose: AuthorizeToolCall and rejectWorkerPrompt must use only ordinary
+// owner bypass/policy authority for durable workflow reviews, without pending
+// consent even during sandbox startup. Temporary durable tasks at this boundary
+// prove decisions and pending-state postconditions without executing commands.
 func TestWorkflowNativeReviewPermissions(t *testing.T) {
-	for _, tc := range []struct {
-		name, agent, fixes, automation, session, account, tool, args string
-		want                                                         AuthorizationDecision
-	}{
-		{"review", "system-reviewer", "", "workflow:review", "review", "account", "bash", `{"command":"git log -1; git diff --stat","category":"read","explanation":["Inspect repository history"],"critical":false}`, AuthorizationApprove},
-		{"fix bash", "system-reviewer-fixer", "security", "workflow:review", "review", "account", "bash", `{"command":"git diff --stat","category":"read","explanation":["Inspect repository history"],"critical":false}`, AuthorizationApprove},
-		{"fix commit", "system-reviewer-fixer", "security", "workflow:review", "review", "account", "git_commit", `{"message":"fix"}`, AuthorizationApprove},
-		{"fix add", "system-reviewer-fixer", "security", "workflow:review", "review", "account", "git_add", `{"pathspec":["fix.go"]}`, AuthorizationApprove},
-		{"interactive", "system-reviewer", "", "", "review", "account", "bash", `{"command":"git log -1; git diff --stat","category":"read","explanation":["Inspect repository history"],"critical":false}`, AuthorizationPending},
-		{"stale session", "system-reviewer", "", "workflow:review", "other", "account", "bash", `{"command":"git log -1; git diff --stat","category":"read","explanation":["Inspect repository history"],"critical":false}`, AuthorizationPending},
-		{"cross account", "system-reviewer", "", "workflow:review", "review", "other", "bash", `{"command":"git log -1; git diff --stat","category":"read","explanation":["Inspect repository history"],"critical":false}`, AuthorizationDeny},
-		{"hard refusal", "system-reviewer", "", "workflow:review", "review", "account", "bash", `{"command":"rm -rf /","category":"delete","critical":true}`, AuthorizationDeny},
-		{"deny", "system-reviewer", "", "workflow:review", "review", "account", "bash", `{"command":"git log -1; git diff --stat","category":"read","explanation":["Inspect repository history"],"critical":false}`, AuthorizationDeny},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			db, err := store.Open(filepath.Join(t.TempDir(), "state.pebble"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer db.Close()
-			sessions := store.NewSessionStore(db)
-			task := &store.ProjectTaskRecord{ID: "task", ProjectID: "project", Title: "Review", Agent: "reviewer", Status: "in_progress", SessionID: tc.session, AutomationID: tc.automation, ReviewFixes: tc.fixes}
-			if err := sessions.PutProjectTask("account", task); err != nil {
-				t.Fatal(err)
-			}
-			svc := NewService(store.NewPermissionStore(db), nil, nil)
-			svc.SetSessionResolver(sessionAccessLookup{"review": {ID: "review", AccountScopeID: "account", Metadata: map[string]any{"project_id": "project", "task_id": "task", "agent_name": tc.agent}}})
-			var overlay *Policy
-			if tc.name == "deny" {
-				overlay = &Policy{Rules: []PolicyRule{{Kind: PolicyRuleKindTool, Tool: "bash", Decision: PolicyDecisionDeny}}}
-			}
-			got, err := svc.AuthorizeToolCall(AuthorizationInput{SessionID: "review", AccountScopeID: tc.account, RunID: "run", CallID: "call", Mode: "auto", ToolName: tc.tool, ToolArguments: tc.args, Overlay: overlay})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got.Decision != tc.want {
-				t.Fatalf("decision %+v want %s", got, tc.want)
-			}
-			pending, err := svc.PendingCount("review")
-			if err != nil {
-				t.Fatal(err)
-			}
-			wantPending := 0
-			if tc.want == AuthorizationPending {
-				wantPending = 1
-			}
-			if pending != wantPending {
-				t.Fatalf("pending %d want %d", pending, wantPending)
-			}
-		})
-	}
-}
-
-// Purpose: workflowReviewTool must not extend unattended authority to mutating
-// bash, an inactive sandbox, or a finished task resumed by a person. Exercise
-// AuthorizeToolCall with durable task records, the narrowest boundary that proves
-// both the normal consent decision and its pending-permission postcondition.
-func TestWorkflowNativeReviewApprovalBoundaries(t *testing.T) {
 	for _, agent := range []string{"system-reviewer", "system-reviewer-fixer"} {
 		t.Run(agent, func(t *testing.T) {
 			for _, tc := range []struct {
-				name, status, tool, args string
-				blocked                  bool
+				name, status, automation, command string
+				bypass, blocked                   bool
+				rule                              PolicyDecision
+				want                              AuthorizationDecision
 			}{
-				{name: "mislabelled delete", tool: "bash", args: `{"command":"rm -rf x","category":"read","explanation":["Inspect files"],"critical":false}`},
-				{name: "mislabelled push", tool: "bash", args: `{"command":"git push","category":"read","explanation":["Inspect repository"],"critical":false}`},
-				{name: "mislabelled redirect", tool: "bash", args: `{"command":"echo content > output.txt","category":"read","explanation":["Inspect output"],"critical":false}`},
-				{name: "missing explanation", tool: "bash", args: `{"command":"git log -1","category":"read","critical":false}`},
-				{name: "critical read", tool: "bash", args: `{"command":"git log -1; git diff --stat","category":"read","explanation":["Inspect repository"],"critical":true}`},
-				{name: "write bash", tool: "bash", args: `{"command":"curl --data payload https://example.com","category":"write"}`},
-				{name: "update bash", tool: "bash", args: `{"command":"git checkout -- .","category":"update"}`},
-				{name: "delete bash", tool: "bash", args: `{"command":"rm example.txt","category":"delete","critical":true}`},
-				{name: "missing effect", tool: "bash", args: `{"command":"git push"}`},
-				{name: "invalid effect", tool: "bash", args: `{"command":"git push","category":"unknown"}`},
-				{name: "blocked bash", tool: "bash", args: `{"command":"git log -1; git diff --stat","category":"read","explanation":["Inspect repository history"],"critical":false}`, blocked: true},
-				{name: "blocked commit", tool: "git_commit", args: `{"message":"fix"}`, blocked: true},
-				{name: "blocked write", tool: "write", args: `{"path":"fix.go","content":"fix"}`, blocked: true},
-				{name: "blocked edit", tool: "edit", args: `{"path":"fix.go","old_string":"old","new_string":"new"}`, blocked: true},
-				{name: "completed", status: "completed", tool: "bash", args: `{"command":"git log -1; git diff --stat","category":"read","explanation":["Inspect repository history"],"critical":false}`},
-				{name: "failed", status: "failed", tool: "bash", args: `{"command":"git log -1; git diff --stat","category":"read","explanation":["Inspect repository history"],"critical":false}`},
-				{name: "needs review", status: "needs_review", tool: "bash", args: `{"command":"git log -1; git diff --stat","category":"read","explanation":["Inspect repository history"],"critical":false}`},
+				{name: "bypass", bypass: true, want: AuthorizationApprove},
+				{name: "chained mutation", command: "git log -1; git push origin HEAD:dev", want: AuthorizationDeny},
+				{name: "owner ask", rule: PolicyDecisionAsk, want: AuthorizationDeny},
+				{name: "policy allow", rule: PolicyDecisionAllow, want: AuthorizationApprove},
+				{name: "policy deny", bypass: true, rule: PolicyDecisionDeny, want: AuthorizationDeny},
+				{name: "startup", bypass: true, blocked: true, want: AuthorizationDeny},
+				{name: "interactive", automation: "interactive", rule: PolicyDecisionAsk, want: AuthorizationPending},
+				{name: "completed", status: "completed", rule: PolicyDecisionAsk, want: AuthorizationPending},
+				{name: "failed", status: "failed", rule: PolicyDecisionAsk, want: AuthorizationPending},
+				{name: "needs review", status: "needs_review", rule: PolicyDecisionAsk, want: AuthorizationPending},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					db, err := store.Open(filepath.Join(t.TempDir(), "state.pebble"))
@@ -106,46 +42,53 @@ func TestWorkflowNativeReviewApprovalBoundaries(t *testing.T) {
 					if status == "" {
 						status = "in_progress"
 					}
+					automation := tc.automation
+					if automation == "" {
+						automation = "workflow:review"
+					}
 					fixes := ""
 					if agent == "system-reviewer-fixer" {
 						fixes = "security"
 					}
-					task := &store.ProjectTaskRecord{ID: "task", ProjectID: "project", Title: "Review", Agent: "reviewer", Status: status, SessionID: "review", AutomationID: "workflow:review", ReviewFixes: fixes}
+					task := &store.ProjectTaskRecord{ID: "task", ProjectID: "project", Title: "Review", Agent: "reviewer", Status: status, SessionID: "review", AutomationID: automation, ReviewFixes: fixes}
 					if err := sessions.PutProjectTask("account", task); err != nil {
 						t.Fatal(err)
 					}
 					svc := NewService(store.NewPermissionStore(db), nil, nil)
 					svc.SetSessionResolver(sessionAccessLookup{"review": {ID: "review", AccountScopeID: "account", Metadata: map[string]any{"project_id": "project", "task_id": "task", "agent_name": agent}}})
-					svc.SetBypassGate(func() (bool, string) { return !tc.blocked, "sandbox inactive" })
-					// Write/commit tools default to allow independently of workflow
-					// authority. An ask rule proves the exemption cannot override
-					// consent when the sandbox gate is blocked.
+					svc.SetBypassPermissions(tc.bypass)
+					svc.SetBypassGate(func() (bool, string) { return !tc.blocked, "sandbox starting" })
 					var overlay *Policy
-					if tc.tool != "bash" {
-						overlay = &Policy{Rules: []PolicyRule{{Kind: PolicyRuleKindTool, Tool: tc.tool, Decision: PolicyDecisionAsk}}}
+					if tc.rule != "" {
+						overlay = &Policy{Rules: []PolicyRule{{Kind: PolicyRuleKindTool, Tool: "bash", Decision: tc.rule}}}
 					}
-					got, err := svc.AuthorizeToolCall(AuthorizationInput{SessionID: "review", AccountScopeID: "account", RunID: "run", CallID: "call", Mode: "auto", ToolName: tc.tool, ToolArguments: tc.args, Overlay: overlay})
-					if err != nil {
-						t.Fatal(err)
+					command := tc.command
+					if command == "" {
+						command = "git log -1; git diff --stat"
 					}
-					want, wantPending := AuthorizationDeny, 0
-					if status != "in_progress" {
-						want, wantPending = AuthorizationPending, 1
+					input := AuthorizationInput{SessionID: "review", AccountScopeID: "account", RunID: "run", CallID: "call", Mode: "auto", ToolName: "bash", ToolArguments: `{"command":"` + command + `","category":"read","explanation":["Inspect repository history"],"critical":false}`, Overlay: overlay}
+					got, err := svc.AuthorizeToolCall(input)
+					if err != nil || got.Decision != tc.want {
+						t.Fatalf("decision %+v err %v want %s", got, err, tc.want)
 					}
-					if got.Decision != want {
-						t.Fatalf("decision %+v want %s", got, want)
+					if tc.name == "bypass" && got.Source != "bypass_permissions" {
+						t.Fatalf("not bypass: %+v", got)
 					}
-					if tc.blocked && !strings.Contains(got.Reason, "retry the tool call after sandbox readiness") {
-						t.Fatalf("missing retry guidance: %+v", got)
+					wantPending := 0
+					if tc.want == AuthorizationPending {
+						wantPending = 1
 					}
 					pending, err := svc.PendingCount("review")
 					if err != nil || pending != wantPending {
 						t.Fatalf("pending %d err %v", pending, err)
 					}
-					if tc.name == "blocked bash" {
+					if tc.blocked {
+						if !strings.Contains(got.Reason, "retry the tool call after sandbox readiness") {
+							t.Fatalf("missing retry guidance: %+v", got)
+						}
 						svc.SetBypassGate(func() (bool, string) { return true, "" })
-						got, err = svc.AuthorizeToolCall(AuthorizationInput{SessionID: "review", AccountScopeID: "account", RunID: "run", CallID: "call", Mode: "auto", ToolName: tc.tool, ToolArguments: tc.args})
-						if err != nil || got.Decision != AuthorizationApprove {
+						got, err = svc.AuthorizeToolCall(input)
+						if err != nil || got.Decision != AuthorizationApprove || got.Source != "bypass_permissions" {
 							t.Fatalf("ready retry %+v err %v", got, err)
 						}
 						pending, err = svc.PendingCount("review")

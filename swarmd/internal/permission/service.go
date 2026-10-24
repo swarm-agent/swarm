@@ -607,13 +607,6 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 			return AuthorizationResult{Decision: AuthorizationApprove, Requirement: requirement, Reason: "the person lets this session start tasks freely", Source: "session_access"}, nil
 		}
 	}
-	workflowReview, err := s.workflowReviewTool(input)
-	if err != nil {
-		return AuthorizationResult{}, err
-	}
-	if workflowReview && explain.Decision != PolicyDecisionDeny {
-		return AuthorizationResult{Decision: AuthorizationApprove, Requirement: requirement, Reason: "workflow native review tools run without interactive approval", Source: "workflow_review"}, nil
-	}
 	if state.BypassPermissions {
 		// Bypass suppresses ordinary approval prompts only. Hard denials and the
 		// dedicated plan-acceptance boundary remain authoritative.

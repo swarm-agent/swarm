@@ -1183,8 +1183,10 @@ func assertWorkflowReviewApproval(t *testing.T, sessions *pebblestore.SessionSto
 	t.Helper()
 	svc := permission.NewService(pebblestore.NewPermissionStore(sessions.Underlying()), nil, nil)
 	svc.SetSessionResolver(sessions)
+	svc.SetBypassGate(func() (bool, string) { return true, "" })
+	svc.SetBypassPermissions(true)
 	result, err := svc.AuthorizeToolCall(permission.AuthorizationInput{SessionID: snapshot.ID, AccountScopeID: snapshot.AccountScopeID, RunID: "permission-check", CallID: tool, Mode: snapshot.Mode, ToolName: tool, ToolArguments: args})
-	if err != nil || result.Decision != permission.AuthorizationApprove || result.Source != "workflow_review" {
+	if err != nil || result.Decision != permission.AuthorizationApprove || result.Source != "bypass_permissions" {
 		t.Fatalf("workflow approval %+v err %v", result, err)
 	}
 	count, err := svc.PendingCount(snapshot.ID)
