@@ -203,3 +203,79 @@ func TestWorkflowExportRequiresProjectFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Requirement: write-key exports may only target JSON outside Git metadata.
+// Threat: overwrite could corrupt source or repository authority. The real-store
+// controlMCPExportWorkflow boundary is the narrowest layer proving rejection and
+// byte-for-byte preservation, including .git files and nested .git components.
+func TestWorkflowExportProtectsTargets(t *testing.T) {
+	server, _ := newRunOwnerServer(t)
+	folder := t.TempDir()
+	c := &controlMCPCall{server: server, request: requestWithScopedToken(withTestPrincipal(httptest.NewRequest("POST", "/mcp", nil)), &pebblestore.ScopedTokenRecord{Scopes: scopesForLevel(t, "write")})}
+	c.next = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]any{"projects": []any{map[string]any{"id": "proj-1", "workspaces": []any{map[string]any{"path": folder}}}}})
+	})
+	if _, err := controlMCPSetAutomation(c, map[string]any{"name": "protected", "scope": map[string]any{"folder": folder}, "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "review"}}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{".git/config", ".git/HEAD", ".git/workflow.json", "nested/.git/config.json", "worktree/.git", "source.go"} {
+		t.Run(path, func(t *testing.T) {
+			full := filepath.Join(folder, path)
+			if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+				t.Fatal(err)
+			}
+			original := []byte("original contents\n")
+			if err := os.WriteFile(full, original, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := controlMCPExportWorkflow(c, map[string]any{"name": "protected", "path": path, "overwrite": true}); err == nil {
+				t.Fatal("unsafe target accepted")
+			}
+			got, err := os.ReadFile(full)
+			if err != nil || string(got) != string(original) {
+				t.Fatalf("target changed: %q %v", got, err)
+			}
+			if _, err := os.Stat(full + ".swarm-new"); !os.IsNotExist(err) {
+				t.Fatalf("temporary export left behind: %v", err)
+			}
+		})
+	}
+}
+
+// Requirement: HTTP JSON export has the same read-scope contract as MCP, but
+// file output still needs write scope. handleJobAutomations/handleWorkflowTransfer
+// own this boundary; handler calls verify the definition and denied-write
+// postcondition without involving transport or an unrelated server lifecycle.
+func TestWorkflowExportReadScopeHTTP(t *testing.T) {
+	server, _ := newRunOwnerServer(t)
+	folder := t.TempDir()
+	owner := &controlMCPCall{server: server, request: requestWithScopedToken(withTestPrincipal(httptest.NewRequest("POST", "/mcp", nil)), &pebblestore.ScopedTokenRecord{Scopes: scopesForLevel(t, "write")})}
+	if _, err := controlMCPSetAutomation(owner, map[string]any{"name": "readable", "scope": map[string]any{"folder": folder}, "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "review"}}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		body   string
+		status int
+	}{
+		{`{"name":"readable"}`, http.StatusOK},
+		{`{"name":"readable","path":""}`, http.StatusForbidden},
+		{`{"name":"readable","path":"workflow.json","overwrite":true}`, http.StatusForbidden},
+	} {
+		r := requestWithScopedToken(withTestPrincipal(httptest.NewRequest("POST", JobAutomationsPath+"/export", strings.NewReader(tc.body))), &pebblestore.ScopedTokenRecord{Scopes: []string{"automations:read"}})
+		w := httptest.NewRecorder()
+		server.handleJobAutomations(w, r)
+		if w.Code != tc.status {
+			t.Fatalf("%s: %d %s", tc.body, w.Code, w.Body)
+		}
+		if tc.status == http.StatusOK {
+			d, err := decodeWorkflow(w.Body.Bytes())
+			if err != nil || d.Name != "readable" || d.Scope.Folder != "" {
+				t.Fatalf("invalid portable export: %+v %v", d, err)
+			}
+		}
+	}
+	entries, err := os.ReadDir(folder)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("read-only export wrote files: %v %v", entries, err)
+	}
+}

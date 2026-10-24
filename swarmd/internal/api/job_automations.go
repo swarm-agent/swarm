@@ -952,6 +952,20 @@ func jobAutomationHTTPError(w http.ResponseWriter, err error) {
 // handleJobAutomations serves /v3/workflows, /v3/workflows/stop
 // and /v3/workflows/{id}.
 func (s *Server) handleJobAutomations(w http.ResponseWriter, r *http.Request) {
+	// Decode export separately so JSON-only exports need read scope, while
+	// file output still requires write scope before any filesystem access.
+	if strings.Trim(strings.TrimPrefix(r.URL.Path, JobAutomationsPath), "/") == "export" && r.Method == http.MethodPost {
+		principal, ok := PrincipalFromRequest(r)
+		if !ok || !principal.Valid() {
+			writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+			return
+		}
+		if !s.requireScopeAny(w, r, "automations:read", "automations:write") {
+			return
+		}
+		s.handleWorkflowTransfer(w, r, "export")
+		return
+	}
 	principal, ok := PrincipalFromRequest(r)
 	if !ok || !principal.Valid() {
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
@@ -972,7 +986,7 @@ func (s *Server) handleJobAutomations(w http.ResponseWriter, r *http.Request) {
 	account := principal.AccountScopeID
 	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, JobAutomationsPath), "/")
 	switch {
-	case (rest == "export" || rest == "import") && r.Method == http.MethodPost:
+	case rest == "import" && r.Method == http.MethodPost:
 		s.handleWorkflowTransfer(w, r, rest)
 	case rest == "" && r.Method == http.MethodGet:
 		list, err := store.List(account)

@@ -127,6 +127,14 @@ func controlMCPExportWorkflow(c *controlMCPCall, args map[string]any) (any, erro
 	if err := workflowPath(path); err != nil {
 		return nil, err
 	}
+	for _, component := range strings.Split(path, string(filepath.Separator)) {
+		if component == ".git" {
+			return nil, errors.New("workflow export paths must not contain .git")
+		}
+	}
+	if !strings.HasSuffix(path, ".json") {
+		return nil, errors.New("workflow export path must end in .json")
+	}
 	// A workflow's explicit scope is not filesystem authority. Resolve it
 	// against the account-visible project folders before creating anything.
 	folder, err := c.workflowExportFolder(a.Scope.Folder)
@@ -361,11 +369,14 @@ func (s *Server) handleWorkflowTransfer(w http.ResponseWriter, r *http.Request, 
 		writeError(w, 400, err)
 		return
 	}
+	if action == "export" && body.Path != nil && !s.requireScope(w, r, "automations:write") {
+		return
+	}
 	data, _ := json.Marshal(body)
 	var args map[string]any
 	_ = json.Unmarshal(data, &args)
 	// The outer HTTP handler already authenticated the local owner and checked
-	// write scope. MCP requires a token even for this trusted internal call.
+	// the required scope. MCP requires a token even for this trusted internal call.
 	if _, ok := ScopedTokenFromRequest(r); !ok {
 		r = requestWithScopedToken(r, &pebblestore.ScopedTokenRecord{Scopes: []string{"admin"}})
 	}
