@@ -1,12 +1,16 @@
-package pebblestore
+package pebblestore_test
 
 import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"swarm/packages/swarmd/internal/notification"
+	. "swarm/packages/swarmd/internal/store/pebble"
 )
 
-// Purpose: writable Open must settle interrupted direct media without replaying
+// Purpose: startup observer installation must settle interrupted media, including
+// real durable notifications exactly once across reopen, without replaying
 // generation or billing. A real store close/reopen exercises the startup boundary
 // and durable files, signals and receipts; missing files and non-media records
 // prove recovery does not manufacture success or change unrelated task state.
@@ -58,6 +62,27 @@ func TestProjectMediaRecoveryOnOpen(t *testing.T) {
 				db, err = Open(path)
 				if err != nil {
 					t.Fatal(err)
+				}
+				notifications := NewNotificationStore(db)
+				service := notification.NewService(notifications, nil, nil)
+				service.SetLocalSwarmIDResolver(func() string { return "swarm" })
+				db.SetProjectTaskStatusObserver(service.ObserveProjectTaskStatus)
+				records, err := notifications.ListNotificationsForAccount("account", "swarm", 10)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if state == "non-media" || state == "terminal" {
+					if len(records) != 0 {
+						t.Fatal("unrelated notification")
+					}
+				} else {
+					title := "Task ready for review: media"
+					if want == "failed" {
+						title = "Task failed: media"
+					}
+					if len(records) != 1 || records[0].Title != title {
+						t.Fatalf("notifications: %+v", records)
+					}
 				}
 				s = NewSessionStore(db)
 				got, found, err := s.GetProjectTask("account", "project", "task")

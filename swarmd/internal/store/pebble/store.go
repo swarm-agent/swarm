@@ -45,6 +45,7 @@ type Store struct {
 	projectPublisherMu          sync.RWMutex
 	projectPublisher            func(V3RealtimeOutboxRecord)
 	projectTaskStatusObserver   func(ProjectTaskStatusTransition)
+	mediaRecoveryPending        bool
 	beforeProjectTaskUpdateHook func(taskID string) error
 	signalsMu                   sync.Mutex
 	workersMu                   sync.Mutex
@@ -137,10 +138,7 @@ func openWithOptions(path string, opts *pebble.Options) (store *Store, err error
 			_ = db.Close()
 			return nil, fmt.Errorf("prepare project task indexes before serving: %w", err)
 		}
-		if err := NewSessionStore(store).recoverInterruptedProjectMedia(); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("recover interrupted project media before serving: %w", err)
-		}
+		store.mediaRecoveryPending = true
 	}
 	return store, nil
 }

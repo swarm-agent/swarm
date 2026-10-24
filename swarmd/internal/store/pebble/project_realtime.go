@@ -3,6 +3,7 @@ package pebblestore
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"sort"
 	"strings"
 
@@ -231,6 +232,17 @@ type ProjectTaskStatusTransition struct {
 // repeats the current status (a retry or replay) is not a transition.
 func (s *Store) SetProjectTaskStatusObserver(fn func(ProjectTaskStatusTransition)) {
 	s.projectPublisherMu.Lock()
-	defer s.projectPublisherMu.Unlock()
 	s.projectTaskStatusObserver = fn
+	recoverMedia := fn != nil && s.mediaRecoveryPending
+	if recoverMedia {
+		s.mediaRecoveryPending = false
+	}
+	s.projectPublisherMu.Unlock()
+	// Startup installs the notification observer before serving. Recover only
+	// once per writable Open, with the real observer installed and no lock held.
+	if recoverMedia {
+		if err := NewSessionStore(s).recoverInterruptedProjectMedia(); err != nil {
+			log.Printf("warning: interrupted media recovery scan failed; deferred until next restart")
+		}
+	}
 }
