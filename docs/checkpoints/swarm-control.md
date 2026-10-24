@@ -351,9 +351,52 @@ that call: a job ends when its agent has built, tested and committed its work.
 {"kind":"sound","operation":"speech","model":"gemini-2.5-flash-preview-tts","text":"Welcome to the demonstration.","voice":"Kore","style":"Calm narrator","language":"English","format":"wav"}
 ```
 
+Speech uses `kind: "sound"` with `operation: "speech"` rather than introducing a new media kind. This reuses the existing sound job, file and receipt lifecycle while keeping speech distinct from music generation; an explicit speech model prevents a music default from being selected.
+
 HTTP project-task creation and SDK `CreateProjectTaskParams` use `agent: "sound"`, `operation: "speech"`, `model`, and nested `speech: {text, voice, style?, language?, format?}`. Existing authentication/project ownership rules apply.
 
 The job lists WAV audio and timing JSON as separate files; `swarm_save_media` saves both side by side. Each file exposes `cost_usd`, `price_status` and `pricing_summary`, backed by separate idempotent generation/transcription receipts. Missing catalog rates or usage stay explicitly `unknown`, not free. Retained audio avoids repeating synthesis after alignment failure. A failed alignment that already incurred usage requires a new job to authorize another paid attempt.
+
+Completed speech media-result shape (the surrounding job envelope retains its ordinary identity/status fields). Angle-bracket values below are placeholders, not measured costs or output; runtime costs and sizes are numbers. Each `file` number selects that file for saving:
+
+```json
+{
+  "model": "gemini-2.5-flash-preview-tts",
+  "cost_usd": "<generation plus transcription cost>",
+  "price_status": "known",
+  "files": [
+    {
+      "file": 1,
+      "id": "deliv_speech",
+      "kind": "audio",
+      "status": "ready",
+      "title": "<task title>",
+      "model": "gemini-2.5-flash-preview-tts",
+      "media_type": "audio/wav",
+      "size_bytes": "<audio byte count>",
+      "sha256": "<audio digest>",
+      "cost_usd": "<generation cost>",
+      "price_status": "known",
+      "pricing_summary": "<catalog-derived summary>"
+    },
+    {
+      "file": 2,
+      "id": "deliv_timings",
+      "kind": "json",
+      "status": "ready",
+      "title": "Speech timings",
+      "media_type": "application/json",
+      "size_bytes": "<JSON byte count>",
+      "sha256": "<JSON digest>",
+      "cost_usd": "<transcription cost>",
+      "price_status": "known",
+      "pricing_summary": "<catalog-derived summary>"
+    }
+  ]
+}
+```
+
+`known` requires available usage and applicable catalog rates; otherwise the price status is `unknown`. File 2 contains the timing JSON illustrated below, not a second audio stream.
 
 Gemini has no native alignment. Audio above 14 MiB uses a temporary Gemini Files upload rather than exceeding the inline request ceiling; Swarm requests deletion after transcription, including failures. Smaller audio remains inline. Swarm transcribes generated audio through the structured-transcript primitive and shared normalizer, requesting word timestamps with the account's configured Google audio-input transcription model. These are semantic estimates, not forced alignment. The provider-neutral interface permits native alignment later. If only segments are returned, the result explicitly uses `granularity: "segment"` and `segments`; no word times are fabricated.
 
@@ -361,6 +404,12 @@ Illustrative timing JSON (seconds from audio start):
 
 ```json
 {"granularity":"word","source":"transcription","words":[{"word":"Welcome","start":0.12,"end":0.54}]}
+```
+
+Word entries are word-level timestamps returned by transcription, not guaranteed forced alignment. When the transcription only supplies segments, the timing file instead looks like this (illustrative values):
+
+```json
+{"granularity":"segment","source":"transcription","segments":[{"word":"Welcome to the demonstration.","start":0.0,"end":2.0}]}
 ```
 
 Segment entries have the same shape, with `word` containing the segment text. Configure the existing account Google key and transcription model before requesting speech. Invalid transcription fails visibly while preserving generated audio. No live-provider qualification is implied by unit tests.
