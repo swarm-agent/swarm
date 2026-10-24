@@ -6,6 +6,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Include the system reviewer in AI-path end-to-end harness model setup and checks for all eight roles. Docs impact: none
 - Remove an accidentally tracked Vitest results cache and ignore root node_modules dependencies. Docs impact: none
 - Keep account-scoped workflow change history with portable revision reads and permission-checked restore through MCP, API and SDK. Docs impact: none.
 
