@@ -202,7 +202,8 @@ func (s *Server) fleetLinkHandler() http.Handler {
 			node, _, _ := s.swarmLocalNode()
 			writeJSON(w, http.StatusOK, map[string]any{
 				"swarm_id":    node.SwarmID,
-				"name":        fleetName(node),
+				"name":        s.fleetName(),
+				"swarm_name":  s.swarmName(),
 				"fingerprint": node.Fingerprint,
 				"home":        home.Name,
 				"linked_at":   home.LinkedAt,
@@ -296,7 +297,8 @@ func (s *Server) handleFleetRedeem(w http.ResponseWriter, r *http.Request, calle
 		"token":       issued.Token,
 		"session_id":  issued.SessionID,
 		"swarm_id":    node.SwarmID,
-		"name":        fleetName(node),
+		"name":        s.fleetName(),
+		"swarm_name":  s.swarmName(),
 		"fingerprint": node.Fingerprint,
 	})
 }

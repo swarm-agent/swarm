@@ -6,7 +6,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -56,13 +55,24 @@ func (s *Server) registerFleetRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(fleetPath+"/", s.ownerOnlyScope(s.handleFleet))
 }
 
-// fleetName is this Swarm's name in the fleet: its node's name, else its host's.
-func fleetName(node pebblestore.SwarmLocalNodeRecord) string {
-	if name := fleet.NameFrom(node.Name); name != "" {
-		return name
+// swarmName is this Swarm's own name, the one the person gave it at setup
+// (install.sh --name, or onboarding's swarm_name).
+func (s *Server) swarmName() string {
+	if cfg, err := s.loadStartupConfig(); err == nil {
+		if name := strings.TrimSpace(cfg.SwarmName); name != "" {
+			return name
+		}
 	}
-	host, _ := os.Hostname()
-	return fleet.NameFrom(host)
+	if node, found, _ := s.swarmLocalNode(); found {
+		return strings.TrimSpace(node.Name)
+	}
+	return ""
+}
+
+// fleetName is this Swarm's name in the fleet: its own name, written the
+// way a machine name is (lowercase letters, digits and dashes).
+func (s *Server) fleetName() string {
+	return fleet.NameFrom(s.swarmName())
 }
 
 func (s *Server) handleFleet(w http.ResponseWriter, r *http.Request) {
@@ -136,7 +146,8 @@ func (s *Server) handleFleetList(w http.ResponseWriter) {
 	}
 	node, _, _ := s.swarmLocalNode()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"name":        fleetName(node),
+		"name":        s.fleetName(),
+		"swarm_name":  s.swarmName(),
 		"fingerprint": node.Fingerprint,
 		"machines":    machines,
 		"homes":       homes,
@@ -185,10 +196,10 @@ func (s *Server) handleFleetInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
-		name = fleetName(node)
+		name = s.fleetName()
 	}
 	if !fleet.ValidName(name) {
-		writeError(w, http.StatusBadRequest, errors.New("a machine's name is lowercase letters, digits and dashes"))
+		writeError(w, http.StatusBadRequest, errors.New("this Swarm has no name to link by: give it one (its setup, or --name NAME)"))
 		return
 	}
 	listening, err := s.listenForHomes(address)
@@ -322,7 +333,7 @@ func (s *Server) handleFleetLink(w http.ResponseWriter, r *http.Request, account
 		SwarmID   string `json:"swarm_id"`
 	}
 	client := fleet.NewClient(cert, invite.Address, invite.Fingerprint, "")
-	if err := client.JSON(r.Context(), http.MethodPost, "/link/v1/redeem", map[string]string{"invite_id": invite.ID, "secret": invite.Secret, "name": fleetName(own)}, &redeemed); err != nil {
+	if err := client.JSON(r.Context(), http.MethodPost, "/link/v1/redeem", map[string]string{"invite_id": invite.ID, "secret": invite.Secret, "name": s.fleetName()}, &redeemed); err != nil {
 		writeError(w, http.StatusBadGateway, errors.New("the machine at "+invite.Address+" did not link: "+err.Error()))
 		return
 	}
