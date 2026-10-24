@@ -226,8 +226,20 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Estimated spend must refuse without persisting an actual usage crossing
+	// or emitting a warning. Install the real signal store to prove both effects.
+	signals := pebblestore.NewSignalStore(db)
+	db.SetLimitSignalStore(signals)
 	if _, err := server.ManageMedia(context.Background(), scope, args); err == nil || !strings.Contains(err.Error(), "job_cost_usd") {
 		t.Fatalf("job estimate limit: %v", err)
+	}
+	var crossing map[string]any
+	if found, err := db.GetJSON("limits/crossed/account/worker%2Frun/job_cost_usd", &crossing); err != nil || found {
+		t.Fatalf("estimate wrote crossing %v %v", crossing, err)
+	}
+	page, err := signals.ListAfter(0, 100, pebblestore.SignalFilter{Account: p.AccountScopeID})
+	if err != nil || len(page.Signals) != 0 {
+		t.Fatalf("estimate emitted signals %+v %v", page, err)
 	}
 	limits.JobCostUSD = 0
 	if _, err := store.SetLimits(p.AccountScopeID, limits.Revision, limits); err != nil {
@@ -474,5 +486,35 @@ func waitMediaTask(t *testing.T, s *Server, scope tool.WorkspaceScope, job strin
 	status := result.(map[string]any)["status"]
 	if status != "completed" && status != "failed" && status != "needs_review" {
 		t.Fatalf("task not terminal %v", result)
+	}
+}
+
+// Purpose: ManageMedia must refuse projectless sessions before task creation.
+// The real session/task store is the narrowest boundary proving both the error
+// and absence of tasks, including accidental fallback to an existing project.
+func TestManageMediaGenerateWithoutProject(t *testing.T) {
+	db, err := pebblestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store := pebblestore.NewSessionStore(db)
+	p := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "user"}
+	if err := store.CreateSessionForAccount(pebblestore.SessionSnapshot{ID: "projectless"}, p.UserID, p.AccountScopeID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutProject(p.AccountScopeID, &pebblestore.ProjectRecord{ID: "project", Name: "Existing project", AccountID: p.AccountScopeID}); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{sessions: session.NewService(store, nil)}
+	_, err = server.ManageMedia(context.Background(), tool.WorkspaceScope{SessionID: "projectless", Principal: p}, map[string]any{"action": "generate", "kind": "image", "brief": "a circle"})
+	if err == nil || !strings.Contains(err.Error(), "requires a session with a project") {
+		t.Fatalf("projectless generation error %v", err)
+	}
+	for _, project := range []string{"project"} {
+		tasks, err := store.ListProjectTasks(p.AccountScopeID, project, 100)
+		if err != nil || len(tasks) != 0 {
+			t.Fatalf("project %q tasks %+v error %v", project, tasks, err)
+		}
 	}
 }

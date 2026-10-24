@@ -342,8 +342,10 @@ func (s *SessionStore) checkWorkerSessionBudget(account, sessionID, priceStatus 
 			if err != nil {
 				return err
 			}
-			if err := s.store.observeLimit(account, scope.ProjectID+"/"+scope.ID, "job_cost_usd", limits.JobCostUSD, total.CatalogCostUSD+total.ProviderCostUSD+total.ProviderEstimateCostUSD+*estimatedCost > limits.JobCostUSD); err != nil {
-				return err
+			// An estimate is not incurred usage: refuse without recording a
+			// crossing or emitting a limit.reached signal.
+			if total.CatalogCostUSD+total.ProviderCostUSD+total.ProviderEstimateCostUSD+*estimatedCost > limits.JobCostUSD {
+				return &LimitReached{"limit.reached", "job_cost_usd", limits.JobCostUSD}
 			}
 		}
 		return nil
