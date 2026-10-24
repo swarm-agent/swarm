@@ -471,7 +471,7 @@ func (s *Service) setupRepositoryForPrincipal(principal identity.Principal, path
 		if err != nil {
 			return RepositoryState{}, err
 		}
-		err = parent.Mkdir(filepath.Base(resolved), 0o700)
+		err = parent.Mkdir(filepath.Base(resolved), 0o770)
 		parent.Close()
 		if err != nil {
 			return RepositoryState{}, fmt.Errorf("create new workspace directory: %w", err)
@@ -548,7 +548,7 @@ func (s *Service) setupRepositoryForPrincipal(principal identity.Principal, path
 	}
 
 	gitPath := filepath.Join(resolved, ".git")
-	if err := os.Mkdir(gitPath, 0o700); err != nil {
+	if err := os.Mkdir(gitPath, 0o770); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return RepositoryState{}, errors.New("repository setup found an unexpected .git path")
 		}

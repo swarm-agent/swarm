@@ -381,7 +381,7 @@ func (s *Service) PrepareRepositoryBaselineForPrincipal(principal identity.Princ
 	// Init is intentionally resumable. A later commit failure retains metadata,
 	// not a misleading successful catalog entry; no user files are removed.
 	if _, statErr := root.Lstat(".git"); errors.Is(statErr, os.ErrNotExist) {
-		if err := root.Mkdir(".git", 0700); err != nil {
+		if err := root.Mkdir(".git", 0o770); err != nil {
 			return state, err
 		}
 		reserved, err := root.Lstat(".git")

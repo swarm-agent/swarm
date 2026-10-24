@@ -209,14 +209,21 @@ func machineWorkspaceCheck(path, who string) (*user.User, error) {
 
 // machineWorkspaceShareGit runs as the owner: Git must not create root-owned
 // configuration or objects while workspace administration is privileged.
+//
+// Agents work only in a repository with a first commit. A folder that is not
+// a repository yet gets an empty one here, as the person: a .git the daemon
+// made would belong to Swarm's user, and the person's own Git would refuse
+// their folder ("dubious ownership"). Swarm makes the first commit inside it
+// later, once the person has chosen what it holds.
 func machineWorkspaceShareGit(path, owner string) error {
-	if _, err := os.Lstat(filepath.Join(path, ".git")); os.IsNotExist(err) {
-		return nil // A workspace need not be a repository.
-	} else if err != nil {
+	if _, err := os.Lstat(filepath.Join(path, ".git")); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return machineRun("runuser", "-u", owner, "--", "sh", "-eu", "-c", `
 cd "$1"
+if [ ! -e .git ]; then
+  git init -q --initial-branch=main
+fi
 git config --local core.sharedRepository group
 objects=$(git rev-parse --path-format=absolute --git-path objects)
 if [ ! -d "$objects" ] || [ -L "$objects" ]; then
