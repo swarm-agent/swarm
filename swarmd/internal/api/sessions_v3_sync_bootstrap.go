@@ -1123,6 +1123,9 @@ func sessionsV3SyncShellMetadataKeyAllowed(key string) bool {
 		"swarm_v3_project_id",
 		"role",
 		"task_id",
+		// A person's own mark on a conversation (pinned in their client), kept
+		// in the session's record and shown in every client's list.
+		"pinned",
 		// Bounded canonical occurrence attribution is required for protected
 		// automation composers, handoffs and links after hydration/reconnect.
 		"automation_v2_occurrence_id",
