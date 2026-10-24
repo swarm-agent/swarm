@@ -93,7 +93,7 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 		if err != nil {
 			return nil, err
 		}
-		input := tool.ProjectTaskCreateInput{ManageMediaSource: true, OriginSessionID: session.ID, Title: brief, Prompt: brief, Description: brief, Agent: kind, WorkspacePath: root, AutoApprove: true, Model: controlMCPString(args, "model"), AspectRatio: controlMCPString(args, "aspect_ratio"), Resolution: controlMCPString(args, "resolution"), DurationSeconds: controlMCPInt(args, "duration_seconds", 0), VariantCount: controlMCPInt(args, "count", 0)}
+		input := tool.ProjectTaskCreateInput{ManageMediaSource: true, OriginSessionID: session.ID, Title: brief, Prompt: brief, Description: brief, Agent: kind, WorkspacePath: root, AutoApprove: pebblestore.SessionAccessFromMetadata(session.Metadata).Tasks != pebblestore.SessionTasksAsk, Model: controlMCPString(args, "model"), AspectRatio: controlMCPString(args, "aspect_ratio"), Resolution: controlMCPString(args, "resolution"), DurationSeconds: controlMCPInt(args, "duration_seconds", 0), VariantCount: controlMCPInt(args, "count", 0)}
 		if kind == "video" {
 			input.VideoType = "single"
 			input.Operation = controlMCPString(args, "operation")
@@ -119,7 +119,11 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"job_id": controlMCPJobID(controlMCPJobMedia, projectID, task.ID), "status": task.Status}, nil
+		result := map[string]any{"job_id": controlMCPJobID(controlMCPJobMedia, projectID, task.ID), "status": task.Status}
+		if task.Status == "pending_approval" {
+			result["message"] = "The task waits for approval."
+		}
+		return result, nil
 	case "get", "save":
 		kind, project, id, err := controlMCPParseJobID(args)
 		if err != nil {

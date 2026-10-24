@@ -629,6 +629,10 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		if err := admitProjectMediaTask(&task); err != nil {
 			return nil, err
 		}
+		if task.ManageMediaSource && !input.AutoApprove {
+			task.Status = "pending_approval"
+			task.ActionNeeded = "Review task and click Approve to start media generation"
+		}
 	} else {
 		if input.AutoApprove {
 			task.Status = "in_progress"

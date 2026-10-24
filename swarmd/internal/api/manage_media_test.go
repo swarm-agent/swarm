@@ -560,3 +560,78 @@ func TestManageMediaGuidance(t *testing.T) {
 		check(map[string]any{"action": "get", "job_id": "media/project/task"})
 	}
 }
+
+// Purpose: ManageMedia must honor the session task-approval setting at the
+// CreateProjectTask boundary. A real store and generation service with a bounded
+// provider fixture prove ask cannot spend, while unset/free still execute.
+func TestManageMediaTaskApproval(t *testing.T) {
+	for _, setting := range []string{"ask", "", "free"} {
+		t.Run("tasks_"+setting, func(t *testing.T) {
+			db, err := pebblestore.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			store := pebblestore.NewSessionStore(db)
+			p := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "user"}
+			metadata := map[string]any{"project_id": "project"}
+			if setting != "" {
+				metadata[pebblestore.SessionAccessMetadataKey] = map[string]any{"tasks": setting}
+			}
+			if err := store.CreateSessionForAccount(pebblestore.SessionSnapshot{ID: "session", Metadata: metadata}, p.UserID, p.AccountScopeID); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.PutProject(p.AccountScopeID, &pebblestore.ProjectRecord{ID: "project", Name: "Media project", AccountID: p.AccountScopeID}); err != nil {
+				t.Fatal(err)
+			}
+			var rec pebblestore.ModelCatalogRecord
+			if err := json.Unmarshal([]byte(`{"provider":"google","model":"gemini-nano-banana-2.1","catalog_modalities":{"outputs":["image"]},"media":{"state":"supported","provider_surface":"gemini_generate_content"},"provider_specific":{"google":{"model_api_surface":"generate_content","image_generation":{"api_surface":"generate_content","status":"verified","settings":{"aspect_ratio":{"status":"verified","supported_values":["1:1"]},"image_size":{"status":"verified","supported_values":["1K"]}}}}}}`), &rec); err != nil {
+				t.Fatal(err)
+			}
+			auth := pebblestore.NewAuthStore(db)
+			if _, err := auth.UpsertCredential(pebblestore.AuthCredentialInput{Provider: "google", AccountScopeID: p.AccountScopeID, ID: "fixture", Type: "api_key", APIKey: "test-only", SetActive: true}); err != nil {
+				t.Fatal(err)
+			}
+			var data bytes.Buffer
+			if err := png.Encode(&data, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+				t.Fatal(err)
+			}
+			gate := make(chan struct{})
+			close(gate)
+			client := &blockingMediaClient{png: data.Bytes(), entered: make(chan struct{}, 10), release: gate}
+			gen := imagegen.NewService(nil, auth, nil, billingCatalog{rec})
+			gen.SetGeminiImageClient(client)
+			server := &Server{sessions: session.NewService(store, nil), imageGen: gen}
+			scope := tool.WorkspaceScope{SessionID: "session", Principal: p}
+			result, err := server.ManageMedia(context.Background(), scope, map[string]any{"action": "generate", "kind": "image", "brief": "A circle", "count": float64(1), "model": rec.Model, "aspect_ratio": "1:1", "resolution": "1K"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			view := result.(map[string]any)
+			_, project, id, err := controlMCPParseJobID(view)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if setting == "ask" {
+				task, found, err := store.GetProjectTask(p.AccountScopeID, project, id)
+				if err != nil || !found || task.Status != "pending_approval" || view["status"] != "pending_approval" || view["message"] != "The task waits for approval." {
+					t.Fatalf("pending task %+v result %+v error %v", task, view, err)
+				}
+				if client.calls.Load() != 0 {
+					t.Fatal("unapproved generation reached provider")
+				}
+			} else {
+				select {
+				case <-client.entered:
+				case <-time.After(5 * time.Second):
+					t.Fatal("provider not entered")
+				}
+				waitMediaTask(t, server, scope, view["job_id"].(string))
+				task, _, err := store.GetProjectTask(p.AccountScopeID, project, id)
+				if err != nil || client.calls.Load() != 1 || len(task.Deliverables) != 1 || task.Deliverables[0].Status != "ready" {
+					t.Fatalf("generation %+v calls %d error %v", task, client.calls.Load(), err)
+				}
+			}
+		})
+	}
+}
