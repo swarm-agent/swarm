@@ -413,6 +413,41 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 	if err != nil || !mcpTask.AutoApprove || mcpTask.RetryOf != retryTask.RetryOf || mcpTask.Description != "A green circle" || mcpTask.Agent != task.Agent || len(mcpTask.AttachedMedia) != 2 {
 		t.Fatalf("MCP retry %+v %v", mcpTask, err)
 	}
+	// Purpose: retryMedia must ignore empty optional overrides on both transports,
+	// and reject unsupported arguments before persisting any paid work.
+	for _, mcp := range []bool{false, true} {
+		invoke := func(extra map[string]any) (any, error) {
+			if mcp {
+				extra["project"], extra["retry_of"] = project, result.(map[string]any)["job_id"]
+				return controlMCPRequestMedia(call, extra)
+			}
+			extra["action"], extra["job_id"] = "retry", result.(map[string]any)["job_id"]
+			return server.ManageMedia(context.Background(), scope, extra)
+		}
+		empty, err := invoke(map[string]any{"model": "", "brief": "", "aspect_ratio": "", "resolution": "", "operation": "", "count": float64(0), "duration_seconds": float64(0)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _, emptyID, _ := controlMCPParseJobID(empty.(map[string]any))
+		copied, found, err := store.GetProjectTask(p.AccountScopeID, project, emptyID)
+		if err != nil || !found || copied.Model != task.Model || copied.Description != task.Description || copied.AspectRatio != task.AspectRatio || copied.Resolution != task.Resolution || copied.Operation != task.Operation || copied.VariantCount != task.VariantCount || copied.DurationSeconds != task.DurationSeconds {
+			t.Fatalf("empty overrides changed source options: %+v %v", copied, err)
+		}
+		before, err := store.ListProjectTasks(p.AccountScopeID, project, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range []string{"kind", "inputs", "title", "text", "voice", "style", "language", "format"} {
+			_, err := invoke(map[string]any{key: ""})
+			if err == nil || !strings.Contains(err.Error(), key) || strings.Contains(err.Error(), "manage_media") {
+				t.Fatalf("unsupported %s: %v", key, err)
+			}
+		}
+		after, err := store.ListProjectTasks(p.AccountScopeID, project, 100)
+		if err != nil || len(after) != len(before) {
+			t.Fatalf("refusal created tasks: %v", err)
+		}
+	}
 	// Rejected pending tasks cannot start execution or consume allowance.
 	for _, status := range []string{"rejected", "cancelled"} {
 		task.Status = status

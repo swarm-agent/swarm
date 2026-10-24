@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/google/uuid"
@@ -36,6 +37,11 @@ func (s *Server) readableMediaTask(p identity.Principal, project, id string) (*p
 // retryMedia copies only generation inputs, never results or lifecycle state.
 // Both transports use this function and the same admission/create path as generate.
 func (s *Server) retryMedia(ctx context.Context, p identity.Principal, project string, input tool.ProjectTaskCreateInput, jobID string, args map[string]any) (*pebblestore.ProjectTaskRecord, error) {
+	for _, key := range []string{"kind", "inputs", "title", "text", "voice", "style", "language", "format"} {
+		if _, present := args[key]; present {
+			return nil, fmt.Errorf("retry: argument %q cannot be applied", key)
+		}
+	}
 	kind, sourceProject, id, err := controlMCPParseJobID(map[string]any{"job_id": jobID})
 	if err != nil {
 		return nil, errors.New("retry requires a valid media job_id")
@@ -48,10 +54,10 @@ func (s *Server) retryMedia(ctx context.Context, p identity.Principal, project s
 		return nil, err
 	}
 	if source.Operation == "speech" {
-		return nil, errors.New("manage_media retry does not support speech jobs; create a new speech request instead")
+		return nil, errors.New("retry: does not support speech jobs; create a new speech request instead")
 	}
-	if _, ok := args["operation"]; ok && source.Agent != "video" {
-		return nil, errors.New("manage_media retry operation override is only supported for video jobs")
+	if controlMCPString(args, "operation") != "" && source.Agent != "video" {
+		return nil, errors.New("retry: operation override is only supported for video jobs")
 	}
 	input.Agent = source.Agent
 	input.Title, input.Prompt, input.Description = source.Description, source.Description, source.Description
@@ -65,21 +71,21 @@ func (s *Server) retryMedia(ctx context.Context, p identity.Principal, project s
 		input.VideoType = "single"
 	}
 	for key, target := range map[string]*string{"model": &input.Model, "aspect_ratio": &input.AspectRatio, "resolution": &input.Resolution, "operation": &input.Operation} {
-		if _, ok := args[key]; ok {
-			*target = controlMCPString(args, key)
+		if value := controlMCPString(args, key); value != "" {
+			*target = value
 		}
 	}
-	if _, ok := args["brief"]; ok {
+	if strings.TrimSpace(controlMCPString(args, "brief")) != "" {
 		input.Prompt = strings.TrimSpace(controlMCPString(args, "brief"))
 		input.Title, input.Description = input.Prompt, input.Prompt
 	}
 	if input.Prompt == "" {
 		return nil, errors.New("retry requires a nonempty brief")
 	}
-	if _, ok := args["count"]; ok {
+	if controlMCPInt(args, "count", 0) > 0 {
 		input.VariantCount = controlMCPInt(args, "count", 0)
 	}
-	if _, ok := args["duration_seconds"]; ok {
+	if controlMCPInt(args, "duration_seconds", 0) > 0 {
 		input.DurationSeconds = controlMCPInt(args, "duration_seconds", 0)
 	}
 	input.MediaRetryOf = controlMCPJobID(controlMCPJobMedia, project, id)
