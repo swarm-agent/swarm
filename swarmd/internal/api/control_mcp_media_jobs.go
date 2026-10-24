@@ -18,6 +18,7 @@ import (
 	"strings"
 	"swarm/packages/swarmd/internal/audiogen"
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/projectfiles"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/videogen"
@@ -261,7 +262,7 @@ func saveMediaFiles(task *pebblestore.ProjectTaskRecord, files []controlMCPMedia
 	if len(roots) > 0 {
 		mkdirAll, readFile, openFile = roots[0].MkdirAll, roots[0].ReadFile, roots[0].OpenFile
 	}
-	if err := mkdirAll(dir, 0o755); err != nil {
+	if err := mkdirAll(dir, projectfiles.DirMode); err != nil {
 		return nil, fmt.Errorf("create %s: %w", dir, err)
 	}
 	saved := []map[string]any{}
@@ -282,7 +283,7 @@ func saveMediaFiles(task *pebblestore.ProjectTaskRecord, files []controlMCPMedia
 			}
 			path = filepath.Join(dir, strings.TrimSuffix(name, filepath.Ext(name))+"-"+suffix+filepath.Ext(name))
 		}
-		handle, err := openFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		handle, err := openFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, projectfiles.FileMode)
 		if err != nil {
 			return saved, fmt.Errorf("write %s: %w", path, err)
 		}

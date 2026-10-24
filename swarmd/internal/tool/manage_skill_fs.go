@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"swarm/packages/swarmd/internal/projectfiles"
 
 	"swarm/packages/swarmd/internal/discovery"
 )
@@ -43,7 +44,7 @@ func openManageSkillStore(scope WorkspaceScope, create bool) (*manageSkillStore,
 
 	const relativeRoot = ".agents/skills"
 	if create {
-		if err := workspace.MkdirAll(relativeRoot, 0o755); err != nil {
+		if err := workspace.MkdirAll(relativeRoot, projectfiles.DirMode); err != nil {
 			return nil, fmt.Errorf("manage-skill create skill root failed: %w", err)
 		}
 	}
@@ -213,10 +214,10 @@ func (s *manageSkillStore) write(canonical string, content []byte, mustExist boo
 	if current != manageSkillMissingRevision {
 		return fmt.Errorf("skill %q already exists; use update", canonical)
 	}
-	if err := s.root.Mkdir(canonical, 0o755); err != nil {
+	if err := s.root.Mkdir(canonical, projectfiles.DirMode); err != nil {
 		return err
 	}
-	file, err := s.root.OpenFile(filepath.Join(canonical, "SKILL.md"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	file, err := s.root.OpenFile(filepath.Join(canonical, "SKILL.md"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, projectfiles.FileMode)
 	if err != nil {
 		_ = s.root.Remove(canonical)
 		return err

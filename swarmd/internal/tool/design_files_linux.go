@@ -86,7 +86,7 @@ func designReadNoFollow(p *rootedWorkspacePath) ([]byte, error) {
 // designWriteNew writes data to a new file name in dir (O_EXCL, never
 // following a symlink) and syncs it. A partial file is removed.
 func designWriteNew(dir *os.File, name string, data []byte, mode os.FileMode) error {
-	fd, err := unix.Openat(int(dir.Fd()), name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, uint32(mode.Perm()))
+	fd, err := unix.Openat(int(dir.Fd()), name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, uint32(sharedFileMode(mode)))
 	if err != nil {
 		if errors.Is(err, unix.EEXIST) {
 			return fmt.Errorf("design files: %s already exists", name)
@@ -95,9 +95,6 @@ func designWriteNew(dir *os.File, name string, data []byte, mode os.FileMode) er
 	}
 	file := os.NewFile(uintptr(fd), name)
 	_, writeErr := file.Write(data)
-	if writeErr == nil {
-		writeErr = file.Chmod(sharedFileMode(mode.Perm()))
-	}
 	if writeErr == nil {
 		writeErr = file.Sync()
 	}

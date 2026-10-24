@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"swarm/packages/swarmd/internal/projectfiles"
 
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -141,7 +142,7 @@ func (s *Service) EnsureRoot(principal identity.Principal, workspacePath, prefer
 				return filepath.Clean(res.SourceMediaDirectories[0]), workspaceID, nil
 			}
 			defaultDir := filepath.Join(workspacePath, "source_media")
-			if err := os.MkdirAll(defaultDir, 0o755); err != nil {
+			if err := os.MkdirAll(defaultDir, projectfiles.DirMode); err != nil {
 				return "", "", fmt.Errorf("create source media directory: %w", err)
 			}
 			if registrar, ok := s.workspace.(WorkspaceDirectoryRegistrar); ok {
@@ -161,7 +162,11 @@ func (s *Service) EnsureRoot(principal identity.Principal, workspacePath, prefer
 			targetDir = filepath.Join(os.TempDir(), "swarm_source_media", principal.AccountScopeID)
 		}
 	}
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+	dirMode := os.FileMode(0o755)
+	if workspacePath != "" {
+		dirMode = projectfiles.DirMode
+	}
+	if err := os.MkdirAll(targetDir, dirMode); err != nil {
 		return "", "", fmt.Errorf("create media directory: %w", err)
 	}
 	return targetDir, "", nil
@@ -232,7 +237,11 @@ func (s *Service) ImportAudio(principal identity.Principal, workspacePath, works
 		}
 	}
 
-	if err := os.WriteFile(destPath, data, 0o600); err != nil {
+	fileMode := os.FileMode(0o600)
+	if workspacePath != "" {
+		fileMode = projectfiles.FileMode
+	}
+	if err := os.WriteFile(destPath, data, fileMode); err != nil {
 		return pebblestore.AudioSourceRecord{}, fmt.Errorf("write imported audio file: %w", err)
 	}
 	stat, err := os.Stat(destPath)

@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"swarm/packages/swarmd/internal/jobautomation"
+	"swarm/packages/swarmd/internal/projectfiles"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -55,18 +56,18 @@ func workflowDefinitionsEqual(a, b jobautomation.Automation) bool {
 func decodeWorkflow(data []byte) (workflowDefinition, error) {
 	var d workflowDefinition
 	if len(data) > workflowFileLimit {
-		return d, errors.New("workflow exceeds 256 KiB")
+		return d, controlMCPToolFailure("workflow exceeds 256 KiB")
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&d); err != nil {
-		return d, err
+		return d, controlMCPToolFailure("invalid workflow JSON")
 	}
 	if err := dec.Decode(new(any)); err != io.EOF {
-		return d, errors.New("expected one workflow JSON object")
+		return d, controlMCPToolFailure("expected one workflow JSON object")
 	}
 	if d.Version != 1 {
-		return d, errors.New("swarm_workflow must be version 1")
+		return d, controlMCPToolFailure("swarm_workflow must be version 1")
 	}
 	return d, nil
 }
@@ -75,7 +76,7 @@ func decodeWorkflow(data []byte) (workflowDefinition, error) {
 // selected folder even if a directory is replaced during an operation.
 func workflowPath(path string) error {
 	if !filepath.IsLocal(path) {
-		return errors.New("workflow path must be relative and inside the project folder")
+		return controlMCPToolFailure("workflow path must be relative and inside the project folder")
 	}
 	return nil
 }
@@ -93,7 +94,7 @@ func (c *controlMCPCall) workflowExportFolder(folder string) (string, error) {
 			}
 		}
 	}
-	return "", errors.New("workflow export folder is not an account project folder")
+	return "", controlMCPToolFailure("workflow export folder is not an account project folder")
 }
 
 func controlMCPExportWorkflow(c *controlMCPCall, args map[string]any) (any, error) {
@@ -120,7 +121,7 @@ func controlMCPExportWorkflow(c *controlMCPCall, args map[string]any) (any, erro
 	}
 	if path == "" {
 		if strings.ContainsAny(a.Name, `/\\`) || a.Name == "." || a.Name == ".." {
-			return nil, errors.New("specify a safe relative export path for this workflow name")
+			return nil, controlMCPToolFailure("specify a safe relative export path for this workflow name")
 		}
 		path = filepath.Join(".swarm", "workflows", a.Name+".json")
 	}
@@ -129,11 +130,11 @@ func controlMCPExportWorkflow(c *controlMCPCall, args map[string]any) (any, erro
 	}
 	for _, component := range strings.Split(path, string(filepath.Separator)) {
 		if component == ".git" {
-			return nil, errors.New("workflow export paths must not contain .git")
+			return nil, controlMCPToolFailure("workflow export paths must not contain .git")
 		}
 	}
 	if !strings.HasSuffix(path, ".json") {
-		return nil, errors.New("workflow export path must end in .json")
+		return nil, controlMCPToolFailure("workflow export path must end in .json")
 	}
 	// A workflow's explicit scope is not filesystem authority. Resolve it
 	// against the account-visible project folders before creating anything.
@@ -154,10 +155,10 @@ func controlMCPExportWorkflow(c *controlMCPCall, args map[string]any) (any, erro
 		return nil, err
 	}
 	data = append(data, '\n')
-	if err := root.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := root.MkdirAll(filepath.Dir(path), projectfiles.DirMode); err != nil {
 		return nil, err
 	}
-	f, err := root.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	f, err := root.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, projectfiles.FileMode)
 	if errors.Is(err, os.ErrExist) {
 		old, readErr := readWorkflowFile(root, path)
 		if readErr != nil {
@@ -168,10 +169,10 @@ func controlMCPExportWorkflow(c *controlMCPCall, args map[string]any) (any, erro
 		}
 		overwrite, _ := args["overwrite"].(bool)
 		if !overwrite {
-			return nil, errors.New("export file differs; pass overwrite: true to replace it")
+			return nil, controlMCPToolFailure("export file differs; pass overwrite: true to replace it")
 		}
 		// Replace the directory entry, never truncate a symlink or hardlink target.
-		temp, tempErr := root.OpenFile(path+".swarm-new", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+		temp, tempErr := root.OpenFile(path+".swarm-new", os.O_WRONLY|os.O_CREATE|os.O_EXCL, projectfiles.FileMode)
 		if tempErr != nil {
 			return nil, tempErr
 		}
@@ -217,7 +218,7 @@ func workflowNoSymlinks(root *os.Root, path string) error {
 			return err
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return errors.New("workflow paths must not contain symlinks")
+			return controlMCPToolFailure("workflow paths must not contain symlinks")
 		}
 	}
 	return nil
@@ -233,7 +234,7 @@ func readWorkflowFile(root *os.Root, path string) ([]byte, error) {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() {
-		return nil, errors.New("workflow must be a regular file")
+		return nil, controlMCPToolFailure("workflow must be a regular file")
 	}
 	f, err := root.Open(path)
 	if err != nil {
@@ -245,11 +246,11 @@ func readWorkflowFile(root *os.Root, path string) ([]byte, error) {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() {
-		return nil, errors.New("workflow must be a regular file")
+		return nil, controlMCPToolFailure("workflow must be a regular file")
 	}
 	data, err := io.ReadAll(io.LimitReader(f, workflowFileLimit+1))
 	if err == nil && len(data) > workflowFileLimit {
-		err = errors.New("workflow exceeds 256 KiB")
+		err = controlMCPToolFailure("workflow exceeds 256 KiB")
 	}
 	return data, err
 }
@@ -280,7 +281,7 @@ func controlMCPImportWorkflow(c *controlMCPCall, args map[string]any) (any, erro
 	raw, definition := args["definition"]
 	path, hasPath := args["path"].(string)
 	if definition == hasPath {
-		return nil, errors.New("provide exactly one of definition or path")
+		return nil, controlMCPToolFailure("provide exactly one of definition or path")
 	}
 	// Inline definitions with an explicit scope.folder need no project, just
 	// like set. Files always require the canonical project/folder selection.
@@ -331,7 +332,7 @@ func controlMCPImportWorkflow(c *controlMCPCall, args map[string]any) (any, erro
 		return nil, err
 	}
 	if len(entries) > 1000 {
-		return nil, errors.New("workflow directory exceeds 1000 entries")
+		return nil, controlMCPToolFailure("workflow directory exceeds 1000 entries")
 	}
 	results := []map[string]any{}
 	for _, entry := range entries {
@@ -347,7 +348,11 @@ func controlMCPImportWorkflow(c *controlMCPCall, args map[string]any) (any, erro
 		result := map[string]any{"path": file}
 		if err != nil {
 			result["status"] = "refused"
-			result["error"] = err.Error()
+			result["error"] = "tool failed"
+			var refusal controlMCPToolError
+			if errors.As(err, &refusal) {
+				result["error"] = refusal.message
+			}
 		} else {
 			result["status"] = "updated"
 			view := out.(map[string]any)

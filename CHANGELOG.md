@@ -9,6 +9,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Run a fresh workflow review when its own reopened job finishes without a new commit, preserving duplicate-end protection and the existing round limit. Docs impact: none.
 
 - Reposition Swarm as a headless AI agent platform with MCP, SDK, HTTP API and CLI interfaces, including direct app integration and sealed agents; align the suggested GitHub About description. Docs impact: README only.
+- Preserve project-folder ACL and umask permissions for exported workflows, saved media and other project outputs, and show actionable workflow import/export refusal reasons without exposing internal errors. Docs impact: none.
 
 - Include the system reviewer in AI-path end-to-end harness model setup and checks for all eight roles. Docs impact: none
 - Remove an accidentally tracked Vitest results cache and ignore root node_modules dependencies. Docs impact: none

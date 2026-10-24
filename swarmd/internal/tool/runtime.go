@@ -5060,7 +5060,7 @@ func resolveWebDownloadOutputDir(scope WorkspaceScope, outputDirArg string) (str
 	} else if !pathWithinAllowedRoots(resolveMutableRoots(scope), path) {
 		return "", "", fmt.Errorf("path %q escapes mutable workspace scope", outputDirArg)
 	}
-	if err := os.MkdirAll(path, 0o755); err != nil {
+	if err := os.MkdirAll(path, sharedDirMode); err != nil {
 		return "", "", fmt.Errorf("create download directory: %w", err)
 	}
 	return path, filepath.ToSlash(outputDirArg), nil

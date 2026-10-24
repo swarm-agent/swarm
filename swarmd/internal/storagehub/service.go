@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"swarm/packages/swarmd/internal/projectfiles"
 	"sync"
 	"time"
 
@@ -803,10 +804,10 @@ func (s *Service) ImportDeliverable(ctx context.Context, accountScopeID, deliver
 			}
 
 			destPath := filepath.Join(cleanTarget, f.Name)
-			if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(destPath), projectfiles.DirMode); err != nil {
 				return nil, err
 			}
-			if err := os.WriteFile(destPath, fileData, 0644); err != nil {
+			if err := os.WriteFile(destPath, fileData, projectfiles.FileMode); err != nil {
 				return nil, fmt.Errorf("write deliverable file %s: %w", destPath, err)
 			}
 		}

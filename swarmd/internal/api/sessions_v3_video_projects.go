@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"swarm/packages/swarmd/internal/projectfiles"
 	"time"
 
 	"swarm/packages/swarmd/internal/artifact"
@@ -965,11 +966,11 @@ func (s *Server) handleSessionV3VideoExport(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if err := os.MkdirAll(filepath.Dir(absDest), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(absDest), projectfiles.DirMode); err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("create destination directory: %w", err))
 		return
 	}
-	out, err := os.OpenFile(absDest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	out, err := os.OpenFile(absDest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, projectfiles.FileMode)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("create destination file: %w", err))
 		return
