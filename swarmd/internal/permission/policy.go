@@ -1786,7 +1786,7 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 			return PolicyDecisionDeny
 		}
 		return PolicyDecisionAllow
-	case "swarm_design":
+	case "swarm_design", "manage_media":
 		// Design generation is auto-approved like other workspace writes: it only
 		// creates new files under its batch folder (or replaces the one edit_path
 		// file it read), and every model call is held to the daily spending limit

@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodel"
 	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -59,7 +60,16 @@ func (s *Server) handleAgentModelSettings(w http.ResponseWriter, r *http.Request
 			writeAgentModelSettingsError(w, err)
 			return
 		}
-		writeAgentModelSettingsResponse(w, settings)
+		if settings.SystemAgents.Coder.Provider == "" && settings.SystemAgents.Reviewer.Model == "" {
+			writeAgentModelSettingsResponse(w, settings)
+			return
+		}
+		reviewer, source, err := agentmodel.EffectiveReviewerAssignment(s.model, settings)
+		if err != nil {
+			writeAgentModelSettingsError(w, err)
+			return
+		}
+		writeAgentModelSettingsResponse(w, settings, map[string]any{agent.ReviewerAgentID: map[string]any{"assignment": reviewer, "source": source}})
 	case http.MethodPatch:
 		var patch agentModelSettingsPatch
 		if err := decodeJSON(r, &patch); err != nil {
@@ -207,17 +217,21 @@ func agentModelRoleDescriptors() ([]map[string]string, error) {
 	return result, nil
 }
 
-func writeAgentModelSettingsResponse(w http.ResponseWriter, settings agentmodelsettings.Settings) {
+func writeAgentModelSettingsResponse(w http.ResponseWriter, settings agentmodelsettings.Settings, effective ...map[string]any) {
 	roles, err := agentModelRoleDescriptors()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	response := map[string]any{
 		"ok":                   true,
 		"agent_model_settings": settings,
 		"roles":                roles,
-	})
+	}
+	if len(effective) > 0 {
+		response["effective_roles"] = effective[0]
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func writeAgentModelSettingsError(w http.ResponseWriter, err error) {

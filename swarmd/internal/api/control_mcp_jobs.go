@@ -17,6 +17,7 @@ import (
 	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 )
 
 // Workers and jobs are explicit persistent application operations, separate
@@ -234,13 +235,41 @@ func controlMCPWorkerView(worker map[string]any) map[string]any {
 }
 
 func controlMCPListWorkerJobs(c *controlMCPCall, args map[string]any) (any, error) {
+	includeUsage := c.requireTokenScope("sessions:read") == nil
 	workers, err := c.listWorkers()
 	if err != nil {
 		return nil, err
 	}
+	jobCounts := map[string]int{}
+	if includeUsage {
+		p, ok := PrincipalFromRequest(c.request)
+		if !ok {
+			return nil, controlMCPToolFailure("authenticated principal required")
+		}
+		if c.server == nil || c.server.sessions == nil {
+			return nil, controlMCPToolFailure("usage store unavailable")
+		}
+		counts, err := c.server.sessions.Store().WorkerStore().CountWorkerRuns(p.AccountScopeID, 0, 0)
+		if err != nil {
+			return nil, err
+		}
+		for id, count := range counts.ByWorker {
+			jobCounts[id] = count.Runs
+		}
+	}
+	date := time.Now().UTC().Format("2006-01-02")
 	out := []map[string]any{}
 	for _, worker := range workers {
 		view := controlMCPWorkerView(worker)
+		if includeUsage {
+			id, _ := worker["id"].(string)
+			usage, err := c.workerUsage(id, date)
+			if err != nil {
+				return nil, err
+			}
+			usage["jobs"] = jobCounts[id]
+			view["usage"] = usage
+		}
 		if model := c.workerModelSummary(worker); model != nil {
 			view["model"] = model
 		}
@@ -266,6 +295,9 @@ func controlMCPListWorkerJobs(c *controlMCPCall, args map[string]any) (any, erro
 }
 
 func controlMCPDeployWorker(c *controlMCPCall, args map[string]any) (any, error) {
+	if _, hasAgent := args["agent"]; hasAgent && controlMCPString(args, "preset") != "" {
+		return nil, controlMCPToolFailure("agent is for custom worker creation; use swarm_update_worker to change an existing worker's agent")
+	}
 	if raw, exists := args["model"]; exists && raw != nil {
 		if _, err := c.workerModel(raw); err != nil {
 			return nil, err
@@ -318,6 +350,7 @@ func controlMCPDeployWorker(c *controlMCPCall, args map[string]any) (any, error)
 	body := map[string]any{
 		"name":            name,
 		"role":            role,
+		"agent":           controlMCPString(args, "agent"),
 		"instructions":    instructions,
 		"idempotency_key": controlMCPRequestID(),
 	}
@@ -1296,6 +1329,39 @@ func controlMCPScheduleJob(c *controlMCPCall, args map[string]any) (any, error) 
 }
 
 func controlMCPRequestMedia(c *controlMCPCall, args map[string]any) (any, error) {
+	if retry := controlMCPString(args, "retry_of"); retry != "" {
+		if err := c.requireTokenScope("sessions:write"); err != nil {
+			return nil, err
+		}
+		p, ok := PrincipalFromRequest(c.request)
+		if !ok {
+			return nil, errors.New("media requires authentication")
+		}
+		place, err := c.place(controlMCPString(args, "project"), controlMCPString(args, "workspace"))
+		if err != nil {
+			return nil, err
+		}
+		origin, err := c.server.projectTaskOrigin(c.request.Context(), p, place.projectID)
+		if err != nil {
+			return nil, err
+		}
+		input := tool.ProjectTaskCreateInput{OriginSessionID: origin, WorkspacePath: place.path, AutoApprove: true}
+		if origin != "" {
+			parent, found, err := c.server.sessions.GetSession(origin)
+			if err != nil {
+				return nil, err
+			}
+			if !found {
+				return nil, errors.New("media origin not found")
+			}
+			input.AutoApprove = pebblestore.SessionAccessFromMetadata(parent.Metadata).Tasks != pebblestore.SessionTasksAsk
+		}
+		task, err := c.server.retryMedia(c.request.Context(), p, place.projectID, input, retry, args)
+		if err != nil {
+			return nil, controlMCPToolFailure("%s", err)
+		}
+		return mediaJobFileView(map[string]any{"job_id": controlMCPJobID(controlMCPJobMedia, place.projectID, task.ID), "status": task.Status, "kind": task.Agent}, task, nil, controlMCPMediaJobGuidance)
+	}
 	kind := controlMCPMediaKinds[controlMCPString(args, "kind")]
 	if kind == "" {
 		return nil, controlMCPToolFailure("kind must be image, video or sound")
@@ -1305,7 +1371,11 @@ func controlMCPRequestMedia(c *controlMCPCall, args map[string]any) (any, error)
 		return nil, err
 	}
 	projectID, path := place.projectID, place.path
-	taskArgs := map[string]any{"project_id": projectID, "role": kind, "brief": controlMCPString(args, "brief"), "workspace": path}
+	brief := controlMCPString(args, "brief")
+	if brief == "" && controlMCPString(args, "operation") == "speech" {
+		brief = "Generate speech narration"
+	}
+	taskArgs := map[string]any{"project_id": projectID, "role": kind, "brief": brief, "workspace": path}
 	if title := controlMCPString(args, "title"); title != "" {
 		taskArgs["title"] = title
 	}
@@ -1315,6 +1385,20 @@ func controlMCPRequestMedia(c *controlMCPCall, args map[string]any) (any, error)
 	for _, arg := range []string{"model", "aspect_ratio", "resolution"} {
 		if value := strings.TrimSpace(controlMCPString(args, arg)); value != "" {
 			body[arg] = value
+		}
+	}
+	if operation := controlMCPString(args, "operation"); operation == "speech" {
+		body["operation"] = operation
+		speech := map[string]string{}
+		for _, key := range []string{"text", "voice", "style", "language", "format"} {
+			speech[key] = controlMCPString(args, key)
+		}
+		body["speech"] = speech
+	} else {
+		for _, key := range []string{"text", "voice", "style", "language", "format"} {
+			if controlMCPString(args, key) != "" {
+				return nil, controlMCPToolFailure("%s requires operation speech", key)
+			}
 		}
 	}
 	if kind == "video" {
@@ -1489,7 +1573,7 @@ func controlMCPListSecrets(c *controlMCPCall, _ map[string]any) (any, error) {
 
 func controlMCPJobTools() []controlMCPTool {
 	jobID := controlMCPStringProp("From swarm_give_job, swarm_request_media, swarm_design, swarm_list_workers (include_jobs) or swarm_activity.", 1, 700)
-	workerRef := controlMCPStringProp("A deployed worker's id or name from swarm_list_workers (deploy one with swarm_deploy_worker first). Swarm's own coder, designer and finder are not workers: use swarm_run_task with a role.", 1, 200)
+	workerRef := controlMCPStringProp("A deployed worker's id or name from swarm_list_workers (deploy one with swarm_deploy_worker first). Swarm's own agents are not workers: use swarm_run_task with a role. In workflow/then steps reviewer runs Swarm's native reviewer task; name a custom reviewer by its worker id.", 1, 200)
 	project := controlMCPStringProp("The project (id or name from swarm_list_projects) the job belongs to. May be left out when there is only one project.", 0, 256)
 	workspace := controlMCPStringProp("Which of the project's folders to work in (an absolute path from swarm_list_projects). May be left out when the project has one folder.", 0, 4096)
 	waitProp := map[string]any{"type": "integer", "minimum": 0, "maximum": controlMCPMaxWaitSeconds, "description": "Wait up to this many seconds (at most 110; keep it under your client's tool timeout, often 60) until the job settles: needs_review (done, ready to merge), completed, failed, needs_input (the worker asked something) or cancelled. waited.timed_out means it is still working: call swarm_get_job again. Default 0."}
@@ -1535,7 +1619,7 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_list_workers", Title: "List workers",
-			Description: "Existing explicitly deployed workers (listing never creates presets), with role, state and the model their next job uses (their role's model unless pinned). include_jobs adds each worker's latest jobs.",
+			Description: "Existing explicitly deployed workers (listing never creates presets), with role, state and the model their next job uses (their role's model unless pinned). With sessions:read, usage includes all_time and today (UTC) tokens, cost_usd (including media), media_cost_usd, media_count (receipts), coverage and jobs (all-time run count); otherwise usage is omitted. include_jobs adds each worker's latest jobs.",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"include_jobs": map[string]any{"type": "boolean", "description": "Also list each worker's 5 latest jobs with job_id and status."},
 			}),
@@ -1543,12 +1627,13 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_deploy_worker", Title: "Deploy a worker",
-			Description: "Make a worker ready on this box: an explicitly selected preset coder, designer, finder or reviewer, or a custom worker with a name, a role (coder, designer, finder, reviewer or swarm: what it can do) and standing instructions that apply to every job. Workers work in any project; each job names its project and folder. Optional model pins this worker; pass worker id or its existing name to update only the pin, or model: null to clear it (no staged review).",
+			Description: "Make a worker ready on this box: an explicitly selected preset coder, designer, finder or reviewer, or a custom worker with a name, a role (coder, designer, finder, reviewer or swarm: what it can do) and standing instructions that apply to every job. Workers work in any project; each job names its project and folder. Optional model pins this worker; pass worker id or its existing name to save supplied instructions, description, agent and model immediately; role changes are refused. Use model: null to clear the pin.",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"preset":       map[string]any{"type": "string", "enum": controlMCPPresetWorkers},
 				"worker":       workerRef,
 				"model":        controlMCPWorkerModelSchema(true),
 				"name":         controlMCPStringProp("Custom worker name.", 0, 256),
+				"agent":        controlMCPStringProp("Optional custom agent whose current tools and additional instructions this worker uses, retaining its system role. Reviewers reject write tools.", 0, 63),
 				"role":         map[string]any{"type": "string", "enum": controlMCPPresetWorkers, "description": "Custom worker's role."},
 				"instructions": controlMCPStringProp("Custom worker's standing instructions.", 0, 20000),
 				"description":  controlMCPStringProp("", 0, 1000),
@@ -1638,7 +1723,7 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_media_models", Title: "Media models and their options",
-			Description: "The image, video and sound models this machine can use: the default per kind, and for each model its aspect ratios, resolutions, lengths (by resolution), how many at once, whether it takes an input image, its operations (create, extend, edit) and pricing. Read it before swarm_request_media to pick a model and values it takes; anything else is refused before anything is spent.",
+			Description: "The image, video and sound models this machine can use: the default per kind, and for each model its aspect ratios, resolutions, lengths (by resolution), how many at once, whether it takes an input image, its operations (create, extend, edit, speech), speech voices/formats/input limits and pricing. Read it before swarm_request_media to pick a model and values it takes; anything else is refused before anything is spent.",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"kind":            map[string]any{"type": "string", "enum": []string{"image", "video", "sound"}, "description": "Only this kind. Default: all."},
 				"include_unready": map[string]any{"type": "boolean", "description": "Also list models whose provider has no key yet."},
@@ -1647,16 +1732,22 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_request_media", Title: "Make an image, video or sound",
-			Description: "Make media with the machine's media models: kind and a detailed brief (for music, the style and any lyrics), optionally model and its options (swarm_media_models lists them; without a model the default for the kind is used). inputs are images or videos to start from: an earlier media job's file (job_id and file number) or a file in a registered workspace (absolute path): an image to edit, the first frame of a video, references, or a video to extend or edit with operation. Returns a job_id; swarm_get_job lists the files when it is done (include_media shows images), swarm_save_media writes them into a workspace. Every result costs money with the provider.",
-			InputSchema: controlMCPObject([]string{"kind", "brief"}, map[string]any{
+			Description: "Make media with the machine's media models. For narration use kind sound, operation speech, explicit TTS model, text and voice; optional style, language and format. Returns audio and timing JSON (granularity word or segment), with generation and transcription costs. Generation only; no cloning or live voice. Otherwise: kind and a detailed brief (for music, the style and any lyrics), optionally model and its options (swarm_media_models lists them; without a model the default for the kind is used). inputs are images or videos to start from: an earlier media job's file (job_id and file number) or a file in a registered workspace (absolute path): an image to edit, the first frame of a video, references, or a video to extend or edit with operation. Returns a job_id; swarm_get_job lists the files when it is done (include_media shows images), swarm_save_media writes them into a workspace. Every result costs money with the provider.",
+			InputSchema: controlMCPObject(nil, map[string]any{
+				"retry_of":         controlMCPStringProp("Earlier media job_id in the same project; reuse kind, brief, inputs and options, optionally overriding model, brief or generation options.", 0, 300),
 				"kind":             map[string]any{"type": "string", "enum": []string{"image", "video", "sound"}},
 				"brief":            controlMCPStringProp("What to make, in detail.", 1, 20000),
 				"model":            controlMCPStringProp("Model id from swarm_media_models. Default: the kind's default.", 0, 200),
 				"aspect_ratio":     controlMCPStringProp("Image or video aspect ratio the model takes, e.g. 16:9.", 0, 20),
 				"resolution":       controlMCPStringProp("Image size (e.g. 1K, 2K, 4K) or video resolution (e.g. 720p, 1080p, 4k) the model takes.", 0, 20),
+				"text":             map[string]any{"type": "string", "description": "Speech script. Complete script plus style/language direction must fit the model limit."},
+				"voice":            map[string]any{"type": "string", "description": "Speech provider voice name from swarm_media_models."},
+				"style":            map[string]any{"type": "string", "description": "Optional speech direction."},
+				"language":         map[string]any{"type": "string", "description": "Optional spoken language direction."},
+				"format":           map[string]any{"type": "string", "description": "Speech output format, currently wav."},
 				"duration_seconds": map[string]any{"type": "integer", "minimum": 0, "maximum": 300, "description": "Video or sound length in seconds, one the model takes."},
 				"count":            map[string]any{"type": "integer", "minimum": 0, "maximum": 8, "description": "How many results (variants). Default 1."},
-				"operation":        map[string]any{"type": "string", "enum": []string{"create", "extend", "edit"}, "description": "Video only: extend or edit the video given in inputs (see the model's operations). An image with an input image is an edit of it. Default create."},
+				"operation":        map[string]any{"type": "string", "enum": []string{"create", "extend", "edit", "speech"}, "description": "Sound: speech generates narration with text and voice. Video: extend or edit the video given in inputs (see the model's operations). An image with an input image is an edit of it. Default create."},
 				"inputs": map[string]any{"type": "array", "maxItems": 14, "description": "Files to start from.", "items": map[string]any{"type": "object", "properties": map[string]any{
 					"job_id": map[string]any{"type": "string", "description": "An earlier media job (media/…)."},
 					"file":   map[string]any{"type": "integer", "minimum": 1, "description": "Its file number (swarm_get_job lists them). Default 1."},

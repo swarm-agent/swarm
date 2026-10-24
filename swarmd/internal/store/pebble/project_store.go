@@ -411,10 +411,22 @@ type TaskDeliveryAssessment struct {
 }
 
 // ProjectTaskRecord represents an autonomous task unit in a project.
+// ProjectSpeechSettings are durable generation-only speech inputs.
+type ProjectSpeechSettings struct {
+	Text     string `json:"text"`
+	Voice    string `json:"voice"`
+	Style    string `json:"style,omitempty"`
+	Language string `json:"language,omitempty"`
+	Format   string `json:"format,omitempty"`
+}
+
 type ProjectTaskRecord struct {
+	RetryOf                string                                   `json:"retry_of,omitempty"`
+	Speech                 *ProjectSpeechSettings                   `json:"speech,omitempty"`
 	EnvironmentAttachments []environments.TaskEnvironmentAttachment `json:"environment_attachments,omitempty"`
 	// Retired IDs cannot be reused: old attachment-bound receipts stay revoked.
 	RetiredEnvironmentAttachmentIDs []string                `json:"retired_environment_attachment_ids,omitempty"`
+	ManageMediaSource               bool                    `json:"manage_media_source,omitempty"`
 	OriginSessionID                 string                  `json:"origin_session_id,omitempty"` // authenticated conversation; never the project primary pointer
 	DeliveryAssessment              *TaskDeliveryAssessment `json:"delivery_assessment,omitempty"`
 	ID                              string                  `json:"id"`
@@ -431,6 +443,12 @@ type ProjectTaskRecord struct {
 	WorkerName                      string                  `json:"worker_name,omitempty"`
 	WorkerRunID                     string                  `json:"worker_run_id,omitempty"`
 	AutomationID                    string                  `json:"automation_id,omitempty"`
+	Review                          *JobReview              `json:"review,omitempty"`
+	ReviewJob                       string                  `json:"review_job,omitempty"`
+	ReviewCheckout                  string                  `json:"review_checkout,omitempty"`
+	ReviewCleanup                   *WorkerRunCleanup       `json:"review_cleanup,omitempty"`
+	ReviewFixes                     string                  `json:"review_fixes,omitempty"`
+	ReviewTarget                    map[string]any          `json:"review_target,omitempty"`
 	// StartCommit is the commit the task's worktree starts at, set only by a
 	// workflow's agent step (the delivery head); "" starts at the folder's
 	// branch.
@@ -707,9 +725,15 @@ func (t *ProjectTaskRecord) Validate() error {
 	}
 	if t.Operation != "" {
 		t.Operation = strings.ToLower(strings.TrimSpace(t.Operation))
-		if t.Operation != VideoOperationCreate && t.Operation != VideoOperationEdit && t.Operation != VideoOperationExtend {
+		if t.Operation != VideoOperationCreate && t.Operation != VideoOperationEdit && t.Operation != VideoOperationExtend && t.Operation != "speech" {
 			return fmt.Errorf("task operation %q is invalid; must be create, edit, or extend", t.Operation)
 		}
+	}
+	if t.Operation == "speech" && ((t.Agent != "sound" && t.Agent != "audio") || t.Speech == nil) {
+		return errors.New("speech requires a sound task and speech settings")
+	}
+	if t.Speech != nil && t.Operation != "speech" {
+		return errors.New("speech settings require speech operation")
 	}
 	if t.SourceDigestSHA256 != "" {
 		t.SourceDigestSHA256 = strings.ToLower(strings.TrimSpace(t.SourceDigestSHA256))

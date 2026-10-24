@@ -46,7 +46,7 @@ func controlMCPProviderConnectMethod(provider string, credentialTypes []string, 
 		}
 		steps = append(steps,
 			"Or the person runs on the machine: sudo swarmctl setup codex-login --timeout 15m (it prints the link and code and waits until they approve).",
-			"Or the person signs in on Swarm's setup page or in Settings > Auth.")
+			"Or the person signs in on Swarm's setup page, under Settings > Providers (in the desktop app: Settings > Auth).")
 		connect["steps"] = steps
 		return connect
 	case provider == "claudecode" && has("cli"):
@@ -64,7 +64,7 @@ func controlMCPProviderConnectMethod(provider string, credentialTypes []string, 
 		steps = append(steps,
 			"Otherwise the person installs Claude Code 2.1.248 or later where Swarm's daemon finds it: on the daemon's PATH (for example /usr/local/bin), or named by SWARM_CLAUDE_CODE_CLI_PATH in the daemon's environment.",
 			"The person signs in as the OS user that runs the Swarm daemon: claude auth login (on a box from install.sh that user is swarm: sudo -u swarm -H claude auth login).",
-			"The person turns it on for their Swarm account on Swarm's setup page or in Settings > Auth: provider claudecode, Claude Code CLI login, make it active. That record holds no secret.")
+			"The person turns it on for their Swarm account on Swarm's setup page, under Settings > Providers (in the desktop app: Settings > Auth): provider claudecode, Claude Code CLI login, make it active. That record holds no secret.")
 		connect["steps"] = steps
 		return connect
 	case has("adc"):
@@ -84,18 +84,19 @@ func controlMCPProviderConnectMethod(provider string, credentialTypes []string, 
 		steps := []string{}
 		if allows("swarm_request_provider_key") {
 			connect["tool"] = "swarm_request_provider_key"
-			steps = append(steps, fmt.Sprintf("Call swarm_request_provider_key with provider %s; the person pastes the key on the one-time page it links to.", provider))
+			steps = append(steps, fmt.Sprintf("First call swarm_request_provider_key with provider %s; the person opens a tailnet link on a device in their tailnet (a loopback link on this machine) and pastes the key on that one-time page. Fleet clients use swarm_fleet_request_provider_key with the named machines.", provider))
 		}
 		steps = append(steps,
-			"The person adds it on Swarm's setup page or in Settings > Auth.",
-			fmt.Sprintf("Or, as the first provider, by script on the machine: sudo swarmctl setup credential --provider %s --api-key-stdin < key-file (on a box from install.sh: install.sh key %s).", provider, provider))
+			"The person adds it on Swarm's setup page, under Settings > Providers (in the desktop app: Settings > Auth).",
+			fmt.Sprintf("Or, as the first provider, by script on the machine: sudo swarmctl setup credential --provider %s --api-key-stdin < key-file (on a box from install.sh: install.sh key %s).", provider, provider),
+			fmt.Sprintf("Next to another provider: sudo swarmctl setup add-credential --provider %s --api-key-stdin < key-file (on a box from install.sh: install.sh key %s).", provider, provider))
 		connect["steps"] = steps
 		return connect
 	default:
 		return map[string]any{
 			"method": controlMCPConnectSettings,
 			"needs":  "a sign-in the person completes in Swarm's settings",
-			"steps":  []string{"The person connects it on Swarm's setup page or in Settings > Auth."},
+			"steps":  []string{"The person connects it on Swarm's setup page, under Settings > Providers (in the desktop app: Settings > Auth)."},
 		}
 	}
 }
@@ -105,8 +106,8 @@ func controlMCPProviderConnectMethod(provider string, credentialTypes []string, 
 // equal options. chatGPTSignIn is how this caller starts the ChatGPT sign-in.
 func controlMCPProviderOptionsText(chatGPTSignIn string) string {
 	return "a ChatGPT plan (codex: " + chatGPTSignIn + "); " +
-		"a Claude plan through Claude Code (claudecode: the person installs Claude Code on the machine, signs in with claude auth login as the OS user that runs Swarm, and turns it on in Swarm's setup page or Settings; Swarm never handles Claude credentials); " +
-		"an API key for anthropic, openai, google, openrouter or fireworks, which the person adds on Swarm's setup page or, as the first provider, through the installed CLI on the machine (swarmctl setup credential --provider PROVIDER --api-key-stdin); " +
+		"a Claude plan through Claude Code (claudecode: the person installs Claude Code on the machine, signs in with claude auth login as the OS user that runs Swarm, and turns it on in Swarm's setup page, under Settings > Providers (in the desktop app: Settings > Auth); Swarm never handles Claude credentials); " +
+		"an API key for anthropic, openai, google, openrouter or fireworks, which the person adds on Swarm's setup page, under Settings > Providers (in the desktop app: Settings > Auth), or, as the first provider, through the installed CLI on the machine (swarmctl setup credential --provider PROVIDER --api-key-stdin); " +
 		"or Vertex AI with the machine's own Google identity (vertex: swarmctl setup credential --provider vertex --project PROJECT)."
 }
 

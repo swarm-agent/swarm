@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -16,11 +17,13 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"swarm/packages/swarmd/internal/auth"
 	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -33,9 +36,10 @@ import (
 // route (POST /v1/auth/credentials, active), so the owner-only scope, vault,
 // onboarding and verify-before-save rules apply unchanged.
 //
-// The page is served only by LoopbackAPIHandler (the loopback API listener):
+// The local page is served by LoopbackAPIHandler (the loopback API listener):
 // never by Handler (peer transport), the private socket, Desktop, the
-// scoped-token listener, the tailnet gateway or the relay. Codes live in
+// scoped-token listener or relay. The tailnet gateway additionally serves
+// pending capabilities to identified user devices through local Serve. Codes live in
 // memory only; a restart forgets them.
 const (
 	providerKeyPagePrefix       = "/keys/"
@@ -50,12 +54,16 @@ const (
 
 var providerKeyCodePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 
+// Private in-process proof for first-provider onboarding; never from HTTP input.
+type providerKeyVerifiedContext struct{}
+
 type providerKeyRegistry struct {
-	mu     sync.Mutex
-	addr   string
-	byCode map[string]*providerKeyRequest
-	latest map[string]*providerKeyRequest
-	now    func() time.Time
+	mu            sync.Mutex
+	addr          string
+	tailnetOrigin string
+	byCode        map[string]*providerKeyRequest
+	latest        map[string]*providerKeyRequest
+	now           func() time.Time
 	// changed is closed (and replaced) whenever a request's outcome changes,
 	// so swarm_list_providers wait_seconds wakes without polling.
 	changed chan struct{}
@@ -80,6 +88,7 @@ func (reg *providerKeyRegistry) notifyLocked() {
 }
 
 type providerKeyRequest struct {
+	tailnet        bool // authenticated gateway request, not a durable bearer token
 	provider       string
 	label          string
 	accountScopeID string
@@ -156,7 +165,7 @@ func (reg *providerKeyRegistry) issue(request providerKeyRequest) (string, strin
 	code := base64.RawURLEncoding.EncodeToString(raw[:])
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
-	if reg.addr == "" {
+	if reg.addr == "" && reg.tailnetOrigin == "" {
 		return "", "", errors.New("the key page needs this machine's loopback API listener, which is not running")
 	}
 	now := reg.clock()
@@ -182,7 +191,11 @@ func (reg *providerKeyRegistry) issue(request providerKeyRequest) (string, strin
 	reg.byCode[entry.codeHash] = &entry
 	reg.latest[slot] = &entry
 	reg.notifyLocked()
-	return code, "http://" + reg.addr + providerKeyPagePrefix + code, nil
+	origin := reg.tailnetOrigin
+	if origin == "" {
+		origin = "http://" + reg.addr
+	}
+	return code, origin + providerKeyPagePrefix + code, nil
 }
 
 // lookup returns a copy of a usable request for the form page.
@@ -269,7 +282,8 @@ const providerKeyPageCSS = `body{margin:0;font:15px/1.5 system-ui,-apple-system,
 
 var providerKeyPageCSP = func() string {
 	sum := sha256.Sum256([]byte(providerKeyPageCSS))
-	return "default-src 'none'; style-src 'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'; " +
+	js := sha256.Sum256([]byte(providerKeyPageJS))
+	return "script-src 'sha256-" + base64.StdEncoding.EncodeToString(js[:]) + "'; default-src 'none'; style-src 'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'; " +
 		"form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
 }()
 
@@ -286,7 +300,7 @@ var providerKeyPageTemplate = template.Must(template.New("key").Parse(`<!doctype
 <button type="submit">Save key</button>
 </form>
 <p class="note">This link works once and expires {{.Expires}}. Do not paste the key into the chat.</p>{{end}}
-</main></body></html>
+</main><script>{{.JS}}</script></body></html>
 `))
 
 type providerKeyPage struct {
@@ -296,10 +310,12 @@ type providerKeyPage struct {
 	Form     bool
 	Expires  string
 	CSS      template.CSS
+	JS       template.JS
 }
 
 func writeProviderKeyPage(w http.ResponseWriter, status int, page providerKeyPage) {
 	page.CSS = template.CSS(providerKeyPageCSS)
+	page.JS = template.JS(providerKeyPageJS)
 	var body bytes.Buffer
 	if err := providerKeyPageTemplate.Execute(&body, page); err != nil {
 		http.Error(w, "page unavailable", http.StatusInternalServerError)
@@ -318,12 +334,19 @@ func (s *Server) handleProviderKeyPage(w http.ResponseWriter, r *http.Request) {
 	header.Set("Pragma", "no-cache")
 	header.Set("X-Frame-Options", "DENY")
 	header.Set("X-Content-Type-Options", "nosniff")
-	header.Set("Referrer-Policy", "same-origin")
-	header.Set("Content-Security-Policy", providerKeyPageCSP)
+	header.Set("Referrer-Policy", "no-referrer")
+	csp := providerKeyPageCSP
+	if providerKeyTailnetRequest(r) {
+		u, _ := url.Parse(s.providerKeys.gatewayOrigin())
+		if parts := providerKeyTailnetHost.FindStringSubmatch(u.Hostname()); len(parts) == 2 {
+			csp += "; connect-src 'self' https://*." + parts[1] + ":8444"
+		}
+	}
+	header.Set("Content-Security-Policy", csp)
 	header.Set("Cross-Origin-Opener-Policy", "same-origin")
 	header.Set("Cross-Origin-Resource-Policy", "same-origin")
 
-	if !s.providerKeyLoopbackRequest(r) {
+	if !providerKeyTailnetRequest(r) && !s.providerKeyLoopbackRequest(r) {
 		writeProviderKeyPage(w, http.StatusNotFound, providerKeyPage{Message: providerKeyInvalidLink, Class: "error"})
 		return
 	}
@@ -415,7 +438,11 @@ func providerKeyValid(key string) bool {
 }
 
 func (s *Server) submitProviderKey(w http.ResponseWriter, r *http.Request, code string) {
-	if !providerKeySameOrigin(r) {
+	allowed := providerKeySameOrigin(r)
+	if providerKeyTailnetRequest(r) {
+		allowed = s.providerKeyAllowedOrigin(r.Header.Get("Origin"))
+	}
+	if !allowed {
 		writeProviderKeyPage(w, http.StatusForbidden, providerKeyPage{Message: "This form must be sent from the page Swarm opened on this machine.", Class: "error"})
 		return
 	}
@@ -469,8 +496,17 @@ func (s *Server) saveProviderKey(r *http.Request, request providerKeyRequest, ke
 	if err != nil || !isCompleteProductActor(actor) || actor.AccountScopeID != request.accountScopeID {
 		return "the account that asked for this link is no longer available", errors.New("actor unavailable")
 	}
-	if !s.providerKeyTokenStillValid(request.token) {
+	if request.tailnet && s.providerKeys.gatewayOrigin() == "" {
+		return "the tailnet gateway is no longer available", errors.New("gateway unavailable")
+	}
+	if !request.tailnet && !s.providerKeyTokenStillValid(request.token) {
 		return "the AI key that asked for this link was revoked or expired", errors.New("token invalid")
+	}
+	// The key-page contract always verifies before save, including the first
+	// OpenAI credential (general onboarding may otherwise defer that check).
+	connection, verifyErr := s.verifyCredentialMaterialForAccount(r.Context(), request.accountScopeID, provideriface.AuthCredential{Provider: request.provider, Type: "api", APIKey: key})
+	if verifyErr != nil || !authCredentialVerificationAccepted(connection) {
+		return "provider verification failed; check the key and try again", errors.New("verification refused")
 	}
 	body, err := json.Marshal(map[string]any{
 		"provider": request.provider,
@@ -482,14 +518,17 @@ func (s *Server) saveProviderKey(r *http.Request, request providerKeyRequest, ke
 	if err != nil {
 		return "the key could not be sent to Swarm", err
 	}
-	sub, err := http.NewRequestWithContext(r.Context(), http.MethodPost, "/v1/auth/credentials", bytes.NewReader(body))
+	sub, err := http.NewRequestWithContext(context.WithValue(r.Context(), providerKeyVerifiedContext{}, (*auth.ConnectionStatus)(connection)), http.MethodPost, "/v1/auth/credentials", bytes.NewReader(body))
 	if err != nil {
 		return "the key could not be sent to Swarm", err
 	}
 	sub.Host = r.Host
 	sub.RemoteAddr = r.RemoteAddr
 	sub.Header.Set("Content-Type", "application/json")
+	// The human capability authorizes only this credential submission, not the
+	// requesting AI. Keep the original token bound and revalidated above.
 	token := request.token
+	token.Scopes = []string{"admin"}
 	sub = requestWithScopedToken(requestWithActorContext(sub, actor), &token)
 	recorder := &controlMCPRecorder{header: http.Header{}, status: http.StatusOK}
 	s.internalRouteHandler().ServeHTTP(recorder, sub)

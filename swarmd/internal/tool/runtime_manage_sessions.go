@@ -869,6 +869,10 @@ func (r *Runtime) manageSessionsGet(scope WorkspaceScope, id string) (string, er
 			"cache_write_tokens": usage.CacheWriteTokens,
 			"total_tokens":       usage.TotalTokens,
 			"estimated_cost_usd": usage.EstimatedCostUSD,
+			"media_cost_usd":     usage.MediaCostUSD,
+			"image_count":        usage.ImageCount,
+			"video_count":        usage.VideoCount,
+			"sound_count":        usage.SoundCount,
 		}
 	}
 

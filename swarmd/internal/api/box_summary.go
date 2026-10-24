@@ -260,7 +260,7 @@ func (s *Server) handleBoxSummary(w http.ResponseWriter, r *http.Request) {
 		"reasons":         reasons,
 		"machine":         machine,
 		"busy":            busy,
-		"sandbox":         map[string]any{"mode": string(sb.Mode), "active": sb.Active, "runtime": sb.Runtime, "reason": sb.Reason},
+		"sandbox":         s.boxSandbox(principal, sb),
 		"secrets_gateway": s.secretsGatewayEnabled,
 		"permissions":     map[string]any{"bypass": s.permissionBypassForAccount(account), "bypass_blocked_reason": s.permissionBypassBlockedReason()},
 		"attention":       attention,
@@ -462,4 +462,42 @@ func (s *Server) boxKeys(account string, now time.Time, raise func(level, reason
 	}
 	keys["active"], keys["stopping_soon"], keys["new_places"] = active, stopping, newPlaces
 	return keys
+}
+
+// boxSandbox keeps machine mode separate from account-visible folder leases.
+func (s *Server) boxSandbox(principal identity.Principal, sb sandbox.Status) map[string]any {
+	out := map[string]any{"mode": string(sb.Mode), "active": sb.Active, "runtime": sb.Runtime, "reason": sb.Reason}
+	folders := []map[string]any{}
+	out["folder_environments"] = folders
+	if s.workspace == nil || s.sandboxEnvironments == nil {
+		return out
+	}
+	entries, err := s.workspace.ListKnownForPrincipal(principal, 100000)
+	if err != nil {
+		out["error"] = err.Error()
+		return out
+	}
+	for _, entry := range entries {
+		env, found, err := s.sandboxEnvironments.Get(entry.Path)
+		if err != nil {
+			out["error"] = err.Error()
+			return out
+		}
+		if !found {
+			continue
+		}
+		view := boxFolderEnvironment(entry.Path, env.MaxLeases, sandbox.Leases().LeaseStatus(entry.Path))
+		folders = append(folders, view)
+	}
+	out["folder_environments"] = folders
+	return out
+}
+
+func boxFolderEnvironment(root string, max int, view map[string]any) map[string]any {
+	view["workspace_path"] = root
+	view["max_leases"] = max
+	if view["runtime"] == "runsc" {
+		view["isolation"] = "gVisor"
+	}
+	return view
 }

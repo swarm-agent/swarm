@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strconv"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -42,7 +43,7 @@ func validateSessionExecutionRepositoryIdentity(session pebblestore.SessionSnaps
 			// reviewed head (instead of a detached HEAD equal to it).
 			return validateSessionRepositoryIdentityWith(session, func(source, lane, branch, base string) error {
 				head := reviewEnvironment(session.Metadata)["SWARM_REVIEW_HEAD"]
-				if run := mapString(session.Metadata, "worker_execution_run_id"); run == "" || branch != reviewFixBranch(run) || head == "" || base != head || session.WorktreeBaseBranch != head || mapString(session.Metadata, "swarm_v3_worktree_owner_session_id") != session.ID {
+				if owner := firstNonEmptyString(mapString(session.Metadata, "worker_execution_run_id"), mapString(session.Metadata, "task_id")); owner == "" || branch != reviewFixBranch(owner) || head == "" || base != head || session.WorktreeBaseBranch != head || mapString(session.Metadata, "swarm_v3_worktree_owner_session_id") != session.ID {
 					return errors.New("review fix session worktree identity mismatch")
 				}
 				return worktreeruntime.ValidateReviewFixExecutionIdentity(source, lane, branch, head)
@@ -88,6 +89,19 @@ func validateSessionRepositoryIdentityWith(session pebblestore.SessionSnapshot, 
 // validation used by workspace transitions deliberately remains unchanged.
 func (s *Service) validateRunRepositoryIdentity(session pebblestore.SessionSnapshot, principal identity.Principal) error {
 	if mapString(session.Metadata, "lineage_kind") != "system_sidechat" {
+		if mapString(session.Metadata, "worker_role") == pebblestore.WorkerRoleReviewer && mapString(session.Metadata, "worker_execution_run_id") == "" {
+			task, found, err := s.sessions.Store().GetProjectTask(session.AccountScopeID, mapString(session.Metadata, "project_id"), mapString(session.Metadata, "task_id"))
+			if err != nil {
+				return err
+			}
+			if !found || task == nil || task.Agent != "reviewer" || task.WorkerID != "" || task.SessionID != session.ID || task.AutomationID == "" || task.ReviewTarget == nil || !reflect.DeepEqual(task.ReviewTarget, session.Metadata["worker_review_target"]) || sessionReviewFixes(session.Metadata) != (task.ReviewFixes == ReviewFixesSecurity) || (sessionReviewFixes(session.Metadata) && session.WorktreeBranch != reviewFixBranch(task.ID)) {
+				return errors.New("native review identity does not match its admitted task")
+			}
+			execution := &WorkerExecutionService{host: &AutomationV2ExecutionHost{runs: s}}
+			if err := execution.registerReview(session); err != nil {
+				return err
+			}
+		}
 		return validateSessionExecutionRepositoryIdentity(session)
 	}
 	kind := mapString(session.Metadata, "system_sidechat_kind")

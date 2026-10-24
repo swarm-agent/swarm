@@ -664,7 +664,7 @@ Do not inspect or mutate the checkout, call any other tool, orchestrate agents, 
 
 func ImageAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
-		"manage_artifact": {Enabled: pebblestore.BoolPtr(true)},
+		"manage_artifact": {Enabled: pebblestore.BoolPtr(false)},
 	}}
 }
 
@@ -676,7 +676,7 @@ Do not inspect or mutate the checkout, call any other tool, orchestrate agents, 
 
 func VideoAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
-		"manage_artifact": {Enabled: pebblestore.BoolPtr(true)},
+		"manage_artifact": {Enabled: pebblestore.BoolPtr(false)},
 	}}
 }
 
@@ -713,6 +713,7 @@ func designerAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
 		"read": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "find": {Enabled: pebblestore.BoolPtr(true)},
 		"swarm_design": {Enabled: pebblestore.BoolPtr(true)},
+		"manage_media": {Enabled: pebblestore.BoolPtr(true)},
 		"git_status":   {Enabled: pebblestore.BoolPtr(true)}, "git_diff": {Enabled: pebblestore.BoolPtr(true)}, "git_add": {Enabled: pebblestore.BoolPtr(true)}, "git_commit": {Enabled: pebblestore.BoolPtr(true)},
 		"write": {Enabled: pebblestore.BoolPtr(false)}, "edit": {Enabled: pebblestore.BoolPtr(false)}, "bash": {Enabled: pebblestore.BoolPtr(false)}, "media_inspect": {Enabled: pebblestore.BoolPtr(false)},
 		"manage_artifact": {Enabled: pebblestore.BoolPtr(false)}, "manage_video": {Enabled: pebblestore.BoolPtr(false)},

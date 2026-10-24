@@ -14,8 +14,11 @@ import (
 	"strings"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
+	modelruntime "swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/store/pebble/pricingtest"
+	"swarm/packages/swarmd/internal/tool"
 	"swarm/packages/swarmd/internal/videogen"
 	"testing"
 	"time"
@@ -315,5 +318,104 @@ func TestMediaCostJobReadyPrices(t *testing.T) {
 				t.Fatal(out)
 			}
 		})
+	}
+}
+
+// Purpose: recordTaskMedia must propagate measured Omni cost through the existing
+// durable receipt, session and daily rollups exactly once. The real store/API
+// boundary is the narrowest layer proving these accounting postconditions.
+func TestOmniMeasuredReceiptRollups(t *testing.T) {
+	db, err := pebblestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store := pebblestore.NewSessionStore(db)
+	p := identity.Principal{AccountScopeID: "account", UserID: "user"}
+	if err := store.CreateSessionForAccount(pebblestore.SessionSnapshot{ID: "session"}, p.UserID, p.AccountScopeID); err != nil {
+		t.Fatal(err)
+	}
+	pricing, _ := pricingtest.Record(t, "gemini-omni-1.1-flash")
+	rec := pebblestore.ModelCatalogRecord{Provider: "google", Model: "gemini-omni-1.1-flash", Pricing: pricing}
+	if err := pebblestore.NewModelCatalogStore(db).SetRecord(rec); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{sessions: session.NewService(store, nil)}
+	task := &pebblestore.ProjectTaskRecord{ID: "video-task", ProjectID: "project", AccountID: p.AccountScopeID, OriginSessionID: "session"}
+	output := videogen.ManagedVideoResult{Provider: "google", Model: rec.Model, MeasuredDurationSeconds: 4.01, Width: 1280, Height: 720, Resolution: "1080p"}
+	for i := 0; i < 2; i++ {
+		got := server.recordGeneratedTaskMedia(p, task, 0, output.BillingOptions(), "video/mp4", 100)
+		if got.PriceStatus != "known" || math.Abs(got.CostUSD-.401) > 1e-10 {
+			t.Fatalf("%+v", got)
+		}
+	}
+	summary, found, err := store.GetUsageSummary("session")
+	if err != nil || !found || summary.VideoCount != 1 || math.Abs(summary.MediaCostUSD-.401) > 1e-10 {
+		t.Fatalf("%+v %v", summary, err)
+	}
+	daily, found, err := store.GetDailyUsageAccumulator("account", time.Now().UTC().Format("2006-01-02"))
+	if err != nil || !found || daily.VideoCount != 1 || math.Abs(daily.MediaCostUSD-.401) > 1e-10 {
+		t.Fatalf("%+v %v", daily, err)
+	}
+}
+
+// Purpose: the Designer estimateManagedMedia admission path must price a
+// duration-less Omni request from the shipped catalog and enforce its worker
+// budget before recording usage. Real temporary stores prove the denial and
+// absence of receipts, without a provider call.
+func TestOmniManagedAdmission(t *testing.T) {
+	db, err := pebblestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store := pebblestore.NewSessionStore(db)
+	p := identity.Principal{AccountScopeID: "account", UserID: "user"}
+	if err := store.CreateSessionForAccount(pebblestore.SessionSnapshot{ID: "session"}, p.UserID, p.AccountScopeID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.PutJSON(pebblestore.KeyWorker("account", "worker"), pebblestore.WorkerRecord{ID: "worker", AccountScopeID: "account"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.PutJSON("usage_scope_binding/account/session", []pebblestore.UsageScopeTotal{{Kind: "worker", ID: "worker"}, {Kind: "worker_run", ProjectID: "worker", ID: "run"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetWorkerBudget("account", "worker", 0, .5, 0); err != nil {
+		t.Fatal(err)
+	}
+	pricing, specific := pricingtest.Record(t, "gemini-omni-1.1-flash")
+	rec := pebblestore.ModelCatalogRecord{Provider: "google", Model: "gemini-omni-1.1-flash", Pricing: pricing, ProviderSpecific: specific}
+	rec.CatalogModalities.Outputs = []string{"video"}
+	catalog := pebblestore.NewModelCatalogStore(db)
+	if err := catalog.SetRecord(rec); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{sessions: session.NewService(store, nil), imageGen: imagegen.NewService(nil, pebblestore.NewAuthStore(db), nil, billingCatalog{}), model: modelruntime.NewService(pebblestore.NewModelStore(db), nil, modelruntime.NewCatalogService(catalog))}
+	input := &tool.ProjectTaskCreateInput{Agent: "video", Model: rec.Model}
+	estimate, err := server.estimateManagedMedia(context.Background(), p, input)
+	if err != nil || estimate.PriceStatus != "known" || estimate.CostUSD != 1 {
+		t.Fatalf("%+v %v", estimate, err)
+	}
+	if input.DurationSeconds != 0 {
+		t.Fatal("estimate mutated requested duration")
+	}
+	if err := store.CheckWorkerMediaAdmission("account", "session", estimate); err == nil {
+		t.Fatal("budget admitted oversized create estimate")
+	}
+	// Extensions reserve only the ten-second generated delta plus 50ms tolerance.
+	input.Operation = pebblestore.VideoOperationExtend
+	estimate, err = server.estimateManagedMedia(context.Background(), p, input)
+	if err != nil || estimate.PriceStatus != "known" || math.Abs(estimate.CostUSD-1.005) > 1e-10 {
+		t.Fatalf("extension: %+v %v", estimate, err)
+	}
+	if _, err := store.SetWorkerBudget("account", "worker", 1, 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CheckWorkerMediaAdmission("account", "session", estimate); err == nil {
+		t.Fatal("budget admitted oversized estimate")
+	}
+	receipts, err := store.ListMediaUsage("account", 10)
+	if err != nil || len(receipts) != 0 {
+		t.Fatalf("%+v %v", receipts, err)
 	}
 }

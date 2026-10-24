@@ -144,6 +144,26 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	if err != nil {
 		return nil, err
 	}
+	if requested := strings.TrimSpace(input.OriginSessionID); requested != "" {
+		parent, found, err := s.sessions.GetSession(requested)
+		if err != nil {
+			return nil, err
+		}
+		if !found || parent.AccountScopeID != p.AccountScopeID || parent.UserID != p.UserID {
+			return nil, errors.New("task origin session ownership mismatch")
+		}
+		if origin != "" && origin != requested {
+			return nil, errors.New("task origin session mismatch")
+		}
+		tomb, found, err := db.GetV3SessionTombstone(requested)
+		if err != nil {
+			return nil, err
+		}
+		if found && (tomb.Archived || tomb.Deleted) {
+			return nil, errors.New("task origin archived or deleted")
+		}
+		origin = requested
+	}
 	prompt := strings.TrimSpace(input.Prompt)
 	if prompt == "" {
 		prompt = strings.TrimSpace(input.Description)
@@ -237,6 +257,11 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		a.SourceWorkspace = bound
 	}
 	wsPath := source.Path
+	if isDirectSimpleMedia && input.ManageMediaSource {
+		// Media carries no source execution authority; retain the caller's
+		// workspace as output context rather than a repository binding.
+		wsPath = strings.TrimSpace(input.WorkspacePath)
+	}
 	agentName := strings.TrimSpace(input.Agent)
 	if isDirectVideo {
 		agentName = "video"
@@ -469,6 +494,8 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 
 	task := pebblestore.ProjectTaskRecord{
 		OriginSessionID:    origin,
+		RetryOf:            input.MediaRetryOf,
+		ManageMediaSource:  input.ManageMediaSource,
 		ID:                 taskID,
 		ProjectID:          projectID,
 		AccountID:          p.AccountScopeID,
@@ -523,6 +550,18 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	if start, ok := workflowTaskStartFrom(ctx); ok {
 		task.AutomationID = start.AutomationID
 		task.StartCommit = start.StartCommit
+		task.ReviewJob, task.ReviewCheckout = start.ReviewJob, start.ReviewCheckout
+		task.ReviewFixes = start.ReviewFixes
+	}
+	if task.Agent == "reviewer" {
+		execution, err := s.workerExecutionService()
+		if err != nil {
+			return nil, err
+		}
+		task.ReviewTarget, err = execution.ResolveTaskReviewTarget(ctx, p, &task, task.ReviewJob, task.ReviewCheckout, task.StartCommit)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if len(task.CoderAssignments) > 0 {
 		// The assignment list, not router boilerplate, is the executable small-task
@@ -590,6 +629,11 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	} else if isDirectMedia {
 		if err := admitProjectMediaTask(&task); err != nil {
 			return nil, err
+		}
+		if task.ManageMediaSource && !input.AutoApprove {
+			task.AutoApprove = false
+			task.Status = "pending_approval"
+			task.ActionNeeded = "Review task and click Approve to start media generation"
 		}
 	} else {
 		if input.AutoApprove {

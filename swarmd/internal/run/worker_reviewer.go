@@ -141,6 +141,24 @@ func allocateReviewerCheckout(trees *worktree.Service, p identity.Principal, sou
 	return trees.AllocateReviewWorkspace(p, source, r.SessionID, head, commits...)
 }
 
+// AllocateTaskReviewCheckout reuses the same captured-target allocation as worker reviews.
+func (s *WorkerExecutionService) AllocateTaskReviewCheckout(p identity.Principal, task *store.ProjectTaskRecord) (worktree.Allocation, error) {
+	if task == nil || task.ReviewTarget == nil {
+		return worktree.Allocation{}, errors.New("review target required")
+	}
+	return allocateReviewerCheckout(s.host.trees, p, task.SourceWorkspace.Path, store.WorkerRunRecord{ID: task.ID, SessionID: task.SessionID, Input: map[string]any{"captured_review_target": task.ReviewTarget}}, task.ReviewFixes == ReviewFixesSecurity)
+}
+
+// PrepareTaskReviewSession pins the read-only review identity and registers its sandbox.
+func (s *WorkerExecutionService) PrepareTaskReviewSession(snapshot *store.SessionSnapshot, task *store.ProjectTaskRecord) error {
+	snapshot.Metadata["worker_role"] = store.WorkerRoleReviewer
+	pinReviewerMetadata(snapshot.Metadata, map[string]any{"captured_review_target": task.ReviewTarget}, task.ReviewFixes == ReviewFixesSecurity)
+	if owner := sessionReviewLaneOwner(snapshot.Metadata); owner != "" {
+		snapshot.Metadata["swarm_v3_worktree_owner_session_id"] = owner
+	}
+	return s.registerReview(*snapshot)
+}
+
 // pinReviewerMetadata pins a reviewer session's review target and, only for
 // the reviewer allowed to fix, worker_review_fixes (what the sandbox, the
 // per-call identity check and cleanup read).
@@ -213,16 +231,39 @@ func (s *WorkerExecutionService) resolveReviewTarget(ctx context.Context, r stor
 	if err != nil {
 		return nil, err
 	}
+	return s.resolveJobReviewTarget(ctx, r, project.ID)
+}
+
+// ResolveTaskReviewTarget captures a task review without resolving or creating a reviewer worker.
+func (s *WorkerExecutionService) ResolveTaskReviewTarget(ctx context.Context, p identity.Principal, task *store.ProjectTaskRecord, job, checkout, head string) (map[string]any, error) {
+	input := map[string]any{"review_job": job, "review_checkout": checkout}
+	if task.ReviewFixes != "" {
+		input["review_fixes"] = task.ReviewFixes
+	}
+	if err := validateReviewRequest(store.WorkerRoleReviewer, "automation", input); err != nil {
+		return nil, err
+	}
+	target, err := s.resolveJobReviewTarget(ctx, store.WorkerRunRecord{AccountScopeID: p.AccountScopeID, UserID: p.UserID, SessionID: task.SessionID, WorkspaceID: task.SourceWorkspace.WorkspaceID, Input: input}, task.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	if target["head"] != head {
+		return nil, errors.New("review job moved past the delivery head")
+	}
+	return target, nil
+}
+
+func (s *WorkerExecutionService) resolveJobReviewTarget(ctx context.Context, r store.WorkerRunRecord, projectID string) (map[string]any, error) {
 	parts := strings.Split(r.Input["review_job"].(string), "/")
 	var task *store.ProjectTaskRecord
 	laneOwner := ""
 	if parts[0] == "task" {
 		// A task of Swarm's own agents (swarm_run_task): it is in the
 		// reviewer's project and folder, worked in its own session's worktree.
-		if parts[1] != project.ID {
+		if parts[1] != projectID {
 			return nil, errors.New("review job must exist in the same project and workspace")
 		}
-		target, found, err := s.host.runs.sessions.Store().GetProjectTask(r.AccountScopeID, project.ID, parts[2])
+		target, found, err := s.host.runs.sessions.Store().GetProjectTask(r.AccountScopeID, projectID, parts[2])
 		if err != nil {
 			return nil, err
 		}
@@ -242,7 +283,7 @@ func (s *WorkerExecutionService) resolveReviewTarget(ctx context.Context, r stor
 		if !found || target.UserID != r.UserID {
 			return nil, errors.New("review job not found")
 		}
-		jobTask, found, err := s.host.runs.sessions.Store().GetProjectTask(r.AccountScopeID, project.ID, "task_"+target.ID)
+		jobTask, found, err := s.host.runs.sessions.Store().GetProjectTask(r.AccountScopeID, projectID, "task_"+target.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -347,6 +388,10 @@ func reviewEnvironment(meta map[string]any) map[string]string {
 	return env
 }
 
+func reviewIdentityMatches(state sandbox.ReviewCleanupState, snapshot store.SessionSnapshot) bool {
+	return state.Checkout == snapshot.WorktreeRootPath && state.Session == snapshot.ID && state.Borrowed == (sessionReviewLaneOwner(snapshot.Metadata) != "")
+}
+
 func (s *WorkerExecutionService) registerReview(snapshot store.SessionSnapshot) error {
 	if snapshot.Metadata["worker_role"] != store.WorkerRoleReviewer {
 		return nil
@@ -372,8 +417,11 @@ func (s *WorkerExecutionService) registerReview(snapshot store.SessionSnapshot) 
 		return err
 	}
 	if found {
-		if state.Checkout != snapshot.WorktreeRootPath || state.Session != snapshot.ID || state.Borrowed != (sessionReviewLaneOwner(snapshot.Metadata) != "") {
+		if !reviewIdentityMatches(state, snapshot) {
 			return fmt.Errorf("review identity mismatch")
+		}
+		if state.Phase == "volume_removed" {
+			return nil
 		}
 		if err := m.RestoreReviewIdentity(state); err != nil {
 			return err
@@ -424,11 +472,15 @@ func (s *WorkerExecutionService) cleanupReview(r store.WorkerRunRecord) error {
 	if head == "" {
 		return fmt.Errorf("review cleanup missing captured head")
 	}
+	source := snapshot.WorkspacePath
+	if mapString(snapshot.Metadata, "worker_execution_run_id") == "" {
+		source = mapString(snapshot.Metadata, "swarm_v3_source_workspace_path")
+	}
 	validate := func() error {
-		return s.host.trees.ValidateReviewWorkspaceRemoval(snapshot.WorkspacePath, snapshot.WorktreeRootPath, r.SessionID, head)
+		return s.host.trees.ValidateReviewWorkspaceRemoval(source, snapshot.WorktreeRootPath, r.SessionID, head)
 	}
 	remove := func() error {
-		return s.host.trees.RemoveValidatedReviewWorkspace(snapshot.WorkspacePath, snapshot.WorktreeRootPath)
+		return s.host.trees.RemoveValidatedReviewWorkspace(source, snapshot.WorktreeRootPath)
 	}
 	if sessionReviewLaneOwner(snapshot.Metadata) != "" {
 		// A reviewer that read the job's own worktree in place leaves it as
@@ -448,16 +500,29 @@ func (s *WorkerExecutionService) cleanupReview(r store.WorkerRunRecord) error {
 	if m := sandbox.Default(); m != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := s.registerReview(snapshot); err != nil {
-			return err
-		}
+		// Cleanup restores the captured identity itself. Do not re-admit an
+		// active review or rebuild its execution environment during recovery.
 		db := s.host.runs.sessions.Store()
 		state, found, err := db.GetReviewCleanup(snapshot.AccountScopeID, snapshot.ID)
 		if err != nil {
 			return err
 		}
 		if !found {
-			return fmt.Errorf("missing durable review identity")
+			// Admission may have allocated the checkout before persisting its
+			// identity. Recover through the same registration path as admission.
+			if err := s.registerReview(snapshot); err != nil {
+				return err
+			}
+			state, found, err = db.GetReviewCleanup(snapshot.AccountScopeID, snapshot.ID)
+			if err != nil {
+				return err
+			}
+			if !found {
+				return fmt.Errorf("missing durable review identity")
+			}
+		}
+		if !reviewIdentityMatches(state, snapshot) {
+			return fmt.Errorf("review identity mismatch")
 		}
 		return m.CleanupReviewDurable(ctx, &state, func(next sandbox.ReviewCleanupState) error {
 			return db.PutReviewCleanup(snapshot.AccountScopeID, next)
@@ -490,4 +555,125 @@ func reviewComparisonCommits(base string, input map[string]any) (string, []strin
 		}
 	}
 	return base, commits, nil
+}
+
+// TaskReviewModel identifies the resolved session model, not the task's optional
+// submission override. Incomplete preferences must not produce a slash sentinel.
+func TaskReviewModel(snapshot store.SessionSnapshot) string {
+	provider, model := strings.TrimSpace(snapshot.Preference.Provider), strings.TrimSpace(snapshot.Preference.Model)
+	if provider == "" || model == "" {
+		return ""
+	}
+	return provider + "/" + model
+}
+
+// FinishTaskReview checks the borrowed head before persisting the verdict, then
+// uses the existing review cleanup protocol without any reviewer worker record.
+func (s *WorkerExecutionService) FinishTaskReview(task *store.ProjectTaskRecord, review store.JobReview) (store.JobReview, error) {
+	snapshot, found, err := s.host.runs.sessions.GetSession(task.SessionID)
+	if err != nil {
+		return review, err
+	}
+	if !found {
+		return review, errors.New("review session missing")
+	}
+	review.Model = TaskReviewModel(snapshot)
+	if task.ReviewFixes == ReviewFixesSecurity {
+		review = withReviewFixHead(review, snapshot, task.ID)
+	}
+	if sessionReviewLaneOwner(snapshot.Metadata) != "" {
+		review = withBorrowedReviewHead(review, snapshot, s.host.trees)
+	}
+	updated, err := s.host.runs.sessions.Store().UpdateProjectTask(task.AccountID, task.ProjectID, task.ID, func(current *store.ProjectTaskRecord) error {
+		if current.SessionID != task.SessionID || current.StartCommit != review.Head {
+			return errors.New("review task changed")
+		}
+		if current.Review == nil {
+			current.Review = &review
+		}
+		return nil
+	})
+	if err != nil {
+		return review, err
+	}
+	review = *updated.Review
+	if err := s.CleanupTaskReview(task); err != nil {
+		return review, err
+	}
+	return review, nil
+}
+
+// ErrTaskReviewCleanupPending indicates a scheduled cleanup retry, not a
+// persistence or cleanup failure. Callers may wait only for this condition.
+var ErrTaskReviewCleanupPending = errors.New("task review cleanup pending")
+
+// ErrTaskReviewCleanup distinguishes cleanup from verdict persistence failures.
+var ErrTaskReviewCleanup = errors.New("task review cleanup failed")
+
+func permanentTaskReviewCleanup(message string) bool {
+	for _, reason := range []string{"missing captured head", "identity mismatch", "missing durable review identity", sandbox.ErrSandboxRequired.Error()} {
+		if strings.Contains(message, reason) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *WorkerExecutionService) CleanupTaskReview(task *store.ProjectTaskRecord) (resultErr error) {
+	defer func() {
+		if resultErr != nil {
+			resultErr = errors.Join(ErrTaskReviewCleanup, resultErr)
+		}
+	}()
+	// Settlement and workflow recovery can arrive together. Neither may report
+	// completion while the other's shared sandbox cleanup is still running.
+	s.taskReviewCleanupMu.Lock()
+	defer s.taskReviewCleanupMu.Unlock()
+	now := time.Now()
+	attempt := false
+	_, err := s.host.runs.sessions.Store().UpdateProjectTask(task.AccountID, task.ProjectID, task.ID, func(current *store.ProjectTaskRecord) error {
+		if current.ReviewCleanup != nil {
+			if current.ReviewCleanup.State == "done" {
+				return nil
+			}
+			if c := current.ReviewCleanup; c.State == "failed" && (c.Attempts >= 5 || c.NextAttemptAt == 0 || permanentTaskReviewCleanup(c.LastError)) {
+				return errors.New(c.LastError)
+			}
+			if current.ReviewCleanup.NextAttemptAt > now.UnixMilli() {
+				return fmt.Errorf("%w: %s", ErrTaskReviewCleanupPending, current.ReviewCleanup.LastError)
+			}
+		}
+		if current.ReviewCleanup == nil {
+			current.ReviewCleanup = &store.WorkerRunCleanup{}
+		}
+		c := current.ReviewCleanup
+		c.State = "pending"
+		c.Attempts++
+		c.NextAttemptAt = now.Add(time.Minute << min(c.Attempts-1, 6)).UnixMilli()
+		attempt = true
+		return nil
+	})
+	if err != nil || !attempt {
+		return err
+	}
+	cleanupErr := s.cleanupReview(store.WorkerRunRecord{AccountScopeID: task.AccountID, SessionID: task.SessionID, Role: store.WorkerRoleReviewer, Input: map[string]any{"review_fixes": task.ReviewFixes}})
+	_, err = s.host.runs.sessions.Store().UpdateProjectTask(task.AccountID, task.ProjectID, task.ID, func(current *store.ProjectTaskRecord) error {
+		c := current.ReviewCleanup
+		if cleanupErr != nil {
+			c.State, c.LastError = "failed", cleanupErr.Error()
+			c.FailureReported = c.Attempts >= 5
+			if permanentTaskReviewCleanup(c.LastError) {
+				c.NextAttemptAt = 0
+			} else if c.Attempts < 5 {
+				cleanupErr = fmt.Errorf("%w: %v", ErrTaskReviewCleanupPending, cleanupErr)
+			}
+		} else {
+			c.State, c.LastError, c.NextAttemptAt = "done", "", 0
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	return cleanupErr
 }

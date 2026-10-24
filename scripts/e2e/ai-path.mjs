@@ -40,7 +40,7 @@ const PROVIDER = 'google'
 const OWNER_NAME = 'e2e-owner'
 const SWARM_NAME = 'AI path e2e'
 const WORKSPACE_NAME = 'e2e-ws'
-const MODEL_SLOTS = [['swarm', 'action'], ['swarm', 'plan'], ['system_agents', 'compact'], ['system_agents', 'finder'], ['system_agents', 'coder'], ['system_agents', 'designer'], ['system_agents', 'router']]
+const MODEL_SLOTS = [['swarm', 'action'], ['swarm', 'plan'], ['system_agents', 'compact'], ['system_agents', 'finder'], ['system_agents', 'coder'], ['system_agents', 'reviewer'], ['system_agents', 'designer'], ['system_agents', 'router']]
 const REQUIRED_TOOLS = ['swarm_list_providers', 'swarm_request_provider_key', 'swarm_list_models', 'swarm_create_workspace', 'swarm_list_workspaces', 'swarm_start_session', 'swarm_send_message', 'swarm_get_session', 'swarm_resolve_permission', 'swarm_create_project', 'swarm_list_tasks', 'swarm_approve_task', 'swarm_get_changes', 'swarm_read_file', 'swarm_integrate_task', 'swarm_accept_review']
 
 class StepError extends Error {}

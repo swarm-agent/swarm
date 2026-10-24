@@ -17,8 +17,7 @@ func isBorrowedReviewWorktree(next SessionSnapshot) bool {
 func (s *SessionStore) validateBorrowedReviewWorktreeBinding(input V3SessionMutationInput, next SessionSnapshot) error {
 	ownerID := v3LibraryMetadataString(next.Metadata, "worker_review_lane_owner")
 	if ownerID == "" || ownerID == input.SessionID || !next.WorktreeEnabled ||
-		v3LibraryMetadataString(next.Metadata, "worker_execution_run_id") == "" ||
-		v3LibraryMetadataString(next.Metadata, SessionPurposeMetadataKey) != SessionPurposeAutomationExecution ||
+		!s.isAdmittedReviewSession(next) ||
 		v3LibraryMetadataString(next.Metadata, "worker_review_fixes") != "" ||
 		v3LibraryMetadataString(next.Metadata, "swarm_v3_worktree_owner_session_id") != ownerID {
 		return ErrWorktreeRecoveryConflict
@@ -48,4 +47,13 @@ func (s *SessionStore) validateBorrowedReviewWorktreeBinding(input V3SessionMuta
 		return ErrWorktreeRecoveryConflict
 	}
 	return nil
+}
+
+// Native review sessions are backed by a reserved task, not a worker receipt.
+func (s *SessionStore) isAdmittedReviewSession(next SessionSnapshot) bool {
+	if v3LibraryMetadataString(next.Metadata, "worker_execution_run_id") != "" {
+		return v3LibraryMetadataString(next.Metadata, SessionPurposeMetadataKey) == SessionPurposeAutomationExecution
+	}
+	task, found, err := s.GetProjectTask(next.AccountScopeID, v3LibraryMetadataString(next.Metadata, "project_id"), v3LibraryMetadataString(next.Metadata, "task_id"))
+	return err == nil && found && task != nil && task.Agent == "reviewer" && task.WorkerID == "" && task.SessionID == next.ID && task.ReviewTarget != nil && task.AutomationID != "" && task.ReviewTarget["lane_owner"] == next.Metadata["worker_review_lane_owner"] && task.ReviewTarget["lane"] == next.WorktreeRootPath && task.StartCommit == next.WorktreeBaseBranch
 }

@@ -77,3 +77,32 @@ server with Tailscale inside for clients that prefer Docker.
 node --test test/*.test.mjs            # routing, discovery, fleet status, the model table, CONNECT + TLS path
 sudo bash test/gateway-e2e.sh          # a real swarmd with tailnet identity behind a Serve stand-in
 ```
+
+## Add a provider key across the fleet
+
+Ask the AI to call `swarm_fleet_request_provider_key` with `provider`, explicit
+`machines: [names]`, and optionally `label`. Write access is enough (read and
+relay clients cannot request these links). Open the returned link on a **user
+device in your tailnet**, check the listed machines, and paste the key once.
+The device needs network access to each gateway on HTTPS port 8444, but does not
+need the `swarmagent.dev/cap/swarm` grant. Tailscale Serve supplies its user login.
+
+Each machine verifies and activates its own credential. Your browser sends the
+key directly to each machine; neither the AI nor swarm-fleet receives it. Other
+page URLs live in the `#also=` fragment, not an HTTP request. Only gateways in
+the same tailnet are accepted. Links expire after ten minutes, allow five failed
+attempts and are consumed on success. Keep the link private too.
+
+This is a two-step flow:
+
+1. The tool returns as soon as every machine issues its page, with `url`,
+   `tell_the_person`, `expires_in_seconds`, and each machine's `waiting` status.
+   The AI gives the person the link and repeats `tell_the_person`, which names
+   the destinations so they can match them against the hostnames on the page.
+   No MCP notification or progress message is needed or sent.
+2. Call `swarm_list_providers` with `machine`, `provider`, and `wait_seconds`
+   (at most **110**) for each named machine to wait for its outcome.
+   If still waiting, call again; the initial request does not wait for saves.
+
+Failures are not atomic across machines: keep successful results and request a
+new link only for failed machines. A restart forgets outstanding links.

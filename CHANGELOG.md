@@ -6,12 +6,57 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Include the system reviewer in AI-path end-to-end harness model setup and checks for all eight roles. Docs impact: none
+- Remove an accidentally tracked Vitest results cache and ignore root node_modules dependencies. Docs impact: none
+- Keep account-scoped workflow change history with portable revision reads and permission-checked restore through MCP, API and SDK. Docs impact: none.
+
+- Export and import portable workflow JSON through API, MCP and SDK, including repository directories with per-file results and confined file paths. Docs impact: none.
+
+- Make the README easier to discover with a self-hosted agent fleet introduction, verified use cases, AI setup links, project disambiguation and updated GitHub metadata; place License last. Docs impact: README only.
+- Expose per-worker today and all-time token, cost and media usage in MCP worker lists and detailed usage, with job counts, coverage and cost ordering. Docs impact: none.
+
+- Give active workflow-native reviewer and reviewer-fixer tasks worker-style permission handling: only owner bypass or existing policy allows authorize tools; calls requiring consent are refused without pending prompts, with retry guidance during sandbox startup. Interactive and finished-task sessions retain normal approval behavior. Docs impact: none.
+- Add session-scoped `manage_media list` and shared media retries with provenance, ownership and spending checks, including MCP `retry_of`. Docs impact: updated `docs/manage-media.md`.
+- Price per-second video output, including catalog equivalent_cost lines such as Gemini Omni's, from measured duration using exact fractional seconds. Extension receipts charge only the generated part (Veo: locked 8 seconds; Omni: output minus source), with admission reserving the same basis (Omni: maximum 10 seconds plus 50ms timing tolerance). Omni create requests without a duration reserve 10 seconds at admission; existing receipts are unchanged. Docs impact: none.
+- Recover interrupted media jobs from persisted files on daemon startup: completed files settle for review, missing files fail with a restart reason, and generation and billing are not replayed. Recovery uses compact summaries, preserves normal task notifications, and isolates unrecoverable records without blocking startup. Docs impact: none
+- Add generation-only Gemini speech requests to sound media jobs, with voice/format validation, timing JSON, catalog-backed generation/transcription receipts and SDK speech settings. Docs impact: docs/checkpoints/swarm-control.md and MCP media tool descriptions.
+- Add Designer's in-session `manage_media` tool using existing media tasks, session media counts/costs and spending guards; disable agent artifact generation. When the session tasks setting is `ask`, `generate` creates a task waiting for approval and returns its pending status. Docs impact: `docs/manage-media.md`.
+
+- Apply worker and attached-job edits immediately while retaining pinned run revisions and legacy review acceptance; MCP deployment updates existing worker instructions, description and agent. Docs impact: `docs/checkpoints/swarm-control.md`, `docs/swarm-atlas.md`.
+
+- Let workers use a custom agent's current tools and added instructions while retaining their system role; reject writable reviewer contracts and support explicit MCP agent tool switches. Docs impact: docs/automations.md.
+
+- Return fleet provider-key links immediately after page issuance, with named destinations and waiting statuses, instead of notifying and blocking; wait for outcomes separately per machine with a 110-second maximum.
+  Docs impact: packages/swarm-fleet/README.md and containers/headless/app/TAILNET.md.
+
+- Let write clients request human-only provider-key links over the tailnet, with same-tailnet browser fan-out and per-machine fleet outcomes; keep relay clients excluded.
+  Docs impact: packages/swarm-fleet/README.md and containers/headless/app/TAILNET.md.
+
+- Record native task reviews with the reviewer session's resolved provider/model during settlement and repair; leave unavailable model identity empty. Docs impact: none.
+
+- Correct headless provider connection guidance to Settings > Providers, expose `runs_agents` in provider status and the SDK, and use that capability for setup-page labels.
+  Docs impact: none.
+
+- Use shared catalog review defaults for unconfigured native reviewers, expose effective reviewer models and their source, and include reviewer assignments in the fleet model table. Docs impact: none.
+
+- Wait for native reviewer sandbox cleanup before workflow follow-up, surface non-pending failures, recover interrupted review admission, and prevent completed review identities from borrowing the worktree again. Docs impact: none.
+- Allow scripted API keys alongside existing providers with `swarmctl setup add-credential --api-key-stdin`; `install.sh key` always uses the owner credential route, which also handles first-provider onboarding on a new machine. Update provider connect guidance. Docs impact: docs/frontends.md.
+- Add shared headless Settings > Providers management, including Exa search, credential replacement/activation/removal, redacted verification feedback and provider-specific sign-in guidance.
+  Docs impact: README.md now directs key setup to Settings > Providers.
+
+- Allow native workflow reviewers to opt into security fixes using the shared fix checkout and verdict binding, with the same 80-line and fail-closed delivery rules as reviewer workers. Docs impact: docs/automations.md and docs/reviewer.md.
+
+- Keep quoted headings and closed code fences inside review sections readable without weakening verdict or section validation. Docs impact: none.
+- Run workflow `reviewer` steps as native read-only reviewer tasks instead of deploying workers; retain parsed verdicts and require explicit reviewer worker IDs for security fixes. Docs impact: updated docs/automations.md and docs/reviewer.md.
+
+- Accept changed model catalog snapshots with an equal generation timestamp so recommendation-only releases reach installs, while still rejecting older snapshots. Docs impact: none.
+
+- Give daemon-user leases the folder Git directory's group for gVisor ACL compatibility, recreate leases when credentials change, report actual sandbox and folder lease status, and revert the bubblewrap packed-ref overlay changes. Docs impact: none.
+
 - Renew the Trivy exception for GO-2026-5932 (x/crypto openpgp, no fixed version) to 2027-01-23 after reassessment: no openpgp import, govulncheck finds nothing reachable. Docs impact: none.
 - Plugin README: names `sudo swarmctl setup credential --provider PROVIDER --api-key-stdin` for adding a provider API key by script. Docs impact: plugins/swarm/README.md.
 
 - swarmctl secret set creates or updates a secret and asks for its value at a hidden prompt; Swarm's MCP text, skills and the headless README name `sudo swarmctl secret set --name NAME --hosts HOST` and `secret grant` instead of 'setup page or by script'; `install.sh secret set` passes through to it. Docs impact: containers/headless/app/README.md, plugins/swarm skills.
-
-- Give writable linked-worktree Git a disposable common-metadata overlay so ref deletions can lock packed refs without changing the real shared packed refs; fail closed when bubblewrap lacks overlay support. Docs impact: none.
 
 - Record direct media task costs with retry-safe receipts, use standard size-aware image pricing and Gemini token breakdowns, and expose file totals and compact catalog prices in MCP. Bill each paid story scene even when assembly fails, retain account-only usage in dashboard/MCP totals, and distinguish unrecorded receipts from ready-file pricing. Docs impact: none.
 

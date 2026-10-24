@@ -24,8 +24,14 @@ func (s *Server) reconcileProjectTaskSession(p identity.Principal, proj *pebbles
 	if task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" && owned.Metadata["task_attempt_id"] != task.ActiveAttemptID {
 		return errors.New("task session attempt does not match reservation")
 	}
+	expectedOwner := owned.ID
+	if task.Agent == "reviewer" {
+		if owner, _ := task.ReviewTarget["lane_owner"].(string); owner != "" {
+			expectedOwner = owner
+		}
+	}
 	if owned.WorktreeEnabled {
-		if owned.WorktreeRootPath == "" || owned.WorkspacePath != owned.WorktreeRootPath || owned.Metadata["swarm_v3_runtime_workspace_path"] != owned.WorktreeRootPath || owned.Metadata["swarm_v3_worktree_owner_session_id"] != owned.ID {
+		if owned.WorktreeRootPath == "" || owned.WorkspacePath != owned.WorktreeRootPath || owned.Metadata["swarm_v3_runtime_workspace_path"] != owned.WorktreeRootPath || owned.Metadata["swarm_v3_worktree_owner_session_id"] != expectedOwner {
 			return errors.New("task session worktree owner does not match reservation")
 		}
 		if task.WorkspacePath != task.SourceWorkspace.Path && task.WorkspacePath != owned.WorktreeRootPath {

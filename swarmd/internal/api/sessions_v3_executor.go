@@ -5324,7 +5324,37 @@ func (e *sessionV3Executor) resolveSessionV3CurrentAgentToolContract(accountScop
 		return pebblestore.AgentProfile{}, fmt.Errorf("reserved system agent %q requires authenticated system sidechat metadata", name)
 	}
 	if systemID, ok := agentruntime.CanonicalSystemAgentID(name); ok {
-		return e.server.agents.ReconcileSystemAgentSnapshot(systemID, snapshot)
+		reconciled, err := e.server.agents.ReconcileSystemAgentSnapshot(systemID, snapshot)
+		if err != nil {
+			return pebblestore.AgentProfile{}, err
+		}
+		workerID := sessionsV3MetadataString(metadata, "worker_id")
+		// Automation v2 also uses worker_id, but is not worker execution.
+		// Only pinned worker execution sessions may load a worker revision.
+		if workerID == "" || sessionsV3MetadataString(metadata, "worker_execution_run_id") == "" {
+			return reconciled, nil
+		}
+		revision, err := strconv.ParseUint(fmt.Sprint(metadata["worker_revision"]), 10, 64)
+		if err != nil {
+			return pebblestore.AgentProfile{}, errors.New("invalid worker revision metadata")
+		}
+		history, found, err := pebblestore.NewWorkerStore(e.server.sessions.Store().Underlying()).GetWorkerRevision(accountScopeID, workerID, revision)
+		if err != nil {
+			return pebblestore.AgentProfile{}, err
+		}
+		if !found {
+			return pebblestore.AgentProfile{}, errors.New("worker revision is unavailable")
+		}
+		if history.Worker.Agent == "" {
+			return reconciled, nil
+		}
+		overlay, ok := e.server.runner.(interface {
+			ApplyWorkerAgent(string, pebblestore.WorkerRecord, pebblestore.AgentProfile) (pebblestore.AgentProfile, error)
+		})
+		if !ok {
+			return pebblestore.AgentProfile{}, errors.New("worker agent resolution is unavailable")
+		}
+		return overlay.ApplyWorkerAgent(accountScopeID, history.Worker, reconciled)
 	}
 	if strings.HasPrefix(strings.ToLower(name), "system-") {
 		return pebblestore.AgentProfile{}, fmt.Errorf("unknown reserved system agent %q", name)

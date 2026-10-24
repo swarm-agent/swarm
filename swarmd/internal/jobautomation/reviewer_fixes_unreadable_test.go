@@ -38,6 +38,7 @@ func TestUnreadableFixingReviewNeverAppliesFixes(t *testing.T) {
 			Commits: []ResultCommit{{SHA: smallFix, Subject: "reviewer: escape the upload name"}}}}}}
 	h.process()
 	loop := reviewLoop(folder, 2)
+	loop.Steps[0].Worker = "wkr_custom_reviewer"
 	loop.Steps[0].Fixes = FixesSecurity
 	h.automation(loop)
 	result := workerResult(folder, "run-1")

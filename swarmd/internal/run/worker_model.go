@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/agentmodel"
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -82,28 +83,10 @@ func (s *Service) ResolveWorkerRoleModelProfile(account, role string, selected *
 			return store.ModelProfileSelection{Provider: a.Provider, Model: a.Model, Thinking: a.Thinking, ServiceTier: a.ServiceTier, ContextMode: a.ContextMode}
 		}
 		if assignment, isRole := workerRoleAssignment(settings, role); isRole {
-			if role == store.WorkerRoleReviewer && settings.SystemAgents.Reviewer.Model == "" {
-				records, ok, err := s.model.RecommendedCatalogRoleDefaults(assignment.Provider, "review")
+			if strings.TrimSpace(role) == store.WorkerRoleReviewer {
+				assignment, _, err = agentmodel.EffectiveReviewerAssignment(s.model, settings)
 				if err != nil {
 					return s.workerDefaultFallback(account, err)
-				}
-				if ok {
-					record := records["review"]
-					for _, rec := range record.Recommendations {
-						if rec.Role == "review" {
-							assignment.Model = record.Model
-							assignment.Thinking = rec.Thinking
-							if assignment.Thinking == "" {
-								assignment.Thinking = record.DefaultThinking
-							}
-							assignment.ServiceTier = ""
-							if rec.Serving == "fast" || rec.Serving == "priority" {
-								assignment.ServiceTier = "priority"
-							}
-							assignment.ContextMode = ""
-							break
-						}
-					}
 				}
 			}
 			if strings.TrimSpace(assignment.Provider) == "" || strings.TrimSpace(assignment.Model) == "" {

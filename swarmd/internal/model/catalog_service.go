@@ -552,7 +552,7 @@ func (s *CatalogService) refresh(ctx context.Context, force bool, reason string)
 	if !sameCatalogSnapshot(meta, version.Version) {
 		currentTime, currentErr := time.Parse(time.RFC3339Nano, meta.GeneratedAt)
 		nextTime, nextErr := time.Parse(time.RFC3339Nano, version.Version.GeneratedAt)
-		if currentErr != nil || nextErr != nil || !nextTime.After(currentTime) {
+		if currentErr != nil || nextErr != nil || nextTime.Before(currentTime) {
 			err := fmt.Errorf("advertised snapshot is not newer than the verified catalog")
 			updated := s.persistRefreshErrorLocked(meta, err, reason)
 			result := catalogRefreshResultFromMeta(updated)

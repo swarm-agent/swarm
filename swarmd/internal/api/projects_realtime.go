@@ -32,7 +32,7 @@ func (s *Server) ConfigureProjectRealtime(store *pebblestore.Store) {
 // reconcileProjectTaskRunLifecycle is the in-process bridge from a managed V3 run terminal
 // mutation to the durable project task model, ensuring project tasks transition out of
 // in_progress and emit project.updated invalidation.
-func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, status, reason string) error {
+func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, status, reason string) (resultErr error) {
 	if s == nil || s.sessions == nil {
 		return nil
 	}
@@ -82,6 +82,21 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 		if !found || state.AccountScopeID != accountScopeID || state.RunID != job.RunID || state.Status != status {
 			return nil
 		}
+	}
+	if isPrimarySession && task.Agent == "reviewer" && task.WorkerID == "" {
+		defer func() {
+			if resultErr != nil {
+				return
+			}
+			current, found, err := db.GetProjectTask(accountScopeID, projectID, taskID)
+			if err != nil {
+				resultErr = err
+				return
+			}
+			if found {
+				_, resultErr = s.settleTaskReview(current)
+			}
+		}()
 	}
 	isTaskProgramSession := false
 	progID := task.TaskProgramID

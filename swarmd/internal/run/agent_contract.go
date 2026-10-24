@@ -312,6 +312,8 @@ func resolveAgentToolStates(profile pebblestore.AgentProfile, knownTools map[str
 		return ResolvedAgentToolContract{}, err
 	}
 	applyExplicitAgentTools(resolved.Tools, contract.Tools, "tool_contract")
+	// Artifact generation remains implemented but is off for every agent.
+	resolved.Tools["manage_artifact"] = ResolvedAgentTool{Enabled: false, Source: "runtime.media_tasks"}
 	if _, implemented := knownTools[tool.LeaseEnvironmentToolName]; implemented {
 		// Leasing the folder's environment is part of bash: every agent with
 		// bash may lease, unless its contract turns leasing off explicitly.

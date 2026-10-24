@@ -168,12 +168,12 @@ A skipped review has no verdict, so verdict conditions do not match; it also
 ```
 
 - `worker` is one of Swarm's own agents (`swarm`, `coder`, `finder`,
-  `designer`), `reviewer`, or a worker id. One of Swarm's own agents runs as
+  `designer`, `reviewer`), or a worker id. One of Swarm's own agents runs as
   a task in the folder, in the triggering work's project, exactly as
   `swarm_run_task` would, with the brief and the triggering work's result; a
   coder's worktree starts at the delivery head, so its commits descend from
   the work it follows. Its task records the workflow that started it and its
-  end never triggers workflows. `fixes` is refused for it.
+  end never triggers workflows. Only `reviewer` may opt into `fixes: security`.
 - For a worker, Swarm starts the job through the normal job admission (workspace and worker
   checks) with request source `automation`, the brief with the triggering
   job's result attached, and the delivery id and step id as its idempotency
@@ -246,10 +246,10 @@ any other combination when the workflow is saved (for a worker named by id,
 #### Reviewer fixes (`fixes: "security"`)
 
 ```json
-{ "id": "review", "type": "agent", "worker": "reviewer", "brief": "Review this job.", "fixes": "security" }
+{ "id": "review", "type": "agent", "worker": "wkr_custom_reviewer", "brief": "Review this job.", "fixes": "security" }
 ```
 
-An `agent` step whose worker is a reviewer may set `fixes` to `security`
+An `agent` step naming `reviewer` or a reviewer worker by its id may set `fixes` to `security`
 (the only value), so that the reviewer may commit small, security-only
 fixes (a missing escape, a path check, a secret in a log line) instead of
 blocking for them. It is opt-in per step and never the default: a reviewer
@@ -410,8 +410,12 @@ commit, the pull request or the manifest key. Anything else (push to a
 remote, deploy, alert) is a `run` step: it gets every deliverable on stdin
 and the result's path in `SWARM_RESULT_FILE`.
 
-A workflow that names `reviewer` on a machine without one deploys Swarm's
-reviewer preset first.
+A workflow that names `reviewer` runs Swarm's native `system-reviewer` as a
+task. It never resolves or deploys a reviewer worker. Name a custom reviewer
+by its worker id. Either may opt into `fixes: security`: the reviewer runs
+`system-reviewer-fixer` in its own fix branch at the reviewed head (`checkout: new`).
+Only OK with at most 80 changed lines advances the delivery head; oversized or
+unreadable fixes fail closed, and BLOCK never advances it.
 
 ### Example: code, reviewed, merged
 
@@ -667,7 +671,7 @@ The step's output is the branch URL; a failed push signals
 ## Example: Swarm's coder, a reviewer, then push
 
 Work given to the coder that comes with Swarm (`swarm_run_task` with role
-`coder`) is reviewed by the person's reviewer worker; a block goes back into
+`coder`) is reviewed by Swarm's native reviewer; a block goes back into
 the coder's own session, where it fixes its own work in its own worktree, at
 most twice; an ok pushes the head.
 
@@ -720,7 +724,7 @@ the automation says so: there is no built-in review chain.
     "scope": { "folder": "/srv/site", "worker": "<coder worker id>" },
     "when": "succeeded",
     "steps": [
-      { "id": "review", "type": "agent", "worker": "reviewer", "fixes": "security",
+      { "id": "review", "type": "agent", "worker": "wkr_custom_reviewer", "fixes": "security",
         "brief": "Review this job's exact head against its brief." },
       { "id": "fix", "type": "reopen", "from": "review", "max_rounds": 2,
         "message": "The reviewer blocked your work. Its findings:",
@@ -833,3 +837,13 @@ A design job's files are already in the folder at the paths its result
 lists. A media job's (`swarm_request_media`) result lists its files' names,
 sha256 and types, but their bytes stay with the job until they are saved
 into a folder (`swarm_save_media`); a step does not receive them.
+
+## Custom agent tools for workers
+
+A worker can set optional `agent` to an enabled, non-system custom agent in the same account through `POST /v3/workers`, `PUT /v3/workers/{id}`, `swarm_deploy_worker` (custom worker creation), or `swarm_update_worker`. An empty string on update restores the role's default tools.
+
+The worker retains its system role, model selection, prompts and checkout behavior. The custom agent supplies its current saved tool contract, including assigned custom tools, and additional prompt instructions. Tool edits apply on the next run without editing the worker. Code-owned tool restrictions still win. Workers without `agent` and custom agents' own sessions keep their existing behavior.
+
+Reviewer saves and run admission reject `write`, `edit`, `git_add`, `git_commit`, `task`, and custom tools with effect `write`; `bash` remains allowed. The workflow fixes option keeps its code-owned reviewer-fixer tools.
+
+`swarm_define_agent` accepts optional `tools_on` and `tools_off` arrays on top of the required `tools` preset (`read_only`, `read_write`, or `build`). For example, `tools: "build", tools_off: ["bash"], tools_on: ["websearch"]` persists explicit switches in the existing contract. Off wins for names in both arrays. Omitting both arrays preserves existing behavior. Permission policy still applies.

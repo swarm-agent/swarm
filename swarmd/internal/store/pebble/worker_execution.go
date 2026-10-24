@@ -593,6 +593,9 @@ func (ws *WorkerStore) AcceptWorker(account, user, id string, revision uint64, b
 	}
 	resumeState := WorkerLifecycleStateActive
 	if w.PendingReview != nil {
+		if w.PendingReviewStale {
+			return WorkerRecord{}, fmt.Errorf("%w: pending review predates a direct save; cannot overwrite saved changes", ErrWorkerConflict)
+		}
 		if w.LifecycleState != WorkerLifecycleStateActive && w.LifecycleState != WorkerLifecycleStateIdle && w.LifecycleState != WorkerLifecycleStatePaused {
 			return WorkerRecord{}, ErrWorkerConflict
 		}

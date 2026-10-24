@@ -48,9 +48,9 @@ const (
 
 // BuiltinAgents are the agents that come with Swarm. An agent step that names
 // one runs it as a task (swarm_run_task): the coder in its own worktree of the
-// folder started at the delivery head, the others in the folder itself; any
-// other name is a worker (reviewer, or a worker id).
-var BuiltinAgents = map[string]bool{"coder": true, "designer": true, "finder": true, "swarm": true}
+// folder started at the delivery head, the reviewer read-only at that head,
+// the others in the folder itself; other names identify custom workers.
+var BuiltinAgents = map[string]bool{"coder": true, "designer": true, "finder": true, "swarm": true, "reviewer": true}
 
 // IsBuiltinAgent reports whether an agent step's worker names a built-in agent.
 func IsBuiltinAgent(name string) bool { return BuiltinAgents[strings.ToLower(strings.TrimSpace(name))] }
@@ -271,7 +271,7 @@ func (s *Scope) normalize() error {
 	}
 	s.Role = strings.ToLower(strings.TrimSpace(s.Role))
 	if s.Role != "" {
-		if !BuiltinAgents[s.Role] {
+		if s.Role == "reviewer" || !BuiltinAgents[s.Role] {
 			return invalid("scope.role must be swarm, coder, finder or designer")
 		}
 		if s.Worker != "" || s.Schedule != "" {
@@ -458,7 +458,7 @@ func (s *Step) normalizeAgent() error {
 		if s.Fixes != FixesSecurity {
 			return invalid("step %s: fixes must be %q (the only value)", s.ID, FixesSecurity)
 		}
-		if IsBuiltinAgent(s.Worker) {
+		if IsBuiltinAgent(s.Worker) && !strings.EqualFold(s.Worker, "reviewer") {
 			return invalid("step %s: fixes is only for a reviewer worker; %s is not a reviewer", s.ID, s.Worker)
 		}
 	}
@@ -477,7 +477,7 @@ func (s *Step) normalizeAgent() error {
 		return invalid("step %s: coder changes files, so it works in its own worktree: checkout must be new (to have the job's own agent continue in its worktree, use a reopen step)", s.ID)
 	case (worker == "finder" || worker == "swarm" || worker == "designer") && s.Checkout != CheckoutNone:
 		return invalid("step %s: %s works in the folder (checkout none), as its tasks always do; the job's commits are the folder's branches, named in its brief", s.ID, worker)
-	case !IsBuiltinAgent(worker) && s.Checkout == CheckoutNone:
+	case (worker == "reviewer" || !IsBuiltinAgent(worker)) && s.Checkout == CheckoutNone:
 		return invalid("step %s: a worker always works in a worktree: checkout must be same (a reviewer) or new", s.ID)
 	}
 	return nil

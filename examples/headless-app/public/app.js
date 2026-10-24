@@ -138,13 +138,12 @@ async function openSetup(fromSignIn = false) {
     } else item.textContent = label;
     return item;
   }));
-  const names = { codex: 'ChatGPT', openai: 'OpenAI', anthropic: 'Anthropic', google: 'Google', openrouter: 'OpenRouter', fireworks: 'Fireworks' };
   $('connected').textContent = setupState.connected?.length
-    ? `Connected: ${setupState.connected.map(id => names[id] || id).join(', ')}`
+    ? `Connected: ${setupState.connected.map(id => providerName(id)).join(', ')}`
     : 'No AI provider connected yet.';
   for (const key of [...STEPS.map(([k]) => k), 'done']) $(`step-${key}`).hidden = key !== current;
   $('setup-later').hidden = current === 'done';
-  if (current === 'provider') await loadProviders();
+  if (current === 'provider') { $('step-provider').append($('provider-manager'), $('provider-continue')); await loadProviders(); }
   if (current === 'claude') renderRemote(setupState.remote, setupState.defaults);
 }
 act('nav-setup', () => openSetup());
@@ -153,22 +152,61 @@ act('go-home', openHome);
 
 async function loadProviders() {
   const settings = await api('settings'); providers = settings.providers;
-  options('provider', providers.map(p => ({ value: p.id, label: p.id })), 'Choose a provider');
-  options('model-provider', providers.filter(p => p.ready).map(p => ({ value: p.id, label: p.id })), 'Choose a provider');
+  renderProviders(settings);
+  options('model-provider', providers.filter(p => p.ready && p.runnable).map(p => ({ value: p.id, label: providerName(p.id) })), 'Choose a provider');
   $('assignments').textContent = JSON.stringify(settings.settings?.agent_model_settings ?? 'Not set yet', null, 2);
 }
-act('provider', () => {
-  const p = providers.find(p => p.id === $('provider').value);
-  options('credential-type', (p?.auth_methods || []).filter(m => m.credential_type).map(m => ({ label: m.label, value: m.credential_type })));
-}, 'change');
-act('credential-form', async e => {
-  const input = e.target.elements.key, key = input.value; input.value = '';
-  const result = await api('credential', { provider: $('provider').value, type: $('credential-type').value, key });
-  if (!result.connected) throw new Error('The key was saved, but the provider did not confirm it. Check the key and try again.');
-  await openSetup();
-}, 'submit');
+const PROVIDER_NAMES = { codex: 'ChatGPT', openai: 'OpenAI', anthropic: 'Anthropic', google: 'Google', openrouter: 'OpenRouter', fireworks: 'Fireworks', exa: 'Exa · web search for agents', vertex: 'Google Vertex AI', claudecode: 'Claude Code' };
+const providerName = id => PROVIDER_NAMES[id] || id;
+function renderProviders(settings) {
+  $('provider-rows').replaceChildren(...settings.providers.map(p => {
+    const credentials = settings.credentials.filter(c => c.provider === p.id);
+    const active = credentials.find(c => c.active);
+    const status = active?.failed ? `Key failed: ${active.message || 'Verification failed'}` : p.ready ? 'Ready'
+      : active?.connected ? (active.auth_type === 'api' ? 'Key verified' : 'Signed in') : `Not connected${p.reason ? ': ' + p.reason : ''}`;
+    const row = el('section', {}, el('h3', { textContent: providerName(p.id) }),
+      el('p', { textContent: p.runs_agents === false ? 'Web search for agents' : 'Model provider · runs agents' }), el('p', { textContent: status }));
+    const feedback = el('p', { role: 'status' });
+    const action = (label, fn) => {
+      const button = el('button', { type: 'button', textContent: label });
+      button.onclick = async () => { button.disabled = true; try { await fn(); } catch (e) { feedback.textContent = e.message; } finally { button.disabled = false; } };
+      return button;
+    };
+    for (const c of credentials) {
+      row.append(el('p', { textContent: `${c.label || 'Stored credential'} · ${c.active ? 'active' : 'inactive'} · ${c.verified_at ? 'verified ' + new Date(c.verified_at).toLocaleString() : 'not verified'}` }),
+        action('Make active', async () => { await api('credential-activate', { provider: p.id, id: c.id }); await loadProviders(); }),
+        action('Remove', async () => { if (!window.confirm('Remove this credential? Clients using it may lose access.')) return;
+          await api('credential-delete', { provider: p.id, id: c.id, confirm: true }); await loadProviders(); }));
+    }
+    for (const method of p.auth_methods || []) {
+      if (method.description) row.append(el('p', { textContent: method.description }));
+      if (method.credential_type !== 'api') continue;
+      const input = el('input', { type: 'password', required: true, maxLength: 16000, autocomplete: 'off' });
+      const replace = el('select', {}, new Option('Add a new key', ''), ...credentials.filter(c => c.auth_type === method.credential_type).map(c => new Option(`Replace ${c.label || 'stored key'}`, c.id)));
+      const button = el('button', { type: 'submit', textContent: 'Save key' });
+      const form = el('form', {}, el('label', { textContent: method.label || 'API key' }, input), el('label', { textContent: 'Add or replace' }, replace), button);
+      form.onsubmit = async e => {
+        e.preventDefault(); const key = input.value; input.value = ''; button.disabled = true;
+        try {
+          const result = await api('credential', { provider: p.id, type: method.credential_type, key, id: replace.value });
+          await loadProviders();
+          // Keep the result visible after the rows refresh.
+          $('provider-feedback').textContent = result.connected && result.active ? 'Key verified and active.' : `Key failed: ${result.message || 'Provider did not confirm the key.'}`;
+        } catch (error) { feedback.textContent = error.message; } finally { button.disabled = false; }
+      };
+      row.append(form);
+    }
+    if (p.id === 'codex') row.append(action('Sign in with ChatGPT', () => $('codex-start').click()));
+    if (p.id === 'claudecode') row.append(el('code', { textContent: 'sudo bash /var/lib/swarm-headless/install.sh claude-code' }));
+    if (p.id === 'vertex') row.append(el('code', { textContent: 'sudo swarmctl setup add-credential --provider vertex --project PROJECT' }));
+    row.append(feedback); return row;
+  }), el('p', { id: 'provider-feedback', role: 'status' }));
+}
+act('providers-refresh', loadProviders);
+act('provider-continue', () => openSetup());
 act('codex-start', async () => {
   clearTimeout(codexTimer);
+  $('codex-wait').textContent = 'Waiting for you to finish… this page updates by itself.';
   const s = await api('codex-start', { method: 'device' });
   const url = new URL(s.verification_url || s.auth_url);
   if (url.protocol !== 'https:') throw new Error('The provider returned an unexpected sign-in address.');
@@ -178,7 +216,7 @@ act('codex-start', async () => {
   const poll = async () => {
     try {
       const status = await api('codex-status', { id: s.session_id });
-      if (status.status === 'success') { $('codex-login').hidden = true; await openSetup(); return; }
+      if (status.status === 'success') { $('codex-login').hidden = true; await loadProviders(); return; }
       if (status.failed || status.status === 'error') throw new Error('Sign-in failed or expired. Press "Sign in with ChatGPT" to try again.');
       if (Date.now() < until) codexTimer = setTimeout(poll, 3000);
       else $('codex-wait').textContent = 'Still waiting. Press "Sign in with ChatGPT" to get a new code.';
@@ -234,6 +272,7 @@ act('claude-form', async e => {
   renderRemote(await api('remote-connect', { relay_url: f.relay_url.value, device_name: f.device_name.value,
     allow_write: f.allow_write.checked, allow_manage: f.allow_manage.checked, allow_approve: f.allow_approve.checked }));
 }, 'submit');
+act('claude-connect', async () => { revisit = 'claude'; await openSetup(); });
 act('claude-disable', async () => { remoteUntil = 0; renderRemote(await api('remote-disable')); });
 act('claude-reset', async () => {
   if (!window.confirm('Forget this server\'s relay key? Claude loses access until you connect and pair again.')) return;
@@ -244,6 +283,7 @@ act('claude-reset', async () => {
 
 async function openSettings() {
   show('settings');
+  $('settings-providers').append($('provider-manager'));
   account = await call('/auth/me');
   $('account-status').textContent = `Signed in as ${account.username}. Two-factor is ${account.two_factor ? 'on' : 'off'}.`;
   $('twofa-on').hidden = account.two_factor; $('twofa-off-box').hidden = !account.two_factor;

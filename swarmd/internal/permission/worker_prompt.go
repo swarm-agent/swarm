@@ -5,9 +5,12 @@ import (
 	"strings"
 )
 
-type workerPromptDeniedError struct{ tool, requirement string }
+type workerPromptDeniedError struct{ tool, requirement, reason string }
 
 func (e *workerPromptDeniedError) Error() string {
+	if e.reason != "" {
+		return e.reason
+	}
 	return fmt.Sprintf("%s denied: unattended worker jobs cannot request interactive permission (%s). This operation is outside the job's approved authority; use an authorized workspace path and stay within the write lane. Host-side tools cannot see sandbox temp paths: use bash inside the sandbox. For network or other restricted operations, report the missing authority instead of retrying for approval", e.tool, e.requirement)
 }
 
@@ -33,19 +36,37 @@ func (s *Service) rejectWorkerPrompt(input CreateInput) error {
 	if s == nil {
 		return nil
 	}
+	if s.sessions == nil {
+		return nil
+	}
+	snapshot, found, err := s.sessions.GetSession(strings.TrimSpace(input.SessionID))
+	if err != nil || !found {
+		gate := s.bypassGate.Load()
+		if gate == nil {
+			return nil
+		}
+		if active, _ := (*gate)(); !active {
+			return nil
+		}
+		return fmt.Errorf("cannot verify session identity for unattended permission safety; retry after session storage is available")
+	}
+	task, review, err := s.store.WorkflowReviewTaskForSession(snapshot)
+	if err != nil {
+		return fmt.Errorf("cannot verify workflow review for unattended permission safety: %w", err)
+	}
+	if review && task.Status == "in_progress" {
+		reason := "unattended workflow review cannot request interactive permission; this operation requires authority outside its approved contract"
+		if blocked := s.BypassBlocked(); blocked != "" {
+			reason = "unattended workflow review permission temporarily unavailable: " + blocked + "; retry the tool call after sandbox readiness is restored"
+		}
+		return &workerPromptDeniedError{tool: input.ToolName, requirement: input.Requirement, reason: reason}
+	}
 	gate := s.bypassGate.Load()
 	if gate == nil {
 		return nil
 	}
 	if active, _ := (*gate)(); !active {
 		return nil
-	}
-	if s.sessions == nil {
-		return nil
-	}
-	snapshot, found, err := s.sessions.GetSession(strings.TrimSpace(input.SessionID))
-	if err != nil || !found {
-		return fmt.Errorf("cannot verify session identity for unattended permission safety; retry after session storage is available")
 	}
 	_, worker, err := s.store.WorkerRunForSession(snapshot.AccountScopeID, snapshot.ID)
 	if err != nil {

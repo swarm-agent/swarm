@@ -39,8 +39,9 @@ Host/Origin checks and a separate CSRF token for privileged requests.
 2. **Two-factor (recommended)**: scan the QR code with an authenticator, or in
    1Password add a one-time password field with the setup key; enter one code
    to turn it on. Sign-in then asks for a current code.
-3. **AI provider**: **Sign in with ChatGPT** shows a device code and finishes by
-   itself; or open **Use an API key instead**.
+3. **AI provider**: **Sign in with ChatGPT** shows a device code and detects
+   completion automatically; or add an API key in the provider list. Choose
+   **Continue** when ready. Manage connections later in **Settings > Providers**.
 4. **Models**: **Use recommended models** (the daemon's verified defaults for
    connected providers); change them later in Settings.
 5. **Workspace**: type a name; the app creates an empty Git repository with one

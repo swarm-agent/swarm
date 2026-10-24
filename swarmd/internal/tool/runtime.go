@@ -1502,6 +1502,7 @@ func (r *Runtime) Definitions() []Definition {
 		manageWorkersV2Definition(),
 		manageAutomationV2Definition(),
 		swarmDesignDefinition(),
+		manageMediaDefinition(),
 		manageArtifactDefinition(),
 		manageVideoDefinition(),
 		taskProgressDefinition(),
@@ -2188,6 +2189,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return "", errors.New("artifact_v3_author was removed; standalone HTML designs are made with swarm_design")
 	case "manage_design":
 		return "", errors.New("manage_design was replaced by swarm_design")
+	case ManageMediaToolName:
+		return r.executeManageMedia(ctx, scope, args)
 	case SwarmDesignToolName:
 		return "", errSwarmDesignRunServiceOnly
 	case "manage-artifact", "manage_artifact":

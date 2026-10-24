@@ -38,6 +38,8 @@ func (r *Registry) ListStatuses(ctx context.Context) ([]provideriface.Status, er
 			return nil, err
 		}
 		runner, hasRunner := r.runners[id]
+		// Capability is independent of credentials and current readiness.
+		status.RunsAgents = hasRunner && runner != nil
 		if !hasRunner || runner == nil {
 			status.Runnable = false
 			if status.RunReason == "" {

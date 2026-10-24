@@ -804,7 +804,7 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_run_task", Title: "Delegate a goal to Swarm",
-			Description: "Delegate a self-contained goal to Swarm (the default role), which coordinates regular specialists and owns review and validation. Ordinary Swarm work does not require a plan. Explicit coder, finder, designer, image, video and sound roles remain available; coder needs a registered repository workspace. No worker presets are created. The brief states what to do, where, and acceptance criteria. The task starts at once under the caller's authority; media batches and explicit plans may require task approval, and tool permissions remain enforced. Follow the task/session receipts with wait_task, task_result and get_session; resolve_permission answers pending questions or approvals, send_message continues the session, stop_run stops it, and integrate_task performs authorized Git delivery.",
+			Description: "Delegate a self-contained goal to Swarm (the default role), which coordinates regular specialists and owns review and validation. Ordinary Swarm work does not require a plan. Explicit coder, finder, designer, image, video and sound roles remain available; coder needs a registered repository workspace. No worker presets are created. Workflow/then steps naming reviewer run Swarm's native read-only reviewer task; custom reviewers are named by worker id. The brief states what to do, where, and acceptance criteria. The task starts at once under the caller's authority; media batches and explicit plans may require task approval, and tool permissions remain enforced. Follow the task/session receipts with wait_task, task_result and get_session; resolve_permission answers pending questions or approvals, send_message continues the session, stop_run stops it, and integrate_task performs authorized Git delivery.",
 			InputSchema: controlMCPObject([]string{"project_id", "brief"}, map[string]any{
 				"project_id":   controlMCPStringProp("From list_projects or create_project.", 1, 200),
 				"role":         map[string]any{"type": "string", "enum": []string{"coder", "finder", "designer", "image", "video", "sound", "swarm"}, "default": "swarm", "description": "Defaults to swarm for goal delegation; set a specialist role only when explicitly desired."},
@@ -860,9 +860,10 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_update_worker", Title: "Update a worker",
-			Description: "Change a worker's name, description or instructions. Runs already started keep their revision.",
+			Description: "Save a worker's name, description, instructions or custom agent tools immediately, without an edit approval step. Runs already started keep their worker revision.",
 			InputSchema: controlMCPObject([]string{"worker_id"}, map[string]any{
 				"worker_id":    workerID,
+				"agent":        controlMCPStringProp("Custom agent whose current tools and instructions this worker uses; empty clears it.", 0, 63),
 				"name":         controlMCPStringProp("", 0, 256),
 				"description":  controlMCPStringProp("", 0, 1000),
 				"instructions": controlMCPStringProp("", 0, 20000),
@@ -894,10 +895,10 @@ func controlMCPTools() []controlMCPTool {
 		{Name: "swarm_set_limits", Title: "Set box limits", Description: "Replace box limits using expected_revision; requires usage:write. Hard ceilings cannot be raised.", InputSchema: controlMCPObject([]string{"expected_revision", "limits"}, map[string]any{"expected_revision": map[string]any{"type": "integer", "minimum": 0}, "limits": controlMCPLimitsSchema()}), Annotations: controlMCPDestructive, call: controlMCPSetLimits},
 		{
 			Name: "swarm_get_usage", Title: "Read usage and limits",
-			Description: "Model spend and tokens for a period, top models, and the account's daily limits. Each model's billing says why its cost is what it is: subscription (a sign-in provider such as ChatGPT: Swarm reports no per-token cost; nominal_cost_usd is the same use at API prices when known), metered (priced per token) or unpriced (no price known, so cost shows 0). A limit of none means no limit.",
+			Description: "Model spend and tokens for a period, top models, and the account's daily limits. Each model's billing says why its cost is what it is: subscription (a sign-in provider such as ChatGPT: Swarm reports no per-token cost; nominal_cost_usd is the same use at API prices when known), metered (priced per token) or unpriced (no price known, so cost shows 0). A limit of none means no limit. detail adds workers with id, name, today (UTC) and all_time tokens, cost_usd (including media), media_cost_usd, media_count (receipts) and coverage, sorted by today.cost_usd for period=today (the default), otherwise all_time.cost_usd descending; worker rolling-period totals are unavailable.",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"period": map[string]any{"type": "string", "enum": []string{"today", "7d", "30d"}, "description": "Default today."},
-				"detail": map[string]any{"type": "boolean", "description": "Also return every provider and model, each day, media and the most active sessions, as a usage page shows them."},
+				"detail": map[string]any{"type": "boolean", "description": "Also return every provider and model, each day, media, the most active sessions, and workers (today and all_time, not the requested rolling period)."},
 			}),
 			Annotations: controlMCPReadOnly, call: controlMCPGetUsage,
 		},
@@ -928,7 +929,9 @@ func controlMCPTools() []controlMCPTool {
 			InputSchema: controlMCPObject([]string{"name", "instructions", "tools"}, map[string]any{
 				"name":         controlMCPStringProp("Lowercase letters, digits and dashes, starting with a letter, e.g. reviewer.", 1, 63),
 				"description":  controlMCPStringProp("One line shown by list_agents.", 0, 200),
-				"instructions": controlMCPStringProp("The agent's instructions (its system prompt).", 1, 20000),
+				"instructions": controlMCPStringProp("The agent's instructions (its system prompt). Workers can select this agent for its tools and added instructions.", 1, 20000),
+				"tools_on":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Enable individual tools on top of the preset."},
+				"tools_off":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Disable individual tools on top of the preset; wins over tools_on."},
 				"tools": map[string]any{"type": "string", "enum": controlMCPAgentToolSets,
 					"description": "read_only: read and search files and the web. read_write: also write and edit files, no commands. build: read, write and edit files, run commands and commit with git."},
 			}),
@@ -966,7 +969,7 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_request_provider_key", Title: "Ask the person for a provider API key",
-			Description: "Set or replace a provider's API key without seeing it: returns a one-time link to a Swarm page on this machine (expires in 10 minutes). Give the person tell_the_person; they paste the key on that page, never in the chat. Swarm verifies the key, saves it and makes it active. Then call list_providers with provider and wait_seconds to wait for the outcome.",
+			Description: "Set or replace a provider's API key without seeing it: returns a one-time link to a Swarm page on this machine (expires in 10 minutes). Give the person tell_the_person; for a tailnet HTTPS link they open it on any device in their tailnet, otherwise on this machine. They paste the key on that page, never in the chat. Swarm verifies the key, saves it and makes it active. Then call list_providers with provider and wait_seconds to wait for the outcome.",
 			InputSchema: controlMCPObject([]string{"provider"}, map[string]any{
 				"provider": controlMCPStringProp("A provider that takes an API key (see list_providers).", 1, 100),
 				"label":    controlMCPStringProp("Optional name for the stored key.", 0, providerKeyMaxLabel),
@@ -1975,6 +1978,10 @@ func controlMCPListModels(c *controlMCPCall, args map[string]any) (any, error) {
 				continue
 			}
 			entry := controlMCPRoleModel(controlMCPMap(controlMCPMap(assignments[slot[0]])[slot[1]]))
+			if effective := controlMCPMap(controlMCPMap(settings["effective_roles"])[id]); len(effective) > 0 {
+				entry = controlMCPRoleModel(controlMCPMap(effective["assignment"]))
+				entry["source"] = effective["source"]
+			}
 			entry["role"] = id
 			roles = append(roles, entry)
 		}
@@ -2655,7 +2662,7 @@ func controlMCPAutomation(args map[string]any) (map[string]any, error) {
 
 // controlMCPWorkerCreateBody is the POST /v3/workers body. A schedule is part
 // of the created worker, so it is approved with it; attaching one later to an
-// existing worker is staged for owner review, which Swarm Control cannot accept.
+// established worker applies immediately through the versioned update boundary.
 func controlMCPWorkerCreateBody(args map[string]any) (map[string]any, map[string]any, error) {
 	automation, err := controlMCPAutomation(args)
 	if err != nil {
@@ -2742,6 +2749,9 @@ func controlMCPUpdateWorker(c *controlMCPCall, args map[string]any) (any, error)
 		return nil, err
 	}
 	body := map[string]any{"expected_revision": controlMCPRevision(worker)}
+	if value, present := args["agent"]; present {
+		body["agent"] = value
+	}
 	for _, key := range []string{"name", "description", "instructions"} {
 		if value := controlMCPString(args, key); value != "" {
 			body[key] = value
@@ -2877,6 +2887,20 @@ func controlMCPGetUsage(c *controlMCPCall, args map[string]any) (any, error) {
 	}
 	if detail {
 		controlMCPUsageDetail(response, subscription, out)
+		if token, ok := ScopedTokenFromRequest(c.request); ok && token != nil && token.WorkerID != "" {
+			out["workers_note"] = "Worker breakdown omitted: worker-bound tokens cannot enumerate workers."
+			return out, nil
+		}
+		sortPeriod := "all_time"
+		if period == "today" {
+			sortPeriod = "today"
+		}
+		workers, err := c.workerUsageDetail(sortPeriod)
+		if err != nil {
+			return nil, err
+		}
+		out["workers"] = workers
+		out["workers_note"] = "Worker totals are today (UTC) and all_time observed receipts, not rolling-period totals; sorted by " + sortPeriod + ".cost_usd descending. Unknown pricing is not free."
 	}
 	return out, nil
 }

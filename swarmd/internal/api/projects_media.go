@@ -361,6 +361,12 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 		principal.AccountScopeID = task.AccountID
 	}
 	agent := strings.TrimSpace(task.Agent)
+	if task.Operation == "speech" || task.Speech != nil {
+		return validateSpeechTask(task)
+	}
+	if audiogen.SpeechModel(task.Model) {
+		return errors.New("TTS models require operation speech")
+	}
 	if isOrdinaryMediaAgent(agent) {
 		count, err := projectMediaBatchCount(task.VariantCount, 0, len(task.Deliverables))
 		if err != nil {
@@ -1584,7 +1590,7 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 					var estimate pebblestore.MediaCostEstimate
 					if sceneCount > 1 {
 						vRes, genErr = generateProjectVideoStory(ctx, vg, vReq, task.Scenes, func(scene int, clip videogen.ManagedVideoResult) {
-							cost := s.recordGeneratedTaskMedia(p, task, slotIndex, pebblestore.MediaCostEstimateOptions{Provider: clip.Provider, Model: clip.Model, Kind: "video", Count: 1, DurationSeconds: clip.DurationSeconds, Resolution: clip.Resolution, AspectRatio: clip.AspectRatio, IncludesAudio: true}, clip.MediaType, len(clip.Bytes), scene)
+							cost := s.recordGeneratedTaskMedia(p, task, slotIndex, clip.BillingOptions(), clip.MediaType, len(clip.Bytes), scene)
 							total := estimate.CostUSD + cost.CostUSD
 							status := estimate.PriceStatus
 							estimate = cost
@@ -1600,7 +1606,7 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 						genErr = errors.New("video provider returned no playable video")
 					}
 					if genErr == nil && sceneCount <= 1 {
-						estimate = s.recordGeneratedTaskMedia(p, task, slotIndex, pebblestore.MediaCostEstimateOptions{Provider: vRes.Provider, Model: vRes.Model, Kind: "video", Count: 1, DurationSeconds: vRes.DurationSeconds, Resolution: vRes.Resolution, AspectRatio: vRes.AspectRatio, IncludesAudio: true}, vRes.MediaType, len(vRes.Bytes))
+						estimate = s.recordGeneratedTaskMedia(p, task, slotIndex, vRes.BillingOptions(), vRes.MediaType, len(vRes.Bytes))
 					}
 					if genErr != nil {
 						errMu.Lock()
@@ -1810,6 +1816,10 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 			return nil
 		})
 	} else if task.Agent == "sound" || task.Agent == "audio" {
+		if task.Operation == "speech" {
+			s.generateTaskSpeech(p, task)
+			return
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 		// The requested model, else the account's default; without either,

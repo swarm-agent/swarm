@@ -7,27 +7,28 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 )
 
 // Provider credentials after first setup, for boxes with no shell (a sealed
-// container): list them, add a Vertex AI credential next to an existing
-// provider, and remove one. `setup credential` stays the first-provider
-// onboarding step. Nothing secret is read or printed here: the listing shows
-// only provider, ID, type and whether it is active, and only Vertex (which
-// uses the machine's Google identity) can be added this way.
+// container): list, add and remove credentials. `setup credential` stays the
+// first-provider onboarding step. API keys are accepted only through redirected
+// stdin; the listing shows only provider, ID, type and whether it is active.
 var credentialIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 
-func runSetupCredentials(args []string, output io.Writer) error {
+func runSetupCredentials(args []string, input io.Reader, output io.Writer) error {
 	fs := flag.NewFlagSet("setup "+args[0], flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	socket := fs.String("socket", "", "private daemon Unix socket (defaults to canonical data root)")
 	var provider, id, project, location *string
+	var stdin *bool
 	switch args[0] {
 	case "credentials":
 	case "add-credential":
-		provider = fs.String("provider", "", "only vertex (the machine's Google identity; no key)")
+		provider = fs.String("provider", "", "provider ID (vertex uses the machine's Google identity; no key)")
+		stdin = fs.Bool("api-key-stdin", false, "read provider API key from redirected stdin, never argv")
 		project = fs.String("project", "", "Google Cloud project")
 		location = fs.String("location", "global", "Vertex AI location: global or a region such as us-central1")
 	case "remove-credential":
@@ -52,14 +53,44 @@ func runSetupCredentials(args []string, output io.Writer) error {
 	case "credentials":
 		method, route = http.MethodGet, "/v1/auth/credentials"
 	case "add-credential":
-		if !strings.EqualFold(strings.TrimSpace(*provider), "vertex") {
-			return errors.New("add-credential supports only --provider vertex; keys go through `setup credential --api-key-stdin`")
-		}
-		if strings.TrimSpace(*project) == "" {
-			return errors.New("--project is required")
-		}
 		method, route = http.MethodPost, "/v1/auth/credentials"
-		payload = map[string]any{"provider": "vertex", "type": "adc", "google_project": strings.TrimSpace(*project), "google_location": strings.TrimSpace(*location), "active": true}
+		*provider = strings.ToLower(strings.TrimSpace(*provider))
+		if *provider == "vertex" {
+			if *stdin {
+				return errors.New("--provider vertex reads no key; drop --api-key-stdin")
+			}
+			if strings.TrimSpace(*project) == "" {
+				return errors.New("--project is required")
+			}
+			payload = map[string]any{"provider": "vertex", "type": "adc", "google_project": strings.TrimSpace(*project), "google_location": strings.TrimSpace(*location), "active": true}
+			break
+		}
+		vertexFlags := false
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "project" || f.Name == "location" {
+				vertexFlags = true
+			}
+		})
+		if vertexFlags {
+			return errors.New("--project and --location apply only to --provider vertex")
+		}
+		if *provider == "" || !*stdin {
+			return errors.New("--provider and --api-key-stdin are required")
+		}
+		if file, ok := input.(*os.File); ok {
+			info, err := file.Stat()
+			if err != nil || info.Mode()&os.ModeCharDevice != 0 {
+				return errors.New("redirect a secret file or pipe to stdin; interactive key entry is not supported")
+			}
+		}
+		key, err := io.ReadAll(io.LimitReader(input, 16385))
+		defer clear(key)
+		if err != nil || len(key) > 16384 || strings.TrimSpace(string(key)) == "" {
+			return errors.New("API key input must be nonempty and at most 16384 bytes")
+		}
+		fields := map[string]any{"provider": *provider, "type": "api", "api_key": strings.TrimSpace(string(key)), "active": true}
+		defer delete(fields, "api_key")
+		payload = fields
 	case "remove-credential":
 		if strings.TrimSpace(*provider) == "" || !credentialIDPattern.MatchString(strings.TrimSpace(*id)) {
 			return errors.New("--provider and a valid --id are required")
@@ -103,7 +134,11 @@ func runSetupCredentials(args []string, output io.Writer) error {
 		if err := setupRequestShowingRejection(client, method, route, payload, &status); err != nil {
 			return err
 		}
-		fmt.Fprintf(output, "Vertex AI credential saved (id %s).\n", status.ID)
+		if *provider == "vertex" {
+			fmt.Fprintf(output, "Vertex AI credential saved (id %s).\n", status.ID)
+		} else {
+			fmt.Fprintf(output, "API credential saved (id %s).\n", status.ID)
+		}
 	default:
 		var ignored map[string]any
 		if err := setupRequest(client, method, route, payload, &ignored); err != nil {

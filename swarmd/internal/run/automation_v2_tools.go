@@ -423,7 +423,7 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 			RequestedCapabilities: requestedCaps,
 			WorkspaceRequirements: workspaceReqs,
 			ProposedBindings:      proposedBindings,
-			ChangeSummary:         "updated worker proposal",
+			ChangeSummary:         "updated worker",
 		}
 		if hasExplicitAutomations || len(automations) > 0 {
 			updateReq.Automations = automations
@@ -447,6 +447,9 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 					updateReq.Metadata["project_id"] = pid
 				}
 			}
+		}
+		if err := s.ValidateWorkerAgent(current.AccountScopeID, existing); err != nil {
+			return "", err
 		}
 		updated, updErr := s.sessions.UpdateWorker(current.AccountScopeID, current.UserID, workerID, existing.Revision, updateReq)
 		if updErr != nil {
@@ -524,6 +527,13 @@ func automationV2ToolOutput(proposal store.AutomationV2Proposal) (string, error)
 }
 
 func workerProposalToolOutput(w store.WorkerRecord) (string, error) {
+	if w.LifecycleState != store.WorkerLifecycleStatePending {
+		raw, err := json.Marshal(map[string]any{
+			"status": "updated", "worker_id": w.ID, "worker": w, "revision": w.Revision,
+			"instruction": "Worker edits are saved and apply immediately. Already admitted jobs keep their pinned revision; the next job uses this revision.",
+		})
+		return string(raw), err
+	}
 	raw, err := json.Marshal(map[string]any{
 		"status":            "pending_review",
 		"review_kind":       "worker",
@@ -801,6 +811,16 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 		}
 		if metaRaw, ok := args["metadata"].(map[string]any); ok {
 			req.Metadata = metaRaw
+		}
+		existing, found, err := s.sessions.GetWorker(current.AccountScopeID, workerID)
+		if err != nil {
+			return "", err
+		}
+		if !found {
+			return "", store.ErrWorkerNotFound
+		}
+		if err := s.ValidateWorkerAgent(current.AccountScopeID, existing); err != nil {
+			return "", err
 		}
 		w, err := s.sessions.UpdateWorker(current.AccountScopeID, current.UserID, workerID, expectedRevision, req)
 		if err != nil {

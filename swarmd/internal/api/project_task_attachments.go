@@ -79,6 +79,12 @@ func projectTaskExecutionAgent(task *pebblestore.ProjectTaskRecord) (string, str
 			mode = "auto"
 		}
 	}
+	if task.Agent == "reviewer" {
+		if task.ReviewFixes == runruntime.ReviewFixesSecurity {
+			return agentruntime.ReviewerFixerAgentID, "auto"
+		}
+		return "system-reviewer", "auto"
+	}
 	return name, mode
 }
 

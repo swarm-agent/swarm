@@ -33,6 +33,7 @@ coverage.out
 /swarmd/.tmp/
 
 # Web build/runtime outputs
+/node_modules/
 /web/node_modules/
 /web/dist/
 /web/.cache/

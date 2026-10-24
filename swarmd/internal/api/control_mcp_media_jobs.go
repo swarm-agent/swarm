@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"os"
@@ -14,6 +16,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"swarm/packages/swarmd/internal/audiogen"
+	"swarm/packages/swarmd/internal/identity"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/videogen"
@@ -47,7 +51,7 @@ func (c *controlMCPCall) mediaTask(projectID, taskID string) (*pebblestore.Proje
 	}
 	task, found, err := c.server.sessions.Store().GetProjectTask(principal.AccountScopeID, projectID, taskID)
 	if err != nil {
-		return nil, err
+		return nil, controlMCPToolFailure("job media/%s/%s: %s (see swarm_activity)", projectID, taskID, err)
 	}
 	if !found || task == nil {
 		return nil, controlMCPToolFailure("job media/%s/%s not found (see swarm_activity)", projectID, taskID)
@@ -143,6 +147,10 @@ func (c *controlMCPCall) controlMCPMediaJobFiles(out map[string]any, projectID, 
 	if err != nil {
 		return nil, err
 	}
+	return mediaJobFileView(out, task, args, controlMCPMediaJobGuidance)
+}
+
+func mediaJobFileView(out map[string]any, task *pebblestore.ProjectTaskRecord, args map[string]any, guidance func(map[string]any, []controlMCPMediaFile)) (any, error) {
 	files := mediaTaskFiles(task)
 	views := make([]map[string]any, 0, len(files))
 	for i, file := range files {
@@ -169,12 +177,16 @@ func (c *controlMCPCall) controlMCPMediaJobFiles(out map[string]any, projectID, 
 	if priceStatus == "" {
 		priceStatus = "known"
 	}
+	if task.RetryOf != "" {
+		out["retry_of"] = task.RetryOf
+	}
+	out["media_cost_usd"] = total
 	out["cost_usd"] = total
 	out["price_status"] = priceStatus
 	if task.Model != "" {
 		out["model"] = task.Model
 	}
-	controlMCPMediaJobGuidance(out, files)
+	guidance(out, files)
 	show, _ := args["include_media"].(bool)
 	if !show {
 		return out, nil
@@ -241,7 +253,15 @@ func (c *controlMCPCall) saveMediaFiles(task *pebblestore.ProjectTaskRecord, fil
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	return saveMediaFiles(task, files, dir)
+}
+
+func saveMediaFiles(task *pebblestore.ProjectTaskRecord, files []controlMCPMediaFile, dir string, roots ...*os.Root) ([]map[string]any, error) {
+	mkdirAll, readFile, openFile := os.MkdirAll, os.ReadFile, os.OpenFile
+	if len(roots) > 0 {
+		mkdirAll, readFile, openFile = roots[0].MkdirAll, roots[0].ReadFile, roots[0].OpenFile
+	}
+	if err := mkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create %s: %w", dir, err)
 	}
 	saved := []map[string]any{}
@@ -251,7 +271,7 @@ func (c *controlMCPCall) saveMediaFiles(task *pebblestore.ProjectTaskRecord, fil
 		}
 		name := file.filename(task.Title, i+1)
 		path := filepath.Join(dir, name)
-		if existing, err := os.ReadFile(path); err == nil {
+		if existing, err := readFile(path); err == nil {
 			if string(existing) == string(file.data) {
 				saved = append(saved, map[string]any{"file": i + 1, "path": path, "unchanged": true})
 				continue
@@ -262,15 +282,16 @@ func (c *controlMCPCall) saveMediaFiles(task *pebblestore.ProjectTaskRecord, fil
 			}
 			path = filepath.Join(dir, strings.TrimSuffix(name, filepath.Ext(name))+"-"+suffix+filepath.Ext(name))
 		}
-		handle, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		handle, err := openFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 		if err != nil {
 			return saved, fmt.Errorf("write %s: %w", path, err)
 		}
-		_, writeErr := handle.Write(file.data)
-		closeErr := handle.Close()
-		if writeErr != nil || closeErr != nil {
-			_ = os.Remove(path)
-			return saved, fmt.Errorf("write %s: %w", path, errors.Join(writeErr, closeErr))
+		remove := os.Remove
+		if len(roots) > 0 {
+			remove = roots[0].Remove
+		}
+		if err := finishMediaSave(handle, file.data, func() error { return remove(path) }); err != nil {
+			return saved, fmt.Errorf("write %s: %w", path, err)
 		}
 		saved = append(saved, map[string]any{"file": i + 1, "path": path, "size_bytes": len(file.data)})
 	}
@@ -284,21 +305,36 @@ func (c *controlMCPCall) mediaSaveDir(task *pebblestore.ProjectTaskRecord, saveT
 	if err != nil {
 		return "", err
 	}
+	base := strings.TrimSpace(task.WorkspacePath)
+	if base == "" {
+		base = c.projectFolder(task.ProjectID)
+	}
+	return mediaSaveDir(roots, base, saveTo, mcpMediaErrors)
+}
+
+type mediaErrorWording struct {
+	missingBase, outsideWorkspace, missingFile, invalidPath string
+}
+
+var mcpMediaErrors = mediaErrorWording{
+	missingBase:      "folder must be an absolute path inside a registered workspace: this job's project has no folder",
+	outsideWorkspace: "folder %s is not inside a registered workspace (see swarm_list_projects)",
+	missingFile:      "input %d: job %s has no ready file %d (swarm_get_job lists its files)",
+	invalidPath:      "input %d: %s must be an absolute path inside a registered workspace",
+}
+
+func mediaSaveDir(roots []string, base, saveTo string, wording mediaErrorWording) (string, error) {
 	target := saveTo
 	if !filepath.IsAbs(target) {
-		base := strings.TrimSpace(task.WorkspacePath)
 		if base == "" {
-			base = c.projectFolder(task.ProjectID)
-		}
-		if base == "" {
-			return "", errors.New("folder must be an absolute path inside a registered workspace: this job's project has no folder")
+			return "", errors.New(wording.missingBase)
 		}
 		target = filepath.Join(base, target)
 	}
 	target = filepath.Clean(target)
 	root := controlMCPWorkspaceRootOf(roots, target)
 	if root == "" {
-		return "", fmt.Errorf("folder %s is not inside a registered workspace (see swarm_list_projects)", target)
+		return "", fmt.Errorf(wording.outsideWorkspace, target)
 	}
 	// The deepest existing folder must still be inside the workspace once
 	// symlinks are resolved.
@@ -355,6 +391,10 @@ func controlMCPWorkspaceRootOf(roots []string, path string) string {
 // attached media: a file of an earlier media job, or a file in a registered
 // workspace. Bytes are read here, so the request carries exactly them.
 func (c *controlMCPCall) controlMCPMediaInputs(raw any) ([]map[string]any, error) {
+	return mediaInputs(raw, c.workspaceRoots, c.mediaTask, mcpMediaErrors)
+}
+
+func mediaInputs(raw any, workspaceRoots func() ([]string, error), mediaTask func(string, string) (*pebblestore.ProjectTaskRecord, error), wording mediaErrorWording, readInput ...func(string) ([]byte, string, error)) ([]map[string]any, error) {
 	inputs := controlMCPList(raw)
 	if len(inputs) == 0 {
 		return nil, nil
@@ -379,27 +419,36 @@ func (c *controlMCPCall) controlMCPMediaInputs(raw any) ([]map[string]any, error
 			if kind != controlMCPJobMedia {
 				return nil, controlMCPToolFailure("input %d: job %s is not a media job; give a file with path instead", i+1, jobID)
 			}
-			task, err := c.mediaTask(projectID, taskID)
+			task, err := mediaTask(projectID, taskID)
 			if err != nil {
 				return nil, err
 			}
 			files := mediaTaskFiles(task)
 			index := controlMCPInt(input, "file", 1)
 			if index < 1 || index > len(files) || len(files[index-1].data) == 0 {
-				return nil, controlMCPToolFailure("input %d: job %s has no ready file %d (swarm_get_job lists its files)", i+1, jobID, index)
+				return nil, controlMCPToolFailure(wording.missingFile, i+1, jobID, index)
 			}
 			data, mediaType = files[index-1].data, files[index-1].mediaType
 			name = files[index-1].filename(task.Title, index)
 		case path != "":
+			if len(readInput) > 0 {
+				var err error
+				data, mediaType, err = readInput[0](path)
+				if err != nil {
+					return nil, err
+				}
+				name = filepath.Base(path)
+				break
+			}
 			if roots == nil {
 				var err error
-				if roots, err = c.workspaceRoots(); err != nil {
+				if roots, err = workspaceRoots(); err != nil {
 					return nil, err
 				}
 			}
 			clean := filepath.Clean(path)
 			if !filepath.IsAbs(clean) || controlMCPWorkspaceRootOf(roots, clean) == "" {
-				return nil, controlMCPToolFailure("input %d: %s must be an absolute path inside a registered workspace", i+1, path)
+				return nil, controlMCPToolFailure(wording.invalidPath, i+1, path)
 			}
 			info, err := os.Stat(clean)
 			if err != nil || !info.Mode().IsRegular() {
@@ -443,11 +492,20 @@ func controlMCPListMediaModels(c *controlMCPCall, args map[string]any) (any, err
 	if !ok || c.server == nil || c.server.imageGen == nil || c.server.model == nil {
 		return nil, controlMCPToolFailure("media models are not available on this machine")
 	}
-	catalog, err := c.server.mediaCatalogFor(c.request.Context(), principal)
+	return c.server.mediaModels(c.request.Context(), principal, args, controlMCPMediaModelsGuidance, "%d more need a provider key (include_unready lists them; swarm_list_providers)")
+}
+
+const controlMCPMediaModelsGuidance = "Pass model and its options to swarm_request_media; a value the model does not take is refused before anything is spent. The default is used when no model is named; swarm_set_media_models changes it when the person asks."
+
+func (s *Server) mediaModels(ctx context.Context, principal identity.Principal, args map[string]any, guidance, unreadyGuidance string) (any, error) {
+	if s.imageGen == nil || s.model == nil {
+		return nil, errors.New("media models are not available on this machine")
+	}
+	catalog, err := s.mediaCatalogFor(ctx, principal)
 	if err != nil {
 		return nil, err
 	}
-	image, video, audio := c.server.mediaDefaults(principal, catalog)
+	image, video, audio := s.mediaDefaults(principal, catalog)
 	wanted := controlMCPString(args, "kind")
 	all, _ := args["include_unready"].(bool)
 	out := map[string]any{}
@@ -462,8 +520,8 @@ func controlMCPListMediaModels(c *controlMCPCall, args map[string]any) (any, err
 				hidden++
 				continue
 			}
-			// Speech and live models are listed by the catalog as sound but
-			// carry no generation settings: Swarm cannot make sound with them.
+			// Live and unsupported sound models remain unavailable without
+			// a generation contract; supported speech models carry options.
 			if kind == "sound" && option.GenerationOptions == nil {
 				continue
 			}
@@ -471,20 +529,20 @@ func controlMCPListMediaModels(c *controlMCPCall, args map[string]any) (any, err
 		}
 		entry := map[string]any{"default": def, "models": models}
 		if hidden > 0 {
-			entry["not_ready"] = fmt.Sprintf("%d more need a provider key (include_unready lists them; swarm_list_providers)", hidden)
+			entry["not_ready"] = fmt.Sprintf(unreadyGuidance, hidden)
 		}
 		out[kind] = entry
 	}
 	add("image", image, catalog.ImageModels)
 	add("video", video, catalog.VideoGenerationModels)
 	add("sound", audio, catalog.AudioModels)
-	out["next"] = "Pass model and its options to swarm_request_media; a value the model does not take is refused before anything is spent. The default is used when no model is named; swarm_set_media_models changes it when the person asks."
+	out["next"] = guidance
 	return out, nil
 }
 
 func controlMCPMediaModelView(option mediaCatalogOption) map[string]any {
 	view := map[string]any{"model": option.ID, "provider": option.Provider}
-	view["pricing"] = conciseMediaPricing(option.Pricing)
+	view["pricing"] = conciseMediaPricing(option.Pricing, audiogen.SpeechModel(option.ID))
 	if option.DisplayName != "" && option.DisplayName != option.ID {
 		view["name"] = option.DisplayName
 	}
@@ -500,6 +558,10 @@ func controlMCPMediaModelView(option mediaCatalogOption) map[string]any {
 		if len(value) > 0 {
 			view[key] = value
 		}
+	}
+	if opts.Speech {
+		view["operations"] = []string{"speech"}
+		view["voices"], view["formats"], view["max_prompt_bytes"] = opts.Voices, opts.Formats, opts.MaxPromptBytes
 	}
 	if len(opts.Durations) > 0 {
 		view["durations_seconds"] = opts.Durations
@@ -664,7 +726,7 @@ func controlMCPReadMedia(c *controlMCPCall, args map[string]any) (any, error) {
 }
 
 // conciseMediaPricing exposes catalog prices, never a raw catalog payload.
-func conciseMediaPricing(raw json.RawMessage) map[string]any {
+func conciseMediaPricing(raw json.RawMessage, speech ...bool) map[string]any {
 	var catalog struct {
 		Billing struct {
 			Status string `json:"status"`
@@ -696,7 +758,8 @@ func conciseMediaPricing(raw json.RawMessage) map[string]any {
 		if strings.HasPrefix(variant, "batch") || strings.HasPrefix(variant, "flex") || strings.HasPrefix(variant, "priority") {
 			continue
 		}
-		if line.Unit != "image" && !(line.Unit == "million_tokens" && line.Billable == "image_output") && line.Unit != "second" {
+		speechTokens := len(speech) > 0 && speech[0] && line.Unit == "million_tokens" && (line.Billable == "text_input" || line.Billable == "audio_output")
+		if !speechTokens && line.Unit != "image" && !(line.Unit == "million_tokens" && line.Billable == "image_output") && line.Unit != "second" {
 			continue
 		}
 		item := map[string]any{"unit": line.Unit, "price_usd": line.Price, "billable": line.Billable}
@@ -713,4 +776,19 @@ func conciseMediaPricing(raw json.RawMessage) map[string]any {
 	}
 	out["prices"] = prices
 	return out
+}
+
+func finishMediaSave(handle interface {
+	Write([]byte) (int, error)
+	Close() error
+}, data []byte, remove func() error) error {
+	n, writeErr := handle.Write(data)
+	if writeErr == nil && n != len(data) {
+		writeErr = io.ErrShortWrite
+	}
+	closeErr := handle.Close()
+	if writeErr != nil || closeErr != nil {
+		return errors.Join(writeErr, closeErr, remove())
+	}
+	return nil
 }

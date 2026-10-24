@@ -98,3 +98,38 @@ A new session then has the `swarm` tools: ask it to "list my Swarm machines".
 - One AI device: Machines → remove it (ephemeral ones vanish on their own).
 - All AI devices: revoke the auth key, or delete the `tag:claude` grants.
 - One machine: `install.sh tailnet-identity off`, or remove its tag.
+
+## Provider keys without an SSH tunnel
+
+A write connection can ask `swarm_request_provider_key` for a one-time page.
+When the tailnet identity gateway is active, Swarm reads this machine's
+`Self.DNSName` from `tailscale status --json` and uses
+`https://MACHINE.TAILNET.ts.net:8444/keys/CODE`. If the gateway/name is unavailable,
+the existing loopback link remains available. Serve 1.92+ and a user-device
+`Tailscale-User-Login` header are required on the gateway; tagged devices without
+a user login cannot open this human entry page. The browser needs tailnet network
+access, not the Swarm app capability grant. The gateway audits login and outcome,
+not the key or capability URL.
+
+For several machines, ask swarm-fleet for `swarm_fleet_request_provider_key` with
+`provider`, explicit `machines: [names]`, and optional `label`. Open its single
+link on a device in the same tailnet, check the machine list, and paste once.
+The browser submits directly to each machine; no daemon forwards the key and
+neither swarm-fleet nor the AI sees it. The additional URLs are in a browser-only
+fragment. CORS permits only HTTPS port 8444 gateways in the same tailnet with a
+pending capability. This is a two-step flow:
+
+1. The tool returns the single `url` as soon as every machine issues its page,
+   together with `tell_the_person`, `expires_in_seconds`, and per-machine
+   `waiting` statuses. The AI gives the person the link and repeats
+   `tell_the_person`, naming the destinations to match against the hostnames
+   on the page. It sends no MCP notification or progress message.
+2. Call `swarm_list_providers` with `machine`, `provider`, and `wait_seconds`
+   (at most **110**) for each machine to wait for its outcome. If still waiting,
+   call again. The page also shows each result; the initial call never waits
+   for the person to save the key.
+
+Each link expires in ten minutes, allows five failed attempts and is single-use
+on success. Partial fleet failure does not undo successful saves: ask for a new
+link for failed machines only. Never paste keys into chat. Loopback entry still
+works locally; relay clients never receive the request-key tool.

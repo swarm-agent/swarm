@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -33,6 +34,10 @@ func (s *Server) TailnetGatewayHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if isHelloRequest(r) {
 			s.serveHello(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, providerKeyPagePrefix) {
+			s.serveTailnetProviderKey(w, r)
 			return
 		}
 		if strings.TrimSpace(r.Header.Get("Authorization")) != "" {
@@ -83,6 +88,7 @@ func (s *Server) TailnetGatewayHandler() http.Handler {
 			UserID:         actor.UserID,
 		}
 		log.Printf("swarmd tailnet gateway: %s level=%s", who, level)
+		r = r.WithContext(context.WithValue(r.Context(), providerKeyTailnetContext{}, true))
 		s.serveControlMCP(w, requestWithScopedToken(requestWithActorContext(r, actor), rec), next)
 	})
 }

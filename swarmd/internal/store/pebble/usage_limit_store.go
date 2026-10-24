@@ -255,24 +255,31 @@ func toFloat64(v any) (float64, bool) {
 
 // MediaCostEstimateOptions holds concrete dimensions for media pricing without guessing.
 type MediaCostEstimateOptions struct {
-	Provider         string
-	Model            string
-	Kind             string // "image", "video", "audio"
-	Count            int
-	DurationSeconds  int
-	Resolution       string
-	ImageSize        string
-	AspectRatio      string
-	IncludesAudio    bool
-	IsIteration      bool
-	OutputTokens     int64 // image output tokens
-	TextOutputTokens int64
-	ThinkingTokens   int64
-	PromptTokens     int64 // text prompt tokens, excluding input images
-	InputImageTokens int64
-	ServiceTier      string
-	Variant          string
-	SKU              string
+	GeneratedExtensionOutput bool // Duration excludes the source video.
+	Speech                   bool
+	Transcription            bool
+	InputCharacters          int64
+	AudioInputTokens         int64
+	AudioOutputTokens        int64
+	Provider                 string
+	Model                    string
+	Kind                     string // "image", "video", "audio"
+	Count                    int
+	DurationSeconds          int
+	MeasuredDurationSeconds  float64 // Actual output duration; takes precedence over requested seconds.
+	Resolution               string
+	ImageSize                string
+	AspectRatio              string
+	IncludesAudio            bool
+	IsIteration              bool
+	OutputTokens             int64 // image output tokens
+	TextOutputTokens         int64
+	ThinkingTokens           int64
+	PromptTokens             int64 // text prompt tokens, excluding input images
+	InputImageTokens         int64
+	ServiceTier              string
+	Variant                  string
+	SKU                      string
 }
 
 // EstimateMediaCostWithOptions resolves snapshot-backed media pricing for images, videos, and audio.
@@ -440,12 +447,20 @@ func EstimateMediaCostFromRecord(rec ModelCatalogRecord, opts MediaCostEstimateO
 		}
 	}
 
+	if opts.Speech || opts.Transcription {
+		return estimateSpeechBilling(rec, opts, verifiedLines)
+	}
 	unitPrice := 0.0
 	foundPrice := false
 	summaryText := ""
 
 	switch kind {
 	case "video":
+		duration := float64(opts.DurationSeconds)
+		if opts.MeasuredDurationSeconds > 0 && !math.IsNaN(opts.MeasuredDurationSeconds) && !math.IsInf(opts.MeasuredDurationSeconds, 0) {
+			duration = opts.MeasuredDurationSeconds
+		}
+		missingDuration := false
 		// Check verified billing lines for video
 		hasVerifiedVideoLines := false
 		type candidateVideoLine struct {
@@ -467,9 +482,17 @@ func EstimateMediaCostFromRecord(rec ModelCatalogRecord, opts MediaCostEstimateO
 			conds, hasConds := lineMap["conditions"].(map[string]any)
 			serviceTier := ""
 
-			// Informational equivalent cost is not a canonical billing rate
-			if kindVal, _ := lineMap["kind"].(string); kindVal == "equivalent_cost" {
-				continue
+			// Accept the catalog's published per-second equivalent for video when
+			// its token conversion is explicit. This is an approximate monetary
+			// estimate, not a provider token receipt; never invent a conversion.
+			kindVal, _ := lineMap["kind"].(string)
+			equivalent := kindVal == "equivalent_cost"
+			if equivalent {
+				rate, ok := toFloat64(conds["output_tokens_per_second"])
+				unit, _ := lineMap["unit"].(string)
+				if !ok || rate <= 0 || math.IsNaN(rate) || math.IsInf(rate, 0) || unit != "second" {
+					continue
+				}
 			}
 
 			// Condition matching: resolution, variant, and sku conditions
@@ -589,18 +612,20 @@ func EstimateMediaCostFromRecord(rec ModelCatalogRecord, opts MediaCostEstimateO
 			var curSummary string
 			switch unitLower {
 			case "second", "sec":
-				if opts.DurationSeconds > 0 {
-					curUnitPrice = pUSD * float64(opts.DurationSeconds)
-					curSummary = fmt.Sprintf("$%.3f/sec ($%.2f for %ds) %s", pUSD, curUnitPrice, opts.DurationSeconds, catalogTag)
+				if duration > 0 {
+					curUnitPrice = pUSD * duration
+					curSummary = fmt.Sprintf("$%.3f/sec ($%.2f for %gs) %s", pUSD, curUnitPrice, duration, catalogTag)
 				} else {
 					// Cannot calculate per-second pricing without positive duration; fail closed
+					missingDuration = true
 					continue
 				}
 			case "minute", "min":
-				if opts.DurationSeconds > 0 {
-					curUnitPrice = (pUSD / 60.0) * float64(opts.DurationSeconds)
-					curSummary = fmt.Sprintf("$%.2f/min ($%.2f for %ds) %s", pUSD, curUnitPrice, opts.DurationSeconds, catalogTag)
+				if duration > 0 {
+					curUnitPrice = (pUSD / 60.0) * duration
+					curSummary = fmt.Sprintf("$%.2f/min ($%.2f for %gs) %s", pUSD, curUnitPrice, duration, catalogTag)
 				} else {
+					missingDuration = true
 					continue
 				}
 			case "video", "generation":
@@ -609,6 +634,9 @@ func EstimateMediaCostFromRecord(rec ModelCatalogRecord, opts MediaCostEstimateO
 			default:
 				// Unknown billing unit (e.g. million_tokens for video without token count, etc.) must fail closed
 				continue
+			}
+			if equivalent && curSummary != "" {
+				curSummary = "approximate published equivalent: " + curSummary
 			}
 			if curSummary != "" {
 				matchedLines = append(matchedLines, candidateVideoLine{
@@ -654,6 +682,9 @@ func EstimateMediaCostFromRecord(rec ModelCatalogRecord, opts MediaCostEstimateO
 				summary := fmt.Sprintf("unknown pricing (unresolved pricing conditions for model %q in snapshot)", model)
 				if snapID != "" {
 					summary = fmt.Sprintf("unknown pricing (unresolved pricing conditions for model %q in snapshot %s)", model, snapID)
+				}
+				if missingDuration {
+					summary = "unknown pricing (video duration unavailable: neither measured nor requested duration is known)"
 				}
 				return MediaCostEstimate{
 					CostUSD:         0.0,
@@ -746,6 +777,9 @@ func EstimateMediaCostFromRecord(rec ModelCatalogRecord, opts MediaCostEstimateO
 		}
 	}
 
+	if kind == "video" && opts.GeneratedExtensionOutput {
+		summaryText += "; generated extension duration (excludes source video)"
+	}
 	totalCost := unitPrice * float64(opts.Count)
 	return MediaCostEstimate{
 		CostUSD:         totalCost,

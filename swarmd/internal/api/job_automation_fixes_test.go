@@ -40,6 +40,9 @@ func TestAgentStepFixesIsRefusedForNonReviewerWorkers(t *testing.T) {
 		}
 		return steps
 	}
+	if err := jobautomation.NormalizeSteps([]jobautomation.Step{{ID: "review", Type: jobautomation.StepAgent, Worker: "reviewer", Brief: "Review.", Fixes: "security"}}); err != nil {
+		t.Fatalf("native reviewer fixes = %v", err)
+	}
 	for _, worker := range []string{"reviewer", reviewer.ID, "Security reviewer"} {
 		if err := f.server.jobAutomationFixesError(p.AccountScopeID, step(worker)); err != nil {
 			t.Fatalf("fixes on reviewer %q refused: %v", worker, err)
@@ -68,6 +71,7 @@ func TestAgentStepFixesIsRefusedForNonReviewerWorkers(t *testing.T) {
 	// A role name that is not a reviewer is refused by the shared validator.
 	for _, raw := range []string{
 		`[{"id":"review","type":"agent","worker":"coder","brief":"Review.","fixes":"security"}]`,
+		`[{"id":"review","type":"agent","worker":"reviewer","brief":"Review.","fixes":"security","checkout":"same"}]`,
 		`[{"id":"review","type":"agent","worker":"reviewer","brief":"Review.","fixes":"everything"}]`,
 		`[{"id":"push","type":"run","command":"deliver/push.sh","fixes":"security"}]`,
 	} {

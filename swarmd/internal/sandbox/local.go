@@ -28,8 +28,9 @@ func newLocalManager(ctx context.Context, cfg Config) (*Manager, error) {
 		return nil, fmt.Errorf("worker_max_concurrent_runs must be non-negative")
 	}
 	m := &Manager{cfg: cfg, boxes: map[string]*box{}, used: map[string]struct{}{}, stop: make(chan struct{}), localRuns: map[string]int{}}
-	m.status = Status{Mode: cfg.Mode, Runtime: BackendBubblewrap}
+	m.status = Status{Mode: cfg.Mode}
 	if cfg.Mode == ModeOff {
+		m.status.Runtime = "host"
 		m.status.Reason = "sandbox mode is off"
 		return m, nil
 	}
@@ -57,14 +58,8 @@ func newLocalManager(ctx context.Context, cfg Config) (*Manager, error) {
 		m.status.Reason = fmt.Sprintf("bubblewrap namespace protection unavailable: %v: %s", err, strings.TrimSpace(string(out)))
 		return m, nil
 	}
-	// Probe advertised flags rather than assuming a version provides overlays.
-	// Older installations still support readonly execution; writable linked Git
-	// fails closed below. Kernel overlay failures also fail closed in bwrap.
-	help := exec.CommandContext(probe, path, "--help")
-	if out, err := help.Output(); err == nil {
-		m.localOverlay = strings.Contains(string(out), "--overlay-src") && strings.Contains(string(out), "--tmp-overlay")
-	}
 	m.status.Active = true
+	m.status.Runtime = BackendBubblewrap
 	dir, err := os.MkdirTemp("", "swarm-isolation-")
 	if err != nil {
 		return nil, fmt.Errorf("create isolated Git config: %w", err)
@@ -245,32 +240,6 @@ func (m *Manager) localGitMounts(root, source string, readonly bool) ([]string, 
 	args := []string{"--ro-bind", dot, dot, "--ro-bind", common, common}
 	if readonly {
 		return args, nil
-	}
-	if !m.localOverlay {
-		return nil, fmt.Errorf("writable linked Git requires bubblewrap overlay support (--overlay-src and --tmp-overlay); real common metadata remains read-only")
-	}
-	// Git ref deletions lock/rewrite packed-refs even for loose pseudorefs.
-	// Start with the current common directory in a disposable private layer:
-	// deleting a packed peer ref changes only this invocation's private view,
-	// never the real packed-refs or its lock. No writable common-dir bind.
-	args = append(args, "--overlay-src", common, "--tmp-overlay", common)
-	// Keep shared subdirectories read-only, then restore only the existing
-	// narrow real writable binds below. Validate every additional mount.
-	entries, err := os.ReadDir(common)
-	if err != nil {
-		return nil, err
-	}
-	for _, entry := range entries {
-		// Non-directories (including symlinks) remain in the private view.
-		// Never follow a symlink to create an additional host bind.
-		if !entry.IsDir() {
-			continue
-		}
-		p := filepath.Join(common, entry.Name())
-		if err := m.localMetadataDir(common, p); err != nil {
-			return nil, err
-		}
-		args = append(args, "--ro-bind", p, p)
 	}
 	args = append(args, "--bind", gitdir, gitdir)
 	args = append(args, m.localDisabledConfig(common)...)
@@ -460,18 +429,11 @@ func (m *Manager) routeLocalGit(ctx context.Context, cmd *exec.Cmd, target strin
 			values[k] = v
 		}
 	}
-	gitArgs := cmd.Args[1:]
-	if st, err := os.Lstat(filepath.Join(root, ".git")); err == nil && !st.IsDir() && scope.daemonGit {
-		gitArgs, err = localLinkedGitArgs(gitArgs)
-		if err != nil {
-			return err
-		}
-	}
-	lifecycleMounts, err := m.localWorktreeMounts(scope, target, gitArgs)
+	lifecycleMounts, err := m.localWorktreeMounts(scope, target, cmd.Args[1:])
 	if err != nil {
 		return err
 	}
-	args, err := m.localArgv(scope, ExecRequest{WorkingDir: target, Command: append([]string{"git", "-c", "safe.directory=" + target, "-c", "user.name=Swarm", "-c", "user.email=swarm@localhost", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "credential.helper="}, gitArgs...), Env: values})
+	args, err := m.localArgv(scope, ExecRequest{WorkingDir: target, Command: append([]string{"git", "-c", "safe.directory=" + target, "-c", "user.name=Swarm", "-c", "user.email=swarm@localhost", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "credential.helper="}, cmd.Args[1:]...), Env: values})
 	if err != nil {
 		return err
 	}
@@ -492,39 +454,6 @@ func (m *Manager) routeLocalGit(ctx context.Context, cmd *exec.Cmd, target strin
 	cmd.Dir = "/"
 	cmd.Env = []string{}
 	return nil
-}
-
-// Packing into the private packed-refs followed by pruning a real loose ref
-// would lose the job branch when the overlay disappears. Disable automatic
-// maintenance and refuse explicit packing, including maintenance's pack-refs task.
-func localLinkedGitArgs(args []string) ([]string, error) {
-	i := 0
-	for i < len(args) && strings.HasPrefix(args[i], "-") {
-		a := args[i]
-		switch {
-		case a == "-c" || a == "-C" || a == "--git-dir" || a == "--work-tree" || a == "--namespace" || a == "--config-env":
-			if i+1 >= len(args) {
-				return nil, fmt.Errorf("incomplete Git global option")
-			}
-			i += 2
-		case strings.HasPrefix(a, "--git-dir=") || strings.HasPrefix(a, "--work-tree=") || strings.HasPrefix(a, "--namespace=") || strings.HasPrefix(a, "--config-env=") || strings.HasPrefix(a, "-c") || strings.HasPrefix(a, "-C"):
-			i++
-		case a == "--no-pager" || a == "--paginate" || a == "--no-optional-locks" || a == "--literal-pathspecs" || a == "--no-replace-objects":
-			i++
-		default:
-			return nil, fmt.Errorf("unsupported linked Git global option %q", a)
-		}
-	}
-	if i < len(args) {
-		switch args[i] {
-		case "pack-refs", "gc", "maintenance":
-			return nil, fmt.Errorf("Git %s is disabled for writable linked checkouts: private packed refs cannot safely prune real loose refs", args[i])
-		}
-	}
-	// Place policy after caller globals so caller configuration cannot enable it.
-	out := append([]string{}, args[:i]...)
-	out = append(out, "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "gc.packRefs=false")
-	return append(out, args[i:]...), nil
 }
 
 func (m *Manager) localAdmit(scope Scope) (func(), error) {

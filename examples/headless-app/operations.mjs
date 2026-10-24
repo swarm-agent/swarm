@@ -2,6 +2,14 @@ import { readFile, realpath, rename, writeFile } from 'node:fs/promises';
 import { SwarmApiError, SwarmNotFoundError } from '@swarm-agent/sdk';
 import { reject, text } from './boundary.mjs';
 
+// Port of providerKeyRedact/providerKeySecretish: redact before truncating.
+export function providerKeyRedact(message, key = '') {
+  let value = String(message || '');
+  if (key) value = value.split(key).join('[redacted]');
+  return value.replace(/[A-Za-z0-9_\-.*+/=]{12,}/g, word =>
+    /[*0-9]/.test(word) && !word.startsWith('http') && !word.includes('//') ? '[redacted]' : word).trim().slice(0, 300);
+}
+
 /**
  * @param {import('@swarm-agent/sdk').SwarmClient} sdk
  * @param {{ relayUrl?: string, deviceName?: string, aiUrl?: string, aiIp?: string, settingsFile?: string }} defaults installer-supplied relay connection
@@ -25,7 +33,9 @@ export function operations(sdk, project = '/project', defaults = {}) {
     await workspace(registered.path);
     return s;
   }
-  const credentialStatus = c => ({ id: c.id, provider: c.provider, active: c.active, auth_type: c.auth_type,
+  const credentialStatus = (c, key = '') => ({ id: c.id, provider: c.provider, active: c.active, auth_type: c.auth_type,
+    label: providerKeyRedact(c.label, key), verified_at: c.connection?.verified_at,
+    message: providerKeyRedact(c.connection?.message, key), failed: c.connection?.connected === false,
     connected: c.connection?.connected === true, defaultsApplied: c.auto_defaults?.applied === true,
     defaultsError: !!c.auto_defaults?.error });
   const loginStatus = c => ({ session_id: c.session_id, method: c.method, status: c.status,
@@ -87,8 +97,9 @@ export function operations(sdk, project = '/project', defaults = {}) {
     if (status.identity?.bootstrapped === true) {
       // A saved key counts only once its provider works: a rejected or
       // unverifiable key must not move setup past the provider step.
-      connected = (await sdk.settings.providers()).filter(p => p.ready && p.runnable).map(p => p.id);
-      steps.provider = connected.length > 0;
+      const providers = await sdk.settings.providers();
+      connected = providers.filter(p => p.ready).map(p => p.id);
+      steps.provider = providers.some(p => p.ready && p.runnable);
       let settings = null;
       try { settings = (await sdk.settings.agentModels()).agent_model_settings; }
       catch (error) { if (!(error instanceof SwarmNotFoundError)) throw error; }
@@ -115,14 +126,30 @@ export function operations(sdk, project = '/project', defaults = {}) {
           let settings = null;
           try { settings = await sdk.settings.agentModels(); }
           catch (error) { if (!(error instanceof SwarmNotFoundError)) throw error; }
-          return { providers: await sdk.settings.providers(), settings,
-            credentials: (await sdk.auth.credentials.list()).records.map(credentialStatus) };
+          return { providers: (await sdk.settings.providers()).map(p => ({ ...p, reason: providerKeyRedact(p.reason),
+            auth_methods: p.auth_methods?.map(m => ({ ...m, description: providerKeyRedact(m.description) })) })), settings,
+            credentials: (await sdk.auth.credentials.list()).records.map(c => credentialStatus(c)) };
         }
         case 'catalog': return sdk.settings.models(text(b.provider));
         case 'credential': {
           const p = (await sdk.settings.providers()).find(p => p.id === b.provider);
           if (!p?.auth_methods?.some(m => m.credential_type === b.type)) reject(400, 'Select an advertised credential type.');
-          return credentialStatus(await sdk.auth.credentials.save({ provider: p.id, type: text(b.type), api_key: text(b.key, 16000), active: true, label: 'Headless app' }));
+          const key = text(b.key, 16000);
+          try {
+            return credentialStatus(await sdk.auth.credentials.save({ provider: p.id, type: text(b.type), api_key: key, active: true,
+              ...(b.id ? { id: text(b.id) } : {}), label: 'Headless app' }), key);
+          } catch (error) {
+            if (error instanceof SwarmApiError) reject(400, providerKeyRedact(error.message, key) || 'Provider rejected the key.');
+            throw error;
+          }
+        }
+        case 'credentials': return { records: (await sdk.auth.credentials.list()).records.map(c => credentialStatus(c)) };
+        case 'credential-activate':
+          return credentialStatus(await sdk.auth.credentials.activate(text(b.provider), text(b.id)));
+        case 'credential-delete': {
+          if (b.confirm !== true) reject(400, 'Confirm credential removal.');
+          const result = await sdk.auth.credentials.delete(text(b.provider), text(b.id));
+          return { ok: result.ok, deleted: result.deleted };
         }
         case 'codex-start': {
           if (!['device', 'manual'].includes(b.method)) reject(400, 'Select device or manual sign-in.');

@@ -181,7 +181,7 @@ func TestAgentStepCheckout(t *testing.T) {
 		{Step{Worker: "reviewer"}, "", CheckoutSame},
 		{Step{Worker: "wkr_1"}, "reviewer", CheckoutSame},
 		{Step{Worker: "reviewer", Checkout: " New "}, "", CheckoutNew},
-		{Step{Worker: "reviewer", Fixes: FixesSecurity}, "", CheckoutNew},
+		{Step{Worker: "wkr_reviewer", Fixes: FixesSecurity}, "reviewer", CheckoutNew},
 		{Step{Worker: "coder"}, "", CheckoutNew},
 		{Step{Worker: "designer"}, "", CheckoutNone},
 		{Step{Worker: "finder"}, "", CheckoutNone},

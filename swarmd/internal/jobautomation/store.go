@@ -246,8 +246,12 @@ func DeliveryID(jobID, followup, automationID string, revision uint64) string {
 // ---- definitions -----------------------------------------------------------
 
 // Put creates or updates (by name) an account's automation. The revision
-// increases on every update.
+// increases on each actual change.
 func (s *Store) Put(account string, in Automation) (Automation, bool, error) {
+	return s.PutChange(account, in, Change{Source: "set", Who: "owner"})
+}
+
+func (s *Store) PutChange(account string, in Automation, change Change) (Automation, bool, error) {
 	account = strings.TrimSpace(account)
 	if account == "" {
 		return Automation{}, false, errors.New("account is required")
@@ -264,9 +268,16 @@ func (s *Store) Put(account string, in Automation) (Automation, bool, error) {
 	now := s.now().UnixMilli()
 	for _, current := range existing {
 		if current.Name == in.Name {
+			if len(changedFields(&current, &in)) == 0 && change.Source != "restore" {
+				return current, false, nil
+			}
 			in.ID, in.Account, in.CreatedAt = current.ID, account, current.CreatedAt
 			in.Revision, in.UpdatedAt = current.Revision+1, now
-			return in, false, s.db.PutJSON(definitionKey(account, in.ID), in)
+			kind := "updated"
+			if change.Source == "restore" {
+				kind = "restored"
+			}
+			return in, false, s.saveHistoryLocked(in, &current, kind, change)
 		}
 	}
 	if len(existing) >= maxDefinitions {
@@ -277,7 +288,22 @@ func (s *Store) Put(account string, in Automation) (Automation, bool, error) {
 		return Automation{}, false, err
 	}
 	in.ID, in.Account, in.Revision, in.CreatedAt, in.UpdatedAt = id, account, 1, now, now
-	return in, true, s.db.PutJSON(definitionKey(account, id), in)
+	records, historyErr := s.historyLocked(account, "", in.Name)
+	if historyErr != nil && historyErr != ErrNotFound {
+		return Automation{}, false, historyErr
+	}
+	if len(records) > 0 {
+		var oldID string
+		if _, err := s.db.GetJSON(historyNameKey(account, in.Name), &oldID); err != nil {
+			return Automation{}, false, err
+		}
+		in.ID, in.Revision = oldID, records[0].Revision+1
+	}
+	kind := "created"
+	if change.Source == "restore" {
+		kind = "restored"
+	}
+	return in, true, s.saveHistoryLocked(in, nil, kind, change)
 }
 
 // Get reads one automation of the account.
@@ -338,6 +364,10 @@ func (s *Store) listLocked(account string) ([]Automation, error) {
 // Delete removes an automation. Its deliveries stay as records; unfinished
 // ones still finish with the revision they started with.
 func (s *Store) Delete(account, id string) error {
+	return s.DeleteChange(account, id, Change{Source: "delete", Who: "owner"})
+}
+
+func (s *Store) DeleteChange(account, id string, change Change) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var a Automation
@@ -348,7 +378,11 @@ func (s *Store) Delete(account, id string) error {
 	if !found || a.Account != account {
 		return ErrNotFound
 	}
-	return s.db.Delete(definitionKey(account, id))
+	previous := a
+	a.Revision++
+	a.UpdatedAt = s.now().UnixMilli()
+	change.Source = "delete"
+	return s.saveHistoryLocked(a, &previous, "deleted", change)
 }
 
 // ---- deliveries ------------------------------------------------------------

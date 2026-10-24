@@ -130,6 +130,9 @@ The onboarding a frontend runs, in order:
      machine offers ChatGPT sign-in, or hands the person the command that
      reads the key from a file on that machine:
      `sudo bash /var/lib/swarm-headless/install.sh key PROVIDER < key-file`.
+     This works for the first provider and alongside existing providers. Without
+     the installer, add another API key with
+     `sudo swarmctl setup add-credential --provider PROVIDER --api-key-stdin < key-file`.
 2. **Models.** `swarm_list_models` shows each role's model. Swarm applies its
    recommended models when a provider connects; change one only when the
    person asks (`swarm_set_agent_model`).

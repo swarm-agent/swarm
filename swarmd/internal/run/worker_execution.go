@@ -24,6 +24,7 @@ import (
 // It uses the existing V3 session/plan executor, not a second execution engine.
 type WorkerExecutionService struct {
 	watchdogBeforeSettleForTest func()
+	taskReviewCleanupMu         sync.Mutex
 	cleanupMu                   sync.Mutex
 	cleanupQueue                map[string]store.WorkerRunRecord
 	cleanupRunning              bool
@@ -494,6 +495,10 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// Revalidate mutable agent tools before creating project tasks or sessions.
+	if err := h.runs.ValidateWorkerAgent(r.AccountScopeID, w); err != nil {
+		return err
+	}
 	if w.ModelProfile != nil && (w.ModelProfile.UseAccountDefault || w.ModelProfile.ActionUseAccountDefault || w.ModelProfile.PlanUseAccountDefault) {
 		return errors.New("admitted worker run has unresolved model policy")
 	}
@@ -625,6 +630,10 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		}
 		agentID, fixes := workerExecutionAgentID(role, r.Input)
 		profile, err := h.runs.agents.ResolveSystemAgent(agentID, profileContext)
+		if err != nil {
+			return err
+		}
+		profile, err = h.runs.ApplyWorkerAgent(r.AccountScopeID, w, profile)
 		if err != nil {
 			return err
 		}
