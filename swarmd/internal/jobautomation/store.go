@@ -401,7 +401,8 @@ func (d Delivery) TriggerHead() string {
 // also false when the automation already has a delivery (active or finished)
 // for the job at the job end's head: the existing delivery, whose id differs
 // from DeliveryID of this job end, is returned and nothing is recorded (at
-// most one delivery per automation, job and head).
+// most one delivery per automation, job and head), except for a follow-up
+// started by this automation's own recorded reopen step.
 func (s *Store) CreateDelivery(a Automation, result Result) (Delivery, bool, error) {
 	id := DeliveryID(result.JobID, result.Followup, a.ID, a.Revision)
 	s.mu.Lock()
@@ -422,6 +423,21 @@ func (s *Store) CreateDelivery(a Automation, result Result) (Delivery, bool, err
 	if result.Git != nil {
 		head = result.Git.Head
 	}
+	// Inspect all prior deliveries before deduplicating: the reopen may be
+	// recorded on a different delivery than the first matching head.
+	reopened := false
+	if result.Followup != "" {
+		for _, p := range previous {
+			if p.AutomationID != a.ID {
+				continue
+			}
+			for _, step := range p.Steps {
+				if step.Type == StepReopen && step.Outcome["followup"] == result.Followup {
+					reopened = true
+				}
+			}
+		}
+	}
 	createdAt := s.now().UnixMilli()
 	roundBase := 0
 	for _, p := range previous {
@@ -433,7 +449,7 @@ func (s *Store) CreateDelivery(a Automation, result Result) (Delivery, bool, err
 		if p.AutomationID != a.ID {
 			continue
 		}
-		if head != "" && p.TriggerHead() == head {
+		if !reopened && head != "" && p.TriggerHead() == head {
 			return p, false, nil
 		}
 		roundBase = max(roundBase, p.RoundBase)
