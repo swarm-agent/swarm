@@ -972,6 +972,8 @@ func (s *Server) handleJobAutomations(w http.ResponseWriter, r *http.Request) {
 	account := principal.AccountScopeID
 	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, JobAutomationsPath), "/")
 	switch {
+	case (rest == "export" || rest == "import") && r.Method == http.MethodPost:
+		s.handleWorkflowTransfer(w, r, rest)
 	case rest == "" && r.Method == http.MethodGet:
 		list, err := store.List(account)
 		if err != nil {
@@ -1197,6 +1199,10 @@ func (c *controlMCPCall) automationSteps(raw any, account string) ([]jobautomati
 }
 
 func controlMCPSetAutomation(c *controlMCPCall, args map[string]any) (any, error) {
+	return controlMCPSaveAutomation(c, args, false)
+}
+
+func controlMCPSaveAutomation(c *controlMCPCall, args map[string]any, skipUnchanged bool) (any, error) {
 	store, account, err := c.jobAutomationAccount("automations:write")
 	if err != nil {
 		return nil, err
@@ -1223,6 +1229,18 @@ func controlMCPSetAutomation(c *controlMCPCall, args map[string]any) (any, error
 	}
 	if enabled, ok := args["enabled"].(bool); ok {
 		a.Enabled = enabled
+	}
+	if skipUnchanged {
+		if err := a.Normalize(); err != nil {
+			return nil, err
+		}
+		previous, err := store.FindByName(account, a.Name)
+		if err != nil && !errors.Is(err, jobautomation.ErrNotFound) {
+			return nil, err
+		}
+		if err == nil && workflowDefinitionsEqual(previous, a) {
+			return map[string]any{"automation": jobAutomationView(previous), "created": false, "unchanged": true}, nil
+		}
 	}
 	saved, created, err := store.Put(account, a)
 	if err != nil {
@@ -1491,7 +1509,7 @@ func controlMCPThenSchema() map[string]any {
 }
 
 func controlMCPAutomationTools() []controlMCPTool {
-	return []controlMCPTool{
+	return append(workflowTransferTools(), []controlMCPTool{
 		{
 			Name: "swarm_set_workflow", Title: "Set a workflow",
 			Description: "Create or update (by name) a workflow: what Swarm does when work ends in a folder. It starts when a task of Swarm's own agents ends (swarm_run_task: swarm, coder, finder, designer; its first run and each follow-up in its session) or when a worker job ends. Its ordered steps are each: another agent working on the result (agent: swarm, coder, finder or designer as a task in the folder, a coder starting at the work's head; or Swarm's native reviewer task at that head, or a custom worker id), a follow-up that sends its message and/or an agent step's findings back into the work's own session so the same agent fixes its own work (reopen, bounded by max_rounds), handing the work's result over (deliver: to a directory of the folder, merged into the folder's branch, a pull request, or the machine's outbox bucket), or the machine owner's root-owned script run on the host in the folder (run: push, deploy, alert). Every result lists its deliverables (branch, files with sha256, media, report); result names the one the work must hand over, and an agent step with produce: true writes it when the work did not (research turned into a report). A step's if runs it only when earlier steps' status or review verdict match. Scope it to every task and job in the folder, one agent's tasks (role), one worker's jobs, one job or one schedule's jobs; when succeeded, failed or always. swarm_list_workflows shows exactly what each one does. Swarm runs only these steps and reports what happened; with no workflow the work just ends with its branch and the person integrates it by hand. Offer it; do not set it up unasked.",
@@ -1535,5 +1553,5 @@ func controlMCPAutomationTools() []controlMCPTool {
 			InputSchema: controlMCPObject([]string{"stopped"}, map[string]any{"stopped": map[string]any{"type": "boolean"}}),
 			Annotations: controlMCPWrites, call: controlMCPStopAutomations,
 		},
-	}
+	}...)
 }

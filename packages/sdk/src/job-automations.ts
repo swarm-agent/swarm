@@ -298,6 +298,14 @@ export interface ListJobDeliveriesParams {
   limit?: number;
 }
 
+export type WorkflowDefinition = Omit<SetJobAutomationParams, 'scope'> & {
+  swarm_workflow: 1;
+  scope: Omit<JobAutomationScope, 'folder'> & { folder?: string };
+};
+export type WorkflowImportResult =
+  | { automation: JobAutomation; created: boolean; unchanged?: boolean }
+  | { files: { path: string; status: 'created' | 'updated' | 'unchanged' | 'refused'; error?: string }[] };
+
 /** Workflows and their deliveries (`/v3/workflows`, `/v3/job-deliveries`). */
 export class SwarmJobAutomationsNamespace {
   constructor(private readonly transport: SwarmTransport) {}
@@ -320,6 +328,16 @@ export class SwarmJobAutomationsNamespace {
       body: params,
     });
     return { automation: res.data.automation, created: Boolean(res.data.created) };
+  }
+
+  /** Export to .swarm/workflows, commit, and import on another machine. Empty path selects the default filename. */
+  async exportWorkflow(params: { name?: string; id?: string; path?: string; overwrite?: boolean }): Promise<WorkflowDefinition> {
+    return (await this.transport.request<WorkflowDefinition>('/v3/workflows/export', { method: 'POST', body: params })).data;
+  }
+
+  /** Import one definition/file or every *.json in a directory; run steps require a full key. */
+  async importWorkflow(params: { definition?: WorkflowDefinition; path?: string; project?: string; workspace?: string }): Promise<WorkflowImportResult> {
+    return (await this.transport.request<WorkflowImportResult>('/v3/workflows/import', { method: 'POST', body: params })).data;
   }
 
   async delete(id: string): Promise<void> {
