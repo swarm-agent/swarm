@@ -106,17 +106,13 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 			return nil, err
 		}
 		input.ID = "task_" + uuid.NewString()
-		estimate, err := s.estimateManagedMedia(ctx, p, &input)
+		_, err = s.estimateManagedMedia(ctx, p, &input)
 		if err != nil {
 			return nil, err
 		}
-		operation := mediaBudgetOperation(projectID, input.ID)
-		if err := s.sessions.Store().CheckWorkerSessionBudgetWithPrice(p.AccountScopeID, session.ID, estimate.PriceStatus, operation); err != nil {
-			return nil, err
-		}
+		// Admission and approval do not spend media allowance. Execution reserves
+		// immediately before generation and completes before this call returns.
 		task, err := s.CreateProjectTask(ctx, p, projectID, input)
-		// Only execution termination plus a matching durable receipt settles the
-		// reservation. Creation, pending approval and uncertain failures do not.
 		if err != nil {
 			return nil, err
 		}

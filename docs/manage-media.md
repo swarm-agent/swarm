@@ -25,12 +25,19 @@ populate these counters; historical receipts are not backfilled by this change.
 Existing account spending limits and media batch confirmation still apply.
 Generation resolves and pins the selected model, then uses the existing media
 cost estimator for worker budget admission. Unknown pricing is not treated as
-free under a cost cap. Daily-budget reservations remain held during asynchronous
-generation and settle only after execution terminates and a matching durable
-media receipt exists. Pending approval and failures without receipts retain the
-reservation, including across restart; there is no timed reset.
+free under a cost cap. Session-origin generation runs synchronously, so its
+reservation settles before the caller's next model turn. Reservations begin at
+the generation boundary, not at task creation or while waiting for approval.
+Creation errors, rejected/cancelled pending batches and settings failures before
+generation do not reserve allowance. Once a generation call starts, uncertain
+failures without receipts remain fail-closed. MCP tasks remain asynchronous.
 
 `manage_artifact` remains implemented but is disabled for all agents.
 The legacy system-image/system-video task launches still require that tool and
 therefore cannot complete through those agent paths. They are not rerouted or
 removed. Direct media tasks and MCP media tools retain their existing paths.
+Specifically, `swarmd/internal/run/service_task_launch.go` resolves
+`ImageAgentID` and the matching video agent through `ResolveSystemAgent`, and
+`swarmd/internal/run/service_tools.go` reconciles those agents through
+`ReconcileSystemAgentSnapshot`. Both launch paths remain unable to produce
+artifacts with `manage_artifact` disabled.

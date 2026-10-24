@@ -188,10 +188,11 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := map[string]any{"inputs": []any{map[string]any{"path": "input.png"}, map[string]any{"job_id": "media/project/prior", "file": float64(1)}}, "action": "generate", "kind": "image", "brief": "A blue circle", "model": rec.Model, "aspect_ratio": "1:1", "resolution": "1K", "count": float64(25)}
-	if _, err := server.ManageMedia(context.Background(), scope, args); err == nil {
-		t.Fatal("unknown priced capped request allowed")
+	// Pending approval never starts a provider or reserves allowance.
+	if _, err := server.ManageMedia(context.Background(), scope, args); err != nil {
+		t.Fatal(err)
 	}
-	rec.Pricing = json.RawMessage(`{"billing":{"status":"verified","lines":[{"kind":"billing_rate","billable":"image_output","unit":"image","price_usd":0.03,"variant":"1K","conditions":{"tier":"paid","service_tier":"standard"}}]}}`)
+	rec.Pricing = json.RawMessage(`{"billing":{"status":"verified","lines":[{"kind":"billing_rate","billable":"image_output","unit":"image","price_usd":0.03,"variant":"1K","conditions":{"tier":"paid","service_tier":"standard"}},{"kind":"billing_rate","billable":"image_output","unit":"million_tokens","price_usd":30,"conditions":{"tier":"paid","service_tier":"standard"}}]}}`)
 	if err := pebblestore.NewModelCatalogStore(db).SetRecord(rec); err != nil {
 		t.Fatal(err)
 	}
@@ -199,9 +200,16 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := server.ManageMedia(context.Background(), scope, args); err == nil {
-		t.Fatal("unsettled parallel request allowed")
+	assertUnreserved := func() {
+		t.Helper()
+		var value map[string]any
+		for _, key := range []string{"worker_budget_account/account/reservation", "worker_budget/account/worker/reservation"} {
+			if found, err := db.GetJSON(key, &value); err != nil || found {
+				t.Fatalf("unexpected reservation %s %v", key, err)
+			}
+		}
 	}
+	assertUnreserved()
 	_, project, id, err := controlMCPParseJobID(result.(map[string]any))
 	if err != nil {
 		t.Fatal(err)
@@ -210,18 +218,70 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 	if err != nil || !found || task.OriginSessionID != "session" || task.Model != rec.Model || task.AspectRatio != "1:1" || task.Resolution != "1K" || task.VariantCount != 25 || task.WorkspacePath != root || task.Status != "pending_approval" || len(task.AttachedMedia) != 2 {
 		t.Fatalf("task %+v %v", task, err)
 	}
-	opts := pebblestore.MediaCostEstimateOptions{Provider: "google", Model: rec.Model, Kind: "image", Count: 1, ImageSize: "1K"}
-	if _, err := server.recordTaskMedia(p, task, 0, opts, "image/png", 10); err != nil {
+	// Rejected pending tasks cannot start execution or consume allowance.
+	for _, status := range []string{"rejected", "cancelled"} {
+		task.Status = status
+		if err := store.PutProjectTask(p.AccountScopeID, task); err != nil {
+			t.Fatal(err)
+		}
+		assertUnreserved()
+	}
+	// A pre-provider settings failure must not acquire either reservation.
+	task.Resolution = "invalid-resolution"
+	server.executeDirectMediaTask(p, &pebblestore.ProjectRecord{ID: project}, task)
+	assertUnreserved()
+	failed, _, err := store.GetProjectTask(p.AccountScopeID, project, id)
+	if err != nil || failed.Status != "failed" {
+		t.Fatalf("settings failure %+v %v", failed, err)
+	}
+	args["resolution"] = "invalid-resolution"
+	if _, err := server.ManageMedia(context.Background(), scope, args); err == nil {
+		t.Fatal("invalid creation accepted")
+	}
+	assertUnreserved()
+	// Real generation service with a deterministic provider proves synchronous
+	// completion and receipt settlement before the caller's next turn.
+	auth := pebblestore.NewAuthStore(db)
+	if _, err := auth.UpsertCredential(pebblestore.AuthCredentialInput{Provider: "google", AccountScopeID: p.AccountScopeID, ID: "fixture", Type: "api_key", APIKey: "test-only", SetActive: true}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := server.ManageMedia(context.Background(), scope, args); err == nil {
-		t.Fatal("receipt before termination released reservation")
-	}
-	if err := store.ReleaseWorkerBudgetReservation(p.AccountScopeID, scope.SessionID, mediaBudgetOperation(project, id)); err != nil {
+	client := &billingGeminiClient{png: imageData.Bytes()}
+	server.imageGen = imagegen.NewService(nil, auth, nil, billingCatalog{rec})
+	server.imageGen.SetGeminiImageClient(client)
+	args["resolution"], args["count"] = "1K", float64(1)
+	delete(args, "inputs")
+	priced := rec.Pricing
+	rec.Pricing = nil
+	if err := pebblestore.NewModelCatalogStore(db).SetRecord(rec); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := server.ManageMedia(context.Background(), scope, args); err != nil {
-		t.Fatalf("settled request blocked: %v", err)
+		t.Fatal(err)
+	}
+	if client.calls != 0 {
+		t.Fatal("unknown-priced capped generation reached provider")
+	}
+	assertUnreserved()
+	rec.Pricing = priced
+	if err := pebblestore.NewModelCatalogStore(db).SetRecord(rec); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := server.ManageMedia(context.Background(), scope, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, completedID, err := controlMCPParseJobID(completed.(map[string]any))
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, _, err := store.GetProjectTask(p.AccountScopeID, project, completedID)
+	if err != nil || client.calls != 1 || len(saved.Deliverables) != 1 || saved.Deliverables[0].Status != "ready" {
+		t.Fatalf("generation not complete %+v calls=%d err=%v", saved, client.calls, err)
+	}
+	assertUnreserved()
+	// The next model operation remains admissible after all non-spending paths.
+	if err := store.CheckWorkerSessionBudgetWithPrice(p.AccountScopeID, scope.SessionID, "known", "next-model-turn"); err != nil {
+		t.Fatalf("next model turn blocked: %v", err)
 	}
 	if _, err := server.CreateProjectTask(context.Background(), p, project, tool.ProjectTaskCreateInput{ID: "rejected", Title: "bad", Agent: "image", OriginSessionID: "missing"}); err == nil {
 		t.Fatal("missing origin accepted")

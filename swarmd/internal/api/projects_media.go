@@ -25,6 +25,7 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 	"swarm/packages/swarmd/internal/videogen"
 )
 
@@ -132,6 +133,11 @@ func (s *Server) generateImageMedia(
 		Source:          sourceImage,
 	}
 
+	if check, ok := ctx.Value(mediaBudgetCheckKey{}).(func() error); ok {
+		if err := check(); err != nil {
+			return "", actualModel, ar, resTag, err
+		}
+	}
 	res, err := s.imageGen.GenerateManagedImage(ctx, genReq)
 	if err != nil {
 		return "", actualModel, ar, resTag, err
@@ -999,6 +1005,8 @@ func validateSourceKindMIME(expectedKind, mediaType string, bytes []byte) error 
 // executeDirectMediaTask handles asynchronous generation of image variants or video stories.
 // Each deliverable is updated independently to "ready" or "failed" upon generation and committed to Pebble,
 // allowing the frontend to stream / observe each item loading and completing in real-time.
+type mediaBudgetCheckKey struct{}
+
 func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.ProjectRecord, task *pebblestore.ProjectTaskRecord) {
 	if s.sessions == nil || s.sessions.Store() == nil || task == nil {
 		return
@@ -1009,8 +1017,27 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 		_ = recover() // Gracefully recover if store is closed during daemon shutdown or test teardown
 	}()
 	db := s.sessions.Store()
+	reserved := false
+	var budgetMu sync.Mutex
+	beforeSpend := func() error {
+		budgetMu.Lock()
+		defer budgetMu.Unlock()
+		if reserved || task.OriginSessionID == "" {
+			return nil
+		}
+		input := tool.ProjectTaskCreateInput{Agent: task.Agent, Model: task.Model, VariantCount: task.VariantCount, Resolution: task.Resolution, AspectRatio: task.AspectRatio, DurationSeconds: task.DurationSeconds}
+		estimate, err := s.estimateManagedMedia(context.Background(), p, &input)
+		if err != nil {
+			return err
+		}
+		if err := db.CheckWorkerSessionBudgetWithPrice(p.AccountScopeID, task.OriginSessionID, estimate.PriceStatus, mediaBudgetOperation(task.ProjectID, task.ID)); err != nil {
+			return err
+		}
+		reserved = true
+		return nil
+	}
 	defer func() {
-		if task.OriginSessionID != "" {
+		if reserved {
 			if err := db.ReleaseWorkerBudgetReservation(p.AccountScopeID, task.OriginSessionID, mediaBudgetOperation(task.ProjectID, task.ID)); err != nil {
 				log.Print("media task budget settlement failed; reservation retained")
 			}
@@ -1036,7 +1063,7 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 	}
 
 	if task.Agent == "image" {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		ctx, cancel := context.WithTimeout(context.WithValue(context.Background(), mediaBudgetCheckKey{}, beforeSpend), 5*time.Minute)
 		defer cancel()
 
 		ar := task.AspectRatio
@@ -1595,7 +1622,9 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 					var vRes videogen.ManagedVideoResult
 					var genErr error
 					var estimate pebblestore.MediaCostEstimate
-					if sceneCount > 1 {
+					if genErr = beforeSpend(); genErr != nil {
+						// Rejected before any provider operation.
+					} else if sceneCount > 1 {
 						vRes, genErr = generateProjectVideoStory(ctx, vg, vReq, task.Scenes, func(scene int, clip videogen.ManagedVideoResult) {
 							cost := s.recordGeneratedTaskMedia(p, task, slotIndex, pebblestore.MediaCostEstimateOptions{Provider: clip.Provider, Model: clip.Model, Kind: "video", Count: 1, DurationSeconds: clip.DurationSeconds, Resolution: clip.Resolution, AspectRatio: clip.AspectRatio, IncludesAudio: true}, clip.MediaType, len(clip.Bytes), scene)
 							total := estimate.CostUSD + cost.CostUSD
@@ -1847,12 +1876,16 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 		var mediaURL string
 		var estimate pebblestore.MediaCostEstimate
 		if s.audioGen != nil {
-			res, err := s.audioGen.GenerateManagedAudio(ctx, audiogen.ManagedAudioRequest{
-				Prompt:          prompt,
-				DurationSeconds: durSeconds,
-				Principal:       p,
-				Model:           soundModel,
-			})
+			var res audiogen.ManagedAudioResult
+			err := beforeSpend()
+			if err == nil {
+				res, err = s.audioGen.GenerateManagedAudio(ctx, audiogen.ManagedAudioRequest{
+					Prompt:          prompt,
+					DurationSeconds: durSeconds,
+					Principal:       p,
+					Model:           soundModel,
+				})
+			}
 			if err != nil {
 				genErr = err
 			} else if len(res.Bytes) > 0 {
