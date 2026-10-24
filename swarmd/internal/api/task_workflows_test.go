@@ -297,9 +297,10 @@ func TestTaskResultGitListsTheTasksOwnCommits(t *testing.T) {
 // commits to prevent oversized, blocked or unreadable fixes moving delivery heads.
 // This service-level harness is the narrowest layer spanning those boundaries.
 // Purpose: workflow agent admission and native review settlement must preserve
-// the delivery checkout and unattended permission authority. This integration
-// fixture exercises taskWorkflowAgents and AuthorizeToolCall against real task
-// receipts; it catches provenance wiring gaps that permission unit tests cannot.
+// the delivery checkout and unattended consent refusal. With bypass disabled,
+// this integration fixture exercises taskWorkflowAgents, AuthorizeToolCall and
+// rejectWorkerPrompt against real task/session records, proving provenance
+// wiring rejects owner ask rules without creating unreachable pending prompts.
 func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "native-review.pebble")
 	server, sessions, _, closeStore, _ := newRoutedSessionTestServerAt(t, storePath, false)
@@ -447,7 +448,7 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 		if err != nil || !found || snapshot.Metadata["agent_name"] != "system-reviewer" || reviewTask.WorkerID != "" {
 			t.Fatalf("native reviewer: %+v %v", snapshot, err)
 		}
-		assertWorkflowReviewApproval(t, sessions.Store(), snapshot, "bash", `{"command":"git log -1; git diff --stat","category":"read","explanation":["Inspect repository history and changes"],"critical":false}`)
+		assertWorkflowReviewConsentRefusal(t, sessions.Store(), snapshot, "bash", `{"command":"git log -1; git diff --stat","category":"read","explanation":["Inspect repository history and changes"],"critical":false}`)
 		if snapshot.Metadata["runtime_mode"] != "read" {
 			t.Fatalf("review runtime mode = %v", snapshot.Metadata["runtime_mode"])
 		}
@@ -742,8 +743,8 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 							if snap.Metadata["agent_name"] != "system-reviewer-fixer" || snap.Metadata["runtime_mode"] != "readwrite" {
 								t.Fatalf("fix profile %+v", snap.Metadata)
 							}
-							assertWorkflowReviewApproval(t, sessions.Store(), snap, "git_add", `{"pathspec":["security.txt"]}`)
-							assertWorkflowReviewApproval(t, sessions.Store(), snap, "git_commit", `{"message":"security fix"}`)
+							assertWorkflowReviewConsentRefusal(t, sessions.Store(), snap, "git_add", `{"pathspec":["security.txt"]}`)
+							assertWorkflowReviewConsentRefusal(t, sessions.Store(), snap, "git_commit", `{"message":"security fix"}`)
 							lines := 2
 							if i == 4 {
 								lines = 81
@@ -1179,15 +1180,15 @@ func TestNativeReviewMessageReadFailureDoesNotSave(t *testing.T) {
 	}
 }
 
-func assertWorkflowReviewApproval(t *testing.T, sessions *pebblestore.SessionStore, snapshot pebblestore.SessionSnapshot, tool, args string) {
+func assertWorkflowReviewConsentRefusal(t *testing.T, sessions *pebblestore.SessionStore, snapshot pebblestore.SessionSnapshot, tool, args string) {
 	t.Helper()
 	svc := permission.NewService(pebblestore.NewPermissionStore(sessions.Underlying()), nil, nil)
 	svc.SetSessionResolver(sessions)
 	svc.SetBypassGate(func() (bool, string) { return true, "" })
-	svc.SetBypassPermissions(true)
-	result, err := svc.AuthorizeToolCall(permission.AuthorizationInput{SessionID: snapshot.ID, AccountScopeID: snapshot.AccountScopeID, RunID: "permission-check", CallID: tool, Mode: snapshot.Mode, ToolName: tool, ToolArguments: args})
-	if err != nil || result.Decision != permission.AuthorizationApprove || result.Source != "bypass_permissions" {
-		t.Fatalf("workflow approval %+v err %v", result, err)
+	svc.SetBypassPermissions(false)
+	result, err := svc.AuthorizeToolCall(permission.AuthorizationInput{SessionID: snapshot.ID, AccountScopeID: snapshot.AccountScopeID, RunID: "permission-check", CallID: tool, Mode: snapshot.Mode, ToolName: tool, ToolArguments: args, Overlay: &permission.Policy{Rules: []permission.PolicyRule{{Kind: permission.PolicyRuleKindTool, Tool: tool, Decision: permission.PolicyDecisionAsk}}}})
+	if err != nil || result.Decision != permission.AuthorizationDeny || result.Source != "worker_noninteractive" {
+		t.Fatalf("workflow consent refusal %+v err %v", result, err)
 	}
 	count, err := svc.PendingCount(snapshot.ID)
 	if err != nil || count != 0 {

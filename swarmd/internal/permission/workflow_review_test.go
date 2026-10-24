@@ -101,3 +101,51 @@ func TestWorkflowNativeReviewPermissions(t *testing.T) {
 		})
 	}
 }
+
+// Purpose: fixer Git mutations must use owner policy without bypass, and an ask
+// must not strand an unattended task. AuthorizeToolCall with durable task state
+// is the narrowest layer proving policy decisions and zero pending records.
+func TestWorkflowNativeReviewFixerGitPolicy(t *testing.T) {
+	for _, tool := range []string{"git_add", "git_commit"} {
+		for _, rule := range []PolicyDecision{PolicyDecisionAllow, PolicyDecisionAsk, PolicyDecisionDeny} {
+			t.Run(tool+"/"+string(rule), func(t *testing.T) {
+				db, err := store.Open(filepath.Join(t.TempDir(), "state.pebble"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer db.Close()
+				sessions := store.NewSessionStore(db)
+				task := &store.ProjectTaskRecord{ID: "task", ProjectID: "project", Title: "Fix review", Agent: "reviewer", Status: "in_progress", SessionID: "review", AutomationID: "workflow:review", ReviewFixes: "security"}
+				if err := sessions.PutProjectTask("account", task); err != nil {
+					t.Fatal(err)
+				}
+				svc := NewService(store.NewPermissionStore(db), nil, nil)
+				svc.SetSessionResolver(sessionAccessLookup{"review": {ID: "review", AccountScopeID: "account", Metadata: map[string]any{"project_id": "project", "task_id": "task", "agent_name": "system-reviewer-fixer"}}})
+				svc.SetBypassPermissions(false)
+				svc.SetBypassGate(func() (bool, string) { return true, "" })
+				args := `{"pathspec":["fix.go"]}`
+				if tool == "git_commit" {
+					args = `{"message":"Fix review finding"}`
+				}
+				got, err := svc.AuthorizeToolCall(AuthorizationInput{SessionID: "review", AccountScopeID: "account", RunID: "run", CallID: "call", Mode: "readwrite", ToolName: tool, ToolArguments: args, Overlay: &Policy{Rules: []PolicyRule{{Kind: PolicyRuleKindTool, Tool: tool, Decision: rule}}}})
+				want := AuthorizationDeny
+				if rule == PolicyDecisionAllow {
+					want = AuthorizationApprove
+				}
+				if err != nil || got.Decision != want {
+					t.Fatalf("decision %+v err %v want %s", got, err, want)
+				}
+				if rule == PolicyDecisionAsk && got.Source != "worker_noninteractive" {
+					t.Fatalf("ask source %+v", got)
+				}
+				if got.Source == "bypass_permissions" {
+					t.Fatalf("unexpected bypass %+v", got)
+				}
+				pending, err := svc.PendingCount("review")
+				if err != nil || pending != 0 {
+					t.Fatalf("pending %d err %v", pending, err)
+				}
+			})
+		}
+	}
+}
