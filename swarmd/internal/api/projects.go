@@ -3344,11 +3344,12 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			detail := map[string]any{"task": sanitizeProjectTaskForClient(task), "model_preview": s.buildTaskModelPreview(p, task)}
 			if folderTask(task) && task.Integration != nil && task.Integration.State == "in_folder" {
 				g, err := taskResultGit(r.Context(), task.WorkspacePath, task.BaseCommit, task.Integration.SourceHead)
+				detail["base_commit"], detail["head"], detail["delivery_state"] = task.BaseCommit, task.Integration.SourceHead, "in_folder"
 				if err != nil {
-					writeError(w, http.StatusInternalServerError, err)
-					return
+					detail["changes_error"] = controlMCPTruncate(err.Error(), 300)
+				} else {
+					detail["commits"], detail["files"] = g.Commits, g.Files
 				}
-				detail["base_commit"], detail["head"], detail["commits"], detail["files"], detail["delivery_state"] = g.BaseCommit, g.Head, g.Commits, g.Files, "in_folder"
 			}
 			writeJSON(w, http.StatusOK, detail)
 			return

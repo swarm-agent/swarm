@@ -408,9 +408,10 @@ func controlMCPTaskResult(c *controlMCPCall, args map[string]any) (any, error) {
 		if out["delivery_state"] == "in_folder" {
 			g, err := taskResultGit(c.request.Context(), controlMCPString(task, "workspace_path"), controlMCPString(task, "base_commit"), controlMCPString(out, "head"))
 			if err != nil {
-				return nil, err
+				out["changes_error"] = controlMCPTruncate(err.Error(), 300)
+			} else {
+				out["commits"], out["files"] = g.Commits, g.Files
 			}
-			out["commits"], out["files"] = g.Commits, g.Files
 			return out, nil
 		}
 		changesArgs := map[string]any{"session_id": sessionID, "diff_chars": 0}

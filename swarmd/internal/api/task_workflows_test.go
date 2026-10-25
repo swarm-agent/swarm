@@ -478,6 +478,26 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 		if resultMap["base_commit"] != launchHead || resultMap["head"] != deliveryHead || resultMap["delivery_state"] != "in_folder" {
 			t.Fatalf("folder result: %+v", resultMap)
 		}
+		// Purpose: unavailable Git history must not hide durable task results
+		// from detail readers or workflow/MCP callers. A missing base exercises
+		// both public reads without destructive repository manipulation.
+		folderTask.BaseCommit = strings.Repeat("0", 40)
+		if err := sessions.Store().PutProjectTask(principal.AccountScopeID, folderTask); err != nil {
+			t.Fatal(err)
+		}
+		detail, err := call.dispatch(http.MethodGet, "/v3/projects/"+project.ID+"/tasks/"+folderTask.ID, nil, nil)
+		if err != nil || controlMCPString(detail, "changes_error") == "" || detail["head"] != deliveryHead || detail["task"] == nil {
+			t.Fatalf("unavailable history hid detail: %+v %v", detail, err)
+		}
+		unavailable, err := controlMCPTaskResult(call, map[string]any{"project_id": project.ID, "task_id": folderTask.ID})
+		unavailableMap := controlMCPMap(unavailable)
+		if err != nil || controlMCPString(unavailableMap, "changes_error") == "" || unavailableMap["head"] != deliveryHead || unavailableMap["delivery_state"] != "in_folder" {
+			t.Fatalf("unavailable history hid result: %+v %v", unavailableMap, err)
+		}
+		folderTask.BaseCommit = launchHead
+		if err := sessions.Store().PutProjectTask(principal.AccountScopeID, folderTask); err != nil {
+			t.Fatal(err)
+		}
 		t.Cleanup(func() { sandbox.SetDefault(manager) })
 		for i := 0; i < 4; i++ {
 			sandbox.SetDefault(manager)
