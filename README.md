@@ -12,7 +12,7 @@ Install it on your Linux PC or server. Choose how to use it:
 
 - **MCP tools** for your AI: Claude Code, Codex or ChatGPT.
 - **SDK** for your own code: [`@swarm-agent/sdk`](packages/sdk).
-- **HTTP API** for apps and scripts: [frontend integration guide](docs/frontends.md).
+- **HTTP API** for your own client app: [building a client](docs/frontends.md), the way Swarm Console does it.
 - **CLI** for command-line setup and control: [`swarmctl`](swarmd/cmd/swarmctl).
 
 Through MCP, your AI can get work done in your folders two ways:
@@ -120,11 +120,11 @@ environment variable).
 ChatGPT or Claude plan, or an API key), asks which folders your work is in,
 creates a project with them, and gives the first piece of work.
 
-**Building your own frontend** (a console, a dashboard, a setup flow for your
-AI)? [docs/frontends.md](docs/frontends.md) is the path: find Swarm without a
-key (`GET http://127.0.0.1:7783/v3/hello`), install it, give your app its own
-key (`install.sh connect-app NAME`), set up a provider and a project, then
-follow the activity feed.
+**Building your own client** (a console, a dashboard, a web app)?
+[docs/frontends.md](docs/frontends.md) is the path, the same one Swarm Console
+and the web UI use: install Swarm, connect your client with an owner session of
+its own (`swarmctl client connect NAME`), read one snapshot and the live
+stream, and talk to the Orchestrator over the HTTP API.
 
 ## What your AI does with it
 

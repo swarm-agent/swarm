@@ -47,6 +47,41 @@ Launch is centered on reliable local operation. Preserve loopback-only defaults,
 - Do not make a public example the source of truth for a private application or require private changes to be made here first. Historical copy instructions do not authorize that workflow.
 - A reusable API defect or missing capability belongs here only as a generic product change with a bounded contract and validation. Keep the consumer implementation and operational details outside this repository.
 
+## One app, two ways to delegate
+
+Swarm is a headless app: the daemon holds every record and every rule. Nothing
+does work in Swarm except through an orchestrator, and there are two:
+
+- **Swarm's Orchestrator, used from a client.** A person uses a client (Swarm
+  Console is the reference client; the web UI is another) and talks to the
+  Orchestrator, a Swarm session. The client connects with an owner session and
+  uses the HTTP API: snapshot, live stream, the Orchestrator's session routes.
+  How to build one: [docs/frontends.md](docs/frontends.md).
+- **An outside AI through Swarm Control (MCP).** The person's own AI (Claude
+  Code, ChatGPT) drives Swarm with an AI key. MCP is a thin layer: each tool
+  calls the HTTP API, and holds no rules or state of its own.
+
+Rules:
+
+- **Each action exists once:** one service function, one rule set, one HTTP
+  route. The Orchestrator's native tools call that service; the MCP tools call
+  that route.
+- **No dead ends:** what an outside AI can do through MCP, the Orchestrator can
+  do natively, on the same records. A new capability is built once, then wired
+  to both in the same change. Never a second store, a second rule set or a
+  second name for the same thing.
+- **Approval depends on how the person works, not on the action:**
+  - In a client, the person approves in the client: tool prompts while a run is
+    live. Something that keeps running on its own (a worker) is proposed by the
+    Orchestrator, and the person accepts or denies it later.
+  - Through MCP, the person approves in their AI's chat, and Swarm enforces the
+    key's level (read, write, approve, manage); a worker made through MCP is
+    active at once.
+- **Work running on its own** (workers, schedules, workflows) acts only within
+  what was already accepted. A worker cannot make or change workers.
+- **Clients never use MCP, AI keys or the activity feed.** Agents never need a
+  client.
+
 ## Current Architecture
 
 ### V3 sessions, sync, and realtime
