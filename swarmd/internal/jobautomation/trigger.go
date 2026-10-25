@@ -1,6 +1,7 @@
 package jobautomation
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/url"
 	"regexp"
@@ -43,7 +44,9 @@ func (t *Trigger) UnmarshalJSON(data []byte) error {
 		}
 	}
 	var value plain
-	if err := json.Unmarshal(data, &value); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value); err != nil {
 		return err
 	}
 	*t = Trigger(value)

@@ -53,6 +53,35 @@ func (r *TriggerRunner) tickSchedule(ctx context.Context, a Automation) {
 	if err != nil {
 		return
 	}
+	// Upgrade reservations written before the full dispatch payload was stored.
+	if state.Pending == nil && state.ActiveJob == "schedule-dispatch-pending" && len(state.Events) > 0 {
+		receipt := state.Events[len(state.Events)-1]
+		slot, err := time.Parse(time.RFC3339, receipt.ID)
+		if err != nil {
+			return
+		}
+		zone := a.On.Schedule.Timezone
+		if zone == "" {
+			zone = "UTC"
+		}
+		loc, err := time.LoadLocation(zone)
+		if err != nil {
+			return
+		}
+		local := slot.In(loc)
+		brief := strings.NewReplacer("{{schedule.date}}", local.Format("2006-01-02"), "{{schedule.time}}", local.Format("15:04")).Replace(a.On.Start.Brief)
+		digest := sha256.Sum256([]byte(a.ID + "/" + state.Fingerprint + "/" + receipt.ID))
+		state.Pending = &scheduleDispatch{Automation: a, Brief: brief, Key: hex.EncodeToString(digest[:]), ReceiptID: receipt.ID}
+		if s.db.PutJSON(triggerKey(a), state) != nil {
+			return
+		}
+	}
+	// Recover an already reserved dispatch, not a missed schedule slot.
+	if state.Pending != nil {
+		if !r.finishScheduleDispatch(ctx, a, &state, true) {
+			return
+		}
+	}
 	now := s.now()
 	key := triggerKey(a)
 	if r.scheduleSeen == nil {
@@ -104,15 +133,8 @@ func (r *TriggerRunner) tickSchedule(ctx context.Context, a Automation) {
 	if len(state.Events) > maxTriggerItems {
 		state.Events = state.Events[len(state.Events)-maxTriggerItems:]
 	}
-	// Reserve before dispatch. An interrupted dispatch with an unknown job ID
-	// must fail closed rather than overlap a possibly running job after restart.
-	if eligible {
-		state.ActiveJob = "schedule-dispatch-pending"
-	}
-	if s.db.PutJSON(key, state) != nil {
-		return
-	}
 	if !eligible {
+		_ = s.db.PutJSON(key, state)
 		return
 	}
 	zone := a.On.Schedule.Timezone
@@ -126,21 +148,41 @@ func (r *TriggerRunner) tickSchedule(ctx context.Context, a Automation) {
 	local := slot.In(loc)
 	brief := strings.NewReplacer("{{schedule.date}}", local.Format("2006-01-02"), "{{schedule.time}}", local.Format("15:04")).Replace(a.On.Start.Brief)
 	digest := sha256.Sum256([]byte(a.ID + "/" + state.Fingerprint + "/" + receipt.ID))
-	status, job, failure := r.advanceQueued(ctx, a, brief, hex.EncodeToString(digest[:]))
-	e := &state.Events[len(state.Events)-1]
-	e.State, e.JobID, e.Error = status, job, failure
+	state.Pending = &scheduleDispatch{Automation: a, Brief: brief, Key: hex.EncodeToString(digest[:]), ReceiptID: receipt.ID}
+	state.ActiveJob = "schedule-dispatch-pending"
+	if s.db.PutJSON(key, state) != nil {
+		return
+	}
+	r.finishScheduleDispatch(ctx, a, &state, false)
+}
+
+func (r *TriggerRunner) finishScheduleDispatch(ctx context.Context, a Automation, state *triggerState, recovering bool) bool {
+	pending := state.Pending
+	status, job, failure := r.advanceQueued(ctx, pending.Automation, pending.Brief, pending.Key)
+	// A recovery error does not prove the original dispatch failed. Retain the
+	// reservation until the idempotent start boundary yields its job ID.
+	if recovering && status != "started" {
+		return false
+	}
+	for i := range state.Events {
+		if state.Events[i].ID == pending.ReceiptID {
+			state.Events[i].State, state.Events[i].JobID, state.Events[i].Error = status, job, failure
+		}
+	}
+	state.Pending = nil
 	state.ActiveJob = ""
 	if status == "started" {
 		state.ActiveJob = job
 	}
-	if s.db.PutJSON(key, state) != nil {
-		return
+	if r.Store.db.PutJSON(triggerKey(a), state) != nil {
+		return false
 	}
 	if r.Signal != nil {
 		kind := "workflow.trigger.fired"
 		if status == "failed" {
 			kind = "workflow.trigger.failed"
 		}
-		r.Signal(a, kind, e.ID)
+		r.Signal(a, kind, pending.ReceiptID)
 	}
+	return true
 }

@@ -117,11 +117,24 @@ func TestScheduleSlotsAndRestart(t *testing.T) {
 	if err := h.db.PutJSON(triggerKey(a), state); err != nil {
 		t.Fatal(err)
 	}
+	r.Start = func(_ context.Context, _ Automation, brief, key string) (string, error) {
+		starts++
+		if key == "" || brief == "" {
+			t.Fatal("missing recovery payload")
+		}
+		return "recovered-job", nil
+	}
+	running = true
+	h.restart()
+	h.store.now = func() time.Time { return now }
+	r.Store = h.store
+	r.scheduleSeen = nil
+	r.Tick(ctx)
 	now = now.Add(time.Minute)
 	r.Tick(ctx)
 	events, err = h.store.TriggerEvents(a)
-	if err != nil || starts != 2 || len(events) != 5 || events[4].State != "failed" {
-		t.Fatalf("uncertain dispatch overlapped: %+v starts=%d err=%v", events, starts, err)
+	if err != nil || starts != 3 || len(events) != 5 || events[3].JobID != "recovered-job" || events[4].State != "skipped" {
+		t.Fatalf("recovery: %+v starts=%d err=%v", events, starts, err)
 	}
 }
 
@@ -159,5 +172,115 @@ func TestTriggerOnlyMatching(t *testing.T) {
 				t.Fatalf("deliveries=%+v", ds)
 			}
 		})
+	}
+}
+
+// Purpose: consume must not poison the account cursor when the owning trigger
+// is deleted. The real store/runner proves both that completion and later work
+// still create worker-scoped deliveries.
+func TestDeletedTriggerContinuesProcessing(t *testing.T) {
+	h := newHarness(t)
+	folder := t.TempDir()
+	a := testAutomation(folder)
+	a.On = &Trigger{Event: TriggerEvent{Source: "webhook", ID: "id"}, Start: TriggerStart{Worker: "coder-1", Brief: "work"}}
+	a = h.automation(a)
+	b := testAutomation(folder)
+	b.Name = "handler"
+	b.Scope.Worker = "coder-1"
+	b = h.automation(b)
+	h.process()
+	if err := h.store.Delete(testAccount, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"run-deleted", "run-later"} {
+		result := workerResult(folder, id)
+		if id == "run-deleted" {
+			result.TriggerID = a.ID
+		}
+		h.results.results[id] = result
+		h.jobEnd(id, "", "succeeded", "workflow_trigger")
+		h.process()
+		ds := h.deliveries(result.JobID)
+		if len(ds) != 1 || ds[0].AutomationID != b.ID {
+			t.Fatalf("%s: %+v", id, ds)
+		}
+	}
+}
+
+// Purpose: Trigger.UnmarshalJSON is nested inside strict HTTP/import decoders;
+// reject misspellings at every nested source/start boundary without mutating
+// the destination, rather than silently selecting UTC or a default interval.
+func TestTriggerRejectsUnknownFields(t *testing.T) {
+	for _, data := range []string{
+		`{"schedule":{"cron":"* * * * *","timzone":"UTC"}}`,
+		`{"event":{"source":"pull","evry_seconds":60}}`,
+		`{"schedule":{"cron":"* * * * *"},"strat":{}}`,
+		`{"schedule":{"cron":"* * * * *"},"start":{"wroker":"worker"}}`,
+	} {
+		value := Trigger{Start: TriggerStart{Worker: "unchanged"}}
+		if err := json.Unmarshal([]byte(data), &value); err == nil {
+			t.Fatalf("accepted %s", data)
+		}
+		if value.Start.Worker != "unchanged" {
+			t.Fatal("mutated rejected definition")
+		}
+	}
+}
+
+// Purpose: a crash reservation must survive restart;
+// finishScheduleDispatch must reuse the exact start identity, keep failed
+// recovery pending, and suppress new starts while the recovered job runs.
+func TestSchedulePendingRecovery(t *testing.T) {
+	h := newHarness(t)
+	now := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
+	h.store.now = func() time.Time { return now }
+	a := testAutomation(t.TempDir())
+	a.On = &Trigger{Schedule: &TriggerSchedule{Cron: "* * * * *"}, Start: TriggerStart{Worker: "worker-1", Brief: "original"}}
+	a = h.automation(a)
+	state, err := h.store.triggerState(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := now.Format(time.RFC3339)
+	state.ActiveJob = "schedule-dispatch-pending"
+	state.Pending = &scheduleDispatch{Automation: a, Brief: "original", Key: "reserved-key", ReceiptID: id}
+	state.Events = []TriggerReceipt{{ID: id, State: "skipped"}}
+	state.NextPoll = now.Add(time.Minute).UnixMilli()
+	if err := h.db.PutJSON(triggerKey(a), state); err != nil {
+		t.Fatal(err)
+	}
+	h.restart()
+	now = now.Add(time.Hour)
+	h.store.now = func() time.Time { return now }
+	attempts := 0
+	r := &TriggerRunner{Store: h.store, Account: func() string { return testAccount }, Start: func(_ context.Context, original Automation, brief, key string) (string, error) {
+		attempts++
+		if brief != "original" || key != "reserved-key" || original.On.Start.Worker != "worker-1" {
+			t.Fatalf("changed recovery payload: %+v %q %q", original, brief, key)
+		}
+		if attempts == 1 {
+			return "", errors.New("temporarily unavailable")
+		}
+		return "existing-job", nil
+	}, Running: func(_ context.Context, _ Automation, job string) (bool, error) {
+		if job != "existing-job" {
+			t.Fatalf("wrong job %s", job)
+		}
+		return true, nil
+	}}
+	r.Tick(context.Background())
+	state, err = h.store.triggerState(a)
+	if err != nil || state.Pending == nil || state.ActiveJob != "schedule-dispatch-pending" {
+		t.Fatalf("lost reservation: %+v %v", state, err)
+	}
+	r.Tick(context.Background())
+	state, err = h.store.triggerState(a)
+	if err != nil || state.Pending != nil || state.ActiveJob != "existing-job" || state.Events[0].JobID != "existing-job" {
+		t.Fatalf("recovery: %+v %v", state, err)
+	}
+	now = now.Add(time.Minute)
+	r.Tick(context.Background())
+	if attempts != 2 {
+		t.Fatalf("new dispatch overlapped: %d", attempts)
 	}
 }

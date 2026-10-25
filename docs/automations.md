@@ -46,9 +46,9 @@ restart (no replay). Recent `events` record started, skipped or failed slots;
 reads include `next_run_at` as Unix milliseconds for enabled schedules. After
 restart a skipped receipt summarizes the oldest pending slot, not every missed
 minute. Nonexistent local minutes do not run; repeated DST minutes may each run.
-If the daemon exits during dispatch before recording its job ID, subsequent
-slots fail closed with an explicit unknown-outcome error rather than risk
-starting overlapping work; operator reconciliation is required.
+If the daemon exits during dispatch before recording its job ID, it retries the
+reserved dispatch with its original idempotency key and brief to recover the job
+ID before allowing later slots. Recovery errors retain the reservation for retry.
 
 With `on`, `steps` may be empty: a trigger-only workflow just starts jobs.
 Trigger-started jobs match the starting workflow's own steps, or ordinary

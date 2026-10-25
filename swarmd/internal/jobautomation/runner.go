@@ -429,7 +429,7 @@ func (r *Runner) consume(ctx context.Context, account string, sig pebblestore.Si
 	triggerOwnsSteps := false
 	if result.TriggerID != "" {
 		origin, err := r.store.Get(account, result.TriggerID)
-		if err != nil {
+		if err != nil && !errors.Is(err, ErrNotFound) {
 			return err
 		}
 		triggerOwnsSteps = len(origin.Steps) > 0

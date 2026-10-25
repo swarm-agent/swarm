@@ -23,14 +23,22 @@ type TriggerReceipt struct {
 	Error      string         `json:"error,omitempty"`
 	Item       map[string]any `json:"item,omitempty"`
 }
+type scheduleDispatch struct {
+	Automation Automation `json:"automation"`
+	Brief      string     `json:"brief"`
+	Key        string     `json:"key"`
+	ReceiptID  string     `json:"receipt_id"`
+}
+
 type triggerState struct {
-	ActiveJob   string           `json:"active_job,omitempty"`
-	Fingerprint string           `json:"fingerprint"`
-	Baseline    bool             `json:"baseline"`
-	Seen        []string         `json:"seen"`
-	Events      []TriggerReceipt `json:"events"`
-	NextPoll    int64            `json:"next_poll"`
-	Failures    int              `json:"failures"`
+	Pending     *scheduleDispatch `json:"pending_schedule,omitempty"`
+	ActiveJob   string            `json:"active_job,omitempty"`
+	Fingerprint string            `json:"fingerprint"`
+	Baseline    bool              `json:"baseline"`
+	Seen        []string          `json:"seen"`
+	Events      []TriggerReceipt  `json:"events"`
+	NextPoll    int64             `json:"next_poll"`
+	Failures    int               `json:"failures"`
 }
 
 func triggerKey(a Automation) string {
@@ -49,7 +57,7 @@ func (s *Store) triggerState(a Automation) (triggerState, error) {
 	hash := sha256.Sum256(data)
 	fingerprint := hex.EncodeToString(hash[:])
 	if state.Fingerprint != fingerprint {
-		state = triggerState{Fingerprint: fingerprint, ActiveJob: state.ActiveJob}
+		state = triggerState{Fingerprint: fingerprint, ActiveJob: state.ActiveJob, Pending: state.Pending, Events: state.Events}
 	}
 	return state, nil
 }
