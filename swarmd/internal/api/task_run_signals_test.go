@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/jobautomation"
+	"swarm/packages/swarmd/internal/modelprofile"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -221,14 +222,14 @@ func TestTaskRunOrchestratorWorkflowParity(t *testing.T) {
 	}
 }
 
-// Purpose: an explicit Designer/Finder task_progress blocker must survive run
+// Purpose: an explicit built-in agent task_progress blocker must survive run
 // completion and must never trigger succeeded workflows. A normal completion
 // must still succeed. This temporary-store executor/tool/runner test is the
 // narrowest layer spanning role tool admission, projectTaskDeclaredBlocker,
 // signalTaskRunEnded and workflow delivery selection. The provider is scripted;
 // this proves lifecycle behavior, not live model behavior.
 func TestTaskRunDeclaredBlockerWorkflowOutcome(t *testing.T) {
-	for _, role := range []string{"designer", "finder"} {
+	for _, role := range []string{"swarm", "coder", "designer", "finder"} {
 		for _, blocked := range []bool{true, false} {
 			name := role + "-completed"
 			if blocked {
@@ -237,6 +238,7 @@ func TestTaskRunDeclaredBlockerWorkflowOutcome(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				f := newConfirmationFixture(t, filepath.Join(t.TempDir(), "store"), nil)
 				defer f.close()
+				f.server.SetModelProfileService(modelprofile.NewService(pebblestore.NewModelProfileStore(f.sessions.Store().Underlying())))
 				const reason = "The required file BRANDBOOK.md is missing"
 				f.runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
 					if blocked && !hasFunctionCallOutput(req.Input) {
@@ -247,7 +249,7 @@ func TestTaskRunDeclaredBlockerWorkflowOutcome(t *testing.T) {
 				}
 				folder := t.TempDir()
 				binding := seedSessionsV3PrimaryAuthority(t, f.server, folder)
-				raw, _ := json.Marshal(map[string]any{"client_request_id": name, "workspace_path": folder, "workspace_name": filepath.Base(folder), "swarm_id": "host-swarm-id", "workspace_binding_id": binding, "target_kind": "host", "target_relationship": "self", "title": name, "mode": sessionruntime.ModeAuto, "agent_name": "system-" + role, "preference": pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model"}})
+				raw, _ := json.Marshal(map[string]any{"client_request_id": name, "workspace_path": folder, "workspace_name": filepath.Base(folder), "swarm_id": "host-swarm-id", "workspace_binding_id": binding, "target_kind": "host", "target_relationship": "self", "title": name, "mode": sessionruntime.ModeAuto, "model_profile": map[string]any{"temporary": map[string]string{"provider": "test-provider", "model": "test-model", "thinking": "medium"}}, "agent_name": map[string]string{"swarm": "system-orchestrator", "coder": "system-coder", "designer": "system-designer", "finder": "system-finder"}[role], "preference": pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model"}})
 				code, body := f.do(http.MethodPost, "/v3/sessions", string(raw))
 				if code != http.StatusOK {
 					t.Fatalf("create: %d %s", code, body)
@@ -303,6 +305,10 @@ func TestTaskRunDeclaredBlockerWorkflowOutcome(t *testing.T) {
 				}
 				if stored.Status != wantStatus || (blocked && stored.LastError != reason) {
 					t.Fatalf("task outcome: %+v", stored)
+				}
+				outcome, err := f.server.waitTaskJob(ctx, p.AccountScopeID, taskRunJobID(task.ProjectID, task.ID))
+				if err != nil || outcome.Status != wantEnd || (blocked && outcome.Error != reason) {
+					t.Fatalf("workflow outcome: %+v, error: %v", outcome, err)
 				}
 				page, err := feed.ListAfter(0, 100, pebblestore.SignalFilter{Account: p.AccountScopeID, KindPrefixes: []string{"task.run"}})
 				if err != nil {

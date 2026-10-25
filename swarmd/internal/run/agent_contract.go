@@ -332,6 +332,11 @@ func resolveAgentToolStates(profile pebblestore.AgentProfile, knownTools map[str
 		}
 	}
 	if agentruntime.IsSwarmOrchestratorAgentName(profile.Name) {
+		// Swarm also executes workflow tasks and must be able to declare a
+		// structured blocker instead of reporting successful completion.
+		if _, implemented := knownTools["task_progress"]; implemented {
+			resolved.Tools["task_progress"] = ResolvedAgentTool{Enabled: true, Source: "runtime.task_lifecycle"}
+		}
 		// A persisted or forged snapshot cannot re-enable session-plan tools.
 		for _, name := range []string{"plan_manage", "exit_plan_mode"} {
 			resolved.Tools[name] = ResolvedAgentTool{Enabled: false, Source: "runtime.orchestrator_task_cards"}

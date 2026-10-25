@@ -106,6 +106,7 @@ type AgentRequest struct {
 type AgentOutcome struct {
 	JobID    string
 	Status   string
+	Error    string // The agent's declared blocker or execution failure reason.
 	Result   *Result
 	Verdict  string
 	Findings string
@@ -987,7 +988,11 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 		return failure
 	}
 	if NormalizeStatus(outcome.Status) != StatusSucceeded {
-		return stepFailure{reason: "the job " + jobID + " ended " + outcome.Status, next: "rerun"}
+		reason := outcome.Error
+		if strings.TrimSpace(reason) == "" {
+			reason = "the job " + jobID + " ended " + outcome.Status
+		}
+		return stepFailure{reason: reason, next: "rerun"}
 	}
 	if step.Produce {
 		return r.recordProduced(ctx, d, step, outcome, out)
