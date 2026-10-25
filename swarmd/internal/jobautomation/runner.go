@@ -455,6 +455,11 @@ func (r *Runner) consume(ctx context.Context, account string, sig pebblestore.Si
 		if err != nil {
 			return fmt.Errorf("record delivery: %w", err)
 		}
+		if created && d.State == StateBlocked {
+			// Terminal-at-creation deliveries are not dispatched; still publish
+			// their blocker and persist the normal completion timestamp.
+			r.finish(&d, StateBlocked)
+		}
 		if !created && d.ID != DeliveryID(result.JobID, result.Followup, a.ID, a.Revision) {
 			r.skippedDuplicateHead(d, *result)
 		}

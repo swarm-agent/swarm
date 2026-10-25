@@ -5,8 +5,9 @@ import "testing"
 // Requirement: reopen results pin their new head, skip duplicate heads, and
 // terminate blocked follow-ups without review, even for success-only workflows.
 // Threat: reviewing stale work or hiding the worker's blocker behind a review.
-// Owners: Runner.consume and Store.CreateDelivery. The real store/signal runner
-// with bounded agent boundaries proves persisted rounds and dispatch counts.
+// Owners: Runner.consume, Runner.finish and Store.CreateDelivery. The real
+// store/signal runner with bounded agent boundaries proves persisted rounds,
+// dispatch counts, and visible completion signals/timestamps for blockers.
 func TestReopenRoundOutcome(t *testing.T) {
 	for _, outcome := range []string{"committed", "same head", "blocked"} {
 		t.Run(outcome, func(t *testing.T) {
@@ -56,8 +57,28 @@ func TestReopenRoundOutcome(t *testing.T) {
 				t.Fatalf("round head = %+v", d)
 			}
 			if outcome == "blocked" {
-				if d.State != StateBlocked || d.BlockedReason != result.Error || len(h.agents.started) != 1 || d.Steps[0].Attempts != 0 {
+				if d.State != StateBlocked || d.BlockedReason != result.Error || d.FinishedAt == 0 || len(h.agents.started) != 1 || d.Steps[0].Attempts != 0 {
 					t.Fatalf("blocker lost or review started: %+v", d)
+				}
+				blocked := h.signalsOf("automation.delivery.blocked")
+				if len(blocked) != 1 {
+					t.Fatalf("blocked signals = %+v", blocked)
+				}
+				sig := blocked[0]
+				if sig.Refs["delivery_id"] != d.ID || sig.Attrs["reason"] != result.Error || sig.Attrs["round"] != "1" || sig.Attrs["head"] != result.Git.Head || sig.Attrs["next"] == "" {
+					t.Fatalf("blocked signal = %+v", sig)
+				}
+				finished := 0
+				for _, sig := range h.signalsOf("automation.delivery.finished") {
+					if sig.Refs["delivery_id"] == d.ID {
+						finished++
+						if sig.Attrs["state"] != StateBlocked {
+							t.Fatalf("finished signal = %+v", sig)
+						}
+					}
+				}
+				if finished != 1 {
+					t.Fatalf("finished signals for blocked round = %d", finished)
 				}
 			} else if len(h.agents.started) != 2 || h.agents.started[1].Head != result.Git.Head || d.Steps[0].State != StateSucceeded {
 				t.Fatalf("new head not reviewed: %+v", d)
