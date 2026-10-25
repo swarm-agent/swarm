@@ -5248,7 +5248,7 @@ func (e *sessionV3Executor) composeSessionV3ResolvedInstructions(job sessionV3Ex
 	mediaContract := resolved.MediaContract
 	for _, definition := range tools {
 		if definition.Name == "media_inspect" {
-			instructions = runruntime.AppendSessionMediaInstructions(instructions, mediaContract)
+			instructions = runruntime.AppendSessionMediaInstructions(instructions, mediaContract, tools...)
 			break
 		}
 	}
