@@ -3,6 +3,8 @@ package claudecode
 import (
 	"encoding/json"
 	"strings"
+
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 )
 
 const emptyTranscriptPrompt = "Continue the task using the latest context."
@@ -108,9 +110,17 @@ func contentText(raw any) string {
 		switch strings.ToLower(strings.TrimSpace(stringField(value, "type"))) {
 		case "input_text", "output_text", "text":
 			return strings.TrimSpace(stringField(value, "text"))
+		case "session_media":
+			// The CLI transcript is text-only. Image perception is available
+			// through MCP media_inspect results, not this attachment reference.
+			payload, ok := value["media"].(provideriface.SessionMediaPayload)
+			if !ok || strings.TrimSpace(payload.AssetID) == "" {
+				return "[Attachment not delivered: you cannot see or hear this attachment directly; its asset_id is unavailable.]"
+			}
+			arguments, _ := json.Marshal(map[string]string{"asset_id": payload.AssetID})
+			return "[Attachment not delivered natively: you cannot see or hear this attachment directly. To inspect it, call media_inspect with " + string(arguments) + ".]"
 		case "input_image", "image", "input_file", "file":
-			// Media is not admitted for this provider (no media declaration), so
-			// only a placeholder reaches the transcript.
+			// Raw attachment parts are not delivered through the text transcript.
 			return "[attachment omitted]"
 		}
 		if text := strings.TrimSpace(stringField(value, "text")); text != "" {
