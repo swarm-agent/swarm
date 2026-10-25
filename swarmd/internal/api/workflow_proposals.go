@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/jobautomation"
@@ -58,7 +59,11 @@ func (s *Server) ManageWorkflows(ctx context.Context, p identity.Principal, sess
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"automation": jobAutomationView(a), "next": "This workflow waits for the person to accept or discard it. Nothing more is needed for this request."}, nil
+		effect := "Accepting adds a new workflow."
+		if a.BaseID != "" {
+			effect = fmt.Sprintf("Accepting replaces %s (revision %d); it keeps that workflow's id.", a.Name, a.BaseRevision)
+		}
+		return map[string]any{"automation": jobAutomationView(a), "next": effect + " This workflow waits for the person to accept or discard it. Nothing more is needed for this request."}, nil
 	case "enable", "disable":
 		a, err := s.workflowByReference(caller, args)
 		if err != nil {

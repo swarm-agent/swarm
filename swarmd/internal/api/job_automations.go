@@ -829,10 +829,16 @@ func jobAutomationView(a jobautomation.Automation) map[string]any {
 	} else if !a.Enabled {
 		state = "disabled"
 	}
-	return map[string]any{
+	view := map[string]any{
 		"id": a.ID, "name": a.Name, "scope": a.Scope, "when": a.When, "enabled": a.Enabled, "retries": a.Retries, "result": a.Result,
 		"state": state, "steps": a.Steps, "revision": a.Revision, "created_at": a.CreatedAt, "updated_at": a.UpdatedAt,
 	}
+	if a.Proposed && a.BaseID != "" {
+		// Propose binds the base by exact name; AcceptProposal checks that
+		// same name and base revision before replacing the active definition.
+		view["replaces"] = map[string]any{"id": a.BaseID, "revision": a.BaseRevision, "name": a.Name}
+	}
+	return view
 }
 
 // jobDeliveryView is a delivery without its full result (the result is

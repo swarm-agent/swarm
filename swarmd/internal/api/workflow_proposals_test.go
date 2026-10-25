@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,7 +15,9 @@ import (
 // Purpose: the native lifecycle and HTTP acceptance boundary must keep proposals
 // inert, reject AI/agent acceptance and non-owner scripts without changing state,
 // and preserve active revisions until explicit acceptance. Real routes and Pebble
-// prove these postconditions without a provider or a live daemon.
+// prove these postconditions without a provider or a live daemon. The shared
+// jobAutomationView and ManageWorkflows results must also distinguish replacement
+// proposals from new workflows, without leaking replacement metadata after acceptance.
 func TestWorkflowNativeProposals(t *testing.T) {
 	s, store := newRunOwnerServer(t)
 	folder := t.TempDir()
@@ -26,12 +29,59 @@ func TestWorkflowNativeProposals(t *testing.T) {
 	args := map[string]any{"action": "propose", "name": "review", "project": "Project", "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "review"}}}
 	propose := func() jobautomation.Automation {
 		t.Helper()
-		if _, err := s.ManageWorkflows(context.Background(), p, "session", args); err != nil {
+		out, err := s.ManageWorkflows(context.Background(), p, "session", args)
+		if err != nil {
 			t.Fatal(err)
 		}
 		list := storedAutomations(t, store)
 		for _, a := range list {
 			if a.Proposed {
+				check := func(view map[string]any) {
+					t.Helper()
+					if a.BaseID == "" {
+						if _, exists := view["replaces"]; exists {
+							t.Fatal("new workflow claims replacement", view)
+						}
+						return
+					}
+					base, err := store.Get(p.AccountScopeID, a.BaseID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					replaces, ok := view["replaces"].(map[string]any)
+					if !ok || replaces["id"] != base.ID || replaces["revision"] != base.Revision || replaces["name"] != base.Name {
+						t.Fatal("incorrect replacement", view, base)
+					}
+				}
+				check(jobAutomationView(a))
+				response := out.(map[string]any)
+				check(response["automation"].(map[string]any))
+				message := "Accepting adds a new workflow."
+				if a.BaseID != "" {
+					message = fmt.Sprintf("Accepting replaces %s (revision %d); it keeps that workflow's id.", a.Name, a.BaseRevision)
+				}
+				if !strings.Contains(response["next"].(string), message) {
+					t.Fatal("missing acceptance effect", response)
+				}
+				got, err := s.ManageWorkflows(context.Background(), p, "session", map[string]any{"action": "get", "id": a.ID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				check(got.(map[string]any)["automation"].(map[string]any))
+				listed, err := s.ManageWorkflows(context.Background(), p, "session", map[string]any{"action": "list"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				for _, view := range listed.(map[string]any)["automations"].([]map[string]any) {
+					if view["id"] == a.ID {
+						check(view)
+						found = true
+					}
+				}
+				if !found {
+					t.Fatal("proposal absent from list")
+				}
 				return a
 			}
 		}
@@ -59,6 +109,24 @@ func TestWorkflowNativeProposals(t *testing.T) {
 		}
 		w := httptest.NewRecorder()
 		s.handleJobAutomations(w, r)
+		if w.Code == http.StatusOK {
+			var response struct {
+				Automation map[string]any `json:"automation"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			wantID := a.ID
+			if a.BaseID != "" {
+				wantID = a.BaseID
+			}
+			if response.Automation["id"] != wantID || response.Automation["state"] != "active" {
+				t.Fatal("acceptance changed workflow identity", response)
+			}
+			if _, exists := response.Automation["replaces"]; exists {
+				t.Fatal("accepted workflow still claims replacement", response)
+			}
+		}
 		return w.Code
 	}
 	if got := accept(&pebblestore.ScopedTokenRecord{Scopes: scopesForLevel(t, "full")}, a.Revision); got != 403 {
@@ -83,6 +151,9 @@ func TestWorkflowNativeProposals(t *testing.T) {
 	}
 	args["steps"] = []any{map[string]any{"type": "run", "command": "deliver/check.sh"}}
 	a = propose()
+	if a.BaseID != active.ID || a.BaseRevision != active.Revision || a.ID == active.ID {
+		t.Fatal("replacement proposal lost its active base", a, active)
+	}
 	still, _ := store.Get(p.AccountScopeID, active.ID)
 	if still.Steps[0].Type != "agent" || !still.Matches(result) {
 		t.Fatal("proposal changed active")

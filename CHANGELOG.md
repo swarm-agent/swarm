@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Show which workflow and revision a proposal replaces, and explain whether accepting replaces it or adds a new workflow. Docs impact: none
+
 - Trigger task workflows for primary Orchestrator delegations as well as direct MCP tasks, preserving internal-agent and automation loop exclusions. Docs impact: none
 
 - Add Orchestrator workflow proposals with person-only revision acceptance, discard, and native workflow management. Docs impact: none
