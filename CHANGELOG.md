@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Enable read-only image inspection for the native reviewer without granting write or media-generation tools. Docs impact: none
+
 - Clarify that the run media contract describes media_inspect inputs, not restrictions on other media tools. Docs impact: none
 - Fix pinning a worker's model for token and tailnet callers, not only the local socket. Docs impact: none
 

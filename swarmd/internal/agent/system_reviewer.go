@@ -26,7 +26,7 @@ TESTS RUN: none (review is read-only)`
 
 func ReviewerAgentToolContract() *store.AgentToolContract {
 	tools := map[string]store.AgentToolConfig{}
-	for _, name := range []string{"read", "search", "find", "list", "websearch", "webfetch", "bash"} {
+	for _, name := range []string{"read", "search", "find", "list", "websearch", "webfetch", "bash", "media_inspect"} {
 		tools[name] = store.AgentToolConfig{Enabled: store.BoolPtr(true)}
 	}
 	return &store.AgentToolContract{Preset: "custom", Tools: tools}
