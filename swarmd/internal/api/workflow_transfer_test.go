@@ -322,3 +322,61 @@ func TestWorkflowExportReadScopeHTTP(t *testing.T) {
 		t.Fatalf("read-only export wrote files: %v %v", entries, err)
 	}
 }
+
+// Purpose: ImportWorkflow must reject instance overrides on directory imports
+// before saving any file, preventing silent name collisions and partial writes.
+// MCP dispatch over the real store is the narrowest shared-service proof; the
+// subsequent unbound directory import proves distinct definitions stay distinct.
+func TestWorkflowDirectoryImportRefusesOverrides(t *testing.T) {
+	server, store := newRunOwnerServer(t)
+	folder := t.TempDir()
+	c := &controlMCPCall{server: server, request: requestWithScopedToken(withTestPrincipal(httptest.NewRequest("POST", "/mcp", nil)), &pebblestore.ScopedTokenRecord{Scopes: scopesForLevel(t, "full")})}
+	c.next = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v3/projects" {
+			t.Errorf("unexpected route %s", r.URL.Path)
+		}
+		writeJSON(w, 200, map[string]any{"projects": []any{map[string]any{"id": "proj-1", "name": "Site", "workspaces": []any{map[string]any{"path": folder, "workspace_id": "ws-1", "role": "primary_code"}}}}})
+	})
+	wireWorkflowRoutes(c)
+	for _, name := range []string{"first", "second"} {
+		data, err := json.Marshal(map[string]any{"swarm_workflow": 1, "name": name, "scope": map[string]any{}, "steps": []any{map[string]any{"type": "agent", "worker": "coder", "brief": name}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(folder, name+".json"), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, field := range []string{"name", "with"} {
+		args := map[string]any{"path": ".", "project": "Site"}
+		if field == "name" {
+			args[field] = "merged"
+		} else {
+			args[field] = map[string]string{"brand": "swarm"}
+		}
+		_, err := controlMCPImportWorkflow(c, args)
+		if err == nil || !strings.Contains(err.Error(), "single-file") {
+			t.Fatalf("expected directory override refusal: %v", err)
+		}
+		if len(storedAutomations(t, store)) != 0 {
+			t.Fatal("refused import mutated store")
+		}
+	}
+	if _, err := controlMCPImportWorkflow(c, map[string]any{"path": ".", "project": "Site"}); err != nil {
+		t.Fatal(err)
+	}
+	saved := storedAutomations(t, store)
+	if len(saved) != 2 {
+		t.Fatalf("expected two workflows: %+v", saved)
+	}
+	names := map[string]bool{}
+	for _, a := range saved {
+		names[a.Name] = true
+		if a.Steps[0].Brief != a.Name {
+			t.Fatal("definition overwritten")
+		}
+	}
+	if !names["first"] || !names["second"] {
+		t.Fatal(names)
+	}
+}

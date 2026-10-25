@@ -268,7 +268,11 @@ func (a jobAutomationAgents) Role(ctx context.Context, account, name string) (st
 	if !ok || principal.AccountScopeID != account {
 		return "", errors.New("agent steps run only for the machine owner's automations")
 	}
-	worker, err := c.resolveWorker(name)
+	resolvedID, err := a.s.workflowRuntimeWorker(c, account, name)
+	if err != nil {
+		return "", err
+	}
+	worker, err := c.resolveWorker(resolvedID)
 	if err != nil {
 		return "", err
 	}
@@ -296,7 +300,11 @@ func (a jobAutomationAgents) Start(ctx context.Context, req jobautomation.AgentR
 	if !ok || principal.AccountScopeID != req.Account {
 		return "", &jobautomation.RefusedError{Reason: "agent steps run only for the machine owner's automations"}
 	}
-	worker, err := c.resolveWorker(req.Worker)
+	resolvedID, err := s.workflowRuntimeWorker(c, req.Account, req.Worker)
+	if err != nil {
+		return "", &jobautomation.RefusedError{Reason: err.Error()}
+	}
+	worker, err := c.resolveWorker(resolvedID)
 	if err != nil {
 		return "", &jobautomation.RefusedError{Reason: err.Error()}
 	}
@@ -856,6 +864,7 @@ func jobAutomationView(a jobautomation.Automation) map[string]any {
 		state = "disabled"
 	}
 	view := map[string]any{
+		"inputs": a.Inputs, "with": a.With,
 		"id": a.ID, "name": a.Name, "scope": a.Scope, "when": a.When, "enabled": a.Enabled, "retries": a.Retries, "result": a.Result,
 		"state": state, "steps": a.Steps, "revision": a.Revision, "created_at": a.CreatedAt, "updated_at": a.UpdatedAt,
 	}
@@ -941,16 +950,18 @@ func jobDeliveryView(d jobautomation.Delivery) map[string]any {
 // ---- HTTP ------------------------------------------------------------------
 
 type jobAutomationBody struct {
-	On        *jobautomation.Trigger `json:"on,omitempty"`
-	RotateKey bool                   `json:"rotate_key,omitempty"`
-	Project   string                 `json:"project,omitempty"`
-	Workspace string                 `json:"workspace,omitempty"`
-	Name      string                 `json:"name"`
-	Scope     jobautomation.Scope    `json:"scope"`
-	When      string                 `json:"when"`
-	Enabled   *bool                  `json:"enabled"`
-	Retries   int                    `json:"retries"`
-	Steps     []jobautomation.Step   `json:"steps"`
+	Inputs    map[string]jobautomation.Input `json:"inputs,omitempty"`
+	With      map[string]string              `json:"with,omitempty"`
+	On        *jobautomation.Trigger         `json:"on,omitempty"`
+	RotateKey bool                           `json:"rotate_key,omitempty"`
+	Project   string                         `json:"project,omitempty"`
+	Workspace string                         `json:"workspace,omitempty"`
+	Name      string                         `json:"name"`
+	Scope     jobautomation.Scope            `json:"scope"`
+	When      string                         `json:"when"`
+	Enabled   *bool                          `json:"enabled"`
+	Retries   int                            `json:"retries"`
+	Steps     []jobautomation.Step           `json:"steps"`
 	// Result is what the work must hand over (optional).
 	Result *jobautomation.ResultSpec `json:"result"`
 }
@@ -960,7 +971,7 @@ func (b jobAutomationBody) automation() jobautomation.Automation {
 	if b.Enabled != nil {
 		enabled = *b.Enabled
 	}
-	return jobautomation.Automation{On: b.On, Name: b.Name, Scope: b.Scope, When: b.When, Enabled: enabled, Retries: b.Retries, Steps: b.Steps, Result: b.Result}
+	return jobautomation.Automation{Inputs: b.Inputs, With: b.With, On: b.On, Name: b.Name, Scope: b.Scope, When: b.When, Enabled: enabled, Retries: b.Retries, Steps: b.Steps, Result: b.Result}
 }
 
 // errRunStepNeedsOwner refuses a run step from a caller without the machine
@@ -1579,6 +1590,7 @@ func controlMCPAutomationTools() []controlMCPTool {
 			Name: "swarm_set_workflow", Title: "Set a workflow",
 			Description: "Create or update (by name) a workflow: what Swarm does when work ends in a folder. It starts when a task of Swarm's own agents ends (swarm_run_task: swarm, coder, finder, designer; its first run and each follow-up in its session) or when a worker job ends. Its ordered steps are each: another agent working on the result (agent: swarm, coder, finder or designer as a task in the folder, a coder starting at the work's head; or Swarm's native reviewer task at that head, or a custom worker id), a follow-up that sends its message and/or an agent step's findings back into the work's own session so the same agent fixes its own work (reopen, bounded by max_rounds), handing the work's result over (deliver: to a directory of the folder, merged into the folder's branch, a pull request, or the machine's outbox bucket), or the machine owner's root-owned script run on the host in the folder (run: push, deploy, alert). Every result lists its deliverables (branch, files with sha256, media, report); result names the one the work must hand over, and an agent step with produce: true writes it when the work did not (research turned into a report). A step's if runs it only when earlier steps' status or review verdict match. Scope it to every task and job in the folder, one agent's tasks (role), one worker's jobs, one job or one schedule's jobs; when succeeded, failed or always. swarm_list_workflows shows exactly what each one does. Swarm runs only these steps and reports what happened; with no workflow the work just ends with its branch and the person integrates it by hand. Changes retain history readable with swarm_workflow_history and reversible with swarm_restore_workflow. Offer it; do not set it up unasked. " + tool.WorkflowTriggerDescription,
 			InputSchema: controlMCPObject([]string{"name", "steps"}, map[string]any{
+				"inputs": tool.WorkflowInputsSchema(), "with": tool.WorkflowWithSchema(),
 				"on":         tool.WorkflowTriggerSchema(),
 				"rotate_key": map[string]any{"type": "boolean", "description": "Replace the webhook signing key; the save result shows it only once."},
 				"name":       controlMCPStringProp("Unique name; setting an existing name updates it (its revision rises).", 1, 200),

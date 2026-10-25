@@ -455,6 +455,10 @@ func (s *Store) CreateDelivery(a Automation, result Result) (Delivery, bool, err
 		}
 		roundBase = max(roundBase, p.RoundBase)
 	}
+	a, err = a.RenderInputs()
+	if err != nil {
+		return Delivery{}, false, err
+	}
 	d := Delivery{
 		ID: id, Account: a.Account, AutomationID: a.ID, AutomationName: a.Name, AutomationRevision: a.Revision,
 		JobID: result.JobID, Followup: result.Followup, State: StatePending, Retries: a.Retries, Folder: a.Scope.Folder,

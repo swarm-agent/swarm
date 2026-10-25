@@ -100,6 +100,8 @@ export const TOOL_SCOPES = {
   swarm_save_media: SCOPE_WRITE,
   swarm_design: SCOPE_WRITE,
   swarm_set_workflow: SCOPE_WRITE,
+  swarm_import_workflow: SCOPE_WRITE,
+  swarm_export_workflow: SCOPE_WRITE,
   swarm_list_workflows: SCOPE_READ,
   swarm_delete_workflow: SCOPE_WRITE,
   swarm_stop_workflows: SCOPE_MANAGE,

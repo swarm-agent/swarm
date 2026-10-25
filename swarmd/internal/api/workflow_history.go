@@ -110,6 +110,8 @@ func (s *Server) RestoreWorkflow(caller WorkflowCaller, args map[string]any) (an
 			if err = json.Unmarshal(data, &save); err != nil {
 				return nil, err
 			}
+			// Export omits instance bindings; restoring a revision must not.
+			save["with"] = record.Definition.With
 			return s.saveWorkflowArgs(caller, save, false, "restore")
 		}
 	}

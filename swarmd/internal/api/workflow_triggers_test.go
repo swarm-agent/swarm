@@ -2,16 +2,22 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/jobautomation"
+	runruntime "swarm/packages/swarmd/internal/run"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	store "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/workspace"
+	"swarm/packages/swarmd/internal/worktree"
 	"testing"
 	"time"
 )
@@ -197,5 +203,71 @@ func TestWorkflowTriggerReviewerRefused(t *testing.T) {
 	}
 	if err := validateTriggerWorkerRole(store.WorkerRoleCoder); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Purpose: the production trigger Start callback must dispatch independently of
+// later step worker availability. Real worker admission is the narrowest proof;
+// execution stops at session mutation, without contacting a provider. A missing
+// start worker must still refuse admission without creating another run.
+func TestWorkflowTriggerDispatchIgnoresStepWorker(t *testing.T) {
+	f := newReopenFixture(t)
+	s, p := f.server, testPrincipal()
+	db := s.sessions.Store().Underlying()
+	s.secretValues = store.NewAuthStore(db)
+	catalog := store.NewModelCatalogStore(db)
+	for _, model := range []string{"action", "plan", "compact", "finder", "coder", "designer", "router"} {
+		if err := catalog.SetRecord(store.ModelCatalogRecord{Provider: "codex", Model: model, ThinkingOptions: []string{"high"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ws := workspace.NewService(store.NewWorkspaceStore(db))
+	s.workspace = ws
+	runtime := s.runner.(*runruntime.Service)
+	runtime.SetWorkspaceService(ws)
+	folder := t.TempDir()
+	outboxPinGit(t, folder, "init", "-q", "-b", "main")
+	outboxPinGit(t, folder, "commit", "-q", "--allow-empty", "-m", "start")
+	added, err := ws.AddForPrincipal(p, folder, "trigger", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.sessions.Store().PutProject(p.AccountScopeID, &store.ProjectRecord{ID: "proj-trigger", Name: "Trigger", Workspaces: []store.ProjectWorkspaceRef{{WorkspaceID: added.WorkspaceID, Path: added.WorkspacePath, Role: "primary_code"}}}); err != nil {
+		t.Fatal(err)
+	}
+	workers := s.sessions.Store().WorkerStore()
+	worker, _, err := workers.GetWorker(p.AccountScopeID, f.workerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workers.ActivateWorker(p.AccountScopeID, p.UserID, worker.ID, worker.Revision, nil); err != nil {
+		t.Fatal(err)
+	}
+	execution, err := runruntime.NewWorkerExecutionService(runtime, s.sessions.Store(), &worktree.Service{}, func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+		return sessionruntime.SessionMutationResult{}, errors.New("test stops at admission")
+	}, func(identity.Principal, store.V3SessionRunIntent) bool { return false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.SetWorkerExecutionService(execution)
+	a := jobautomation.Automation{ID: "workflow-trigger", Account: p.AccountScopeID, TriggerOwner: p.UserID, Scope: jobautomation.Scope{Folder: added.WorkspacePath}, Steps: []jobautomation.Step{{Type: "agent", Worker: "missing-step-worker", Brief: "later"}}, On: &jobautomation.Trigger{Event: jobautomation.TriggerEvent{Source: "webhook", ID: "id"}, Start: jobautomation.TriggerStart{Worker: worker.ID, Brief: "start"}}}
+	runner := s.workflowTriggerRunner(jobautomation.NewStore(db))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, startErr := runner.Start(ctx, a, "start work", "trigger-dispatch-test")
+	runs, _, err := workers.ListWorkerRuns(p.AccountScopeID, worker.ID, 10, "")
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("dispatch did not admit job: runs=%+v err=%v start=%v", runs, err, startErr)
+	}
+	if runs[0].RequestSource != "workflow_trigger" || runs[0].WorkspaceID != added.WorkspaceID || runs[0].Input["prompt"] != "start work" {
+		t.Fatalf("wrong admission: %+v", runs[0])
+	}
+	a.On.Start.Worker = "missing-start-worker"
+	if _, err := runner.Start(ctx, a, "refused", "trigger-refused-test"); !jobautomation.IsValidationError(err) {
+		t.Fatalf("missing start worker: %v", err)
+	}
+	runs, _, err = workers.ListWorkerRuns(p.AccountScopeID, worker.ID, 10, "")
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("refusal changed runs: %+v %v", runs, err)
 	}
 }

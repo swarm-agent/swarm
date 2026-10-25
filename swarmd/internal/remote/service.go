@@ -129,6 +129,8 @@ var toolScopes = map[string]string{
 	// and deleting them is write like scheduling a job; the machine-wide stop
 	// switch is manage.
 	"swarm_set_workflow":    ScopeWrite,
+	"swarm_import_workflow": ScopeWrite,
+	"swarm_export_workflow": ScopeWrite,
 	"swarm_list_workflows":  ScopeRead,
 	"swarm_delete_workflow": ScopeWrite,
 	"swarm_stop_workflows":  ScopeManage,

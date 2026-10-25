@@ -195,20 +195,23 @@ type Step struct {
 // Automation is a durable, account-owned definition. Revision changes on
 // every update; a delivery keeps the revision it started with.
 type Automation struct {
-	On           *Trigger `json:"on,omitempty"`
-	TriggerOwner string   `json:"trigger_owner,omitempty"`
-	Proposed     bool     `json:"proposed,omitempty"`
-	ProposedBy   string   `json:"proposed_by,omitempty"`
-	BaseID       string   `json:"base_id,omitempty"`
-	BaseRevision uint64   `json:"base_revision,omitempty"`
-	ID           string   `json:"id"`
-	Account      string   `json:"account"`
-	Name         string   `json:"name"`
-	Scope        Scope    `json:"scope"`
-	When         string   `json:"when"`
-	Enabled      bool     `json:"enabled"`
-	Retries      int      `json:"retries"`
-	Steps        []Step   `json:"steps"`
+	inputsRendered bool
+	Inputs         map[string]Input  `json:"inputs,omitempty"`
+	With           map[string]string `json:"with,omitempty"`
+	On             *Trigger          `json:"on,omitempty"`
+	TriggerOwner   string            `json:"trigger_owner,omitempty"`
+	Proposed       bool              `json:"proposed,omitempty"`
+	ProposedBy     string            `json:"proposed_by,omitempty"`
+	BaseID         string            `json:"base_id,omitempty"`
+	BaseRevision   uint64            `json:"base_revision,omitempty"`
+	ID             string            `json:"id"`
+	Account        string            `json:"account"`
+	Name           string            `json:"name"`
+	Scope          Scope             `json:"scope"`
+	When           string            `json:"when"`
+	Enabled        bool              `json:"enabled"`
+	Retries        int               `json:"retries"`
+	Steps          []Step            `json:"steps"`
 	// Result is what the work must hand over (optional): see ResultSpec.
 	Result    *ResultSpec `json:"result,omitempty"`
 	Revision  uint64      `json:"revision"`
@@ -233,7 +236,9 @@ func IsValidationError(err error) bool {
 
 // Normalize applies defaults and validates a definition. It never touches
 // id, account, revision or times.
-func (a *Automation) Normalize() error {
+func (a *Automation) Normalize() error { return a.normalizeInputs() }
+
+func (a *Automation) normalize() error {
 	a.Name = strings.TrimSpace(a.Name)
 	if a.Name == "" || utf8.RuneCountInString(a.Name) > maxNameRunes || strings.ContainsAny(a.Name, "\r\n") {
 		return invalid("name is required (one line, at most %d characters)", maxNameRunes)

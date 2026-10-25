@@ -39,6 +39,16 @@ func (s *Server) validateWorkflowTrigger(p identity.Principal, a jobautomation.A
 	if a.On == nil {
 		return nil
 	}
+	rendered, err := a.RenderInputs()
+	if err != nil {
+		return err
+	}
+	a = rendered
+	id, err := s.workflowStartWorker(a.Account, a.On.Start.Worker)
+	if err != nil {
+		return err
+	}
+	a.On.Start.Worker = id
 	refuse := jobautomation.InvalidTrigger
 	if s.sessions == nil || s.sessions.Store() == nil {
 		return refuse("worker and project authorities unavailable")
@@ -86,6 +96,15 @@ func (s *Server) validateWorkflowTrigger(p identity.Principal, a jobautomation.A
 	}
 	return nil
 }
+// Keep trigger-specific diagnostics consistent at save and dispatch boundaries.
+func (s *Server) workflowStartWorker(account, ref string) (string, error) {
+	id, err := s.workflowWorker(account, ref)
+	if err != nil {
+		return "", jobautomation.InvalidTrigger("on.start.worker must be a deployed, active worker: " + err.Error())
+	}
+	return id, nil
+}
+
 func validateTriggerWorkerRole(role string) error {
 	if role == store.WorkerRoleReviewer {
 		return jobautomation.InvalidTrigger("a trigger starts the work; review it with a reviewer step")
@@ -146,12 +165,17 @@ func (s *Server) workflowPullSecret(a jobautomation.Automation) (string, error) 
 
 // RunWorkflowTriggers is the daemon's single external-event poller and queue runner.
 func (s *Server) RunWorkflowTriggers(ctx context.Context) {
-	emit := signals.NewEmitter(s.signals).Emit
 	repository, err := s.jobAutomationStore()
 	if err != nil {
 		return
 	}
-	runner := jobautomation.TriggerRunner{Store: repository, Account: s.OutboxAccount, Secret: s.workflowPullSecret,
+	runner := s.workflowTriggerRunner(repository)
+	runner.Run(ctx)
+}
+
+func (s *Server) workflowTriggerRunner(repository *jobautomation.Store) jobautomation.TriggerRunner {
+	emit := signals.NewEmitter(s.signals).Emit
+	return jobautomation.TriggerRunner{Store: repository, Account: s.OutboxAccount, Secret: s.workflowPullSecret,
 		Signal: func(a jobautomation.Automation, kind, item string) {
 			if emit != nil {
 				emit(store.Signal{Kind: kind, Account: a.Account, Severity: store.SignalSeverityInfo, Summary: kind, Refs: map[string]string{"workflow_id": a.ID}})
@@ -159,6 +183,11 @@ func (s *Server) RunWorkflowTriggers(ctx context.Context) {
 		},
 		Start: func(ctx context.Context, a jobautomation.Automation, brief, key string) (string, error) {
 			p := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: a.Account, UserID: a.TriggerOwner, AccountScopeSource: identity.AccountScopeSourceServerState}
+			id, err := s.workflowStartWorker(a.Account, a.On.Start.Worker)
+			if err != nil {
+				return "", err
+			}
+			a.On.Start.Worker = id
 			if err := s.validateWorkflowTrigger(p, a); err != nil {
 				return "", err
 			}
@@ -190,7 +219,6 @@ func (s *Server) RunWorkflowTriggers(ctx context.Context) {
 			}
 			return true, nil
 		}}
-	runner.Run(ctx)
 }
 func (s *Server) saveTriggerKey(a jobautomation.Automation, rotate bool) (string, error) {
 	if a.On == nil || a.On.Event.Source != "webhook" || a.Proposed {

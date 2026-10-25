@@ -14,6 +14,7 @@ type WorkflowLifecycleService interface {
 func manageWorkflowsDefinition() Definition {
 	return Definition{Type: "function", Name: "manage_workflows", Description: "Manage workflows that run when tasks or worker jobs end. Propose new workflows or changes for the person to accept or discard; never self-accept. Enable and disable existing workflows immediately. Call help for examples. " + WorkflowTriggerDescription, Parameters: map[string]any{
 		"type": "object", "required": []string{"action"}, "properties": map[string]any{
+			"inputs": WorkflowInputsSchema(), "with": WorkflowWithSchema(),
 			"on":         WorkflowTriggerSchema(),
 			"rotate_key": map[string]any{"type": "boolean", "description": "Webhook key rotation is not yet supported for native proposals; use the person's HTTP save or MCP path."},
 			"action":     map[string]any{"type": "string", "enum": []string{"list", "get", "deliveries", "history", "propose", "disable", "enable", "help"}},
@@ -23,4 +24,13 @@ func manageWorkflowsDefinition() Definition {
 			"when":  map[string]any{"type": "string", "enum": []string{"succeeded", "failed", "always"}}, "enabled": map[string]any{"type": "boolean"}, "retries": map[string]any{"type": "integer"}, "revision": map[string]any{"type": "integer"},
 			"result": map[string]any{"type": "object"}, "steps": map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "Ordered agent/reopen/run/deliver steps; help describes fields and examples."},
 		}}}
+}
+
+// WorkflowInputsSchema is shared by the native and MCP workflow tools.
+func WorkflowInputsSchema() map[string]any {
+	return map[string]any{"type": "object", "maxProperties": 20, "propertyNames": map[string]any{"pattern": "^[a-z][a-z0-9_]{0,31}$"}, "additionalProperties": map[string]any{"type": "object", "properties": map[string]any{"description": map[string]any{"type": "string"}, "default": map[string]any{"type": "string", "maxLength": 1000}}, "additionalProperties": false}}
+}
+
+func WorkflowWithSchema() map[string]any {
+	return map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string", "maxLength": 1000}}
 }

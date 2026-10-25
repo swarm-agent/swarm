@@ -15,6 +15,7 @@ import (
 
 	"swarm/packages/swarmd/internal/jobautomation"
 	"swarm/packages/swarmd/internal/projectfiles"
+	"swarm/packages/swarmd/internal/tool"
 )
 
 const workflowFileLimit = 256 << 10
@@ -45,11 +46,11 @@ func portableWorkflow(a jobautomation.Automation, folder string) workflowDefinit
 	if filepath.Clean(scope.Folder) == filepath.Clean(folder) {
 		scope.Folder = ""
 	}
-	return workflowDefinition{1, jobAutomationBody{On: a.On, Name: a.Name, Scope: scope, When: a.When, Enabled: &a.Enabled, Retries: a.Retries, Steps: a.Steps, Result: a.Result}}
+	return workflowDefinition{1, jobAutomationBody{Inputs: a.Inputs, On: a.On, Name: a.Name, Scope: scope, When: a.When, Enabled: &a.Enabled, Retries: a.Retries, Steps: a.Steps, Result: a.Result}}
 }
 
 func workflowDefinitionsEqual(a, b jobautomation.Automation) bool {
-	return reflect.DeepEqual(portableWorkflow(a, ""), portableWorkflow(b, ""))
+	return reflect.DeepEqual(a.With, b.With) && reflect.DeepEqual(portableWorkflow(a, ""), portableWorkflow(b, ""))
 }
 
 func decodeWorkflow(data []byte) (workflowDefinition, error) {
@@ -255,7 +256,7 @@ func readWorkflowFile(root *os.Root, path string) ([]byte, error) {
 	return data, err
 }
 
-func (s *Server) importWorkflowDefinition(caller WorkflowCaller, data []byte, folder string) (any, error) {
+func (s *Server) importWorkflowDefinition(caller WorkflowCaller, data []byte, folder string, options ...map[string]any) (any, error) {
 	d, err := decodeWorkflow(data)
 	if err != nil {
 		return nil, err
@@ -270,6 +271,16 @@ func (s *Server) importWorkflowDefinition(caller WorkflowCaller, data []byte, fo
 	var args map[string]any
 	if err := json.Unmarshal(encoded, &args); err != nil {
 		return nil, err
+	}
+	// Instance values come only from the import call, never the portable file.
+	delete(args, "with")
+	if len(options) > 0 {
+		if value, ok := options[0]["with"]; ok {
+			args["with"] = value
+		}
+		if name, ok := options[0]["name"]; ok {
+			args["name"] = name
+		}
 	}
 	return s.saveWorkflowArgs(caller, args, true, "import")
 }
@@ -299,7 +310,7 @@ func (s *Server) ImportWorkflow(caller WorkflowCaller, args map[string]any) (any
 		if err != nil {
 			return nil, err
 		}
-		return s.importWorkflowDefinition(caller, data, folder)
+		return s.importWorkflowDefinition(caller, data, folder, args)
 	}
 	if err := workflowPath(path); err != nil {
 		return nil, err
@@ -321,7 +332,12 @@ func (s *Server) ImportWorkflow(caller WorkflowCaller, args map[string]any) (any
 		if err != nil {
 			return nil, err
 		}
-		return s.importWorkflowDefinition(caller, data, folder)
+		return s.importWorkflowDefinition(caller, data, folder, args)
+	}
+	for _, field := range []string{"name", "with"} {
+		if _, present := args[field]; present {
+			return nil, controlMCPToolFailure("%s is only supported for inline or single-file workflow imports", field)
+		}
 	}
 	dir, err := root.Open(path)
 	if err != nil {
@@ -344,7 +360,7 @@ func (s *Server) ImportWorkflow(caller WorkflowCaller, args map[string]any) (any
 		data, err := readWorkflowFile(root, file)
 		var out any
 		if err == nil {
-			out, err = s.importWorkflowDefinition(caller, data, folder)
+			out, err = s.importWorkflowDefinition(caller, data, folder, args)
 		}
 		result := map[string]any{"path": file}
 		if err != nil {
@@ -371,13 +387,14 @@ func (s *Server) ImportWorkflow(caller WorkflowCaller, args map[string]any) (any
 
 func (s *Server) handleWorkflowTransfer(w http.ResponseWriter, r *http.Request, action string) {
 	var body struct {
-		Name       string          `json:"name,omitempty"`
-		ID         string          `json:"id,omitempty"`
-		Path       *string         `json:"path,omitempty"`
-		Project    string          `json:"project,omitempty"`
-		Workspace  string          `json:"workspace,omitempty"`
-		Overwrite  bool            `json:"overwrite,omitempty"`
-		Definition json.RawMessage `json:"definition,omitempty"`
+		With       map[string]string `json:"with,omitempty"`
+		Name       string            `json:"name,omitempty"`
+		ID         string            `json:"id,omitempty"`
+		Path       *string           `json:"path,omitempty"`
+		Project    string            `json:"project,omitempty"`
+		Workspace  string            `json:"workspace,omitempty"`
+		Overwrite  bool              `json:"overwrite,omitempty"`
+		Definition json.RawMessage   `json:"definition,omitempty"`
 	}
 	if err := decodeJSONStrict(w, r, workflowFileLimit, &body); err != nil {
 		writeError(w, 400, err)
@@ -410,6 +427,8 @@ func (s *Server) handleWorkflowTransfer(w http.ResponseWriter, r *http.Request, 
 
 func workflowTransferTools() []controlMCPTool {
 	common := map[string]any{"path": controlMCPStringProp("Relative file or directory inside the project folder.", 0, 4096), "project": controlMCPStringProp("Project id or name.", 0, 256), "workspace": controlMCPStringProp("Project folder when several are linked.", 0, 4096), "definition": map[string]any{"type": "object", "description": "Portable JSON object with swarm_workflow: 1; mutually exclusive with path."}}
+	common["with"] = tool.WorkflowWithSchema()
+	common["name"] = controlMCPStringProp("Instance name override.", 0, 200)
 	return []controlMCPTool{
 		{Name: "swarm_export_workflow", Title: "Export workflow", Description: "Export portable workflow JSON by name or id. Supply path (empty for .swarm/workflows/<name>.json) to write inside its folder; different files require overwrite: true. Keep workflows as code: export to .swarm/workflows, commit, then swarm_import_workflow on another machine.", InputSchema: controlMCPObject(nil, map[string]any{"name": controlMCPStringProp("Workflow name.", 0, 200), "id": controlMCPStringProp("Workflow id.", 0, 200), "path": controlMCPStringProp("Optional relative destination; empty selects .swarm/workflows/<name>.json.", 0, 4096), "overwrite": map[string]any{"type": "boolean"}}), Annotations: controlMCPWrites, call: controlMCPExportWorkflow},
 		{Name: "swarm_import_workflow", Title: "Import workflow", Description: fmt.Sprintf("Import portable JSON (swarm_workflow: %d) from definition or a project-relative path. A directory imports every *.json with created/updated/unchanged/refused per file. Uses set validation and updates by name; changes are retained by swarm_workflow_history and reversible with swarm_restore_workflow. Run steps require the owner's full key, never a write key. Export to .swarm/workflows, commit, import on another machine; omitted scope.folder binds to that project folder. No watcher.", 1), InputSchema: controlMCPObject(nil, common), Annotations: controlMCPWrites, call: controlMCPImportWorkflow},

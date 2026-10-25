@@ -84,10 +84,23 @@ func (s *Server) SaveWorkflow(caller WorkflowCaller, body WorkflowDefinition, so
 	if a.On != nil {
 		a.TriggerOwner = caller.Principal.UserID
 	}
-	if err := s.validateWorkflowTrigger(caller.Principal, a); err != nil {
+	rendered, err := a.RenderInputs()
+	if err != nil {
 		return zero, false, false, err
 	}
-	if err := s.jobAutomationFixesError(account, a.Steps); err != nil {
+	// Preserve actionable fixes diagnostics when worker authority is absent.
+	if s.sessions == nil || s.sessions.Store() == nil {
+		if err := s.jobAutomationFixesError(account, rendered.Steps); err != nil {
+			return zero, false, false, controlMCPToolFailure("%s", err)
+		}
+	}
+	if err := s.resolveWorkflowWorkers(&rendered); err != nil {
+		return zero, false, false, err
+	}
+	if err := s.validateWorkflowTrigger(caller.Principal, rendered); err != nil {
+		return zero, false, false, err
+	}
+	if err := s.jobAutomationFixesError(account, rendered.Steps); err != nil {
 		return zero, false, false, controlMCPToolFailure("%s", err)
 	}
 	if source == "propose" {

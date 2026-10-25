@@ -56,6 +56,11 @@ func (s *Store) triggerState(a Automation) (triggerState, error) {
 
 // TriggerEvents omits event payloads from read models.
 func (s *Store) TriggerEvents(a Automation) ([]TriggerReceipt, error) {
+	var err error
+	a, err = a.RenderInputs()
+	if err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	state, err := s.triggerState(a)
@@ -107,6 +112,11 @@ func decodeTriggerItems(data []byte, event TriggerEvent) ([]map[string]any, erro
 
 // Receive durably deduplicates a complete batch, or changes nothing on rejection.
 func (s *Store) Receive(a Automation, data []byte) error {
+	var renderErr error
+	a, renderErr = a.RenderInputs()
+	if renderErr != nil {
+		return renderErr
+	}
 	items, err := decodeTriggerItems(data, a.On.Event)
 	if err != nil {
 		return err
@@ -199,6 +209,11 @@ func (r *TriggerRunner) Tick(ctx context.Context) {
 	}
 }
 func (r *TriggerRunner) tick(ctx context.Context, a Automation) {
+	var renderErr error
+	a, renderErr = a.RenderInputs()
+	if renderErr != nil {
+		return
+	}
 	s := r.Store
 	s.mu.Lock()
 	state, err := s.triggerState(a)

@@ -34,7 +34,7 @@ func (a *Automation) validateTrigger() error {
 		return nil
 	}
 	t := a.On
-	if !refIDPattern.MatchString(t.Start.Worker) || IsBuiltinAgent(t.Start.Worker) {
+	if strings.TrimSpace(t.Start.Worker) == "" || len(t.Start.Worker) > 200 || IsBuiltinAgent(t.Start.Worker) {
 		return invalid("on.start.worker must be a deployed worker id")
 	}
 	if strings.TrimSpace(t.Start.Brief) == "" || utf8.RuneCountInString(t.Start.Brief) > maxBriefRunes {

@@ -886,3 +886,44 @@ The worker retains its system role, model selection, prompts and checkout behavi
 Reviewer saves and run admission reject `write`, `edit`, `git_add`, `git_commit`, `task`, and custom tools with effect `write`; `bash` remains allowed. The workflow fixes option keeps its code-owned reviewer-fixer tools.
 
 `swarm_define_agent` accepts optional `tools_on` and `tools_off` arrays on top of the required `tools` preset (`read_only`, `read_write`, or `build`). For example, `tools: "build", tools_off: ["bash"], tools_on: ["websearch"]` persists explicit switches in the existing contract. Off wins for names in both arrays. Omitting both arrays preserves existing behavior. Permission policy still applies.
+
+## Inputs
+
+Declare reusable string inputs and bind each saved instance with `with`. Names
+match `^[a-z][a-z0-9_]{0,31}$` (up to 20); values have at most 1000 characters.
+Inputs without a `default` require a value. Undeclared bindings and unknown
+`{{inputs.name}}` references are refused. Substitution is literal, not shell
+escaping; command args remain separate argv entries.
+
+For example, commit this pipeline as `.swarm/workflows/content.json`:
+
+```json
+{
+  "swarm_workflow": 1,
+  "name": "content",
+  "inputs": {"brand": {"description": "Brand to write for"}},
+  "scope": {},
+  "steps": [
+    {"type": "agent", "worker": "coder", "brief": "Plan and make content for {{inputs.brand}}"},
+    {"type": "agent", "worker": "reviewer", "brief": "Review content for {{inputs.brand}}"}
+  ]
+}
+```
+
+Call `swarm_import_workflow` twice with the same `path` and `project`, first
+`name: "swarm-content", with: {"brand": "swarm"}`, then
+`name: "nameflow-content", with: {"brand": "nameflow"}`. Reimporting the same
+name updates that instance. `name` and `with` are accepted only for inline or
+single-file imports; directory imports reject either field before saving files.
+Export retains declarations and placeholders but
+never instance `with` values; defaults are part of the portable definition.
+
+Placeholders work in step briefs, args, messages, deliver paths and workers,
+and in `on.event.url`, `items`, `id`, `on.start.worker` and `brief`.
+`{{event.*}}` in trigger start briefs still expands from the event. Worker names
+resolve to exactly one active worker in the account (or use an existing worker
+ID); built-in step agents retain their meaning. Trigger starts still require a
+deployed worker. Reads retain templates and bindings separately. Use the same
+`inputs` and `with` fields with `swarm_set_workflow`, `/v3/workflows`, or native
+`manage_workflows` proposals; approvals are unchanged. Do not put secrets in
+inputs, defaults or bindings.
