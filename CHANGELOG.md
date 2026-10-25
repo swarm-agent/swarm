@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Align relay tool scopes and local-only restrictions with the daemon, with regression tests for write-scoped custom agent discovery and read-only rejection. Docs impact: none
+
 - Add write-scoped custom agent definitions shared by MCP and the Orchestrator, with bounded work tools and worker agent selection. Docs impact: none
 
 - Let Designer and Finder tasks declare blockers and emit failed task-run signals for blocked tasks so only failed/always workflows run. Docs impact: none

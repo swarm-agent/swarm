@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import { MCP_PROTOCOL_VERSIONS, SCOPES, SCOPE_MANAGE, SCOPE_READ, authMessage, toolScope } from './protocol.js';
+import { LOCAL_ONLY_TOOLS, MCP_PROTOCOL_VERSIONS, SCOPES, SCOPE_MANAGE, SCOPE_READ, authMessage, toolScope } from './protocol.js';
 
 const AUTH_TIMEOUT_MS = 10_000;
 const DEVICE_TIMEOUT_MS = 120_000;
@@ -471,7 +471,7 @@ export class Fleet extends DurableObject {
     if (scopes.includes(SCOPE_MANAGE)) tools.push(PAIR_TOOL, REMOVE_TOOL);
     const relayTools = new Set(tools.map((tool) => tool.name));
     for (const tool of deviceTools.values()) {
-      if (!scopes.includes(toolScope(tool.name)) || relayTools.has(tool.name)) continue;
+      if (LOCAL_ONLY_TOOLS.has(tool.name) || !scopes.includes(toolScope(tool.name)) || relayTools.has(tool.name)) continue;
       const schema = structuredClone(tool.inputSchema || { type: 'object', properties: {} });
       schema.properties = { ...(schema.properties || {}), machine: { type: 'string', maxLength: 100, description: 'Machine id (swarm_list_machines). Required if several are online.' } };
       tools.push({ ...tool, inputSchema: schema });
@@ -482,6 +482,7 @@ export class Fleet extends DurableObject {
   async callTool(params, auth, scopes) {
     const name = String(params.name || '');
     const args = params.arguments && typeof params.arguments === 'object' ? { ...params.arguments } : {};
+    if (LOCAL_ONLY_TOOLS.has(name)) return toolError(`${name} is only available locally on the machine.`);
     if (!scopes.includes(toolScope(name))) {
       return toolError(`This connection is not authorized for ${name}. Re-authorize with the ${toolScope(name)} scope.`);
     }

@@ -5,6 +5,7 @@
   "description": "Reference swarm-remote-1 relay for Cloudflare Workers: an OAuth-protected MCP endpoint that forwards to Swarm machines connected over outbound WebSockets.",
   "type": "module",
   "scripts": {
+    "test": "node --test --test-timeout=10000 test/*.test.js",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
   },

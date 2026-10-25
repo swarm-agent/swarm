@@ -28,6 +28,10 @@ export const TOOL_SCOPES = {
   swarm_get_session: SCOPE_READ,
   swarm_list_projects: SCOPE_READ,
   swarm_get_project: SCOPE_READ,
+  swarm_get_theme: SCOPE_READ,
+  swarm_get_plan_usage: SCOPE_READ,
+  swarm_set_session_access: SCOPE_APPROVE,
+  swarm_read_media: SCOPE_READ,
   swarm_list_workers: SCOPE_READ,
   swarm_get_worker: SCOPE_READ,
   swarm_get_limits: SCOPE_READ,
@@ -61,10 +65,14 @@ export const TOOL_SCOPES = {
   swarm_list_agents: SCOPE_READ,
   swarm_define_agent: SCOPE_WRITE,
   swarm_create_client_key: SCOPE_MANAGE,
-  // ChatGPT sign-in is local only: the device never lists or forwards it.
+  swarm_create_key: SCOPE_MANAGE,
+  swarm_list_keys: SCOPE_READ,
+  swarm_revoke_key: SCOPE_WRITE,
+  // Provider sign-in and key setup are local only.
   swarm_connect_chatgpt: SCOPE_WRITE,
+  swarm_connect_claude_code: SCOPE_WRITE,
   swarm_list_providers: SCOPE_READ,
-  swarm_request_provider_key: SCOPE_MANAGE,
+  swarm_request_provider_key: SCOPE_WRITE,
   swarm_read_file: SCOPE_READ,
   swarm_get_changes: SCOPE_READ,
   swarm_accept_review: SCOPE_APPROVE,
@@ -90,10 +98,25 @@ export const TOOL_SCOPES = {
   swarm_request_media: SCOPE_WRITE,
   swarm_media_models: SCOPE_READ,
   swarm_save_media: SCOPE_WRITE,
+  swarm_design: SCOPE_WRITE,
+  swarm_set_workflow: SCOPE_WRITE,
+  swarm_list_workflows: SCOPE_READ,
+  swarm_delete_workflow: SCOPE_WRITE,
+  swarm_stop_workflows: SCOPE_MANAGE,
   // Relay tools: trust a machine waiting to pair, or remove a paired one.
   swarm_pair_machine: SCOPE_MANAGE,
   swarm_remove_machine: SCOPE_MANAGE,
 };
+
+// Box setup is never exposed through the relay, regardless of granted scopes.
+// Keep this aligned with localOnlyTools in swarmd/internal/remote/service.go.
+export const LOCAL_ONLY_TOOLS = new Set([
+  'swarm_create_client_key',
+  'swarm_create_key',
+  'swarm_connect_chatgpt',
+  'swarm_connect_claude_code',
+  'swarm_request_provider_key',
+]);
 
 export function toolScope(name) {
   return TOOL_SCOPES[name] || SCOPE_WRITE;
