@@ -1290,6 +1290,22 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 	}
 	switch intent.Status {
 	case sessions.RunIntentCompleted:
+		// Provider completion does not imply the job completed its work. Only
+		// honor a declaration belonging to this session's exact execution.
+		snapshot, found, err := s.host.runs.sessions.GetSession(r.SessionID)
+		if err != nil {
+			return err
+		}
+		if !found || snapshot.AccountScopeID != r.AccountScopeID || snapshot.UserID != r.UserID {
+			return store.ErrWorkerConflict
+		}
+		if intent.RunID != "" && snapshot.Metadata["lifecycle_signal"] == "blocked" && snapshot.Metadata["lifecycle_signal_run_id"] == intent.RunID {
+			if reason, ok := snapshot.Metadata["blocker_reason"].(string); ok && strings.TrimSpace(reason) != "" {
+				current.Status = "failed"
+				current.Error = "blocked: " + reason
+				break
+			}
+		}
 		if workerRunPlanID(r) == "" {
 			// Direct role runs (no plan_manage) succeed when their run completes.
 			current.Status = "succeeded"

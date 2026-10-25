@@ -64,7 +64,7 @@ func emitStartupSignals(emitter *signals.Emitter, status sandbox.Status, headles
 
 // workerRunSignal raises worker.run.succeeded, worker.run.failed or
 // worker.run.cancelled when a worker run finishes. It names the worker and
-// run; the run's input, output and error text stay on the machine.
+// run. Explicit blocker reasons are included in the failure summary.
 func workerRunSignal(emitter *signals.Emitter) func(pebblestore.WorkerRecord, pebblestore.WorkerRunRecord) {
 	return func(worker pebblestore.WorkerRecord, run pebblestore.WorkerRunRecord) {
 		if run.Cleanup != nil && run.Cleanup.FailureReported {
@@ -100,11 +100,15 @@ func workerRunSignal(emitter *signals.Emitter) func(pebblestore.WorkerRecord, pe
 		if strings.Contains(run.Error, sandbox.ErrInterrupted.Error()) {
 			emitter.Emit(pebblestore.Signal{Kind: "job.sandbox_interrupted", Severity: pebblestore.SignalSeverityWarning, Account: run.AccountScopeID, Summary: "Job sandbox interrupted (OOM or container restart); uncommitted work preserved; retry with a follow-up", Refs: refs, DedupKey: "job.sandbox:" + run.ID})
 		}
+		summary := "Worker " + name + " run " + run.Status
+		if run.Status == "failed" && strings.HasPrefix(run.Error, "blocked: ") {
+			summary += ": " + run.Error
+		}
 		emitter.Emit(pebblestore.Signal{
 			Kind:     "worker.run." + run.Status,
 			Severity: severity,
 			Account:  run.AccountScopeID,
-			Summary:  "Worker " + name + " run " + run.Status,
+			Summary:  summary,
 			DedupKey: "worker.run:" + run.ID + ":" + followup,
 			Refs:     refs,
 			Attrs:    map[string]string{"source": run.RequestSource},
