@@ -7,6 +7,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 ## Unreleased
 
 - Clarify that the run media contract describes media_inspect inputs, not restrictions on other media tools. Docs impact: none
+- Fix pinning a worker's model for token and tailnet callers, not only the local socket. Docs impact: none
 
 - Align relay tool scopes and local-only restrictions with the daemon, with regression tests for write-scoped custom agent discovery and read-only rejection. Docs impact: none
 

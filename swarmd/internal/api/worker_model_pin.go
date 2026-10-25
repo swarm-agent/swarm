@@ -90,7 +90,7 @@ func (s *Server) handleWorkerModelPin(w http.ResponseWriter, r *http.Request, p 
 	}
 	profile := &store.SessionModelProfileSnapshot{Source: store.SessionModelProfileSourceSwarmSettings, UseAccountDefault: true}
 	if req.Model != nil {
-		c := &controlMCPCall{request: r, next: s.Handler(), server: s}
+		c := &controlMCPCall{request: r, next: s.internalRouteHandler(), server: s}
 		var err error
 		profile, err = c.workerModel(req.Model)
 		if err != nil {
