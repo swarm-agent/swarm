@@ -1133,15 +1133,15 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 	if existingTask.AccountID != "" && existingTask.AccountID != p.AccountScopeID {
 		return nil, errors.New("cross-account task approval forbidden")
 	}
+	if existingTask.Design != nil {
+		return nil, errDesignJobNotAgentTask
+	}
 	if existingTask.Status != "pending_approval" && existingTask.Status != "planning" {
 		next := "use get_task to inspect the task or reopen_task to request follow-up work"
 		if existingTask.Status == "needs_review" {
 			next = "use integrate_task to merge its commits"
 		}
 		return nil, fmt.Errorf("cannot approve task in state %q: it is not waiting for approval; %s", existingTask.Status, next)
-	}
-	if existingTask.Design != nil {
-		return nil, errDesignJobNotAgentTask
 	}
 	if existingTask.ProjectID != "" && existingTask.ProjectID != projectID {
 		return nil, errors.New("cross-project task approval forbidden")
