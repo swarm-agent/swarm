@@ -1,15 +1,13 @@
 package automation
 
 import (
-	"strconv"
 	"strings"
 	"time"
 
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
 
-// Cron deliberately accepts five numeric fields, '*' and '*/n' only. Reject
-// unsupported syntax rather than guessing. DST gaps skip nonexistent wall times;
+// Cron uses the shared store parser. DST gaps skip nonexistent wall times;
 // folds fire once at the first instant. Misfires never backfill an unbounded queue.
 func NormalizeSchedule(s store.AutomationSchedulePolicy) (store.AutomationSchedulePolicy, error) {
 	if s.MissedPolicy == "" {
@@ -44,47 +42,14 @@ func NormalizeSchedule(s store.AutomationSchedulePolicy) (store.AutomationSchedu
 		if _, err := time.LoadLocation(s.Timezone); err != nil {
 			return s, ErrInvalid
 		}
-		fields := strings.Fields(s.Expression)
-		if len(fields) != 5 {
+		if _, err := store.ParseCron(s.Expression); err != nil {
 			return s, ErrInvalid
 		}
-		mins, maxs := []int{0, 0, 1, 1, 0}, []int{59, 23, 31, 12, 6}
-		for i, f := range fields {
-			if !validField(f, mins[i], maxs[i]) {
-				return s, ErrInvalid
-			}
-		}
-		// Avoid divergent cron DOM/DOW OR-vs-AND conventions.
-		if fields[2] != "*" && fields[4] != "*" {
-			return s, ErrInvalid
-		}
-		s.Expression = strings.Join(fields, " ")
+		s.Expression = strings.Join(strings.Fields(s.Expression), " ")
 	default:
 		return s, ErrInvalid
 	}
 	return s, nil
-}
-func validField(f string, min, max int) bool {
-	if f == "*" {
-		return true
-	}
-	if strings.HasPrefix(f, "*/") {
-		n, err := strconv.Atoi(f[2:])
-		return err == nil && n > 0 && n <= max-min+1
-	}
-	n, err := strconv.Atoi(f)
-	return err == nil && n >= min && n <= max && strconv.Itoa(n) == f
-}
-func matches(f string, value, min int) bool {
-	if f == "*" {
-		return true
-	}
-	if strings.HasPrefix(f, "*/") {
-		n, _ := strconv.Atoi(f[2:])
-		return (value-min)%n == 0
-	}
-	n, _ := strconv.Atoi(f)
-	return n == value
 }
 
 // Due evaluates one exact UTC minute, not a polling loop. The caller owns the
@@ -106,12 +71,12 @@ func Due(s store.AutomationSchedulePolicy, at, anchor time.Time) (bool, error) {
 	if local.Second() != 0 || local.Nanosecond() != 0 {
 		return false, nil
 	}
-	f := strings.Fields(s.Expression)
-	values, mins := []int{local.Minute(), local.Hour(), local.Day(), int(local.Month()), int(local.Weekday())}, []int{0, 0, 1, 1, 0}
-	for i := range f {
-		if !matches(f[i], values[i], mins[i]) {
-			return false, nil
-		}
+	cron, err := store.ParseCron(s.Expression)
+	if err != nil {
+		return false, err
+	}
+	if !cron.Matches(local) {
+		return false, nil
 	}
 	// Detect repeated civil minutes after backward transitions, including
 	// half-hour folds. Bounded at 24h for historical date-line transitions.

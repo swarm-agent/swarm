@@ -197,7 +197,7 @@ func validateAutomationRecord(r AutomationRecord) error {
 				return ErrAutomationInvalid
 			}
 		case "cron":
-			if s.Expression == "" || s.Timezone == "" {
+			if ValidateSchedule(&AutomationV2Schedule{Kind: "cron", Cron: s.Expression, Timezone: s.Timezone, IntervalSeconds: s.IntervalSeconds}) != nil {
 				return ErrAutomationInvalid
 			}
 		case "event":
