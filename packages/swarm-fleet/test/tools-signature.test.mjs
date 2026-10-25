@@ -20,3 +20,13 @@ test('a changed tool schema changes what the client is told', () => {
   assert.equal(toolsSignature(before), toolsSignature(structuredClone(before)));
   assert.notEqual(toolsSignature(before), toolsSignature([{ ...before[0], description: 'Set or update a workflow' }]));
 });
+
+// Purpose: toolsSignature must invalidate fleet discovery when worker budget
+// arguments arrive; this pure cache-boundary test prevents stale client schemas.
+test('worker budget schema invalidates the tool signature', () => {
+  const before = [{ name: 'swarm_deploy_worker', inputSchema: { type: 'object', properties: {} } }];
+  const after = structuredClone(before);
+  after[0].inputSchema.properties.budget = { anyOf: [{ type: 'object', required: ['daily_usd'], properties: { daily_usd: { type: 'number', minimum: 0 }, daily_tokens: { type: 'integer', minimum: 0 } } }, { type: 'null' }] };
+  assert.notEqual(toolsSignature(before), toolsSignature(after));
+  assert.equal(toolsSignature(after), toolsSignature(structuredClone(after)));
+});

@@ -646,6 +646,23 @@ func (ws *WorkerStore) AcceptWorker(account, user, id string, revision uint64, b
 	if primary != "" {
 		w.LocalBindings = map[string]string{"primary": primary}
 	}
+	var budgetPolicy *WorkerBudgetPolicy
+	if w.Budget != nil {
+		// Match admission and SetLimits: workersMu precedes the account lock.
+		unlockBudget := ws.store.sessionMutations.lockSessions("account:" + account)
+		defer unlockBudget()
+		ss := NewSessionStore(ws.store)
+		existing, err := ss.GetWorkerBudget(account, id)
+		if err != nil {
+			return WorkerRecord{}, err
+		}
+		policy, err := ss.prepareWorkerBudget(account, id, existing.Revision, w.Budget.DailyUSD, w.Budget.DailyTokens)
+		if err != nil {
+			return WorkerRecord{}, err
+		}
+		budgetPolicy = &policy
+		w.Budget = nil
+	}
 	w.LifecycleState = resumeState
 	w.Revision++
 	w.UpdatedAt = now
@@ -659,6 +676,11 @@ func (ws *WorkerStore) AcceptWorker(account, user, id string, revision uint64, b
 		ChangeSummary:  "accepted worker proposal",
 	}
 	m := &workerRealtimeMutation{accountScopeID: account, userID: user, workerID: id}
+	if budgetPolicy != nil {
+		if err := m.put(workerBudgetKey(account, id), *budgetPolicy); err != nil {
+			return WorkerRecord{}, err
+		}
+	}
 	for _, a := range w.Automations {
 		if err = m.put(KeyWorkerByAutomation(account, a.ID), id); err != nil {
 			return WorkerRecord{}, err

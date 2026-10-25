@@ -927,3 +927,5 @@ deployed worker. Reads retain templates and bindings separately. Use the same
 `inputs` and `with` fields with `swarm_set_workflow`, `/v3/workflows`, or native
 `manage_workflows` proposals; approvals are unchanged. Do not put secrets in
 inputs, defaults or bindings.
+
+See [Worker daily spending limits](box-limits.md#worker-daily-spending-limits) for per-worker budgets.

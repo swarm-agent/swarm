@@ -57,8 +57,22 @@ func (s *SessionStore) GetWorkerBudget(account, worker string) (WorkerBudgetPoli
 	return policy, err
 }
 
-// SetWorkerBudget is an internal persistence boundary; authenticated user-only
-// ingress must authorize it. Neither AI definitions nor triggers call this API.
+// WorkerBudgetRequest is a proposed policy change. A non-nil zero value clears
+// limits; nil leaves the existing policy unchanged.
+type WorkerBudgetRequest struct {
+	DailyUSD    float64 `json:"daily_usd"`
+	DailyTokens int64   `json:"daily_tokens,omitempty"`
+}
+
+func (b *WorkerBudgetRequest) Validate() error {
+	if b != nil && (math.IsNaN(b.DailyUSD) || math.IsInf(b.DailyUSD, 0) || b.DailyUSD < 0 || b.DailyTokens < 0) {
+		return errors.New("invalid worker budget limits")
+	}
+	return nil
+}
+
+// SetWorkerBudget is the authorized policy mutation service. Acceptance shares
+// its preparation boundary to commit the policy and worker atomically.
 func (s *SessionStore) SetWorkerBudget(account, worker string, expected uint64, cost float64, tokens int64, users ...string) (WorkerBudgetPolicy, error) {
 	if math.IsNaN(cost) || math.IsInf(cost, 0) || cost < 0 || tokens < 0 {
 		return WorkerBudgetPolicy{}, errors.New("invalid worker budget limits")
@@ -73,6 +87,36 @@ func (s *SessionStore) SetWorkerBudget(account, worker string, expected uint64, 
 			unlock()
 		}
 	}()
+	policy, err := s.prepareWorkerBudget(account, worker, expected, cost, tokens)
+	if err != nil {
+		return policy, err
+	}
+	user := ""
+	if len(users) == 1 {
+		user = users[0]
+	}
+	mutation := &workerRealtimeMutation{accountScopeID: account, userID: user, workerID: worker}
+	if err := mutation.put(workerBudgetKey(account, worker), policy); err != nil {
+		return policy, err
+	}
+	if err := mutation.setPayload(WorkerRealtimePayload{WorkerID: worker, BudgetRevision: policy.Revision, ChangeSummary: "budget policy updated"}); err != nil {
+		return policy, err
+	}
+	if err := s.store.commitWorkerRealtime(mutation); err != nil {
+		return policy, err
+	}
+	unlock()
+	locked = false
+	s.store.publishWorkerRealtime(mutation)
+	return policy, nil
+}
+
+// prepareWorkerBudget requires the account mutation lock; callers commit the
+// returned policy with their own atomic realtime mutation.
+func (s *SessionStore) prepareWorkerBudget(account, worker string, expected uint64, cost float64, tokens int64) (WorkerBudgetPolicy, error) {
+	if err := (&WorkerBudgetRequest{DailyUSD: cost, DailyTokens: tokens}).Validate(); err != nil {
+		return WorkerBudgetPolicy{}, err
+	}
 	policy, err := s.GetWorkerBudget(account, worker)
 	if err != nil {
 		return policy, err
@@ -92,23 +136,6 @@ func (s *SessionStore) SetWorkerBudget(account, worker string, expected uint64, 
 	}
 	policy.Revision++
 	policy.DailyCostLimitUSD, policy.DailyTokensLimit, policy.UpdatedAt = cost, tokens, time.Now().UnixMilli()
-	user := ""
-	if len(users) == 1 {
-		user = users[0]
-	}
-	mutation := &workerRealtimeMutation{accountScopeID: account, userID: user, workerID: worker}
-	if err := mutation.put(workerBudgetKey(account, worker), policy); err != nil {
-		return policy, err
-	}
-	if err := mutation.setPayload(WorkerRealtimePayload{WorkerID: worker, BudgetRevision: policy.Revision, ChangeSummary: "budget policy updated"}); err != nil {
-		return policy, err
-	}
-	if err := s.store.commitWorkerRealtime(mutation); err != nil {
-		return policy, err
-	}
-	unlock()
-	locked = false
-	s.store.publishWorkerRealtime(mutation)
 	return policy, nil
 }
 

@@ -107,7 +107,8 @@ type WorkerAutomationDefinition struct {
 }
 
 type WorkerRecord struct {
-	Agent string `json:"agent,omitempty"`
+	Budget *WorkerBudgetRequest `json:"budget,omitempty"`
+	Agent  string               `json:"agent,omitempty"`
 	// Role is the code-owned system agent that runs this worker's jobs
 	// (WorkerRoles). Empty behaves as WorkerRoleSwarm.
 	Role                  string                       `json:"role,omitempty"`
@@ -248,6 +249,7 @@ type ListWorkersResult struct {
 }
 
 type CreateWorkerRequest struct {
+	Budget                *WorkerBudgetRequest         `json:"budget,omitempty"`
 	Agent                 string                       `json:"agent,omitempty"`
 	Role                  string                       `json:"role,omitempty"`
 	ModelProfile          *SessionModelProfileSnapshot `json:"model_profile,omitempty"`
@@ -266,6 +268,7 @@ type CreateWorkerRequest struct {
 }
 
 type UpdateWorkerRequest struct {
+	Budget *WorkerBudgetRequest `json:"budget,omitempty"`
 	// ProposeModel stages native model edits for explicit acceptance; API edits remain direct.
 	ProposeModel          bool                         `json:"-"`
 	Agent                 *string                      `json:"agent,omitempty"`
@@ -972,7 +975,14 @@ func (ws *WorkerStore) CreateWorker(account, user string, req CreateWorkerReques
 	if err != nil {
 		return WorkerRecord{}, err
 	}
+	if err := req.Budget.Validate(); err != nil {
+		return WorkerRecord{}, err
+	}
+	if req.Budget != nil && state != WorkerLifecycleStatePending {
+		return WorkerRecord{}, errors.New("budget requires pending proposal")
+	}
 	w := WorkerRecord{
+		Budget:                req.Budget,
 		Agent:                 strings.TrimSpace(req.Agent),
 		Role:                  role,
 		ID:                    workerID,
@@ -1228,6 +1238,13 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 		}
 		updated.ExecutionMode = *req.ExecutionMode
 	}
+	if err := req.Budget.Validate(); err != nil {
+		return WorkerRecord{}, err
+	}
+	if req.Budget != nil {
+		b := *req.Budget
+		updated.Budget = &b
+	}
 	if req.ModelProfile != nil {
 		if err := ValidateWorkerModelProfile(req.ModelProfile); err != nil {
 			return WorkerRecord{}, err
@@ -1390,7 +1407,7 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 			req.ChangeSummary = "updated worker"
 		}
 	}
-	if established && req.ProposeModel && req.ModelProfile != nil {
+	if established && ((req.ProposeModel && req.ModelProfile != nil) || req.Budget != nil) {
 		if approved.LifecycleState != WorkerLifecycleStateActive && approved.LifecycleState != WorkerLifecycleStateIdle && approved.LifecycleState != WorkerLifecycleStatePaused {
 			return WorkerRecord{}, ErrWorkerConflict
 		}

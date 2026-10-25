@@ -10,15 +10,24 @@ import (
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
 
-// Budget policy has no AI tool ingress. Scoped/trigger principals cannot edit,
-// disable, or reset it; the account is never accepted from the request body.
+// Budget policy uses the authenticated account, never an account in the body.
+// Scoped automation writers may limit worker spending, but triggers cannot.
 func (s *Server) handleWorkerBudget(w http.ResponseWriter, r *http.Request) {
 	p, ok := PrincipalFromRequest(r)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
 		return
 	}
-	if _, scoped := ScopedTokenFromRequest(r); scoped || p.Type != identity.PrincipalTypeUser {
+	if token, scoped := ScopedTokenFromRequest(r); scoped {
+		if token.WorkerID != "" {
+			writeError(w, http.StatusForbidden, errors.New("worker-bound tokens cannot access worker budgets"))
+			return
+		}
+		if r.Method != http.MethodPut || !token.HasScope("automations:write") {
+			writeError(w, http.StatusForbidden, errors.New("worker budget requires automations:write"))
+			return
+		}
+	} else if p.Type != identity.PrincipalTypeUser {
 		writeError(w, http.StatusForbidden, errors.New("worker budget requires authenticated user authority"))
 		return
 	}

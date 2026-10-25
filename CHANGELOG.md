@@ -9,6 +9,9 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Add reusable workflow inputs, per-instance bindings and portable worker-name resolution; imports accept instance names and exports omit bindings. Docs impact: added Inputs example in docs/automations.md.
 - Enable in-job speech narration through manage_media using shared MCP speech validation, with audio and timing JSON saving. Docs impact: updated docs/manage-media.md.
 - Preserve workflow reopen heads and blocker reasons, skip duplicate-head reviews, and reject reviews without a head. Docs impact: none
+- Add native worker budget proposals on create/update and atomically apply the policy on user acceptance through the shared budget service. Docs impact: worker budget limits in `docs/automations.md`.
+
+- Add MCP worker daily budget setting/reset and receipt-backed budget status in worker listings. Docs impact: documented MCP limits in docs/automations.md.
 
 - Expose workflow event triggers in MCP and Orchestrator tool schemas, with one-time MCP webhook key guidance; native proposal key rotation remains unsupported. Docs impact: updated Triggers in docs/automations.md.
 

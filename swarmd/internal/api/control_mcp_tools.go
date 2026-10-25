@@ -152,6 +152,7 @@ var controlMCPRoutes = []string{
 	"GET v3/workers/*/runs/*",
 	"POST v3/workers/*/runs/*/cancel",
 	"GET v3/usage",
+	"PUT v3/usage/worker-budget",
 	"GET v1/codex/account/usage", "GET v1/claudecode/usage",
 	"GET v3/usage/limits",
 	"POST v3/usage/limits",

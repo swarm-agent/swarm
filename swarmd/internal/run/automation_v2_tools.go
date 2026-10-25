@@ -49,8 +49,9 @@ func workerProposalCall(call tool.Call) bool {
 	var args struct {
 		Action string          `json:"action"`
 		Model  json.RawMessage `json:"model"`
+		Budget json.RawMessage `json:"budget"`
 	}
-	return json.Unmarshal([]byte(call.Arguments), &args) == nil && (args.Action == "propose" || ((args.Action == "create" || args.Action == "update") && len(args.Model) > 0))
+	return json.Unmarshal([]byte(call.Arguments), &args) == nil && (args.Action == "propose" || ((args.Action == "create" || args.Action == "update") && (len(args.Model) > 0 || len(args.Budget) > 0)))
 }
 
 func (s *Service) automationV2ToolSession(id string) (store.SessionSnapshot, string, error) {
@@ -193,6 +194,10 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 		}
 	}
 
+	budget, err := workerToolBudget(args)
+	if err != nil {
+		return "", err
+	}
 	selectedModel, err := s.workerToolModel(current, args)
 	if err != nil {
 		return "", err
@@ -441,6 +446,7 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 			return "", errors.New("worker agent cannot be changed by proposal reuse; create a separately named proposal")
 		}
 		updateReq := store.UpdateWorkerRequest{
+			Budget:                budget,
 			ModelProfile:          selectedModel,
 			ProposeModel:          selectedModel != nil,
 			Name:                  &name,
@@ -498,6 +504,7 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 		return "", err
 	}
 	createReq := store.CreateWorkerRequest{
+		Budget:                budget,
 		Agent:                 agentName,
 		Role:                  role,
 		ModelProfile:          workerModel,
@@ -803,6 +810,10 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 		return s.executeCreateOrProposePendingWorker(readID, args, "manage_workers", true, profile...)
 
 	case "update":
+		budget, err := workerToolBudget(args)
+		if err != nil {
+			return "", err
+		}
 		workerID := strings.TrimSpace(firstNonEmptyString(mapString(args, "worker_id"), mapString(args, "id")))
 		if workerID == "" {
 			return "", errors.New("worker_id is required for update")
@@ -816,6 +827,7 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 			return "", err
 		}
 		req := store.UpdateWorkerRequest{
+			Budget:        budget,
 			ModelProfile:  selectedModel,
 			ProposeModel:  selectedModel != nil,
 			ChangeSummary: strings.TrimSpace(mapString(args, "change_summary")),
@@ -867,7 +879,7 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 			"status": "updated",
 			"worker": w,
 		})
-		if selectedModel != nil {
+		if selectedModel != nil || budget != nil {
 			return workerProposalToolOutput(w)
 		}
 		return string(raw), err
