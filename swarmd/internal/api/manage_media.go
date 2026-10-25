@@ -13,6 +13,7 @@ import (
 	"strings"
 	"swarm/packages/swarmd/internal/videogen"
 	"time"
+	"unicode/utf8"
 
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
@@ -114,7 +115,14 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 		return map[string]any{"job_id": controlMCPJobID(controlMCPJobMedia, projectID, task.ID), "status": task.Status, "retry_of": task.RetryOf}, nil
 	case "generate":
 		kind := controlMCPMediaKinds[controlMCPString(args, "kind")]
+		speech, err := mediaSpeechSettings(args, kind)
+		if err != nil {
+			return nil, err
+		}
 		brief := strings.TrimSpace(controlMCPString(args, "brief"))
+		if brief == "" && speech != nil {
+			brief = "Generate speech narration"
+		}
 		if kind == "" || brief == "" {
 			return nil, errors.New("generate requires kind image, video or sound and a brief")
 		}
@@ -150,6 +158,9 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 			return nil, err
 		}
 		input := tool.ProjectTaskCreateInput{ManageMediaSource: true, OriginSessionID: session.ID, Title: brief, Prompt: brief, Description: brief, Agent: kind, WorkspacePath: root, AutoApprove: pebblestore.SessionAccessFromMetadata(session.Metadata).Tasks != pebblestore.SessionTasksAsk, Model: controlMCPString(args, "model"), AspectRatio: controlMCPString(args, "aspect_ratio"), Resolution: controlMCPString(args, "resolution"), DurationSeconds: controlMCPInt(args, "duration_seconds", 0), VariantCount: controlMCPInt(args, "count", 0)}
+		if speech != nil {
+			input.Operation, input.Speech = "speech", speech
+		}
 		if kind == "video" {
 			input.VideoType = "single"
 			input.Operation = controlMCPString(args, "operation")
@@ -258,10 +269,19 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 
 // Pin the selected model before admission so pricing and execution agree.
 func (s *Server) estimateManagedMedia(ctx context.Context, p identity.Principal, input *tool.ProjectTaskCreateInput) (pebblestore.MediaCostEstimate, error) {
+	if input.Operation == "speech" || input.Speech != nil {
+		if err := s.admitSpeechTask(p.AccountScopeID, &pebblestore.ProjectTaskRecord{Agent: input.Agent, Operation: input.Operation, Speech: input.Speech, Model: input.Model, DurationSeconds: input.DurationSeconds, AspectRatio: input.AspectRatio, Resolution: input.Resolution, VariantCount: input.VariantCount, AttachedMedia: input.AttachedMedia}, false); err != nil {
+			return pebblestore.MediaCostEstimate{}, err
+		}
+	}
 	if input.Model == "" {
 		input.Model = s.defaultMediaModel(ctx, p, input.Agent)
 	}
 	opts := pebblestore.MediaCostEstimateOptions{Model: input.Model, Kind: input.Agent, Count: max(1, input.VariantCount), ImageSize: input.Resolution, Resolution: input.Resolution, AspectRatio: input.AspectRatio, DurationSeconds: input.DurationSeconds, IncludesAudio: input.Agent == "video"}
+	if input.Operation == "speech" {
+		opts.Speech = true
+		opts.InputCharacters = int64(utf8.RuneCountInString(input.Speech.Text))
+	}
 	if input.Agent == "image" && s.imageGen != nil {
 		selection, err := s.imageGen.ResolveModelSelection(input.Model)
 		if err != nil {

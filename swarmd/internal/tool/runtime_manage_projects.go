@@ -40,6 +40,7 @@ type ProjectTaskCreateInput struct {
 	Agent               string                                   `json:"agent,omitempty"`
 	Intent              string                                   `json:"intent,omitempty"`
 	Operation           string                                   `json:"operation,omitempty"`
+	Speech              *pebblestore.ProjectSpeechSettings        `json:"speech,omitempty"`
 	WorkerName          string                                   `json:"worker_name,omitempty"`
 	FeatureSize         string                                   `json:"feature_size,omitempty"`
 	WorkspacePath       string                                   `json:"workspace_path,omitempty"`

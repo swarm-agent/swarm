@@ -2437,20 +2437,8 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				if preflight.Agent == "" {
 					preflight.Agent = req.Intent
 				}
-				if err := validateSpeechTask(preflight); err != nil {
+				if err := s.admitSpeechTask(p.AccountScopeID, preflight, req.TaskProgram != nil || req.Document != nil || req.PlanDocument != nil || len(req.CoderAssignments) > 0 || len(req.Deliverables) > 0 || req.EnhancePrompt != nil && *req.EnhancePrompt); err != nil {
 					writeError(w, http.StatusBadRequest, err)
-					return
-				}
-				if s.audioGen == nil {
-					writeError(w, http.StatusBadRequest, errors.New("speech service unavailable"))
-					return
-				}
-				if _, err := s.audioGen.SpeechAlignmentModel(p.AccountScopeID); err != nil {
-					writeError(w, http.StatusBadRequest, err)
-					return
-				}
-				if req.TaskProgram != nil || req.Document != nil || req.PlanDocument != nil || len(req.CoderAssignments) > 0 || len(req.Deliverables) > 0 || req.EnhancePrompt != nil && *req.EnhancePrompt {
-					writeError(w, http.StatusBadRequest, errors.New("speech cannot carry source execution, deliverables or prompt enhancement"))
 					return
 				}
 				req.Intent = "sound"
@@ -2474,7 +2462,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				}
 				req.Model = s.defaultMediaModel(r.Context(), p, kind)
 			}
-			if !isMediaRequest || isDirectSimpleMedia {
+			if !isMediaRequest || isDirectSimpleMedia || req.Operation == "speech" {
 				input := tool.ProjectTaskCreateInput{
 					ID:                  req.ID,
 					Title:               req.Title,
@@ -2492,6 +2480,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					WorktreeBranch:      req.WorktreeBranch,
 					OutcomeType:         req.OutcomeType,
 					Operation:           req.Operation,
+					Speech:              req.Speech,
 					Tier:                req.Tier,
 					AspectRatio:         req.AspectRatio,
 					Resolution:          req.Resolution,

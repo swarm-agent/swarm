@@ -1387,19 +1387,12 @@ func controlMCPRequestMedia(c *controlMCPCall, args map[string]any) (any, error)
 			body[arg] = value
 		}
 	}
-	if operation := controlMCPString(args, "operation"); operation == "speech" {
-		body["operation"] = operation
-		speech := map[string]string{}
-		for _, key := range []string{"text", "voice", "style", "language", "format"} {
-			speech[key] = controlMCPString(args, key)
-		}
-		body["speech"] = speech
-	} else {
-		for _, key := range []string{"text", "voice", "style", "language", "format"} {
-			if controlMCPString(args, key) != "" {
-				return nil, controlMCPToolFailure("%s requires operation speech", key)
-			}
-		}
+	speech, err := mediaSpeechSettings(args, kind)
+	if err != nil {
+		return nil, controlMCPToolFailure("%s", err)
+	}
+	if speech != nil {
+		body["operation"], body["speech"] = "speech", speech
 	}
 	if kind == "video" {
 		// One clip, as asked. Without this the task router plans a two-scene
