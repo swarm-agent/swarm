@@ -8,6 +8,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 - Apply Gemini 3 thought-signature replay repair and thinking support to Gemini 4 and later major versions, preserving signed and parallel calls. Docs impact: none
 - Reuse same-session pending worker proposals, allow worker reads without permission prompts, and read proposal review/progress from the worker store. Docs impact: none
+- Let the Orchestrator integrate reviewed tasks through the same service as HTTP, preserve unrelated untracked files during promotion, and refuse repeat task approval with actionable guidance. Docs impact: none
 
 - Clients and agents: one model. AGENTS.md says how Swarm is used (a client talking to the Orchestrator, or an outside AI through MCP, doing the same actions with approval set by how the person works), and docs/frontends.md now documents the client path Swarm Console uses (owner session from `swarmctl client connect`, sync snapshot and realtime stream, the Orchestrator session routes) instead of app keys, `/mcp` and the activity feed. Docs impact: AGENTS.md, docs/frontends.md, README.
 

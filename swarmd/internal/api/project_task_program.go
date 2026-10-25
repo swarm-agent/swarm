@@ -1133,6 +1133,13 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 	if existingTask.AccountID != "" && existingTask.AccountID != p.AccountScopeID {
 		return nil, errors.New("cross-account task approval forbidden")
 	}
+	if existingTask.Status != "pending_approval" && existingTask.Status != "planning" {
+		next := "use get_task to inspect the task or reopen_task to request follow-up work"
+		if existingTask.Status == "needs_review" {
+			next = "use integrate_task to merge its commits"
+		}
+		return nil, fmt.Errorf("cannot approve task in state %q: it is not waiting for approval; %s", existingTask.Status, next)
+	}
 	if existingTask.Design != nil {
 		return nil, errDesignJobNotAgentTask
 	}
@@ -1185,14 +1192,6 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 				return nil, err
 			}
 		}
-	}
-	if existingTask.Status == "rejected" {
-		return nil, errors.New("cannot approve rejected task")
-	}
-	if existingTask.Status == "completed" {
-		hydrateTaskPlanDocument(existingTask, db)
-		hydrateTaskProgramStatus(existingTask, db)
-		return existingTask, nil
 	}
 
 	var guard tool.ProjectTaskApprovalGuards

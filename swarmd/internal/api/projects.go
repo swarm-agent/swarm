@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"mime"
 	"net/http"
 	"os"
@@ -3691,17 +3690,18 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Mutation requests must identify the exact selected session and captured lane.
-		var selection struct {
-			SessionID    string `json:"session_id"`
-			SourceBranch string `json:"source_branch"`
-			TargetBranch string `json:"target_branch"`
-			Revision     int    `json:"revision"`
-			AttemptID    string `json:"attempt_id"`
-			SourceHead   string `json:"source_head"`
-			TargetHead   string `json:"target_head"`
-		}
+		var selection tool.ProjectTaskIntegrationSelection
 		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&selection); err != nil {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("select the task session and target branch before integrating: %w", err))
+			return
+		}
+		if segments[3] == "integrate" {
+			result, err := s.IntegrateProjectTask(r.Context(), p, projectID, taskID, selection)
+			if err != nil {
+				writeProjectTaskIntegrationError(w, err)
+			} else {
+				writeJSON(w, http.StatusOK, result)
+			}
 			return
 		}
 		if selection.SessionID == "" || selection.SessionID != task.SessionID || selection.SourceBranch == "" || selection.TargetBranch == "" {
@@ -3733,229 +3733,6 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			s.recoverTaskDelta(w, r, p, task, selectedSession, gitState.deliveryAssessment, selection.Revision, selection.AttemptID, selection.SourceHead, selection.TargetHead)
 			return
 		}
-		if gitState.deliveryAssessment == nil || gitState.deliveryAssessment.Freshness != "observed" || (gitState.deliveryAssessment.State != "candidate_work" && gitState.deliveryAssessment.State != "integrated") {
-			writeJSON(w, http.StatusConflict, map[string]any{
-				"ok":       false,
-				"error":    taskDeliveryNotActionableMessage(projectID, taskID, gitState.deliveryAssessment),
-				"code":     strconv.Itoa(http.StatusConflict),
-				"delivery": gitState.deliveryAssessment,
-			})
-			return
-		}
-		// Uncommitted changes are a precondition, not an integration attempt:
-		// refuse before recording a receipt and name exactly what blocks.
-		if a := gitState.deliveryAssessment; gitState.isDirty || a.SourceDirty || a.TargetDirty {
-			writeError(w, http.StatusConflict, errors.New("cannot integrate: "+taskDeliveryDirtyMessage(a)))
-			return
-		}
-		receipt := &pebblestore.ProjectTaskIntegration{State: "in_progress", SessionID: selection.SessionID, SourceBranch: selection.SourceBranch, TargetBranch: selection.TargetBranch, TargetWorkspacePath: capturedPath}
-		if err := pebblestore.BeginProjectTaskIntegration(db, p.AccountScopeID, task, receipt); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-		defer func() {
-			if receipt.State == "in_progress" {
-				receipt.State = "conflict"
-				if receipt.Error == "" {
-					receipt.Error = "Integration did not complete. Inspect the source and target Git state before retrying."
-				}
-				if _, err := pebblestore.FinishProjectTaskIntegration(db, p.AccountScopeID, task, receipt); err != nil {
-					log.Printf("persist terminal integration receipt failed: %v", err)
-				}
-			}
-		}()
-		if gitState.unintegratedCommits == 0 {
-			if gitState.isIntegrated {
-				// Inspect the captured checkout, not a remote-tracking ref, before
-				// claiming this task was integrated into the requested target.
-				checkout, checkoutErr := s.worktrees.InspectTaskWorkspace(capturedPath)
-				sourceState, sourceErr := s.worktrees.InspectTaskWorkspace(selectedSession.WorktreeRootPath)
-				if checkoutErr != nil || sourceErr != nil || checkout.BranchName != selection.TargetBranch || sourceState.BranchName != selection.SourceBranch || checkout.HeadCommit != gitState.deliveryAssessment.TargetOID || sourceState.HeadCommit != gitState.deliveryAssessment.SourceOID || !checkout.TrackedClean || !sourceState.Clean || sourceState.HeadCommit == capturedBase {
-					writeError(w, http.StatusConflict, errors.New("captured target or committed source is unavailable; inspect Git before retrying"))
-					return
-				}
-				receipt.SourceHead = sourceState.HeadCommit
-				receipt.PreviousTargetHead = checkout.HeadCommit
-				ancestorCtx, ancestorCancel := context.WithTimeout(r.Context(), 3*time.Second)
-				defer ancestorCancel()
-				if err := sandbox.Command(ancestorCtx, "-C", capturedPath, "merge-base", "--is-ancestor", sourceState.HeadCommit, checkout.HeadCommit).Run(); err != nil {
-					receipt.Error = "Integration ancestry changed during verification; inspect the retained source and target before launching repair."
-					writeError(w, http.StatusConflict, errors.New(receipt.Error))
-					return
-				}
-				receipt.SourceHead = sourceState.HeadCommit
-				receipt.ResultingTargetHead = checkout.HeadCommit
-				receipt.State = "already_integrated"
-				updated, updateErr := pebblestore.FinishProjectTaskIntegration(db, p.AccountScopeID, task, receipt)
-				if updateErr != nil {
-					writeError(w, http.StatusInternalServerError, fmt.Errorf("Git integration verified at %s but task receipt persistence failed; reconcile task state without rerunning Git: %w", receipt.ResultingTargetHead, updateErr))
-					return
-				}
-				writeJSON(w, http.StatusOK, map[string]any{
-					"status": "already_integrated",
-					"task":   sanitizeProjectTaskForClient(updated),
-				})
-				return
-			}
-			writeError(w, http.StatusBadRequest, errors.New("cannot integrate: worktree has no commits to integrate"))
-			return
-		}
-
-		// Resolve worktree target path
-		targetPath := strings.TrimSpace(task.WorkspacePath)
-		var sess *pebblestore.SessionSnapshot
-		if task.SessionID != "" {
-			if sSnap, sFound, _ := db.GetSession(task.SessionID); sFound {
-				sess = &sSnap
-				if sess.WorktreeEnabled && strings.TrimSpace(sess.WorktreeRootPath) != "" {
-					targetPath = strings.TrimSpace(sess.WorktreeRootPath)
-				}
-			}
-		}
-		parentWs := ""
-		if sess != nil && sess.Metadata != nil {
-			if src, ok := sess.Metadata["swarm_v3_source_workspace_path"].(string); ok && src != "" {
-				parentWs = src
-			}
-		}
-		if parentWs != capturedPath || targetPath != selectedSession.WorktreeRootPath || parentWs == targetPath {
-			writeError(w, http.StatusConflict, errors.New("task worktree does not match the captured repository and session lane"))
-			return
-		}
-
-		type workspaceInspector interface {
-			InspectTaskWorkspace(workspacePath string) (worktreeruntime.TaskWorkspaceState, error)
-		}
-		var inspector workspaceInspector = &worktreeruntime.Service{}
-		if s.worktrees != nil {
-			inspector = s.worktrees
-		}
-		parentState, err := inspector.InspectTaskWorkspace(parentWs)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("inspect parent repository %q: %w", parentWs, err))
-			return
-		}
-		// Untracked files the task does not write may stay; PrepareTaskIntegration
-		// refuses any it would overwrite.
-		if !parentState.TrackedClean {
-			writeError(w, http.StatusConflict, fmt.Errorf("captured repository on %s has uncommitted changes to tracked files:\n%s\ncommit or stash them before integrating", parentState.BranchName, parentState.Status))
-			return
-		}
-		if parentState.BranchName != selection.TargetBranch {
-			writeError(w, http.StatusConflict, fmt.Errorf("captured checkout is on %s, not selected target %s; check out the target and retry", parentState.BranchName, selection.TargetBranch))
-			return
-		}
-
-		childState, err := inspector.InspectTaskWorkspace(targetPath)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("inspect worktree %q: %w", targetPath, err))
-			return
-		}
-		if childState.HeadCommit != gitState.deliveryAssessment.SourceOID || parentState.HeadCommit != gitState.deliveryAssessment.TargetOID {
-			writeError(w, http.StatusConflict, errors.New("delivery heads moved; refresh before integration"))
-			return
-		}
-		if !childState.Clean {
-			writeError(w, http.StatusConflict, errors.New("source worktree is dirty; explicitly commit changes before integrating"))
-			return
-		}
-		if childState.BranchName != selection.SourceBranch {
-			writeError(w, http.StatusConflict, errors.New("source worktree branch changed; refresh the selected task"))
-			return
-		}
-
-		baseCommit := capturedBase
-		if baseCommit == childState.HeadCommit {
-			writeError(w, http.StatusBadRequest, errors.New("cannot integrate: worktree has no commits beyond its base commit"))
-			return
-		}
-
-		type taskIntegrator interface {
-			PrepareTaskIntegration(workspacePath, targetBranch, targetHead string, children []worktreeruntime.TaskIntegrationChild) (worktreeruntime.TaskIntegrationPlan, error)
-			ApplyTaskIntegration(workspacePath string, plan worktreeruntime.TaskIntegrationPlan) (worktreeruntime.TaskIntegrationResult, error)
-		}
-		var integrator taskIntegrator = &worktreeruntime.Service{}
-		if ti, ok := s.worktrees.(taskIntegrator); ok {
-			integrator = ti
-		}
-		// Persist inspected provenance before preparation: a merge conflict (or a
-		// restart during preparation) must retain the exact committed repair base.
-		receipt.SourceHead = childState.HeadCommit
-		receipt.PreviousTargetHead = parentState.HeadCommit
-		if _, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-			if err := pebblestore.CheckProjectTaskIntegration(t, receipt); err != nil {
-				return err
-			}
-			copy := *receipt
-			t.Integration = &copy
-			t.Revision++
-			return nil
-		}); err != nil {
-			writeError(w, http.StatusConflict, err)
-			return
-		}
-		plan, err := integrator.PrepareTaskIntegration(parentWs, parentState.BranchName, parentState.HeadCommit, []worktreeruntime.TaskIntegrationChild{
-			{
-				SessionID:        selection.SessionID,
-				BaseCommit:       baseCommit,
-				HeadCommit:       childState.HeadCommit,
-				PreserveAncestry: true,
-			},
-		})
-		if err != nil {
-			receipt.Error = fmt.Sprintf("prepare integration failed: %v", err)
-			writeError(w, http.StatusBadRequest, errors.New(receipt.Error))
-			return
-		}
-
-		// Patch equivalence can eliminate every replay candidate without landing
-		// the original history. Do not apply a no-op and then claim integration;
-		// retain the inspected receipt so repair can merge in an isolated lane.
-		if len(plan.Commits) == 0 && plan.FastForwardHead == "" {
-			receipt.Error = "Integration requires original commit ancestry: equivalent patches exist on the captured target, but the source history is unmerged. Launch repair to reconcile history in a new isolated worktree, then explicitly integrate."
-			writeError(w, http.StatusConflict, errors.New(receipt.Error))
-			return
-		}
-
-		result, err := integrator.ApplyTaskIntegration(parentWs, plan)
-		if err != nil {
-			receipt.Error = fmt.Sprintf("apply integration failed: %v", err)
-			writeError(w, http.StatusInternalServerError, errors.New(receipt.Error))
-			return
-		}
-
-		receipt.ResultingTargetHead = result.ResultingParentHead
-		// The integration service reports an applied operation, but the receipt is
-		// authoritative only after verifying the actual checked-out target ancestry.
-		verified, verifyErr := inspector.InspectTaskWorkspace(parentWs)
-		if verifyErr != nil || verified.BranchName != selection.TargetBranch || verified.HeadCommit != result.ResultingParentHead {
-			receipt.Error = "target changed after promotion; inspect Git before retrying"
-			writeError(w, http.StatusConflict, errors.New(receipt.Error))
-			return
-		}
-		verifyCtx, verifyCancel := context.WithTimeout(r.Context(), 3*time.Second)
-		defer verifyCancel()
-		if err := sandbox.Command(verifyCtx, "-C", parentWs, "merge-base", "--is-ancestor", childState.HeadCommit, verified.HeadCommit).Run(); err != nil {
-			receipt.Error = "source commit ancestry on target could not be verified; inspect Git before retrying"
-			writeError(w, http.StatusConflict, errors.New(receipt.Error))
-			return
-		}
-		receipt.State = "integrated"
-		updated, err := pebblestore.FinishProjectTaskIntegration(db, p.AccountScopeID, task, receipt)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Errorf("Git integration verified at %s but task receipt persistence failed; reconcile task state without rerunning Git: %w", receipt.ResultingTargetHead, err))
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status": "integrated",
-			"task":   sanitizeProjectTaskForClient(updated),
-			"integration": map[string]any{
-				"target_branch":         parentState.BranchName,
-				"previous_target_head":  parentState.HeadCommit,
-				"resulting_target_head": result.ResultingParentHead,
-			},
-		})
-		return
 	}
 
 	// 7. Approve task session: POST /v3/projects/{id}/tasks/{taskId}/approve (or /accept)

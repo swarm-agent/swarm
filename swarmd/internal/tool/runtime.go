@@ -7070,10 +7070,6 @@ func (r *Runtime) manageWorktreePromote(scope WorkspaceScope, args map[string]an
 		}
 		started = append(started, entry)
 	}
-	if !targetState.Clean {
-		err := fmt.Errorf("promotion target checkout is dirty at branch %q full HEAD %q; preserve or finish those changes before promotion, then refresh target_branch and target_head", targetState.BranchName, targetState.HeadCommit)
-		return "", errors.Join(err, r.finishPromotionTasks(scope, started, "failed", "", err))
-	}
 	if (primaryTargetBranch != "" && targetState.BranchName != primaryTargetBranch) || (targetHead != "" && targetState.HeadCommit != targetHead) {
 		err := fmt.Errorf("promotion target branch or HEAD changed; expected branch %q at full HEAD %q, found branch %q at full HEAD %q; refresh both values from the captured checkout before retrying", primaryTargetBranch, targetHead, targetState.BranchName, targetState.HeadCommit)
 		return "", errors.Join(err, r.finishPromotionTasks(scope, started, "failed", "", err))
@@ -7096,7 +7092,7 @@ func (r *Runtime) manageWorktreePromote(scope WorkspaceScope, args map[string]an
 	}
 	// Reconcile against the canonical Git service, never the tool JSON alone.
 	verified, verifyErr := r.worktrees.InspectTaskWorkspace(primaryResolvedTarget)
-	if verifyErr != nil || !verified.Clean || verified.BranchName != targetBranchName || verified.HeadCommit != result.ResultingParentHead {
+	if verifyErr != nil || !verified.TrackedClean || verified.BranchName != targetBranchName || verified.HeadCommit != result.ResultingParentHead {
 		err = errors.New("promotion applied but captured target changed; inspect Git before retrying")
 		return "", errors.Join(err, r.finishPromotionTasks(scope, started, "failed", result.ResultingParentHead, err))
 	}

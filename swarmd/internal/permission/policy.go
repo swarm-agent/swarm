@@ -1650,7 +1650,7 @@ func manageProjectsPolicyIdentity(toolArguments string) string {
 	}
 	action, _ := args["action"].(string)
 	switch strings.ToLower(strings.TrimSpace(action)) {
-	case "approve_task", "accept_task", "deploy_task":
+	case "approve_task", "accept_task", "deploy_task", "integrate_task":
 		return policyToolProjectTaskLaunch
 	case "propose_task", "create_task":
 		if isManageProjectsPendingTaskProposal(toolArguments) {

@@ -92,6 +92,22 @@ type ProjectTaskFollowupService interface {
 	ReopenProjectTask(context.Context, identity.Principal, string, string, ProjectTaskFollowupInput) (*pebblestore.ProjectTaskRecord, error)
 }
 
+// ProjectTaskIntegrationSelection captures the lane selected by an HTTP caller.
+type ProjectTaskIntegrationSelection struct {
+	SessionID    string `json:"session_id"`
+	SourceBranch string `json:"source_branch"`
+	TargetBranch string `json:"target_branch"`
+	Revision     int    `json:"revision"`
+	AttemptID    string `json:"attempt_id"`
+	SourceHead   string `json:"source_head"`
+	TargetHead   string `json:"target_head"`
+}
+
+// ProjectTaskIntegrationService is implemented by the canonical lifecycle service.
+type ProjectTaskIntegrationService interface {
+	IntegrateProjectTask(context.Context, identity.Principal, string, string, ...ProjectTaskIntegrationSelection) (map[string]any, error)
+}
+
 // ProjectTaskApprovalGuards specifies caller-provided guards for task approval.
 type ProjectTaskApprovalGuards struct {
 	SessionID          string `json:"session_id,omitempty"`
@@ -307,7 +323,7 @@ func manageProjectsDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_projects",
-		Description: "Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, list_sources, inspect_source, inspect_files, create, update, delete, synthesize_context, list_media, get_media, propose_task, approve_task, accept_task, deploy_task, refine_task, create_task, reopen_task, list_tasks, get_task, update_task, archive_task, unarchive_task, delete_task, reconcile_tasks, edit_requirements, wait_tasks, report_task. wait_tasks durably yields the current project goal on 1-16 delegated task_ids; resumes on all review-ready/completed outcomes or any actionable blocker. No polling or timeout/provider calls while waiting. needs_review is not user acceptance. Stop/archive/new user messages invalidate the wait. Task edits never transition execution status; unarchive_task restores visibility at expected_revision without changing status, attempts or linked sessions (already unarchived is an error); delete_task only removes an archived, unlaunched task.",
+		Description: "integrate_task merges a needs_review task's commits into its target branch, the same as the person's merge. Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, list_sources, inspect_source, inspect_files, create, update, delete, synthesize_context, list_media, get_media, propose_task, approve_task, accept_task, integrate_task, deploy_task, refine_task, create_task, reopen_task, list_tasks, get_task, update_task, archive_task, unarchive_task, delete_task, reconcile_tasks, edit_requirements, wait_tasks, report_task. wait_tasks durably yields the current project goal on 1-16 delegated task_ids; resumes on all review-ready/completed outcomes or any actionable blocker. No polling or timeout/provider calls while waiting. needs_review is not user acceptance. Stop/archive/new user messages invalidate the wait. Task edits never transition execution status; unarchive_task restores visibility at expected_revision without changing status, attempts or linked sessions (already unarchived is an error); delete_task only removes an archived, unlaunched task.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -317,7 +333,8 @@ func manageProjectsDefinition() Definition {
 				"inspection":        map[string]any{"type": "object", "description": "inspect_files optionally runs a bounded read-only tool against the selected catalog source or exact task result; arguments are the normal read/list/search/find arguments, with paths relative to that tree", "properties": map[string]any{"tool": map[string]any{"type": "string", "enum": []string{"read", "list", "search", "find"}}, "arguments": map[string]any{"type": "object", "description": "Object, e.g. {\"path\":\".\"}"}}, "required": []string{"tool", "arguments"}, "additionalProperties": false},
 				"action": map[string]any{
 					"type":        "string",
-					"description": "Action: list|get|list_sources|inspect_source|inspect_files|create|update|delete|synthesize_context|list_media|get_media|propose_task|approve_task|accept_task|deploy_task|refine_task|create_task|reopen_task|list_tasks|get_task|update_task|archive_task|unarchive_task|delete_task|reconcile_tasks|edit_requirements|wait_tasks|report_task",
+					"description": "Action: list|get|list_sources|inspect_source|inspect_files|create|update|delete|synthesize_context|list_media|get_media|propose_task|approve_task|accept_task|integrate_task|deploy_task|refine_task|create_task|reopen_task|list_tasks|get_task|update_task|archive_task|unarchive_task|delete_task|reconcile_tasks|edit_requirements|wait_tasks|report_task",
+					"enum":        []string{"list", "get", "list_sources", "inspect_source", "inspect_files", "create", "update", "delete", "synthesize_context", "list_media", "get_media", "propose_task", "approve_task", "accept_task", "integrate_task", "deploy_task", "refine_task", "create_task", "reopen_task", "list_tasks", "get_task", "update_task", "archive_task", "unarchive_task", "delete_task", "reconcile_tasks", "edit_requirements", "wait_tasks", "report_task"},
 				},
 				"id": map[string]any{
 					"type":        "string",
@@ -325,7 +342,7 @@ func manageProjectsDefinition() Definition {
 				},
 				"project_id": map[string]any{
 					"type":        "string",
-					"description": "Project ID for task and media operations (list_media, get_media, propose_task, approve_task, accept_task, deploy_task, refine_task, list_tasks, update_task)",
+					"description": "Project ID for task and media operations (list_media, get_media, propose_task, approve_task, accept_task, integrate_task, deploy_task, refine_task, list_tasks, update_task)",
 				},
 				"media_id": map[string]any{
 					"type":        "string",
@@ -333,7 +350,7 @@ func manageProjectsDefinition() Definition {
 				},
 				"task_id": map[string]any{
 					"type":        "string",
-					"description": "Task ID for approve_task, accept_task, deploy_task, refine_task, update_task",
+					"description": "Task ID for approve_task, accept_task, integrate_task, deploy_task, refine_task, update_task",
 				},
 				"session_id": map[string]any{
 					"type":        "string",
@@ -1126,6 +1143,24 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 
 	case "wait_tasks", "edit_requirements", "reopen_task", "list_tasks", "get_task", "update_task", "archive_task", "unarchive_task", "delete_task", "reconcile_tasks":
 		return r.executeManageProjectTasksContext(ctx, scope, actionName, args)
+
+	case "integrate_task":
+		projectID := strings.TrimSpace(asString(args["project_id"]))
+		taskID := strings.TrimSpace(asString(args["task_id"]))
+		if projectID == "" || taskID == "" {
+			return "", errors.New("manage_projects integrate_task requires project_id and task_id")
+		}
+		integrator, ok := r.getProjectTaskLifecycleService().(ProjectTaskIntegrationService)
+		if !ok {
+			return "", errors.New("project task integration service is not configured")
+		}
+		result, err := integrator.IntegrateProjectTask(ctx, p, projectID, taskID)
+		if err != nil {
+			return "", fmt.Errorf("integrate task: %w", err)
+		}
+		for key, value := range result {
+			response[key] = value
+		}
 
 	case "approve_task", "accept_task":
 		projectID := strings.TrimSpace(asString(args["project_id"]))
