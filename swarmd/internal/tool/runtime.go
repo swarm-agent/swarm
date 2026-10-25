@@ -1500,6 +1500,7 @@ func (r *Runtime) Definitions() []Definition {
 		manageProjectsDefinition(),
 		leaseEnvironmentDefinition(),
 		manageWorkersV2Definition(),
+		manageWorkflowsDefinition(),
 		manageAutomationV2Definition(),
 		swarmDesignDefinition(),
 		manageMediaDefinition(),

@@ -76,12 +76,16 @@ func (s *Server) SaveWorkflow(caller WorkflowCaller, body WorkflowDefinition, so
 	if err := a.Normalize(); err != nil {
 		return zero, false, false, err
 	}
-	if jobautomation.HasRunStep(a.Steps) && !caller.MachineOwner {
+	if source != "propose" && jobautomation.HasRunStep(a.Steps) && !caller.MachineOwner {
 		return zero, false, false, errRunStepNeedsOwner
 	}
 	account := caller.Principal.AccountScopeID
 	if err := s.jobAutomationFixesError(account, a.Steps); err != nil {
 		return zero, false, false, controlMCPToolFailure("%s", err)
+	}
+	if source == "propose" {
+		saved, err := store.Propose(account, caller.Who, a)
+		return saved, false, false, err
 	}
 	if skipUnchanged {
 		previous, err := store.FindByName(account, a.Name)

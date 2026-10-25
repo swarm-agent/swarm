@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Add Orchestrator workflow proposals with person-only revision acceptance, discard, and native workflow management. Docs impact: none
+
 - Share cron parsing across worker and automation schedules, supporting ranges, lists, month/day names and Sunday aliases while preserving explicit timezones and DST behavior. Docs impact: none
 - Unify workflow saving and management behind shared server methods, with MCP workflow tools calling the canonical V3 routes. Docs impact: none
 

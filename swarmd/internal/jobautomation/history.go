@@ -86,6 +86,10 @@ func (s *Store) History(account, id, name string) ([]HistoryRecord, error) {
 	return s.historyLocked(account, id, name)
 }
 func (s *Store) saveHistoryLocked(a Automation, previous *Automation, kind string, change Change) error {
+	return s.saveHistoryRemovingProposalLocked(a, previous, kind, change, "")
+}
+
+func (s *Store) saveHistoryRemovingProposalLocked(a Automation, previous *Automation, kind string, change Change, proposalID string) error {
 	records, err := s.historyLocked(a.Account, a.ID, "")
 	if err != nil && err != ErrNotFound {
 		return err
@@ -126,8 +130,15 @@ func (s *Store) saveHistoryLocked(a Automation, previous *Automation, kind strin
 	if err = put(historyKey(a.Account, a.ID), records); err != nil {
 		return err
 	}
-	if err = put(historyNameKey(a.Account, a.Name), a.ID); err != nil {
-		return err
+	if !a.Proposed {
+		if err = put(historyNameKey(a.Account, a.Name), a.ID); err != nil {
+			return err
+		}
+	}
+	if proposalID != "" && proposalID != a.ID {
+		if err = batch.Delete([]byte(definitionKey(a.Account, proposalID)), nil); err != nil {
+			return err
+		}
 	}
 	return batch.Commit(pebble.Sync)
 }

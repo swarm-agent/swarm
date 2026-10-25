@@ -823,9 +823,15 @@ func (s *Server) jobAutomationFixesError(account string, steps []jobautomation.S
 // ---- views -----------------------------------------------------------------
 
 func jobAutomationView(a jobautomation.Automation) map[string]any {
+	state := "active"
+	if a.Proposed {
+		state = "proposed"
+	} else if !a.Enabled {
+		state = "disabled"
+	}
 	return map[string]any{
 		"id": a.ID, "name": a.Name, "scope": a.Scope, "when": a.When, "enabled": a.Enabled, "retries": a.Retries, "result": a.Result,
-		"steps": a.Steps, "revision": a.Revision, "created_at": a.CreatedAt, "updated_at": a.UpdatedAt,
+		"state": state, "steps": a.Steps, "revision": a.Revision, "created_at": a.CreatedAt, "updated_at": a.UpdatedAt,
 	}
 }
 
@@ -942,6 +948,8 @@ func runStepOwnerError(r *http.Request, steps []jobautomation.Step) error {
 
 func jobAutomationHTTPError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, jobautomation.ErrProposalConflict):
+		writeError(w, http.StatusConflict, err)
 	case errors.Is(err, errRunStepNeedsOwner):
 		writeError(w, http.StatusForbidden, err)
 	case jobautomation.IsValidationError(err):
@@ -997,6 +1005,8 @@ func (s *Server) handleJobAutomations(w http.ResponseWriter, r *http.Request) {
 	}
 	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, JobAutomationsPath), "/")
 	switch {
+	case strings.HasSuffix(rest, "/accept") && r.Method == http.MethodPost:
+		s.handleWorkflowAccept(w, r, strings.TrimSuffix(rest, "/accept"))
 	case (rest == "history" && r.Method == http.MethodGet) || (rest == "restore" && r.Method == http.MethodPost):
 		s.handleWorkflowHistory(w, r, rest)
 	case rest == "import" && r.Method == http.MethodPost:

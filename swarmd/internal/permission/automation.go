@@ -21,3 +21,16 @@ func automationPolicyIdentity(arguments string) string {
 		return "automation_change"
 	}
 }
+
+func workflowPolicyIdentity(arguments string) string {
+	var args struct {
+		Action string `json:"action"`
+	}
+	if json.Unmarshal([]byte(arguments), &args) == nil {
+		switch args.Action {
+		case "list", "get", "deliveries", "history", "help":
+			return "automation_read"
+		}
+	}
+	return "automation_change"
+}

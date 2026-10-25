@@ -735,7 +735,7 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 			return tool.Result{CallID: call.CallID, Name: call.Name, Error: err.Error()}, 0, nil
 		}
 	}
-	if toolName == "manage_workers" || toolName == "manage_automation" {
+	if toolName == "manage_workers" || toolName == "manage_automation" || toolName == "manage_workflows" {
 		isOrchestrator := agentruntime.IsOrchestratorAgentName(config.agentProfile.Name)
 		if permissionSessionID != config.sessionID || !isOrchestrator {
 			return tool.Result{CallID: call.CallID, Name: call.Name, Error: "Worker and automation management is exclusive to Swarm Orchestrator in Swarm mode"}, 0, nil

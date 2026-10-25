@@ -96,6 +96,9 @@ func (s *Server) RestoreWorkflow(caller WorkflowCaller, args map[string]any) (an
 	}
 	for _, record := range records {
 		if record.Revision == revision {
+			if record.Definition != nil && record.Definition.Proposed {
+				return nil, controlMCPToolFailure("a proposed revision requires explicit person acceptance, not restore")
+			}
 			if record.Definition == nil {
 				return nil, controlMCPToolFailure("revision %d is a deleted marker and cannot be restored", revision)
 			}

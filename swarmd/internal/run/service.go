@@ -109,6 +109,7 @@ var (
 )
 
 type Service struct {
+	workflowLifecycle            tool.WorkflowLifecycleService
 	workerExecution              *WorkerExecutionService
 	automationContext            func(string) (string, error)
 	sessions                     *sessionruntime.Service

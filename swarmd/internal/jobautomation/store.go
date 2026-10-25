@@ -252,6 +252,7 @@ func (s *Store) Put(account string, in Automation) (Automation, bool, error) {
 }
 
 func (s *Store) PutChange(account string, in Automation, change Change) (Automation, bool, error) {
+	in.Proposed, in.ProposedBy, in.BaseID, in.BaseRevision = false, "", "", 0
 	account = strings.TrimSpace(account)
 	if account == "" {
 		return Automation{}, false, errors.New("account is required")
@@ -267,7 +268,7 @@ func (s *Store) PutChange(account string, in Automation, change Change) (Automat
 	}
 	now := s.now().UnixMilli()
 	for _, current := range existing {
-		if current.Name == in.Name {
+		if !current.Proposed && current.Name == in.Name {
 			if len(changedFields(&current, &in)) == 0 && change.Source != "restore" {
 				return current, false, nil
 			}
@@ -326,7 +327,7 @@ func (s *Store) FindByName(account, name string) (Automation, error) {
 		return Automation{}, err
 	}
 	for _, a := range list {
-		if a.Name == strings.TrimSpace(name) {
+		if !a.Proposed && a.Name == strings.TrimSpace(name) {
 			return a, nil
 		}
 	}

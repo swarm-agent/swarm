@@ -807,6 +807,7 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 		configureClient(apiServer, store)
 	}
 	toolRuntime.SetProjectTaskLifecycleService(apiServer)
+	runSvc.SetWorkflowLifecycleService(apiServer)
 	// Automation mutations always commit through canonical V3 authority before
 	// waking realtime. Wake failures cannot turn a committed execution into retry.
 	apiServer.ConfigureAutomationRealtime(store)

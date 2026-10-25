@@ -195,14 +195,18 @@ type Step struct {
 // Automation is a durable, account-owned definition. Revision changes on
 // every update; a delivery keeps the revision it started with.
 type Automation struct {
-	ID      string `json:"id"`
-	Account string `json:"account"`
-	Name    string `json:"name"`
-	Scope   Scope  `json:"scope"`
-	When    string `json:"when"`
-	Enabled bool   `json:"enabled"`
-	Retries int    `json:"retries"`
-	Steps   []Step `json:"steps"`
+	Proposed     bool   `json:"proposed,omitempty"`
+	ProposedBy   string `json:"proposed_by,omitempty"`
+	BaseID       string `json:"base_id,omitempty"`
+	BaseRevision uint64 `json:"base_revision,omitempty"`
+	ID           string `json:"id"`
+	Account      string `json:"account"`
+	Name         string `json:"name"`
+	Scope        Scope  `json:"scope"`
+	When         string `json:"when"`
+	Enabled      bool   `json:"enabled"`
+	Retries      int    `json:"retries"`
+	Steps        []Step `json:"steps"`
 	// Result is what the work must hand over (optional): see ResultSpec.
 	Result    *ResultSpec `json:"result,omitempty"`
 	Revision  uint64      `json:"revision"`
@@ -522,7 +526,7 @@ func ValidCommandPath(command string) error {
 
 // Matches reports whether the automation applies to this job end.
 func (a Automation) Matches(r *Result) bool {
-	if !a.Enabled || r == nil {
+	if a.Proposed || !a.Enabled || r == nil {
 		return false
 	}
 	if filepath.Clean(r.Folder) != a.Scope.Folder || r.Folder == "" {
