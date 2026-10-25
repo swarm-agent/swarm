@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Enable bounded image inspection through Claude Code's MCP tool bridge with matching catalog and credential media contracts. Docs impact: none
+
 - Enable read-only image inspection for the native reviewer without granting write or media-generation tools. Docs impact: none
 
 - Clarify that the run media contract describes media_inspect inputs, not restrictions on other media tools. Docs impact: none
