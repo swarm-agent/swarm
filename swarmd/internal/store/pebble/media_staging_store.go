@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -647,13 +646,8 @@ func newOpaqueMediaStagingID() (string, error) {
 	return "stg_" + hex.EncodeToString(value[:]), nil
 }
 
+// normalizeMediaStagingMIME spells a type the way session media does, so a wav
+// declared audio/wav matches the audio/wave Go detects.
 func normalizeMediaStagingMIME(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	if parsed, _, err := mime.ParseMediaType(value); err == nil {
-		return strings.ToLower(strings.TrimSpace(parsed))
-	}
-	if index := strings.IndexByte(value, ';'); index >= 0 {
-		value = strings.TrimSpace(value[:index])
-	}
-	return value
+	return normalizeSessionMediaMIME(value)
 }
