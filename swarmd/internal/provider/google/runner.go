@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -473,14 +474,23 @@ func supportsGoogleThinking(modelID string) bool {
 	if modelID == "" || !strings.Contains(modelID, "gemini") {
 		return false
 	}
-	return strings.Contains(modelID, "gemini-3") ||
+	return supportsGoogle3OrLater(modelID) ||
 		strings.Contains(modelID, "gemini-2.5") ||
 		strings.Contains(modelID, "thinking")
 }
 
-func supportsGoogle3(modelID string) bool {
+func supportsGoogle3OrLater(modelID string) bool {
 	modelID = strings.ToLower(strings.TrimSpace(modelID))
-	return strings.Contains(modelID, "gemini-3")
+	_, version, ok := strings.Cut(modelID, "gemini-")
+	if !ok {
+		return false
+	}
+	end := 0
+	for end < len(version) && version[end] >= '0' && version[end] <= '9' {
+		end++
+	}
+	major, err := strconv.Atoi(version[:end])
+	return err == nil && major >= 3
 }
 
 func googleLegacyThinkingBudgetConfig(level string) *googleThinkingConfig {
@@ -736,11 +746,11 @@ func buildGoogleContentsWithMedia(req provideriface.Request) ([]googleContent, [
 				}
 				if len(parts) > 0 {
 					// Old durable histories and provider-transferred traces may predate
-					// thought-signature persistence. Gemini 3 validates the first call
+					// thought-signature persistence. Gemini 3+ validates the first call
 					// in each model step, and Google explicitly documents this sentinel
 					// for client-injected calls that cannot have an original signature.
 					// Never add it to later parallel calls when the first call is signed.
-					if partThoughtSignatureValue(parts[0]) == "" && supportsGoogle3(req.Model) {
+					if partThoughtSignatureValue(parts[0]) == "" && supportsGoogle3OrLater(req.Model) {
 						parts[0].ThoughtSignature = googleSkipSignature
 					}
 					contents = append(contents, googleContent{
