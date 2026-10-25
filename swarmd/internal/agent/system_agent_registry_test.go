@@ -446,7 +446,9 @@ func TestManageMediaBuiltinDefaults(t *testing.T) {
 		}
 		media := profile.ToolContract.Tools["manage_media"].Enabled
 		enabled := media != nil && *media
-		if enabled != (id == DesignerAgentID) {
+		// The Designer makes media; the Orchestrator makes it, reads attached files
+		// and transcribes them for the person.
+		if enabled != (id == DesignerAgentID || id == SwarmOrchestratorAgentID) {
 			t.Fatalf("%s manage_media enabled=%v", id, enabled)
 		}
 		artifact := profile.ToolContract.Tools["manage_artifact"].Enabled

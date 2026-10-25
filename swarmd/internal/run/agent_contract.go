@@ -338,6 +338,9 @@ func resolveAgentToolStates(profile pebblestore.AgentProfile, knownTools map[str
 		for _, name := range []string{"manage_artifact", "manage_video"} {
 			resolved.Tools[name] = ResolvedAgentTool{Enabled: false, Source: "runtime.orchestrator_media_tasks"}
 		}
+		if _, implemented := knownTools[tool.ManageMediaToolName]; implemented {
+			resolved.Tools[tool.ManageMediaToolName] = ResolvedAgentTool{Enabled: true, Source: "runtime.orchestrator_media_tasks"}
+		}
 		// Its tools for the person's machine are code-owned too: a stored profile
 		// from before them cannot hide them. Each session's access gates every
 		// call in the permission service.

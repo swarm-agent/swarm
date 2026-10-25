@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -50,6 +51,24 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 		return s.readableMediaTask(p, project, id)
 	}
 	root := scope.PrimaryPath
+	readers := mediaInputReaders{
+		path: func(path string) ([]byte, string, error) { return readManagedMediaInput(scope, path) },
+		asset: func(id string) ([]byte, string, string, error) {
+			asset, data, err := s.sessions.Store().ReadSessionMediaAsset(p.AccountScopeID, session.ID, strings.TrimSpace(id))
+			if err != nil {
+				return nil, "", "", err
+			}
+			mediaType := asset.DetectedMIMEType
+			if mediaType == "" {
+				mediaType = asset.DeclaredMIMEType
+			}
+			name := asset.FileName
+			if name == "" {
+				name = asset.ID
+			}
+			return data, pebblestore.NormalizeSessionMediaMIME(mediaType), name, nil
+		},
+	}
 	switch action {
 	case "list":
 		limit := controlMCPInt(args, "limit", 20)
@@ -126,7 +145,7 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 			}
 			input["path"] = path
 		}
-		inputs, err := mediaInputs(args["inputs"], func() ([]string, error) { return []string{root}, nil }, load, manageMediaErrors, func(path string) ([]byte, string, error) { return readManagedMediaInput(scope, path) })
+		inputs, err := mediaInputs(args["inputs"], func() ([]string, error) { return []string{root}, nil }, load, manageMediaErrors, readers)
 		if err != nil {
 			return nil, err
 		}
@@ -151,6 +170,31 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 			result["message"] = "The task waits for approval."
 		}
 		return result, nil
+	case "transcribe":
+		items := controlMCPList(args["inputs"])
+		if len(items) != 1 {
+			return nil, errors.New("transcribe takes one input: asset_id, path or job_id with file")
+		}
+		if s.videoTranscription == nil {
+			return nil, errors.New("audio transcription is not configured on this Swarm")
+		}
+		var roots []string
+		data, mediaType, name, err := mediaInput(0, controlMCPMap(items[0]), &roots, func() ([]string, error) { return []string{root}, nil }, load, manageMediaErrors, readers)
+		if err != nil {
+			return nil, err
+		}
+		if kind := strings.SplitN(mediaType, "/", 2)[0]; kind != "audio" && kind != "video" {
+			return nil, fmt.Errorf("%s is %s; transcribe takes audio or video", name, mediaType)
+		}
+		transcript, model, err := s.videoTranscription.TranscribeAudio(ctx, p, data, controlMCPString(args, "focus"))
+		if err != nil {
+			return nil, err
+		}
+		segments := make([]map[string]any, 0, len(transcript.Segments))
+		for _, segment := range transcript.Segments {
+			segments = append(segments, map[string]any{"start_ms": segment.StartMs, "end_ms": segment.EndMs, "text": segment.Text})
+		}
+		return map[string]any{"file": name, "model": model, "language": transcript.Language, "duration_ms": transcript.DurationMs, "text": transcript.Text, "segments": segments}, nil
 	case "get", "save":
 		kind, project, id, err := controlMCPParseJobID(args)
 		if err != nil {
@@ -208,7 +252,7 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 		}
 		return mediaJobFileView(map[string]any{"job_id": controlMCPJobID(controlMCPJobMedia, project, id), "status": task.Status}, task, nil, manageMediaJobGuidance)
 	default:
-		return nil, errors.New("action must be models, generate, list, retry, get or save")
+		return nil, errors.New("action must be models, generate, list, retry, get, save or transcribe")
 	}
 }
 

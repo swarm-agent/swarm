@@ -395,7 +395,14 @@ func (c *controlMCPCall) controlMCPMediaInputs(raw any) ([]map[string]any, error
 	return mediaInputs(raw, c.workspaceRoots, c.mediaTask, mcpMediaErrors)
 }
 
-func mediaInputs(raw any, workspaceRoots func() ([]string, error), mediaTask func(string, string) (*pebblestore.ProjectTaskRecord, error), wording mediaErrorWording, readInput ...func(string) ([]byte, string, error)) ([]map[string]any, error) {
+// mediaInputReaders are the in-session readers: a workspace path read through
+// the session's retained roots, and a file attached to this session's chat.
+type mediaInputReaders struct {
+	path  func(string) ([]byte, string, error)
+	asset func(string) ([]byte, string, string, error)
+}
+
+func mediaInputs(raw any, workspaceRoots func() ([]string, error), mediaTask func(string, string) (*pebblestore.ProjectTaskRecord, error), wording mediaErrorWording, readers ...mediaInputReaders) ([]map[string]any, error) {
 	inputs := controlMCPList(raw)
 	if len(inputs) == 0 {
 		return nil, nil
@@ -406,69 +413,9 @@ func mediaInputs(raw any, workspaceRoots func() ([]string, error), mediaTask fun
 	var roots []string
 	attached := []map[string]any{}
 	for i, item := range inputs {
-		input := controlMCPMap(item)
-		jobID, _ := input["job_id"].(string)
-		path, _ := input["path"].(string)
-		var data []byte
-		var mediaType, name string
-		switch {
-		case jobID != "":
-			kind, projectID, taskID, err := controlMCPParseJobID(map[string]any{"job_id": jobID})
-			if err != nil {
-				return nil, err
-			}
-			if kind != controlMCPJobMedia {
-				return nil, controlMCPToolFailure("input %d: job %s is not a media job; give a file with path instead", i+1, jobID)
-			}
-			task, err := mediaTask(projectID, taskID)
-			if err != nil {
-				return nil, err
-			}
-			files := mediaTaskFiles(task)
-			index := controlMCPInt(input, "file", 1)
-			if index < 1 || index > len(files) || len(files[index-1].data) == 0 {
-				return nil, controlMCPToolFailure(wording.missingFile, i+1, jobID, index)
-			}
-			data, mediaType = files[index-1].data, files[index-1].mediaType
-			name = files[index-1].filename(task.Title, index)
-		case path != "":
-			if len(readInput) > 0 {
-				var err error
-				data, mediaType, err = readInput[0](path)
-				if err != nil {
-					return nil, err
-				}
-				name = filepath.Base(path)
-				break
-			}
-			if roots == nil {
-				var err error
-				if roots, err = workspaceRoots(); err != nil {
-					return nil, err
-				}
-			}
-			clean := filepath.Clean(path)
-			if !filepath.IsAbs(clean) || controlMCPWorkspaceRootOf(roots, clean) == "" {
-				return nil, controlMCPToolFailure(wording.invalidPath, i+1, path)
-			}
-			info, err := os.Stat(clean)
-			if err != nil || !info.Mode().IsRegular() {
-				return nil, controlMCPToolFailure("input %d: %s is not a readable file", i+1, path)
-			}
-			if info.Size() > controlMCPMediaInputMaxBytes {
-				return nil, controlMCPToolFailure("input %d: %s is larger than %d MB", i+1, path, controlMCPMediaInputMaxBytes>>20)
-			}
-			if data, err = os.ReadFile(clean); err != nil {
-				return nil, controlMCPToolFailure("input %d: %s could not be read", i+1, path)
-			}
-			mediaType = mime.TypeByExtension(strings.ToLower(filepath.Ext(clean)))
-			if mediaType == "" {
-				mediaType = http.DetectContentType(data)
-			}
-			mediaType, _, _ = strings.Cut(mediaType, ";")
-			name = filepath.Base(clean)
-		default:
-			return nil, controlMCPToolFailure("input %d needs job_id (an earlier media job) or path (a file in a workspace)", i+1)
+		data, mediaType, name, err := mediaInput(i, controlMCPMap(item), &roots, workspaceRoots, mediaTask, wording, readers...)
+		if err != nil {
+			return nil, err
 		}
 		kind := strings.SplitN(mediaType, "/", 2)[0]
 		if kind != "image" && kind != "video" && kind != "audio" {
@@ -480,6 +427,83 @@ func mediaInputs(raw any, workspaceRoots func() ([]string, error), mediaTask fun
 		})
 	}
 	return attached, nil
+}
+
+// mediaInput reads one input: a file of an earlier media job, a file attached
+// to the session's chat, or a file in a workspace.
+func mediaInput(i int, input map[string]any, roots *[]string, workspaceRoots func() ([]string, error), mediaTask func(string, string) (*pebblestore.ProjectTaskRecord, error), wording mediaErrorWording, readers ...mediaInputReaders) ([]byte, string, string, error) {
+	jobID, _ := input["job_id"].(string)
+	assetID, _ := input["asset_id"].(string)
+	path, _ := input["path"].(string)
+	switch {
+	case jobID != "":
+		kind, projectID, taskID, err := controlMCPParseJobID(map[string]any{"job_id": jobID})
+		if err != nil {
+			return nil, "", "", err
+		}
+		if kind != controlMCPJobMedia {
+			return nil, "", "", controlMCPToolFailure("input %d: job %s is not a media job; give a file with path instead", i+1, jobID)
+		}
+		task, err := mediaTask(projectID, taskID)
+		if err != nil {
+			return nil, "", "", err
+		}
+		files := mediaTaskFiles(task)
+		index := controlMCPInt(input, "file", 1)
+		if index < 1 || index > len(files) || len(files[index-1].data) == 0 {
+			return nil, "", "", controlMCPToolFailure(wording.missingFile, i+1, jobID, index)
+		}
+		return files[index-1].data, files[index-1].mediaType, files[index-1].filename(task.Title, index), nil
+	case assetID != "":
+		if len(readers) == 0 || readers[0].asset == nil {
+			return nil, "", "", controlMCPToolFailure("input %d: asset_id names a file attached to a chat; give a path or job_id here", i+1)
+		}
+		data, mediaType, name, err := readers[0].asset(assetID)
+		if err != nil {
+			return nil, "", "", controlMCPToolFailure("input %d: %v", i+1, err)
+		}
+		return data, mediaType, name, nil
+	case path != "":
+		if len(readers) > 0 && readers[0].path != nil {
+			data, mediaType, err := readers[0].path(path)
+			if err != nil {
+				return nil, "", "", err
+			}
+			return data, mediaType, filepath.Base(path), nil
+		}
+		if *roots == nil {
+			var err error
+			if *roots, err = workspaceRoots(); err != nil {
+				return nil, "", "", err
+			}
+		}
+		clean := filepath.Clean(path)
+		if !filepath.IsAbs(clean) || controlMCPWorkspaceRootOf(*roots, clean) == "" {
+			return nil, "", "", controlMCPToolFailure(wording.invalidPath, i+1, path)
+		}
+		info, err := os.Stat(clean)
+		if err != nil || !info.Mode().IsRegular() {
+			return nil, "", "", controlMCPToolFailure("input %d: %s is not a readable file", i+1, path)
+		}
+		if info.Size() > controlMCPMediaInputMaxBytes {
+			return nil, "", "", controlMCPToolFailure("input %d: %s is larger than %d MB", i+1, path, controlMCPMediaInputMaxBytes>>20)
+		}
+		data, err := os.ReadFile(clean)
+		if err != nil {
+			return nil, "", "", controlMCPToolFailure("input %d: %s could not be read", i+1, path)
+		}
+		mediaType := mime.TypeByExtension(strings.ToLower(filepath.Ext(clean)))
+		if mediaType == "" {
+			mediaType = http.DetectContentType(data)
+		}
+		mediaType, _, _ = strings.Cut(mediaType, ";")
+		return data, mediaType, filepath.Base(clean), nil
+	default:
+		if len(readers) > 0 && readers[0].asset != nil {
+			return nil, "", "", controlMCPToolFailure("input %d needs job_id (an earlier media job), asset_id (a file attached to the chat) or path (a file in a workspace)", i+1)
+		}
+		return nil, "", "", controlMCPToolFailure("input %d needs job_id (an earlier media job) or path (a file in a workspace)", i+1)
+	}
 }
 
 // controlMCPListMediaModels lists the media models: which are ready, the

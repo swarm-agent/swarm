@@ -1,6 +1,7 @@
 package videotranscription
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -847,4 +848,40 @@ func boundedError(err error) string {
 		value = value[:512]
 	}
 	return value
+}
+
+// TranscribeAudio transcribes one audio file an agent handed over (a chat
+// attachment, a workspace file, an earlier media result) with the account's
+// transcription model, the way registered audio is: ffmpeg prepares it and the
+// model returns a timed transcript. It waits for the result; nothing is kept.
+func (s *Service) TranscribeAudio(ctx context.Context, principal identity.Principal, audio []byte, focusNotes string) (GeneratedTranscript, string, error) {
+	if s == nil || s.catalog == nil || s.settings == nil || s.deterministic == nil {
+		return GeneratedTranscript{}, "", errors.New("audio transcription is not configured on this Swarm")
+	}
+	focusNotes, err := NormalizeFocusNotes(focusNotes)
+	if err != nil {
+		return GeneratedTranscript{}, "", err
+	}
+	model, _, _, err := s.resolveModel(principal.AccountScopeID)
+	if err != nil {
+		return GeneratedTranscript{}, "", err
+	}
+	prepared, err := PrepareRegisteredAudio(ctx, bytes.NewReader(audio), int64(len(audio)))
+	if err != nil {
+		return GeneratedTranscript{}, "", err
+	}
+	defer prepared.Close()
+	generated, err := s.deterministic.AnalyzeAudio(ctx, AudioAnalysisRequest{
+		AccountScopeID: principal.AccountScopeID, Model: model, MIMEType: "audio/flac", PrivatePath: prepared.FLACPath,
+		SizeBytes: prepared.FLACBytes, DurationMs: prepared.DurationMs, FocusNotes: focusNotes,
+	})
+	if err != nil {
+		return GeneratedTranscript{}, "", err
+	}
+	generated.DurationMs = prepared.DurationMs
+	generated, err = NormalizeGeneratedTranscript(generated)
+	if err == nil && generated.Partial {
+		err = errors.New("the transcription model's answer did not form a timed transcript; nothing was returned")
+	}
+	return generated, model, err
 }
