@@ -85,6 +85,12 @@ func (s *Server) signalTaskRunEnded(job sessionV3ExecutorJob, status string, res
 	if job.RunID == pebblestore.InitialTaskRunID(task.ID) {
 		followup = ""
 	}
+	attrs := map[string]string{"job_id": taskRunJobID(projectID, taskID), "role": task.Agent}
+	// Provider completion does not mean the reconciled task did its work.
+	if task.Status == "blocked" {
+		ended = jobautomation.StatusFailed
+		attrs["blocker_reason"] = task.LastError
+	}
 	severity := pebblestore.SignalSeverityInfo
 	if ended != jobautomation.StatusSucceeded {
 		severity = pebblestore.SignalSeverityWarning
@@ -93,13 +99,14 @@ func (s *Server) signalTaskRunEnded(job sessionV3ExecutorJob, status string, res
 	if task.AutomationID != "" {
 		source = jobautomation.RequestSourceAutomation
 	}
+	attrs["source"] = source
 	kind := "task.run." + ended
 	if _, err := s.signals.AppendOnce(pebblestore.Signal{
 		Kind: kind, Severity: severity, Source: pebblestore.SignalSourceSwarmd, Account: account,
 		Summary:  "Task " + controlMCPTruncate(task.Title, 120) + " (" + task.Agent + ") run " + ended,
 		DedupKey: "task.run:" + task.ID + ":" + followup,
 		Refs:     map[string]string{"project_id": projectID, "task_id": taskID, "session_id": job.SessionID, "run_id": job.RunID},
-		Attrs:    map[string]string{"job_id": taskRunJobID(projectID, taskID), "role": task.Agent, "source": source},
+		Attrs:    attrs,
 	}); err != nil {
 		log.Printf("swarmd signal %s not recorded: %v", kind, err)
 	}

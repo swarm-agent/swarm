@@ -605,6 +605,7 @@ func ReviewCommitAgentToolContract() *pebblestore.AgentToolContract {
 func FinderAgentPrompt() string {
 	return strings.TrimSpace(`You are Finder, Swarm's compiled research subagent.
 Map files, summarize architecture and execution flow, and surface likely attack points.
+If you encounter an unresolvable blocker, call task_progress(action="blocked", reason="...") to signal the block and stop.
 Use only the locked read and research tools. Provide precise findings with path/line evidence, then end with a Relevant filepaths list and why each file matters. Your final report is a durable research handoff that declared dependent Task Program jobs may receive as untrusted evidence.`)
 }
 
@@ -613,7 +614,8 @@ func FinderAgentToolContract() *pebblestore.AgentToolContract {
 		"bash": {Enabled: pebblestore.BoolPtr(true)},
 		"read": {Enabled: pebblestore.BoolPtr(true)}, "media_inspect": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
 		"websearch": {Enabled: pebblestore.BoolPtr(true)}, "webfetch": {Enabled: pebblestore.BoolPtr(true)},
-		"task": {Enabled: pebblestore.BoolPtr(false)},
+		"task_progress": {Enabled: pebblestore.BoolPtr(true)},
+		"task":          {Enabled: pebblestore.BoolPtr(false)},
 	}}
 }
 
@@ -646,7 +648,7 @@ func CoderAgentToolContract() *pebblestore.AgentToolContract {
 	}}
 }
 
-const designerPrompt = "You are Designer, Swarm's design worker. You make and edit standalone HTML designs with the swarm_design tool: it writes each design in one model call, checks it in a browser and repairs only real errors. Call swarm_design with the brief, with count for several designs, or with edit_path to change one existing HTML file. Do not write or edit HTML any other way. Report every design's path and status exactly as swarm_design returned it, including failed and unverified ones; never claim a design works when its status says otherwise. When you work in a git worktree, commit the files swarm_design wrote with git_add and git_commit."
+const designerPrompt = "You are Designer, Swarm's design worker. You make and edit standalone HTML designs with the swarm_design tool: it writes each design in one model call, checks it in a browser and repairs only real errors. Call swarm_design with the brief, with count for several designs, or with edit_path to change one existing HTML file. Do not write or edit HTML any other way. Report every design's path and status exactly as swarm_design returned it, including failed and unverified ones; never claim a design works when its status says otherwise. When you work in a git worktree, commit the files swarm_design wrote with git_add and git_commit. If you encounter an unresolvable blocker, call task_progress(action=\"blocked\", reason=\"...\") to signal the block and stop."
 
 // DesignerAgentPrompt is the Designer's one prompt (task launches and the
 // designer worker alike).
@@ -721,7 +723,7 @@ func designerAgentToolContract() *pebblestore.AgentToolContract {
 		"write": {Enabled: pebblestore.BoolPtr(false)}, "edit": {Enabled: pebblestore.BoolPtr(false)}, "bash": {Enabled: pebblestore.BoolPtr(false)}, "media_inspect": {Enabled: pebblestore.BoolPtr(false)},
 		"manage_artifact": {Enabled: pebblestore.BoolPtr(false)}, "manage_video": {Enabled: pebblestore.BoolPtr(false)},
 		"websearch": {Enabled: pebblestore.BoolPtr(false)}, "webfetch": {Enabled: pebblestore.BoolPtr(false)}, "webdownload": {Enabled: pebblestore.BoolPtr(false)},
-		"task": {Enabled: pebblestore.BoolPtr(false)}, "task_progress": {Enabled: pebblestore.BoolPtr(false)}, "skill_use": {Enabled: pebblestore.BoolPtr(false)}, "manage_skill": {Enabled: pebblestore.BoolPtr(false)},
+		"task": {Enabled: pebblestore.BoolPtr(false)}, "task_progress": {Enabled: pebblestore.BoolPtr(true)}, "skill_use": {Enabled: pebblestore.BoolPtr(false)}, "manage_skill": {Enabled: pebblestore.BoolPtr(false)},
 		"manage_agent": {Enabled: pebblestore.BoolPtr(false)}, "manage_theme": {Enabled: pebblestore.BoolPtr(false)}, "manage_sessions": {Enabled: pebblestore.BoolPtr(false)}, "manage_worktree": {Enabled: pebblestore.BoolPtr(false)},
 		"manage_todos": {Enabled: pebblestore.BoolPtr(false)}, "manage_projects": {Enabled: pebblestore.BoolPtr(false)}, "manage_workers": {Enabled: pebblestore.BoolPtr(false)}, "manage_automation": {Enabled: pebblestore.BoolPtr(false)},
 		"plan_manage": {Enabled: pebblestore.BoolPtr(false)}, "ask_user": {Enabled: pebblestore.BoolPtr(false)}, "exit_plan_mode": {Enabled: pebblestore.BoolPtr(false)},

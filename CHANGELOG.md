@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Let Designer and Finder tasks declare blockers and emit failed task-run signals for blocked tasks so only failed/always workflows run. Docs impact: none
+
 - Show which workflow and revision a proposal replaces, and explain whether accepting replaces it or adds a new workflow. Docs impact: none
 
 - Trigger task workflows for primary Orchestrator delegations as well as direct MCP tasks, preserving internal-agent and automation loop exclusions. Docs impact: none

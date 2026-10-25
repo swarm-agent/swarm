@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"swarm/packages/swarmd/internal/jobautomation"
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -216,5 +218,123 @@ func TestTaskRunOrchestratorWorkflowParity(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Purpose: an explicit Designer/Finder task_progress blocker must survive run
+// completion and must never trigger succeeded workflows. A normal completion
+// must still succeed. This temporary-store executor/tool/runner test is the
+// narrowest layer spanning role tool admission, projectTaskDeclaredBlocker,
+// signalTaskRunEnded and workflow delivery selection. The provider is scripted;
+// this proves lifecycle behavior, not live model behavior.
+func TestTaskRunDeclaredBlockerWorkflowOutcome(t *testing.T) {
+	for _, role := range []string{"designer", "finder"} {
+		for _, blocked := range []bool{true, false} {
+			name := role + "-completed"
+			if blocked {
+				name = role + "-blocked"
+			}
+			t.Run(name, func(t *testing.T) {
+				f := newConfirmationFixture(t, filepath.Join(t.TempDir(), "store"), nil)
+				defer f.close()
+				const reason = "The required file BRANDBOOK.md is missing"
+				f.runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+					if blocked && !hasFunctionCallOutput(req.Input) {
+						args, _ := json.Marshal(map[string]string{"action": "blocked", "reason": reason})
+						return provideriface.Response{FunctionCalls: []provideriface.FunctionCall{{CallID: "declare-blocker", Name: "task_progress", Arguments: string(args)}}}, nil
+					}
+					return provideriface.Response{Text: "Finished reporting the outcome.", StopReason: "stop"}, nil
+				}
+				folder := t.TempDir()
+				binding := seedSessionsV3PrimaryAuthority(t, f.server, folder)
+				raw, _ := json.Marshal(map[string]any{"client_request_id": name, "workspace_path": folder, "workspace_name": filepath.Base(folder), "swarm_id": "host-swarm-id", "workspace_binding_id": binding, "target_kind": "host", "target_relationship": "self", "title": name, "mode": sessionruntime.ModeAuto, "agent_name": "system-" + role, "preference": pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model"}})
+				code, body := f.do(http.MethodPost, "/v3/sessions", string(raw))
+				if code != http.StatusOK {
+					t.Fatalf("create: %d %s", code, body)
+				}
+				var created struct {
+					Session pebblestore.SessionSnapshot `json:"session"`
+				}
+				if err := json.Unmarshal([]byte(body), &created); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{
+					SessionID: created.Session.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID,
+					Kind: sessionruntime.SessionMutationAppendMessage, ClientRequestID: "brief", PayloadHash: "brief",
+					Message: &pebblestore.MessageSnapshot{ID: "brief", Role: "user", Content: "Perform the task or declare the missing input."},
+				}); err != nil {
+					t.Fatal(err)
+				}
+				task := taskSessionFixture(t, f.server, created.Session, pebblestore.ProjectTaskRecord{ID: name, ProjectID: "blocker-project", Agent: role, Status: "in_progress", WorkspacePath: folder})
+				db := f.sessions.Store()
+				feed := pebblestore.NewSignalStore(db.Underlying())
+				f.server.SetSignalStore(feed)
+				req := requestWithScopedToken(withTestPrincipal(httptest.NewRequest(http.MethodPost, "/mcp", nil)), &pebblestore.ScopedTokenRecord{Scopes: []string{"swarm:read", "sessions:read"}})
+				f.server.jobAutomationCallFn = func(context.Context) (*controlMCPCall, error) {
+					return &controlMCPCall{request: req, next: f.server.internalRouteHandler(), server: f.server}, nil
+				}
+				writeAutomationScript(t, folder, "follow.sh")
+				p := testPrincipal()
+				runner := newAutomationRunner(t, f.server, db.Underlying(), feed, p.AccountScopeID, newAutomationHost(t))
+				for _, when := range []string{jobautomation.WhenSucceeded, jobautomation.WhenFailed, jobautomation.WhenAlways} {
+					if _, _, err := runner.Store().Put(p.AccountScopeID, jobautomation.Automation{Name: when, Scope: jobautomation.Scope{Folder: folder, Role: role}, When: when, Enabled: true, Steps: []jobautomation.Step{{ID: "follow", Type: jobautomation.StepRun, Command: "follow.sh"}}}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				job := sessionV3ExecutorJob{Principal: p, SessionID: created.Session.ID, RunID: task.ExecutionRunID(), EpochID: "epoch-00000000000000000001"}
+				exec := f.server.v3SessionExecutor
+				if _, err := exec.recordRunStatus(job, sessionruntime.RunIntentPendingExecutor, "", "session.run.queued"); err != nil {
+					t.Fatal(err)
+				}
+				exec.run(ctx, job)
+				intent, found, err := f.sessions.GetSessionRunIntent(job.SessionID, job.RunID)
+				if err != nil || !found || intent.Status != sessionruntime.RunIntentCompleted {
+					t.Fatalf("run: %+v %v", intent, err)
+				}
+				stored, found, err := db.GetProjectTask(p.AccountScopeID, task.ProjectID, task.ID)
+				if err != nil || !found {
+					t.Fatalf("task: %v %v", found, err)
+				}
+				wantStatus, wantEnd := "needs_review", jobautomation.StatusSucceeded
+				if blocked {
+					wantStatus, wantEnd = "blocked", jobautomation.StatusFailed
+				}
+				if stored.Status != wantStatus || (blocked && stored.LastError != reason) {
+					t.Fatalf("task outcome: %+v", stored)
+				}
+				page, err := feed.ListAfter(0, 100, pebblestore.SignalFilter{Account: p.AccountScopeID, KindPrefixes: []string{"task.run"}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(page.Signals) != 1 || page.Signals[0].Kind != "task.run."+wantEnd {
+					t.Fatalf("signals: %+v", page.Signals)
+				}
+				if blocked && page.Signals[0].Attrs["blocker_reason"] != reason {
+					t.Fatalf("missing blocker reason: %+v", page.Signals[0])
+				}
+				if err := runner.ProcessOnce(ctx); err != nil {
+					t.Fatal(err)
+				}
+				deliveries, err := runner.Store().JobDeliveries(p.AccountScopeID, taskRunJobID(task.ProjectID, task.ID))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(deliveries) != 2 {
+					t.Fatalf("deliveries: %+v", deliveries)
+				}
+				seen := map[string]bool{}
+				for _, d := range deliveries {
+					seen[d.AutomationName] = true
+					if d.State != jobautomation.StateSucceeded {
+						t.Fatalf("delivery failed: %+v", d)
+					}
+				}
+				if !seen[wantEnd] || !seen[jobautomation.WhenAlways] {
+					t.Fatalf("wrong workflow deliveries: %+v", deliveries)
+				}
+			})
+		}
 	}
 }
