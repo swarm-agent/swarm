@@ -59,7 +59,7 @@ type FleetListen struct {
 
 const (
 	fleetInvitePrefix  = "fleet/invite/"
-	fleetHomePrefix    = "fleet/home/"
+	fleetHomePrefix    = "fleet/homes/"
 	fleetMachinePrefix = "fleet/machine/"
 	fleetListenKey     = "fleet/listen"
 	// KeyFleetLinkTokenPrefix holds a home's session on each machine, in the
