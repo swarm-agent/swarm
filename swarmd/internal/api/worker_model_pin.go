@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"swarm/packages/swarmd/internal/identity"
+	runruntime "swarm/packages/swarmd/internal/run"
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -23,49 +24,11 @@ func controlMCPWorkerModelSchema(nullable bool) map[string]any {
 // workerModel validates through the same provider/catalog authority as list_models,
 // without requiring its sessions:read grant: these tools retain their write scopes.
 func (c *controlMCPCall) workerModel(raw any) (*store.SessionModelProfileSnapshot, error) {
-	args := controlMCPMap(raw)
-	fail := func() (*store.SessionModelProfileSnapshot, error) {
-		return nil, controlMCPToolFailure("invalid worker model; choose a connected provider, model and supported options from swarm_list_models")
-	}
-	if args == nil {
-		return fail()
-	}
-	for key := range args {
-		if key != "provider" && key != "model" && key != "thinking" && key != "fast" {
-			return fail()
-		}
-	}
-	for _, key := range []string{"provider", "model", "thinking"} {
-		if _, ok := args[key].(string); !ok {
-			return fail()
-		}
-	}
-	if fast, exists := args["fast"]; exists {
-		if _, ok := fast.(bool); !ok {
-			return fail()
-		}
-	}
-	providers, err := c.dispatch(http.MethodGet, "/v1/providers", nil, nil)
+	profile, err := runruntime.ValidateWorkerModelPin(c.request.Context(), c.server.providers, c.server.model, raw)
 	if err != nil {
-		return nil, err
+		return nil, controlMCPToolFailure("%s", err)
 	}
-	connected := false
-	for _, raw := range controlMCPList(providers["providers"]) {
-		p := controlMCPMap(raw)
-		runnable, _ := p["runnable"].(bool)
-		if p["id"] == args["provider"] && runnable {
-			connected = true
-		}
-	}
-	if !connected {
-		return fail()
-	}
-	preference, err := c.modelPreference(args)
-	if err != nil || preference == nil || controlMCPString(preference, "thinking") != args["thinking"] {
-		return fail()
-	}
-	selection := store.ModelProfileSelection{Provider: controlMCPString(preference, "provider"), Model: controlMCPString(preference, "model"), Thinking: controlMCPString(preference, "thinking"), ServiceTier: controlMCPString(preference, "service_tier")}
-	return &store.SessionModelProfileSnapshot{Source: store.SessionModelProfileSourceTemporary, Action: selection, Plan: &selection}, nil
+	return profile, nil
 }
 
 func (s *Server) handleWorkerModelPin(w http.ResponseWriter, r *http.Request, p identity.Principal, id string) {
@@ -90,9 +53,8 @@ func (s *Server) handleWorkerModelPin(w http.ResponseWriter, r *http.Request, p 
 	}
 	profile := &store.SessionModelProfileSnapshot{Source: store.SessionModelProfileSourceSwarmSettings, UseAccountDefault: true}
 	if req.Model != nil {
-		c := &controlMCPCall{request: r, next: s.internalRouteHandler(), server: s}
 		var err error
-		profile, err = c.workerModel(req.Model)
+		profile, err = runruntime.ValidateWorkerModelPin(identity.ContextWithPrincipal(r.Context(), p), s.providers, s.model, req.Model)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return

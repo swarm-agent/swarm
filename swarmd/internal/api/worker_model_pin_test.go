@@ -11,6 +11,7 @@ import (
 
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/provider/registry"
+	runruntime "swarm/packages/swarmd/internal/run"
 	"swarm/packages/swarmd/internal/security"
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -89,5 +90,51 @@ func TestWorkerModelPinScopedToken(t *testing.T) {
 				t.Fatalf("model pin not returned and persisted: %+v", after)
 			}
 		})
+	}
+}
+
+// Purpose: MCP and native callers share ValidateWorkerModelPin rejection text,
+// and a rejected deployment must not mutate its worker. This handler/store test
+// proves the MCP boundary plus explicit null reset without live provider calls.
+func TestWorkerModelPinMCPValidationAndClear(t *testing.T) {
+	c, ws := newMCPPresetTestCall(t)
+	s := c.server
+	s.providers = registry.New(onboardingProviderTestAdapter{id: "codex", ready: true})
+	s.providers.RegisterRunner(controlMCPConnectTestRunner{id: "codex"})
+	if err := store.NewModelCatalogStore(s.sessions.Store().Underlying()).SetRecord(store.ModelCatalogRecord{Provider: "codex", Model: "fixture-model", ThinkingOptions: []string{"high"}, DefaultThinking: "high"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controlMCPDeployWorker(c, map[string]any{"preset": "coder", "model": map[string]any{"provider": "codex", "model": "fixture-model", "thinking": "high"}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := ws.ListWorkers(testPrincipal().AccountScopeID, store.ListWorkersQuery{Limit: 10})
+	if err != nil || len(result.Workers) != 1 {
+		t.Fatalf("workers: %+v %v", result, err)
+	}
+	before := result.Workers[0]
+	invalid := map[string]any{"provider": "codex", "model": "missing", "thinking": "high"}
+	_, mcpErr := c.workerModel(invalid)
+	_, nativeErr := runruntime.ValidateWorkerModelPin(c.request.Context(), s.providers, s.model, invalid)
+	if mcpErr == nil || nativeErr == nil || mcpErr.Error() != nativeErr.Error() {
+		t.Fatalf("different errors: %v / %v", mcpErr, nativeErr)
+	}
+	encoded, _ := json.Marshal(before)
+	var view map[string]any
+	if err := json.Unmarshal(encoded, &view); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.deployWorkerModel(view, map[string]any{"model": invalid}); err == nil {
+		t.Fatal("invalid model accepted")
+	}
+	after, _, err := ws.GetWorker(before.AccountScopeID, before.ID)
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatal("invalid pin changed worker")
+	}
+	if _, err := c.deployWorkerModel(view, map[string]any{"model": nil}); err != nil {
+		t.Fatal(err)
+	}
+	after, _, err = ws.GetWorker(before.AccountScopeID, before.ID)
+	if err != nil || after.ModelProfile == nil || !after.ModelProfile.UseAccountDefault || after.Revision != before.Revision+1 {
+		t.Fatalf("null did not clear: %+v %v", after, err)
 	}
 }

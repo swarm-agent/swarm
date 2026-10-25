@@ -265,6 +265,8 @@ type CreateWorkerRequest struct {
 }
 
 type UpdateWorkerRequest struct {
+	// ProposeModel stages native model edits for explicit acceptance; API edits remain direct.
+	ProposeModel          bool                         `json:"-"`
 	Agent                 *string                      `json:"agent,omitempty"`
 	Role                  *string                      `json:"role,omitempty"`
 	ExecutionMode         *string                      `json:"execution_mode,omitempty"`
@@ -901,7 +903,12 @@ func (ws *WorkerStore) CreateWorker(account, user string, req CreateWorkerReques
 		reqForHash := req
 		reqForHash.IdempotencyKey = ""
 		// Server-resolved defaults are not caller input; retries retain the receipt.
-		reqForHash.ModelProfile = nil
+		if req.ModelProfile == nil || req.ModelProfile.UseAccountDefault {
+			reqForHash.ModelProfile = nil
+		} else {
+			reqForHash.ModelProfile = CloneSessionModelProfileSnapshot(req.ModelProfile)
+			reqForHash.ModelProfile.AppliedAt = 0
+		}
 		var err error
 		payloadHash, err = hashWorkerPayload(reqForHash)
 		if err != nil {
@@ -1380,6 +1387,27 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 		}
 		if req.ChangeSummary == "" {
 			req.ChangeSummary = "updated worker"
+		}
+	}
+	if established && req.ProposeModel && req.ModelProfile != nil {
+		if approved.LifecycleState != WorkerLifecycleStateActive && approved.LifecycleState != WorkerLifecycleStateIdle && approved.LifecycleState != WorkerLifecycleStatePaused {
+			return WorkerRecord{}, ErrWorkerConflict
+		}
+		candidate := updated
+		candidate.LifecycleState = WorkerLifecycleStatePending
+		candidate.PendingReview = nil
+		candidate.PendingReviewStale = false
+		updated = approved
+		updated.Revision = candidate.Revision
+		updated.UpdatedAt = now
+		updated.PendingReview = &candidate
+		updated.PendingReviewStale = false
+		encoded, err := json.Marshal(updated)
+		if err != nil {
+			return WorkerRecord{}, err
+		}
+		if len(encoded) > 1024*1024 {
+			return WorkerRecord{}, errors.New("worker and pending review exceed maximum size of 1 MiB")
 		}
 	}
 

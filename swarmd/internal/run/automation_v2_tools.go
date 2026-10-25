@@ -10,6 +10,8 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/model"
+	"swarm/packages/swarmd/internal/provider/registry"
 	store "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
@@ -45,9 +47,10 @@ func workerProposalCall(call tool.Call) bool {
 		return false
 	}
 	var args struct {
-		Action string `json:"action"`
+		Action string          `json:"action"`
+		Model  json.RawMessage `json:"model"`
 	}
-	return json.Unmarshal([]byte(call.Arguments), &args) == nil && args.Action == "propose"
+	return json.Unmarshal([]byte(call.Arguments), &args) == nil && (args.Action == "propose" || ((args.Action == "create" || args.Action == "update") && len(args.Model) > 0))
 }
 
 func (s *Service) automationV2ToolSession(id string) (store.SessionSnapshot, string, error) {
@@ -121,6 +124,9 @@ func (s *Service) executeWorkerProposalTool(id string, call tool.Call, profile .
 		return "", err
 	}
 	if action := strings.TrimSpace(mapString(args, "action")); action != "propose" {
+		if _, present := args["model"]; present && (action == "create" || action == "update") {
+			return s.executeManageWorkersTool(id, call.Arguments, profile...)
+		}
 		return "", errors.New("manage_workers action=propose required")
 	}
 	return s.executeCreateOrProposePendingWorker(id, args, call.Name, false, profile...)
@@ -187,6 +193,10 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 		}
 	}
 
+	selectedModel, err := s.workerToolModel(current, args)
+	if err != nil {
+		return "", err
+	}
 	var name, description, instructions string
 	var automations []store.WorkerAutomationDefinition
 	var requestedCaps []store.WorkerCapabilityRequest
@@ -431,6 +441,8 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 			return "", errors.New("worker agent cannot be changed by proposal reuse; create a separately named proposal")
 		}
 		updateReq := store.UpdateWorkerRequest{
+			ModelProfile:          selectedModel,
+			ProposeModel:          selectedModel != nil,
 			Name:                  &name,
 			Description:           &description,
 			Instructions:          &instructions,
@@ -473,7 +485,7 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 		return workerProposalToolOutput(updated)
 	}
 
-	workerModel, err := s.ResolveWorkerModelProfile(current.AccountScopeID, nil)
+	workerModel, err := s.ResolveWorkerModelProfile(current.AccountScopeID, selectedModel)
 	if err != nil {
 		return "", err
 	}
@@ -553,7 +565,7 @@ func automationV2ToolOutput(proposal store.AutomationV2Proposal) (string, error)
 }
 
 func workerProposalToolOutput(w store.WorkerRecord) (string, error) {
-	if w.LifecycleState != store.WorkerLifecycleStatePending {
+	if w.LifecycleState != store.WorkerLifecycleStatePending && w.PendingReview == nil {
 		raw, err := json.Marshal(map[string]any{
 			"status": "updated", "worker_id": w.ID, "worker": w, "revision": w.Revision,
 			"instruction": "Worker edits are saved and apply immediately. Already admitted jobs keep their pinned revision; the next job uses this revision.",
@@ -740,8 +752,12 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 		if err != nil {
 			return "", err
 		}
+		views := make([]any, 0, len(res.Workers))
+		for _, worker := range res.Workers {
+			views = append(views, s.workerToolView(worker))
+		}
 		raw, err := json.Marshal(map[string]any{
-			"workers":     res.Workers,
+			"workers":     views,
 			"next_cursor": res.NextCursor,
 		})
 		return string(raw), err
@@ -760,7 +776,7 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 		}
 		out := map[string]any{
 			"found":  true,
-			"worker": w,
+			"worker": s.workerToolView(w),
 		}
 		if rev, ok := parseUint64Arg(args, "revision"); ok && rev > 0 {
 			snap, sFound, sErr := s.sessions.GetWorkerRevision(current.AccountScopeID, workerID, rev)
@@ -795,7 +811,13 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 		if !ok || expectedRevision == 0 {
 			return "", errors.New("expected_revision is required for update")
 		}
+		selectedModel, err := s.workerToolModel(current, args)
+		if err != nil {
+			return "", err
+		}
 		req := store.UpdateWorkerRequest{
+			ModelProfile:  selectedModel,
+			ProposeModel:  selectedModel != nil,
 			ChangeSummary: strings.TrimSpace(mapString(args, "change_summary")),
 		}
 		if val, ok := args["name"].(string); ok {
@@ -845,6 +867,9 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 			"status": "updated",
 			"worker": w,
 		})
+		if selectedModel != nil {
+			return workerProposalToolOutput(w)
+		}
 		return string(raw), err
 
 	case "attach":
@@ -1007,4 +1032,114 @@ func (s *Service) pendingWorkersForSession(account, sessionID string) ([]store.W
 		}
 		query.After = page.NextCursor
 	}
+}
+
+// ValidateWorkerModelPin is the shared native/API worker pin boundary. Provider
+// readiness is account-scoped through ctx; no HTTP subrequest is involved.
+func ValidateWorkerModelPin(ctx context.Context, providers *registry.Registry, catalog *model.Service, raw any) (*store.SessionModelProfileSnapshot, error) {
+	invalid := errors.New("invalid worker model; choose a connected provider, model and supported options from swarm_list_models")
+	args, ok := raw.(map[string]any)
+	if !ok || providers == nil || catalog == nil {
+		return nil, invalid
+	}
+	for key := range args {
+		if key != "provider" && key != "model" && key != "thinking" && key != "fast" {
+			return nil, invalid
+		}
+	}
+	provider, pOK := args["provider"].(string)
+	name, mOK := args["model"].(string)
+	thinking, tOK := args["thinking"].(string)
+	if !pOK || !mOK || !tOK || provider == "" || name == "" {
+		return nil, invalid
+	}
+	fast := false
+	if value, present := args["fast"]; present {
+		fast, ok = value.(bool)
+		if !ok {
+			return nil, invalid
+		}
+	}
+	statuses, err := providers.ListStatuses(ctx)
+	if err != nil {
+		return nil, err
+	}
+	runnable := false
+	for _, status := range statuses {
+		if status.ID == provider && status.Runnable {
+			runnable = true
+		}
+	}
+	if !runnable {
+		return nil, invalid
+	}
+	lookup, err := catalog.GetCatalog(provider, name)
+	if err != nil || !lookup.Found {
+		return nil, invalid
+	}
+	record := lookup.Record
+	allowed := thinking == "" && record.DefaultThinking == ""
+	for _, option := range record.ThinkingOptions {
+		if option == thinking {
+			allowed = true
+		}
+	}
+	if !allowed {
+		return nil, invalid
+	}
+	selection := store.ModelProfileSelection{Provider: provider, Model: name, Thinking: thinking}
+	if fast {
+		for _, mapping := range record.ServiceTierMappings {
+			if strings.EqualFold(mapping.SwarmSetting, "fast") {
+				selection.ServiceTier = strings.ToLower(strings.TrimSpace(mapping.Tier))
+				break
+			}
+		}
+		if selection.ServiceTier == "" {
+			return nil, invalid
+		}
+	}
+	return &store.SessionModelProfileSnapshot{Source: store.SessionModelProfileSourceTemporary, Action: selection, Plan: &selection}, nil
+}
+
+func (s *Service) workerToolModel(current store.SessionSnapshot, args map[string]any) (*store.SessionModelProfileSnapshot, error) {
+	raw, present := args["model"]
+	if !present {
+		return nil, nil
+	}
+	if raw == nil {
+		return &store.SessionModelProfileSnapshot{Source: store.SessionModelProfileSourceSwarmSettings, UseAccountDefault: true}, nil
+	}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: current.UserID, AccountScopeID: current.AccountScopeID, AccountScopeSource: identity.AccountScopeSourceServerState}
+	return ValidateWorkerModelPin(identity.ContextWithPrincipal(context.Background(), principal), s.providers, s.model, raw)
+}
+
+func (s *Service) workerToolView(w store.WorkerRecord) any {
+	profile := w.ModelProfile
+	pinned := profile != nil && !profile.UseAccountDefault
+	source := "role_default"
+	if pinned {
+		source = "pinned"
+	}
+	summary := map[string]any{"source": source, "pinned": pinned}
+	if !pinned {
+		resolved, err := s.ResolveWorkerRoleModelProfile(w.AccountScopeID, w.Role, nil)
+		if err != nil {
+			summary["error"] = err.Error()
+		} else {
+			profile = resolved
+		}
+	}
+	if profile != nil {
+		selection := profile.Action
+		if w.ExecutionMode == "plan" && profile.Plan != nil {
+			selection = *profile.Plan
+		}
+		summary["provider"], summary["model"], summary["thinking"] = selection.Provider, selection.Model, selection.Thinking
+		summary["fast"] = selection.ServiceTier == "fast" || selection.ServiceTier == "priority"
+	}
+	return struct {
+		store.WorkerRecord
+		Model map[string]any `json:"model"`
+	}{w, summary}
 }

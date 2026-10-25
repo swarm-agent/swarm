@@ -67,6 +67,7 @@ func manageWorkersV2Definition() Definition {
 						"progress",
 					},
 				},
+				"model": map[string]any{"description": "Optional worker model on create, propose or update; null clears the pin to the role default. Requires user acceptance.", "anyOf": []any{map[string]any{"type": "null"}, map[string]any{"type": "object", "additionalProperties": false, "required": []string{"provider", "model", "thinking"}, "properties": map[string]any{"provider": map[string]any{"type": "string"}, "model": map[string]any{"type": "string"}, "thinking": map[string]any{"type": "string"}, "fast": map[string]any{"type": "boolean"}}}}},
 				"agent": map[string]any{"type": "string", "description": "Custom agent name for a new worker proposal."},
 				"worker_id": map[string]any{
 					"type":        "string",
