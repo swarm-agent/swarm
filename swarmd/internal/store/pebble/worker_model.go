@@ -61,7 +61,8 @@ func (ws *WorkerStore) setWorkerModelProfile(account, user, id string, revision 
 	if revision == 0 || w.Revision != revision || (initialize && w.ModelProfile != nil) || w.LifecycleState == WorkerLifecycleStateDeleted || w.LifecycleState == WorkerLifecycleStateStopping {
 		return WorkerRecord{}, ErrWorkerConflict
 	}
-	if w.PendingReview != nil {
+	// Capturing the role default is not an explicit edit of approved policy.
+	if !initialize && w.PendingReview != nil {
 		w.PendingReviewStale = true
 	}
 	w.ModelProfile = CloneSessionModelProfileSnapshot(profile)
