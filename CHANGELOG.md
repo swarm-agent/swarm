@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Trigger task workflows for primary Orchestrator delegations as well as direct MCP tasks, preserving internal-agent and automation loop exclusions. Docs impact: none
+
 - Add Orchestrator workflow proposals with person-only revision acceptance, discard, and native workflow management. Docs impact: none
 
 - Share cron parsing across worker and automation schedules, supporting ranges, lists, month/day names and Sunday aliases while preserving explicit timezones and DST behavior. Docs impact: none
