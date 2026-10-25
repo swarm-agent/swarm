@@ -5651,7 +5651,7 @@ func (e *sessionV3Executor) sessionsV3ProviderInputWithMedia(resolved sessionV3R
 			}
 			content = append(content, map[string]any{
 				"type": "input_text",
-				"text": fmt.Sprintf("[Attached media input (retained, model perception not supported): %s]", strings.Join(descs, ", ")),
+				"text": fmt.Sprintf("[Attached, kept on this Swarm; you cannot see or hear these directly: %s. Pass an asset_id to a tool that takes one, such as manage_media (transcribe for speech in audio or video, or inputs for media to make).]", strings.Join(descs, ", ")),
 			})
 		}
 		// The asset_ids let the agent hand the files on, e.g. to a media task.
