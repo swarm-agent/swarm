@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Expose workflow event triggers in MCP and Orchestrator tool schemas, with one-time MCP webhook key guidance; native proposal key rotation remains unsupported. Docs impact: updated Triggers in docs/automations.md.
+
 - Add external workflow triggers with HTTPS feed polling, signed webhook ingress, durable event queues, and trigger-scoped worker jobs. Docs impact: added Triggers to docs/automations.md.
 
 - Fail workflow agent steps with their declared blocker or execution error, preserve reviewer verdict semantics, and instruct step agents to report blockers explicitly. Docs impact: none

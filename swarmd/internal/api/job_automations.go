@@ -16,6 +16,7 @@ import (
 	"swarm/packages/swarmd/internal/outbox"
 	"swarm/packages/swarmd/internal/sandbox"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 )
 
 // Job automations (docs/automations.md): when a job ends Swarm records one
@@ -1274,6 +1275,9 @@ func controlMCPSetAutomation(c *controlMCPCall, args map[string]any) (any, error
 		return nil, err
 	}
 	out["next"] = workflowSaveNext
+	if key, _ := out["trigger_key"].(string); key != "" {
+		out["next"] = workflowSaveNext + " The trigger key is shown only now; store it securely."
+	}
 	return out, nil
 }
 
@@ -1550,11 +1554,13 @@ func controlMCPAutomationTools() []controlMCPTool {
 	return append(append(workflowTransferTools(), workflowHistoryTools()...), []controlMCPTool{
 		{
 			Name: "swarm_set_workflow", Title: "Set a workflow",
-			Description: "Create or update (by name) a workflow: what Swarm does when work ends in a folder. It starts when a task of Swarm's own agents ends (swarm_run_task: swarm, coder, finder, designer; its first run and each follow-up in its session) or when a worker job ends. Its ordered steps are each: another agent working on the result (agent: swarm, coder, finder or designer as a task in the folder, a coder starting at the work's head; or Swarm's native reviewer task at that head, or a custom worker id), a follow-up that sends its message and/or an agent step's findings back into the work's own session so the same agent fixes its own work (reopen, bounded by max_rounds), handing the work's result over (deliver: to a directory of the folder, merged into the folder's branch, a pull request, or the machine's outbox bucket), or the machine owner's root-owned script run on the host in the folder (run: push, deploy, alert). Every result lists its deliverables (branch, files with sha256, media, report); result names the one the work must hand over, and an agent step with produce: true writes it when the work did not (research turned into a report). A step's if runs it only when earlier steps' status or review verdict match. Scope it to every task and job in the folder, one agent's tasks (role), one worker's jobs, one job or one schedule's jobs; when succeeded, failed or always. swarm_list_workflows shows exactly what each one does. Swarm runs only these steps and reports what happened; with no workflow the work just ends with its branch and the person integrates it by hand. Changes retain history readable with swarm_workflow_history and reversible with swarm_restore_workflow. Offer it; do not set it up unasked.",
+			Description: "Create or update (by name) a workflow: what Swarm does when work ends in a folder. It starts when a task of Swarm's own agents ends (swarm_run_task: swarm, coder, finder, designer; its first run and each follow-up in its session) or when a worker job ends. Its ordered steps are each: another agent working on the result (agent: swarm, coder, finder or designer as a task in the folder, a coder starting at the work's head; or Swarm's native reviewer task at that head, or a custom worker id), a follow-up that sends its message and/or an agent step's findings back into the work's own session so the same agent fixes its own work (reopen, bounded by max_rounds), handing the work's result over (deliver: to a directory of the folder, merged into the folder's branch, a pull request, or the machine's outbox bucket), or the machine owner's root-owned script run on the host in the folder (run: push, deploy, alert). Every result lists its deliverables (branch, files with sha256, media, report); result names the one the work must hand over, and an agent step with produce: true writes it when the work did not (research turned into a report). A step's if runs it only when earlier steps' status or review verdict match. Scope it to every task and job in the folder, one agent's tasks (role), one worker's jobs, one job or one schedule's jobs; when succeeded, failed or always. swarm_list_workflows shows exactly what each one does. Swarm runs only these steps and reports what happened; with no workflow the work just ends with its branch and the person integrates it by hand. Changes retain history readable with swarm_workflow_history and reversible with swarm_restore_workflow. Offer it; do not set it up unasked. " + tool.WorkflowTriggerDescription,
 			InputSchema: controlMCPObject([]string{"name", "steps"}, map[string]any{
-				"name":      controlMCPStringProp("Unique name; setting an existing name updates it (its revision rises).", 1, 200),
-				"project":   controlMCPStringProp("Project (id or name) whose folder the workflow watches, when scope.folder is not given.", 0, 256),
-				"workspace": controlMCPStringProp("Which of the project's folders (absolute path), when it has several.", 0, 4096),
+				"on":         tool.WorkflowTriggerSchema(),
+				"rotate_key": map[string]any{"type": "boolean", "description": "Replace the webhook signing key; the save result shows it only once."},
+				"name":       controlMCPStringProp("Unique name; setting an existing name updates it (its revision rises).", 1, 200),
+				"project":    controlMCPStringProp("Project (id or name) whose folder the workflow watches, when scope.folder is not given.", 0, 256),
+				"workspace":  controlMCPStringProp("Which of the project's folders (absolute path), when it has several.", 0, 4096),
 				"scope": map[string]any{"type": "object", "properties": map[string]any{
 					"folder":   controlMCPStringProp("Absolute path of the project folder.", 0, 4096),
 					"role":     map[string]any{"type": "string", "enum": []string{"swarm", "coder", "finder", "designer"}, "description": "Only the tasks this one of Swarm's own agents finished in the folder."},

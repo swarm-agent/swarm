@@ -51,8 +51,10 @@ Both sources retain the last 2000 IDs and queue events durably in feed order,
 starting at most one job at a time per workflow. Failed starts are recorded and
 not retried. Workflow reads include recent `events`, without their item payloads.
 The signals are `workflow.trigger.fired` and `workflow.trigger.failed`.
-Proposal acceptance remains required for Orchestrator-proposed workflows; tool
-schemas are unchanged in this version.
+Both `swarm_set_workflow` and `manage_workflows` include `on` in their tool
+schemas. Proposal acceptance remains required for Orchestrator-proposed workflows;
+a new webhook key is returned only to the person's client on acceptance, not to
+the Orchestrator. Explicit key rotation currently requires the HTTP save or MCP path.
 
 ## What an automation is
 
