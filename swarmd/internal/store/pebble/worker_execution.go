@@ -21,6 +21,7 @@ type WorkerRunAdmission struct {
 	ModelOverride          *SessionModelProfileSnapshot
 	ModelSource            string
 	ResolvedModelProfile   *SessionModelProfileSnapshot
+	WorkflowTriggerID      string
 	WorkerID               string
 	AutomationID           string
 	UserID                 string
@@ -75,7 +76,7 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 		return WorkerRunRecord{}, fmt.Errorf("%w: use exactly one occurrence or idempotency key", ErrWorkerConflict)
 	}
 	switch req.RequestSource {
-	case "direct", "orchestrator", "test_run", "automation":
+	case "direct", "orchestrator", "test_run", "automation", "workflow_trigger":
 		if req.OccurrenceID != "" {
 			return WorkerRunRecord{}, ErrWorkerConflict
 		}
@@ -91,6 +92,9 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 			return WorkerRunRecord{}, ErrWorkerConflict
 		}
 	default:
+		return WorkerRunRecord{}, ErrWorkerConflict
+	}
+	if (req.RequestSource == "workflow_trigger") != (req.WorkflowTriggerID != "") {
 		return WorkerRunRecord{}, ErrWorkerConflict
 	}
 	inputBytes, err := json.Marshal(req.Input)
@@ -109,9 +113,10 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 	}
 	hash, err := hashWorkerPayload(struct {
 		Worker, Automation, User, Source, Occurrence string
+		WorkflowTrigger                              string `json:",omitempty"`
 		Input                                        json.RawMessage
 		ModelOverride                                *SessionModelProfileSnapshot `json:",omitempty"`
-	}{req.WorkerID, req.AutomationID, req.UserID, req.RequestSource, req.OccurrenceID, inputBytes, req.ModelOverride})
+	}{req.WorkerID, req.AutomationID, req.UserID, req.RequestSource, req.OccurrenceID, req.WorkflowTriggerID, inputBytes, req.ModelOverride})
 	if err != nil {
 		return WorkerRunRecord{}, err
 	}
@@ -283,7 +288,7 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 	now := time.Now().UnixMilli()
 	runID := GenerateWorkerRunID()
 	req.SessionID = "worker-execution-" + runID
-	receipt := WorkerRunRecord{ProjectID: req.ResolvedProjectID, ModelSource: req.ModelSource, ModelProfile: model, ID: runID, AccountScopeID: account, UserID: req.UserID, WorkerID: worker.ID, WorkerRevision: worker.Revision, AutomationID: req.AutomationID, AutomationRevision: automationRevision, OccurrenceID: req.OccurrenceID, WorkspaceID: workspaceID, WorkspaceSource: workspaceSource, Role: worker.Role, SessionID: req.SessionID, RequestSource: req.RequestSource, Input: acceptedInput, Status: "admitted", CreatedAt: now}
+	receipt := WorkerRunRecord{WorkflowTriggerID: req.WorkflowTriggerID, ProjectID: req.ResolvedProjectID, ModelSource: req.ModelSource, ModelProfile: model, ID: runID, AccountScopeID: account, UserID: req.UserID, WorkerID: worker.ID, WorkerRevision: worker.Revision, AutomationID: req.AutomationID, AutomationRevision: automationRevision, OccurrenceID: req.OccurrenceID, WorkspaceID: workspaceID, WorkspaceSource: workspaceSource, Role: worker.Role, SessionID: req.SessionID, RequestSource: req.RequestSource, Input: acceptedInput, Status: "admitted", CreatedAt: now}
 	m := &workerRealtimeMutation{accountScopeID: account, userID: req.UserID, workerID: worker.ID}
 	if err := ws.pinWorkerPlacement(account, req, worker, &receipt, m); err != nil {
 		return WorkerRunRecord{}, err

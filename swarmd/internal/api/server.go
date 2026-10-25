@@ -4390,6 +4390,9 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 				return
 			}
 		}
+		if s.serveWorkflowEvent(w, r) {
+			return
+		}
 		if s.isAuthExemptRequest(r) {
 			next.ServeHTTP(w, r)
 			return

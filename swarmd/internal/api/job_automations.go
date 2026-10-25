@@ -132,6 +132,7 @@ func (s *Server) workerJobAutomationResult(ctx context.Context, workerID, runID,
 	out.Brief, _ = controlMCPMap(refs.run["input"])["prompt"].(string)
 	out.RequestSource, _ = refs.run["request_source"].(string)
 	out.ScheduleID, _ = refs.run["automation_id"].(string)
+	out.TriggerID, _ = refs.run["workflow_trigger_id"].(string)
 	if completed, ok := refs.run["completed_at"].(float64); ok && completed > 0 {
 		out.FinishedAt = int64(completed)
 	}
@@ -834,6 +835,9 @@ func jobAutomationView(a jobautomation.Automation) map[string]any {
 		"id": a.ID, "name": a.Name, "scope": a.Scope, "when": a.When, "enabled": a.Enabled, "retries": a.Retries, "result": a.Result,
 		"state": state, "steps": a.Steps, "revision": a.Revision, "created_at": a.CreatedAt, "updated_at": a.UpdatedAt,
 	}
+	if a.On != nil {
+		view["on"] = a.On
+	}
 	if a.Proposed && a.BaseID != "" {
 		// Propose binds the base by exact name; AcceptProposal checks that
 		// same name and base revision before replacing the active definition.
@@ -913,14 +917,16 @@ func jobDeliveryView(d jobautomation.Delivery) map[string]any {
 // ---- HTTP ------------------------------------------------------------------
 
 type jobAutomationBody struct {
-	Project   string               `json:"project,omitempty"`
-	Workspace string               `json:"workspace,omitempty"`
-	Name      string               `json:"name"`
-	Scope     jobautomation.Scope  `json:"scope"`
-	When      string               `json:"when"`
-	Enabled   *bool                `json:"enabled"`
-	Retries   int                  `json:"retries"`
-	Steps     []jobautomation.Step `json:"steps"`
+	On        *jobautomation.Trigger `json:"on,omitempty"`
+	RotateKey bool                   `json:"rotate_key,omitempty"`
+	Project   string                 `json:"project,omitempty"`
+	Workspace string                 `json:"workspace,omitempty"`
+	Name      string                 `json:"name"`
+	Scope     jobautomation.Scope    `json:"scope"`
+	When      string                 `json:"when"`
+	Enabled   *bool                  `json:"enabled"`
+	Retries   int                    `json:"retries"`
+	Steps     []jobautomation.Step   `json:"steps"`
 	// Result is what the work must hand over (optional).
 	Result *jobautomation.ResultSpec `json:"result"`
 }
@@ -930,7 +936,7 @@ func (b jobAutomationBody) automation() jobautomation.Automation {
 	if b.Enabled != nil {
 		enabled = *b.Enabled
 	}
-	return jobautomation.Automation{Name: b.Name, Scope: b.Scope, When: b.When, Enabled: enabled, Retries: b.Retries, Steps: b.Steps, Result: b.Result}
+	return jobautomation.Automation{On: b.On, Name: b.Name, Scope: b.Scope, When: b.When, Enabled: enabled, Retries: b.Retries, Steps: b.Steps, Result: b.Result}
 }
 
 // errRunStepNeedsOwner refuses a run step from a caller without the machine
@@ -980,6 +986,9 @@ func jobAutomationHTTPError(w http.ResponseWriter, err error) {
 // handleJobAutomations serves /v3/workflows, /v3/workflows/stop
 // and /v3/workflows/{id}.
 func (s *Server) handleJobAutomations(w http.ResponseWriter, r *http.Request) {
+	if s.serveWorkflowEvent(w, r) {
+		return
+	}
 	// Decode export separately so JSON-only exports need read scope, while
 	// file output still requires write scope before any filesystem access.
 	if strings.Trim(strings.TrimPrefix(r.URL.Path, JobAutomationsPath), "/") == "export" && r.Method == http.MethodPost {
@@ -1042,7 +1051,16 @@ func (s *Server) handleJobAutomations(w http.ResponseWriter, r *http.Request) {
 		if created {
 			status = http.StatusCreated
 		}
-		writeJSON(w, status, map[string]any{"ok": true, "automation": jobAutomationView(saved), "created": created})
+		key, err := s.saveTriggerKey(saved, body.RotateKey)
+		if err != nil {
+			jobAutomationHTTPError(w, err)
+			return
+		}
+		view := map[string]any{"ok": true, "automation": jobAutomationView(saved), "created": created}
+		if key != "" {
+			view["trigger_key"] = key
+		}
+		writeJSON(w, status, view)
 	case rest == "stop" && r.Method == http.MethodGet:
 		stop, err := s.StopWorkflows(workflowCallerFromRequest(r), nil)
 		if err != nil {
@@ -1070,7 +1088,17 @@ func (s *Server) handleJobAutomations(w http.ResponseWriter, r *http.Request) {
 			jobAutomationHTTPError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "automation": jobAutomationView(a)})
+		view := jobAutomationView(a)
+		if a.On != nil {
+			repository, _ := s.jobAutomationStore()
+			events, err := repository.TriggerEvents(a)
+			if err != nil {
+				jobAutomationHTTPError(w, err)
+				return
+			}
+			view["events"] = events
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "automation": view})
 	case !strings.Contains(rest, "/") && r.Method == http.MethodDelete:
 		out, err := s.DeleteWorkflow(workflowCallerFromRequest(r), map[string]any{"id": rest, "name": r.URL.Query().Get("name")})
 		if err != nil {
@@ -1261,6 +1289,13 @@ func (s *Server) ListWorkflows(caller WorkflowCaller) (any, error) {
 	out := []map[string]any{}
 	for _, a := range list {
 		view := jobAutomationView(a)
+		if a.On != nil {
+			events, err := store.TriggerEvents(a)
+			if err != nil {
+				return nil, err
+			}
+			view["events"] = events
+		}
 		if err := workflowHistorySummary(store, account, a.ID, view); err != nil {
 			return nil, err
 		}
@@ -1294,6 +1329,17 @@ func (s *Server) DeleteWorkflow(caller WorkflowCaller, args map[string]any) (any
 			return nil, controlMCPToolFailure("no workflow named %q (swarm_list_workflows lists them)", controlMCPString(args, "name"))
 		}
 		id = a.ID
+	}
+	if a, err := store.Get(account, id); err != nil {
+		return nil, err
+	} else if a.On != nil && a.On.Event.Source == "webhook" {
+		values, err := s.triggerSecrets()
+		if err != nil {
+			return nil, err
+		}
+		if err := values.DeleteWorkflowTriggerKey(account, id); err != nil {
+			return nil, err
+		}
 	}
 	if err := store.DeleteChange(account, id, jobautomation.Change{Source: "delete", Who: caller.Who}); err != nil {
 		if errors.Is(err, jobautomation.ErrNotFound) {

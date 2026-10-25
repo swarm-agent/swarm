@@ -1432,6 +1432,7 @@ func (d *Daemon) Run() error {
 	}
 	if d.jobAutomations != nil && d.bgCtx != nil {
 		go d.jobAutomations.Run(d.bgCtx)
+		go d.apiServer.RunWorkflowTriggers(d.bgCtx)
 	}
 	// Start only V2, after listeners succeed; never migrate or execute V1 records.
 	if d.automationV2Scheduler != nil {

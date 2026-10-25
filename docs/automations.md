@@ -17,6 +17,43 @@ named for workflows (`swarm_set_workflow`, `/v3/workflows`); the internal
 names are unchanged: the `automation.*` signals, the `automations:read` and
 `automations:write` scopes, `then` and `automation: true` on the job tools.
 
+## Triggers
+
+The HTTP workflow save API accepts an optional `on` alongside the existing
+scope and steps:
+
+```json
+{"event":{"source":"pull","url":"https://example.com/posts","every_seconds":60,"items":"posts","id":"id"},"start":{"worker":"worker-id","brief":"Revise {{event.text}} using {{event.notes}}"}}
+```
+
+`start.worker` must be active and deployed, not a reviewer or a media/design
+worker. The folder must belong to exactly one project. Jobs use that worker's
+model settings and the saving owner's authority. Only jobs started by this
+workflow trigger match its steps. Missing template fields become empty strings;
+objects and arrays become compact JSON.
+
+Pull uses HTTPS GET, a 10-second timeout, a 1 MiB response limit, and an interval
+of 30–86400 seconds with error backoff. The first successful feed after a trigger
+change establishes a baseline without starting jobs. An optional `secret` names
+a granted Swarm secret whose allowed hosts include the URL host; it is sent as a
+Bearer credential. Redirects are refused rather than forwarding credentials.
+
+For webhook ingress use `event: {"source":"webhook","id":"id"}`. Saving returns
+`trigger_key` once (hex encoding of 32 random bytes). Decode that hex before
+computing HMAC-SHA256 over the exact request body and send
+`X-Swarm-Trigger-Signature: sha256=<hex digest>` to
+`POST /v3/workflows/{id}/events` on the existing daemon listener. No public
+listener is added. `rotate_key: true` on save replaces the key. Bodies are one
+item or `{"items":[...]}`, limited to 64 KiB and one accepted request per second.
+Keys are sealed internally, never included in workflow reads or folder grants.
+
+Both sources retain the last 2000 IDs and queue events durably in feed order,
+starting at most one job at a time per workflow. Failed starts are recorded and
+not retried. Workflow reads include recent `events`, without their item payloads.
+The signals are `workflow.trigger.fired` and `workflow.trigger.failed`.
+Proposal acceptance remains required for Orchestrator-proposed workflows; tool
+schemas are unchanged in this version.
+
 ## What an automation is
 
 An automation belongs to an account and has:

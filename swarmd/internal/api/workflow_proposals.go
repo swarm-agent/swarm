@@ -116,12 +116,26 @@ func (s *Server) handleWorkflowAccept(w http.ResponseWriter, r *http.Request, id
 		jobAutomationHTTPError(w, err)
 		return
 	}
-	a, err := store.AcceptProposal(account, id, body.ExpectedRevision, p.UserID, func(a jobautomation.Automation) error { return runStepOwnerError(r, a.Steps) })
+	a, err := store.AcceptProposal(account, id, body.ExpectedRevision, p.UserID, func(a jobautomation.Automation) error {
+		if err := runStepOwnerError(r, a.Steps); err != nil {
+			return err
+		}
+		return s.validateWorkflowTrigger(p, a)
+	})
 	if err != nil {
 		jobAutomationHTTPError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "automation": jobAutomationView(a)})
+	key, err := s.saveTriggerKey(a, false)
+	if err != nil {
+		jobAutomationHTTPError(w, err)
+		return
+	}
+	view := map[string]any{"ok": true, "automation": jobAutomationView(a)}
+	if key != "" {
+		view["trigger_key"] = key
+	}
+	writeJSON(w, http.StatusOK, view)
 }
 
 func isWorkflowAIRequest(r *http.Request) bool {

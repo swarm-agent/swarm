@@ -166,6 +166,7 @@ type WorkerRunRecord struct {
 	AccountScopeID     string                       `json:"account_scope_id"`
 	WorkerID           string                       `json:"worker_id"`
 	WorkerRevision     uint64                       `json:"worker_revision"`
+	WorkflowTriggerID  string                       `json:"workflow_trigger_id,omitempty"`
 	AutomationID       string                       `json:"automation_id,omitempty"`
 	AutomationRevision uint64                       `json:"automation_revision,omitempty"`
 	OccurrenceID       string                       `json:"occurrence_id,omitempty"`

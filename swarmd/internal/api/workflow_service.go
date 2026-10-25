@@ -80,6 +80,13 @@ func (s *Server) SaveWorkflow(caller WorkflowCaller, body WorkflowDefinition, so
 		return zero, false, false, errRunStepNeedsOwner
 	}
 	account := caller.Principal.AccountScopeID
+	a.Account = account
+	if a.On != nil {
+		a.TriggerOwner = caller.Principal.UserID
+	}
+	if err := s.validateWorkflowTrigger(caller.Principal, a); err != nil {
+		return zero, false, false, err
+	}
 	if err := s.jobAutomationFixesError(account, a.Steps); err != nil {
 		return zero, false, false, controlMCPToolFailure("%s", err)
 	}

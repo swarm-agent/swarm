@@ -195,18 +195,20 @@ type Step struct {
 // Automation is a durable, account-owned definition. Revision changes on
 // every update; a delivery keeps the revision it started with.
 type Automation struct {
-	Proposed     bool   `json:"proposed,omitempty"`
-	ProposedBy   string `json:"proposed_by,omitempty"`
-	BaseID       string `json:"base_id,omitempty"`
-	BaseRevision uint64 `json:"base_revision,omitempty"`
-	ID           string `json:"id"`
-	Account      string `json:"account"`
-	Name         string `json:"name"`
-	Scope        Scope  `json:"scope"`
-	When         string `json:"when"`
-	Enabled      bool   `json:"enabled"`
-	Retries      int    `json:"retries"`
-	Steps        []Step `json:"steps"`
+	On           *Trigger `json:"on,omitempty"`
+	TriggerOwner string   `json:"trigger_owner,omitempty"`
+	Proposed     bool     `json:"proposed,omitempty"`
+	ProposedBy   string   `json:"proposed_by,omitempty"`
+	BaseID       string   `json:"base_id,omitempty"`
+	BaseRevision uint64   `json:"base_revision,omitempty"`
+	ID           string   `json:"id"`
+	Account      string   `json:"account"`
+	Name         string   `json:"name"`
+	Scope        Scope    `json:"scope"`
+	When         string   `json:"when"`
+	Enabled      bool     `json:"enabled"`
+	Retries      int      `json:"retries"`
+	Steps        []Step   `json:"steps"`
 	// Result is what the work must hand over (optional): see ResultSpec.
 	Result    *ResultSpec `json:"result,omitempty"`
 	Revision  uint64      `json:"revision"`
@@ -237,6 +239,9 @@ func (a *Automation) Normalize() error {
 		return invalid("name is required (one line, at most %d characters)", maxNameRunes)
 	}
 	if err := a.Scope.normalize(); err != nil {
+		return err
+	}
+	if err := a.validateTrigger(); err != nil {
 		return err
 	}
 	a.When = strings.ToLower(strings.TrimSpace(a.When))
@@ -527,6 +532,9 @@ func ValidCommandPath(command string) error {
 // Matches reports whether the automation applies to this job end.
 func (a Automation) Matches(r *Result) bool {
 	if a.Proposed || !a.Enabled || r == nil {
+		return false
+	}
+	if a.On != nil && (a.ID == "" || r.TriggerID != a.ID) {
 		return false
 	}
 	if filepath.Clean(r.Folder) != a.Scope.Folder || r.Folder == "" {

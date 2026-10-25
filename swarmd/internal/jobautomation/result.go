@@ -49,6 +49,7 @@ type Result struct {
 	Report        string        `json:"report,omitempty"`
 	Error         string        `json:"error,omitempty"`
 	RequestSource string        `json:"request_source,omitempty"`
+	TriggerID     string        `json:"trigger_id,omitempty"`
 	ScheduleID    string        `json:"schedule_id,omitempty"`
 	Git           *ResultGit    `json:"git,omitempty"`
 	Files         []ResultFile  `json:"files,omitempty"`
