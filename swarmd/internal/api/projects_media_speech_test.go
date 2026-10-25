@@ -100,7 +100,9 @@ func TestSpeechReceipts(t *testing.T) {
 
 // Purpose: the actual HTTP decoder must persist speech settings without Router
 // spend and reject unsupported voices without creating a task. Temporary store
-// plus pending approval exercises admission without a live provider.
+// with no provider credentials exercises admission without a live provider. Untitled
+// requests exercise handleProjects/CreateProjectTask with no Router configured,
+// proving speech retains its default title even when a prompt is supplied.
 func TestSpeechHTTPAdmission(t *testing.T) {
 	db, err := pebblestore.Open(t.TempDir())
 	if err != nil {
@@ -126,6 +128,27 @@ func TestSpeechHTTPAdmission(t *testing.T) {
 	}
 	server := &Server{sessions: session.NewService(store, nil), audioGen: audiogen.NewService(nil, settings, billingCatalog{record})}
 	p := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "user"}
+	for _, tc := range []struct{ id, fields, title string }{
+		{"untitled", "", "Speech narration"},
+		{"prompt", `"prompt":"Read this aloud",`, "Speech narration"},
+		{"description", `"description":"Read this aloud",`, "Speech narration"},
+		{"explicit", `"title":"My narration",`, "My narration"},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			body := `{"id":"` + tc.id + `",` + tc.fields + `"agent":"sound","operation":"speech","model":"gemini-2.5-flash-preview-tts","speech":{"text":"Hello","voice":"Kore"}}`
+			req := httptest.NewRequest(http.MethodPost, ProjectsPath+"/project/tasks", strings.NewReader(body))
+			req = req.WithContext(identity.ContextWithPrincipal(req.Context(), p))
+			response := httptest.NewRecorder()
+			server.handleProjects(response, req)
+			if response.Code != http.StatusCreated {
+				t.Fatalf("HTTP %d: %s", response.Code, response.Body.String())
+			}
+			task, found, err := store.GetProjectTask("account", "project", tc.id)
+			if err != nil || !found || task.Title != tc.title || task.Speech == nil || task.Speech.Text != "Hello" {
+				t.Fatalf("task %+v %v", task, err)
+			}
+		})
+	}
 	for _, voice := range []string{"Kore", "cloned"} {
 		body := `{"id":"speech-` + voice + `","title":"Narration","agent":"sound","operation":"speech","model":"gemini-2.5-flash-preview-tts","speech":{"text":"Hello","voice":"` + voice + `"}}`
 		req := httptest.NewRequest(http.MethodPost, ProjectsPath+"/project/tasks", strings.NewReader(body))

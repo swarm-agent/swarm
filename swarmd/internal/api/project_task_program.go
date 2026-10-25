@@ -124,6 +124,10 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 			return nil, err
 		}
 		input.Agent, input.Intent = "sound", "sound"
+		// Speech needs neither a task prompt nor a Router naming call.
+		if strings.TrimSpace(input.Title) == "" {
+			input.Title = "Speech narration"
+		}
 	}
 	title := strings.TrimSpace(input.Title)
 	if title == "" {
