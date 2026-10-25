@@ -428,8 +428,9 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 	runner.SetWorkerExecutionService(execution)
 	// Purpose: folder-task review resolves the recorded delivery rather than
 	// inventing a worktree lane or following later folder commits. This real
-	// store/Git admission check covers ResolveTaskReviewTarget and allocation;
-	// sandbox-on folder registration requires separate qualification.
+	// store/Git admission check covers ResolveTaskReviewTarget, allocation and
+	// read-only registration with sandbox off and on (a hermetic engine runner,
+	// not live container execution). Neither case may borrow the source folder.
 	t.Run("designer folder review", func(t *testing.T) {
 		folderTask := &pebblestore.ProjectTaskRecord{ID: "folder-design", ProjectID: project.ID, AccountID: principal.AccountScopeID, Title: "Design", Agent: "designer", SessionID: "folder-design-session", WorkspacePath: folder, SourceWorkspace: task.SourceWorkspace, Status: "needs_review"}
 		if err := captureFolderTaskBase(folderTask); err != nil {
@@ -443,8 +444,10 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 			t.Fatal(err)
 		}
 		deliveryHead := folderTask.Integration.SourceHead
-		for i := 0; i < 2; i++ {
-			if i == 1 {
+		t.Cleanup(func() { sandbox.SetDefault(manager) })
+		for i := 0; i < 4; i++ {
+			sandbox.SetDefault(manager)
+			if i == 2 {
 				outboxPinGit(t, folder, "commit", "-q", "--allow-empty", "-m", "later work")
 			}
 			request := jobautomation.AgentRequest{Account: step.Account, Folder: folder, Worker: "reviewer", Brief: "Review design", Checkout: "same", Head: deliveryHead, IdempotencyKey: fmt.Sprintf("folder-review-%d", i), Result: jobautomation.Result{V: 1, JobID: taskRunJobID(project.ID, folderTask.ID), ProjectID: project.ID, Role: "designer"}}
@@ -457,12 +460,32 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 			if err != nil || !found {
 				t.Fatalf("review: %v %v", found, err)
 			}
-			if (review.WorkspacePath == folder) != (i == 0) || review.StartCommit != deliveryHead || outboxPinGit(t, review.WorkspacePath, "rev-parse", "HEAD") != deliveryHead {
+			if review.WorkspacePath == folder || review.ReviewTarget["lane"] != nil || review.StartCommit != deliveryHead || outboxPinGit(t, review.WorkspacePath, "rev-parse", "HEAD") != deliveryHead {
 				t.Fatalf("wrong folder review checkout: %+v", review)
 			}
 			snapshot, _, err := sessions.Store().GetSession(review.SessionID)
-			if err != nil || snapshot.Metadata["runtime_mode"] != "read" {
+			if err != nil || snapshot.Metadata["runtime_mode"] != "read" || snapshot.Metadata["agent_name"] != "system-reviewer" {
 				t.Fatalf("review not read-only: %v", err)
+			}
+			if outboxPinGit(t, review.WorkspacePath, "rev-parse", "--abbrev-ref", "HEAD") != "HEAD" {
+				t.Fatal("review checkout is not detached")
+			}
+			if i%2 == 1 {
+				// Exercise sandbox-on registration after real Git allocation. The
+				// hermetic engine does not execute Git or launch a container.
+				on, err := sandbox.NewManager(context.Background(), sandbox.Config{Mode: sandbox.ModeRequired, Backend: sandbox.BackendDocker, StateDir: t.TempDir(), Memory: "4g", MaxWorkerRuns: 2, UID: 10001, GID: 10001}, boxLeaseRunner{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				on.SetLayout(sandbox.Layout{Projects: func() ([]string, error) { return []string{folder}, nil }, WorktreesRoot: filepath.Dir(filepath.Dir(task.WorkspacePath)), Bucket: func(string) (string, error) { return filepath.Base(filepath.Dir(task.WorkspacePath)), nil }})
+				sandbox.SetDefault(on)
+				if err := execution.PrepareTaskReviewSession(&snapshot, review); err != nil {
+					t.Fatal(err)
+				}
+				cleanup, found, err := sessions.Store().GetReviewCleanup(principal.AccountScopeID, review.SessionID)
+				if err != nil || !found || cleanup.Borrowed || cleanup.Checkout != review.WorkspacePath || sandbox.ReviewSessionCheckout(review.SessionID) != review.WorkspacePath {
+					t.Fatalf("isolated registration: %+v %v", cleanup, err)
+				}
 			}
 		}
 	})
