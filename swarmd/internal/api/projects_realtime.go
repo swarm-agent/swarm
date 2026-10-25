@@ -227,6 +227,9 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 					return nil
 				}
 			}
+			if err := captureFolderTaskDelivery(t); err != nil {
+				return err
+			}
 			// Unknown delivery must clear stale Git claims without erasing the
 			// independently recorded execution result or integration receipt.
 			t.IsIntegrated = gitState.isIntegrated

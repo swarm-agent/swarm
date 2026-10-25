@@ -123,10 +123,15 @@ func allocateReviewerCheckout(trees *worktree.Service, p identity.Principal, sou
 		// session; nothing is allocated, so nothing is removed afterwards.
 		owner, _ := target["lane_owner"].(string)
 		branch, _ := target["lane_branch"].(string)
-		if owner == "" || branch == "" || owner == r.SessionID {
+		folder, _ := target["folder"].(bool)
+		if owner == "" || (!folder && branch == "") || owner == r.SessionID {
 			return worktree.Allocation{}, errors.New("captured review worktree is incomplete")
 		}
-		if err := trees.ValidateSessionRepositoryLaneForRead(source, lane, owner, branch); err != nil {
+		if folder {
+			if lane != source {
+				return worktree.Allocation{}, errors.New("folder review source mismatch")
+			}
+		} else if err := trees.ValidateSessionRepositoryLaneForRead(source, lane, owner, branch); err != nil {
 			return worktree.Allocation{}, err
 		}
 		state, err := trees.InspectTaskWorkspace(lane)
@@ -134,6 +139,15 @@ func allocateReviewerCheckout(trees *worktree.Service, p identity.Principal, sou
 			return worktree.Allocation{}, err
 		}
 		if state.HeadCommit != head || !state.TrackedClean {
+			if folder {
+				// The folder advanced between capture and allocation. Do not
+				// borrow it or let cleanup treat the new checkout as borrowed.
+				delete(target, "lane")
+				delete(target, "lane_owner")
+				delete(target, "lane_branch")
+				delete(target, "folder")
+				return trees.AllocateReviewWorkspace(p, source, r.SessionID, head, commits...)
+			}
 			return worktree.Allocation{}, errors.New("the reviewed job's worktree moved past the head being reviewed or has uncommitted changes")
 		}
 		return worktree.Allocation{WorkspacePath: lane, BranchName: branch, BaseBranch: head, BaseCommit: head, RepoRoot: source}, nil
@@ -292,12 +306,22 @@ func (s *WorkerExecutionService) resolveJobReviewTarget(ctx context.Context, r s
 		}
 		task, laneOwner = jobTask, target.SessionID
 	}
-	if err := s.host.trees.ValidateSessionRepositoryLaneForRead(task.SourceWorkspace.Path, task.WorkspacePath, laneOwner, task.WorktreeBranch); err != nil {
-		return nil, err
+	folder := task.WorktreeBranch == "" && task.WorkspacePath == task.SourceWorkspace.Path && task.WorkspacePath != "" && task.WorkerRunID == ""
+	if !folder {
+		if err := s.host.trees.ValidateSessionRepositoryLaneForRead(task.SourceWorkspace.Path, task.WorkspacePath, laneOwner, task.WorktreeBranch); err != nil {
+			return nil, err
+		}
 	}
 	state, err := s.host.trees.InspectTaskWorkspace(task.WorkspacePath)
 	if err != nil {
 		return nil, err
+	}
+	liveHead := state.HeadCommit
+	if folder {
+		if task.Integration == nil || task.Integration.State != "in_folder" || task.Integration.SessionID != task.SessionID || task.Integration.SourceHead == "" {
+			return nil, errors.New("folder task has no captured delivery head")
+		}
+		state.HeadCommit = task.Integration.SourceHead
 	}
 	if task.BaseCommit == "" || state.HeadCommit == task.BaseCommit {
 		return nil, errors.New("review job must have commits")
@@ -305,7 +329,10 @@ func (s *WorkerExecutionService) resolveJobReviewTarget(ctx context.Context, r s
 	// A job rebased onto (or merged with) a newer target after it was
 	// created is reviewed from that newer base, so the range holds only its
 	// own commits (worktree.EffectiveTaskBase); otherwise its recorded fork.
-	jobBase := worktree.EffectiveTaskBase(ctx, task.WorkspacePath, task.SourceWorkspace.Path, task.BaseBranch, task.BaseCommit, state.HeadCommit)
+	jobBase := task.BaseCommit
+	if !folder {
+		jobBase = worktree.EffectiveTaskBase(ctx, task.WorkspacePath, task.SourceWorkspace.Path, task.BaseBranch, task.BaseCommit, state.HeadCommit)
+	}
 	if state.HeadCommit == jobBase {
 		return nil, errors.New("review job must have commits")
 	}
@@ -361,18 +388,21 @@ func (s *WorkerExecutionService) resolveJobReviewTarget(ctx context.Context, r s
 		// folder.
 		captured["fixes"] = ReviewFixesSecurity
 	}
-	if reviewSharesCheckout(r.Input) {
+	if reviewSharesCheckout(r.Input) && (!folder || (liveHead == state.HeadCommit && state.TrackedClean)) {
 		// The reviewer reads the job's own worktree as it is: only when that
 		// is exactly the reviewed head, with nothing uncommitted.
 		if !state.TrackedClean {
 			return nil, errors.New("the job's worktree has uncommitted changes, so it is not the head being reviewed: commit or discard them, or review with checkout new")
 		}
-		if task.WorktreeBranch == "" || laneOwner == "" || laneOwner == r.SessionID {
+		if (!folder && task.WorktreeBranch == "") || laneOwner == "" || laneOwner == r.SessionID {
 			return nil, errors.New("the job's worktree has no owning session to review it in place; review with checkout new")
 		}
 		captured["lane"] = task.WorkspacePath
 		captured["lane_owner"] = laneOwner
 		captured["lane_branch"] = task.WorktreeBranch
+		if folder {
+			captured["folder"] = true
+		}
 	}
 	return captured, nil
 }

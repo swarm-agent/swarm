@@ -1401,6 +1401,12 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 			DelegatedCoder:       targetAgent == "coder",
 			AllocatedRuntimeRoot: true, // Every allocation above uses its owned runtime path, including Swarm coding tasks.
 		}
+	} else {
+		task.WorktreeBranch, task.WorktreeName = "", ""
+		task.WorkspacePath = wsPath
+		if err := captureFolderTaskBase(task); err != nil {
+			return err
+		}
 	}
 
 	if task.Agent == "reviewer" {
@@ -3335,10 +3341,16 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			syncTaskSessionState(task, db)
 			hydrateTaskProgramStatus(task, db)
 			hydrateTaskPlanDocument(task, db)
-			writeJSON(w, http.StatusOK, map[string]any{
-				"task":          sanitizeProjectTaskForClient(task),
-				"model_preview": s.buildTaskModelPreview(p, task),
-			})
+			detail := map[string]any{"task": sanitizeProjectTaskForClient(task), "model_preview": s.buildTaskModelPreview(p, task)}
+			if folderTask(task) && task.Integration != nil && task.Integration.State == "in_folder" {
+				g, err := taskResultGit(r.Context(), task.WorkspacePath, task.BaseCommit, task.Integration.SourceHead)
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, err)
+					return
+				}
+				detail["base_commit"], detail["head"], detail["commits"], detail["files"], detail["delivery_state"] = g.BaseCommit, g.Head, g.Commits, g.Files, "in_folder"
+			}
+			writeJSON(w, http.StatusOK, detail)
 			return
 		}
 

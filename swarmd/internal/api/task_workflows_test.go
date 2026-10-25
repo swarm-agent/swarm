@@ -426,6 +426,46 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner.SetWorkerExecutionService(execution)
+	// Purpose: folder-task review resolves the recorded delivery rather than
+	// inventing a worktree lane or following later folder commits. This real
+	// store/Git admission check covers ResolveTaskReviewTarget and allocation;
+	// sandbox-on folder registration requires separate qualification.
+	t.Run("designer folder review", func(t *testing.T) {
+		folderTask := &pebblestore.ProjectTaskRecord{ID: "folder-design", ProjectID: project.ID, AccountID: principal.AccountScopeID, Title: "Design", Agent: "designer", SessionID: "folder-design-session", WorkspacePath: folder, SourceWorkspace: task.SourceWorkspace, Status: "needs_review"}
+		if err := captureFolderTaskBase(folderTask); err != nil {
+			t.Fatal(err)
+		}
+		outboxPinGit(t, folder, "commit", "-q", "--allow-empty", "-m", "design")
+		if err := captureFolderTaskDelivery(folderTask); err != nil {
+			t.Fatal(err)
+		}
+		if err := sessions.Store().PutProjectTask(principal.AccountScopeID, folderTask); err != nil {
+			t.Fatal(err)
+		}
+		deliveryHead := folderTask.Integration.SourceHead
+		for i := 0; i < 2; i++ {
+			if i == 1 {
+				outboxPinGit(t, folder, "commit", "-q", "--allow-empty", "-m", "later work")
+			}
+			request := jobautomation.AgentRequest{Account: step.Account, Folder: folder, Worker: "reviewer", Brief: "Review design", Checkout: "same", Head: deliveryHead, IdempotencyKey: fmt.Sprintf("folder-review-%d", i), Result: jobautomation.Result{V: 1, JobID: taskRunJobID(project.ID, folderTask.ID), ProjectID: project.ID, Role: "designer"}}
+			id, err := agents.Start(context.Background(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, reviewID, _ := parseTaskJobID(id)
+			review, found, err := sessions.Store().GetProjectTask(principal.AccountScopeID, project.ID, reviewID)
+			if err != nil || !found {
+				t.Fatalf("review: %v %v", found, err)
+			}
+			if (review.WorkspacePath == folder) != (i == 0) || review.StartCommit != deliveryHead || outboxPinGit(t, review.WorkspacePath, "rev-parse", "HEAD") != deliveryHead {
+				t.Fatalf("wrong folder review checkout: %+v", review)
+			}
+			snapshot, _, err := sessions.Store().GetSession(review.SessionID)
+			if err != nil || snapshot.Metadata["runtime_mode"] != "read" {
+				t.Fatalf("review not read-only: %v", err)
+			}
+		}
+	})
 	outboxPinGit(t, task.WorkspacePath, "commit", "-q", "--allow-empty", "-m", "delivery")
 	reviewHead := outboxPinGit(t, task.WorkspacePath, "rev-parse", "HEAD")
 	for i, report := range []string{"VERDICT: OK\nSUMMARY: Checked.\nFINDINGS: None.\nTESTS RUN: None.", "VERDICT: BLOCK\nSUMMARY: Unsafe.\nFINDINGS: Fix the unchecked input.\nTESTS RUN: None.", "not a review", "", "VERDICT: OK\nSUMMARY: Checked.\nFINDINGS: None.\nTESTS RUN: None."} {
