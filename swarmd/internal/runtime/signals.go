@@ -80,13 +80,9 @@ func workerRunSignal(emitter *signals.Emitter, sessions *pebblestore.SessionStor
 		// outcome while retaining its follow-up identity for workflow rounds.
 		switch run.FollowupStatus {
 		case "completed":
-			// Preserve completed reopen rounds after success. Only recovery from
-			// an unsuccessful run needs exact-execution lifecycle verification.
-			verifyLifecycle := run.Status != "succeeded"
+			// Every follow-up has its own lifecycle outcome, even when the
+			// original run succeeded. Only this exact execution can block it.
 			run.Status, run.Error = "succeeded", ""
-			if !verifyLifecycle {
-				break
-			}
 			snapshot, found, err := sessions.GetSession(run.SessionID)
 			if err != nil || !found || snapshot.AccountScopeID != run.AccountScopeID || snapshot.UserID != run.UserID {
 				run.Status, run.Error = "failed", "cannot verify follow-up session lifecycle"
@@ -130,7 +126,7 @@ func workerRunSignal(emitter *signals.Emitter, sessions *pebblestore.SessionStor
 			Summary:  summary,
 			DedupKey: "worker.run:" + run.ID + ":" + followup,
 			Refs:     refs,
-			Attrs:    map[string]string{"source": run.RequestSource},
+			Attrs:    map[string]string{"source": run.RequestSource, "error": run.Error},
 		})
 	}
 }

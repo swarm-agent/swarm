@@ -1,104 +1,96 @@
 package jobautomation
 
-import (
-	"context"
-	"strconv"
-	"testing"
-)
+import "testing"
 
-// Requirement: a recorded reopen's follow-up receives a fresh review even
-// without a commit, exactly once, while unrelated same-head ends stay skipped
-// and max_rounds still blocks. Threat: silent review loss or an unbounded loop.
-// Owners: Store.CreateDelivery/ReopenCount and Runner.consume/runReopen.
-// The real store and runner with stubbed host boundaries are the narrowest
-// layer proving delivery creation, review execution, signals and round limits.
-func TestReopenSameHeadRounds(t *testing.T) {
-	h := newHarness(t)
-	reopener := &sessionReopener{}
-	h.withReopener(reopener)
-	folder := t.TempDir()
-	const maxRounds = 2
-	for i := 0; i <= maxRounds; i++ {
-		h.agents.outcomes = append(h.agents.outcomes, AgentOutcome{Verdict: VerdictBlock, Findings: "fix the unchecked limit"})
-	}
-	h.process()
-	a := h.automation(reviewLoop(folder, maxRounds))
-	h.results.results["run-1"] = workerResult(folder, "run-1")
-	const jobID = "worker/coder-1/run-1"
-	h.jobEnd("run-1", "", "succeeded", "direct")
-	h.process()
-	first := h.deliveries(jobID)[0]
-	if first.Round != 0 || first.Steps[1].Outcome["followup"] != "followup-1" {
-		t.Fatalf("initial reopen = %+v", first)
-	}
-
-	for round := 1; round <= maxRounds; round++ {
-		followup := "followup-" + strconv.Itoa(round)
-		report := "Retested without changes, round " + strconv.Itoa(round)
-		h.results.results["run-1"].Report = report
-		h.jobEnd("run-1", followup, "succeeded", "direct")
-		h.process()
-		list := h.deliveries(jobID)
-		if len(list) != round+1 {
-			t.Fatalf("round %d: deliveries = %d", round, len(list))
-		}
-		var current Delivery
-		for _, d := range list {
-			if d.Followup == followup {
-				current = d
+// Requirement: reopen results pin their new head, skip duplicate heads, and
+// terminate blocked follow-ups without review, even for success-only workflows.
+// Threat: reviewing stale work or hiding the worker's blocker behind a review.
+// Owners: Runner.consume and Store.CreateDelivery. The real store/signal runner
+// with bounded agent boundaries proves persisted rounds and dispatch counts.
+func TestReopenRoundOutcome(t *testing.T) {
+	for _, outcome := range []string{"committed", "same head", "blocked"} {
+		t.Run(outcome, func(t *testing.T) {
+			h := newHarness(t)
+			h.withReopener(&sessionReopener{})
+			folder := t.TempDir()
+			h.agents.outcomes = []AgentOutcome{{Verdict: VerdictBlock, Findings: "fix the limit"}, {Verdict: VerdictOK}}
+			h.process()
+			a := reviewLoop(folder, 2)
+			a.When = WhenSucceeded
+			h.automation(a)
+			result := workerResult(folder, "run-1")
+			h.results.results["run-1"] = result
+			h.jobEnd("run-1", "", "succeeded", "direct")
+			h.process()
+			first := h.deliveries(result.JobID)[0]
+			if first.Steps[1].Outcome["followup"] != "followup-1" {
+				t.Fatalf("no reopen: %+v", first)
 			}
-		}
-		if current.ID != DeliveryID(jobID, followup, a.ID, a.Revision) || current.Round != round || current.TriggerHead() != first.TriggerHead() {
-			t.Fatalf("round %d: delivery = %+v", round, current)
-		}
-		if current.Steps[0].State != StateSucceeded || current.Steps[0].Attempts != 1 || len(h.agents.started) != round+1 {
-			t.Fatalf("round %d: review did not run once: %+v", round, current.Steps[0])
-		}
-		if got := h.agents.started[round].Result; got.Report != report || got.Followup != followup {
-			t.Fatalf("review did not receive new result: %+v", got)
-		}
-		if round == maxRounds {
-			if current.State != StateBlocked || current.BlockedReason != ReasonRoundsExhausted || current.Steps[1].Reason != ReasonRoundsExhausted || len(reopener.sent) != maxRounds {
-				t.Fatalf("round budget not enforced: %+v; sent %d", current, len(reopener.sent))
+			status := "succeeded"
+			switch outcome {
+			case "committed":
+				result.Git.Head = "cccccccccccccccccccccccccccccccccccccccc"
+			case "blocked":
+				status = "failed"
+				result.Status, result.Error = StatusFailed, "blocked: approval required"
 			}
-		}
-
-		// Replay at the consumer as well as the store boundary, without
-		// relying on the signal feed's own deduplication to hide duplicates.
-		for _, sig := range h.signalsOf("worker.run.succeeded") {
-			if followupOf(sig) == followup {
-				if err := h.runner.consume(context.Background(), testAccount, sig); err != nil {
-					t.Fatal(err)
+			h.jobEnd("run-1", "followup-1", status, "direct")
+			h.process()
+			list := h.deliveries(result.JobID)
+			if outcome == "same head" {
+				if len(list) != 1 || len(h.agents.started) != 1 {
+					t.Fatalf("duplicate reviewed: %+v", list)
+				}
+				return
+			}
+			if len(list) != 2 {
+				t.Fatalf("deliveries = %+v", list)
+			}
+			var d Delivery
+			for _, item := range list {
+				if item.Followup == "followup-1" {
+					d = item
 				}
 			}
-		}
-		again, created, err := h.store.CreateDelivery(a, current.Result)
-		if err != nil || created || again.ID != current.ID {
-			t.Fatalf("repeated end: id %s created %v err %v", again.ID, created, err)
-		}
-		h.process()
-		if len(h.deliveries(jobID)) != round+1 || len(h.agents.started) != round+1 {
-			t.Fatal("repeated end created another delivery or review")
-		}
-	}
-
-	h.jobEnd("run-1", "manual-followup", "succeeded", "direct")
-	h.process()
-	if len(h.deliveries(jobID)) != maxRounds+1 || len(h.agents.started) != maxRounds+1 || len(reopener.sent) != maxRounds {
-		t.Fatal("unrelated same-head end changed workflow state")
-	}
-	skips := h.signalsOf("automation.delivery.skipped")
-	if len(skips) != 1 || skips[0].Attrs["reason"] != ReasonDuplicateHead || skips[0].Attrs["followup"] != "manual-followup" {
-		t.Fatalf("duplicate-head signals = %+v", skips)
+			if d.Round != 1 || d.TriggerHead() != result.Git.Head {
+				t.Fatalf("round head = %+v", d)
+			}
+			if outcome == "blocked" {
+				if d.State != StateBlocked || d.BlockedReason != result.Error || len(h.agents.started) != 1 || d.Steps[0].Attempts != 0 {
+					t.Fatalf("blocker lost or review started: %+v", d)
+				}
+			} else if len(h.agents.started) != 2 || h.agents.started[1].Head != result.Git.Head || d.Steps[0].State != StateSucceeded {
+				t.Fatalf("new head not reviewed: %+v", d)
+			}
+		})
 	}
 }
 
-// Requirement: only this automation's reopen for this job grants a same-head
-// exception. Threat: another automation/job or a non-reopen outcome bypasses
-// deduplication. Owner: Store.CreateDelivery; store-level fixtures isolate the
-// provenance decision and verify rejection leaves the delivery set unchanged.
+// Requirement: missing Git is unknown, never a review target. Runner.runAgent
+// must fail the step explicitly without calling the reviewer; the store/runner
+// fixture is the narrowest test of both dispatch absence and durable failure.
+func TestReviewWithoutHeadNeverStarts(t *testing.T) {
+	h := newHarness(t)
+	h.process()
+	folder := t.TempDir()
+	h.automation(reviewLoop(folder, 2))
+	result := workerResult(folder, "run-1")
+	result.Git = nil
+	h.results.results["run-1"] = result
+	h.jobEnd("run-1", "", "succeeded", "direct")
+	h.process()
+	d := h.deliveries(result.JobID)[0]
+	if len(h.agents.started) != 0 || d.State != StateFailed || d.Steps[0].Reason != "no head to review" {
+		t.Fatalf("headless review: %+v", d)
+	}
+}
+
+// Requirement: same-head deduplication applies even to this workflow's reopen;
+// unrelated workflow/job/step evidence must not bypass it either. Threat: an
+// unnecessary review or unbounded reopen loop. Owner: Store.CreateDelivery;
+// store fixtures prove rejection leaves the delivery set unchanged.
 func TestSameHeadReopenProvenance(t *testing.T) {
-	for _, source := range []string{"other automation", "other job", "non-reopen step", "empty followup"} {
+	for _, source := range []string{"same automation", "other automation", "other job", "non-reopen step", "empty followup"} {
 		t.Run(source, func(t *testing.T) {
 			h := newHarness(t)
 			a := h.automation(reviewLoop(t.TempDir(), 2))
@@ -135,7 +127,7 @@ func TestSameHeadReopenProvenance(t *testing.T) {
 			result.Followup = followup
 			got, created, err := h.store.CreateDelivery(a, result)
 			if err != nil || created || got.ID != first.ID || len(h.deliveries(result.JobID)) != before {
-				t.Fatalf("unrelated evidence bypassed deduplication: id %s created %v err %v", got.ID, created, err)
+				t.Fatalf("deduplication bypassed: id %s created %v err %v", got.ID, created, err)
 			}
 		})
 	}

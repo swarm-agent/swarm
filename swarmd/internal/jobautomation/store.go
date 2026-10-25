@@ -402,8 +402,8 @@ func (d Delivery) TriggerHead() string {
 // also false when the automation already has a delivery (active or finished)
 // for the job at the job end's head: the existing delivery, whose id differs
 // from DeliveryID of this job end, is returned and nothing is recorded (at
-// most one delivery per automation, job and head), except for a follow-up
-// started by this automation's own recorded reopen step.
+// most one delivery per automation, job and head), except when a blocked
+// follow-up must record the reason this automation's reopen could not finish.
 func (s *Store) CreateDelivery(a Automation, result Result) (Delivery, bool, error) {
 	id := DeliveryID(result.JobID, result.Followup, a.ID, a.Revision)
 	s.mu.Lock()
@@ -450,7 +450,7 @@ func (s *Store) CreateDelivery(a Automation, result Result) (Delivery, bool, err
 		if p.AutomationID != a.ID {
 			continue
 		}
-		if !reopened && head != "" && p.TriggerHead() == head {
+		if !(reopened && strings.HasPrefix(result.Error, "blocked: ")) && head != "" && p.TriggerHead() == head {
 			return p, false, nil
 		}
 		roundBase = max(roundBase, p.RoundBase)
@@ -472,6 +472,12 @@ func (s *Store) CreateDelivery(a Automation, result Result) (Delivery, bool, err
 	d.RoundBase = min(roundBase, d.Round)
 	for _, step := range a.Steps {
 		d.Steps = append(d.Steps, StepRecord{ID: step.ID, Type: step.Type, State: StatePending})
+	}
+	if reopened && strings.HasPrefix(result.Error, "blocked: ") {
+		d.State, d.BlockedReason = StateBlocked, result.Error
+		for i := range d.Steps {
+			d.Steps[i].State, d.Steps[i].Reason = StateSkipped, result.Error
+		}
 	}
 	if err := s.putDeliveryLocked(d); err != nil {
 		return Delivery{}, false, err

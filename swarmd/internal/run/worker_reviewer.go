@@ -236,6 +236,9 @@ func (s *WorkerExecutionService) resolveReviewTarget(ctx context.Context, r stor
 
 // ResolveTaskReviewTarget captures a task review without resolving or creating a reviewer worker.
 func (s *WorkerExecutionService) ResolveTaskReviewTarget(ctx context.Context, p identity.Principal, task *store.ProjectTaskRecord, job, checkout, head string) (map[string]any, error) {
+	if strings.TrimSpace(head) == "" {
+		return nil, errors.New("no head to review")
+	}
 	input := map[string]any{"review_job": job, "review_checkout": checkout}
 	if task.ReviewFixes != "" {
 		input["review_fixes"] = task.ReviewFixes

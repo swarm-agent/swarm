@@ -74,7 +74,11 @@ func (r jobAutomationResults) Result(ctx context.Context, sig pebblestore.Signal
 func (r jobAutomationResults) result(ctx context.Context, sig pebblestore.Signal, lastAttempt bool) (*jobautomation.Result, error) {
 	switch {
 	case strings.HasPrefix(sig.Kind, "worker.run."):
-		return r.s.workerJobAutomationResult(ctx, sig.Refs["worker_id"], sig.Refs["run_id"], strings.TrimPrefix(sig.Kind, "worker.run."), lastAttempt)
+		out, err := r.s.workerJobAutomationResult(ctx, sig.Refs["worker_id"], sig.Refs["run_id"], strings.TrimPrefix(sig.Kind, "worker.run."), lastAttempt)
+		if out != nil && sig.Attrs["error"] != "" {
+			out.Error = sig.Attrs["error"]
+		}
+		return out, err
 	case strings.HasPrefix(sig.Kind, "media.job."):
 		return r.s.mediaJobResultForAutomation(sig)
 	case strings.HasPrefix(sig.Kind, "design.job."):
@@ -107,6 +111,16 @@ func (s *Server) workerJobAutomationResult(ctx context.Context, workerID, runID,
 	if err != nil {
 		return nil, err
 	}
+	// Follow-ups may settle while the public view still reports in_progress
+	// or blocked. Read the same task result used by first-run job views rather
+	// than letting that presentation status discard the branch and head.
+	if followup, _ := refs.run["followup_status"].(string); followup != "" && refs.projectID != "" {
+		result, err := controlMCPTaskResult(c, map[string]any{"project_id": refs.projectID, "task_id": refs.taskID})
+		if err != nil {
+			return nil, err
+		}
+		view["result"] = controlMCPMap(result)
+	}
 	workerName, role := "", ""
 	if response, err := c.dispatch(http.MethodGet, "/v3/workers/"+workerID, nil, nil); err == nil {
 		worker := controlMCPMap(response["worker"])
@@ -125,6 +139,12 @@ func (s *Server) workerJobAutomationResult(ctx context.Context, workerID, runID,
 		return nil, err
 	}
 	out := core.automationResult(ctx, b, role)
+	// A resolved head is delivery identity even when the task assessment has
+	// not populated its commit list yet. Positively empty lanes retain their
+	// existing no-commits handling.
+	if out.Git == nil && !out.NoCommits && core.head != "" {
+		out.Git = &jobautomation.ResultGit{Head: core.head, Branch: core.branch, BaseCommit: core.base, Worktree: core.repo}
+	}
 	switch ended {
 	case jobautomation.StatusSucceeded, jobautomation.StatusFailed, jobautomation.StatusCancelled:
 		out.Status = ended
@@ -309,6 +329,9 @@ func (a jobAutomationAgents) Start(ctx context.Context, req jobautomation.AgentR
 		input["review_fixes"] = req.Fixes
 	}
 	if role == pebblestore.WorkerRoleReviewer {
+		if strings.TrimSpace(req.Head) == "" {
+			return "", &jobautomation.RefusedError{Reason: "no head to review"}
+		}
 		// same: a new reviewer session in the reviewed job's own worktree,
 		// read-only; new: its own checkout at the reviewed head.
 		input["review_checkout"] = checkout

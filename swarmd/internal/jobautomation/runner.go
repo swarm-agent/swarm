@@ -428,7 +428,28 @@ func (r *Runner) consume(ctx context.Context, account string, sig pebblestore.Si
 	defer r.reopenMu.Unlock()
 	for _, a := range candidates {
 		if !a.Matches(result) {
-			continue
+			// A blocked response to this workflow's own reopen must close
+			// its round even when the workflow normally matches successes.
+			match := *result
+			match.Status = StatusSucceeded
+			if result.Followup == "" || !strings.HasPrefix(result.Error, "blocked: ") || !a.Matches(&match) {
+				continue
+			}
+			previous, err := r.store.JobDeliveries(account, result.JobID)
+			if err != nil {
+				return err
+			}
+			reopened := false
+			for _, p := range previous {
+				for _, step := range p.Steps {
+					if p.AutomationID == a.ID && step.Type == StepReopen && step.Outcome["followup"] == result.Followup {
+						reopened = true
+					}
+				}
+			}
+			if !reopened {
+				continue
+			}
 		}
 		d, created, err := r.store.CreateDelivery(a, *result)
 		if err != nil {
@@ -913,6 +934,18 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 		return stepFailure{reason: "agent steps are not available on this daemon", next: "rerun", refused: true}
 	}
 	jobID, _ := record.Outcome["job_id"].(string)
+	if jobID == "" && strings.TrimSpace(d.Head) == "" {
+		reviewer := strings.EqualFold(strings.TrimSpace(step.Worker), "reviewer")
+		if roles, ok := r.agent.(interface {
+			Role(context.Context, string, string) (string, error)
+		}); ok && !reviewer {
+			role, err := roles.Role(ctx, d.Account, step.Worker)
+			reviewer = err == nil && role == "reviewer"
+		}
+		if reviewer {
+			return stepFailure{reason: "no head to review", next: "rerun", refused: true}
+		}
+	}
 	if jobID == "" && step.Fixes != "" {
 		// A reviewer allowed to fix branches at the reviewed job's own head;
 		// once an earlier agent step moved the delivery head its fixes could
