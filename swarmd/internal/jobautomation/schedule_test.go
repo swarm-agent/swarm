@@ -253,6 +253,7 @@ func TestSchedulePendingRecovery(t *testing.T) {
 	now = now.Add(time.Hour)
 	h.store.now = func() time.Time { return now }
 	attempts := 0
+	failures := 0
 	r := &TriggerRunner{Store: h.store, Account: func() string { return testAccount }, Start: func(_ context.Context, original Automation, brief, key string) (string, error) {
 		attempts++
 		if brief != "original" || key != "reserved-key" || original.On.Start.Worker != "worker-1" {
@@ -268,11 +269,22 @@ func TestSchedulePendingRecovery(t *testing.T) {
 		}
 		return true, nil
 	}}
+	r.Signal = func(_ Automation, kind, _ string) {
+		if kind == "workflow.trigger.failed" {
+			failures++
+		}
+	}
 	r.Tick(context.Background())
 	state, err = h.store.triggerState(a)
+	if failures != 1 || state.Events[0].State != "failed" || state.Events[0].Error == "" {
+		t.Fatalf("invisible recovery failure: %+v signals=%d", state, failures)
+	}
 	if err != nil || state.Pending == nil || state.ActiveJob != "schedule-dispatch-pending" {
 		t.Fatalf("lost reservation: %+v %v", state, err)
 	}
+	// Switching source must recover the reservation before calling Running.
+	a.On = &Trigger{Event: TriggerEvent{Source: "webhook", ID: "id"}, Start: TriggerStart{Worker: "worker-2", Brief: "new"}}
+	a = h.automation(a)
 	r.Tick(context.Background())
 	state, err = h.store.triggerState(a)
 	if err != nil || state.Pending != nil || state.ActiveJob != "existing-job" || state.Events[0].JobID != "existing-job" {
@@ -283,4 +295,36 @@ func TestSchedulePendingRecovery(t *testing.T) {
 	if attempts != 2 {
 		t.Fatalf("new dispatch overlapped: %d", attempts)
 	}
+}
+
+// Purpose: triggerState owns definition-change isolation. A persisted queued
+// webhook must not dispatch under the replacement worker/brief; the reset
+// must also discard baseline/seen state while retaining a real running job.
+func TestTriggerEditRetiresQueuedEvents(t *testing.T) {
+	h := newHarness(t)
+	a := testAutomation(t.TempDir())
+	a.On = &Trigger{Event: TriggerEvent{Source: "webhook", ID: "id"}, Start: TriggerStart{Worker: "worker-1", Brief: "old"}}
+	a = h.automation(a)
+	state, err := h.store.triggerState(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Baseline = true
+	state.Seen = []string{"old"}
+	state.Events = []TriggerReceipt{{ID: "old", State: "queued", Item: map[string]any{"id": "old"}}}
+	state.ActiveJob = "existing-job"
+	if err := h.db.PutJSON(triggerKey(a), state); err != nil {
+		t.Fatal(err)
+	}
+	a.On.Start = TriggerStart{Worker: "worker-2", Brief: "new"}
+	a = h.automation(a)
+	state, err = h.store.triggerState(a)
+	if err != nil || state.Baseline || len(state.Seen) != 0 || len(state.Events) != 0 || state.ActiveJob != "existing-job" {
+		t.Fatalf("reset: %+v %v", state, err)
+	}
+	r := &TriggerRunner{Store: h.store, Account: func() string { return testAccount }, Start: func(context.Context, Automation, string, string) (string, error) {
+		t.Fatal("dispatched retired item")
+		return "", nil
+	}, Running: func(context.Context, Automation, string) (bool, error) { return false, nil }}
+	r.Tick(context.Background())
 }

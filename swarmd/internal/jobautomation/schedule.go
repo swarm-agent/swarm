@@ -162,6 +162,17 @@ func (r *TriggerRunner) finishScheduleDispatch(ctx context.Context, a Automation
 	// A recovery error does not prove the original dispatch failed. Retain the
 	// reservation until the idempotent start boundary yields its job ID.
 	if recovering && status != "started" {
+		changed := false
+		for i := range state.Events {
+			if state.Events[i].ID == pending.ReceiptID {
+				changed = state.Events[i].State != "failed"
+				state.Events[i].State = "failed"
+				state.Events[i].Error = "schedule dispatch recovery blocked; reservation retained: " + failure
+			}
+		}
+		if r.Store.db.PutJSON(triggerKey(a), state) == nil && changed && r.Signal != nil {
+			r.Signal(a, "workflow.trigger.failed", pending.ReceiptID)
+		}
 		return false
 	}
 	for i := range state.Events {

@@ -57,7 +57,15 @@ func (s *Store) triggerState(a Automation) (triggerState, error) {
 	hash := sha256.Sum256(data)
 	fingerprint := hex.EncodeToString(hash[:])
 	if state.Fingerprint != fingerprint {
-		state = triggerState{Fingerprint: fingerprint, ActiveJob: state.ActiveJob, Pending: state.Pending, Events: state.Events}
+		previous := state
+		state = triggerState{Fingerprint: fingerprint, ActiveJob: previous.ActiveJob, Pending: previous.Pending}
+		// Retire queued events from the old definition. A reserved schedule
+		// dispatch alone survives edits until its idempotent start is resolved.
+		for _, receipt := range previous.Events {
+			if previous.Pending != nil && receipt.ID == previous.Pending.ReceiptID {
+				state.Events = append(state.Events, receipt)
+			}
+		}
 	}
 	return state, nil
 }
@@ -272,6 +280,9 @@ func (r *TriggerRunner) tick(ctx context.Context, a Automation) {
 	}
 	state, err = s.triggerState(a)
 	if err != nil {
+		return
+	}
+	if state.Pending != nil && !r.finishScheduleDispatch(ctx, a, &state, true) {
 		return
 	}
 	if state.ActiveJob != "" {

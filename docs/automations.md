@@ -48,7 +48,11 @@ restart a skipped receipt summarizes the oldest pending slot, not every missed
 minute. Nonexistent local minutes do not run; repeated DST minutes may each run.
 If the daemon exits during dispatch before recording its job ID, it retries the
 reserved dispatch with its original idempotency key and brief to recover the job
-ID before allowing later slots. Recovery errors retain the reservation for retry.
+ID before allowing later slots, even if the source is changed to an event trigger.
+Recovery errors retain the reservation for retry and mark its receipt failed with
+an error and a failure signal. If the original worker or folder is unavailable,
+restore that prerequisite; editing the trigger does not release an uncertain
+start. Queued event items are retired when the trigger definition changes.
 
 With `on`, `steps` may be empty: a trigger-only workflow just starts jobs.
 Trigger-started jobs match the starting workflow's own steps, or ordinary
