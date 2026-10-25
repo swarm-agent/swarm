@@ -432,11 +432,31 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 	// read-only registration with sandbox off and on (a hermetic engine runner,
 	// not live container execution). Neither case may borrow the source folder.
 	t.Run("designer folder review", func(t *testing.T) {
-		folderTask := &pebblestore.ProjectTaskRecord{ID: "folder-design", ProjectID: project.ID, AccountID: principal.AccountScopeID, Title: "Design", Agent: "designer", SessionID: "folder-design-session", WorkspacePath: folder, SourceWorkspace: task.SourceWorkspace, Status: "needs_review"}
-		if err := captureFolderTaskBase(folderTask); err != nil {
+		// Exercise the launch boundary: it must clear MakeWorktreeBranch's
+		// provisional name for Designer rather than persist a fictitious lane.
+		launchHead := outboxPinGit(t, folder, "rev-parse", "HEAD")
+		designStep := step
+		designStep.Worker = "designer"
+		designStep.IdempotencyKey = "folder-design-launch"
+		designID, err := agents.Start(context.Background(), designStep)
+		if err != nil {
 			t.Fatal(err)
 		}
-		outboxPinGit(t, folder, "commit", "-q", "--allow-empty", "-m", "design")
+		_, designTaskID, _ := parseTaskJobID(designID)
+		folderTask, found, err := sessions.Store().GetProjectTask(principal.AccountScopeID, project.ID, designTaskID)
+		if err != nil || !found {
+			t.Fatalf("designer launch: %v", err)
+		}
+		if folderTask.WorktreeBranch != "" || folderTask.WorktreeName != "" || folderTask.BaseCommit != launchHead || folderTask.WorkspacePath != folder {
+			t.Fatalf("folder launch provenance: %+v", folderTask)
+		}
+		for _, name := range []string{"card.html", ".env"} {
+			if err := os.WriteFile(filepath.Join(folder, name), []byte("fixture"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		outboxPinGit(t, folder, "add", "card.html")
+		outboxPinGit(t, folder, "commit", "-q", "-m", "design")
 		if err := captureFolderTaskDelivery(folderTask); err != nil {
 			t.Fatal(err)
 		}
@@ -444,6 +464,20 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 			t.Fatal(err)
 		}
 		deliveryHead := folderTask.Integration.SourceHead
+		// The public MCP result traverses the task detail route; neither may
+		// substitute live folder files or lose the captured commit range.
+		result, err := controlMCPTaskResult(call, map[string]any{"project_id": project.ID, "task_id": folderTask.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resultMap := controlMCPMap(result)
+		files, ok := resultMap["files"].([]string)
+		if !ok || len(files) != 1 || files[0] != "card.html" {
+			t.Fatalf("folder result files: %+v", resultMap["files"])
+		}
+		if resultMap["base_commit"] != launchHead || resultMap["head"] != deliveryHead || resultMap["delivery_state"] != "in_folder" {
+			t.Fatalf("folder result: %+v", resultMap)
+		}
 		t.Cleanup(func() { sandbox.SetDefault(manager) })
 		for i := 0; i < 4; i++ {
 			sandbox.SetDefault(manager)

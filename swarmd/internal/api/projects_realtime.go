@@ -228,7 +228,18 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 				}
 			}
 			if err := captureFolderTaskDelivery(t); err != nil {
-				return err
+				// Settle execution even when Git provenance cannot be captured.
+				// Never leave a prior run's receipt available to the next reviewer.
+				t.Integration = nil
+				t.Status = "needs_review"
+				t.LastError = "Folder delivery capture failed: " + err.Error()
+				t.ActionNeeded = "Action Needed: Resolve folder Git delivery failure before review"
+				t.GitStatus = "unknown"
+				t.IsIntegrated = false
+				return nil
+			}
+			if folderTask(t) {
+				gitState = inspectTaskGitState(*t, db)
 			}
 			// Unknown delivery must clear stale Git claims without erasing the
 			// independently recorded execution result or integration receipt.

@@ -28,11 +28,13 @@ func captureFolderTaskBase(task *store.ProjectTaskRecord) error {
 	}
 	branch, err := folderGit(ctx, task.WorkspacePath, "symbolic-ref", "--quiet", "--short", "HEAD")
 	if err != nil {
-		return fmt.Errorf("folder task requires a branch: %w", err)
+		// Detached checkouts remain usable, without branch delivery.
+		return nil
 	}
 	head, err := folderGit(ctx, task.WorkspacePath, "rev-parse", "--verify", "HEAD")
 	if err != nil {
-		return fmt.Errorf("capture folder task base: %w", err)
+		// Unborn branches remain usable, without a commit range.
+		return nil
 	}
 	task.BaseBranch, task.BaseCommit = branch, head
 	return nil
@@ -41,7 +43,7 @@ func captureFolderTaskBase(task *store.ProjectTaskRecord) error {
 // captureFolderTaskDelivery runs at the owning run's terminal mutation, never
 // during hydration: later folder commits must not become this task's output.
 func captureFolderTaskDelivery(task *store.ProjectTaskRecord) error {
-	if !folderTask(task) || task.BaseCommit == "" || task.Integration != nil {
+	if !folderTask(task) || task.BaseCommit == "" {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

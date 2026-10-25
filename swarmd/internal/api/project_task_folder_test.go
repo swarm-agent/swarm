@@ -36,9 +36,6 @@ func TestFolderTaskDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 	outboxPinGit(t, folder, "commit", "-q", "--allow-empty", "-m", "later")
-	if err := captureFolderTaskDelivery(task); err != nil {
-		t.Fatal(err)
-	}
 	state := inspectTaskGitState(*task, nil)
 	if state.deliveryAssessment.State != "in_folder" || state.deliveryAssessment.SourceOID != head || len(state.deliveryAssessment.AllowedActions) != 0 {
 		t.Fatalf("delivery: %+v", state.deliveryAssessment)
@@ -51,5 +48,25 @@ func TestFolderTaskDelivery(t *testing.T) {
 	outboxPinGit(t, folder, "checkout", "-q", "-b", "other")
 	if err := captureFolderTaskDelivery(task); err == nil || task.Integration != nil {
 		t.Fatal("changed branch produced a receipt")
+	}
+}
+
+// Purpose: captureFolderTaskBase must not prevent non-writing agents from
+// using detached or unborn repositories. Real Git exercises both failure modes.
+func TestFolderTaskBaseWithoutBranchDelivery(t *testing.T) {
+	for _, detached := range []bool{false, true} {
+		folder := t.TempDir()
+		outboxPinGit(t, folder, "init", "-q", "-b", "main")
+		if detached {
+			outboxPinGit(t, folder, "commit", "-q", "--allow-empty", "-m", "base")
+			outboxPinGit(t, folder, "checkout", "--detach")
+		}
+		task := &store.ProjectTaskRecord{Agent: "finder", WorkspacePath: folder, SourceWorkspace: store.ProjectTaskSource{Path: folder}}
+		if err := captureFolderTaskBase(task); err != nil {
+			t.Fatal(err)
+		}
+		if task.BaseCommit != "" || task.BaseBranch != "" {
+			t.Fatalf("unexpected delivery base: %+v", task)
+		}
 	}
 }
