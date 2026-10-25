@@ -93,6 +93,8 @@ func (s *Server) registerSwarmRoutes(mux *http.ServeMux) {
 }
 
 func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/v3/agents", s.handleCustomAgents)
+	mux.HandleFunc("/v3/agents/", s.handleCustomAgents)
 	mux.HandleFunc("/v2/custom-tools", s.agentConfigScope(s.handleCustomToolsV2))
 	mux.HandleFunc("/v2/custom-tools/", s.agentConfigScope(s.handleCustomToolByNameV2))
 	mux.HandleFunc("/v2/agents", s.agentConfigScope(s.handleAgentsV2))

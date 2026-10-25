@@ -422,6 +422,7 @@ func SwarmOrchestratorAgentPrompt() string {
 	return strings.TrimSpace(`You are Swarm Orchestrator, the executive project management and coordination agent.
 
 Your role is to orchestrate complex multi-workspace software initiatives, manage autonomous background workers, and supervise delegated tasks.
+- Use manage_custom_agents to save custom agent definitions; propose workers with agent=<name> for the person to accept.
 - Workflows run steps (a reviewer, send back, deliver, a script) when a task or a worker job ends; propose them with manage_workflows.
 - Elevate from raw files to cohesive Projects: maintain project architecture and context in project.md.
 - Project chats intentionally have no ambient checkout. Use manage_projects action=list_sources with project_id to discover current account-authorized project sources, then action=inspect_source with workspace_path or workspace_id (and the returned workspace_generation) for source-specific committed HEAD, branch and cleanliness. Missing cwd or generic filesystem tool failures do not prove a project or repository is absent; never ask the user to leave the project chat, open a workspace, or git init solely for this reason. Select the source identified by the request; ask only when genuinely ambiguous, never choose the first project workspace. Pass the resolved source tuple to propose_task. Inspection grants no execution permission: preserve deployment revalidation, prerequisite ancestry and isolated-worktree gates. Only claim launched after a linked execution/session receipt, not merely a proposed task card.
@@ -452,30 +453,31 @@ func SwarmOrchestratorAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{
 		Preset: "custom",
 		Tools: map[string]pebblestore.AgentToolConfig{
-			"read":              {Enabled: pebblestore.BoolPtr(true)},
-			"media_inspect":     {Enabled: pebblestore.BoolPtr(true)},
-			"search":            {Enabled: pebblestore.BoolPtr(true)},
-			"websearch":         {Enabled: pebblestore.BoolPtr(true)},
-			"webfetch":          {Enabled: pebblestore.BoolPtr(true)},
-			"find":              {Enabled: pebblestore.BoolPtr(true)},
-			"list":              {Enabled: pebblestore.BoolPtr(true)},
-			"bash":              {Enabled: pebblestore.BoolPtr(true)},
-			"swarm_design":      {Enabled: pebblestore.BoolPtr(true)},
-			"manage_media":      {Enabled: pebblestore.BoolPtr(true)},
-			"manage_artifact":   {Enabled: pebblestore.BoolPtr(false)},
-			"manage_video":      {Enabled: pebblestore.BoolPtr(false)},
-			"manage_projects":   {Enabled: pebblestore.BoolPtr(true)},
-			"manage_memory":     {Enabled: pebblestore.BoolPtr(true)},
-			"manage_workspace":  {Enabled: pebblestore.BoolPtr(true)},
-			"manage_sessions":   {Enabled: pebblestore.BoolPtr(true)},
-			"manage_worktree":   {Enabled: pebblestore.BoolPtr(true)},
-			"manage-theme":      {Enabled: pebblestore.BoolPtr(true)},
-			"manage_workers":    {Enabled: pebblestore.BoolPtr(true)},
-			"manage_workflows":  {Enabled: pebblestore.BoolPtr(true)},
-			"manage_automation": {Enabled: pebblestore.BoolPtr(true)},
-			"plan_manage":       {Enabled: pebblestore.BoolPtr(false)},
-			"ask_user":          {Enabled: pebblestore.BoolPtr(true)},
-			"exit_plan_mode":    {Enabled: pebblestore.BoolPtr(false)},
+			"read":                 {Enabled: pebblestore.BoolPtr(true)},
+			"media_inspect":        {Enabled: pebblestore.BoolPtr(true)},
+			"search":               {Enabled: pebblestore.BoolPtr(true)},
+			"websearch":            {Enabled: pebblestore.BoolPtr(true)},
+			"webfetch":             {Enabled: pebblestore.BoolPtr(true)},
+			"find":                 {Enabled: pebblestore.BoolPtr(true)},
+			"list":                 {Enabled: pebblestore.BoolPtr(true)},
+			"bash":                 {Enabled: pebblestore.BoolPtr(true)},
+			"swarm_design":         {Enabled: pebblestore.BoolPtr(true)},
+			"manage_media":         {Enabled: pebblestore.BoolPtr(true)},
+			"manage_artifact":      {Enabled: pebblestore.BoolPtr(false)},
+			"manage_video":         {Enabled: pebblestore.BoolPtr(false)},
+			"manage_projects":      {Enabled: pebblestore.BoolPtr(true)},
+			"manage_memory":        {Enabled: pebblestore.BoolPtr(true)},
+			"manage_workspace":     {Enabled: pebblestore.BoolPtr(true)},
+			"manage_sessions":      {Enabled: pebblestore.BoolPtr(true)},
+			"manage_worktree":      {Enabled: pebblestore.BoolPtr(true)},
+			"manage-theme":         {Enabled: pebblestore.BoolPtr(true)},
+			"manage_workers":       {Enabled: pebblestore.BoolPtr(true)},
+			"manage_custom_agents": {Enabled: pebblestore.BoolPtr(true)},
+			"manage_workflows":     {Enabled: pebblestore.BoolPtr(true)},
+			"manage_automation":    {Enabled: pebblestore.BoolPtr(true)},
+			"plan_manage":          {Enabled: pebblestore.BoolPtr(false)},
+			"ask_user":             {Enabled: pebblestore.BoolPtr(true)},
+			"exit_plan_mode":       {Enabled: pebblestore.BoolPtr(false)},
 		},
 	}
 }

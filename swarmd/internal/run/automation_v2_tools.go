@@ -427,6 +427,9 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 		if existing.Revision != expectedRevision {
 			return "", store.ErrWorkerConflict
 		}
+		if requested, ok := args["agent"].(string); ok && strings.TrimSpace(requested) != existing.Agent {
+			return "", errors.New("worker agent cannot be changed by proposal reuse; create a separately named proposal")
+		}
 		updateReq := store.UpdateWorkerRequest{
 			Name:                  &name,
 			Description:           &description,
@@ -474,7 +477,12 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 	if err != nil {
 		return "", err
 	}
+	agentName := strings.TrimSpace(mapString(args, "agent"))
+	if err := s.ValidateWorkerAgent(current.AccountScopeID, store.WorkerRecord{Agent: agentName}); err != nil {
+		return "", err
+	}
 	createReq := store.CreateWorkerRequest{
+		Agent:                 agentName,
 		ModelProfile:          workerModel,
 		Name:                  name,
 		Description:           description,

@@ -67,6 +67,7 @@ func manageWorkersV2Definition() Definition {
 						"progress",
 					},
 				},
+				"agent": map[string]any{"type": "string", "description": "Custom agent name for a new worker proposal."},
 				"worker_id": map[string]any{
 					"type":        "string",
 					"description": "Stable durable worker ID (e.g. worker_...).",

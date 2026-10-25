@@ -87,7 +87,7 @@ var toolScopes = map[string]string{
 	"swarm_set_agent_model":        ScopeWrite,
 	"swarm_set_media_models":       ScopeWrite,
 	"swarm_list_agents":            ScopeRead,
-	"swarm_define_agent":           ScopeManage,
+	"swarm_define_agent":           ScopeWrite,
 	"swarm_create_client_key":      ScopeManage,
 	"swarm_create_key":             ScopeManage,
 	"swarm_list_keys":              ScopeRead,
@@ -139,7 +139,6 @@ var toolScopes = map[string]string{
 // nor forwarded for relay clients. On the machine, ChatGPT sign-in takes a
 // write AI key, the rest a full one.
 var localOnlyTools = map[string]bool{
-	"swarm_define_agent":         true,
 	"swarm_create_client_key":    true,
 	"swarm_create_key":           true,
 	"swarm_connect_chatgpt":      true,

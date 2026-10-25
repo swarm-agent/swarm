@@ -233,7 +233,7 @@ func (s *Service) resolveValidatedStoredV3AgentToolStates(accountScopeID string,
 }
 
 func (s *Service) storedV3ToolNamesForAccount(accountScopeID string) (map[string]struct{}, error) {
-	known := map[string]struct{}{"ask_user": {}, "exit_plan_mode": {}, "plan_manage": {}, "task": {}}
+	known := map[string]struct{}{"ask_user": {}, "exit_plan_mode": {}, "plan_manage": {}, "task": {}, "task_progress": {}}
 	if s != nil && s.tools != nil {
 		for _, name := range storedV3BuiltinToolNames {
 			known[name] = struct{}{}
@@ -314,12 +314,15 @@ func resolveAgentToolStates(profile pebblestore.AgentProfile, knownTools map[str
 	applyExplicitAgentTools(resolved.Tools, contract.Tools, "tool_contract")
 	// Artifact generation remains implemented but is off for every agent.
 	resolved.Tools["manage_artifact"] = ResolvedAgentTool{Enabled: false, Source: "runtime.media_tasks"}
-	if _, implemented := knownTools[tool.LeaseEnvironmentToolName]; implemented {
+	if _, implemented := knownTools[tool.LeaseEnvironmentToolName]; implemented && agentruntime.IsReservedSystemAgentName(profile.Name) {
 		// Leasing the folder's environment is part of bash: every agent with
 		// bash may lease, unless its contract turns leasing off explicitly.
 		if _, explicit := contract.Tools[tool.LeaseEnvironmentToolName]; !explicit && resolved.Tools["bash"].Enabled {
 			resolved.Tools[tool.LeaseEnvironmentToolName] = ResolvedAgentTool{Enabled: true, Source: "runtime.bash_lease"}
 		}
+	}
+	if !agentruntime.IsSwarmOrchestratorAgentName(profile.Name) {
+		resolved.Tools["manage_custom_agents"] = ResolvedAgentTool{Enabled: false, Source: "runtime.orchestrator_only"}
 	}
 	if !accountMemoryAgentAllowed(profile) {
 		// Stale snapshots, permissive presets and custom agents cannot expose
@@ -423,6 +426,9 @@ func (s *Service) compileAgentToolPolicy(accountScopeID string, profile pebblest
 			})
 			continue
 		}
+		if name == "manage_custom_agents" {
+			continue
+		} // Reads and mutations use action-aware permission defaults.
 		decision := permission.PolicyDecisionAllow
 		if workspaceOnboarding {
 			switch name {

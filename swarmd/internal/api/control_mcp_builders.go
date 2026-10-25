@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
-	"strings"
 	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
@@ -29,27 +28,10 @@ var controlMCPAgentName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 // prefixes are not enforced in V3 sessions.
 var controlMCPAgentToolSets = []string{"read_only", "read_write", "build"}
 
-var controlMCPBuildAgentTools = []string{
-	"read", "search", "list", "find", "write", "edit", "bash",
-	"git_status", "git_diff", "git_add", "git_commit",
-	"plan_manage", "ask_user", "compact", "exit_plan_mode", "skill_use", "websearch", "webfetch",
-}
-
 // Client keys may start, read and drive sessions and nothing else.
 var controlMCPClientKeyScopes = []string{"sessions:read", "sessions:write", clientAppScope}
 
 var controlMCPClientKeyDays = []int{1, 7, 30, 90, 365}
-
-func controlMCPAgentToolContract(toolSet string) map[string]any {
-	if toolSet != "build" {
-		return map[string]any{"preset": toolSet}
-	}
-	tools := make(map[string]any, len(controlMCPBuildAgentTools))
-	for _, name := range controlMCPBuildAgentTools {
-		tools[name] = map[string]any{"enabled": true}
-	}
-	return map[string]any{"preset": "custom", "tools": tools}
-}
 
 func controlMCPIsSystemAgent(name string) bool {
 	if slices.Contains(controlMCPSessionAgents, name) {
@@ -110,62 +92,13 @@ func controlMCPListAgents(c *controlMCPCall, _ map[string]any) (any, error) {
 
 func controlMCPDefineAgent(c *controlMCPCall, args map[string]any) (any, error) {
 	name := controlMCPString(args, "name")
-	if !controlMCPAgentName.MatchString(name) || controlMCPReservedIDs[name] {
-		return nil, controlMCPToolFailure("name must be lowercase letters, digits and dashes, starting with a letter")
-	}
-	if controlMCPIsSystemAgent(name) {
-		return nil, controlMCPToolFailure("%q is a built-in agent; choose another name", name)
-	}
-	instructions := controlMCPString(args, "instructions")
-	if instructions == "" {
-		return nil, controlMCPToolFailure("instructions are required")
-	}
-	toolSet := controlMCPString(args, "tools")
-	if !slices.Contains(controlMCPAgentToolSets, toolSet) {
-		return nil, controlMCPToolFailure("tools must be one of %v", controlMCPAgentToolSets)
-	}
-	// Never replace a protected (built-in) profile under a name the system
-	// registry does not know.
-	if existing, err := c.dispatch(http.MethodGet, "/v2/agents/"+name, nil, nil); err == nil {
-		if protected, _ := controlMCPMap(existing["profile"])["protected"].(bool); protected {
-			return nil, controlMCPToolFailure("%q is a built-in agent; choose another name", name)
-		}
-	}
-	contract := controlMCPAgentToolContract(toolSet)
-	for _, switchKey := range []string{"tools_on", "tools_off"} {
-		if values, ok := args[switchKey].([]any); ok {
-			tools, _ := contract["tools"].(map[string]any)
-			if tools == nil {
-				tools = map[string]any{}
-				contract["tools"] = tools
-			}
-			for _, value := range values {
-				name, ok := value.(string)
-				if !ok || strings.TrimSpace(name) == "" {
-					return nil, controlMCPToolFailure("%s requires tool names", switchKey)
-				}
-				tools[name] = map[string]any{"enabled": switchKey == "tools_on"}
-			}
-		}
-	}
-	// Empty provider/model/thinking clear any pin left on an earlier agent of
-	// this name, so custom agents always run on the account default model.
-	response, err := c.dispatch(http.MethodPut, "/v2/agents/"+name, nil, map[string]any{
-		"mode":          agentruntime.ModeSubagent,
-		"description":   controlMCPString(args, "description"),
-		"prompt":        instructions,
-		"provider":      "",
-		"model":         "",
-		"thinking":      "",
-		"tool_contract": contract,
-		"enabled":       true,
-	})
+	response, err := c.dispatch(http.MethodPut, "/v3/agents/"+url.PathEscape(name), nil, args)
 	if err != nil {
 		return nil, err
 	}
-	agent := controlMCPPick(controlMCPMap(response["profile"]), "name", "enabled")
-	agent["tools"] = toolSet
-	return map[string]any{"agent": agent, "next": fmt.Sprintf("start_session with agent %q", name)}, nil
+	result := controlMCPPick(controlMCPMap(response["profile"]), "name", "enabled")
+	result["tools"] = args["tools"]
+	return map[string]any{"agent": result, "next": fmt.Sprintf("start_session with agent %q", name)}, nil
 }
 
 func controlMCPCreateClientKey(c *controlMCPCall, args map[string]any) (any, error) {

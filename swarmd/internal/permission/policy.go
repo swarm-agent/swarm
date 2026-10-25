@@ -1770,6 +1770,18 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 			return PolicyDecisionAllow
 		}
 		return PolicyDecisionAsk
+	case "manage_custom_agents":
+		var args map[string]any
+		if json.Unmarshal([]byte(toolArguments), &args) != nil {
+			return PolicyDecisionDeny
+		}
+		if args["action"] == "list" || args["action"] == "get" {
+			return PolicyDecisionAllow
+		}
+		if mode == "read" {
+			return PolicyDecisionDeny
+		}
+		return PolicyDecisionAsk
 	case "manage_agent":
 		if ShouldApproveManageAgentMutation(toolArguments) {
 			return PolicyDecisionAsk

@@ -222,6 +222,7 @@ type Runtime struct {
 	projects             manageProjectStore
 	projectTaskDeployer  ProjectTaskDeployer
 	projectTaskLifecycle ProjectTaskLifecycleService
+	customAgentLifecycle CustomAgentLifecycleService
 }
 
 type manageSessionController interface {
@@ -1500,6 +1501,7 @@ func (r *Runtime) Definitions() []Definition {
 		manageProjectsDefinition(),
 		leaseEnvironmentDefinition(),
 		manageWorkersV2Definition(),
+		manageCustomAgentsDefinition(),
 		manageWorkflowsDefinition(),
 		manageAutomationV2Definition(),
 		swarmDesignDefinition(),
@@ -2162,6 +2164,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return executeSkillUse(scope, args)
 	case "manage-skill", "manage_skill":
 		return executeManageSkill(scope, args)
+	case "manage_custom_agents":
+		return r.executeManageCustomAgents(scope, args)
 	case "manage-agent", "manage_agent":
 		return r.executeManageAgent(scope, args)
 	case "manage-theme", "manage_theme":

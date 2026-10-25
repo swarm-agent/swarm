@@ -1703,6 +1703,12 @@ func authorizationRequirement(mode, toolName, toolArguments string) string {
 			return requirement
 		}
 		return "plan_manage"
+	case "manage_custom_agents":
+		var args map[string]any
+		if json.Unmarshal([]byte(toolArguments), &args) == nil && (args["action"] == "list" || args["action"] == "get") {
+			return "manage_custom_agents"
+		}
+		return "agent_change"
 	case "manage_agent":
 		if ShouldApproveManageAgentMutation(toolArguments) {
 			return "agent_change"
