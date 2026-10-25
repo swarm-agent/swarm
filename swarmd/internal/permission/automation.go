@@ -11,7 +11,7 @@ func automationPolicyIdentity(arguments string) string {
 		return "automation_change"
 	}
 	switch args.Action {
-	case "list", "get", "search", "history", "context":
+	case "list", "get", "search", "history", "context", "inspect", "review", "progress", "help":
 		return "automation_read"
 	case "run":
 		return "automation_run"

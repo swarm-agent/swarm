@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
@@ -405,6 +404,18 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 		proposedBindings = map[string]string{"primary": proposedPrimary}
 	}
 
+	if workerID == "" {
+		pending, err := s.pendingWorkersForSession(current.AccountScopeID, current.ID)
+		if err != nil {
+			return "", err
+		}
+		for _, candidate := range pending {
+			if candidate.Name == name {
+				workerID, expectedRevision = candidate.ID, candidate.Revision
+				break
+			}
+		}
+	}
 	if workerID != "" {
 		existing, found, getErr := s.sessions.GetWorker(current.AccountScopeID, workerID)
 		if getErr != nil {
@@ -436,6 +447,7 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 		}
 		if metaRaw, ok := args["metadata"].(map[string]any); ok {
 			updateReq.Metadata = metaRaw
+			updateReq.Metadata["source_session_id"] = existing.Metadata["source_session_id"]
 		}
 		if updateReq.Metadata != nil && mapString(updateReq.Metadata, "project_id") == "" {
 			if pid := strings.TrimSpace(mapString(args, "project_id")); pid != "" {
@@ -489,7 +501,7 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 			}
 		}
 	}
-	if mapString(createReq.Metadata, "source_session_id") == "" && current.ID != "" {
+	if current.ID != "" {
 		createReq.Metadata["source_session_id"] = current.ID
 	}
 	w, createErr := s.sessions.CreateWorker(context.Background(), current.AccountScopeID, current.UserID, createReq)
@@ -499,6 +511,7 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 	if isCreate {
 		raw, err := json.Marshal(map[string]any{
 			"status":            "created",
+			"instruction":       "The proposal is waiting for the person to accept or deny. Nothing more is needed for this request.",
 			"lifecycle_state":   w.LifecycleState,
 			"worker":            w,
 			"next_action":       "await_worker_acceptance",
@@ -549,7 +562,7 @@ func workerProposalToolOutput(w store.WorkerRecord) (string, error) {
 			"worker_id": w.ID,
 			"revision":  w.Revision,
 		},
-		"instruction": "The durable worker proposal is saved for review. Existing approved work remains unchanged and continues in its current lifecycle. Stop and let the user review it in Tasks > Workers or its worker detail page. Only explicit Accept worker approves this exact revision and workspace. No immediate run; workers without a job wait for a task. Edit using worker_id and expected_revision.",
+		"instruction": "The proposal is waiting for the person to accept or deny. Nothing more is needed for this request. Existing approved work remains unchanged and continues in its current lifecycle. Stop and let the user review it in Tasks > Workers or its worker detail page. Only explicit Accept worker approves this exact revision and workspace. No immediate run; workers without a job wait for a task. Edit using worker_id and expected_revision.",
 	})
 	return string(raw), err
 }
@@ -621,7 +634,7 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 		}
 		readID = parentID
 	}
-	current, defaultWorkspace, err := s.automationV2ToolSession(readID)
+	current, _, err := s.automationV2ToolSession(readID)
 	if err != nil {
 		return "", err
 	}
@@ -647,11 +660,6 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 		return "", errors.New("manage_workers action is required")
 	}
 
-	workspace := defaultWorkspace
-	if wsID := mapString(args, "workspace_id"); wsID != "" {
-		workspace = wsID
-	}
-
 	switch action {
 	case "help":
 		raw, err := json.Marshal(map[string]any{"action": "help", "status": "ok", "instructions": tool.WorkerV2AuthoringInstructions})
@@ -660,7 +668,8 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 	case "propose":
 		return s.executeWorkerProposalTool(readID, tool.Call{Name: "manage_workers", Arguments: arguments}, profile...)
 
-	case "review", "context":
+	case "review", "context", "progress":
+		var workers []store.WorkerRecord
 		if workerID := strings.TrimSpace(firstNonEmptyString(mapString(args, "worker_id"), mapString(args, "id"))); workerID != "" {
 			w, found, err := s.sessions.GetWorker(current.AccountScopeID, workerID)
 			if err != nil {
@@ -669,35 +678,28 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 			if !found {
 				return "", store.ErrWorkerNotFound
 			}
-			raw, err := json.Marshal(map[string]any{
-				"found":  true,
-				"worker": w,
-			})
-			return string(raw), err
+			workers = append(workers, w)
+		} else {
+			workers, err = s.pendingWorkersForSession(current.AccountScopeID, readID)
+			if err != nil {
+				return "", err
+			}
 		}
-		if workspace == "" {
-			return "", errors.New("target workspace required")
+		items := make([]map[string]any, 0, len(workers))
+		for _, w := range workers {
+			runs, cursor, err := s.sessions.ListWorkerRuns(current.AccountScopeID, w.ID, 20, mapString(args, "cursor"))
+			if err != nil {
+				return "", err
+			}
+			items = append(items, map[string]any{"worker": w, "runs": runs, "runs_cursor": cursor})
 		}
-		p, found, err := s.sessions.GetAutomationV2Proposal(current.AccountScopeID, current.UserID, workspace, readID)
-		if err != nil {
-			return "", err
-		}
-		out := map[string]any{"found": found, "state": "not_created", "instruction": tool.WorkerV2AuthoringInstructions}
-		if found {
-			out = map[string]any{"found": true, "proposal": p, "worker_review": p.AutomationV2Review, "automation_review": p.AutomationV2Review}
+		out := map[string]any{"found": len(items) > 0, "workers": items}
+		if len(items) == 1 {
+			for key, value := range items[0] {
+				out[key] = value
+			}
 		}
 		raw, err := json.Marshal(out)
-		return string(raw), err
-
-	case "progress":
-		if workspace == "" {
-			return "", errors.New("target workspace required")
-		}
-		progress, err := s.sessions.AutomationV2Progress(current.AccountScopeID, current.UserID, workspace, readID, mapString(args, "timezone"), mapString(args, "cursor"), time.Now().UnixMilli())
-		if err != nil {
-			return "", err
-		}
-		raw, err := json.Marshal(progress)
 		return string(raw), err
 
 	case "list":
@@ -970,5 +972,26 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 
 	default:
 		return "", errors.New("V1 automation operations are retired; V2 mutations require a Worker plan review and explicit user acceptance")
+	}
+}
+
+// pendingWorkersForSession reads the canonical worker store, including all pages.
+func (s *Service) pendingWorkersForSession(account, sessionID string) ([]store.WorkerRecord, error) {
+	var workers []store.WorkerRecord
+	query := store.ListWorkersQuery{Limit: 50, LifecycleState: store.WorkerLifecycleStatePending}
+	for {
+		page, err := s.sessions.ListWorkers(account, query)
+		if err != nil {
+			return nil, err
+		}
+		for _, w := range page.Workers {
+			if mapString(w.Metadata, "source_session_id") == sessionID {
+				workers = append(workers, w)
+			}
+		}
+		if page.NextCursor == "" {
+			return workers, nil
+		}
+		query.After = page.NextCursor
 	}
 }
