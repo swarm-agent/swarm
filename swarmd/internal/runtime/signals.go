@@ -80,9 +80,13 @@ func workerRunSignal(emitter *signals.Emitter, sessions *pebblestore.SessionStor
 		// outcome while retaining its follow-up identity for workflow rounds.
 		switch run.FollowupStatus {
 		case "completed":
-			// Provider completion is not a work-completion declaration. Like
-			// first runs, honor only a blocker from this exact execution.
+			// Preserve completed reopen rounds after success. Only recovery from
+			// an unsuccessful run needs exact-execution lifecycle verification.
+			verifyLifecycle := run.Status != "succeeded"
 			run.Status, run.Error = "succeeded", ""
+			if !verifyLifecycle {
+				break
+			}
 			snapshot, found, err := sessions.GetSession(run.SessionID)
 			if err != nil || !found || snapshot.AccountScopeID != run.AccountScopeID || snapshot.UserID != run.UserID {
 				run.Status, run.Error = "failed", "cannot verify follow-up session lifecycle"

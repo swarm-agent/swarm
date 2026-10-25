@@ -15,7 +15,8 @@ import (
 // contract; failure cases ensure blocked first runs and failed retries cannot
 // masquerade as success. Workflow delivery and Git head selection remain owned
 // by the runner, not this signal boundary. Persisted exact-run lifecycle metadata
-// proves provider completion cannot hide a second block or reuse a stale blocker.
+// proves failed-run recovery cannot hide a second block or reuse a stale blocker,
+// while completed follow-ups after success retain their prior success contract.
 func TestWorkerRunSignalFollowupOutcome(t *testing.T) {
 	for _, tc := range []struct {
 		name, original, followup, want, blockerRun string
@@ -25,6 +26,8 @@ func TestWorkerRunSignalFollowupOutcome(t *testing.T) {
 		{"interrupted_again", "failed", "interrupted", "failed", ""},
 		{"failed_after_success", "succeeded", "failed", "failed", ""},
 		{"workflow_reopen_completed", "succeeded", "completed", "succeeded", ""},
+		{"completed_after_success_with_blocker", "succeeded", "completed", "succeeded", "followup-test"},
+		{"completed_after_success_missing_session", "succeeded", "completed", "succeeded", "missing"},
 		{"completed_but_blocked_again", "failed", "completed", "failed", "followup-test"},
 		{"wrong_account", "failed", "completed", "failed", "wrong-account"},
 		{"wrong_user", "failed", "completed", "failed", "wrong-user"},
@@ -88,8 +91,11 @@ func TestWorkerRunSignalFollowupOutcome(t *testing.T) {
 			if sig.DedupKey != "worker.run:run-test:"+run.FollowupRunID || sig.Refs["worker_id"] != "worker-test" || sig.Refs["run_id"] != run.ID || sig.Refs["session_id"] != run.SessionID || sig.Attrs["source"] != run.RequestSource {
 				t.Fatalf("workflow identity changed: %+v", sig)
 			}
-			if tc.blockerRun == "followup-test" && sig.Summary != "Worker Test worker run failed: blocked: additional approval required" {
+			if tc.blockerRun == "followup-test" && tc.want == "failed" && sig.Summary != "Worker Test worker run failed: blocked: additional approval required" {
 				t.Fatalf("follow-up blocker summary = %q", sig.Summary)
+			}
+			if tc.want == "succeeded" && sig.Summary != "Worker Test worker run succeeded" {
+				t.Fatalf("success summary = %q", sig.Summary)
 			}
 			if tc.followup == "" && sig.Summary != "Worker Test worker run failed: blocked: scope approval required" {
 				t.Fatalf("first-run blocker summary changed: %q", sig.Summary)
