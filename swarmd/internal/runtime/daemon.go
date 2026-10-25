@@ -461,7 +461,7 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 	store.SetLimitSignalStore(signalStore)
 	signalEmitter := signals.NewEmitter(signalStore)
 	permissionSvc.SetSignalEmitter(signalEmitter)
-	store.SetWorkerRunObserver(workerRunSignal(signalEmitter))
+	store.SetWorkerRunObserver(workerRunSignal(signalEmitter, pebblestore.NewSessionStore(store)))
 	store.SetJobReviewObserver(jobReviewSignal(signalEmitter))
 	// A design job the restart marks failed ends like any other: its
 	// design.job.failed signal feeds the activity feed, outbox and automations.
@@ -486,7 +486,7 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 		log.Printf("swarmd environment leases unavailable (%s)", leaseOff)
 	}
 	sandbox.SetLeases(leaseMgr)
-	emitWorkerRun := workerRunSignal(signalEmitter)
+	emitWorkerRun := workerRunSignal(signalEmitter, pebblestore.NewSessionStore(store))
 	store.SetWorkerRunObserver(func(w pebblestore.WorkerRecord, r pebblestore.WorkerRunRecord) {
 		if snap, ok, err := pebblestore.NewSessionStore(store).GetSession(r.SessionID); err == nil && ok {
 			if err := sandboxMgr.EndJob(context.Background(), snap.WorktreeRootPath, func() (bool, error) {

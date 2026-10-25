@@ -11,6 +11,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Add external workflow triggers with HTTPS feed polling, signed webhook ingress, durable event queues, and trigger-scoped worker jobs. Docs impact: added Triggers to docs/automations.md.
 
 - Fail workflow agent steps with their declared blocker or execution error, preserve reviewer verdict semantics, and instruct step agents to report blockers explicitly. Docs impact: none
+- Trigger worker workflows when a completed follow-up recovers from a failed first run, preserving blocked/failed retry signals with exact-run blocker reasons and workflow round identity. Docs impact: none
 
 - Fix secret-gateway public CA and bundle permissions under restrictive service umasks, including existing CA files, while keeping the private key private. Docs impact: none
 

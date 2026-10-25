@@ -65,7 +65,7 @@ func emitStartupSignals(emitter *signals.Emitter, status sandbox.Status, headles
 // workerRunSignal raises worker.run.succeeded, worker.run.failed or
 // worker.run.cancelled when a worker run finishes. It names the worker and
 // run. Explicit blocker reasons are included in the failure summary.
-func workerRunSignal(emitter *signals.Emitter) func(pebblestore.WorkerRecord, pebblestore.WorkerRunRecord) {
+func workerRunSignal(emitter *signals.Emitter, sessions *pebblestore.SessionStore) func(pebblestore.WorkerRecord, pebblestore.WorkerRunRecord) {
 	return func(worker pebblestore.WorkerRecord, run pebblestore.WorkerRunRecord) {
 		if run.Cleanup != nil && run.Cleanup.FailureReported {
 			kind, severity, summary := "job.cleanup_failed", pebblestore.SignalSeverityWarning, "Job finished but checkout cleanup repeatedly failed"
@@ -76,8 +76,23 @@ func workerRunSignal(emitter *signals.Emitter) func(pebblestore.WorkerRecord, pe
 			return
 		}
 		followup := run.FollowupRunID
-		if run.FollowupStatus == "interrupted" || run.FollowupStatus == "failed" {
-			run.Status = "failed"
+		// Follow-ups keep the original run receipt's status. Emit the latest
+		// outcome while retaining its follow-up identity for workflow rounds.
+		switch run.FollowupStatus {
+		case "completed":
+			// Provider completion is not a work-completion declaration. Like
+			// first runs, honor only a blocker from this exact execution.
+			run.Status, run.Error = "succeeded", ""
+			snapshot, found, err := sessions.GetSession(run.SessionID)
+			if err != nil || !found || snapshot.AccountScopeID != run.AccountScopeID || snapshot.UserID != run.UserID {
+				run.Status, run.Error = "failed", "cannot verify follow-up session lifecycle"
+			} else if followup != "" && snapshot.Metadata["lifecycle_signal"] == "blocked" && snapshot.Metadata["lifecycle_signal_run_id"] == followup {
+				if reason, ok := snapshot.Metadata["blocker_reason"].(string); ok && strings.TrimSpace(reason) != "" {
+					run.Status, run.Error = "failed", "blocked: "+reason
+				}
+			}
+		case "interrupted", "failed":
+			run.Status, run.Error = "failed", run.FollowupError
 		}
 		severity := pebblestore.SignalSeverityInfo
 		if run.Status == "failed" {
