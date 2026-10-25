@@ -103,13 +103,13 @@ func sessionMediaToolDefinition(contract provideriface.SessionMediaContract) (pr
 	}, true
 }
 
-func sessionMediaContractInstructions(contract provideriface.SessionMediaContract) string {
+func sessionMediaContractInstructions(contract provideriface.SessionMediaContract, tools ...provideriface.ToolDefinition) string {
 	allowed := allowedSessionMediaCapabilities(contract)
 	if len(allowed) == 0 {
 		return ""
 	}
 	lines := []string{
-		"Current run media contract (backend-authoritative):",
+		"Current run media_inspect input contract (backend-authoritative):",
 		"- Use media_inspect with exactly one of: a workspace-contained image path, an immutable asset ID already attached to this session, a complete exact ready legacy managed artifact reference carrying session_id, collection_id, variant_id, and event_seq together, or a native Artifact V3 preview reference carrying session_id, artifact_id, and revision_ref.",
 		"- Do not ask the user to provide hashes, MIME types, or internal asset metadata; the backend derives and revalidates ownership, contract, type, size, count, and digest.",
 		"- Attached images are also delivered to the model natively; use media_inspect when an explicit workspace path or asset re-read is needed.",
@@ -130,12 +130,18 @@ func sessionMediaContractInstructions(contract provideriface.SessionMediaContrac
 		}
 		lines = append(lines, strings.Join(parts, "; "))
 	}
-	lines = append(lines, "- All unlisted media kinds, types, processing semantics, generation, transcription, and video options are unsupported for this run.")
+	lines = append(lines, "- Media kinds and types not listed cannot be inspected in this run.")
+	for _, definition := range tools {
+		if canonicalToolName(definition.Name) == "manage_media" {
+			lines = append(lines, "- Generating, editing, saving and transcribing media are done with manage_media using its own models and options, not with media_inspect.")
+			break
+		}
+	}
 	return strings.Join(lines, "\n")
 }
 
-func AppendSessionMediaInstructions(instructions string, contract provideriface.SessionMediaContract) string {
-	media := sessionMediaContractInstructions(contract)
+func AppendSessionMediaInstructions(instructions string, contract provideriface.SessionMediaContract, tools ...provideriface.ToolDefinition) string {
+	media := sessionMediaContractInstructions(contract, tools...)
 	if media == "" {
 		return strings.TrimSpace(instructions)
 	}
