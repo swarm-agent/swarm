@@ -900,12 +900,14 @@ func jobDeliveryView(d jobautomation.Delivery) map[string]any {
 // ---- HTTP ------------------------------------------------------------------
 
 type jobAutomationBody struct {
-	Name    string               `json:"name"`
-	Scope   jobautomation.Scope  `json:"scope"`
-	When    string               `json:"when"`
-	Enabled *bool                `json:"enabled"`
-	Retries int                  `json:"retries"`
-	Steps   []jobautomation.Step `json:"steps"`
+	Project   string               `json:"project,omitempty"`
+	Workspace string               `json:"workspace,omitempty"`
+	Name      string               `json:"name"`
+	Scope     jobautomation.Scope  `json:"scope"`
+	When      string               `json:"when"`
+	Enabled   *bool                `json:"enabled"`
+	Retries   int                  `json:"retries"`
+	Steps     []jobautomation.Step `json:"steps"`
 	// Result is what the work must hand over (optional).
 	Result *jobautomation.ResultSpec `json:"result"`
 }
@@ -940,12 +942,23 @@ func runStepOwnerError(r *http.Request, steps []jobautomation.Step) error {
 
 func jobAutomationHTTPError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, errRunStepNeedsOwner):
+		writeError(w, http.StatusForbidden, err)
 	case jobautomation.IsValidationError(err):
 		writeError(w, http.StatusBadRequest, err)
 	case errors.Is(err, jobautomation.ErrNotFound):
 		writeError(w, http.StatusNotFound, err)
 	default:
-		writeError(w, http.StatusInternalServerError, err)
+		var refusal controlMCPToolError
+		if errors.As(err, &refusal) {
+			status := refusal.status
+			if status == 0 {
+				status = http.StatusBadRequest
+			}
+			writeError(w, status, err)
+		} else {
+			writeError(w, http.StatusInternalServerError, err)
+		}
 	}
 }
 
@@ -978,12 +991,10 @@ func (s *Server) handleJobAutomations(w http.ResponseWriter, r *http.Request) {
 	if !read && !s.requireScope(w, r, "automations:write") {
 		return
 	}
-	store, err := s.jobAutomationStore()
-	if err != nil {
+	if _, err := s.jobAutomationStore(); err != nil {
 		writeError(w, http.StatusServiceUnavailable, err)
 		return
 	}
-	account := principal.AccountScopeID
 	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, JobAutomationsPath), "/")
 	switch {
 	case (rest == "history" && r.Method == http.MethodGet) || (rest == "restore" && r.Method == http.MethodPost):
@@ -991,49 +1002,21 @@ func (s *Server) handleJobAutomations(w http.ResponseWriter, r *http.Request) {
 	case rest == "import" && r.Method == http.MethodPost:
 		s.handleWorkflowTransfer(w, r, rest)
 	case rest == "" && r.Method == http.MethodGet:
-		list, err := store.List(account)
+		out, err := s.ListWorkflows(workflowCallerFromRequest(r))
 		if err != nil {
 			jobAutomationHTTPError(w, err)
 			return
 		}
-		out := []map[string]any{}
-		for _, a := range list {
-			view := jobAutomationView(a)
-			if err := workflowHistorySummary(store, account, a.ID, view); err != nil {
-				jobAutomationHTTPError(w, err)
-				return
-			}
-			if latest, err := store.ListDeliveries(account, jobautomation.DeliveryFilter{AutomationID: a.ID, Limit: 5}); err == nil {
-				deliveries := []map[string]any{}
-				for _, d := range latest {
-					deliveries = append(deliveries, jobDeliveryView(d))
-				}
-				view["latest_deliveries"] = deliveries
-			}
-			out = append(out, view)
-		}
-		stop, _ := store.StopState()
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "automations": out, "stopped": stop.Stopped})
+		view := out.(map[string]any)
+		view["ok"] = true
+		writeJSON(w, http.StatusOK, view)
 	case rest == "" && (r.Method == http.MethodPost || r.Method == http.MethodPut):
 		var body jobAutomationBody
 		if err := decodeJSONStrict(w, r, 256*1024, &body); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		automation := body.automation()
-		if err := automation.Normalize(); err != nil {
-			jobAutomationHTTPError(w, err)
-			return
-		}
-		if err := runStepOwnerError(r, automation.Steps); err != nil {
-			writeError(w, http.StatusForbidden, err)
-			return
-		}
-		if err := s.jobAutomationFixesError(account, automation.Steps); err != nil {
-			jobAutomationHTTPError(w, err)
-			return
-		}
-		saved, created, err := store.PutChange(account, automation, workflowChange(r, "set"))
+		saved, created, _, err := s.SaveWorkflow(workflowCallerFromRequest(r), body, "set", false)
 		if err != nil {
 			jobAutomationHTTPError(w, err)
 			return
@@ -1044,7 +1027,7 @@ func (s *Server) handleJobAutomations(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, status, map[string]any{"ok": true, "automation": jobAutomationView(saved), "created": created})
 	case rest == "stop" && r.Method == http.MethodGet:
-		stop, err := store.StopState()
+		stop, err := s.StopWorkflows(workflowCallerFromRequest(r), nil)
 		if err != nil {
 			jobAutomationHTTPError(w, err)
 			return
@@ -1058,25 +1041,28 @@ func (s *Server) handleJobAutomations(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, errors.New("stopped (true or false) is required"))
 			return
 		}
-		stop, err := s.setJobAutomationsStopped(*body.Stopped, principal.UserID)
+		stop, err := s.StopWorkflows(workflowCallerFromRequest(r), body.Stopped)
 		if err != nil {
 			jobAutomationHTTPError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "stop": stop})
 	case rest != "" && !strings.Contains(rest, "/") && r.Method == http.MethodGet:
-		a, err := store.Get(account, rest)
+		a, err := s.GetWorkflow(workflowCallerFromRequest(r), rest)
 		if err != nil {
 			jobAutomationHTTPError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "automation": jobAutomationView(a)})
-	case rest != "" && !strings.Contains(rest, "/") && r.Method == http.MethodDelete:
-		if err := store.DeleteChange(account, rest, workflowChange(r, "delete")); err != nil {
+	case !strings.Contains(rest, "/") && r.Method == http.MethodDelete:
+		out, err := s.DeleteWorkflow(workflowCallerFromRequest(r), map[string]any{"id": rest, "name": r.URL.Query().Get("name")})
+		if err != nil {
 			jobAutomationHTTPError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": rest})
+		view := out.(map[string]any)
+		view["ok"] = true
+		writeJSON(w, http.StatusOK, view)
 	default:
 		writeError(w, http.StatusNotFound, errors.New("unknown job automation route"))
 	}
@@ -1218,74 +1204,36 @@ func (c *controlMCPCall) automationSteps(raw any, account string) ([]jobautomati
 	return steps, nil
 }
 
+func (s *Server) saveWorkflowArgs(caller WorkflowCaller, args map[string]any, skipUnchanged bool, source string) (any, error) {
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		return nil, err
+	}
+	var body jobAutomationBody
+	if err := json.Unmarshal(encoded, &body); err != nil {
+		return nil, controlMCPToolFailure("invalid workflow: %s", err)
+	}
+	saved, created, unchanged, err := s.SaveWorkflow(caller, body, source, skipUnchanged)
+	if err != nil {
+		return nil, err
+	}
+	if unchanged {
+		return map[string]any{"automation": jobAutomationView(saved), "created": false, "unchanged": true}, nil
+	}
+	return workflowSaveView(saved, created), nil
+}
+
 func controlMCPSetAutomation(c *controlMCPCall, args map[string]any) (any, error) {
-	return controlMCPSaveAutomation(c, args, false)
-}
-
-func controlMCPSaveAutomation(c *controlMCPCall, args map[string]any, skipUnchanged bool) (any, error) {
-	source := "set"
-	if skipUnchanged {
-		source = "import"
-	}
-	return controlMCPSaveAutomationChange(c, args, skipUnchanged, source)
-}
-
-func controlMCPSaveAutomationChange(c *controlMCPCall, args map[string]any, skipUnchanged bool, source string) (any, error) {
-	store, account, err := c.jobAutomationAccount("automations:write")
+	out, err := c.workflowDispatch(http.MethodPost, JobAutomationsPath, nil, args)
 	if err != nil {
 		return nil, err
 	}
-	steps, err := c.automationSteps(args["steps"], account)
-	if err != nil {
-		return nil, err
-	}
-	scope := controlMCPMap(args["scope"])
-	folder := controlMCPString(scope, "folder")
-	if folder == "" {
-		place, err := c.place(controlMCPString(args, "project"), controlMCPString(args, "workspace"))
-		if err != nil {
-			return nil, err
-		}
-		folder = place.path
-	}
-	a := jobautomation.Automation{
-		Name: controlMCPString(args, "name"), When: controlMCPString(args, "when"), Retries: controlMCPInt(args, "retries", 0), Steps: steps, Enabled: true,
-		Scope: jobautomation.Scope{Folder: folder, Role: controlMCPString(scope, "role"), Worker: controlMCPString(scope, "worker"), Job: controlMCPString(scope, "job"), Schedule: controlMCPString(scope, "schedule")},
-	}
-	if raw, ok := args["result"].(map[string]any); ok {
-		a.Result = &jobautomation.ResultSpec{Kind: controlMCPString(raw, "kind"), Path: controlMCPString(raw, "path"), Describe: controlMCPString(raw, "describe")}
-	}
-	if enabled, ok := args["enabled"].(bool); ok {
-		a.Enabled = enabled
-	}
-	if skipUnchanged {
-		if err := a.Normalize(); err != nil {
-			if jobautomation.IsValidationError(err) {
-				return nil, controlMCPToolFailure("%s", err.Error())
-			}
-			return nil, err
-		}
-		previous, err := store.FindByName(account, a.Name)
-		if err != nil && !errors.Is(err, jobautomation.ErrNotFound) {
-			return nil, err
-		}
-		if err == nil && workflowDefinitionsEqual(previous, a) {
-			return map[string]any{"automation": jobAutomationView(previous), "created": false, "unchanged": true}, nil
-		}
-	}
-	saved, created, err := store.PutChange(account, a, workflowChange(c.request, source))
-	if err != nil {
-		if jobautomation.IsValidationError(err) {
-			return nil, controlMCPToolFailure("%s", err.Error())
-		}
-		return nil, err
-	}
-	return map[string]any{"automation": jobAutomationView(saved), "created": created,
-		"next": "it runs when a matching job ends; swarm_list_workflows shows it and its deliveries, swarm_get_job a job's steps"}, nil
+	out["next"] = workflowSaveNext
+	return out, nil
 }
 
-func controlMCPListAutomations(c *controlMCPCall, _ map[string]any) (any, error) {
-	store, account, err := c.jobAutomationAccount("automations:read")
+func (s *Server) ListWorkflows(caller WorkflowCaller) (any, error) {
+	store, account, err := s.workflowAccount(caller)
 	if err != nil {
 		return nil, err
 	}
@@ -1299,7 +1247,10 @@ func controlMCPListAutomations(c *controlMCPCall, _ map[string]any) (any, error)
 		if err := workflowHistorySummary(store, account, a.ID, view); err != nil {
 			return nil, err
 		}
-		latest, _ := store.ListDeliveries(account, jobautomation.DeliveryFilter{AutomationID: a.ID, Limit: 5})
+		latest, err := store.ListDeliveries(account, jobautomation.DeliveryFilter{AutomationID: a.ID, Limit: 5})
+		if err != nil {
+			return nil, err
+		}
 		deliveries := []map[string]any{}
 		for _, d := range latest {
 			deliveries = append(deliveries, jobDeliveryView(d))
@@ -1307,12 +1258,15 @@ func controlMCPListAutomations(c *controlMCPCall, _ map[string]any) (any, error)
 		view["latest_deliveries"] = deliveries
 		out = append(out, view)
 	}
-	stop, _ := store.StopState()
+	stop, err := store.StopState()
+	if err != nil {
+		return nil, err
+	}
 	return map[string]any{"automations": out, "stopped": stop.Stopped}, nil
 }
 
-func controlMCPDeleteAutomation(c *controlMCPCall, args map[string]any) (any, error) {
-	store, account, err := c.jobAutomationAccount("automations:write")
+func (s *Server) DeleteWorkflow(caller WorkflowCaller, args map[string]any) (any, error) {
+	store, account, err := s.workflowAccount(caller)
 	if err != nil {
 		return nil, err
 	}
@@ -1324,9 +1278,9 @@ func controlMCPDeleteAutomation(c *controlMCPCall, args map[string]any) (any, er
 		}
 		id = a.ID
 	}
-	if err := store.DeleteChange(account, id, workflowChange(c.request, "delete")); err != nil {
+	if err := store.DeleteChange(account, id, jobautomation.Change{Source: "delete", Who: caller.Who}); err != nil {
 		if errors.Is(err, jobautomation.ErrNotFound) {
-			return nil, controlMCPToolFailure("no automation %q", id)
+			return nil, workflowHistoryNotFound("no automation %q", id)
 		}
 		return nil, err
 	}
@@ -1334,23 +1288,16 @@ func controlMCPDeleteAutomation(c *controlMCPCall, args map[string]any) (any, er
 }
 
 func controlMCPStopAutomations(c *controlMCPCall, args map[string]any) (any, error) {
-	if _, _, err := c.jobAutomationAccount("automations:write"); err != nil {
-		return nil, err
-	}
-	stopped, ok := args["stopped"].(bool)
-	if !ok {
-		return nil, controlMCPToolFailure("stopped (true or false) is required")
-	}
-	principal, _ := PrincipalFromRequest(c.request)
-	stop, err := c.server.setJobAutomationsStopped(stopped, principal.UserID)
+	out, err := c.workflowDispatch(http.MethodPost, JobAutomationsPath+"/stop", nil, args)
 	if err != nil {
 		return nil, err
 	}
+	stopped, _ := controlMCPMap(out["stop"])["stopped"].(bool)
 	next := "no new automation step starts on this machine until you turn it off; running steps finish"
 	if !stopped {
 		next = "automations run again; deliveries the switch stopped re-run with swarm_deliver_job (automation: true)"
 	}
-	return map[string]any{"stopped": stop.Stopped, "next": next}, nil
+	return map[string]any{"stopped": stopped, "next": next}, nil
 }
 
 // controlMCPThen creates the automation of a `then` argument: the steps,
@@ -1360,24 +1307,18 @@ func (c *controlMCPCall) controlMCPThen(raw any, name, folder string, scope joba
 	if then == nil {
 		return nil, controlMCPToolFailure("then must be {steps, when, retries}")
 	}
-	store, account, err := c.jobAutomationAccount("automations:write")
-	if err != nil {
-		return nil, err
-	}
-	steps, err := c.automationSteps(then["steps"], account)
-	if err != nil {
+	if err := c.requireTokenScope("automations:write"); err != nil {
 		return nil, err
 	}
 	scope.Folder = folder
-	saved, _, err := store.PutChange(account, jobautomation.Automation{Name: name, Scope: scope, When: controlMCPString(then, "when"),
-		Retries: controlMCPInt(then, "retries", 0), Steps: steps, Enabled: true}, workflowChange(c.request, "set"))
+	out, err := c.server.saveWorkflowArgs(workflowCallerFromRequest(c.request), map[string]any{"name": name, "scope": scope, "when": controlMCPString(then, "when"), "retries": controlMCPInt(then, "retries", 0), "steps": then["steps"]}, false, "set")
 	if err != nil {
 		if jobautomation.IsValidationError(err) {
 			return nil, controlMCPToolFailure("then: %s", err.Error())
 		}
 		return nil, err
 	}
-	return jobAutomationView(saved), nil
+	return controlMCPMap(out.(map[string]any)["automation"]), nil
 }
 
 // controlMCPValidateThen checks a `then` argument before a job starts.

@@ -15,7 +15,6 @@ import (
 
 	"swarm/packages/swarmd/internal/jobautomation"
 	"swarm/packages/swarmd/internal/projectfiles"
-	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 const workflowFileLimit = 256 << 10
@@ -97,8 +96,9 @@ func (c *controlMCPCall) workflowExportFolder(folder string) (string, error) {
 	return "", controlMCPToolFailure("workflow export folder is not an account project folder")
 }
 
-func controlMCPExportWorkflow(c *controlMCPCall, args map[string]any) (any, error) {
-	store, account, err := c.jobAutomationAccount("automations:read")
+func (s *Server) ExportWorkflow(caller WorkflowCaller, args map[string]any) (any, error) {
+	c := s.workflowContext(caller)
+	store, account, err := s.workflowAccount(caller)
 	if err != nil {
 		return nil, err
 	}
@@ -255,7 +255,7 @@ func readWorkflowFile(root *os.Root, path string) ([]byte, error) {
 	return data, err
 }
 
-func importWorkflowDefinition(c *controlMCPCall, data []byte, folder string) (any, error) {
+func (s *Server) importWorkflowDefinition(caller WorkflowCaller, data []byte, folder string) (any, error) {
 	d, err := decodeWorkflow(data)
 	if err != nil {
 		return nil, err
@@ -271,11 +271,12 @@ func importWorkflowDefinition(c *controlMCPCall, data []byte, folder string) (an
 	if err := json.Unmarshal(encoded, &args); err != nil {
 		return nil, err
 	}
-	return controlMCPSaveAutomation(c, args, true)
+	return s.saveWorkflowArgs(caller, args, true, "import")
 }
 
-func controlMCPImportWorkflow(c *controlMCPCall, args map[string]any) (any, error) {
-	if _, _, err := c.jobAutomationAccount("automations:write"); err != nil {
+func (s *Server) ImportWorkflow(caller WorkflowCaller, args map[string]any) (any, error) {
+	c := s.workflowContext(caller)
+	if _, _, err := s.workflowAccount(caller); err != nil {
 		return nil, err
 	}
 	raw, definition := args["definition"]
@@ -298,7 +299,7 @@ func controlMCPImportWorkflow(c *controlMCPCall, args map[string]any) (any, erro
 		if err != nil {
 			return nil, err
 		}
-		return importWorkflowDefinition(c, data, folder)
+		return s.importWorkflowDefinition(caller, data, folder)
 	}
 	if err := workflowPath(path); err != nil {
 		return nil, err
@@ -320,7 +321,7 @@ func controlMCPImportWorkflow(c *controlMCPCall, args map[string]any) (any, erro
 		if err != nil {
 			return nil, err
 		}
-		return importWorkflowDefinition(c, data, folder)
+		return s.importWorkflowDefinition(caller, data, folder)
 	}
 	dir, err := root.Open(path)
 	if err != nil {
@@ -343,12 +344,12 @@ func controlMCPImportWorkflow(c *controlMCPCall, args map[string]any) (any, erro
 		data, err := readWorkflowFile(root, file)
 		var out any
 		if err == nil {
-			out, err = importWorkflowDefinition(c, data, folder)
+			out, err = s.importWorkflowDefinition(caller, data, folder)
 		}
 		result := map[string]any{"path": file}
 		if err != nil {
 			result["status"] = "refused"
-			result["error"] = "tool failed"
+			result["error"] = err.Error()
 			var refusal controlMCPToolError
 			if errors.As(err, &refusal) {
 				result["error"] = refusal.message
@@ -388,18 +389,13 @@ func (s *Server) handleWorkflowTransfer(w http.ResponseWriter, r *http.Request, 
 	data, _ := json.Marshal(body)
 	var args map[string]any
 	_ = json.Unmarshal(data, &args)
-	// The outer HTTP handler already authenticated the local owner and checked
-	// the required scope. MCP requires a token even for this trusted internal call.
-	if _, ok := ScopedTokenFromRequest(r); !ok {
-		r = requestWithScopedToken(r, &pebblestore.ScopedTokenRecord{Scopes: []string{"admin"}})
-	}
-	c := &controlMCPCall{server: s, request: r, next: s.internalRouteHandler()}
+	caller := workflowCallerFromRequest(r)
 	var out any
 	var err error
 	if action == "export" {
-		out, err = controlMCPExportWorkflow(c, args)
+		out, err = s.ExportWorkflow(caller, args)
 	} else {
-		out, err = controlMCPImportWorkflow(c, args)
+		out, err = s.ImportWorkflow(caller, args)
 	}
 	if err != nil {
 		status := http.StatusBadRequest

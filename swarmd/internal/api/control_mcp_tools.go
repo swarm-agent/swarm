@@ -79,6 +79,9 @@ var controlMCPWorkspaceName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
 // minting and ChatGPT sign-in appear only for the box-setup tools, which fix
 // the scopes and the sign-in method themselves.
 var controlMCPRoutes = []string{
+	"GET v3/workflows", "POST v3/workflows", "PUT v3/workflows", "DELETE v3/workflows",
+	"GET v3/workflows/*", "DELETE v3/workflows/*",
+	"POST v3/workflows/stop", "POST v3/workflows/restore", "POST v3/workflows/import", "POST v3/workflows/export",
 	"POST v3/subagents:stop",
 	"GET v3/limits", "PUT v3/limits",
 	"GET v1/workspace/list",

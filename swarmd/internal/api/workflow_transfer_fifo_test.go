@@ -30,6 +30,8 @@ func TestWorkflowFIFORefused(t *testing.T) {
 	c.next = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"projects": []any{map[string]any{"id": "proj-1", "name": "Site", "workspaces": []any{map[string]any{"path": folder, "workspace_id": "ws-1", "role": "primary_code"}}}}})
 	})
+	// Exercise the real workflow route; only project discovery is fixture-backed.
+	wireWorkflowRoutes(c)
 	if _, err := controlMCPSetAutomation(c, map[string]any{"name": "fifo-test", "scope": map[string]any{"folder": folder}, "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "review"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -60,8 +62,8 @@ func TestWorkflowFIFORefused(t *testing.T) {
 					if got.err != nil {
 						t.Fatal(got.err)
 					}
-					files := got.value.(map[string]any)["files"].([]map[string]any)
-					if len(files) != 1 || files[0]["path"] != "x.json" || files[0]["status"] != "refused" || !strings.Contains(files[0]["error"].(string), "regular file") {
+					files := got.value.(map[string]any)["files"].([]any)
+					if len(files) != 1 || files[0].(map[string]any)["path"] != "x.json" || files[0].(map[string]any)["status"] != "refused" || !strings.Contains(files[0].(map[string]any)["error"].(string), "regular file") {
 						t.Fatalf("unexpected results: %v", files)
 					}
 				} else if got.err == nil || !strings.Contains(got.err.Error(), "regular file") {

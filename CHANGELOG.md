@@ -7,6 +7,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 ## Unreleased
 
 - Share cron parsing across worker and automation schedules, supporting ranges, lists, month/day names and Sunday aliases while preserving explicit timezones and DST behavior. Docs impact: none
+- Unify workflow saving and management behind shared server methods, with MCP workflow tools calling the canonical V3 routes. Docs impact: none
 
 - Apply Gemini 3 thought-signature replay repair and thinking support to Gemini 4 and later major versions, preserving signed and parallel calls. Docs impact: none
 - Reuse same-session pending worker proposals, allow worker reads without permission prompts, and read proposal review/progress from the worker store. Docs impact: none

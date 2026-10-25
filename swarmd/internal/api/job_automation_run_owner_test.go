@@ -122,8 +122,11 @@ func TestRunStepNeedsTheOwnerOverHTTP(t *testing.T) {
 func TestRunStepNeedsTheOwnerOverMCP(t *testing.T) {
 	server, store := newRunOwnerServer(t)
 	call := func(scopes []string) *controlMCPCall {
-		return &controlMCPCall{server: server, request: requestWithScopedToken(withTestPrincipal(httptest.NewRequest(http.MethodPost, "/mcp", nil)),
+		c := &controlMCPCall{server: server, request: requestWithScopedToken(withTestPrincipal(httptest.NewRequest(http.MethodPost, "/mcp", nil)),
 			&pebblestore.ScopedTokenRecord{Scopes: scopes})}
+		// Exercise SaveWorkflow via the real route, preserving owner refusals.
+		wireWorkflowRoutes(c)
+		return c
 	}
 	var step map[string]any
 	if err := json.Unmarshal([]byte(shellRunStep), &step); err != nil {

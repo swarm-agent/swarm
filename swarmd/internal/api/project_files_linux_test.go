@@ -22,6 +22,7 @@ func projectOutputCall(t *testing.T, folder string) *controlMCPCall {
 	c.next = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"projects": []any{map[string]any{"id": "project", "workspaces": []any{map[string]any{"path": folder}}}}})
 	})
+	wireWorkflowRoutes(c)
 	if _, err := controlMCPSetAutomation(c, map[string]any{"name": "review", "scope": map[string]any{"folder": folder}, "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "review"}}}); err != nil {
 		t.Fatal(err)
 	}

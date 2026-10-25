@@ -14,12 +14,14 @@ import (
 // Purpose: workflow history/restore must reuse set authorization, never let a
 // write key resurrect host commands, and retain portable snapshots after delete.
 // The MCP and HTTP handlers over a real store are the narrowest layer exercising
-// controlMCPSaveAutomationChange, automationSteps and runStepOwnerError together.
+// handleJobAutomations and SaveWorkflow together through MCP dispatch.
 func TestWorkflowHistoryRestoreAuthorization(t *testing.T) {
 	server, store := newRunOwnerServer(t)
 	account := testPrincipal().AccountScopeID
 	call := func(level string) *controlMCPCall {
-		return &controlMCPCall{server: server, request: requestWithScopedToken(withTestPrincipal(httptest.NewRequest("POST", "/mcp", nil)), &pebblestore.ScopedTokenRecord{ID: "key-" + level, Scopes: scopesForLevel(t, level)})}
+		c := &controlMCPCall{server: server, request: requestWithScopedToken(withTestPrincipal(httptest.NewRequest("POST", "/mcp", nil)), &pebblestore.ScopedTokenRecord{ID: "key-" + level, Scopes: scopesForLevel(t, level)})}
+		wireWorkflowRoutes(c)
+		return c
 	}
 	full := call("full")
 	args := map[string]any{"name": "history", "scope": map[string]any{"folder": t.TempDir()}, "steps": []any{map[string]any{"type": "run", "command": "deliver/push.sh"}}}
@@ -93,8 +95,8 @@ func TestWorkflowHistoryRestoreAuthorization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	view := out.(map[string]any)["automations"].([]map[string]any)[0]
-	if view["history_count"] != 4 || view["last_change"] == nil {
+	view := out.(map[string]any)["automations"].([]any)[0].(map[string]any)
+	if view["history_count"] != float64(4) || view["last_change"] == nil {
 		t.Fatal(view)
 	}
 }
@@ -160,6 +162,7 @@ func TestWorkflowHistoryClientErrors(t *testing.T) {
 			}
 			r := requestWithScopedToken(withTestPrincipal(httptest.NewRequest("POST", "/mcp", nil)), &pebblestore.ScopedTokenRecord{Scopes: scopesForLevel(t, "full")})
 			c := &controlMCPCall{server: server, request: r}
+			wireWorkflowRoutes(c)
 			var out any
 			var err error
 			if tc.action == "history" {

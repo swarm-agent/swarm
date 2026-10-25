@@ -15,7 +15,7 @@ import (
 // Requirement: portable files round trip across project folders without runtime
 // fields; invalid files and weaker keys cannot save commands or escape folders.
 // Owners: controlMCPExportWorkflow, controlMCPImportWorkflow, os.Root and the
-// shared controlMCPSaveAutomation/automationSteps boundary. Handler-level calls
+// shared handleJobAutomations/SaveWorkflow boundary via MCP dispatch. Handler-level calls
 // over the real store are the narrowest proof of both results and no mutation.
 func TestWorkflowTransfer(t *testing.T) {
 	server, store := newRunOwnerServer(t)
@@ -28,6 +28,7 @@ func TestWorkflowTransfer(t *testing.T) {
 		}
 		writeJSON(w, 200, map[string]any{"projects": []any{map[string]any{"id": "proj-source", "name": "Source", "workspaces": []any{map[string]any{"path": folder, "workspace_id": "ws-source", "role": "primary_code"}}}, map[string]any{"id": "proj-1", "name": "Site", "workspaces": []any{map[string]any{"path": target, "workspace_id": "ws-1", "role": "primary_code"}}}}})
 	})
+	wireWorkflowRoutes(c)
 	if _, err := controlMCPSetAutomation(c, map[string]any{"name": "review", "scope": map[string]any{"folder": folder}, "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "review"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +95,8 @@ func TestWorkflowTransfer(t *testing.T) {
 		t.Fatal(err)
 	}
 	found := false
-	for _, f := range result.(map[string]any)["files"].([]map[string]any) {
+	for _, raw := range result.(map[string]any)["files"].([]any) {
+		f := raw.(map[string]any)
 		if f["path"] == "invalid.json" {
 			found = true
 			if f["status"] != "refused" || f["error"] != text {
@@ -106,7 +108,8 @@ func TestWorkflowTransfer(t *testing.T) {
 		t.Fatal("missing invalid file result")
 	}
 	statuses := map[string]string{}
-	for _, f := range result.(map[string]any)["files"].([]map[string]any) {
+	for _, raw := range result.(map[string]any)["files"].([]any) {
+		f := raw.(map[string]any)
 		statuses[f["path"].(string)] = f["status"].(string)
 	}
 	if statuses["good.json"] != "unchanged" || statuses["bad.json"] != "refused" {
@@ -165,7 +168,8 @@ func TestWorkflowTransfer(t *testing.T) {
 		t.Fatal(err)
 	}
 	created := false
-	for _, f := range result.(map[string]any)["files"].([]map[string]any) {
+	for _, raw := range result.(map[string]any)["files"].([]any) {
+		f := raw.(map[string]any)
 		if f["status"] == "created" {
 			created = true
 		}
@@ -211,6 +215,7 @@ func TestWorkflowExportRequiresProjectFolder(t *testing.T) {
 		}
 		writeJSON(w, 200, map[string]any{"projects": []any{map[string]any{"id": "proj-1", "workspaces": []any{map[string]any{"path": project}}}}})
 	})
+	wireWorkflowRoutes(c)
 	if _, err := controlMCPSetAutomation(c, map[string]any{"name": "outside", "scope": map[string]any{"folder": outside}, "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "review"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -251,6 +256,7 @@ func TestWorkflowExportProtectsTargets(t *testing.T) {
 	c.next = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"projects": []any{map[string]any{"id": "proj-1", "workspaces": []any{map[string]any{"path": folder}}}}})
 	})
+	wireWorkflowRoutes(c)
 	if _, err := controlMCPSetAutomation(c, map[string]any{"name": "protected", "scope": map[string]any{"folder": folder}, "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "review"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -286,6 +292,7 @@ func TestWorkflowExportReadScopeHTTP(t *testing.T) {
 	server, _ := newRunOwnerServer(t)
 	folder := t.TempDir()
 	owner := &controlMCPCall{server: server, request: requestWithScopedToken(withTestPrincipal(httptest.NewRequest("POST", "/mcp", nil)), &pebblestore.ScopedTokenRecord{Scopes: scopesForLevel(t, "write")})}
+	wireWorkflowRoutes(owner)
 	if _, err := controlMCPSetAutomation(owner, map[string]any{"name": "readable", "scope": map[string]any{"folder": folder}, "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "review"}}}); err != nil {
 		t.Fatal(err)
 	}
