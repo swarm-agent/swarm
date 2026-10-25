@@ -565,7 +565,7 @@ func automationV2ToolOutput(proposal store.AutomationV2Proposal) (string, error)
 }
 
 func workerProposalToolOutput(w store.WorkerRecord) (string, error) {
-	if w.LifecycleState != store.WorkerLifecycleStatePending && w.PendingReview == nil {
+	if w.LifecycleState != store.WorkerLifecycleStatePending && (w.PendingReview == nil || w.PendingReviewStale) {
 		raw, err := json.Marshal(map[string]any{
 			"status": "updated", "worker_id": w.ID, "worker": w, "revision": w.Revision,
 			"instruction": "Worker edits are saved and apply immediately. Already admitted jobs keep their pinned revision; the next job uses this revision.",

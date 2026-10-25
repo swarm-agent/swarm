@@ -117,6 +117,38 @@ func TestManageWorkersModelPinProposal(t *testing.T) {
 	if err != nil || saved.Revision != direct.Revision || !saved.ModelProfile.UseAccountDefault {
 		t.Fatal("stale acceptance changed policy")
 	}
+	// Purpose: workerProposalToolOutput must not advertise stale reviews as
+	// acceptable after UpdateWorker directly saves a model-free native edit.
+	// Exercise the tool and durable store together to prove both the response
+	// and the applied instructions, rather than only testing output formatting.
+	t.Run("StaleReviewReportsUpdated", func(t *testing.T) {
+		staged, err := invoke(map[string]any{"action": "update", "worker_id": w.ID, "expected_revision": saved.Revision, "model": choice})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if staged.PendingReview == nil || staged.PendingReviewStale {
+			t.Fatal("model proposal is not fresh")
+		}
+		raw, _ := json.Marshal(map[string]any{"action": "propose", "worker_id": w.ID, "expected_revision": staged.Revision, "instructions": "Updated review instructions"})
+		output, err := s.executeWorkerProposalTool("author", tool.Call{Name: "manage_workers", Arguments: string(raw)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var result struct {
+			Status     string `json:"status"`
+			NextAction string `json:"next_action"`
+		}
+		if err := json.Unmarshal([]byte(output), &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.Status != "updated" || result.NextAction != "" {
+			t.Fatalf("direct edit incorrectly awaits acceptance: %s", output)
+		}
+		updated, _, err := s.sessions.GetWorker("account-a", w.ID)
+		if err != nil || updated.PendingReview == nil || !updated.PendingReviewStale || updated.Instructions != "Updated review instructions" || !updated.ModelProfile.UseAccountDefault {
+			t.Fatalf("direct edit did not preserve approved policy and stale review: %+v, %v", updated, err)
+		}
+	})
 	for _, action := range []string{"get", "list"} {
 		raw, _ := json.Marshal(map[string]any{"action": action, "worker_id": w.ID})
 		output, err := s.executeManageWorkersTool("author", string(raw))
