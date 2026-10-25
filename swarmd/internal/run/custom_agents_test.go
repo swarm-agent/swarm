@@ -48,7 +48,12 @@ func TestCustomAgentWorkerProposal(t *testing.T) {
 	s.sessions = sessionruntime.NewService(sessions, nil)
 	agents := store.NewAgentStore(db)
 	s.agents = agentruntime.NewService(agents, nil)
-	if err := agents.PutProfileForAccount("account-a", store.AgentProfile{Name: "social-maker", Mode: "subagent", Enabled: true, ToolContract: &store.AgentToolContract{Preset: "custom", Tools: map[string]store.AgentToolConfig{"manage_media": {Enabled: store.BoolPtr(true)}}}}); err != nil {
+	names := []string{"bash", "edit", "find", "git_add", "git_commit", "git_diff", "git_status", "list", "manage_media", "media_inspect", "read", "search", "task_progress", "write"}
+	tools := map[string]store.AgentToolConfig{}
+	for _, name := range names {
+		tools[name] = store.AgentToolConfig{Enabled: store.BoolPtr(true)}
+	}
+	if err := agents.PutProfileForAccount("account-a", store.AgentProfile{Name: "social-maker", Mode: "subagent", Enabled: true, ToolContract: &store.AgentToolContract{Preset: "custom", Tools: tools}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := sessions.CreateSession(store.SessionSnapshot{ID: "author", AccountScopeID: "account-a", UserID: "owner", Metadata: map[string]any{"agent_name": "orchestrator"}, WorkspaceGrants: []store.WorkspaceGrant{{WorkspaceID: "folder", Kind: store.WorkspaceGrantPrimary, Available: store.BoolPtr(true)}}}); err != nil {
@@ -64,8 +69,35 @@ func TestCustomAgentWorkerProposal(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Worker.Agent != "social-maker" || result.Worker.LifecycleState != store.WorkerLifecycleStatePending {
+	if result.Worker.Role != store.WorkerRoleCoder || result.Worker.Agent != "social-maker" || result.Worker.LifecycleState != store.WorkerLifecycleStatePending {
 		t.Fatalf("unexpected worker: %+v", result.Worker)
+	}
+	// Follow worker execution's role resolution and custom overlay, then round
+	// trip the snapshot as persistence does before compiling its actual tools.
+	for _, role := range []string{store.WorkerRoleCoder, store.WorkerRoleSwarm} {
+		worker := result.Worker
+		worker.Role = role
+		id, _ := workerExecutionAgentID(role, nil)
+		profile, err := s.agents.ResolveSystemAgent(id, store.AgentProfile{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		profile, err = s.ApplyWorkerAgent("account-a", worker, profile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := json.Marshal(profile)
+		var persisted store.AgentProfile
+		if err := json.Unmarshal(data, &persisted); err != nil {
+			t.Fatal(err)
+		}
+		resolved, _, err := s.CompileStoredV3AgentToolContract("account-a", persisted)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(resolved.AvailableTools, names) {
+			t.Fatalf("role %s leaked tools: %v", role, resolved.AvailableTools)
+		}
 	}
 	if _, err := s.executeManageWorkersTool("author", `{"action":"propose","name":"Missing","instructions":"Make media","workspace_id":"folder","agent":"missing"}`); err == nil {
 		t.Fatal("missing agent accepted")

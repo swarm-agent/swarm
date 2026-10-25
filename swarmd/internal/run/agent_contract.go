@@ -386,6 +386,12 @@ func resolveAgentToolStates(profile pebblestore.AgentProfile, knownTools map[str
 		}
 	}
 
+	// Persisted worker scopes only narrow authority, after role defaults.
+	if profile.ToolScope != nil {
+		for _, name := range profile.ToolScope.DenyTools {
+			resolved.Tools[name] = ResolvedAgentTool{Enabled: false, Source: "runtime.worker_scope"}
+		}
+	}
 	return resolved, nil
 }
 

@@ -478,11 +478,16 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 		return "", err
 	}
 	agentName := strings.TrimSpace(mapString(args, "agent"))
-	if err := s.ValidateWorkerAgent(current.AccountScopeID, store.WorkerRecord{Agent: agentName}); err != nil {
+	role := ""
+	if agentName != "" {
+		role = store.WorkerRoleCoder
+	}
+	if err := s.ValidateWorkerAgent(current.AccountScopeID, store.WorkerRecord{Agent: agentName, Role: role}); err != nil {
 		return "", err
 	}
 	createReq := store.CreateWorkerRequest{
 		Agent:                 agentName,
+		Role:                  role,
 		ModelProfile:          workerModel,
 		Name:                  name,
 		Description:           description,
