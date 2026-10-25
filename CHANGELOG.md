@@ -8,7 +8,6 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 - Let Designer and Finder tasks declare blockers and emit failed task-run signals for blocked tasks so only failed/always workflows run. Docs impact: none
 - Record worker jobs that declare a current-run blocker as failed, include the reason in failure signals, and prevent succeeded-only workflows from running for them. Docs impact: none
-- Record folder-task commit deliveries without fictitious worktrees and pin workflow reviews to their delivered head; sandbox-on same-folder review remains pending borrowed-source support. Docs impact: none
 - Record folder-task commit deliveries without fictitious worktrees and pin workflow reviews to their delivered head in separate checkouts, refresh deliveries after follow-ups, and surface capture failures without stranding tasks. Docs impact: none
 
 - Show which workflow and revision a proposal replaces, and explain whether accepting replaces it or adds a new workflow. Docs impact: none
