@@ -96,6 +96,7 @@ func (s *Server) validateWorkflowTrigger(p identity.Principal, a jobautomation.A
 	}
 	return nil
 }
+
 // Keep trigger-specific diagnostics consistent at save and dispatch boundaries.
 func (s *Server) workflowStartWorker(account, ref string) (string, error) {
 	id, err := s.workflowWorker(account, ref)
@@ -176,9 +177,26 @@ func (s *Server) RunWorkflowTriggers(ctx context.Context) {
 func (s *Server) workflowTriggerRunner(repository *jobautomation.Store) jobautomation.TriggerRunner {
 	emit := signals.NewEmitter(s.signals).Emit
 	return jobautomation.TriggerRunner{Store: repository, Account: s.OutboxAccount, Secret: s.workflowPullSecret,
+		ItemOutcome: func(ctx context.Context, a jobautomation.Automation, job string) (string, error) {
+			parts := strings.Split(job, "/")
+			if len(parts) != 3 {
+				return "", errors.New("invalid item job")
+			}
+			run, ok, err := s.sessions.Store().WorkerStore().GetWorkerRun(a.Account, parts[1], parts[2])
+			if err != nil {
+				return "", err
+			}
+			if !ok {
+				return "", errors.New("item job missing")
+			}
+			if run.Status == "failed" || run.Status == "cancelled" {
+				return "worker job " + run.Status, nil
+			}
+			return "", nil
+		},
 		Signal: func(a jobautomation.Automation, kind, item string) {
 			if emit != nil {
-				emit(store.Signal{Kind: kind, Account: a.Account, Severity: store.SignalSeverityInfo, Summary: kind, Refs: map[string]string{"workflow_id": a.ID}})
+				emit(store.Signal{Kind: kind, Account: a.Account, Severity: store.SignalSeverityInfo, Summary: kind, Refs: map[string]string{"workflow_id": a.ID, "request_source": a.ItemSource, "item": item}})
 			}
 		},
 		Start: func(ctx context.Context, a jobautomation.Automation, brief, key string) (string, error) {
@@ -199,7 +217,11 @@ func (s *Server) workflowTriggerRunner(repository *jobautomation.Store) jobautom
 			if err != nil {
 				return "", err
 			}
-			run, err := execution.Dispatch(ctx, a.Account, a.TriggerOwner, store.WorkerRunAdmission{WorkerID: a.On.Start.Worker, WorkflowTriggerID: a.ID, RequestSource: "workflow_trigger", WorkspaceID: workspace, Input: map[string]any{"prompt": brief}, IdempotencyKey: key})
+			source, triggerID := "workflow_trigger", a.ID
+			if a.ItemSource != "" {
+				source, triggerID = a.ItemSource, ""
+			}
+			run, err := execution.Dispatch(ctx, a.Account, a.TriggerOwner, store.WorkerRunAdmission{WorkerID: a.On.Start.Worker, WorkflowTriggerID: triggerID, RequestSource: source, WorkspaceID: workspace, Input: map[string]any{"prompt": brief}, IdempotencyKey: key})
 			if err != nil {
 				return "", err
 			}

@@ -12,7 +12,7 @@ type WorkflowLifecycleService interface {
 }
 
 func manageWorkflowsDefinition() Definition {
-	return Definition{Type: "function", Name: "manage_workflows", Description: "Manage workflows that run when tasks or worker jobs end. Propose new workflows or changes for the person to accept or discard; never self-accept. Enable and disable existing workflows immediately. Call help for examples. " + WorkflowTriggerDescription, Parameters: map[string]any{
+	return Definition{Type: "function", Name: "manage_workflows", Description: "Manage workflows that run when tasks or worker jobs end. Propose new workflows or changes for the person to accept or discard; never self-accept. Enable and disable existing workflows immediately. Call help for examples. for_each queues one independent worker job per object in a committed JSON array with bounded parallelism. " + WorkflowTriggerDescription, Parameters: map[string]any{
 		"type": "object", "required": []string{"action"}, "properties": map[string]any{
 			"inputs": WorkflowInputsSchema(), "with": WorkflowWithSchema(),
 			"on":         WorkflowTriggerSchema(),
@@ -22,8 +22,13 @@ func manageWorkflowsDefinition() Definition {
 			"project": map[string]any{"type": "string"}, "workspace": map[string]any{"type": "string"},
 			"scope": map[string]any{"type": "object", "properties": map[string]any{"role": map[string]any{"type": "string"}, "worker": map[string]any{"type": "string"}, "job": map[string]any{"type": "string"}, "schedule": map[string]any{"type": "string"}}},
 			"when":  map[string]any{"type": "string", "enum": []string{"succeeded", "failed", "always"}}, "enabled": map[string]any{"type": "boolean"}, "retries": map[string]any{"type": "integer"}, "revision": map[string]any{"type": "integer"},
-			"result": map[string]any{"type": "object"}, "steps": map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "Ordered agent/reopen/run/deliver steps; help describes fields and examples."},
+			"result": map[string]any{"type": "object"}, "steps": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"for_each": WorkflowForEachSchema()}}, "description": "Ordered agent/reopen/run/deliver steps; for_each queues one independent worker job per committed JSON item."},
 		}}}
+}
+
+// WorkflowForEachSchema is shared by native and MCP workflow steps.
+func WorkflowForEachSchema() map[string]any {
+	return map[string]any{"type": "object", "required": []string{"file"}, "additionalProperties": false, "description": "for_each queues one independent worker job per object in a committed JSON array, with bounded parallelism.", "properties": map[string]any{"file": map[string]any{"type": "string"}, "items": map[string]any{"type": "string"}, "max_parallel": map[string]any{"type": "integer", "minimum": 1, "maximum": 5, "default": 1}}}
 }
 
 // WorkflowInputsSchema is shared by the native and MCP workflow tools.

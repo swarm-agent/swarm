@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -75,19 +76,19 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 	if req.OccurrenceID != "" && req.IdempotencyKey != "" {
 		return WorkerRunRecord{}, fmt.Errorf("%w: use exactly one occurrence or idempotency key", ErrWorkerConflict)
 	}
-	switch req.RequestSource {
-	case "direct", "orchestrator", "test_run", "automation", "workflow_trigger":
+	switch {
+	case req.RequestSource == "direct" || req.RequestSource == "orchestrator" || req.RequestSource == "test_run" || req.RequestSource == "automation" || req.RequestSource == "workflow_trigger" || IsWorkflowItemSource(req.RequestSource):
 		if req.OccurrenceID != "" {
 			return WorkerRunRecord{}, ErrWorkerConflict
 		}
 		if prompt, ok := req.Input["prompt"].(string); req.AutomationID == "" && (!ok || strings.TrimSpace(prompt) == "") {
 			return WorkerRunRecord{}, fmt.Errorf("%w: a non-empty direct request prompt is required", ErrWorkerConflict)
 		}
-	case "trigger":
+	case req.RequestSource == "trigger":
 		if req.AutomationID == "" || req.IdempotencyKey == "" || req.OccurrenceID != "" {
 			return WorkerRunRecord{}, ErrWorkerConflict
 		}
-	case "schedule":
+	case req.RequestSource == "schedule":
 		if req.AutomationID == "" || req.OccurrenceID == "" {
 			return WorkerRunRecord{}, ErrWorkerConflict
 		}
@@ -873,3 +874,8 @@ func (ws *WorkerStore) WorkerRunAdmissionExists(account string, req WorkerRunAdm
 	}
 	return false, nil
 }
+
+var workflowItemSource = regexp.MustCompile(`^workflow/[A-Za-z0-9._:-]{1,200}/delivery/[A-Za-z0-9._:-]{1,200}/step/[a-z0-9][a-z0-9_-]{0,63}$`)
+
+// IsWorkflowItemSource identifies independently queued workflow jobs.
+func IsWorkflowItemSource(source string) bool { return workflowItemSource.MatchString(source) }

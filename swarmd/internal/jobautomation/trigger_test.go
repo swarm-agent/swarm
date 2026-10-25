@@ -2,6 +2,7 @@ package jobautomation
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -124,5 +125,32 @@ func TestTriggerPollBaselineQueueRestart(t *testing.T) {
 	events, _ = runner.Store.TriggerEvents(a)
 	if len(events) != 2 {
 		t.Fatal("partial batch written")
+	}
+}
+
+// Purpose: the durable trigger event must preserve advanceQueued's failure reason
+// exactly once. Receive and Tick with a rejected dispatch exercise the persistence
+// boundary without a provider and assert no job receipt is recorded on failure.
+func TestTriggerStartFailureReason(t *testing.T) {
+	_, s := openTestStore(t)
+	a := testAutomation(t.TempDir())
+	a.On = &Trigger{Event: TriggerEvent{Source: "webhook", ID: "id"}, Start: TriggerStart{Worker: "worker-1", Brief: "{{event.id}}"}}
+	a, _, err := s.Put(testAccount, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Receive(a, []byte(`[{"id":"one"}]`)); err != nil {
+		t.Fatal(err)
+	}
+	runner := TriggerRunner{Store: s, Account: func() string { return testAccount }, Start: func(context.Context, Automation, string, string) (string, error) {
+		return "", errors.New("dispatch refused")
+	}, Running: func(context.Context, Automation, string) (bool, error) { return false, nil }}
+	runner.Tick(context.Background())
+	events, err := s.TriggerEvents(a)
+	if err != nil || len(events) != 1 {
+		t.Fatal(events, err)
+	}
+	if events[0].Error != "worker start failed: dispatch refused" || events[0].State != "failed" || events[0].JobID != "" {
+		t.Fatal(events[0])
 	}
 }

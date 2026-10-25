@@ -929,3 +929,29 @@ deployed worker. Reads retain templates and bindings separately. Use the same
 inputs, defaults or bindings.
 
 See [Worker daily spending limits](box-limits.md#worker-daily-spending-limits) for per-worker budgets.
+
+## One job per item
+
+A planner can commit `plan.json` containing `{"posts":[{"title":"First post"}]}`.
+An agent step then queues one independent job per planned post:
+
+```json
+{"type":"agent","worker":"Post maker","brief":"Write {{item.title}}",
+ "for_each":{"file":"plan.json","items":"posts","max_parallel":2}}
+```
+
+The worker must already be active (id or unique active name), and cannot be a
+reviewer or built-in/media/design agent. The file is read at the delivery's
+recorded head, never from uncommitted files: at most 256 KiB and 20 JSON objects.
+Omit `items` when the file itself is the array. `file` supports `{{inputs.*}}`;
+briefs support inputs and `{{item.field}}` (nested dot paths, compact JSON for
+objects/arrays, empty text for missing fields).
+
+`max_parallel` is 1–5, default 1. The step succeeds after durable queuing; later
+steps do not wait. Delivery reads list each item's state, job id and error.
+Starts are deduplicated across restart. Each maker job runs its own worker-scoped
+job-end workflow, so put review, send-back, merge and draft steps there rather
+than after the planner's fan-out. Fan-out is refused when the triggering job is
+an item of any workflow, preventing recursive job creation across workflows as
+well as within one workflow. Ordinary non-`for_each` job-end steps still run on
+item jobs normally.

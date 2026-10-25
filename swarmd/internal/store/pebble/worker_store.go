@@ -2585,7 +2585,9 @@ func (ws *WorkerStore) recordWorkerRun(account string, run WorkerRunRecord, sett
 		switch run.RequestSource {
 		case "direct", "schedule", "trigger", "test_run", "orchestrator", "automation":
 		default:
-			return WorkerRunRecord{}, fmt.Errorf("invalid request_source: %q", run.RequestSource)
+			if !IsWorkflowItemSource(run.RequestSource) {
+				return WorkerRunRecord{}, fmt.Errorf("invalid request_source: %q", run.RequestSource)
+			}
 		}
 	}
 

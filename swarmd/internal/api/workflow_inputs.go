@@ -58,6 +58,21 @@ func (s *Server) resolveWorkflowWorkers(a *jobautomation.Automation) error {
 		if err != nil {
 			return err
 		}
+		if a.Steps[i].ForEach != nil {
+			if jobautomation.IsBuiltinAgent(id) {
+				return jobautomation.InvalidTrigger("for_each requires a deployed worker")
+			}
+			worker, found, err := s.sessions.Store().WorkerStore().GetWorker(a.Account, id)
+			if err != nil {
+				return err
+			}
+			if !found || worker.LifecycleState != store.WorkerLifecycleStateActive {
+				return jobautomation.InvalidTrigger("for_each requires an active worker")
+			}
+			if err := validateTriggerWorkerRole(worker.Role); err != nil {
+				return err
+			}
+		}
 		a.Steps[i].Worker = id
 	}
 	if a.On != nil {

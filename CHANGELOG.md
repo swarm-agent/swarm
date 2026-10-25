@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Add workflow agent `for_each` steps that queue bounded, independent worker jobs from committed JSON plans, with durable item receipts. Docs impact: `docs/automations.md` documents one job per item.
+
 - Add reusable workflow inputs, per-instance bindings and portable worker-name resolution; imports accept instance names and exports omit bindings. Docs impact: added Inputs example in docs/automations.md.
 - Enable in-job speech narration through manage_media using shared MCP speech validation, with audio and timing JSON saving. Docs impact: updated docs/manage-media.md.
 - Preserve workflow reopen heads and blocker reasons, skip duplicate-head reviews, and reject reviews without a head. Docs impact: none

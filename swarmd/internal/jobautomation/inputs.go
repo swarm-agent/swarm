@@ -71,6 +71,9 @@ func (a Automation) RenderInputs() (Automation, error) {
 	}
 	for i := range out.Steps {
 		s := &out.Steps[i]
+		if s.ForEach != nil {
+			s.ForEach.File = replace(s.ForEach.File)
+		}
 		s.Brief, s.Worker, s.Message, s.Path = replace(s.Brief), replace(s.Worker), replace(s.Message), replace(s.Path)
 		for j := range s.Args {
 			s.Args[j] = replace(s.Args[j])
@@ -108,6 +111,9 @@ func (a *Automation) normalizeInputs() error {
 		}
 		if strings.Contains(original.Path, "{{inputs.") {
 			s.Path = original.Path
+		}
+		if original.ForEach != nil && strings.Contains(original.ForEach.File, "{{inputs.") {
+			s.ForEach.File = original.ForEach.File
 		}
 		s.Args = original.Args
 	}

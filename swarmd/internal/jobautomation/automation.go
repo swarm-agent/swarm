@@ -166,8 +166,9 @@ type Step struct {
 	// so a step that still sends it is refused, never silently ignored.
 	Secrets json.RawMessage `json:"secrets,omitempty"`
 	// agent
-	Worker string `json:"worker,omitempty"`
-	Brief  string `json:"brief,omitempty"`
+	Worker  string   `json:"worker,omitempty"`
+	Brief   string   `json:"brief,omitempty"`
+	ForEach *ForEach `json:"for_each,omitempty"`
 	// Fixes ("security", a reviewer worker only) lets the reviewer commit
 	// small security fixes on top of the reviewed head. Never the default.
 	Fixes string `json:"fixes,omitempty"`
@@ -195,6 +196,7 @@ type Step struct {
 // Automation is a durable, account-owned definition. Revision changes on
 // every update; a delivery keeps the revision it started with.
 type Automation struct {
+	ItemSource     string `json:"-"`
 	inputsRendered bool
 	Inputs         map[string]Input  `json:"inputs,omitempty"`
 	With           map[string]string `json:"with,omitempty"`
@@ -336,6 +338,9 @@ func NormalizeSteps(steps []Step) error {
 			return invalid("step %s: timeout_seconds must be 1 to %d", step.ID, MaxStepTimeoutSeconds)
 		}
 		step.Type = strings.ToLower(strings.TrimSpace(step.Type))
+		if err := step.normalizeForEach(); err != nil {
+			return err
+		}
 		switch step.Type {
 		case StepRun:
 			if err := step.normalizeRun(); err != nil {

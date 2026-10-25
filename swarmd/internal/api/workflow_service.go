@@ -81,9 +81,7 @@ func (s *Server) SaveWorkflow(caller WorkflowCaller, body WorkflowDefinition, so
 	}
 	account := caller.Principal.AccountScopeID
 	a.Account = account
-	if a.On != nil {
-		a.TriggerOwner = caller.Principal.UserID
-	}
+	a.TriggerOwner = caller.Principal.UserID
 	rendered, err := a.RenderInputs()
 	if err != nil {
 		return zero, false, false, err

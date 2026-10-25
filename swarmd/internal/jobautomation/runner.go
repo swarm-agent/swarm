@@ -771,7 +771,11 @@ func (r *Runner) runStep(ctx context.Context, d *Delivery, i int, step Step) boo
 	case StepRun:
 		failure = r.runScript(stepCtx, d, record, step)
 	case StepAgent:
-		failure = r.runAgent(stepCtx, d, record, step)
+		if step.ForEach != nil {
+			failure = r.queueItems(stepCtx, d, record, step)
+		} else {
+			failure = r.runAgent(stepCtx, d, record, step)
+		}
 	case StepReopen:
 		failure = r.runReopen(stepCtx, d, record, step)
 	case StepDeliver:

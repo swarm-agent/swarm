@@ -169,13 +169,14 @@ func (s *Store) Receive(a Automation, data []byte) error {
 // TriggerRunner serializes external starts, using the canonical execution boundary.
 // Start must be idempotent for its key, including recovery after a process exit.
 type TriggerRunner struct {
-	Store   *Store
-	Account func() string
-	Start   func(context.Context, Automation, string, string) (string, error)
-	Running func(context.Context, Automation, string) (bool, error)
-	Secret  func(Automation) (string, error)
-	Signal  func(Automation, string, string)
-	Client  *http.Client
+	ItemOutcome func(context.Context, Automation, string) (string, error)
+	Store       *Store
+	Account     func() string
+	Start       func(context.Context, Automation, string, string) (string, error)
+	Running     func(context.Context, Automation, string) (bool, error)
+	Secret      func(Automation) (string, error)
+	Signal      func(Automation, string, string)
+	Client      *http.Client
 }
 
 func (r *TriggerRunner) Run(ctx context.Context) {
@@ -202,6 +203,7 @@ func (r *TriggerRunner) Tick(ctx context.Context) {
 	if err != nil || stop.Stopped {
 		return
 	}
+	r.tickItems(ctx)
 	for _, a := range list {
 		if a.Enabled && !a.Proposed && a.On != nil {
 			r.tick(ctx, a)
@@ -272,11 +274,15 @@ func (r *TriggerRunner) tick(ctx context.Context, a Automation) {
 			continue
 		}
 		digest := sha256.Sum256([]byte(a.ID + "/" + state.Fingerprint + "/" + e.ID))
-		job, err := r.Start(ctx, a, RenderEvent(a.On.Start.Brief, e.Item), hex.EncodeToString(digest[:]))
+		stateName, job, startError := r.advanceQueued(ctx, a, RenderEvent(a.On.Start.Brief, e.Item), hex.EncodeToString(digest[:]))
+		var err error
+		if stateName == "failed" {
+			err = errors.New(startError)
+		}
 		kind := "workflow.trigger.fired"
 		if err != nil {
 			e.State = "failed"
-			e.Error = "worker start failed: " + err.Error()
+			e.Error = startError
 			kind = "workflow.trigger.failed"
 		} else {
 			e.State = "started"
