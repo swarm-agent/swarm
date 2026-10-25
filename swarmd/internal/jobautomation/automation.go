@@ -263,8 +263,10 @@ func (a *Automation) normalize() error {
 	if a.Retries < 0 || a.Retries > MaxRetries {
 		return invalid("retries must be 0 to %d", MaxRetries)
 	}
-	if err := NormalizeSteps(a.Steps); err != nil {
-		return err
+	if a.On == nil || len(a.Steps) != 0 {
+		if err := NormalizeSteps(a.Steps); err != nil {
+			return err
+		}
 	}
 	return a.normalizeResult()
 }
@@ -541,7 +543,7 @@ func ValidCommandPath(command string) error {
 
 // Matches reports whether the automation applies to this job end.
 func (a Automation) Matches(r *Result) bool {
-	if a.Proposed || !a.Enabled || r == nil {
+	if a.Proposed || !a.Enabled || r == nil || len(a.Steps) == 0 {
 		return false
 	}
 	if a.On != nil && (a.ID == "" || r.TriggerID != a.ID) {

@@ -426,7 +426,18 @@ func (r *Runner) consume(ctx context.Context, account string, sig pebblestore.Si
 	}
 	r.reopenMu.Lock()
 	defer r.reopenMu.Unlock()
+	triggerOwnsSteps := false
+	if result.TriggerID != "" {
+		origin, err := r.store.Get(account, result.TriggerID)
+		if err != nil {
+			return err
+		}
+		triggerOwnsSteps = len(origin.Steps) > 0
+	}
 	for _, a := range candidates {
+		if a.On == nil && triggerOwnsSteps {
+			continue
+		}
 		if !a.Matches(result) {
 			// A blocked response to this workflow's own reopen must close
 			// its round even when the workflow normally matches successes.

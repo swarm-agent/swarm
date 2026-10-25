@@ -5,14 +5,56 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"time"
 	"unicode/utf8"
 )
 
 // Trigger starts work from an external item; it never selects a model.
 type Trigger struct {
-	Event TriggerEvent `json:"event"`
-	Start TriggerStart `json:"start"`
+	Event    TriggerEvent     `json:"event,omitempty"`
+	Schedule *TriggerSchedule `json:"schedule,omitempty"`
+	Start    TriggerStart     `json:"start"`
 }
+
+// MarshalJSON omits the event source for schedule definitions.
+func (t Trigger) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		Event    *TriggerEvent    `json:"event,omitempty"`
+		Schedule *TriggerSchedule `json:"schedule,omitempty"`
+		Start    TriggerStart     `json:"start"`
+	}
+	var event *TriggerEvent
+	if t.Schedule == nil || t.Event != (TriggerEvent{}) {
+		event = &t.Event
+	}
+	return json.Marshal(wire{event, t.Schedule, t.Start})
+}
+
+func (t *Trigger) UnmarshalJSON(data []byte) error {
+	type plain Trigger
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	if _, event := fields["event"]; event {
+		if _, schedule := fields["schedule"]; schedule {
+			return invalid("exactly one of on.event and on.schedule is required")
+		}
+	}
+	var value plain
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	*t = Trigger(value)
+	return nil
+}
+
+type TriggerSchedule struct {
+	Cron     string `json:"cron"`
+	Timezone string `json:"timezone,omitempty"`
+}
+
 type TriggerEvent struct {
 	Source       string `json:"source"`
 	URL          string `json:"url,omitempty"`
@@ -45,6 +87,24 @@ func (a *Automation) validateTrigger() error {
 	}
 	if a.Scope.Role != "" || a.Scope.Job != "" || a.Scope.Schedule != "" {
 		return invalid("a trigger uses scope.folder and optional scope.worker only")
+	}
+	if t.Schedule != nil {
+		if t.Event != (TriggerEvent{}) {
+			return invalid("exactly one of on.event and on.schedule is required")
+		}
+		if _, err := pebblestore.ParseCron(t.Schedule.Cron); err != nil {
+			return invalid("on.schedule.cron: %v", err)
+		}
+		if t.Schedule.Timezone == "" {
+			t.Schedule.Timezone = "UTC"
+		}
+		if t.Schedule.Timezone == "Local" {
+			return invalid("on.schedule.timezone must be an IANA timezone")
+		}
+		if _, err := time.LoadLocation(t.Schedule.Timezone); err != nil {
+			return invalid("on.schedule.timezone: %v", err)
+		}
+		return nil
 	}
 	if t.Event.ID == "" || len(t.Event.ID) > 200 || len(t.Event.Items) > 200 {
 		return invalid("on.event.id is required; item paths are limited to 200 bytes")

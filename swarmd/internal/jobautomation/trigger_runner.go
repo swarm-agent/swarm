@@ -169,14 +169,15 @@ func (s *Store) Receive(a Automation, data []byte) error {
 // TriggerRunner serializes external starts, using the canonical execution boundary.
 // Start must be idempotent for its key, including recovery after a process exit.
 type TriggerRunner struct {
-	ItemOutcome func(context.Context, Automation, string) (string, error)
-	Store       *Store
-	Account     func() string
-	Start       func(context.Context, Automation, string, string) (string, error)
-	Running     func(context.Context, Automation, string) (bool, error)
-	Secret      func(Automation) (string, error)
-	Signal      func(Automation, string, string)
-	Client      *http.Client
+	scheduleSeen map[string]string
+	ItemOutcome  func(context.Context, Automation, string) (string, error)
+	Store        *Store
+	Account      func() string
+	Start        func(context.Context, Automation, string, string) (string, error)
+	Running      func(context.Context, Automation, string) (bool, error)
+	Secret       func(Automation) (string, error)
+	Signal       func(Automation, string, string)
+	Client       *http.Client
 }
 
 func (r *TriggerRunner) Run(ctx context.Context) {
@@ -214,6 +215,10 @@ func (r *TriggerRunner) tick(ctx context.Context, a Automation) {
 	var renderErr error
 	a, renderErr = a.RenderInputs()
 	if renderErr != nil {
+		return
+	}
+	if a.On.Schedule != nil {
+		r.tickSchedule(ctx, a)
 		return
 	}
 	s := r.Store

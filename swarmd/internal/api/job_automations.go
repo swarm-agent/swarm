@@ -850,6 +850,11 @@ func jobAutomationView(a jobautomation.Automation) map[string]any {
 	}
 	if a.On != nil {
 		view["on"] = a.On
+		if a.Enabled && !a.Proposed && a.On.Schedule != nil {
+			if next := a.NextScheduleRun(time.Now()); !next.IsZero() {
+				view["next_run_at"] = next.UnixMilli()
+			}
+		}
 	}
 	if a.Proposed && a.BaseID != "" {
 		// Propose binds the base by exact name; AcceptProposal checks that
@@ -1119,6 +1124,7 @@ func (s *Server) handleJobAutomations(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			view["events"] = events
+
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "automation": view})
 	case !strings.Contains(rest, "/") && r.Method == http.MethodDelete:
@@ -1320,6 +1326,7 @@ func (s *Server) ListWorkflows(caller WorkflowCaller) (any, error) {
 				return nil, err
 			}
 			view["events"] = events
+
 		}
 		if err := workflowHistorySummary(store, account, a.ID, view); err != nil {
 			return nil, err
@@ -1534,7 +1541,7 @@ func (c *controlMCPCall) jobCurrentHead(kind, a, b string) (string, error) {
 
 // controlMCPAutomationStepsSchema is the JSON schema of an automation's steps.
 func controlMCPAutomationStepsSchema() map[string]any {
-	return map[string]any{"type": "array", "minItems": 1, "maxItems": jobautomation.MaxSteps, "description": "Ordered steps. A failed step stops the rest unless continue_on_failure; a step whose if does not hold is skipped and the rest still run.",
+	return map[string]any{"type": "array", "minItems": 0, "maxItems": jobautomation.MaxSteps, "description": "Ordered steps; empty only when on is set. A failed step stops the rest unless continue_on_failure; a step whose if does not hold is skipped and the rest still run.",
 		"items": map[string]any{"type": "object", "required": []string{"type"}, "properties": map[string]any{
 			"id":   controlMCPStringProp("Step id (lowercase, digits, - or _). Default step-N.", 0, 64),
 			"type": map[string]any{"type": "string", "enum": []string{jobautomation.StepRun, jobautomation.StepAgent, jobautomation.StepReopen, jobautomation.StepDeliver}},

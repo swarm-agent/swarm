@@ -32,6 +32,29 @@ model settings and the saving owner's authority. Only jobs started by this
 workflow trigger match its steps. Missing template fields become empty strings;
 objects and arrays become compact JSON.
 
+Alternatively, use exactly one schedule source instead of `event`:
+
+```json
+{"schedule":{"cron":"0 9 * * *","timezone":"America/New_York"},"start":{"worker":"worker-id","brief":"Plan {{inputs.brand}} for {{schedule.date}} at {{schedule.time}}"}}
+```
+
+Cron has five fields, including ranges, lists and names; timezone is IANA and
+defaults to UTC. `schedule.date` is local `YYYY-MM-DD` and `schedule.time` is
+local `HH:mm`. Each due minute starts the existing worker, without copying it.
+A slot while its previous job is running is skipped, as are missed slots after
+restart (no replay). Recent `events` record started, skipped or failed slots;
+reads include `next_run_at` as Unix milliseconds for enabled schedules. After
+restart a skipped receipt summarizes the oldest pending slot, not every missed
+minute. Nonexistent local minutes do not run; repeated DST minutes may each run.
+If the daemon exits during dispatch before recording its job ID, subsequent
+slots fail closed with an explicit unknown-outcome error rather than risk
+starting overlapping work; operator reconciliation is required.
+
+With `on`, `steps` may be empty: a trigger-only workflow just starts jobs.
+Trigger-started jobs match the starting workflow's own steps, or ordinary
+job-end workflows only when that starting workflow has no steps; `for_each`
+jobs continue to match ordinary job-end workflows.
+
 Pull uses HTTPS GET, a 10-second timeout, a 1 MiB response limit, and an interval
 of 30–86400 seconds with error backoff. The first successful feed after a trigger
 change establishes a baseline without starting jobs. An optional `secret` names
