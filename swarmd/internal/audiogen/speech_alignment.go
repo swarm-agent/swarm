@@ -230,6 +230,11 @@ func (s *Service) alignGoogleSpeechChunk(ctx context.Context, key, model string,
 			result.PromptTokens += detail.Count
 		}
 	}
+	// promptTokenCount includes audio. Recover text tokens when the provider
+	// omits TEXT details, without ever charging audio at the text rate.
+	if result.PromptTokens == 0 && result.AudioInputTokens > 0 && wire.Usage.Prompt > result.AudioInputTokens {
+		result.PromptTokens = wire.Usage.Prompt - result.AudioInputTokens
+	}
 	if len(wire.Candidates) != 1 || wire.Candidates[0].FinishReason != "STOP" {
 		return answer, result, errors.New("speech timing generation incomplete")
 	}

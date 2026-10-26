@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Supply published standard-tier Gemini transcription rates missing from model snapshots and retain speech alignment text usage when modality details omit it. Docs impact: none.
+
 - Chunk long audio transcription at silence boundaries or overlapping windows, retry failed chunks once, and retain partial transcripts and speech timings with explicit gap notes. Docs impact: none.
 
 - Install missing host ffmpeg/ffprobe on headless fresh installs and updates so media transcription has its required tools. Docs impact: list host dependencies in the headless app README.

@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	catalogMaterializationVersion = 2
+	catalogMaterializationVersion = 3
 	defaultCatalogURL             = "https://models.swarmagent.dev/v1/snapshot.json"
 	defaultCatalogVersionURL      = "https://models.swarmagent.dev/v1/snapshot-version.json"
 	defaultCatalogTTL             = time.Hour
@@ -889,7 +889,7 @@ func decodeSwarmSnapshotRecords(payload []byte, nowMs, expiresAt int64, source, 
 			ETag:                      etag,
 			FetchedAt:                 nowMs,
 			ExpiresAt:                 expiresAt,
-			Pricing:                   cloneRawJSON(model.Pricing),
+			Pricing:                   supplementMediaPricing(providerID, modelID, model.Pricing),
 			Thinking:                  cloneRawJSON(model.Thinking),
 			ProviderSpecific:          cloneRawJSON(model.ProviderSpecific),
 		}

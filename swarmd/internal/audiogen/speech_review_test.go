@@ -12,7 +12,8 @@ import (
 
 // Purpose: the alignment wire boundary must send JSON Schema in Gemini's JSON
 // schema field and retain all billed modalities, including thinking, on parse
-// failures, including the single parse retry. A fake server proves the adapter
+// failures, including the single parse retry. Recover omitted TEXT detail from
+// aggregate prompt usage without double-counting audio. A fake server proves the adapter
 // without spending or credentials.
 func TestSpeechAlignmentWire(t *testing.T) {
 	for _, invalid := range []bool{false, true} {
@@ -34,7 +35,7 @@ func TestSpeechAlignmentWire(t *testing.T) {
 				if invalid {
 					text = "invalid"
 				}
-				json.NewEncoder(w).Encode(map[string]any{"candidates": []any{map[string]any{"finishReason": "STOP", "content": map[string]any{"parts": []any{map[string]string{"text": text}}}}}, "usageMetadata": map[string]any{"candidatesTokenCount": 30, "thoughtsTokenCount": 70, "promptTokensDetails": []any{map[string]any{"modality": "TEXT", "tokenCount": 10}, map[string]any{"modality": "AUDIO", "tokenCount": 20}}}})
+				json.NewEncoder(w).Encode(map[string]any{"candidates": []any{map[string]any{"finishReason": "STOP", "content": map[string]any{"parts": []any{map[string]string{"text": text}}}}}, "usageMetadata": map[string]any{"candidatesTokenCount": 30, "thoughtsTokenCount": 70, "promptTokenCount": 30, "promptTokensDetails": []any{map[string]any{"modality": "AUDIO", "tokenCount": 20}}}})
 			}))
 			defer server.Close()
 			s := NewService(nil, nil, nil)
