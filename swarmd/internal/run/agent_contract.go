@@ -332,11 +332,6 @@ func resolveAgentToolStates(profile pebblestore.AgentProfile, knownTools map[str
 		}
 	}
 	if agentruntime.IsSwarmOrchestratorAgentName(profile.Name) {
-		// Swarm also executes workflow tasks and must be able to declare a
-		// structured blocker instead of reporting successful completion.
-		if _, implemented := knownTools["task_progress"]; implemented {
-			resolved.Tools["task_progress"] = ResolvedAgentTool{Enabled: true, Source: "runtime.task_lifecycle"}
-		}
 		// A persisted or forged snapshot cannot re-enable session-plan tools.
 		for _, name := range []string{"plan_manage", "exit_plan_mode"} {
 			resolved.Tools[name] = ResolvedAgentTool{Enabled: false, Source: "runtime.orchestrator_task_cards"}
@@ -395,6 +390,18 @@ func resolveAgentToolStates(profile pebblestore.AgentProfile, knownTools map[str
 	if profile.ToolScope != nil {
 		for _, name := range profile.ToolScope.DenyTools {
 			resolved.Tools[name] = ResolvedAgentTool{Enabled: false, Source: "runtime.worker_scope"}
+		}
+	}
+	// Execution agents must always be able to report a structured blocker,
+	// including workflow steps and workers with a narrowed custom tool scope.
+	// This grants lifecycle reporting only, not orchestration or work tools.
+	switch profile.Name {
+	case agentruntime.SwarmAgentID, agentruntime.SwarmOrchestratorAgentID,
+		agentruntime.CoderAgentID, agentruntime.WorkerCoderAgentID,
+		agentruntime.FinderAgentID, agentruntime.DesignerAgentID,
+		agentruntime.ReviewerAgentID, "system-reviewer-fixer":
+		if _, implemented := knownTools["task_progress"]; implemented {
+			resolved.Tools["task_progress"] = ResolvedAgentTool{Enabled: true, Source: "runtime.task_lifecycle"}
 		}
 	}
 	return resolved, nil
