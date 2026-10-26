@@ -43,14 +43,15 @@ type TranscribeRequest struct {
 }
 
 type GeneratedTranscript struct {
-	Text         string // derived deterministically for immediate callers; durable text is rebuilt from Segments
-	Segments     []pebblestore.NormalizedTranscriptSegment
-	Words        []pebblestore.NormalizedTranscriptWord
-	Language     string
-	DurationMs   int64
-	Summary      string
-	ContentEmpty bool
-	Partial      bool
+	Text          string // derived deterministically for immediate callers; durable text is rebuilt from Segments
+	Segments      []pebblestore.NormalizedTranscriptSegment
+	Words         []pebblestore.NormalizedTranscriptWord
+	Language      string
+	DurationMs    int64
+	Summary       string
+	ContentEmpty  bool
+	Partial       bool
+	ChunkFailures []string // Explicit gaps from otherwise valid chunked audio.
 }
 
 type ModelCatalog interface {
@@ -566,7 +567,7 @@ func (s *Service) process(ctx context.Context, principal identity.Principal, ini
 	if err != nil {
 		return
 	}
-	if generated.Partial {
+	if generated.Partial && len(generated.ChunkFailures) == 0 {
 		partial, _, transitionErr := s.sessions.TransitionTranscriptionJob(pebblestore.TransitionTranscriptionJobInput{
 			AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: job.SessionID,
 			JobRef: job.Ref, ExpectedStatus: job.Status, Status: pebblestore.TranscriptionJobPartial,
@@ -594,7 +595,7 @@ func (s *Service) transcribeRegisteredAudio(ctx context.Context, principal ident
 		return GeneratedTranscript{}, err
 	}
 	defer prepared.Close()
-	generated, err := s.deterministic.AnalyzeAudio(ctx, AudioAnalysisRequest{
+	generated, err := analyzeAudioChunks(ctx, s.deterministic, AudioAnalysisRequest{
 		AccountScopeID: principal.AccountScopeID, Model: job.Model, MIMEType: "audio/flac", PrivatePath: prepared.FLACPath,
 		SizeBytes: prepared.FLACBytes, DurationMs: prepared.DurationMs, FocusNotes: job.FocusNotes,
 	})
@@ -872,7 +873,7 @@ func (s *Service) TranscribeAudio(ctx context.Context, principal identity.Princi
 		return GeneratedTranscript{}, "", err
 	}
 	defer prepared.Close()
-	generated, err := s.deterministic.AnalyzeAudio(ctx, AudioAnalysisRequest{
+	generated, err := analyzeAudioChunks(ctx, s.deterministic, AudioAnalysisRequest{
 		AccountScopeID: principal.AccountScopeID, Model: model, MIMEType: "audio/flac", PrivatePath: prepared.FLACPath,
 		SizeBytes: prepared.FLACBytes, DurationMs: prepared.DurationMs, FocusNotes: focusNotes,
 	})
@@ -881,7 +882,7 @@ func (s *Service) TranscribeAudio(ctx context.Context, principal identity.Princi
 	}
 	generated.DurationMs = prepared.DurationMs
 	generated, err = NormalizeGeneratedTranscript(generated)
-	if err == nil && generated.Partial {
+	if err == nil && generated.Partial && len(generated.ChunkFailures) == 0 {
 		err = errors.New("the transcription model's answer did not form a timed transcript; nothing was returned")
 	}
 	return generated, model, err

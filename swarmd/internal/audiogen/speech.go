@@ -46,10 +46,12 @@ type SpeechTiming struct {
 	End   float64 `json:"end"`
 }
 type SpeechTimings struct {
-	Granularity string         `json:"granularity"`
-	Source      string         `json:"source"`
-	Words       []SpeechTiming `json:"words,omitempty"`
-	Segments    []SpeechTiming `json:"segments,omitempty"`
+	Partial       bool           `json:"partial,omitempty"`
+	ChunkFailures []string       `json:"chunk_failures,omitempty"`
+	Granularity   string         `json:"granularity"`
+	Source        string         `json:"source"`
+	Words         []SpeechTiming `json:"words,omitempty"`
+	Segments      []SpeechTiming `json:"segments,omitempty"`
 }
 
 // The byte ceiling conservatively bounds the complete prompt below the 8192
@@ -203,6 +205,10 @@ func (s *Service) generateGoogleSpeech(ctx context.Context, key string, r Speech
 }
 
 func TimingsFromTranscript(t videotranscription.GeneratedTranscript) (SpeechTimings, error) {
+	partial := t.Partial
+	if len(t.ChunkFailures) > 0 {
+		t.Partial = false
+	}
 	normalized, err := videotranscription.NormalizeGeneratedTranscript(t)
 	if err != nil {
 		return SpeechTimings{}, err
@@ -210,7 +216,7 @@ func TimingsFromTranscript(t videotranscription.GeneratedTranscript) (SpeechTimi
 	if normalized.Partial {
 		return SpeechTimings{}, errors.New("invalid or partial transcript timings")
 	}
-	result := SpeechTimings{Granularity: "segment", Source: "transcription"}
+	result := SpeechTimings{Granularity: "segment", Source: "transcription", Partial: partial, ChunkFailures: t.ChunkFailures}
 	for _, w := range normalized.Words {
 		result.Words = append(result.Words, SpeechTiming{w.Text, float64(w.StartMs) / 1000, float64(w.EndMs) / 1000})
 	}
