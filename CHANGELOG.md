@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Install missing host ffmpeg/ffprobe on headless fresh installs and updates so media transcription has its required tools. Docs impact: list host dependencies in the headless app README.
+
 - Resolve bare and Google-prefixed transcription settings consistently for speech timings and media transcription, with caller-specific modality errors. Docs impact: none
 
 - Fix custom worker creation with a model through Swarm Control by applying the existing model-pin route after creation; report partial success if pinning fails. Docs impact: none.

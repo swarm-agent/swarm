@@ -80,6 +80,9 @@ local_api() {
     /v3/box/summary) printf '{"machine":{"commit":"%s"},"sandbox":{"active":true}}' "$(running_commit)" ;;
   esac
 }
+# Host packages are tested separately by install-media-dependencies.test.sh;
+# update lifecycle tests must never invoke the real package manager.
+install_media_dependencies() { return 0; }
 systemctl() { return 0; }
 sleep() { :; }
 # Docker records what it was asked; its help names the flag current Docker has.
