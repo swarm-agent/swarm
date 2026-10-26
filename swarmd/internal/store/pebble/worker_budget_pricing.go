@@ -6,6 +6,10 @@ import (
 	"time"
 )
 
+// Bound legacy repricing under the account lock. If history exceeds this limit,
+// retain the original unresolved projection so USD admission fails closed.
+const workerBudgetPricingReceiptLimit = 100
+
 // workerBudgetUsageDay rejudges unresolved model pricing without changing the
 // receipt ledger or its projections. Preserve media charges, coverage and known
 // provider costs; only replace an unknown model price when current rules resolve it.
@@ -15,8 +19,13 @@ func (s *SessionStore) workerBudgetUsageDay(account, worker, date string) (Usage
 		return total, err
 	}
 	prefix := SessionTurnUsageByAccountPrefix(account, "")
-	const iterateAll = int(^uint(0) >> 1)
-	err = s.store.IteratePrefix(prefix, iterateAll, func(key string, value []byte) error {
+	original := total
+	visited := 0
+	err = s.store.IteratePrefix(prefix, workerBudgetPricingReceiptLimit+1, func(key string, value []byte) error {
+		visited++
+		if visited > workerBudgetPricingReceiptLimit {
+			return nil
+		}
 		parts := strings.Split(strings.TrimPrefix(key, prefix), "/")
 		if len(parts) != 2 {
 			return errors.New("invalid worker budget receipt index")
@@ -53,5 +62,8 @@ func (s *SessionStore) workerBudgetUsageDay(account, worker, date string) (Usage
 		}
 		return nil
 	})
+	if visited > workerBudgetPricingReceiptLimit {
+		return original, err
+	}
 	return total, err
 }

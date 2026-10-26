@@ -146,10 +146,20 @@ func (s *SessionStore) checkWorkerBudgetLocked(account, worker, date string) (Wo
 	if err != nil {
 		return policy, UsageScopeTotal{}, err
 	}
-	total, err := s.workerBudgetUsageDay(account, worker, date)
+	var total UsageScopeTotal
+	if policy.DailyCostLimitUSD > 0 {
+		total, err = s.workerBudgetUsageDay(account, worker, date)
+	} else {
+		total, _, err = s.GetUsageScopeDay(account, "worker", "", worker, date)
+	}
 	if err != nil {
 		return policy, total, err
 	}
+	return s.checkWorkerBudgetTotalLocked(account, worker, date, policy, total)
+}
+
+// The caller holds the account lock and supplies one consistent usage read.
+func (s *SessionStore) checkWorkerBudgetTotalLocked(account, worker, date string, policy WorkerBudgetPolicy, total UsageScopeTotal) (WorkerBudgetPolicy, UsageScopeTotal, error) {
 	var hold WorkerBudgetHold
 	if found, err := s.store.GetJSON(workerBudgetHoldKey(account, worker, date), &hold); err != nil {
 		return policy, total, err
@@ -212,6 +222,10 @@ func (s *SessionStore) checkWorkerBudgetAdmissionLocked(account, worker string) 
 	if err != nil {
 		return err
 	}
+	return s.checkWorkerBudgetReservationsLocked(account, worker)
+}
+
+func (s *SessionStore) checkWorkerBudgetReservationsLocked(account, worker string) error {
 	var reservation workerBudgetReservation
 	found, err := s.store.GetJSON(workerBudgetKey(account, worker)+"/reservation", &reservation)
 	if err != nil {
@@ -294,11 +308,22 @@ func (s *SessionStore) checkWorkerSessionBudget(account, sessionID, priceStatus 
 	}
 	date := time.Now().UTC().Format("2006-01-02")
 	// Exhaustion precedes reservations so they cannot hide a genuine day stop.
+	// Reuse these reads while the account lock keeps receipts/policies stable.
+	type checkedBudget struct {
+		policy WorkerBudgetPolicy
+		total  UsageScopeTotal
+	}
+	checked := make(map[string]checkedBudget)
 	for _, scope := range scopes {
 		if scope.Kind == "worker" {
-			if _, _, err := s.checkWorkerBudgetLocked(account, scope.ID, date); err != nil {
+			if _, ok := checked[scope.ID]; ok {
+				continue
+			}
+			policy, total, err := s.checkWorkerBudgetLocked(account, scope.ID, date)
+			if err != nil {
 				return err
 			}
+			checked[scope.ID] = checkedBudget{policy, total}
 		}
 	}
 	keys := []string{}
@@ -335,10 +360,7 @@ func (s *SessionStore) checkWorkerSessionBudget(account, sessionID, priceStatus 
 		if scope.Kind != "worker" {
 			continue
 		}
-		policy, total, err := s.checkWorkerBudgetLocked(account, scope.ID, date)
-		if err != nil {
-			return err
-		}
+		policy, total := checked[scope.ID].policy, checked[scope.ID].total
 		if found, err := s.store.GetJSON(workerBudgetKey(account, scope.ID)+"/reservation", &existing); err != nil {
 			return err
 		} else if found {

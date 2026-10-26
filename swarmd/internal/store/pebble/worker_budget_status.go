@@ -105,7 +105,11 @@ func (s *SessionStore) GetWorkerBudgetStatus(account, worker string) (WorkerBudg
 	if err != nil {
 		return status, err
 	}
-	if err := s.checkWorkerBudgetAdmissionLocked(account, worker); err != nil {
+	_, _, admissionErr := s.checkWorkerBudgetTotalLocked(account, worker, status.Date, policy, status.Usage)
+	if admissionErr == nil {
+		admissionErr = s.checkWorkerBudgetReservationsLocked(account, worker)
+	}
+	if err := admissionErr; err != nil {
 		if !errors.Is(err, ErrWorkerBudget) {
 			return status, err
 		}
