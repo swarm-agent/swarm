@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Count Claude Code model usage as $0 subscription usage for worker USD budgets, preserving media charges, token limits, and unknown-pricing rejection for other providers. Docs impact: clarified plan-backed worker accounting in `docs/box-limits.md`.
+
 - Render workflow inputs in worker/job/schedule scopes and schedule clocks, validate rendered clocks, and retain resolved worker-name IDs for matching. Docs impact: expanded the Inputs section in `docs/automations.md`.
 
 - Add workflow schedule triggers and trigger-only workflows, skipping busy/missed slots and preventing duplicate job-end handling. Docs impact: schedule and matching rules in `docs/automations.md`.
