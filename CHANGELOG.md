@@ -6,7 +6,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
-- Re-evaluate unresolved model receipt pricing in worker budget checks and status, so historical Claude Code receipts count as $0 subscription usage without rewriting receipts; repricing is bounded to 100 historical entries per read, skips non-USD admission checks, and fails closed beyond that bound. Still-unpriced providers remain blocked. Docs impact: none.
+- Re-evaluate unresolved model receipt pricing in worker budget checks and status, so historical Claude Code receipts count as $0 subscription usage without rewriting receipts; repricing is bounded to 100 matching worker-day receipts using daily session rollups, independently of unrelated account history, skips non-USD admission checks, and fails closed beyond that bound. Still-unpriced providers remain blocked. Docs impact: none.
 
 - Count Claude Code model usage as $0 subscription usage for worker USD budgets, preserving media charges, token limits, and unknown-pricing rejection for other providers. Docs impact: clarified plan-backed worker accounting in `docs/box-limits.md`.
 

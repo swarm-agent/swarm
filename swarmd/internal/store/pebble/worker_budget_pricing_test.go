@@ -42,6 +42,25 @@ func TestWorkerBudgetStoredUnknownPricing(t *testing.T) {
 			date := now.Format("2006-01-02")
 			scope := UsageScopeTotal{Kind: "worker", ID: w.ID, Coverage: "observed_receipts_only"}
 			receipt := SessionTurnUsageSnapshot{AccountScopeID: "acct", SessionID: "fixture-session", RunID: "fixture-run", Provider: provider, Model: "fixture-model", PriceStatus: "unknown", InputTokens: 7, OutputTokens: 3, TotalTokens: 10, CreatedAt: now.UnixMilli(), ScopeProjectionVersion: 3, ScopeTotals: []UsageScopeTotal{scope}}
+			// Exercise a delegated session's frozen worker attribution amid more
+			// than 100 unrelated receipts, including earlier days of this worker.
+			seedWorkerBudgetPricingLocator(t, db, receipt)
+			for i := 0; i < 240; i++ {
+				other := receipt
+				other.SessionID = fmt.Sprintf("unrelated-%03d", i)
+				if i%2 == 0 {
+					other.CreatedAt = now.AddDate(0, 0, -1).UnixMilli()
+				} else {
+					other.ScopeTotals = []UsageScopeTotal{{Kind: "worker", ID: "other-worker"}}
+				}
+				seedWorkerBudgetPricingLocator(t, db, other)
+				if err := db.PutJSON(KeySessionTurnUsage(other.SessionID, other.RunID), other); err != nil {
+					t.Fatal(err)
+				}
+				if err := db.db.Set([]byte(KeySessionTurnUsageByAccount("acct", other.SessionID, other.RunID)), []byte(other.RunID), nil); err != nil {
+					t.Fatal(err)
+				}
+			}
 			// Seed the pre-fix durable format, bypassing today's write-time pricing.
 			if err := db.PutJSON(KeySessionTurnUsage(receipt.SessionID, receipt.RunID), receipt); err != nil {
 				t.Fatal(err)
@@ -122,6 +141,7 @@ func TestWorkerBudgetPricingReadBound(t *testing.T) {
 	if err := db.PutJSON(usageScopeDayKey("acct", scope, date), scope); err != nil {
 		t.Fatal(err)
 	}
+	seedWorkerBudgetPricingLocator(t, db, SessionTurnUsageSnapshot{AccountScopeID: "acct", SessionID: "000", RunID: "run", CreatedAt: time.Now().UnixMilli(), ScopeTotals: []UsageScopeTotal{{Kind: "worker", ID: w.ID}}})
 	// An invalid first index entry makes any unnecessary receipt scan observable.
 	sentinel := KeySessionTurnUsageByAccount("acct", "000", "run")
 	if err := db.db.Set([]byte(sentinel), []byte("run"), nil); err != nil {
@@ -142,15 +162,15 @@ func TestWorkerBudgetPricingReadBound(t *testing.T) {
 	if _, err := s.GetWorkerBudgetStatus("acct", w.ID); err == nil {
 		t.Fatal("status must still attempt pricing")
 	}
-	scope.UnknownReceipts = workerBudgetPricingReceiptLimit
+	scope.UnknownReceipts = workerBudgetPricingReceiptLimit + 1
 	if err := db.PutJSON(usageScopeDayKey("acct", scope, date), scope); err != nil {
 		t.Fatal(err)
 	}
-	// Replace sentinel with valid history. Exactly the bounded prefix is decoded;
-	// the next index has no receipt and must not be loaded.
-	for i := 0; i < workerBudgetPricingReceiptLimit; i++ {
+	// Overflow only this worker's current-day receipts; discard partial repricing.
+	for i := 0; i <= workerBudgetPricingReceiptLimit; i++ {
 		session := fmt.Sprintf("%03d", i)
 		receipt := SessionTurnUsageSnapshot{AccountScopeID: "acct", SessionID: session, RunID: "run", Provider: "claudecode", PriceStatus: "unknown", ScopeProjectionVersion: 3, CreatedAt: time.Now().UnixMilli(), ScopeTotals: []UsageScopeTotal{{Kind: "worker", ID: w.ID}}}
+		seedWorkerBudgetPricingLocator(t, db, receipt)
 		if err := db.PutJSON(KeySessionTurnUsage(session, "run"), receipt); err != nil {
 			t.Fatal(err)
 		}
@@ -182,5 +202,18 @@ func TestWorkerBudgetPricingReadBound(t *testing.T) {
 	stored, _, err := s.GetUsageScopeDay("acct", "worker", "", w.ID, date)
 	if err != nil || !reflect.DeepEqual(stored, scope) {
 		t.Fatalf("projection mutated: %+v %v", stored, err)
+	}
+}
+
+// Seed the existing write-time locator records alongside a historical receipt.
+func seedWorkerBudgetPricingLocator(t *testing.T, db *Store, receipt SessionTurnUsageSnapshot) {
+	t.Helper()
+	date := time.UnixMilli(receipt.CreatedAt).UTC().Format("2006-01-02")
+	rollup := AccountUsageRollup{AccountScopeID: receipt.AccountScopeID, Date: date, SessionID: receipt.SessionID, Provider: receipt.Provider, Model: receipt.Model, Turns: 1}
+	if err := db.PutJSON(KeyAccountUsageRollup(receipt.AccountScopeID, date, receipt.SessionID, receipt.Provider, receipt.Model), rollup); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.PutJSON(usageBindingKey(receipt.AccountScopeID, receipt.SessionID), receipt.ScopeTotals); err != nil {
+		t.Fatal(err)
 	}
 }
