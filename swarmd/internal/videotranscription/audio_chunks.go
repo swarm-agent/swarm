@@ -61,6 +61,16 @@ func audioSilences(ctx context.Context, path string) []int64 {
 // analyzeAudioChunks keeps model/schema/account authority on the existing
 // adapter. Every attempt uses the same context, including its usage collector.
 func analyzeAudioChunks(ctx context.Context, adapter DeterministicAdapter, request AudioAnalysisRequest) (GeneratedTranscript, error) {
+	return AnalyzeAudioChunks(ctx, request, adapter.AnalyzeAudio)
+}
+
+// ErrInvalidTranscript marks an invalid structured model answer, not a transport
+// or configuration failure. Only this error and normalization failures retry.
+var ErrInvalidTranscript = errors.New("invalid structured transcript")
+
+// AnalyzeAudioChunks shares extraction, retry and stitching with speech alignment.
+// analyze must account for usage on every attempt, including invalid answers.
+func AnalyzeAudioChunks(ctx context.Context, request AudioAnalysisRequest, analyze func(context.Context, AudioAnalysisRequest) (GeneratedTranscript, error)) (GeneratedTranscript, error) {
 	windows := []audioWindow{{0, request.DurationMs}}
 	if request.DurationMs > audioChunkMs {
 		windows = audioWindows(request.DurationMs, audioSilences(ctx, request.PrivatePath))
@@ -95,12 +105,17 @@ func analyzeAudioChunks(ctx context.Context, adapter DeterministicAdapter, reque
 		}
 		var generated GeneratedTranscript
 		for attempt := 0; attempt < 2; attempt++ {
-			generated, err = adapter.AnalyzeAudio(ctx, chunk)
+			generated, err = analyze(ctx, chunk)
 			if ctx.Err() != nil {
 				return GeneratedTranscript{}, ctx.Err()
 			}
+			if err != nil && !invalidTranscriptError(err) {
+				return GeneratedTranscript{}, err
+			}
 			if err == nil {
-				generated.DurationMs = chunk.DurationMs
+				if chunk.DurationMs > 0 {
+					generated.DurationMs = chunk.DurationMs
+				}
 				generated, err = NormalizeGeneratedTranscript(generated)
 				if err == nil && !generated.Partial {
 					break
@@ -173,4 +188,18 @@ func trimOverlap(previous, current string) string {
 		}
 	}
 	return current
+}
+
+// The existing Google adapter predates typed parse errors. Keep this exact,
+// narrow compatibility list until that adapter adopts ErrInvalidTranscript;
+// never classify credentials, policy, upload or HTTP failures by substring.
+func invalidTranscriptError(err error) bool {
+	if errors.Is(err, ErrInvalidTranscript) {
+		return true
+	}
+	switch err.Error() {
+	case "google video transcription output did not match the structured schema", "google video transcription output contained trailing structured data":
+		return true
+	}
+	return false
 }

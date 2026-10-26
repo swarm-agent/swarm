@@ -25,7 +25,7 @@ func (m *chunkModel) AnalyzeAudio(_ context.Context, r AudioAnalysisRequest) (Ge
 	m.calls = append(m.calls, r)
 	m.attempts[r.PrivatePath]++
 	if strings.Contains(r.PrivatePath, "chunk-1.flac") && m.attempts[r.PrivatePath] <= m.fail {
-		return GeneratedTranscript{}, errors.New("malformed structured answer")
+		return GeneratedTranscript{}, ErrInvalidTranscript
 	}
 	return GeneratedTranscript{DurationMs: r.DurationMs, Segments: []pebblestore.NormalizedTranscriptSegment{{StartMs: 1000, EndMs: 2000, Speech: "hello"}}, Words: []pebblestore.NormalizedTranscriptWord{{StartMs: 1000, EndMs: 2000, Text: "hello"}}}, nil
 }
@@ -38,7 +38,7 @@ func TestTranscribeAudioLongChunks(t *testing.T) {
 	defer cancel()
 	for _, binary := range []string{"ffmpeg", "ffprobe"} {
 		if _, err := exec.LookPath(binary); err != nil {
-			t.Fatal(err)
+			t.Skipf("%s unavailable: %v", binary, err)
 		}
 	}
 	path := filepath.Join(t.TempDir(), "long.wav")
@@ -130,5 +130,32 @@ func TestAudioChunkInvalidRetry(t *testing.T) {
 	before := len(model.calls)
 	if _, err := analyzeAudioChunks(ctx, model, AudioAnalysisRequest{DurationMs: 1000}); !errors.Is(err, context.Canceled) || len(model.calls) != before {
 		t.Fatalf("cancellation: %v", err)
+	}
+}
+
+// Purpose: AnalyzeAudioChunks must preserve operational failures without a
+// billable retry; only structured-answer failures may retry. The callback
+// boundary proves error identity and call count without media dependencies.
+func TestAudioChunkProviderErrors(t *testing.T) {
+	for _, message := range []string{"google video transcription credential is unavailable", "principal/account mismatch", "upload failed", "HTTP 503"} {
+		t.Run(message, func(t *testing.T) {
+			cause := errors.New(message)
+			calls := 0
+			_, err := AnalyzeAudioChunks(context.Background(), AudioAnalysisRequest{DurationMs: 1000}, func(context.Context, AudioAnalysisRequest) (GeneratedTranscript, error) {
+				calls++
+				return GeneratedTranscript{}, cause
+			})
+			if err != cause || calls != 1 {
+				t.Fatalf("error=%v calls=%d", err, calls)
+			}
+		})
+	}
+	calls := 0
+	_, err := AnalyzeAudioChunks(context.Background(), AudioAnalysisRequest{DurationMs: 1000}, func(context.Context, AudioAnalysisRequest) (GeneratedTranscript, error) {
+		calls++
+		return GeneratedTranscript{}, errors.New("google video transcription output did not match the structured schema")
+	})
+	if err == nil || calls != 2 {
+		t.Fatalf("parse error=%v calls=%d", err, calls)
 	}
 }

@@ -12,7 +12,8 @@ import (
 
 // Purpose: the alignment wire boundary must send JSON Schema in Gemini's JSON
 // schema field and retain all billed modalities, including thinking, on parse
-// failures. A fake server proves the adapter without spending or credentials.
+// failures, including the single parse retry. A fake server proves the adapter
+// without spending or credentials.
 func TestSpeechAlignmentWire(t *testing.T) {
 	for _, invalid := range []bool{false, true} {
 		t.Run(map[bool]string{false: "success", true: "paid-invalid"}[invalid], func(t *testing.T) {
@@ -42,7 +43,11 @@ func TestSpeechAlignmentWire(t *testing.T) {
 			if (err != nil) != invalid {
 				t.Fatalf("error %v", err)
 			}
-			if got.Model != "transcriber" || got.PromptTokens != 10 || got.AudioInputTokens != 20 || got.OutputTokens != 100 {
+			attempts := int64(1)
+			if invalid {
+				attempts = 2
+			}
+			if got.Model != "transcriber" || got.PromptTokens != 10*attempts || got.AudioInputTokens != 20*attempts || got.OutputTokens != 100*attempts {
 				t.Fatalf("lost usage: %+v", got)
 			}
 			if !invalid && got.Timings.Granularity != "word" {

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 
@@ -119,11 +120,46 @@ func (s *Service) AlignSpeech(ctx context.Context, r SpeechRequest, audio Speech
 }
 
 func (s *Service) alignGoogleSpeech(ctx context.Context, key, model string, audio SpeechResult) (SpeechAlignmentResult, error) {
+	result := SpeechAlignmentResult{Model: model}
+	// Short synthesis retains its existing inline path. Long inputs use the
+	// same trusted preparation and chunk pipeline as media transcription.
+	request := videotranscription.AudioAnalysisRequest{DurationMs: int64(audio.DurationSeconds * 1000)}
+	if request.DurationMs > 45000 {
+		prepared, err := videotranscription.PrepareRegisteredAudio(ctx, bytes.NewReader(audio.Bytes), int64(len(audio.Bytes)))
+		if err != nil {
+			return result, err
+		}
+		defer prepared.Close()
+		request.PrivatePath, request.DurationMs = prepared.FLACPath, prepared.DurationMs
+	}
+	transcript, err := videotranscription.AnalyzeAudioChunks(ctx, request, func(ctx context.Context, chunk videotranscription.AudioAnalysisRequest) (videotranscription.GeneratedTranscript, error) {
+		input := audio
+		if chunk.PrivatePath != "" {
+			data, err := os.ReadFile(chunk.PrivatePath)
+			if err != nil {
+				return videotranscription.GeneratedTranscript{}, err
+			}
+			input.Bytes, input.MediaType = data, "audio/flac"
+		}
+		answer, usage, err := s.alignGoogleSpeechChunk(ctx, key, model, input)
+		result.PromptTokens += usage.PromptTokens
+		result.AudioInputTokens += usage.AudioInputTokens
+		result.OutputTokens += usage.OutputTokens
+		return answer, err
+	})
+	if err != nil {
+		return result, err
+	}
+	result.Timings, err = TimingsFromTranscript(transcript)
+	return result, err
+}
+
+func (s *Service) alignGoogleSpeechChunk(ctx context.Context, key, model string, audio SpeechResult) (answer videotranscription.GeneratedTranscript, usage SpeechAlignmentResult, err error) {
 	var audioPart map[string]any
 	if len(audio.Bytes) > speechInlineAudioLimit {
 		file, cleanup, err := s.uploadSpeechAudio(ctx, key, audio)
 		if err != nil {
-			return SpeechAlignmentResult{}, err
+			return answer, SpeechAlignmentResult{}, err
 		}
 		defer cleanup()
 		audioPart = map[string]any{"fileData": map[string]string{"mimeType": audio.MediaType, "fileUri": file.URI}}
@@ -141,11 +177,11 @@ func (s *Service) alignGoogleSpeech(ctx context.Context, key, model string, audi
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return SpeechAlignmentResult{}, err
+		return answer, SpeechAlignmentResult{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.googleURL()+"/v1beta/models/"+model+":generateContent", bytes.NewReader(payload))
 	if err != nil {
-		return SpeechAlignmentResult{}, err
+		return answer, SpeechAlignmentResult{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-goog-api-key", key)
@@ -153,15 +189,15 @@ func (s *Service) alignGoogleSpeech(ctx context.Context, key, model string, audi
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	response, err := client.Do(req)
 	if err != nil {
-		return SpeechAlignmentResult{}, errors.New("speech timing provider request failed")
+		return answer, SpeechAlignmentResult{}, errors.New("speech timing provider request failed")
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return SpeechAlignmentResult{}, fmt.Errorf("speech timing provider returned HTTP %d", response.StatusCode)
+		return answer, SpeechAlignmentResult{}, fmt.Errorf("speech timing provider returned HTTP %d", response.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, (2<<20)+1))
 	if err != nil || len(data) > 2<<20 {
-		return SpeechAlignmentResult{}, errors.New("speech timing response exceeds limit or could not be read")
+		return answer, SpeechAlignmentResult{}, errors.New("speech timing response exceeds limit or could not be read")
 	}
 	var wire struct {
 		Candidates []struct {
@@ -183,7 +219,7 @@ func (s *Service) alignGoogleSpeech(ctx context.Context, key, model string, audi
 		} `json:"usageMetadata"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
-		return SpeechAlignmentResult{}, errors.New("invalid timing response")
+		return answer, SpeechAlignmentResult{}, errors.New("invalid timing response")
 	}
 	result := SpeechAlignmentResult{Model: model, OutputTokens: wire.Usage.Output + wire.Usage.Thoughts}
 	for _, detail := range wire.Usage.Details {
@@ -195,7 +231,7 @@ func (s *Service) alignGoogleSpeech(ctx context.Context, key, model string, audi
 		}
 	}
 	if len(wire.Candidates) != 1 || wire.Candidates[0].FinishReason != "STOP" {
-		return result, errors.New("speech timing generation incomplete")
+		return answer, result, errors.New("speech timing generation incomplete")
 	}
 	var text strings.Builder
 	for _, part := range wire.Candidates[0].Content.Parts {
@@ -210,8 +246,7 @@ func (s *Service) alignGoogleSpeech(ctx context.Context, key, model string, audi
 		Words        []pebblestore.NormalizedTranscriptWord    `json:"words"`
 	}
 	if err := json.Unmarshal([]byte(text.String()), &transcript); err != nil {
-		return result, errors.New("invalid structured speech timings")
+		return answer, result, videotranscription.ErrInvalidTranscript
 	}
-	result.Timings, err = TimingsFromTranscript(videotranscription.GeneratedTranscript{Summary: transcript.Summary, Language: transcript.Language, DurationMs: transcript.DurationMs, ContentEmpty: transcript.ContentEmpty, Segments: transcript.Segments, Words: transcript.Words})
-	return result, err
+	return videotranscription.GeneratedTranscript{Summary: transcript.Summary, Language: transcript.Language, DurationMs: transcript.DurationMs, ContentEmpty: transcript.ContentEmpty, Segments: transcript.Segments, Words: transcript.Words}, result, nil
 }
