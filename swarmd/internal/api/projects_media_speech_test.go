@@ -227,3 +227,96 @@ func TestSpeechRejectedGenerationReceipt(t *testing.T) {
 		t.Fatalf("receipts=%+v calls=%d err=%v", receipts, calls, err)
 	}
 }
+
+// Purpose: unset timing preferences must not dead-end speech at admission or
+// generation. The shared admitSpeechTask/generateTaskSpeech boundary, a temporary
+// durable store and local HTTP provider prove fallback dispatch/receipts and the
+// negative no-capable-model case without live provider calls.
+func TestSpeechUnsetTranscription(t *testing.T) {
+	for _, available := range []bool{true, false} {
+		t.Run(map[bool]string{true: "catalog-default", false: "no-model"}[available], func(t *testing.T) {
+			db, err := pebblestore.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			store := pebblestore.NewSessionStore(db)
+			auth := pebblestore.NewAuthStore(db)
+			if _, err := auth.UpsertCredential(pebblestore.AuthCredentialInput{Provider: "google", AccountScopeID: "account", Type: "api_key", APIKey: "test-key", SetActive: true}); err != nil {
+				t.Fatal(err)
+			}
+			settings := uisettings.NewService(pebblestore.NewUISettingsStore(db))
+			var record pebblestore.ModelCatalogRecord
+			if available {
+				if err := json.Unmarshal([]byte(`{"provider":"google","model":"catalog-transcriber","catalog_modalities":{"inputs":["audio"],"outputs":["text"]}}`), &record); err != nil {
+					t.Fatal(err)
+				}
+			}
+			generationCalls, timingCalls := 0, 0
+			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/v1beta/models/gemini-2.5-flash-preview-tts:generateContent":
+					generationCalls++
+					_, _ = w.Write([]byte(`{"candidates":[{"finishReason":"STOP","content":{"parts":[{"inlineData":{"mimeType":"audio/L16;codec=pcm;rate=24000","data":"AAA="}}]}}],"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":25}}`))
+				case "/v1beta/models/catalog-transcriber:generateContent":
+					timingCalls++
+					text := `{"duration_ms":1000,"segments":[{"start_ms":0,"end_ms":1000,"speech":"Hello"}],"words":[{"text":"Hello","start_ms":0,"end_ms":1000}]}`
+					_ = json.NewEncoder(w).Encode(map[string]any{"candidates": []any{map[string]any{"finishReason": "STOP", "content": map[string]any{"parts": []any{map[string]string{"text": text}}}}}, "usageMetadata": map[string]any{"promptTokenCount": 20, "candidatesTokenCount": 10}})
+				default:
+					t.Errorf("unexpected dispatch %s", r.URL.Path)
+					w.WriteHeader(http.StatusBadRequest)
+				}
+			}))
+			defer provider.Close()
+			audio := audiogen.NewService(auth, settings, billingCatalog{record})
+			audio.SetBaseURL(provider.URL)
+			server := &Server{sessions: session.NewService(store, nil), audioGen: audio}
+			task := &pebblestore.ProjectTaskRecord{ID: "speech-task", ProjectID: "project", AccountID: "account", Title: "Speech", Agent: "sound", Operation: "speech", Model: "gemini-2.5-flash-preview-tts", Speech: &pebblestore.ProjectSpeechSettings{Text: "Hello", Voice: "Charon"}}
+			if err := server.admitSpeechTask("account", task, false); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.PutProjectTask("account", task); err != nil {
+				t.Fatal(err)
+			}
+			server.generateTaskSpeech(identity.Principal{AccountScopeID: "account", UserID: "user"}, task)
+			saved, found, err := store.GetProjectTask("account", "project", task.ID)
+			if err != nil || !found || saved.Status != "needs_review" || saved.LastError != "" || len(saved.Deliverables) == 0 {
+				t.Fatalf("task %+v err=%v", saved, err)
+			}
+			mime, data, ok := decodeMediaDataURL(saved.Deliverables[0].MediaURL)
+			if !ok || mime != "audio/wav" || len(data) != 46 || saved.Deliverables[0].Status != "ready" || generationCalls != 1 {
+				t.Fatalf("missing speech: %+v calls=%d", saved, generationCalls)
+			}
+			wantReceipts := 1
+			if available {
+				wantReceipts = 2
+				if timingCalls != 1 || len(saved.Deliverables) != 2 {
+					t.Fatalf("missing timings: %+v calls=%d", saved, timingCalls)
+				}
+				_, timingData, ok := decodeMediaDataURL(saved.Deliverables[1].MediaURL)
+				var timings audiogen.SpeechTimings
+				if !ok || json.Unmarshal(timingData, &timings) != nil || len(timings.Words) != 1 || timings.Words[0].Word != "Hello" || saved.Deliverables[1].PriceStatus == "" {
+					t.Fatalf("timings/receipt missing: %+v", saved.Deliverables[1])
+				}
+			} else if timingCalls != 0 || len(saved.Deliverables) != 1 || saved.ActionNeeded != "timings unavailable: no transcription model" {
+				t.Fatalf("no-model result %+v calls=%d", saved, timingCalls)
+			}
+			receipts, err := store.ListMediaUsage("account", 10)
+			if err != nil || len(receipts) != wantReceipts {
+				t.Fatalf("receipts %+v err=%v", receipts, err)
+			}
+			if available {
+				foundModel := false
+				for _, receipt := range receipts {
+					if receipt.Model == "catalog-transcriber" {
+						foundModel = true
+					}
+				}
+				if !foundModel {
+					t.Fatalf("missing resolved model receipt: %+v", receipts)
+				}
+			}
+		})
+	}
+}

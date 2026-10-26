@@ -53,7 +53,7 @@ func (s *Server) generateTaskSpeech(p identity.Principal, task *pebblestore.Proj
 		fail(errors.New("speech service unavailable"))
 		return
 	}
-	if _, err := s.audioGen.SpeechAlignmentModel(p.AccountScopeID); err != nil {
+	if _, err := s.audioGen.SpeechAlignmentModel(p.AccountScopeID); err != nil && !errors.Is(err, audiogen.ErrNoSpeechTranscriptionModel) {
 		fail(err)
 		return
 	}
@@ -109,11 +109,25 @@ func (s *Server) generateTaskSpeech(p identity.Principal, task *pebblestore.Proj
 		return
 	}
 	var timings audiogen.SpeechTimings
+	var timingModel string
 	var estimate pebblestore.MediaCostEstimate
 	if audio.Timings != nil {
 		timings = *audio.Timings
 	} else {
 		aligned, err := s.audioGen.AlignSpeech(ctx, request, audio)
+		if errors.Is(err, audiogen.ErrNoSpeechTranscriptionModel) {
+			_, saveErr := updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
+				t.Deliverables = t.Deliverables[:1]
+				t.Status, t.LastError, t.ActionNeeded = "needs_review", "", err.Error()
+				t.WhatDidDo = []string{"Generated speech", err.Error()}
+				return nil
+			})
+			if saveErr != nil {
+				fail(saveErr)
+			}
+			return
+		}
+		timingModel = aligned.Model
 		if aligned.Model != "" {
 			estimate = s.recordGeneratedTaskMedia(p, task, 1, pebblestore.MediaCostEstimateOptions{Provider: "google", Model: aligned.Model, Kind: "audio", Count: 1, Transcription: true, PromptTokens: aligned.PromptTokens, AudioInputTokens: aligned.AudioInputTokens, TextOutputTokens: aligned.OutputTokens}, "application/json", 0)
 		}
@@ -137,7 +151,7 @@ func (s *Server) generateTaskSpeech(p identity.Principal, task *pebblestore.Proj
 		return
 	}
 	_, err = updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
-		timingFile := pebblestore.ProjectTaskDeliverable{ID: "deliv_timings", Title: "Speech timings", Kind: "json", Status: "ready", MediaURL: "data:application/json;base64," + base64.StdEncoding.EncodeToString(data), MediaCostEstimate: estimate}
+		timingFile := pebblestore.ProjectTaskDeliverable{ID: "deliv_timings", Title: "Speech timings", Kind: "json", Status: "ready", Model: timingModel, MediaURL: "data:application/json;base64," + base64.StdEncoding.EncodeToString(data), MediaCostEstimate: estimate}
 		if len(t.Deliverables) == 1 {
 			t.Deliverables = append(t.Deliverables, timingFile)
 		} else {

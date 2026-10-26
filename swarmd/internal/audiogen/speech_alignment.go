@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -29,7 +30,13 @@ type SpeechAlignmentResult struct {
 	OutputTokens     int64
 }
 
-// SpeechAlignmentModel resolves the existing account transcription selection.
+// ErrNoSpeechTranscriptionModel means synthesis can proceed without timings.
+var ErrNoSpeechTranscriptionModel = errors.New("timings unavailable: no transcription model")
+
+// SpeechAlignmentModel resolves the account selection or the first eligible
+// catalog model in display-name order, matching the media catalog ordering.
+// Google is currently the only speech/alignment adapter and is preferred over
+// introducing a dispatch to a provider without a supported alignment contract.
 func (s *Service) SpeechAlignmentModel(account string) (string, error) {
 	if s == nil || s.uiSettings == nil || s.modelCatalog == nil {
 		return "", errors.New("speech timing transcription is not configured")
@@ -38,13 +45,29 @@ func (s *Service) SpeechAlignmentModel(account string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	model := strings.TrimPrefix(settings.Media.TranscriptionModel, "google/")
+	model := strings.TrimPrefix(strings.TrimSpace(settings.Media.TranscriptionModel), "google/")
 	records, err := s.modelCatalog.ListCatalog("google", 2000)
 	if err != nil {
 		return "", err
 	}
+	records = append([]pebblestore.ModelCatalogRecord(nil), records...)
+	sort.Slice(records, func(i, j int) bool {
+		name := func(r pebblestore.ModelCatalogRecord) string {
+			if strings.TrimSpace(r.DisplayName) != "" {
+				return strings.TrimSpace(r.DisplayName)
+			}
+			return r.Model
+		}
+		if name(records[i]) == name(records[j]) {
+			return records[i].Model < records[j].Model
+		}
+		return name(records[i]) < name(records[j])
+	})
 	for _, record := range records {
-		if record.Model != model {
+		if model != "" && record.Model != model {
+			continue
+		}
+		if model == "" && !speechTranscriptionCatalogRecord(record) {
 			continue
 		}
 		audio, text := false, false
@@ -55,10 +78,33 @@ func (s *Service) SpeechAlignmentModel(account string) (string, error) {
 			text = text || output == "text"
 		}
 		if audio && text {
-			return model, nil
+			if model == "" {
+				if _, err := s.getGoogleAPIKey(account); err != nil {
+					return "", err
+				}
+			}
+			return record.Model, nil
 		}
 	}
+	if model == "" {
+		return "", ErrNoSpeechTranscriptionModel
+	}
 	return "", errors.New("select a Google audio-input transcription model in Media settings for speech timings")
+}
+
+// speechTranscriptionCatalogRecord identifies models usable by the Google
+// generateContent alignment adapter, excluding specialized/realtime endpoints.
+func speechTranscriptionCatalogRecord(record pebblestore.ModelCatalogRecord) bool {
+	if !strings.EqualFold(strings.TrimSpace(record.Provider), "google") {
+		return false
+	}
+	joined := strings.ToLower(strings.Join([]string{record.Model, record.DisplayName, record.CatalogID, strings.Join(record.CatalogModalities.Categories, " ")}, " "))
+	for _, excluded := range []string{"embedding", "veo", "robot", "research", "live", "imagen"} {
+		if strings.Contains(joined, excluded) {
+			return false
+		}
+	}
+	return true
 }
 
 // AlignSpeech uses the existing structured-transcript schema and normalizer.

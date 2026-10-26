@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 
+	"swarm/packages/swarmd/internal/audiogen"
+
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -42,7 +44,7 @@ func (s *Server) admitSpeechTask(account string, task *pebblestore.ProjectTaskRe
 	if s.audioGen == nil {
 		return errors.New("speech service unavailable")
 	}
-	if _, err := s.audioGen.SpeechAlignmentModel(account); err != nil {
+	if _, err := s.audioGen.SpeechAlignmentModel(account); err != nil && !errors.Is(err, audiogen.ErrNoSpeechTranscriptionModel) {
 		return err
 	}
 	if hasExecution {
