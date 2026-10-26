@@ -784,7 +784,7 @@ func conciseMediaPricing(raw json.RawMessage, speech ...bool) map[string]any {
 			continue
 		}
 		speechTokens := len(speech) > 0 && speech[0] && line.Unit == "million_tokens" && (line.Billable == "text_input" || line.Billable == "audio_output")
-		if !speechTokens && line.Unit != "image" && !(line.Unit == "million_tokens" && line.Billable == "image_output") && line.Unit != "second" {
+		if !speechTokens && line.Unit != "image" && !(line.Unit == "million_tokens" && line.Billable == "image_output") && line.Unit != "second" && line.Unit != "song" {
 			continue
 		}
 		item := map[string]any{"unit": line.Unit, "price_usd": line.Price, "billable": line.Billable}
@@ -798,6 +798,9 @@ func conciseMediaPricing(raw json.RawMessage, speech ...bool) map[string]any {
 		if len(prices) == 12 {
 			break
 		}
+	}
+	if len(prices) == 0 {
+		out["billing_status"] = "unknown"
 	}
 	out["prices"] = prices
 	return out

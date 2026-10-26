@@ -6,7 +6,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
-- Supply published standard-tier Gemini transcription rates missing from model snapshots and retain speech alignment text usage when modality details omit it. Docs impact: none.
+- Supply published standard-tier Gemini transcription rates (including Gemini 3.5 Flash-Lite) missing from model snapshots, retain speech alignment text usage when modality details omit it, and expose Lyria song prices without marking empty media price views verified. Conditional expiry/context-tier transcription rates remain unsupported. Docs impact: none.
 
 - Chunk long audio transcription at silence boundaries or overlapping windows, retry failed chunks once, and retain partial transcripts and speech timings with explicit gap notes. Docs impact: none.
 

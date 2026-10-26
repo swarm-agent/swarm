@@ -14,6 +14,12 @@ func supplementMediaPricing(provider, model string, pricing json.RawMessage) jso
 		"gemini-2.5-flash-lite":  {0.10, 0.30, 0.40},
 		"gemini-3-flash-preview": {0.50, 1.00, 3.00},
 		"gemini-3.1-flash-lite":  {0.25, 0.50, 1.50},
+		"gemini-3.5-flash-lite":  {0.30, 0.30, 2.50},
+		// Published but not supplemented: gemini-3.6-flash has a rate
+		// expiry date; gemini-2.5-pro and gemini-3.1-pro-preview (including
+		// customtools) have prompt-length tiers. estimateSpeechBilling only
+		// accepts unconditional standard/paid rates, so these remain unknown
+		// rather than applying a conditional price to every receipt.
 	}[model]
 	if !ok {
 		return cloneRawJSON(pricing)
