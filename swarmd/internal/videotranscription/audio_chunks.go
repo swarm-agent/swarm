@@ -161,6 +161,9 @@ func mergeAudioChunk(dst *GeneratedTranscript, src GeneratedTranscript, offset i
 				segment.StartMs = previous.EndMs
 			}
 		}
+		if strings.TrimSpace(segment.Speech) == "" && strings.TrimSpace(segment.Audio) == "" && strings.TrimSpace(segment.Visual) == "" && strings.TrimSpace(segment.OnScreenText) == "" {
+			continue
+		}
 		if segment.EndMs > segment.StartMs {
 			dst.Segments = append(dst.Segments, segment)
 		}

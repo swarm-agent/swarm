@@ -159,3 +159,16 @@ func TestAudioChunkProviderErrors(t *testing.T) {
 		t.Fatalf("parse error=%v calls=%d", err, calls)
 	}
 }
+
+// Purpose: mergeAudioChunk must not retain empty speech duplicates when audio
+// descriptions differ across chunks. Normalizing the merge proves that valid
+// narration over music survives stitching rather than becoming a partial error.
+func TestAudioChunkOverlapEmptySegment(t *testing.T) {
+	dst := GeneratedTranscript{DurationMs: 47000, Segments: []pebblestore.NormalizedTranscriptSegment{{StartMs: 43000, EndMs: 45000, Speech: "hello world", Audio: "soft music"}}}
+	src := GeneratedTranscript{Segments: []pebblestore.NormalizedTranscriptSegment{{StartMs: 0, EndMs: 2000, Speech: "world"}, {StartMs: 2000, EndMs: 3000, Speech: "again"}}}
+	mergeAudioChunk(&dst, src, 44000)
+	got, err := NormalizeGeneratedTranscript(dst)
+	if err != nil || got.Partial || len(got.Segments) != 2 || got.Segments[0].Audio != "soft music" || got.Segments[1].Speech != "again" || got.Segments[1].StartMs != 46000 {
+		t.Fatalf("merged transcript: %+v, error: %v", got, err)
+	}
+}

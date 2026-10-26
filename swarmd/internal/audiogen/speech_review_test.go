@@ -39,7 +39,7 @@ func TestSpeechAlignmentWire(t *testing.T) {
 			defer server.Close()
 			s := NewService(nil, nil, nil)
 			s.SetBaseURL(server.URL)
-			got, err := s.alignGoogleSpeech(context.Background(), "test-key", "transcriber", SpeechResult{Bytes: []byte{0, 0}, MediaType: "audio/wav"})
+			got, err := s.alignGoogleSpeech(context.Background(), "test-key", "transcriber", SpeechResult{Bytes: []byte{0, 0}, MediaType: "audio/wav", DurationSeconds: 2})
 			if (err != nil) != invalid {
 				t.Fatalf("error %v", err)
 			}

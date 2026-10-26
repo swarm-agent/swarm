@@ -121,10 +121,10 @@ func (s *Service) AlignSpeech(ctx context.Context, r SpeechRequest, audio Speech
 
 func (s *Service) alignGoogleSpeech(ctx context.Context, key, model string, audio SpeechResult) (SpeechAlignmentResult, error) {
 	result := SpeechAlignmentResult{Model: model}
-	// Short synthesis retains its existing inline path. Long inputs use the
-	// same trusted preparation and chunk pipeline as media transcription.
+	// Known short synthesis retains its inline path. Long inputs and retained
+	// audio with no duration use trusted preparation to probe before chunking.
 	request := videotranscription.AudioAnalysisRequest{DurationMs: int64(audio.DurationSeconds * 1000)}
-	if request.DurationMs > 45000 {
+	if audio.DurationSeconds <= 0 || request.DurationMs > 45000 {
 		prepared, err := videotranscription.PrepareRegisteredAudio(ctx, bytes.NewReader(audio.Bytes), int64(len(audio.Bytes)))
 		if err != nil {
 			return result, err
