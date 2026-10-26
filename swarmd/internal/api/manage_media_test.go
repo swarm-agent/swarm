@@ -490,7 +490,51 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 		}
 		assertUnreserved()
 	}
-	// A pre-provider settings failure must not acquire either reservation.
+	// Purpose: executeDirectMediaTask must release an admitted worker media
+	// operation on provider failure, while leaving the enclosing model turn open.
+	// This real-store runner fixture uses missing credentials to fail before any
+	// network request and verifies both worker and account reservation postconditions.
+	workerPolicy, err := store.GetWorkerBudget(p.AccountScopeID, "worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetWorkerBudget(p.AccountScopeID, "worker", workerPolicy.Revision, 100, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CheckWorkerSessionBudget(p.AccountScopeID, "session", "claudecode", "fixture", "open-turn"); err != nil {
+		t.Fatal(err)
+	}
+	task.Status = "in_progress"
+	server.executeDirectMediaTask(p, &pebblestore.ProjectRecord{ID: project}, task)
+	failedMedia, found, err := store.GetProjectTask(p.AccountScopeID, project, task.ID)
+	if err != nil || !found || failedMedia.Status != "failed" {
+		t.Fatalf("expected failed media: %+v %v", failedMedia, err)
+	}
+	for _, prefix := range []string{"worker_budget_account/account/reservation/", "worker_budget/account/worker/reservation/"} {
+		count := 0
+		if err := db.IteratePrefix(prefix, 0, func(_ string, value []byte) error {
+			var reservation struct {
+				OperationID string `json:"operation_id"`
+			}
+			if err := json.Unmarshal(value, &reservation); err != nil {
+				return err
+			}
+			if reservation.OperationID != "open-turn" {
+				t.Errorf("failed media retained reservation: %s", reservation.OperationID)
+			}
+			count++
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("enclosing reservation lost: %s count=%d", prefix, count)
+		}
+	}
+	if err := store.ReleaseWorkerBudgetReservation(p.AccountScopeID, "session", "open-turn"); err != nil {
+		t.Fatal(err)
+	}
+	// A pre-provider settings failure must not leave either reservation.
 	task.Resolution = "invalid-resolution"
 	server.executeDirectMediaTask(p, &pebblestore.ProjectRecord{ID: project}, task)
 	assertUnreserved()

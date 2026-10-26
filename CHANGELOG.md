@@ -16,7 +16,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 - Explicitly request shared gVisor access for workspace bind mounts so host and concurrent lease writes are visible without relaxing sandbox isolation. Docs impact: none.
 - Keep structured `task_progress` blocker reporting available to workflow execution agents, including Swarm and narrowed worker contracts. Docs impact: none.
-
+- Allow nested and concurrent worker media operations within remaining budgets using per-operation estimates, release completed operations including failures, and expire stale reservations after one hour. Docs impact: none.
 - Use an eligible connected Google catalog model for speech timings when transcription is unset; return speech audio with an explicit note when no timing model exists. Docs impact: documented fallback and audio-only results in `docs/manage-media.md`.
 - Add `for_each.after_field` / `id_field` dependencies that wait for successful item jobs and job-end deliveries before dispatch, without consuming parallel slots. Docs impact: documented dependent video cuts in `docs/automations.md`.
 

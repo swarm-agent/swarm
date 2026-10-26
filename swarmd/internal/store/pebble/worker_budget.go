@@ -25,9 +25,11 @@ type WorkerBudgetPolicy struct {
 }
 
 type workerBudgetReservation struct {
-	SessionID   string `json:"session_id"`
-	Date        string `json:"date"`
-	OperationID string `json:"operation_id,omitempty"`
+	SessionID   string  `json:"session_id"`
+	Date        string  `json:"date"`
+	OperationID string  `json:"operation_id,omitempty"`
+	CostUSD     float64 `json:"cost_usd"`
+	CreatedAt   int64   `json:"created_at"`
 }
 
 func accountBudgetReservationKey(account string) string {
@@ -226,28 +228,16 @@ func (s *SessionStore) checkWorkerBudgetAdmissionLocked(account, worker string) 
 }
 
 func (s *SessionStore) checkWorkerBudgetReservationsLocked(account, worker string) error {
-	var reservation workerBudgetReservation
-	found, err := s.store.GetJSON(workerBudgetKey(account, worker)+"/reservation", &reservation)
-	if err != nil {
+	if _, err := s.openWorkerBudgetCost(workerBudgetKey(account, worker) + "/reservation"); err != nil {
 		return err
 	}
-	if found {
-		return fmt.Errorf("%w: worker allowance reserved by an unsettled operation", ErrWorkerBudget)
-	}
-	var accountReservation workerBudgetReservation
-	if found, err := s.store.GetJSON(accountBudgetReservationKey(account), &accountReservation); err != nil {
-		return err
-	} else if found {
-		return fmt.Errorf("%w: account allowance reserved by an unsettled operation", ErrWorkerBudget)
-	}
-	return nil
+	_, err := s.openWorkerBudgetCost(accountBudgetReservationKey(account))
+	return err
 }
 
 // CheckWorkerSessionBudget resolves trusted durable descendant lineage on every
-// new billable operation. A capped worker reserves its entire remaining allowance
-// exclusively for one session: no guessed output-token or price upper bounds.
-// Reservations survive restart and UTC rollover. An unresolved prior call blocks
-// another session rather than silently expiring its potentially billable work.
+// new billable operation. Model calls have no output estimate (subscription calls
+// cost zero); media reserves its canonical estimate. Reservations expire in an hour.
 // This is a stop-before-next-call control, not an invoice-hard cap: an already
 // admitted provider operation can overshoot before its genuine receipt arrives.
 func (s *SessionStore) CheckWorkerSessionBudget(account, sessionID, provider, model string, operationIDs ...string) error {
@@ -260,13 +250,13 @@ func (s *SessionStore) CheckWorkerSessionBudgetWithPrice(account, sessionID, pri
 	return s.checkWorkerSessionBudget(account, sessionID, priceStatus, nil, operationIDs...)
 }
 
-// CheckWorkerMediaAdmission checks current usage plus the estimate without holding
-// allowance. Concurrent background media may overshoot before receipts arrive.
-func (s *SessionStore) CheckWorkerMediaAdmission(account, sessionID string, estimate MediaCostEstimate) error {
+// CheckWorkerMediaAdmission reserves the estimate when an operation ID is supplied.
+// Calls without an ID are read-only admission previews.
+func (s *SessionStore) CheckWorkerMediaAdmission(account, sessionID string, estimate MediaCostEstimate, operationIDs ...string) error {
 	if math.IsNaN(estimate.CostUSD) || math.IsInf(estimate.CostUSD, 0) || estimate.CostUSD < 0 {
 		return errors.New("invalid media cost estimate")
 	}
-	return s.checkWorkerSessionBudget(account, sessionID, estimate.PriceStatus, &estimate.CostUSD)
+	return s.checkWorkerSessionBudget(account, sessionID, estimate.PriceStatus, &estimate.CostUSD, operationIDs...)
 }
 
 func (s *SessionStore) checkWorkerSessionBudget(account, sessionID, priceStatus string, estimatedCost *float64, operationIDs ...string) error {
@@ -327,11 +317,13 @@ func (s *SessionStore) checkWorkerSessionBudget(account, sessionID, priceStatus 
 		}
 	}
 	keys := []string{}
-	var existing workerBudgetReservation
-	if found, err := s.store.GetJSON(accountBudgetReservationKey(account), &existing); err != nil {
+	accountReserved, err := s.openWorkerBudgetCost(accountBudgetReservationKey(account))
+	if err != nil {
 		return err
-	} else if found {
-		return fmt.Errorf("%w: account operation remains unsettled", ErrWorkerBudget)
+	}
+	cost := 0.0
+	if estimatedCost != nil {
+		cost = *estimatedCost
 	}
 	accountPolicy, accountActive, err := s.accountBudgetActive(account)
 	if err != nil {
@@ -351,7 +343,7 @@ func (s *SessionStore) checkWorkerSessionBudget(account, sessionID, priceStatus 
 		if accountPolicy.DailyCostLimitUSD > 0 && priceStatus != "known" && priceStatus != "free" && priceStatus != "subscription" {
 			return fmt.Errorf("%w: account-capped provider pricing is unknown", ErrWorkerBudget)
 		}
-		if estimatedCost != nil && accountPolicy.DailyCostLimitUSD > 0 && usage.TotalCostUSD+*estimatedCost > accountPolicy.DailyCostLimitUSD {
+		if accountPolicy.DailyCostLimitUSD > 0 && usage.TotalCostUSD+accountReserved+cost > accountPolicy.DailyCostLimitUSD {
 			return fmt.Errorf("%w: daily account usage limit exceeded", ErrWorkerBudget)
 		}
 		keys = append(keys, accountBudgetReservationKey(account))
@@ -361,10 +353,9 @@ func (s *SessionStore) checkWorkerSessionBudget(account, sessionID, priceStatus 
 			continue
 		}
 		policy, total := checked[scope.ID].policy, checked[scope.ID].total
-		if found, err := s.store.GetJSON(workerBudgetKey(account, scope.ID)+"/reservation", &existing); err != nil {
+		reserved, err := s.openWorkerBudgetCost(workerBudgetKey(account, scope.ID) + "/reservation")
+		if err != nil {
 			return err
-		} else if found {
-			return fmt.Errorf("%w: worker operation remains unsettled", ErrWorkerBudget)
 		}
 		if policy.DailyCostLimitUSD == 0 && policy.DailyTokensLimit == 0 {
 			continue
@@ -377,7 +368,7 @@ func (s *SessionStore) checkWorkerSessionBudget(account, sessionID, priceStatus 
 				return fmt.Errorf("%w: provider pricing is unknown", ErrWorkerBudget)
 			}
 		}
-		if estimatedCost != nil && policy.DailyCostLimitUSD > 0 && total.CatalogCostUSD+total.ProviderCostUSD+total.ProviderEstimateCostUSD+*estimatedCost > policy.DailyCostLimitUSD {
+		if policy.DailyCostLimitUSD > 0 && total.CatalogCostUSD+total.ProviderCostUSD+total.ProviderEstimateCostUSD+reserved+cost > policy.DailyCostLimitUSD {
 			return fmt.Errorf("%w: daily worker usage limit exceeded", ErrWorkerBudget)
 		}
 		keys = append(keys, workerBudgetKey(account, scope.ID)+"/reservation")
@@ -397,7 +388,9 @@ func (s *SessionStore) checkWorkerSessionBudget(account, sessionID, priceStatus 
 				return &LimitReached{"limit.reached", "job_cost_usd", limits.JobCostUSD}
 			}
 		}
-		return nil
+		if len(operationIDs) == 0 {
+			return nil
+		}
 	}
 	if len(keys) == 0 {
 		return nil
@@ -414,13 +407,20 @@ func (s *SessionStore) checkWorkerSessionBudget(account, sessionID, priceStatus 
 			return fmt.Errorf("%w: operation identity already has a receipt", ErrWorkerBudget)
 		}
 	}
-	payload, err := json.Marshal(workerBudgetReservation{SessionID: sessionID, Date: date, OperationID: operation})
+	payload, err := json.Marshal(workerBudgetReservation{SessionID: sessionID, Date: date, OperationID: operation, CostUSD: cost, CreatedAt: time.Now().UnixMilli()})
 	if err != nil {
 		return err
 	}
 	batch := s.store.NewBatch()
 	defer batch.Close()
 	for _, key := range keys {
+		key = budgetOperationKey(key, sessionID, operation)
+		var existing workerBudgetReservation
+		if found, err := s.store.GetJSON(key, &existing); err != nil {
+			return err
+		} else if found {
+			return fmt.Errorf("%w: operation already reserved", ErrWorkerBudget)
+		}
 		if err := batch.Set([]byte(key), payload, nil); err != nil {
 			return err
 		}
@@ -428,10 +428,10 @@ func (s *SessionStore) checkWorkerSessionBudget(account, sessionID, priceStatus 
 	return batch.Commit(pebble.Sync)
 }
 
-// ReleaseWorkerBudgetReservation is used only after a run has terminated and
-// genuine receipts have been persisted. A run without observed receipts retains
-// its reservation, including cancellation and restart; there is no timed reset.
+// ReleaseWorkerBudgetReservation releases only the completed operation, including
+// failures without receipts. Durable usage remains authoritative for exhaustion.
 func (s *SessionStore) ReleaseWorkerBudgetReservation(account, sessionID string, operationIDs ...string) error {
+	session := sessionID
 	if s == nil || s.store == nil {
 		return errors.New("store is not configured")
 	}
@@ -454,6 +454,7 @@ func (s *SessionStore) ReleaseWorkerBudgetReservation(account, sessionID string,
 	batch := s.store.NewBatch()
 	defer batch.Close()
 	for _, key := range keys {
+		key = budgetOperationKey(key, session, operation)
 		var reservation workerBudgetReservation
 		found, err := s.store.GetJSON(key, &reservation)
 		if err != nil {
@@ -462,19 +463,13 @@ func (s *SessionStore) ReleaseWorkerBudgetReservation(account, sessionID string,
 		if !found || reservation.SessionID != sessionID {
 			continue
 		}
-		// Legacy/unidentified calls stay blocked: a newer unrelated receipt is not settlement.
+		// Release only the matching operation's reservation; other operations remain
+		// reserved until they finish or expire after one hour.
 		if operation == "" || reservation.OperationID != operation {
 			continue
 		}
 		if err := batch.Set([]byte(workerBudgetOperationReceiptKey(account, sessionID, operation)+"/terminated"), []byte("true"), nil); err != nil {
 			return err
-		}
-		var received bool
-		if _, err := s.store.GetJSON(workerBudgetOperationReceiptKey(account, sessionID, operation), &received); err != nil {
-			return err
-		}
-		if !received {
-			continue
 		}
 		if err := batch.Delete([]byte(key), nil); err != nil {
 			return err
@@ -512,6 +507,7 @@ func (s *SessionStore) setWorkerBudgetOperationReceipt(batch *pebble.Batch, acco
 		}
 	}
 	for _, key := range keys {
+		key = budgetOperationKey(key, session, operation)
 		var reservation workerBudgetReservation
 		found, err := s.store.GetJSON(key, &reservation)
 		if err != nil {

@@ -25,6 +25,7 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 	"swarm/packages/swarmd/internal/videogen"
 )
 
@@ -1005,10 +1006,43 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 	}
 	// Declared first so it runs last, after a recovered panic too.
 	defer s.signalMediaSettled(p, task.ProjectID, task.ID)
+	reserved := false
+	defer func() {
+		if reserved {
+			if err := s.sessions.Store().ReleaseWorkerBudgetReservation(p.AccountScopeID, task.OriginSessionID, task.ID); err != nil {
+				log.Print("media task budget release failed")
+			}
+		}
+	}()
 	defer func() {
 		_ = recover() // Gracefully recover if store is closed during daemon shutdown or test teardown
 	}()
 	db := s.sessions.Store()
+	if task.ManageMediaSource && task.OriginSessionID != "" {
+		active, err := db.WorkerBudgetActive(p.AccountScopeID, task.OriginSessionID)
+		if err == nil && active {
+			input := tool.ProjectTaskCreateInput{Agent: task.Agent, Model: task.Model, Operation: task.Operation, Speech: task.Speech, VariantCount: task.VariantCount, Resolution: task.Resolution, AspectRatio: task.AspectRatio, DurationSeconds: task.DurationSeconds, AttachedMedia: task.AttachedMedia}
+			var estimate pebblestore.MediaCostEstimate
+			estimate, err = s.estimateManagedMedia(context.Background(), p, &input)
+			if err == nil {
+				err = db.CheckWorkerMediaAdmission(p.AccountScopeID, task.OriginSessionID, estimate, task.ID)
+				reserved = err == nil
+			}
+		}
+		if err != nil {
+			_, updateErr := updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
+				t.Status, t.LastError = "failed", err.Error()
+				for i := range t.Deliverables {
+					t.Deliverables[i].Status = "failed"
+				}
+				return nil
+			})
+			if updateErr != nil {
+				log.Print("media budget refusal persistence failed")
+			}
+			return
+		}
+	}
 
 	if valErr := validateProjectMediaTaskSettings(s, task, p); valErr != nil {
 		_, _ = updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {

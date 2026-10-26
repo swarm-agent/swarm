@@ -96,12 +96,11 @@ func (s *SessionStore) GetWorkerBudgetStatus(account, worker string) (WorkerBudg
 	if status.AccountPolicy.Enabled {
 		status.AccountRemainingCostUSD, status.AccountRemainingTokens = remainingBudget(status.AccountPolicy.DailyCostLimitUSD, status.AccountPolicy.DailyTokensLimit, status.AccountUsage.TotalCostUSD, status.AccountUsage.TotalTokens)
 	}
-	var reservation workerBudgetReservation
-	status.Inflight, err = s.store.GetJSON(workerBudgetKey(account, worker)+"/reservation", &reservation)
+	status.Inflight, err = s.hasOpenWorkerBudgetReservation(workerBudgetKey(account, worker) + "/reservation")
 	if err != nil {
 		return status, err
 	}
-	status.AccountInflight, err = s.store.GetJSON(accountBudgetReservationKey(account), &reservation)
+	status.AccountInflight, err = s.hasOpenWorkerBudgetReservation(accountBudgetReservationKey(account))
 	if err != nil {
 		return status, err
 	}
@@ -133,6 +132,6 @@ func (s *SessionStore) GetWorkerBudgetStatus(account, worker string) (WorkerBudg
 		}
 	}
 	status.EffectiveCostLimitUSD, status.EffectiveTokensLimit = remainingBudget(cost, tokens, 0, 0)
-	status.Limitations = "Stop-before-next-call, not an invoice-hard cap; admitted work may overshoot. Unsettled or unidentified operations survive restart and UTC rollover. Totals reflect observed receipts only; unknown pricing is not free."
+	status.Limitations = "Stop-before-next-call, not an invoice-hard cap; admitted work may overshoot. Operation reservations expire after one hour and are released at the next admission check. Totals reflect observed receipts only; unknown pricing is not free."
 	return status, nil
 }
