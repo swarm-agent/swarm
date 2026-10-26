@@ -161,7 +161,7 @@ func (s *Service) StartRegisteredAudioSources(ctx context.Context, principal ide
 	if err != nil {
 		return StartResult{}, err
 	}
-	model, snapshot, settingsHash, err := s.resolveModel(principal.AccountScopeID)
+	model, snapshot, settingsHash, err := s.resolveModel(principal.AccountScopeID, "audio")
 	if err != nil {
 		return StartResult{}, err
 	}
@@ -244,7 +244,7 @@ func (s *Service) StartWithFocus(ctx context.Context, principal identity.Princip
 	if err != nil {
 		return StartResult{}, err
 	}
-	model, snapshot, settingsHash, err := s.resolveModel(principal.AccountScopeID)
+	model, snapshot, settingsHash, err := s.resolveModel(principal.AccountScopeID, "video")
 	if err != nil {
 		return StartResult{}, err
 	}
@@ -669,32 +669,33 @@ func (s *Service) fail(principal identity.Principal, job pebblestore.Transcripti
 	})
 }
 
-func (s *Service) resolveModel(accountScopeID string) (string, string, string, error) {
+func (s *Service) resolveModel(accountScopeID, input string) (string, string, string, error) {
 	settings, err := s.settings.GetForAccount(accountScopeID)
 	if err != nil {
 		return "", "", "", err
 	}
-	model := strings.TrimSpace(settings.Media.TranscriptionModel)
+	model, err := NormalizeTranscriptionModel(settings.Media.TranscriptionModel)
+	if err != nil {
+		return "", "", "", err
+	}
 	if model == "" {
-		return "", "", "", errors.New("a Google video transcription model must be selected in Media settings")
+		return "", "", "", fmt.Errorf("a Google %s-input transcription model must be selected in Media settings", input)
 	}
 	records, err := s.catalog.ListCatalog("google", 2000)
 	if err != nil {
 		return "", "", "", err
 	}
-	for _, record := range records {
-		if record.Model != model || !containsFold(record.CatalogModalities.Inputs, "video") || !containsFold(record.CatalogModalities.Outputs, "text") {
-			continue
-		}
-		snapshot := strings.TrimSpace(record.SourceSnapshotID + ":" + record.SourceSnapshotVersion)
-		if snapshot == ":" {
-			return "", "", "", errors.New("configured transcription model lacks snapshot identity")
-		}
-		settingsPayload, _ := json.Marshal(map[string]string{"prompt": TranscriptPromptVersion, "schema": pebblestore.NormalizedTranscriptSchemaVersion, "model": model})
-		hash := sha256.Sum256(settingsPayload)
-		return model, snapshot, hex.EncodeToString(hash[:]), nil
+	record, err := ResolveTranscriptionModel(model, records, input)
+	if err != nil {
+		return "", "", "", err
 	}
-	return "", "", "", errors.New("configured transcription model is absent from the current Google video catalog")
+	snapshot := strings.TrimSpace(record.SourceSnapshotID + ":" + record.SourceSnapshotVersion)
+	if snapshot == ":" {
+		return "", "", "", fmt.Errorf("transcription model %q lacks snapshot identity", model)
+	}
+	settingsPayload, _ := json.Marshal(map[string]string{"prompt": TranscriptPromptVersion, "schema": pebblestore.NormalizedTranscriptSchemaVersion, "model": model})
+	hash := sha256.Sum256(settingsPayload)
+	return model, snapshot, hex.EncodeToString(hash[:]), nil
 }
 
 func StructuredTranscriptJSONSchema() map[string]any {
@@ -862,7 +863,7 @@ func (s *Service) TranscribeAudio(ctx context.Context, principal identity.Princi
 	if err != nil {
 		return GeneratedTranscript{}, "", err
 	}
-	model, _, _, err := s.resolveModel(principal.AccountScopeID)
+	model, _, _, err := s.resolveModel(principal.AccountScopeID, "audio")
 	if err != nil {
 		return GeneratedTranscript{}, "", err
 	}

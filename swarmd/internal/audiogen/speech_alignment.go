@@ -45,10 +45,17 @@ func (s *Service) SpeechAlignmentModel(account string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	model := strings.TrimPrefix(strings.TrimSpace(settings.Media.TranscriptionModel), "google/")
+	model, err := videotranscription.NormalizeTranscriptionModel(settings.Media.TranscriptionModel)
+	if err != nil {
+		return "", err
+	}
 	records, err := s.modelCatalog.ListCatalog("google", 2000)
 	if err != nil {
 		return "", err
+	}
+	if model != "" {
+		record, err := videotranscription.ResolveTranscriptionModel(model, records, "audio")
+		return record.Model, err
 	}
 	records = append([]pebblestore.ModelCatalogRecord(nil), records...)
 	sort.Slice(records, func(i, j int) bool {
@@ -64,32 +71,18 @@ func (s *Service) SpeechAlignmentModel(account string) (string, error) {
 		return name(records[i]) < name(records[j])
 	})
 	for _, record := range records {
-		if model != "" && record.Model != model {
+		if !speechTranscriptionCatalogRecord(record) {
 			continue
 		}
-		if model == "" && !speechTranscriptionCatalogRecord(record) {
+		if _, err := videotranscription.ResolveTranscriptionModel(record.Model, []pebblestore.ModelCatalogRecord{record}, "audio"); err != nil {
 			continue
 		}
-		audio, text := false, false
-		for _, input := range record.CatalogModalities.Inputs {
-			audio = audio || input == "audio"
+		if _, err := s.getGoogleAPIKey(account); err != nil {
+			return "", err
 		}
-		for _, output := range record.CatalogModalities.Outputs {
-			text = text || output == "text"
-		}
-		if audio && text {
-			if model == "" {
-				if _, err := s.getGoogleAPIKey(account); err != nil {
-					return "", err
-				}
-			}
-			return record.Model, nil
-		}
+		return record.Model, nil
 	}
-	if model == "" {
-		return "", ErrNoSpeechTranscriptionModel
-	}
-	return "", errors.New("select a Google audio-input transcription model in Media settings for speech timings")
+	return "", ErrNoSpeechTranscriptionModel
 }
 
 // speechTranscriptionCatalogRecord identifies models usable by the Google

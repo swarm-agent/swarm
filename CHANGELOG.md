@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Resolve bare and Google-prefixed transcription settings consistently for speech timings and media transcription, with caller-specific modality errors. Docs impact: none
+
 - Fix custom worker creation with a model through Swarm Control by applying the existing model-pin route after creation; report partial success if pinning fails. Docs impact: none.
 
 - Explicitly request shared gVisor access for workspace bind mounts so host and concurrent lease writes are visible without relaxing sandbox isolation. Docs impact: none.
