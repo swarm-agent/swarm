@@ -371,13 +371,6 @@ func controlMCPDeployWorker(c *controlMCPCall, args map[string]any) (any, error)
 	if description := controlMCPString(args, "description"); description != "" {
 		body["description"] = description
 	}
-	if raw := args["model"]; raw != nil {
-		profile, err := c.workerModel(raw)
-		if err != nil {
-			return nil, err
-		}
-		body["model_profile"] = profile
-	}
 	created, err := c.dispatch(http.MethodPost, "/v3/workers", nil, body)
 	if err != nil {
 		return nil, err
@@ -399,7 +392,15 @@ func controlMCPDeployWorker(c *controlMCPCall, args map[string]any) (any, error)
 	if err != nil {
 		return nil, controlMCPToolFailure("worker %s created but not activated: %s", workerID, err.Error())
 	}
-	return c.deployWorkerModel(controlMCPMap(activated["worker"]), map[string]any{})
+	modelArgs := map[string]any{}
+	if raw := args["model"]; raw != nil {
+		modelArgs["model"] = raw
+	}
+	result, err := c.deployWorkerModel(controlMCPMap(activated["worker"]), modelArgs)
+	if err != nil {
+		return nil, controlMCPToolFailure("worker %s created and activated without the requested model pin: %s", workerID, err)
+	}
+	return result, nil
 }
 
 // ---- jobs -----------------------------------------------------------------
