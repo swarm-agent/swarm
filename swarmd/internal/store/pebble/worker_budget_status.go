@@ -66,7 +66,7 @@ func (s *SessionStore) GetWorkerBudgetStatus(account, worker string) (WorkerBudg
 	}
 	status.WorkerBudgetPolicy = policy
 	status.Date = time.Now().UTC().Format("2006-01-02")
-	status.Usage, _, err = s.GetUsageScopeDay(account, "worker", "", worker, status.Date)
+	status.Usage, err = s.workerBudgetUsageDay(account, worker, status.Date)
 	if err != nil {
 		return status, err
 	}

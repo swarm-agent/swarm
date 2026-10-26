@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Re-evaluate unresolved model receipt pricing in worker budget checks and status, so historical Claude Code receipts count as $0 subscription usage without rewriting receipts; still-unpriced providers remain blocked. Docs impact: none.
+
 - Count Claude Code model usage as $0 subscription usage for worker USD budgets, preserving media charges, token limits, and unknown-pricing rejection for other providers. Docs impact: clarified plan-backed worker accounting in `docs/box-limits.md`.
 
 - Render workflow inputs in worker/job/schedule scopes and schedule clocks, validate rendered clocks, and retain resolved worker-name IDs for matching. Docs impact: expanded the Inputs section in `docs/automations.md`.

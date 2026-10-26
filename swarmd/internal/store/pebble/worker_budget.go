@@ -146,7 +146,7 @@ func (s *SessionStore) checkWorkerBudgetLocked(account, worker, date string) (Wo
 	if err != nil {
 		return policy, UsageScopeTotal{}, err
 	}
-	total, _, err := s.GetUsageScopeDay(account, "worker", "", worker, date)
+	total, err := s.workerBudgetUsageDay(account, worker, date)
 	if err != nil {
 		return policy, total, err
 	}
