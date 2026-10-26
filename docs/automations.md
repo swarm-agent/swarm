@@ -946,7 +946,10 @@ Export retains declarations and placeholders but
 never instance `with` values; defaults are part of the portable definition.
 
 Placeholders work in step briefs, args, messages, deliver paths and workers,
-and in `on.event.url`, `items`, `id`, `on.start.worker` and `brief`.
+in `for_each.file`, `scope.worker`, `scope.job`, `scope.schedule`,
+`on.schedule.cron`, `on.schedule.timezone`, and in `on.event.url`, `items`,
+`id`, `on.start.worker` and `brief`. `scope.worker` may be a worker name;
+its resolved ID is retained for matching while the saved template is preserved.
 `{{event.*}}` in trigger start briefs still expands from the event. Worker names
 resolve to exactly one active worker in the account (or use an existing worker
 ID); built-in step agents retain their meaning. Trigger starts still require a

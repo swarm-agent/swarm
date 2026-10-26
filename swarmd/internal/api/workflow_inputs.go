@@ -50,6 +50,13 @@ func (s *Server) workflowWorker(account, name string) (string, error) {
 }
 
 func (s *Server) resolveWorkflowWorkers(a *jobautomation.Automation) error {
+	if a.Scope.Worker != "" {
+		id, err := s.workflowWorker(a.Account, a.Scope.Worker)
+		if err != nil {
+			return err
+		}
+		a.Scope.Worker = id
+	}
 	for i := range a.Steps {
 		if a.Steps[i].Type != jobautomation.StepAgent {
 			continue

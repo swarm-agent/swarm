@@ -47,16 +47,17 @@ func TestScheduleValidation(t *testing.T) {
 
 // Purpose: TriggerRunner's schedule path must render local dates, serialize
 // canonical starts, persist skip/failure receipts and never replay downtime.
-// Real Pebble and a fixed clock isolate these invariants from provider latency.
+// Real Pebble and a fixed clock isolate these invariants from provider latency,
+// including use of input-bound cron/timezone through RenderInputs.
 func TestScheduleSlotsAndRestart(t *testing.T) {
 	h := newHarness(t)
 	now := time.Date(2026, 1, 2, 4, 59, 0, 0, time.UTC)
 	h.store.now = func() time.Time { return now }
 	a := testAutomation(t.TempDir())
 	a.Steps = nil
-	a.Inputs = map[string]Input{"brand": {}}
-	a.With = map[string]string{"brand": "Brand"}
-	a.On = &Trigger{Schedule: &TriggerSchedule{Cron: "* * * * *", Timezone: "America/New_York"}, Start: TriggerStart{Worker: "worker-1", Brief: "{{inputs.brand}} {{schedule.date}} {{schedule.time}}"}}
+	a.Inputs = map[string]Input{"brand": {}, "cron": {}, "zone": {}}
+	a.With = map[string]string{"brand": "Brand", "cron": "* * * * *", "zone": "America/New_York"}
+	a.On = &Trigger{Schedule: &TriggerSchedule{Cron: "{{inputs.cron}}", Timezone: "{{inputs.zone}}"}, Start: TriggerStart{Worker: "worker-1", Brief: "{{inputs.brand}} {{schedule.date}} {{schedule.time}}"}}
 	a = h.automation(a)
 	starts := 0
 	running := true

@@ -33,7 +33,7 @@ func definitionFields(a *Automation) map[string]any {
 	if a == nil {
 		return map[string]any{}
 	}
-	return map[string]any{"inputs": a.Inputs, "with": a.With, "on": a.On, "trigger_owner": a.TriggerOwner, "name": a.Name, "scope": a.Scope, "when": a.When, "enabled": a.Enabled, "retries": a.Retries, "steps": a.Steps, "result": a.Result}
+	return map[string]any{"scope_worker_id": a.ScopeWorkerID, "inputs": a.Inputs, "with": a.With, "on": a.On, "trigger_owner": a.TriggerOwner, "name": a.Name, "scope": a.Scope, "when": a.When, "enabled": a.Enabled, "retries": a.Retries, "steps": a.Steps, "result": a.Result}
 }
 func changedFields(a, b *Automation) []string {
 	before, after := definitionFields(a), definitionFields(b)

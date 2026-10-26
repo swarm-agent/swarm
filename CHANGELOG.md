@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Render workflow inputs in worker/job/schedule scopes and schedule clocks, validate rendered clocks, and retain resolved worker-name IDs for matching. Docs impact: expanded the Inputs section in `docs/automations.md`.
+
 - Add workflow schedule triggers and trigger-only workflows, skipping busy/missed slots and preventing duplicate job-end handling. Docs impact: schedule and matching rules in `docs/automations.md`.
 
 - Add workflow agent `for_each` steps that queue bounded, independent worker jobs from committed JSON plans, with durable item receipts. Docs impact: `docs/automations.md` documents one job per item.

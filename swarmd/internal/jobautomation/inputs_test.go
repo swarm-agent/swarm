@@ -125,3 +125,66 @@ func TestWorkflowInputsStepRuntime(t *testing.T) {
 		t.Fatal(h.agents.started[0].Brief)
 	}
 }
+
+// Purpose: Normalize and Matches must validate/render all scope bindings while
+// preserving portable templates. This domain test isolates malformed references
+// and ensures job/schedule filters are not bypassed after substitution.
+func TestWorkflowInputsScopeFields(t *testing.T) {
+	a := testAutomation(t.TempDir())
+	a.Inputs = map[string]Input{"worker": {}, "job": {}, "schedule": {}}
+	a.With = map[string]string{"worker": "maker", "job": "worker/maker/run", "schedule": "daily"}
+	a.Scope.Worker, a.Scope.Job, a.Scope.Schedule = "{{inputs.worker}}", "{{inputs.job}}", "{{inputs.schedule}}"
+	if err := a.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	if a.Scope.Worker != "{{inputs.worker}}" || a.Scope.Job != "{{inputs.job}}" || a.Scope.Schedule != "{{inputs.schedule}}" {
+		t.Fatal("lost templates")
+	}
+	r := &Result{Folder: a.Scope.Folder, JobID: a.With["job"], ScheduleID: "daily", Worker: &ResultWorker{ID: "maker"}, Status: StatusSucceeded}
+	if !a.Matches(r) {
+		t.Fatal("did not match rendered scope")
+	}
+	r.ScheduleID = "other"
+	if a.Matches(r) {
+		t.Fatal("matched wrong schedule")
+	}
+	for _, key := range []string{"job", "schedule"} {
+		old := a.With[key]
+		a.With[key] = "bad reference!"
+		if err := a.Normalize(); !IsValidationError(err) {
+			t.Fatal(err)
+		}
+		a.With[key] = old
+	}
+}
+
+// Purpose: Normalize must reject invalid rendered clock fields before saving;
+// RenderInputs must preserve templates and produce the clock used by scheduling.
+func TestWorkflowInputsScheduleValidation(t *testing.T) {
+	for _, tc := range []struct {
+		cron, zone string
+		bad        bool
+	}{{"0 9 * * *", "UTC", false}, {"bad", "UTC", true}, {"0 9 * * *", "Not/AZone", true}} {
+		a := testAutomation(t.TempDir())
+		a.Inputs = map[string]Input{"cron": {}, "zone": {}}
+		a.With = map[string]string{"cron": tc.cron, "zone": tc.zone}
+		a.On = &Trigger{Schedule: &TriggerSchedule{Cron: "{{inputs.cron}}", Timezone: "{{inputs.zone}}"}, Start: TriggerStart{Worker: "maker", Brief: "work"}}
+		err := a.Normalize()
+		if tc.bad {
+			if !IsValidationError(err) {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a.On.Schedule.Cron != "{{inputs.cron}}" || a.On.Schedule.Timezone != "{{inputs.zone}}" {
+			t.Fatal("lost schedule templates")
+		}
+		rendered, err := a.RenderInputs()
+		if err != nil || rendered.On.Schedule.Cron != tc.cron || rendered.On.Schedule.Timezone != tc.zone {
+			t.Fatal(rendered, err)
+		}
+	}
+}

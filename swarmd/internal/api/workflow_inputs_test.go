@@ -171,3 +171,55 @@ func TestWorkflowInputsLegacyWorkerRuntime(t *testing.T) {
 		t.Fatal(runs, err)
 	}
 }
+
+// Purpose: SaveWorkflow must persist a resolved scope ID while retaining its
+// template. Real service/store reads and Matches prove name binding cannot
+// select another worker; refused names must leave the saved revision unchanged.
+func TestWorkflowInputsScopeWorker(t *testing.T) {
+	f := newReopenFixture(t)
+	f.server.SetJobAutomations(jobautomation.NewRunner(jobautomation.Options{Store: jobautomation.NewStore(f.server.sessions.Store().Underlying())}))
+	p := testPrincipal()
+	ws := f.server.sessions.Store().WorkerStore()
+	w, err := ws.CreateWorker(p.AccountScopeID, p.UserID, pebblestore.CreateWorkerRequest{Name: "Brand maker", Role: pebblestore.WorkerRoleCoder, IdempotencyKey: "scope-maker"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err = ws.ActivateWorker(p.AccountScopeID, p.UserID, w.ID, w.Revision, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caller := workflowCallerFromRequest(withTestPrincipal(httptest.NewRequest("POST", "/", nil)))
+	body := WorkflowDefinition{Name: "scoped", Scope: jobautomation.Scope{Folder: t.TempDir(), Worker: "{{inputs.maker}}"}, Inputs: map[string]jobautomation.Input{"maker": {}}, With: map[string]string{"maker": w.Name}, Steps: []jobautomation.Step{{Type: jobautomation.StepAgent, Worker: "coder", Brief: "work"}}}
+	saved, _, _, err := f.server.SaveWorkflow(caller, body, "set", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err = f.server.GetWorkflow(caller, saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Scope.Worker != "{{inputs.maker}}" || saved.ScopeWorkerID != w.ID {
+		t.Fatalf("scope: %+v", saved)
+	}
+	result := &jobautomation.Result{Folder: body.Scope.Folder, Status: jobautomation.StatusSucceeded, Worker: &jobautomation.ResultWorker{ID: w.ID}}
+	if !saved.Matches(result) {
+		t.Fatal("bound worker did not match")
+	}
+	result.Worker.ID = f.workerID
+	if saved.Matches(result) {
+		t.Fatal("matched another worker")
+	}
+	if _, err := ws.CreateWorker(p.AccountScopeID, p.UserID, pebblestore.CreateWorkerRequest{Name: "Inactive maker", Role: pebblestore.WorkerRoleCoder, IdempotencyKey: "inactive-maker"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"missing maker", "Inactive maker"} {
+		body.With["maker"] = name
+		if _, _, _, err := f.server.SaveWorkflow(caller, body, "set", false); !jobautomation.IsValidationError(err) {
+			t.Fatal(err)
+		}
+		current, err := f.server.GetWorkflow(caller, saved.ID)
+		if err != nil || current.Revision != saved.Revision || current.ScopeWorkerID != w.ID {
+			t.Fatalf("refusal changed record: %+v %v", current, err)
+		}
+	}
+}

@@ -50,7 +50,7 @@ func portableWorkflow(a jobautomation.Automation, folder string) workflowDefinit
 }
 
 func workflowDefinitionsEqual(a, b jobautomation.Automation) bool {
-	return reflect.DeepEqual(a.With, b.With) && reflect.DeepEqual(portableWorkflow(a, ""), portableWorkflow(b, ""))
+	return a.ScopeWorkerID == b.ScopeWorkerID && reflect.DeepEqual(a.With, b.With) && reflect.DeepEqual(portableWorkflow(a, ""), portableWorkflow(b, ""))
 }
 
 func decodeWorkflow(data []byte) (workflowDefinition, error) {

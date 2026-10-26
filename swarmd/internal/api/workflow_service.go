@@ -95,6 +95,7 @@ func (s *Server) SaveWorkflow(caller WorkflowCaller, body WorkflowDefinition, so
 	if err := s.resolveWorkflowWorkers(&rendered); err != nil {
 		return zero, false, false, err
 	}
+	a.ScopeWorkerID = rendered.Scope.Worker
 	if err := s.validateWorkflowTrigger(caller.Principal, rendered); err != nil {
 		return zero, false, false, err
 	}

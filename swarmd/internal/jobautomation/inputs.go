@@ -69,6 +69,9 @@ func (a Automation) RenderInputs() (Automation, error) {
 			return value
 		})
 	}
+	out.Scope.Worker = replace(out.Scope.Worker)
+	out.Scope.Job = replace(out.Scope.Job)
+	out.Scope.Schedule = replace(out.Scope.Schedule)
 	for i := range out.Steps {
 		s := &out.Steps[i]
 		if s.ForEach != nil {
@@ -81,6 +84,10 @@ func (a Automation) RenderInputs() (Automation, error) {
 	}
 	if out.On != nil {
 		t := out.On
+		if t.Schedule != nil {
+			t.Schedule.Cron = replace(t.Schedule.Cron)
+			t.Schedule.Timezone = replace(t.Schedule.Timezone)
+		}
 		t.Event.URL, t.Event.Items, t.Event.ID = replace(t.Event.URL), replace(t.Event.Items), replace(t.Event.ID)
 		t.Start.Worker, t.Start.Brief = replace(t.Start.Worker), replace(t.Start.Brief)
 	}
@@ -116,6 +123,15 @@ func (a *Automation) normalizeInputs() error {
 			s.ForEach.File = original.ForEach.File
 		}
 		s.Args = original.Args
+	}
+	if strings.Contains(a.Scope.Worker, "{{inputs.") {
+		rendered.Scope.Worker = a.Scope.Worker
+	}
+	if strings.Contains(a.Scope.Job, "{{inputs.") {
+		rendered.Scope.Job = a.Scope.Job
+	}
+	if strings.Contains(a.Scope.Schedule, "{{inputs.") {
+		rendered.Scope.Schedule = a.Scope.Schedule
 	}
 	rendered.On = a.On
 	rendered.inputsRendered = false

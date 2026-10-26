@@ -196,7 +196,9 @@ type Step struct {
 // Automation is a durable, account-owned definition. Revision changes on
 // every update; a delivery keeps the revision it started with.
 type Automation struct {
-	ItemSource     string `json:"-"`
+	ItemSource string `json:"-"`
+	// ScopeWorkerID is save-resolved metadata, not part of the portable definition.
+	ScopeWorkerID  string `json:"scope_worker_id,omitempty"`
 	inputsRendered bool
 	Inputs         map[string]Input  `json:"inputs,omitempty"`
 	With           map[string]string `json:"with,omitempty"`
@@ -278,8 +280,8 @@ func (s *Scope) normalize() error {
 	}
 	s.Folder = filepath.Clean(s.Folder)
 	s.Worker, s.Job, s.Schedule = strings.TrimSpace(s.Worker), strings.TrimSpace(s.Job), strings.TrimSpace(s.Schedule)
-	if s.Worker != "" && !refIDPattern.MatchString(s.Worker) {
-		return invalid("scope.worker must be a worker id")
+	if len(s.Worker) > 200 {
+		return invalid("scope.worker must be a worker id or name (at most 200 bytes)")
 	}
 	if s.Schedule != "" && !refIDPattern.MatchString(s.Schedule) {
 		return invalid("scope.schedule must be a schedule id")
@@ -543,6 +545,14 @@ func ValidCommandPath(command string) error {
 
 // Matches reports whether the automation applies to this job end.
 func (a Automation) Matches(r *Result) bool {
+	var err error
+	a, err = a.RenderInputs()
+	if err != nil {
+		return false
+	}
+	if a.ScopeWorkerID != "" {
+		a.Scope.Worker = a.ScopeWorkerID
+	}
 	if a.Proposed || !a.Enabled || r == nil || len(a.Steps) == 0 {
 		return false
 	}
