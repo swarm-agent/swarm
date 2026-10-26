@@ -7,6 +7,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 ## Unreleased
 
 - Use an eligible connected Google catalog model for speech timings when transcription is unset; return speech audio with an explicit note when no timing model exists. Docs impact: documented fallback and audio-only results in `docs/manage-media.md`.
+- Add `for_each.after_field` / `id_field` dependencies that wait for successful item jobs and job-end deliveries before dispatch, without consuming parallel slots. Docs impact: documented dependent video cuts in `docs/automations.md`.
 
 - Re-evaluate unresolved model receipt pricing in worker budget checks and status, so historical Claude Code receipts count as $0 subscription usage without rewriting receipts; repricing is bounded to 100 matching worker-day receipts using daily session rollups, independently of unrelated account history, skips non-USD admission checks, and fails closed beyond that bound. Still-unpriced providers remain blocked. Docs impact: none.
 

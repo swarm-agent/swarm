@@ -15,14 +15,18 @@ import (
 	pebble "swarm/packages/swarmd/internal/store/pebble"
 )
 
-// ForEach queues independent worker jobs from a committed JSON array.
+// ForEach queues worker jobs from a committed JSON array.
 type ForEach struct {
 	File        string `json:"file"`
 	Items       string `json:"items,omitempty"`
 	MaxParallel int    `json:"max_parallel,omitempty"`
+	AfterField  string `json:"after_field,omitempty"`
+	IDField     string `json:"id_field,omitempty"`
 }
 
 type ItemRecord struct {
+	ID    string `json:"id,omitempty"`
+	After string `json:"after,omitempty"`
 	Index int    `json:"index"`
 	Label string `json:"label,omitempty"`
 	State string `json:"state"`
@@ -53,6 +57,14 @@ func (s *Step) normalizeForEach() error {
 			if part == "" {
 				return invalid("for_each.items must be a dot path")
 			}
+		}
+	}
+	if f.IDField == "" {
+		f.IDField = "id"
+	}
+	for _, field := range []string{f.IDField, f.AfterField} {
+		if len(field) > 200 || strings.ContainsAny(field, "\x00\r\n") {
+			return invalid("for_each field names must be at most 200 bytes without control characters")
 		}
 	}
 	if f.MaxParallel == 0 {
@@ -138,6 +150,10 @@ func (r *Runner) queueItems(ctx context.Context, d *Delivery, record *StepRecord
 	if err != nil {
 		return stepFailure{reason: err.Error(), refused: true}
 	}
+	dependencies, err := matrixDependencies(items, *step.ForEach)
+	if err != nil {
+		return stepFailure{reason: err.Error(), refused: true}
+	}
 	queued := make([]ItemRecord, 0, len(items))
 	for i, item := range items {
 		label := eventText(item["title"])
@@ -151,7 +167,13 @@ func (r *Runner) queueItems(ctx context.Context, d *Delivery, record *StepRecord
 		if err != nil || len(input) > 64*1024 {
 			return stepFailure{reason: fmt.Sprintf("for_each item %d exceeds the 64 KiB worker input limit", i), refused: true}
 		}
-		queued = append(queued, ItemRecord{Index: i, Label: truncate(label, 120), State: "queued", Brief: brief})
+		entry := dependencies[i]
+		entry.Index, entry.Label, entry.Brief = i, truncate(label, 120), brief
+		entry.State = "queued"
+		if entry.After != "" {
+			entry.State = "waiting for " + entry.After
+		}
+		queued = append(queued, entry)
 	}
 	record.Items = queued
 	if err := r.store.SaveDelivery(*d); err != nil {
@@ -188,7 +210,7 @@ func (r *TriggerRunner) tickItems(ctx context.Context) {
 			}
 			pending := false
 			for _, item := range rec.Items {
-				if item.State == "queued" || item.State == "started" {
+				if itemPending(item) {
 					pending = true
 					break
 				}
@@ -231,6 +253,19 @@ func (r *TriggerRunner) tickItems(ctx context.Context) {
 			}
 			for j := range rec.Items {
 				item := &rec.Items[j]
+				if item.After != "" && (item.State == "queued" || strings.HasPrefix(item.State, "waiting for ")) {
+					ready, failure := r.itemDependency(d.Account, rec.Items, item.After)
+					if failure != "" {
+						item.State, item.Error = "failed", "waits for "+item.After+", which did not finish: "+failure
+						changed = true
+						continue
+					}
+					if !ready || active >= step.ForEach.MaxParallel {
+						continue
+					}
+					item.State = "queued"
+					changed = true
+				}
 				if item.State != "queued" || active >= step.ForEach.MaxParallel {
 					continue
 				}

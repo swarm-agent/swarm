@@ -513,7 +513,7 @@ func (s *Store) putDeliveryLocked(d Delivery) error {
 	pending := false
 	for _, step := range d.Steps {
 		for _, item := range step.Items {
-			if item.State == "queued" || item.State == "started" {
+			if itemPending(item) {
 				pending = true
 			}
 		}

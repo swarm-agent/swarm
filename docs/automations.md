@@ -977,6 +977,8 @@ Omit `items` when the file itself is the array. `file` supports `{{inputs.*}}`;
 briefs support inputs and `{{item.field}}` (nested dot paths, compact JSON for
 objects/arrays, empty text for missing fields).
 
+Set `after_field: "reuses"` to let a 9:16 cut with `{"id":"cut","reuses":"wide"}` wait for the 16:9 video with `{"id":"wide"}` in the same file. `id_field` defaults to `id`. The cut shows `waiting for wide` until that job succeeds and all its job-end workflow deliveries finish successfully, including their deliver/merge steps, so it can use the committed files in the folder branch. A failed/blocked prerequisite or delivery fails the cut without starting it, with `waits for wide, which did not finish: <reason>`. Missing/empty references impose no dependency; unknown references, duplicate IDs, and cycles are refused before queuing. Waiting items consume no parallel slots.
+
 `max_parallel` is 1–5, default 1. The step succeeds after durable queuing; later
 steps do not wait. Delivery reads list each item's state, job id and error.
 Starts are deduplicated across restart. Each maker job runs its own worker-scoped

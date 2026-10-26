@@ -394,7 +394,7 @@ func (r *Runner) consume(ctx context.Context, account string, sig pebblestore.Si
 			candidates = append(candidates, a)
 		}
 	}
-	if len(candidates) == 0 || r.results == nil {
+	if r.results == nil || (len(candidates) == 0 && !pebblestore.IsWorkflowItemSource(sig.Attrs["source"])) {
 		return nil
 	}
 	r.mu.Lock()
@@ -474,6 +474,9 @@ func (r *Runner) consume(ctx context.Context, account string, sig pebblestore.Si
 		if !created && d.ID != DeliveryID(result.JobID, result.Followup, a.ID, a.Revision) {
 			r.skippedDuplicateHead(d, *result)
 		}
+	}
+	if pebblestore.IsWorkflowItemSource(result.RequestSource) {
+		return r.store.db.PutJSON(itemEndKey(account, result.JobID), result)
 	}
 	return nil
 }
