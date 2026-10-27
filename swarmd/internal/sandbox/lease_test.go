@@ -231,3 +231,26 @@ func TestLeaseRunsAsTheOwnerOfTheWorkingDirectory(t *testing.T) {
 		t.Fatalf("folder lease does not run as the folder owner: %s", owner)
 	}
 }
+
+// Purpose: recoverLeases must isolate a stale review row so later containers
+// remain counted and reapable. The fake engine is the narrowest deterministic
+// boundary proving removal, accounting and reaping without Docker.
+func TestLeasesRecoveryContinuesAfterStaleReview(t *testing.T) {
+	m, runner, project := newLeaseTestManager(t, 2, func(string) (bool, error) { return false, nil })
+	stale := leaseContainerName(project, "stale")
+	ordinary := leaseContainerName(project, "ordinary")
+	runner.out["ps -a"] = stale + "\tstale\treviewer\t" + project + "\tdaemon\t" + project + "/removed\n" + ordinary + "\tordinary\tworker\t" + project + "\n"
+	if err := m.recoverLeases(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !runner.ran("rm -f "+stale) || len(m.OwnerLeases("reviewer")) != 0 {
+		t.Fatal("stale review was not removed")
+	}
+	if len(m.OwnerLeases("worker")) != 1 || m.LeasesInUse(project) != 1 {
+		t.Fatal("later lease lost from accounting")
+	}
+	m.reapLeases(context.Background())
+	if !runner.ran("rm -f "+ordinary) || m.LeasesInUse(project) != 0 {
+		t.Fatal("later lease was not reaped")
+	}
+}

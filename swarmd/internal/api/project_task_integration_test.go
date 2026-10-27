@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"swarm/packages/swarmd/internal/jobautomation"
 	"testing"
 	"time"
 
@@ -40,8 +42,10 @@ func integrationGit(t *testing.T, dir string, args ...string) string {
 // branches and target mismatches must remain unchanged with lane_branch_mismatch
 // and the HTTP delivery assessment, preserving MCP's unobserved-state handling. Git HEAD lock
 // conflicts must surface through IntegrateProjectTask without changing delivery.
+// The workflow case crosses toBranch and the real HTTP handler to prove the
+// recovery warning reaches the recorded outcome, not just the stored receipt.
 func TestProjectTaskIntegrateNativeAndHTTP(t *testing.T) {
-	for _, entry := range []string{"native", "http", "detached-tip", "detached-lock", "detached-stale", "detached-dirty", "wrong-branch", "target-mismatch"} {
+	for _, entry := range []string{"native", "http", "detached-tip", "detached-tip-workflow", "detached-lock", "detached-stale", "detached-dirty", "wrong-branch", "target-mismatch"} {
 		t.Run(entry, func(t *testing.T) {
 			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 			t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
@@ -178,6 +182,35 @@ func TestProjectTaskIntegrateNativeAndHTTP(t *testing.T) {
 				if err := json.Unmarshal([]byte(out), &result); err != nil {
 					t.Fatal(err)
 				}
+			} else if entry == "detached-tip-workflow" {
+				// Exercise toBranch through the real HTTP routes and real Git:
+				// a fabricated integration response cannot prove warning delivery.
+				integrationGit(t, child, "checkout", "--detach", head)
+				handler := f.server.internalRouteHandler()
+				call := &controlMCPCall{request: withTestPrincipal(httptest.NewRequest(http.MethodPost, "/mcp", nil)), server: f.server}
+				call.next = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					rec := httptest.NewRecorder()
+					handler.ServeHTTP(rec, r)
+					if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/integrate") && rec.Code == http.StatusOK {
+						if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+							t.Fatal(err)
+						}
+					}
+					for k, values := range rec.Header() {
+						w.Header()[k] = values
+					}
+					w.WriteHeader(rec.Code)
+					_, _ = w.Write(rec.Body.Bytes())
+				})
+				f.server.jobAutomationCallFn = func(context.Context) (*controlMCPCall, error) { return call, nil }
+				outcome, err := (jobAutomationDeliverer{s: f.server}).toBranch(context.Background(), jobautomation.DeliverRequest{Folder: source, To: jobautomation.DeliverMerge, Result: jobautomation.Result{JobID: "task/" + proj.ID + "/" + task.ID, Git: &jobautomation.ResultGit{Head: head}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				warning, _ := result["integration"].(map[string]any)["warning"].(string)
+				if warning == "" || !strings.Contains(outcome.Where, warning) || len(outcome.Delivered) != 1 || !strings.Contains(outcome.Delivered[0].Where, warning) {
+					t.Fatalf("warning lost: response=%#v outcome=%#v", result, outcome)
+				}
 			} else {
 				args, _ := json.Marshal(tool.ProjectTaskIntegrationSelection{SessionID: session.ID, SourceBranch: "agent/task", TargetBranch: "dev"})
 				code, out := f.do(http.MethodPost, "/v3/projects/"+proj.ID+"/tasks/"+task.ID+"/integrate", string(args))
@@ -195,8 +228,11 @@ func TestProjectTaskIntegrateNativeAndHTTP(t *testing.T) {
 			if receipt["target_branch"] != "dev" || receipt["resulting_target_head"] != head {
 				t.Fatalf("receipt: %#v", receipt)
 			}
+			if entry == "detached-tip" && receipt["warning"] == "" {
+				t.Fatal("HTTP response lost recovery warning")
+			}
 			updated, _, _ := db.GetProjectTask(p.AccountScopeID, proj.ID, task.ID)
-			if entry == "detached-tip" && (updated.Integration.Warning == "" || integrationGit(t, child, "symbolic-ref", "--short", "HEAD") != "agent/task") {
+			if strings.HasPrefix(entry, "detached-tip") && (updated.Integration.Warning == "" || integrationGit(t, child, "symbolic-ref", "--short", "HEAD") != "agent/task") {
 				t.Fatal("recovery did not attach and record warning")
 			}
 			if updated.Status != "completed" {

@@ -248,5 +248,5 @@ func (s *Server) IntegrateProjectTask(ctx context.Context, p identity.Principal,
 	if err != nil {
 		return nil, fmt.Errorf("Git integration verified at %s but task receipt persistence failed; reconcile task state without rerunning Git: %w", receipt.ResultingTargetHead, err)
 	}
-	return map[string]any{"status": "integrated", "task": sanitizeProjectTaskForClient(updated), "integration": map[string]any{"target_branch": parentState.BranchName, "previous_target_head": parentState.HeadCommit, "resulting_target_head": result.ResultingParentHead}}, nil
+	return map[string]any{"status": "integrated", "task": sanitizeProjectTaskForClient(updated), "integration": map[string]any{"target_branch": parentState.BranchName, "previous_target_head": parentState.HeadCommit, "resulting_target_head": result.ResultingParentHead, "warning": receipt.Warning}}, nil
 }

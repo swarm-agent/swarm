@@ -327,7 +327,11 @@ func deliveredBranchWhere(response any) string {
 	integration := controlMCPMap(view["integration"])
 	if head, _ := integration["resulting_target_head"].(string); head != "" {
 		target, _ := integration["target_branch"].(string)
-		return strings.TrimSpace(firstNonEmptyString(target, "the folder's branch") + " at " + head)
+		where := strings.TrimSpace(firstNonEmptyString(target, "the folder's branch") + " at " + head)
+		if warning, _ := integration["warning"].(string); warning != "" {
+			where += "; warning: " + warning
+		}
+		return where
 	}
 	return controlMCPTruncate(string(encoded), 300)
 }

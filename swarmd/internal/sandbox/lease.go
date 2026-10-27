@@ -388,6 +388,7 @@ func (m *Manager) recoverLeases(ctx context.Context) error {
 		return err
 	}
 	t := m.leaseTable()
+	var errs []error
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		f := strings.Split(line, "\t")
 		if len(f) < 4 || f[1] == "" || f[3] == "" {
@@ -405,7 +406,17 @@ func (m *Manager) recoverLeases(ctx context.Context) error {
 		if len(f) > 5 && f[5] != "" {
 			checkout := resolveExisting(f[5])
 			if _, err := reviewGitMounts(checkout, l.Root); err != nil {
-				return fmt.Errorf("recover review lease: %w", err)
+				// Keep failed removals accounted for and reapable, never reusable
+				// as an ordinary writable lease. One stale row must not hide others.
+				l.scope.ReviewCheckout = checkout
+				t.mu.Lock()
+				t.byID[l.ID] = l
+				t.mu.Unlock()
+				if dropErr := m.dropLease(ctx, l.ID); dropErr != nil {
+					errs = append(errs, fmt.Errorf("recover stale review lease: %w", dropErr))
+				}
+				log.Printf("swarmd stale review lease: %v", err)
+				continue
 			}
 			l.scope.ReviewCheckout = checkout
 		}
@@ -415,7 +426,7 @@ func (m *Manager) recoverLeases(ctx context.Context) error {
 		}
 		t.mu.Unlock()
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // reapLeases releases the leases of owners that no longer run.
