@@ -375,6 +375,7 @@ func SwarmAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{
 		Preset: "custom",
 		Tools: map[string]pebblestore.AgentToolConfig{
+			"manage_jobs":       {Enabled: pebblestore.BoolPtr(true)},
 			"read":              {Enabled: pebblestore.BoolPtr(true)},
 			"media_inspect":     {Enabled: pebblestore.BoolPtr(true)},
 			"search":            {Enabled: pebblestore.BoolPtr(true)},
@@ -474,6 +475,7 @@ func SwarmOrchestratorAgentToolContract() *pebblestore.AgentToolContract {
 			"manage_workers":       {Enabled: pebblestore.BoolPtr(true)},
 			"manage_custom_agents": {Enabled: pebblestore.BoolPtr(true)},
 			"manage_workflows":     {Enabled: pebblestore.BoolPtr(true)},
+			"manage_jobs":          {Enabled: pebblestore.BoolPtr(true)},
 			"manage_automation":    {Enabled: pebblestore.BoolPtr(true)},
 			"plan_manage":          {Enabled: pebblestore.BoolPtr(false)},
 			"ask_user":             {Enabled: pebblestore.BoolPtr(true)},

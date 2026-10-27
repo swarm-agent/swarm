@@ -1117,6 +1117,10 @@ func normalizePolicyRule(rule PolicyRule, now int64) (PolicyRule, bool) {
 
 func normalizePolicyToolName(name string) string {
 	name = strings.TrimSpace(strings.ToLower(name))
+	// Native job grants are explicit per-agent capabilities, not provider namespaces.
+	if strings.HasPrefix(name, "manage_jobs.") {
+		return name
+	}
 	if dot := strings.LastIndex(name, "."); dot >= 0 && dot+1 < len(name) {
 		name = name[dot+1:]
 	}

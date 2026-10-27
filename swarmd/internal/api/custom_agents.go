@@ -11,7 +11,7 @@ import (
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
 
-var customAgentAllowedTools = []string{"read", "search", "list", "find", "write", "edit", "bash", "websearch", "webfetch", "webdownload", "media_inspect", "manage_media", "git_status", "git_diff", "git_add", "git_commit", "task_progress"}
+var customAgentAllowedTools = []string{"manage_jobs", "read", "search", "list", "find", "write", "edit", "bash", "websearch", "webfetch", "webdownload", "media_inspect", "manage_media", "git_status", "git_diff", "git_add", "git_commit", "task_progress"}
 
 // ManageCustomAgents is the single account-scoped boundary for native and HTTP callers.
 func (s *Server) ManageCustomAgents(account string, args map[string]any) (any, error) {

@@ -990,3 +990,22 @@ than after the planner's fan-out. Fan-out is refused when the triggering job is
 an item of any workflow, preventing recursive job creation across workflows as
 well as within one workflow. Ordinary non-`for_each` job-end steps still run on
 item jobs normally.
+
+## An agent that watches the daily work
+
+Give a custom `daily-watch` agent the `manage_jobs` tool and a brief such as:
+
+> List today's failed or blocked worker runs. Read each job and its workflow
+> deliveries. Summarize the reason and attempts. For a transient delivery
+> failure, rerun its failed steps once; for a correctable job failure, send a
+> focused follow-up. Do not act on your own job or workflow delivery.
+
+Start read-only. To authorize repairs, the owner explicitly allows
+`manage_jobs.daily-watch.rerun_failed_steps` and/or
+`manage_jobs.daily-watch.message_job` in account permission rules. Starting a
+separate repair worker additionally needs `manage_jobs.daily-watch.give_job`.
+No grant means a clear refusal, not an implicit escalation. These actions use
+Control's existing job handlers and session account, not an outside AI key.
+See [native agent job tools](agent-tools.md) for filters, pagination, grants
+and self-loop restrictions. This is an example brief, not a claim of a live
+qualification run.

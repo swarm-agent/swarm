@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Add native `manage_jobs` for Swarm and opted-in custom agents, sharing Control job handlers, with explicit per-agent owner action grants, self-loop refusal and bounded inline read pages. Docs impact: new agent tool reference and daily-work watcher example in docs/automations.md.
+
 - Keep `for_each` dependencies waiting through review send-back rounds and judge only each workflow's latest delivery; explicit automation delivery retries recover failed dependent items once their prerequisite finishes without repeating successful steps. Docs impact: none.
 - Swarm Console has one Permissions page for the account rules (this device, other devices, home, linked machines) with each rule's live state; the per-conversation access chips, the fleet level toggle and browser leases are gone, and device and browser calls run only after Swarm approves them for this device. Docs impact: console/README.md unchanged; docs/access-model.md describes the page.
 - Retire per-session access writes in favor of account permissions and add MCP permission reads and home/linked writes. Docs impact: access model status and frontend device execution protocol updated.
