@@ -269,6 +269,7 @@ impl Console {
                 .id("media-preview")
                 .absolute()
                 .inset_0()
+                .occlude()
                 .flex()
                 .items_center()
                 .justify_center()

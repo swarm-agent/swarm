@@ -99,6 +99,7 @@ impl Console {
                 .id("fleet-popover-backdrop")
                 .absolute()
                 .inset_0()
+                .occlude()
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.fleet_open = false;
                     cx.notify();

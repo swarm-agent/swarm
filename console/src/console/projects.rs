@@ -176,6 +176,7 @@ impl Console {
                 .id("project-menu-backdrop")
                 .absolute()
                 .inset_0()
+                .occlude()
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.project_menu = false;
                     cx.notify();
