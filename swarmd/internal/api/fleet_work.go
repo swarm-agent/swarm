@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"swarm/packages/swarmd/internal/identity"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
 
@@ -109,6 +110,14 @@ func (s *Server) CallFleetWork(ctx context.Context, p identity.Principal, machin
 		return nil, fmt.Errorf("linked machine %s refused %s: %w", machine, action, err)
 	}
 	if action == "list" {
+		if name == "manage_workers" || name == "manage_automation" {
+			return compactFleetWorkers(result, func(id, cursor string) (json.RawMessage, error) {
+				var page json.RawMessage
+				err := client.JSON(ctx, http.MethodGet, WorkersPath+"/"+url.PathEscape(id)+"/runs?limit=100&cursor="+url.QueryEscape(cursor), nil, &page)
+				s.noteFleetContact(linked, err)
+				return page, err
+			})
+		}
 		return compactFleetList(result)
 	}
 	return result, nil
@@ -181,4 +190,77 @@ func compactFleetList(raw json.RawMessage) (json.RawMessage, error) {
 		out["count"] = len(items)
 	}
 	return json.Marshal(out)
+}
+
+// Run pages are ordered by opaque ID, not time. Scan bounded history rather than
+// claiming that the first run is the latest. Refuse incomplete summaries.
+func compactFleetWorkers(raw json.RawMessage, runs func(string, string) (json.RawMessage, error)) (json.RawMessage, error) {
+	var list struct {
+		Workers []pebblestore.WorkerRecord `json:"workers"`
+		Next    string                     `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return nil, err
+	}
+	if len(list.Workers) > 100 {
+		return nil, errors.New("linked worker list exceeds summary budget")
+	}
+	items := []any{}
+	requests := 0
+	for _, w := range list.Workers {
+		if w.ID == "" || w.ID == "." || w.ID == ".." || strings.ContainsAny(w.ID, "/\\?#%") {
+			return nil, errors.New("invalid linked worker id")
+		}
+		if len(w.ID) > 256 || len(w.Name) > 256 || len(w.Role) > 256 || (w.ModelProfile != nil && len(w.ModelProfile.Action.Model) > 256) {
+			return nil, errors.New("linked worker summary field exceeds budget")
+		}
+		role := w.Role
+		if role == "" {
+			role = "swarm"
+		}
+		var model any
+		if w.ModelProfile != nil {
+			model = w.ModelProfile.Action.Model
+		}
+		var latest *pebblestore.WorkerRunRecord
+		cursor := ""
+		seen := map[string]bool{}
+		for {
+			requests++
+			if requests > 200 {
+				return nil, errors.New("linked worker history exceeds summary budget")
+			}
+			page, err := runs(w.ID, cursor)
+			if err != nil {
+				return nil, fmt.Errorf("linked worker history: %w", err)
+			}
+			var history struct {
+				Runs []pebblestore.WorkerRunRecord `json:"runs"`
+				Next string                        `json:"next_cursor"`
+			}
+			if err := json.Unmarshal(page, &history); err != nil {
+				return nil, err
+			}
+			for _, run := range history.Runs {
+				if latest == nil || run.CreatedAt > latest.CreatedAt || (run.CreatedAt == latest.CreatedAt && run.ID > latest.ID) {
+					copy := run
+					latest = &copy
+				}
+			}
+			if history.Next == "" {
+				break
+			}
+			if seen[history.Next] {
+				return nil, errors.New("linked worker history repeated cursor")
+			}
+			seen[history.Next] = true
+			cursor = history.Next
+		}
+		var last any
+		if latest != nil {
+			last = map[string]any{"state": latest.Status, "created_at": latest.CreatedAt, "started_at": latest.StartedAt, "completed_at": latest.CompletedAt}
+		}
+		items = append(items, map[string]any{"id": w.ID, "name": w.Name, "role": role, "model": model, "enabled": w.LifecycleState == pebblestore.WorkerLifecycleStateIdle || w.LifecycleState == pebblestore.WorkerLifecycleStateActive, "lifecycle_state": w.LifecycleState, "last_run": last})
+	}
+	return json.Marshal(map[string]any{"workers": items, "count": len(items), "next_cursor": list.Next})
 }

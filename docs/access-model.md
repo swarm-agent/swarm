@@ -61,6 +61,10 @@ Fixed, not rules: a linked machine is never asked to integrate, deploy or
 delete projects, and never runs commands directly for the home. Agents inside the home
 work in its sandbox under the tool permission policy.
 
+Remote workflow actions are `list`, `get`, `history`, `deliveries`, `propose`, `enable`, `disable`, and `delete`. Workflow run/cancel and delivery rerun are not exposed remotely. Remote worker actions are `list`, `get`, `inspect`, `runs`, `pause`, `resume`, `archive`, and `delete` (also through `manage_automation`). Worker create/propose, update, run, acceptance, deployment and other actions are not remote; create/update need a separate proposal-preserving HTTP contract.
+
+Worker lists return id, name, role, stored model (null if unset), enabled (idle or active), lifecycle state, and the latest run's state and timestamps (null if never run). History is read through the link with a bounded scan; incomplete history fails explicitly rather than presenting an older run as latest. Full definitions remain available through `get`.
+
 For linked work, reads proceed under `ask` or `allowed`; changes under `ask` wait for a normal permission request. `off` denies both. Secrets, AI keys and permission changes are never exposed through linked management tools.
 
 For devices, `ask` means each call waits for the person's decision as a normal permission

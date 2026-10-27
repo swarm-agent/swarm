@@ -138,11 +138,17 @@ func TestFleetWorkRules(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, name := range []string{"manage_workflows", "manage_workers"} {
-			for _, action := range []string{"list", "get", "delete", "secrets", "permissions"} {
+			actions := []string{"list", "get", "delete", "secrets", "permissions"}
+			if name == "manage_workflows" {
+				actions = append(actions, "propose", "enable", "disable")
+			} else {
+				actions = append(actions, "pause", "resume", "archive")
+			}
+			for _, action := range actions {
 				want := AuthorizationApprove
 				if action == "secrets" || action == "permissions" || level == "off" {
 					want = AuthorizationDeny
-				} else if action == "delete" && level == "ask" {
+				} else if action != "list" && action != "get" && level == "ask" {
 					want = AuthorizationPending
 				}
 				args := `{"machine":"build-box","action":"` + action + `","id":"record"}`

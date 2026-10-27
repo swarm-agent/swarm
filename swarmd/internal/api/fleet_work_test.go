@@ -7,6 +7,10 @@ import (
 	"strings"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/jobautomation"
+	"swarm/packages/swarmd/internal/permission"
+	runruntime "swarm/packages/swarmd/internal/run"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/worktree"
 	"testing"
 	"time"
 )
@@ -80,5 +84,186 @@ func TestFleetWorkCompact(t *testing.T) {
 	}
 	if !strings.Contains(string(compact), `"step_count":1`) || !strings.Contains(string(compact), `"state":"succeeded"`) {
 		t.Fatalf("missing summary: %s", compact)
+	}
+}
+
+// Purpose: AuthorizeToolCall and CallFleetWork must gate workflow disable and
+// worker pause before the pinned HTTP link changes durable remote state. Real
+// temporary stores prove off/ask leave records unchanged and exact approval or
+// allowed changes only the remote record, with one pending card per call.
+func TestFleetWorkMutationRules(t *testing.T) {
+	for _, kind := range []string{"manage_workflows", "manage_workers"} {
+		for _, level := range []string{"off", "ask", "allowed"} {
+			t.Run(kind+"/"+level, func(t *testing.T) {
+				home := newFleetTestSwarm(t, "home")
+				defer home.cleanup()
+				remote := newFleetTestSwarm(t, "remote")
+				defer remote.cleanup()
+				repo := jobautomation.NewStore(remote.s.sessions.Store().Underlying())
+				remote.s.SetJobAutomations(jobautomation.NewRunner(jobautomation.Options{Store: repo}))
+				runner := runruntime.NewService(remote.s.sessions, nil, nil, nil, nil, nil, nil, nil)
+				execution, err := runruntime.NewWorkerExecutionService(runner, remote.s.sessions.Store(), &worktree.Service{}, remote.s.applySessionV3PrimaryMutation, func(identity.Principal, pebblestore.V3SessionRunIntent) bool {
+					t.Fatal("unexpected execution")
+					return false
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				runner.SetWorkerExecutionService(execution)
+				remote.s.runner = runner
+				body, _ := json.Marshal(map[string]string{"code": remote.invite(t), "name": "build-box"})
+				if status, out := home.call(t, http.MethodPost, "/v3/fleet/machines", string(body), false); status != http.StatusCreated {
+					t.Fatalf("link %d %v", status, out)
+				}
+				p := identity.Principal{Type: identity.PrincipalTypeUser, UserID: home.user, AccountScopeID: home.account}
+				account, err := home.s.sessions.Store().GetAccountPermissions(home.account)
+				if err != nil {
+					t.Fatal(err)
+				}
+				account.Linked["build-box"] = pebblestore.LinkedPermissionRule{Work: level}
+				if _, err := home.s.sessions.Store().Underlying().SetAccountPermissions(home.account, account.Revision, account); err != nil {
+					t.Fatal(err)
+				}
+				session := pebblestore.SessionSnapshot{ID: "permission-session", AccountScopeID: home.account, UserID: home.user}
+				if err := home.s.sessions.Store().CreateSessionForAccount(session, home.user, home.account); err != nil {
+					t.Fatal(err)
+				}
+				perms := permission.NewService(pebblestore.NewPermissionStore(home.s.sessions.Store().Underlying()), nil, nil)
+				perms.SetSessionResolver(home.s.sessions)
+				id, action := "", "disable"
+				var revision uint64
+				unchanged := func() bool { return false }
+				changed := func() bool { return false }
+				if kind == "manage_workflows" {
+					a, _, err := repo.Put(remote.account, jobautomation.Automation{Name: "Review", Scope: jobautomation.Scope{Folder: t.TempDir()}, Enabled: true, Steps: []jobautomation.Step{{ID: "review", Type: jobautomation.StepAgent, Worker: "reviewer", Brief: "Review"}}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					id = a.ID
+					unchanged = func() bool { got, err := repo.Get(remote.account, id); return err == nil && got.Enabled }
+					changed = func() bool { return !unchanged() }
+				} else {
+					ws := remote.s.sessions.Store().WorkerStore()
+					w, err := ws.CreateWorker(remote.account, remote.user, pebblestore.CreateWorkerRequest{Name: "Review", Instructions: "Review", Role: "finder"}, nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					id = w.ID
+					revision = w.Revision
+					action = "pause"
+					unchanged = func() bool {
+						got, found, err := ws.GetWorker(remote.account, id)
+						return err == nil && found && got.Revision == revision && got.LifecycleState == w.LifecycleState
+					}
+					changed = func() bool {
+						got, found, err := ws.GetWorker(remote.account, id)
+						return err == nil && found && got.LifecycleState == pebblestore.WorkerLifecycleStatePaused && got.Revision > revision
+					}
+				}
+				args := map[string]any{"machine": "build-box", "action": action, "id": id, "expected_revision": revision}
+				encoded, _ := json.Marshal(args)
+				auth, err := perms.AuthorizeToolCall(permission.AuthorizationInput{SessionID: session.ID, AccountScopeID: home.account, RunID: "run", CallID: "change", ToolName: kind, ToolArguments: string(encoded), Mode: "auto+bypass_permissions"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !unchanged() {
+					t.Fatal("changed before authorization")
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if level == "off" {
+					if auth.Decision != permission.AuthorizationDeny {
+						t.Fatal(auth)
+					}
+					if _, err := home.s.CallFleetWork(ctx, p, "build-box", kind, action, args); err == nil || !strings.Contains(err.Error(), "linked.build-box.work") {
+						t.Fatalf("off: %v", err)
+					}
+					if !unchanged() {
+						t.Fatal("off changed state")
+					}
+					return
+				}
+				if level == "ask" {
+					if auth.Decision != permission.AuthorizationPending || auth.Record == nil {
+						t.Fatal(auth)
+					}
+					pending, err := perms.ListPending(session.ID, 10)
+					if err != nil || len(pending) != 1 {
+						t.Fatalf("pending %v %v", pending, err)
+					}
+					if !unchanged() {
+						t.Fatal("pending changed state")
+					}
+					if _, err := perms.Resolve(session.ID, auth.Record.ID, "approve", "owner approval"); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := perms.WaitForResolution(ctx, session.ID, auth.Record.ID); err != nil {
+						t.Fatal(err)
+					}
+				} else if auth.Decision != permission.AuthorizationApprove {
+					t.Fatal(auth)
+				}
+				if _, err := home.s.CallFleetWork(ctx, p, "build-box", kind, action, args); err != nil {
+					t.Fatal(err)
+				}
+				if !changed() {
+					t.Fatal("remote change not stored")
+				}
+				if kind == "manage_workers" {
+					listing, err := home.s.CallFleetWork(ctx, p, "build-box", kind, "list", nil)
+					if err != nil || len(listing) > 2000 || !strings.Contains(string(listing), `"enabled":false`) || !strings.Contains(string(listing), `"last_run":null`) || !strings.Contains(string(listing), `"role":"finder"`) || strings.Contains(string(listing), "instructions") {
+						t.Fatalf("linked summary: %s %v", listing, err)
+					}
+				}
+			})
+		}
+	}
+}
+
+// Purpose: compactFleetWorkers must discard large instructions and run output,
+// select the newest run across opaque-ID pages, and fail on incomplete history.
+// The projection layer is the narrowest proof of summary shape and size bounds.
+func TestFleetWorkerCompact(t *testing.T) {
+	rows := []any{}
+	for i := 0; i < 12; i++ {
+		rows = append(rows, map[string]any{"id": "worker", "name": "Review", "role": "finder", "lifecycle_state": "idle", "model_profile": map[string]any{"action": map[string]any{"model": "fixture-model"}}, "instructions": strings.Repeat("x", 140000)})
+	}
+	raw, _ := json.Marshal(map[string]any{"workers": rows, "next_cursor": "next"})
+	summary, err := compactFleetWorkers(raw, func(id, cursor string) (json.RawMessage, error) {
+		if cursor == "" {
+			return json.RawMessage(`{"runs":[{"id":"z","status":"failed","created_at":1}],"next_cursor":"page"}`), nil
+		}
+		return json.RawMessage(`{"runs":[{"id":"a","status":"succeeded","created_at":2,"completed_at":3}]}`), nil
+	})
+	if err != nil || len(summary) > 6000 {
+		t.Fatalf("size %d: %v", len(summary), err)
+	}
+	var out struct {
+		Workers []struct {
+			ID, Name, Role, Model string
+			Enabled               bool
+			Last                  struct {
+				State     string
+				Completed int64 `json:"completed_at"`
+			} `json:"last_run"`
+		}
+		Next string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(summary, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Workers) != 12 || out.Next != "next" {
+		t.Fatalf("shape %s", summary)
+	}
+	for _, w := range out.Workers {
+		if w.ID != "worker" || w.Name != "Review" || w.Role != "finder" || w.Model != "fixture-model" || !w.Enabled || w.Last.State != "succeeded" || w.Last.Completed != 3 {
+			t.Fatalf("summary %+v", w)
+		}
+	}
+	if strings.Contains(string(summary), "instructions") {
+		t.Fatal("definition leaked")
+	}
+	if _, err := compactFleetWorkers(raw, func(string, string) (json.RawMessage, error) { return json.RawMessage(`{"next_cursor":"repeat"}`), nil }); err == nil {
+		t.Fatal("repeating history accepted")
 	}
 }
