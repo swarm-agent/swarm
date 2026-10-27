@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::data::{
     Assignment, Busy, Choice, ClientCall, Day, Entry, Health, LiveRef, Machine, ModelUse, Pending, Plan,
-    Credential, Found, Merge, PlanWindow, Project, Provider, Question, Role, RunClock, RunState, RunsToday, Session, SessionUse, Task, TaskStatus, Text, Tokens, ToolState, UpdateState, Usage,
+    Credential, Drain, Found, Merge, PlanWindow, Project, Provider, Question, Role, RunClock, RunState, RunsToday, Session, SessionUse, Task, TaskStatus, Text, Tokens, ToolState, UpdateState, Updates, Usage,
 };
 
 pub(crate) fn s<'a>(v: &'a Value, key: &str) -> &'a str {
@@ -407,6 +407,7 @@ pub fn task(t: &Value) -> Task {
         runs: vec![],
         report: task_report(t).into(),
         merge: task_merge(t),
+        head: t.get("delivery_assessment").map(|a| s(a, "source_oid")).unwrap_or("").to_string().into(),
     }
 }
 
@@ -536,6 +537,18 @@ pub fn machine(status: &Value, kind: &str) -> Machine {
         cost_today: usage.get("today_cost_usd").and_then(Value::as_f64),
         build: (!build.is_empty()).then(|| build.into()),
         update: m.get("update").map(update_state).unwrap_or(UpdateState::Unknown),
+        updates: m.get("update").filter(|u| u.is_object()).map(|u| Updates {
+            auto: s(u, "auto").trim().to_string().into(),
+            channel: s(u, "channel").trim().to_string().into(),
+            at: u.get("at").and_then(Value::as_u64).unwrap_or(0),
+        }),
+        drain: m.get("drain").filter(|d| d.is_object()).map(|d| Drain {
+            draining: d.get("draining").and_then(Value::as_bool).unwrap_or(false),
+            since: d.get("since_ms").and_then(Value::as_u64).unwrap_or(0),
+            deadline: d.get("deadline_ms").and_then(Value::as_u64).unwrap_or(0),
+            timed_out: d.get("timed_out").and_then(Value::as_bool).unwrap_or(false),
+            blocking_runs: count(d, "blocking_runs").unwrap_or(0),
+        }),
         sandbox,
         uptime: m.get("uptime_ms").and_then(Value::as_f64).map(|ms| uptime(ms).into()),
         ..Machine::unread("".into(), kind.to_string().into(), "owner".into())
@@ -834,6 +847,27 @@ mod tests {
     }
 
     #[test]
+    fn summary_update_setting_and_drain() {
+        let now = 10 * 3_600_000;
+        let m = machine(
+            &json!({"machine": {
+                "update": {"auto": "on", "channel": "dev", "state": "installed", "at": now - 4 * 60_000},
+                "drain": {"draining": true, "since_ms": now - 5 * 60_000, "deadline_ms": now + 25 * 60_000, "timed_out": false, "blocking_runs": 2}
+            }}),
+            "paired",
+        );
+        assert_eq!(m.updates_line(now), "automatic · channel dev · state written 4m ago");
+        assert_eq!(m.drain_line(now), "draining for 5m: new work waits, 2 runs to finish · deadline in 25m");
+        let idle = machine(&json!({"machine": {"drain": {"draining": false, "since_ms": 0, "deadline_ms": 0}}}), "local");
+        assert_eq!(idle.drain_line(now), "not draining");
+        assert_eq!(idle.updates_line(now), "—");
+        // An older Swarm without the ms times still says it drains.
+        let old = machine(&json!({"machine": {"drain": {"draining": true, "timed_out": true, "blocking_runs": 1}}}), "local");
+        assert_eq!(old.drain_line(now), "draining: new work waits, 1 run to finish · its deadline passed");
+        assert_eq!(machine(&json!({}), "local").drain_line(now), "—");
+    }
+
+    #[test]
     fn summary_without_fields_leaves_them_unknown() {
         let m = machine(&json!({"ok": true, "status": "ok", "reasons": [], "machine": {}, "runs": {}, "usage": {}}), "local");
         assert_eq!(m.name.as_ref(), "swarm");
@@ -991,5 +1025,13 @@ mod project_context_tests {
         assert_eq!(missing[0].context_generation.attempt, 0);
         assert!(!missing[0].context_generation.updating());
         assert_eq!(missing[0].context_generation.label(), "Swarm has not written project.md yet.");
+    }
+
+    #[test]
+    fn task_head_and_merge_come_from_the_delivery_assessment() {
+        let t = super::task(&json!({"id": "t1", "status": "needs_review", "delivery_assessment": {"source_oid": "abc123", "allowed_actions": ["integrate"]}}));
+        assert_eq!((t.head.as_ref(), &t.merge), ("abc123", &crate::data::Merge::Integrate));
+        let none = super::task(&json!({"id": "t2", "status": "running"}));
+        assert_eq!(none.head.as_ref(), "");
     }
 }

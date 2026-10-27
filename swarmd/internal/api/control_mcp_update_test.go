@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"swarm/packages/swarmd/internal/executioncapacity"
 )
 
 // Requirement: swarm_status advertises the installed updater only when configured.
@@ -81,5 +84,20 @@ func TestControlMCPInitializeUpdateInstructions(t *testing.T) {
 	text, _ := result["instructions"].(string)
 	if !strings.Contains(text, "machine.update.command") || !strings.Contains(text, "swarm_status") {
 		t.Fatalf("missing update discovery: %s", text)
+	}
+}
+
+// Requirement: a client reads a machine's drain from its summary with times
+// in Unix ms, like the summary's other times, and no run identifiers.
+// Owner: boxDrainSummary.
+func TestBoxDrainSummaryTimes(t *testing.T) {
+	idle := boxDrainSummary(executioncapacity.DrainStatus{})
+	if idle["draining"] != false || idle["since_ms"] != int64(0) || idle["deadline_ms"] != int64(0) {
+		t.Fatalf("idle drain: %v", idle)
+	}
+	since := time.UnixMilli(1_793_000_000_000)
+	d := boxDrainSummary(executioncapacity.DrainStatus{Draining: true, Since: since, Deadline: since.Add(time.Hour), Blockers: make([]executioncapacity.DrainBlocker, 2)})
+	if d["draining"] != true || d["since_ms"] != since.UnixMilli() || d["deadline_ms"] != since.Add(time.Hour).UnixMilli() || d["blocking_runs"] != 2 {
+		t.Fatalf("draining: %v", d)
 	}
 }

@@ -14,6 +14,7 @@ pub mod permissions;
 pub mod fleet;
 pub mod fleet_keys;
 pub mod clients;
+pub mod diff;
 pub mod fleet_models;
 pub mod progress;
 pub mod realtime;

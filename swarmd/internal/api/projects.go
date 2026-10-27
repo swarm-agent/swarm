@@ -3678,6 +3678,12 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 5c. Task changes for review: GET /v3/projects/{id}/tasks/{taskId}/diff
+	if len(segments) == 4 && segments[1] == "tasks" && segments[3] == "diff" {
+		s.handleProjectTaskDiff(w, r, p, db, projectID, segments[2])
+		return
+	}
+
 	// 5b. Task model preview: GET /v3/projects/{id}/tasks/{taskId}/model-preview
 	if len(segments) == 4 && segments[1] == "tasks" && (segments[3] == "model-preview" || segments[3] == "preview") {
 		taskID := segments[2]

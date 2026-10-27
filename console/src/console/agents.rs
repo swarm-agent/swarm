@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 
 use gpui::{AnyElement, ClickEvent, Context, Div, Hsla, SharedString, div, prelude::*, px, relative};
 
-use super::{AgentsFocus, Console, Link, Page, alpha};
+use super::{AgentsFocus, Console, Link, Page, alpha, now_ms};
 use crate::data::{Assignment, Cell, Health, Machine};
 use crate::swarm::fleet_models;
 
@@ -401,6 +401,8 @@ impl Console {
                             .when(!update_reason.is_empty(), |d| {
                                 d.child(div().px_3().pl(px(92.)).py(px(1.)).text_size(px(11.)).text_color(t.faint).child(update_reason.clone()))
                             })
+                            .child(self.kv_row("updates", m.updates_line(now_ms())))
+                            .child(self.kv_row("drain", div().text_color(if m.drain.is_some_and(|d| d.draining) { t.warn } else { t.muted }).child(m.drain_line(now_ms()))))
                             .child(self.kv_row("sandbox", m.sandbox_line()))
                             .child(self.kv_row("uptime", m.uptime_line()))
                             .child(self.kv_row("now", m.now_line()))

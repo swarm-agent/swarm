@@ -122,8 +122,42 @@ pub struct Machine {
     pub last_contact: Option<u64>,
     /// Its model per role key (GET /v1/agent-model-settings); None when not read.
     pub models: Option<Vec<(Text, Assignment)>>,
+    /// The installer's update setting (`machine.update`); None when it keeps none.
+    pub updates: Option<Updates>,
+    /// Whether it drains for an update (`machine.drain`); None when not said.
+    pub drain: Option<Drain>,
     /// Where a fleet machine's Swarm answers (empty for home and the demo).
     pub gateway: Text,
+}
+
+/// The installer's update setting and when it last wrote its state (ms).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Updates {
+    pub auto: Text,
+    pub channel: Text,
+    pub at: u64,
+}
+
+/// A drain for an update: new work waits while running work finishes.
+/// Times are Unix ms, 0 when that Swarm does not give them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Drain {
+    pub draining: bool,
+    pub since: u64,
+    pub deadline: u64,
+    pub timed_out: bool,
+    pub blocking_runs: u32,
+}
+
+/// "just now", "4m", "3h", "2d" for a span of ms.
+fn span(ms: u64) -> String {
+    let m = ms / 60_000;
+    match m {
+        0 => "under a minute".into(),
+        m if m < 60 => format!("{m}m"),
+        m if m < 60 * 24 => format!("{}h", m / 60),
+        m => format!("{}d", m / (60 * 24)),
+    }
 }
 
 const UNKNOWN: &str = "—";
@@ -146,6 +180,8 @@ impl Machine {
             uptime: None,
             last_contact: None,
             models: None,
+            updates: None,
+            drain: None,
             gateway: "".into(),
         }
     }
@@ -196,6 +232,46 @@ impl Machine {
 
     pub fn sandbox_line(&self) -> String {
         self.sandbox.as_ref().map(|s| s.to_string()).unwrap_or_else(|| UNKNOWN.into())
+    }
+
+    /// "automatic · dev · state written 4m ago", or "—".
+    pub fn updates_line(&self, now: u64) -> String {
+        let Some(u) = &self.updates else { return UNKNOWN.into() };
+        let mode = match u.auto.as_ref() {
+            "on" => "automatic".to_string(),
+            "off" => "manual".to_string(),
+            "" => "update mode —".to_string(),
+            other => format!("auto {other}"),
+        };
+        let mut parts = vec![mode];
+        if !u.channel.is_empty() {
+            parts.push(format!("channel {}", u.channel));
+        }
+        if u.at > 0 {
+            parts.push(format!("state written {} ago", span(now.saturating_sub(u.at))));
+        }
+        parts.join(" · ")
+    }
+
+    /// "not draining", what a drain waits for and until when, or "—".
+    pub fn drain_line(&self, now: u64) -> String {
+        let Some(d) = self.drain else { return UNKNOWN.into() };
+        if !d.draining {
+            return "not draining".into();
+        }
+        let runs = match d.blocking_runs {
+            0 => "nothing left running".to_string(),
+            1 => "1 run to finish".to_string(),
+            n => format!("{n} runs to finish"),
+        };
+        let since = if d.since > 0 { format!(" for {}", span(now.saturating_sub(d.since))) } else { String::new() };
+        let end = match (d.timed_out, d.deadline) {
+            (true, _) => " · its deadline passed".to_string(),
+            (false, 0) => String::new(),
+            (false, at) if at <= now => " · deadline reached".to_string(),
+            (false, at) => format!(" · deadline in {}", span(at - now)),
+        };
+        format!("draining{since}: new work waits, {runs}{end}")
     }
 
     /// When home last reached it, against `now` (ms): "last contact 4m ago",
@@ -293,6 +369,9 @@ pub struct Task {
     pub report: Text,
     /// What Swarm's delivery assessment allows for finished work.
     pub merge: Merge,
+    /// The task branch's head commit as Swarm's delivery assessment saw it
+    /// ("" when it has none): its changes are read again when it moves.
+    pub head: Text,
 }
 
 /// Swarm's word on a finished task's work (its delivery assessment): commits
@@ -601,11 +680,11 @@ pub fn sessions() -> Vec<Session> {
                 Entry::tool("fleet", "forge · run_task coder · integration tests"),
             ],
             tasks: vec![
-                Task { key: "".into(), session: "".into(), title: "Reopen step for blocked deliveries".into(), role: "coder".into(), machine: 0, status: TaskStatus::Running, activity: "editing automation/reopen.go · step 3 of 5".into(), report: "".into(), merge: Merge::None("".into()), runs: vec![run("coder".into(), 0, RunState::Running, "attempt 2".into(), "now".into(), 0.41), run("coder".into(), 0, RunState::Failed, "attempt 1 · tests failed".into(), "9m".into(), 0.21)] },
-                Task { key: "".into(), session: "".into(), title: "Round limits on automation steps".into(), role: "coder".into(), machine: 0, status: TaskStatus::PendingApproval, activity: "waiting for your approval · changes a stored schema".into(), report: "".into(), merge: Merge::None("".into()), runs: vec![] },
-                Task { key: "".into(), session: "".into(), title: "Document conditions and rounds".into(), role: "swarm".into(), machine: 0, status: TaskStatus::NeedsReview, activity: "ready to merge · 2 commits".into(), report: "".into(), merge: Merge::None("".into()), runs: vec![run("swarm".into(), 0, RunState::Idle, "docs pass".into(), "4m".into(), 0.22), run("finder".into(), 0, RunState::Idle, "link check".into(), "3m".into(), 0.09)] },
-                Task { key: "".into(), session: "".into(), title: "Integration test sweep".into(), role: "coder".into(), machine: 1, status: TaskStatus::Running, activity: "go test ./... · 212 of 640 packages".into(), report: "".into(), merge: Merge::None("".into()), runs: vec![run("coder".into(), 1, RunState::Running, "test sweep".into(), "now".into(), 0.48)] },
-                Task { key: "".into(), session: "".into(), title: "Independent review of T-418".into(), role: "reviewer".into(), machine: 1, status: TaskStatus::Queued, activity: "starts when T-418 lands".into(), report: "".into(), merge: Merge::None("".into()), runs: vec![] },
+                Task { key: "".into(), session: "".into(), title: "Reopen step for blocked deliveries".into(), role: "coder".into(), machine: 0, status: TaskStatus::Running, activity: "editing automation/reopen.go · step 3 of 5".into(), report: "".into(), merge: Merge::None("".into()), head: "".into(), runs: vec![run("coder".into(), 0, RunState::Running, "attempt 2".into(), "now".into(), 0.41), run("coder".into(), 0, RunState::Failed, "attempt 1 · tests failed".into(), "9m".into(), 0.21)] },
+                Task { key: "".into(), session: "".into(), title: "Round limits on automation steps".into(), role: "coder".into(), machine: 0, status: TaskStatus::PendingApproval, activity: "waiting for your approval · changes a stored schema".into(), report: "".into(), merge: Merge::None("".into()), head: "".into(), runs: vec![] },
+                Task { key: "".into(), session: "".into(), title: "Document conditions and rounds".into(), role: "swarm".into(), machine: 0, status: TaskStatus::NeedsReview, activity: "ready to merge · 2 commits".into(), report: "".into(), merge: Merge::None("".into()), head: "".into(), runs: vec![run("swarm".into(), 0, RunState::Idle, "docs pass".into(), "4m".into(), 0.22), run("finder".into(), 0, RunState::Idle, "link check".into(), "3m".into(), 0.09)] },
+                Task { key: "".into(), session: "".into(), title: "Integration test sweep".into(), role: "coder".into(), machine: 1, status: TaskStatus::Running, activity: "go test ./... · 212 of 640 packages".into(), report: "".into(), merge: Merge::None("".into()), head: "".into(), runs: vec![run("coder".into(), 1, RunState::Running, "test sweep".into(), "now".into(), 0.48)] },
+                Task { key: "".into(), session: "".into(), title: "Independent review of T-418".into(), role: "reviewer".into(), machine: 1, status: TaskStatus::Queued, activity: "starts when T-418 lands".into(), report: "".into(), merge: Merge::None("".into()), head: "".into(), runs: vec![] },
             ],
             activity: vec![
                 ("14:02".into(), "coder T-418 committed 2 files".into()),
@@ -638,7 +717,7 @@ pub fn sessions() -> Vec<Session> {
                 Entry::Assistant("The cleanup races the scratch unmount. Small, contained fix, so it goes straight to a coder on studio.".into()),
             ],
             tasks: vec![
-                Task { key: "".into(), session: "".into(), title: "Wait on the mount table before cleanup".into(), role: "coder".into(), machine: 0, status: TaskStatus::Running, activity: "go test -run Scratch -count 50 · 31 passed".into(), report: "".into(), merge: Merge::None("".into()), runs: vec![run("finder".into(), 0, RunState::Idle, "reproduce".into(), "5m".into(), 0.05), run("coder".into(), 0, RunState::Running, "fix".into(), "now".into(), 0.16)] },
+                Task { key: "".into(), session: "".into(), title: "Wait on the mount table before cleanup".into(), role: "coder".into(), machine: 0, status: TaskStatus::Running, activity: "go test -run Scratch -count 50 · 31 passed".into(), report: "".into(), merge: Merge::None("".into()), head: "".into(), runs: vec![run("finder".into(), 0, RunState::Idle, "reproduce".into(), "5m".into(), 0.05), run("coder".into(), 0, RunState::Running, "fix".into(), "now".into(), 0.16)] },
             ],
             activity: vec![("14:01".into(), "coder T-430 edited sandbox/scratch.go".into())],
         },
@@ -692,8 +771,8 @@ pub fn sessions() -> Vec<Session> {
                 Entry::tool("swarm_design", "count 3 · hero.html"),
             ],
             tasks: vec![
-                Task { key: "".into(), session: "".into(), title: "Hero directions ×3".into(), role: "designer".into(), machine: 1, status: TaskStatus::Running, activity: "rendering direction 3 of 3".into(), report: "".into(), merge: Merge::None("".into()), runs: vec![run("designer".into(), 1, RunState::Running, "directions".into(), "now".into(), 0.55)] },
-                Task { key: "".into(), session: "".into(), title: "Lighthouse pass".into(), role: "finder".into(), machine: 2, status: TaskStatus::NeedsInput, activity: "asks: which pages should it audit?".into(), report: "".into(), merge: Merge::None("".into()), runs: vec![run("finder".into(), 2, RunState::NeedsYou, "lighthouse".into(), "2m".into(), 0.0)] },
+                Task { key: "".into(), session: "".into(), title: "Hero directions ×3".into(), role: "designer".into(), machine: 1, status: TaskStatus::Running, activity: "rendering direction 3 of 3".into(), report: "".into(), merge: Merge::None("".into()), head: "".into(), runs: vec![run("designer".into(), 1, RunState::Running, "directions".into(), "now".into(), 0.55)] },
+                Task { key: "".into(), session: "".into(), title: "Lighthouse pass".into(), role: "finder".into(), machine: 2, status: TaskStatus::NeedsInput, activity: "asks: which pages should it audit?".into(), report: "".into(), merge: Merge::None("".into()), head: "".into(), runs: vec![run("finder".into(), 2, RunState::NeedsYou, "lighthouse".into(), "2m".into(), 0.0)] },
             ],
             activity: vec![("13:40".into(), "designer rendered direction 2".into()), ("13:31".into(), "designer rendered direction 1".into())],
         },
@@ -746,8 +825,8 @@ pub fn sessions() -> Vec<Session> {
                 Entry::tool("manage_automation", "create · nightly-audit · 02:00"),
             ],
             tasks: vec![
-                Task { key: "".into(), session: "".into(), title: "Bump ws to 8.21.3".into(), role: "coder".into(), machine: 2, status: TaskStatus::Completed, activity: "merged · 1 commit".into(), report: "".into(), merge: Merge::None("".into()), runs: vec![run("coder".into(), 2, RunState::Idle, "bump".into(), "2h".into(), 0.09)] },
-                Task { key: "".into(), session: "".into(), title: "Advisory feed check".into(), role: "finder".into(), machine: 2, status: TaskStatus::Failed, activity: "advisory feed timed out".into(), report: "".into(), merge: Merge::None("".into()), runs: vec![run("finder".into(), 2, RunState::Failed, "check".into(), "2h".into(), 0.01)] },
+                Task { key: "".into(), session: "".into(), title: "Bump ws to 8.21.3".into(), role: "coder".into(), machine: 2, status: TaskStatus::Completed, activity: "merged · 1 commit".into(), report: "".into(), merge: Merge::None("".into()), head: "".into(), runs: vec![run("coder".into(), 2, RunState::Idle, "bump".into(), "2h".into(), 0.09)] },
+                Task { key: "".into(), session: "".into(), title: "Advisory feed check".into(), role: "finder".into(), machine: 2, status: TaskStatus::Failed, activity: "advisory feed timed out".into(), report: "".into(), merge: Merge::None("".into()), head: "".into(), runs: vec![run("finder".into(), 2, RunState::Failed, "check".into(), "2h".into(), 0.01)] },
             ],
             activity: vec![("02:00".into(), "automation nightly-audit ran".into()), ("02:04".into(), "T-12 completed".into())],
         },

@@ -135,7 +135,7 @@ Everything else uses the same routes as the web UI:
 
 | What | Routes |
 | --- | --- |
-| Projects and tasks | `/v3/projects…`, `/v3/projects/{id}/tasks…` |
+| Projects and tasks | `/v3/projects…`, `/v3/projects/{id}/tasks…`; what a task changed before merging it: `GET /v3/projects/{id}/tasks/{task}/diff` (base, head, per file path, status, +/− counts, binary, hunks; 400 KB in all, 64 KB a file, `truncated` flags; `?path=` one file in full within 400 KB) |
 | Workers and their runs | `/v3/workers…` |
 | Models and providers | `/v1/agent-model-settings`, `/v1/model-profiles`, `/v1/providers`, `/v1/auth/credentials…`, `/v1/auth/codex/oauth/*` |
 | Folders | `/v1/workspace/add`, `/v1/workspace/repository/setup` |

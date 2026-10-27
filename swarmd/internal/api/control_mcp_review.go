@@ -470,6 +470,152 @@ func controlMCPMetadataString(metadata map[string]any, keys ...string) string {
 	return ""
 }
 
+// changesTarget is a session's working folder and what Swarm recorded about
+// where its work started, as the session record holds them.
+type changesTarget struct {
+	Folder      string
+	HasWorktree bool
+	BaseCommit  string
+	BaseBranch  string
+	Branch      string
+	SourcePath  string
+}
+
+// sessionChangesTarget reads a changesTarget from a session's fields: its
+// worktree when it has one, else its workspace.
+func sessionChangesTarget(workspace string, worktreeEnabled bool, worktreeRoot, baseBranch, branch string, metadata map[string]any) changesTarget {
+	t := changesTarget{Folder: workspace, HasWorktree: worktreeEnabled, BaseBranch: baseBranch, Branch: branch}
+	if worktreeEnabled && strings.TrimSpace(worktreeRoot) != "" {
+		t.Folder = worktreeRoot
+	}
+	if worktreeEnabled {
+		t.BaseCommit = controlMCPMetadataString(metadata, "swarm_v3_worktree_base_commit", "base_commit")
+	}
+	t.SourcePath = controlMCPMetadataString(metadata, "swarm_v3_source_workspace_path")
+	return t
+}
+
+// changesRange is the commit range a session's changes are read over: Dir is
+// its resolved folder, Base the commit its own work starts from ("HEAD" when
+// it works directly in a folder without a worktree base) and Head its HEAD.
+type changesRange struct {
+	Dir          string
+	Base         string
+	RecordedBase string
+	Head         string
+	Note         string
+}
+
+var errChangesNoBase = errors.New("no usable base revision")
+
+// changesFolder resolves a working folder, refusing Swarm's protected storage.
+func changesFolder(folder string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(folder)
+	if err != nil {
+		return "", controlMCPToolFailure("the session folder %s is not available", folder)
+	}
+	if err := tool.RefuseProtectedPath(folder, resolved); err != nil {
+		return "", controlMCPToolFailure("the session folder is inside Swarm's private storage")
+	}
+	return resolved, nil
+}
+
+// resolveChangesRange finds the range swarm_get_changes and the task diff
+// route read: the recorded worktree base (or the merge-base with its base
+// branch), moved to the newer target a rebased job now sits on
+// (worktree.EffectiveTaskBase), up to HEAD. All Git runs through controlMCPGit.
+func resolveChangesRange(ctx context.Context, t changesTarget) (changesRange, error) {
+	resolved, err := changesFolder(t.Folder)
+	if err != nil {
+		return changesRange{}, err
+	}
+	out := changesRange{Dir: resolved}
+	base := ""
+	if t.HasWorktree {
+		base = t.BaseCommit
+		if base == "" && controlMCPGitRevision.MatchString(t.BaseBranch) {
+			if mergeBase, _, err := controlMCPGit(ctx, resolved, 200, "merge-base", "HEAD", t.BaseBranch); err == nil {
+				base = strings.TrimSpace(mergeBase)
+			}
+		}
+	}
+	if base == "" {
+		base = "HEAD"
+		out.Note = "this session works directly in its folder (no worktree base): showing uncommitted changes against HEAD"
+	}
+	if !controlMCPGitRevision.MatchString(base) {
+		return changesRange{}, errChangesNoBase
+	}
+	head, _, err := controlMCPGit(ctx, resolved, 200, "rev-parse", "HEAD")
+	if err != nil {
+		return changesRange{}, err
+	}
+	out.Head = strings.TrimSpace(head)
+	if base != "HEAD" {
+		// A job rebased onto (or merged with) a newer target after it was
+		// created lists its commits from that newer base, never from the
+		// recorded one (worktree.EffectiveTaskBase).
+		if effective := worktree.EffectiveTaskBase(ctx, resolved, t.SourcePath, t.BaseBranch, base, out.Head); effective != base {
+			out.RecordedBase = base
+			base = effective
+		}
+	}
+	out.Base = base
+	return out, nil
+}
+
+// changedFile is one entry of a diff's file list.
+type changedFile struct {
+	Path    string
+	OldPath string
+	Status  string
+}
+
+var changedFileStatus = map[string]string{"A": "added", "M": "modified", "D": "deleted", "T": "type_changed", "R": "renamed", "C": "copied"}
+
+// changedFiles lists the files changed from base to "to" (a commit, or the
+// working tree when to is empty), at most limit of them. With renames, a
+// moved file is one renamed entry with its old path.
+func changedFiles(ctx context.Context, dir, base, to string, renames bool, limit int, pathspec []string) ([]changedFile, bool, error) {
+	args := []string{"diff", "--no-color", "--name-status", "-z"}
+	if renames {
+		args = append(args, "-M")
+	} else {
+		args = append(args, "--no-renames")
+	}
+	args = append(args, base)
+	if to != "" {
+		args = append(args, to)
+	}
+	names, _, err := controlMCPGit(ctx, dir, 256<<10, append(args, pathspec...)...)
+	if err != nil {
+		return nil, false, err
+	}
+	files := []changedFile{}
+	fields := strings.Split(strings.TrimSuffix(names, "\x00"), "\x00")
+	for i := 0; i+1 < len(fields); {
+		code := fields[i]
+		file := changedFile{Status: changedFileStatus[code], Path: fields[i+1]}
+		i += 2
+		if code != "" && (code[0] == 'R' || code[0] == 'C') {
+			if i >= len(fields) {
+				break
+			}
+			file.Status = changedFileStatus[code[:1]]
+			file.OldPath, file.Path = file.Path, fields[i]
+			i++
+		}
+		if file.Status == "" {
+			file.Status = code
+		}
+		if len(files) >= limit {
+			return files, true, nil
+		}
+		files = append(files, file)
+	}
+	return files, false, nil
+}
+
 func controlMCPGetChanges(c *controlMCPCall, args map[string]any) (any, error) {
 	if err := c.requireTokenScope("sessions:read"); err != nil {
 		return nil, err
@@ -488,53 +634,28 @@ func controlMCPGetChanges(c *controlMCPCall, args map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	resolved, err := filepath.EvalSymlinks(folder)
-	if err != nil {
-		return nil, controlMCPToolFailure("the session folder %s is not available", folder)
-	}
-	if err := tool.RefuseProtectedPath(folder, resolved); err != nil {
-		return nil, controlMCPToolFailure("the session folder is inside Swarm's private storage")
-	}
 	ctx, cancel := context.WithTimeout(c.request.Context(), controlMCPGitTimeout)
 	defer cancel()
-	out := map[string]any{"session_id": sessionID, "folder": folder}
 	hasWorktree, _ := session["worktree_enabled"].(bool)
-	base := ""
-	if hasWorktree {
-		base = controlMCPMetadataString(controlMCPMap(session["metadata"]), "swarm_v3_worktree_base_commit", "base_commit")
-		if base == "" {
-			if branch, _ := session["worktree_base_branch"].(string); controlMCPGitRevision.MatchString(branch) {
-				if mergeBase, _, err := controlMCPGit(ctx, resolved, 200, "merge-base", "HEAD", branch); err == nil {
-					base = strings.TrimSpace(mergeBase)
-				}
-			}
-		}
-	}
-	if base == "" {
-		base = "HEAD"
-		out["note"] = "this session works directly in its folder (no worktree base): showing uncommitted changes against HEAD"
-	}
-	if !controlMCPGitRevision.MatchString(base) {
+	baseBranch, _ := session["worktree_base_branch"].(string)
+	branch, _ := session["worktree_branch"].(string)
+	target := sessionChangesTarget(folder, hasWorktree, "", baseBranch, branch, controlMCPMap(session["metadata"]))
+	span, err := resolveChangesRange(ctx, target)
+	if errors.Is(err, errChangesNoBase) {
 		return nil, controlMCPToolFailure("session %q has no usable base revision", sessionID)
 	}
-	head, _, err := controlMCPGit(ctx, resolved, 200, "rev-parse", "HEAD")
 	if err != nil {
 		return nil, err
 	}
-	out["head"] = strings.TrimSpace(head)
-	if base != "HEAD" {
-		// A job rebased onto (or merged with) a newer target after it was
-		// created lists its commits from that newer base, never from the
-		// recorded one (worktree.EffectiveTaskBase).
-		source := controlMCPMetadataString(controlMCPMap(session["metadata"]), "swarm_v3_source_workspace_path")
-		target, _ := session["worktree_base_branch"].(string)
-		if effective := worktree.EffectiveTaskBase(ctx, resolved, source, target, base, strings.TrimSpace(head)); effective != base {
-			out["recorded_base"] = base
-			base = effective
-		}
+	resolved, base := span.Dir, span.Base
+	out := map[string]any{"session_id": sessionID, "folder": folder, "head": span.Head, "base": base}
+	if span.Note != "" {
+		out["note"] = span.Note
 	}
-	out["base"] = base
-	if branch, _ := session["worktree_branch"].(string); branch != "" {
+	if span.RecordedBase != "" {
+		out["recorded_base"] = span.RecordedBase
+	}
+	if branch != "" {
 		out["branch"] = branch
 	}
 	pathspec := []string{}
@@ -554,18 +675,13 @@ func controlMCPGetChanges(c *controlMCPCall, args map[string]any) (any, error) {
 		}
 		out["commits"] = commits
 	}
-	names, _, err := controlMCPGit(ctx, resolved, 256<<10, append([]string{"diff", "--no-color", "--no-renames", "--name-status", "-z", base}, pathspec...)...)
+	changed, _, err := changedFiles(ctx, resolved, base, "", false, controlMCPMaxChangedFiles, pathspec)
 	if err != nil {
 		return nil, err
 	}
 	files := []map[string]any{}
-	fields := strings.Split(strings.TrimSuffix(names, "\x00"), "\x00")
-	for i := 0; i+1 < len(fields) && len(files) < controlMCPMaxChangedFiles; i += 2 {
-		status := map[string]string{"A": "added", "M": "modified", "D": "deleted", "T": "type_changed"}[fields[i]]
-		if status == "" {
-			status = fields[i]
-		}
-		files = append(files, map[string]any{"path": fields[i+1], "status": status})
+	for _, file := range changed {
+		files = append(files, map[string]any{"path": file.Path, "status": file.Status})
 	}
 	untracked, _, err := controlMCPGit(ctx, resolved, 64<<10, append([]string{"ls-files", "--others", "--exclude-standard", "-z"}, pathspec...)...)
 	if err != nil {

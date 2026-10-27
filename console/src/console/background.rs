@@ -126,6 +126,7 @@ impl Console {
                         task.role.to_string()
                     }))
                     .child(div().flex_none().text_size(px(11.)).text_color(color).child(task.status.label()))
+                    .children(self.changes_toggle(si, ti, task, &key, cx))
                     .child(self.task_actions(si, ti, task.status, &key, cx)),
             )
             .when(detail && (!task.activity.is_empty() || !task.runs.is_empty() || !task.report.is_empty()), |d| {
@@ -141,6 +142,7 @@ impl Console {
                         .children(self.runs_toggle(si, ti, task, &key, cx)),
                 )
             })
+            .children(self.render_changes(si, task, &key, cx))
             .when(detail, |d| d.children(self.render_runs(si, ti, task)))
     }
 
@@ -265,7 +267,8 @@ impl Console {
         let body = (!rows.is_empty()).then(|| {
             div()
                 .id(SharedString::from(format!("bg-tray-{pid}")))
-                .max_h(px(260.))
+                // A task's open changes need room to read.
+                .max_h(px(if self.changes_open(si) { 600. } else { 260. }))
                 .overflow_y_scroll()
                 .px_3()
                 .pb_1()

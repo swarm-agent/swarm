@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"swarm-refactor/swarmtui/pkg/buildinfo"
+	"swarm/packages/swarmd/internal/executioncapacity"
 	"swarm/packages/swarmd/internal/identity"
 	runruntime "swarm/packages/swarmd/internal/run"
 	"swarm/packages/swarmd/internal/sandbox"
@@ -120,7 +121,7 @@ func (s *Server) handleBoxSummary(w http.ResponseWriter, r *http.Request) {
 	if manager := s.ExecutionCapacity(); manager != nil {
 		drain := manager.DrainStatus()
 		// Machine summaries expose no cross-account run identifiers.
-		machine["drain"] = map[string]any{"draining": drain.Draining, "since": drain.Since, "deadline": drain.Deadline, "timed_out": drain.TimedOut, "blocking_runs": len(drain.Blockers)}
+		machine["drain"] = boxDrainSummary(drain)
 		if drain.Draining {
 			raise(BoxStatusAttention, "draining for update")
 		}
@@ -500,4 +501,18 @@ func boxFolderEnvironment(root string, max int, view map[string]any) map[string]
 		view["isolation"] = "gVisor"
 	}
 	return view
+}
+
+// boxDrainSummary is a machine's drain for its summary: times also in Unix ms,
+// like the summary's other times, and only a count of the runs it waits for.
+func boxDrainSummary(drain executioncapacity.DrainStatus) map[string]any {
+	return map[string]any{"draining": drain.Draining, "since": drain.Since, "deadline": drain.Deadline, "since_ms": unixMillisOrZero(drain.Since), "deadline_ms": unixMillisOrZero(drain.Deadline), "timed_out": drain.TimedOut, "blocking_runs": len(drain.Blockers)}
+}
+
+// unixMillisOrZero is a summary time in Unix ms, like its other times; 0 when unset.
+func unixMillisOrZero(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.UnixMilli()
 }
