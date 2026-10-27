@@ -65,7 +65,7 @@ Remote workflow actions are `list`, `get`, `history`, `deliveries`, `propose`, `
 
 Worker lists return id, name, role, stored model (null if unset), enabled (idle or active), lifecycle state, and the latest run's state and timestamps (null if never run). History is read through the link with a bounded scan; incomplete history fails explicitly rather than presenting an older run as latest. Full definitions remain available through `get`.
 
-For linked work, reads proceed under `ask` or `allowed`; changes under `ask` wait for a normal permission request. `off` denies both. Secrets, AI keys and permission changes are never exposed through linked management tools.
+For linked work, reads proceed under `ask` or `allowed`; changes under `ask` wait for a normal permission request. `off` denies both. Secrets, AI keys and permission changes are never exposed through linked management tools, and the link itself refuses them: a home cannot add, read or verify provider credentials, finish a sign-in, use the vault, read or write a secret value, create AI keys or change a linked machine's permission rules through `/v3/fleet/machines/{name}/api/...` (listing secret names stays). Keys reach linked machines only through the fleet key manager, when it exists.
 
 For devices, `ask` means each call waits for the person's decision as a normal permission
 request; `allowed` means it proceeds. Swarm enforces both, for every rule,

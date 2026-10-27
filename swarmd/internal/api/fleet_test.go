@@ -138,6 +138,29 @@ func TestFleetLinkGoesOneWay(t *testing.T) {
 		}
 	}
 
+	// Keys, secret values, the vault, AI keys and B's own permission rules
+	// never cross the link; listing secret names does.
+	for _, c := range []struct{ method, path, body string }{
+		{http.MethodPost, "/v1/auth/credentials", `{"provider":"openai","type":"api","api_key":"x"}`},
+		{http.MethodGet, "/v1/auth/credentials", ""},
+		{http.MethodPost, "/v1/auth/credentials/verify", `{}`},
+		{http.MethodPost, "/v1/auth/codex/oauth/complete", `{}`},
+		{http.MethodPost, "/v1/onboarding/provider/credential", `{}`},
+		{http.MethodPost, "/v1/vault/export", `{}`},
+		{http.MethodPut, "/v1/secrets/demo/value", `{"value":"x"}`},
+		{http.MethodGet, "/v1/secrets/demo/value", ""},
+		{http.MethodPost, "/v1/secrets", `{"name":"demo","value":"x"}`},
+		{http.MethodPost, "/v3/auth/tokens", `{}`},
+		{http.MethodPatch, "/v3/permissions", `{}`},
+	} {
+		if code, out := a.call(t, c.method, "/v3/fleet/machines/b/api"+c.path, c.body, false); code != http.StatusForbidden {
+			t.Fatalf("%s %s through the link: HTTP %d %v", c.method, c.path, code, out)
+		}
+	}
+	if code, out := a.call(t, http.MethodGet, "/v3/fleet/machines/b/api/v1/secrets", "", false); code == http.StatusForbidden {
+		t.Fatalf("listing secret names through the link: HTTP %d %v", code, out)
+	}
+
 	// The code worked once.
 	body, _ = json.Marshal(map[string]string{"code": linkCode, "name": "b"})
 	if code, _ := c.call(t, http.MethodPost, "/v3/fleet/machines", string(body), false); code != http.StatusBadGateway {

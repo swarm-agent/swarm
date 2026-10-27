@@ -13,6 +13,9 @@ impl Console {
     /// Reads the rules from Swarm (on opening the page, after a change, and
     /// when Swarm says they changed).
     pub(super) fn load_permissions(&mut self) {
+        if self.via.is_some() {
+            return;
+        }
         let Some(live) = &self.live else { return };
         self.permissions_busy = true;
         live.run(Command::ReadPermissions);
@@ -82,6 +85,13 @@ impl Console {
                     )),
             )
             .children(self.permissions_error.clone().map(|(_, e)| div().text_size(px(11.5)).text_color(t.err).child(e)));
+        // A linked machine's own rules never cross the link: they are set on
+        // that machine. Its work rule from home is on home's page.
+        if let Some(name) = &self.via {
+            return page.child(div().text_size(px(12.)).text_color(t.muted).child(format!(
+                "{name}'s own rules are set on {name} itself; they never cross the link. What your home may do on {name} is its \"Hand it work\" rule on your home's Permissions page."
+            )));
+        }
         let board = match self.permissions.as_ref().map(|v| permissions::board(v, now_ms())) {
             None if self.live.is_none() => return page.child(div().text_color(t.faint).child("Not connected to Swarm.")),
             None => return page.child(div().text_color(t.faint).child(if self.permissions_busy { "Reading the rules from Swarm…" } else { "Not read yet." })),

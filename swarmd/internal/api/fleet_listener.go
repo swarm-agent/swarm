@@ -159,6 +159,37 @@ func fleetLinkRefused(path string) bool {
 	return false
 }
 
+// fleetLinkSecretRefused is what never crosses the link: provider credentials,
+// sign-in codes, the vault, secret values, AI keys and this Swarm's own
+// permission rules. A home may list secret names and their grants, never read
+// or write a value.
+func fleetLinkSecretRefused(method, path string) bool {
+	for _, prefix := range []string{
+		"/v1/auth/credentials",
+		"/v1/auth/codex/oauth/complete",
+		"/v1/auth/attach/rotate",
+		"/v1/onboarding/provider/credential",
+		"/v1/vault",
+		"/v3/auth/tokens",
+		"/v3/permissions",
+	} {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			return true
+		}
+	}
+	if path == "/v1/secrets" || strings.HasPrefix(path, "/v1/secrets/") {
+		rest := strings.TrimSuffix(strings.TrimPrefix(path, "/v1/secrets"), "/")
+		if strings.HasSuffix(rest, "/value") {
+			return true
+		}
+		// Creating or changing a slot can carry a value; reads of names stay.
+		if rest == "" && method != http.MethodGet && method != http.MethodHead {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) fleetLinkHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
@@ -223,6 +254,10 @@ func (s *Server) fleetLinkHandler() http.Handler {
 		}
 		if fleetLinkRefused(r.URL.Path) {
 			writeError(w, http.StatusForbidden, errors.New("who controls this Swarm is decided on it, not by a home"))
+			return
+		}
+		if fleetLinkSecretRefused(r.Method, r.URL.Path) {
+			writeError(w, http.StatusForbidden, errors.New("keys, secret values and permission rules never cross the link; change them on this machine"))
 			return
 		}
 		ctx := context.WithValue(r.Context(), fleetHomeContextKey{}, home)
