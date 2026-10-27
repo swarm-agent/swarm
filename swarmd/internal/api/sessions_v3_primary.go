@@ -3048,7 +3048,8 @@ func (s *Server) handleSessionV3PrimaryPermissionResolve(w http.ResponseWriter, 
 		writeError(w, http.StatusConflict, err)
 		return
 	}
-	record, savedRule, err := s.perm.ResolveWithPolicyAndArguments(sessionID, permissionID, req.Action, req.Reason, string(req.ApprovedArguments))
+	actor, _ := productActorFromRequest(r)
+	record, savedRule, err := s.perm.ResolveFromClient(sessionID, permissionID, req.Action, req.Reason, string(req.ApprovedArguments), actor.ClientSessionID)
 	if err != nil {
 		writePermissionPolicyError(w, err)
 		return

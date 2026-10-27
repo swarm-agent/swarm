@@ -31,6 +31,8 @@ const (
 )
 
 type PermissionRecord struct {
+	TargetDevice        string `json:"target_device,omitempty"`
+	Execution           string `json:"execution,omitempty"`
 	ID                  string `json:"id"`
 	SessionID           string `json:"session_id"`
 	RunID               string `json:"run_id"`

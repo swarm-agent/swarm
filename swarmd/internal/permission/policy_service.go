@@ -369,6 +369,14 @@ func (s *Service) ResolveWithPolicyAndArguments(sessionID, permissionID, action,
 		return pebblestore.PermissionRecord{}, nil, err
 	}
 
+	pendingDevice, lookupErr := s.lookupPermission(sessionID, permissionID)
+	if lookupErr != nil {
+		return pebblestore.PermissionRecord{}, nil, lookupErr
+	}
+	if pendingDevice.TargetDevice != "" {
+		record, err := s.ResolveWithArguments(sessionID, permissionID, action, reason, approvedArguments)
+		return record, nil, err
+	}
 	var savedRule *PolicyRule
 	if action == ActionAllowAlways {
 		pending, lookupErr := s.lookupPermission(sessionID, permissionID)

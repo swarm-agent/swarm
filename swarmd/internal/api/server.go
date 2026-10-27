@@ -300,6 +300,7 @@ type permissionService interface {
 	ExplainToolForAccount(accountScopeID, mode, toolName, toolArguments string, overlay *permission.Policy) (permission.PolicyExplain, error)
 	ResolveWithPolicy(sessionID, permissionID, action, reason string) (pebblestore.PermissionRecord, *permission.PolicyRule, error)
 	ResolveWithPolicyAndArguments(sessionID, permissionID, action, reason, approvedArguments string) (pebblestore.PermissionRecord, *permission.PolicyRule, error)
+	ResolveFromClient(sessionID, permissionID, action, reason, arguments, clientSessionID string) (pebblestore.PermissionRecord, *permission.PolicyRule, error)
 	MarkToolStarted(sessionID, runID, callID string, step int, startedAt int64) (pebblestore.PermissionRecord, bool, error)
 	MarkToolCompleted(sessionID, runID, callID string, step int, result tool.Result, completedAt int64) (pebblestore.PermissionRecord, bool, error)
 	SetBypassPermissions(enabled bool)
@@ -3536,7 +3537,8 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		if rejectScopedPersistentResolve(w, r, req.Action) {
 			return
 		}
-		record, savedRule, err := s.perm.ResolveWithPolicyAndArguments(sessionID, permissionID, req.Action, req.Reason, string(req.ApprovedArguments))
+		actor, _ := productActorFromRequest(r)
+		record, savedRule, err := s.perm.ResolveFromClient(sessionID, permissionID, req.Action, req.Reason, string(req.ApprovedArguments), actor.ClientSessionID)
 		if err != nil {
 			writePermissionPolicyError(w, err)
 			return

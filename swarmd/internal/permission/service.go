@@ -1213,6 +1213,10 @@ func (s *Service) CancelRunPending(sessionID, runID, reason string) ([]pebblesto
 }
 
 func (s *Service) resolveLocked(sessionID, permissionID, action, reason, approvedArguments string, now int64) (pebblestore.PermissionRecord, bool, error) {
+	return s.resolveForDeviceLocked(sessionID, permissionID, action, reason, approvedArguments, "", now)
+}
+
+func (s *Service) resolveForDeviceLocked(sessionID, permissionID, action, reason, approvedArguments, clientSessionID string, now int64) (pebblestore.PermissionRecord, bool, error) {
 	if utf8.RuneCountInString(reason) > MaxReplyCharacters {
 		return pebblestore.PermissionRecord{}, false, fmt.Errorf("reply exceeds %d characters; no truncation is performed", MaxReplyCharacters)
 	}
@@ -1227,6 +1231,39 @@ func (s *Service) resolveLocked(sessionID, permissionID, action, reason, approve
 		return record, false, nil
 	}
 
+	if record.TargetDevice != "" {
+		args := parsePermissionJSONMap(approvedArguments)
+		_, hasResult := args["result"]
+		if hasResult && (record.Execution != "ready" || clientSessionID != record.TargetDevice || !actionIsAllow(action)) {
+			return pebblestore.PermissionRecord{}, false, errors.New("device result requires a ready call and the target device's own client session")
+		}
+		if actionIsPersistent(action) {
+			return pebblestore.PermissionRecord{}, false, errors.New("change device rules on that device's Permissions page")
+		}
+		if actionIsAllow(action) && !hasResult {
+			if strings.TrimSpace(approvedArguments) != "" && strings.TrimSpace(approvedArguments) != "{}" {
+				return pebblestore.PermissionRecord{}, false, errors.New("device approval must not change the call arguments")
+			}
+			if record.Execution == "ready" {
+				return record, false, nil
+			}
+			if record.Execution != "awaiting_approval" {
+				return pebblestore.PermissionRecord{}, false, errors.New("invalid device execution state")
+			}
+			updated := record
+			updated.Execution = "ready"
+			updated.UpdatedAt = now
+			summary, err := s.summaryForMutationLocked(sessionID, &record, updated, now)
+			if err != nil {
+				return pebblestore.PermissionRecord{}, false, err
+			}
+			if err := s.store.PutPermissionWithSummary(updated, &record, summary); err != nil {
+				return pebblestore.PermissionRecord{}, false, err
+			}
+			_, _ = s.emitLocked("session:"+sessionID, "permission.updated", sessionID, map[string]any{"permission": updated})
+			return updated, true, nil
+		}
+	}
 	updated := record
 	switch {
 	case actionIsAllow(action):
