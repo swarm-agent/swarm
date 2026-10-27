@@ -1254,6 +1254,9 @@ func controlMCPAutomationSteps(raw any) ([]jobautomation.Step, error) {
 	if err := jobautomation.NormalizeSteps(steps); err != nil {
 		return nil, controlMCPToolFailure("%s", err.Error())
 	}
+	if err := jobautomation.ValidateBriefPlaceholders(steps); err != nil {
+		return nil, controlMCPToolFailure("%s", err.Error())
+	}
 	return steps, nil
 }
 

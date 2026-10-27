@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Reject invalid `then` brief placeholders before starting jobs or schedules; keep save-time placeholder validation out of runtime matching so legacy workflows still create deliveries. Docs impact: none.
+
 - Render workflow `{{item}}` as the whole item's compact JSON, preserving the worker-input limit; refuse item placeholders outside `for_each` and unknown step-brief placeholder namespaces on save. Docs impact: updated workflow placeholder documentation and shared native/MCP step descriptions.
 
 - Keep borrowed-lane reviewers' environment leases read-only for the reviewed checkout and Git metadata, including after restart, without shell filtering. Delivery safely reattaches a clean detached branch tip and reports a warning; other mismatches retain their delivery assessment. Sandbox-off remains unconfined by the owner's choice; no host command guard is added, and delivery recovery also covers that case. Docs impact: none.

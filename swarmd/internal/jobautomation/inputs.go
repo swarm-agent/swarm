@@ -22,11 +22,6 @@ func (a Automation) RenderInputs() (Automation, error) {
 	if a.inputsRendered {
 		return a, nil
 	}
-	for _, step := range a.Steps {
-		if err := step.validateBriefPlaceholders(); err != nil {
-			return Automation{}, err
-		}
-	}
 	values := map[string]string{}
 	if len(a.Inputs) > 20 {
 		return Automation{}, invalid("at most 20 inputs are allowed")
@@ -102,6 +97,9 @@ func (a Automation) RenderInputs() (Automation, error) {
 
 // normalizeInputs validates the executable form but retains the reusable fields.
 func (a *Automation) normalizeInputs() error {
+	if err := ValidateBriefPlaceholders(a.Steps); err != nil {
+		return err
+	}
 	rendered, err := a.RenderInputs()
 	if err != nil {
 		return err

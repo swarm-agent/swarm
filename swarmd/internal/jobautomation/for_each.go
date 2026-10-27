@@ -79,6 +79,17 @@ func (s *Step) normalizeForEach() error {
 var itemPlaceholder = regexp.MustCompile(`\{\{item(?:\.([^{}]+))?\}\}`)
 var briefPlaceholder = regexp.MustCompile(`\{\{([^{}]*)\}\}`)
 
+// ValidateBriefPlaceholders checks definition text at admission, before any input
+// substitution. Do not apply it to rendered data or legacy runtime definitions.
+func ValidateBriefPlaceholders(steps []Step) error {
+	for _, step := range steps {
+		if err := step.validateBriefPlaceholders(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Validate template text before substituting input data: braces in data are literal.
 func (s Step) validateBriefPlaceholders() error {
 	for _, match := range briefPlaceholder.FindAllStringSubmatch(s.Brief, -1) {
