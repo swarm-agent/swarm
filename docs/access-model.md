@@ -2,7 +2,15 @@
 
 Status: agreed design; device identity plumbing is built (`ClientSessionRecord.device`,
 `swarmctl client connect --device`, and authenticated actor client-session id).
-Account-wide rules, enforcement and the Permissions page are not built yet.
+The account record and GET/PATCH `/v3/permissions` are built. Enforcement and
+ the Permissions page are not built yet. Device `connected` uses an authenticated
+ request within two minutes (not realtime socket presence). `browser_attached`
+ is omitted: Swarm does not know extension attachment. Device `home` compares
+ the supplied device name with the daemon hostname; it is a display hint, not
+ an identity or authorization check. Waiting tasks counts non-archived project
+ tasks in `pending_approval`. Changes emit `permissions.updated` to realtime
+ workset subscribers. Record storage and realtime publication are separate
+ commits; publication failure returns an explicit error after storage.
 The design replaces per-conversation access
 (`/v3/sessions/{id}/access`) and the console's own `fleet.json` with
 account-wide rules that Swarm stores and enforces. Tool permission policy for

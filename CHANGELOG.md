@@ -7,6 +7,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 ## Unreleased
 
 - Keep `for_each` dependencies waiting through review send-back rounds and judge only each workflow's latest delivery; explicit automation delivery retries recover failed dependent items once their prerequisite finishes without repeating successful steps. Docs impact: none.
+- Add revision-guarded account permissions GET/PATCH with device ownership checks and live device/link/task summaries; enforcement remains unchanged. Docs impact: access model API status and limitations documented.
+
 - Record client computer names with `swarmctl client connect --device` (defaulting to the host name) and expose authenticated client-session identity to handlers. Account-wide access rules remain unimplemented. Docs impact: updated access-model status and remote client connection guidance.
 
 - Reject invalid `then` brief placeholders before starting jobs or schedules; keep save-time placeholder validation out of runtime matching so legacy workflows still create deliveries. Docs impact: none.

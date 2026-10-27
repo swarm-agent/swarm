@@ -295,6 +295,7 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v3/sessions:usage-limits", s.handleSessionsV3UsageLimits)
 	mux.HandleFunc("/v3/sessions:end-user-usage", s.handleSessionsV3EndUserUsage)
 	mux.HandleFunc("/v3/limits", s.handleLimits)
+	mux.HandleFunc("/v3/permissions", s.handleAccountPermissions)
 	mux.HandleFunc("/v3/usage/limits", s.handleSessionsV3UsageLimits)
 	mux.HandleFunc("/v3/usage/worker-budget", s.handleWorkerBudget)
 	mux.HandleFunc("/v3/sessions:archive", s.handleSessionsV3Primary)
