@@ -115,11 +115,17 @@ a separate profile and the extension loaded, for trying it out.
 - **Navigation:** Sessions, Media, Usage, Agents and Settings at the top of
   the left sidebar. `«` (or ctrl-b) collapses the sidebar to an icon rail with
   the pages, the current project's sessions and fleet health; `»` expands it.
-- **Agents:** the fleet. Machine cards (health, build, jobs, cpu, key level,
-  spend) and one role × machine model grid that only spells out models where a
-  machine differs from the fleet default. Selecting a machine, role or cell
-  opens it in the right-hand inspector with its actions; one bar applies every
-  pending change.
+- **Agents:** the machines, read-only. Each card is what that machine's own
+  Swarm reports in `GET /v3/box/summary` (a linked machine's read through
+  home at `/v3/fleet/machines/{name}/api/v3/box/summary`): status (ok,
+  attention or degraded, with Swarm's reasons), build and update state, what
+  runs now, today's runs and spend, uptime and sandbox; anything it does not
+  report shows as "—", and a machine home cannot reach shows offline with its
+  last contact. Below, one role × machine grid: the first column is the
+  setting on the connected Swarm (`/v1/agent-model-settings`, the only one
+  changed here); each linked machine's cell says whether its own setting is
+  the same, another model, or unknown. Selecting a machine, role or cell
+  opens it in the right-hand inspector.
 - **Media, Usage, Settings:** generated media by kind; spend against limits by
   day, machine, role and session; home machine, connections, appearance and
   approvals.
@@ -145,12 +151,12 @@ a separate profile and the extension loaded, for trying it out.
   button (approve, reject, merge), and a running task's stop. Open, it lists
   every task with its activity and the background sessions behind it.
 - **Composer:** while Swarm says the run is active, send becomes stop
-  (`swarm_stop_run`; the notice is Swarm's own answer). Typing `/` lists the
+  (`POST /v3/sessions/{id}/run/stop`; the notice is Swarm's own answer). Typing `/` lists the
   commands: `/new`, `/new bottom`, `/stop`, `/theme`, `/usage`,
   `/settings`, `/media`, `/agents`; tab completes, enter runs.
-- **Usage:** each sign-in plan's limit windows (`swarm_get_plan_usage`),
+- **Usage:** each sign-in plan's limit windows (`GET /v1/codex/account/usage`),
   then 30 days of tokens, spend at API prices, turns, each day, each model
-  and recent sessions (`swarm_get_usage` with `detail`).
+  and recent sessions (`GET /v3/usage`, today and 30 days).
 - **Search** (below Settings, ctrl-k or alt-6): every
   conversation Swarm has, found as you type by words in titles and messages
   (`POST /v3/sessions:search`), scoped to active, archived or all. An
@@ -170,8 +176,8 @@ a separate profile and the extension loaded, for trying it out.
   reads again when Swarm sends `worker.updated` or `automation.updated`;
   a new failure also shows in the status bar, and the nav says how many
   run or failed. Routes: `/v3/workers`, `/v3/workers/{id}/runs` and
-  `…/cancel`, `/v3/automations/v2`, `/v3/sessions/{id}`. Other machines
-  show a note until home has fleet routes.
+  `…/cancel`, `/v3/automations/v2`, `/v3/sessions/{id}`. A linked
+  machine's automations show in its own window (open it from its card).
 - **Icons:** line, solid, pixel or glyph. They
   are one-color SVG masks tinted by the theme, so a reskin needs no new art.
   Line by default; Settings or ctrl-4 change it. Pixel icons are ASCII art
@@ -192,9 +198,12 @@ a separate profile and the extension loaded, for trying it out.
 
 - `gpui` 0.2.2 is Zed's last crates.io release. Its `xattr` 0.2.3 dependency
   breaks on libc 0.2.191, so `patches/xattr-0.2.3` maps `ENOATTR` to `ENODATA`.
-- `src/swarm/live.rs` polls Swarm Control every 2 seconds (machine, models and
-  usage every 16, plan limits about once a minute) and reads the
-  conversations of open and running sessions;
+- `src/swarm/live.rs` follows Swarm the way its web UI does: one sync
+  snapshot, then the realtime stream for everything that happens, with open
+  and running sessions hydrated in full. The machine summary, models, usage
+  and plan limits are reread on their own thread every 30 seconds and after a
+  command; `src/swarm/fleet.rs` rereads home's fleet list and each linked
+  machine's summary and models through home every 20 seconds.
   `src/swarm/map.rs` turns the answers into what the console shows.
 
 ### Project folders and project.md

@@ -176,7 +176,7 @@ impl Console {
                         Some(Ok(board)) => self.render_board(board, cx),
                     }
                 } else {
-                    self.note_line("Home cannot read this machine's workers yet: the fleet routes are not in Swarm (the fleet rebuild).")
+                    self.note_line("This machine's workers show in its own window: open it from its card on the Agents page.")
                 };
                 div()
                     .flex()

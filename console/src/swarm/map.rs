@@ -5,8 +5,8 @@
 use serde_json::Value;
 
 use crate::data::{
-    Assignment, Cell, Choice, ClientCall, Day, Entry, Health, LiveRef, Machine, ModelUse, Pending, Plan,
-    Credential, Found, Merge, PlanWindow, Project, Provider, Question, Role, RunClock, RunState, Session, SessionUse, Task, TaskStatus, Text, Tokens, ToolState, Usage,
+    Assignment, Busy, Choice, ClientCall, Day, Entry, Health, LiveRef, Machine, ModelUse, Pending, Plan,
+    Credential, Found, Merge, PlanWindow, Project, Provider, Question, Role, RunClock, RunState, RunsToday, Session, SessionUse, Task, TaskStatus, Text, Tokens, ToolState, UpdateState, Usage,
 };
 
 pub(crate) fn s<'a>(v: &'a Value, key: &str) -> &'a str {
@@ -462,39 +462,89 @@ fn uptime(ms: f64) -> String {
     }
 }
 
-/// The machine from GET /v3/box/summary. `kind` says how the console reaches it.
+/// A number Swarm gave, or None when the key is absent.
+fn count(v: &Value, key: &str) -> Option<u32> {
+    v.get(key).and_then(Value::as_u64).map(|n| n.min(u32::MAX as u64) as u32)
+}
+
+/// A commit shortened for a card.
+fn short_commit(c: &str) -> String {
+    c.trim().chars().take(9).collect()
+}
+
+/// The installer's update state from the summary's `machine.update` (the
+/// states containers/headless/app/install.sh writes).
+pub fn update_state(update: &Value) -> UpdateState {
+    let state = s(update, "state").trim();
+    let reason: Text = s(update, "reason").trim().to_string().into();
+    let candidate: Text = short_commit(s(update, "candidate")).into();
+    match state {
+        "" => UpdateState::Unknown,
+        "current" | "installed" => UpdateState::Current,
+        "waiting" | "waiting_review" | "blocked" if !candidate.is_empty() => UpdateState::Behind { candidate, reason },
+        "building" | "draining" => UpdateState::Updating { candidate, reason },
+        "failed" | "rolled_back" => UpdateState::Failed { reason },
+        other => UpdateState::Other { state: other.replace('_', " ").into(), reason },
+    }
+}
+
+/// The machine from GET /v3/box/summary. `kind` says how the console reaches
+/// it. What the summary leaves out stays unknown.
 pub fn machine(status: &Value, kind: &str) -> Machine {
     let m = status.get("machine").cloned().unwrap_or(Value::Null);
-    let workers = status.get("workers").cloned().unwrap_or(Value::Null);
-    let usage = status.get("usage").cloned().unwrap_or(Value::Null);
-    let sandbox = status.get("sandbox").cloned().unwrap_or(Value::Null);
-    let running = f(&workers, "active_runs") as u32;
     let health = match s(status, "status") {
-        "degraded" => Health::Offline,
-        _ if running > 0 => Health::Busy,
-        _ => Health::Online,
+        "ok" => Health::Ok,
+        "attention" => Health::Attention,
+        "degraded" => Health::Degraded,
+        _ => Health::Unknown,
     };
-    let commit = s(&m, "commit");
+    let reasons = list(status, "reasons").iter().filter_map(Value::as_str).map(|r| r.to_string().into()).collect();
+    let busy = status.get("busy").filter(|b| b.is_object()).map(|b| Busy {
+        sessions: count(b, "sessions").unwrap_or(0),
+        worker_runs: count(b, "worker_runs").unwrap_or(0),
+        reviews: count(b, "reviews").unwrap_or(0),
+        followups: count(b, "followups").unwrap_or(0),
+        environment_builds: count(b, "environment_builds").unwrap_or(0),
+    });
+    // `runs` is empty when that Swarm keeps no run records.
+    let runs = status.get("runs").and_then(|r| {
+        Some(RunsToday {
+            total: count(r, "total")?,
+            succeeded: count(r, "succeeded").unwrap_or(0),
+            failed: count(r, "failed").unwrap_or(0),
+            running_now: count(r, "running_now").unwrap_or(0),
+        })
+    });
+    let usage = status.get("usage").cloned().unwrap_or(Value::Null);
+    let sandbox = status.get("sandbox").filter(|v| v.is_object()).map(|sb| {
+        if sb.get("active").and_then(Value::as_bool) == Some(true) {
+            if s(sb, "runtime").is_empty() { "on".to_string() } else { s(sb, "runtime").to_string() }
+        } else if s(sb, "mode") == "off" {
+            "off".to_string()
+        } else {
+            "not running".to_string()
+        }
+        .into()
+    });
+    let build = format!("{} {}", s(&m, "version").trim(), short_commit(s(&m, "commit"))).trim().to_string();
     Machine {
         name: if s(&m, "name").is_empty() { "swarm".into() } else { s(&m, "name").to_string().into() },
-        kind: kind.to_string().into(),
         health,
-        running,
-        slots: running.max(1),
-        cost_today: f(&usage, "today_cost_usd"),
-        build: format!("{} {}", s(&m, "version"), &commit[..commit.len().min(9)]).trim().to_string().into(),
-        behind: 0,
-        access: "owner".into(),
-        sandbox: if s(&sandbox, "active") == "true" || sandbox.get("active").and_then(Value::as_bool) == Some(true) {
-            s(&sandbox, "runtime").to_string().into()
-        } else {
-            "off".into()
-        },
-        uptime: uptime(m.get("uptime_ms").and_then(Value::as_f64).unwrap_or(0.)).into(),
-        cpu: 0.,
-        mem: 0.,
-        gateway: "".into(),
+        reasons,
+        busy,
+        runs,
+        cost_today: usage.get("today_cost_usd").and_then(Value::as_f64),
+        build: (!build.is_empty()).then(|| build.into()),
+        update: m.get("update").map(update_state).unwrap_or(UpdateState::Unknown),
+        sandbox,
+        uptime: m.get("uptime_ms").and_then(Value::as_f64).map(|ms| uptime(ms).into()),
+        ..Machine::unread("".into(), kind.to_string().into(), "owner".into())
     }
+}
+
+/// Each role key's model from GET /v1/agent-model-settings.
+pub fn models(settings: &Value) -> Vec<(Text, Assignment)> {
+    roles(settings).into_iter().map(|r| (r.key, r.default)).collect()
 }
 
 /// Agent roles and their models from GET /v1/agent-model-settings.
@@ -511,7 +561,6 @@ pub fn roles(settings: &Value) -> Vec<Role> {
         label: role_label(key).to_string().into(),
         purpose: role_purpose(key).into(),
         default: assignment(a),
-        cells: vec![Cell::InSync],
     };
     let mut out = Vec::new();
     let swarm = root.get("swarm").cloned().unwrap_or(Value::Null);
@@ -742,9 +791,11 @@ mod tests {
             "workers": {"active_runs": 1, "today_runs": 4, "today_failed": 1}, "usage": {"today_cost_usd": 0.5},
             "sandbox": {"active": false, "mode": "off"}});
         let m = machine(&status, "ssh");
-        assert_eq!(m.build.as_ref(), "dev 67c69d05d");
-        assert_eq!(m.uptime.as_ref(), "2h 5m");
-        assert!(m.health == Health::Busy);
+        assert_eq!(m.build.as_ref().map(ToString::to_string).as_deref(), Some("dev 67c69d05d"));
+        assert_eq!(m.uptime.as_ref().map(ToString::to_string).as_deref(), Some("2h 5m"));
+        assert_eq!(m.health, Health::Ok);
+        assert_eq!(m.cost_today, Some(0.5));
+        assert_eq!(m.sandbox.as_ref().map(ToString::to_string).as_deref(), Some("off"));
         let r = roles(&json!({"agent_model_settings": {"swarm": {"plan": {"provider": "anthropic", "model": "opus"}}, "system_agents": {"coder": {"provider": "codex", "model": "gpt-6.1-sol", "thinking": "medium"}}}}));
         assert_eq!(r[0].label.as_ref(), "Orchestrator");
         assert_eq!(r[1].key.as_ref(), "system-coder");
@@ -769,6 +820,75 @@ mod tests {
         assert_eq!((u.plans[0].kind.as_ref(), u.plans[0].connected), ("pro", true));
         assert_eq!((u.plans[0].windows[0].label.as_ref(), u.plans[0].windows[0].used), ("week", 8.));
         assert!(!plans(Err("not signed in"))[0].connected);
+    }
+
+    #[test]
+    fn summary_status_and_reasons() {
+        for (status, health) in [("ok", Health::Ok), ("attention", Health::Attention), ("degraded", Health::Degraded), ("", Health::Unknown), ("new-word", Health::Unknown)] {
+            let m = machine(&json!({"status": status, "reasons": ["daily spending limit reached"]}), "local");
+            assert_eq!(m.health, health, "{status}");
+            assert_eq!(m.reasons, vec![Text::from("daily spending limit reached")]);
+        }
+        // Degraded is its own state, never offline.
+        assert_ne!(machine(&json!({"status": "degraded"}), "local").health, Health::Offline);
+    }
+
+    #[test]
+    fn summary_without_fields_leaves_them_unknown() {
+        let m = machine(&json!({"ok": true, "status": "ok", "reasons": [], "machine": {}, "runs": {}, "usage": {}}), "local");
+        assert_eq!(m.name.as_ref(), "swarm");
+        assert_eq!((m.build.clone(), m.uptime.clone(), m.sandbox.clone(), m.cost_today, m.busy, m.runs), (None, None, None, None, None, None));
+        assert_eq!(m.update, UpdateState::Unknown);
+        assert_eq!(m.build_line(), "— · update —");
+        assert_eq!(m.now_line(), "—");
+        assert_eq!(m.runs_line(), "—");
+        assert_eq!(m.cost_line(), "—");
+        assert!(m.reasons.is_empty());
+        // Idle is a reading, not a default.
+        let idle = machine(&json!({"busy": {"busy": false, "sessions": 0, "worker_runs": 0}, "runs": {"total": 0, "succeeded": 0, "failed": 0, "running_now": 0}}), "local");
+        assert_eq!(idle.now_line(), "idle");
+        assert_eq!(idle.runs_line(), "0 runs");
+        let wanted = machine(&json!({"sandbox": {"mode": "required", "active": false, "reason": "runsc missing"}}), "local");
+        assert_eq!(wanted.sandbox.as_ref().map(ToString::to_string).as_deref(), Some("not running"));
+    }
+
+    #[test]
+    fn every_update_state() {
+        let state = |s: &str, candidate: &str| update_state(&json!({"auto": "on", "channel": "dev", "state": s, "reason": "why", "running": "aaaaaaaaa", "candidate": candidate}));
+        assert_eq!(update_state(&json!({})), UpdateState::Unknown);
+        assert_eq!(state("current", ""), UpdateState::Current);
+        assert_eq!(state("installed", "bbbbbbbbbbbb"), UpdateState::Current);
+        for s in ["waiting", "waiting_review", "blocked"] {
+            assert_eq!(state(s, "bbbbbbbbbbbb"), UpdateState::Behind { candidate: "bbbbbbbbb".into(), reason: "why".into() }, "{s}");
+        }
+        // Waiting with nothing named is not "behind": it says so in its own words.
+        assert_eq!(state("waiting", ""), UpdateState::Other { state: "waiting".into(), reason: "why".into() });
+        for s in ["building", "draining"] {
+            assert_eq!(state(s, "bbbbbbbbbbbb"), UpdateState::Updating { candidate: "bbbbbbbbb".into(), reason: "why".into() }, "{s}");
+        }
+        for s in ["failed", "rolled_back"] {
+            assert_eq!(state(s, "bbbbbbbbbbbb"), UpdateState::Failed { reason: "why".into() }, "{s}");
+        }
+        assert_eq!(state("something_new", ""), UpdateState::Other { state: "something new".into(), reason: "why".into() });
+
+        assert_eq!(UpdateState::Unknown.short(), "update —");
+        assert_eq!(state("current", "").short(), "current");
+        assert_eq!(state("blocked", "bbbbbbbbbbbb").short(), "behind: bbbbbbbbb waiting");
+        assert_eq!(state("building", "bbbbbbbbbbbb").short(), "updating to bbbbbbbbb");
+        assert_eq!(state("draining", "").short(), "updating");
+        assert_eq!(state("rolled_back", "c").short(), "update failed");
+        assert!(state("failed", "").warns() && state("blocked", "b").warns() && !state("current", "").warns() && !state("building", "b").warns());
+
+        let m = machine(&json!({"status": "ok", "machine": {"version": "v0.1.56", "commit": "965ba5a3c0ffee", "update": {"state": "current"}}}), "local");
+        assert_eq!(m.build_line(), "v0.1.56 965ba5a3c · current");
+    }
+
+    #[test]
+    fn spend_sums_only_what_is_known() {
+        let known = machine(&json!({"usage": {"today_cost_usd": 1.25}}), "local");
+        let unknown = machine(&json!({"status": "ok"}), "paired");
+        assert_eq!(crate::data::spend_today(&[known.clone()]), (1.25, false));
+        assert_eq!(crate::data::spend_today(&[known, unknown]), (1.25, true));
     }
 }
 

@@ -248,4 +248,6 @@ moves them to `ready` while keeping them pending. Execute only `ready` calls for
 the authenticated device's own client session, then resolve with
 `approved_arguments.result`. Premature results and results from another device
 are refused. Do not derive execution permission from legacy session metadata.
-The Console migration to this protocol is still pending.
+Swarm Console follows this protocol: it shows `awaiting_approval` calls as approval
+cards and executes only calls Swarm marked `ready` for its own client session
+(`console/src/console/machine_calls.rs`).

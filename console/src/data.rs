@@ -6,33 +6,230 @@ use gpui::SharedString;
 
 pub type Text = SharedString;
 
+/// A machine's state as its Swarm says it (GET /v3/box/summary `status`), or
+/// Offline when it could not be read.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Health {
-    Online,
-    Busy,
+    /// "ok".
+    Ok,
+    /// "attention": something waits on a person or failed today.
+    Attention,
+    /// "degraded": a wanted sandbox could not start, or spending is over the limit.
+    Degraded,
+    /// It answered, without a status the console knows.
+    Unknown,
+    /// Not reached (or not read yet).
     Offline,
 }
 
+impl Health {
+    pub fn label(self) -> &'static str {
+        match self {
+            Health::Ok => "ok",
+            Health::Attention => "attention",
+            Health::Degraded => "degraded",
+            Health::Unknown => "status unknown",
+            Health::Offline => "offline",
+        }
+    }
+}
+
+/// The installer's update state (the summary's `machine.update`).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum UpdateState {
+    /// The summary has no update state (no installer state on that machine).
+    Unknown,
+    /// Running the newest build of its channel.
+    Current,
+    /// A newer build is waiting (for checks, review, or was blocked).
+    Behind { candidate: Text, reason: Text },
+    /// A newer build is being built or the machine drains to switch to it.
+    Updating { candidate: Text, reason: Text },
+    /// The last update failed or was rolled back.
+    Failed { reason: Text },
+    /// Any other state, shown as Swarm names it.
+    Other { state: Text, reason: Text },
+}
+
+impl UpdateState {
+    /// Short words for a card: "current", "behind: 1a2b3c4d5", "updating", "update failed".
+    pub fn short(&self) -> String {
+        match self {
+            UpdateState::Unknown => "update —".into(),
+            UpdateState::Current => "current".into(),
+            UpdateState::Behind { candidate, .. } => format!("behind: {candidate} waiting"),
+            UpdateState::Updating { candidate, .. } if candidate.is_empty() => "updating".into(),
+            UpdateState::Updating { candidate, .. } => format!("updating to {candidate}"),
+            UpdateState::Failed { .. } => "update failed".into(),
+            UpdateState::Other { state, .. } => format!("update {state}"),
+        }
+    }
+
+    /// Why, as the installer wrote it ("" when it gave none).
+    pub fn reason(&self) -> Text {
+        match self {
+            UpdateState::Behind { reason, .. } | UpdateState::Updating { reason, .. } | UpdateState::Failed { reason } | UpdateState::Other { reason, .. } => reason.clone(),
+            UpdateState::Unknown | UpdateState::Current => "".into(),
+        }
+    }
+
+    /// Wants a look: behind or failed.
+    pub fn warns(&self) -> bool {
+        matches!(self, UpdateState::Behind { .. } | UpdateState::Failed { .. })
+    }
+}
+
+/// What a restart would interrupt now (the summary's `busy`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Busy {
+    pub sessions: u32,
+    pub worker_runs: u32,
+    pub reviews: u32,
+    pub followups: u32,
+    pub environment_builds: u32,
+}
+
+/// Today's worker runs (the summary's `runs`, today in UTC).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct RunsToday {
+    pub total: u32,
+    pub succeeded: u32,
+    pub failed: u32,
+    pub running_now: u32,
+}
+
+/// One machine. Every `Option` is None when its Swarm did not say (shown as
+/// "—"); nothing here is filled in by the console.
 #[derive(Clone)]
 pub struct Machine {
     pub name: Text,
-    /// How the console reaches it: this pc, tailnet, relay or ssh.
+    /// How the console reaches it: local, ssh, linked, or paired (through home).
     pub kind: Text,
     pub health: Health,
-    pub running: u32,
-    pub slots: u32,
-    pub cost_today: f32,
-    /// Release branch and how it compares with the branch tip.
-    pub build: Text,
-    pub behind: u32,
-    /// Key level the console holds: read, write or full.
+    /// Swarm's reasons for its status, or why it could not be read.
+    pub reasons: Vec<Text>,
+    pub busy: Option<Busy>,
+    pub runs: Option<RunsToday>,
+    pub cost_today: Option<f64>,
+    /// Version and short commit.
+    pub build: Option<Text>,
+    pub update: UpdateState,
+    /// The session the console (or home) holds on it.
     pub access: Text,
-    pub sandbox: Text,
-    pub uptime: Text,
-    pub cpu: f32,
-    pub mem: f32,
+    pub sandbox: Option<Text>,
+    pub uptime: Option<Text>,
+    /// When home last reached it (ms), from GET /v3/fleet; linked machines only.
+    pub last_contact: Option<u64>,
+    /// Its model per role key (GET /v1/agent-model-settings); None when not read.
+    pub models: Option<Vec<(Text, Assignment)>>,
     /// Where a fleet machine's Swarm answers (empty for home and the demo).
     pub gateway: Text,
+}
+
+const UNKNOWN: &str = "—";
+
+impl Machine {
+    /// A machine nothing has been read about yet.
+    pub fn unread(name: Text, kind: Text, access: Text) -> Machine {
+        Machine {
+            name,
+            kind,
+            health: Health::Offline,
+            reasons: vec![],
+            busy: None,
+            runs: None,
+            cost_today: None,
+            build: None,
+            update: UpdateState::Unknown,
+            access,
+            sandbox: None,
+            uptime: None,
+            last_contact: None,
+            models: None,
+            gateway: "".into(),
+        }
+    }
+
+    /// "dev 67c69d05d · current".
+    pub fn build_line(&self) -> String {
+        format!("{} · {}", self.build.as_ref().map(|b| b.to_string()).unwrap_or_else(|| UNKNOWN.into()), self.update.short())
+    }
+
+    /// What runs now: "2 sessions · 1 worker run", "idle", or "—".
+    pub fn now_line(&self) -> String {
+        let Some(b) = self.busy else { return UNKNOWN.into() };
+        let mut parts = Vec::new();
+        let mut add = |n: u32, one: &str, many: &str| {
+            if n > 0 {
+                parts.push(format!("{n} {}", if n == 1 { one } else { many }));
+            }
+        };
+        add(b.sessions, "session", "sessions");
+        add(b.worker_runs, "worker run", "worker runs");
+        add(b.reviews, "review", "reviews");
+        add(b.followups, "follow-up", "follow-ups");
+        add(b.environment_builds, "environment build", "environment builds");
+        if parts.is_empty() { "idle".into() } else { parts.join(" · ") }
+    }
+
+    /// Today's worker runs: "4 runs · 3 ok · 1 failed", or "—".
+    pub fn runs_line(&self) -> String {
+        let Some(r) = self.runs else { return UNKNOWN.into() };
+        let mut out = format!("{} run{}", r.total, if r.total == 1 { "" } else { "s" });
+        if r.total > 0 {
+            out.push_str(&format!(" · {} ok", r.succeeded));
+        }
+        if r.failed > 0 {
+            out.push_str(&format!(" · {} failed", r.failed));
+        }
+        out
+    }
+
+    /// Today's spend: "$0.50", or "—".
+    pub fn cost_line(&self) -> String {
+        self.cost_today.map(|c| format!("${c:.2}")).unwrap_or_else(|| UNKNOWN.into())
+    }
+
+    pub fn uptime_line(&self) -> String {
+        self.uptime.as_ref().map(|u| u.to_string()).unwrap_or_else(|| UNKNOWN.into())
+    }
+
+    pub fn sandbox_line(&self) -> String {
+        self.sandbox.as_ref().map(|s| s.to_string()).unwrap_or_else(|| UNKNOWN.into())
+    }
+
+    /// When home last reached it, against `now` (ms): "last contact 4m ago",
+    /// "never reached", or "" when that is not known (home and this machine).
+    pub fn contact_line(&self, now: u64) -> String {
+        if self.kind.as_ref() != "paired" {
+            return String::new();
+        }
+        match self.last_contact {
+            Some(at) if at > 0 => {
+                let m = now.saturating_sub(at) / 60_000;
+                let ago = match m {
+                    0 => "just now".to_string(),
+                    m if m < 60 => format!("{m}m ago"),
+                    m if m < 60 * 24 => format!("{}h ago", m / 60),
+                    m => format!("{}d ago", m / (60 * 24)),
+                };
+                format!("last contact {ago}")
+            }
+            _ => "never reached".into(),
+        }
+    }
+
+    /// Its setting for a role key, as its Swarm said: None when not read or not listed.
+    pub fn model(&self, key: &str) -> Option<&Assignment> {
+        self.models.as_ref()?.iter().find(|(k, _)| k.as_ref() == key).map(|(_, a)| a)
+    }
+}
+
+/// Today's spend over machines: the sum of what is known, and whether any
+/// machine's spend is unknown.
+pub fn spend_today(machines: &[Machine]) -> (f64, bool) {
+    let known: f64 = machines.iter().filter_map(|m| m.cost_today).sum();
+    (known, machines.iter().any(|m| m.cost_today.is_none()))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -322,11 +519,47 @@ pub struct Choice {
 
 pub fn machines() -> Vec<Machine> {
     vec![
-        Machine { name: "studio".into(), kind: "local".into(), health: Health::Busy, running: 3, slots: 6, cost_today: 4.12, build: "dev".into(), behind: 0, access: "full".into(), sandbox: "gVisor".into(), uptime: "3d 4h".into(), cpu: 0.62, mem: 0.48, gateway: "".into() },
-        Machine { name: "forge".into(), kind: "tailnet".into(), health: Health::Online, running: 2, slots: 8, cost_today: 1.37, build: "dev".into(), behind: 3, access: "full".into(), sandbox: "gVisor".into(), uptime: "11d".into(), cpu: 0.31, mem: 0.36, gateway: "".into() },
-        Machine { name: "edge-1".into(), kind: "relay".into(), health: Health::Online, running: 0, slots: 4, cost_today: 0.21, build: "main".into(), behind: 0, access: "write".into(), sandbox: "bubblewrap".into(), uptime: "26d".into(), cpu: 0.04, mem: 0.18, gateway: "".into() },
-        Machine { name: "lab".into(), kind: "ssh".into(), health: Health::Offline, running: 0, slots: 4, cost_today: 0.0, build: "dev".into(), behind: 0, access: "full".into(), sandbox: "gVisor".into(), uptime: "—".into(), cpu: 0.0, mem: 0.0, gateway: "".into() },
+        demo_machine("studio", "local", Health::Ok, Busy { sessions: 3, ..Default::default() }, 4.12, "dev 67c69d05d", UpdateState::Current, "gVisor", "3d 4h", None),
+        demo_machine(
+            "forge",
+            "paired",
+            Health::Attention,
+            Busy { worker_runs: 2, ..Default::default() },
+            1.37,
+            "dev 5a667f28a",
+            UpdateState::Behind { candidate: "3ce146eae".into(), reason: "waiting for its checks".into() },
+            "gVisor",
+            "11d 2h",
+            Some(("coder", a("openai".into(), "gpt-5.4".into(), "high".into()))),
+        ),
+        demo_machine("edge-1", "paired", Health::Ok, Busy::default(), 0.21, "v0.1.56 965ba5a3c", UpdateState::Current, "bubblewrap", "26d 1h", None),
+        Machine { last_contact: Some(now_ms().saturating_sub(42 * 60_000)), ..Machine::unread("lab".into(), "paired".into(), "owner".into()) },
     ]
+}
+
+#[allow(clippy::too_many_arguments)]
+fn demo_machine(name: &str, kind: &str, health: Health, busy: Busy, cost: f64, build: &str, update: UpdateState, sandbox: &str, uptime: &str, differs: Option<(&str, Assignment)>) -> Machine {
+    let models = roles()
+        .into_iter()
+        .map(|r| match &differs {
+            Some((key, a)) if r.key.as_ref() == *key => (r.key, a.clone()),
+            _ => (r.key, r.default),
+        })
+        .collect();
+    Machine {
+        health,
+        reasons: if health == Health::Attention { vec!["workers failed today".into()] } else { vec![] },
+        busy: Some(busy),
+        runs: Some(RunsToday { total: 6, succeeded: 5, failed: u32::from(health == Health::Attention), running_now: busy.worker_runs }),
+        cost_today: Some(cost),
+        build: Some(build.to_string().into()),
+        update,
+        sandbox: Some(sandbox.to_string().into()),
+        uptime: Some(uptime.to_string().into()),
+        last_contact: (kind == "paired").then(now_ms),
+        models: Some(models),
+        ..Machine::unread(name.to_string().into(), kind.to_string().into(), "owner".into())
+    }
 }
 
 pub fn projects() -> Vec<Project> {
@@ -545,17 +778,15 @@ impl Assignment {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+/// One role on one machine, against the first machine's setting (the
+/// Swarm this console is connected to).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Cell {
-    /// Runs the fleet default.
+    /// The same model as the default column.
     InSync,
-    /// Deliberately different on this machine.
+    /// Its Swarm runs another model for this role.
     Custom(Assignment),
-    /// Differs from what it should run; Apply fixes it.
-    Drift(Assignment),
-    /// The provider is not connected on this machine.
-    Unavailable,
-    /// The machine could not be reached.
+    /// Not read: the machine was not reached or did not list the role.
     Unknown,
 }
 
@@ -564,9 +795,21 @@ pub struct Role {
     pub key: Text,
     pub label: Text,
     pub purpose: Text,
+    /// The setting on the Swarm this console is connected to.
     pub default: Assignment,
-    /// One cell per machine, in fleet order.
-    pub cells: Vec<Cell>,
+}
+
+/// A role on a machine: the first machine is the default itself; any other
+/// is compared with it from what its own Swarm said.
+pub fn cell(role: &Role, machines: &[Machine], mi: usize) -> Cell {
+    if mi == 0 {
+        return Cell::InSync;
+    }
+    match machines.get(mi).and_then(|m| m.model(&role.key)) {
+        Some(a) if *a == role.default => Cell::InSync,
+        Some(a) => Cell::Custom(a.clone()),
+        None => Cell::Unknown,
+    }
 }
 
 fn a(provider: Text, model: Text, thinking: Text) -> Assignment {
@@ -574,16 +817,15 @@ fn a(provider: Text, model: Text, thinking: Text) -> Assignment {
 }
 
 pub fn roles() -> Vec<Role> {
-    use Cell::*;
     vec![
-        Role { key: "plan".into(), label: "Orchestrator".into(), purpose: "runs your sessions, delegates".into(), default: a("anthropic".into(), "opus-5.5".into(), "high".into()), cells: vec![InSync, InSync, InSync, Unknown] },
-        Role { key: "action".into(), label: "Swarm".into(), purpose: "big tasks, coordinates children".into(), default: a("anthropic".into(), "opus-5.5".into(), "medium".into()), cells: vec![InSync, InSync, Custom(a("openai".into(), "gpt-5.5".into(), "high".into())), Unknown] },
-        Role { key: "coder".into(), label: "Coder".into(), purpose: "edits code in a worktree".into(), default: a("openai".into(), "gpt-5.5".into(), "high".into()), cells: vec![InSync, Drift(a("openai".into(), "gpt-5.4".into(), "high".into())), InSync, Unknown] },
-        Role { key: "finder".into(), label: "Finder".into(), purpose: "searches, reads, reports".into(), default: a("anthropic".into(), "sonnet-5.5".into(), "".into()), cells: vec![InSync, InSync, InSync, Unknown] },
-        Role { key: "designer".into(), label: "Designer".into(), purpose: "UI, HTML designs, images".into(), default: a("google".into(), "gemini-3.5-pro".into(), "".into()), cells: vec![InSync, InSync, Unavailable, Unknown] },
-        Role { key: "reviewer".into(), label: "Reviewer".into(), purpose: "independent read-only review".into(), default: a("anthropic".into(), "opus-5.5".into(), "high".into()), cells: vec![InSync, Custom(a("openai".into(), "gpt-5.5".into(), "xhigh".into())), InSync, Unknown] },
-        Role { key: "compact".into(), label: "Compact".into(), purpose: "summarises long sessions".into(), default: a("anthropic".into(), "haiku-5.5".into(), "".into()), cells: vec![InSync, InSync, InSync, Unknown] },
-        Role { key: "router".into(), label: "Router".into(), purpose: "titles and small routing".into(), default: a("anthropic".into(), "haiku-5.5".into(), "".into()), cells: vec![InSync, Drift(a("google".into(), "gemini-3.5-flash".into(), "".into())), InSync, Unknown] },
+        Role { key: "plan".into(), label: "Orchestrator".into(), purpose: "runs your sessions, delegates".into(), default: a("anthropic".into(), "opus-5.5".into(), "high".into()) },
+        Role { key: "action".into(), label: "Swarm".into(), purpose: "big tasks, coordinates children".into(), default: a("anthropic".into(), "opus-5.5".into(), "medium".into()) },
+        Role { key: "coder".into(), label: "Coder".into(), purpose: "edits code in a worktree".into(), default: a("openai".into(), "gpt-5.5".into(), "high".into()) },
+        Role { key: "finder".into(), label: "Finder".into(), purpose: "searches, reads, reports".into(), default: a("anthropic".into(), "sonnet-5.5".into(), "".into()) },
+        Role { key: "designer".into(), label: "Designer".into(), purpose: "UI, HTML designs, images".into(), default: a("google".into(), "gemini-3.5-pro".into(), "".into()) },
+        Role { key: "reviewer".into(), label: "Reviewer".into(), purpose: "independent read-only review".into(), default: a("anthropic".into(), "opus-5.5".into(), "high".into()) },
+        Role { key: "compact".into(), label: "Compact".into(), purpose: "summarises long sessions".into(), default: a("anthropic".into(), "haiku-5.5".into(), "".into()) },
+        Role { key: "router".into(), label: "Router".into(), purpose: "titles and small routing".into(), default: a("anthropic".into(), "haiku-5.5".into(), "".into()) },
     ]
 }
 

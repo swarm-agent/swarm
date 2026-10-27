@@ -8,7 +8,7 @@ use std::time::Duration;
 use gpui::{Context, Focusable, SharedString, Window, prelude::*};
 
 use super::{Console, Link, Open, Page};
-use crate::data::{Entry, LiveRef, Machine, Health, Project, RunState, Session, Text};
+use crate::data::{Entry, LiveRef, Machine, Project, RunState, Session, Text};
 use crate::onboarding::input_colors;
 use crate::swarm::client::Client;
 use crate::swarm::live::{Command, Live, Snapshot, Update};
@@ -51,24 +51,9 @@ pub(super) fn draft(project: usize) -> Session {
     }
 }
 
-/// The machine until Swarm answers.
+/// The machine until Swarm answers: nothing known yet.
 pub(super) fn placeholder_machine(target: &Target) -> Machine {
-    Machine {
-        name: target.label().into(),
-        kind: if matches!(target, Target::Local) { "local".into() } else { "ssh".into() },
-        health: Health::Offline,
-        running: 0,
-        slots: 1,
-        cost_today: 0.,
-        build: "".into(),
-        behind: 0,
-        access: "full".into(),
-        sandbox: "".into(),
-        uptime: "".into(),
-        cpu: 0.,
-        mem: 0.,
-        gateway: "".into(),
-    }
+    Machine::unread(target.label().into(), if matches!(target, Target::Local) { "local".into() } else { "ssh".into() }, "owner".into())
 }
 
 pub(super) fn placeholder_project() -> Project {

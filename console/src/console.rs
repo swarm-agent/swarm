@@ -665,9 +665,10 @@ impl Console {
 
     fn health_color(&self, health: Health) -> Hsla {
         match health {
-            Health::Online => self.theme.ok,
-            Health::Busy => self.theme.warn,
-            Health::Offline => self.theme.faint,
+            Health::Ok => self.theme.ok,
+            Health::Attention => self.theme.warn,
+            Health::Degraded => self.theme.err,
+            Health::Unknown | Health::Offline => self.theme.faint,
         }
     }
 
@@ -770,7 +771,7 @@ impl Console {
             .sum::<usize>()
             + self.waiting_workers().len()
             + self.proposed_workflows();
-        let cost: f32 = self.machines.iter().map(|m| m.cost_today).sum();
+        let (cost, unknown) = crate::data::spend_today(&self.machines);
         let (link, link_bad) = self.link_text();
         let sep = || div().text_color(t.border_strong).child("│");
         div()
@@ -797,7 +798,7 @@ impl Console {
                     .child(sep())
                     .child(div().text_color(t.warn).child(format!("{needs} need you")))
                     .child(sep())
-                    .child(format!("${cost:.2} today")),
+                    .child(format!("${cost:.2}{} today", if unknown { " + ?" } else { "" })),
             )
             .when_some(self.notice.clone(), |d, (text, bad)| {
                 d.child(div().flex_1().min_w_0().pl_4().overflow_hidden().whitespace_nowrap().text_ellipsis().text_right().text_color(if bad { t.err } else { t.muted }).child(text))

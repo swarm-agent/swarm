@@ -35,7 +35,7 @@ impl Console {
                 } else if m.health == Health::Offline {
                     div().text_color(t.faint).text_size(px(10.5)).child("offline")
                 } else {
-                    div().text_color(t.muted).text_size(px(10.5)).child("online")
+                    div().text_color(t.muted).text_size(px(10.5)).child(m.health.label())
                 })
     }
 

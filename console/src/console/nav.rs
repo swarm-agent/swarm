@@ -4,17 +4,9 @@ use gpui::{ClickEvent, Context, Div, Hsla, SharedString, div, prelude::*, px};
 
 use super::{AgentsFocus, Console, Open, Page, alpha};
 use crate::icons::Icon;
-use crate::data::{Cell, Health};
+use crate::data::Health;
 
 impl Console {
-    pub(super) fn drift_count(&self) -> usize {
-        self.roles
-            .iter()
-            .flat_map(|r| r.cells.iter())
-            .filter(|c| matches!(c, Cell::Drift(_)))
-            .count()
-    }
-
     pub(super) fn needs_you_total(&self) -> usize {
         self.sessions
             .iter()
@@ -39,17 +31,12 @@ impl Console {
                 })
             }
             Page::Usage => {
-                let today: f32 = self.machines.iter().map(|m| m.cost_today).sum();
-                Some((format!("${today:.2}"), t.faint, false))
+                let (today, unknown) = crate::data::spend_today(&self.machines);
+                Some((format!("${today:.2}{}", if unknown { "+?" } else { "" }), t.faint, false))
             }
             Page::Agents => {
-                let drift = self.drift_count();
-                if drift > 0 {
-                    Some((format!("{drift} differ"), t.warn, true))
-                } else {
-                    let online = self.machines.iter().filter(|m| m.health != Health::Offline).count();
-                    Some((format!("{online}/{}", self.machines.len()), t.faint, false))
-                }
+                let online = self.machines.iter().filter(|m| m.health != Health::Offline).count();
+                Some((format!("{online}/{}", self.machines.len()), t.faint, false))
             }
             Page::Automations => match &self.automations {
                 Some(Ok(b)) => {

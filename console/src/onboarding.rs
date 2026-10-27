@@ -1127,7 +1127,7 @@ impl Onboarding {
                 self.fleet = ["build-box", "media-box", "edge-1"]
                     .iter()
                     .enumerate()
-                    .map(|(i, n)| fleet::Found { name: n.to_string(), address: format!("10.0.0.{}:7792", i + 5), online: true, open_tasks: 0 })
+                    .map(|(i, n)| fleet::Found { name: n.to_string(), address: format!("10.0.0.{}:7792", i + 5), last_contact_at: 0, last_error: String::new() })
                     .collect();
                 self.draft.home = THIS_PC.into();
                 if stage == "home" { Stage::Home { choice: 0 } } else { Stage::Access }
