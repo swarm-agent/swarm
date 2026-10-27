@@ -49,11 +49,6 @@ func (s *Server) CallFleetProject(ctx context.Context, p identity.Principal, mac
 	if s.fleet == nil || s.fleetTokens == nil {
 		return nil, errors.New("fleet service unavailable")
 	}
-	// report_task is an active task-run mutation, not an owner API operation.
-	// Never forge the remote session/run binding from a home Orchestrator.
-	if action == "report_task" {
-		return nil, errors.New("report_task requires the machine's active task run; the home cannot impersonate it")
-	}
 	str := func(key string) string { value, _ := args[key].(string); return strings.TrimSpace(value) }
 	segment := func(value string) (string, error) {
 		if value == "" || value == "." || value == ".." || strings.ContainsAny(value, "/\\?#%") {

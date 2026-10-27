@@ -328,7 +328,7 @@ func manageProjectsDefinition() Definition {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"machine":           map[string]any{"type": "string", "description": "Linked machine name; use list_machines to see session access. Only project/task reads and delegation lifecycle actions are available remotely; never integrate, deploy or wait_tasks."},
+				"machine":           map[string]any{"type": "string", "description": "Linked machine name; use list_machines to see session access. Only project/task reads and delegation lifecycle actions are available remotely; never integrate, deploy, report_task or wait_tasks. Read task status and reports with get_task."},
 				"attempt_id":        map[string]any{"type": "string", "description": "Exact linked task attempt from wait_tasks/get_task for inspect_files"},
 				"source_session_id": map[string]any{"type": "string", "description": "Exact linked task session for inspect_files; not a regular task_call_id recovery source"},
 				"head_commit":       map[string]any{"type": "string", "description": "Expected committed task result HEAD; omit only for initial inspection, then retain returned reference"},

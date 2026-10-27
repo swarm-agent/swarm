@@ -99,7 +99,7 @@ func TestFleetSessionAccessGate(t *testing.T) {
 	for _, tc := range []struct {
 		session, action string
 		want            AuthorizationDecision
-	}{{"none", "propose_task", AuthorizationDeny}, {"ask", "propose_task", AuthorizationPending}, {"full", "propose_task", AuthorizationApprove}, {"full", "integrate_task", AuthorizationDeny}} {
+	}{{"none", "propose_task", AuthorizationDeny}, {"ask", "propose_task", AuthorizationPending}, {"full", "propose_task", AuthorizationApprove}, {"full", "integrate_task", AuthorizationDeny}, {"full", "report_task", AuthorizationDeny}, {"ask", "report_task", AuthorizationDeny}} {
 		args := `{"machine":"box","action":"` + tc.action + `","title":"Fix it","agent":"coder"}`
 		got, err := service.AuthorizeToolCall(AuthorizationInput{SessionID: tc.session, AccountScopeID: "acct", RunID: "run", CallID: tc.session + tc.action, ToolName: "manage_projects", ToolArguments: args, Mode: "auto+bypass_permissions"})
 		if err != nil || got.Decision != tc.want {

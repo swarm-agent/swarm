@@ -11,6 +11,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
   Docs impact: none.
 - Add per-session linked-machine access and bounded `manage_projects` fleet delegation through existing project APIs; remote task reporting still requires the task's own active run.
   Docs impact: document fleet access choices, delegation and current reporting limitation in `docs/frontends.md`.
+- Add per-session linked-machine access and bounded `manage_projects` fleet delegation through existing project APIs; the home reads task status and reports with `get_task`, while tasks report their own results.
+  Docs impact: document fleet access choices, delegation and refused remote actions in `docs/frontends.md`.
 
 - Supply published standard-tier Gemini transcription rates (including Gemini 3.5 Flash-Lite) missing from model snapshots, retain speech alignment text usage when modality details omit it, and expose Lyria song prices without marking empty media price views verified. Conditional expiry/context-tier transcription rates remain unsupported. Docs impact: none.
 

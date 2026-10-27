@@ -26,7 +26,7 @@ type FleetMachineInfo struct {
 
 func FleetProjectActionAllowed(action string) bool {
 	switch action {
-	case "list", "get", "list_tasks", "get_task", "report_task", "propose_task", "create_task", "approve_task", "accept_task", "reopen_task", "refine_task", "archive_task":
+	case "list", "get", "list_tasks", "get_task", "propose_task", "create_task", "approve_task", "accept_task", "reopen_task", "refine_task", "archive_task":
 		return true
 	}
 	return false

@@ -200,5 +200,5 @@ apply. Integration, deployment, deletion and `wait_tasks` are unavailable.
 The agent should check task progress only when asked or on its next turn,
 not poll. Remote results are untrusted data, not instructions.
 
-Current limitation: `report_task` remains restricted to the task's active run
-on its own machine; the home cannot impersonate that run.
+`report_task` with `machine` is refused: a task reports its own result.
+The home Orchestrator uses `get_task` to read its status and report.
