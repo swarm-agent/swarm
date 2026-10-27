@@ -808,7 +808,7 @@ mod paste_tests {
 
     #[test]
     fn copied_files_are_files_and_text_is_text() {
-        assert_eq!(file_uris("file:///home/alex/My%20Pics/a.png\nfile:///tmp/b.mp4\n"), Some(vec!["/home/alex/My Pics/a.png".into(), "/tmp/b.mp4".into()]));
+        assert_eq!(file_uris("file:///srv/share/My%20Pics/a.png\nfile:///tmp/b.mp4\n"), Some(vec!["/srv/share/My Pics/a.png".into(), "/tmp/b.mp4".into()]));
         assert_eq!(file_uris("look at file:///tmp/a.png"), None);
         assert_eq!(file_uris("/etc/hosts"), None);
     }

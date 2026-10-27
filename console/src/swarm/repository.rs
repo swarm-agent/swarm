@@ -177,8 +177,8 @@ mod tests {
 
     #[test]
     fn paths_are_query_escaped() {
-        assert_eq!(query("/home/dev/my project"), "/home/dev/my%20project");
-        assert_eq!(query("/home/dev/a&b"), "/home/dev/a%26b");
+        assert_eq!(query("/srv/work/my project"), "/srv/work/my%20project");
+        assert_eq!(query("/srv/work/a&b"), "/srv/work/a%26b");
     }
 
     #[test]

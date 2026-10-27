@@ -351,7 +351,7 @@ mod tests {
     fn loop_json() -> Value {
         json!({
             "id": "jauto_1", "name": "swarm-go review loop", "revision": 6, "enabled": true, "when": "succeeded",
-            "scope": {"folder": "/home/dev/swarm-go", "worker": "worker_c"},
+            "scope": {"folder": "/srv/work/swarm-go", "worker": "worker_c"},
             "steps": [
                 {"id": "review", "type": "agent", "worker": "reviewer", "brief": "Review it."},
                 {"id": "send-back", "type": "reopen", "from": "review", "max_rounds": 2, "if": [{"step": "review", "verdict": "block"}]},
@@ -392,7 +392,7 @@ mod tests {
 
     #[test]
     fn an_event_trigger_in_words() {
-        let w = workflow(&json!({"name": "socials-post", "when": "succeeded", "scope": {"folder": "/home/alex/socials"},
+        let w = workflow(&json!({"name": "socials-post", "when": "succeeded", "scope": {"folder": "/srv/work/socials"},
             "on": {"event": {"source": "pull", "url": "https://socials.example.dev/v1/posts?status=changes_requested", "every_seconds": 60,
                              "secret": "SOCIALS_DRAFT_TOKEN", "items": "posts", "id": "id"},
                    "start": {"worker": "worker_c", "brief": "Revise {{event.key}}"}},

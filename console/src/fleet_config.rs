@@ -125,11 +125,11 @@ mod folder_tests {
 
     #[test]
     fn inside_allowed_folders_only() {
-        let c = FleetConfig { folders: vec!["/home/alex/code".into()], ..Default::default() };
-        assert!(c.allows("/home/alex/code"));
-        assert!(c.allows("/home/alex/code/app/src/main.rs"));
-        assert!(!c.allows("/home/alex/codex/x"));
-        assert!(!c.allows("/home/alex/code/../.ssh/id_ed25519"));
+        let c = FleetConfig { folders: vec!["/srv/work/code".into()], ..Default::default() };
+        assert!(c.allows("/srv/work/code"));
+        assert!(c.allows("/srv/work/code/app/src/main.rs"));
+        assert!(!c.allows("/srv/work/codex/x"));
+        assert!(!c.allows("/srv/work/code/../.ssh/id_ed25519"));
         assert!(!FleetConfig::default().allows("/tmp/x"));
     }
 }

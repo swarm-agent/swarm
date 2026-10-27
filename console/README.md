@@ -110,19 +110,6 @@ fixed by the key in its manifest) and open its popup once.
 `scripts/chrome-with-extension.mjs PROFILE extension/` starts a Chrome with
 a separate profile and the extension loaded, for trying it out.
 
-## Test machine
-
-`scripts/test-vm.sh up|ssh|status|down|reset` runs a throwaway Ubuntu 24.04
-VM on this PC (QEMU + KVM, no sudo; ssh on 127.0.0.1:4223, and `tunnel` opens
-Swarm Control on 27783 and the setup page on 28443 through ssh) to dogfood a fresh Swarm install and
-onboarding without touching the Swarm already installed here. `reset` throws
-its disk away so the next `up` is a fresh machine again.
-`VM_NAME=b scripts/test-vm.sh up` runs a second machine beside it (ssh on 4224);
-the two share a private network of their own (192.168.77.10 and .20) for
-linking Swarms.
-`scripts/test-vm.sh seed REPO BRANCH` makes its installer build a local swarm-go
-branch, and `scripts/dogfood.sh` runs the onboarding on your screen against it.
-
 ## Layout
 
 - **Navigation:** Sessions, Media, Usage, Agents and Settings at the top of

@@ -1153,9 +1153,9 @@ impl Onboarding {
             }
             "project" => {
                 self.folders = vec![
-                    ("/home/you/code/storefront".into(), true),
-                    ("/home/you/code/storefront-docs".into(), true),
-                    ("/home/you/code/scratch".into(), false),
+                    ("~/code/storefront".into(), true),
+                    ("~/code/storefront-docs".into(), true),
+                    ("~/code/scratch".into(), false),
                 ];
                 self.name.update(cx, |n, cx| n.set_text("storefront", cx));
                 Stage::Project { suggestions_loaded: true }

@@ -10,8 +10,8 @@
 #   log             print the app's log so far
 #   quit
 # The environment passes through to the app (SWARM_CONSOLE_ONBOARDING=1,
-# SWARM_CONSOLE_SSH, SWARM_CONSOLE_INSTALLER, ...), as scripts/dogfood.sh
-# sets it. Needs Xvfb, i3, xdotool, xwd and ffmpeg (see scripts/snap.sh).
+# SWARM_CONSOLE_SSH, SWARM_CONSOLE_INSTALLER, ...).
+# Needs Xvfb, i3, xdotool, xwd and ffmpeg (see scripts/snap.sh).
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 bin=$root/target/debug/swarm-console
