@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"swarm/packages/swarmd/internal/jobautomation"
+	"swarm/packages/swarmd/internal/sandbox"
 	"testing"
 	"time"
 
@@ -42,10 +43,13 @@ func integrationGit(t *testing.T, dir string, args ...string) string {
 // branches and target mismatches must remain unchanged with lane_branch_mismatch
 // and the HTTP delivery assessment, preserving MCP's unobserved-state handling. Git HEAD lock
 // conflicts must surface through IntegrateProjectTask without changing delivery.
+// The inspection-timeout case injects only the assessment result, checking the
+// mutation's effective sandbox allowance and real HTTP/MCP refusal reason on
+// all three attempts, with no receipt or target mutation.
 // The workflow case crosses toBranch and the real HTTP handler to prove the
 // recovery warning reaches the recorded outcome, not just the stored receipt.
 func TestProjectTaskIntegrateNativeAndHTTP(t *testing.T) {
-	for _, entry := range []string{"native", "http", "detached-tip", "detached-tip-workflow", "detached-lock", "detached-stale", "detached-dirty", "wrong-branch", "target-mismatch"} {
+	for _, entry := range []string{"inspection-timeout", "native", "http", "detached-tip", "detached-tip-workflow", "detached-lock", "detached-stale", "detached-dirty", "wrong-branch", "target-mismatch"} {
 		t.Run(entry, func(t *testing.T) {
 			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 			t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
@@ -112,6 +116,50 @@ func TestProjectTaskIntegrateNativeAndHTTP(t *testing.T) {
 			unchanged, _, _ := db.GetProjectTask(p.AccountScopeID, proj.ID, task.ID)
 			if unchanged.Integration != nil || integrationGit(t, source, "rev-parse", "HEAD") != base {
 				t.Fatal("rejection mutated task or target")
+			}
+			if entry == "inspection-timeout" {
+				manager, err := sandbox.NewManager(context.Background(), sandbox.Config{Mode: sandbox.ModeRequired, UID: 10001, GID: 10001, StateDir: t.TempDir()}, boxLeaseRunner{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				previous := sandbox.Default()
+				sandbox.SetDefault(manager)
+				defer sandbox.SetDefault(previous)
+				original := inspectIntegrationGitState
+				defer func() { inspectIntegrationGitState = original }()
+				calls := 0
+				inspectIntegrationGitState = func(ctx context.Context, task pebblestore.ProjectTaskRecord, db *pebblestore.SessionStore) taskGitState {
+					calls++
+					if got := worktreeruntime.DeliveryAssessmentBudget(ctx); got != 30*time.Second {
+						t.Fatalf("mutation budget %s", got)
+					}
+					a := &pebblestore.TaskDeliveryAssessment{State: "unavailable", Freshness: "unknown", ReasonCode: "inspection_timeout", Reason: "Git inspection exceeded its time budget"}
+					return taskGitState{deliveryAssessment: a, actionNeeded: taskAssessmentAction(a)}
+				}
+				if got := worktreeruntime.DeliveryAssessmentBudget(context.Background()); got != 15*time.Second {
+					t.Fatalf("status budget %s", got)
+				}
+				call := &controlMCPCall{request: withTestPrincipal(httptest.NewRequest(http.MethodPost, "/mcp", nil)), server: f.server}
+				handler := f.server.internalRouteHandler()
+				call.next = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method == http.MethodGet {
+						writeJSON(w, 200, map[string]any{"tasks": []any{task}})
+						return
+					}
+					handler.ServeHTTP(w, r)
+				})
+				for i := 0; i < 3; i++ {
+					_, err := controlMCPIntegrate(call, map[string]any{"project_id": proj.ID, "task_id": task.ID}, "merge", "get")
+					if err == nil || !strings.Contains(err.Error(), "Git inspection exceeded its time budget (inspection_timeout)") || strings.Contains(err.Error(), "will retry") {
+						t.Fatalf("attempt %d: %v", i+1, err)
+					}
+				}
+				sandbox.SetDefault(previous)
+				unchanged, _, _ := db.GetProjectTask(p.AccountScopeID, proj.ID, task.ID)
+				if calls != 3 || unchanged.Integration != nil || integrationGit(t, source, "rev-parse", "HEAD") != base {
+					t.Fatal("timeout mutated delivery or lost attempts")
+				}
+				return
 			}
 			if strings.HasPrefix(entry, "detached-") {
 				commit := head

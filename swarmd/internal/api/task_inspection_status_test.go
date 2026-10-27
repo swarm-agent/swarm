@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"swarm/packages/swarmd/internal/jobautomation"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"testing"
 )
@@ -21,8 +22,13 @@ func TestTaskInspectionStatusNote(t *testing.T) {
 			if action != "original reason" {
 				t.Fatal(action)
 			}
-		} else if action != "" || a.Reason != "Git state not read in time; will retry" {
+		} else if action != "" || a.Reason != "original reason" {
 			t.Fatalf("action %q assessment %+v", action, a)
+		}
+		if code != "lane_branch_mismatch" {
+			if taskStatusAssessment(&a).Reason != "Git state not read in time; will retry" || a.Reason != "original reason" {
+				t.Fatal("status note changed mutation reason")
+			}
 		}
 		if a.State != "unavailable" || len(a.AllowedActions) != 0 {
 			t.Fatal("unobserved state became actionable")
@@ -53,5 +59,35 @@ func TestIntegrateInspectionCode(t *testing.T) {
 		if !errors.As(err, &typed) || typed.inspectionCode != code || calls != 1 {
 			t.Fatalf("code %s calls %d error %#v", code, calls, err)
 		}
+	}
+}
+
+// Purpose: workflowDeliveryError must preserve configured retries for ordinary
+// operational errors, and refuse only known unsafe Git states. This adapter
+// unit is the narrowest proof that HTTP status alone does not disable retries.
+func TestWorkflowDeliveryErrorClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		err     error
+		refused bool
+	}{
+		{"publish", errors.New("push failed"), false},
+		{"store", controlMCPToolError{status: 500, message: "database not available"}, false},
+		{"heads moved", controlMCPToolError{inspectionCode: "heads_changed"}, false},
+		{"unknown conflict", controlMCPToolError{status: 409, message: "temporary failure"}, false},
+		{"mismatch", controlMCPToolError{inspectionCode: "lane_branch_mismatch"}, true},
+		{"dirty", controlMCPToolError{body: `{"delivery":{"source_dirty":true}}`}, true},
+		{"conflict", controlMCPToolError{body: `{"delivery":{"state":"conflict"}}`}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := workflowDeliveryError(tc.err)
+			var refused *jobautomation.RefusedError
+			if errors.As(got, &refused) != tc.refused {
+				t.Fatalf("classification: %T %v", got, got)
+			}
+			if !tc.refused && got != tc.err {
+				t.Fatal("ordinary retry error replaced")
+			}
+		})
 	}
 }

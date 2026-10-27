@@ -41,6 +41,8 @@ func writeProjectTaskIntegrationError(w http.ResponseWriter, err error) {
 	writeError(w, http.StatusInternalServerError, err)
 }
 
+var inspectIntegrationGitState = inspectTaskGitStateContext
+
 // IntegrateProjectTask is the shared native-tool and HTTP integration boundary.
 // Native callers select the current durable lane; HTTP callers supply their selection.
 func (s *Server) IntegrateProjectTask(ctx context.Context, p identity.Principal, projectID, taskID string, selections ...tool.ProjectTaskIntegrationSelection) (map[string]any, error) {
@@ -84,24 +86,25 @@ func (s *Server) IntegrateProjectTask(ctx context.Context, p identity.Principal,
 	if _, err := s.resolveProjectTaskSource(p, proj, task.SourceWorkspace.Path, task.SourceWorkspace.WorkspaceID, task.SourceWorkspace.WorkspaceGeneration, true); err != nil {
 		return nil, integrationFailure(http.StatusConflict, err)
 	}
-	gitState := inspectTaskGitStateContext(ctx, *task, db)
+	ctx = worktreeruntime.WithDeliveryExecution(ctx)
+	gitState := inspectIntegrationGitState(ctx, *task, db)
 	warning := ""
 	if a := gitState.deliveryAssessment; a != nil && a.ReasonCode == "lane_branch_mismatch" {
 		// Only the mutation boundary repairs a validated, exclusively owned lane;
 		// ordinary delivery assessments remain read-only.
 		warning, err = worktreeruntime.ReattachDeliveryLane(ctx, selectedSession.WorktreeRootPath, selection.SourceBranch, capturedPath, selection.TargetBranch)
 		if err != nil {
-			return nil, integrationFailure(http.StatusConflict, fmt.Errorf("cannot reattach delivery lane (%s): %w", a.ReasonCode, err))
+			return nil, &projectTaskIntegrationError{status: http.StatusConflict, err: fmt.Errorf("cannot reattach delivery lane (%s): %w", a.ReasonCode, err), delivery: a}
 		}
 		if warning != "" {
-			gitState = inspectTaskGitStateContext(ctx, *task, db)
+			gitState = inspectIntegrationGitState(ctx, *task, db)
 		}
 	}
 	if gitState.deliveryAssessment == nil || gitState.deliveryAssessment.Freshness != "observed" || (gitState.deliveryAssessment.State != "candidate_work" && gitState.deliveryAssessment.State != "integrated") {
 		return nil, &projectTaskIntegrationError{status: http.StatusConflict, err: errors.New(taskDeliveryNotActionableMessage(projectID, taskID, gitState.deliveryAssessment)), delivery: gitState.deliveryAssessment}
 	}
 	if a := gitState.deliveryAssessment; gitState.isDirty || a.SourceDirty || a.TargetDirty {
-		return nil, integrationFailure(http.StatusConflict, errors.New("cannot integrate: "+taskDeliveryDirtyMessage(a)))
+		return nil, &projectTaskIntegrationError{status: http.StatusConflict, err: errors.New("cannot integrate: " + taskDeliveryDirtyMessage(a)), delivery: a}
 	}
 	receipt := &pebblestore.ProjectTaskIntegration{State: "in_progress", SessionID: selection.SessionID, SourceBranch: selection.SourceBranch, TargetBranch: selection.TargetBranch, TargetWorkspacePath: capturedPath, Warning: warning}
 	if err := pebblestore.BeginProjectTaskIntegration(db, p.AccountScopeID, task, receipt); err != nil {
@@ -220,6 +223,12 @@ func (s *Server) IntegrateProjectTask(ctx context.Context, p identity.Principal,
 	plan, err := integrator.PrepareTaskIntegration(parentWs, parentState.BranchName, parentState.HeadCommit, []worktreeruntime.TaskIntegrationChild{{SessionID: selection.SessionID, BaseCommit: capturedBase, HeadCommit: childState.HeadCommit, PreserveAncestry: true}})
 	if err != nil {
 		receipt.Error = fmt.Sprintf("prepare integration failed: %v", err)
+		var conflict *worktreeruntime.TaskIntegrationConflictError
+		if errors.As(err, &conflict) {
+			a := *gitState.deliveryAssessment
+			a.State, a.ReasonCode, a.Reason = "conflict", "merge_conflict", receipt.Error
+			return nil, &projectTaskIntegrationError{status: http.StatusConflict, err: errors.New(receipt.Error), delivery: &a}
+		}
 		return nil, integrationFailure(http.StatusBadRequest, errors.New(receipt.Error))
 	}
 	if len(plan.Commits) == 0 && plan.FastForwardHead == "" {

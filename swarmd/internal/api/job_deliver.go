@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"swarm/packages/swarmd/internal/projectfiles"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 
 	"swarm/packages/swarmd/internal/jobautomation"
 	"swarm/packages/swarmd/internal/outbox"
@@ -308,12 +309,7 @@ func (d jobAutomationDeliverer) toBranch(ctx context.Context, req jobautomation.
 		response, err = controlMCPDeliverJob(c, map[string]any{"job_id": req.Result.JobID})
 	}
 	if err != nil {
-		var toolErr controlMCPToolError
-		if errors.As(err, &toolErr) && (toolErr.inspectionCode == "inspection_timeout" || toolErr.inspectionCode == "inspection_cancelled") {
-			return jobautomation.DeliverOutcome{}, &jobautomation.TransientInspectionError{Reason: err.Error()}
-		}
-		// A conflict, dirty lane or identity mismatch must not be retried.
-		return jobautomation.DeliverOutcome{}, &jobautomation.RefusedError{Reason: err.Error()}
+		return jobautomation.DeliverOutcome{}, workflowDeliveryError(err)
 	}
 	where := deliveredBranchWhere(response)
 	return jobautomation.DeliverOutcome{Where: where, Delivered: []jobautomation.DeliveredItem{{Name: "branch", Kind: jobautomation.DeliverableBranch, Where: where}}}, nil
@@ -374,4 +370,32 @@ func (d jobAutomationDeliverer) Locate(ctx context.Context, folder string, spec 
 	content.remove()
 	found.Source, found.SHA256, found.Size = jobautomation.SourceFolder, content.sha256, content.size
 	return found, nil
+}
+
+// Only proven Git safety refusals bypass the workflow's configured retries.
+// Other failures (including publish/network/store failures and moving heads)
+// retain their original retry semantics.
+func workflowDeliveryError(err error) error {
+	var toolErr controlMCPToolError
+	if !errors.As(err, &toolErr) {
+		return err
+	}
+	code := toolErr.inspectionCode
+	var body struct {
+		Delivery pebblestore.TaskDeliveryAssessment `json:"delivery"`
+	}
+	_ = json.Unmarshal([]byte(toolErr.body), &body)
+	if code == "" {
+		code = body.Delivery.ReasonCode
+	}
+	switch code {
+	case "inspection_timeout", "inspection_cancelled":
+		return &jobautomation.TransientInspectionError{Reason: err.Error()}
+	case "lane_branch_mismatch", "unresolved_recovery":
+		return &jobautomation.RefusedError{Reason: err.Error()}
+	}
+	if body.Delivery.SourceDirty || body.Delivery.TargetDirty || body.Delivery.State == "dirty" || body.Delivery.State == "conflict" {
+		return &jobautomation.RefusedError{Reason: err.Error()}
+	}
+	return err
 }

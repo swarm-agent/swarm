@@ -161,6 +161,15 @@ func WithDeliveryExecution(ctx context.Context) context.Context {
 	return context.WithValue(ctx, deliveryExecutionKey{}, true)
 }
 
+// DeliveryAssessmentBudget returns the effective Git inspection allowance.
+func DeliveryAssessmentBudget(ctx context.Context) time.Duration {
+	budget := deliveryBudgetFor()
+	if execution, _ := ctx.Value(deliveryExecutionKey{}).(bool); execution && sandbox.Default().Active() {
+		budget *= 2
+	}
+	return budget
+}
+
 func deliveryBudgetFor() time.Duration {
 	if sandbox.Default().Active() {
 		return deliverySandboxedBudget
@@ -183,10 +192,7 @@ func assessDeliveryWithHook(parent context.Context, in TaskDeliveryInput, before
 		_ = sandbox.Warm(warmCtx, path)
 	}
 	cancelWarm()
-	budget := deliveryBudgetFor()
-	if execution, _ := parent.Value(deliveryExecutionKey{}).(bool); execution && sandbox.Default().Active() {
-		budget *= 2
-	}
+	budget := DeliveryAssessmentBudget(parent)
 	ctx, cancel := context.WithTimeout(parent, budget)
 	defer cancel()
 	d := &deliveryInspector{ctx: ctx, budget: deliveryBudget{remaining: 1 << 20}, beforeFinish: beforeFinish}

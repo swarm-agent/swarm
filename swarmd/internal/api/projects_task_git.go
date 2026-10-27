@@ -113,17 +113,27 @@ func inspectTaskGitStateContext(ctx context.Context, task pebblestore.ProjectTas
 	return res
 }
 
-// taskAssessmentAction keeps transient observation failures as status notes,
+// taskAssessmentAction keeps transient observation failures non-actionable,
 // never instructions for the person. The next status read reassesses Git.
 func taskAssessmentAction(a *pebblestore.TaskDeliveryAssessment) string {
 	if a.ReasonCode == "inspection_timeout" || a.ReasonCode == "inspection_cancelled" {
-		a.Reason = "Git state not read in time; will retry"
 		return ""
 	}
 	if a.State == "integrated" || a.State == "empty" {
 		return ""
 	}
 	return a.Reason
+}
+
+// taskStatusAssessment changes only the read projection, never the assessment
+// used to explain a mutation refusal (including the last workflow attempt).
+func taskStatusAssessment(a *pebblestore.TaskDeliveryAssessment) *pebblestore.TaskDeliveryAssessment {
+	if a != nil && (a.ReasonCode == "inspection_timeout" || a.ReasonCode == "inspection_cancelled") {
+		note := *a
+		note.Reason = "Git state not read in time; will retry"
+		return &note
+	}
+	return a
 }
 
 // Reads project ephemeral facts only: never change execution outcome, historical
@@ -140,7 +150,7 @@ func reconcileTaskGitStateContext(ctx context.Context, db *pebblestore.SessionSt
 		return nil
 	}
 	state := inspectTaskGitStateContext(ctx, *task, db)
-	task.DeliveryAssessment = state.deliveryAssessment
+	task.DeliveryAssessment = taskStatusAssessment(state.deliveryAssessment)
 	task.GitStatus, task.UnintegratedCommits, task.IsIntegrated = state.gitStatus, state.unintegratedCommits, state.isIntegrated
 	task.IsDirty, task.DirtyCount = state.isDirty, state.dirtyCount
 	if state.baseCommit != "" {
