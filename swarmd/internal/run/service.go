@@ -2165,11 +2165,15 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			instructionPrincipal.SessionID = strings.TrimSpace(sessionSnapshot.ID)
 		}
 		mediaExecutionMode := requestMode
-		mediaContract := CompileSessionMediaContract(SessionMediaContractInput{
-			ProviderID: providerID, Model: resolvedPreference.Preference.Model, Catalog: catalogRecord, CatalogMeta: catalogMeta,
-			Adapter: ResolveMediaAdapterDeclaration(runnerCtx, providerID, providerRunner), AgentAuthorized: AgentProfileAuthorizesMedia(agentProfile) && !effectiveDisabledTools[mediaInspectToolName],
-			ExecutionMode: mediaExecutionMode, WorkspaceScope: workspaceCtx.WorkspacePath, SessionScope: sessionID,
-		})
+		mediaInput, err := s.sessionMediaContractInput(providerToolInvokerConfig{
+			providerID: providerID, model: resolvedPreference.Preference.Model, agentProfile: agentProfile,
+			mediaInspectDisabled: effectiveDisabledTools[mediaInspectToolName], mediaExecutionMode: mediaExecutionMode,
+			workspacePath: workspaceCtx.WorkspacePath, sessionID: sessionID, principal: instructionPrincipal,
+		}, sessionSnapshot, catalogRecord, catalogMeta, ResolveMediaAdapterDeclaration(runnerCtx, providerID, providerRunner))
+		if err != nil {
+			return RunResult{}, err
+		}
+		mediaContract := CompileSessionMediaContract(mediaInput)
 		stepToolDefinitions := MaterializeSessionMediaTool(toolDefinitions, mediaContract)
 		stepToolDefinitions = MaterializeSessionVideoTool(stepToolDefinitions, sessionSnapshot.Metadata)
 		planWarning := ""
@@ -2470,6 +2474,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				providerID:              providerID,
 				model:                   resolvedPreference.Preference.Model,
 				mediaContract:           mediaContract,
+				mediaInspectDisabled:    effectiveDisabledTools[mediaInspectToolName],
 				artifactRunContext:      cloneArtifactRunContext(options.ArtifactRunContext),
 				artifactV3AuthorContext: tool.BindArtifactV3AuthorRunContext(options.ArtifactV3AuthorContext, runID),
 				offeredTools:            offeredToolSetFromDefinitions(stepToolDefinitions),
@@ -2941,6 +2946,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 					providerID:           providerID,
 					model:                resolvedPreference.Preference.Model,
 					mediaContract:        mediaContract,
+					mediaInspectDisabled: effectiveDisabledTools[mediaInspectToolName],
 				}, call, options.Principal)
 				if mediaErr != nil {
 					mediaResult.Error = strings.TrimSpace(mediaErr.Error())

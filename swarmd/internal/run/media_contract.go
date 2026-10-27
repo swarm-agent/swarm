@@ -207,6 +207,41 @@ func CompileSessionMediaContract(input SessionMediaContractInput) provideriface.
 	return contract
 }
 
+// sessionMediaContractInput is shared by step admission and call-time validation.
+// Project scope is admitted only after durable ownership validation at both boundaries.
+func (s *Service) sessionMediaContractInput(config providerToolInvokerConfig, session pebblestore.SessionSnapshot, catalog *pebblestore.ModelCatalogRecord, meta *pebblestore.ModelCatalogMeta, adapter provideriface.MediaAdapterDeclaration) (SessionMediaContractInput, error) {
+	projectScope := pebblestore.ProjectConversationID(session)
+	if projectScope != "" {
+		if err := s.sessions.Store().ValidateProjectConversation(session, config.principal.AccountScopeID, config.principal.UserID); err != nil {
+			return SessionMediaContractInput{}, err
+		}
+	}
+	return SessionMediaContractInput{
+		ProviderID: config.providerID, Model: config.model, Catalog: catalog, CatalogMeta: meta, Adapter: adapter,
+		AgentAuthorized: AgentProfileAuthorizesMedia(config.agentProfile) && !config.mediaInspectDisabled,
+		ExecutionMode:   firstNonEmptyString(config.mediaExecutionMode, config.sessionMode),
+		WorkspaceScope:  config.workspacePath, SessionScope: config.sessionID, ProjectScope: projectScope,
+	}, nil
+}
+
+// Catalog publication provenance is diagnostic, not an authorization epoch.
+// Keep the full hashes intact for evidence and reject malformed contracts before
+// comparing every other field, including capability limits and denial reasons.
+func sameSessionMediaAuthority(start, current provideriface.SessionMediaContract) bool {
+	if start.Hash == "" || start.Hash != hashSessionMediaContract(start) || current.Hash != hashSessionMediaContract(current) {
+		return false
+	}
+	authorityHash := func(contract provideriface.SessionMediaContract) string {
+		contract.SnapshotID, contract.SnapshotVersion, contract.SnapshotSource = "", "", ""
+		contract.Capabilities = append([]provideriface.MediaContractCapability(nil), contract.Capabilities...)
+		for i := range contract.Capabilities {
+			contract.Capabilities[i].Provenance = nil
+		}
+		return hashSessionMediaContract(contract)
+	}
+	return authorityHash(start) == authorityHash(current)
+}
+
 func AgentProfileAuthorizesMedia(profile pebblestore.AgentProfile) bool {
 	const toolName = mediaInspectToolName
 	if profile.ToolContract != nil {

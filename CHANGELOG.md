@@ -6,6 +6,9 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Keep media inspection available across catalog snapshot refreshes when effective media authority is unchanged; share step/call scope and authorization inputs while rejecting capability revocation and changed provider, model, credentials or scope.
+  Docs impact: none.
+
 - Swarm Console's Media page shows what media tasks made: it lists each task's ready deliverables from the project task list and downloads their files in the background into its cache, so connecting is not held up. Docs impact: console/README.md.
 - Confirm project deletion in Console, refuse unsettled tasks or active sessions, remove project/task records and archive conversations without touching project files. Docs impact: document project deletion rules in docs/frontends.md.
 
