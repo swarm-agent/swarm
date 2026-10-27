@@ -1576,7 +1576,7 @@ func (r *Runtime) sessionTasks(sessionID string) string {
 	}
 	access, err := r.sessions.GetAccountPermissions(session.AccountScopeID)
 	if err != nil {
-		return "approve"
+		return "auto"
 	}
 	return access.Tasks
 }

@@ -67,7 +67,7 @@ including the device rules: a client runs a device tool only after Swarm has
 approved that exact call.
 
 Defaults: a new device starts at `off` for both device rules; `Start tasks`
-starts at `approve`; a newly linked machine starts at `ask`.
+starts at `auto` (tasks start as they did before these rules), so updating a Swarm never stalls its delegations; a newly linked machine starts at `ask`.
 
 ## Devices
 

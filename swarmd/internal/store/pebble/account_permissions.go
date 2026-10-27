@@ -34,7 +34,7 @@ type LinkedPermissionRule struct {
 var ErrAccountPermissionsConflict = errors.New("permissions revision conflict")
 
 func DefaultAccountPermissions() AccountPermissions {
-	return AccountPermissions{Tasks: "approve", Devices: map[string]DevicePermissionRule{}, Linked: map[string]LinkedPermissionRule{}}
+	return AccountPermissions{Tasks: "auto", Devices: map[string]DevicePermissionRule{}, Linked: map[string]LinkedPermissionRule{}}
 }
 func ValidAccessRule(value string) bool {
 	return value == "off" || value == "ask" || value == "allowed"

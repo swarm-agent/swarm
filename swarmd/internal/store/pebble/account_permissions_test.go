@@ -19,10 +19,10 @@ func TestAccountPermissionsDefaultsAndConflict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Tasks != "approve" || p.Device("device").Files != "off" || p.Device("device").Browser != "off" || p.Link("linked").Work != "ask" {
+	if p.Tasks != "auto" || p.Device("device").Files != "off" || p.Device("device").Browser != "off" || p.Link("linked").Work != "ask" {
 		t.Fatalf("unsafe defaults: %+v", p)
 	}
-	p.Tasks = "auto"
+	p.Tasks = "approve"
 	p.Devices["device"] = DevicePermissionRule{Files: "ask", Browser: "allowed"}
 	saved, err := s.SetAccountPermissions("account-a", 0, p)
 	if err != nil || saved.Revision != 1 {

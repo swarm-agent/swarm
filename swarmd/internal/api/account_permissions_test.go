@@ -51,7 +51,7 @@ func TestAccountPermissionsHTTP(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil || w.Code != 200 {
 		t.Fatalf("get: %d %s", w.Code, w.Body.String())
 	}
-	if view.Home.Tasks != "approve" || view.Home.WaitingTasks != 0 || len(view.Devices) != 2 {
+	if view.Home.Tasks != "auto" || view.Home.WaitingTasks != 0 || len(view.Devices) != 2 {
 		t.Fatalf("defaults: %+v", view)
 	}
 	for _, d := range view.Devices {
@@ -82,7 +82,7 @@ func TestAccountPermissionsHTTP(t *testing.T) {
 	if err != nil || len(events) != 1 || events[0].EventType != "permissions.updated" {
 		t.Fatalf("realtime event: %+v %v", events, err)
 	}
-	if view.Revision != 1 || view.Home.Tasks != "approve" {
+	if view.Revision != 1 || view.Home.Tasks != "auto" {
 		t.Fatalf("failed writes changed state: %+v", view)
 	}
 	for _, d := range view.Devices {
@@ -111,7 +111,7 @@ func TestAccountPermissionsKeyAuthority(t *testing.T) {
 		{"gateway", []string{"swarm:approve"}, "agent", 403},
 		{"approve", []string{"swarm:approve"}, "", 200},
 	} {
-		r := requestWithTestPrincipalForAccount(httptest.NewRequest("PATCH", "/v3/permissions", strings.NewReader(`{"expected_revision":0,"client_request_id":"key","tasks":"auto"}`)), actor.UserID, actor.AccountScopeID)
+		r := requestWithTestPrincipalForAccount(httptest.NewRequest("PATCH", "/v3/permissions", strings.NewReader(`{"expected_revision":0,"client_request_id":"key","tasks":"approve"}`)), actor.UserID, actor.AccountScopeID)
 		r = requestWithScopedToken(r, &store.ScopedTokenRecord{Name: tc.name, Scopes: tc.scopes, AgentName: tc.agent})
 		w := httptest.NewRecorder()
 		s.handleAccountPermissions(w, r)
@@ -122,10 +122,10 @@ func TestAccountPermissionsKeyAuthority(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if tc.want == 403 && (p.Revision != 0 || p.Tasks != "approve") {
+		if tc.want == 403 && (p.Revision != 0 || p.Tasks != "auto") {
 			t.Fatalf("refusal mutated record: %+v", p)
 		}
-		if tc.want == 200 && (p.Revision != 1 || p.Tasks != "auto") {
+		if tc.want == 200 && (p.Revision != 1 || p.Tasks != "approve") {
 			t.Fatalf("approval not stored: %+v", p)
 		}
 	}

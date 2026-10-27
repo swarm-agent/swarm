@@ -37,6 +37,12 @@ func TestManageMediaSpeech(t *testing.T) {
 	if err := store.CreateSessionForAccount(pebblestore.SessionSnapshot{ID: "session", WorkspacePath: root, Metadata: map[string]any{"project_id": "project", pebblestore.SessionAccessMetadataKey: map[string]any{"tasks": "ask"}}}, p.UserID, p.AccountScopeID); err != nil {
 		t.Fatal(err)
 	}
+	// The account's Start tasks rule waits for approval, so the job is held.
+	rules := pebblestore.DefaultAccountPermissions()
+	rules.Tasks = "approve"
+	if _, err := db.SetAccountPermissions(p.AccountScopeID, 0, rules); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.PutProject(p.AccountScopeID, &pebblestore.ProjectRecord{ID: "project", Name: "Speech", AccountID: p.AccountScopeID}); err != nil {
 		t.Fatal(err)
 	}
