@@ -99,6 +99,11 @@ type providerKeyRequest struct {
 	status         string // waiting, submitting, saved, failed, expired
 	reason         string
 	attempts       int
+
+	// clientSessionID is the owner client session that asked, when no AI
+	// key did; fleet is set for a fleet key (fleet_keys.go).
+	clientSessionID string
+	fleet           *fleetKeyPending
 }
 
 // providerKeyOutcome is what swarm_list_providers reports about the latest
@@ -132,6 +137,15 @@ func (reg *providerKeyRegistry) clock() time.Time {
 func providerKeyCodeHash(code string) string {
 	sum := sha256.Sum256([]byte(code))
 	return hex.EncodeToString(sum[:])
+}
+
+// slot is where a request's outcome is kept: per provider, or per fleet key
+// (fleetKeySlot), so a fleet key link never replaces a local one.
+func (request providerKeyRequest) slot() string {
+	if request.fleet != nil {
+		return providerKeySlot(request.accountScopeID, fleetKeySlot(request.fleet.id))
+	}
+	return providerKeySlot(request.accountScopeID, request.provider)
 }
 
 func providerKeySlot(accountScopeID, provider string) string {
@@ -174,7 +188,7 @@ func (reg *providerKeyRegistry) issue(request providerKeyRequest) (string, strin
 		reg.byCode = map[string]*providerKeyRequest{}
 		reg.latest = map[string]*providerKeyRequest{}
 	}
-	slot := providerKeySlot(request.accountScopeID, request.provider)
+	slot := request.slot()
 	if previous := reg.latest[slot]; previous != nil && previous.status != "submitting" {
 		delete(reg.byCode, previous.codeHash)
 		if previous.status == "waiting" || previous.status == "failed" {
@@ -294,6 +308,7 @@ var providerKeyPageTemplate = template.Must(template.New("key").Parse(`<!doctype
 <h1>{{if .Provider}}{{.Provider}} API key{{else}}Swarm{{end}}</h1>
 {{if .Message}}<p class="{{.Class}}" role="status">{{.Message}}</p>{{end}}
 {{if .Form}}<p>Paste your {{.Provider}} API key here. It goes straight to Swarm on this machine; the AI that sent you this link never sees it.</p>
+{{if .Targets}}<p>Swarm keeps it sealed on this machine, your home, and installs it on: {{.Targets}}.</p>{{end}}
 <form method="post" autocomplete="off">
 <label for="api_key">API key</label>
 <input id="api_key" name="api_key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="4096" required autofocus>
@@ -309,6 +324,7 @@ type providerKeyPage struct {
 	Class    string
 	Form     bool
 	Expires  string
+	Targets  string
 	CSS      template.CSS
 	JS       template.JS
 }
@@ -378,6 +394,9 @@ func providerKeyFormPage(request providerKeyRequest, now time.Time, message stri
 		expires = "in " + strconv.Itoa(minutes) + " minutes"
 	}
 	page := providerKeyPage{Provider: request.provider, Form: true, Expires: expires}
+	if request.fleet != nil {
+		page.Targets = strings.Join(request.fleet.targets, ", ")
+	}
 	if message != "" {
 		page.Message, page.Class = message, "error"
 	}
@@ -466,7 +485,11 @@ func (s *Server) submitProviderKey(w http.ResponseWriter, r *http.Request, code 
 		s.writeProviderKeyFailure(w, snapshot, retry, "Paste the key alone, with no spaces or line breaks.")
 		return
 	}
-	reason, err := s.saveProviderKey(r, snapshot, key)
+	save := s.saveProviderKey
+	if snapshot.fleet != nil {
+		save = s.saveFleetKey
+	}
+	reason, err := save(r, snapshot, key)
 	if err != nil {
 		reason = providerKeyRedact(reason, key)
 		retry := s.providerKeys.finish(request, false, reason)

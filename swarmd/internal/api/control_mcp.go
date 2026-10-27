@@ -76,6 +76,7 @@ var controlMCPCoreTools = map[string]bool{
 	"swarm_design":       true,
 	"swarm_list_secrets": true,
 	"swarm_list_keys":    true, "swarm_create_key": true, "swarm_revoke_key": true,
+	"swarm_list_fleet_keys": true, "swarm_request_fleet_key": true, "swarm_revoke_fleet_key": true,
 	"swarm_workflow_history": true, "swarm_restore_workflow": true, "swarm_set_workflow": true, "swarm_export_workflow": true, "swarm_import_workflow": true, "swarm_list_workflows": true, "swarm_delete_workflow": true, "swarm_stop_workflows": true,
 }
 

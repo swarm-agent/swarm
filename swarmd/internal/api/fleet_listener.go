@@ -162,7 +162,9 @@ func fleetLinkRefused(path string) bool {
 // fleetLinkSecretRefused is what never crosses the link: provider credentials,
 // sign-in codes, the vault, secret values, AI keys and this Swarm's own
 // permission rules. A home may list secret names and their grants, never read
-// or write a value.
+// or write a value. Provider keys reach this Swarm only through its home's fleet
+// key manager (POST /v3/fleet/keys/install, fleet_keys.go), which the home's
+// raw proxy refuses, so a client can never send one.
 func fleetLinkSecretRefused(method, path string) bool {
 	for _, prefix := range []string{
 		"/v1/auth/credentials",

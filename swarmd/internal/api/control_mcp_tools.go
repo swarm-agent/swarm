@@ -104,6 +104,11 @@ var controlMCPRoutes = []string{
 	"POST v3/sessions/*/access",
 	"GET v3/permissions",
 	"PATCH v3/permissions",
+	// Fleet keys (control_mcp_fleet_keys.go): list, ask for a key page link,
+	// revoke. The machine-side install and remove routes are never listed.
+	"GET v3/fleet/keys",
+	"POST v3/fleet/keys/requests",
+	"POST v3/fleet/keys/*/revoke",
 	"POST v3/sessions/*/media",
 	"POST v3/sessions/*/plans",
 	"GET v3/sessions/*/plans/active",
@@ -1000,7 +1005,7 @@ func controlMCPTools() []controlMCPTool {
 			Annotations: controlMCPWrites, call: controlMCPRequestProviderKey,
 		},
 		controlMCPClaudeCodeTool(),
-	}, append(append(append(controlMCPReviewTools(sessionID), controlMCPJobTools()...), controlMCPEnvironmentTools()...), append(controlMCPAutomationTools(), controlMCPKeyTools()...)...)...)
+	}, append(append(append(controlMCPReviewTools(sessionID), controlMCPJobTools()...), controlMCPEnvironmentTools()...), append(append(controlMCPAutomationTools(), controlMCPKeyTools()...), controlMCPFleetKeyTools()...)...)...)
 }
 
 // ---- sessions ------------------------------------------------------------

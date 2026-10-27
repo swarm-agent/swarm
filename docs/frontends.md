@@ -204,6 +204,23 @@ retries by itself) or `not_shown`. It is metadata only and needs
 `sessions:read`, the same as `/v3/activity`. Details:
 [activity-stream.md](activity-stream.md#the-fleets-activity).
 
+#### Fleet keys
+
+A provider key the whole fleet uses goes through the home's key manager, never
+through your client: `POST /v3/fleet/keys/requests`
+`{"provider":"openai","label":"team","machines":["build-box"],"include_home":true}`
+returns a one-time `url` to Swarm's own key page on the home. Open it for the
+person; they paste the key there. The home verifies it, keeps it sealed and
+installs it on each machine over the link; each machine verifies it and
+reports. `GET /v3/fleet/keys` shows every key with a fingerprint and, per
+machine and for the home, `pending`, `installed`, `failed` (with a reason) or
+`removed`; never a value. `POST /v3/fleet/keys/{id}/install` with `machines`
+adds machines (a newly linked one); `POST /v3/fleet/keys/{id}/revoke`
+(all when no `machines` or `include_home` is given) removes it, and once it is
+gone everywhere the home deletes the value. Writes need an owner session; the
+machine-side routes are refused through `/v3/fleet/machines/{name}/api/...`.
+Details: [access-model.md](access-model.md#fleet-keys).
+
 #### Historical session access (retired; do not use)
 
 An owner client (or a key with `swarm:approve`, never an agent gateway token)

@@ -98,10 +98,17 @@ var toolScopes = map[string]string{
 	"swarm_connect_claude_code":    ScopeWrite, // the person signs the CLI in on the machine; local only
 	"swarm_list_providers":         ScopeRead,
 	"swarm_request_provider_key":   ScopeWrite, // the person types the key on Swarm's own page, never the AI; local only
-	"swarm_read_file":              ScopeRead,
-	"swarm_get_changes":            ScopeRead,
-	"swarm_accept_review":          ScopeApprove,
-	"swarm_approve_task":           ScopeManage,
+
+	// Fleet keys: reading the record is read; asking for a key for linked
+	// machines and removing one is approve, like linked machine rules.
+	"swarm_list_fleet_keys":   ScopeRead,
+	"swarm_request_fleet_key": ScopeApprove, // the person types the key on the home's own page; local only
+	"swarm_revoke_fleet_key":  ScopeApprove,
+
+	"swarm_read_file":     ScopeRead,
+	"swarm_get_changes":   ScopeRead,
+	"swarm_accept_review": ScopeApprove,
+	"swarm_approve_task":  ScopeManage,
 	// Workers and jobs, the default surface: reading them and the machine's
 	// state is read; deploying workers, giving, answering, merging, stopping
 	// and scheduling jobs is write. Answering covers a worker's questions only,
@@ -148,6 +155,7 @@ var localOnlyTools = map[string]bool{
 	"swarm_connect_chatgpt":      true,
 	"swarm_connect_claude_code":  true,
 	"swarm_request_provider_key": true,
+	"swarm_request_fleet_key":    true,
 }
 
 func toolScope(name string) string {

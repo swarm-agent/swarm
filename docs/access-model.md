@@ -65,7 +65,7 @@ Remote workflow actions are `list`, `get`, `history`, `deliveries`, `propose`, `
 
 Worker lists return id, name, role, stored model (null if unset), enabled (idle or active), lifecycle state, and the latest run's state and timestamps (null if never run). History is read through the link with a bounded scan; incomplete history fails explicitly rather than presenting an older run as latest. Full definitions remain available through `get`.
 
-For linked work, reads proceed under `ask` or `allowed`; changes under `ask` wait for a normal permission request. `off` denies both. Secrets, AI keys and permission changes are never exposed through linked management tools, and the link itself refuses them: a home cannot add, read or verify provider credentials, finish a sign-in, use the vault, read or write a secret value, create AI keys or change a linked machine's permission rules through `/v3/fleet/machines/{name}/api/...` (listing secret names stays). Keys reach linked machines only through the fleet key manager, when it exists.
+For linked work, reads proceed under `ask` or `allowed`; changes under `ask` wait for a normal permission request. `off` denies both. Secrets, AI keys and permission changes are never exposed through linked management tools, and the link itself refuses them: a home cannot add, read or verify provider credentials, finish a sign-in, use the vault, read or write a secret value, create AI keys or change a linked machine's permission rules through `/v3/fleet/machines/{name}/api/...` (listing secret names stays). Provider keys reach linked machines only through the home's fleet key manager (below).
 
 For devices, `ask` means each call waits for the person's decision as a normal permission
 request; `allowed` means it proceeds. Swarm enforces both, for every rule,
@@ -74,6 +74,41 @@ approved that exact call.
 
 Defaults: a new device starts at `off` for both device rules; `Start tasks`
 starts at `auto` (tasks start as they did before these rules), so updating a Swarm never stalls its delegations; a newly linked machine starts at `ask`.
+
+## Fleet keys
+
+The home is its fleet's key manager for provider API keys. A person enters a
+key once, on the home, in Swarm's own key page; never in a chat or a client.
+
+- **How a key moves.** `POST /v3/fleet/keys/requests` names the provider, the
+  linked machines and whether the home uses it too, and returns a one-time key
+  page link (single use, ten minutes). On submit the home verifies the key with
+  the provider, seals it in its secret store, then installs it: on itself if
+  asked, and on each machine over its pinned link (a few at a time). Each
+  machine verifies it with the provider again and saves it as an ordinary,
+  active provider credential labelled "managed by home NAME, fleet key ID" and
+  tagged with the key id and the home; it answers with the outcome only.
+- **What the home keeps.** The value, sealed with the account key that seals
+  provider credentials (vault rules apply), so it can install the key on a
+  machine linked later (`POST /v3/fleet/keys/{id}/install`) and revoke it
+  reliably. The record (`GET /v3/fleet/keys`, revisioned) holds the provider,
+  label, a fingerprint (first eight hex characters of its SHA-256 and the last
+  four characters) and, per machine and for the home, `pending`, `installed`,
+  `failed` (with a short reason) or `removed`, with times. Never the value.
+- **Revoke.** `POST /v3/fleet/keys/{id}/revoke` (all targets when none are
+  named) has each machine delete only the credential that key installed. Once
+  it is removed everywhere, the home deletes the value and the key cannot be
+  installed again.
+- **Who can do what.** Reads need `sessions:read`. Requesting, installing and
+  revoking need an owner session or an AI key with `swarm:approve` (MCP:
+  `swarm_list_fleet_keys`, `swarm_request_fleet_key`, `swarm_revoke_fleet_key`).
+  Agents' gateway tokens never see or manage fleet keys, and no AI ever sees a
+  value. A machine accepts `POST /v3/fleet/keys/install` and
+  `/v3/fleet/keys/{id}/remove` only from its linked home over the link (not
+  from its own owner, not from an AI key), and the home's raw proxy
+  (`/v3/fleet/machines/{name}/api/...`) refuses every `/v3/fleet/keys` path, so
+  only the home's key manager sends a key. The machine's owner still controls
+  the saved credential like any other.
 
 ## Devices
 

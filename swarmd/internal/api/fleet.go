@@ -35,6 +35,8 @@ import (
 // Read like /v3/activity (sessions:read; fleet_activity.go):
 //
 //	GET    /v3/fleet/activity[/stream]       the fleet's merged activity
+//
+// Fleet keys, the fleet's provider key manager: fleet_keys.go.
 
 const fleetPath = "/v3/fleet"
 
@@ -42,6 +44,10 @@ type fleetTokenStore interface {
 	PutFleetLinkToken(accountScopeID, machine, token string) error
 	GetFleetLinkToken(accountScopeID, machine string) (string, bool, error)
 	DeleteFleetLinkToken(accountScopeID, machine string) error
+	// Fleet keys' values, sealed the same way (fleet_keys.go).
+	PutFleetKeyValue(accountScopeID, id string, value []byte) error
+	GetFleetKeyValue(accountScopeID, id string) ([]byte, bool, error)
+	DeleteFleetKeyValue(accountScopeID, id string) error
 }
 
 // SetFleet wires the fleet's records and the sealed store for the sessions
@@ -60,6 +66,10 @@ func (s *Server) registerFleetRoutes(mux *http.ServeMux) {
 	// The fleet's activity reads like /v3/activity (sessions:read), not as an owner route.
 	mux.HandleFunc(fleetActivityPagePath, s.handleFleetActivity)
 	mux.HandleFunc(fleetActivityStreamPath, s.handleFleetActivity)
+	// Fleet keys authorize per route (fleet_keys.go): reads like the activity,
+	// writes for owners and swarm:approve, and the machine side only over the link.
+	mux.HandleFunc(fleetKeysPath, s.handleFleetKeys)
+	mux.HandleFunc(fleetKeysPath+"/", s.handleFleetKeys)
 }
 
 // swarmName is this Swarm's own name, the one the person gave it at setup
@@ -462,6 +472,10 @@ var fleetHopHeaders = map[string]bool{
 // handleFleetForward sends one request to the machine's own API as its home
 // and passes the answer back as it comes.
 func (s *Server) handleFleetForward(w http.ResponseWriter, r *http.Request, account, name, path string) {
+	if fleetKeyProxyRefused(path) {
+		writeError(w, http.StatusForbidden, errors.New("fleet keys reach a machine only from this home's key manager (/v3/fleet/keys), never through the proxy"))
+		return
+	}
 	client, machine, status, err := s.fleetMachineClient(account, name)
 	if err != nil {
 		writeError(w, status, err)
