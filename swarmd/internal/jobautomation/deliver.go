@@ -286,6 +286,12 @@ func deliverableNames(all []Deliverable) string {
 	return "it has " + strings.Join(names, ", ")
 }
 
+// TransientInspectionError means the delivery assessment did not finish; no
+// merge was attempted. Only the structured timeout/cancellation boundary uses it.
+type TransientInspectionError struct{ Reason string }
+
+func (e *TransientInspectionError) Error() string { return e.Reason }
+
 // runDeliver hands the selected deliverables over (see selectDeliverables)
 // and records what went where.
 func (r *Runner) runDeliver(ctx context.Context, d *Delivery, record *StepRecord, step Step) stepFailure {
@@ -313,6 +319,10 @@ func (r *Runner) runDeliver(ctx context.Context, d *Delivery, record *StepRecord
 	out, err := r.deliver.Deliver(ctx, DeliverRequest{Account: d.Account, DeliveryID: d.ID, StepID: step.ID, Folder: d.Folder, To: step.To, Path: step.Path,
 		Head: head, Result: d.Result, Deliverables: items})
 	if err != nil {
+		var transient *TransientInspectionError
+		if errors.As(err, &transient) {
+			return stepFailure{reason: truncate("could not deliver "+step.To+": "+err.Error(), 300), next: "rerun", inspectionTransient: true}
+		}
 		if ctx.Err() != nil {
 			return stepFailure{}
 		}

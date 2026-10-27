@@ -308,7 +308,12 @@ func (d jobAutomationDeliverer) toBranch(ctx context.Context, req jobautomation.
 		response, err = controlMCPDeliverJob(c, map[string]any{"job_id": req.Result.JobID})
 	}
 	if err != nil {
-		return jobautomation.DeliverOutcome{}, err
+		var toolErr controlMCPToolError
+		if errors.As(err, &toolErr) && (toolErr.inspectionCode == "inspection_timeout" || toolErr.inspectionCode == "inspection_cancelled") {
+			return jobautomation.DeliverOutcome{}, &jobautomation.TransientInspectionError{Reason: err.Error()}
+		}
+		// A conflict, dirty lane or identity mismatch must not be retried.
+		return jobautomation.DeliverOutcome{}, &jobautomation.RefusedError{Reason: err.Error()}
 	}
 	where := deliveredBranchWhere(response)
 	return jobautomation.DeliverOutcome{Where: where, Delivered: []jobautomation.DeliveredItem{{Name: "branch", Kind: jobautomation.DeliverableBranch, Where: where}}}, nil

@@ -79,9 +79,7 @@ func inspectTaskGitStateContext(ctx context.Context, task pebblestore.ProjectTas
 		assessment.AllowedActions = []string{}
 	}
 	res.deliveryAssessment = &assessment
-	if assessment.State != "integrated" && assessment.State != "empty" {
-		res.actionNeeded = assessment.Reason
-	}
+	res.actionNeeded = taskAssessmentAction(&assessment)
 	switch assessment.State {
 	case "integrated":
 		res.gitStatus, res.isIntegrated = "clean", true
@@ -113,6 +111,19 @@ func inspectTaskGitStateContext(ctx context.Context, task pebblestore.ProjectTas
 		}
 	}
 	return res
+}
+
+// taskAssessmentAction keeps transient observation failures as status notes,
+// never instructions for the person. The next status read reassesses Git.
+func taskAssessmentAction(a *pebblestore.TaskDeliveryAssessment) string {
+	if a.ReasonCode == "inspection_timeout" || a.ReasonCode == "inspection_cancelled" {
+		a.Reason = "Git state not read in time; will retry"
+		return ""
+	}
+	if a.State == "integrated" || a.State == "empty" {
+		return ""
+	}
+	return a.Reason
 }
 
 // Reads project ephemeral facts only: never change execution outcome, historical

@@ -26,6 +26,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Add revision-guarded account permissions GET/PATCH with device ownership checks and live device/link/task summaries; enforcement remains unchanged. Docs impact: access model API status and limitations documented.
 
 - Record client computer names with `swarmctl client connect --device` (defaulting to the host name) and expose authenticated client-session identity to handlers. Account-wide access rules remain unimplemented. Docs impact: updated access-model status and remote client connection guidance.
+- Workflow merge delivery retries transient Git inspection timeouts/cancellation up to three recorded attempts with backoff. Mutating sandbox assessments receive 30 seconds instead of status reads' 15 seconds; status inspection timeouts are notes, not actions for the person. Conflicts and lane mismatches still fail immediately. Docs impact: none.
 
 - Reject invalid `then` brief placeholders before starting jobs or schedules; keep save-time placeholder validation out of runtime matching so legacy workflows still create deliveries. Docs impact: none.
 

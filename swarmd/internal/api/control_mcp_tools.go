@@ -2500,9 +2500,9 @@ func controlMCPUnobservedDelivery(err error) (map[string]any, bool) {
 	return delivery, true
 }
 
-// controlMCPIntegrate integrates for the named tool. An unobserved delivery
-// is retried once; if it repeats, the refusal names the tool to call again and
-// the tool that reads the job, never an HTTP route the AI cannot call.
+// controlMCPIntegrate integrates once for the named tool. An unobserved
+// delivery preserves its structured reason for the workflow retry policy;
+// the refusal names callable tools rather than an internal HTTP route.
 func controlMCPIntegrate(c *controlMCPCall, args map[string]any, tool, readTool string) (any, error) {
 	projectID, err := controlMCPID(args, "project_id")
 	if err != nil {
@@ -2535,9 +2535,6 @@ func controlMCPIntegrate(c *controlMCPCall, args map[string]any, tool, readTool 
 	}
 	path := "/v3/projects/" + projectID + "/tasks/" + taskID + "/integrate"
 	integrated, err := c.dispatch(http.MethodPost, path, nil, selection)
-	if _, unobserved := controlMCPUnobservedDelivery(err); unobserved {
-		integrated, err = c.dispatch(http.MethodPost, path, nil, selection)
-	}
 	if delivery, unobserved := controlMCPUnobservedDelivery(err); unobserved {
 		reason, _ := delivery["reason"].(string)
 		if code, _ := delivery["reason_code"].(string); code != "" {
@@ -2546,7 +2543,8 @@ func controlMCPIntegrate(c *controlMCPCall, args map[string]any, tool, readTool 
 		if reason == "" {
 			reason = "its delivery state was not observed"
 		}
-		return nil, controlMCPToolFailure("Swarm could not read this task's Git state to merge it (%s); nothing was merged. Call %s again; if it repeats, read %s.", controlMCPTruncate(reason, 200), tool, readTool)
+		code, _ := delivery["reason_code"].(string)
+		return nil, controlMCPToolError{message: fmt.Sprintf("Swarm could not read this task's Git state to merge it (%s); nothing was merged. Call %s again; if it repeats, read %s.", controlMCPTruncate(reason, 200), tool, readTool), inspectionCode: code}
 	}
 	if err != nil {
 		return nil, err

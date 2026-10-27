@@ -3773,7 +3773,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, err)
 			return
 		}
-		gitState := inspectTaskGitStateContext(r.Context(), *task, db)
+		gitState := inspectTaskGitStateContext(worktreeruntime.WithDeliveryExecution(r.Context()), *task, db)
 		if segments[3] == "recover-integrate" {
 			s.recoverTaskDelta(w, r, p, task, selectedSession, gitState.deliveryAssessment, selection.Revision, selection.AttemptID, selection.SourceHead, selection.TargetHead)
 			return

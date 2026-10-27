@@ -799,9 +799,10 @@ func (r *Runner) runStep(ctx context.Context, d *Delivery, i int, step Step) boo
 	}
 	timedOut := errors.Is(stepCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
 	cancel()
-	if ctx.Err() != nil {
+	if ctx.Err() != nil && !failure.inspectionTransient {
 		// The daemon is stopping: the step stays running and is resumed on
-		// the next start.
+		// the next start. A classified inspection cancellation instead saves
+		// its bounded retry below, including backoff, before stopping.
 		return false
 	}
 	if timedOut && failure.reason == "" {
@@ -822,6 +823,11 @@ func (r *Runner) runStep(ctx context.Context, d *Delivery, i int, step Step) boo
 	}
 	record.State, record.Reason, record.Next = StateFailed, failure.reason, failure.next
 	retry := !failure.refused && record.Attempts <= d.Retries
+	if failure.inspectionTransient {
+		// Three durable attempts, with the existing 15s/30s backoff. At
+		// 30s per sandbox assessment this is roughly two minutes total.
+		retry = record.Attempts < 3
+	}
 	if retry {
 		record.State = StatePending
 		record.NextAttemptAt = r.now().Add(r.backoff(record.Attempts)).UnixMilli()
@@ -854,8 +860,9 @@ func agentIdempotencyKey(d Delivery, stepID string) string {
 }
 
 type stepFailure struct {
-	reason, next string
-	refused      bool
+	reason, next        string
+	refused             bool
+	inspectionTransient bool
 }
 
 // stepEnv is the environment a run step's script gets. SWARM_HEAD is the

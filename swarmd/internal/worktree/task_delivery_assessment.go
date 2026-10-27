@@ -30,6 +30,7 @@ type deliveryFlight struct {
 }
 
 type deliveryKey struct {
+	Budget                                                                                                               time.Duration
 	Account, Task, Session, Attempt, Workspace, Base, Source, Target, SourceBranch, TargetBranch, SourcePath, TargetPath string
 	Revision                                                                                                             int
 	Generation                                                                                                           int64
@@ -152,6 +153,14 @@ var (
 	deliveryWarmTimeout     = 2 * time.Minute
 )
 
+type deliveryExecutionKey struct{}
+
+// WithDeliveryExecution gives a mutating delivery's sandbox assessment twice
+// the status-read allowance, without making read-only status calls wait longer.
+func WithDeliveryExecution(ctx context.Context) context.Context {
+	return context.WithValue(ctx, deliveryExecutionKey{}, true)
+}
+
 func deliveryBudgetFor() time.Duration {
 	if sandbox.Default().Active() {
 		return deliverySandboxedBudget
@@ -174,7 +183,11 @@ func assessDeliveryWithHook(parent context.Context, in TaskDeliveryInput, before
 		_ = sandbox.Warm(warmCtx, path)
 	}
 	cancelWarm()
-	ctx, cancel := context.WithTimeout(parent, deliveryBudgetFor())
+	budget := deliveryBudgetFor()
+	if execution, _ := parent.Value(deliveryExecutionKey{}).(bool); execution && sandbox.Default().Active() {
+		budget *= 2
+	}
+	ctx, cancel := context.WithTimeout(parent, budget)
 	defer cancel()
 	d := &deliveryInspector{ctx: ctx, budget: deliveryBudget{remaining: 1 << 20}, beforeFinish: beforeFinish}
 	a := deliveryUnknown(in.Identity, "lane_unavailable", "Captured Git lane is unavailable", "unknown")
@@ -206,7 +219,7 @@ func assessDeliveryWithHook(parent context.Context, in TaskDeliveryInput, before
 	}
 	d.targetRepo = targetRepo
 	a.SourceOID, a.TargetOID = source, target
-	key := deliveryKey{a.AccountID, a.TaskID, a.SessionID, a.AttemptID, a.WorkspaceID, a.BaseOID, source, target, a.SourceBranch, a.TargetBranch, gitstatus.NormalizePath(in.SourcePath), gitstatus.NormalizePath(in.TargetPath), a.TaskRevision, a.WorkspaceGeneration}
+	key := deliveryKey{budget, a.AccountID, a.TaskID, a.SessionID, a.AttemptID, a.WorkspaceID, a.BaseOID, source, target, a.SourceBranch, a.TargetBranch, gitstatus.NormalizePath(in.SourcePath), gitstatus.NormalizePath(in.TargetPath), a.TaskRevision, a.WorkspaceGeneration}
 	deliveryFlights.Lock()
 	if flight := deliveryFlights.active[key]; flight != nil {
 		deliveryFlights.Unlock()

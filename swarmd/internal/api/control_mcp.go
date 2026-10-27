@@ -201,9 +201,10 @@ type controlMCPCall struct {
 // rejection's JSON body (a string keeps the error comparable), for tools
 // that act on its structured detail.
 type controlMCPToolError struct {
-	message string
-	status  int
-	body    string
+	message        string
+	status         int
+	body           string
+	inspectionCode string
 }
 
 func (e controlMCPToolError) Error() string { return e.message }
