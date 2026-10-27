@@ -799,10 +799,10 @@ func (r *Runner) runStep(ctx context.Context, d *Delivery, i int, step Step) boo
 	}
 	timedOut := errors.Is(stepCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
 	cancel()
-	if ctx.Err() != nil && !failure.inspectionTransient {
-		// The daemon is stopping: the step stays running and is resumed on
-		// the next start. A classified inspection cancellation instead saves
-		// its bounded retry below, including backoff, before stopping.
+	if ctx.Err() != nil && (!failure.inspectionTransient || record.Attempts >= 3) {
+		// The daemon is stopping: never exhaust retries because of shutdown.
+		// Keep the final attempt running for resume on the next start.
+		// Earlier inspection cancellations persist their backoff below.
 		return false
 	}
 	if timedOut && failure.reason == "" {

@@ -101,3 +101,34 @@ func TestDeliverInspectionCancellationPersistsRetry(t *testing.T) {
 		t.Fatalf("record %+v", rec)
 	}
 }
+
+// Requirement: shutdown on the last inspection attempt must remain resumable.
+// Threat: the retry ceiling turns daemon cancellation into permanent failure.
+// runStep and the real store prove the durable state and successful resume at
+// the narrow runner boundary, without claiming live daemon/Git qualification.
+func TestDeliverInspectionThirdAttemptShutdownResumes(t *testing.T) {
+	h := newHarness(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.runner.deliver = &cancelledInspectionDeliverer{cancel: cancel}
+	d := Delivery{ID: "third-cancelled", Account: testAccount, Steps: []StepRecord{{ID: "merge", Type: StepDeliver, Attempts: 2}}, Result: Result{Deliverables: []Deliverable{{Name: "branch", Kind: DeliverableBranch}}}}
+	step := Step{ID: "merge", Type: StepDeliver, To: DeliverMerge, TimeoutSeconds: 600}
+	if h.runner.runStep(ctx, &d, 0, step) {
+		t.Fatal("cancelled inspection succeeded")
+	}
+	saved, err := h.runner.store.GetDelivery(testAccount, d.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Steps[0].State != StateRunning || saved.Steps[0].Attempts != 3 || saved.Steps[0].FinishedAt != 0 {
+		t.Fatalf("not resumable: %+v", saved.Steps[0])
+	}
+	h.runner.deliver = &recordingDeliverer{}
+	if !h.runner.runStep(context.Background(), &saved, 0, step) {
+		t.Fatalf("resume failed: %+v", saved.Steps[0])
+	}
+	saved, err = h.runner.store.GetDelivery(testAccount, d.ID)
+	if err != nil || saved.Steps[0].State != StateSucceeded {
+		t.Fatalf("resume not persisted: %+v %v", saved, err)
+	}
+}

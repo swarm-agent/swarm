@@ -73,7 +73,6 @@ func TestWorkflowDeliveryErrorClassification(t *testing.T) {
 	}{
 		{"publish", errors.New("push failed"), false},
 		{"store", controlMCPToolError{status: 500, message: "database not available"}, false},
-		{"heads moved", controlMCPToolError{inspectionCode: "heads_changed"}, false},
 		{"unknown conflict", controlMCPToolError{status: 409, message: "temporary failure"}, false},
 		{"mismatch", controlMCPToolError{inspectionCode: "lane_branch_mismatch"}, true},
 		{"dirty", controlMCPToolError{body: `{"delivery":{"source_dirty":true}}`}, true},
@@ -89,5 +88,23 @@ func TestWorkflowDeliveryErrorClassification(t *testing.T) {
 				t.Fatal("ordinary retry error replaced")
 			}
 		})
+	}
+}
+
+// Requirement: default workflows retry busy or changing repositories even with
+// retries=0. The workflowDeliveryError boundary is the narrowest proof that
+// these structured refusals enter the runner's bounded inspection retry policy.
+func TestWorkflowUnreadStateRetries(t *testing.T) {
+	for _, code := range []string{"capacity_exceeded", "heads_changed"} {
+		for _, err := range []error{
+			controlMCPToolError{inspectionCode: code, message: code},
+			controlMCPToolError{body: fmt.Sprintf(`{"delivery":{"reason_code":%q}}`, code), message: code},
+		} {
+			got := workflowDeliveryError(err)
+			var transient *jobautomation.TransientInspectionError
+			if !errors.As(got, &transient) || transient.Reason != err.Error() {
+				t.Fatalf("%s: %T %v", code, got, got)
+			}
+		}
 	}
 }

@@ -373,8 +373,8 @@ func (d jobAutomationDeliverer) Locate(ctx context.Context, folder string, spec 
 }
 
 // Only proven Git safety refusals bypass the workflow's configured retries.
-// Other failures (including publish/network/store failures and moving heads)
-// retain their original retry semantics.
+// Known transient inspection failures use bounded automatic retries; other
+// failures (including publish/network/store failures) retain configured retries.
 func workflowDeliveryError(err error) error {
 	var toolErr controlMCPToolError
 	if !errors.As(err, &toolErr) {
@@ -389,7 +389,7 @@ func workflowDeliveryError(err error) error {
 		code = body.Delivery.ReasonCode
 	}
 	switch code {
-	case "inspection_timeout", "inspection_cancelled":
+	case "inspection_timeout", "inspection_cancelled", "capacity_exceeded", "heads_changed":
 		return &jobautomation.TransientInspectionError{Reason: err.Error()}
 	case "lane_branch_mismatch", "unresolved_recovery":
 		return &jobautomation.RefusedError{Reason: err.Error()}
