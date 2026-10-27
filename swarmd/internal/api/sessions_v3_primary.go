@@ -99,17 +99,18 @@ type sessionsV3ModelProfileApplyRequest struct {
 }
 
 type sessionsV3MessageRequest struct {
-	ClientRequestID    string                                          `json:"client_request_id,omitempty"`
-	IdempotencyKey     string                                          `json:"idempotency_key,omitempty"`
-	MessageID          string                                          `json:"message_id,omitempty"`
-	RunID              string                                          `json:"run_id,omitempty"`
-	Role               string                                          `json:"role"`
-	Content            string                                          `json:"content"`
-	Metadata           map[string]any                                  `json:"metadata,omitempty"`
-	Media              []pebblestore.SessionMediaReference             `json:"media,omitempty"`
-	VideoAttachments   []pebblestore.SessionVideoAttachmentReference   `json:"video_attachments,omitempty"`
-	ArtifactSelections []pebblestore.SessionArtifactSelectionReference `json:"artifact_selections,omitempty"`
-	DispatchAuthority  map[string]any                                  `json:"dispatch_authority,omitempty"`
+	SendingClientSessionID string                                          `json:"-"`
+	ClientRequestID        string                                          `json:"client_request_id,omitempty"`
+	IdempotencyKey         string                                          `json:"idempotency_key,omitempty"`
+	MessageID              string                                          `json:"message_id,omitempty"`
+	RunID                  string                                          `json:"run_id,omitempty"`
+	Role                   string                                          `json:"role"`
+	Content                string                                          `json:"content"`
+	Metadata               map[string]any                                  `json:"metadata,omitempty"`
+	Media                  []pebblestore.SessionMediaReference             `json:"media,omitempty"`
+	VideoAttachments       []pebblestore.SessionVideoAttachmentReference   `json:"video_attachments,omitempty"`
+	ArtifactSelections     []pebblestore.SessionArtifactSelectionReference `json:"artifact_selections,omitempty"`
+	DispatchAuthority      map[string]any                                  `json:"dispatch_authority,omitempty"`
 }
 
 type sessionsV3StopRequest struct {
@@ -1788,6 +1789,8 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 			return
 		}
 	}
+	actor, _ := productActorFromRequest(r)
+	req.SendingClientSessionID = actor.ClientSessionID
 	result, enqueueJob, err := s.acceptSessionsV3Message(principal, sessionID, req)
 	if err != nil {
 		if errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) {
@@ -1870,7 +1873,8 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 		return sessionruntime.SessionMutationResult{}, nil, err
 	}
 	message := pebblestore.MessageSnapshot{
-		ID: strings.TrimSpace(req.MessageID), Role: strings.TrimSpace(req.Role), Content: req.Content,
+		SendingClientSessionID: req.SendingClientSessionID,
+		ID:                     strings.TrimSpace(req.MessageID), Role: strings.TrimSpace(req.Role), Content: req.Content,
 		Metadata: cloneSessionsV3Metadata(req.Metadata), Media: append([]pebblestore.SessionMediaReference(nil), req.Media...),
 		VideoAttachments:   append([]pebblestore.SessionVideoAttachmentReference(nil), req.VideoAttachments...),
 		ArtifactSelections: append([]pebblestore.SessionArtifactSelectionReference(nil), req.ArtifactSelections...),
@@ -1904,7 +1908,7 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	}
 	now := time.Now().UnixMilli()
 	runStatus, blockedReason := s.sessionsV3PrimaryRunIntentStatus(principal, session, req)
-	runIntent := &pebblestore.V3SessionRunIntent{RunID: strings.TrimSpace(req.RunID), SourceMessageID: strings.TrimSpace(message.ID), Status: runStatus, BlockedReason: blockedReason}
+	runIntent := &pebblestore.V3SessionRunIntent{SendingClientSessionID: req.SendingClientSessionID, RunID: strings.TrimSpace(req.RunID), SourceMessageID: strings.TrimSpace(message.ID), Status: runStatus, BlockedReason: blockedReason}
 	clientRequestID := strings.TrimSpace(firstNonEmpty(req.ClientRequestID, req.IdempotencyKey))
 	if clientRequestID == "" {
 		return sessionruntime.SessionMutationResult{}, nil, errors.New("client_request_id is required")

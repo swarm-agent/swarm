@@ -425,30 +425,31 @@ func newV3RealtimeOutboxMembershipFromTombstone(tombstone V3SessionTombstone, no
 }
 
 type V3SessionRunIntent struct {
-	TaskWait             *V3ProjectTaskWait `json:"task_wait,omitempty"`
-	TaskWaitOwnerRunID   string             `json:"task_wait_owner_run_id,omitempty"`
-	TaskUpdateRootRunID  string             `json:"task_update_root_run_id,omitempty"`
-	SessionID            string             `json:"session_id"`
-	UserID               string             `json:"user_id,omitempty"`
-	AccountScopeID       string             `json:"account_scope_id,omitempty"`
-	RunID                string             `json:"run_id"`
-	SourceMessageID      string             `json:"source_message_id,omitempty"`
-	Status               string             `json:"status"`
-	BlockedReason        string             `json:"blocked_reason,omitempty"`
-	CreatedAt            int64              `json:"created_at"`
-	StartedAt            int64              `json:"started_at,omitempty"`
-	CompletedAt          int64              `json:"completed_at,omitempty"`
-	DurationMs           int64              `json:"duration_ms,omitempty"`
-	CumulativeDurationMs int64              `json:"cumulative_duration_ms,omitempty"`
-	UpdatedAt            int64              `json:"updated_at"`
-	EventSeq             uint64             `json:"event_seq"`
-	EpochID              string             `json:"epoch_id,omitempty"`
-	PlanID               string             `json:"plan_id,omitempty"`
-	CheckpointID         string             `json:"checkpoint_id,omitempty"`
-	AttemptID            string             `json:"attempt_id,omitempty"`
-	RunSessionID         string             `json:"run_session_id,omitempty"`
-	ParentSessionID      string             `json:"parent_session_id,omitempty"`
-	ResumeContext        bool               `json:"resume_context,omitempty"`
+	SendingClientSessionID string             `json:"sending_client_session_id,omitempty"`
+	TaskWait               *V3ProjectTaskWait `json:"task_wait,omitempty"`
+	TaskWaitOwnerRunID     string             `json:"task_wait_owner_run_id,omitempty"`
+	TaskUpdateRootRunID    string             `json:"task_update_root_run_id,omitempty"`
+	SessionID              string             `json:"session_id"`
+	UserID                 string             `json:"user_id,omitempty"`
+	AccountScopeID         string             `json:"account_scope_id,omitempty"`
+	RunID                  string             `json:"run_id"`
+	SourceMessageID        string             `json:"source_message_id,omitempty"`
+	Status                 string             `json:"status"`
+	BlockedReason          string             `json:"blocked_reason,omitempty"`
+	CreatedAt              int64              `json:"created_at"`
+	StartedAt              int64              `json:"started_at,omitempty"`
+	CompletedAt            int64              `json:"completed_at,omitempty"`
+	DurationMs             int64              `json:"duration_ms,omitempty"`
+	CumulativeDurationMs   int64              `json:"cumulative_duration_ms,omitempty"`
+	UpdatedAt              int64              `json:"updated_at"`
+	EventSeq               uint64             `json:"event_seq"`
+	EpochID                string             `json:"epoch_id,omitempty"`
+	PlanID                 string             `json:"plan_id,omitempty"`
+	CheckpointID           string             `json:"checkpoint_id,omitempty"`
+	AttemptID              string             `json:"attempt_id,omitempty"`
+	RunSessionID           string             `json:"run_session_id,omitempty"`
+	ParentSessionID        string             `json:"parent_session_id,omitempty"`
+	ResumeContext          bool               `json:"resume_context,omitempty"`
 }
 
 type V3SessionRunState struct {

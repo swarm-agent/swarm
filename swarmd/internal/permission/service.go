@@ -120,6 +120,8 @@ type permissionStateCacheEntry struct {
 }
 
 type CreateInput struct {
+	TargetDevice      string
+	Execution         string
 	SessionID         string
 	RunID             string
 	Step              int
@@ -522,6 +524,10 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 		return AuthorizationResult{}, errors.New("session id is required")
 	}
 
+	switch normalizePolicyToolName(input.ToolName) {
+	case "machine_read", "machine_write", "machine_run", "manage_browser":
+		return s.authorizeDeviceCall(input)
+	}
 	requirement := authorizationRequirement(input.Mode, input.ToolName, input.ToolArguments)
 	if requirement == "" {
 		requirement = "tool"
@@ -798,6 +804,8 @@ func (s *Service) CreatePending(input CreateInput) (pebblestore.PermissionRecord
 	now := time.Now().UnixMilli()
 
 	record := pebblestore.PermissionRecord{
+		TargetDevice:        input.TargetDevice,
+		Execution:           input.Execution,
 		ID:                  s.newPermissionID(now, sessionID, runID, strings.TrimSpace(input.CallID)),
 		SessionID:           sessionID,
 		RunID:               runID,

@@ -140,18 +140,19 @@ type V3SessionTombstone struct {
 }
 
 type MessageSnapshot struct {
-	ID                 string                              `json:"id"`
-	SessionID          string                              `json:"session_id"`
-	UserID             string                              `json:"user_id,omitempty"`
-	AccountScopeID     string                              `json:"account_scope_id,omitempty"`
-	GlobalSeq          uint64                              `json:"global_seq"`
-	Role               string                              `json:"role"`
-	Content            string                              `json:"content"`
-	Metadata           map[string]any                      `json:"metadata,omitempty"`
-	Media              []SessionMediaReference             `json:"media,omitempty"`
-	VideoAttachments   []SessionVideoAttachmentReference   `json:"video_attachments,omitempty"`
-	ArtifactSelections []SessionArtifactSelectionReference `json:"artifact_selections,omitempty"`
-	CreatedAt          int64                               `json:"created_at"`
+	SendingClientSessionID string                              `json:"sending_client_session_id,omitempty"`
+	ID                     string                              `json:"id"`
+	SessionID              string                              `json:"session_id"`
+	UserID                 string                              `json:"user_id,omitempty"`
+	AccountScopeID         string                              `json:"account_scope_id,omitempty"`
+	GlobalSeq              uint64                              `json:"global_seq"`
+	Role                   string                              `json:"role"`
+	Content                string                              `json:"content"`
+	Metadata               map[string]any                      `json:"metadata,omitempty"`
+	Media                  []SessionMediaReference             `json:"media,omitempty"`
+	VideoAttachments       []SessionVideoAttachmentReference   `json:"video_attachments,omitempty"`
+	ArtifactSelections     []SessionArtifactSelectionReference `json:"artifact_selections,omitempty"`
+	CreatedAt              int64                               `json:"created_at"`
 }
 
 type SessionCodexConfig struct {
