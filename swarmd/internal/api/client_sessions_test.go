@@ -13,7 +13,9 @@ import (
 // the owner on the loopback API through X-Swarm-Token, and stops the moment
 // it is revoked. Threat: a leaked token minting more; a revoked client still
 // in. Boundary: Server.handleClientSessions and identity.SessionService.
-// Validate through Server.withAuth.
+// Validate through Server.withAuth. This HTTP layer also proves that the supplied
+// device name survives storage and the validated actor identifies that exact
+// client session, rather than confusing two clients with the same owner.
 func TestClientSessionsMintListActAndRevoke(t *testing.T) {
 	s, _, _, cleanup := setupScopedAuthTestServer(t)
 	defer cleanup()
@@ -27,12 +29,12 @@ func TestClientSessionsMintListActAndRevoke(t *testing.T) {
 
 	// Minting needs the owner socket.
 	w := httptest.NewRecorder()
-	s.handleClientSessions(w, owner(httptest.NewRequest(http.MethodPost, clientSessionsPath, strings.NewReader(`{"name":"console"}`))))
+	s.handleClientSessions(w, owner(httptest.NewRequest(http.MethodPost, clientSessionsPath, strings.NewReader(`{"name":"console","device":"test-device"}`))))
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("mint off the socket: HTTP %d %s", w.Code, w.Body.String())
 	}
 	w = httptest.NewRecorder()
-	s.handleClientSessions(w, markLocalTransportRequest(owner(httptest.NewRequest(http.MethodPost, clientSessionsPath, strings.NewReader(`{"name":"console"}`)))))
+	s.handleClientSessions(w, markLocalTransportRequest(owner(httptest.NewRequest(http.MethodPost, clientSessionsPath, strings.NewReader(`{"name":"console","device":"test-device"}`)))))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("mint: HTTP %d %s", w.Code, w.Body.String())
 	}
@@ -46,6 +48,19 @@ func TestClientSessionsMintListActAndRevoke(t *testing.T) {
 	}
 	if minted.Token == "" || minted.SessionID == "" || minted.Name != "console" {
 		t.Fatalf("mint answered %s", w.Body.String())
+	}
+
+	validated, err := s.identitySessions.Validate(minted.Token)
+	if err != nil || validated.ClientSessionID != minted.SessionID {
+		t.Fatalf("client identity: id=%q err=%v", validated.ClientSessionID, err)
+	}
+	plain, err := s.identitySessions.IssueForCurrentSelection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plainActor, err := s.identitySessions.Validate(plain.Token)
+	if err != nil || plainActor.ClientSessionID != "" {
+		t.Fatalf("unnamed owner session acquired device identity: %q, %v", plainActor.ClientSessionID, err)
 	}
 
 	// The token is the owner on the loopback API.
@@ -75,10 +90,11 @@ func TestClientSessionsMintListActAndRevoke(t *testing.T) {
 		Clients []struct {
 			SessionID string `json:"session_id"`
 			Name      string `json:"name"`
+			Device    string `json:"device"`
 			RevokedAt int64  `json:"revoked_at"`
 		} `json:"clients"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &listed); err != nil || len(listed.Clients) != 1 || listed.Clients[0].SessionID != minted.SessionID || listed.Clients[0].Name != "console" {
+	if err := json.Unmarshal(w.Body.Bytes(), &listed); err != nil || len(listed.Clients) != 1 || listed.Clients[0].SessionID != minted.SessionID || listed.Clients[0].Name != "console" || listed.Clients[0].Device != "test-device" {
 		t.Fatalf("list: HTTP %d %s (%v)", w.Code, w.Body.String(), err)
 	}
 

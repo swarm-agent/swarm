@@ -1,6 +1,9 @@
 # Access model: devices, home, linked Swarms
 
-Status: agreed design, not built yet. It replaces per-conversation access
+Status: agreed design; device identity plumbing is built (`ClientSessionRecord.device`,
+`swarmctl client connect --device`, and authenticated actor client-session id).
+Account-wide rules, enforcement and the Permissions page are not built yet.
+The design replaces per-conversation access
 (`/v3/sessions/{id}/access`) and the console's own `fleet.json` with
 account-wide rules that Swarm stores and enforces. Tool permission policy for
 agents inside Swarm is separate and unchanged (`docs/permissions-defaults.md`).

@@ -46,13 +46,14 @@ func (s *Server) handleClientSessions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var req struct {
-			Name string `json:"name"`
+			Name   string `json:"name"`
+			Device string `json:"device"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, errors.New("invalid client session request"))
 			return
 		}
-		issued, err := s.identitySessions.IssueClientSession(req.Name)
+		issued, err := s.identitySessions.IssueDeviceClientSession(req.Name, req.Device)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -61,6 +62,7 @@ func (s *Server) handleClientSessions(w http.ResponseWriter, r *http.Request) {
 			"token":      issued.Token,
 			"session_id": issued.SessionID,
 			"name":       strings.TrimSpace(req.Name),
+			"device":     strings.TrimSpace(req.Device),
 			"issued_at":  issued.IssuedAt.UnixMilli(),
 			"expires_at": issued.ExpiresAt.UnixMilli(),
 		})

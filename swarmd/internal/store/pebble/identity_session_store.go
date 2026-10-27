@@ -91,6 +91,7 @@ func decodeIdentitySessionSigningKey(record IdentitySessionSigningKeyRecord) ([]
 type ClientSessionRecord struct {
 	SessionID      string `json:"session_id"`
 	Name           string `json:"name"`
+	Device         string `json:"device,omitempty"`
 	UserID         string `json:"user_id"`
 	AccountScopeID string `json:"account_scope_id"`
 	CreatedAt      int64  `json:"created_at"`

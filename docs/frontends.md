@@ -73,7 +73,7 @@ pkexec swarmctl client connect my-console --for-user "$USER"
   owner socket. The token lands in `~/.config/swarm/clients/my-console.token`,
   mode 0600 and readable by the person alone; it is never printed.
 - **For a server:**
-  - run `sudo swarmctl client connect my-console --print` over SSH and keep the
+  - run `sudo swarmctl client connect my-console --device client-computer --print` over SSH (replace `client-computer` with the client's computer name) and keep the
     token in your client's own private file;
   - reach the server's API through an SSH tunnel:
     `ssh -N -L 127.0.0.1:PORT:127.0.0.1:7781 HOST`.

@@ -23,7 +23,7 @@ import (
 const clientTokenDirName = "clients"
 
 func cmdClient(args []string) error {
-	usage := fmt.Errorf("usage: swarmctl client connect NAME [--for-user USER] [--print] | list | revoke SESSION_ID|NAME")
+	usage := fmt.Errorf("usage: swarmctl client connect NAME [--device NAME] [--for-user USER] [--print] | list | revoke SESSION_ID|NAME")
 	if len(args) < 1 {
 		return usage
 	}
@@ -45,6 +45,7 @@ func cmdClient(args []string) error {
 type clientSessionRow struct {
 	SessionID  string `json:"session_id"`
 	Name       string `json:"name"`
+	Device     string `json:"device,omitempty"`
 	CreatedAt  int64  `json:"created_at"`
 	ExpiresAt  int64  `json:"expires_at"`
 	LastSeenAt int64  `json:"last_seen_at"`
@@ -53,8 +54,16 @@ type clientSessionRow struct {
 
 func clientConnect(args []string) error {
 	name, who, print := "", "", false
+	device := ""
+	deviceSet := false
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; {
+		case a == "--device":
+			if i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" {
+				return fmt.Errorf("--device needs a computer name")
+			}
+			i++
+			device, deviceSet = strings.TrimSpace(args[i]), true
 		case a == "--for-user":
 			if i+1 >= len(args) {
 				return fmt.Errorf("--for-user needs a user name")
@@ -74,6 +83,13 @@ func clientConnect(args []string) error {
 	if !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`).MatchString(name) {
 		return fmt.Errorf("the client's name is letters, digits, dot, dash or underscore (1-64)")
 	}
+	if !deviceSet {
+		var err error
+		device, err = os.Hostname()
+		if err != nil || strings.TrimSpace(device) == "" {
+			return fmt.Errorf("cannot determine this computer's name; pass --device NAME")
+		}
+	}
 	if err := machineRoot(append([]string{"client", "connect"}, args...)); err != nil {
 		return err
 	}
@@ -89,7 +105,7 @@ func clientConnect(args []string) error {
 		SessionID string `json:"session_id"`
 		ExpiresAt int64  `json:"expires_at"`
 	}
-	if err := machineRequest(http.MethodPost, "/v1/auth/clients", map[string]string{"name": name}, &minted); err != nil {
+	if err := machineRequest(http.MethodPost, "/v1/auth/clients", map[string]string{"name": name, "device": device}, &minted); err != nil {
 		return err
 	}
 	if minted.Token == "" {

@@ -42,17 +42,18 @@ func WithSessionClock(now func() time.Time) SessionOption {
 }
 
 type ActorContext struct {
-	Principal      Principal                          `json:"principal"`
-	UserID         string                             `json:"user_id"`
-	AccountScopeID string                             `json:"account_scope_id"`
-	TeamID         string                             `json:"team_id,omitempty"`
-	User           pebblestore.UserRecord             `json:"user"`
-	AccountScope   pebblestore.AccountScopeRecord     `json:"account_scope"`
-	AccountUser    pebblestore.AccountUserRecord      `json:"account_user"`
-	Team           pebblestore.TeamRecord             `json:"team,omitempty"`
-	Membership     pebblestore.TeamMembershipRecord   `json:"membership,omitempty"`
-	Selection      pebblestore.CurrentSelectionRecord `json:"selection"`
-	TokenExpires   time.Time                          `json:"token_expires_at,omitempty"`
+	ClientSessionID string                             `json:"client_session_id,omitempty"`
+	Principal       Principal                          `json:"principal"`
+	UserID          string                             `json:"user_id"`
+	AccountScopeID  string                             `json:"account_scope_id"`
+	TeamID          string                             `json:"team_id,omitempty"`
+	User            pebblestore.UserRecord             `json:"user"`
+	AccountScope    pebblestore.AccountScopeRecord     `json:"account_scope"`
+	AccountUser     pebblestore.AccountUserRecord      `json:"account_user"`
+	Team            pebblestore.TeamRecord             `json:"team,omitempty"`
+	Membership      pebblestore.TeamMembershipRecord   `json:"membership,omitempty"`
+	Selection       pebblestore.CurrentSelectionRecord `json:"selection"`
+	TokenExpires    time.Time                          `json:"token_expires_at,omitempty"`
 }
 
 type IssuedSession struct {
@@ -98,6 +99,12 @@ func (s *SessionService) IssueForCurrentSelection() (IssuedSession, error) {
 // named so they can see and revoke it. The token is the same kind the
 // desktop UI holds; the record is what Validate checks for revocation.
 func (s *SessionService) IssueClientSession(name string) (IssuedSession, error) {
+	return s.IssueDeviceClientSession(name, "")
+}
+
+// IssueDeviceClientSession records the client computer separately from the app name.
+// An empty device retains compatibility for non-device clients such as fleet links.
+func (s *SessionService) IssueDeviceClientSession(name, device string) (IssuedSession, error) {
 	if err := s.configured(); err != nil {
 		return IssuedSession{}, err
 	}
@@ -112,6 +119,7 @@ func (s *SessionService) IssueClientSession(name string) (IssuedSession, error) 
 	record := pebblestore.ClientSessionRecord{
 		SessionID:      issued.SessionID,
 		Name:           name,
+		Device:         strings.TrimSpace(device),
 		UserID:         issued.Actor.UserID,
 		AccountScopeID: issued.Actor.AccountScopeID,
 		CreatedAt:      issued.IssuedAt.UnixMilli(),
@@ -120,6 +128,7 @@ func (s *SessionService) IssueClientSession(name string) (IssuedSession, error) 
 	if err := s.sessionStore.PutClientSession(record); err != nil {
 		return IssuedSession{}, err
 	}
+	issued.Actor.ClientSessionID = issued.SessionID
 	return issued, nil
 }
 
@@ -239,9 +248,14 @@ func (s *SessionService) Validate(token string) (ActorContext, error) {
 	}
 	// A client session can be revoked; a revoked one is invalid from then on.
 	// Its last use is noted at most once a minute.
+	clientSessionID := ""
 	if record, ok, err := s.sessionStore.GetClientSession(claims.SessionID); err != nil {
 		return ActorContext{}, err
 	} else if ok {
+		if record.UserID != claims.Subject || record.AccountScopeID != claims.AccountScopeID {
+			return ActorContext{}, ErrInvalidProductSession
+		}
+		clientSessionID = record.SessionID
 		if record.RevokedAt != 0 {
 			return ActorContext{}, ErrInvalidProductSession
 		}
@@ -251,6 +265,7 @@ func (s *SessionService) Validate(token string) (ActorContext, error) {
 		}
 	}
 	actor, err := s.actorForAuthSubject(claims.Issuer, claims.Subject)
+	actor.ClientSessionID = clientSessionID
 	if err != nil {
 		return ActorContext{}, err
 	}
