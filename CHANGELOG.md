@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Scope native job action grants to a worker's custom agent or worker ID, never its shared base agent; resolve delivery workflow names within the session account and reject unknown references. Docs impact: docs/agent-tools.md documents worker grant examples and delivery lookup.
+
 - Add native `manage_jobs` for Swarm and opted-in custom agents, sharing Control job handlers, with explicit per-agent owner action grants, self-loop refusal and bounded inline read pages. Docs impact: new agent tool reference and daily-work watcher example in docs/automations.md.
 - Summarize linked workers with role, model, enabled state and latest run; verify linked workflow/worker changes under off, ask and allowed rules. Docs impact: explicit remote action limits in access-model.md.
 

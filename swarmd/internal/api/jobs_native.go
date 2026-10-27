@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"unicode/utf8"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -32,8 +33,23 @@ func (s *Server) ManageJobs(ctx context.Context, p identity.Principal, sessionID
 	action := controlMCPString(args, "action")
 	mutate := action == "give_job" || action == "message_job" || action == "rerun_failed_steps"
 	if mutate {
+		// Worker identity comes from the account-owned record, not the base
+		// system agent or model-supplied arguments.
+		if workerID, _ := current.Metadata["worker_id"].(string); workerID != "" {
+			worker, found, err := s.sessions.GetWorker(p.AccountScopeID, workerID)
+			if err != nil {
+				return nil, err
+			}
+			if !found {
+				return nil, errors.New("manage_jobs acting worker not found")
+			}
+			agent = strings.TrimSpace(worker.Agent)
+			if agent == "" || strings.HasPrefix(agent, "system-worker-") {
+				agent = "worker_" + worker.ID
+			}
+		}
 		if s.perm == nil {
-			return nil, errors.New("manage_jobs requires an explicit owner action grant")
+			return nil, fmt.Errorf("owner must allow manage_jobs.%s.%s in account permission rules", agent, action)
 		}
 		policy, err := s.perm.CurrentPolicyForAccount(p.AccountScopeID)
 		if err != nil {
@@ -92,8 +108,19 @@ func (s *Server) ManageJobs(ctx context.Context, p identity.Principal, sessionID
 		var ds *jobautomation.Store
 		ds, err = s.jobAutomationStore()
 		if err == nil {
+			automationID := controlMCPString(args, "id")
+			if automationID != "" {
+				automation, lookupErr := ds.Get(p.AccountScopeID, automationID)
+				if errors.Is(lookupErr, jobautomation.ErrNotFound) {
+					automation, lookupErr = ds.FindByName(p.AccountScopeID, automationID)
+				}
+				if lookupErr != nil {
+					return nil, fmt.Errorf("workflow %q: %w", automationID, lookupErr)
+				}
+				automationID = automation.ID
+			}
 			var deliveries []jobautomation.Delivery
-			deliveries, err = ds.ListDeliveries(p.AccountScopeID, jobautomation.DeliveryFilter{AutomationID: controlMCPString(args, "id"), JobID: controlMCPString(args, "job_id"), Limit: limit})
+			deliveries, err = ds.ListDeliveries(p.AccountScopeID, jobautomation.DeliveryFilter{AutomationID: automationID, JobID: controlMCPString(args, "job_id"), Limit: limit})
 			views := []map[string]any{}
 			for _, d := range deliveries {
 				views = append(views, jobDeliveryView(d))

@@ -28,7 +28,12 @@ func TestManageJobsAuthorityAndSharedDelivery(t *testing.T) {
 	defer db.Close()
 	sessions := store.NewSessionStore(db)
 	p := testPrincipal()
-	current := store.SessionSnapshot{ID: "watcher", AccountScopeID: p.AccountScopeID, UserID: p.UserID, Metadata: map[string]any{"worker_id": "watcher-worker", "worker_execution_run_id": "watcher-run"}}
+	worker, err := sessionruntime.NewService(sessions, nil).CreateWorker(context.Background(), p.AccountScopeID, p.UserID, store.CreateWorkerRequest{Name: "watcher", Role: "coder", Agent: "swarm"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownJob := "worker/" + worker.ID + "/watcher-run"
+	current := store.SessionSnapshot{ID: "watcher", AccountScopeID: p.AccountScopeID, UserID: p.UserID, Metadata: map[string]any{"worker_id": worker.ID, "worker_execution_run_id": "watcher-run"}}
 	if err := sessions.CreateSession(current); err != nil {
 		t.Fatal(err)
 	}
@@ -59,6 +64,19 @@ func TestManageJobsAuthorityAndSharedDelivery(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("delivery mismatch: %#v", got)
 	}
+	byName, err := s.ManageJobs(context.Background(), p, current.ID, "swarm", map[string]any{"action": "deliveries", "id": a.Name})
+	if err != nil || !reflect.DeepEqual(byName, got) {
+		t.Fatalf("name/id mismatch: %#v %v", byName, err)
+	}
+	foreignFlow, _, err := ds.Put("foreign", jobautomation.Automation{Name: "foreign-only", Scope: a.Scope, Enabled: true, Steps: a.Steps})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range []string{"unknown-workflow", foreignFlow.Name, foreignFlow.ID} {
+		if out, err := s.ManageJobs(context.Background(), p, current.ID, "swarm", map[string]any{"action": "deliveries", "id": ref}); err == nil || !strings.Contains(err.Error(), "not found") || out != nil {
+			t.Fatalf("unknown/foreign workflow accepted: %q %#v %v", ref, out, err)
+		}
+	}
 	foreign := p
 	foreign.AccountScopeID = "foreign"
 	if _, err := s.ManageJobs(context.Background(), foreign, current.ID, "swarm", map[string]any{"action": "deliveries"}); err == nil {
@@ -76,7 +94,7 @@ func TestManageJobsAuthorityAndSharedDelivery(t *testing.T) {
 		t.Fatalf("MCP/native mismatch %s %s", lhs, rhs)
 	}
 	for _, action := range []string{"give_job", "message_job", "rerun_failed_steps"} {
-		args := map[string]any{"action": action, "job_id": "worker/watcher-worker/watcher-run", "worker": "watcher-worker", "brief": "work", "message": "retry"}
+		args := map[string]any{"action": action, "job_id": ownJob, "worker": worker.ID, "brief": "work", "message": "retry"}
 		if _, err := s.ManageJobs(context.Background(), p, current.ID, "swarm", args); err == nil || !strings.Contains(err.Error(), "owner must allow") {
 			t.Fatalf("missing grant: %v", err)
 		}
@@ -96,13 +114,13 @@ func TestManageJobsAuthorityAndSharedDelivery(t *testing.T) {
 	}
 	// Resolve aliases before comparing worker identity; no mutation dispatch.
 	c.next = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, map[string]any{"workers": []map[string]any{{"id": "watcher-worker", "name": "watcher"}}})
+		writeJSON(w, 200, map[string]any{"workers": []map[string]any{{"id": worker.ID, "name": "watcher"}}})
 	})
 	if err := s.refuseNativeJobSelfTarget(c, current, "give_job", map[string]any{"worker": "watcher"}); err == nil {
 		t.Fatal("own worker alias accepted")
 	}
 	// Child of a delivery cannot target the triggering job.
-	d.Steps[0].Outcome = map[string]any{"job_id": "worker/watcher-worker/watcher-run"}
+	d.Steps[0].Outcome = map[string]any{"job_id": ownJob}
 	if err := ds.SaveDelivery(d); err != nil {
 		t.Fatal(err)
 	}
@@ -264,5 +282,72 @@ func TestManageJobsGrantedDispatch(t *testing.T) {
 	after, err := ds.GetDelivery(p.AccountScopeID, d.ID)
 	if err != nil || after.State != jobautomation.StatePending || after.Steps[0].State != jobautomation.StatePending || after.Reruns != 1 {
 		t.Fatalf("rerun not persisted: %+v %v", after, err)
+	}
+}
+
+// Purpose: ManageJobs must authorize the account-owned worker's most specific
+// identity, never its shared base agent. Real worker/session/permission stores
+// and bounded route responses prove refused calls do not dispatch writes, while
+// exact custom-agent and worker-ID grants dispatch once and retain self-loop checks.
+func TestManageJobsWorkerGrantIdentity(t *testing.T) {
+	for _, custom := range []string{"custom-watch", "", "system-worker-coder"} {
+		t.Run("agent="+custom, func(t *testing.T) {
+			db, err := store.Open(filepath.Join(t.TempDir(), "identity.pebble"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			p := testPrincipal()
+			ss := store.NewSessionStore(db)
+			perms := permission.NewService(store.NewPermissionStore(db), nil, nil)
+			s := &Server{sessions: sessionruntime.NewService(ss, nil), perm: perms}
+			worker, err := s.sessions.CreateWorker(context.Background(), p.AccountScopeID, p.UserID, store.CreateWorkerRequest{Name: "watch", Role: "coder", Agent: custom})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := ss.CreateSession(store.SessionSnapshot{ID: "watch", AccountScopeID: p.AccountScopeID, UserID: p.UserID, Metadata: map[string]any{"worker_id": worker.ID}}); err != nil {
+				t.Fatal(err)
+			}
+			key := custom
+			if key == "" || strings.HasPrefix(key, "system-worker-") {
+				key = "worker_" + worker.ID
+			}
+			writes := 0
+			s.controlMCPRoutesOnce.Do(func() {
+				s.controlMCPRoutes = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method == http.MethodPost {
+						writes++
+					}
+					if r.URL.Path == "/v3/projects" {
+						writeJSON(w, 200, map[string]any{"projects": []any{map[string]any{"id": "project", "name": "project", "workspaces": []any{map[string]any{"path": "/workspace", "workspace_id": "ws"}}}}})
+					} else if r.URL.Path == "/v3/workers" {
+						writeJSON(w, 200, map[string]any{"workers": []any{map[string]any{"id": "other", "name": "other"}, map[string]any{"id": worker.ID, "name": "self"}}})
+					} else {
+						writeJSON(w, 200, map[string]any{"run": map[string]any{"id": "run"}})
+					}
+				})
+			})
+			args := map[string]any{"action": "give_job", "worker": "other", "brief": "work"}
+			grant := func(identity string) {
+				t.Helper()
+				if _, err := perms.UpsertRuleForAccount(p.AccountScopeID, permission.PolicyRule{Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionAllow, Tool: "manage_jobs." + identity + ".give_job"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, wrong := range []string{"unrelated-agent", "system-worker-coder"} {
+				grant(wrong)
+				if _, err := s.ManageJobs(context.Background(), p, "watch", "system-worker-coder", args); err == nil || !strings.Contains(err.Error(), "manage_jobs."+key+".give_job") || writes != 0 {
+					t.Fatalf("wrong grant accepted or wrong refusal: %v writes=%d", err, writes)
+				}
+			}
+			grant(key)
+			if _, err := s.ManageJobs(context.Background(), p, "watch", "system-worker-coder", args); err != nil || writes != 1 {
+				t.Fatalf("exact grant: %v writes=%d", err, writes)
+			}
+			args["worker"] = "self"
+			if _, err := s.ManageJobs(context.Background(), p, "watch", "system-worker-coder", args); err == nil || !strings.Contains(err.Error(), "own worker") || writes != 1 {
+				t.Fatalf("self-loop: %v writes=%d", err, writes)
+			}
+		})
 	}
 }

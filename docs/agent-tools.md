@@ -22,6 +22,9 @@ Each response stays below 64 KiB; no host spill files are created. Large
 mutation responses tell the agent to read the job/deliveries, not repeat the
 mutation.
 
+For `deliveries`, `id` accepts a workflow ID or name within the session's
+account. Unknown references return an error; omit `id` to leave workflows unfiltered.
+
 ## Owner action grants
 
 Tool enablement allows reads, not actions. The owner must add an account
@@ -33,8 +36,15 @@ manage_jobs.<agent-name>.give_job
 manage_jobs.<agent-name>.message_job
 ```
 
-For example, `manage_jobs.daily-watch.message_job` permits only that action
-for `daily-watch`. A generic `manage_jobs` allow, permission bypass, or an
+For workers, `<agent-name>` is the custom agent name when configured; otherwise
+use `worker_<worker-id>` (the `worker_` prefix followed by the full worker ID).
+Shared base agents such as `system-worker-coder` never grant worker actions.
+Non-worker sessions use their session agent name.
+
+For example, `manage_jobs.daily-watch.message_job` permits that action for
+workers using custom agent `daily-watch`. For a worker without a custom agent
+whose ID is `example-worker`, use `manage_jobs.worker_example-worker.give_job`.
+The refusal message gives the exact required key. A generic `manage_jobs` allow, permission bypass, or an
 allow for another agent does not substitute for this grant. A matching deny
 (or a `manage_jobs` deny) wins. Use the existing owner permission-rule API;
 this tool cannot change grants. Normal tool permission checks still apply.
