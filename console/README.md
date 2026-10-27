@@ -12,7 +12,7 @@ Orchestrator's question); approve, reject and merge on a card, stop or allow
 a tool call in the header. Drag a session, or a pane by its header, onto a
 pane's edge to split there or its middle to show it there; drag dividers to
 resize. The Orchestrator can use your own Chrome on a lease you grant (see
-below). Media still shows nothing real. Linked machines show through the home Swarm (`/v3/fleet…`). `SWARM_CONSOLE_DEMO=1` shows the design set instead.
+below). Media shows what the media tasks made (from their deliverables), and linked machines show through the home Swarm (`/v3/fleet…`). `SWARM_CONSOLE_DEMO=1` shows the design set instead.
 
 ## Run
 

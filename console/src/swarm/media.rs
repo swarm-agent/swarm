@@ -1,7 +1,7 @@
 //! What the Orchestrator made: its media tasks (image, video, sound) and their
 //! files, downloaded once into this app's cache so the Media tab and page
-//! show them and open them locally. Reading the files over Swarm's HTTP API
-//! is not wired yet: settled tasks show nothing until it is.
+//! show them and open them locally, from each task's deliverables on Swarm's
+//! HTTP API (`media_url`).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -16,19 +16,24 @@ pub fn is_media_agent(agent: &str) -> bool {
     matches!(agent, "image" | "video" | "sound")
 }
 
-/// One media task of a session, as the session's children list it.
+/// One media task of a project (agent image, video or sound).
 #[derive(Clone, Debug, PartialEq)]
 pub struct MediaTask {
     pub task_id: String,
     pub agent: String,
     pub status: String,
     pub title: String,
+    pub created_at: u64,
+    /// Its deliverables as the task list gives them (`media_url` per file).
+    pub deliverables: Vec<Value>,
 }
 
 /// A media task's files as last read, and the status they were read at.
 pub struct Read {
     status: String,
     files: Vec<Media>,
+    /// A file is still being downloaded: read the task again next time.
+    missing: bool,
 }
 
 /// Where downloaded files live.
@@ -86,16 +91,42 @@ fn store(path: &PathBuf, data: &[u8]) -> Result<(), String> {
     std::fs::rename(&part, path).map_err(|e| e.to_string())
 }
 
-/// A media task's files as Swarm lists them. Not read over HTTP yet: none.
-fn files_of(_client: &Client, _project_id: &str, _task_id: &str) -> Option<Value> {
-    None
+
+/// How long ago, shortly: "now", "4m", "3h", "2d".
+fn age(created_at: u64) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+    match now.saturating_sub(created_at) / 60_000 {
+        0 => "now".into(),
+        m if m < 60 => format!("{m}m"),
+        m if m < 60 * 24 => format!("{}h", m / 60),
+        m => format!("{}d", m / (60 * 24)),
+    }
 }
 
-/// The media of the sessions' media tasks: settled tasks are read once (and
-/// their files downloaded once); running ones show as being made.
-pub fn collect(client: &Client, reads: &mut HashMap<String, Read>, tasks: &[(String, String, MediaTask)]) -> Vec<Media> {
+/// The sha256 a deliverable's media_url names, so a changed file gets a new
+/// cache name.
+fn sha_of(url: &str) -> &str {
+    url.split(['?', '&']).find_map(|part| part.strip_prefix("sha256=")).unwrap_or("")
+}
+
+/// Downloads one file `collect` asked for into the cache as STEM.EXT (EXT from
+/// the type Swarm serves it as). True when the file is there.
+pub fn download(client: &Client, url: &str, stem: &str) -> bool {
+    match client.get_bytes(url) {
+        Ok((data, mime)) => {
+            let mime = mime.split(';').next().unwrap_or("").trim().to_string();
+            store(&cache_dir().join(format!("{stem}.{}", ext_of(&mime))), &data).is_ok()
+        }
+        Err(_) => false,
+    }
+}
+
+/// The media of the media tasks, newest first: settled tasks are read once
+/// and the files they lack go into `wanted` for `download`; running ones show
+/// as being made.
+pub fn collect(reads: &mut HashMap<String, Read>, tasks: &[(String, String, MediaTask)], wanted: &mut Vec<(String, String)>) -> Vec<Media> {
     let mut out = Vec::new();
-    for (session_id, project_id, task) in tasks {
+    for (session_id, _project_id, task) in tasks {
         if !settled(&task.status) {
             out.push(Media {
                 id: task.task_id.clone().into(),
@@ -109,61 +140,76 @@ pub fn collect(client: &Client, reads: &mut HashMap<String, Read>, tasks: &[(Str
                 machine: 0,
                 model: "".into(),
                 meta: "being made".into(),
-                age: "".into(),
+                age: age(task.created_at).into(),
                 hue: 0.6,
                 pending: true,
             });
             continue;
         }
-        let fresh = reads.get(&task.task_id).is_none_or(|r| r.status != task.status);
+        let fresh = reads.get(&task.task_id).is_none_or(|r| r.status != task.status || r.missing);
         if fresh {
-            let Some(job) = files_of(client, project_id, &task.task_id) else { continue };
+            let deliverables = &task.deliverables;
             let mut files = Vec::new();
-            for f in job.get("files").and_then(Value::as_array).cloned().unwrap_or_default() {
-                let index = f.get("file").and_then(Value::as_u64).unwrap_or(1) as usize;
-                let media_type = f.get("media_type").and_then(Value::as_str).unwrap_or("").to_string();
-                let size = f.get("size_bytes").and_then(Value::as_u64).unwrap_or(0);
-                let sha = f.get("sha256").and_then(Value::as_str).unwrap_or("");
-                let failed = f.get("status").and_then(Value::as_str) == Some("failed");
-                if failed {
+            let mut missing = false;
+            for (n, d) in deliverables.iter().enumerate() {
+                let url = s(d, "media_url");
+                if s(d, "status") != "ready" || !url.starts_with("/v3/") {
                     // A failed file has nothing to show; the task says why.
                     continue;
                 }
-                let path = cache_dir().join(format!("{}-{index}-{}.{}", task.task_id, &sha[..sha.len().min(12)], ext_of(&media_type)));
-                let file = if size > 0 && !failed && (path.exists() || client.get_bytes(&format!("/v3/projects/{project_id}/media/{}", s(&f, "id"))).ok().is_some_and(|(data, _)| store(&path, &data).is_ok())) {
-                    Some(path)
-                } else {
-                    None
+                let sha = sha_of(url);
+                let key = if sha.is_empty() { s(d, "id") } else { &sha[..sha.len().min(12)] };
+                let cached = std::fs::read_dir(cache_dir()).ok().and_then(|dir| {
+                    let prefix = format!("{}-{}-{key}.", task.task_id, n + 1);
+                    dir.filter_map(Result::ok).map(|e| e.path()).find(|p| p.file_name().and_then(|f| f.to_str()).is_some_and(|f| f.starts_with(&prefix) && !f.ends_with(".part")))
+                });
+                let (file, media_type) = match cached {
+                    Some(path) => (Some(path), String::new()),
+                    None => {
+                        // Fetched off this thread; the next read finds it cached.
+                        wanted.push((url.to_string(), format!("{}-{}-{key}", task.task_id, n + 1)));
+                        missing = true;
+                        (None, String::new())
+                    }
                 };
-                let model = f.get("model").and_then(Value::as_str).unwrap_or("");
+                let media_type = if media_type.is_empty() {
+                    match s(d, "kind") {
+                        "video" => "video/".to_string(),
+                        "audio" | "sound" | "music" | "speech" => "audio/".to_string(),
+                        _ => "image/".to_string(),
+                    }
+                } else {
+                    media_type
+                };
+                let model = s(d, "model");
                 let mut meta = vec![];
                 if !model.is_empty() {
                     meta.push(model.to_string());
                 }
-                if failed {
-                    meta.push(f.get("error").and_then(Value::as_str).unwrap_or("failed").to_string());
-                } else if size > 0 {
+                if let Some(cost) = d.get("cost_usd").and_then(Value::as_f64) {
+                    meta.push(format!("${cost:.2}"));
+                }
+                if let Some(size) = file.as_ref().and_then(|p| std::fs::metadata(p).ok()).map(|m| m.len()) {
                     meta.push(format!("{:.1} MB", size as f64 / (1 << 20) as f64));
                 }
-                let title = f.get("title").and_then(Value::as_str).filter(|t| !t.is_empty()).unwrap_or(&task.title);
                 files.push(Media {
-                    id: format!("{}#{index}", task.task_id).into(),
+                    id: format!("{}#{}", task.task_id, n + 1).into(),
                     session_id: session_id.clone().into(),
                     session: None,
                     dims: file.as_ref().and_then(|p| image_dims(p)),
                     file,
-                    title: title.to_string().into(),
+                    title: task.title.clone().into(),
                     kind: kind_of(&media_type, &task.agent),
                     project: 0,
                     machine: 0,
                     model: model.to_string().into(),
                     meta: meta.join(" · ").into(),
-                    age: "".into(),
+                    age: age(task.created_at).into(),
                     hue: 0.6,
                     pending: false,
                 });
             }
-            reads.insert(task.task_id.clone(), Read { status: task.status.clone(), files });
+            reads.insert(task.task_id.clone(), Read { status: task.status.clone(), files, missing });
         }
         if let Some(read) = reads.get(&task.task_id) {
             out.extend(read.files.iter().cloned());
@@ -230,6 +276,37 @@ mod tests {
         assert_eq!(ext_of("image/jpeg"), "jpg");
         assert!(settled("completed") && !settled("in_progress"));
         assert!(is_media_agent("video") && !is_media_agent("coder"));
+    }
+
+    // A settled task's ready deliverable is listed at once and its file is
+    // asked of the download thread; a failed one is left out; a running task
+    // shows as being made.
+    #[test]
+    fn deliverables_become_media() {
+        let url = "/v3/projects/p/tasks/t/deliverables/d1?field=media&sha256=0a5b47adfba7802c16f2";
+        assert_eq!(sha_of(url), "0a5b47adfba7802c16f2");
+        let task = |id: &str, status: &str| MediaTask {
+            task_id: id.into(),
+            agent: "image".into(),
+            status: status.into(),
+            title: "bee".into(),
+            created_at: 0,
+            deliverables: vec![
+                serde_json::json!({"status": "ready", "media_url": url, "kind": "image", "model": "nano", "cost_usd": 0.0415}),
+                serde_json::json!({"status": "failed", "media_url": "", "kind": "image"}),
+            ],
+        };
+        let tasks = vec![
+            ("s".to_string(), "p".to_string(), task("task_test-not-cached", "completed")),
+            ("s".to_string(), "p".to_string(), task("task_test-running", "in_progress")),
+        ];
+        let (mut reads, mut wanted) = (HashMap::new(), Vec::new());
+        let media = collect(&mut reads, &tasks, &mut wanted);
+        assert_eq!(media.len(), 2);
+        assert!(media[0].file.is_none() && !media[0].pending);
+        assert_eq!(media[0].meta.as_ref(), "nano · $0.04");
+        assert!(media[1].pending);
+        assert_eq!(wanted, vec![(url.to_string(), "task_test-not-cached-1-0a5b47adfba7".to_string())]);
     }
 }
 

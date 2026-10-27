@@ -614,6 +614,12 @@ struct Model<'a> {
     details: HashMap<String, Detail>,
     /// Each project's tasks, by project id.
     tasks: HashMap<String, Vec<Value>>,
+    /// What the media tasks made, and their files as last read.
+    media: Vec<crate::data::Media>,
+    media_reads: HashMap<String, super::media::Read>,
+    /// Files asked of the download thread, by cache name.
+    media_fetching: HashSet<String>,
+    media_fetch: Sender<(String, String)>,
     /// Task details read for review, by task id with the revision they are of.
     assessed: HashMap<String, (i64, Value)>,
     /// Asks the facts thread to read again (usage changed, a command ran).
@@ -624,6 +630,20 @@ struct Model<'a> {
 fn follow(client: &Client, watched: &Mutex<HashSet<String>>, tx: &Sender<Update>, frames: &Receiver<Value>, frames_tx: &Sender<Value>, kind: &'static str, facts_kick: &Sender<()>, run_watch: &Mutex<Option<String>>) -> Result<(), String> {
     // The run session subscribed to on this connection.
     let mut run_sub: Option<String> = None;
+    // Media files download on their own thread; each one wakes the model,
+    // whose next read finds it in the cache.
+    let (media_fetch, media_wanted) = mpsc::channel::<(String, String)>();
+    {
+        let (client, frames_tx) = (client.clone(), frames_tx.clone());
+        std::thread::spawn(move || {
+            for (url, stem) in media_wanted {
+                super::media::download(&client, &url, &stem);
+                if frames_tx.send(json!({"kind": "console.media_ready"})).is_err() {
+                    return;
+                }
+            }
+        });
+    }
     let mut m = Model {
         client,
         kind,
@@ -634,6 +654,10 @@ fn follow(client: &Client, watched: &Mutex<HashSet<String>>, tx: &Sender<Update>
         waiting: HashSet::new(),
         details: HashMap::new(),
         tasks: HashMap::new(),
+        media: Vec::new(),
+        media_reads: HashMap::new(),
+        media_fetching: HashSet::new(),
+        media_fetch,
         assessed: HashMap::new(),
         facts_kick: facts_kick.clone(),
     };
@@ -851,7 +875,40 @@ impl Model<'_> {
             }
         }
         self.tasks.insert(project_id.to_string(), tasks);
+        self.read_media();
         Ok(())
+    }
+
+    /// The media tasks of every project, newest first, and what they made.
+    fn read_media(&mut self) {
+        let mut found: Vec<(String, String, super::media::MediaTask)> = self
+            .tasks
+            .iter()
+            .flat_map(|(project_id, tasks)| tasks.iter().map(move |t| (project_id, t)))
+            .filter(|(_, t)| super::media::is_media_agent(s(t, "agent")) && !t.get("archived").and_then(Value::as_bool).unwrap_or(false))
+            .map(|(project_id, t)| {
+                (
+                    s(t, "origin_session_id").to_string(),
+                    project_id.clone(),
+                    super::media::MediaTask {
+                        task_id: s(t, "id").to_string(),
+                        agent: s(t, "agent").to_string(),
+                        status: s(t, "status").to_string(),
+                        title: s(t, "title").to_string(),
+                        created_at: t.get("created_at").and_then(Value::as_u64).unwrap_or(0),
+                        deliverables: t.get("deliverables").and_then(Value::as_array).cloned().unwrap_or_default(),
+                    },
+                )
+            })
+            .collect();
+        found.sort_by(|a, b| b.2.created_at.cmp(&a.2.created_at));
+        let mut wanted = Vec::new();
+        self.media = super::media::collect(&mut self.media_reads, &found, &mut wanted);
+        for (url, stem) in wanted {
+            if self.media_fetching.insert(stem.clone()) {
+                let _ = self.media_fetch.send((url, stem));
+            }
+        }
     }
 
 
@@ -1004,6 +1061,11 @@ impl Model<'_> {
         match s(frame, "kind") {
             "hello" | "keepalive" | "endpoint.watermark" | "replay.started" | "replay.complete" => Ok(false),
             "console.stream_ended" => Err(s(frame, "error").to_string()),
+            // A media file finished downloading.
+            "console.media_ready" => {
+                self.read_media();
+                Ok(true)
+            }
             // The console woke us: a watch change, or a command that ran (then
             // the facts may have changed too).
             "console.kick" => {
@@ -1259,7 +1321,7 @@ impl Model<'_> {
             roles: None,
             usage: None,
             themes: None,
-            media: Vec::new(),
+            media: self.media.clone(),
             catalog: None,
         }
     }
