@@ -2,6 +2,9 @@ package api
 
 import (
 	"context"
+	"net/http/httptest"
+	"strings"
+	"swarm/packages/swarmd/internal/identity"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -122,5 +125,131 @@ func TestProjectContextCredentialRetry(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Purpose: PATCH membership and explicit retry must refresh existing context,
+// while metadata/no-op edits and concurrent attempts must not launch work.
+// Owners: handleProjects, startProjectContext, ClaimProjectContext. This API
+// test uses the real temporary store and existing router fake, the narrowest
+// layer proving HTTP status, persisted attempts and generated output together.
+func TestProjectContextRefresh(t *testing.T) {
+	for _, scenario := range []string{"removed", "unchanged", "metadata", "retry", "failed", "stale", "running"} {
+		t.Run(scenario, func(t *testing.T) {
+			s, sessions, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+			p := testPrincipal()
+			db := sessions.Store()
+			rec, _, err := db.CreateProjectWithContext(p.AccountScopeID, "refresh", "refresh", pebblestore.ProjectRecord{Name: "Refresh"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec, err = db.ClaimProjectContext(p.AccountScopeID, rec.ID, 0, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if scenario != "running" {
+				failure := ""
+				if scenario == "failed" {
+					failure = "Previous provider failure"
+				}
+				rec, err = db.FinishProjectContext(p.AccountScopeID, rec.ID, 1, "# Person's notes", failure, "")
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario == "removed" {
+				rec, err = db.UpdateProject(p.AccountScopeID, rec.ID, func(p *pebblestore.ProjectRecord) error {
+					p.Workspaces = []pebblestore.ProjectWorkspaceRef{{Path: "/srv/removed", Role: "docs"}}
+					return nil
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			catalog := pebblestore.NewModelCatalogStore(db.Underlying())
+			if err := catalog.SetRecord(pebblestore.ModelCatalogRecord{Provider: "codex", Model: "router", ThinkingOptions: []string{"high"}}); err != nil {
+				t.Fatal(err)
+			}
+			runner := &projectContextRetryRunner{}
+			s.providers = registry.New()
+			s.providers.RegisterRunner(runner)
+			method, path, body, want := "PATCH", ProjectsPath+"/"+rec.ID, `{"workspaces":[]}`, 200
+			if scenario == "metadata" {
+				body = `{"name":"Renamed","description":"Changed","project_context":"Edited"}`
+			}
+			if scenario == "retry" || scenario == "failed" || scenario == "stale" || scenario == "running" {
+				method = "POST"
+				path += "/context:retry"
+				body = `{"expected_attempt":1}`
+				want = 202
+			}
+			if scenario == "running" || scenario == "stale" {
+				want = 409
+			}
+			if scenario == "stale" {
+				body = `{"expected_attempt":0}`
+			}
+			req := httptest.NewRequest(method, path, strings.NewReader(body))
+			req = req.WithContext(identity.ContextWithPrincipal(req.Context(), p))
+			response := httptest.NewRecorder()
+			s.handleProjects(response, req)
+			if response.Code != want {
+				t.Fatalf("HTTP %d: %s", response.Code, response.Body.String())
+			}
+			refresh := scenario == "removed" || scenario == "retry" || scenario == "failed"
+			deadline := time.NewTimer(5 * time.Second)
+			defer deadline.Stop()
+			tick := time.NewTicker(time.Millisecond)
+			defer tick.Stop()
+			for {
+				got, _, err := db.GetProject(p.AccountScopeID, rec.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !refresh {
+					if got.ContextGeneration.Attempt != 1 || runner.calls.Load() != 0 {
+						t.Fatalf("unexpected generation: %+v", got)
+					}
+					if scenario == "running" && got.ContextGeneration.Status != "generating" {
+						t.Fatal("running claim changed")
+					}
+					break
+				}
+				if got.ContextGeneration.Status == "ready" {
+					if got.ContextGeneration.Attempt != 2 || got.ProjectContext != "# Recovered project" || runner.calls.Load() != 1 {
+						t.Fatalf("refresh: %+v", got)
+					}
+					break
+				}
+				select {
+				case <-deadline.C:
+					t.Fatalf("refresh did not finish: %+v", got)
+				case <-tick.C:
+				}
+			}
+		})
+	}
+}
+
+// Purpose: refresh input must include the person's current document, and folder
+// membership comparison must ignore order but detect additions/removals.
+// Owners: buildProjectContextInput and projectFoldersChanged. Pure input tests
+// are the narrowest layer proving evidence preservation without a provider.
+func TestProjectContextRefreshInput(t *testing.T) {
+	s, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	input, err := s.buildProjectContextInput(testPrincipal(), &pebblestore.ProjectRecord{Name: "Example", ProjectContext: "Keep this human-authored constraint."})
+	if err != nil || !strings.Contains(input, "Keep this human-authored constraint.") {
+		t.Fatalf("input %q: %v", input, err)
+	}
+	a := pebblestore.ProjectWorkspaceRef{Path: "/srv/a"}
+	b := pebblestore.ProjectWorkspaceRef{Path: "/srv/b"}
+	if projectFoldersChanged([]pebblestore.ProjectWorkspaceRef{a, b}, []pebblestore.ProjectWorkspaceRef{b, a}) {
+		t.Fatal("reordering refreshed context")
+	}
+	if !projectFoldersChanged([]pebblestore.ProjectWorkspaceRef{a}, []pebblestore.ProjectWorkspaceRef{a, b}) {
+		t.Fatal("addition missed")
+	}
+	if !projectFoldersChanged([]pebblestore.ProjectWorkspaceRef{a, b}, []pebblestore.ProjectWorkspaceRef{b}) {
+		t.Fatal("removal missed")
 	}
 }

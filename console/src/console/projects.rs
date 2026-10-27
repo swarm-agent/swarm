@@ -218,6 +218,7 @@ impl Console {
         });
         self._onboarding_done = Some(cx.subscribe(&onboarding, |this, entity, _: &OnboardingEvent, cx| {
             this.pending_project = entity.read(cx).project_id();
+            this.page = Page::Projects;
             this.onboarding = None;
             this._onboarding_done = None;
             this.pending_focus = true;
@@ -251,6 +252,7 @@ impl Console {
         let Some(id) = self.pending_project.clone() else { return };
         if let Some(pi) = self.projects.iter().position(|p| p.id.as_ref() == id) {
             self.pending_project = None;
+            self.projects_tab = Some(id);
             self.project = pi;
             self.follow_theme(cx);
         }
@@ -403,7 +405,11 @@ impl Console {
             .workspaces
             .iter()
             .zip(p.roles.iter().chain(std::iter::repeat(&SharedString::from(""))))
-            .map(|(path, role)| {
+            .enumerate()
+            .map(|(wi, (path, role))| {
+                let id = p.id.to_string();
+                let folder = path.to_string();
+                let confirming = self.folder_remove.as_ref() == Some(&(id.clone(), folder.clone()));
                 div()
                     .flex()
                     .items_center()
@@ -413,6 +419,21 @@ impl Console {
                     .child(div().text_color(t.faint).child("▸"))
                     .child(div().flex_1().min_w_0().truncate().text_color(t.text).child(path.clone()))
                     .child(div().text_size(px(10.5)).text_color(t.faint).child(role.replace('_', " ")))
+                    .child(self.button(SharedString::from(format!("remove-{pi}-{wi}")), if confirming { "confirm removal" } else { "remove" }, false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        if let Some(name) = &this.via {
+                            this.notice = Some((format!("Change folders on {name} itself.").into(), true));
+                        } else if confirming {
+                            if let (Some(project), Some(live)) = (this.projects.iter().find(|p| p.id.as_ref() == id.as_str()), &this.live) {
+                                let folders: Vec<_> = project.workspaces.iter().zip(project.roles.iter()).filter(|(path, _)| path.as_ref() != folder.as_str()).map(|(path, role)| json!({"path": path.to_string(), "role": role.to_string()})).collect();
+                                live.run(Command::PatchProject { project_id: id.clone(), body: json!({"workspaces": folders}) });
+                            }
+                            this.folder_remove = None;
+                        } else {
+                            this.folder_remove = Some((id.clone(), folder.clone()));
+                        }
+                        cx.notify();
+                    })))
+                    .when(confirming, |d| d.child(self.button(SharedString::from(format!("cancel-remove-{pi}-{wi}")), "cancel", false).on_click(cx.listener(|this, _: &ClickEvent, _, cx| { this.folder_remove = None; cx.notify(); }))))
                     .into_any_element()
             })
             .collect();
@@ -434,6 +455,8 @@ impl Console {
                         }))),
                 )
                 .into_any_element()
+        } else if p.context_generation.updating() {
+            div().into_any_element()
         } else if p.context.is_empty() {
             div().px_3().py_2().text_size(px(11.)).text_color(t.faint).child("Swarm has not written project.md yet.").into_any_element()
         } else {
@@ -446,7 +469,7 @@ impl Console {
                 .text_size(px(11.5))
                 .line_height(px(17.))
                 .text_color(t.muted)
-                .child(p.context.clone())
+                .child(self.markdown(&p.context, usize::MAX, pi, cx))
                 .into_any_element()
         };
         div()
@@ -499,6 +522,14 @@ impl Console {
             .child(div().px_3().pt_2().text_size(px(10.5)).text_color(t.faint).child("FOLDERS"))
             .child(div().flex().flex_col().pb_1().children(folders))
             .child(div().px_3().pt_1().text_size(px(10.5)).text_color(t.faint).child("PROJECT.MD"))
+            .child(div().px_3().py_2().child(p.context_generation.label()))
+            .when(matches!(p.context_generation.status.as_ref(), "ready" | "failed"), |d| {
+                let id = p.id.to_string();
+                let attempt = p.context_generation.attempt;
+                d.child(self.button(SharedString::from(format!("refresh-context-{pi}")), if p.context_generation.status.as_ref() == "failed" { "retry" } else { "refresh project.md" }, false).on_click(cx.listener(move |this, _: &ClickEvent, _, _| {
+                    if let Some(live) = &this.live { live.run(Command::RefreshProjectContext { project_id: id.clone(), expected_attempt: attempt }); }
+                })))
+            })
             .child(context)
             .into_any_element()
     }

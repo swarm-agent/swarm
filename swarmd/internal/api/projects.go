@@ -1746,8 +1746,9 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
+			refreshContext := false
 			updated, err := db.UpdateProject(p.AccountScopeID, projectID, func(p *pebblestore.ProjectRecord) error {
-				if p.ContextGeneration != nil && p.ContextGeneration.Status != "ready" {
+				if p.ContextGeneration != nil && p.ContextGeneration.Status != "ready" && p.ContextGeneration.Status != "failed" {
 					for _, key := range []string{"workspaces", "name", "description", "project_context"} {
 						if _, ok := patch[key]; ok {
 							return errors.New("finish or retry project context before editing its inputs")
@@ -1777,7 +1778,15 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					if err == nil {
 						var ws []pebblestore.ProjectWorkspaceRef
 						if err := json.Unmarshal(rawBytes, &ws); err == nil {
+							refreshContext = projectFoldersChanged(p.Workspaces, authorizedRefs)
 							p.Workspaces = authorizedRefs
+							if refreshContext {
+								attempt := 0
+								if p.ContextGeneration != nil {
+									attempt = p.ContextGeneration.Attempt
+								}
+								p.ContextGeneration = &pebblestore.ProjectContextGeneration{Status: "pending", Attempt: attempt}
+							}
 						}
 					}
 				}
@@ -1810,6 +1819,13 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
+			if refreshContext {
+				updated, err = s.startProjectContext(p, updated, false)
+				if err != nil {
+					writeError(w, http.StatusConflict, err)
+					return
+				}
+			}
 			writeJSON(w, http.StatusOK, map[string]any{
 				"project": updated,
 			})

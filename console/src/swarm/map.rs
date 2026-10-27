@@ -91,6 +91,11 @@ pub fn projects(v: &Value) -> Vec<Project> {
             workspaces: list(p, "workspaces").iter().map(|w| Text::from(s(w, "path").to_string())).collect(),
             roles: list(p, "workspaces").iter().map(|w| Text::from(s(w, "role").to_string())).collect(),
             context: s(p, "project_context").to_string().into(),
+            context_generation: crate::data::ContextGeneration {
+                status: s(&p["context_generation"], "status").to_string().into(),
+                attempt: p["context_generation"]["attempt"].as_u64().unwrap_or(0),
+                error: s(&p["context_generation"], "error").to_string().into(),
+            },
             theme_id: s(p, "theme_id").to_string().into(),
         })
         .collect()
@@ -781,4 +786,41 @@ pub fn found(answer: &Value, projects: &[Project]) -> Vec<Found> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod project_context_tests {
+    use super::projects;
+    use serde_json::json;
+
+    // Purpose: map::projects must retain the daemon's generation attempt/error,
+    // and ContextGeneration::label must never call a pending refresh ready.
+    // Pure mapping is the narrowest layer proving the Projects page's status
+    // contract without a window or a second client-owned generation state.
+    #[test]
+    fn project_generation_status() {
+        for status in ["pending", "running", "generating", "ready", "failed"] {
+            let records = projects(&json!({"projects": [{
+                "id": "project", "workspaces": [{"path": "/srv/project", "role": "docs"}],
+                "project_context": "# Old document",
+                "context_generation": {"status": status, "attempt": 3, "error": "Provider unavailable"}
+            }]}));
+            let p = &records[0];
+            assert_eq!(p.workspaces[0].as_ref(), "/srv/project");
+            assert_eq!(p.roles[0].as_ref(), "docs");
+            assert_eq!(p.context_generation.status.as_ref(), status);
+            assert_eq!(p.context_generation.attempt, 3);
+            assert_eq!(p.context_generation.error.as_ref(), "Provider unavailable");
+            match status {
+                "ready" => assert_eq!(p.context_generation.label(), "project.md is ready."),
+                "failed" => assert_eq!(p.context_generation.label(), "Could not update project.md: Provider unavailable"),
+                _ => assert_eq!(p.context_generation.label(), "Swarm is updating project.md…"),
+            }
+            assert_eq!(p.context_generation.updating(), !matches!(status, "ready" | "failed"));
+        }
+        let missing = projects(&json!({"projects": [{}]}));
+        assert_eq!(missing[0].context_generation.attempt, 0);
+        assert!(!missing[0].context_generation.updating());
+        assert_eq!(missing[0].context_generation.label(), "Swarm has not written project.md yet.");
+    }
 }

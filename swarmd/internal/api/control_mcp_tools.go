@@ -774,7 +774,7 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_set_project_workspaces", Title: "Set a project's workspaces",
-			Description: "Replace a project's workspace list: send the full list, the current workspaces to keep plus any new ones (a new folder is registered in place). A workspace left out leaves the project; its folder is untouched. Refused until project.md generation is ready. project.md is not rewritten: update it with swarm_update_project_context when the sources changed.",
+			Description: "Replace a project's workspace list: send the full list, the current workspaces to keep plus any new ones (a new folder is registered in place). A workspace left out leaves the project; its folder is untouched. Refused while project.md generation is in progress. Added or removed folders automatically refresh project.md, preserving applicable existing writing.",
 			InputSchema: controlMCPObject([]string{"project_id", "workspaces"}, map[string]any{
 				"project_id": controlMCPStringProp("From list_projects.", 1, 200),
 				"workspaces": controlMCPProjectWorkspacesProp(),
@@ -783,7 +783,7 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_retry_project_context", Title: "Generate a project's project.md again",
-			Description: "Start project.md generation again when swarm_get_project shows it failed (or still running more than five minutes after it started). Then wait with swarm_get_project.",
+			Description: "Refresh project.md when ready or failed, preserving applicable existing writing and updating it from current folders. Refused while an attempt is running (an expired claim can be retried). Then wait with swarm_get_project.",
 			InputSchema: controlMCPObject([]string{"project_id"}, map[string]any{
 				"project_id": controlMCPStringProp("From list_projects.", 1, 200),
 			}),
@@ -2263,7 +2263,7 @@ func (c *controlMCPCall) waitForProjectContext(projectID string, seconds int) (m
 	}
 	generating := func(project map[string]any) bool {
 		status := controlMCPContextStatus(project)
-		return status == "pending" || status == "running"
+		return status == "pending" || status == "running" || status == "generating"
 	}
 	if !generating(project) {
 		return project, map[string]any{"settled": true}, nil
@@ -2319,10 +2319,8 @@ func (c *controlMCPCall) readyProject(projectID string) error {
 
 func controlMCPContextNotReady(projectID, status string) error {
 	switch status {
-	case "ready":
+	case "ready", "failed":
 		return nil
-	case "failed":
-		return controlMCPToolFailure("project %s: project.md generation failed, so its workspaces and project.md cannot change yet; start it again with swarm_retry_project_context, wait with swarm_get_project until ready, then retry", projectID)
 	default:
 		return controlMCPToolFailure("project %s: project.md is still being generated (%s), so its workspaces and project.md cannot change yet; wait with swarm_get_project (wait_seconds) until context_generation.status is ready, then retry", projectID, status)
 	}
@@ -2379,9 +2377,6 @@ func controlMCPRetryProjectContext(c *controlMCPCall, args map[string]any) (any,
 	project, err := c.project(projectID)
 	if err != nil {
 		return nil, err
-	}
-	if status := controlMCPContextStatus(project); status == "ready" {
-		return nil, controlMCPToolFailure("project %s: project.md is already ready; edit it with swarm_update_project_context", projectID)
 	}
 	attempt, _ := controlMCPMap(project["context_generation"])["attempt"].(float64)
 	response, err := c.dispatch(http.MethodPost, "/v3/projects/"+projectID+"/context:retry", nil, map[string]any{"expected_attempt": int(attempt)})

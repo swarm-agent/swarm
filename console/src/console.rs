@@ -179,6 +179,7 @@ pub struct Console {
     /// index), the project.md field, and a project to select once listed.
     project_rename: Option<usize>,
     context_edit: Option<usize>,
+    folder_remove: Option<(String, String)>,
     context_input: Option<Entity<TextInput>>,
     pending_project: Option<String>,
     /// Sessions picked in the sidebar for one action, by session id.
@@ -374,6 +375,7 @@ impl Console {
             projects_tab: None,
             project_rename: None,
             context_edit: None,
+            folder_remove: None,
             context_input: None,
             pending_project: None,
             picked: std::collections::HashSet::new(),

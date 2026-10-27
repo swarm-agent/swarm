@@ -74,7 +74,7 @@ pub(super) fn placeholder_machine(target: &Target) -> Machine {
 }
 
 pub(super) fn placeholder_project() -> Project {
-    Project { name: "connecting…".into(), machines: vec![0], id: "".into(), workspaces: vec![], roles: vec![], context: "".into(), theme_id: "".into() }
+    Project { name: "connecting…".into(), machines: vec![0], id: "".into(), workspaces: vec![], roles: vec![], context: "".into(), context_generation: Default::default(), theme_id: "".into() }
 }
 
 impl Console {

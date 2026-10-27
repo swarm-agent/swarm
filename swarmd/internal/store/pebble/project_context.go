@@ -57,11 +57,11 @@ func (s *SessionStore) ClaimProjectContext(account, id string, expected int, ret
 	return s.UpdateProject(account, id, func(p *ProjectRecord) error {
 		g := p.ContextGeneration
 		now := time.Now().UnixMilli()
-		if g == nil || g.Attempt != expected || g.Status == "ready" || (g.Status == "running" && g.LeaseUntil > now) || (g.Status == "failed" && !retry) {
+		if g == nil || g.Attempt != expected || (g.Status == "ready" && !retry) || ((g.Status == "running" || g.Status == "generating") && g.LeaseUntil > now) || (g.Status == "failed" && !retry) {
 			return ErrProjectContextStale
 		}
 		g.Attempt++
-		g.Status, g.Error = "running", ""
+		g.Status, g.Error = "generating", ""
 		g.LeaseUntil = now + (5 * time.Minute).Milliseconds()
 		return nil
 	})
@@ -70,7 +70,7 @@ func (s *SessionStore) ClaimProjectContext(account, id string, expected int, ret
 func (s *SessionStore) FinishProjectContext(account, id string, attempt int, content, failure, alert string) (*ProjectRecord, error) {
 	return s.UpdateProject(account, id, func(p *ProjectRecord) error {
 		g := p.ContextGeneration
-		if g == nil || g.Attempt != attempt || g.Status != "running" {
+		if g == nil || g.Attempt != attempt || (g.Status != "running" && g.Status != "generating") {
 			return ErrProjectContextStale
 		}
 		g.LeaseUntil, g.RouterAlert = 0, alert

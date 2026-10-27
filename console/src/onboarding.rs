@@ -712,6 +712,11 @@ impl Onboarding {
     }
 
     fn project(&mut self, cx: &mut Context<Self>) {
+        if let Some(existing) = &self.existing {
+            self.folders = existing.workspaces.iter().map(|w| (text(w, "path"), true)).collect();
+            self.go(Stage::Project { suggestions_loaded: true }, cx);
+            return;
+        }
         self.go(Stage::Project { suggestions_loaded: false }, cx);
         let target = self.target.clone();
         self.run(
@@ -879,7 +884,13 @@ impl Onboarding {
                 Ok(Created::Project(v, notes)) => {
                     let project = v.get("project").cloned().unwrap_or(Value::Null);
                     this.project_id = Some(text(&project, "id"));
-                    this.setting_up(text(&project, "name"), cx);
+                    if this.existing.is_some() {
+                        // Return to the Projects page, whose durable live subscription
+                        // shows generation status; do not present the old document.
+                        cx.emit(OnboardingEvent::Finished);
+                    } else {
+                        this.setting_up(text(&project, "name"), cx);
+                    }
                     if !notes.is_empty() {
                         this.note = Some(notes.join(" "));
                     }
@@ -1006,7 +1017,7 @@ impl Onboarding {
                             this.fail(format!("Swarm could not write project.md: {why}"), cx);
                             false
                         }
-                        "running" => {
+                        "running" | "generating" => {
                             *phase = 2;
                             cx.notify();
                             true

@@ -196,3 +196,7 @@ a separate profile and the extension loaded, for trying it out.
   usage every 16, plan limits about once a minute) and reads the
   conversations of open and running sessions;
   `src/swarm/map.rs` turns the answers into what the console shows.
+
+### Project folders and project.md
+
+The Projects page lists folder paths and roles, supports confirmed removal and adding folders to the selected project, and renders editable project.md as Markdown. Folder changes refresh project.md automatically. Generation status and failures follow `project.updated`; ready documents can be refreshed and failed attempts retried. Linked-machine windows refuse folder changes; change folders on that machine instead.

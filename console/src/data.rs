@@ -146,8 +146,31 @@ pub struct Project {
     pub roles: Vec<Text>,
     /// project.md: the context Swarm wrote (or the person edited).
     pub context: Text,
+    pub context_generation: ContextGeneration,
     /// The project's theme in Swarm (empty: the account's active theme).
     pub theme_id: Text,
+}
+
+#[derive(Clone, Default)]
+pub struct ContextGeneration {
+    pub status: Text,
+    pub attempt: u64,
+    pub error: Text,
+}
+
+impl ContextGeneration {
+    pub fn updating(&self) -> bool {
+        matches!(self.status.as_ref(), "pending" | "running" | "generating")
+    }
+
+    pub fn label(&self) -> String {
+        if self.updating() { return "Swarm is updating project.md…".into(); }
+        match self.status.as_ref() {
+            "failed" => format!("Could not update project.md: {}", self.error),
+            "ready" => "project.md is ready.".into(),
+            _ => "Swarm has not written project.md yet.".into(),
+        }
+    }
 }
 
 /// Where a session lives in Swarm: the task that started it and its session.
@@ -357,9 +380,9 @@ pub fn machines() -> Vec<Machine> {
 
 pub fn projects() -> Vec<Project> {
     vec![
-        Project { name: "swarm-go".into(), machines: vec![0, 1], id: "".into(), workspaces: vec![], roles: vec![], context: "".into(), theme_id: "".into() },
-        Project { name: "site".into(), machines: vec![1, 2], id: "".into(), workspaces: vec![], roles: vec![], context: "".into(), theme_id: "".into() },
-        Project { name: "console".into(), machines: vec![2], id: "".into(), workspaces: vec![], roles: vec![], context: "".into(), theme_id: "".into() },
+        Project { name: "swarm-go".into(), machines: vec![0, 1], id: "".into(), workspaces: vec![], roles: vec![], context: "".into(), context_generation: ContextGeneration::default(), theme_id: "".into() },
+        Project { name: "site".into(), machines: vec![1, 2], id: "".into(), workspaces: vec![], roles: vec![], context: "".into(), context_generation: ContextGeneration::default(), theme_id: "".into() },
+        Project { name: "console".into(), machines: vec![2], id: "".into(), workspaces: vec![], roles: vec![], context: "".into(), context_generation: ContextGeneration::default(), theme_id: "".into() },
     ]
 }
 

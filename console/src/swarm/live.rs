@@ -140,6 +140,7 @@ pub enum Command {
     Reveal { session_id: String },
     /// Change a project's record (name, project.md): PATCH /v3/projects/{id}.
     PatchProject { project_id: String, body: Value },
+    RefreshProjectContext { project_id: String, expected_attempt: u64 },
     Integrate { project_id: String, task_id: String, recover: bool },
     /// Accept a reviewed task that has nothing to merge (a report) as done.
     Complete { project_id: String, task_id: String },
@@ -464,7 +465,8 @@ fn perform(client: &Client, command: Command) -> (Option<u64>, &'static str, Res
         Command::Pin { session_id, pinned } => (None, if pinned { "pin" } else { "unpin" }, client.post(&format!("/v3/sessions/{session_id}/metadata"), json!({"metadata": {"pinned": pinned}, "client_request_id": request_id("pin")})).map_err(err)),
         Command::Unarchive { session_id, project_id } => (None, "unarchive", unarchive(client, &session_id, &project_id)),
         Command::Reveal { .. } => (None, "reveal", Ok(json!({}))),
-        Command::PatchProject { project_id, body } => (None, "project", client.patch(&format!("/v3/projects/{project_id}"), body).map_err(err)),
+        Command::RefreshProjectContext { project_id, expected_attempt } => (None, "project", client.post(&format!("/v3/projects/{project_id}/context:retry"), json!({"expected_attempt": expected_attempt})).map_err(err)),
+		Command::PatchProject { project_id, body } => (None, "project", client.patch(&format!("/v3/projects/{project_id}"), body).map_err(err)),
         Command::SetModel { session_id, choice } => (None, "model", models::set_session_model(client, &session_id, &choice, &request_id("model")).map_err(err)),
         Command::SetDefault { role, model } => (None, "default", models::set_default(client, &role, &model).map_err(err)),
         Command::SaveFavorite { name, model } => (None, "favorite", models::save_favorite(client, &name, &model).map_err(err)),
