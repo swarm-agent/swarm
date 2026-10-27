@@ -93,6 +93,7 @@ secrets.env
 !/docs/managed-local-systemd-environments.md
 !/docs/permissions-defaults.md
 !/docs/frontends.md
+!/docs/access-model.md
 !/docs/task-program-probes/
 !/docs/task-program-probes/**
 /REPO_SHIP_READINESS_CHECKLIST.md
