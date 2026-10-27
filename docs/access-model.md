@@ -54,7 +54,7 @@ the home Swarm follows the same values. Each rule names what it protects.
 |---|---|---|---|
 | device | Files and terminal | client tools that read and write files and run commands on that device, as the person, outside Swarm's sandbox (`machine_read`, `machine_write`, `machine_run`) | `off`, `ask`, `allowed` |
 | device | Browser | client tools that drive the device's browser (`manage_browser`) | `off`, `ask`, `allowed` |
-| home | Start tasks | delegating to the home's own agents; media tasks included | `approve` (task waits for approval), `auto` |
+| home | Start tasks | delegating to the home's own agents; media tasks included | `approve` (every new task waits for approval), `auto` (starts at once unless the agent asks for a card that waits) |
 | linked | Hand it work, per machine | management tools with `machine`: projects, tasks, workflows and workers; workflow proposals and enable/disable, worker pause/resume/archive/delete | `off`, `ask`, `allowed` |
 
 Fixed, not rules: a linked machine is never asked to integrate, deploy or

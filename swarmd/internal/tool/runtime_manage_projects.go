@@ -1019,14 +1019,24 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		diffSummary := strings.TrimSpace(asString(args["diff_summary"]))
 		autoApprove, _ := args["auto_approve"].(bool)
 		// Account Start tasks is authoritative, regardless of tool arguments.
-		access, err := r.sessions.GetAccountPermissions(p.AccountScopeID)
-		if err != nil {
-			return "", err
+		// A runtime without the session store (some agent roles) has no
+		// stored rules and follows the default.
+		access := pebblestore.DefaultAccountPermissions()
+		if r.sessions != nil {
+			stored, err := r.sessions.GetAccountPermissions(p.AccountScopeID)
+			if err != nil {
+				return "", err
+			}
+			access = stored
 		}
-		if ManageProjectsDelegation(args) || ManageProjectsMediaTask(args) {
-			autoApprove = access.Tasks == "auto"
-		} else if access.Tasks != "auto" {
+		// approve: every new task waits for the person. auto: delegated and
+		// media work starts at once unless the call asks for a card that waits
+		// (auto_approve false); other tasks follow the call.
+		_, given := args["auto_approve"]
+		if access.Tasks != "auto" {
 			autoApprove = false
+		} else if (ManageProjectsDelegation(args) || ManageProjectsMediaTask(args)) && !given {
+			autoApprove = true
 		}
 
 		lifecycle := r.getProjectTaskLifecycleService()
@@ -1034,7 +1044,7 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 			return "", errors.New("project task lifecycle service is not configured")
 		}
 
-		if autoApprove {
+		if autoApprove && r.sessions != nil {
 			if err := r.sessions.RecordPermissionUse(p.AccountScopeID, "tasks", "", time.Now().UnixMilli()); err != nil {
 				return "", err
 			}
