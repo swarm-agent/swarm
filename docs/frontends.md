@@ -218,3 +218,21 @@ The home Orchestrator uses `get_task` to read its status and report.
 The store checks tasks and atomically removes the project and all its task records under the same lock used for task writes, then publishes `project.updated` with action `project_deleted`. New task writes to the deleted project fail. The API then archives its sessions through the normal session archive operation; archived conversations remain readable. No project folders, files, worktrees or repositories are removed. Clients refresh Swarm's project list and open its first remaining project.
 
 Session activity is checked before the store deletion, not in the same transaction. Session archiving is a subsequent operation; an archive failure is reported explicitly even though the project has already been deleted. This endpoint is not an atomic project-and-session deletion transaction.
+
+### Account permissions and device execution
+
+Use GET/PATCH `/v3/permissions` for account rules and live state; refresh on
+`permissions.updated`. Writes require `expected_revision` and `client_request_id`;
+a 409 returns the current record. Session access POST and session-create `access`
+are retired (400 pointing to `/v3/permissions`); session access GET is an account
+permissions alias. MCP exposes `swarm_get_permissions` and
+`swarm_set_permissions`; the latter accepts home and linked rules only and needs
+`swarm:approve`.
+
+Pending device calls include `target_device` (client session id) and `execution`.
+Show `awaiting_approval` calls as normal approval cards. Allow without a result
+moves them to `ready` while keeping them pending. Execute only `ready` calls for
+the authenticated device's own client session, then resolve with
+`approved_arguments.result`. Premature results and results from another device
+are refused. Do not derive execution permission from legacy session metadata.
+The Console migration to this protocol is still pending.

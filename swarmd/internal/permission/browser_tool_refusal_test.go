@@ -14,7 +14,7 @@ func TestBrowserToolRefusalWithoutLease(t *testing.T) {
 	if reason := s.browserToolRefusal("s1", pebblestore.BrowserToolManage, 1); !strings.Contains(reason, "request_browser_access") {
 		t.Fatalf("manage_browser without a lease: %q", reason)
 	}
-	if reason := s.browserToolRefusal("s1", pebblestore.BrowserToolRequestAccess, 1); reason != "" {
+	if reason := s.browserToolRefusal("s1", pebblestore.BrowserToolRequestAccess, 1); !strings.Contains(reason, "Permissions page") {
 		t.Fatalf("the request without a lease was refused: %q", reason)
 	}
 }

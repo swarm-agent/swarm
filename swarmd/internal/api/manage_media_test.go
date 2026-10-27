@@ -362,7 +362,12 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 		t.Fatalf("ask retry %v %v", askResult, err)
 	}
 	// Purpose: below the batch-confirmation threshold, approval intent must
-	// distinguish the session's ask setting from automatic retry approval.
+	// distinguish the account's approve setting from automatic retry approval.
+	accountRules := pebblestore.DefaultAccountPermissions()
+	accountRules.Tasks = "auto"
+	if _, err := store.Underlying().SetAccountPermissions(p.AccountScopeID, 0, accountRules); err != nil {
+		t.Fatal(err)
+	}
 	autoResult, err := server.ManageMedia(context.Background(), scope, map[string]any{"action": "retry", "job_id": result.(map[string]any)["job_id"], "count": float64(1)})
 	if err != nil {
 		t.Fatal(err)
@@ -819,11 +824,11 @@ func TestManageMediaGuidance(t *testing.T) {
 	}
 }
 
-// Purpose: ManageMedia must honor the session task-approval setting at the
+// Purpose: ManageMedia must honor the account task-approval setting at the
 // CreateProjectTask boundary. A real store and generation service with a bounded
-// provider fixture prove ask cannot spend, while unset/free still execute.
+// provider fixture prove approve/default cannot spend, while auto executes.
 func TestManageMediaTaskApproval(t *testing.T) {
-	for _, setting := range []string{"ask", "", "free"} {
+	for _, setting := range []string{"approve", "", "auto"} {
 		t.Run("tasks_"+setting, func(t *testing.T) {
 			db, err := pebblestore.Open(t.TempDir())
 			if err != nil {
@@ -834,7 +839,11 @@ func TestManageMediaTaskApproval(t *testing.T) {
 			p := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "user"}
 			metadata := map[string]any{"project_id": "project"}
 			if setting != "" {
-				metadata[pebblestore.SessionAccessMetadataKey] = map[string]any{"tasks": setting}
+				rules := pebblestore.DefaultAccountPermissions()
+				rules.Tasks = setting
+				if _, err := db.SetAccountPermissions(p.AccountScopeID, 0, rules); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if err := store.CreateSessionForAccount(pebblestore.SessionSnapshot{ID: "session", Metadata: metadata}, p.UserID, p.AccountScopeID); err != nil {
 				t.Fatal(err)
@@ -870,7 +879,7 @@ func TestManageMediaTaskApproval(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if setting == "ask" {
+			if setting != "auto" {
 				task, found, err := store.GetProjectTask(p.AccountScopeID, project, id)
 				if err != nil || !found || task.Status != "pending_approval" || view["status"] != "pending_approval" || view["message"] != "The task waits for approval." {
 					t.Fatalf("pending task %+v result %+v error %v", task, view, err)

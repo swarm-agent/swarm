@@ -13,7 +13,9 @@ func (l sessionAccessLookup) GetSession(sessionID string) (pebblestore.SessionSn
 	return session, found, nil
 }
 
-func TestSessionTasksFreeApprovesOnlyTasksInThatSession(t *testing.T) {
+// Purpose: legacy tasks metadata must never grant authority. The service gate
+// must retain normal approval requirements for both code and media delegation.
+func TestLegacySessionTasksCannotApprove(t *testing.T) {
 	service, _ := openSubagentReservationTestServices(t)
 	service.SetSessionResolver(sessionAccessLookup{
 		"free": {ID: "free", Metadata: map[string]any{pebblestore.SessionAccessMetadataKey: map[string]any{"tasks": "free"}}},
@@ -29,7 +31,7 @@ func TestSessionTasksFreeApprovesOnlyTasksInThatSession(t *testing.T) {
 		return result
 	}
 	delegate := `{"action":"propose_task","project_id":"p","agent":"coder","title":"Fix it","auto_approve":true}`
-	if got := authorize("free", delegate); got.Decision != AuthorizationApprove || got.Source != "session_access" {
+	if got := authorize("free", delegate); got.Decision == AuthorizationApprove {
 		t.Fatalf("free session delegation = %+v, want approved by session_access", got)
 	}
 	for _, sessionID := range []string{"ask", "none"} {
@@ -39,7 +41,7 @@ func TestSessionTasksFreeApprovesOnlyTasksInThatSession(t *testing.T) {
 	}
 	// A media task is delegation too in a free session, and nowhere else.
 	media := `{"action":"propose_task","project_id":"p","agent":"image","title":"Logo","auto_approve":true}`
-	if got := authorize("free", media); got.Source != "session_access" {
+	if got := authorize("free", media); got.Decision == AuthorizationApprove {
 		t.Fatalf("free session did not start the media task: %+v", got)
 	}
 	for _, sessionID := range []string{"ask", "none"} {
@@ -53,7 +55,8 @@ func TestSessionTasksFreeApprovesOnlyTasksInThatSession(t *testing.T) {
 	}
 }
 
-func TestMachineToolsFollowTheSessionAccess(t *testing.T) {
+// Purpose: legacy device grants cannot authorize a disconnected device or grant request.
+func TestLegacyMachineAccessCannotApprove(t *testing.T) {
 	service, _ := openSubagentReservationTestServices(t)
 	access := func(machine string) pebblestore.SessionSnapshot {
 		return pebblestore.SessionSnapshot{Metadata: map[string]any{pebblestore.SessionAccessMetadataKey: map[string]any{"machine": machine}}}
@@ -66,10 +69,10 @@ func TestMachineToolsFollowTheSessionAccess(t *testing.T) {
 		{"never", pebblestore.MachineToolRun, true},
 		{"none", pebblestore.MachineToolRun, true},
 		{"none", pebblestore.MachineToolWrite, true},
-		{"none", pebblestore.MachineToolRequestAccess, false},
+		{"none", pebblestore.MachineToolRequestAccess, true},
 		{"ask", pebblestore.MachineToolRequestAccess, true},
-		{"ask", pebblestore.MachineToolRun, false},
-		{"full", pebblestore.MachineToolRead, false},
+		{"ask", pebblestore.MachineToolRun, true},
+		{"full", pebblestore.MachineToolRead, true},
 		{"full", pebblestore.MachineToolRequestAccess, true},
 	}
 	for _, c := range cases {
@@ -86,9 +89,8 @@ func TestMachineToolsFollowTheSessionAccess(t *testing.T) {
 	}
 }
 
-// Purpose: AuthorizeToolCall must enforce per-machine session choices before
-// bypass or tasks=free. This service-layer test proves deny has no pending
-// record, ask persists the exact call, and full approves without a card.
+// Purpose: AuthorizeToolCall must ignore legacy fleet grants even with bypass.
+// Missing account entries default to ask and fixed forbidden operations deny.
 func TestFleetSessionAccessGate(t *testing.T) {
 	service, _ := openSubagentReservationTestServices(t)
 	lookup := sessionAccessLookup{}
@@ -99,7 +101,7 @@ func TestFleetSessionAccessGate(t *testing.T) {
 	for _, tc := range []struct {
 		session, action string
 		want            AuthorizationDecision
-	}{{"none", "propose_task", AuthorizationDeny}, {"ask", "propose_task", AuthorizationPending}, {"full", "propose_task", AuthorizationApprove}, {"full", "integrate_task", AuthorizationDeny}, {"full", "report_task", AuthorizationDeny}, {"ask", "report_task", AuthorizationDeny}} {
+	}{{"none", "propose_task", AuthorizationPending}, {"ask", "propose_task", AuthorizationPending}, {"full", "propose_task", AuthorizationPending}, {"full", "integrate_task", AuthorizationDeny}, {"full", "report_task", AuthorizationDeny}, {"ask", "report_task", AuthorizationDeny}} {
 		args := `{"machine":"box","action":"` + tc.action + `","title":"Fix it","agent":"coder"}`
 		got, err := service.AuthorizeToolCall(AuthorizationInput{SessionID: tc.session, AccountScopeID: "acct", RunID: "run", CallID: tc.session + tc.action, ToolName: "manage_projects", ToolArguments: args, Mode: "auto+bypass_permissions"})
 		if err != nil || got.Decision != tc.want {

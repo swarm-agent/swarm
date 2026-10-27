@@ -2,8 +2,11 @@
 
 Status: agreed design; device identity plumbing is built (`ClientSessionRecord.device`,
 `swarmctl client connect --device`, and authenticated actor client-session id).
-The account record and GET/PATCH `/v3/permissions` are built. Enforcement and
- the Permissions page are not built yet. Device `connected` uses an authenticated
+The account record, GET/PATCH `/v3/permissions`, account-rule enforcement,
+per-turn instructions and MCP permission tools are built. Legacy session access
+writes are refused; legacy reads return account rules. The Console Permissions
+page and ready-call execution support are not built yet. Explicit task approval
+usage tracking remains incomplete; usage and approval mutations are not atomic. Device `connected` uses an authenticated
  request within two minutes (not realtime socket presence). `browser_attached`
  is omitted: Swarm does not know extension attachment. Device `home` compares
  the supplied device name with the daemon hostname; it is a display hint, not
