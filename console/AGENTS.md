@@ -22,9 +22,10 @@ Swarm's own clients connect. Never through MCP, never with an AI key.
   same session). Check `swarmd/internal/api/desktop_local_auth.go` and
   `desktop_boundary.go` before building; do not invent one.
 - Forbidden, always: `/mcp`, `swk_` keys (`connect-app`, `connect-ai`,
-  `/v3/auth/tokens`), the AI gateway on `:7783`, `/v3/activity` and
-  `/v3/activity/stream`, the key files under `~/.config/swarm/apps`,
-  SSH tunnels to any of those, and polling.
+  `/v3/auth/tokens`), the AI gateway on `:7783`, a machine's own
+  `/v3/activity` and `/v3/activity/stream` (the console mode uses the home's
+  merged `/v3/fleet/activity/stream` instead), the key files under
+  `~/.config/swarm/apps`, SSH tunnels to any of those, and polling.
 
 ## How the app reads and acts
 

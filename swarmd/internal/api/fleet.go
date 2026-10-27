@@ -31,6 +31,10 @@ import (
 //	GET    /v3/fleet/machines/{name}         check the link (the machine answers)
 //	DELETE /v3/fleet/machines/{name}         unlink (the machine is told)
 //	*      /v3/fleet/machines/{name}/api/... the machine's API, as its home
+//
+// Read like /v3/activity (sessions:read; fleet_activity.go):
+//
+//	GET    /v3/fleet/activity[/stream]       the fleet's merged activity
 
 const fleetPath = "/v3/fleet"
 
@@ -53,6 +57,9 @@ func (s *Server) SetFleet(store *pebblestore.FleetStore, tokens fleetTokenStore)
 func (s *Server) registerFleetRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(fleetPath, s.ownerOnlyScope(s.handleFleet))
 	mux.HandleFunc(fleetPath+"/", s.ownerOnlyScope(s.handleFleet))
+	// The fleet's activity reads like /v3/activity (sessions:read), not as an owner route.
+	mux.HandleFunc(fleetActivityPagePath, s.handleFleetActivity)
+	mux.HandleFunc(fleetActivityStreamPath, s.handleFleetActivity)
 }
 
 // swarmName is this Swarm's own name, the one the person gave it at setup

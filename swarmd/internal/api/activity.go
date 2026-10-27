@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -14,6 +15,8 @@ import (
 )
 
 const activityStreamLimit = 32
+const activityPagePath = "/v3/activity"
+const activityStreamPath = "/v3/activity/stream"
 const activityHeartbeat = 15 * time.Second
 
 type activityEvent struct {
@@ -196,7 +199,7 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	project, worker := r.URL.Query().Get("project"), r.URL.Query().Get("worker")
-	if r.URL.Path == "/v3/activity" {
+	if r.URL.Path == activityPagePath {
 		events, next, gap, err := s.activityPage(principal, cursor, project, worker)
 		if err != nil {
 			http.Error(w, "activity replay failed", http.StatusInternalServerError)
@@ -229,9 +232,6 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 		}
 		return controller.Flush() == nil
 	}
-	gap := func(end uint64) {
-		send("gap", map[string]any{"from": cursor + 1, "to": end, "cursor": strconv.FormatUint(cursor, 10)})
-	}
 	// Flush headers immediately so a client can establish its subscription before
 	// committing work. The deadline is refreshed before every subsequent write.
 	_ = controller.SetWriteDeadline(time.Now().Add(5 * time.Second))
@@ -243,24 +243,47 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	ticker := time.NewTicker(activityHeartbeat)
 	defer ticker.Stop()
+	heartbeat := func() bool {
+		_ = controller.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		if _, err := fmt.Fprint(w, ": heartbeat\n\n"); err != nil {
+			return false
+		}
+		return controller.Flush() == nil
+	}
+	if gap := s.followActivity(r.Context(), sub, principal, cursor, project, worker, send, ticker.C, heartbeat); gap != nil {
+		send("gap", map[string]any{"from": gap.From, "to": gap.To, "cursor": strconv.FormatUint(gap.Cursor, 10)})
+	}
+}
+
+// activityGap is where a followed feed lost records: from..to were not
+// delivered, and Cursor is where a reader resumes.
+type activityGap struct {
+	From, To, Cursor uint64
+}
+
+// followActivity replays the principal's activity after cursor and follows it
+// live through sub, calling emit for each activity and cursor frame. It returns
+// when ctx ends or emit fails (nil), or with the gap that ends the feed: the
+// subscription overflowed (resume at the last delivered cursor) or the cursor
+// is expired or ahead (resume at the head). beat runs on each heartbeat tick;
+// a nil heartbeat channel never ticks.
+func (s *Server) followActivity(ctx context.Context, sub *v3RealtimeOutboxSubscriber, principal identity.Principal, cursor uint64, project, worker string, emit func(kind string, value any) bool, heartbeat <-chan time.Time, beat func() bool) *activityGap {
 	for {
 		select {
 		case slow := <-sub.slow:
-			gap(slow.EndpointSeq)
-			return
+			return &activityGap{From: cursor + 1, To: slow.EndpointSeq, Cursor: cursor}
 		default:
 		}
 		events, next, expired, err := s.activityPage(principal, cursor, project, worker)
 		if err != nil {
-			return
+			return nil
 		}
 		if expired {
-			send("gap", map[string]any{"from": cursor + 1, "to": next, "cursor": strconv.FormatUint(next, 10)})
-			return
+			return &activityGap{From: cursor + 1, To: next, Cursor: next}
 		}
 		for _, event := range events {
-			if !send("activity", event) {
-				return
+			if !emit("activity", event) {
+				return nil
 			}
 		}
 		advanced := next != cursor
@@ -275,25 +298,20 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if advanced {
-			if !send("cursor", map[string]string{"cursor": strconv.FormatUint(cursor, 10)}) {
-				return
+			if !emit("cursor", map[string]string{"cursor": strconv.FormatUint(cursor, 10)}) {
+				return nil
 			}
 			continue
 		}
 		select {
-		case <-r.Context().Done():
-			return
+		case <-ctx.Done():
+			return nil
 		case slow := <-sub.slow:
-			gap(slow.EndpointSeq)
-			return
+			return &activityGap{From: cursor + 1, To: slow.EndpointSeq, Cursor: cursor}
 		case <-sub.send: // A wakeup only: always replay committed rows in durable sequence order.
-		case <-ticker.C:
-			_ = controller.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			if _, err := fmt.Fprint(w, ": heartbeat\n\n"); err != nil {
-				return
-			}
-			if controller.Flush() != nil {
-				return
+		case <-heartbeat:
+			if !beat() {
+				return nil
 			}
 		}
 	}

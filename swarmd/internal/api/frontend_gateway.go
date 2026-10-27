@@ -17,7 +17,8 @@ import (
 //     has an owner yet, before it holds any key. It carries no secrets,
 //     identities, paths or counts.
 //   - AI keys (and app keys, which are AI keys with their own file) may read
-//     the activity feed, GET /v3/activity and /v3/activity/stream, besides
+//     the activity feed, GET /v3/activity and /v3/activity/stream, and the
+//     fleet's merged feed, GET /v3/fleet/activity and its /stream, besides
 //     Swarm Control (/mcp). The feed is metadata only (activity.go) and still
 //     requires sessions:read, so a read key qualifies and nothing new is
 //     reachable from it; it lets a frontend stay current without polling tools.
@@ -25,7 +26,7 @@ const helloPath = "/v3/hello"
 
 // helloFeatures names what this build offers a frontend, so a client can check
 // for a capability instead of comparing versions.
-var helloFeatures = []string{"hello", "control_mcp", "activity_feed", "app_keys"}
+var helloFeatures = []string{"hello", "control_mcp", "activity_feed", "fleet_activity_feed", "app_keys"}
 
 func isHelloRequest(r *http.Request) bool {
 	return r.URL.Path == helloPath && (r.Method == http.MethodGet || r.Method == http.MethodHead)
@@ -46,7 +47,7 @@ func (s *Server) serveHello(w http.ResponseWriter, r *http.Request) {
 		"commit":   strings.TrimSpace(buildinfo.Commit),
 		"owner":    owner,
 		"features": helloFeatures,
-		"control":  map[string]any{"mcp": controlMCPPath, "activity": "/v3/activity", "activity_stream": "/v3/activity/stream"},
+		"control":  map[string]any{"mcp": controlMCPPath, "activity": "/v3/activity", "activity_stream": "/v3/activity/stream", "fleet_activity": fleetActivityPagePath, "fleet_activity_stream": fleetActivityStreamPath},
 		"auth":     map[string]any{"scheme": "bearer", "key_prefix": "swk_"},
 	})
 }
@@ -56,5 +57,9 @@ func aiKeyFeedRoute(r *http.Request) bool {
 	if r.Method != http.MethodGet {
 		return false
 	}
-	return r.URL.Path == "/v3/activity" || r.URL.Path == "/v3/activity/stream"
+	switch r.URL.Path {
+	case activityPagePath, activityStreamPath, fleetActivityPagePath, fleetActivityStreamPath:
+		return true
+	}
+	return false
 }

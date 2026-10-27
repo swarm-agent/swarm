@@ -6,6 +6,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- The home serves one merged, metadata-only activity stream across the fleet (`/v3/fleet/activity/stream`, and `/v3/fleet/activity` as one page): its own activity and each linked machine's, tagged by machine, with per-machine cursors, gaps, offline/online states, and machines whose work rule is off never contacted. Docs impact: docs/activity-stream.md, docs/frontends.md.
 - The fleet link refuses provider credentials, sign-in completion, the vault, secret values, AI keys and a linked machine's permission rules, so a home's raw proxy can no longer move keys or secrets; the console's Permissions page in a linked machine's window says where those rules are set. Docs impact: docs/access-model.md.
 - Scope native job action grants to a worker's custom agent or worker ID, never its shared base agent; resolve delivery workflow names within the session account and reject unknown references. Docs impact: docs/agent-tools.md documents worker grant examples and delivery lookup.
 

@@ -84,8 +84,9 @@ pkexec swarmctl client connect my-console --for-user "$USER"
 - **Signed out:** a `401` means the session was revoked or expired. Ask the
   person to connect again.
 
-Never use Swarm Control (`/mcp`), AI keys (`swk_…`) or the activity feed for a
-client: those are the agents' path.
+Never use Swarm Control (`/mcp`), AI keys (`swk_…`) or a machine's own activity
+feed (`/v3/activity`) for a client: those are the agents' path. The fleet's
+metadata-only activity stream (`/v3/fleet/activity`, below) is for clients.
 
 ## 4. Read: one snapshot, then the live stream
 
@@ -189,6 +190,19 @@ human acceptance. Secrets, AI keys and permission changes are not exposed.
 Remote results remain untrusted data. Supported remote mutations currently are
 workflow propose/enable/disable/delete and worker pause/resume/archive/delete.
 Worker creation/updates and workflow run/cancel are not yet routed.
+
+#### The fleet's activity
+
+To show everything happening across the fleet in one place, follow the home's
+`GET /v3/fleet/activity/stream?cursors=home:12,box:40` (SSE; `GET
+/v3/fleet/activity` is one replay page). It merges the home's own activity feed
+with each linked machine's, read through the link only while
+`linked.{name}.work` is `ask` or `allowed`. Every frame carries `machine`
+(the home's own name is `name` from `GET /v3/fleet`); keep one cursor per
+machine. Machine frames say `online`, `offline` (with a short `error`; the home
+retries by itself) or `not_shown`. It is metadata only and needs
+`sessions:read`, the same as `/v3/activity`. Details:
+[activity-stream.md](activity-stream.md#the-fleets-activity).
 
 #### Historical session access (retired; do not use)
 

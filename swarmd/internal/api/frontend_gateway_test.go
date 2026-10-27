@@ -80,6 +80,11 @@ func TestFrontendGatewayDiscoveryAndFeed(t *testing.T) {
 		if code, out := f.do(t, key, http.MethodGet, "/v3/activity?cursor=0", ""); code != http.StatusOK {
 			t.Fatalf("%s AI key reading the feed: %d %v", level, code, out)
 		}
+		// The fleet's merged feed is the same kind of read: the gateway lets it
+		// through to its handler (this fixture has no fleet name, hence 409).
+		if code, out := f.do(t, key, http.MethodGet, fleetActivityPagePath, ""); code == http.StatusForbidden || code == http.StatusUnauthorized {
+			t.Fatalf("%s AI key reading the fleet feed: %d %v", level, code, out)
+		}
 		for _, tc := range []struct{ method, path, body string }{
 			{http.MethodPost, "/v3/activity", `{}`},
 			{http.MethodGet, "/v3/sessions", ""},
