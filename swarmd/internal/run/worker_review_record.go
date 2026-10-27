@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/providerlimit"
 	store "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/worktree"
 )
@@ -73,6 +74,12 @@ func withBorrowedReviewHead(review store.JobReview, snapshot store.SessionSnapsh
 
 func (s *WorkerExecutionService) recordReviewResult(r store.WorkerRunRecord) error {
 	if r.Role != store.WorkerRoleReviewer {
+		return nil
+	}
+	if r.Status == "failed" && providerlimit.Is(r.Error) {
+		// The provider's usage, rate or session limit stopped the reviewer:
+		// it gave no verdict, so none is recorded (never a block); a
+		// workflow step that started it waits for the reset and reruns.
 		return nil
 	}
 	snapshot, found, err := s.host.runs.sessions.GetSession(r.SessionID)

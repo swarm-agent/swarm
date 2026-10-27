@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"swarm/packages/swarmd/internal/providerlimit"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -565,7 +566,7 @@ func nextAttemptWait(d Delivery, now int64) time.Duration {
 		if Terminal(step.State) {
 			continue
 		}
-		if step.State == StatePending && step.NextAttemptAt > now {
+		if (step.State == StatePending || step.State == StateWaiting) && step.NextAttemptAt > now {
 			return time.Duration(step.NextAttemptAt-now) * time.Millisecond
 		}
 		return 0
@@ -598,8 +599,8 @@ func (r *Runner) runDelivery(ctx context.Context, account, id string) {
 		if Terminal(record.State) {
 			continue
 		}
-		if record.State == StatePending && record.NextAttemptAt > r.now().UnixMilli() {
-			return // waits for its retry
+		if (record.State == StatePending || record.State == StateWaiting) && record.NextAttemptAt > r.now().UnixMilli() {
+			return // waits for its retry or the provider's limit to reset
 		}
 		stop, err := r.store.StopState()
 		if err != nil {
@@ -638,8 +639,8 @@ func (r *Runner) runDelivery(ctx context.Context, account, id string) {
 			return
 		}
 		record = &d.Steps[i]
-		if record.State == StatePending {
-			return // waits for its retry
+		if record.State == StatePending || (record.State == StateWaiting && record.NextAttemptAt > 0) {
+			return // waits for its retry or the provider's limit to reset
 		}
 		if !ok && d.BlockedReason != "" {
 			r.skipRest(&d, i, "not run: the delivery is blocked")
@@ -821,8 +822,21 @@ func (r *Runner) runStep(ctx context.Context, d *Delivery, i int, step Step) boo
 		r.signal(*d, "automation.step.succeeded", pebblestore.SignalSeverityInfo, fmt.Sprintf("Automation %s step %s succeeded", d.AutomationName, step.ID), step.ID, attrs, "")
 		return true
 	}
+	if failure.limitUntil > 0 {
+		// A provider limit is not a failure: the step waits for the reset
+		// and runs a new job then, using none of its retries.
+		record.State, record.Reason, record.Next, record.NextAttemptAt = StateWaiting, failure.reason, failure.next, failure.limitUntil
+		if err := r.store.SaveDelivery(*d); err != nil {
+			log.Printf("swarmd job automations: save delivery %s: %v", d.ID, err)
+		}
+		r.signal(*d, "automation.step.waiting", pebblestore.SignalSeverityInfo, fmt.Sprintf("Automation %s step %s %s", d.AutomationName, step.ID, failure.reason), step.ID,
+			map[string]string{"automation": d.AutomationName, "step": step.ID, "type": step.Type, "reason": failure.reason, "next": failure.next,
+				"provider_limit": "true", "retry_at": strconv.FormatInt(record.NextAttemptAt, 10), "attempt": strconv.Itoa(record.Attempts)},
+			strconv.Itoa(record.Attempts))
+		return false
+	}
 	record.State, record.Reason, record.Next = StateFailed, failure.reason, failure.next
-	retry := !failure.refused && record.Attempts <= d.Retries
+	retry := !failure.refused && record.Attempts-record.LimitWaits <= d.Retries
 	if failure.inspectionTransient {
 		// Three durable attempts, with the existing 15s/30s backoff. At
 		// 30s per sandbox assessment this is roughly two minutes total.
@@ -863,6 +877,42 @@ type stepFailure struct {
 	reason, next        string
 	refused             bool
 	inspectionTransient bool
+	// limitUntil (unix ms) is set when the agent's job ended on a provider's
+	// usage, rate or session limit: the step waits until then and reruns.
+	limitUntil int64
+}
+
+// maxProviderLimitWaits bounds how many times one agent step waits for a
+// provider's limit to reset before it fails.
+const maxProviderLimitWaits = 12
+
+// providerLimitWait classifies an agent job that ended on a provider's usage,
+// rate or session limit. It is never a failure or a reviewer's verdict: the
+// step waits for the reset the provider states (else a bounded backoff) and
+// then starts a new job. ok is false for any other ending.
+func (r *Runner) providerLimitWait(record *StepRecord, jobID string, outcome AgentOutcome) (stepFailure, bool) {
+	status := NormalizeStatus(outcome.Status)
+	if status == StatusSucceeded || status == StatusCancelled || !providerlimit.Is(outcome.Error) {
+		return stepFailure{}, false
+	}
+	detail := truncate(strings.TrimSpace(outcome.Error), 200)
+	record.Outcome = map[string]any{"limited_job_id": jobID, "status": outcome.Status, "provider_limit": detail}
+	if record.LimitWaits >= maxProviderLimitWaits {
+		return stepFailure{reason: truncate(fmt.Sprintf("the provider's limit was still in effect after %d waits for its reset: %s", record.LimitWaits, detail), 300),
+			next: "rerun once the provider's limit has reset", refused: true}, true
+	}
+	record.LimitWaits++
+	now := r.now()
+	until, stated := providerlimit.ResetAt(outcome.Error, now)
+	if !stated {
+		until = now.Add(providerlimit.Backoff(record.LimitWaits))
+	}
+	when := until.UTC().Format(time.RFC3339)
+	if !stated {
+		when += "; the provider stated no reset time"
+	}
+	return stepFailure{reason: truncate("waiting for the provider's limit to reset (until "+when+"): "+detail, 300),
+		next: "none: the step runs again after the reset", limitUntil: until.UnixMilli()}, true
 }
 
 // stepEnv is the environment a run step's script gets. SWARM_HEAD is the
@@ -986,8 +1036,13 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 		}
 	}
 	if jobID == "" {
+		key := agentIdempotencyKey(*d, step.ID)
+		if record.LimitWaits > 0 {
+			// The job before ended on a provider limit: a new job, once.
+			key += ".limit" + strconv.Itoa(record.LimitWaits)
+		}
 		req := AgentRequest{Account: d.Account, Folder: d.Folder, Worker: step.Worker, Brief: step.Brief, Result: d.Result, Head: d.Head,
-			IdempotencyKey: agentIdempotencyKey(*d, step.ID), Fixes: step.Fixes, Checkout: step.Checkout,
+			IdempotencyKey: key, Fixes: step.Fixes, Checkout: step.Checkout,
 			ReviewJob: latestWorkJob(*d, step.ID), Deliverables: d.CurrentDeliverables()}
 		if step.Produce && d.Spec != nil {
 			spec := *d.Spec
@@ -1013,6 +1068,11 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 			return stepFailure{}
 		}
 		return stepFailure{reason: truncate("waiting for job "+jobID+": "+err.Error(), 300), next: "rerun"}
+	}
+	// A job that ended on a provider limit recorded no review and moves no
+	// head: whatever verdict its review record holds is not a reviewer's.
+	if limited, ok := r.providerLimitWait(record, jobID, outcome); ok {
+		return limited
 	}
 	out := map[string]any{"job_id": jobID, "status": outcome.Status}
 	if res := outcome.Result; res != nil {

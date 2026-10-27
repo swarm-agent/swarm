@@ -44,7 +44,10 @@ const (
 	StateStopped   = "stopped"
 	// StateWaiting is a reopen step waiting, within its timeout_seconds, for
 	// its job's run or follow-up to settle before it sends; its reason says
-	// what it waits for. It is not final.
+	// what it waits for. It is also an agent step whose job ended on a
+	// provider's usage, rate or session limit, waiting until NextAttemptAt
+	// (the stated reset, else a bounded backoff) to run again. It is not
+	// final.
 	StateWaiting = "waiting"
 	// StateBlocked ends a delivery whose reopen step ran out of rounds or
 	// had an unreadable review to send.
@@ -133,20 +136,24 @@ type ReopenRecord struct {
 
 // StepRecord is one step of one delivery.
 type StepRecord struct {
-	Items         []ItemRecord   `json:"items"`
-	ID            string         `json:"id"`
-	Type          string         `json:"type"`
-	State         string         `json:"state"`
-	Attempts      int            `json:"attempts"`
-	StartedAt     int64          `json:"started_at,omitempty"`
-	FinishedAt    int64          `json:"finished_at,omitempty"`
-	NextAttemptAt int64          `json:"next_attempt_at,omitempty"`
-	ExitCode      *int           `json:"exit_code,omitempty"`
-	Output        string         `json:"output,omitempty"`
-	Reason        string         `json:"reason,omitempty"`
-	Next          string         `json:"next,omitempty"`
-	Outcome       map[string]any `json:"outcome,omitempty"`
-	LogTail       string         `json:"log_tail,omitempty"`
+	Items         []ItemRecord `json:"items"`
+	ID            string       `json:"id"`
+	Type          string       `json:"type"`
+	State         string       `json:"state"`
+	Attempts      int          `json:"attempts"`
+	StartedAt     int64        `json:"started_at,omitempty"`
+	FinishedAt    int64        `json:"finished_at,omitempty"`
+	NextAttemptAt int64        `json:"next_attempt_at,omitempty"`
+	// LimitWaits counts the agent step's jobs that ended on a provider's
+	// usage, rate or session limit; each wait for the reset starts a new job
+	// and uses none of the step's retries.
+	LimitWaits int            `json:"limit_waits,omitempty"`
+	ExitCode   *int           `json:"exit_code,omitempty"`
+	Output     string         `json:"output,omitempty"`
+	Reason     string         `json:"reason,omitempty"`
+	Next       string         `json:"next,omitempty"`
+	Outcome    map[string]any `json:"outcome,omitempty"`
+	LogTail    string         `json:"log_tail,omitempty"`
 }
 
 // Terminal reports whether a delivery or step state is final.

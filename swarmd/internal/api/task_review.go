@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+
+	"swarm/packages/swarmd/internal/providerlimit"
 	"swarm/packages/swarmd/internal/run"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -36,6 +38,17 @@ func (s *Server) repairTaskReview(task *pebblestore.ProjectTaskRecord) (*pebbles
 			}
 		}
 		return stored.Review, nil
+	}
+	// A reviewer whose provider turn ended on a usage, rate or session limit
+	// gave no verdict: none is recorded (never a block), its checkout is
+	// cleaned up, and the workflow step that started it waits for the reset.
+	if (task.Status == "failed" || task.Status == "blocked") && providerlimit.Is(task.LastError) {
+		if executionErr == nil {
+			if err := execution.CleanupTaskReview(task); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
 	}
 	report := ""
 	var after uint64

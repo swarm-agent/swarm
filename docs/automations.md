@@ -640,7 +640,12 @@ and `step_id`:
 
 - `automation.step.started`
 - `automation.step.waiting` (a reopen step waits for its still-running job;
-  attrs: `step`, `reason`)
+  attrs: `step`, `reason`). Also an agent step whose job ended on the
+  provider's usage, rate or session limit: the step is `waiting` with reason
+  "waiting for the provider's limit to reset (until …)", records no verdict,
+  and runs a new job after the reset the provider states (else a backoff of
+  5 minutes doubling to an hour, at most 12 waits), using none of its
+  `retries`; attrs also `provider_limit` and `retry_at`.
 - `automation.step.succeeded` (attrs: `step`, `output`)
 - `automation.step.failed` (severity warning; attrs: `step`, `reason` and
   `next`, the next allowed action: `rerun` or `fix the script`; while
