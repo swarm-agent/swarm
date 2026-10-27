@@ -102,6 +102,8 @@ var controlMCPRoutes = []string{
 	"POST v3/sessions/*/run/stop",
 	"POST v3/sessions/*/permissions/*/resolve",
 	"POST v3/sessions/*/access",
+	"GET v3/permissions",
+	"PATCH v3/permissions",
 	"POST v3/sessions/*/media",
 	"POST v3/sessions/*/plans",
 	"GET v3/sessions/*/plans/active",
@@ -670,7 +672,24 @@ func controlMCPTools() []controlMCPTool {
 			Annotations: controlMCPReadOnly, call: controlMCPReadMedia,
 		},
 		{
-			Name: "swarm_set_session_access", Title: "Choose what a session's agent may do",
+			Name: "swarm_get_permissions", Title: "Read account permissions",
+			Description: "Read account rules and their current live state.",
+			InputSchema: controlMCPObject(nil, map[string]any{}),
+			Annotations: controlMCPReadOnly, call: controlMCPGetPermissions,
+		},
+		{
+			Name: "swarm_set_permissions", Title: "Change account permissions",
+			Description: "Change home Start tasks and linked work rules with swarm:approve. Device rules must be changed on that device. Stale revisions return the current record.",
+			InputSchema: controlMCPObject([]string{"expected_revision", "client_request_id"}, map[string]any{
+				"expected_revision": map[string]any{"type": "integer", "minimum": 0},
+				"client_request_id": map[string]any{"type": "string"},
+				"tasks":             map[string]any{"type": "string", "enum": []string{"approve", "auto"}},
+				"linked":            map[string]any{"type": "object", "additionalProperties": controlMCPObject([]string{"work"}, map[string]any{"work": map[string]any{"type": "string", "enum": []string{"off", "ask", "allowed"}}})},
+			}),
+			Annotations: controlMCPDestructive, call: controlMCPSetPermissions,
+		},
+		{
+			Name: "swarm_set_session_access", Title: "Retired: use swarm_set_permissions",
 			Description: "The person's choice for one session, as their app's shield sets it: tasks free (delegated code and audit tasks start at once, nothing to approve; their work still reaches a branch only through merge) or ask (task cards wait for Approve), and machine none, ask or full (the agent's access to the person's own machine through their app). Fields left out keep their value. Needs the approve level. Returns the session's access.",
 			InputSchema: controlMCPObject([]string{"session_id"}, map[string]any{"session_id": sessionID, "tasks": controlMCPAccessSchema()["properties"].(map[string]any)["tasks"], "machine": controlMCPAccessSchema()["properties"].(map[string]any)["machine"]}),
 			Annotations: controlMCPDestructive, call: controlMCPSetSessionAccess,
@@ -1553,11 +1572,8 @@ func controlMCPStartSession(c *controlMCPCall, args map[string]any) (any, error)
 		}
 		body["workspace_path"] = workspacePath
 	}
-	if access, ok := args["access"].(map[string]any); ok && len(access) > 0 {
-		if err := c.requireTokenScope(sessionAccessScope); err != nil {
-			return nil, err
-		}
-		body["access"] = controlMCPPick(access, "tasks", "machine")
+	if _, present := args["access"]; present {
+		return nil, controlMCPToolFailure(retiredSessionAccess)
 	}
 	created, err := c.dispatch(http.MethodPost, createPath, nil, body)
 	if err != nil {
@@ -3128,21 +3144,5 @@ func controlMCPAccessSchema() map[string]any {
 
 // controlMCPSetSessionAccess applies the person's shield choice to a session.
 func controlMCPSetSessionAccess(c *controlMCPCall, args map[string]any) (any, error) {
-	if err := c.requireTokenScope(sessionAccessScope); err != nil {
-		return nil, err
-	}
-	sessionID, err := controlMCPID(args, "session_id")
-	if err != nil {
-		return nil, err
-	}
-	body := controlMCPPick(args, "tasks", "machine")
-	if len(body) == 0 {
-		return nil, controlMCPToolFailure("give tasks, machine or both")
-	}
-	body["client_request_id"] = controlMCPRequestID()
-	response, err := c.dispatch(http.MethodPost, controlMCPSessionPath(sessionID, "access"), nil, body)
-	if err != nil {
-		return nil, controlMCPNotFound(err, "session", sessionID, "swarm_list_sessions")
-	}
-	return map[string]any{"session_id": sessionID, "access": response["access"]}, nil
+	return nil, controlMCPToolFailure(retiredSessionAccess)
 }

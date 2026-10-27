@@ -929,22 +929,9 @@ func (s *Server) createSessionsV3Primary(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	var access pebblestore.SessionAccess
 	if req.Access != nil {
-		if err := sessionAccessAuthority(r); err != nil {
-			writeError(w, http.StatusForbidden, err)
-			return
-		}
-		normalized, err := pebblestore.NormalizeSessionAccess(*req.Access)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		if err := s.validateFleetAccess(principal, normalized); err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		access = normalized
+		writeError(w, http.StatusBadRequest, errors.New(retiredSessionAccess))
+		return
 	}
 	// managed_worktree_requested is a tolerated rolling-client field only. The
 	// canonical request uses worktree_mode and never echoes the retired toggle.
@@ -1060,9 +1047,6 @@ func (s *Server) createSessionsV3Primary(w http.ResponseWriter, r *http.Request,
 		Metadata:        sessionsV3ModelProfileMetadata(sessionsV3CreateServerMetadata(req.Metadata, resolvedAgent, binding), modelProfileSnapshot),
 		CreatedAt:       now,
 		UpdatedAt:       now,
-	}
-	if !access.Empty() {
-		session.Metadata[pebblestore.SessionAccessMetadataKey] = pebblestore.SessionAccessMetadata(access)
 	}
 	if appBinding, ok := r.Context().Value(applicationAgentContextKey{}).(applicationAgentBinding); ok {
 		session.Metadata[applicationAgentBindingKey] = appBinding

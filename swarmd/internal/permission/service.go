@@ -2716,21 +2716,7 @@ func (s *Service) sessionTasksStartFreely(sessionID string) bool {
 // twice. Whether each command runs at once or waits for the person (access
 // ask or full) is their app's to enforce, since it runs the command.
 func (s *Service) machineToolRefusal(sessionID, name string) string {
-	machine := pebblestore.SessionMachineNone
-	if s != nil && s.sessions != nil {
-		if session, found, err := s.sessions.GetSession(sessionID); err == nil && found {
-			if chosen := pebblestore.SessionAccessFromMetadata(session.Metadata).Machine; chosen != "" {
-				machine = chosen
-			}
-		}
-	}
-	switch {
-	case name == pebblestore.MachineToolRequestAccess && machine != pebblestore.SessionMachineNone:
-		return fmt.Sprintf("you already have %s access to the person's machine; use machine_run, machine_read and machine_write", machine)
-	case name != pebblestore.MachineToolRequestAccess && machine == pebblestore.SessionMachineNone:
-		return "you have no access to the person's machine; when they ask for something that needs it, call request_machine_access with your reason"
-	}
-	return ""
+	return "change the files and terminal rule on that device's Permissions page (/v3/permissions); request_machine_access cannot grant access"
 }
 
 // browserToolRefusal is why a browser tool call may not reach the person's
@@ -2738,18 +2724,5 @@ func (s *Service) machineToolRefusal(sessionID, name string) string {
 // how the agent asks for more sites or more time, so it goes through.
 // The lease is the session's access record; past its end it counts as none.
 func (s *Service) browserToolRefusal(sessionID, name string, now int64) string {
-	var access pebblestore.SessionAccess
-	if s != nil && s.sessions != nil {
-		if session, found, err := s.sessions.GetSession(sessionID); err == nil && found {
-			access = pebblestore.SessionAccessFromMetadata(session.Metadata)
-		}
-	}
-	live := access.BrowserLeaseLive(now)
-	switch {
-	case name == pebblestore.BrowserToolManage && !live && access.Browser != "" && access.Browser != pebblestore.SessionBrowserNone:
-		return "the lease on the person's browser has ended; when they still want the work done, call request_browser_access again with your reason and the sites"
-	case name == pebblestore.BrowserToolManage && !live:
-		return "you have no lease on the person's browser; when they ask for something on the web that needs it, call request_browser_access with your reason and the sites"
-	}
-	return ""
+	return "change the browser rule on that device's Permissions page (/v3/permissions); request_browser_access cannot grant access"
 }

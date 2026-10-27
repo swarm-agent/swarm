@@ -37,26 +37,12 @@ func TestFleetProjectAdapter(t *testing.T) {
 		t.Fatalf("machines: %+v %v", machines, err)
 	}
 	request := httptest.NewRequest(http.MethodPost, "/v3/sessions/session/access", strings.NewReader(`{"fleet":{"box":"full"},"folders":["ignored"]}`))
-	var accessRequest sessionsV3AccessRequest
-	if err := decodeJSON(request, &accessRequest); err != nil || accessRequest.Fleet["box"] != "full" {
-		t.Fatalf("access request: %+v %v", accessRequest, err)
-	}
 	request = request.WithContext(context.WithValue(request.Context(), applicationAgentContextKey{}, applicationAgentBinding{}))
 	if err := sessionAccessAuthority(request); err == nil {
 		t.Fatal("agent gateway may change access")
 	}
-	access := pebblestore.SessionAccess{Fleet: map[string]string{"box": "full"}}
-	if err := home.s.validateFleetAccess(p, access); err != nil {
-		t.Fatal(err)
-	}
-	if err := home.s.validateFleetAccess(p, pebblestore.SessionAccess{Fleet: map[string]string{"missing": "none"}}); err == nil {
-		t.Fatal("unknown machine accepted")
-	}
 	other := p
 	other.AccountScopeID = "other-account"
-	if err := home.s.validateFleetAccess(other, access); err == nil {
-		t.Fatal("other account accepted")
-	}
 	if got, err := home.s.ListFleetMachines(ctx, other); err != nil || len(got) != 0 {
 		t.Fatalf("cross account list: %+v %v", got, err)
 	}
@@ -146,9 +132,9 @@ func testFleetPermissionExecution(t *testing.T, ctx context.Context, home, remot
 			agent  bool
 			status int
 		}{
-			{`{"client_request_id":"valid","fleet":{"box":"` + level + `"},"folders":[]}`, false, http.StatusOK},
+			{`{"client_request_id":"valid","fleet":{"box":"` + level + `"},"folders":[]}`, false, http.StatusBadRequest},
 			{`{"client_request_id":"unknown","fleet":{"missing":"full"}}`, false, http.StatusBadRequest},
-			{`{"client_request_id":"agent","fleet":{"box":"none"}}`, true, http.StatusForbidden},
+			{`{"client_request_id":"agent","fleet":{"box":"none"}}`, true, http.StatusBadRequest},
 		} {
 			req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+id+"/access", strings.NewReader(tc.body))
 			if tc.agent {
