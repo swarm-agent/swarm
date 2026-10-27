@@ -152,6 +152,11 @@ impl Console {
                     _ => {}
                 },
             }
+            // The fleet's keys are read again with each fleet read while the
+            // Fleet page shows (a key entered on Swarm's key page appears).
+            if self.page == Page::Fleet {
+                self.load_fleet_keys(cx);
+            }
             cx.notify();
         }
         if self.live.is_none() {

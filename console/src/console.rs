@@ -22,6 +22,7 @@ mod automations;
 mod background;
 mod commands;
 mod fleet;
+mod fleet_keys;
 mod fleet_live;
 mod live;
 mod markdown;
@@ -325,6 +326,10 @@ pub struct Console {
     custom_for: Option<(SharedString, SharedString)>,
     /// The Live page: the fleet stream, its lines and filters.
     live_page: fleet_live::LivePage,
+    /// The Fleet page's provider keys (the home's fleet key manager).
+    keys_page: fleet_keys::KeysPage,
+    /// Model settings being applied to linked machines from the Agents page.
+    model_apply: agents::ModelApply,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -479,6 +484,8 @@ impl Console {
             answers: HashMap::new(),
             custom_for: None,
             live_page: Default::default(),
+            keys_page: Default::default(),
+            model_apply: Default::default(),
         };
         if demo {
             // Three panes: one beside a stack of two, to show both split directions.
@@ -634,8 +641,11 @@ impl Console {
         if page == Page::Automations {
             self.load_automations(cx);
         }
-        if page == Page::Permissions {
+        if page == Page::Permissions || page == Page::Agents {
             self.load_permissions();
+        }
+        if page == Page::Fleet {
+            self.load_fleet_keys(cx);
         }
         cx.notify();
     }
@@ -718,7 +728,7 @@ impl Console {
             .children(count.map(|n| div().child(n.to_string())))
     }
 
-    fn button(&self, id: impl Into<SharedString>, label: &'static str, strong: bool) -> Stateful<Div> {
+    fn button(&self, id: impl Into<SharedString>, label: impl Into<SharedString>, strong: bool) -> Stateful<Div> {
         let t = &self.theme;
         let hover = t.hover;
         let base = div()
@@ -729,7 +739,7 @@ impl Console {
             .border_1()
             .cursor_pointer()
             .text_size(px(11.))
-            .child(label);
+            .child(label.into());
         if strong {
             let accent = t.accent;
             base.bg(t.accent)
@@ -1459,6 +1469,8 @@ impl Render for Console {
         let _timed = Timed::new("render");
         self.ensure_composers(cx);
         self.sync_live_page(cx);
+        self.sync_fleet_keys(cx);
+        self.sync_agents(cx);
         // The conversations open in panes are followed in full, from the moment
         // they open (watch sends nothing when the set is unchanged).
         if let Some(live) = &self.live {

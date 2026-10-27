@@ -419,6 +419,7 @@ impl Console {
                         )
                     }),
             )
+            .child(self.fleet_keys_section(cx))
             .child(self.section("SPEND TODAY", None).px_0())
             .child(
                 div()

@@ -1,16 +1,31 @@
 //! Agents: each machine's model for every role, and the inspector the Fleet
 //! page shares (a machine, the whole fleet, linking).
 //!
-//! Read-only: every card and cell is what that machine's own Swarm said (its
+//! Every card and cell is what that machine's own Swarm said (its
 //! GET /v3/box/summary and GET /v1/agent-model-settings, a linked machine's
 //! read through home). The first column is the setting on the Swarm this
-//! console is connected to, the only one it changes; other machines' cells
-//! say whether they run the same model, another one, or are unknown.
+//! console is connected to; other machines' cells say whether they run the
+//! same model, another one, or are unknown. In home's window a linked
+//! machine that runs another model can be given home's setting for that
+//! role, on the person's click only, never while home's linked work rule
+//! for it is off (swarm::fleet_models); the machine's settings are then
+//! read again.
+
+use std::collections::{HashMap, HashSet};
 
 use gpui::{AnyElement, ClickEvent, Context, Div, Hsla, SharedString, div, prelude::*, px, relative};
 
-use super::{AgentsFocus, Console, alpha};
+use super::{AgentsFocus, Console, Link, Page, alpha};
 use crate::data::{Assignment, Cell, Health, Machine};
+use crate::swarm::fleet_models;
+
+/// Model settings being sent to linked machines, by (role key, machine),
+/// and the last refusal of each, in the machine's words.
+#[derive(Default)]
+pub(super) struct ModelApply {
+    saving: HashSet<(String, String)>,
+    refused: HashMap<(String, String), String>,
+}
 
 const COL: f32 = 128.;
 const ROLE_COL: f32 = 200.;
@@ -172,7 +187,7 @@ impl Console {
             let role_selected = self.agents_focus == AgentsFocus::Role(ri);
             let cells = (0..self.machines.len()).map(|mi| {
                 let cell = self.cell(ri, mi);
-                let (glyph, color, text) = self.cell_look(cell.clone());
+                let (glyph, color, text) = self.apply_cell_text(ri, mi).unwrap_or_else(|| self.cell_look(cell.clone()));
                 let selected = self.agents_focus == AgentsFocus::Cell(ri, mi);
                 div()
                     .id(SharedString::from(format!("cell-{ri}-{mi}")))
@@ -276,7 +291,7 @@ impl Console {
                     .gap_1()
                     .child(div().text_size(px(16.)).text_color(t.text).child("Agents"))
                     .child(div().text_color(t.faint).child(
-                        "Each machine's model for every role, as its own Swarm reports it. DEFAULT is the setting on the Swarm this window is connected to; other machines show whether they run the same model. The machines themselves are on the Fleet page.",
+                        "Each machine's model for every role, as its own Swarm reports it. DEFAULT is the setting on the Swarm this window is connected to; other machines show whether they run the same model; select a role or a cell on another model to give a linked machine the home's setting. The machines themselves are on the Fleet page.",
                     )),
             )
             .child(self.section("ROLES", Some(self.roles.len())).px_0())
@@ -453,18 +468,29 @@ impl Console {
                             )),
                     )
                     .child(self.section("ON EACH MACHINE", None))
-                    .children((0..self.machines.len()).map(|mi| {
-                        let cell = self.cell(ri, mi);
-                        let (glyph, color, text) = self.cell_look(cell);
-                        div()
-                            .flex()
-                            .gap_2()
-                            .px_3()
-                            .py(px(2.))
-                            .child(div().text_color(color).child(glyph))
-                            .child(div().w(px(64.)).text_color(t.muted).child(self.machines[mi].name.clone()))
-                            .child(div().text_color(t.faint).child(if text.is_empty() { "same as default".to_string() } else { text }))
-                    }))
+                    .children(
+                        (0..self.machines.len())
+                            .map(|mi| {
+                                let cell = self.cell(ri, mi);
+                                let (glyph, color, text) = self.cell_look(cell);
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .px_3()
+                                    .py(px(2.))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .gap_2()
+                                            .child(div().text_color(color).child(glyph))
+                                            .child(div().w(px(64.)).text_color(t.muted).child(self.machines[mi].name.clone()))
+                                            .child(div().text_color(t.faint).child(if text.is_empty() { "same as default".to_string() } else { text })),
+                                    )
+                                    .children(self.apply_control(ri, mi, cx).map(|c| div().pl(px(20.)).pt(px(2.)).child(c)))
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                    .children(self.apply_all_control(ri, cx).map(|c| div().px_3().pt_2().child(c)))
                     .child(div().px_3().pt_3().child(
                         self.button("role-change", "change default…", true)
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_picker(super::models::PickerScope::Role(ri), window, cx))),
@@ -495,6 +521,8 @@ impl Console {
                             .child(self.kv_row("here", have.map(|a| a.short()).unwrap_or_else(|| "—".into()))),
                     )
                     .child(div().px_3().pt_3().text_size(px(11.)).text_color(t.faint).child(explain))
+                    // A linked machine on another model can be given home's setting.
+                    .children(self.apply_control(ri, mi, cx).map(|c| div().px_3().pt_3().child(c)))
                     // Only the connected Swarm's own setting is changed here.
                     .when(mi == 0, |d| {
                         d.child(div().px_3().pt_3().child(
@@ -514,5 +542,177 @@ impl Console {
             .border_l_1()
             .border_color(t.border)
             .child(div().id("agents-inspector").size_full().overflow_y_scroll().pb_3().child(body))
+    }
+}
+
+/// Giving a linked machine home's setting for a role (home's window only).
+impl Console {
+    /// On the Agents page in home's window: home's permissions are read
+    /// once, for the linked work rule each action respects.
+    pub(super) fn sync_agents(&mut self, _cx: &mut Context<Self>) {
+        if self.page != Page::Agents || self.via.is_some() || self.link == Link::Demo {
+            return;
+        }
+        if self.permissions.is_none() && !self.permissions_busy && self.permissions_error.is_none() {
+            self.load_permissions();
+        }
+    }
+
+    /// Whether home's setting for a role may be sent to machine `mi` now;
+    /// Err says why not.
+    fn apply_allowed(&self, mi: usize) -> Result<(), String> {
+        if self.via.is_some() || self.link == Link::Demo || mi == 0 {
+            return Err("Only home's window changes a linked machine.".into());
+        }
+        if self.home.is_none() {
+            return Err("Connecting to Swarm…".into());
+        }
+        let name = self.machines.get(mi).map(|m| m.name.to_string()).unwrap_or_default();
+        match fleet_models::work_blocked(self.permissions.as_ref(), &name) {
+            Some(why) => Err(why),
+            None => Ok(()),
+        }
+    }
+
+    fn apply_key(&self, ri: usize, mi: usize) -> Option<(String, String)> {
+        Some((self.roles.get(ri)?.key.to_string(), self.machines.get(mi)?.name.to_string()))
+    }
+
+    /// Sends home's setting for role `ri` to machine `mi`, then reads that
+    /// machine's settings again. Only on the person's click.
+    fn apply_home_setting(&mut self, ri: usize, mi: usize, cx: &mut Context<Self>) {
+        let (Some(role), Some(key)) = (self.roles.get(ri).cloned(), self.apply_key(ri, mi)) else { return };
+        if !matches!(self.cell(ri, mi), Cell::Custom(_)) || self.apply_allowed(mi).is_err() {
+            return;
+        }
+        let Some(home) = self.home.clone() else { return };
+        if !self.model_apply.saving.insert(key.clone()) {
+            return;
+        }
+        self.model_apply.refused.remove(&key);
+        cx.notify();
+        let name = key.1.clone();
+        cx.spawn(async move |this, cx| {
+            let (machine, role_key, setting) = (name.clone(), role.key.to_string(), role.default.clone());
+            let result = cx.background_executor().spawn(async move { fleet_models::apply(&home, &machine, &role_key, &setting) }).await;
+            this.update(cx, |this, cx| {
+                this.model_apply.saving.remove(&key);
+                this.notice = Some(match result {
+                    Ok(Ok(models)) => {
+                        let now = models.iter().find(|(k, _)| k.as_ref() == role.key.as_ref()).map(|(_, a)| a.clone());
+                        if let Some(m) = this.machines.iter_mut().find(|m| m.name.as_ref() == name.as_str()) {
+                            m.models = Some(models);
+                        }
+                        match now {
+                            Some(a) if a == role.default => (format!("{name} runs home's setting for {} now.", role.label).into(), false),
+                            Some(a) => (format!("{name} answered and reports {} for {}.", a.short(), role.label).into(), true),
+                            None => (format!("{name} answered but does not list {}.", role.label).into(), true),
+                        }
+                    }
+                    Ok(Err(e)) => (format!("{name} took the setting; reading it back failed: {e}").into(), true),
+                    Err(e) => {
+                        let text = format!("{name} did not take the setting: {e}");
+                        this.model_apply.refused.insert(key.clone(), e);
+                        (text.into(), true)
+                    }
+                });
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Home's setting for role `ri` to every machine known to run another
+    /// model, where the linked work rule allows it.
+    fn apply_to_all(&mut self, ri: usize, cx: &mut Context<Self>) {
+        let Some(role) = self.roles.get(ri) else { return };
+        for mi in fleet_models::differing(role, &self.machines) {
+            if self.apply_allowed(mi).is_ok() {
+                self.apply_home_setting(ri, mi, cx);
+            }
+        }
+    }
+
+    /// A cell's text while a setting is sent to it or after it was refused.
+    fn apply_cell_text(&self, ri: usize, mi: usize) -> Option<(&'static str, Hsla, String)> {
+        let key = self.apply_key(ri, mi)?;
+        if self.model_apply.saving.contains(&key) {
+            return Some(("…", self.theme.info, "saving…".into()));
+        }
+        self.model_apply.refused.contains_key(&key).then(|| ("✕", self.theme.err, "refused".into()))
+    }
+
+    /// "apply home's setting" for one machine: the button, "saving…", or
+    /// why it is off; and the machine's last refusal.
+    fn apply_control(&self, ri: usize, mi: usize, cx: &mut Context<Self>) -> Option<Div> {
+        if self.via.is_some() || self.link == Link::Demo || mi == 0 || !matches!(self.cell(ri, mi), Cell::Custom(_)) {
+            return None;
+        }
+        let t = &self.theme;
+        let key = self.apply_key(ri, mi)?;
+        let control = if self.model_apply.saving.contains(&key) {
+            div().text_size(px(11.)).text_color(t.info).child("saving…")
+        } else {
+            match self.apply_allowed(mi) {
+                Ok(()) => div().child(
+                    self.button(SharedString::from(format!("apply-{ri}-{mi}")), "apply home's setting", false)
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.apply_home_setting(ri, mi, cx))),
+                ),
+                Err(why) => div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(div().flex().child(self.off_button("apply home's setting")))
+                    .child(div().text_size(px(10.5)).text_color(t.faint).child(why)),
+            }
+        };
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(control)
+                .children(self.model_apply.refused.get(&key).map(|e| div().text_size(px(10.5)).text_color(t.err).child(format!("Refused: {e}")))),
+        )
+    }
+
+    /// "apply to all machines" for a role, when any machine runs another model.
+    fn apply_all_control(&self, ri: usize, cx: &mut Context<Self>) -> Option<Div> {
+        if self.via.is_some() || self.link == Link::Demo {
+            return None;
+        }
+        let role = self.roles.get(ri)?;
+        let differing = fleet_models::differing(role, &self.machines);
+        if differing.is_empty() {
+            return None;
+        }
+        let ready = differing
+            .iter()
+            .filter(|mi| self.apply_allowed(**mi).is_ok() && self.apply_key(ri, **mi).is_some_and(|k| !self.model_apply.saving.contains(&k)))
+            .count();
+        let t = &self.theme;
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(if ready > 0 {
+                    div().flex().child(
+                        self.button(SharedString::from(format!("apply-all-{ri}")), format!("apply to all machines ({ready})"), false)
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.apply_to_all(ri, cx))),
+                    )
+                } else {
+                    div().flex().child(self.off_button("apply to all machines"))
+                })
+                .when(ready < differing.len(), |d| {
+                    d.child(div().text_size(px(10.5)).text_color(t.faint).child(format!(
+                        "{} of {} machine{} on another model can't be changed now; see each below.",
+                        differing.len() - ready,
+                        differing.len(),
+                        if differing.len() == 1 { "" } else { "s" }
+                    )))
+                }),
+        )
     }
 }

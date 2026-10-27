@@ -180,12 +180,16 @@ pub fn remove_favorite(client: &Client, id: &str) -> Result<Value, Refusal> {
 /// Sets one role's default (PATCH /v1/agent-model-settings): the Orchestrator
 /// ("plan"), Swarm ("action") or a system agent ("system-coder", …).
 pub fn set_default(client: &Client, role: &str, a: &Assignment) -> Result<Value, Refusal> {
+    client.patch("/v1/agent-model-settings", default_body(role, a))
+}
+
+/// The PATCH /v1/agent-model-settings body that sets one role.
+pub fn default_body(role: &str, a: &Assignment) -> Value {
     let assignment = body_of(a);
-    let body = match role {
+    match role {
         "plan" | "action" => json!({"swarm": {role: assignment}}),
         other => json!({"system_agents": {other.trim_start_matches("system-"): assignment}}),
-    };
-    client.patch("/v1/agent-model-settings", body)
+    }
 }
 
 /// What a conversation runs on: a choice of its own, or a favorite.
