@@ -309,14 +309,15 @@ impl Target {
     /// from a server it is printed over SSH and kept in this PC's private folder.
     pub fn connect(&self) -> Result<String, String> {
         let person = self.person();
+        let device = this_computer();
         match self {
             Target::Local => {
-                let args: Vec<String> = [SWARMCTL, "client", "connect", APP_NAME, "--for-user", &person].map(String::from).to_vec();
+                let args: Vec<String> = [SWARMCTL, "client", "connect", APP_NAME, "--device", &device, "--for-user", &person].map(String::from).to_vec();
                 let mut usage = false;
                 self.run_root(&args, |line| usage |= line.trim() == "Usage:").map_err(|e| older(usage, e))?;
             }
             Target::Ssh { .. } => {
-                let args: Vec<String> = [SWARMCTL, "client", "connect", APP_NAME, "--print"].map(String::from).to_vec();
+                let args: Vec<String> = [SWARMCTL, "client", "connect", APP_NAME, "--device", &device, "--print"].map(String::from).to_vec();
                 let mut token = String::new();
                 let mut usage = false;
                 self.run_root(&args, |line| {

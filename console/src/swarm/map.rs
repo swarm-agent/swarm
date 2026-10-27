@@ -243,7 +243,7 @@ pub fn client_calls(records: &[Value]) -> Vec<ClientCall> {
     records
         .iter()
         .filter(|p| (s(p, "status").is_empty() || s(p, "status") == "pending") && is_client_tool(s(p, "tool_name")))
-        .map(|p| ClientCall { id: s(p, "id").to_string().into(), tool: s(p, "tool_name").to_string().into(), args: tool_arguments(p) })
+        .map(|p| ClientCall { id: s(p, "id").to_string().into(), tool: s(p, "tool_name").to_string().into(), target_device: s(p, "target_device").to_string().into(), this_device: false, execution: s(p, "execution").to_string().into(), args: tool_arguments(p) })
         .collect()
 }
 

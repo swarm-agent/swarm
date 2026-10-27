@@ -289,6 +289,10 @@ impl Live {
             // An action in the browser may come back held (critical, not yet
             // confirmed): then the request stays open and the console shows it.
             if let Command::Browser { session_id, permission_id, args, confirmed } = &command {
+                if let Err(why) = require_ready_device_call(&client, session_id, permission_id) {
+                    let _ = tx.send(Update::Done { draft: None, what: "browser", result: Err(why) });
+                    return;
+                }
                 let outcome = match crate::browser::act(session_id, args, *confirmed) {
                     Ok(result) if result.get("needs_confirm").is_some() => {
                         let why = result.get("needs_confirm").and_then(Value::as_str).unwrap_or("").to_string();
@@ -362,7 +366,6 @@ fn perform(client: &Client, command: Command) -> (Option<u64>, &'static str, Res
                 "client_request_id": request_id("session"),
                 "project_id": project_id,
                 "agent_name": "system-orchestrator",
-                "access": {"tasks": access.tasks(), "machine": access.machine.as_str()},
             });
             if let Some(model) = model {
                 body["model_profile"] = models::new_session_profile(&model);
@@ -388,8 +391,11 @@ fn perform(client: &Client, command: Command) -> (Option<u64>, &'static str, Res
             (None, if allow { "answer" } else { "deny" }, resolve(client, &session_id, &permission_id, body))
         }
         Command::Client { session_id, permission_id, tool, args } => {
-            let result = crate::machine::answer(&tool, &args);
-            (None, "machine", resolve(client, &session_id, &permission_id, json!({"action": "allow_once", "approved_arguments": {"result": result}})))
+            let result = require_ready_device_call(client, &session_id, &permission_id).and_then(|_| {
+                let result = crate::machine::answer(&tool, &args);
+                resolve(client, &session_id, &permission_id, json!({"action": "allow_once", "approved_arguments": {"result": result}}))
+            });
+            (None, "machine", result)
         }
         Command::Commit { session_id, permission_id, review, selected } => {
             let result = repository::baseline(client, &review, &selected).and_then(|state| {
@@ -545,6 +551,23 @@ fn attach(client: &Client, session_id: &str, text: &str, files: &[Attachment]) -
         }));
     }
     Ok((content, media))
+}
+
+// Revalidate immediately before executing on this computer. Neither a stale
+// card nor another device's pending call grants local execution authority.
+fn require_ready_device_call(client: &Client, session_id: &str, permission_id: &str) -> Result<(), String> {
+    let permissions = client.get("/v3/permissions").map_err(err)?;
+    let device = list(&permissions, "devices").iter()
+        .find(|d| d.get("this_device").and_then(Value::as_bool) == Some(true))
+        .map(|d| s(d, "id").to_string())
+        .filter(|id| !id.is_empty())
+        .ok_or("Swarm has not identified this client as a device")?;
+    let pending = client.get(&format!("/v3/sessions/{session_id}/permissions")).map_err(err)?;
+    let ready = list(&pending, "permissions").iter().any(|p|
+        s(p, "id") == permission_id && s(p, "status") == "pending"
+        && s(p, "execution") == "ready" && s(p, "target_device") == device);
+    if !ready { return Err("Swarm has not approved this call for execution on this device".into()); }
+    Ok(())
 }
 
 fn resolve(client: &Client, session_id: &str, permission_id: &str, body: Value) -> Result<Value, String> {
@@ -1034,9 +1057,16 @@ impl Model<'_> {
     fn read_pending(&mut self, id: &str) -> Result<(), String> {
         let answer = self.client.get(&format!("/v3/sessions/{id}/permissions?status=pending&limit=50")).map_err(err)?;
         let permissions = list(&answer, "permissions").to_vec();
+        let account = self.client.get("/v3/permissions").map_err(err)?;
+        let device = list(&account, "devices").iter()
+            .find(|d| d.get("this_device").and_then(Value::as_bool) == Some(true))
+            .map(|d| s(d, "id").to_string()).unwrap_or_default();
         let d = self.details.entry(id.to_string()).or_default();
         d.pending = map::pending(&permissions);
         d.calls = map::client_calls(&permissions);
+        for call in &mut d.calls {
+            call.this_device = !device.is_empty() && call.target_device.as_ref() == device.as_str();
+        }
         if d.pending.is_some() || !d.calls.is_empty() {
             self.waiting.insert(id.to_string());
         } else {
@@ -1081,7 +1111,6 @@ impl Model<'_> {
             "console.browser" => {
                 if s(frame, "event") == "stopped" {
                     for id in crate::browser::live_sessions() {
-                        let _ = self.client.post(&format!("/v3/sessions/{id}/access"), json!({"browser": "none", "client_request_id": format!("swarm-console:stop:{id}")}));
                         crate::browser::lease(&id, None);
                         if let Some(d) = self.details.get_mut(&id) {
                             d.browser = None;

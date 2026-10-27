@@ -20,7 +20,8 @@ impl Console {
 
     /// Sends one command for a call, once.
     fn answer_call(&mut self, si: usize, call: &ClientCall, command: Command, cx: &mut Context<Self>) {
-        if !self.answered.insert(call.id.clone()) {
+        // Approval and execution are distinct phases of the same record.
+        if !matches!(&command, Command::Resolve { allow: true, .. }) && !self.answered.insert(call.id.clone()) {
             return;
         }
         self.holds.remove(&call.id);
@@ -58,6 +59,9 @@ impl Console {
     /// The command that carries out a call at once, if it needs nothing from
     /// you: a call to your machine with full access, inside your folders.
     fn automatic(&self, si: usize, session_id: &str, call: &ClientCall) -> Option<Command> {
+        if call.execution.as_ref() != "ready" || !call.this_device {
+            return None;
+        }
         let id = call.id.to_string();
         // A window on a linked machine: that machine's agents never reach
         // this computer or its browser, whatever they ask.
@@ -70,13 +74,14 @@ impl Console {
         }
         match call.tool.as_ref() {
             "request_machine_access" | "request_workspace_setup" | "request_browser_access" => None,
-            "manage_browser" => self.automatic_browser(si, session_id, call),
-            _ => (self.machine_level(si) == MachineAccess::Full && self.inside_folders(call)).then(|| Command::Client {
+            "manage_browser" => Some(Command::Browser { session_id: session_id.to_string(), permission_id: id, args: call.args.clone(), confirmed: true }),
+            "machine_read" | "machine_write" | "machine_run" => Some(Command::Client {
                 session_id: session_id.to_string(),
                 permission_id: id,
                 tool: call.tool.to_string(),
-                args: self.with_folder(call),
+                args: call.args.clone(),
             }),
+            _ => None,
         }
     }
 
@@ -108,14 +113,7 @@ impl Console {
         s.calls
             .iter()
             .filter(|c| !self.answered.contains(&c.id) && self.automatic(si, &session_id, c).is_none())
-            .filter(|c| match c.tool.as_ref() {
-                "request_machine_access" | "request_workspace_setup" | "request_browser_access" | "manage_browser" => true,
-                _ => match self.machine_level(si) {
-                    MachineAccess::Ask => true,
-                    MachineAccess::Full => !self.inside_folders(c),
-                    MachineAccess::None => false,
-                },
-            })
+            .filter(|c| c.execution.as_ref() == "awaiting_approval" || c.tool.as_ref() == "request_workspace_setup")
             .map(|call| {
                 let key = format!("call-{pid}-{}", call.id);
                 let button = |label: &'static str, strong: bool, command: Command| {
@@ -126,6 +124,12 @@ impl Console {
                 let id = call.id.to_string();
                 let refuse = |reason: &str| Command::Refuse { session_id: session_id.clone(), permission_id: id.clone(), reason: reason.to_string() };
                 let (heading, actions, note): (String, gpui::Div, Option<&str>) = match call.tool.as_ref() {
+                    _ if call.execution.as_ref() == "awaiting_approval" => {
+                        let approve = Command::Resolve { session_id: session_id.clone(), permission_id: id.clone(), allow: true, answer: None };
+                        (format!("DEVICE CALL · {}", call.target_device),
+                         div().flex().gap_1().child(button("allow", true, approve)).child(button("deny", false, refuse("The person denied this device call."))),
+                         Some("Approval makes this call ready for its target device; it does not execute here."))
+                    }
                     "request_machine_access" => {
                         let grant = |level| Command::Grant { session_id: session_id.clone(), permission_id: id.clone(), level };
                         (

@@ -231,6 +231,9 @@ pub struct ClientCall {
     /// The pending request's id in Swarm.
     pub id: Text,
     pub tool: Text,
+    pub target_device: Text,
+    pub this_device: bool,
+    pub execution: Text,
     pub args: serde_json::Value,
 }
 
