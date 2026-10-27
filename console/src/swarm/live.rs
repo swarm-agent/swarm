@@ -466,7 +466,7 @@ fn perform(client: &Client, command: Command) -> (Option<u64>, &'static str, Res
         Command::Unarchive { session_id, project_id } => (None, "unarchive", unarchive(client, &session_id, &project_id)),
         Command::Reveal { .. } => (None, "reveal", Ok(json!({}))),
         Command::RefreshProjectContext { project_id, expected_attempt } => (None, "project", client.post(&format!("/v3/projects/{project_id}/context:retry"), json!({"expected_attempt": expected_attempt})).map_err(err)),
-		Command::PatchProject { project_id, body } => (None, "project", client.patch(&format!("/v3/projects/{project_id}"), body).map_err(err)),
+        Command::PatchProject { project_id, body } => (None, "project", client.patch(&format!("/v3/projects/{project_id}"), body).map_err(err)),
         Command::SetModel { session_id, choice } => (None, "model", models::set_session_model(client, &session_id, &choice, &request_id("model")).map_err(err)),
         Command::SetDefault { role, model } => (None, "default", models::set_default(client, &role, &model).map_err(err)),
         Command::SaveFavorite { name, model } => (None, "favorite", models::save_favorite(client, &name, &model).map_err(err)),
