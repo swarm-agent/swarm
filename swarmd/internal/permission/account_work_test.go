@@ -26,12 +26,12 @@ func TestAccountLinkedWork(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := map[string]AuthorizationDecision{"off": AuthorizationDeny, "ask": AuthorizationPending, "allowed": AuthorizationApprove}[rule]
+			want := map[string]AuthorizationDecision{"off": AuthorizationDeny, "ask": AuthorizationApprove, "allowed": AuthorizationApprove}[rule]
 			if got.Decision != want {
 				t.Fatalf("%s: %+v", rule, got)
 			}
-			if rule == "ask" && got.Record == nil {
-				t.Fatal("missing pending permission")
+			if rule == "ask" && got.Record != nil {
+				t.Fatal("read unexpectedly created pending permission")
 			}
 			if rule == "off" && got.Record != nil {
 				t.Fatal("off created permission")

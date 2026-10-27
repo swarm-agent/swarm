@@ -55,13 +55,15 @@ the home Swarm follows the same values. Each rule names what it protects.
 | device | Files and terminal | client tools that read and write files and run commands on that device, as the person, outside Swarm's sandbox (`machine_read`, `machine_write`, `machine_run`) | `off`, `ask`, `allowed` |
 | device | Browser | client tools that drive the device's browser (`manage_browser`) | `off`, `ask`, `allowed` |
 | home | Start tasks | delegating to the home's own agents; media tasks included | `approve` (task waits for approval), `auto` |
-| linked | Hand it work, per machine | `manage_projects` with `machine`: read its projects and tasks, create, approve, accept, reopen, refine, archive tasks | `off`, `ask`, `allowed` |
+| linked | Hand it work, per machine | management tools with `machine`: projects, tasks, workflows and workers; workflow proposals and enable/disable, worker pause/resume/archive/delete | `off`, `ask`, `allowed` |
 
 Fixed, not rules: a linked machine is never asked to integrate, deploy or
-delete, and never runs commands directly for the home. Agents inside the home
+delete projects, and never runs commands directly for the home. Agents inside the home
 work in its sandbox under the tool permission policy.
 
-`ask` means each call waits for the person's decision as a normal permission
+For linked work, reads proceed under `ask` or `allowed`; changes under `ask` wait for a normal permission request. `off` denies both. Secrets, AI keys and permission changes are never exposed through linked management tools.
+
+For devices, `ask` means each call waits for the person's decision as a normal permission
 request; `allowed` means it proceeds. Swarm enforces both, for every rule,
 including the device rules: a client runs a device tool only after Swarm has
 approved that exact call.

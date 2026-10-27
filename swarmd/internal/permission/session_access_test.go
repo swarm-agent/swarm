@@ -116,3 +116,48 @@ func TestFleetSessionAccessGate(t *testing.T) {
 		}
 	}
 }
+
+// Purpose: the account linked-work boundary in AuthorizeToolCall must gate
+// workflow/worker mutations even under bypass, while ask reads need no card.
+// This service-layer test checks exact pending arguments and no card on denial.
+func TestFleetWorkRules(t *testing.T) {
+	db, err := pebblestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	service := NewService(pebblestore.NewPermissionStore(db), nil, nil)
+	service.SetSessionResolver(sessionAccessLookup{"home": {ID: "home", AccountScopeID: "acct"}})
+	for _, level := range []string{"off", "ask", "allowed"} {
+		account, err := service.store.GetAccountPermissions("acct")
+		if err != nil {
+			t.Fatal(err)
+		}
+		account.Linked["build-box"] = pebblestore.LinkedPermissionRule{Work: level}
+		if _, err := db.SetAccountPermissions("acct", account.Revision, account); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"manage_workflows", "manage_workers"} {
+			for _, action := range []string{"list", "get", "delete", "secrets", "permissions"} {
+				want := AuthorizationApprove
+				if action == "secrets" || action == "permissions" || level == "off" {
+					want = AuthorizationDeny
+				} else if action == "delete" && level == "ask" {
+					want = AuthorizationPending
+				}
+				args := `{"machine":"build-box","action":"` + action + `","id":"record"}`
+				got, err := service.AuthorizeToolCall(AuthorizationInput{SessionID: "home", AccountScopeID: "acct", RunID: "run", CallID: level + name + action, ToolName: name, ToolArguments: args, Mode: "auto+bypass_permissions"})
+				if err != nil || got.Decision != want {
+					t.Fatalf("%s %s %s: %+v %v", level, name, action, got, err)
+				}
+				if want == AuthorizationPending {
+					if got.Record == nil || got.Record.ToolArguments != permissionStoredArguments(args) {
+						t.Fatal("missing exact pending call")
+					}
+				} else if got.Record != nil {
+					t.Fatal("unexpected pending card")
+				}
+			}
+		}
+	}
+}

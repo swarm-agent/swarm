@@ -595,7 +595,7 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 		return s.createPendingAuthorization(input, sessionID, requirement, "ask_user requires an explicit user response", "user_input_policy", "ask user input")
 	}
 	// Fleet access is a per-call boundary, even under generic bypass.
-	if normalizePolicyToolName(input.ToolName) == "manage_projects" {
+	if name := normalizePolicyToolName(input.ToolName); name == "manage_projects" || name == "manage_workflows" || name == "manage_workers" || name == "manage_automation" {
 		args := parsePermissionJSONMap(input.ToolArguments)
 		machine := strings.TrimSpace(mapStringAny(args["machine"]))
 		if machine != "" {
@@ -603,7 +603,7 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 			if action == "" {
 				action = "list"
 			}
-			if !tool.FleetProjectActionAllowed(action) {
+			if !tool.FleetWorkActionAllowed(name, action) {
 				return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: action + " is not available on a linked machine", Source: "session_access"}, nil
 			}
 			access, err := s.store.GetAccountPermissions(input.AccountScopeID)
@@ -615,7 +615,7 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 				return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: fmt.Sprintf("linked work rule for machine %q is off; change it on the Permissions page", machine), Source: "session_access"}, nil
 			}
 			if explain.Decision != PolicyDecisionDeny {
-				if level == "ask" {
+				if level == "ask" && !tool.FleetWorkRead(action) {
 					return s.createPendingAuthorization(input, sessionID, requirement, "Approve linked machine "+machine+" action "+action, "account_permissions", "ask each linked machine call")
 				}
 				if err := s.store.RecordPermissionUse(input.AccountScopeID, "linked", machine, time.Now().UnixMilli()); err != nil {

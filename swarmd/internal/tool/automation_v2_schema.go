@@ -44,6 +44,7 @@ func manageWorkersV2Definition() Definition {
 			"additionalProperties": false,
 			"required":             []string{"action"},
 			"properties": map[string]any{
+				"machine": map[string]any{"type": "string", "description": FleetWorkDescription},
 				"budget": map[string]any{
 					"description": "Daily UTC limits on create/propose/update; zero is unset and null clears. Omission preserves the policy. Budget changes are included in the worker proposal and applied only on user acceptance, including updates to existing workers.",
 					"anyOf":       []any{map[string]any{"type": "object", "additionalProperties": false, "required": []string{"daily_usd"}, "properties": map[string]any{"daily_usd": map[string]any{"type": "number", "minimum": 0}, "daily_tokens": map[string]any{"type": "integer", "minimum": 0}}}, map[string]any{"type": "null"}},

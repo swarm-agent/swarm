@@ -691,6 +691,9 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 	if action == "" {
 		return "", errors.New("manage_workers action is required")
 	}
+	if mapString(args, "machine") != "" {
+		return s.executeFleetWork(current, "manage_workers", args)
+	}
 
 	switch action {
 	case "help":

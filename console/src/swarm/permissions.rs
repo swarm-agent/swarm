@@ -225,7 +225,7 @@ fn linked_row(m: &Value, now: u64) -> Row {
     Row {
         rule: Rule::Work(name.to_string()),
         title: name.to_string(),
-        protects: format!("Handing {name} work: reading its projects and tasks; creating, approving, accepting, reopening, refining and archiving tasks there."),
+        protects: format!("Handing {name} work: reading its projects, tasks, workflows and workers; creating, approving, accepting, reopening, refining and archiving tasks there."),
         choices: LEVELS,
         value,
         read_only: false,

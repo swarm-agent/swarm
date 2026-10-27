@@ -29,6 +29,9 @@ func (s *Service) executeManageWorkflowsTool(sessionID, arguments string, profil
 	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
 		return "", err
 	}
+	if mapString(args, "machine") != "" {
+		return s.executeFleetWork(current, "manage_workflows", args)
+	}
 	if rotate, _ := args["rotate_key"].(bool); rotate {
 		return "", errors.New("webhook key rotation is not supported for native workflow proposals; use the person's HTTP save or MCP path")
 	}

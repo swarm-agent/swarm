@@ -116,5 +116,8 @@ func (s *Server) CallFleetProject(ctx context.Context, p identity.Principal, mac
 		}
 		return nil, fmt.Errorf("could not reach linked machine %s", machine)
 	}
+	if action == "list" {
+		return compactFleetList(result)
+	}
 	return result, nil
 }

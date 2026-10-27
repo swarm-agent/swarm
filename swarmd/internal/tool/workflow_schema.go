@@ -12,12 +12,13 @@ type WorkflowLifecycleService interface {
 }
 
 func manageWorkflowsDefinition() Definition {
-	return Definition{Type: "function", Name: "manage_workflows", Description: "Manage workflows that run when tasks or worker jobs end. Propose new workflows or changes for the person to accept or discard; never self-accept. Enable and disable existing workflows immediately. Call help for examples. for_each queues one independent worker job per object in a committed JSON array with bounded parallelism. " + WorkflowTriggerDescription, Parameters: map[string]any{
+	return Definition{Type: "function", Name: "manage_workflows", Description: "Manage workflows that run when tasks or worker jobs end. Propose new workflows or changes for the person to accept or discard; never self-accept. Enable and disable existing workflows immediately. Call help for examples. for_each queues one independent worker job per object in a committed JSON array with bounded parallelism. " + WorkflowTriggerDescription + FleetWorkDescription, Parameters: map[string]any{
 		"type": "object", "required": []string{"action"}, "properties": map[string]any{
-			"inputs": WorkflowInputsSchema(), "with": WorkflowWithSchema(),
+			"machine": map[string]any{"type": "string", "description": FleetWorkDescription},
+			"inputs":  WorkflowInputsSchema(), "with": WorkflowWithSchema(),
 			"on":         WorkflowTriggerSchema(),
 			"rotate_key": map[string]any{"type": "boolean", "description": "Webhook key rotation is not yet supported for native proposals; use the person's HTTP save or MCP path."},
-			"action":     map[string]any{"type": "string", "enum": []string{"list", "get", "deliveries", "history", "propose", "disable", "enable", "help"}},
+			"action":     map[string]any{"type": "string", "enum": []string{"list", "get", "deliveries", "history", "propose", "disable", "enable", "delete", "help"}},
 			"id":         map[string]any{"type": "string"}, "name": map[string]any{"type": "string"}, "job_id": map[string]any{"type": "string"},
 			"project": map[string]any{"type": "string"}, "workspace": map[string]any{"type": "string"},
 			"scope": map[string]any{"type": "object", "properties": map[string]any{"role": map[string]any{"type": "string"}, "worker": map[string]any{"type": "string"}, "job": map[string]any{"type": "string"}, "schedule": map[string]any{"type": "string"}}},

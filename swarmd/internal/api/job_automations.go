@@ -1048,6 +1048,41 @@ func (s *Server) handleJobAutomations(w http.ResponseWriter, r *http.Request) {
 	}
 	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, JobAutomationsPath), "/")
 	switch {
+	case r.Method == http.MethodPost && (rest == "propose" || strings.HasSuffix(rest, "/enable") || strings.HasSuffix(rest, "/disable")):
+		var args map[string]any
+		if err := decodeJSONStrict(w, r, 256*1024, &args); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if args == nil {
+			writeError(w, http.StatusBadRequest, errors.New("object body required"))
+			return
+		}
+		if rest == "propose" {
+			args["action"] = "propose"
+		} else {
+			parts := strings.Split(rest, "/")
+			if len(parts) != 2 {
+				writeError(w, http.StatusBadRequest, errors.New("invalid workflow id"))
+				return
+			}
+			args["id"], args["action"] = parts[0], parts[1]
+		}
+		if _, exists := args["machine"]; exists {
+			writeError(w, http.StatusBadRequest, errors.New("nested machine routing is not allowed"))
+			return
+		}
+		if rotate, _ := args["rotate_key"].(bool); rotate {
+			writeError(w, http.StatusForbidden, errors.New("key rotation is not available for proposals"))
+			return
+		}
+		p, _ := PrincipalFromRequest(r)
+		out, err := s.ManageWorkflows(r.Context(), p, p.UserID, args)
+		if err != nil {
+			jobAutomationHTTPError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
 	case strings.HasSuffix(rest, "/accept") && r.Method == http.MethodPost:
 		s.handleWorkflowAccept(w, r, strings.TrimSuffix(rest, "/accept"))
 	case (rest == "history" && r.Method == http.MethodGet) || (rest == "restore" && r.Method == http.MethodPost):

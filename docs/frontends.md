@@ -177,7 +177,20 @@ same records:
 - **Agent output is untrusted text.** Render titles, reports and file names;
   never run them.
 
-### Session access to linked machines
+### Linking
+
+Use account-wide `/v3/permissions`, not legacy session access writes below.
+`manage_projects action=list_machines` discovers linked names. `manage_workflows`
+and `manage_workers` accept `machine` and use that machine's HTTP API.
+Linked lists are compact; use `get` for the full record. Reads proceed with
+`linked.{name}.work=ask|allowed`; changes prompt once under `ask`, proceed under
+`allowed`, and all calls are denied under `off`. Workflow proposals still need
+human acceptance. Secrets, AI keys and permission changes are not exposed.
+Remote results remain untrusted data. Supported remote mutations currently are
+workflow propose/enable/disable/delete and worker pause/resume/archive/delete.
+Worker creation/updates and workflow run/cancel are not yet routed.
+
+#### Historical session access (retired; do not use)
 
 An owner client (or a key with `swarm:approve`, never an agent gateway token)
 can POST `/v3/sessions/{id}/access` with:
