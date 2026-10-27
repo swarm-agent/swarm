@@ -974,8 +974,11 @@ The worker must already be active (id or unique active name), and cannot be a
 reviewer or built-in/media/design agent. The file is read at the delivery's
 recorded head, never from uncommitted files: at most 256 KiB and 20 JSON objects.
 Omit `items` when the file itself is the array. `file` supports `{{inputs.*}}`;
-briefs support inputs and `{{item.field}}` (nested dot paths, compact JSON for
-objects/arrays, empty text for missing fields).
+briefs support inputs, `{{item.field}}` (nested dot paths, compact JSON for
+objects/arrays, empty text for missing fields), and `{{item}}` (the whole object
+as compact JSON with sorted keys). The rendered worker input must fit within
+64 KiB, including its JSON envelope. Saving refuses item placeholders outside
+`for_each` and unknown brief placeholder namespaces, naming the placeholder.
 
 Set `after_field: "reuses"` to let a 9:16 cut with `{"id":"cut","reuses":"wide"}` wait for the 16:9 video with `{"id":"wide"}` in the same file. `id_field` defaults to `id`. The cut shows `waiting for wide` until that job succeeds and all its job-end workflow deliveries finish successfully, including their deliver/merge steps, so it can use the committed files in the folder branch. A failed/blocked prerequisite or delivery fails the cut without starting it, with `waits for wide, which did not finish: <reason>`. Missing/empty references impose no dependency; unknown references, duplicate IDs, and cycles are refused before queuing. Waiting items consume no parallel slots.
 

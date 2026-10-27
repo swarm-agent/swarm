@@ -28,7 +28,7 @@ func manageWorkflowsDefinition() Definition {
 
 // WorkflowForEachSchema is shared by native and MCP workflow steps.
 func WorkflowForEachSchema() map[string]any {
-	return map[string]any{"type": "object", "required": []string{"file"}, "additionalProperties": false, "description": "for_each queues one worker job per object in a committed JSON array, with bounded parallelism and optional after_field dependencies on id_field (default id).", "properties": map[string]any{"file": map[string]any{"type": "string"}, "items": map[string]any{"type": "string"}, "max_parallel": map[string]any{"type": "integer", "minimum": 1, "maximum": 5, "default": 1}, "after_field": map[string]any{"type": "string"}, "id_field": map[string]any{"type": "string", "default": "id"}}}
+	return map[string]any{"type": "object", "required": []string{"file"}, "additionalProperties": false, "description": "for_each queues one worker job per object in a committed JSON array, with bounded parallelism and optional after_field dependencies on id_field (default id). Briefs support {{item.field}} (nested paths; missing fields become empty) and {{item}} (the whole object as compact, sorted-key JSON), within the 64 KiB worker-input limit. Item placeholders require for_each; unknown brief placeholder namespaces are refused.", "properties": map[string]any{"file": map[string]any{"type": "string"}, "items": map[string]any{"type": "string"}, "max_parallel": map[string]any{"type": "integer", "minimum": 1, "maximum": 5, "default": 1}, "after_field": map[string]any{"type": "string"}, "id_field": map[string]any{"type": "string", "default": "id"}}}
 }
 
 // WorkflowInputsSchema is shared by the native and MCP workflow tools.

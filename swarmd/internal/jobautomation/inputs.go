@@ -22,6 +22,11 @@ func (a Automation) RenderInputs() (Automation, error) {
 	if a.inputsRendered {
 		return a, nil
 	}
+	for _, step := range a.Steps {
+		if err := step.validateBriefPlaceholders(); err != nil {
+			return Automation{}, err
+		}
+	}
 	values := map[string]string{}
 	if len(a.Inputs) > 20 {
 		return Automation{}, invalid("at most 20 inputs are allowed")

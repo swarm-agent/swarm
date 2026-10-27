@@ -76,10 +76,40 @@ func (s *Step) normalizeForEach() error {
 	return nil
 }
 
-var itemPlaceholder = regexp.MustCompile(`\{\{item\.([^{}]+)\}\}`)
+var itemPlaceholder = regexp.MustCompile(`\{\{item(?:\.([^{}]+))?\}\}`)
+var briefPlaceholder = regexp.MustCompile(`\{\{([^{}]*)\}\}`)
+
+// Validate template text before substituting input data: braces in data are literal.
+func (s Step) validateBriefPlaceholders() error {
+	for _, match := range briefPlaceholder.FindAllStringSubmatch(s.Brief, -1) {
+		name := match[1]
+		namespace, _, _ := strings.Cut(name, ".")
+		switch namespace {
+		case "item":
+			if s.ForEach == nil {
+				return invalid("step %s: placeholder %s requires for_each", s.ID, match[0])
+			}
+			if !itemPlaceholder.MatchString(match[0]) {
+				return invalid("step %s: invalid placeholder %s", s.ID, match[0])
+			}
+		case "inputs":
+			if !inputPlaceholder.MatchString(match[0]) {
+				return invalid("step %s: invalid placeholder %s", s.ID, match[0])
+			}
+		default:
+			return invalid("step %s: unknown brief placeholder %s", s.ID, match[0])
+		}
+	}
+	return nil
+}
 
 func RenderItem(brief string, item map[string]any) string {
-	return itemPlaceholder.ReplaceAllStringFunc(brief, func(m string) string { return eventText(eventField(item, itemPlaceholder.FindStringSubmatch(m)[1])) })
+	return itemPlaceholder.ReplaceAllStringFunc(brief, func(m string) string {
+		if m == "{{item}}" {
+			return eventText(item)
+		}
+		return eventText(eventField(item, itemPlaceholder.FindStringSubmatch(m)[1]))
+	})
 }
 
 func decodeMatrix(data []byte, selector string) ([]map[string]any, error) {

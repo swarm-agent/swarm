@@ -286,35 +286,38 @@ func TestForEachPendingIndex(t *testing.T) {
 // Purpose: queueItems must validate every serialized worker input before saving
 // any queue. A valid first item and oversized second item prove batch atomicity;
 // escaped text checks the actual admission byte limit rather than raw text size.
+// Whole-item and field rendering must both preserve this queueItems boundary.
 func TestForEachOversizedItemSavesNothing(t *testing.T) {
-	for _, text := range []string{strings.Repeat("x", 64*1024), strings.Repeat("\"", 33*1024)} {
-		h := newHarness(t)
-		folder := t.TempDir()
-		repo := newGitRepo(t, folder)
-		data, err := json.Marshal([]map[string]string{{"title": "small"}, {"title": text}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(folder, "plan.json"), data, 0600); err != nil {
-			t.Fatal(err)
-		}
-		repo.git("add", "plan.json")
-		head := repo.commit("plan")
-		d := Delivery{ID: "oversized", Account: testAccount, AutomationID: "planner", Folder: folder, Head: head, Steps: []StepRecord{{ID: "make"}}}
-		if err := h.store.SaveDelivery(d); err != nil {
-			t.Fatal(err)
-		}
-		before, _, _ := h.store.db.GetBytes(deliveryKey(testAccount, d.ID))
-		failure := h.runner.queueItems(context.Background(), &d, &d.Steps[0], Step{Brief: "Write {{item.title}}", ForEach: &ForEach{File: "plan.json"}})
-		if !failure.refused || failure.reason != "for_each item 1 exceeds the 64 KiB worker input limit" || d.Steps[0].Items != nil {
-			t.Fatal(failure, d.Steps)
-		}
-		after, _, err := h.store.db.GetBytes(deliveryKey(testAccount, d.ID))
-		if err != nil || string(before) != string(after) {
-			t.Fatal("delivery changed", err)
-		}
-		if _, found, err := h.store.db.GetBytes(keyPendingItemsPrefix + hexKey(testAccount) + "/" + d.ID); err != nil || found {
-			t.Fatal("partial queue indexed", err)
+	for _, brief := range []string{"Write {{item.title}}", "Write {{item}}"} {
+		for _, text := range []string{strings.Repeat("x", 64*1024), strings.Repeat("\"", 33*1024)} {
+			h := newHarness(t)
+			folder := t.TempDir()
+			repo := newGitRepo(t, folder)
+			data, err := json.Marshal([]map[string]string{{"title": "small"}, {"title": text}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(folder, "plan.json"), data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			repo.git("add", "plan.json")
+			head := repo.commit("plan")
+			d := Delivery{ID: "oversized", Account: testAccount, AutomationID: "planner", Folder: folder, Head: head, Steps: []StepRecord{{ID: "make"}}}
+			if err := h.store.SaveDelivery(d); err != nil {
+				t.Fatal(err)
+			}
+			before, _, _ := h.store.db.GetBytes(deliveryKey(testAccount, d.ID))
+			failure := h.runner.queueItems(context.Background(), &d, &d.Steps[0], Step{Brief: brief, ForEach: &ForEach{File: "plan.json"}})
+			if !failure.refused || failure.reason != "for_each item 1 exceeds the 64 KiB worker input limit" || d.Steps[0].Items != nil {
+				t.Fatal(failure, d.Steps)
+			}
+			after, _, err := h.store.db.GetBytes(deliveryKey(testAccount, d.ID))
+			if err != nil || string(before) != string(after) {
+				t.Fatal("delivery changed", err)
+			}
+			if _, found, err := h.store.db.GetBytes(keyPendingItemsPrefix + hexKey(testAccount) + "/" + d.ID); err != nil || found {
+				t.Fatal("partial queue indexed", err)
+			}
 		}
 	}
 }
