@@ -276,6 +276,7 @@ type WorkspaceScope struct {
 }
 
 type manageSessionService interface {
+	RecordPermissionUse(account, kind, target string, at int64) error
 	GetAccountPermissions(account string) (pebblestore.AccountPermissions, error)
 	GetSession(sessionID string) (pebblestore.SessionSnapshot, bool, error)
 	ApplySessionMutation(input pebblestore.V3SessionMutationInput) (pebblestore.V3SessionMutationResult, error)

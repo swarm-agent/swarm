@@ -53,6 +53,13 @@ func TestDeviceAccountAuthorization(t *testing.T) {
 						t.Fatalf("gate: %+v", got)
 					}
 				}
+				used, err := db.GetAccountPermissions("a")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if (used.Device("d").LastUsed > 0) != (rule == "allowed") {
+					t.Fatalf("unexpected usage: %+v", used)
+				}
 				in.CallID = "disconnected"
 				in.ToolArguments = `{"device":"missing"}`
 				got, err = svc.AuthorizeToolCall(in)

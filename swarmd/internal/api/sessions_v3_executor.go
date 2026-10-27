@@ -5239,7 +5239,7 @@ func (e *sessionV3Executor) composeSessionV3ResolvedInstructions(job sessionV3Ex
 			return "", errors.New("resolved v3 instructions are empty")
 		}
 		instructions += applicationInstructions
-		instructions += sessionAccessInstructions(session)
+		instructions += e.server.accountAccessInstructions(session)
 		instructions = runruntime.AppendResolvedModelPolicyInstructions(instructions, session.Mode, pref)
 	}
 	if instructions == "" {

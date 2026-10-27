@@ -9,10 +9,11 @@ import (
 // AccountPermissions is the account-wide access authority. Missing entries use
 // the safe defaults; live device and fleet state is not persisted here.
 type AccountPermissions struct {
-	Revision uint64                          `json:"revision"`
-	Tasks    string                          `json:"tasks"`
-	Devices  map[string]DevicePermissionRule `json:"devices"`
-	Linked   map[string]LinkedPermissionRule `json:"linked"`
+	TasksLastUsed int64                           `json:"tasks_last_used"`
+	Revision      uint64                          `json:"revision"`
+	Tasks         string                          `json:"tasks"`
+	Devices       map[string]DevicePermissionRule `json:"devices"`
+	Linked        map[string]LinkedPermissionRule `json:"linked"`
 }
 type PermissionChange struct {
 	By string `json:"by"`

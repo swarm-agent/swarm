@@ -1034,6 +1034,11 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 			return "", errors.New("project task lifecycle service is not configured")
 		}
 
+		if autoApprove {
+			if err := r.sessions.RecordPermissionUse(p.AccountScopeID, "tasks", "", time.Now().UnixMilli()); err != nil {
+				return "", err
+			}
+		}
 		createdTask, err := lifecycle.CreateProjectTask(ctx, p, projectID, ProjectTaskCreateInput{
 			ID:                  taskID,
 			Title:               title,

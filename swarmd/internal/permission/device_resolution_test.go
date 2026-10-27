@@ -9,7 +9,15 @@ import (
 // completion. A temporary store exercises the real mutation and verifies that
 // premature and wrong-device results do not change pending state.
 func TestDeviceResolutionPhases(t *testing.T) {
-	s, _ := openSubagentReservationTestServices(t)
+	db, err := pebblestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.PutJSON(pebblestore.KeySession("session"), pebblestore.SessionSnapshot{ID: "session", AccountScopeID: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	s := NewService(pebblestore.NewPermissionStore(db), nil, nil)
 	p, err := s.CreatePending(CreateInput{SessionID: "session", RunID: "run", CallID: "call", ToolName: "machine_read", ToolArguments: `{"path":"/srv/example"}`, Requirement: RequirementClientTool, Mode: "auto"})
 	if err != nil {
 		t.Fatal(err)

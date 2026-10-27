@@ -54,6 +54,9 @@ func (s *Service) authorizeDeviceCall(input AuthorizationInput) (AuthorizationRe
 	}
 	execution := "awaiting_approval"
 	if rule == "allowed" {
+		if err := s.store.RecordPermissionUse(input.AccountScopeID, kind, id, now); err != nil {
+			return AuthorizationResult{}, err
+		}
 		execution = "ready"
 	}
 	record, err := s.CreatePending(CreateInput{SessionID: input.SessionID, RunID: input.RunID, Step: input.Step, CallID: input.CallID, ToolName: input.ToolName, ToolArguments: input.ToolArguments, ToolCallArguments: input.ToolCallArguments, Requirement: RequirementClientTool, Mode: input.Mode, TargetDevice: id, Execution: execution})

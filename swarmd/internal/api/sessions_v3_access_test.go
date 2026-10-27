@@ -7,13 +7,18 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+// Purpose: per-turn instructions describe account authority and authenticated
+// device liveness without exposing another account's devices. Pure formatting
+// is the narrowest layer for these user-visible instructions.
 func TestSessionAccessInstructions(t *testing.T) {
-	if got := sessionAccessInstructions(pebblestore.SessionSnapshot{}); got != "" {
-		t.Fatalf("a session without a choice got %q", got)
+	p := pebblestore.DefaultAccountPermissions()
+	p.Tasks = "auto"
+	clients := []pebblestore.ClientSessionRecord{{SessionID: "d", Device: "computer", AccountScopeID: "a", ExpiresAt: 300000, LastSeenAt: 200000}, {SessionID: "other", Device: "private-device", AccountScopeID: "b", ExpiresAt: 300000, LastSeenAt: 200000}}
+	got := sessionAccessInstructions(p, clients, "a", 200000)
+	if strings.Contains(got, "private-device") {
+		t.Fatal("cross-account device leak")
 	}
-	session := pebblestore.SessionSnapshot{Metadata: map[string]any{pebblestore.SessionAccessMetadataKey: map[string]any{"tasks": "free", "machine": "none"}}}
-	got := sessionAccessInstructions(session)
-	for _, want := range []string{"start tasks freely", "nothing for them to approve", "no access"} {
+	for _, want := range []string{"start automatically", "connected", "files and terminal off", "browser off"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("instructions %q lack %q", got, want)
 		}

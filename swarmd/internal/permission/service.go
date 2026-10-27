@@ -618,6 +618,9 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 				if level == "ask" {
 					return s.createPendingAuthorization(input, sessionID, requirement, "Approve linked machine "+machine+" action "+action, "account_permissions", "ask each linked machine call")
 				}
+				if err := s.store.RecordPermissionUse(input.AccountScopeID, "linked", machine, time.Now().UnixMilli()); err != nil {
+					return AuthorizationResult{}, err
+				}
 				return AuthorizationResult{Decision: AuthorizationApprove, Requirement: requirement, Reason: "linked work rule allows machine " + machine, Source: "account_permissions"}, nil
 			}
 		}
@@ -1254,6 +1257,9 @@ func (s *Service) resolveForDeviceLocked(sessionID, permissionID, action, reason
 				return pebblestore.PermissionRecord{}, false, errors.New("invalid device execution state")
 			}
 			updated := record
+			if err := s.recordResolvedRuleUse(record, now); err != nil {
+				return pebblestore.PermissionRecord{}, false, err
+			}
 			updated.Execution = "ready"
 			updated.UpdatedAt = now
 			summary, err := s.summaryForMutationLocked(sessionID, &record, updated, now)
@@ -1270,6 +1276,11 @@ func (s *Service) resolveForDeviceLocked(sessionID, permissionID, action, reason
 	updated := record
 	switch {
 	case actionIsAllow(action):
+		if record.TargetDevice == "" {
+			if err := s.recordResolvedRuleUse(record, now); err != nil {
+				return pebblestore.PermissionRecord{}, false, err
+			}
+		}
 		updated.Status = pebblestore.PermissionStatusApproved
 	case actionIsDeny(action):
 		updated.Status = pebblestore.PermissionStatusDenied

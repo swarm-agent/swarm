@@ -131,7 +131,7 @@ func (s *Server) handleSessionV3Access(w http.ResponseWriter, r *http.Request, p
 // sessionAccessInstructions tells the agent, every turn, what the person lets
 // this session do, so it neither asks for approval it does not need nor
 // assumes access it does not have. A session without a choice gets nothing.
-func sessionAccessInstructions(session pebblestore.SessionSnapshot) string {
+func legacySessionAccessInstructions(session pebblestore.SessionSnapshot) string {
 	access := pebblestore.SessionAccessFromMetadata(session.Metadata)
 	var lines []string
 	if len(access.Fleet) > 0 {

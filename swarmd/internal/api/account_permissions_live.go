@@ -29,6 +29,7 @@ type permissionsView struct {
 		Name         string `json:"name"`
 		Tasks        string `json:"tasks"`
 		WaitingTasks int    `json:"waiting_tasks"`
+		LastUsed     int64  `json:"last_used"`
 	} `json:"home"`
 	Devices []permissionsDevice `json:"devices"`
 	Linked  []permissionsLink   `json:"linked"`
@@ -46,6 +47,7 @@ func (s *Server) accountPermissionsView(r *http.Request, p store.AccountPermissi
 		return v, err
 	}
 	v.Home.Tasks = p.Tasks
+	v.Home.LastUsed = p.TasksLastUsed
 	v.Home.WaitingTasks, err = s.sessions.Store().Underlying().CountPermissionWaitingTasks(principal.AccountScopeID)
 	if err != nil {
 		return v, err

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"swarm/packages/swarmd/internal/identity"
@@ -96,6 +97,11 @@ func (s *Server) retryMedia(ctx context.Context, p identity.Principal, project s
 }
 
 func (s *Server) createManagedMedia(ctx context.Context, p identity.Principal, project string, input tool.ProjectTaskCreateInput) (*pebblestore.ProjectTaskRecord, error) {
+	if input.AutoApprove {
+		if err := s.sessions.Store().RecordPermissionUse(p.AccountScopeID, "tasks", "", time.Now().UnixMilli()); err != nil {
+			return nil, err
+		}
+	}
 	input.ID = "task_" + uuid.NewString()
 	estimate, err := s.estimateManagedMedia(ctx, p, &input)
 	if err != nil {
