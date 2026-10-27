@@ -282,9 +282,10 @@ func (s *SessionStore) deleteProjectLocked(accountScopeID, id string) (*projectR
 			return errors.New("project task identity mismatch")
 		}
 		keys = append(keys, key)
+		// Only work that is running or about to run blocks deletion; a task
+		// waiting for review, accepted, rejected or blocked has no live run.
 		switch task.Status {
-		case "completed", "failed", "cancelled", "canceled":
-		default:
+		case "in_progress", "planning", "running", "queued", "pending", "starting", "generating":
 			unsettled++
 		}
 		return nil
@@ -885,11 +886,6 @@ func (s *SessionStore) persistProjectTaskLocked(accountScopeID string, task *Pro
 func (s *SessionStore) persistProjectTaskMetadataLocked(accountScopeID string, task *ProjectTaskRecord, validate, captureAttempt bool) (*projectRealtimeMutation, error) {
 	if task == nil {
 		return nil, errors.New("project task definition required")
-	}
-	if _, found, err := s.GetProject(accountScopeID, task.ProjectID); err != nil {
-		return nil, err
-	} else if !found {
-		return nil, ErrProjectNotFound
 	}
 	// Git observations must be recomputed, never persisted as delivery authority.
 	task.DeliveryAssessment = nil

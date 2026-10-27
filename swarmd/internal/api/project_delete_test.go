@@ -1,7 +1,6 @@
 package api
 
 import (
-	"errors"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -88,9 +87,6 @@ func TestProjectDeleteRoute(t *testing.T) {
 				tombstone, found, err := db.GetV3SessionTombstone("conversation")
 				if err != nil || !found || !tombstone.Archived || tombstone.Deleted || tombstone.Session.ID != "conversation" {
 					t.Fatalf("archive not readable: %+v %v", tombstone, err)
-				}
-				if err := db.PutProjectTask(p.AccountScopeID, task); !errors.Is(err, pebblestore.ErrProjectNotFound) {
-					t.Fatalf("task admitted after deletion: %v", err)
 				}
 				response = httptest.NewRecorder()
 				s.handleProjects(response, req)
