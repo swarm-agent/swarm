@@ -6,6 +6,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Add Swarm Console, the native desktop client (Rust, GPUI), under `console/`: onboarding that connects it as an owner client, projects, Orchestrator conversations, tasks, agents, usage, and linked machines through the home Swarm. It builds on its own and is not part of the Swarm release yet. Docs impact: new `console/README.md` and `console/AGENTS.md`.
 - Send Gemini API tool declarations with only Gemini Schema fields: `oneOf` becomes `anyOf`, `const` becomes a one-value enum, and validation-only keywords such as `propertyNames` are left out, so the Orchestrator's workflow and custom-agent tools no longer stop its run on the Gemini API. Docs impact: none.
 - Forward linked machines' realtime WebSockets through the home over pinned TLS, using the home's link session and preserving owner access checks.
   Docs impact: none.

@@ -103,3 +103,6 @@ secrets.env
 
 # Local prod sync helper
 /scripts/pull-from-prod-swarm.sh
+
+# Swarm Console build output
+/console/target/

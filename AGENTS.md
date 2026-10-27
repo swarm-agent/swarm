@@ -151,6 +151,7 @@ Do not diagnose from or silently reuse old home/XDG config locations. `/workspac
 - Root module: launcher, CLI, TUI, and shared packages — `cmd/`, `internal/`, `pkg/`.
 - Daemon module and backend authority — `swarmd/cmd/`, `swarmd/internal/`, `swarmd/tests/`.
 - Desktop frontend — `web/src/`, with V3 Desktop state under `web/src/features/desktop/`.
+- Swarm Console, the native desktop client (Rust, GPUI), released separately from Swarm — `console/` (its own `AGENTS.md`).
 - Tests and checked-in harnesses — `tests/`, `swarmd/tests/`, `scripts/`.
 - Release and operator guidance — `README.md`, `docs/main-deploy-checklist.md`, `.github/workflows/`.
 - FFF bindings under `internal/fff/` and `swarmd/internal/fff/` are intentional runtime dependencies. Do not delete or replace their vendored libraries without packaging verification.

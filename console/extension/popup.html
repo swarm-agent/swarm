@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Swarm Browser</title>
+<style>
+  body { font: 13px/1.4 system-ui, sans-serif; margin: 0; padding: 12px; width: 300px; color: #1b1f24; }
+  h1 { font-size: 14px; margin: 0 0 8px; }
+  .muted { color: #666; }
+  .bad { color: #b42318; }
+  .ok { color: #1a7f37; }
+  .lease { border: 1px solid #ddd; border-radius: 6px; padding: 8px; margin: 8px 0; }
+  .lease b { display: block; }
+  button { background: #b42318; color: #fff; border: 0; border-radius: 4px; padding: 6px 12px; font: inherit; font-weight: 600; cursor: pointer; width: 100%; margin-top: 8px; }
+  button[disabled] { background: #ccc; cursor: default; }
+</style>
+</head>
+<body>
+<h1>Swarm Browser</h1>
+<div id="link" class="muted">…</div>
+<div id="leases"></div>
+<button id="stop">Stop Swarm in this browser</button>
+<p class="muted">Swarm acts only inside a lease you granted in Swarm Console, in tabs it opened on the leased sites. Stop ends every lease; the Orchestrator has to ask again.</p>
+<script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Swarm Browser",
+  "version": "0.2.1",
+  "description": "Lets the Swarm Orchestrator use this browser through Swarm Console, only inside a lease you grant per session.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsUIjYLHF4UUg4Hf3rJnszv2E7Tw1sNZxhhJksFZcCFjUBCeq36KyxcjXBu2VAL2dv5eoYRMRjsG89Il17Hxr1DjCJHwTfDt6PBQhN4CXSJdlq0hKEaQ35SwG0aJ6oAqSCWHAtogzJetN0mEC44mSzN+7vL6vrfR0JHb3Q68opQdZLc3GY8woknNwW8XLFyHCusCtPEAinHIa0b5pMg15DkfElta3SFJAjVlv6S7ajcHq36izit9oTW3PdmRk+vLbkJp+n2GWKq4elQXiVEz8u6uFjobrZz2GYA1GNk8iiv/EfcBaKDIScicOaApLR0O/HY9lxgxp8bMmb1IzbtwS7QIDAQAB",
+  "permissions": ["nativeMessaging", "tabs", "tabGroups", "scripting", "alarms", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "Swarm Browser", "default_popup": "popup.html" }
+}
