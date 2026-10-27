@@ -85,13 +85,25 @@ func (s *Server) IntegrateProjectTask(ctx context.Context, p identity.Principal,
 		return nil, integrationFailure(http.StatusConflict, err)
 	}
 	gitState := inspectTaskGitStateContext(ctx, *task, db)
+	warning := ""
+	if a := gitState.deliveryAssessment; a != nil && a.ReasonCode == "lane_branch_mismatch" {
+		// Only the mutation boundary repairs a validated, exclusively owned lane;
+		// ordinary delivery assessments remain read-only.
+		warning, err = worktreeruntime.ReattachDeliveryLane(ctx, selectedSession.WorktreeRootPath, selection.SourceBranch, capturedPath, selection.TargetBranch)
+		if err != nil {
+			return nil, integrationFailure(http.StatusConflict, fmt.Errorf("cannot reattach delivery lane (%s): %w", a.ReasonCode, err))
+		}
+		if warning != "" {
+			gitState = inspectTaskGitStateContext(ctx, *task, db)
+		}
+	}
 	if gitState.deliveryAssessment == nil || gitState.deliveryAssessment.Freshness != "observed" || (gitState.deliveryAssessment.State != "candidate_work" && gitState.deliveryAssessment.State != "integrated") {
 		return nil, &projectTaskIntegrationError{status: http.StatusConflict, err: errors.New(taskDeliveryNotActionableMessage(projectID, taskID, gitState.deliveryAssessment)), delivery: gitState.deliveryAssessment}
 	}
 	if a := gitState.deliveryAssessment; gitState.isDirty || a.SourceDirty || a.TargetDirty {
 		return nil, integrationFailure(http.StatusConflict, errors.New("cannot integrate: "+taskDeliveryDirtyMessage(a)))
 	}
-	receipt := &pebblestore.ProjectTaskIntegration{State: "in_progress", SessionID: selection.SessionID, SourceBranch: selection.SourceBranch, TargetBranch: selection.TargetBranch, TargetWorkspacePath: capturedPath}
+	receipt := &pebblestore.ProjectTaskIntegration{State: "in_progress", SessionID: selection.SessionID, SourceBranch: selection.SourceBranch, TargetBranch: selection.TargetBranch, TargetWorkspacePath: capturedPath, Warning: warning}
 	if err := pebblestore.BeginProjectTaskIntegration(db, p.AccountScopeID, task, receipt); err != nil {
 		return nil, err
 	}

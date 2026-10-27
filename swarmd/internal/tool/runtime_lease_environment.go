@@ -44,7 +44,7 @@ func executeLeaseEnvironment(ctx context.Context, scope WorkspaceScope, args map
 	if owner == "" {
 		return "", errors.New("lease_environment needs an agent session")
 	}
-	if scope.ReadOnlyBash || scope.ReviewCheckout != "" {
+	if scope.ReadOnlyBash || (scope.ReviewCheckout != "" && !sandbox.BorrowedReviewSession(scope.SessionID)) {
 		return "", errors.New("a review cannot lease an environment")
 	}
 	path := strings.TrimSpace(scope.PrimaryPath)

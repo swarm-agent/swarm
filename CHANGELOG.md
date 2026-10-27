@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Keep borrowed-lane reviewers' environment leases read-only for the reviewed checkout and Git metadata, including after restart, without shell filtering. Delivery safely reattaches a clean detached branch tip and reports a warning; other mismatches retain their delivery assessment. Sandbox-off remains unconfined by the owner's choice; no host command guard is added, and delivery recovery also covers that case. Docs impact: none.
+
 - Keep media inspection available across catalog snapshot refreshes when effective media authority is unchanged; share step/call scope and authorization inputs while rejecting capability revocation and changed provider, model, credentials or scope.
   Docs impact: none.
 

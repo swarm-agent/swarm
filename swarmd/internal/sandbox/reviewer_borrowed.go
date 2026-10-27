@@ -71,3 +71,10 @@ func (m *Manager) forgetBorrowedReview(checkout string) {
 func OwnerTurnedOff() bool {
 	return Default().Status().Mode == ModeOff
 }
+
+// BorrowedReviewSession reports daemon-registered read-only borrowed identity.
+// Writable security-fix reviewers are never registered here.
+func BorrowedReviewSession(session string) bool {
+	checkout := ReviewSessionCheckout(session)
+	return checkout != "" && borrowedReviewSession(checkout) == session
+}

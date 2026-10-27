@@ -164,7 +164,7 @@ func executeSandboxedBash(parent context.Context, manager *sandbox.Manager, scop
 // the command runs as before.
 func bashLease(ctx context.Context, scope WorkspaceScope, args map[string]any, wait time.Duration, onDelta func(string)) (string, error) {
 	id := strings.TrimSpace(asString(args["environment"]))
-	if scope.ReadOnlyBash || scope.ReviewCheckout != "" {
+	if scope.ReadOnlyBash || (scope.ReviewCheckout != "" && !sandbox.BorrowedReviewSession(scope.SessionID)) {
 		if id != "" {
 			return "", errors.New("a review cannot run in a lease")
 		}

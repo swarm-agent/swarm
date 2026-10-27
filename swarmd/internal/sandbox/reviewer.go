@@ -143,7 +143,8 @@ func (m *Manager) scopeRunArgs(name, root, spec string, mounts []string, secret 
 	}
 	guards, _ := reviewGitMounts(checkout, root) // validated by acquire
 	checkoutMount := "type=bind,src=" + checkout + ",dst=" + checkout
-	if borrowedReviewSession(checkout) != "" {
+	if borrowedReviewSession(checkout) != "" || strings.HasPrefix(name, ContainerName(root)+"-lease-") {
+		// Review leases remain read-only even before registrations recover.
 		// Another session's worktree, read in place: no build outputs either.
 		checkoutMount += ",readonly"
 	}

@@ -410,6 +410,7 @@ type ProjectTaskIntegration struct {
 	PreviousTargetHead  string `json:"previous_target_head,omitempty"`
 	ResultingTargetHead string `json:"resulting_target_head,omitempty"`
 	Error               string `json:"error,omitempty"`
+	Warning             string `json:"warning,omitempty"`
 	// Delta recovery never asserts original source ancestry. SourceHead remains
 	// the original tip; these fields authenticate the separately prepared delta.
 	RecoveryBase  string `json:"recovery_base,omitempty"`

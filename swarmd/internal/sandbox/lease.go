@@ -27,9 +27,10 @@ import (
 // lease it holds. Leases work whatever the sandbox setting is.
 
 const (
-	labelLease      = "swarm.lease"
-	labelLeaseOwner = "swarm.lease.owner"
-	labelLeaseUser  = "swarm.lease.user"
+	labelLease       = "swarm.lease"
+	labelLeaseOwner  = "swarm.lease.owner"
+	labelLeaseUser   = "swarm.lease.user"
+	labelLeaseReview = "swarm.lease.review"
 	// LeaseReapInterval is how often leases whose agent no longer runs are released.
 	LeaseReapInterval = 15 * time.Second
 )
@@ -134,6 +135,9 @@ func (m *Manager) leaseLabelsLocked(name string) []string {
 	for _, l := range t.byID {
 		if l.Container == name {
 			labels := []string{"--label", labelLease + "=" + l.ID, "--label", labelLeaseOwner + "=" + l.Owner}
+			if l.scope.ReviewCheckout != "" {
+				labels = append(labels, "--label", labelLeaseReview+"="+l.scope.ReviewCheckout)
+			}
 			if l.asDaemon {
 				labels = append(labels, "--label", labelLeaseUser+"=daemon")
 			}
@@ -160,6 +164,19 @@ func (m *Manager) TakeLease(ctx context.Context, path, owner string) (Lease, err
 		return Lease{}, err
 	}
 	scope.JobCheckout, scope.ReviewCheckout = "", ""
+	if checkout := ReviewSessionCheckout(owner); checkout != "" {
+		if !BorrowedReviewSession(owner) {
+			return Lease{}, errors.New("a disposable review cannot lease an environment")
+		}
+		reviewCtx, bindErr := WithReviewSession(ctx, owner, checkout)
+		if bindErr != nil {
+			return Lease{}, bindErr
+		}
+		scope, err = m.enforceReviewIdentity(reviewCtx, scope, path)
+		if err != nil {
+			return Lease{}, err
+		}
+	}
 	root := filepath.Clean(scope.Root)
 	t := m.leaseTable()
 	t.mu.Lock()
@@ -293,6 +310,9 @@ func (m *Manager) ExecLease(ctx context.Context, id, owner string, req ExecReque
 	if err != nil {
 		return nil, err
 	}
+	if checkout := ReviewSessionCheckout(owner); checkout != "" && l.scope.ReviewCheckout != checkout {
+		return nil, errors.New("review lease lacks read-only mounts; release it and take a new lease")
+	}
 	// The lease runs as the folder's owner, while the agent's worktree and
 	// bucket belong to Swarm's user (and the folder may belong to the person):
 	// Git in the lease needs safe.directory for each of them, by exact path.
@@ -363,7 +383,7 @@ func (m *Manager) recoverLeases(ctx context.Context) error {
 	out, err := m.runner.Run(ctx, m.cfg.Engine, "ps", "-a",
 		"--filter", "label="+labelLease,
 		"--filter", "label="+labelInstance+"="+instanceIdentity(m.cfg.StateDir),
-		"--format", "{{.Names}}\t{{.Label \""+labelLease+"\"}}\t{{.Label \""+labelLeaseOwner+"\"}}\t{{.Label \""+labelRoot+"\"}}\t{{.Label \""+labelLeaseUser+"\"}}")
+		"--format", "{{.Names}}\t{{.Label \""+labelLease+"\"}}\t{{.Label \""+labelLeaseOwner+"\"}}\t{{.Label \""+labelRoot+"\"}}\t{{.Label \""+labelLeaseUser+"\"}}\t{{.Label \""+labelLeaseReview+"\"}}")
 	if err != nil {
 		return err
 	}
@@ -379,6 +399,15 @@ func (m *Manager) recoverLeases(ctx context.Context) error {
 			l.scope = scope
 		} else {
 			l.scope = Scope{Root: l.Root, Mounts: []string{l.Root}, Lease: l.ID}
+		}
+		// The immutable container label preserves confinement even before session
+		// registrations are restored. Never downgrade a recovered review lease.
+		if len(f) > 5 && f[5] != "" {
+			checkout := resolveExisting(f[5])
+			if _, err := reviewGitMounts(checkout, l.Root); err != nil {
+				return fmt.Errorf("recover review lease: %w", err)
+			}
+			l.scope.ReviewCheckout = checkout
 		}
 		t.mu.Lock()
 		if _, ok := t.byID[l.ID]; !ok {

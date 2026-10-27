@@ -35,9 +35,13 @@ func integrationGit(t *testing.T, dir string, args ...string) string {
 // Purpose: IntegrateProjectTask must preserve unrelated untracked files through
 // both public entry points. Real Git and the task store are the narrowest layer
 // proving ancestry, completion and file preservation, including stale selection
-// rejection without a receipt or target mutation.
+// rejection without a receipt or target mutation. Detached-tip cases exercise
+// delivery-only recovery and durable warnings; stale detached commits and wrong
+// branches and target mismatches must remain unchanged with lane_branch_mismatch
+// and the HTTP delivery assessment, preserving MCP's unobserved-state handling. Git HEAD lock
+// conflicts must surface through IntegrateProjectTask without changing delivery.
 func TestProjectTaskIntegrateNativeAndHTTP(t *testing.T) {
-	for _, entry := range []string{"native", "http"} {
+	for _, entry := range []string{"native", "http", "detached-tip", "detached-lock", "detached-stale", "detached-dirty", "wrong-branch", "target-mismatch"} {
 		t.Run(entry, func(t *testing.T) {
 			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 			t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
@@ -105,6 +109,61 @@ func TestProjectTaskIntegrateNativeAndHTTP(t *testing.T) {
 			if unchanged.Integration != nil || integrationGit(t, source, "rev-parse", "HEAD") != base {
 				t.Fatal("rejection mutated task or target")
 			}
+			if strings.HasPrefix(entry, "detached-") {
+				commit := head
+				if entry == "detached-stale" {
+					commit = base
+				}
+				integrationGit(t, child, "checkout", "--detach", commit)
+			}
+			if entry == "detached-lock" {
+				lock := filepath.Join(integrationGit(t, child, "rev-parse", "--absolute-git-dir"), "HEAD.lock")
+				if err := os.WriteFile(lock, []byte("held"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				_, err := f.server.IntegrateProjectTask(context.Background(), p, proj.ID, task.ID)
+				if err == nil || !strings.Contains(err.Error(), "HEAD.lock") {
+					t.Fatalf("lost lock failure: %v", err)
+				}
+				unchanged, _, _ := db.GetProjectTask(p.AccountScopeID, proj.ID, task.ID)
+				if unchanged.Integration != nil || integrationGit(t, child, "rev-parse", "--symbolic-full-name", "HEAD") != "HEAD" || integrationGit(t, source, "rev-parse", "HEAD") != base {
+					t.Fatal("lock failure mutated delivery")
+				}
+				return
+			}
+			if entry == "detached-dirty" {
+				if err := os.WriteFile(filepath.Join(child, "result.txt"), []byte("uncommitted\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if entry == "wrong-branch" {
+				integrationGit(t, child, "checkout", "-b", "other")
+			}
+			if entry == "target-mismatch" {
+				integrationGit(t, source, "checkout", "--detach", base)
+			}
+			if entry == "detached-stale" || entry == "detached-dirty" || entry == "wrong-branch" || entry == "target-mismatch" {
+				before := integrationGit(t, child, "rev-parse", "HEAD", "--symbolic-full-name", "HEAD")
+				_, err := f.server.IntegrateProjectTask(context.Background(), p, proj.ID, task.ID)
+				if err == nil || !strings.Contains(err.Error(), "lane_branch_mismatch") {
+					t.Fatalf("mismatch: %v", err)
+				}
+				args, _ := json.Marshal(tool.ProjectTaskIntegrationSelection{SessionID: session.ID, SourceBranch: "agent/task", TargetBranch: "dev"})
+				code, out := f.do(http.MethodPost, "/v3/projects/"+proj.ID+"/tasks/"+task.ID+"/integrate", string(args))
+				var body map[string]any
+				if err := json.Unmarshal([]byte(out), &body); err != nil {
+					t.Fatal(err)
+				}
+				delivery, ok := body["delivery"].(map[string]any)
+				if code != http.StatusConflict || !ok || delivery["reason_code"] != "lane_branch_mismatch" {
+					t.Fatalf("lost delivery assessment: %d %s", code, out)
+				}
+				unchanged, _, _ := db.GetProjectTask(p.AccountScopeID, proj.ID, task.ID)
+				if unchanged.Integration != nil || integrationGit(t, source, "rev-parse", "HEAD") != base || integrationGit(t, child, "rev-parse", "HEAD", "--symbolic-full-name", "HEAD") != before {
+					t.Fatal("rejection mutated lane, receipt or target")
+				}
+				return
+			}
 			var result map[string]any
 			if entry == "native" {
 				runtime := tool.NewRuntime(1)
@@ -137,6 +196,9 @@ func TestProjectTaskIntegrateNativeAndHTTP(t *testing.T) {
 				t.Fatalf("receipt: %#v", receipt)
 			}
 			updated, _, _ := db.GetProjectTask(p.AccountScopeID, proj.ID, task.ID)
+			if entry == "detached-tip" && (updated.Integration.Warning == "" || integrationGit(t, child, "symbolic-ref", "--short", "HEAD") != "agent/task") {
+				t.Fatal("recovery did not attach and record warning")
+			}
 			if updated.Status != "completed" {
 				t.Fatalf("status %s", updated.Status)
 			}

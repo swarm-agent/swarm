@@ -2531,7 +2531,7 @@ func controlMCPIntegrate(c *controlMCPCall, args map[string]any, tool, readTool 
 		return nil, err
 	}
 	out := map[string]any{"status": integrated["status"], "task": controlMCPTaskSummary(controlMCPMap(integrated["task"]))}
-	if result := controlMCPPick(controlMCPMap(integrated["integration"]), "target_branch", "resulting_target_head"); len(result) > 0 {
+	if result := controlMCPPick(controlMCPMap(integrated["integration"]), "target_branch", "resulting_target_head", "warning"); len(result) > 0 {
 		out["integration"] = result
 	}
 	return out, nil
