@@ -11,7 +11,7 @@
 //! session over the same stream. Making and changing them is the
 //! Orchestrator's (manage_workers, manage_automation).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use gpui::{AnyElement, ClickEvent, Context, Div, IntoElement, SharedString, div, prelude::*, px};
 
@@ -21,14 +21,147 @@ use crate::swarm::automations::{self, Automation, Board, Run, Worker};
 use crate::swarm::workflows::{self, Workflow};
 
 /// The run whose own view is open.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct RunOpen {
     pub run_id: String,
     pub worker_id: String,
     pub session_id: String,
 }
 
+/// What the person last asked of one worker schedule, by (worker, schedule).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum ScheduleAsk {
+    /// Sent; Swarm has not answered yet ("starting…", "pausing…").
+    Waiting(&'static str),
+    /// Swarm's answer in a line; true when it refused. A started run can be
+    /// opened.
+    Answer(String, bool, Option<RunOpen>),
+}
+
+pub(super) type ScheduleAsks = HashMap<(String, String), ScheduleAsk>;
+
+/// Swarm's answer to "run now", in a line, and the run it can open.
+fn started_line(worker_id: &str, s: &automations::Started) -> (String, bool, Option<RunOpen>) {
+    let failed = s.status == "failed";
+    let mut line = if s.run_id.is_empty() { format!("Swarm answered: {}", s.status) } else { format!("Swarm started run {} · {}", s.run_id, s.status) };
+    if !s.error.is_empty() {
+        line.push_str(&format!(": {}", s.error));
+    }
+    let open = (!s.run_id.is_empty()).then(|| RunOpen { run_id: s.run_id.clone(), worker_id: worker_id.to_string(), session_id: s.session_id.clone() });
+    (line, failed, open)
+}
+
+/// Swarm's answer to "pause schedule" / "resume schedule", in a line.
+fn schedule_line(enabled: Option<bool>) -> String {
+    match enabled {
+        Some(true) => "Swarm: the schedule is on.".into(),
+        Some(false) => "Swarm: the schedule is off.".into(),
+        None => "Swarm answered without this schedule.".into(),
+    }
+}
+
 impl Console {
+    /// Runs a worker's schedule now. One press sends one key, and a press
+    /// while Swarm has not answered the last one sends nothing.
+    fn run_schedule_now(&mut self, worker_id: String, automation_id: String, cx: &mut Context<Self>) {
+        let Some(client) = self.live.as_ref().map(|l| l.client()) else { return };
+        let at = (worker_id.clone(), automation_id.clone());
+        if matches!(self.schedule_asks.get(&at), Some(ScheduleAsk::Waiting(_))) {
+            return;
+        }
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let key = automations::run_now_key(&worker_id, &automation_id, nanos);
+        self.schedule_asks.insert(at.clone(), ScheduleAsk::Waiting("starting…"));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let (w, a) = (worker_id.clone(), automation_id.clone());
+            let result = cx.background_executor().spawn(async move { automations::trigger(&client, &w, &a, &key) }).await;
+            this.update(cx, |this, cx| {
+                let answer = match result {
+                    Ok(started) => {
+                        let (line, failed, open) = started_line(&worker_id, &started);
+                        ScheduleAsk::Answer(line, failed, open)
+                    }
+                    Err(e) => ScheduleAsk::Answer(format!("Swarm refused: {e}"), true, None),
+                };
+                this.schedule_asks.insert(at, answer);
+                this.load_automations(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Turns a worker's schedule on or off at the revision shown; the line
+    /// shows the state Swarm answers with.
+    fn switch_schedule(&mut self, worker_id: String, automation_id: String, revision: u64, enable: bool, cx: &mut Context<Self>) {
+        let Some(client) = self.live.as_ref().map(|l| l.client()) else { return };
+        let at = (worker_id.clone(), automation_id.clone());
+        if matches!(self.schedule_asks.get(&at), Some(ScheduleAsk::Waiting(_))) {
+            return;
+        }
+        self.schedule_asks.insert(at.clone(), ScheduleAsk::Waiting(if enable { "resuming…" } else { "pausing…" }));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_executor().spawn(async move { automations::set_schedule(&client, &worker_id, &automation_id, revision, enable) }).await;
+            this.update(cx, |this, cx| {
+                let answer = match result {
+                    Ok(enabled) => ScheduleAsk::Answer(schedule_line(enabled), false, None),
+                    Err(e) => ScheduleAsk::Answer(format!("Swarm refused: {e}"), true, None),
+                };
+                this.schedule_asks.insert(at, answer);
+                this.load_automations(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// One schedule of a worker: when it runs, and for an accepted worker
+    /// "run now" and pause or resume, with Swarm's answer to the last ask.
+    fn schedule_row(&self, w: &Worker, a: &automations::WorkerAutomation, cx: &mut Context<Self>) -> Div {
+        let t = &self.theme;
+        let can = w.state != "pending" && !a.id.is_empty();
+        let ask = self.schedule_asks.get(&(w.id.clone(), a.id.clone()));
+        let waiting = matches!(ask, Some(ScheduleAsk::Waiting(_)));
+        let line = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .text_size(px(11.))
+            .child(div().text_color(if a.enabled { t.accent } else { t.faint }).child(if a.enabled { "●" } else { "○" }))
+            .child(div().text_color(t.muted).child(a.name.clone()))
+            .child(div().text_color(t.faint).child(if a.enabled { a.when.clone() } else { format!("{} · off", a.when) }))
+            .child(div().flex_1())
+            .when(can && !waiting, |d| {
+                let (wid, aid) = (w.id.clone(), a.id.clone());
+                let (wid2, aid2, rev, enable) = (w.id.clone(), a.id.clone(), w.revision, !a.enabled);
+                d.child(self.button(SharedString::from(format!("schedule-run-{}-{}", w.id, a.id)), "run now", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.run_schedule_now(wid.clone(), aid.clone(), cx);
+                })))
+                .child(self.button(SharedString::from(format!("schedule-switch-{}-{}", w.id, a.id)), if a.enabled { "pause schedule" } else { "resume schedule" }, false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.switch_schedule(wid2.clone(), aid2.clone(), rev, enable, cx);
+                })))
+            });
+        let answer: Option<Div> = match ask {
+            None => None,
+            Some(ScheduleAsk::Waiting(label)) => Some(div().text_color(t.accent).child(label.to_string())),
+            Some(ScheduleAsk::Answer(text, refused, open)) => Some(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().text_color(if *refused { t.err } else { t.muted }).child(text.clone()))
+                    .when_some(open.clone(), |d, open| {
+                        d.child(self.button(SharedString::from(format!("schedule-open-{}-{}", w.id, a.id)), "open run", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.open_run_ids(open.worker_id.clone(), open.run_id.clone(), open.session_id.clone(), cx);
+                        })))
+                    }),
+            ),
+        };
+        div().pl_3().flex().flex_col().gap(px(2.)).child(line).when_some(answer, |d, a| d.child(div().pl_4().text_size(px(11.)).child(a)))
+    }
+
     /// Reads workers, their runs and automations; a read asked for while one
     /// is under way follows it.
     pub(super) fn load_automations(&mut self, cx: &mut Context<Self>) {
@@ -181,7 +314,7 @@ impl Console {
                         Some(Ok(board)) => self.render_board(board, cx),
                     }
                 } else {
-                    self.note_line("This machine's workers show in its own window: open it from its card on the Agents page.")
+                    self.note_line("This machine's workers show in its own window: open it from its card on the Fleet page.")
                 };
                 div()
                     .flex()
@@ -617,16 +750,7 @@ impl Console {
             })
             .when(!detail.is_empty(), |d| d.child(div().text_size(px(11.)).text_color(t.faint).child(detail.join(" · "))))
             .when(!w.description.is_empty(), |d| d.child(div().text_size(px(11.)).text_color(t.muted).child(w.description.clone())))
-            .children(w.automations.iter().map(|a| {
-                div()
-                    .pl_3()
-                    .flex()
-                    .gap_2()
-                    .text_size(px(11.))
-                    .child(div().text_color(if a.enabled { t.accent } else { t.faint }).child(if a.enabled { "●" } else { "○" }))
-                    .child(div().text_color(t.muted).child(a.name.clone()))
-                    .child(div().text_color(t.faint).child(if a.enabled { a.when.clone() } else { format!("{} · off", a.when) }))
-            }))
+            .children(w.automations.iter().map(|a| self.schedule_row(w, a, cx)))
     }
 
     fn automation_row(&self, a: &Automation, rule: bool) -> Div {
@@ -846,5 +970,21 @@ mod tests {
         };
         let ids: Vec<&str> = Console::failing(&board).iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids, vec!["a2"]);
+    }
+
+    /// "Run now" shows the run Swarm started, which opens on its view.
+    #[test]
+    fn the_run_now_answer() {
+        let s = automations::Started { run_id: "r1".into(), status: "admitted".into(), session_id: "s1".into(), error: String::new() };
+        let (line, refused, open) = started_line("w1", &s);
+        assert_eq!(line, "Swarm started run r1 · admitted");
+        assert!(!refused);
+        assert_eq!(open, Some(RunOpen { run_id: "r1".into(), worker_id: "w1".into(), session_id: "s1".into() }));
+        let f = automations::Started { run_id: "r2".into(), status: "failed".into(), session_id: String::new(), error: "no workspace".into() };
+        let (line, refused, _) = started_line("w1", &f);
+        assert_eq!(line, "Swarm started run r2 · failed: no workspace");
+        assert!(refused);
+        assert_eq!(schedule_line(Some(false)), "Swarm: the schedule is off.");
+        assert_eq!(schedule_line(None), "Swarm answered without this schedule.");
     }
 }
