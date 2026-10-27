@@ -61,6 +61,8 @@ pub enum Page {
     Sessions,
     Media,
     Usage,
+    /// The whole fleet: every machine, what needs you, spend.
+    Fleet,
     Agents,
     /// The account's rules: this device, other devices, home, linked machines.
     Permissions,
@@ -72,13 +74,14 @@ pub enum Page {
 }
 
 impl Page {
-    const ALL: [Page; 8] = [Page::Sessions, Page::Media, Page::Usage, Page::Agents, Page::Permissions, Page::Automations, Page::Settings, Page::Search];
+    const ALL: [Page; 9] = [Page::Sessions, Page::Media, Page::Usage, Page::Fleet, Page::Agents, Page::Permissions, Page::Automations, Page::Settings, Page::Search];
 
     fn label(self) -> &'static str {
         match self {
             Page::Sessions => "Sessions",
             Page::Media => "Media",
             Page::Usage => "Usage",
+            Page::Fleet => "Fleet",
             Page::Agents => "Agents",
             Page::Permissions => "Permissions",
             Page::Automations => "Automations",
@@ -93,6 +96,7 @@ impl Page {
             Page::Sessions => Icon::Sessions,
             Page::Media => Icon::Media,
             Page::Usage => Icon::Usage,
+            Page::Fleet => Icon::Machine,
             Page::Agents => Icon::Agents,
             Page::Permissions => Icon::Shield,
             Page::Automations => Icon::Tasks,
@@ -125,6 +129,7 @@ actions!(
         GoMedia,
         GoUsage,
         GoAgents,
+        GoFleet,
         GoSettings,
         Send,
         Complete,
@@ -241,6 +246,12 @@ pub struct Console {
     catalog: crate::swarm::models::Catalog,
     /// The machines home controls, read from home (fleet::Fleet); after home in machines.
     fleet: Option<crate::swarm::fleet::Fleet>,
+    /// What needs the person on home (first) and each linked machine, from
+    /// the fleet reader; empty until its first tick.
+    needs: Vec<crate::swarm::needs::Reading>,
+    /// An item to open once this window is connected (a machine window
+    /// opened from the Fleet page).
+    focus_on_connect: Option<crate::swarm::needs::Target>,
     /// A linked machine this window shows, through home's link to it
     /// (/v3/fleet/machines/NAME/api); None: home itself.
     via: Option<String>,
@@ -342,9 +353,12 @@ impl Console {
         Self::build(None, cx)
     }
 
-    /// A window on a machine home has linked, through home's link to it.
-    pub fn for_machine(name: String, cx: &mut Context<Self>) -> Self {
-        Self::build(Some(name), cx)
+    /// A window on a machine home has linked, through home's link to it,
+    /// that opens `target` (an item from the Fleet page) once connected.
+    pub fn for_machine_at(name: String, target: Option<crate::swarm::needs::Target>, cx: &mut Context<Self>) -> Self {
+        let mut console = Self::build(Some(name), cx);
+        console.focus_on_connect = target;
+        console
     }
 
     fn build(via: Option<String>, cx: &mut Context<Self>) -> Self {
@@ -432,6 +446,8 @@ impl Console {
             preview: None,
             selection: None,
             fleet: None,
+            needs: Vec::new(),
+            focus_on_connect: None,
             via: via.clone(),
             home: None,
             link_code: None,
@@ -628,6 +644,9 @@ impl Console {
     }
     fn go_automations(&mut self, _: &GoAutomations, _: &mut Window, cx: &mut Context<Self>) {
         self.go(Page::Automations, cx);
+    }
+    fn go_fleet(&mut self, _: &GoFleet, _: &mut Window, cx: &mut Context<Self>) {
+        self.go(Page::Fleet, cx);
     }
     fn go_settings(&mut self, _: &GoSettings, _: &mut Window, cx: &mut Context<Self>) {
         self.go(Page::Settings, cx);
@@ -1468,6 +1487,7 @@ impl Render for Console {
             .on_action(cx.listener(Self::go_media))
             .on_action(cx.listener(Self::go_usage))
             .on_action(cx.listener(Self::go_agents))
+            .on_action(cx.listener(Self::go_fleet))
             .on_action(cx.listener(Self::go_settings))
             .on_action(cx.listener(Self::go_search))
             .on_action(cx.listener(Self::go_automations))
@@ -1494,6 +1514,7 @@ impl Render for Console {
                             .child(self.render_node(&layout, vec![], cx)),
                         Page::Media => div().flex_1().min_w_0().child(self.render_media(cx)),
                         Page::Usage => div().flex_1().min_w_0().child(self.render_usage(cx)),
+                        Page::Fleet => div().flex_1().min_w_0().child(self.render_fleet(cx)),
                         Page::Agents => div().flex_1().min_w_0().child(self.render_agents(cx)),
                         Page::Permissions => div().flex_1().min_w_0().child(self.render_permissions(cx)),
                         Page::Automations => div().flex_1().min_w_0().child(self.render_automations(cx)),
@@ -1501,7 +1522,7 @@ impl Render for Console {
                         Page::Search => div().flex_1().min_w_0().child(self.render_search(cx)),
                         Page::Projects => div().flex_1().min_w_0().child(self.render_projects(cx)),
                     })
-                    .when(right && self.page == Page::Agents, |d| d.child(self.render_agents_inspector(cx))),
+                    .when(right && matches!(self.page, Page::Agents | Page::Fleet), |d| d.child(self.render_agents_inspector(cx))),
             )
             .child(self.render_statusbar(hints, cx))
             .children(self.render_fleet_popover(cx))

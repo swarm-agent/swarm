@@ -34,10 +34,15 @@ impl Console {
                 let (today, unknown) = crate::data::spend_today(&self.machines);
                 Some((format!("${today:.2}{}", if unknown { "+?" } else { "" }), t.faint, false))
             }
-            Page::Agents => {
+            Page::Fleet => {
+                let waiting = crate::swarm::needs::Count::of(self.needs.iter().map(crate::swarm::needs::Reading::waiting));
+                if waiting.known > 0 {
+                    return Some((format!("{} waiting", waiting.text()), t.warn, true));
+                }
                 let online = self.machines.iter().filter(|m| m.health != Health::Offline).count();
                 Some((format!("{online}/{}", self.machines.len()), t.faint, false))
             }
+            Page::Agents => None,
             Page::Automations => match &self.automations {
                 Some(Ok(b)) => {
                     let failed = Console::failing(b).len();
@@ -157,7 +162,7 @@ impl Console {
                 .text_size(px(9.))
                 .text_color(self.health_color(m.health))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.page = Page::Agents;
+                    this.page = Page::Fleet;
                     this.agents_focus = AgentsFocus::Machine(mi);
                     cx.notify();
                 }))

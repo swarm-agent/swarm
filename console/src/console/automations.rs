@@ -74,7 +74,12 @@ impl Console {
 
     /// Opens a run's own view and follows its session.
     fn open_run(&mut self, run: &Run, cx: &mut Context<Self>) {
-        let open = RunOpen { run_id: run.id.clone(), worker_id: run.worker_id.clone(), session_id: run.session_id.clone() };
+        self.open_run_ids(run.worker_id.clone(), run.id.clone(), run.session_id.clone(), cx);
+    }
+
+    /// Opens the run with these ids (from the Fleet page) on the Automations page.
+    pub(super) fn open_run_ids(&mut self, worker_id: String, run_id: String, session_id: String, cx: &mut Context<Self>) {
+        let open = RunOpen { run_id, worker_id, session_id };
         self.run_entries = None;
         if let Some(live) = &self.live {
             live.watch_run(Some(open.session_id.clone()).filter(|s| !s.is_empty()));
@@ -210,7 +215,7 @@ impl Console {
             .children(sections)
     }
 
-    fn note_line(&self, text: impl Into<SharedString>) -> Div {
+    pub(super) fn note_line(&self, text: impl Into<SharedString>) -> Div {
         div().text_size(px(11.)).text_color(self.theme.faint).line_height(px(17.)).child(text.into())
     }
 

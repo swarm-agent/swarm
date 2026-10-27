@@ -136,10 +136,22 @@ impl Console {
     }
 
     fn pump(&mut self, updates: Vec<Update>, cx: &mut Context<Self>) {
-        if let Some(fleet) = self.fleet.as_ref().and_then(|f| f.latest()) {
+        if let Some(reading) = self.fleet.as_ref().and_then(|f| f.latest()) {
             let home = self.machines.first().map(|m| m.name.clone());
-            self.machines.truncate(1);
-            self.machines.extend(fleet.into_iter().filter(|m| Some(&m.name) != home.as_ref()));
+            match reading.machines {
+                Some(fleet) => {
+                    self.machines.truncate(1);
+                    self.machines.extend(fleet.into_iter().filter(|m| Some(&m.name) != home.as_ref()));
+                    self.needs = reading.needs;
+                }
+                // Home's list was not read: the machines stand, and so does
+                // what was read from them; home's own part is new.
+                None => match (self.needs.first_mut(), reading.needs.into_iter().next()) {
+                    (Some(first), Some(here)) => *first = here,
+                    (None, Some(here)) => self.needs = vec![here],
+                    _ => {}
+                },
+            }
             cx.notify();
         }
         if self.live.is_none() {
@@ -175,6 +187,10 @@ impl Console {
                         self.load_permissions();
                     }
                     self.open_pending();
+                    // A machine window opened for one item opens it now.
+                    if let Some(target) = self.focus_on_connect.take() {
+                        self.open_target(target, cx);
+                    }
                     self.select_pending_project(cx);
                     self.answer_calls(cx);
                     self.follow_theme(cx);

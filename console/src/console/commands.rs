@@ -16,6 +16,7 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
     ("/settings", "settings"),
     ("/media", "images, video and sound"),
     ("/agents", "models per role"),
+    ("/fleet", "every machine, what needs you, spend"),
 ];
 
 #[derive(Debug, PartialEq)]
@@ -32,7 +33,7 @@ pub(super) enum Slash {
 pub(super) fn parse(text: &str) -> Slash {
     let text = text.trim();
     let (word, rest) = text.split_once(char::is_whitespace).map(|(w, r)| (w, r.trim())).unwrap_or((text, ""));
-    let names = ["/new", "/stop", "/theme", "/usage", "/settings", "/media", "/agents"];
+    let names = ["/new", "/stop", "/theme", "/usage", "/settings", "/media", "/agents", "/fleet"];
     let hits: Vec<&str> = names.iter().copied().filter(|n| n.starts_with(word) && word.len() > 1).collect();
     let name = if names.contains(&word) { word } else if hits.len() == 1 { hits[0] } else { return Slash::Unknown };
     match (name, rest) {
@@ -45,6 +46,7 @@ pub(super) fn parse(text: &str) -> Slash {
         ("/settings", "") => Slash::Go(Page::Settings),
         ("/media", "") => Slash::Go(Page::Media),
         ("/agents", "") => Slash::Go(Page::Agents),
+        ("/fleet", "") => Slash::Go(Page::Fleet),
         _ => Slash::Unknown,
     }
 }

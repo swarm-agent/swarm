@@ -14,7 +14,7 @@ mod layout;
 mod theme;
 
 use console::{
-    ClosePane, Console, GoAgents, GoMedia,
+    ClosePane, Console, GoAgents, GoFleet, GoMedia,
     GoSessions, GoSettings, GoUsage, GoSearch, GoAutomations, SearchRun, NextPane, SplitDown, SplitRight, ToggleLeft, CycleIcons,
 };
 use gpui::{
@@ -65,6 +65,7 @@ fn main() {
             KeyBinding::new("alt-5", GoSettings, None),
             KeyBinding::new("alt-6", GoSearch, None),
             KeyBinding::new("alt-7", GoAutomations, None),
+            KeyBinding::new("alt-8", GoFleet, None),
             KeyBinding::new("ctrl-k", GoSearch, None),
             KeyBinding::new("enter", SearchRun, Some("Search")),
         ]);

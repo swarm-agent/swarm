@@ -112,20 +112,39 @@ a separate profile and the extension loaded, for trying it out.
 
 ## Layout
 
-- **Navigation:** Sessions, Media, Usage, Agents and Settings at the top of
-  the left sidebar. `«` (or ctrl-b) collapses the sidebar to an icon rail with
-  the pages, the current project's sessions and fleet health; `»` expands it.
-- **Agents:** the machines, read-only. Each card is what that machine's own
-  Swarm reports in `GET /v3/box/summary` (a linked machine's read through
-  home at `/v3/fleet/machines/{name}/api/v3/box/summary`): status (ok,
-  attention or degraded, with Swarm's reasons), build and update state, what
-  runs now, today's runs and spend, uptime and sandbox; anything it does not
-  report shows as "—", and a machine home cannot reach shows offline with its
-  last contact. Below, one role × machine grid: the first column is the
-  setting on the connected Swarm (`/v1/agent-model-settings`, the only one
-  changed here); each linked machine's cell says whether its own setting is
-  the same, another model, or unknown. Selecting a machine, role or cell
-  opens it in the right-hand inspector.
+- **Navigation:** Sessions, Media, Usage, Fleet, Agents and Settings at the
+  top of the left sidebar. `«` (or ctrl-b) collapses the sidebar to an icon
+  rail with the pages, the current project's sessions and fleet health; `»`
+  expands it.
+- **Fleet:** the one place to see the whole fleet. The top line counts it
+  ("4 machines · 1 needs attention · 3 waiting on you · 2 failed today"; a
+  count with `+?` has a machine that was not read). Then the machine cards,
+  read-only: each is what that machine's own Swarm reports in
+  `GET /v3/box/summary` (a linked machine's read through home at
+  `/v3/fleet/machines/{name}/api/v3/box/summary`): status (ok, attention or
+  degraded, with Swarm's reasons), build and update state, what runs now,
+  today's runs and spend, uptime and sandbox; anything it does not report
+  shows as "—", and a machine home cannot reach shows offline with its last
+  contact. Selecting a card opens it in the right-hand inspector. Below,
+  **Needs you**: one line per item across home and every linked machine,
+  newest first, tagged with the machine: sessions waiting on a permission or
+  a question (the summary's `attention.sessions`, each with what it asks from
+  `GET /v3/sessions/{id}/permissions?status=pending`), tasks in
+  `pending_approval` or `needs_review` (`GET /v3/projects`, then each
+  project's `/tasks`), and runs that failed today (the summary's
+  `runs.failed_runs`, with the error from
+  `GET /v3/workers/{id}/runs/{run}`). At most 20 per machine and kind are
+  listed; when Swarm counts more, or something could not be read, a note
+  under the list says so. A home item opens here (the conversation, or the
+  run on Automations); a linked machine's opens that machine's window, which
+  opens the item once connected. Last, today's spend per machine and the
+  fleet total ("unknown" where a machine did not report it). Everything is
+  read on the fleet tick, every 20 seconds, off the UI thread.
+- **Agents:** one role × machine grid: the first column is the setting on
+  the connected Swarm (`/v1/agent-model-settings`, the only one changed
+  here); each linked machine's cell says whether its own setting is the same,
+  another model, or unknown. Selecting a role or cell opens it in the
+  right-hand inspector.
 - **Media, Usage, Settings:** generated media by kind; spend against limits by
   day, machine, role and session; home machine, connections, appearance and
   approvals.
@@ -153,7 +172,7 @@ a separate profile and the extension loaded, for trying it out.
 - **Composer:** while Swarm says the run is active, send becomes stop
   (`POST /v3/sessions/{id}/run/stop`; the notice is Swarm's own answer). Typing `/` lists the
   commands: `/new`, `/new bottom`, `/stop`, `/theme`, `/usage`,
-  `/settings`, `/media`, `/agents`; tab completes, enter runs.
+  `/settings`, `/media`, `/agents`, `/fleet`; tab completes, enter runs.
 - **Usage:** each sign-in plan's limit windows (`GET /v1/codex/account/usage`),
   then 30 days of tokens, spend at API prices, turns, each day, each model
   and recent sessions (`GET /v3/usage`, today and 30 days).
@@ -177,7 +196,7 @@ a separate profile and the extension loaded, for trying it out.
   a new failure also shows in the status bar, and the nav says how many
   run or failed. Routes: `/v3/workers`, `/v3/workers/{id}/runs` and
   `…/cancel`, `/v3/automations/v2`, `/v3/sessions/{id}`. A linked
-  machine's automations show in its own window (open it from its card).
+  machine's automations show in its own window (open it from its card on Fleet).
 - **Icons:** line, solid, pixel or glyph. They
   are one-color SVG masks tinted by the theme, so a reskin needs no new art.
   Line by default; Settings or ctrl-4 change it. Pixel icons are ASCII art
@@ -192,6 +211,7 @@ a separate profile and the extension loaded, for trying it out.
 | ctrl-b | collapse or expand the sidebar |
 | ctrl-4 | next icon style |
 | alt-1 … alt-5 | Sessions, Media, Usage, Agents, Settings |
+| alt-8 | Fleet |
 | tab | in a composer, complete a / command |
 
 ## Notes
@@ -203,7 +223,9 @@ a separate profile and the extension loaded, for trying it out.
   and running sessions hydrated in full. The machine summary, models, usage
   and plan limits are reread on their own thread every 30 seconds and after a
   command; `src/swarm/fleet.rs` rereads home's fleet list and each linked
-  machine's summary and models through home every 20 seconds.
+  machine's summary and models through home every 20 seconds, and in the
+  same tick what needs the person on home and each machine
+  (`src/swarm/needs.rs`).
   `src/swarm/map.rs` turns the answers into what the console shows.
 
 ### Project folders and project.md

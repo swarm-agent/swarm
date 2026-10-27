@@ -1,4 +1,5 @@
-//! Agents: the machines and each one's model for every role.
+//! Agents: each machine's model for every role, and the inspector the Fleet
+//! page shares (a machine, the whole fleet, linking).
 //!
 //! Read-only: every card and cell is what that machine's own Swarm said (its
 //! GET /v3/box/summary and GET /v1/agent-model-settings, a linked machine's
@@ -57,7 +58,7 @@ impl Console {
         (word, color)
     }
 
-    fn machine_card(&self, mi: usize, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn machine_card(&self, mi: usize, cx: &mut Context<Self>) -> AnyElement {
         let t = &self.theme;
         let m = &self.machines[mi];
         let selected = self.agents_focus == AgentsFocus::Machine(mi);
@@ -240,8 +241,6 @@ impl Console {
         })
         .collect::<Vec<_>>();
 
-        let cards: Vec<_> = (0..self.machines.len()).map(|mi| self.machine_card(mi, cx)).collect();
-
         let legend = div()
             .flex()
             .gap_4()
@@ -277,40 +276,7 @@ impl Console {
                     .gap_1()
                     .child(div().text_size(px(16.)).text_color(t.text).child("Agents"))
                     .child(div().text_color(t.faint).child(
-                        "Each machine as its own Swarm reports it. DEFAULT is the setting on the Swarm this window is connected to; other machines show whether they run the same model.",
-                    )),
-            )
-            .child(self.section("MACHINES", Some(self.machines.len())).px_0())
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap_3()
-                    .children(cards)
-                    // Linking is in the fleet inspector (a code made on the machine).
-                    .when(self.via.is_none() && self.link != super::Link::Demo, |d| d.child(
-                        div()
-                            .id("add-machine")
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.agents_focus = AgentsFocus::Fleet;
-                                cx.notify();
-                            }))
-                            .w(px(232.))
-                            .min_h(px(150.))
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .justify_center()
-                            .gap_1()
-                            .rounded(px(t.radius + 2.))
-                            .border_1()
-                            .border_dashed()
-                            .border_color(t.border_strong)
-                            .text_color(t.faint)
-                            .cursor_pointer()
-                            .hover(move |s| s.bg(hover))
-                            .child(div().text_color(t.muted).child("+ link a machine"))
-                            .child(div().text_size(px(10.5)).child("with a code from sudo swarmctl fleet invite")),
+                        "Each machine's model for every role, as its own Swarm reports it. DEFAULT is the setting on the Swarm this window is connected to; other machines show whether they run the same model. The machines themselves are on the Fleet page.",
                     )),
             )
             .child(self.section("ROLES", Some(self.roles.len())).px_0())
@@ -353,7 +319,17 @@ impl Console {
 
     pub(super) fn render_agents_inspector(&self, cx: &mut Context<Self>) -> Div {
         let t = &self.theme;
-        let body = match self.agents_focus {
+        // The Fleet page selects machines; a role or cell belongs to Agents.
+        let focus = match (self.page, self.agents_focus) {
+            (super::Page::Fleet, AgentsFocus::Role(_) | AgentsFocus::Cell(..)) => AgentsFocus::Fleet,
+            (_, focus) => focus,
+        };
+        let tip = if self.page == super::Page::Fleet {
+            "Select a machine for what its Swarm reports."
+        } else {
+            "Select a role to change its default on this Swarm, or a cell for one machine's model."
+        };
+        let body = match focus {
             AgentsFocus::Fleet => {
                 let online = self.machines.iter().filter(|m| m.health != Health::Offline).count();
                 let attention = self.machines.iter().filter(|m| matches!(m.health, Health::Attention | Health::Degraded)).count();
@@ -373,7 +349,7 @@ impl Console {
                             .px_3()
                             .text_size(px(11.))
                             .text_color(t.faint)
-                            .child("Select a machine for what its Swarm reports, or a role to change its default on this Swarm."),
+                            .child(tip),
                     )
             }
             AgentsFocus::Machine(mi) => {

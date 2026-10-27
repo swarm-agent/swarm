@@ -109,7 +109,7 @@ impl Console {
     /// Opens a found conversation: one the sidebar has opens at once; one it
     /// does not (older than the recent list) is read from Swarm first, then
     /// opened when it arrives.
-    fn open_found(&mut self, id: String, cx: &mut Context<Self>) {
+    pub(super) fn open_found(&mut self, id: String, cx: &mut Context<Self>) {
         if let Some(i) = self.sessions.iter().position(|s| s.live.as_ref().is_some_and(|l| l.session_id.as_ref() == id)) {
             self.open(i, Open::Here);
             self.page = Page::Sessions;

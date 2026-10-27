@@ -4,7 +4,9 @@
 //! seconds and, through home's link to each machine
 //! (/v3/fleet/machines/{name}/api/…), that machine's own summary
 //! (GET /v3/box/summary) and its model per role (GET
-//! /v1/agent-model-settings). The app never calls the other machines itself.
+//! /v1/agent-model-settings). The same tick reads what needs the person on
+//! home and on each machine (swarm::needs), all at once off the UI thread.
+//! The app never calls the other machines itself.
 //! A Swarm without the fleet routes yet has no machines.
 
 use std::sync::mpsc::{self, Receiver};
@@ -13,7 +15,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use super::client::{Client, Refusal};
-use super::map;
+use super::{map, needs};
 use crate::data::{Health, Machine};
 
 const EVERY: Duration = Duration::from_secs(20);
@@ -90,40 +92,76 @@ pub fn machine(found: &Found, summary: Result<&Value, &str>, settings: Option<&V
     m
 }
 
-/// One machine read through home: its summary and models.
-fn read_machine(home: &Client, found: &Found) -> Machine {
+/// One machine read through home: its summary and models, and what on it
+/// needs the person (from the same summary).
+fn read_machine(home: &Client, found: &Found, recall: &needs::Recall) -> (Machine, needs::Reading) {
     let link = Client::new(machine_base(home.base(), &found.name), home.token());
     let summary = link.get("/v3/box/summary").map_err(|e| e.to_string());
     let settings = summary.as_ref().ok().and_then(|_| link.get("/v1/agent-model-settings").ok());
-    machine(found, summary.as_ref().map_err(String::as_str), settings.as_ref())
+    let summary = summary.as_ref().map_err(String::as_str);
+    let needs = needs::read(&link, false, &found.name, summary.map_err(|why| if why.trim().is_empty() { found.last_error.as_str() } else { why }), recall);
+    (machine(found, summary, settings.as_ref()), needs)
+}
+
+/// What needs the person on home itself.
+fn read_home(home: &Client, recall: &needs::Recall) -> needs::Reading {
+    let summary = home.get("/v3/box/summary").map_err(|e| e.to_string());
+    needs::read(home, true, "", summary.as_ref().map_err(String::as_str), recall)
+}
+
+/// One fleet tick: home's machines (None when home's list could not be
+/// read; the last one stands) and what needs the person on home and on each.
+pub struct Reading {
+    pub machines: Option<Vec<Machine>>,
+    /// Home first, then each machine in home's order.
+    pub needs: Vec<needs::Reading>,
 }
 
 /// Every machine, read at once so one slow machine does not hold the rest.
-pub fn read_all(home: &Client, found: &[Found]) -> Vec<Machine> {
+pub fn read_all(home: &Client, found: &[Found], recall: &needs::Recall) -> (Vec<Machine>, Vec<needs::Reading>) {
     std::thread::scope(|scope| {
-        let reads: Vec<_> = found.iter().map(|f| scope.spawn(move || read_machine(home, f))).collect();
+        let reads: Vec<_> = found.iter().map(|f| scope.spawn(move || read_machine(home, f, recall))).collect();
         reads
             .into_iter()
             .zip(found)
-            .map(|(r, f)| r.join().unwrap_or_else(|_| machine(f, Err("reading it failed"), None)))
-            .collect()
+            .map(|(r, f)| {
+                r.join().unwrap_or_else(|_| {
+                    let why = "reading it failed";
+                    (machine(f, Err(why), None), needs::Reading { machine: f.name.clone(), unread: vec![why.into()], ..Default::default() })
+                })
+            })
+            .unzip()
     })
 }
 
 /// Watches home's fleet from a background thread.
 pub struct Fleet {
-    rx: Receiver<Vec<Machine>>,
+    rx: Receiver<Reading>,
 }
 
 impl Fleet {
     pub fn start(home: Client) -> Fleet {
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
+            let mut recall = needs::Recall::default();
             loop {
-                if let Ok(found) = read(&home) {
-                    if tx.send(read_all(&home, &found)).is_err() {
-                        return; // the console is gone
+                let (here, fleet) = std::thread::scope(|scope| {
+                    let here = scope.spawn(|| read_home(&home, &recall));
+                    let fleet = read(&home).map(|found| read_all(&home, &found, &recall));
+                    let here = here.join().unwrap_or_else(|_| needs::Reading { home: true, unread: vec!["reading it failed".into()], ..Default::default() });
+                    (here, fleet)
+                });
+                recall.turn();
+                let mut needs = vec![here];
+                let machines = match fleet {
+                    Ok((machines, linked)) => {
+                        needs.extend(linked);
+                        Some(machines)
                     }
+                    Err(_) => None,
+                };
+                if tx.send(Reading { machines, needs }).is_err() {
+                    return; // the console is gone
                 }
                 std::thread::sleep(EVERY);
             }
@@ -132,7 +170,7 @@ impl Fleet {
     }
 
     /// The newest reading since the last call, if any.
-    pub fn latest(&self) -> Option<Vec<Machine>> {
+    pub fn latest(&self) -> Option<Reading> {
         self.rx.try_iter().last()
     }
 }
