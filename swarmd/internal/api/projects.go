@@ -1864,14 +1864,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			if !s.requireScopeAny(w, r, "projects:write", "sessions:write") {
 				return
 			}
-			if err := db.DeleteProject(p.AccountScopeID, projectID); err != nil {
-				writeError(w, http.StatusInternalServerError, err)
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]any{
-				"status": "deleted",
-				"id":     projectID,
-			})
+			s.deleteProject(w, p.AccountScopeID, projectID)
 			return
 		}
 

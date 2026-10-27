@@ -550,6 +550,27 @@ impl Console {
                 self.button(SharedString::from(format!("project-{}-{label}", p.id)), label, false)
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.move_project(&id, offset, cx)))
             })))
+            .when(!p.id.is_empty(), |d| {
+                let id = p.id.to_string();
+                if self.delete_project_confirm.as_deref() == Some(id.as_str()) {
+                    d.child(div().flex().flex_wrap().gap_2().px_3().py_2()
+                        .child(format!("delete {}? Its folders and files stay on disk.", p.name))
+                        .child(self.button("confirm-delete-project", "confirm", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            if let Some(live) = &this.live { live.run(Command::DeleteProject { project_id: id.clone() }); }
+                            this.delete_project_confirm = None;
+                            cx.notify();
+                        })))
+                        .child(self.button("cancel-delete-project", "cancel", false).on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.delete_project_confirm = None;
+                            cx.notify();
+                        }))))
+                } else {
+                    d.child(div().flex().px_3().py_2().child(self.button("delete-project", "delete project", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.delete_project_confirm = Some(id.clone());
+                        cx.notify();
+                    }))))
+                }
+            })
             .child(div().px_3().pt_2().text_size(px(10.5)).text_color(t.faint).child("FOLDERS"))
             .child(div().flex().flex_col().pb_1().children(folders))
             .child(div().px_3().pt_1().text_size(px(10.5)).text_color(t.faint).child("PROJECT.MD"))

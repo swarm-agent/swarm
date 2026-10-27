@@ -266,6 +266,38 @@ func (s *SessionStore) deleteProjectLocked(accountScopeID, id string) (*projectR
 	if accountScopeID == "" || id == "" {
 		return nil, errors.New("account scope id and project id are required")
 	}
+	if _, found, err := s.GetProject(accountScopeID, id); err != nil {
+		return nil, err
+	} else if !found {
+		return nil, ErrProjectNotFound
+	}
+	var keys []string
+	unsettled := 0
+	err := s.store.IteratePrefix(ProjectTaskPrefix(accountScopeID, id), 10001, func(key string, value []byte) error {
+		var task ProjectTaskRecord
+		if err := json.Unmarshal(value, &task); err != nil {
+			return err
+		}
+		if task.AccountID != accountScopeID || task.ProjectID != id {
+			return errors.New("project task identity mismatch")
+		}
+		keys = append(keys, key)
+		switch task.Status {
+		case "completed", "failed", "cancelled", "canceled":
+		default:
+			unsettled++
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(keys) > 10000 {
+		return nil, errors.New("project has too many tasks to delete safely")
+	}
+	if unsettled > 0 {
+		return nil, &ProjectTasksUnsettledError{Count: unsettled}
+	}
 	payload, _ := json.Marshal(map[string]any{
 		"project_id": id,
 		"account_id": accountScopeID,
@@ -275,6 +307,9 @@ func (s *SessionStore) deleteProjectLocked(accountScopeID, id string) (*projectR
 		accountScopeID: accountScopeID,
 		projectID:      id,
 		eventPayload:   payload,
+	}
+	for _, key := range keys {
+		mutation.delete(key)
 	}
 	mutation.delete(KeyProject(accountScopeID, id))
 	if err := s.store.commitProjectRealtime(mutation); err != nil {
@@ -850,6 +885,11 @@ func (s *SessionStore) persistProjectTaskLocked(accountScopeID string, task *Pro
 func (s *SessionStore) persistProjectTaskMetadataLocked(accountScopeID string, task *ProjectTaskRecord, validate, captureAttempt bool) (*projectRealtimeMutation, error) {
 	if task == nil {
 		return nil, errors.New("project task definition required")
+	}
+	if _, found, err := s.GetProject(accountScopeID, task.ProjectID); err != nil {
+		return nil, err
+	} else if !found {
+		return nil, ErrProjectNotFound
 	}
 	// Git observations must be recomputed, never persisted as delivery authority.
 	task.DeliveryAssessment = nil

@@ -175,6 +175,8 @@ pub struct Console {
     /// The Projects page's open tab (a project index; none means the open
     /// project).
     projects_tab: Option<String>,
+    delete_project_confirm: Option<String>,
+    deleted_project: Option<String>,
     /// A project being renamed or whose project.md is being edited (its
     /// ID), the project.md field, and a project to select once listed.
     project_rename: Option<String>,
@@ -373,6 +375,8 @@ impl Console {
             pending_open: None,
             gone: std::collections::HashSet::new(),
             projects_tab: None,
+            delete_project_confirm: None,
+            deleted_project: None,
             project_rename: None,
             context_edit: None,
             folder_remove: None,

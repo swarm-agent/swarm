@@ -210,3 +210,11 @@ The home Orchestrator uses `get_task` to read its status and report.
 ### Project order
 
 `PUT /v3/projects:order` accepts `{"project_ids":["project-id"],"client_request_id":"request-id"}` with owner access or `projects:write`. IDs must be unique and belong to the authenticated account; unknown or foreign IDs reject the whole change. `GET /v3/projects` (and MCP project listing) uses this account order. Projects omitted from the order appear first, newest-created first, with ID as the tie-breaker. Updating project metadata, folders or project.md does not move a project. An order change emits durable `project.updated`; clients refresh from Swarm rather than retaining a separate local order.
+
+### Deleting a project
+
+`DELETE /v3/projects/{id}` uses the existing project-write authorization. Confirm the project name before sending it and explain that its folders and files stay on disk. A missing (or other-account) project returns `404`. The API returns `409` with a reason and count if any project session has an active run or any task is not settled. Only `completed`, `failed`, `cancelled` and `canceled` tasks are terminal for deletion; queued, planning, running, review, blocked and unknown states refuse deletion.
+
+The store checks tasks and atomically removes the project and all its task records under the same lock used for task writes, then publishes `project.updated` with action `project_deleted`. New task writes to the deleted project fail. The API then archives its sessions through the normal session archive operation; archived conversations remain readable. No project folders, files, worktrees or repositories are removed. Clients refresh Swarm's project list and open its first remaining project.
+
+Session activity is checked before the store deletion, not in the same transaction. Session archiving is a subsequent operation; an archive failure is reported explicitly even though the project has already been deleted. This endpoint is not an atomic project-and-session deletion transaction.

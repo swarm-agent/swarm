@@ -306,7 +306,9 @@ impl Console {
         if let Some(c) = snap.catalog {
             self.catalog = c;
         }
-        if !snap.projects.is_empty() {
+        {
+            // Snapshots contain Swarm's complete project list, including an empty
+            // list after deleting the last project (the event may precede the reply).
             // Sessions keep their project when the list changes.
             let ids: Vec<Text> = self.projects.iter().map(|p| p.id.clone()).collect();
             let current = ids.get(self.project).cloned();
@@ -318,6 +320,12 @@ impl Console {
             }
             self.projects = snap.projects;
             self.project = current.and_then(|id| self.projects.iter().position(|p| p.id == id)).unwrap_or(0);
+            if self.deleted_project.as_ref().is_some_and(|id| !self.projects.iter().any(|p| p.id.as_ref() == id.as_str())) {
+                self.deleted_project = None;
+                self.project = 0;
+                self.projects_tab = self.projects.first().map(|p| p.id.to_string());
+                self.page = Page::Projects;
+            }
         }
 
         // Sessions keep their place (panes point at them by index).
@@ -452,6 +460,15 @@ impl Console {
                 self.notice = Some((text.into(), false));
             }
             (None, Ok(_)) if what == "model" => self.notice = Some(("This chat uses that model now.".into(), false)),
+            (None, Ok(answer)) if what == "delete project" => {
+                self.deleted_project = answer.get("id").and_then(|v| v.as_str())
+                    .filter(|id| self.projects.iter().any(|p| p.id.as_ref() == *id))
+                    .map(str::to_string);
+                self.project = 0;
+                self.projects_tab = None;
+                self.page = Page::Projects;
+                self.notice = Some(("Project deleted. Folders and files remain on disk.".into(), false));
+            }
             (None, Ok(_)) if what == "default" => self.notice = Some(("Default saved for every conversation.".into(), false)),
             (None, Ok(_)) if what == "favorite" => self.notice = Some(("Favorite saved.".into(), false)),
             (None, Ok(_)) if what == "unfavorite" => self.notice = Some(("Favorite removed.".into(), false)),
