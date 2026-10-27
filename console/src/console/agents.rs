@@ -59,7 +59,7 @@ impl Console {
         let overrides = self
             .roles
             .iter()
-            .filter(|r| matches!(r.cells[mi], Cell::Custom(_) | Cell::Drift(_)))
+            .filter(|r| matches!(r.cells.get(mi), Some(Cell::Custom(_) | Cell::Drift(_))))
             .count();
         let hover = t.border_strong;
         let build = if offline {
@@ -488,8 +488,8 @@ impl Console {
             }
             AgentsFocus::Machine(mi) => {
                 let m = &self.machines[mi];
-                let overrides = self.roles.iter().enumerate().filter_map(|(ri, r)| match &r.cells[mi] {
-                    Cell::Custom(a) | Cell::Drift(a) => Some((ri, r.label.clone(), a.clone(), matches!(r.cells[mi], Cell::Drift(_)))),
+                let overrides = self.roles.iter().enumerate().filter_map(|(ri, r)| match r.cells.get(mi) {
+                    Some(Cell::Custom(a) | Cell::Drift(a)) => Some((ri, r.label.clone(), a.clone(), matches!(r.cells.get(mi), Some(Cell::Drift(_))))),
                     _ => None,
                 });
                 div()
@@ -546,8 +546,8 @@ impl Console {
                             .child(self.button("machine-sync", "sync to fleet", true).on_click(cx.listener(
                                 move |this, _: &ClickEvent, _, cx| {
                                     for role in &mut this.roles {
-                                        if matches!(role.cells[mi], Cell::Drift(_)) {
-                                            role.cells[mi] = Cell::InSync;
+                                        if let Some(cell @ Cell::Drift(_)) = role.cells.get_mut(mi) {
+                                            *cell = Cell::InSync;
                                         }
                                     }
                                     cx.notify();
@@ -614,7 +614,8 @@ impl Console {
             AgentsFocus::Cell(ri, mi) => {
                 let role = &self.roles[ri];
                 let machine = self.machines[mi].name.clone();
-                let cell = role.cells[mi].clone();
+                // A machine linked after the roles were read has no column yet.
+                let cell = role.cells.get(mi).cloned().unwrap_or(Cell::Unknown);
                 let (glyph, color, _) = self.cell_look(cell.clone());
                 let (state, explain, have): (&str, String, Option<Assignment>) = match cell.clone() {
                     Cell::InSync => ("fleet default", format!("{machine} runs the fleet default for {}.", role.label), None),
