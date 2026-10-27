@@ -1018,17 +1018,14 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		fullPlanMarkdown := strings.TrimSpace(asString(args["full_plan_markdown"]))
 		diffSummary := strings.TrimSpace(asString(args["diff_summary"]))
 		autoApprove, _ := args["auto_approve"].(bool)
-		// When the person let this session start tasks freely, delegated code
-		// and audit work starts at once unless the call asks for a card that
-		// waits (auto_approve false). A plan_document always waits on its card.
-		switch r.sessionTasks(scope.SessionID) {
-		case pebblestore.SessionTasksFree:
-			if _, given := args["auto_approve"]; !given && (ManageProjectsDelegation(args) || ManageProjectsMediaTask(args)) {
-				autoApprove = true
-			}
-		case pebblestore.SessionTasksAsk:
-			// The person reviews each new task first: its card waits for their
-			// Approve whatever the call or the machine's permission mode says.
+		// Account Start tasks is authoritative, regardless of tool arguments.
+		access, err := r.sessions.GetAccountPermissions(p.AccountScopeID)
+		if err != nil {
+			return "", err
+		}
+		if ManageProjectsDelegation(args) || ManageProjectsMediaTask(args) {
+			autoApprove = access.Tasks == "auto"
+		} else if access.Tasks != "auto" {
 			autoApprove = false
 		}
 
@@ -1572,5 +1569,9 @@ func (r *Runtime) sessionTasks(sessionID string) string {
 	if err != nil || !found {
 		return ""
 	}
-	return pebblestore.SessionAccessFromMetadata(session.Metadata).Tasks
+	access, err := r.sessions.GetAccountPermissions(session.AccountScopeID)
+	if err != nil {
+		return "approve"
+	}
+	return access.Tasks
 }

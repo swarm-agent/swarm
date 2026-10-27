@@ -34,6 +34,10 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 	if !found || session.AccountScopeID != p.AccountScopeID || session.UserID != p.UserID {
 		return nil, errors.New("media session ownership mismatch")
 	}
+	access, err := s.sessions.Store().GetAccountPermissions(p.AccountScopeID)
+	if err != nil {
+		return nil, err
+	}
 	action := controlMCPString(args, "action")
 	if action == "models" {
 		return s.mediaModels(ctx, p, args, manageMediaModelsGuidance, "%d more need a provider key; configure credentials before using manage_media models again")
@@ -108,7 +112,7 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 		}
 		return map[string]any{"jobs": jobs}, nil
 	case "retry":
-		task, err := s.retryMedia(ctx, p, projectID, tool.ProjectTaskCreateInput{ManageMediaSource: true, OriginSessionID: session.ID, WorkspacePath: root, AutoApprove: pebblestore.SessionAccessFromMetadata(session.Metadata).Tasks != pebblestore.SessionTasksAsk}, controlMCPString(args, "job_id"), args)
+		task, err := s.retryMedia(ctx, p, projectID, tool.ProjectTaskCreateInput{ManageMediaSource: true, OriginSessionID: session.ID, WorkspacePath: root, AutoApprove: access.Tasks == "auto"}, controlMCPString(args, "job_id"), args)
 		if err != nil {
 			return nil, err
 		}
@@ -157,7 +161,7 @@ func (s *Server) ManageMedia(ctx context.Context, scope tool.WorkspaceScope, arg
 		if err != nil {
 			return nil, err
 		}
-		input := tool.ProjectTaskCreateInput{ManageMediaSource: true, OriginSessionID: session.ID, Title: brief, Prompt: brief, Description: brief, Agent: kind, WorkspacePath: root, AutoApprove: pebblestore.SessionAccessFromMetadata(session.Metadata).Tasks != pebblestore.SessionTasksAsk, Model: controlMCPString(args, "model"), AspectRatio: controlMCPString(args, "aspect_ratio"), Resolution: controlMCPString(args, "resolution"), DurationSeconds: controlMCPInt(args, "duration_seconds", 0), VariantCount: controlMCPInt(args, "count", 0)}
+		input := tool.ProjectTaskCreateInput{ManageMediaSource: true, OriginSessionID: session.ID, Title: brief, Prompt: brief, Description: brief, Agent: kind, WorkspacePath: root, AutoApprove: access.Tasks == "auto", Model: controlMCPString(args, "model"), AspectRatio: controlMCPString(args, "aspect_ratio"), Resolution: controlMCPString(args, "resolution"), DurationSeconds: controlMCPInt(args, "duration_seconds", 0), VariantCount: controlMCPInt(args, "count", 0)}
 		if speech != nil {
 			input.Operation, input.Speech = "speech", speech
 		}

@@ -164,9 +164,19 @@ func testFleetPermissionExecution(t *testing.T, ctx context.Context, home, remot
 				t.Fatalf("access changed unexpectedly: %+v %v", got, err)
 			}
 		}
+		// Legacy session values above must not authorize execution; account rules do.
+		rule := map[string]string{"none": "off", "ask": "ask", "full": "allowed"}[level]
+		account, err := home.s.sessions.Store().GetAccountPermissions(p.AccountScopeID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		account.Linked["box"] = pebblestore.LinkedPermissionRule{Work: rule}
+		if _, err := home.s.sessions.Store().Underlying().SetAccountPermissions(p.AccountScopeID, account.Revision, account); err != nil {
+			t.Fatal(err)
+		}
 		scope := tool.WorkspaceScope{SessionID: id, Principal: p}
 		listing, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, tool.Call{Name: "manage_projects", Arguments: `{"action":"list_machines"}`})
-		if err != nil || !strings.Contains(listing, `"access":"`+level+`"`) {
+		if err != nil || !strings.Contains(listing, `"access":"`+rule+`"`) {
 			t.Fatalf("list: %s %v", listing, err)
 		}
 		args := `{"action":"propose_task","machine":"box","project_id":"remote-project","title":"Gate ` + level + `","agent":"finder","auto_approve":false}`

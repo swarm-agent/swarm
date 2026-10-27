@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"swarm/packages/swarmd/internal/identity"
-	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // FleetProjects keeps link credentials and transport entirely server-side.
@@ -61,13 +60,13 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 	if err != nil {
 		return "", err
 	}
-	access := pebblestore.SessionAccessFromMetadata(session.Metadata)
+	access, err := r.sessions.GetAccountPermissions(scope.Principal.AccountScopeID)
+	if err != nil {
+		return "", err
+	}
 	linked := false
 	for i := range machines {
-		machines[i].Access = access.Fleet[machines[i].Name]
-		if machines[i].Access == "" {
-			machines[i].Access = "none"
-		}
+		machines[i].Access = access.Link(machines[i].Name).Work
 		if machines[i].Name == machine {
 			linked = true
 		}
@@ -76,8 +75,8 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 		raw, err := json.Marshal(map[string]any{"machines": machines})
 		return string(raw), err
 	}
-	if !linked || (access.Fleet[machine] != "ask" && access.Fleet[machine] != "full") {
-		return "", fmt.Errorf("the person has not given this session access to machine %q; ask them to grant it in their app", machine)
+	if !linked || (access.Link(machine).Work != "ask" && access.Link(machine).Work != "allowed") {
+		return "", fmt.Errorf("linked work rule for machine %q is off or the machine is not linked; check the Permissions page", machine)
 	}
 	raw, err := service.CallFleetProject(ctx, scope.Principal, machine, action, args)
 	if err != nil {

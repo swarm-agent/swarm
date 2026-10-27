@@ -606,24 +606,19 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 			if !tool.FleetProjectActionAllowed(action) {
 				return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: action + " is not available on a linked machine", Source: "session_access"}, nil
 			}
-			level := ""
-			if s.sessions != nil {
-				session, found, err := s.sessions.GetSession(sessionID)
-				if err != nil {
-					return AuthorizationResult{}, err
-				}
-				if found && session.AccountScopeID == input.AccountScopeID {
-					level = pebblestore.SessionAccessFromMetadata(session.Metadata).Fleet[machine]
-				}
+			access, err := s.store.GetAccountPermissions(input.AccountScopeID)
+			if err != nil {
+				return AuthorizationResult{}, err
 			}
-			if level != "ask" && level != "full" {
-				return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: fmt.Sprintf("the person has not given this session access to machine %q; ask them to grant it in their app", machine), Source: "session_access"}, nil
+			level := access.Link(machine).Work
+			if level != "ask" && level != "allowed" {
+				return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: fmt.Sprintf("linked work rule for machine %q is off; change it on the Permissions page", machine), Source: "session_access"}, nil
 			}
 			if explain.Decision != PolicyDecisionDeny {
 				if level == "ask" {
-					return s.createPendingAuthorization(input, sessionID, requirement, "Approve linked machine "+machine+" action "+action, "session_access", "ask each linked machine call")
+					return s.createPendingAuthorization(input, sessionID, requirement, "Approve linked machine "+machine+" action "+action, "account_permissions", "ask each linked machine call")
 				}
-				return AuthorizationResult{Decision: AuthorizationApprove, Requirement: requirement, Reason: "full session access to linked machine", Source: "session_access"}, nil
+				return AuthorizationResult{Decision: AuthorizationApprove, Requirement: requirement, Reason: "linked work rule allows machine " + machine, Source: "account_permissions"}, nil
 			}
 		}
 	}
@@ -2697,7 +2692,11 @@ func (s *Service) sessionTasksStartFreely(sessionID string) bool {
 		return false
 	}
 	session, found, err := s.sessions.GetSession(sessionID)
-	return err == nil && found && pebblestore.SessionTasksStartFreely(session)
+	if err != nil || !found {
+		return false
+	}
+	access, err := s.store.GetAccountPermissions(session.AccountScopeID)
+	return err == nil && access.Tasks == "auto"
 }
 
 // machineToolRefusal says why a machine tool call may not reach the person's

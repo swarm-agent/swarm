@@ -1365,17 +1365,11 @@ func controlMCPRequestMedia(c *controlMCPCall, args map[string]any) (any, error)
 		if err != nil {
 			return nil, err
 		}
-		input := tool.ProjectTaskCreateInput{OriginSessionID: origin, WorkspacePath: place.path, AutoApprove: true}
-		if origin != "" {
-			parent, found, err := c.server.sessions.GetSession(origin)
-			if err != nil {
-				return nil, err
-			}
-			if !found {
-				return nil, errors.New("media origin not found")
-			}
-			input.AutoApprove = pebblestore.SessionAccessFromMetadata(parent.Metadata).Tasks != pebblestore.SessionTasksAsk
+		access, err := c.server.sessions.Store().GetAccountPermissions(p.AccountScopeID)
+		if err != nil {
+			return nil, err
 		}
+		input := tool.ProjectTaskCreateInput{OriginSessionID: origin, WorkspacePath: place.path, AutoApprove: access.Tasks == "auto"}
 		task, err := c.server.retryMedia(c.request.Context(), p, place.projectID, input, retry, args)
 		if err != nil {
 			return nil, controlMCPToolFailure("%s", err)
