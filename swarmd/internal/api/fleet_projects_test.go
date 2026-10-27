@@ -117,6 +117,10 @@ func TestFleetProjectAdapter(t *testing.T) {
 			t.Fatalf("%s: %v", action, err)
 		}
 	}
+	// The machine's own refusal reaches the agent, so it knows what to change.
+	if _, err := home.s.CallFleetProject(ctx, p, "box", "get_task", map[string]any{"project_id": "remote-project", "task_id": "no-such-task"}); err == nil || !strings.Contains(err.Error(), "box refused get_task: the machine answered HTTP 404") {
+		t.Fatalf("remote refusal: %v", err)
+	}
 }
 
 // Purpose: exercise the real permission store and native runtime against the

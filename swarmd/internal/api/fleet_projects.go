@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 
+	"swarm/packages/swarmd/internal/fleet"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/tool"
 )
@@ -107,7 +108,13 @@ func (s *Server) CallFleetProject(ctx context.Context, p identity.Principal, mac
 	err = client.JSON(ctx, method, path, input, &result)
 	s.noteFleetContact(linked, err)
 	if err != nil {
-		return nil, errors.New("linked machine rejected the call or could not be reached")
+		// The machine's own refusal (its status and message) tells the agent
+		// what to change; a call that never got an answer says only that.
+		var refused *fleet.Error
+		if errors.As(err, &refused) {
+			return nil, fmt.Errorf("%s refused %s: %s", machine, action, refused.Error())
+		}
+		return nil, fmt.Errorf("could not reach linked machine %s", machine)
 	}
 	return result, nil
 }
