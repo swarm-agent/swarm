@@ -1505,7 +1505,7 @@ func (r *Runtime) Definitions() []Definition {
 		manageWorkersV2Definition(),
 		manageCustomAgentsDefinition(),
 		manageWorkflowsDefinition(),
-	manageJobsDefinition(),
+		manageJobsDefinition(),
 		manageAutomationV2Definition(),
 		swarmDesignDefinition(),
 		manageMediaDefinition(),
