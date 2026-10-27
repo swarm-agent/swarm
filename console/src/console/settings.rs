@@ -2,20 +2,19 @@
 
 use gpui::{ClickEvent, Context, Div, SharedString, div, prelude::*, px};
 
-use super::{Console, alpha, now_ms};
+use super::{Console, alpha};
 use crate::data::Health;
-use crate::fleet_config::{Level, THIS_PC};
 use crate::icons::{Icon, IconStyle};
 
 impl Console {
-    pub(super) fn settings_group(&self, title: &'static str, note: &'static str, rows: Vec<Div>) -> Div {
+    pub(super) fn settings_group(&self, title: impl Into<SharedString>, note: impl Into<SharedString>, rows: Vec<Div>) -> Div {
         let t = &self.theme;
         div()
             .flex()
             .flex_col()
             .gap_1()
-            .child(div().text_color(t.text).child(title))
-            .child(div().pb_1().text_size(px(11.)).text_color(t.faint).child(note))
+            .child(div().text_color(t.text).child(title.into()))
+            .child(div().pb_1().text_size(px(11.)).text_color(t.faint).child(note.into()))
             .child(
                 div()
                     .flex()
@@ -99,62 +98,6 @@ impl Console {
             })
             .collect();
 
-        let hover = t.hover;
-        // Your PC first, then each fleet machine: full, ask or off.
-        let mut machines: Vec<(String, String, String)> = vec![(THIS_PC.to_string(), format!("{} · your computer", crate::swarm::target::this_computer()), "its files and commands, as you, through this app".to_string())];
-        machines.extend(self.machines.iter().skip(1).map(|m| (m.name.to_string(), m.name.to_string(), format!("tasks home sends to its Swarm at {}", m.gateway))));
-        let fleet_rows: Vec<Div> = machines
-            .into_iter()
-            .map(|(key, label, detail)| {
-                let current = self.fleet_config.level(&key);
-                let pills = div().flex().gap_1().children([Level::Full, Level::Ask, Level::Off].into_iter().map(|level| {
-                    let on = current == level;
-                    let key = key.clone();
-                    div()
-                        .id(SharedString::from(format!("settings-level-{key}-{}", level.label())))
-                        .w(px(48.))
-                        .py(px(2.))
-                        .flex()
-                        .justify_center()
-                        .rounded(px(t.radius))
-                        .border_1()
-                        .border_color(if on { alpha(t.accent, 0.7) } else { t.border })
-                        .when(on, |d| d.bg(alpha(t.accent, 0.15)))
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(hover))
-                        .text_size(px(11.))
-                        .text_color(if on { t.text } else { t.muted })
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.fleet_config.access.insert(key.clone(), level);
-                            this.save_fleet_config(cx);
-                        }))
-                        .child(level.label())
-                }));
-                self.setting_row(label, detail, pills)
-            })
-            .collect();
-        let mut folder_rows: Vec<Div> = self
-            .fleet_config
-            .folders
-            .iter()
-            .enumerate()
-            .map(|(i, folder)| {
-                self.setting_row(folder.clone(), "the Orchestrator may work in here", self.button(SharedString::from(format!("folder-remove-{i}")), "remove", false).on_click(cx.listener(
-                    move |this, _: &ClickEvent, _, cx| {
-                        if i < this.fleet_config.folders.len() {
-                            this.fleet_config.folders.remove(i);
-                        }
-                        this.save_fleet_config(cx);
-                    },
-                )))
-            })
-            .collect();
-        folder_rows.push(self.setting_row(
-            if self.fleet_config.folders.is_empty() { "No folders yet" } else { "Add folders" },
-            "pick folders the Orchestrator may work in on your computer",
-            self.button("folder-add", "+ add folder", true).on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.add_folders(cx))),
-        ));
-
         let status = crate::browser::status();
         let chrome_detail = match (&status.error, status.connected) {
             (Some(e), _) => format!("socket error: {e}"),
@@ -162,7 +105,7 @@ impl Console {
             (None, false) => "not connected: connect Chrome, then load the extension and open it once".to_string(),
         };
         let extension_dir = crate::browser::extension_dir().display().to_string();
-        let mut browser_rows: Vec<Div> = vec![
+        let browser_rows: Vec<Div> = vec![
             self.setting_row("Chrome", chrome_detail, self.button("browser-connect", "connect Chrome", !status.connected).on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.connect_chrome(cx)))),
             self.setting_row(
                 "Extension",
@@ -174,13 +117,6 @@ impl Console {
                 })),
             ),
         ];
-        let now = now_ms();
-        for (session_id, lease) in crate::browser::leases().into_iter().filter(|(_, l)| l.live(now)) {
-            let title = self.sessions.iter().find(|s| s.live.as_ref().is_some_and(|l| l.session_id.as_ref() == session_id)).map(|s| s.title.to_string()).unwrap_or_else(|| session_id.clone());
-            let detail = super::shield::lease_detail(&lease, lease.until.saturating_sub(now), crate::browser::tab_of(&session_id));
-            let id = session_id.clone();
-            browser_rows.push(self.setting_row(title, detail, self.button(SharedString::from(format!("browser-end-{session_id}")), "end", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.end_browser(id.clone(), cx)))));
-        }
 
         div()
             .id("settings-page")
@@ -200,14 +136,8 @@ impl Console {
             .child(self.render_providers(cx))
             .child(self.settings_group(
                 "Browser",
-                "The Orchestrator may use your own Chrome through this app, only inside a lease you grant per session (sites, level, minutes) when it asks; Swarm keeps the lease and refuses calls outside it. The extension acts only in tabs it opens on those sites, never reads password fields, hides what looks like a key, and holds anything that looks like paying, publishing, keys or account settings for you unless the lease is full. Its popup has a stop.",
+                "How this app reaches your own Chrome. Whether agents may use it is this device's Browser rule on the Permissions page. The extension acts only in tabs it opens, never reads password fields and hides what looks like a key. Its popup has a stop.",
                 browser_rows,
-            ))
-            .child(self.settings_group("Fleet", "Your other Swarm machines and what the Orchestrator may do on each. Click a level to change it.", fleet_rows))
-            .child(self.settings_group(
-                "Folders on your computer",
-                "Where the Orchestrator may work on your computer through this app. Files outside them, and commands that start outside them, always wait for your run or deny.",
-                folder_rows,
             ))
             .child(self.settings_group(
                 "Connections",
@@ -223,34 +153,6 @@ impl Console {
                     self.setting_row("Font", "JetBrains Mono · 12.5px", div()),
                 ],
             ))
-    }
-
-    /// Adds folders you pick (the system's folder picker) to the allowed list.
-    fn add_folders(&mut self, cx: &mut Context<Self>) {
-        let picked = cx.prompt_for_paths(gpui::PathPromptOptions { files: false, directories: true, multiple: true, prompt: Some("Allow".into()) });
-        cx.spawn(async move |this, cx| {
-            let Ok(Ok(Some(paths))) = picked.await else { return };
-            let _ = this.update(cx, |c, cx| {
-                for path in paths {
-                    let path = path.display().to_string();
-                    if !c.fleet_config.folders.contains(&path) {
-                        c.fleet_config.folders.push(path);
-                    }
-                }
-                c.save_fleet_config(cx);
-            });
-        })
-        .detach();
-    }
-
-    /// Saves fleet.json and tells the open conversations.
-    pub(super) fn save_fleet_config(&mut self, cx: &mut Context<Self>) {
-        if let Err(e) = self.fleet_config.save() {
-            self.notice = Some((format!("Could not save: {e}").into(), true));
-        }
-        self.fleet_told.clear();
-        self.sync_fleet(cx);
-        cx.notify();
     }
 
     /// Writes Chrome's native messaging manifest and the host script, so

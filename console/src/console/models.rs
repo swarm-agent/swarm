@@ -74,7 +74,6 @@ impl Console {
             let stage = if self.catalog.favorites.is_empty() { Stage::Model } else { Stage::Favorites };
             Some(Picker { scope, stage, provider: None, model: None, thinking: None, tier: None, favorite: None, saving: false })
         };
-        self.shield_open = None;
         if let Some(q) = &self.picker_query {
             q.update(cx, |q, cx| q.set_text("", cx));
             if self.picker.is_some() {

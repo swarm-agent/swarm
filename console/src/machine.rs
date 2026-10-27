@@ -1,8 +1,7 @@
 //! Your machine, for the Orchestrator: the machine_run, machine_read and
 //! machine_write calls Swarm hands this app, carried out here, as you. Swarm
-//! only lets them through when the session's shield allows access; whether
-//! each one waits for you (ask) or runs at once (full) is decided by the
-//! console before it calls `answer`.
+//! decides each one by this device's files and terminal rule; the console
+//! calls `answer` only for a call Swarm marked ready for this device.
 
 use std::io::Read;
 use std::path::PathBuf;

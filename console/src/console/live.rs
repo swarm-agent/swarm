@@ -8,7 +8,7 @@ use std::time::Duration;
 use gpui::{Context, Focusable, SharedString, Window, prelude::*};
 
 use super::{Console, Link, Open, Page};
-use crate::data::{Access, Entry, LiveRef, Machine, Health, Project, RunState, Session, Text};
+use crate::data::{Entry, LiveRef, Machine, Health, Project, RunState, Session, Text};
 use crate::onboarding::input_colors;
 use crate::swarm::client::Client;
 use crate::swarm::live::{Command, Live, Snapshot, Update};
@@ -42,8 +42,6 @@ pub(super) fn draft(project: usize) -> Session {
         activity: vec![],
         status: None,
         pending: None,
-        access: Some(Access::DEFAULT),
-        browser: None,
         model_choice: None,
         model_favorite: None,
         pinned: false,
@@ -157,7 +155,6 @@ impl Console {
             let home = self.machines.first().map(|m| m.name.clone());
             self.machines.truncate(1);
             self.machines.extend(fleet.into_iter().filter(|m| Some(&m.name) != home.as_ref()));
-            self.sync_fleet(cx);
             cx.notify();
         }
         if self.live.is_none() {
@@ -173,7 +170,7 @@ impl Console {
             return;
         }
         if std::env::var_os("SWARM_CONSOLE_TRACE").is_some() {
-            let kinds: Vec<&str> = updates.iter().map(|u| match u { Update::Snapshot(_) => "snapshot", Update::Session(_) => "session", Update::Facts(_) => "facts", Update::Lost(_) => "lost", Update::Done { .. } => "done", Update::Review { .. } => "review", Update::Hold { .. } => "hold", Update::AutomationsChanged => "automations", Update::RunActivity(_) => "run" }).collect();
+            let kinds: Vec<&str> = updates.iter().map(|u| match u { Update::Snapshot(_) => "snapshot", Update::Session(_) => "session", Update::Facts(_) => "facts", Update::Lost(_) => "lost", Update::Done { .. } => "done", Update::Review { .. } => "review", Update::Hold { .. } => "hold", Update::AutomationsChanged => "automations", Update::PermissionsChanged => "permissions", Update::RunActivity(_) => "run" }).collect();
             eprintln!("pump {:?} {}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0), kinds.join(","));
         }
         for update in updates {
@@ -184,10 +181,13 @@ impl Console {
                     if self.automations.is_none() && !self.automations_busy {
                         self.load_automations(cx);
                     }
+                    // The Permissions page open from the start reads once connected.
+                    if self.page == Page::Permissions && self.permissions.is_none() {
+                        self.load_permissions();
+                    }
                     self.open_pending();
                     self.select_pending_project(cx);
                     self.answer_calls(cx);
-                    self.sync_fleet(cx);
                     self.follow_theme(cx);
                 }
                 Update::Session(s) => {
@@ -196,10 +196,10 @@ impl Console {
                 }
                 Update::Facts(f) => {
                     self.apply_facts(f);
-                    self.sync_fleet(cx);
                     self.follow_theme(cx);
                 }
                 Update::Lost(e) => self.link = Link::Lost(e.into()),
+                Update::Done { what: what @ ("permissions" | "permission"), result, .. } => self.permissions_done(what, result),
                 Update::Done { draft, what, result } => {
                     let linked = what == "link" && result.is_ok();
                     self.done(draft, what, result);
@@ -214,6 +214,12 @@ impl Console {
                     }
                 }
                 Update::AutomationsChanged => self.load_automations(cx),
+                // Read again once the page has shown them; otherwise on opening it.
+                Update::PermissionsChanged => {
+                    if self.permissions.is_some() || self.page == Page::Permissions {
+                        self.load_permissions();
+                    }
+                }
                 Update::RunActivity(session_id) => {
                     if self.run_open.as_ref().is_some_and(|r| r.session_id == session_id) {
                         self.load_run(cx);
@@ -440,11 +446,6 @@ impl Console {
                 self.notice = Some((format!("Could not start the session: {e}").into(), true));
             }
             (None, Ok(_)) if what == "machine" => self.notice = Some(("Answered from your computer.".into(), false)),
-            (None, Ok(_)) if what == "grant" => self.notice = Some(("Access granted for this session.".into(), false)),
-            (None, Ok(_)) if what == "grant-browser" => {
-                self.notice = Some(("Browser lease granted for this session.".into(), false));
-            }
-            (None, Ok(_)) if what == "end-browser" => self.notice = Some(("Browser lease ended.".into(), false)),
             (None, Ok(_)) if what == "browser" => self.notice = Some(("Done in your browser.".into(), false)),
             (None, Ok(_)) if what == "refuse" => self.notice = Some(("Refused.".into(), false)),
             (None, Ok(answer)) if what == "link" || what == "unlink" => {
@@ -472,12 +473,6 @@ impl Console {
             (None, Ok(_)) if what == "default" => self.notice = Some(("Default saved for every conversation.".into(), false)),
             (None, Ok(_)) if what == "favorite" => self.notice = Some(("Favorite saved.".into(), false)),
             (None, Ok(_)) if what == "unfavorite" => self.notice = Some(("Favorite removed.".into(), false)),
-            (None, Ok(answer)) if what == "access" => {
-                if let Some(si) = self.acting {
-                    self.sessions[si].access = crate::swarm::map::access(&answer);
-                }
-                self.notice = Some(("Shield saved.".into(), false));
-            }
             (None, Ok(answer)) if what == "stop" => {
                 // Swarm says how the run ended, or that it is still winding down.
                 let summary = answer.get("summary").and_then(|v| v.as_str()).unwrap_or("");
@@ -667,7 +662,6 @@ impl Console {
         if text.is_empty() {
             text = format!("Attached: {}", files.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(", "));
         }
-        let fleet = self.fleet_levels();
         let command = match self.sessions[si].live.clone() {
             // A pending question takes the message as its answer.
             Some(l) => Command::Send { session_id: l.session_id.to_string(), text: text.clone(), files: files.clone() },
@@ -691,19 +685,11 @@ impl Console {
                     project_id,
                     workspace_path,
                     text: text.clone(),
-                    // A linked machine's Orchestrator never reaches this computer.
-                    access: if self.via.is_some() {
-                        Access { machine: crate::data::MachineAccess::None, ..s.access.unwrap_or(Access::DEFAULT) }
-                    } else {
-                        s.access.unwrap_or(Access::DEFAULT)
-                    },
                     model: match (&s.model_favorite, &s.model_choice) {
                         (Some(id), _) => Some(crate::swarm::models::Choice::Favorite(id.clone())),
                         (None, Some(a)) => Some(crate::swarm::models::Choice::Temporary(a.clone())),
                         (None, None) => None,
                     },
-                    fleet: fleet.clone(),
-                    folders: if self.via.is_some() { Vec::new() } else { self.fleet_config.folders.clone() },
                     files: files.clone(),
                 }
             }

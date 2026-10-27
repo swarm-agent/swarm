@@ -7,6 +7,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 ## Unreleased
 
 - Keep `for_each` dependencies waiting through review send-back rounds and judge only each workflow's latest delivery; explicit automation delivery retries recover failed dependent items once their prerequisite finishes without repeating successful steps. Docs impact: none.
+- Swarm Console has one Permissions page for the account rules (this device, other devices, home, linked machines) with each rule's live state; the per-conversation access chips, the fleet level toggle and browser leases are gone, and device and browser calls run only after Swarm approves them for this device. Docs impact: console/README.md unchanged; docs/access-model.md describes the page.
 - Retire per-session access writes in favor of account permissions and add MCP permission reads and home/linked writes. Docs impact: access model status and frontend device execution protocol updated.
 
 - Add revision-guarded account permissions GET/PATCH with device ownership checks and live device/link/task summaries; enforcement remains unchanged. Docs impact: access model API status and limitations documented.

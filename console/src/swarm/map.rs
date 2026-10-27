@@ -5,7 +5,7 @@
 use serde_json::Value;
 
 use crate::data::{
-    Access, Assignment, BrowserAccess, BrowserLease, Cell, Choice, ClientCall, Day, Entry, Health, LiveRef, Machine, MachineAccess, ModelUse, Pending, Plan,
+    Assignment, Cell, Choice, ClientCall, Day, Entry, Health, LiveRef, Machine, ModelUse, Pending, Plan,
     Credential, Found, Merge, PlanWindow, Project, Provider, Question, Role, RunClock, RunState, Session, SessionUse, Task, TaskStatus, Text, Tokens, Usage,
 };
 
@@ -181,8 +181,6 @@ pub fn session(shell: &Value, run: &Value, pending: bool, projects: &[Project]) 
         activity: vec![],
         status: None,
         pending: None,
-        access: None,
-        browser: None,
         model_choice: None,
         model_favorite: None,
         pinned: shell.get("metadata").and_then(|m| m.get("pinned")).and_then(Value::as_bool).unwrap_or(false),
@@ -544,29 +542,6 @@ fn token_split(v: &Value) -> Tokens {
     Tokens { total: n("total_tokens"), input: n("input_tokens"), output: n("output_tokens"), cached: n("cached_tokens"), thinking: n("thinking_tokens") }
 }
 
-/// A session's access as Swarm answers it ({"access": {"tasks", "machine"}});
-/// None when the person never chose one.
-pub fn access(v: &Value) -> Option<Access> {
-    let a = v.get("access")?;
-    let tasks = s(a, "tasks");
-    let machine = MachineAccess::parse(s(a, "machine"));
-    if tasks.is_empty() && machine.is_none() {
-        return None;
-    }
-    Some(Access { tasks_free: tasks == "free", machine: machine.unwrap_or(MachineAccess::None) })
-}
-
-/// A session's browser lease as Swarm answers it with its access
-/// ({"access": {"browser", "browser_sites", "browser_until"}}); None when
-/// never granted.
-pub fn browser_lease(v: &Value) -> Option<BrowserLease> {
-    let a = v.get("access")?;
-    let level = BrowserAccess::parse(s(a, "browser"))?;
-    let sites = s(a, "browser_sites").split_whitespace().map(|x| x.to_ascii_lowercase()).collect();
-    let until = a.get("browser_until").and_then(Value::as_u64).unwrap_or(0);
-    Some(BrowserLease { level, sites, until })
-}
-
 /// ChatGPT's plan and its windows from GET /v1/codex/account/usage
 /// (used_percent, 0 to 100), or why it could not be read.
 pub fn plans(chatgpt: Result<&Value, &str>) -> Vec<Plan> {
@@ -719,7 +694,6 @@ mod tests {
         assert_eq!((u.plans[0].kind.as_ref(), u.plans[0].connected), ("pro", true));
         assert_eq!((u.plans[0].windows[0].label.as_ref(), u.plans[0].windows[0].used), ("week", 8.));
         assert!(!plans(Err("not signed in"))[0].connected);
-        assert_eq!(access(&json!({"access": {"tasks": "ask", "machine": "full"}})), Some(Access { tasks_free: false, machine: MachineAccess::Full }));
     }
 }
 

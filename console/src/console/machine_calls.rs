@@ -1,21 +1,27 @@
-//! Calls the Orchestrator makes to your machine. With full access this app
-//! answers them at once; with "access, but ask" each waits on a card with run
-//! and deny; a request for access shows the Orchestrator's reason and lets you
-//! choose full, ask or deny. Swarm refuses them all while the shield says no
-//! access, so none of them reaches this app then.
+//! Calls the Orchestrator makes to your machine. Swarm decides each one by
+//! this device's rules (the Permissions page): a call it marks "ready" for
+//! this device runs here at once; one "awaiting_approval" waits on a card
+//! with allow and deny. A request for access only points to the Permissions
+//! page, where the rule is changed for every conversation.
 
 use gpui::{AnyElement, ClickEvent, Context, SharedString, div, prelude::*, px};
 
-use super::{Console, alpha};
-use crate::data::{BrowserAccess, BrowserLease, ClientCall, MachineAccess};
-use crate::fleet_config::Level;
+use super::{Console, Page, alpha};
+use crate::data::ClientCall;
 use crate::machine;
 use crate::swarm::live::Command;
 
 impl Console {
-    /// The session's shield for your machine (none when never chosen).
-    fn machine_level(&self, si: usize) -> MachineAccess {
-        self.sessions[si].access.map(|a| a.machine).unwrap_or(MachineAccess::None)
+    /// A device's name as Swarm's permissions list it ("this device" when it
+    /// is this one), for a call that targets its client session.
+    fn device_name(&self, client_session: &str) -> String {
+        let devices = self.permissions.as_ref().and_then(|p| p.get("devices")).and_then(|d| d.as_array());
+        let device = devices.and_then(|d| d.iter().find(|d| d.get("id").and_then(|v| v.as_str()) == Some(client_session)));
+        match device {
+            Some(d) if d.get("this_device").and_then(|v| v.as_bool()) == Some(true) => "this device".into(),
+            Some(d) => d.get("name").and_then(|v| v.as_str()).unwrap_or("another device").to_string(),
+            None => "another device".into(),
+        }
     }
 
     /// Sends one command for a call, once.
@@ -33,32 +39,9 @@ impl Console {
         cx.notify();
     }
 
-    /// A call to your PC with its working folder filled in: a command without
-    /// one starts in your first allowed folder.
-    fn with_folder(&self, call: &ClientCall) -> serde_json::Value {
-        let mut args = call.args.clone();
-        if call.tool.as_ref() == "machine_run" && args.get("cwd").and_then(|v| v.as_str()).is_none_or(str::is_empty) {
-            if let Some(first) = self.fleet_config.folders.first() {
-                args["cwd"] = serde_json::json!(first);
-            }
-        }
-        args
-    }
-
-    /// Whether a call to your PC stays in the folders you allowed (always,
-    /// when you allowed none). A command is judged by where it starts.
-    fn inside_folders(&self, call: &ClientCall) -> bool {
-        if self.fleet_config.folders.is_empty() {
-            return true;
-        }
-        let args = self.with_folder(call);
-        let key = if call.tool.as_ref() == "machine_run" { "cwd" } else { "path" };
-        args.get(key).and_then(|v| v.as_str()).is_some_and(|p| self.fleet_config.allows(p))
-    }
-
-    /// The command that carries out a call at once, if it needs nothing from
-    /// you: a call to your machine with full access, inside your folders.
-    fn automatic(&self, si: usize, session_id: &str, call: &ClientCall) -> Option<Command> {
+    /// The command that carries out a call at once: one Swarm marked ready
+    /// for this device.
+    fn automatic(&self, session_id: &str, call: &ClientCall) -> Option<Command> {
         if call.execution.as_ref() != "ready" || !call.this_device {
             return None;
         }
@@ -73,7 +56,6 @@ impl Console {
             });
         }
         match call.tool.as_ref() {
-            "request_machine_access" | "request_workspace_setup" | "request_browser_access" => None,
             "manage_browser" => Some(Command::Browser { session_id: session_id.to_string(), permission_id: id, args: call.args.clone(), confirmed: true }),
             "machine_read" | "machine_write" | "machine_run" => Some(Command::Client {
                 session_id: session_id.to_string(),
@@ -94,7 +76,7 @@ impl Console {
                 if self.answered.contains(&call.id) {
                     continue;
                 }
-                if let Some(command) = self.automatic(si, &l.session_id, call) {
+                if let Some(command) = self.automatic(&l.session_id, call) {
                     runs.push((si, call.clone(), command));
                 }
             }
@@ -112,8 +94,8 @@ impl Console {
         let t = &self.theme;
         s.calls
             .iter()
-            .filter(|c| !self.answered.contains(&c.id) && self.automatic(si, &session_id, c).is_none())
-            .filter(|c| c.execution.as_ref() == "awaiting_approval" || c.tool.as_ref() == "request_workspace_setup")
+            .filter(|c| !self.answered.contains(&c.id) && self.automatic(&session_id, c).is_none())
+            .filter(|c| c.execution.as_ref() == "awaiting_approval" || matches!(c.tool.as_ref(), "request_workspace_setup" | "request_machine_access" | "request_browser_access"))
             .map(|call| {
                 let key = format!("call-{pid}-{}", call.id);
                 let button = |label: &'static str, strong: bool, command: Command| {
@@ -126,22 +108,10 @@ impl Console {
                 let (heading, actions, note): (String, gpui::Div, Option<&str>) = match call.tool.as_ref() {
                     _ if call.execution.as_ref() == "awaiting_approval" => {
                         let approve = Command::Resolve { session_id: session_id.clone(), permission_id: id.clone(), allow: true, answer: None };
-                        (format!("DEVICE CALL · {}", call.target_device),
+                        let what = if call.tool.as_ref() == "manage_browser" { "IN THE BROWSER OF" } else { "ON" };
+                        (format!("{what} {}, AS YOU", self.device_name(&call.target_device).to_uppercase()),
                          div().flex().gap_1().child(button("allow", true, approve)).child(button("deny", false, refuse("The person denied this device call."))),
-                         Some("Approval makes this call ready for its target device; it does not execute here."))
-                    }
-                    "request_machine_access" => {
-                        let grant = |level| Command::Grant { session_id: session_id.clone(), permission_id: id.clone(), level };
-                        (
-                            format!("THE ORCHESTRATOR ASKS TO USE YOUR COMPUTER ({})", crate::swarm::target::this_computer()),
-                            div()
-                                .flex()
-                                .gap_1()
-                                .child(button("full access", true, grant(MachineAccess::Full)))
-                                .child(button("access, but ask", false, grant(MachineAccess::Ask)))
-                                .child(button("deny", false, refuse("The person denied access to their machine."))),
-                            Some("Full access runs its commands as you without asking; with ask, you run or deny each one. You can change this in the shield."),
-                        )
+                         Some("Allow lets that device run this one call; your Permissions page sets when it asks."))
                     }
                     "request_workspace_setup" => {
                         let path = call.args.get("workspace_path").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -206,118 +176,17 @@ impl Console {
                             }
                         }
                     }
-                    "request_browser_access" => {
-                        let wanted: Vec<String> = call.args.get("sites").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).map(|x| x.trim().to_ascii_lowercase()).filter(|x| !x.is_empty()).collect()).unwrap_or_default();
-                        // Asked during a live lease: the new sites join the
-                        // ones it has. Any site, asked or chosen, covers all.
-                        let current = self.lease_of(si);
-                        let any = self.lease_any.contains(&call.id) || wanted.iter().any(|s| s == "*") || current.as_ref().is_some_and(|l| l.sites.iter().any(|s| s == "*"));
-                        let sites: Vec<String> = if any {
-                            vec!["*".to_string()]
-                        } else {
-                            let mut all = current.as_ref().map(|l| l.sites.clone()).unwrap_or_default();
-                            for s in &wanted {
-                                if !all.contains(s) {
-                                    all.push(s.clone());
-                                }
-                            }
-                            all
-                        };
-                        let asked = call.args.get("minutes").and_then(|v| v.as_u64()).filter(|m| *m > 0).unwrap_or(30);
-                        let minutes = self.lease_minutes.get(&call.id).copied().unwrap_or(asked);
-                        let added: Vec<String> = wanted.iter().filter(|s| !current.as_ref().is_some_and(|l| l.covers(s))).cloned().collect();
-                        let sites_line = match (&current, any) {
-                            (_, true) => "Sites: any site (it may go anywhere on the web; risky actions still follow the level)".to_string(),
-                            (Some(_), false) => format!("Sites: {} (adds {})", sites.join(", "), if added.is_empty() { "nothing new".to_string() } else { added.join(", ") }),
-                            (None, false) => format!("Sites: {}", if sites.is_empty() { "none named".to_string() } else { sites.join(", ") }),
-                        };
-                        let any_toggle = {
-                            let call_id = call.id.clone();
-                            let asked_any = wanted.iter().any(|s| s == "*");
-                            self.button(SharedString::from(format!("{key}-any")), if any { "only the sites asked" } else { "allow any site" }, false)
-                                .when(asked_any, |b| b.opacity(0.5))
-                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                    if !asked_any && !this.lease_any.remove(&call_id) {
-                                        this.lease_any.insert(call_id.clone());
-                                    }
-                                    cx.notify();
-                                }))
-                        };
-                        let grant = |level| Command::GrantBrowser { session_id: session_id.clone(), permission_id: id.clone(), level, sites: sites.clone(), minutes };
-                        let status = crate::browser::status();
-                        let link = if status.connected {
-                            format!("Chrome is connected (extension {}).", status.version)
-                        } else {
-                            "Chrome is not connected to this app yet (Settings → Browser). You can grant now and connect after; its actions wait until then.".to_string()
-                        };
-                        let step = |label: &'static str, delta: i64| {
-                            let call_id = call.id.clone();
-                            self.button(SharedString::from(format!("{key}-min-{label}")), label, false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                let next = (minutes as i64 + delta).max(1) as u64;
-                                this.lease_minutes.insert(call_id.clone(), next);
-                                cx.notify();
-                            }))
-                        };
-                        (
-                            if current.is_some() { "THE ORCHESTRATOR ASKS FOR MORE OF YOUR BROWSER".into() } else { "THE ORCHESTRATOR ASKS TO USE YOUR BROWSER".into() },
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap_2()
-                                .child(div().flex().items_center().gap_2().child(div().text_size(px(11.)).text_color(if any { t.warn } else { t.muted }).child(sites_line)).child(any_toggle))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap_1()
-                                        .text_size(px(11.))
-                                        .text_color(t.muted)
-                                        .child("For")
-                                        .child(step("−5", -5))
-                                        .child(div().text_color(t.text).child(format!("{minutes} min")))
-                                        .child(step("+5", 5))
-                                        .child(div().text_color(t.faint).child(if minutes == asked { "(as asked)".to_string() } else { format!("(it asked {asked})") })),
-                                )
-                                .child(div().text_size(px(11.)).text_color(if status.connected { t.faint } else { t.warn }).child(link))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_wrap()
-                                        .gap_1()
-                                        .child(button("ask each action", true, grant(BrowserAccess::Ask)))
-                                        .child(button("confirm the critical ones", false, grant(BrowserAccess::Confirm)))
-                                        .child(button("full (dangerous)", false, grant(BrowserAccess::Full)))
-                                        .child(button("deny", false, refuse("The person denied the use of their browser."))),
-                                ),
-                            Some("Only those sites (or any, if you allow it), in the Swarm tab group it opens in Chrome, until the lease ends; it reads what those pages show. Ask: every action waits for you. Confirm: reading, moving and typing run; paying, publishing, keys and account settings wait for you. Full: everything runs. Stop any time from the shield or the extension."),
-                        )
-                    }
-                    "manage_browser" => {
-                        let held = self.holds.get(&call.id).cloned();
-                        let run = Command::Browser { session_id: session_id.clone(), permission_id: id.clone(), args: call.args.clone(), confirmed: true };
-                        let lease = self.lease_of(si);
-                        let scope = match &lease {
-                            Some(l) => format!("Lease: {} · {} · ends {}", l.level.as_str(), l.sites.join(", "), crate::swarm::live::ends_at_utc(l.until)),
-                            None => "No live lease is known for this session; the action fails unless Swarm has one.".to_string(),
-                        };
-                        (
-                            if held.is_some() { "IN YOUR BROWSER: THIS LOOKS CRITICAL".into() } else { "IN YOUR BROWSER".into() },
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap_2()
-                                .children(held.map(|why| div().text_size(px(11.)).text_color(t.warn).child(why)))
-                                .child(div().text_size(px(11.)).text_color(t.faint).child(scope))
-                                .child(div().flex().gap_1().child(button("do it", true, run)).child(button("deny", false, refuse("The person denied this action in their browser.")))),
-                            None,
-                        )
-                    }
+                    // request_machine_access and request_browser_access: access
+                    // is a rule of this device, not a grant in a conversation.
                     _ => {
-                        let run = Command::Client { session_id: session_id.clone(), permission_id: id.clone(), tool: call.tool.to_string(), args: self.with_folder(call) };
+                        let what = if call.tool.as_ref() == "request_browser_access" { "YOUR BROWSER" } else { "YOUR COMPUTER" };
+                        let open = self
+                            .button(SharedString::from(format!("{key}-permissions")), "open Permissions", true)
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.go(Page::Permissions, cx)));
                         (
-                            if self.inside_folders(call) { format!("ON YOUR COMPUTER ({}), AS YOU", crate::swarm::target::this_computer()) } else { format!("ON YOUR COMPUTER ({}), OUTSIDE YOUR ALLOWED FOLDERS", crate::swarm::target::this_computer()) },
-                            div().flex().gap_1().child(button("run", true, run)).child(button("deny", false, refuse("The person denied this call on their machine."))),
-                            None,
+                            format!("THE ORCHESTRATOR ASKS FOR {what} ({})", crate::swarm::target::this_computer()),
+                            div().flex().gap_1().child(open).child(button("dismiss", false, refuse("The person dismissed the request. Device rules are changed on the Permissions page, not in a conversation."))),
+                            Some("Access is not granted per conversation. This device's rules (files and terminal, browser) are changed on the Permissions page; Swarm applies them to every conversation."),
                         )
                     }
                 };
@@ -359,71 +228,4 @@ impl Console {
 /// One line saying what a call does.
 fn describe(call: &ClientCall) -> String {
     machine::describe(call.tool.as_ref(), &call.args)
-}
-
-impl Console {
-    /// Each fleet machine's level as Swarm stores it (none, ask, full).
-    pub(super) fn fleet_levels(&self) -> std::collections::BTreeMap<String, String> {
-        self.machines
-            .iter()
-            .skip(1)
-            .map(|m| {
-                let level = match self.fleet_config.level(&m.name) {
-                    Level::Full => "full",
-                    Level::Ask => "ask",
-                    Level::Off => "none",
-                };
-                (m.name.to_string(), level.to_string())
-            })
-            .collect()
-    }
-
-    /// Tells the open conversations their fleet when it changed: machines
-    /// came or went, or you changed a level.
-    pub(super) fn sync_fleet(&mut self, cx: &mut Context<Self>) {
-        if self.via.is_some() {
-            return;
-        }
-        let Some(live) = &self.live else { return };
-        let fleet = self.fleet_levels();
-        let folders = self.fleet_config.folders.clone();
-        if fleet.is_empty() && folders.is_empty() {
-            return;
-        }
-        let told = format!("{fleet:?} {folders:?}");
-        for p in &self.panes {
-            let Some(l) = &self.sessions[p.session].live else { continue };
-            if self.fleet_told.get(&l.session_id) != Some(&told) {
-                self.fleet_told.insert(l.session_id.clone(), told.clone());
-                live.run(Command::SetFleet { session_id: l.session_id.to_string(), fleet: fleet.clone(), folders: folders.clone() });
-            }
-        }
-        cx.notify();
-    }
-}
-
-impl Console {
-    /// A session's browser lease: Swarm's record on the session, or what the
-    /// app granted a moment ago (the record follows by event).
-    pub(super) fn lease_of(&self, si: usize) -> Option<BrowserLease> {
-        let now = super::now_ms();
-        if let Some(l) = self.sessions[si].browser.as_ref().filter(|l| l.live(now)) {
-            return Some(l.clone());
-        }
-        let id = self.sessions[si].live.as_ref()?.session_id.to_string();
-        crate::browser::leases().into_iter().find(|(sid, l)| *sid == id && l.live(now)).map(|(_, l)| l)
-    }
-
-    /// The command that carries out a browser action at once, if the lease
-    /// lets it: full runs it; confirm runs it unless the extension held it
-    /// as critical; ask and an unknown lease wait for you.
-    fn automatic_browser(&self, si: usize, session_id: &str, call: &ClientCall) -> Option<Command> {
-        let level = self.lease_of(si)?.level;
-        let confirmed = match level {
-            BrowserAccess::Full => true,
-            BrowserAccess::Confirm if !self.holds.contains_key(&call.id) => false,
-            _ => return None,
-        };
-        Some(Command::Browser { session_id: session_id.to_string(), permission_id: call.id.to_string(), args: call.args.clone(), confirmed })
-    }
 }

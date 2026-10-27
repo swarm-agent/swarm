@@ -28,6 +28,7 @@ mod models;
 mod nav;
 mod panes;
 mod projects;
+mod permissions;
 mod providers;
 mod settings;
 mod sidebar;
@@ -60,6 +61,8 @@ pub enum Page {
     Media,
     Usage,
     Agents,
+    /// The account's rules: this device, other devices, home, linked machines.
+    Permissions,
     Automations,
     Settings,
     Search,
@@ -68,7 +71,7 @@ pub enum Page {
 }
 
 impl Page {
-    const ALL: [Page; 7] = [Page::Sessions, Page::Media, Page::Usage, Page::Agents, Page::Automations, Page::Settings, Page::Search];
+    const ALL: [Page; 8] = [Page::Sessions, Page::Media, Page::Usage, Page::Agents, Page::Permissions, Page::Automations, Page::Settings, Page::Search];
 
     fn label(self) -> &'static str {
         match self {
@@ -76,6 +79,7 @@ impl Page {
             Page::Media => "Media",
             Page::Usage => "Usage",
             Page::Agents => "Agents",
+            Page::Permissions => "Permissions",
             Page::Automations => "Automations",
             Page::Settings => "Settings",
             Page::Search => "Search",
@@ -89,6 +93,7 @@ impl Page {
             Page::Media => Icon::Media,
             Page::Usage => Icon::Usage,
             Page::Agents => Icon::Agents,
+            Page::Permissions => Icon::Shield,
             Page::Automations => Icon::Tasks,
             Page::Settings => Icon::Settings,
             Page::Search => Icon::Search,
@@ -201,8 +206,13 @@ pub struct Console {
     agents_focus: AgentsFocus,
     /// The day hovered in the Usage chart.
     usage_hover: Option<usize>,
-    /// The pane whose shield menu is open.
-    shield_open: Option<usize>,
+    /// The Permissions page: Swarm's last answer (GET /v3/permissions), a
+    /// read under way, the last refusal or failure, and the rule and value a
+    /// click is saving until Swarm answers.
+    permissions: Option<serde_json::Value>,
+    permissions_busy: bool,
+    permissions_error: Option<(bool, String)>,
+    permission_saving: Option<(crate::swarm::permissions::Rule, String)>,
     /// The model picker, when open, and its search box.
     picker: Option<models::Picker>,
     picker_query: Option<Entity<TextInput>>,
@@ -228,10 +238,6 @@ pub struct Console {
     md_cache: std::cell::RefCell<HashMap<String, (u64, std::rc::Rc<Vec<markdown::Block>>)>>,
     /// Models to pick from, as Swarm lists them.
     catalog: crate::swarm::models::Catalog,
-    /// The fleet each conversation was last told (session id), so it is told once per change.
-    fleet_told: HashMap<data::Text, String>,
-    /// Home and what the Orchestrator may do per machine (fleet.json).
-    fleet_config: crate::fleet_config::FleetConfig,
     /// The machines home controls, read from home (fleet::Fleet); after home in machines.
     fleet: Option<crate::swarm::fleet::Fleet>,
     /// A linked machine this window shows, through home's link to it
@@ -256,10 +262,6 @@ pub struct Console {
     /// Browser actions the extension found critical, waiting for you: the
     /// request id and why.
     holds: HashMap<data::Text, String>,
-    /// Minutes chosen on a browser lease card, by request id.
-    lease_minutes: HashMap<data::Text, u64>,
-    /// Lease cards where the person chose any site over the sites asked.
-    lease_any: HashSet<data::Text>,
     /// The Automations page: what the home machine has, whether a read is
     /// under way and when the last one finished.
     automations: Option<Result<crate::swarm::automations::Board, String>>,
@@ -396,7 +398,10 @@ impl Console {
             usage: if demo { data::usage() } else { data::Usage::default() },
             agents_focus: AgentsFocus::Fleet,
             usage_hover: None,
-            shield_open: None,
+            permissions: None,
+            permissions_busy: false,
+            permissions_error: None,
+            permission_saving: None,
             picker: None,
             picker_query: None,
             providers: Vec::new(),
@@ -415,8 +420,6 @@ impl Console {
             answered: HashSet::new(),
             reviews: HashMap::new(),
             holds: HashMap::new(),
-            lease_minutes: HashMap::new(),
-            lease_any: HashSet::new(),
             automations: None,
             automations_busy: false,
             automations_at: 0,
@@ -431,8 +434,6 @@ impl Console {
             via: via.clone(),
             home: None,
             link_code: None,
-            fleet_told: HashMap::new(),
-            fleet_config: crate::fleet_config::FleetConfig::load().unwrap_or_default(),
             selecting: false,
             onboarding: None,
             pending_focus: false,
@@ -606,6 +607,9 @@ impl Console {
         }
         if page == Page::Automations {
             self.load_automations(cx);
+        }
+        if page == Page::Permissions {
+            self.load_permissions();
         }
         cx.notify();
     }
@@ -1047,7 +1051,6 @@ impl Console {
             .border_color(t.border)
             .on_drop(cx.listener(move |this, paths: &gpui::ExternalPaths, _, cx| this.attach_files(pid, paths.paths(), cx)))
             .drag_over::<gpui::ExternalPaths>(move |s, _, _, _| s.bg(drop_tint))
-            .children(self.render_shield_menu(si, pid, cx))
             .children(self.render_model_picker_for_pane(si, pid, cx))
             .children(self.render_commands(pid, &typed, cx))
             .child(
@@ -1084,7 +1087,7 @@ impl Console {
                             .gap_3()
                             .text_size(px(10.5))
                             .text_color(t.faint)
-                            .child(self.shield_button(si, pid, cx))
+                            .child(self.permissions_chip(pid, cx))
                             .child(self.model_button(si, pid, cx))
                             .child(div().flex_1().min_w_0().truncate().child(hint))
                             .child(div().flex_none().child("/ commands"))
@@ -1467,6 +1470,7 @@ impl Render for Console {
                         Page::Media => div().flex_1().min_w_0().child(self.render_media(cx)),
                         Page::Usage => div().flex_1().min_w_0().child(self.render_usage(cx)),
                         Page::Agents => div().flex_1().min_w_0().child(self.render_agents(cx)),
+                        Page::Permissions => div().flex_1().min_w_0().child(self.render_permissions(cx)),
                         Page::Automations => div().flex_1().min_w_0().child(self.render_automations(cx)),
                         Page::Settings => div().flex_1().min_w_0().child(self.render_settings(cx)),
                         Page::Search => div().flex_1().min_w_0().child(self.render_search(cx)),

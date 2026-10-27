@@ -68,7 +68,7 @@ impl Console {
                 }
                 _ => None,
             },
-            Page::Settings => None,
+            Page::Settings | Page::Permissions => None,
             Page::Search | Page::Projects => None,
         }
     }

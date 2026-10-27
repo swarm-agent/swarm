@@ -8,6 +8,7 @@ pub mod live;
 pub mod map;
 pub mod media;
 pub mod models;
+pub mod permissions;
 pub mod fleet;
 pub mod progress;
 pub mod realtime;

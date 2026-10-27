@@ -204,11 +204,6 @@ pub struct Session {
     pub run: Option<RunClock>,
     /// What the session waits on you for: a question or a tool approval.
     pub pending: Option<Pending>,
-    /// What you let its Orchestrator do (the shield), as Swarm stores it. For a
-    /// session not started yet: what it will start with. None: never chosen.
-    pub access: Option<Access>,
-    /// Its lease on your browser, as Swarm keeps it (none when never granted).
-    pub browser: Option<BrowserLease>,
     /// Calls the Orchestrator made to your machine that wait on this app.
     pub calls: Vec<ClientCall>,
     /// The model picked for a session not started yet; it starts with it.
@@ -224,118 +219,21 @@ pub struct Session {
     pub outbox: Vec<(Text, usize)>,
 }
 
-/// A call to your machine (request_machine_access, machine_run, machine_read,
-/// machine_write) that this app answers.
+/// A call to your machine (machine_run, machine_read, machine_write,
+/// manage_browser, a request for a folder or for access) that this app
+/// answers. Swarm says which device it targets and whether it may run there.
 #[derive(Clone, PartialEq, Debug)]
 pub struct ClientCall {
     /// The pending request's id in Swarm.
     pub id: Text,
     pub tool: Text,
+    /// The client session id of the device the call targets.
     pub target_device: Text,
+    /// That device is this app (Swarm's this_device).
     pub this_device: bool,
+    /// "awaiting_approval" (the person decides) or "ready" (the target runs it).
     pub execution: Text,
     pub args: serde_json::Value,
-}
-
-/// What the person lets a session's Orchestrator do.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Access {
-    /// Delegated tasks start at once (true) or wait for Approve.
-    pub tasks_free: bool,
-    pub machine: MachineAccess,
-}
-
-/// The Orchestrator's access to your own machine, through this app.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum MachineAccess {
-    None,
-    Ask,
-    Full,
-}
-
-impl Access {
-    /// New sessions: tasks start freely, no access to your machine.
-    pub const DEFAULT: Access = Access { tasks_free: true, machine: MachineAccess::None };
-
-    pub fn tasks(self) -> &'static str {
-        if self.tasks_free { "free" } else { "ask" }
-    }
-}
-
-impl MachineAccess {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            MachineAccess::None => "none",
-            MachineAccess::Ask => "ask",
-            MachineAccess::Full => "full",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<MachineAccess> {
-        match s {
-            "none" => Some(MachineAccess::None),
-            "ask" => Some(MachineAccess::Ask),
-            "full" => Some(MachineAccess::Full),
-            _ => None,
-        }
-    }
-}
-
-/// The Orchestrator's lease on your own browser (Chrome, through this app):
-/// its level, the sites it covers and when it ends (unix ms). Swarm keeps it
-/// on the session and refuses browser calls outside it.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct BrowserLease {
-    pub level: BrowserAccess,
-    pub sites: Vec<String>,
-    pub until: u64,
-}
-
-/// How much of the browser the Orchestrator may use on its own.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum BrowserAccess {
-    None,
-    /// Each action waits for you.
-    Ask,
-    /// Reading, moving and typing run; paying, publishing, keys and account
-    /// settings wait for you.
-    Confirm,
-    /// Everything runs.
-    Full,
-}
-
-impl BrowserAccess {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            BrowserAccess::None => "none",
-            BrowserAccess::Ask => "ask",
-            BrowserAccess::Confirm => "confirm",
-            BrowserAccess::Full => "full",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<BrowserAccess> {
-        match s {
-            "none" => Some(BrowserAccess::None),
-            "ask" => Some(BrowserAccess::Ask),
-            "confirm" => Some(BrowserAccess::Confirm),
-            "full" => Some(BrowserAccess::Full),
-            _ => None,
-        }
-    }
-}
-
-impl BrowserLease {
-    /// A lease is live while its level is not none and its end is ahead.
-    pub fn live(&self, now_ms: u64) -> bool {
-        self.level != BrowserAccess::None && self.until > now_ms
-    }
-
-    /// Whether a host is one of the leased sites or under one.
-    pub fn covers(&self, host: &str) -> bool {
-        let host = host.trim().to_ascii_lowercase();
-        self.sites.iter().any(|s| s == "*" || host == *s || host.ends_with(&format!(".{s}")))
-    }
 }
 
 /// What a session waits on: an ask_user question (or several) or a tool
@@ -397,8 +295,6 @@ pub fn sessions() -> Vec<Session> {
             live: None,
             status: None,
             pending: None,
-            access: None,
-            browser: None,
             model_choice: None,
             model_favorite: None,
             pinned: false,
@@ -439,8 +335,6 @@ pub fn sessions() -> Vec<Session> {
             live: None,
             status: None,
             pending: None,
-            access: None,
-            browser: None,
             model_choice: None,
             model_favorite: None,
             pinned: false,
@@ -469,8 +363,6 @@ pub fn sessions() -> Vec<Session> {
             live: None,
             status: None,
             pending: None,
-            access: None,
-            browser: None,
             model_choice: None,
             model_favorite: None,
             pinned: false,
@@ -497,8 +389,6 @@ pub fn sessions() -> Vec<Session> {
             live: None,
             status: None,
             pending: None,
-            access: None,
-            browser: None,
             model_choice: None,
             model_favorite: None,
             pinned: false,
@@ -528,8 +418,6 @@ pub fn sessions() -> Vec<Session> {
             live: None,
             status: None,
             pending: None,
-            access: None,
-            browser: None,
             model_choice: None,
             model_favorite: None,
             pinned: false,
@@ -555,8 +443,6 @@ pub fn sessions() -> Vec<Session> {
             live: None,
             status: None,
             pending: None,
-            access: None,
-            browser: None,
             model_choice: None,
             model_favorite: None,
             pinned: false,

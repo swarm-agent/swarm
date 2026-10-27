@@ -75,6 +75,8 @@ async function onMessage(msg) {
   }
   if (msg.op === "ping") { post({ event: "pong" }); return; }
   if (msg.op === "lease") { lease(msg); return; }
+  // The person turned Browser on again for this device in Swarm.
+  if (msg.op === "resume") { stopped = false; return; }
   if (msg.op === "act" && msg.id !== undefined) {
     try {
       const result = await act(msg);
@@ -101,6 +103,13 @@ function lease(msg) {
   stopped = false;
   for (const id of sessionTabs[session] || []) banner(id, leases[session]);
   paintGroup(session);
+}
+
+// Swarm approved this one call under the device's Browser rule: it carries its
+// own approval, kept for this call only. A stop still holds.
+function approvedCall() {
+  if (stopped) throw new Error("The person stopped Swarm in their browser; turn Browser on again on the Permissions page.");
+  return { level: "full", sites: ["*"], until: Date.now() + 6 * 60 * 1000 };
 }
 
 function liveLease(session) {
@@ -237,7 +246,7 @@ async function pageOf(tab, lease, extra) {
 
 async function act(msg) {
   const session = String(msg.session || "");
-  const lease = liveLease(session);
+  const lease = msg.approved === true ? approvedCall() : liveLease(session);
   // The console's view of the lease travels with each action; the stricter wins.
   if (Array.isArray(msg.sites) && msg.sites.length) {
     lease.sites = lease.sites.filter((s) => msg.sites.includes(s));

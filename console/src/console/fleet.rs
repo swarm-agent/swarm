@@ -1,15 +1,15 @@
 //! The fleet in the sidebar and the status bar: counts, and only the machines
 //! that need a look; the full list opens from the status bar. The Agents
-//! page holds the detail and each machine's level.
+//! page holds the detail; what home may hand each machine is a rule on the
+//! Permissions page.
 
 use gpui::{AnyElement, ClickEvent, Context, Div, SharedString, Stateful, div, prelude::*, px};
 
 use super::{AgentsFocus, Console, Page};
 use crate::data::{Health, Machine};
-use crate::fleet_config::Level;
 
 impl Console {
-    /// One machine: its state, name, kind and level (or "home").
+    /// One machine: its state, name, kind, and home or online/offline.
     pub(super) fn fleet_row(&self, mi: usize, m: &Machine, cx: &mut Context<Self>) -> Stateful<Div> {
         let t = &self.theme;
         let hover = t.hover;
@@ -31,39 +31,11 @@ impl Console {
                 .child(div().text_color(t.muted).child(m.name.clone()))
                 .child(div().flex_1().text_color(t.faint).text_size(px(10.5)).child(m.kind.clone()))
                 .child(if mi == 0 {
-                    div().text_color(t.accent).text_size(px(10.5)).child("home").into_any_element()
+                    div().text_color(t.accent).text_size(px(10.5)).child("home")
+                } else if m.health == Health::Offline {
+                    div().text_color(t.faint).text_size(px(10.5)).child("offline")
                 } else {
-                    // What the Orchestrator may do there; click to change.
-                    let name = m.name.to_string();
-                    let level = self.fleet_config.level(&name);
-                    div()
-                        .id(SharedString::from(format!("fleet-level-{mi}")))
-                        .px_1()
-                        .rounded(px(t.radius))
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(hover))
-                        .text_size(px(10.5))
-                        .text_color(match level {
-                            Level::Full => t.warn,
-                            Level::Ask => t.muted,
-                            Level::Off => t.faint,
-                        })
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            let next = match this.fleet_config.level(&name) {
-                                Level::Full => Level::Ask,
-                                Level::Ask => Level::Off,
-                                Level::Off => Level::Full,
-                            };
-                            this.fleet_config.access.insert(name.clone(), next);
-                            if let Err(e) = this.fleet_config.save() {
-                                this.notice = Some((format!("Could not save: {e}").into(), true));
-                            }
-                            this.sync_fleet(cx);
-                            cx.stop_propagation();
-                            cx.notify();
-                        }))
-                        .child(if m.health == Health::Offline { format!("offline · {}", level.label()) } else { level.label().to_string() })
-                        .into_any_element()
+                    div().text_color(t.muted).text_size(px(10.5)).child("online")
                 })
     }
 
@@ -93,7 +65,6 @@ impl Console {
             return None;
         }
         let t = &self.theme;
-        let levels = "full: runs as you · ask: you approve each · off";
         Some(
             div()
                 .id("fleet-popover-backdrop")
@@ -121,8 +92,7 @@ impl Console {
                         .shadow_md()
                         .on_click(|_, _, cx| cx.stop_propagation())
                         .child(div().px_3().pt_1().pb_1().text_size(px(10.5)).text_color(t.faint).child(format!("FLEET · {} · click a machine for its page", self.machines.len())))
-                        .children(self.machines.iter().enumerate().map(|(mi, m)| self.fleet_row(mi, m, cx)))
-                        .child(div().px_3().pt_1().text_size(px(10.5)).text_color(t.faint).child(levels)),
+                        .children(self.machines.iter().enumerate().map(|(mi, m)| self.fleet_row(mi, m, cx))),
                 )
                 .into_any_element(),
         )

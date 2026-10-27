@@ -6,7 +6,7 @@
 //! console snapshots; commands (start a session, send, approve, merge, stop)
 //! run on their own threads and report back the same way.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -16,9 +16,10 @@ use serde_json::{Value, json};
 use super::client::{Client, Refusal};
 use super::map::{self, list, s};
 use super::models::{self, Catalog, Choice};
+use super::permissions::Rule;
 use super::realtime::Stream;
 use super::repository::{self, Prepared};
-use crate::data::{Access, Assignment, Attachment, BrowserAccess, BrowserLease, ClientCall, Entry, Machine, MachineAccess, Pending, Project, Role, RunState, Session, Task, Usage};
+use crate::data::{Assignment, Attachment, ClientCall, Entry, Machine, Pending, Project, Role, RunState, Session, Task, Usage};
 
 /// The machine, roles and usage change slowly: reread this often.
 const SLOW_EVERY: Duration = Duration::from_secs(30);
@@ -72,6 +73,8 @@ pub enum Update {
     Review { permission_id: String, review: repository::Review },
     /// Workers or automations changed in Swarm: read them again.
     AutomationsChanged,
+    /// The account's permissions changed in Swarm (permissions.updated).
+    PermissionsChanged,
     /// The watched run's session moved (a message, an action): read it again.
     RunActivity(String),
     /// An action in your browser the extension found critical: it waits for
@@ -82,7 +85,7 @@ pub enum Update {
 #[derive(Clone)]
 pub enum Command {
     /// Start an Orchestrator conversation in a project with the person's first message.
-    Start { draft: u64, project_id: String, workspace_path: String, text: String, access: Access, model: Option<Choice>, fleet: BTreeMap<String, String>, folders: Vec<String>, files: Vec<Attachment> },
+    Start { draft: u64, project_id: String, workspace_path: String, text: String, model: Option<Choice>, files: Vec<Attachment> },
     /// The model for one conversation only.
     SetModel { session_id: String, choice: Choice },
     /// A role's default model for every conversation (plan, action, system-coder, …).
@@ -90,8 +93,11 @@ pub enum Command {
     /// Save a favorite (a named model, thinking and priority), or remove one.
     SaveFavorite { name: String, model: Assignment },
     RemoveFavorite { id: String },
-    /// The shield: what the person lets the session's Orchestrator do.
-    SetAccess { session_id: String, access: Access },
+    /// Read the account's permissions (GET /v3/permissions).
+    ReadPermissions,
+    /// Change one rule (PATCH /v3/permissions with the revision it was read
+    /// at), then read the record again.
+    SetPermission { rule: Rule, value: String, revision: u64 },
     /// Carry out a call to your machine here and answer it with the result.
     Client { session_id: String, permission_id: String, tool: String, args: serde_json::Value },
     /// Ready a project folder for agents on the Orchestrator's request: Swarm's
@@ -101,21 +107,11 @@ pub enum Command {
     Commit { session_id: String, permission_id: String, review: repository::Review, selected: Vec<String> },
     /// Refuse a call to your machine, or a request for access.
     Refuse { session_id: String, permission_id: String, reason: String },
-    /// Tell a session its fleet: each machine's level (none, ask, full).
-    SetFleet { session_id: String, fleet: BTreeMap<String, String>, folders: Vec<String> },
     /// Home redeems a machine's link code (made on the machine with
     /// `sudo swarmctl fleet invite ADDRESS`) and becomes its home.
     LinkMachine { code: String },
     /// Home lets a linked machine go (the machine is told and ends home's session there).
     UnlinkMachine { name: String },
-    /// Grant a request for access: the session's shield becomes `level`, then
-    /// the request is answered with it.
-    Grant { session_id: String, permission_id: String, level: MachineAccess },
-    /// Grant a request for your browser: the session's lease (level, sites,
-    /// minutes from now) goes to Swarm, then the request is answered with it.
-    GrantBrowser { session_id: String, permission_id: String, level: BrowserAccess, sites: Vec<String>, minutes: u64 },
-    /// End a session's browser lease now.
-    EndBrowser { session_id: String },
     /// Carry out a manage_browser call in your Chrome and answer it; with
     /// `confirmed` false an action the extension finds critical is held.
     Browser { session_id: String, permission_id: String, args: serde_json::Value, confirmed: bool },
@@ -175,8 +171,6 @@ struct Detail {
     model: String,
     pending: Option<Pending>,
     calls: Vec<ClientCall>,
-    browser: Option<BrowserLease>,
-    access: Option<Access>,
     hydrated: bool,
 }
 
@@ -314,9 +308,14 @@ impl Live {
                 Command::Pin { session_id, .. } | Command::Unarchive { session_id, .. } | Command::Reveal { session_id } => Some(session_id.clone()),
                 _ => None,
             };
+            // The rules change nothing the model holds: no reread after them.
+            let quiet = matches!(command, Command::ReadPermissions | Command::SetPermission { .. });
             let (draft, what, result) = perform(&client, command);
             let ok = result.is_ok();
             let _ = tx.send(Update::Done { draft, what, result });
+            if quiet {
+                return;
+            }
             if let Some(session_id) = reread.filter(|_| ok) {
                 let _ = kick.send(json!({"kind": "console.session", "session_id": session_id}));
             }
@@ -345,20 +344,9 @@ fn err(e: Refusal) -> String {
     e.to_string()
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
-}
-
-/// A unix-ms time as "HH:MM UTC" for the agent.
-pub fn ends_at_utc(ms: u64) -> String {
-    let secs = ms / 1000;
-    let (h, m) = ((secs / 3600) % 24, (secs / 60) % 60);
-    format!("{h:02}:{m:02} UTC")
-}
-
 fn perform(client: &Client, command: Command) -> (Option<u64>, &'static str, Result<Value, String>) {
     match command {
-        Command::Start { draft, project_id, workspace_path, text, access, model, files, .. } => {
+        Command::Start { draft, project_id, workspace_path, text, model, files } => {
             // A project conversation lives in its project; Swarm binds no
             // workspace to it (the project's folders are its scope).
             let _ = workspace_path;
@@ -408,56 +396,21 @@ fn perform(client: &Client, command: Command) -> (Option<u64>, &'static str, Res
         Command::Refuse { session_id, permission_id, reason } => {
             (None, "refuse", resolve(client, &session_id, &permission_id, json!({"action": "deny_once", "reason": reason})))
         }
-        Command::Grant { session_id, permission_id, level } => {
-            let set = client.post(&format!("/v3/sessions/{session_id}/access"), json!({"machine": level.as_str(), "client_request_id": request_id("access")})).map_err(err);
-            let answered = set.and_then(|_| {
-                resolve(client, &session_id, &permission_id, json!({"action": "allow_once", "approved_arguments": {"result": {"access": level.as_str()}}}))
-            });
-            (None, "grant", answered)
-        }
-        Command::GrantBrowser { session_id, permission_id, level, sites, minutes } => {
-            let until = now_ms() + minutes * 60_000;
-            let lease = BrowserLease { level, sites: sites.clone(), until };
-            let set = client
-                .post(
-                    &format!("/v3/sessions/{session_id}/access"),
-                    json!({"browser": level.as_str(), "browser_sites": sites.join(" "), "browser_until": until, "client_request_id": request_id("access")}),
-                )
-                .map_err(err);
-            let answered = set.and_then(|_| {
-                crate::browser::lease(&session_id, Some(lease));
-                let ends = ends_at_utc(until);
-                resolve(
-                    client,
-                    &session_id,
-                    &permission_id,
-                    json!({"action": "allow_once", "approved_arguments": {"result": {"access": level.as_str(), "sites": sites, "until": until, "ends_at_utc": ends, "minutes": minutes}}}),
-                )
-            });
-            (None, "grant-browser", answered)
-        }
-        Command::EndBrowser { session_id } => {
-            let set = client.post(&format!("/v3/sessions/{session_id}/access"), json!({"browser": "none", "client_request_id": request_id("access")})).map_err(err);
-            if set.is_ok() {
-                crate::browser::lease(&session_id, None);
-            }
-            (None, "end-browser", set)
-        }
         Command::Browser { .. } => (None, "browser", Err("handled before perform".into())),
-        Command::SetAccess { session_id, access } => (
-            None,
-            "access",
-            client
-                .post(&format!("/v3/sessions/{session_id}/access"), json!({"tasks": access.tasks(), "machine": access.machine.as_str(), "client_request_id": request_id("access")}))
-                .map_err(err),
-        ),
-        Command::SetFleet { session_id, fleet, folders } => (
-            None,
-            "fleet",
-            client
-                .post(&format!("/v3/sessions/{session_id}/access"), json!({"fleet": fleet, "folders": folders, "client_request_id": request_id("access")}))
-                .map_err(err),
-        ),
+        Command::ReadPermissions => (None, "permissions", client.get("/v3/permissions").map_err(err)),
+        // Swarm's answer is the stored record; the page shows a fresh read of
+        // it. A refusal (409 stale revision, 403 another device's rule, 400)
+        // comes back as Swarm's message; the console then reads again.
+        Command::SetPermission { rule, value, revision } => {
+            let body = rule.patch(&value, revision, &request_id("permissions"));
+            let result = client.patch("/v3/permissions", body).map_err(err).map(|saved| client.get("/v3/permissions").unwrap_or(saved));
+            // Browser on again for this device lifts a stop pressed in the
+            // extension (only this device's own rows can be changed here).
+            if result.is_ok() && matches!(rule, super::permissions::Rule::Browser(_)) && value != "off" {
+                crate::browser::resume();
+            }
+            (None, "permission", result)
+        }
         Command::LinkMachine { code } => (None, "link", client.post("/v3/fleet/machines", json!({"code": code})).map_err(err)),
         Command::UnlinkMachine { name } => (None, "unlink", client.delete(&format!("/v3/fleet/machines/{name}")).map_err(err)),
         Command::Approve { project_id, task_id, approve } => (
@@ -612,6 +565,17 @@ fn unarchive(client: &Client, session_id: &str, project_id: &str) -> Result<Valu
 }
 
 /// Stops a session's run: Swarm wants the run and the Swarm it runs on.
+/// The person pressed stop in the extension: this device's Browser rule turns
+/// off in Swarm (from Swarm's current record and revision).
+fn browser_off(client: &Client) {
+    let Ok(record) = client.get("/v3/permissions") else { return };
+    let revision = record.get("revision").and_then(Value::as_u64).unwrap_or(0);
+    let mine = record.get("devices").and_then(Value::as_array).and_then(|d| d.iter().find(|d| d.get("this_device").and_then(Value::as_bool) == Some(true)));
+    let Some(id) = mine.map(|d| s(d, "id").to_string()).filter(|id| !id.is_empty()) else { return };
+    let body = super::permissions::Rule::Browser(id).patch("off", revision, &request_id("browser-stop"));
+    let _ = client.patch("/v3/permissions", body);
+}
+
 fn stop(client: &Client, session_id: &str) -> Result<Value, String> {
     let detail = client.get(&format!("/v3/sessions/{session_id}?message_limit=0")).map_err(err)?;
     let run = detail.get("active_run_intent").cloned().unwrap_or(Value::Null);
@@ -720,6 +684,7 @@ fn follow(client: &Client, watched: &Mutex<HashSet<String>>, tx: &Sender<Update>
         // one conversation updates only that one; anything else sends the whole.
         let mut dirty: HashSet<String> = HashSet::new();
         let mut automations_changed = false;
+        let mut permissions_changed = false;
         let mut run_moved = false;
         let mut whole = false;
         let first = match frames.recv_timeout(Duration::from_millis(250)) {
@@ -737,6 +702,10 @@ fn follow(client: &Client, watched: &Mutex<HashSet<String>>, tx: &Sender<Update>
             // ended): the Automations page reads again.
             if kind == "worker.updated" || kind == "automation.updated" {
                 automations_changed = true;
+            }
+            // A rule changed (here or anywhere): the console reads them again.
+            if kind == "permissions.updated" {
+                permissions_changed = true;
             }
             if !sid.is_empty() && run_sub.as_deref() == Some(sid.as_str()) {
                 run_moved = true;
@@ -758,6 +727,9 @@ fn follow(client: &Client, watched: &Mutex<HashSet<String>>, tx: &Sender<Update>
         // A command finished: models, roles and usage may have changed.
         whole |= m.hydrate_watched(watched, &mut subscribed, &commands)?;
         if automations_changed && tx.send(Update::AutomationsChanged).is_err() {
+            return Ok(());
+        }
+        if permissions_changed && tx.send(Update::PermissionsChanged).is_err() {
             return Ok(());
         }
         if run_moved {
@@ -970,7 +942,7 @@ impl Model<'_> {
     }
 
     /// Reads conversations in full: their messages, views (pending requests,
-    /// model) and access.
+    /// model).
     fn hydrate(&mut self, ids: &[String]) -> Result<(), String> {
         let body = json!({
             "surface": "desktop",
@@ -992,14 +964,11 @@ impl Model<'_> {
             if let Some(shell) = snap.get("sessions_by_id").and_then(|x| x.get(id)) {
                 self.shells.insert(id.clone(), shell.clone());
             }
-            let (access, browser) = self.read_access(id);
             let d = self.details.entry(id.clone()).or_default();
             d.entries = map::entries(&messages);
             d.model = map::model_line(&view);
             d.pending = map::pending(&permissions);
             d.calls = map::client_calls(&permissions);
-            d.access = access;
-            d.browser = browser;
             d.hydrated = true;
             if d.pending.is_some() || !d.calls.is_empty() {
                 self.waiting.insert(id.clone());
@@ -1043,15 +1012,6 @@ impl Model<'_> {
             self.order.insert(0, id.to_string());
         }
         Ok(true)
-    }
-
-    /// A session's shield and browser lease from Swarm; the extension is
-    /// told the lease, so it matches Swarm's record after a restart too.
-    fn read_access(&self, id: &str) -> (Option<Access>, Option<BrowserLease>) {
-        let Ok(answer) = self.client.get(&format!("/v3/sessions/{id}/access")) else { return (None, None) };
-        let browser = map::browser_lease(&answer);
-        crate::browser::lease(id, browser.clone());
-        (map::access(&answer), browser)
     }
 
     fn read_pending(&mut self, id: &str) -> Result<(), String> {
@@ -1107,15 +1067,11 @@ impl Model<'_> {
                 Ok(true)
             }
             // Chrome's link changed (repaint), or the person pressed stop in
-            // the extension: every live lease ends in Swarm's record.
+            // the extension: this device's Browser rule turns off in Swarm,
+            // so Swarm's record says what the browser will do.
             "console.browser" => {
                 if s(frame, "event") == "stopped" {
-                    for id in crate::browser::live_sessions() {
-                        crate::browser::lease(&id, None);
-                        if let Some(d) = self.details.get_mut(&id) {
-                            d.browser = None;
-                        }
-                    }
+                    browser_off(self.client);
                 }
                 Ok(true)
             }
@@ -1300,16 +1256,7 @@ impl Model<'_> {
                 }
                 Ok(true)
             }
-            "session.metadata.updated" => {
-                if watched {
-                    let (access, browser) = self.read_access(sid);
-                    if let Some(d) = self.details.get_mut(sid) {
-                        d.access = access;
-                        d.browser = browser;
-                    }
-                }
-                Ok(true)
-            }
+            "session.metadata.updated" => Ok(true),
             "session.reactivated" => self.reread_session(sid),
             "session.archived" | "session.deleted" => {
                 self.shells.remove(sid);
@@ -1334,8 +1281,6 @@ impl Model<'_> {
             session.model = d.model.clone().into();
             session.pending = d.pending.clone();
             session.calls = d.calls.clone();
-            session.access = d.access.clone();
-            session.browser = d.browser.clone();
             if session.state != RunState::Running && (d.pending.is_some() || !d.calls.is_empty()) {
                 session.state = RunState::NeedsYou;
             }

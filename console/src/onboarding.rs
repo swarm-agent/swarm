@@ -14,7 +14,7 @@ use gpui::{
 use serde_json::{Value, json};
 
 use crate::icons::{Icon, IconStyle};
-use crate::fleet_config::{FleetConfig, Level, THIS_PC};
+use crate::fleet_config::{FleetConfig, THIS_PC};
 use crate::swarm::client::{self, Client};
 use crate::swarm::fleet;
 use crate::swarm::progress::{self, Event as Progress};
@@ -88,7 +88,7 @@ enum Stage {
     Connecting,
     /// Which machine your conversations live on (only with a fleet).
     Home { choice: usize },
-    /// What the Orchestrator may do on each machine.
+    /// Where what agents may use is set: the Permissions page (Swarm's rules).
     Access,
     Provider { rows: Vec<ProviderRow>, loaded: bool, connected: Option<String> },
     ChatGpt { url: String, code: String },
@@ -499,9 +499,9 @@ impl Onboarding {
         );
     }
 
-    /// Connected to home: with no saved choices yet, choose what the
-    /// Orchestrator may use (this PC, and the machines home controls), then the
-    /// provider. Home is the Swarm this app connected to.
+    /// Connected to home: with no saved choices yet, say where what agents
+    /// may use is set (the Permissions page), then the provider. Home is the
+    /// Swarm this app connected to.
     fn after_connect(&mut self, cx: &mut Context<Self>) {
         // A Swarm still called by the installer's default gets its name first.
         if !self.named && self.hello.as_ref().is_some_and(|h| h.name.is_empty() || h.name == DEFAULT_SWARM_NAME) {
@@ -573,13 +573,6 @@ impl Onboarding {
                 Err(e) => this.fail(e, cx),
             },
         );
-    }
-
-    /// The machines whose access you choose: this PC, then the fleet but home.
-    fn access_rows(&self) -> Vec<(String, String)> {
-        let mut rows = vec![(THIS_PC.to_string(), format!("{} · your computer, as you", crate::swarm::target::this_computer()))];
-        rows.extend(self.fleet.iter().filter(|f| f.name != self.draft.home).map(|f| (f.name.clone(), format!("{} · paired with home", f.name))));
-        rows
     }
 
     fn providers(&mut self, cx: &mut Context<Self>) {
@@ -1465,46 +1458,19 @@ impl Onboarding {
                 )
             }
             Stage::Access => {
-                let hover = t.hover;
-                let rows = self.access_rows().into_iter().map(|(machine, title)| {
-                    let current = self.draft.level(&machine);
-                    let pill = |level: Level| {
-                        let on = current == level;
-                        let machine = machine.clone();
-                        div()
-                            .id(SharedString::from(format!("access-{machine}-{}", level.label())))
-                            .w(px(52.))
-                            .py(px(3.))
-                            .flex()
-                            .justify_center()
-                            .rounded(px(t.radius))
-                            .border_1()
-                            .border_color(if on { alpha(t.accent, 0.7) } else { t.border })
-                            .when(on, |d| d.bg(alpha(t.accent, 0.15)))
-                            .cursor_pointer()
-                            .hover(move |s| s.bg(hover))
-                            .text_size(px(11.5))
-                            .text_color(if on { t.text } else { t.muted })
-                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                this.draft.access.insert(machine.clone(), level);
-                                cx.notify();
-                            }))
-                            .child(level.label())
-                    };
+                let line = |text: &'static str| div().py(px(3.)).text_color(t.muted).child(text);
+                (
+                    "What may agents use?".into(),
+                    "Swarm keeps these rules for every conversation and enforces them. Change them any time on the Permissions page.".into(),
                     div()
                         .flex()
-                        .items_center()
-                        .gap_2()
-                        .py(px(3.))
-                        .child(div().flex_1().min_w_0().truncate().text_color(t.text).child(title))
-                        .child(pill(Level::Full))
-                        .child(pill(Level::Ask))
-                        .child(pill(Level::Off))
-                });
-                (
-                    "What may the Orchestrator use?".into(),
-                    "Full: it acts freely. Ask: each action waits for your run or deny. Off: it asks for access when it needs it. Change this any time in Settings.".into(),
-                    div().flex().flex_col().gap_1().pt_2().children(rows).into_any_element(),
+                        .flex_col()
+                        .gap_1()
+                        .pt_2()
+                        .child(line("This computer: its files and terminal, and its browser, each off, ask or allowed."))
+                        .child(line("This Swarm: whether new tasks wait for your approval or start on their own."))
+                        .child(line("Linked machines: whether this Swarm may hand each one work."))
+                        .into_any_element(),
                     footer(None, primary(self, "access-continue", "Continue", true, cx)),
                 )
             }
