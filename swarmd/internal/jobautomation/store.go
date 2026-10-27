@@ -726,7 +726,8 @@ func (s *Store) Unfinished() ([]Delivery, error) {
 
 // Rerun makes a finished delivery run again from its failed or stopped
 // steps: those steps and the ones after them that never ran become pending;
-// a step that succeeded is never run again. It returns the delivery and
+// a step that succeeded is never run again, but its failed dependency items
+// are requeued when their prerequisites are now ready. It returns the delivery and
 // whether there was anything to re-run. This is the explicit re-run of one
 // named delivery (POST /v3/job-deliveries/<id>/rerun), whatever its head.
 func (s *Store) Rerun(account, id string) (Delivery, bool, error) {
@@ -793,8 +794,28 @@ func (s *Store) RerunNewest(account, jobID, jobHead string) ([]RerunOutcome, err
 }
 
 func (s *Store) rerunLocked(d Delivery) (Delivery, bool, error) {
-	if !Terminal(d.State) || (d.State != StateFailed && d.State != StateStopped && d.State != StateBlocked) {
+	if !Terminal(d.State) {
 		return d, false, nil
+	}
+	// Item queues outlive their successful make step. Recover only items
+	// that never dispatched and failed specifically on a now-ready dependency.
+	itemsReset := false
+	dependency := TriggerRunner{Store: s}
+	for i := range d.Steps {
+		step := &d.Steps[i]
+		if i >= len(d.Definition) || d.Definition[i].ForEach == nil {
+			continue
+		}
+		for j := range step.Items {
+			item := &step.Items[j]
+			if item.State != "failed" || item.JobID != "" || item.After == "" || !strings.HasPrefix(item.Error, "waits for "+item.After+", which did not finish: ") {
+				continue
+			}
+			if ready, _ := dependency.itemDependency(d.Account, step.Items, item.After); ready {
+				item.State, item.Error = "waiting for "+item.After, ""
+				itemsReset = true
+			}
+		}
 	}
 	reset := false
 	if d.State == StateBlocked {
@@ -831,10 +852,12 @@ func (s *Store) rerunLocked(d Delivery) (Delivery, bool, error) {
 		}
 		*step = StepRecord{ID: step.ID, Type: step.Type, State: StatePending}
 	}
-	if !reset {
+	if !reset && !itemsReset {
 		return d, false, nil
 	}
-	d.State, d.FinishedAt = StatePending, 0
+	if reset {
+		d.State, d.FinishedAt = StatePending, 0
+	}
 	d.Reruns++
 	return d, true, s.putDeliveryLocked(d)
 }

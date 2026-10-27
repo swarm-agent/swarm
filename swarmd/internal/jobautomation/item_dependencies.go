@@ -81,7 +81,14 @@ func (r *TriggerRunner) itemDependency(account string, items []ItemRecord, id st
 			return false, ""
 		}
 		ready := true
+		// JobDeliveries is newest first. Earlier review rounds are history,
+		// not failures of the job's current delivery.
+		seen := map[string]bool{}
 		for _, d := range deliveries {
+			if seen[d.AutomationID] {
+				continue
+			}
+			seen[d.AutomationID] = true
 			if !Terminal(d.State) {
 				ready = false
 				continue
@@ -92,12 +99,24 @@ func (r *TriggerRunner) itemDependency(account string, items []ItemRecord, id st
 					reason = "workflow " + d.AutomationName + " " + d.State
 				}
 				for _, step := range d.Steps {
-					if step.State == StateFailed && step.Reason != "" {
+					if d.BlockedReason == "" && step.State == StateFailed && step.Reason != "" {
 						reason = step.Reason
 						break
 					}
 				}
 				return false, reason
+			}
+			// A successful reopen only acknowledges sending the follow-up;
+			// its delivery is still outstanding, even though this round ended.
+			reopened := false
+			for _, step := range d.Steps {
+				if followup, _ := step.Outcome["followup"].(string); step.Type == StepReopen && step.State == StateSucceeded && followup != "" && result.Followup != followup {
+					reopened = true
+				}
+			}
+			if reopened {
+				ready = false
+				continue
 			}
 			for _, step := range d.Steps {
 				if step.Type == StepDeliver && step.State != StateSucceeded {

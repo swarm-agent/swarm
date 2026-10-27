@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Keep `for_each` dependencies waiting through review send-back rounds and judge only each workflow's latest delivery; explicit automation delivery retries recover failed dependent items once their prerequisite finishes without repeating successful steps. Docs impact: none.
+
 - Reject invalid `then` brief placeholders before starting jobs or schedules; keep save-time placeholder validation out of runtime matching so legacy workflows still create deliveries. Docs impact: none.
 
 - Render workflow `{{item}}` as the whole item's compact JSON, preserving the worker-input limit; refuse item placeholders outside `for_each` and unknown step-brief placeholder namespaces on save. Docs impact: updated workflow placeholder documentation and shared native/MCP step descriptions.
