@@ -31,13 +31,35 @@ const (
 	// SessionMachineFull: commands on the person's machine run as the
 	// person without asking.
 	SessionMachineFull = "full"
+	// The person's browser (their Chrome, through their app's extension): a
+	// lease the person grants for a while, scoped to sites.
+	// SessionBrowserNone: no lease; the agent may ask with request_browser_access.
+	SessionBrowserNone = "none"
+	// SessionBrowserAsk: every action in the browser waits for the person.
+	SessionBrowserAsk = "ask"
+	// SessionBrowserConfirm: reading, moving and typing run; actions the
+	// app judges critical (paying, publishing, keys, account settings) wait.
+	SessionBrowserConfirm = "confirm"
+	// SessionBrowserFull: everything runs; the person watches.
+	SessionBrowserFull = "full"
 )
 
 // SessionAccess is a session's stored access. Empty fields mean the setting
-// was never chosen.
+// was never chosen. The browser lease carries the sites it covers (hosts,
+// space-separated) and when it ends (Unix ms); a lease past its end counts
+// as none.
 type SessionAccess struct {
-	Tasks   string `json:"tasks,omitempty"`
-	Machine string `json:"machine,omitempty"`
+	Tasks        string `json:"tasks,omitempty"`
+	Machine      string `json:"machine,omitempty"`
+	Browser      string `json:"browser,omitempty"`
+	BrowserSites string `json:"browser_sites,omitempty"`
+	BrowserUntil int64  `json:"browser_until,omitempty"`
+}
+
+// BrowserLeaseLive reports whether the access holds a browser lease that
+// has not ended at now (Unix ms).
+func (a SessionAccess) BrowserLeaseLive(now int64) bool {
+	return a.Browser != "" && a.Browser != SessionBrowserNone && a.BrowserUntil > now
 }
 
 // NormalizeSessionAccess trims and checks an access choice. An empty field
@@ -55,6 +77,16 @@ func NormalizeSessionAccess(access SessionAccess) (SessionAccess, error) {
 	default:
 		return SessionAccess{}, fmt.Errorf("machine must be %q, %q or %q", SessionMachineNone, SessionMachineAsk, SessionMachineFull)
 	}
+	access.Browser = strings.ToLower(strings.TrimSpace(access.Browser))
+	access.BrowserSites = strings.Join(strings.Fields(strings.ToLower(access.BrowserSites)), " ")
+	switch access.Browser {
+	case "", SessionBrowserNone, SessionBrowserAsk, SessionBrowserConfirm, SessionBrowserFull:
+	default:
+		return SessionAccess{}, fmt.Errorf("browser must be %q, %q, %q or %q", SessionBrowserNone, SessionBrowserAsk, SessionBrowserConfirm, SessionBrowserFull)
+	}
+	if access.Browser == SessionBrowserNone {
+		access.BrowserSites, access.BrowserUntil = "", 0
+	}
 	return access, nil
 }
 
@@ -67,6 +99,10 @@ func MergeSessionAccess(current, change SessionAccess) SessionAccess {
 	if change.Machine != "" {
 		current.Machine = change.Machine
 	}
+	// A browser choice replaces the whole lease: level, sites and end.
+	if change.Browser != "" {
+		current.Browser, current.BrowserSites, current.BrowserUntil = change.Browser, change.BrowserSites, change.BrowserUntil
+	}
 	return current
 }
 
@@ -78,6 +114,16 @@ func SessionAccessFromMetadata(metadata map[string]any) SessionAccess {
 	case map[string]any:
 		access.Tasks, _ = raw["tasks"].(string)
 		access.Machine, _ = raw["machine"].(string)
+		access.Browser, _ = raw["browser"].(string)
+		access.BrowserSites, _ = raw["browser_sites"].(string)
+		switch until := raw["browser_until"].(type) {
+		case float64:
+			access.BrowserUntil = int64(until)
+		case int64:
+			access.BrowserUntil = until
+		case int:
+			access.BrowserUntil = int64(until)
+		}
 	case map[string]string:
 		access.Tasks, access.Machine = raw["tasks"], raw["machine"]
 	case SessionAccess:
@@ -100,6 +146,15 @@ func SessionAccessMetadata(access SessionAccess) map[string]any {
 	}
 	if access.Machine != "" {
 		out["machine"] = access.Machine
+	}
+	if access.Browser != "" {
+		out["browser"] = access.Browser
+		if access.BrowserSites != "" {
+			out["browser_sites"] = access.BrowserSites
+		}
+		if access.BrowserUntil > 0 {
+			out["browser_until"] = access.BrowserUntil
+		}
 	}
 	return out
 }

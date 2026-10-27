@@ -32,7 +32,11 @@ func (s *Server) ConfigureProjectRealtime(store *pebblestore.Store) {
 // reconcileProjectTaskRunLifecycle is the in-process bridge from a managed V3 run terminal
 // mutation to the durable project task model, ensuring project tasks transition out of
 // in_progress and emit project.updated invalidation.
-func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, status, reason string) (resultErr error) {
+func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, status, reason string) error {
+	return s.reconcileProjectTaskRunLifecycleWithCapture(job, status, reason, captureFolderTaskDelivery)
+}
+
+func (s *Server) reconcileProjectTaskRunLifecycleWithCapture(job sessionV3ExecutorJob, status, reason string, capture func(*pebblestore.ProjectTaskRecord) error) (resultErr error) {
 	if s == nil || s.sessions == nil {
 		return nil
 	}
@@ -207,7 +211,12 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 				}
 			}
 		}
-		gitState := inspectTaskGitState(*task, db)
+		// Capture Git evidence before taking the global project-store lock.
+		// The callback below revalidates the owning session, attempt and run
+		// before publishing this snapshot.
+		captured := *task
+		captureErr := capture(&captured)
+		gitState := inspectTaskGitState(captured, db)
 		_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
 			if t.SessionID != job.SessionID || t.ActiveAttemptID != task.ActiveAttemptID || !projectTaskCurrentRunEvent(db, accountScopeID, job, status) || (t.Status == "planning" && t.ExecutionRunID() != job.RunID) {
 				return nil
@@ -226,6 +235,20 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 				if !found || state.Active || state.AccountScopeID != accountScopeID || state.RunID != job.RunID || state.Status != sessionruntime.RunIntentCompleted {
 					return nil
 				}
+			}
+			if captureErr != nil {
+				// Settle execution even when Git provenance cannot be captured.
+				// Never leave a prior run's receipt available to the next reviewer.
+				t.Integration = nil
+				t.Status = "needs_review"
+				t.LastError = "Folder delivery capture failed: " + captureErr.Error()
+				t.ActionNeeded = "Action Needed: Resolve folder Git delivery failure before review"
+				t.GitStatus = "unknown"
+				t.IsIntegrated = false
+				return nil
+			}
+			if folderTask(t) {
+				t.Integration = captured.Integration
 			}
 			// Unknown delivery must clear stale Git claims without erasing the
 			// independently recorded execution result or integration receipt.

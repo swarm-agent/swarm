@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"sort"
 	"strings"
 
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -29,7 +31,13 @@ type SpeechAlignmentResult struct {
 	OutputTokens     int64
 }
 
-// SpeechAlignmentModel resolves the existing account transcription selection.
+// ErrNoSpeechTranscriptionModel means synthesis can proceed without timings.
+var ErrNoSpeechTranscriptionModel = errors.New("timings unavailable: no transcription model")
+
+// SpeechAlignmentModel resolves the account selection or the first eligible
+// catalog model in display-name order, matching the media catalog ordering.
+// Google is currently the only speech/alignment adapter and is preferred over
+// introducing a dispatch to a provider without a supported alignment contract.
 func (s *Service) SpeechAlignmentModel(account string) (string, error) {
 	if s == nil || s.uiSettings == nil || s.modelCatalog == nil {
 		return "", errors.New("speech timing transcription is not configured")
@@ -38,27 +46,59 @@ func (s *Service) SpeechAlignmentModel(account string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	model := strings.TrimPrefix(settings.Media.TranscriptionModel, "google/")
+	model, err := videotranscription.NormalizeTranscriptionModel(settings.Media.TranscriptionModel)
+	if err != nil {
+		return "", err
+	}
 	records, err := s.modelCatalog.ListCatalog("google", 2000)
 	if err != nil {
 		return "", err
 	}
+	if model != "" {
+		record, err := videotranscription.ResolveTranscriptionModel(model, records, "audio")
+		return record.Model, err
+	}
+	records = append([]pebblestore.ModelCatalogRecord(nil), records...)
+	sort.Slice(records, func(i, j int) bool {
+		name := func(r pebblestore.ModelCatalogRecord) string {
+			if strings.TrimSpace(r.DisplayName) != "" {
+				return strings.TrimSpace(r.DisplayName)
+			}
+			return r.Model
+		}
+		if name(records[i]) == name(records[j]) {
+			return records[i].Model < records[j].Model
+		}
+		return name(records[i]) < name(records[j])
+	})
 	for _, record := range records {
-		if record.Model != model {
+		if !speechTranscriptionCatalogRecord(record) {
 			continue
 		}
-		audio, text := false, false
-		for _, input := range record.CatalogModalities.Inputs {
-			audio = audio || input == "audio"
+		if _, err := videotranscription.ResolveTranscriptionModel(record.Model, []pebblestore.ModelCatalogRecord{record}, "audio"); err != nil {
+			continue
 		}
-		for _, output := range record.CatalogModalities.Outputs {
-			text = text || output == "text"
+		if _, err := s.getGoogleAPIKey(account); err != nil {
+			return "", err
 		}
-		if audio && text {
-			return model, nil
+		return record.Model, nil
+	}
+	return "", ErrNoSpeechTranscriptionModel
+}
+
+// speechTranscriptionCatalogRecord identifies models usable by the Google
+// generateContent alignment adapter, excluding specialized/realtime endpoints.
+func speechTranscriptionCatalogRecord(record pebblestore.ModelCatalogRecord) bool {
+	if !strings.EqualFold(strings.TrimSpace(record.Provider), "google") {
+		return false
+	}
+	joined := strings.ToLower(strings.Join([]string{record.Model, record.DisplayName, record.CatalogID, strings.Join(record.CatalogModalities.Categories, " ")}, " "))
+	for _, excluded := range []string{"embedding", "veo", "robot", "research", "live", "imagen"} {
+		if strings.Contains(joined, excluded) {
+			return false
 		}
 	}
-	return "", errors.New("select a Google audio-input transcription model in Media settings for speech timings")
+	return true
 }
 
 // AlignSpeech uses the existing structured-transcript schema and normalizer.
@@ -80,11 +120,46 @@ func (s *Service) AlignSpeech(ctx context.Context, r SpeechRequest, audio Speech
 }
 
 func (s *Service) alignGoogleSpeech(ctx context.Context, key, model string, audio SpeechResult) (SpeechAlignmentResult, error) {
+	result := SpeechAlignmentResult{Model: model}
+	// Known short synthesis retains its inline path. Long inputs and retained
+	// audio with no duration use trusted preparation to probe before chunking.
+	request := videotranscription.AudioAnalysisRequest{DurationMs: int64(audio.DurationSeconds * 1000)}
+	if audio.DurationSeconds <= 0 || request.DurationMs > 45000 {
+		prepared, err := videotranscription.PrepareRegisteredAudio(ctx, bytes.NewReader(audio.Bytes), int64(len(audio.Bytes)))
+		if err != nil {
+			return result, err
+		}
+		defer prepared.Close()
+		request.PrivatePath, request.DurationMs = prepared.FLACPath, prepared.DurationMs
+	}
+	transcript, err := videotranscription.AnalyzeAudioChunks(ctx, request, func(ctx context.Context, chunk videotranscription.AudioAnalysisRequest) (videotranscription.GeneratedTranscript, error) {
+		input := audio
+		if chunk.PrivatePath != "" {
+			data, err := os.ReadFile(chunk.PrivatePath)
+			if err != nil {
+				return videotranscription.GeneratedTranscript{}, err
+			}
+			input.Bytes, input.MediaType = data, "audio/flac"
+		}
+		answer, usage, err := s.alignGoogleSpeechChunk(ctx, key, model, input)
+		result.PromptTokens += usage.PromptTokens
+		result.AudioInputTokens += usage.AudioInputTokens
+		result.OutputTokens += usage.OutputTokens
+		return answer, err
+	})
+	if err != nil {
+		return result, err
+	}
+	result.Timings, err = TimingsFromTranscript(transcript)
+	return result, err
+}
+
+func (s *Service) alignGoogleSpeechChunk(ctx context.Context, key, model string, audio SpeechResult) (answer videotranscription.GeneratedTranscript, usage SpeechAlignmentResult, err error) {
 	var audioPart map[string]any
 	if len(audio.Bytes) > speechInlineAudioLimit {
 		file, cleanup, err := s.uploadSpeechAudio(ctx, key, audio)
 		if err != nil {
-			return SpeechAlignmentResult{}, err
+			return answer, SpeechAlignmentResult{}, err
 		}
 		defer cleanup()
 		audioPart = map[string]any{"fileData": map[string]string{"mimeType": audio.MediaType, "fileUri": file.URI}}
@@ -102,11 +177,11 @@ func (s *Service) alignGoogleSpeech(ctx context.Context, key, model string, audi
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return SpeechAlignmentResult{}, err
+		return answer, SpeechAlignmentResult{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.googleURL()+"/v1beta/models/"+model+":generateContent", bytes.NewReader(payload))
 	if err != nil {
-		return SpeechAlignmentResult{}, err
+		return answer, SpeechAlignmentResult{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-goog-api-key", key)
@@ -114,15 +189,15 @@ func (s *Service) alignGoogleSpeech(ctx context.Context, key, model string, audi
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	response, err := client.Do(req)
 	if err != nil {
-		return SpeechAlignmentResult{}, errors.New("speech timing provider request failed")
+		return answer, SpeechAlignmentResult{}, errors.New("speech timing provider request failed")
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return SpeechAlignmentResult{}, fmt.Errorf("speech timing provider returned HTTP %d", response.StatusCode)
+		return answer, SpeechAlignmentResult{}, fmt.Errorf("speech timing provider returned HTTP %d", response.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, (2<<20)+1))
 	if err != nil || len(data) > 2<<20 {
-		return SpeechAlignmentResult{}, errors.New("speech timing response exceeds limit or could not be read")
+		return answer, SpeechAlignmentResult{}, errors.New("speech timing response exceeds limit or could not be read")
 	}
 	var wire struct {
 		Candidates []struct {
@@ -144,7 +219,7 @@ func (s *Service) alignGoogleSpeech(ctx context.Context, key, model string, audi
 		} `json:"usageMetadata"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
-		return SpeechAlignmentResult{}, errors.New("invalid timing response")
+		return answer, SpeechAlignmentResult{}, errors.New("invalid timing response")
 	}
 	result := SpeechAlignmentResult{Model: model, OutputTokens: wire.Usage.Output + wire.Usage.Thoughts}
 	for _, detail := range wire.Usage.Details {
@@ -155,8 +230,13 @@ func (s *Service) alignGoogleSpeech(ctx context.Context, key, model string, audi
 			result.PromptTokens += detail.Count
 		}
 	}
+	// promptTokenCount includes audio. Recover text tokens when the provider
+	// omits TEXT details, without ever charging audio at the text rate.
+	if result.PromptTokens == 0 && result.AudioInputTokens > 0 && wire.Usage.Prompt > result.AudioInputTokens {
+		result.PromptTokens = wire.Usage.Prompt - result.AudioInputTokens
+	}
 	if len(wire.Candidates) != 1 || wire.Candidates[0].FinishReason != "STOP" {
-		return result, errors.New("speech timing generation incomplete")
+		return answer, result, errors.New("speech timing generation incomplete")
 	}
 	var text strings.Builder
 	for _, part := range wire.Candidates[0].Content.Parts {
@@ -171,8 +251,7 @@ func (s *Service) alignGoogleSpeech(ctx context.Context, key, model string, audi
 		Words        []pebblestore.NormalizedTranscriptWord    `json:"words"`
 	}
 	if err := json.Unmarshal([]byte(text.String()), &transcript); err != nil {
-		return result, errors.New("invalid structured speech timings")
+		return answer, result, videotranscription.ErrInvalidTranscript
 	}
-	result.Timings, err = TimingsFromTranscript(videotranscription.GeneratedTranscript{Summary: transcript.Summary, Language: transcript.Language, DurationMs: transcript.DurationMs, ContentEmpty: transcript.ContentEmpty, Segments: transcript.Segments, Words: transcript.Words})
-	return result, err
+	return videotranscription.GeneratedTranscript{Summary: transcript.Summary, Language: transcript.Language, DurationMs: transcript.DurationMs, ContentEmpty: transcript.ContentEmpty, Segments: transcript.Segments, Words: transcript.Words}, result, nil
 }

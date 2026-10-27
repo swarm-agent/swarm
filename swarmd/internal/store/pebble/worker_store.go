@@ -107,7 +107,8 @@ type WorkerAutomationDefinition struct {
 }
 
 type WorkerRecord struct {
-	Agent string `json:"agent,omitempty"`
+	Budget *WorkerBudgetRequest `json:"budget,omitempty"`
+	Agent  string               `json:"agent,omitempty"`
 	// Role is the code-owned system agent that runs this worker's jobs
 	// (WorkerRoles). Empty behaves as WorkerRoleSwarm.
 	Role                  string                       `json:"role,omitempty"`
@@ -166,6 +167,7 @@ type WorkerRunRecord struct {
 	AccountScopeID     string                       `json:"account_scope_id"`
 	WorkerID           string                       `json:"worker_id"`
 	WorkerRevision     uint64                       `json:"worker_revision"`
+	WorkflowTriggerID  string                       `json:"workflow_trigger_id,omitempty"`
 	AutomationID       string                       `json:"automation_id,omitempty"`
 	AutomationRevision uint64                       `json:"automation_revision,omitempty"`
 	OccurrenceID       string                       `json:"occurrence_id,omitempty"`
@@ -247,6 +249,7 @@ type ListWorkersResult struct {
 }
 
 type CreateWorkerRequest struct {
+	Budget                *WorkerBudgetRequest         `json:"budget,omitempty"`
 	Agent                 string                       `json:"agent,omitempty"`
 	Role                  string                       `json:"role,omitempty"`
 	ModelProfile          *SessionModelProfileSnapshot `json:"model_profile,omitempty"`
@@ -265,6 +268,9 @@ type CreateWorkerRequest struct {
 }
 
 type UpdateWorkerRequest struct {
+	Budget *WorkerBudgetRequest `json:"budget,omitempty"`
+	// ProposeModel stages native model edits for explicit acceptance; API edits remain direct.
+	ProposeModel          bool                         `json:"-"`
 	Agent                 *string                      `json:"agent,omitempty"`
 	Role                  *string                      `json:"role,omitempty"`
 	ExecutionMode         *string                      `json:"execution_mode,omitempty"`
@@ -335,38 +341,8 @@ func ValidateSchedule(s *AutomationV2Schedule) error {
 		if _, err := time.LoadLocation(s.Timezone); err != nil {
 			return errors.New("explicit IANA timezone required for cron")
 		}
-		fields := strings.Fields(s.Cron)
-		if len(fields) != 5 {
-			return errors.New("five cron fields required")
-		}
-		bounds := [][2]int{{0, 59}, {0, 23}, {1, 31}, {1, 12}, {0, 6}}
-		for i, f := range fields {
-			if f == "*" {
-				continue
-			}
-			step := strings.HasPrefix(f, "*/")
-			if step {
-				f = strings.TrimPrefix(f, "*/")
-			}
-			if f == "" {
-				return errors.New("invalid cron field")
-			}
-			for _, c := range f {
-				if c < '0' || c > '9' {
-					return errors.New("cron supports numeric fields, * and */n only; ranges, lists and names are unsupported")
-				}
-			}
-			n, err := strconv.Atoi(f)
-			lo, hi := bounds[i][0], bounds[i][1]
-			if step {
-				lo, hi = 1, hi-lo+1
-			}
-			if err != nil || n < lo || n > hi {
-				return errors.New("cron field outside bounds")
-			}
-		}
-		if fields[2] != "*" && fields[4] != "*" {
-			return errors.New("both cron day fields cannot be restricted")
+		if _, err := ParseCron(s.Cron); err != nil {
+			return err
 		}
 	case "trigger", "":
 		if s.IntervalSeconds != 0 || s.Cron != "" {
@@ -931,7 +907,12 @@ func (ws *WorkerStore) CreateWorker(account, user string, req CreateWorkerReques
 		reqForHash := req
 		reqForHash.IdempotencyKey = ""
 		// Server-resolved defaults are not caller input; retries retain the receipt.
-		reqForHash.ModelProfile = nil
+		if req.ModelProfile == nil || req.ModelProfile.UseAccountDefault {
+			reqForHash.ModelProfile = nil
+		} else {
+			reqForHash.ModelProfile = CloneSessionModelProfileSnapshot(req.ModelProfile)
+			reqForHash.ModelProfile.AppliedAt = 0
+		}
 		var err error
 		payloadHash, err = hashWorkerPayload(reqForHash)
 		if err != nil {
@@ -994,7 +975,14 @@ func (ws *WorkerStore) CreateWorker(account, user string, req CreateWorkerReques
 	if err != nil {
 		return WorkerRecord{}, err
 	}
+	if err := req.Budget.Validate(); err != nil {
+		return WorkerRecord{}, err
+	}
+	if req.Budget != nil && state != WorkerLifecycleStatePending {
+		return WorkerRecord{}, errors.New("budget requires pending proposal")
+	}
 	w := WorkerRecord{
+		Budget:                req.Budget,
 		Agent:                 strings.TrimSpace(req.Agent),
 		Role:                  role,
 		ID:                    workerID,
@@ -1250,6 +1238,13 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 		}
 		updated.ExecutionMode = *req.ExecutionMode
 	}
+	if err := req.Budget.Validate(); err != nil {
+		return WorkerRecord{}, err
+	}
+	if req.Budget != nil {
+		b := *req.Budget
+		updated.Budget = &b
+	}
 	if req.ModelProfile != nil {
 		if err := ValidateWorkerModelProfile(req.ModelProfile); err != nil {
 			return WorkerRecord{}, err
@@ -1410,6 +1405,27 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 		}
 		if req.ChangeSummary == "" {
 			req.ChangeSummary = "updated worker"
+		}
+	}
+	if established && ((req.ProposeModel && req.ModelProfile != nil) || req.Budget != nil) {
+		if approved.LifecycleState != WorkerLifecycleStateActive && approved.LifecycleState != WorkerLifecycleStateIdle && approved.LifecycleState != WorkerLifecycleStatePaused {
+			return WorkerRecord{}, ErrWorkerConflict
+		}
+		candidate := updated
+		candidate.LifecycleState = WorkerLifecycleStatePending
+		candidate.PendingReview = nil
+		candidate.PendingReviewStale = false
+		updated = approved
+		updated.Revision = candidate.Revision
+		updated.UpdatedAt = now
+		updated.PendingReview = &candidate
+		updated.PendingReviewStale = false
+		encoded, err := json.Marshal(updated)
+		if err != nil {
+			return WorkerRecord{}, err
+		}
+		if len(encoded) > 1024*1024 {
+			return WorkerRecord{}, errors.New("worker and pending review exceed maximum size of 1 MiB")
 		}
 	}
 
@@ -2569,7 +2585,9 @@ func (ws *WorkerStore) recordWorkerRun(account string, run WorkerRunRecord, sett
 		switch run.RequestSource {
 		case "direct", "schedule", "trigger", "test_run", "orchestrator", "automation":
 		default:
-			return WorkerRunRecord{}, fmt.Errorf("invalid request_source: %q", run.RequestSource)
+			if !IsWorkflowItemSource(run.RequestSource) {
+				return WorkerRunRecord{}, fmt.Errorf("invalid request_source: %q", run.RequestSource)
+			}
 		}
 	}
 

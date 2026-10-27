@@ -10,10 +10,11 @@ type roleAgents struct{ *recordingAgents }
 
 func (a roleAgents) Role(context.Context, string, string) (string, error) { return "reviewer", nil }
 
-// Purpose: Runner must skip only positively empty reviews, never unknown or
-// committed work, and preserve conditions and unrelated steps. The durable
-// runner harness is the narrowest layer proving stored states and dispatches;
-// provider execution is not needed to prove this scheduling boundary.
+// Purpose: Runner.skipEmptyReview must skip only positively empty reviews;
+// Runner.runAgent must reject unknown heads instead of dispatching a reviewer.
+// Committed work, role-based review detection, conditions and unrelated steps
+// retain their contracts. The durable runner harness is the narrowest layer
+// proving stored states and dispatches without provider execution.
 func TestReviewNoCommits(t *testing.T) {
 	for _, tc := range []struct {
 		name, worker         string
@@ -54,6 +55,12 @@ func TestReviewNoCommits(t *testing.T) {
 			h.jobEnd("run-1", "", "succeeded", "direct")
 			h.process()
 			d := h.deliveries(result.JobID)[0]
+			if tc.unknown {
+				if d.State != StateFailed || d.Steps[0].State != StateFailed || d.Steps[0].Reason != "no head to review" || len(h.agents.started) != 0 {
+					t.Fatalf("unknown head review = %+v; starts=%d", d, len(h.agents.started))
+				}
+				return
+			}
 			if d.State != StateSucceeded {
 				t.Fatalf("delivery = %+v", d)
 			}

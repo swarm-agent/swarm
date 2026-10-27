@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -100,9 +101,11 @@ type mcpBridge struct {
 	listener net.Listener
 	server   *http.Server
 
-	onRestart   func()
-	correlation *toolUseCorrelator
-	callSeq     atomic.Int64
+	onRestart     func()
+	correlation   *toolUseCorrelator
+	callSeq       atomic.Int64
+	mediaContract provideriface.SessionMediaContract
+	mediaCount    atomic.Int64
 }
 
 type mcpTool struct {
@@ -497,8 +500,15 @@ func (b *mcpBridge) callTool(requestCtx context.Context, rawParams json.RawMessa
 	if text == "" && isError {
 		text = strings.TrimSpace(result.Error)
 	}
+	content := []map[string]any{{"type": "text", "text": text}}
+	if result.Media != nil {
+		if err := validateClaudeCodeImage(b.mediaContract, *result.Media, b.mediaCount.Add(1)); err != nil {
+			return map[string]any{"content": []map[string]any{{"type": "text", "text": err.Error()}}, "isError": true}, nil
+		}
+		content = append(content, map[string]any{"type": "image", "data": base64.StdEncoding.EncodeToString(result.Media.Bytes), "mimeType": strings.ToLower(strings.TrimSpace(result.Media.MIMEType))})
+	}
 	return map[string]any{
-		"content": []map[string]any{{"type": "text", "text": text}},
+		"content": content,
 		"isError": isError,
 	}, nil
 }

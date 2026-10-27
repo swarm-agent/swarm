@@ -22,6 +22,11 @@ curl -fsSL https://swarmagent.dev/install | sudo bash
 checks it against its published `.sha256` and that it was built from the commit
 GitHub names, unpacks its `headless/` package (the daemon, `swarmctl`, this app
 and its Node) and starts them. Nothing is compiled and no Docker is installed.
+Host dependencies installed through apt are Git, curl, ca-certificates, gnupg,
+iproute2, jq, acl, and ffmpeg (including ffprobe). Media transcription runs on
+the host; fresh installs and `install.sh update` install ffmpeg when either
+media tool is missing from the daemon's PATH, which includes `/usr/bin`.
+
 `--environments on` (or `install.sh environments on` later) installs Docker and
 gVisor for environments and the sandbox; Docker from snap cannot run them, so
 the installer then asks you to remove it. `--ref BRANCH` builds that branch

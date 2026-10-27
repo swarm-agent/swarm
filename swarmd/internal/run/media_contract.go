@@ -24,6 +24,7 @@ type conversationalMediaSurface struct {
 // resolution and contract compilation. Provider adapters still must declare the
 // exact registered surface; membership alone never grants a capability.
 var conversationalMediaProviders = map[string]conversationalMediaSurface{
+	"claudecode": {provideriface.MediaAdapterIDClaudeCodeMCPV1, provideriface.MediaProviderSurfaceClaudeCodeMCP, provideriface.MediaCredentialSurfaceClaudeCodeCLI},
 	"anthropic":  {provideriface.MediaAdapterIDAnthropicMessagesV1, provideriface.MediaProviderSurfaceAnthropicMessages, provideriface.MediaCredentialSurfaceAnthropicAPIKey},
 	"codex":      {provideriface.MediaAdapterIDCodexChatGPTV1, provideriface.MediaProviderSurfaceCodexChatGPT, provideriface.MediaCredentialSurfaceCodexOAuth},
 	"fireworks":  {provideriface.MediaAdapterIDFireworksChatCompletionsV1, provideriface.MediaProviderSurfaceFireworksChatCompletions, provideriface.MediaCredentialSurfaceFireworksAPIKey},

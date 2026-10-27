@@ -62,3 +62,9 @@ Helper `helper_tokens` is a cumulative budget enforced after the provider's
 usage receipt. An over-budget helper is stopped and reported at the next step;
 the in-flight response may exceed the budget. No pre-dispatch token estimate is
 used.
+
+### Worker daily spending limits
+
+MCP `swarm_deploy_worker` accepts `budget: {"daily_usd": 10, "daily_tokens": 100000}` (tokens optional); omission preserves the policy and `budget: null` clears its limits. Zero means unset, not a zero-spend cap. `automations:write` is sufficient. `swarm_list_workers` includes the worker's policy, today's indexed UTC spend, and blocked status/reason. Account limits still apply; changing a policy does not erase usage, reservations, or existing budget holds. Limits stop subsequent model calls, not an already-running call's final invoice. Native `manage_workers` accepts the same budget on create/propose/update; the budget is part of the worker proposal and takes effect only when the person accepts it. Existing-worker budget updates also require acceptance. Acceptance commits the policy and worker together through the canonical budget service's shared persistence boundary.
+
+Claude Code and Codex model usage counts as $0 subscription cost toward worker USD budgets; media generation and priced API usage still count at their price, tokens still count for every provider, and unknown pricing on other providers still fails closed.

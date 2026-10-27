@@ -344,3 +344,26 @@ func TestWorkerSchedulerRunSleepsUntilDueAndWakesOnChange(t *testing.T) {
 		}
 	}
 }
+
+// Requirement: a schedule runs one run at a time. Threat: an every-minute
+// worker whose run outlives a minute piling up overlapping runs (seen with a
+// run that never closed: a new one each minute). Owner: TickWorker skips a
+// due slot while the automation has an unfinished run.
+func TestWorkerSchedulerSkipsSlotsWhileARunIsOpen(t *testing.T) {
+	fx := newSchedulerFixture(t, 1, 60)
+	w := fx.workers[0]
+	if len(w.Automations) == 0 {
+		t.Fatal("fixture worker has no automation")
+	}
+	start := schedulerTestStart(time.Now())
+	open := pebblestore.WorkerRunRecord{ID: "wrun_open", AccountScopeID: w.AccountScopeID, UserID: schedulerUser, WorkerID: w.ID, WorkerRevision: w.Revision, AutomationID: w.Automations[0].ID, RequestSource: "schedule", Status: "running", CreatedAt: start.UnixMilli()}
+	if _, err := fx.ws.RecordWorkerRun(w.AccountScopeID, open); err != nil {
+		t.Fatalf("record open run: %v", err)
+	}
+	h := newSchedulerHarness(t, fx, start)
+	first := firstSlotAfter(t, w, start)
+	h.run(t, first.Add(time.Minute+30*time.Second))
+	if got := h.dispatch.dueAts(); len(got) != 0 {
+		t.Fatalf("dispatched %v while a run of the same schedule was open, want none", got)
+	}
+}

@@ -9,16 +9,8 @@ import (
 	"strings"
 
 	"swarm/packages/swarmd/internal/jobautomation"
-	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-func workflowChange(r *http.Request, source string) jobautomation.Change {
-	who := "owner"
-	if token, ok := ScopedTokenFromRequest(r); ok && token.ID != "" {
-		who = token.ID
-	}
-	return jobautomation.Change{Source: source, Who: who}
-}
 func workflowHistorySummary(store *jobautomation.Store, account, id string, view map[string]any) error {
 	records, err := store.History(account, id, "")
 	if errors.Is(err, jobautomation.ErrNotFound) {
@@ -54,8 +46,8 @@ func workflowRevision(args map[string]any, required bool) (uint64, error) {
 	}
 	return n, nil
 }
-func controlMCPWorkflowHistory(c *controlMCPCall, args map[string]any) (any, error) {
-	store, account, err := c.jobAutomationAccount("automations:read")
+func (s *Server) WorkflowHistory(caller WorkflowCaller, args map[string]any) (any, error) {
+	store, account, err := s.workflowAccount(caller)
 	if err != nil {
 		return nil, err
 	}
@@ -86,8 +78,8 @@ func controlMCPWorkflowHistory(c *controlMCPCall, args map[string]any) (any, err
 	}
 	return map[string]any{"history": records}, nil
 }
-func controlMCPRestoreWorkflow(c *controlMCPCall, args map[string]any) (any, error) {
-	store, account, err := c.jobAutomationAccount("automations:write")
+func (s *Server) RestoreWorkflow(caller WorkflowCaller, args map[string]any) (any, error) {
+	store, account, err := s.workflowAccount(caller)
 	if err != nil {
 		return nil, err
 	}
@@ -104,6 +96,9 @@ func controlMCPRestoreWorkflow(c *controlMCPCall, args map[string]any) (any, err
 	}
 	for _, record := range records {
 		if record.Revision == revision {
+			if record.Definition != nil && record.Definition.Proposed {
+				return nil, controlMCPToolFailure("a proposed revision requires explicit person acceptance, not restore")
+			}
 			if record.Definition == nil {
 				return nil, controlMCPToolFailure("revision %d is a deleted marker and cannot be restored", revision)
 			}
@@ -115,7 +110,9 @@ func controlMCPRestoreWorkflow(c *controlMCPCall, args map[string]any) (any, err
 			if err = json.Unmarshal(data, &save); err != nil {
 				return nil, err
 			}
-			return controlMCPSaveAutomationChange(c, save, false, "restore")
+			// Export omits instance bindings; restoring a revision must not.
+			save["with"] = record.Definition.With
+			return s.saveWorkflowArgs(caller, save, false, "restore")
 		}
 	}
 	return nil, workflowHistoryNotFound("revision %d was not found in retained workflow history", revision)
@@ -143,16 +140,13 @@ func (s *Server) handleWorkflowHistory(w http.ResponseWriter, r *http.Request, a
 			args["revision"] = *body.Revision
 		}
 	}
-	if _, ok := ScopedTokenFromRequest(r); !ok {
-		r = requestWithScopedToken(r, &pebblestore.ScopedTokenRecord{Scopes: []string{"admin"}})
-	}
-	c := &controlMCPCall{server: s, request: r, next: s.internalRouteHandler()}
+	caller := workflowCallerFromRequest(r)
 	var out any
 	var err error
 	if action == "history" {
-		out, err = controlMCPWorkflowHistory(c, args)
+		out, err = s.WorkflowHistory(caller, args)
 	} else {
-		out, err = controlMCPRestoreWorkflow(c, args)
+		out, err = s.RestoreWorkflow(caller, args)
 	}
 	if err != nil {
 		var toolErr controlMCPToolError

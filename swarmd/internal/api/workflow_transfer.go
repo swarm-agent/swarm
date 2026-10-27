@@ -14,7 +14,8 @@ import (
 	"strings"
 
 	"swarm/packages/swarmd/internal/jobautomation"
-	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/projectfiles"
+	"swarm/packages/swarmd/internal/tool"
 )
 
 const workflowFileLimit = 256 << 10
@@ -45,28 +46,28 @@ func portableWorkflow(a jobautomation.Automation, folder string) workflowDefinit
 	if filepath.Clean(scope.Folder) == filepath.Clean(folder) {
 		scope.Folder = ""
 	}
-	return workflowDefinition{1, jobAutomationBody{Name: a.Name, Scope: scope, When: a.When, Enabled: &a.Enabled, Retries: a.Retries, Steps: a.Steps, Result: a.Result}}
+	return workflowDefinition{1, jobAutomationBody{Inputs: a.Inputs, On: a.On, Name: a.Name, Scope: scope, When: a.When, Enabled: &a.Enabled, Retries: a.Retries, Steps: a.Steps, Result: a.Result}}
 }
 
 func workflowDefinitionsEqual(a, b jobautomation.Automation) bool {
-	return reflect.DeepEqual(portableWorkflow(a, ""), portableWorkflow(b, ""))
+	return a.ScopeWorkerID == b.ScopeWorkerID && reflect.DeepEqual(a.With, b.With) && reflect.DeepEqual(portableWorkflow(a, ""), portableWorkflow(b, ""))
 }
 
 func decodeWorkflow(data []byte) (workflowDefinition, error) {
 	var d workflowDefinition
 	if len(data) > workflowFileLimit {
-		return d, errors.New("workflow exceeds 256 KiB")
+		return d, controlMCPToolFailure("workflow exceeds 256 KiB")
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&d); err != nil {
-		return d, err
+		return d, controlMCPToolFailure("invalid workflow JSON")
 	}
 	if err := dec.Decode(new(any)); err != io.EOF {
-		return d, errors.New("expected one workflow JSON object")
+		return d, controlMCPToolFailure("expected one workflow JSON object")
 	}
 	if d.Version != 1 {
-		return d, errors.New("swarm_workflow must be version 1")
+		return d, controlMCPToolFailure("swarm_workflow must be version 1")
 	}
 	return d, nil
 }
@@ -75,7 +76,7 @@ func decodeWorkflow(data []byte) (workflowDefinition, error) {
 // selected folder even if a directory is replaced during an operation.
 func workflowPath(path string) error {
 	if !filepath.IsLocal(path) {
-		return errors.New("workflow path must be relative and inside the project folder")
+		return controlMCPToolFailure("workflow path must be relative and inside the project folder")
 	}
 	return nil
 }
@@ -93,11 +94,12 @@ func (c *controlMCPCall) workflowExportFolder(folder string) (string, error) {
 			}
 		}
 	}
-	return "", errors.New("workflow export folder is not an account project folder")
+	return "", controlMCPToolFailure("workflow export folder is not an account project folder")
 }
 
-func controlMCPExportWorkflow(c *controlMCPCall, args map[string]any) (any, error) {
-	store, account, err := c.jobAutomationAccount("automations:read")
+func (s *Server) ExportWorkflow(caller WorkflowCaller, args map[string]any) (any, error) {
+	c := s.workflowContext(caller)
+	store, account, err := s.workflowAccount(caller)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +122,7 @@ func controlMCPExportWorkflow(c *controlMCPCall, args map[string]any) (any, erro
 	}
 	if path == "" {
 		if strings.ContainsAny(a.Name, `/\\`) || a.Name == "." || a.Name == ".." {
-			return nil, errors.New("specify a safe relative export path for this workflow name")
+			return nil, controlMCPToolFailure("specify a safe relative export path for this workflow name")
 		}
 		path = filepath.Join(".swarm", "workflows", a.Name+".json")
 	}
@@ -129,11 +131,11 @@ func controlMCPExportWorkflow(c *controlMCPCall, args map[string]any) (any, erro
 	}
 	for _, component := range strings.Split(path, string(filepath.Separator)) {
 		if component == ".git" {
-			return nil, errors.New("workflow export paths must not contain .git")
+			return nil, controlMCPToolFailure("workflow export paths must not contain .git")
 		}
 	}
 	if !strings.HasSuffix(path, ".json") {
-		return nil, errors.New("workflow export path must end in .json")
+		return nil, controlMCPToolFailure("workflow export path must end in .json")
 	}
 	// A workflow's explicit scope is not filesystem authority. Resolve it
 	// against the account-visible project folders before creating anything.
@@ -154,10 +156,10 @@ func controlMCPExportWorkflow(c *controlMCPCall, args map[string]any) (any, erro
 		return nil, err
 	}
 	data = append(data, '\n')
-	if err := root.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := root.MkdirAll(filepath.Dir(path), projectfiles.DirMode); err != nil {
 		return nil, err
 	}
-	f, err := root.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	f, err := root.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, projectfiles.FileMode)
 	if errors.Is(err, os.ErrExist) {
 		old, readErr := readWorkflowFile(root, path)
 		if readErr != nil {
@@ -168,10 +170,10 @@ func controlMCPExportWorkflow(c *controlMCPCall, args map[string]any) (any, erro
 		}
 		overwrite, _ := args["overwrite"].(bool)
 		if !overwrite {
-			return nil, errors.New("export file differs; pass overwrite: true to replace it")
+			return nil, controlMCPToolFailure("export file differs; pass overwrite: true to replace it")
 		}
 		// Replace the directory entry, never truncate a symlink or hardlink target.
-		temp, tempErr := root.OpenFile(path+".swarm-new", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+		temp, tempErr := root.OpenFile(path+".swarm-new", os.O_WRONLY|os.O_CREATE|os.O_EXCL, projectfiles.FileMode)
 		if tempErr != nil {
 			return nil, tempErr
 		}
@@ -217,7 +219,7 @@ func workflowNoSymlinks(root *os.Root, path string) error {
 			return err
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return errors.New("workflow paths must not contain symlinks")
+			return controlMCPToolFailure("workflow paths must not contain symlinks")
 		}
 	}
 	return nil
@@ -233,7 +235,7 @@ func readWorkflowFile(root *os.Root, path string) ([]byte, error) {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() {
-		return nil, errors.New("workflow must be a regular file")
+		return nil, controlMCPToolFailure("workflow must be a regular file")
 	}
 	f, err := root.Open(path)
 	if err != nil {
@@ -245,16 +247,16 @@ func readWorkflowFile(root *os.Root, path string) ([]byte, error) {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() {
-		return nil, errors.New("workflow must be a regular file")
+		return nil, controlMCPToolFailure("workflow must be a regular file")
 	}
 	data, err := io.ReadAll(io.LimitReader(f, workflowFileLimit+1))
 	if err == nil && len(data) > workflowFileLimit {
-		err = errors.New("workflow exceeds 256 KiB")
+		err = controlMCPToolFailure("workflow exceeds 256 KiB")
 	}
 	return data, err
 }
 
-func importWorkflowDefinition(c *controlMCPCall, data []byte, folder string) (any, error) {
+func (s *Server) importWorkflowDefinition(caller WorkflowCaller, data []byte, folder string, options ...map[string]any) (any, error) {
 	d, err := decodeWorkflow(data)
 	if err != nil {
 		return nil, err
@@ -270,17 +272,28 @@ func importWorkflowDefinition(c *controlMCPCall, data []byte, folder string) (an
 	if err := json.Unmarshal(encoded, &args); err != nil {
 		return nil, err
 	}
-	return controlMCPSaveAutomation(c, args, true)
+	// Instance values come only from the import call, never the portable file.
+	delete(args, "with")
+	if len(options) > 0 {
+		if value, ok := options[0]["with"]; ok {
+			args["with"] = value
+		}
+		if name, ok := options[0]["name"]; ok {
+			args["name"] = name
+		}
+	}
+	return s.saveWorkflowArgs(caller, args, true, "import")
 }
 
-func controlMCPImportWorkflow(c *controlMCPCall, args map[string]any) (any, error) {
-	if _, _, err := c.jobAutomationAccount("automations:write"); err != nil {
+func (s *Server) ImportWorkflow(caller WorkflowCaller, args map[string]any) (any, error) {
+	c := s.workflowContext(caller)
+	if _, _, err := s.workflowAccount(caller); err != nil {
 		return nil, err
 	}
 	raw, definition := args["definition"]
 	path, hasPath := args["path"].(string)
 	if definition == hasPath {
-		return nil, errors.New("provide exactly one of definition or path")
+		return nil, controlMCPToolFailure("provide exactly one of definition or path")
 	}
 	// Inline definitions with an explicit scope.folder need no project, just
 	// like set. Files always require the canonical project/folder selection.
@@ -297,7 +310,7 @@ func controlMCPImportWorkflow(c *controlMCPCall, args map[string]any) (any, erro
 		if err != nil {
 			return nil, err
 		}
-		return importWorkflowDefinition(c, data, folder)
+		return s.importWorkflowDefinition(caller, data, folder, args)
 	}
 	if err := workflowPath(path); err != nil {
 		return nil, err
@@ -319,7 +332,12 @@ func controlMCPImportWorkflow(c *controlMCPCall, args map[string]any) (any, erro
 		if err != nil {
 			return nil, err
 		}
-		return importWorkflowDefinition(c, data, folder)
+		return s.importWorkflowDefinition(caller, data, folder, args)
+	}
+	for _, field := range []string{"name", "with"} {
+		if _, present := args[field]; present {
+			return nil, controlMCPToolFailure("%s is only supported for inline or single-file workflow imports", field)
+		}
 	}
 	dir, err := root.Open(path)
 	if err != nil {
@@ -331,7 +349,7 @@ func controlMCPImportWorkflow(c *controlMCPCall, args map[string]any) (any, erro
 		return nil, err
 	}
 	if len(entries) > 1000 {
-		return nil, errors.New("workflow directory exceeds 1000 entries")
+		return nil, controlMCPToolFailure("workflow directory exceeds 1000 entries")
 	}
 	results := []map[string]any{}
 	for _, entry := range entries {
@@ -342,12 +360,16 @@ func controlMCPImportWorkflow(c *controlMCPCall, args map[string]any) (any, erro
 		data, err := readWorkflowFile(root, file)
 		var out any
 		if err == nil {
-			out, err = importWorkflowDefinition(c, data, folder)
+			out, err = s.importWorkflowDefinition(caller, data, folder, args)
 		}
 		result := map[string]any{"path": file}
 		if err != nil {
 			result["status"] = "refused"
 			result["error"] = err.Error()
+			var refusal controlMCPToolError
+			if errors.As(err, &refusal) {
+				result["error"] = refusal.message
+			}
 		} else {
 			result["status"] = "updated"
 			view := out.(map[string]any)
@@ -365,13 +387,14 @@ func controlMCPImportWorkflow(c *controlMCPCall, args map[string]any) (any, erro
 
 func (s *Server) handleWorkflowTransfer(w http.ResponseWriter, r *http.Request, action string) {
 	var body struct {
-		Name       string          `json:"name,omitempty"`
-		ID         string          `json:"id,omitempty"`
-		Path       *string         `json:"path,omitempty"`
-		Project    string          `json:"project,omitempty"`
-		Workspace  string          `json:"workspace,omitempty"`
-		Overwrite  bool            `json:"overwrite,omitempty"`
-		Definition json.RawMessage `json:"definition,omitempty"`
+		With       map[string]string `json:"with,omitempty"`
+		Name       string            `json:"name,omitempty"`
+		ID         string            `json:"id,omitempty"`
+		Path       *string           `json:"path,omitempty"`
+		Project    string            `json:"project,omitempty"`
+		Workspace  string            `json:"workspace,omitempty"`
+		Overwrite  bool              `json:"overwrite,omitempty"`
+		Definition json.RawMessage   `json:"definition,omitempty"`
 	}
 	if err := decodeJSONStrict(w, r, workflowFileLimit, &body); err != nil {
 		writeError(w, 400, err)
@@ -383,18 +406,13 @@ func (s *Server) handleWorkflowTransfer(w http.ResponseWriter, r *http.Request, 
 	data, _ := json.Marshal(body)
 	var args map[string]any
 	_ = json.Unmarshal(data, &args)
-	// The outer HTTP handler already authenticated the local owner and checked
-	// the required scope. MCP requires a token even for this trusted internal call.
-	if _, ok := ScopedTokenFromRequest(r); !ok {
-		r = requestWithScopedToken(r, &pebblestore.ScopedTokenRecord{Scopes: []string{"admin"}})
-	}
-	c := &controlMCPCall{server: s, request: r, next: s.internalRouteHandler()}
+	caller := workflowCallerFromRequest(r)
 	var out any
 	var err error
 	if action == "export" {
-		out, err = controlMCPExportWorkflow(c, args)
+		out, err = s.ExportWorkflow(caller, args)
 	} else {
-		out, err = controlMCPImportWorkflow(c, args)
+		out, err = s.ImportWorkflow(caller, args)
 	}
 	if err != nil {
 		status := http.StatusBadRequest
@@ -409,6 +427,8 @@ func (s *Server) handleWorkflowTransfer(w http.ResponseWriter, r *http.Request, 
 
 func workflowTransferTools() []controlMCPTool {
 	common := map[string]any{"path": controlMCPStringProp("Relative file or directory inside the project folder.", 0, 4096), "project": controlMCPStringProp("Project id or name.", 0, 256), "workspace": controlMCPStringProp("Project folder when several are linked.", 0, 4096), "definition": map[string]any{"type": "object", "description": "Portable JSON object with swarm_workflow: 1; mutually exclusive with path."}}
+	common["with"] = tool.WorkflowWithSchema()
+	common["name"] = controlMCPStringProp("Instance name override.", 0, 200)
 	return []controlMCPTool{
 		{Name: "swarm_export_workflow", Title: "Export workflow", Description: "Export portable workflow JSON by name or id. Supply path (empty for .swarm/workflows/<name>.json) to write inside its folder; different files require overwrite: true. Keep workflows as code: export to .swarm/workflows, commit, then swarm_import_workflow on another machine.", InputSchema: controlMCPObject(nil, map[string]any{"name": controlMCPStringProp("Workflow name.", 0, 200), "id": controlMCPStringProp("Workflow id.", 0, 200), "path": controlMCPStringProp("Optional relative destination; empty selects .swarm/workflows/<name>.json.", 0, 4096), "overwrite": map[string]any{"type": "boolean"}}), Annotations: controlMCPWrites, call: controlMCPExportWorkflow},
 		{Name: "swarm_import_workflow", Title: "Import workflow", Description: fmt.Sprintf("Import portable JSON (swarm_workflow: %d) from definition or a project-relative path. A directory imports every *.json with created/updated/unchanged/refused per file. Uses set validation and updates by name; changes are retained by swarm_workflow_history and reversible with swarm_restore_workflow. Run steps require the owner's full key, never a write key. Export to .swarm/workflows, commit, import on another machine; omitted scope.folder binds to that project folder. No watcher.", 1), InputSchema: controlMCPObject(nil, common), Annotations: controlMCPWrites, call: controlMCPImportWorkflow},

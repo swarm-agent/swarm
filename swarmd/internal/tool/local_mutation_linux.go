@@ -28,7 +28,6 @@ func (p *rootedWorkspacePath) openLocalMutationParent(create bool) (*os.File, st
 		return nil, "", err
 	}
 	for _, part := range parts[:len(parts)-1] {
-		created := false
 		fd, openErr := openNoFollowDirAt(int(dir.Fd()), part)
 		if errors.Is(openErr, unix.ENOENT) && create {
 			mkdirErr := unix.Mkdirat(int(dir.Fd()), part, uint32(sharedDirMode.Perm()))
@@ -36,7 +35,6 @@ func (p *rootedWorkspacePath) openLocalMutationParent(create bool) (*os.File, st
 				dir.Close()
 				return nil, "", mkdirErr
 			}
-			created = mkdirErr == nil
 			fd, openErr = openNoFollowDirAt(int(dir.Fd()), part)
 		}
 		dir.Close()
@@ -44,12 +42,6 @@ func (p *rootedWorkspacePath) openLocalMutationParent(create bool) (*os.File, st
 			return nil, "", openErr
 		}
 		dir = os.NewFile(uintptr(fd), part)
-		if created {
-			if err := dir.Chmod(sharedDirMode); err != nil {
-				dir.Close()
-				return nil, "", err
-			}
-		}
 	}
 	return dir, parts[len(parts)-1], nil
 }

@@ -79,6 +79,10 @@ var controlMCPWorkspaceName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
 // minting and ChatGPT sign-in appear only for the box-setup tools, which fix
 // the scopes and the sign-in method themselves.
 var controlMCPRoutes = []string{
+	"GET v3/agents", "GET v3/agents/*", "PUT v3/agents/*", "POST v3/agents/*/disable",
+	"GET v3/workflows", "POST v3/workflows", "PUT v3/workflows", "DELETE v3/workflows",
+	"GET v3/workflows/*", "DELETE v3/workflows/*",
+	"POST v3/workflows/stop", "POST v3/workflows/restore", "POST v3/workflows/import", "POST v3/workflows/export",
 	"POST v3/subagents:stop",
 	"GET v3/limits", "PUT v3/limits",
 	"GET v1/workspace/list",
@@ -148,6 +152,7 @@ var controlMCPRoutes = []string{
 	"GET v3/workers/*/runs/*",
 	"POST v3/workers/*/runs/*/cancel",
 	"GET v3/usage",
+	"PUT v3/usage/worker-budget",
 	"GET v1/codex/account/usage", "GET v1/claudecode/usage",
 	"GET v3/usage/limits",
 	"POST v3/usage/limits",
@@ -932,8 +937,7 @@ func controlMCPTools() []controlMCPTool {
 				"instructions": controlMCPStringProp("The agent's instructions (its system prompt). Workers can select this agent for its tools and added instructions.", 1, 20000),
 				"tools_on":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Enable individual tools on top of the preset."},
 				"tools_off":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Disable individual tools on top of the preset; wins over tools_on."},
-				"tools": map[string]any{"type": "string", "enum": controlMCPAgentToolSets,
-					"description": "read_only: read and search files and the web. read_write: also write and edit files, no commands. build: read, write and edit files, run commands and commit with git."},
+				"tools":        map[string]any{"oneOf": []any{map[string]any{"type": "string", "enum": controlMCPAgentToolSets}, map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": customAgentAllowedTools}}}, "description": "Explicit allowed tool names, or read_only, read_write, build preset."},
 			}),
 			Annotations: controlMCPWrites, call: controlMCPDefineAgent,
 		},

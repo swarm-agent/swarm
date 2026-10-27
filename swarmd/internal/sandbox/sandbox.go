@@ -591,7 +591,7 @@ func (m *Manager) specHashImage(root string, mounts []string, secretFingerprint,
 	uid, gid := m.sandboxUser(root)
 	m.mu.Lock()
 	parts := []string{
-		"v7-project-cache", imageID, m.runtime, m.cfg.Network, m.cfg.Memory, strconv.Itoa(m.cfg.PidsLimit), m.cfg.CPUs, m.cfg.CgroupParent, m.resolvConf,
+		"v8-shared-workspace", imageID, m.runtime, m.cfg.Network, m.cfg.Memory, strconv.Itoa(m.cfg.PidsLimit), m.cfg.CPUs, m.cfg.CgroupParent, m.resolvConf,
 		strconv.Itoa(uid), strconv.Itoa(gid), strings.Join(m.cfg.DNS, ","), secretFingerprint,
 	}
 	m.mu.Unlock()
@@ -672,8 +672,19 @@ func (m *Manager) runArgsImage(name, root, spec string, mounts []string, secret 
 		// A mount on /etc/resolv.conf replaces Docker's generated one.
 		args = append(args, "--mount", "type=bind,src="+m.resolvConf+",dst=/etc/resolv.conf,readonly")
 	}
-	for _, mount := range mounts {
+	for i, mount := range mounts {
 		args = append(args, "--mount", "type=bind,src="+mount+",dst="+mount)
+		if runtime == gvisorRuntime {
+			// The daemon and other leases write these folders concurrently.
+			// Explicit shared access prevents exclusive gofer caching without
+			// changing rootfs caching, mount permissions or sandbox isolation.
+			prefix := fmt.Sprintf("dev.gvisor.spec.mount.workspace%d.", i)
+			args = append(args,
+				"--annotation", prefix+"source="+mount,
+				"--annotation", prefix+"type=bind",
+				"--annotation", prefix+"share=shared",
+			)
+		}
 	}
 	// Read-only guards over the project's hooks and config (gitguard.go).
 	for _, g := range gitGuardMounts(root) {

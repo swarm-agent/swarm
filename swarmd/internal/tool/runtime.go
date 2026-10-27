@@ -222,6 +222,7 @@ type Runtime struct {
 	projects             manageProjectStore
 	projectTaskDeployer  ProjectTaskDeployer
 	projectTaskLifecycle ProjectTaskLifecycleService
+	customAgentLifecycle CustomAgentLifecycleService
 }
 
 type manageSessionController interface {
@@ -1500,6 +1501,8 @@ func (r *Runtime) Definitions() []Definition {
 		manageProjectsDefinition(),
 		leaseEnvironmentDefinition(),
 		manageWorkersV2Definition(),
+		manageCustomAgentsDefinition(),
+		manageWorkflowsDefinition(),
 		manageAutomationV2Definition(),
 		swarmDesignDefinition(),
 		manageMediaDefinition(),
@@ -2161,6 +2164,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return executeSkillUse(scope, args)
 	case "manage-skill", "manage_skill":
 		return executeManageSkill(scope, args)
+	case "manage_custom_agents":
+		return r.executeManageCustomAgents(scope, args)
 	case "manage-agent", "manage_agent":
 		return r.executeManageAgent(scope, args)
 	case "manage-theme", "manage_theme":
@@ -5060,7 +5065,7 @@ func resolveWebDownloadOutputDir(scope WorkspaceScope, outputDirArg string) (str
 	} else if !pathWithinAllowedRoots(resolveMutableRoots(scope), path) {
 		return "", "", fmt.Errorf("path %q escapes mutable workspace scope", outputDirArg)
 	}
-	if err := os.MkdirAll(path, 0o755); err != nil {
+	if err := os.MkdirAll(path, sharedDirMode); err != nil {
 		return "", "", fmt.Errorf("create download directory: %w", err)
 	}
 	return path, filepath.ToSlash(outputDirArg), nil
@@ -7070,10 +7075,6 @@ func (r *Runtime) manageWorktreePromote(scope WorkspaceScope, args map[string]an
 		}
 		started = append(started, entry)
 	}
-	if !targetState.Clean {
-		err := fmt.Errorf("promotion target checkout is dirty at branch %q full HEAD %q; preserve or finish those changes before promotion, then refresh target_branch and target_head", targetState.BranchName, targetState.HeadCommit)
-		return "", errors.Join(err, r.finishPromotionTasks(scope, started, "failed", "", err))
-	}
 	if (primaryTargetBranch != "" && targetState.BranchName != primaryTargetBranch) || (targetHead != "" && targetState.HeadCommit != targetHead) {
 		err := fmt.Errorf("promotion target branch or HEAD changed; expected branch %q at full HEAD %q, found branch %q at full HEAD %q; refresh both values from the captured checkout before retrying", primaryTargetBranch, targetHead, targetState.BranchName, targetState.HeadCommit)
 		return "", errors.Join(err, r.finishPromotionTasks(scope, started, "failed", "", err))
@@ -7096,7 +7097,7 @@ func (r *Runtime) manageWorktreePromote(scope WorkspaceScope, args map[string]an
 	}
 	// Reconcile against the canonical Git service, never the tool JSON alone.
 	verified, verifyErr := r.worktrees.InspectTaskWorkspace(primaryResolvedTarget)
-	if verifyErr != nil || !verified.Clean || verified.BranchName != targetBranchName || verified.HeadCommit != result.ResultingParentHead {
+	if verifyErr != nil || !verified.TrackedClean || verified.BranchName != targetBranchName || verified.HeadCommit != result.ResultingParentHead {
 		err = errors.New("promotion applied but captured target changed; inspect Git before retrying")
 		return "", errors.Join(err, r.finishPromotionTasks(scope, started, "failed", result.ResultingParentHead, err))
 	}

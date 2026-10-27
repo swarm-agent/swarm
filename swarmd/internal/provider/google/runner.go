@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -473,14 +474,23 @@ func supportsGoogleThinking(modelID string) bool {
 	if modelID == "" || !strings.Contains(modelID, "gemini") {
 		return false
 	}
-	return strings.Contains(modelID, "gemini-3") ||
+	return supportsGoogle3OrLater(modelID) ||
 		strings.Contains(modelID, "gemini-2.5") ||
 		strings.Contains(modelID, "thinking")
 }
 
-func supportsGoogle3(modelID string) bool {
+func supportsGoogle3OrLater(modelID string) bool {
 	modelID = strings.ToLower(strings.TrimSpace(modelID))
-	return strings.Contains(modelID, "gemini-3")
+	_, version, ok := strings.Cut(modelID, "gemini-")
+	if !ok {
+		return false
+	}
+	end := 0
+	for end < len(version) && version[end] >= '0' && version[end] <= '9' {
+		end++
+	}
+	major, err := strconv.Atoi(version[:end])
+	return err == nil && major >= 3
 }
 
 func googleLegacyThinkingBudgetConfig(level string) *googleThinkingConfig {
@@ -564,6 +574,15 @@ func sanitizeGoogleToolSchemaValue(value any) any {
 	}
 }
 
+// googleToolSchemaFields are the Gemini API Schema fields passed through as is;
+// properties, enum, anyOf, oneOf and const are adapted separately.
+var googleToolSchemaFields = map[string]bool{
+	"type": true, "format": true, "title": true, "description": true, "nullable": true,
+	"maxItems": true, "minItems": true, "required": true, "minProperties": true, "maxProperties": true,
+	"minLength": true, "maxLength": true, "pattern": true, "example": true, "propertyOrdering": true,
+	"default": true, "items": true, "minimum": true, "maximum": true,
+}
+
 func sanitizeGoogleToolSchemaMap(schema map[string]any, inheritedProperties map[string]any) map[string]any {
 	out := make(map[string]any, len(schema)+2)
 	// Property names are data, not schema keywords (a tool may name a field "enum").
@@ -577,8 +596,22 @@ func sanitizeGoogleToolSchemaMap(schema map[string]any, inheritedProperties map[
 	}
 	for key, item := range schema {
 		switch key {
-		case "additionalProperties", "uniqueItems", "exclusiveMinimum", "exclusiveMaximum", "properties":
+		case "properties":
 			continue
+		case "oneOf":
+			// protobuf Schema has anyOf only. Exclusivity is enforced by the tool
+			// itself; the alternatives still describe the accepted shapes.
+			if _, hasAnyOf := schema["anyOf"]; !hasAnyOf {
+				out["anyOf"] = sanitizeGoogleToolSchemaAlternatives(item, properties)
+			}
+		case "const":
+			if _, hasEnum := schema["enum"]; !hasEnum {
+				if text, ok := item.(string); ok && text != "" {
+					out["enum"] = []string{text}
+				} else if encoded, err := json.Marshal(item); err == nil && string(encoded) != "null" {
+					out["enum"] = []string{string(encoded)}
+				}
+			}
 		case "enum":
 			// Google's parameters field uses protobuf Schema: enum is repeated
 			// string even for INTEGER/NUMBER schemas, unlike JSON Schema enums.
@@ -612,6 +645,11 @@ func sanitizeGoogleToolSchemaMap(schema map[string]any, inheritedProperties map[
 		case "anyOf":
 			out[key] = sanitizeGoogleToolSchemaAlternatives(item, properties)
 		default:
+			// The Gemini API refuses the whole request on a field its protobuf
+			// Schema does not define (propertyNames, allOf, $ref, ...).
+			if !googleToolSchemaFields[key] {
+				continue
+			}
 			out[key] = sanitizeGoogleToolSchemaValue(item)
 		}
 	}
@@ -736,11 +774,11 @@ func buildGoogleContentsWithMedia(req provideriface.Request) ([]googleContent, [
 				}
 				if len(parts) > 0 {
 					// Old durable histories and provider-transferred traces may predate
-					// thought-signature persistence. Gemini 3 validates the first call
+					// thought-signature persistence. Gemini 3+ validates the first call
 					// in each model step, and Google explicitly documents this sentinel
 					// for client-injected calls that cannot have an original signature.
 					// Never add it to later parallel calls when the first call is signed.
-					if partThoughtSignatureValue(parts[0]) == "" && supportsGoogle3(req.Model) {
+					if partThoughtSignatureValue(parts[0]) == "" && supportsGoogle3OrLater(req.Model) {
 						parts[0].ThoughtSignature = googleSkipSignature
 					}
 					contents = append(contents, googleContent{

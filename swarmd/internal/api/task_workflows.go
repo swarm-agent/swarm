@@ -137,7 +137,7 @@ func (s *Server) taskJobResult(ctx context.Context, account, projectID, taskID, 
 	}
 	head, base := controlMCPString(view, "head"), controlMCPString(view, "base_commit")
 	worktree := strings.TrimSpace(task.WorkspacePath)
-	if !controlMCPCommitID.MatchString(head) || !controlMCPCommitID.MatchString(base) || worktree == "" || filepath.Clean(worktree) == filepath.Clean(out.Folder) {
+	if !controlMCPCommitID.MatchString(head) || !controlMCPCommitID.MatchString(base) || worktree == "" || (filepath.Clean(worktree) == filepath.Clean(out.Folder) && controlMCPString(view, "delivery_state") != "in_folder") {
 		return out, nil // no commits in a worktree of its own
 	}
 	g, err := taskResultGit(ctx, worktree, base, head)
@@ -278,7 +278,7 @@ func (s *Server) waitTaskJob(ctx context.Context, account, jobID string) (jobaut
 			}
 		}
 		if controlMCPTaskSettled[task.Status] && !active {
-			out := jobautomation.AgentOutcome{JobID: jobID, Status: jobautomation.NormalizeStatus(task.Status)}
+			out := jobautomation.AgentOutcome{JobID: jobID, Status: jobautomation.NormalizeStatus(task.Status), Error: task.LastError}
 			switch task.Status {
 			case "failed", "blocked", "rejected", "needs_input", "pending_approval":
 				out.Status = jobautomation.StatusFailed

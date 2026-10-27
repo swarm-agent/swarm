@@ -115,6 +115,20 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	if projectID == "" {
 		return nil, errors.New("project id is required")
 	}
+	if input.Speech != nil || input.Operation == "speech" {
+		preflight := &pebblestore.ProjectTaskRecord{Agent: input.Agent, Operation: input.Operation, Speech: input.Speech, Model: input.Model, DurationSeconds: input.DurationSeconds, AspectRatio: input.AspectRatio, Resolution: input.Resolution, VariantCount: input.VariantCount, AttachedMedia: input.AttachedMedia}
+		if preflight.Agent == "" {
+			preflight.Agent = input.Intent
+		}
+		if err := s.admitSpeechTask(p.AccountScopeID, preflight, input.TaskProgram != nil || input.Document != nil || input.PlanDocument != nil || len(input.CoderAssignments) > 0 || len(input.Deliverables) > 0 || input.EnhancePrompt); err != nil {
+			return nil, err
+		}
+		input.Agent, input.Intent = "sound", "sound"
+		// Speech needs neither a task prompt nor a Router naming call.
+		if strings.TrimSpace(input.Title) == "" {
+			input.Title = "Speech narration"
+		}
+	}
 	title := strings.TrimSpace(input.Title)
 	if title == "" {
 		title = strings.TrimSpace(input.Prompt)
@@ -340,6 +354,9 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	if rErr != nil {
 		return nil, fmt.Errorf("task configuration invalid: %w", rErr)
 	}
+	if input.Operation == "speech" {
+		routed = pebblestore.TaskRouteResult{Title: title, Agent: "sound", OutcomeType: "audio_clip", Tier: "direct", VariantCount: 1, Stages: []string{"Speech generation", "Speech alignment"}, Deliverables: []pebblestore.ProjectTaskDeliverable{{ID: "deliv_speech", Title: title, Kind: "audio", Status: "pending"}}}
+	}
 	if source.Path != "" {
 		routed.WorkspacesInvolved = []string{source.Path}
 		routed.ContextPoolSummary = "Execution source: " + source.Path
@@ -533,6 +550,7 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		ServiceTier:        strings.TrimSpace(input.ServiceTier),
 		ContextMode:        strings.TrimSpace(input.ContextMode),
 		Operation:          reqOp,
+		Speech:             input.Speech,
 		Scenes:             routed.Scenes,
 		Soundtrack:         soundtrack,
 		AutoApprove:        input.AutoApprove,
@@ -1136,6 +1154,13 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 	if existingTask.Design != nil {
 		return nil, errDesignJobNotAgentTask
 	}
+	if existingTask.Status != "pending_approval" && existingTask.Status != "planning" {
+		next := "use get_task to inspect the task or reopen_task to request follow-up work"
+		if existingTask.Status == "needs_review" {
+			next = "use integrate_task to merge its commits"
+		}
+		return nil, fmt.Errorf("cannot approve task in state %q: it is not waiting for approval; %s", existingTask.Status, next)
+	}
 	if existingTask.ProjectID != "" && existingTask.ProjectID != projectID {
 		return nil, errors.New("cross-project task approval forbidden")
 	}
@@ -1185,14 +1210,6 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 				return nil, err
 			}
 		}
-	}
-	if existingTask.Status == "rejected" {
-		return nil, errors.New("cannot approve rejected task")
-	}
-	if existingTask.Status == "completed" {
-		hydrateTaskPlanDocument(existingTask, db)
-		hydrateTaskProgramStatus(existingTask, db)
-		return existingTask, nil
 	}
 
 	var guard tool.ProjectTaskApprovalGuards

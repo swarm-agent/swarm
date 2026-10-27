@@ -12,7 +12,9 @@ import (
 
 // Purpose: the alignment wire boundary must send JSON Schema in Gemini's JSON
 // schema field and retain all billed modalities, including thinking, on parse
-// failures. A fake server proves the adapter without spending or credentials.
+// failures, including the single parse retry. Recover omitted TEXT detail from
+// aggregate prompt usage without double-counting audio. A fake server proves the adapter
+// without spending or credentials.
 func TestSpeechAlignmentWire(t *testing.T) {
 	for _, invalid := range []bool{false, true} {
 		t.Run(map[bool]string{false: "success", true: "paid-invalid"}[invalid], func(t *testing.T) {
@@ -33,16 +35,20 @@ func TestSpeechAlignmentWire(t *testing.T) {
 				if invalid {
 					text = "invalid"
 				}
-				json.NewEncoder(w).Encode(map[string]any{"candidates": []any{map[string]any{"finishReason": "STOP", "content": map[string]any{"parts": []any{map[string]string{"text": text}}}}}, "usageMetadata": map[string]any{"candidatesTokenCount": 30, "thoughtsTokenCount": 70, "promptTokensDetails": []any{map[string]any{"modality": "TEXT", "tokenCount": 10}, map[string]any{"modality": "AUDIO", "tokenCount": 20}}}})
+				json.NewEncoder(w).Encode(map[string]any{"candidates": []any{map[string]any{"finishReason": "STOP", "content": map[string]any{"parts": []any{map[string]string{"text": text}}}}}, "usageMetadata": map[string]any{"candidatesTokenCount": 30, "thoughtsTokenCount": 70, "promptTokenCount": 30, "promptTokensDetails": []any{map[string]any{"modality": "AUDIO", "tokenCount": 20}}}})
 			}))
 			defer server.Close()
 			s := NewService(nil, nil, nil)
 			s.SetBaseURL(server.URL)
-			got, err := s.alignGoogleSpeech(context.Background(), "test-key", "transcriber", SpeechResult{Bytes: []byte{0, 0}, MediaType: "audio/wav"})
+			got, err := s.alignGoogleSpeech(context.Background(), "test-key", "transcriber", SpeechResult{Bytes: []byte{0, 0}, MediaType: "audio/wav", DurationSeconds: 2})
 			if (err != nil) != invalid {
 				t.Fatalf("error %v", err)
 			}
-			if got.Model != "transcriber" || got.PromptTokens != 10 || got.AudioInputTokens != 20 || got.OutputTokens != 100 {
+			attempts := int64(1)
+			if invalid {
+				attempts = 2
+			}
+			if got.Model != "transcriber" || got.PromptTokens != 10*attempts || got.AudioInputTokens != 20*attempts || got.OutputTokens != 100*attempts {
 				t.Fatalf("lost usage: %+v", got)
 			}
 			if !invalid && got.Timings.Granularity != "word" {

@@ -165,7 +165,7 @@ func (s *SessionStore) CalculateCost(provider, model string, inputTokens, output
 func (s *SessionStore) CalculateCostWithStatus(provider, model string, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, thinkingTokens int64) (float64, string) {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	model = strings.ToLower(strings.TrimSpace(model))
-	if provider == "codex" {
+	if provider == "codex" || provider == "claudecode" {
 		return 0.0, "subscription"
 	}
 	// Vertex AI runs Google's Gemini models and is priced from google's

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"strconv"
 	"strings"
 	"time"
 
@@ -69,39 +68,15 @@ func AutomationV2NextDue(policy AutomationV2Settings, anchor, after int64) (int6
 	if err != nil {
 		return 0, err
 	}
-	fields := strings.Fields(policy.Schedule.Cron)
-	match := func(i, value int) bool {
-		f := fields[i]
-		if f == "*" {
-			return true
-		}
-		if strings.HasPrefix(f, "*/") {
-			n, err := strconv.Atoi(f[2:])
-			if err != nil || n <= 0 {
-				return false
-			}
-			base := 0
-			if i == 2 || i == 3 {
-				base = 1
-			}
-			return (value-base)%n == 0
-		}
-		n, _ := strconv.Atoi(f)
-		return value == n
+	cron, err := ParseCron(policy.Schedule.Cron)
+	if err != nil {
+		return 0, err
 	}
-	domRestricted := fields[2] != "*"
-	dowRestricted := fields[4] != "*"
 	t := time.UnixMilli(after).UTC().Truncate(time.Minute).Add(time.Minute)
 	end := t.AddDate(8, 0, 0)
 	for t.Before(end) {
 		local := t.In(loc)
-		dayMatch := false
-		if domRestricted && dowRestricted {
-			dayMatch = match(2, local.Day()) || match(4, int(local.Weekday()))
-		} else {
-			dayMatch = match(2, local.Day()) && match(4, int(local.Weekday()))
-		}
-		if match(3, int(local.Month())) && dayMatch && match(1, local.Hour()) && match(0, local.Minute()) {
+		if cron.Matches(local) {
 			return t.UnixMilli(), nil
 		}
 		t = t.Add(time.Minute)

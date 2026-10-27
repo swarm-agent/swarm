@@ -13,20 +13,22 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cockroachdb/pebble"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // Durable keys. Account ids and job ids are hex-encoded inside keys, since
 // both may hold '/'.
 const (
-	keyDefinitionPrefix = "job_automation/def/"
-	keyDeliveryPrefix   = "job_automation/delivery/"
-	keyByJobPrefix      = "job_automation/by_job/"
-	keyActivePrefix     = "job_automation/active/"
-	keyStepLogPrefix    = "job_automation/log/"
-	keyReopenPrefix     = "job_automation/reopen/"
-	keyStop             = "job_automation_meta/stop"
-	keyCursor           = "job_automation_meta/cursor"
+	keyDefinitionPrefix   = "job_automation/def/"
+	keyPendingItemsPrefix = "job_automation/pending_items/"
+	keyDeliveryPrefix     = "job_automation/delivery/"
+	keyByJobPrefix        = "job_automation/by_job/"
+	keyActivePrefix       = "job_automation/active/"
+	keyStepLogPrefix      = "job_automation/log/"
+	keyReopenPrefix       = "job_automation/reopen/"
+	keyStop               = "job_automation_meta/stop"
+	keyCursor             = "job_automation_meta/cursor"
 	// MaxLogTailBytes is how much of a step's output is kept: the last 64 KiB.
 	MaxLogTailBytes = 64 << 10
 	maxDefinitions  = 500
@@ -79,6 +81,7 @@ var ErrNotFound = errors.New("not found")
 // Delivery is one (job end, automation revision) pair: the steps run once
 // for it. It keeps the automation as it was when the job ended.
 type Delivery struct {
+	ItemOwner          string `json:"item_owner,omitempty"`
 	ID                 string `json:"id"`
 	Account            string `json:"account"`
 	AutomationID       string `json:"automation_id"`
@@ -130,6 +133,7 @@ type ReopenRecord struct {
 
 // StepRecord is one step of one delivery.
 type StepRecord struct {
+	Items         []ItemRecord   `json:"items"`
 	ID            string         `json:"id"`
 	Type          string         `json:"type"`
 	State         string         `json:"state"`
@@ -252,6 +256,7 @@ func (s *Store) Put(account string, in Automation) (Automation, bool, error) {
 }
 
 func (s *Store) PutChange(account string, in Automation, change Change) (Automation, bool, error) {
+	in.Proposed, in.ProposedBy, in.BaseID, in.BaseRevision = false, "", "", 0
 	account = strings.TrimSpace(account)
 	if account == "" {
 		return Automation{}, false, errors.New("account is required")
@@ -267,7 +272,7 @@ func (s *Store) PutChange(account string, in Automation, change Change) (Automat
 	}
 	now := s.now().UnixMilli()
 	for _, current := range existing {
-		if current.Name == in.Name {
+		if !current.Proposed && current.Name == in.Name {
 			if len(changedFields(&current, &in)) == 0 && change.Source != "restore" {
 				return current, false, nil
 			}
@@ -326,7 +331,7 @@ func (s *Store) FindByName(account, name string) (Automation, error) {
 		return Automation{}, err
 	}
 	for _, a := range list {
-		if a.Name == strings.TrimSpace(name) {
+		if !a.Proposed && a.Name == strings.TrimSpace(name) {
 			return a, nil
 		}
 	}
@@ -401,7 +406,8 @@ func (d Delivery) TriggerHead() string {
 // also false when the automation already has a delivery (active or finished)
 // for the job at the job end's head: the existing delivery, whose id differs
 // from DeliveryID of this job end, is returned and nothing is recorded (at
-// most one delivery per automation, job and head).
+// most one delivery per automation, job and head), except when a blocked
+// follow-up must record the reason this automation's reopen could not finish.
 func (s *Store) CreateDelivery(a Automation, result Result) (Delivery, bool, error) {
 	id := DeliveryID(result.JobID, result.Followup, a.ID, a.Revision)
 	s.mu.Lock()
@@ -422,6 +428,21 @@ func (s *Store) CreateDelivery(a Automation, result Result) (Delivery, bool, err
 	if result.Git != nil {
 		head = result.Git.Head
 	}
+	// Inspect all prior deliveries before deduplicating: the reopen may be
+	// recorded on a different delivery than the first matching head.
+	reopened := false
+	if result.Followup != "" {
+		for _, p := range previous {
+			if p.AutomationID != a.ID {
+				continue
+			}
+			for _, step := range p.Steps {
+				if step.Type == StepReopen && step.Outcome["followup"] == result.Followup {
+					reopened = true
+				}
+			}
+		}
+	}
 	createdAt := s.now().UnixMilli()
 	roundBase := 0
 	for _, p := range previous {
@@ -433,12 +454,16 @@ func (s *Store) CreateDelivery(a Automation, result Result) (Delivery, bool, err
 		if p.AutomationID != a.ID {
 			continue
 		}
-		if head != "" && p.TriggerHead() == head {
+		if !(reopened && strings.HasPrefix(result.Error, "blocked: ")) && head != "" && p.TriggerHead() == head {
 			return p, false, nil
 		}
 		roundBase = max(roundBase, p.RoundBase)
 	}
-	d := Delivery{
+	a, err = a.RenderInputs()
+	if err != nil {
+		return Delivery{}, false, err
+	}
+	d := Delivery{ItemOwner: a.TriggerOwner,
 		ID: id, Account: a.Account, AutomationID: a.ID, AutomationName: a.Name, AutomationRevision: a.Revision,
 		JobID: result.JobID, Followup: result.Followup, State: StatePending, Retries: a.Retries, Folder: a.Scope.Folder,
 		Definition: append([]Step(nil), a.Steps...), Result: result, CreatedAt: createdAt, Spec: a.Result,
@@ -456,6 +481,12 @@ func (s *Store) CreateDelivery(a Automation, result Result) (Delivery, bool, err
 	for _, step := range a.Steps {
 		d.Steps = append(d.Steps, StepRecord{ID: step.ID, Type: step.Type, State: StatePending})
 	}
+	if reopened && strings.HasPrefix(result.Error, "blocked: ") {
+		d.State, d.BlockedReason = StateBlocked, result.Error
+		for i := range d.Steps {
+			d.Steps[i].State, d.Steps[i].Reason = StateSkipped, result.Error
+		}
+	}
 	if err := s.putDeliveryLocked(d); err != nil {
 		return Delivery{}, false, err
 	}
@@ -469,19 +500,62 @@ func (s *Store) putDeliveryLocked(d Delivery) error {
 	for i := range d.Steps {
 		d.Steps[i].LogTail = "" // kept under its own key
 	}
-	if err := s.db.PutJSON(deliveryKey(d.Account, d.ID), d); err != nil {
+	data, err := json.Marshal(d)
+	if err != nil {
+		return err
+	}
+	batch := s.db.NewBatch()
+	defer batch.Close()
+	if err := batch.Set([]byte(deliveryKey(d.Account, d.ID)), data, nil); err != nil {
+		return err
+	}
+	pendingKey := []byte(keyPendingItemsPrefix + hexKey(d.Account) + "/" + d.ID)
+	pending := false
+	for _, step := range d.Steps {
+		for _, item := range step.Items {
+			if itemPending(item) {
+				pending = true
+			}
+		}
+	}
+	if pending {
+		err = batch.Set(pendingKey, []byte(d.ID), nil)
+	} else {
+		err = batch.Delete(pendingKey, nil)
+	}
+	if err != nil {
 		return err
 	}
 	if Terminal(d.State) {
-		return s.db.Delete(keyActivePrefix + d.ID)
+		err = batch.Delete([]byte(keyActivePrefix+d.ID), nil)
+	} else {
+		account, marshalErr := json.Marshal(d.Account)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		err = batch.Set([]byte(keyActivePrefix+d.ID), account, nil)
 	}
-	return s.db.PutJSON(keyActivePrefix+d.ID, d.Account)
+	if err != nil {
+		return err
+	}
+	return batch.Commit(pebble.Sync)
 }
 
 // SaveDelivery writes a delivery's new state.
 func (s *Store) SaveDelivery(d Delivery) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Item receipts are independently advanced by the queue runner. Preserve
+	// its newer receipts when the delivery runner saves subsequent steps.
+	if current, err := s.GetDelivery(d.Account, d.ID); err == nil {
+		for i := range d.Steps {
+			if i < len(current.Steps) && current.Steps[i].Items != nil {
+				d.Steps[i].Items = current.Steps[i].Items
+			}
+		}
+	} else if !errors.Is(err, ErrNotFound) {
+		return err
+	}
 	return s.putDeliveryLocked(d)
 }
 

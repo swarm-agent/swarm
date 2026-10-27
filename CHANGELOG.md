@@ -6,7 +6,85 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Send Gemini API tool declarations with only Gemini Schema fields: `oneOf` becomes `anyOf`, `const` becomes a one-value enum, and validation-only keywords such as `propertyNames` are left out, so the Orchestrator's workflow and custom-agent tools no longer stop its run on the Gemini API. Docs impact: none.
+
+- Supply published standard-tier Gemini transcription rates (including Gemini 3.5 Flash-Lite) missing from model snapshots, retain speech alignment text usage when modality details omit it, and expose Lyria song prices without marking empty media price views verified. Conditional expiry/context-tier transcription rates remain unsupported. Docs impact: none.
+
+- Chunk long audio transcription at silence boundaries or overlapping windows, retry failed chunks once, and retain partial transcripts and speech timings with explicit gap notes. Docs impact: none.
+
+- Install missing host ffmpeg/ffprobe on headless fresh installs and updates so media transcription has its required tools. Docs impact: list host dependencies in the headless app README.
+
+- Resolve bare and Google-prefixed transcription settings consistently for speech timings and media transcription, with caller-specific modality errors. Docs impact: none
+
+- Fix custom worker creation with a model through Swarm Control by applying the existing model-pin route after creation; report partial success if pinning fails. Docs impact: none.
+
+- Explicitly request shared gVisor access for workspace bind mounts so host and concurrent lease writes are visible without relaxing sandbox isolation. Docs impact: none.
+- Keep structured `task_progress` blocker reporting available to workflow execution agents, including Swarm and narrowed worker contracts. Docs impact: none.
+- Allow nested and concurrent worker media operations within remaining budgets using per-operation estimates, release completed operations including failures, and expire stale reservations after one hour. Docs impact: none.
+- Use an eligible connected Google catalog model for speech timings when transcription is unset; return speech audio with an explicit note when no timing model exists. Docs impact: documented fallback and audio-only results in `docs/manage-media.md`.
+- Add `for_each.after_field` / `id_field` dependencies that wait for successful item jobs and job-end deliveries before dispatch, without consuming parallel slots. Docs impact: documented dependent video cuts in `docs/automations.md`.
+
+- Re-evaluate unresolved model receipt pricing in worker budget checks and status, so historical Claude Code receipts count as $0 subscription usage without rewriting receipts; repricing is bounded to 100 matching worker-day receipts using daily session rollups, independently of unrelated account history, skips non-USD admission checks, and fails closed beyond that bound. Still-unpriced providers remain blocked. Docs impact: none.
+
+- Count Claude Code model usage as $0 subscription usage for worker USD budgets, preserving media charges, token limits, and unknown-pricing rejection for other providers. Docs impact: clarified plan-backed worker accounting in `docs/box-limits.md`.
+
+- Render workflow inputs in worker/job/schedule scopes and schedule clocks, validate rendered clocks, and retain resolved worker-name IDs for matching. Docs impact: expanded the Inputs section in `docs/automations.md`.
+
+- Add workflow schedule triggers and trigger-only workflows, skipping busy/missed slots and preventing duplicate job-end handling. Docs impact: schedule and matching rules in `docs/automations.md`.
+
+- Add workflow agent `for_each` steps that queue bounded, independent worker jobs from committed JSON plans, with durable item receipts. Docs impact: `docs/automations.md` documents one job per item.
+
+- Add reusable workflow inputs, per-instance bindings and portable worker-name resolution; imports accept instance names and exports omit bindings. Docs impact: added Inputs example in docs/automations.md.
+- Enable in-job speech narration through manage_media using shared MCP speech validation, with audio and timing JSON saving. Docs impact: updated docs/manage-media.md.
+- Preserve workflow reopen heads and blocker reasons, skip duplicate-head reviews, and reject reviews without a head. Docs impact: none
+- Add native worker budget proposals on create/update and atomically apply the policy on user acceptance through the shared budget service. Docs impact: worker budget limits in `docs/automations.md`.
+
+- Add MCP worker daily budget setting/reset and receipt-backed budget status in worker listings. Docs impact: documented MCP limits in docs/automations.md.
+
+- Expose workflow event triggers in MCP and Orchestrator tool schemas, with one-time MCP webhook key guidance; native proposal key rotation remains unsupported. Docs impact: updated Triggers in docs/automations.md.
+
+- Add external workflow triggers with HTTPS feed polling, signed webhook ingress, durable event queues, and trigger-scoped worker jobs. Docs impact: added Triggers to docs/automations.md.
+
+- Fail workflow agent steps with their declared blocker or execution error, preserve reviewer verdict semantics, and instruct step agents to report blockers explicitly. Docs impact: none
+- Trigger worker workflows when a completed follow-up recovers from a failed first run, preserving blocked/failed retry signals with exact-run blocker reasons and workflow round identity. Docs impact: none
+
+- Fix secret-gateway public CA and bundle permissions under restrictive service umasks, including existing CA files, while keeping the private key private. Docs impact: none
+
+- Enable bounded image inspection through Claude Code's MCP tool bridge with matching catalog and credential media contracts. Docs impact: none
+- Let the Orchestrator propose worker model pins and resets with shared provider/catalog validation and visible model summaries. Docs impact: none.
+
+- Enable read-only image inspection for the native reviewer without granting write or media-generation tools. Docs impact: none
+
+- Clarify that the run media contract describes media_inspect inputs, not restrictions on other media tools. Docs impact: none
+- Fix pinning a worker's model for token and tailnet callers, not only the local socket. Docs impact: none
+
+- Align relay tool scopes and local-only restrictions with the daemon, with regression tests for write-scoped custom agent discovery and read-only rejection. Docs impact: none
+
+- Add write-scoped custom agent definitions shared by MCP and the Orchestrator, with bounded work tools and worker agent selection. Docs impact: none
+
+- Let Designer and Finder tasks declare blockers and emit failed task-run signals for blocked tasks so only failed/always workflows run. Docs impact: none
+- Record worker jobs that declare a current-run blocker as failed, include the reason in failure signals, and prevent succeeded-only workflows from running for them. Docs impact: none
+- Record folder-task commit deliveries without fictitious worktrees and pin workflow reviews to their delivered head in separate checkouts, refresh deliveries after follow-ups, and surface capture failures without stranding tasks. Docs impact: none
+
+- Show which workflow and revision a proposal replaces, and explain whether accepting replaces it or adds a new workflow. Docs impact: none
+
+- Trigger task workflows for primary Orchestrator delegations as well as direct MCP tasks, preserving internal-agent and automation loop exclusions. Docs impact: none
+
+- Add Orchestrator workflow proposals with person-only revision acceptance, discard, and native workflow management. Docs impact: none
+
+- Share cron parsing across worker and automation schedules, supporting ranges, lists, month/day names and Sunday aliases while preserving explicit timezones and DST behavior. Docs impact: none
+- Unify workflow saving and management behind shared server methods, with MCP workflow tools calling the canonical V3 routes. Docs impact: none
+
+- Apply Gemini 3 thought-signature replay repair and thinking support to Gemini 4 and later major versions, preserving signed and parallel calls. Docs impact: none
+- Reuse same-session pending worker proposals, allow worker reads without permission prompts, and read proposal review/progress from the worker store. Docs impact: none
+- Let the Orchestrator integrate reviewed tasks through the same service as HTTP, preserve unrelated untracked files during promotion, and refuse repeat task approval with actionable guidance. Docs impact: none
+
+- Clients and agents: one model. AGENTS.md says how Swarm is used (a client talking to the Orchestrator, or an outside AI through MCP, doing the same actions with approval set by how the person works), and docs/frontends.md now documents the client path Swarm Console uses (owner session from `swarmctl client connect`, sync snapshot and realtime stream, the Orchestrator session routes) instead of app keys, `/mcp` and the activity feed. Docs impact: AGENTS.md, docs/frontends.md, README.
+
+- Run a fresh workflow review when its own reopened job finishes without a new commit, preserving duplicate-end protection and the existing round limit. Docs impact: none.
+
 - Reposition Swarm as a headless AI agent platform with MCP, SDK, HTTP API and CLI interfaces, including direct app integration and sealed agents; align the suggested GitHub About description. Docs impact: README only.
+- Preserve project-folder ACL and umask permissions for exported workflows, saved media and other project outputs, and show actionable workflow import/export refusal reasons without exposing internal errors. Docs impact: none.
 
 - Include the system reviewer in AI-path end-to-end harness model setup and checks for all eight roles. Docs impact: none
 - Remove an accidentally tracked Vitest results cache and ignore root node_modules dependencies. Docs impact: none

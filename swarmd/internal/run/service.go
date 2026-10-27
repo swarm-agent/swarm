@@ -109,6 +109,7 @@ var (
 )
 
 type Service struct {
+	workflowLifecycle            tool.WorkflowLifecycleService
 	workerExecution              *WorkerExecutionService
 	automationContext            func(string) (string, error)
 	sessions                     *sessionruntime.Service
@@ -2195,7 +2196,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		baseInstructions = s.appendWorkspaceEnvironmentPromptBlock(baseInstructions, instructionScope)
 		stepInstructions := composeModeAwareInstructions(baseInstructions, executionMode, s.permissions != nil && s.permissions.BypassPermissions(), instructionProfile)
 		if profileHasCapability(instructionProfile, mediaInspectToolName) {
-			stepInstructions = AppendSessionMediaInstructions(stepInstructions, mediaContract)
+			stepInstructions = AppendSessionMediaInstructions(stepInstructions, mediaContract, stepToolDefinitions...)
 		}
 		runStateInstructions, stateErr := s.durableRunStateInstructions(sessionID, executionMode, runID, options)
 		if stateErr != nil {

@@ -33,7 +33,7 @@ func definitionFields(a *Automation) map[string]any {
 	if a == nil {
 		return map[string]any{}
 	}
-	return map[string]any{"name": a.Name, "scope": a.Scope, "when": a.When, "enabled": a.Enabled, "retries": a.Retries, "steps": a.Steps, "result": a.Result}
+	return map[string]any{"scope_worker_id": a.ScopeWorkerID, "inputs": a.Inputs, "with": a.With, "on": a.On, "trigger_owner": a.TriggerOwner, "name": a.Name, "scope": a.Scope, "when": a.When, "enabled": a.Enabled, "retries": a.Retries, "steps": a.Steps, "result": a.Result}
 }
 func changedFields(a, b *Automation) []string {
 	before, after := definitionFields(a), definitionFields(b)
@@ -86,6 +86,10 @@ func (s *Store) History(account, id, name string) ([]HistoryRecord, error) {
 	return s.historyLocked(account, id, name)
 }
 func (s *Store) saveHistoryLocked(a Automation, previous *Automation, kind string, change Change) error {
+	return s.saveHistoryRemovingProposalLocked(a, previous, kind, change, "")
+}
+
+func (s *Store) saveHistoryRemovingProposalLocked(a Automation, previous *Automation, kind string, change Change, proposalID string) error {
 	records, err := s.historyLocked(a.Account, a.ID, "")
 	if err != nil && err != ErrNotFound {
 		return err
@@ -126,8 +130,15 @@ func (s *Store) saveHistoryLocked(a Automation, previous *Automation, kind strin
 	if err = put(historyKey(a.Account, a.ID), records); err != nil {
 		return err
 	}
-	if err = put(historyNameKey(a.Account, a.Name), a.ID); err != nil {
-		return err
+	if !a.Proposed {
+		if err = put(historyNameKey(a.Account, a.Name), a.ID); err != nil {
+			return err
+		}
+	}
+	if proposalID != "" && proposalID != a.ID {
+		if err = batch.Delete([]byte(definitionKey(a.Account, proposalID)), nil); err != nil {
+			return err
+		}
 	}
 	return batch.Commit(pebble.Sync)
 }

@@ -87,7 +87,7 @@ var toolScopes = map[string]string{
 	"swarm_set_agent_model":        ScopeWrite,
 	"swarm_set_media_models":       ScopeWrite,
 	"swarm_list_agents":            ScopeRead,
-	"swarm_define_agent":           ScopeManage,
+	"swarm_define_agent":           ScopeWrite,
 	"swarm_create_client_key":      ScopeManage,
 	"swarm_create_key":             ScopeManage,
 	"swarm_list_keys":              ScopeRead,
@@ -129,6 +129,8 @@ var toolScopes = map[string]string{
 	// and deleting them is write like scheduling a job; the machine-wide stop
 	// switch is manage.
 	"swarm_set_workflow":    ScopeWrite,
+	"swarm_import_workflow": ScopeWrite,
+	"swarm_export_workflow": ScopeWrite,
 	"swarm_list_workflows":  ScopeRead,
 	"swarm_delete_workflow": ScopeWrite,
 	"swarm_stop_workflows":  ScopeManage,
@@ -139,7 +141,6 @@ var toolScopes = map[string]string{
 // nor forwarded for relay clients. On the machine, ChatGPT sign-in takes a
 // write AI key, the rest a full one.
 var localOnlyTools = map[string]bool{
-	"swarm_define_agent":         true,
 	"swarm_create_client_key":    true,
 	"swarm_create_key":           true,
 	"swarm_connect_chatgpt":      true,
@@ -174,18 +175,19 @@ type TokenIssuer interface {
 
 // Config is persisted only in the secrets store.
 type Config struct {
-	RelayURL     string `json:"relay_url"`
-	DeviceID     string `json:"device_id"`
-	DeviceName   string `json:"device_name"`
-	PrivateKey   string `json:"private_key"`
-	Enabled      bool   `json:"enabled"`
-	AllowWrite   bool   `json:"allow_write"`
-	AllowApprove bool   `json:"allow_approve"`
-	AllowManage  bool   `json:"allow_manage"`
-	TokenID      string `json:"token_id"`
-	Token        string `json:"token"`
-	CreatedAt    int64  `json:"created_at"`
-	UpdatedAt    int64  `json:"updated_at"`
+	RelayURL          string `json:"relay_url"`
+	DeviceID          string `json:"device_id"`
+	DeviceName        string `json:"device_name"`
+	PrivateKey        string `json:"private_key"`
+	Enabled           bool   `json:"enabled"`
+	AllowWrite        bool   `json:"allow_write"`
+	AllowApprove      bool   `json:"allow_approve"`
+	AllowManage       bool   `json:"allow_manage"`
+	TokenScopeVersion int    `json:"token_scope_version,omitempty"`
+	TokenID           string `json:"token_id"`
+	Token             string `json:"token"`
+	CreatedAt         int64  `json:"created_at"`
+	UpdatedAt         int64  `json:"updated_at"`
 }
 
 // Consent is an authorization request an AI client is waiting on.
@@ -350,19 +352,7 @@ func (s *Service) Init(in InitInput) (Status, error) {
 	if _, err := rand.Read(idBytes[:]); err != nil {
 		return Status{}, err
 	}
-	// API scopes the device token needs for its ceiling. Remote clients are
-	// still limited per tool by the ceiling (toolScopes) on every call.
-	scopes := []string{"sessions:read", "automations:read", "agents:read", "signals:read", "secrets:read"}
-	if in.AllowWrite || in.AllowApprove {
-		scopes = append(scopes, "sessions:write")
-	}
-	if in.AllowWrite || in.AllowManage {
-		// Write may also pick each role's model among the connected providers.
-		scopes = append(scopes, "automations:write", "settings:write")
-	}
-	if in.AllowManage {
-		scopes = append(scopes, "usage:write")
-	}
+	scopes := deviceTokenScopes(in.AllowWrite, in.AllowApprove, in.AllowManage)
 	token, tokenID, err := s.tokens.Mint("swarm-remote "+name, scopes)
 	if err != nil {
 		return Status{}, fmt.Errorf("mint device token: %w", err)
@@ -371,13 +361,53 @@ func (s *Service) Init(in InitInput) (Status, error) {
 	cfg := Config{
 		RelayURL: origin, DeviceID: "dev_" + hex.EncodeToString(idBytes[:]), DeviceName: name,
 		PrivateKey: base64.StdEncoding.EncodeToString(private), AllowWrite: in.AllowWrite, AllowApprove: in.AllowApprove, AllowManage: in.AllowManage,
-		TokenID: tokenID, Token: token, CreatedAt: now, UpdatedAt: now,
+		TokenScopeVersion: 1, TokenID: tokenID, Token: token, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.store.PutJSON(configKey, cfg); err != nil {
 		_ = s.tokens.Revoke(tokenID)
 		return Status{}, err
 	}
 	return s.Status()
+}
+
+func deviceTokenScopes(write, approve, manage bool) []string {
+	// API scopes the device token needs for its ceiling. Remote clients are
+	// still limited per tool by the ceiling (toolScopes) on every call.
+	scopes := []string{"sessions:read", "automations:read", "agents:read", "signals:read", "secrets:read"}
+	if write || approve {
+		scopes = append(scopes, "sessions:write")
+	}
+	if write || manage {
+		// Write may also pick each role's model among the connected providers.
+		scopes = append(scopes, "automations:write", "settings:write", "agents:write")
+	}
+	if manage {
+		scopes = append(scopes, "usage:write")
+	}
+	return scopes
+}
+
+// Upgrade persisted device credentials before connecting. Fail closed on every
+// storage/revocation error; never dispatch using a partially upgraded identity.
+func (s *Service) upgradeDeviceToken(cfg Config) (Config, error) {
+	if cfg.TokenScopeVersion >= 1 {
+		return cfg, nil
+	}
+	token, id, err := s.tokens.Mint("swarm-remote "+cfg.DeviceName, deviceTokenScopes(cfg.AllowWrite, cfg.AllowApprove, cfg.AllowManage))
+	if err != nil {
+		return cfg, err
+	}
+	if err := s.tokens.Revoke(cfg.TokenID); err != nil {
+		_ = s.tokens.Revoke(id)
+		return cfg, err
+	}
+	cfg.Token, cfg.TokenID, cfg.TokenScopeVersion = token, id, 1
+	cfg.UpdatedAt = time.Now().UnixMilli()
+	if err := s.store.PutJSON(configKey, cfg); err != nil {
+		_ = s.tokens.Revoke(id)
+		return Config{}, err
+	}
+	return cfg, nil
 }
 
 func (s *Service) SetEnabled(enabled bool) (Status, error) {
@@ -588,6 +618,10 @@ func AuthMessage(relayOrigin, deviceID, nonce string) string {
 }
 
 func (s *Service) session(ctx context.Context, cfg Config) error {
+	cfg, err := s.upgradeDeviceToken(cfg)
+	if err != nil {
+		return fmt.Errorf("upgrade device token: %w", err)
+	}
 	raw, err := base64.StdEncoding.DecodeString(cfg.PrivateKey)
 	if err != nil || len(raw) != ed25519.PrivateKeySize {
 		return errors.New("stored device key is invalid")

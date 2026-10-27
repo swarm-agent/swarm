@@ -106,6 +106,8 @@ func (s *Server) createManagedMedia(ctx context.Context, p identity.Principal, p
 			return nil, err
 		}
 	}
+	// Pending approval is not an operation. The runner reserves atomically just
+	// before dispatch, rechecking usage after any approval delay.
 	return s.CreateProjectTask(ctx, p, project, input)
 }
 

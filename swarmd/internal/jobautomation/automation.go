@@ -166,8 +166,9 @@ type Step struct {
 	// so a step that still sends it is refused, never silently ignored.
 	Secrets json.RawMessage `json:"secrets,omitempty"`
 	// agent
-	Worker string `json:"worker,omitempty"`
-	Brief  string `json:"brief,omitempty"`
+	Worker  string   `json:"worker,omitempty"`
+	Brief   string   `json:"brief,omitempty"`
+	ForEach *ForEach `json:"for_each,omitempty"`
 	// Fixes ("security", a reviewer worker only) lets the reviewer commit
 	// small security fixes on top of the reviewed head. Never the default.
 	Fixes string `json:"fixes,omitempty"`
@@ -195,14 +196,26 @@ type Step struct {
 // Automation is a durable, account-owned definition. Revision changes on
 // every update; a delivery keeps the revision it started with.
 type Automation struct {
-	ID      string `json:"id"`
-	Account string `json:"account"`
-	Name    string `json:"name"`
-	Scope   Scope  `json:"scope"`
-	When    string `json:"when"`
-	Enabled bool   `json:"enabled"`
-	Retries int    `json:"retries"`
-	Steps   []Step `json:"steps"`
+	ItemSource string `json:"-"`
+	// ScopeWorkerID is save-resolved metadata, not part of the portable definition.
+	ScopeWorkerID  string `json:"scope_worker_id,omitempty"`
+	inputsRendered bool
+	Inputs         map[string]Input  `json:"inputs,omitempty"`
+	With           map[string]string `json:"with,omitempty"`
+	On             *Trigger          `json:"on,omitempty"`
+	TriggerOwner   string            `json:"trigger_owner,omitempty"`
+	Proposed       bool              `json:"proposed,omitempty"`
+	ProposedBy     string            `json:"proposed_by,omitempty"`
+	BaseID         string            `json:"base_id,omitempty"`
+	BaseRevision   uint64            `json:"base_revision,omitempty"`
+	ID             string            `json:"id"`
+	Account        string            `json:"account"`
+	Name           string            `json:"name"`
+	Scope          Scope             `json:"scope"`
+	When           string            `json:"when"`
+	Enabled        bool              `json:"enabled"`
+	Retries        int               `json:"retries"`
+	Steps          []Step            `json:"steps"`
 	// Result is what the work must hand over (optional): see ResultSpec.
 	Result    *ResultSpec `json:"result,omitempty"`
 	Revision  uint64      `json:"revision"`
@@ -227,12 +240,17 @@ func IsValidationError(err error) bool {
 
 // Normalize applies defaults and validates a definition. It never touches
 // id, account, revision or times.
-func (a *Automation) Normalize() error {
+func (a *Automation) Normalize() error { return a.normalizeInputs() }
+
+func (a *Automation) normalize() error {
 	a.Name = strings.TrimSpace(a.Name)
 	if a.Name == "" || utf8.RuneCountInString(a.Name) > maxNameRunes || strings.ContainsAny(a.Name, "\r\n") {
 		return invalid("name is required (one line, at most %d characters)", maxNameRunes)
 	}
 	if err := a.Scope.normalize(); err != nil {
+		return err
+	}
+	if err := a.validateTrigger(); err != nil {
 		return err
 	}
 	a.When = strings.ToLower(strings.TrimSpace(a.When))
@@ -247,8 +265,10 @@ func (a *Automation) Normalize() error {
 	if a.Retries < 0 || a.Retries > MaxRetries {
 		return invalid("retries must be 0 to %d", MaxRetries)
 	}
-	if err := NormalizeSteps(a.Steps); err != nil {
-		return err
+	if a.On == nil || len(a.Steps) != 0 {
+		if err := NormalizeSteps(a.Steps); err != nil {
+			return err
+		}
 	}
 	return a.normalizeResult()
 }
@@ -260,8 +280,8 @@ func (s *Scope) normalize() error {
 	}
 	s.Folder = filepath.Clean(s.Folder)
 	s.Worker, s.Job, s.Schedule = strings.TrimSpace(s.Worker), strings.TrimSpace(s.Job), strings.TrimSpace(s.Schedule)
-	if s.Worker != "" && !refIDPattern.MatchString(s.Worker) {
-		return invalid("scope.worker must be a worker id")
+	if len(s.Worker) > 200 {
+		return invalid("scope.worker must be a worker id or name (at most 200 bytes)")
 	}
 	if s.Schedule != "" && !refIDPattern.MatchString(s.Schedule) {
 		return invalid("scope.schedule must be a schedule id")
@@ -322,6 +342,9 @@ func NormalizeSteps(steps []Step) error {
 			return invalid("step %s: timeout_seconds must be 1 to %d", step.ID, MaxStepTimeoutSeconds)
 		}
 		step.Type = strings.ToLower(strings.TrimSpace(step.Type))
+		if err := step.normalizeForEach(); err != nil {
+			return err
+		}
 		switch step.Type {
 		case StepRun:
 			if err := step.normalizeRun(); err != nil {
@@ -522,7 +545,18 @@ func ValidCommandPath(command string) error {
 
 // Matches reports whether the automation applies to this job end.
 func (a Automation) Matches(r *Result) bool {
-	if !a.Enabled || r == nil {
+	var err error
+	a, err = a.RenderInputs()
+	if err != nil {
+		return false
+	}
+	if a.ScopeWorkerID != "" {
+		a.Scope.Worker = a.ScopeWorkerID
+	}
+	if a.Proposed || !a.Enabled || r == nil || len(a.Steps) == 0 {
+		return false
+	}
+	if a.On != nil && (a.ID == "" || r.TriggerID != a.ID) {
 		return false
 	}
 	if filepath.Clean(r.Folder) != a.Scope.Folder || r.Folder == "" {

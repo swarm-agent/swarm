@@ -398,3 +398,9 @@ func normalizeSessionMediaMIME(value string) string {
 		return value
 	}
 }
+
+// NormalizeSessionMediaMIME is the one spelling Swarm keeps for a media type
+// (audio/wave and audio/x-wav are audio/wav, image/jpg is image/jpeg, ...).
+func NormalizeSessionMediaMIME(value string) string {
+	return normalizeSessionMediaMIME(value)
+}

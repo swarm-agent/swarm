@@ -11,7 +11,7 @@ func automationPolicyIdentity(arguments string) string {
 		return "automation_change"
 	}
 	switch args.Action {
-	case "list", "get", "search", "history", "context":
+	case "list", "get", "search", "history", "context", "inspect", "review", "progress", "help":
 		return "automation_read"
 	case "run":
 		return "automation_run"
@@ -20,4 +20,17 @@ func automationPolicyIdentity(arguments string) string {
 	default:
 		return "automation_change"
 	}
+}
+
+func workflowPolicyIdentity(arguments string) string {
+	var args struct {
+		Action string `json:"action"`
+	}
+	if json.Unmarshal([]byte(arguments), &args) == nil {
+		switch args.Action {
+		case "list", "get", "deliveries", "history", "help":
+			return "automation_read"
+		}
+	}
+	return "automation_change"
 }

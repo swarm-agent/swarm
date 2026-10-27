@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	catalogMaterializationVersion = 2
+	catalogMaterializationVersion = 3
 	defaultCatalogURL             = "https://models.swarmagent.dev/v1/snapshot.json"
 	defaultCatalogVersionURL      = "https://models.swarmagent.dev/v1/snapshot-version.json"
 	defaultCatalogTTL             = time.Hour
@@ -62,6 +62,12 @@ func catalogModelSource(providerID string) (string, string) {
 }
 
 func rekeyCatalogRecord(record pebblestore.ModelCatalogRecord, providerID string) pebblestore.ModelCatalogRecord {
+	if providerID == "claudecode" && record.Provider == "anthropic" && record.Media != nil {
+		media := *record.Media
+		media.ProviderSurface = provideriface.MediaProviderSurfaceClaudeCodeMCP
+		media.CredentialSurface = provideriface.MediaCredentialSurfaceClaudeCodeCLI
+		record.Media = &media
+	}
 	record.Provider = providerID
 	return record
 }
@@ -883,7 +889,7 @@ func decodeSwarmSnapshotRecords(payload []byte, nowMs, expiresAt int64, source, 
 			ETag:                      etag,
 			FetchedAt:                 nowMs,
 			ExpiresAt:                 expiresAt,
-			Pricing:                   cloneRawJSON(model.Pricing),
+			Pricing:                   supplementMediaPricing(providerID, modelID, model.Pricing),
 			Thinking:                  cloneRawJSON(model.Thinking),
 			ProviderSpecific:          cloneRawJSON(model.ProviderSpecific),
 		}
@@ -984,7 +990,7 @@ func capabilityModalities(model swarmSnapshotModel, input bool) []string {
 
 func catalogMediaProviderEnabled(providerID string) bool {
 	switch canonicalCatalogProviderID(providerID) {
-	case "openai", "codex", "google", "anthropic", "fireworks", "openrouter":
+	case "openai", "codex", "google", "anthropic", "claudecode", "fireworks", "openrouter":
 		return true
 	default:
 		return false
@@ -1016,8 +1022,12 @@ func snapshotModelMediaCapabilities(snapshot swarmSnapshot, providerID string, m
 		return nil, nil
 	}
 
-	providerRaw := snapshotProviderDefinitionMultimodal(snapshot, providerID)
-	modelRaw, err := snapshotProviderMultimodalRaw(model.ProviderSpecific, providerID)
+	factsProvider := providerID
+	if providerID == "claudecode" {
+		factsProvider = "anthropic"
+	}
+	providerRaw := snapshotProviderDefinitionMultimodal(snapshot, factsProvider)
+	modelRaw, err := snapshotProviderMultimodalRaw(model.ProviderSpecific, factsProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -1042,6 +1052,9 @@ func snapshotModelMediaCapabilities(snapshot swarmSnapshot, providerID string, m
 	case "google":
 		surface = provideriface.MediaProviderSurfaceGoogleGenerateContent
 		credentialSurface = provideriface.MediaCredentialSurfaceGoogleAPIKey
+	case "claudecode":
+		surface = provideriface.MediaProviderSurfaceClaudeCodeMCP
+		credentialSurface = provideriface.MediaCredentialSurfaceClaudeCodeCLI
 	case "anthropic":
 		surface = provideriface.MediaProviderSurfaceAnthropicMessages
 		credentialSurface = provideriface.MediaCredentialSurfaceAnthropicAPIKey
@@ -1052,7 +1065,11 @@ func snapshotModelMediaCapabilities(snapshot swarmSnapshot, providerID string, m
 		surface = provideriface.MediaProviderSurfaceOpenRouterChatCompletions
 		credentialSurface = provideriface.MediaCredentialSurfaceOpenRouterAPIKey
 	}
-	if modelPresent && strings.TrimSpace(modelFacts.APISurface) != "" && !catalogMediaSurfaceAliasMatches(providerID, modelFacts.APISurface, surface) {
+	factsSurface := surface
+	if providerID == "claudecode" {
+		factsSurface = provideriface.MediaProviderSurfaceAnthropicMessages
+	}
+	if modelPresent && strings.TrimSpace(modelFacts.APISurface) != "" && !catalogMediaSurfaceAliasMatches(factsProvider, modelFacts.APISurface, factsSurface) {
 		return nil, fmt.Errorf("provider surface %q contradicts %q", modelFacts.APISurface, surface)
 	}
 

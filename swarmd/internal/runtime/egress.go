@@ -110,6 +110,10 @@ func writeCombinedBundle(dir string, caPEM []byte) (string, error) {
 	if err := os.WriteFile(path, combined, 0o644); err != nil {
 		return "", fmt.Errorf("write egress CA bundle: %w", err)
 	}
+	// The public bundle must be readable by sandbox users despite the daemon's umask.
+	if err := os.Chmod(path, 0o644); err != nil {
+		return "", fmt.Errorf("chmod egress CA bundle: %w", err)
+	}
 	return path, nil
 }
 

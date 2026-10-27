@@ -236,6 +236,9 @@ func (s *WorkerExecutionService) resolveReviewTarget(ctx context.Context, r stor
 
 // ResolveTaskReviewTarget captures a task review without resolving or creating a reviewer worker.
 func (s *WorkerExecutionService) ResolveTaskReviewTarget(ctx context.Context, p identity.Principal, task *store.ProjectTaskRecord, job, checkout, head string) (map[string]any, error) {
+	if strings.TrimSpace(head) == "" {
+		return nil, errors.New("no head to review")
+	}
 	input := map[string]any{"review_job": job, "review_checkout": checkout}
 	if task.ReviewFixes != "" {
 		input["review_fixes"] = task.ReviewFixes
@@ -292,12 +295,21 @@ func (s *WorkerExecutionService) resolveJobReviewTarget(ctx context.Context, r s
 		}
 		task, laneOwner = jobTask, target.SessionID
 	}
-	if err := s.host.trees.ValidateSessionRepositoryLaneForRead(task.SourceWorkspace.Path, task.WorkspacePath, laneOwner, task.WorktreeBranch); err != nil {
-		return nil, err
+	folder := task.WorktreeBranch == "" && task.WorkspacePath == task.SourceWorkspace.Path && task.WorkspacePath != "" && task.WorkerRunID == ""
+	if !folder {
+		if err := s.host.trees.ValidateSessionRepositoryLaneForRead(task.SourceWorkspace.Path, task.WorkspacePath, laneOwner, task.WorktreeBranch); err != nil {
+			return nil, err
+		}
 	}
 	state, err := s.host.trees.InspectTaskWorkspace(task.WorkspacePath)
 	if err != nil {
 		return nil, err
+	}
+	if folder {
+		if task.Integration == nil || task.Integration.State != "in_folder" || task.Integration.SessionID != task.SessionID || task.Integration.SourceHead == "" {
+			return nil, errors.New("folder task has no captured delivery head")
+		}
+		state.HeadCommit = task.Integration.SourceHead
 	}
 	if task.BaseCommit == "" || state.HeadCommit == task.BaseCommit {
 		return nil, errors.New("review job must have commits")
@@ -305,7 +317,10 @@ func (s *WorkerExecutionService) resolveJobReviewTarget(ctx context.Context, r s
 	// A job rebased onto (or merged with) a newer target after it was
 	// created is reviewed from that newer base, so the range holds only its
 	// own commits (worktree.EffectiveTaskBase); otherwise its recorded fork.
-	jobBase := worktree.EffectiveTaskBase(ctx, task.WorkspacePath, task.SourceWorkspace.Path, task.BaseBranch, task.BaseCommit, state.HeadCommit)
+	jobBase := task.BaseCommit
+	if !folder {
+		jobBase = worktree.EffectiveTaskBase(ctx, task.WorkspacePath, task.SourceWorkspace.Path, task.BaseBranch, task.BaseCommit, state.HeadCommit)
+	}
 	if state.HeadCommit == jobBase {
 		return nil, errors.New("review job must have commits")
 	}
@@ -361,7 +376,8 @@ func (s *WorkerExecutionService) resolveJobReviewTarget(ctx context.Context, r s
 		// folder.
 		captured["fixes"] = ReviewFixesSecurity
 	}
-	if reviewSharesCheckout(r.Input) {
+	// Folder tasks always use a detached review checkout, never the person's folder.
+	if reviewSharesCheckout(r.Input) && !folder {
 		// The reviewer reads the job's own worktree as it is: only when that
 		// is exactly the reviewed head, with nothing uncommitted.
 		if !state.TrackedClean {

@@ -56,6 +56,10 @@ func main() {
 		err = cmdMCP(os.Args[2:])
 	case "secret":
 		err = cmdSecret(os.Args[2:])
+	case "client":
+		err = cmdClient(os.Args[2:])
+	case "fleet":
+		err = cmdFleet(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -85,6 +89,8 @@ func usage() {
 	fmt.Println("  swarmctl workspace add PATH [PATH...] [--for-user NAME] | remove PATH | list  # root")
 	fmt.Println("  swarmctl workspace publish PATH COMMAND [--sync] | publish PATH --off  # root")
 	fmt.Println("  swarmctl idle-off MINUTES|off|status  # root")
+	fmt.Println("  swarmctl client connect NAME [--for-user USER] [--print] | list | revoke SESSION_ID|NAME  # root: owner sessions for the person's client app")
+	fmt.Println("  swarmctl fleet invite|link|list|check|unlink|drop|cancel|call  # link Swarms one way (swarmctl fleet for help)")
 	fmt.Println("  swarmctl context sources [--cwd PATH] [--addr URL]")
 	fmt.Println("  swarmctl session list [--limit N] [--addr URL]")
 	fmt.Println("  swarmctl session create [--title TEXT] [--workspace-path PATH] [--workspace-name NAME] [--addr URL]")

@@ -45,6 +45,10 @@ func LoadOrCreateCA(dir string) (*CA, error) {
 	certPEM, certErr := os.ReadFile(certPath)
 	keyPEM, keyErr := os.ReadFile(keyPath)
 	if certErr == nil && keyErr == nil {
+		// Repair certificates created under a restrictive service umask.
+		if err := os.Chmod(certPath, 0o644); err != nil {
+			return nil, fmt.Errorf("chmod egress CA certificate: %w", err)
+		}
 		return parseCA(certPEM, keyPEM)
 	}
 	if !errors.Is(certErr, os.ErrNotExist) && certErr != nil {
@@ -85,6 +89,10 @@ func LoadOrCreateCA(dir string) (*CA, error) {
 	// Public certificate: mounted read-only into sandboxes with grants.
 	if err := os.WriteFile(certPath, certPEM, 0o644); err != nil {
 		return nil, err
+	}
+	// WriteFile's creation mode is filtered by the daemon's umask.
+	if err := os.Chmod(certPath, 0o644); err != nil {
+		return nil, fmt.Errorf("chmod egress CA certificate: %w", err)
 	}
 	return parseCA(certPEM, keyPEM)
 }

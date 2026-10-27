@@ -647,6 +647,9 @@ func buildPolicyEvalContext(toolName, toolArguments string) policyEvalContext {
 	} else if toolName == "plan_manage" && IsPlanAcceptanceLifecycleRequirement(PlanManageLifecycleRequirement(toolArguments)) {
 		toolName = "plan_acceptance"
 	}
+	if toolName == "manage_workflows" {
+		toolName = workflowPolicyIdentity(toolArguments)
+	}
 	if toolName == "manage_automation" || toolName == "manage_workers" {
 		toolName = automationPolicyIdentity(toolArguments)
 	}
@@ -1650,7 +1653,7 @@ func manageProjectsPolicyIdentity(toolArguments string) string {
 	}
 	action, _ := args["action"].(string)
 	switch strings.ToLower(strings.TrimSpace(action)) {
-	case "approve_task", "accept_task", "deploy_task":
+	case "approve_task", "accept_task", "deploy_task", "integrate_task":
 		return policyToolProjectTaskLaunch
 	case "propose_task", "create_task":
 		if isManageProjectsPendingTaskProposal(toolArguments) {
@@ -1765,6 +1768,18 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 	case "skill_change":
 		if bypass {
 			return PolicyDecisionAllow
+		}
+		return PolicyDecisionAsk
+	case "manage_custom_agents":
+		var args map[string]any
+		if json.Unmarshal([]byte(toolArguments), &args) != nil {
+			return PolicyDecisionDeny
+		}
+		if args["action"] == "list" || args["action"] == "get" {
+			return PolicyDecisionAllow
+		}
+		if mode == "read" {
+			return PolicyDecisionDeny
 		}
 		return PolicyDecisionAsk
 	case "manage_agent":

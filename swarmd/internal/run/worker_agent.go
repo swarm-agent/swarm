@@ -75,6 +75,21 @@ func (s *Service) ApplyWorkerAgent(account string, w store.WorkerRecord, profile
 	if profile.Name == "system-reviewer-fixer" {
 		return profile, nil
 	}
+	// Preserve the code-owned role identity, but persist a narrowing scope so
+	// role defaults cannot grant tools outside the accepted custom contract.
+	resolved, _, err := s.resolveValidatedStoredV3AgentToolStates(account, custom)
+	if err != nil {
+		return profile, err
+	}
+	if profile.ToolScope == nil {
+		profile.ToolScope = &store.AgentToolScope{}
+	}
+	for name, state := range resolved.Tools {
+		if !state.Enabled {
+			profile.ToolScope.DenyTools = append(profile.ToolScope.DenyTools, name)
+		}
+	}
+	sort.Strings(profile.ToolScope.DenyTools)
 	profile.ToolContract = store.CloneAgentToolContract(custom.ToolContract)
 	if strings.TrimSpace(custom.Prompt) != "" {
 		profile.Prompt = strings.TrimSpace(profile.Prompt + "\n\n" + custom.Prompt)

@@ -6,7 +6,7 @@ import (
 )
 
 // Purpose: manageMediaDefinition is the public action/argument contract. This
-// unit test prevents list/retry from becoming unreachable through strict schemas;
+// unit test prevents list/retry and speech fields from becoming unreachable through strict schemas;
 // authorization and mutation postconditions belong to the API integration tests.
 func TestManageMediaDefinition(t *testing.T) {
 	def := manageMediaDefinition()
@@ -33,7 +33,7 @@ func TestManageMediaDefinition(t *testing.T) {
 			t.Fatalf("missing action %s", wanted)
 		}
 	}
-	for _, key := range []string{"status", "limit", "job_id", "model", "brief"} {
+	for _, key := range []string{"status", "limit", "job_id", "model", "brief", "operation", "text", "voice", "style", "language", "format"} {
 		if _, ok := schema.Properties[key]; !ok {
 			t.Fatalf("missing property %s", key)
 		}

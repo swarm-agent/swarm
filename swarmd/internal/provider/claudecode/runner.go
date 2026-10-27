@@ -156,6 +156,7 @@ func (r *Runner) planTurn(ctx context.Context, req provideriface.Request, workDi
 		if err != nil {
 			return turnPlan{}, err
 		}
+		bridge.mediaContract = req.MediaContract
 		plan.bridge = bridge
 		config, err := bridge.Config()
 		if err != nil {

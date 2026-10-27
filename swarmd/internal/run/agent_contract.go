@@ -233,7 +233,7 @@ func (s *Service) resolveValidatedStoredV3AgentToolStates(accountScopeID string,
 }
 
 func (s *Service) storedV3ToolNamesForAccount(accountScopeID string) (map[string]struct{}, error) {
-	known := map[string]struct{}{"ask_user": {}, "exit_plan_mode": {}, "plan_manage": {}, "task": {}}
+	known := map[string]struct{}{"ask_user": {}, "exit_plan_mode": {}, "plan_manage": {}, "task": {}, "task_progress": {}}
 	if s != nil && s.tools != nil {
 		for _, name := range storedV3BuiltinToolNames {
 			known[name] = struct{}{}
@@ -314,12 +314,15 @@ func resolveAgentToolStates(profile pebblestore.AgentProfile, knownTools map[str
 	applyExplicitAgentTools(resolved.Tools, contract.Tools, "tool_contract")
 	// Artifact generation remains implemented but is off for every agent.
 	resolved.Tools["manage_artifact"] = ResolvedAgentTool{Enabled: false, Source: "runtime.media_tasks"}
-	if _, implemented := knownTools[tool.LeaseEnvironmentToolName]; implemented {
+	if _, implemented := knownTools[tool.LeaseEnvironmentToolName]; implemented && agentruntime.IsReservedSystemAgentName(profile.Name) {
 		// Leasing the folder's environment is part of bash: every agent with
 		// bash may lease, unless its contract turns leasing off explicitly.
 		if _, explicit := contract.Tools[tool.LeaseEnvironmentToolName]; !explicit && resolved.Tools["bash"].Enabled {
 			resolved.Tools[tool.LeaseEnvironmentToolName] = ResolvedAgentTool{Enabled: true, Source: "runtime.bash_lease"}
 		}
+	}
+	if !agentruntime.IsSwarmOrchestratorAgentName(profile.Name) {
+		resolved.Tools["manage_custom_agents"] = ResolvedAgentTool{Enabled: false, Source: "runtime.orchestrator_only"}
 	}
 	if !accountMemoryAgentAllowed(profile) {
 		// Stale snapshots, permissive presets and custom agents cannot expose
@@ -337,6 +340,9 @@ func resolveAgentToolStates(profile pebblestore.AgentProfile, knownTools map[str
 		// stored profile from before cannot bring the old artifact tools back.
 		for _, name := range []string{"manage_artifact", "manage_video"} {
 			resolved.Tools[name] = ResolvedAgentTool{Enabled: false, Source: "runtime.orchestrator_media_tasks"}
+		}
+		if _, implemented := knownTools[tool.ManageMediaToolName]; implemented {
+			resolved.Tools[tool.ManageMediaToolName] = ResolvedAgentTool{Enabled: true, Source: "runtime.orchestrator_media_tasks"}
 		}
 		// Its tools for the person's machine are code-owned too: a stored profile
 		// from before them cannot hide them. Each session's access gates every
@@ -380,6 +386,24 @@ func resolveAgentToolStates(profile pebblestore.AgentProfile, knownTools map[str
 		}
 	}
 
+	// Persisted worker scopes only narrow authority, after role defaults.
+	if profile.ToolScope != nil {
+		for _, name := range profile.ToolScope.DenyTools {
+			resolved.Tools[name] = ResolvedAgentTool{Enabled: false, Source: "runtime.worker_scope"}
+		}
+	}
+	// Execution agents must always be able to report a structured blocker,
+	// including workflow steps and workers with a narrowed custom tool scope.
+	// This grants lifecycle reporting only, not orchestration or work tools.
+	switch profile.Name {
+	case agentruntime.SwarmAgentID, agentruntime.SwarmOrchestratorAgentID,
+		agentruntime.CoderAgentID, agentruntime.WorkerCoderAgentID,
+		agentruntime.FinderAgentID, agentruntime.DesignerAgentID,
+		agentruntime.ReviewerAgentID, "system-reviewer-fixer":
+		if _, implemented := knownTools["task_progress"]; implemented {
+			resolved.Tools["task_progress"] = ResolvedAgentTool{Enabled: true, Source: "runtime.task_lifecycle"}
+		}
+	}
 	return resolved, nil
 }
 
@@ -420,6 +444,9 @@ func (s *Service) compileAgentToolPolicy(accountScopeID string, profile pebblest
 			})
 			continue
 		}
+		if name == "manage_custom_agents" {
+			continue
+		} // Reads and mutations use action-aware permission defaults.
 		decision := permission.PolicyDecisionAllow
 		if workspaceOnboarding {
 			switch name {

@@ -41,6 +41,8 @@ func (s *Server) registerAuthVaultRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/auth/credentials/active", s.ownerOnlyScope(s.handleAuthCredentialActive))
 	mux.HandleFunc("/v1/auth/credentials/delete", s.ownerOnlyScope(s.handleAuthCredentialDelete))
 	mux.HandleFunc("/v1/auth/attach/rotate", s.ownerOnlyScope(s.handleAttachRotate))
+	mux.HandleFunc(clientSessionsPath, s.ownerOnlyScope(s.handleClientSessions))
+	mux.HandleFunc(clientSessionsPath+"/", s.ownerOnlyScope(s.handleClientSessions))
 	mux.HandleFunc("/v1/vault", s.ownerOnlyScope(s.handleVaultStatus))
 	mux.HandleFunc("/v1/vault/enable", s.ownerOnlyScope(s.handleVaultEnable))
 	mux.HandleFunc("/v1/vault/unlock", s.ownerOnlyScope(s.handleVaultUnlock))
@@ -91,6 +93,8 @@ func (s *Server) registerSwarmRoutes(mux *http.ServeMux) {
 }
 
 func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/v3/agents", s.handleCustomAgents)
+	mux.HandleFunc("/v3/agents/", s.handleCustomAgents)
 	mux.HandleFunc("/v2/custom-tools", s.agentConfigScope(s.handleCustomToolsV2))
 	mux.HandleFunc("/v2/custom-tools/", s.agentConfigScope(s.handleCustomToolByNameV2))
 	mux.HandleFunc("/v2/agents", s.agentConfigScope(s.handleAgentsV2))

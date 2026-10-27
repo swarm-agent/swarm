@@ -39,6 +39,12 @@ func inspectTaskGitStateContext(ctx context.Context, task pebblestore.ProjectTas
 		a.State, a.ReasonCode, a.Reason, a.Freshness = "report_only", "reviewer_report", "Reviewer jobs return reports; nothing can be delivered", "observed"
 		return res
 	}
+	if folderTask(&task) && task.Integration != nil && task.Integration.State == "in_folder" && task.Integration.SessionID == task.SessionID {
+		a.State, a.SourceOID, a.Freshness = "in_folder", task.Integration.SourceHead, "recorded"
+		a.ReasonCode, a.Reason = "folder_delivery", "Task commits are already in the folder"
+		res.baseBranch, res.baseCommit, res.gitStatus = task.BaseBranch, task.BaseCommit, "clean"
+		return res
+	}
 	if receipt := task.Integration; receipt != nil && taskDeliveredState(receipt.State, receipt.PullRequestURL) != "" {
 		// The receipt describes delivery already performed. Do not inspect a
 		// possibly moved or removed checkout as if delivery were still pending.

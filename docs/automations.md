@@ -17,6 +17,72 @@ named for workflows (`swarm_set_workflow`, `/v3/workflows`); the internal
 names are unchanged: the `automation.*` signals, the `automations:read` and
 `automations:write` scopes, `then` and `automation: true` on the job tools.
 
+## Triggers
+
+The HTTP workflow save API accepts an optional `on` alongside the existing
+scope and steps:
+
+```json
+{"event":{"source":"pull","url":"https://example.com/posts","every_seconds":60,"items":"posts","id":"id"},"start":{"worker":"worker-id","brief":"Revise {{event.text}} using {{event.notes}}"}}
+```
+
+`start.worker` must be active and deployed, not a reviewer or a media/design
+worker. The folder must belong to exactly one project. Jobs use that worker's
+model settings and the saving owner's authority. Only jobs started by this
+workflow trigger match its steps. Missing template fields become empty strings;
+objects and arrays become compact JSON.
+
+Alternatively, use exactly one schedule source instead of `event`:
+
+```json
+{"schedule":{"cron":"0 9 * * *","timezone":"America/New_York"},"start":{"worker":"worker-id","brief":"Plan {{inputs.brand}} for {{schedule.date}} at {{schedule.time}}"}}
+```
+
+Cron has five fields, including ranges, lists and names; timezone is IANA and
+defaults to UTC. `schedule.date` is local `YYYY-MM-DD` and `schedule.time` is
+local `HH:mm`. Each due minute starts the existing worker, without copying it.
+A slot while its previous job is running is skipped, as are missed slots after
+restart (no replay). Recent `events` record started, skipped or failed slots;
+reads include `next_run_at` as Unix milliseconds for enabled schedules. After
+restart a skipped receipt summarizes the oldest pending slot, not every missed
+minute. Nonexistent local minutes do not run; repeated DST minutes may each run.
+If the daemon exits during dispatch before recording its job ID, it retries the
+reserved dispatch with its original idempotency key and brief to recover the job
+ID before allowing later slots, even if the source is changed to an event trigger.
+Recovery errors retain the reservation for retry and mark its receipt failed with
+an error and a failure signal. If the original worker or folder is unavailable,
+restore that prerequisite; editing the trigger does not release an uncertain
+start. Queued event items are retired when the trigger definition changes.
+
+With `on`, `steps` may be empty: a trigger-only workflow just starts jobs.
+Trigger-started jobs match the starting workflow's own steps, or ordinary
+job-end workflows only when that starting workflow has no steps; `for_each`
+jobs continue to match ordinary job-end workflows.
+
+Pull uses HTTPS GET, a 10-second timeout, a 1 MiB response limit, and an interval
+of 30–86400 seconds with error backoff. The first successful feed after a trigger
+change establishes a baseline without starting jobs. An optional `secret` names
+a granted Swarm secret whose allowed hosts include the URL host; it is sent as a
+Bearer credential. Redirects are refused rather than forwarding credentials.
+
+For webhook ingress use `event: {"source":"webhook","id":"id"}`. Saving returns
+`trigger_key` once (hex encoding of 32 random bytes). Decode that hex before
+computing HMAC-SHA256 over the exact request body and send
+`X-Swarm-Trigger-Signature: sha256=<hex digest>` to
+`POST /v3/workflows/{id}/events` on the existing daemon listener. No public
+listener is added. `rotate_key: true` on save replaces the key. Bodies are one
+item or `{"items":[...]}`, limited to 64 KiB and one accepted request per second.
+Keys are sealed internally, never included in workflow reads or folder grants.
+
+Both sources retain the last 2000 IDs and queue events durably in feed order,
+starting at most one job at a time per workflow. Failed starts are recorded and
+not retried. Workflow reads include recent `events`, without their item payloads.
+The signals are `workflow.trigger.fired` and `workflow.trigger.failed`.
+Both `swarm_set_workflow` and `manage_workflows` include `on` in their tool
+schemas. Proposal acceptance remains required for Orchestrator-proposed workflows;
+a new webhook key is returned only to the person's client on acceptance, not to
+the Orchestrator. Explicit key rotation currently requires the HTTP save or MCP path.
+
 ## What an automation is
 
 An automation belongs to an account and has:
@@ -847,3 +913,77 @@ The worker retains its system role, model selection, prompts and checkout behavi
 Reviewer saves and run admission reject `write`, `edit`, `git_add`, `git_commit`, `task`, and custom tools with effect `write`; `bash` remains allowed. The workflow fixes option keeps its code-owned reviewer-fixer tools.
 
 `swarm_define_agent` accepts optional `tools_on` and `tools_off` arrays on top of the required `tools` preset (`read_only`, `read_write`, or `build`). For example, `tools: "build", tools_off: ["bash"], tools_on: ["websearch"]` persists explicit switches in the existing contract. Off wins for names in both arrays. Omitting both arrays preserves existing behavior. Permission policy still applies.
+
+## Inputs
+
+Declare reusable string inputs and bind each saved instance with `with`. Names
+match `^[a-z][a-z0-9_]{0,31}$` (up to 20); values have at most 1000 characters.
+Inputs without a `default` require a value. Undeclared bindings and unknown
+`{{inputs.name}}` references are refused. Substitution is literal, not shell
+escaping; command args remain separate argv entries.
+
+For example, commit this pipeline as `.swarm/workflows/content.json`:
+
+```json
+{
+  "swarm_workflow": 1,
+  "name": "content",
+  "inputs": {"brand": {"description": "Brand to write for"}},
+  "scope": {},
+  "steps": [
+    {"type": "agent", "worker": "coder", "brief": "Plan and make content for {{inputs.brand}}"},
+    {"type": "agent", "worker": "reviewer", "brief": "Review content for {{inputs.brand}}"}
+  ]
+}
+```
+
+Call `swarm_import_workflow` twice with the same `path` and `project`, first
+`name: "swarm-content", with: {"brand": "swarm"}`, then
+`name: "nameflow-content", with: {"brand": "nameflow"}`. Reimporting the same
+name updates that instance. `name` and `with` are accepted only for inline or
+single-file imports; directory imports reject either field before saving files.
+Export retains declarations and placeholders but
+never instance `with` values; defaults are part of the portable definition.
+
+Placeholders work in step briefs, args, messages, deliver paths and workers,
+in `for_each.file`, `scope.worker`, `scope.job`, `scope.schedule`,
+`on.schedule.cron`, `on.schedule.timezone`, and in `on.event.url`, `items`,
+`id`, `on.start.worker` and `brief`. `scope.worker` may be a worker name;
+its resolved ID is retained for matching while the saved template is preserved.
+`{{event.*}}` in trigger start briefs still expands from the event. Worker names
+resolve to exactly one active worker in the account (or use an existing worker
+ID); built-in step agents retain their meaning. Trigger starts still require a
+deployed worker. Reads retain templates and bindings separately. Use the same
+`inputs` and `with` fields with `swarm_set_workflow`, `/v3/workflows`, or native
+`manage_workflows` proposals; approvals are unchanged. Do not put secrets in
+inputs, defaults or bindings.
+
+See [Worker daily spending limits](box-limits.md#worker-daily-spending-limits) for per-worker budgets.
+
+## One job per item
+
+A planner can commit `plan.json` containing `{"posts":[{"title":"First post"}]}`.
+An agent step then queues one independent job per planned post:
+
+```json
+{"type":"agent","worker":"Post maker","brief":"Write {{item.title}}",
+ "for_each":{"file":"plan.json","items":"posts","max_parallel":2}}
+```
+
+The worker must already be active (id or unique active name), and cannot be a
+reviewer or built-in/media/design agent. The file is read at the delivery's
+recorded head, never from uncommitted files: at most 256 KiB and 20 JSON objects.
+Omit `items` when the file itself is the array. `file` supports `{{inputs.*}}`;
+briefs support inputs and `{{item.field}}` (nested dot paths, compact JSON for
+objects/arrays, empty text for missing fields).
+
+Set `after_field: "reuses"` to let a 9:16 cut with `{"id":"cut","reuses":"wide"}` wait for the 16:9 video with `{"id":"wide"}` in the same file. `id_field` defaults to `id`. The cut shows `waiting for wide` until that job succeeds and all its job-end workflow deliveries finish successfully, including their deliver/merge steps, so it can use the committed files in the folder branch. A failed/blocked prerequisite or delivery fails the cut without starting it, with `waits for wide, which did not finish: <reason>`. Missing/empty references impose no dependency; unknown references, duplicate IDs, and cycles are refused before queuing. Waiting items consume no parallel slots.
+
+`max_parallel` is 1–5, default 1. The step succeeds after durable queuing; later
+steps do not wait. Delivery reads list each item's state, job id and error.
+Starts are deduplicated across restart. Each maker job runs its own worker-scoped
+job-end workflow, so put review, send-back, merge and draft steps there rather
+than after the planner's fan-out. Fan-out is refused when the triggering job is
+an item of any workflow, preventing recursive job creation across workflows as
+well as within one workflow. Ordinary non-`for_each` job-end steps still run on
+item jobs normally.

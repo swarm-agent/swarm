@@ -106,6 +106,7 @@ type AgentRequest struct {
 type AgentOutcome struct {
 	JobID    string
 	Status   string
+	Error    string // The agent's declared blocker or execution failure reason.
 	Result   *Result
 	Verdict  string
 	Findings string
@@ -393,7 +394,7 @@ func (r *Runner) consume(ctx context.Context, account string, sig pebblestore.Si
 			candidates = append(candidates, a)
 		}
 	}
-	if len(candidates) == 0 || r.results == nil {
+	if r.results == nil || (len(candidates) == 0 && !pebblestore.IsWorkflowItemSource(sig.Attrs["source"])) {
 		return nil
 	}
 	r.mu.Lock()
@@ -425,17 +426,57 @@ func (r *Runner) consume(ctx context.Context, account string, sig pebblestore.Si
 	}
 	r.reopenMu.Lock()
 	defer r.reopenMu.Unlock()
+	triggerOwnsSteps := false
+	if result.TriggerID != "" {
+		origin, err := r.store.Get(account, result.TriggerID)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		triggerOwnsSteps = len(origin.Steps) > 0
+	}
 	for _, a := range candidates {
-		if !a.Matches(result) {
+		if a.On == nil && triggerOwnsSteps {
 			continue
+		}
+		if !a.Matches(result) {
+			// A blocked response to this workflow's own reopen must close
+			// its round even when the workflow normally matches successes.
+			match := *result
+			match.Status = StatusSucceeded
+			if result.Followup == "" || !strings.HasPrefix(result.Error, "blocked: ") || !a.Matches(&match) {
+				continue
+			}
+			previous, err := r.store.JobDeliveries(account, result.JobID)
+			if err != nil {
+				return err
+			}
+			reopened := false
+			for _, p := range previous {
+				for _, step := range p.Steps {
+					if p.AutomationID == a.ID && step.Type == StepReopen && step.Outcome["followup"] == result.Followup {
+						reopened = true
+					}
+				}
+			}
+			if !reopened {
+				continue
+			}
 		}
 		d, created, err := r.store.CreateDelivery(a, *result)
 		if err != nil {
 			return fmt.Errorf("record delivery: %w", err)
 		}
+		if created && d.State == StateBlocked {
+			// Terminal-at-creation deliveries are not dispatched; still publish
+			// their blocker and persist the normal completion timestamp.
+			r.finish(&d, StateBlocked)
+		}
 		if !created && d.ID != DeliveryID(result.JobID, result.Followup, a.ID, a.Revision) {
 			r.skippedDuplicateHead(d, *result)
 		}
+	}
+	if pebblestore.IsWorkflowItemSource(result.RequestSource) {
+		return r.store.db.PutJSON(itemEndKey(account, result.JobID), result)
 	}
 	return nil
 }
@@ -744,7 +785,11 @@ func (r *Runner) runStep(ctx context.Context, d *Delivery, i int, step Step) boo
 	case StepRun:
 		failure = r.runScript(stepCtx, d, record, step)
 	case StepAgent:
-		failure = r.runAgent(stepCtx, d, record, step)
+		if step.ForEach != nil {
+			failure = r.queueItems(stepCtx, d, record, step)
+		} else {
+			failure = r.runAgent(stepCtx, d, record, step)
+		}
 	case StepReopen:
 		failure = r.runReopen(stepCtx, d, record, step)
 	case StepDeliver:
@@ -912,6 +957,18 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 		return stepFailure{reason: "agent steps are not available on this daemon", next: "rerun", refused: true}
 	}
 	jobID, _ := record.Outcome["job_id"].(string)
+	if jobID == "" && strings.TrimSpace(d.Head) == "" {
+		reviewer := strings.EqualFold(strings.TrimSpace(step.Worker), "reviewer")
+		if roles, ok := r.agent.(interface {
+			Role(context.Context, string, string) (string, error)
+		}); ok && !reviewer {
+			role, err := roles.Role(ctx, d.Account, step.Worker)
+			reviewer = err == nil && role == "reviewer"
+		}
+		if reviewer {
+			return stepFailure{reason: "no head to review", next: "rerun", refused: true}
+		}
+	}
 	if jobID == "" && step.Fixes != "" {
 		// A reviewer allowed to fix branches at the reviewed job's own head;
 		// once an earlier agent step moved the delivery head its fixes could
@@ -987,7 +1044,11 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 		return failure
 	}
 	if NormalizeStatus(outcome.Status) != StatusSucceeded {
-		return stepFailure{reason: "the job " + jobID + " ended " + outcome.Status, next: "rerun"}
+		reason := outcome.Error
+		if strings.TrimSpace(reason) == "" {
+			reason = "the job " + jobID + " ended " + outcome.Status
+		}
+		return stepFailure{reason: reason, next: "rerun"}
 	}
 	if step.Produce {
 		return r.recordProduced(ctx, d, step, outcome, out)

@@ -1,6 +1,7 @@
 package videotranscription
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -42,14 +43,15 @@ type TranscribeRequest struct {
 }
 
 type GeneratedTranscript struct {
-	Text         string // derived deterministically for immediate callers; durable text is rebuilt from Segments
-	Segments     []pebblestore.NormalizedTranscriptSegment
-	Words        []pebblestore.NormalizedTranscriptWord
-	Language     string
-	DurationMs   int64
-	Summary      string
-	ContentEmpty bool
-	Partial      bool
+	Text          string // derived deterministically for immediate callers; durable text is rebuilt from Segments
+	Segments      []pebblestore.NormalizedTranscriptSegment
+	Words         []pebblestore.NormalizedTranscriptWord
+	Language      string
+	DurationMs    int64
+	Summary       string
+	ContentEmpty  bool
+	Partial       bool
+	ChunkFailures []string // Explicit gaps from otherwise valid chunked audio.
 }
 
 type ModelCatalog interface {
@@ -160,7 +162,7 @@ func (s *Service) StartRegisteredAudioSources(ctx context.Context, principal ide
 	if err != nil {
 		return StartResult{}, err
 	}
-	model, snapshot, settingsHash, err := s.resolveModel(principal.AccountScopeID)
+	model, snapshot, settingsHash, err := s.resolveModel(principal.AccountScopeID, "audio")
 	if err != nil {
 		return StartResult{}, err
 	}
@@ -243,7 +245,7 @@ func (s *Service) StartWithFocus(ctx context.Context, principal identity.Princip
 	if err != nil {
 		return StartResult{}, err
 	}
-	model, snapshot, settingsHash, err := s.resolveModel(principal.AccountScopeID)
+	model, snapshot, settingsHash, err := s.resolveModel(principal.AccountScopeID, "video")
 	if err != nil {
 		return StartResult{}, err
 	}
@@ -565,7 +567,7 @@ func (s *Service) process(ctx context.Context, principal identity.Principal, ini
 	if err != nil {
 		return
 	}
-	if generated.Partial {
+	if generated.Partial && len(generated.ChunkFailures) == 0 {
 		partial, _, transitionErr := s.sessions.TransitionTranscriptionJob(pebblestore.TransitionTranscriptionJobInput{
 			AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: job.SessionID,
 			JobRef: job.Ref, ExpectedStatus: job.Status, Status: pebblestore.TranscriptionJobPartial,
@@ -593,7 +595,7 @@ func (s *Service) transcribeRegisteredAudio(ctx context.Context, principal ident
 		return GeneratedTranscript{}, err
 	}
 	defer prepared.Close()
-	generated, err := s.deterministic.AnalyzeAudio(ctx, AudioAnalysisRequest{
+	generated, err := analyzeAudioChunks(ctx, s.deterministic, AudioAnalysisRequest{
 		AccountScopeID: principal.AccountScopeID, Model: job.Model, MIMEType: "audio/flac", PrivatePath: prepared.FLACPath,
 		SizeBytes: prepared.FLACBytes, DurationMs: prepared.DurationMs, FocusNotes: job.FocusNotes,
 	})
@@ -668,32 +670,33 @@ func (s *Service) fail(principal identity.Principal, job pebblestore.Transcripti
 	})
 }
 
-func (s *Service) resolveModel(accountScopeID string) (string, string, string, error) {
+func (s *Service) resolveModel(accountScopeID, input string) (string, string, string, error) {
 	settings, err := s.settings.GetForAccount(accountScopeID)
 	if err != nil {
 		return "", "", "", err
 	}
-	model := strings.TrimSpace(settings.Media.TranscriptionModel)
+	model, err := NormalizeTranscriptionModel(settings.Media.TranscriptionModel)
+	if err != nil {
+		return "", "", "", err
+	}
 	if model == "" {
-		return "", "", "", errors.New("a Google video transcription model must be selected in Media settings")
+		return "", "", "", fmt.Errorf("a Google %s-input transcription model must be selected in Media settings", input)
 	}
 	records, err := s.catalog.ListCatalog("google", 2000)
 	if err != nil {
 		return "", "", "", err
 	}
-	for _, record := range records {
-		if record.Model != model || !containsFold(record.CatalogModalities.Inputs, "video") || !containsFold(record.CatalogModalities.Outputs, "text") {
-			continue
-		}
-		snapshot := strings.TrimSpace(record.SourceSnapshotID + ":" + record.SourceSnapshotVersion)
-		if snapshot == ":" {
-			return "", "", "", errors.New("configured transcription model lacks snapshot identity")
-		}
-		settingsPayload, _ := json.Marshal(map[string]string{"prompt": TranscriptPromptVersion, "schema": pebblestore.NormalizedTranscriptSchemaVersion, "model": model})
-		hash := sha256.Sum256(settingsPayload)
-		return model, snapshot, hex.EncodeToString(hash[:]), nil
+	record, err := ResolveTranscriptionModel(model, records, input)
+	if err != nil {
+		return "", "", "", err
 	}
-	return "", "", "", errors.New("configured transcription model is absent from the current Google video catalog")
+	snapshot := strings.TrimSpace(record.SourceSnapshotID + ":" + record.SourceSnapshotVersion)
+	if snapshot == ":" {
+		return "", "", "", fmt.Errorf("transcription model %q lacks snapshot identity", model)
+	}
+	settingsPayload, _ := json.Marshal(map[string]string{"prompt": TranscriptPromptVersion, "schema": pebblestore.NormalizedTranscriptSchemaVersion, "model": model})
+	hash := sha256.Sum256(settingsPayload)
+	return model, snapshot, hex.EncodeToString(hash[:]), nil
 }
 
 func StructuredTranscriptJSONSchema() map[string]any {
@@ -847,4 +850,40 @@ func boundedError(err error) string {
 		value = value[:512]
 	}
 	return value
+}
+
+// TranscribeAudio transcribes one audio file an agent handed over (a chat
+// attachment, a workspace file, an earlier media result) with the account's
+// transcription model, the way registered audio is: ffmpeg prepares it and the
+// model returns a timed transcript. It waits for the result; nothing is kept.
+func (s *Service) TranscribeAudio(ctx context.Context, principal identity.Principal, audio []byte, focusNotes string) (GeneratedTranscript, string, error) {
+	if s == nil || s.catalog == nil || s.settings == nil || s.deterministic == nil {
+		return GeneratedTranscript{}, "", errors.New("audio transcription is not configured on this Swarm")
+	}
+	focusNotes, err := NormalizeFocusNotes(focusNotes)
+	if err != nil {
+		return GeneratedTranscript{}, "", err
+	}
+	model, _, _, err := s.resolveModel(principal.AccountScopeID, "audio")
+	if err != nil {
+		return GeneratedTranscript{}, "", err
+	}
+	prepared, err := PrepareRegisteredAudio(ctx, bytes.NewReader(audio), int64(len(audio)))
+	if err != nil {
+		return GeneratedTranscript{}, "", err
+	}
+	defer prepared.Close()
+	generated, err := analyzeAudioChunks(ctx, s.deterministic, AudioAnalysisRequest{
+		AccountScopeID: principal.AccountScopeID, Model: model, MIMEType: "audio/flac", PrivatePath: prepared.FLACPath,
+		SizeBytes: prepared.FLACBytes, DurationMs: prepared.DurationMs, FocusNotes: focusNotes,
+	})
+	if err != nil {
+		return GeneratedTranscript{}, "", err
+	}
+	generated.DurationMs = prepared.DurationMs
+	generated, err = NormalizeGeneratedTranscript(generated)
+	if err == nil && generated.Partial && len(generated.ChunkFailures) == 0 {
+		err = errors.New("the transcription model's answer did not form a timed transcript; nothing was returned")
+	}
+	return generated, model, err
 }

@@ -461,7 +461,7 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 	store.SetLimitSignalStore(signalStore)
 	signalEmitter := signals.NewEmitter(signalStore)
 	permissionSvc.SetSignalEmitter(signalEmitter)
-	store.SetWorkerRunObserver(workerRunSignal(signalEmitter))
+	store.SetWorkerRunObserver(workerRunSignal(signalEmitter, pebblestore.NewSessionStore(store)))
 	store.SetJobReviewObserver(jobReviewSignal(signalEmitter))
 	// A design job the restart marks failed ends like any other: its
 	// design.job.failed signal feeds the activity feed, outbox and automations.
@@ -486,7 +486,7 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 		log.Printf("swarmd environment leases unavailable (%s)", leaseOff)
 	}
 	sandbox.SetLeases(leaseMgr)
-	emitWorkerRun := workerRunSignal(signalEmitter)
+	emitWorkerRun := workerRunSignal(signalEmitter, pebblestore.NewSessionStore(store))
 	store.SetWorkerRunObserver(func(w pebblestore.WorkerRecord, r pebblestore.WorkerRunRecord) {
 		if snap, ok, err := pebblestore.NewSessionStore(store).GetSession(r.SessionID); err == nil && ok {
 			if err := sandboxMgr.EndJob(context.Background(), snap.WorktreeRootPath, func() (bool, error) {
@@ -807,6 +807,8 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 		configureClient(apiServer, store)
 	}
 	toolRuntime.SetProjectTaskLifecycleService(apiServer)
+	toolRuntime.SetCustomAgentLifecycleService(apiServer)
+	runSvc.SetWorkflowLifecycleService(apiServer)
 	// Automation mutations always commit through canonical V3 authority before
 	// waking realtime. Wake failures cannot turn a committed execution into retry.
 	apiServer.ConfigureAutomationRealtime(store)
@@ -832,6 +834,7 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 	apiServer.SetSandboxEnvironmentStore(sandboxEnvironments)
 	secretSlots := pebblestore.NewSecretSlotStore(store)
 	apiServer.SetSecretServices(secretSlots, authStore)
+	apiServer.SetFleet(pebblestore.NewFleetStore(store), authStore)
 	apiServer.SetSignalStore(signalStore)
 	apiServer.SetSecretsGatewayEnabled(cfg.SecretsGateway == "on")
 	signalSinks := pebblestore.NewSignalSinkStore(store)
@@ -1326,6 +1329,10 @@ func (d *Daemon) Run() error {
 	d.httpServer.Addr = ln.Addr().String()
 	if d.apiServer != nil {
 		d.apiServer.SetProviderKeyPageAddr(d.httpServer.Addr)
+		// The fleet: listen for the homes this Swarm invited, if it did.
+		if err := d.apiServer.StartFleetListener(); err != nil {
+			log.Printf("swarmd fleet: %v", err)
+		}
 	}
 	log.Printf("swarmd listener topology api_listen=%q", d.httpServer.Addr)
 
@@ -1425,6 +1432,7 @@ func (d *Daemon) Run() error {
 	}
 	if d.jobAutomations != nil && d.bgCtx != nil {
 		go d.jobAutomations.Run(d.bgCtx)
+		go d.apiServer.RunWorkflowTriggers(d.bgCtx)
 	}
 	// Start only V2, after listeners succeed; never migrate or execute V1 records.
 	if d.automationV2Scheduler != nil {
@@ -1461,6 +1469,7 @@ func (d *Daemon) waitForShutdown() error {
 	d.automationMu.Unlock()
 	if d.apiServer != nil {
 		d.apiServer.BeginShutdown()
+		d.apiServer.CloseFleetListener()
 		d.apiServer.CancelInFlightRuns()
 		if !d.apiServer.WaitForInFlightRuns(shutdownTimeout) {
 			errs = append(errs, fmt.Errorf("timed out draining %d active run(s)", d.apiServer.ActiveRunCount()))

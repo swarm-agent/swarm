@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"swarm/packages/swarmd/internal/projectfiles"
 
 	"swarm/packages/swarmd/internal/jobautomation"
 	"swarm/packages/swarmd/internal/outbox"
@@ -168,7 +169,7 @@ func (d jobAutomationDeliverer) toFolder(ctx context.Context, req jobautomation.
 	if err != nil {
 		return jobautomation.DeliverOutcome{}, err
 	}
-	if err := os.MkdirAll(dir, 0o775); err != nil {
+	if err := os.MkdirAll(dir, projectfiles.DirMode); err != nil {
 		return jobautomation.DeliverOutcome{}, err
 	}
 	if again, err := deliverFolderPath(req.Folder, req.Path); err != nil || again != dir {
@@ -212,16 +213,13 @@ func installDeliverable(src, dest string) error {
 		return err
 	}
 	defer in.Close()
-	tmp, err := os.CreateTemp(filepath.Dir(dest), ".swarm-deliver-*")
+	tmp, err := projectfiles.CreateTemp(filepath.Dir(dest), ".swarm-deliver-")
 	if err != nil {
 		return err
 	}
 	_, err = io.Copy(tmp, in)
 	if closeErr := tmp.Close(); err == nil {
 		err = closeErr
-	}
-	if err == nil {
-		err = os.Chmod(tmp.Name(), 0o664)
 	}
 	if err == nil {
 		// A hard link fails when dest exists: never a silent overwrite.

@@ -426,6 +426,123 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner.SetWorkerExecutionService(execution)
+	// Purpose: folder-task review resolves the recorded delivery rather than
+	// inventing a worktree lane or following later folder commits. This real
+	// store/Git admission check covers ResolveTaskReviewTarget, allocation and
+	// read-only registration with sandbox off and on (a hermetic engine runner,
+	// not live container execution). Neither case may borrow the source folder.
+	t.Run("designer folder review", func(t *testing.T) {
+		// Exercise the launch boundary: it must clear MakeWorktreeBranch's
+		// provisional name for Designer rather than persist a fictitious lane.
+		launchHead := outboxPinGit(t, folder, "rev-parse", "HEAD")
+		designStep := step
+		designStep.Worker = "designer"
+		designStep.IdempotencyKey = "folder-design-launch"
+		designID, err := agents.Start(context.Background(), designStep)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, designTaskID, _ := parseTaskJobID(designID)
+		folderTask, found, err := sessions.Store().GetProjectTask(principal.AccountScopeID, project.ID, designTaskID)
+		if err != nil || !found {
+			t.Fatalf("designer launch: %v", err)
+		}
+		if folderTask.WorktreeBranch != "" || folderTask.WorktreeName != "" || folderTask.BaseCommit != launchHead || folderTask.WorkspacePath != folder {
+			t.Fatalf("folder launch provenance: %+v", folderTask)
+		}
+		for _, name := range []string{"card.html", ".env"} {
+			if err := os.WriteFile(filepath.Join(folder, name), []byte("fixture"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		outboxPinGit(t, folder, "add", "card.html")
+		outboxPinGit(t, folder, "commit", "-q", "-m", "design")
+		if err := captureFolderTaskDelivery(folderTask); err != nil {
+			t.Fatal(err)
+		}
+		if err := sessions.Store().PutProjectTask(principal.AccountScopeID, folderTask); err != nil {
+			t.Fatal(err)
+		}
+		deliveryHead := folderTask.Integration.SourceHead
+		// The public MCP result traverses the task detail route; neither may
+		// substitute live folder files or lose the captured commit range.
+		result, err := controlMCPTaskResult(call, map[string]any{"project_id": project.ID, "task_id": folderTask.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resultMap := controlMCPMap(result)
+		files, ok := resultMap["files"].([]string)
+		if !ok || len(files) != 1 || files[0] != "card.html" {
+			t.Fatalf("folder result files: %+v", resultMap["files"])
+		}
+		if resultMap["base_commit"] != launchHead || resultMap["head"] != deliveryHead || resultMap["delivery_state"] != "in_folder" {
+			t.Fatalf("folder result: %+v", resultMap)
+		}
+		// Purpose: unavailable Git history must not hide durable task results
+		// from detail readers or workflow/MCP callers. A missing base exercises
+		// both public reads without destructive repository manipulation.
+		folderTask.BaseCommit = strings.Repeat("0", 40)
+		if err := sessions.Store().PutProjectTask(principal.AccountScopeID, folderTask); err != nil {
+			t.Fatal(err)
+		}
+		detail, err := call.dispatch(http.MethodGet, "/v3/projects/"+project.ID+"/tasks/"+folderTask.ID, nil, nil)
+		if err != nil || controlMCPString(detail, "changes_error") == "" || detail["head"] != deliveryHead || detail["task"] == nil {
+			t.Fatalf("unavailable history hid detail: %+v %v", detail, err)
+		}
+		unavailable, err := controlMCPTaskResult(call, map[string]any{"project_id": project.ID, "task_id": folderTask.ID})
+		unavailableMap := controlMCPMap(unavailable)
+		if err != nil || controlMCPString(unavailableMap, "changes_error") == "" || unavailableMap["head"] != deliveryHead || unavailableMap["delivery_state"] != "in_folder" {
+			t.Fatalf("unavailable history hid result: %+v %v", unavailableMap, err)
+		}
+		folderTask.BaseCommit = launchHead
+		if err := sessions.Store().PutProjectTask(principal.AccountScopeID, folderTask); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { sandbox.SetDefault(manager) })
+		for i := 0; i < 4; i++ {
+			sandbox.SetDefault(manager)
+			if i == 2 {
+				outboxPinGit(t, folder, "commit", "-q", "--allow-empty", "-m", "later work")
+			}
+			request := jobautomation.AgentRequest{Account: step.Account, Folder: folder, Worker: "reviewer", Brief: "Review design", Checkout: "same", Head: deliveryHead, IdempotencyKey: fmt.Sprintf("folder-review-%d", i), Result: jobautomation.Result{V: 1, JobID: taskRunJobID(project.ID, folderTask.ID), ProjectID: project.ID, Role: "designer"}}
+			id, err := agents.Start(context.Background(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, reviewID, _ := parseTaskJobID(id)
+			review, found, err := sessions.Store().GetProjectTask(principal.AccountScopeID, project.ID, reviewID)
+			if err != nil || !found {
+				t.Fatalf("review: %v %v", found, err)
+			}
+			if review.WorkspacePath == folder || review.ReviewTarget["lane"] != nil || review.StartCommit != deliveryHead || outboxPinGit(t, review.WorkspacePath, "rev-parse", "HEAD") != deliveryHead {
+				t.Fatalf("wrong folder review checkout: %+v", review)
+			}
+			snapshot, _, err := sessions.Store().GetSession(review.SessionID)
+			if err != nil || snapshot.Metadata["runtime_mode"] != "read" || snapshot.Metadata["agent_name"] != "system-reviewer" {
+				t.Fatalf("review not read-only: %v", err)
+			}
+			if outboxPinGit(t, review.WorkspacePath, "rev-parse", "--abbrev-ref", "HEAD") != "HEAD" {
+				t.Fatal("review checkout is not detached")
+			}
+			if i%2 == 1 {
+				// Exercise sandbox-on registration after real Git allocation. The
+				// hermetic engine does not execute Git or launch a container.
+				on, err := sandbox.NewManager(context.Background(), sandbox.Config{Mode: sandbox.ModeRequired, Backend: sandbox.BackendDocker, StateDir: t.TempDir(), Memory: "4g", MaxWorkerRuns: 2, UID: 10001, GID: 10001}, boxLeaseRunner{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				on.SetLayout(sandbox.Layout{Projects: func() ([]string, error) { return []string{folder}, nil }, WorktreesRoot: filepath.Dir(filepath.Dir(task.WorkspacePath)), Bucket: func(string) (string, error) { return filepath.Base(filepath.Dir(task.WorkspacePath)), nil }})
+				sandbox.SetDefault(on)
+				if err := execution.PrepareTaskReviewSession(&snapshot, review); err != nil {
+					t.Fatal(err)
+				}
+				cleanup, found, err := sessions.Store().GetReviewCleanup(principal.AccountScopeID, review.SessionID)
+				if err != nil || !found || cleanup.Borrowed || cleanup.Checkout != review.WorkspacePath || sandbox.ReviewSessionCheckout(review.SessionID) != review.WorkspacePath {
+					t.Fatalf("isolated registration: %+v %v", cleanup, err)
+				}
+			}
+		}
+	})
 	outboxPinGit(t, task.WorkspacePath, "commit", "-q", "--allow-empty", "-m", "delivery")
 	reviewHead := outboxPinGit(t, task.WorkspacePath, "rev-parse", "HEAD")
 	for i, report := range []string{"VERDICT: OK\nSUMMARY: Checked.\nFINDINGS: None.\nTESTS RUN: None.", "VERDICT: BLOCK\nSUMMARY: Unsafe.\nFINDINGS: Fix the unchecked input.\nTESTS RUN: None.", "not a review", "", "VERDICT: OK\nSUMMARY: Checked.\nFINDINGS: None.\nTESTS RUN: None."} {

@@ -261,7 +261,16 @@ func controlMCPListWorkerJobs(c *controlMCPCall, args map[string]any) (any, erro
 	out := []map[string]any{}
 	for _, worker := range workers {
 		view := controlMCPWorkerView(worker)
+		p, _ := PrincipalFromRequest(c.request)
+		id, _ := worker["id"].(string)
+		budget, err := c.server.sessions.Store().GetWorkerBudgetStatus(p.AccountScopeID, id)
+		if err != nil {
+			return nil, err
+		}
+		budgetView := map[string]any{"daily_usd": budget.DailyCostLimitUSD, "daily_tokens": budget.DailyTokensLimit, "date": budget.Date, "blocked": budget.Blocked, "blocked_reason": budget.BlockedReason}
+		view["budget"] = budgetView
 		if includeUsage {
+			budgetView["usage"] = budget.Usage
 			id, _ := worker["id"].(string)
 			usage, err := c.workerUsage(id, date)
 			if err != nil {
@@ -295,6 +304,11 @@ func controlMCPListWorkerJobs(c *controlMCPCall, args map[string]any) (any, erro
 }
 
 func controlMCPDeployWorker(c *controlMCPCall, args map[string]any) (any, error) {
+	if raw, present := args["budget"]; present {
+		if _, err := parseControlMCPWorkerBudget(raw); err != nil {
+			return nil, err
+		}
+	}
 	if _, hasAgent := args["agent"]; hasAgent && controlMCPString(args, "preset") != "" {
 		return nil, controlMCPToolFailure("agent is for custom worker creation; use swarm_update_worker to change an existing worker's agent")
 	}
@@ -308,7 +322,7 @@ func controlMCPDeployWorker(c *controlMCPCall, args map[string]any) (any, error)
 		if err != nil {
 			return nil, err
 		}
-		return c.deployWorkerModel(worker, args)
+		return c.deployWorkerWithBudget(worker, args)
 	}
 	if name := controlMCPString(args, "name"); name != "" {
 		workers, err := c.listWorkers()
@@ -325,7 +339,7 @@ func controlMCPDeployWorker(c *controlMCPCall, args map[string]any) (any, error)
 			}
 		}
 		if match != nil {
-			return c.deployWorkerModel(match, args)
+			return c.deployWorkerWithBudget(match, args)
 		}
 	}
 	if preset := strings.ToLower(controlMCPString(args, "preset")); preset != "" {
@@ -338,7 +352,7 @@ func controlMCPDeployWorker(c *controlMCPCall, args map[string]any) (any, error)
 		}
 		for _, worker := range workers {
 			if controlMCPWorkerPreset(worker) == preset {
-				return c.deployWorkerModel(worker, args)
+				return c.deployWorkerWithBudget(worker, args)
 			}
 		}
 		return nil, controlMCPToolFailure("preset %q was not deployed", preset)
@@ -357,13 +371,6 @@ func controlMCPDeployWorker(c *controlMCPCall, args map[string]any) (any, error)
 	if description := controlMCPString(args, "description"); description != "" {
 		body["description"] = description
 	}
-	if raw := args["model"]; raw != nil {
-		profile, err := c.workerModel(raw)
-		if err != nil {
-			return nil, err
-		}
-		body["model_profile"] = profile
-	}
 	created, err := c.dispatch(http.MethodPost, "/v3/workers", nil, body)
 	if err != nil {
 		return nil, err
@@ -373,6 +380,11 @@ func controlMCPDeployWorker(c *controlMCPCall, args map[string]any) (any, error)
 	if !controlMCPSafeID.MatchString(workerID) {
 		return nil, controlMCPToolFailure("worker created without a usable id")
 	}
+	if raw, present := args["budget"]; present {
+		if _, err := c.deployWorkerWithBudget(worker, map[string]any{"budget": raw}); err != nil {
+			return nil, controlMCPToolFailure("worker %s created but budget not applied; not activated: %s", workerID, err)
+		}
+	}
 	activated, err := c.dispatch(http.MethodPost, "/v3/workers/"+workerID+"/activate", nil, map[string]any{
 		"expected_revision": controlMCPRevision(worker),
 		"local_bindings":    map[string]string{},
@@ -380,7 +392,15 @@ func controlMCPDeployWorker(c *controlMCPCall, args map[string]any) (any, error)
 	if err != nil {
 		return nil, controlMCPToolFailure("worker %s created but not activated: %s", workerID, err.Error())
 	}
-	return c.deployWorkerModel(controlMCPMap(activated["worker"]), map[string]any{})
+	modelArgs := map[string]any{}
+	if raw := args["model"]; raw != nil {
+		modelArgs["model"] = raw
+	}
+	result, err := c.deployWorkerModel(controlMCPMap(activated["worker"]), modelArgs)
+	if err != nil {
+		return nil, controlMCPToolFailure("worker %s created and activated without the requested model pin: %s", workerID, err)
+	}
+	return result, nil
 }
 
 // ---- jobs -----------------------------------------------------------------
@@ -1387,19 +1407,12 @@ func controlMCPRequestMedia(c *controlMCPCall, args map[string]any) (any, error)
 			body[arg] = value
 		}
 	}
-	if operation := controlMCPString(args, "operation"); operation == "speech" {
-		body["operation"] = operation
-		speech := map[string]string{}
-		for _, key := range []string{"text", "voice", "style", "language", "format"} {
-			speech[key] = controlMCPString(args, key)
-		}
-		body["speech"] = speech
-	} else {
-		for _, key := range []string{"text", "voice", "style", "language", "format"} {
-			if controlMCPString(args, key) != "" {
-				return nil, controlMCPToolFailure("%s requires operation speech", key)
-			}
-		}
+	speech, err := mediaSpeechSettings(args, kind)
+	if err != nil {
+		return nil, controlMCPToolFailure("%s", err)
+	}
+	if speech != nil {
+		body["operation"], body["speech"] = "speech", speech
 	}
 	if kind == "video" {
 		// One clip, as asked. Without this the task router plans a two-scene
@@ -1619,7 +1632,7 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_list_workers", Title: "List workers",
-			Description: "Existing explicitly deployed workers (listing never creates presets), with role, state and the model their next job uses (their role's model unless pinned). With sessions:read, usage includes all_time and today (UTC) tokens, cost_usd (including media), media_cost_usd, media_count (receipts), coverage and jobs (all-time run count); otherwise usage is omitted. include_jobs adds each worker's latest jobs.",
+			Description: "Existing explicitly deployed workers (listing never creates presets), with role, state, daily budget, today's UTC budget spend and blocked reason, and the model their next job uses (their role's model unless pinned). With sessions:read, usage includes all_time and today (UTC) tokens, cost_usd (including media), media_cost_usd, media_count (receipts), coverage and jobs (all-time run count); otherwise usage is omitted. include_jobs adds each worker's latest jobs.",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"include_jobs": map[string]any{"type": "boolean", "description": "Also list each worker's 5 latest jobs with job_id and status."},
 			}),
@@ -1632,6 +1645,7 @@ func controlMCPJobTools() []controlMCPTool {
 				"preset":       map[string]any{"type": "string", "enum": controlMCPPresetWorkers},
 				"worker":       workerRef,
 				"model":        controlMCPWorkerModelSchema(true),
+				"budget":       controlMCPWorkerBudgetSchema(),
 				"name":         controlMCPStringProp("Custom worker name.", 0, 256),
 				"agent":        controlMCPStringProp("Optional custom agent whose current tools and additional instructions this worker uses, retaining its system role. Reviewers reject write tools.", 0, 63),
 				"role":         map[string]any{"type": "string", "enum": controlMCPPresetWorkers, "description": "Custom worker's role."},

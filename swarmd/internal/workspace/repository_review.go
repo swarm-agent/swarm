@@ -381,7 +381,7 @@ func (s *Service) PrepareRepositoryBaselineForPrincipal(principal identity.Princ
 	// Init is intentionally resumable. A later commit failure retains metadata,
 	// not a misleading successful catalog entry; no user files are removed.
 	if _, statErr := root.Lstat(".git"); errors.Is(statErr, os.ErrNotExist) {
-		if err := root.Mkdir(".git", 0700); err != nil {
+		if err := root.Mkdir(".git", 0o770); err != nil {
 			return state, err
 		}
 		reserved, err := root.Lstat(".git")
@@ -464,6 +464,20 @@ func (s *Service) PrepareRepositoryBaselineForPrincipal(principal identity.Princ
 	}
 	if _, err := runRepositoryGit(requested, "-c", "core.hooksPath="+os.DevNull, "update-ref", "HEAD", commit, strings.Repeat("0", len(commit))); err != nil {
 		return state, err
+	}
+	// A repository this baseline created has no index of the person's to
+	// preserve: left empty, Git shows every committed file as a staged
+	// deletion plus an untracked copy. The index then matches HEAD; the
+	// working tree is not touched.
+	if indexPath, e := runRepositoryGit(requested, "rev-parse", "--git-path", "index"); e == nil {
+		if !filepath.IsAbs(indexPath) {
+			indexPath = filepath.Join(requested, indexPath)
+		}
+		if _, statErr := os.Lstat(indexPath); errors.Is(statErr, os.ErrNotExist) {
+			if _, e := runRepositoryGit(requested, "read-tree", "HEAD"); e != nil {
+				return state, e
+			}
+		}
 	}
 	state = inspectRepository(requested)
 	if state.State != RepositoryStateReady {

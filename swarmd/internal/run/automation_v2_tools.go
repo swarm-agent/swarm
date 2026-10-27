@@ -7,10 +7,11 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/model"
+	"swarm/packages/swarmd/internal/provider/registry"
 	store "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
@@ -46,9 +47,11 @@ func workerProposalCall(call tool.Call) bool {
 		return false
 	}
 	var args struct {
-		Action string `json:"action"`
+		Action string          `json:"action"`
+		Model  json.RawMessage `json:"model"`
+		Budget json.RawMessage `json:"budget"`
 	}
-	return json.Unmarshal([]byte(call.Arguments), &args) == nil && args.Action == "propose"
+	return json.Unmarshal([]byte(call.Arguments), &args) == nil && (args.Action == "propose" || ((args.Action == "create" || args.Action == "update") && (len(args.Model) > 0 || len(args.Budget) > 0)))
 }
 
 func (s *Service) automationV2ToolSession(id string) (store.SessionSnapshot, string, error) {
@@ -122,6 +125,9 @@ func (s *Service) executeWorkerProposalTool(id string, call tool.Call, profile .
 		return "", err
 	}
 	if action := strings.TrimSpace(mapString(args, "action")); action != "propose" {
+		if _, present := args["model"]; present && (action == "create" || action == "update") {
+			return s.executeManageWorkersTool(id, call.Arguments, profile...)
+		}
 		return "", errors.New("manage_workers action=propose required")
 	}
 	return s.executeCreateOrProposePendingWorker(id, args, call.Name, false, profile...)
@@ -188,6 +194,14 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 		}
 	}
 
+	budget, err := workerToolBudget(args)
+	if err != nil {
+		return "", err
+	}
+	selectedModel, err := s.workerToolModel(current, args)
+	if err != nil {
+		return "", err
+	}
 	var name, description, instructions string
 	var automations []store.WorkerAutomationDefinition
 	var requestedCaps []store.WorkerCapabilityRequest
@@ -405,6 +419,18 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 		proposedBindings = map[string]string{"primary": proposedPrimary}
 	}
 
+	if workerID == "" {
+		pending, err := s.pendingWorkersForSession(current.AccountScopeID, current.ID)
+		if err != nil {
+			return "", err
+		}
+		for _, candidate := range pending {
+			if candidate.Name == name {
+				workerID, expectedRevision = candidate.ID, candidate.Revision
+				break
+			}
+		}
+	}
 	if workerID != "" {
 		existing, found, getErr := s.sessions.GetWorker(current.AccountScopeID, workerID)
 		if getErr != nil {
@@ -416,7 +442,13 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 		if existing.Revision != expectedRevision {
 			return "", store.ErrWorkerConflict
 		}
+		if requested, ok := args["agent"].(string); ok && strings.TrimSpace(requested) != existing.Agent {
+			return "", errors.New("worker agent cannot be changed by proposal reuse; create a separately named proposal")
+		}
 		updateReq := store.UpdateWorkerRequest{
+			Budget:                budget,
+			ModelProfile:          selectedModel,
+			ProposeModel:          selectedModel != nil,
 			Name:                  &name,
 			Description:           &description,
 			Instructions:          &instructions,
@@ -436,6 +468,7 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 		}
 		if metaRaw, ok := args["metadata"].(map[string]any); ok {
 			updateReq.Metadata = metaRaw
+			updateReq.Metadata["source_session_id"] = existing.Metadata["source_session_id"]
 		}
 		if updateReq.Metadata != nil && mapString(updateReq.Metadata, "project_id") == "" {
 			if pid := strings.TrimSpace(mapString(args, "project_id")); pid != "" {
@@ -458,11 +491,22 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 		return workerProposalToolOutput(updated)
 	}
 
-	workerModel, err := s.ResolveWorkerModelProfile(current.AccountScopeID, nil)
+	workerModel, err := s.ResolveWorkerModelProfile(current.AccountScopeID, selectedModel)
 	if err != nil {
 		return "", err
 	}
+	agentName := strings.TrimSpace(mapString(args, "agent"))
+	role := ""
+	if agentName != "" {
+		role = store.WorkerRoleCoder
+	}
+	if err := s.ValidateWorkerAgent(current.AccountScopeID, store.WorkerRecord{Agent: agentName, Role: role}); err != nil {
+		return "", err
+	}
 	createReq := store.CreateWorkerRequest{
+		Budget:                budget,
+		Agent:                 agentName,
+		Role:                  role,
 		ModelProfile:          workerModel,
 		Name:                  name,
 		Description:           description,
@@ -489,7 +533,7 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 			}
 		}
 	}
-	if mapString(createReq.Metadata, "source_session_id") == "" && current.ID != "" {
+	if current.ID != "" {
 		createReq.Metadata["source_session_id"] = current.ID
 	}
 	w, createErr := s.sessions.CreateWorker(context.Background(), current.AccountScopeID, current.UserID, createReq)
@@ -499,6 +543,7 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 	if isCreate {
 		raw, err := json.Marshal(map[string]any{
 			"status":            "created",
+			"instruction":       "The proposal is waiting for the person to accept or deny. Nothing more is needed for this request.",
 			"lifecycle_state":   w.LifecycleState,
 			"worker":            w,
 			"next_action":       "await_worker_acceptance",
@@ -527,7 +572,7 @@ func automationV2ToolOutput(proposal store.AutomationV2Proposal) (string, error)
 }
 
 func workerProposalToolOutput(w store.WorkerRecord) (string, error) {
-	if w.LifecycleState != store.WorkerLifecycleStatePending {
+	if w.LifecycleState != store.WorkerLifecycleStatePending && (w.PendingReview == nil || w.PendingReviewStale) {
 		raw, err := json.Marshal(map[string]any{
 			"status": "updated", "worker_id": w.ID, "worker": w, "revision": w.Revision,
 			"instruction": "Worker edits are saved and apply immediately. Already admitted jobs keep their pinned revision; the next job uses this revision.",
@@ -549,7 +594,7 @@ func workerProposalToolOutput(w store.WorkerRecord) (string, error) {
 			"worker_id": w.ID,
 			"revision":  w.Revision,
 		},
-		"instruction": "The durable worker proposal is saved for review. Existing approved work remains unchanged and continues in its current lifecycle. Stop and let the user review it in Tasks > Workers or its worker detail page. Only explicit Accept worker approves this exact revision and workspace. No immediate run; workers without a job wait for a task. Edit using worker_id and expected_revision.",
+		"instruction": "The proposal is waiting for the person to accept or deny. Nothing more is needed for this request. Existing approved work remains unchanged and continues in its current lifecycle. Stop and let the user review it in Tasks > Workers or its worker detail page. Only explicit Accept worker approves this exact revision and workspace. No immediate run; workers without a job wait for a task. Edit using worker_id and expected_revision.",
 	})
 	return string(raw), err
 }
@@ -621,7 +666,7 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 		}
 		readID = parentID
 	}
-	current, defaultWorkspace, err := s.automationV2ToolSession(readID)
+	current, _, err := s.automationV2ToolSession(readID)
 	if err != nil {
 		return "", err
 	}
@@ -647,11 +692,6 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 		return "", errors.New("manage_workers action is required")
 	}
 
-	workspace := defaultWorkspace
-	if wsID := mapString(args, "workspace_id"); wsID != "" {
-		workspace = wsID
-	}
-
 	switch action {
 	case "help":
 		raw, err := json.Marshal(map[string]any{"action": "help", "status": "ok", "instructions": tool.WorkerV2AuthoringInstructions})
@@ -660,7 +700,8 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 	case "propose":
 		return s.executeWorkerProposalTool(readID, tool.Call{Name: "manage_workers", Arguments: arguments}, profile...)
 
-	case "review", "context":
+	case "review", "context", "progress":
+		var workers []store.WorkerRecord
 		if workerID := strings.TrimSpace(firstNonEmptyString(mapString(args, "worker_id"), mapString(args, "id"))); workerID != "" {
 			w, found, err := s.sessions.GetWorker(current.AccountScopeID, workerID)
 			if err != nil {
@@ -669,35 +710,28 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 			if !found {
 				return "", store.ErrWorkerNotFound
 			}
-			raw, err := json.Marshal(map[string]any{
-				"found":  true,
-				"worker": w,
-			})
-			return string(raw), err
+			workers = append(workers, w)
+		} else {
+			workers, err = s.pendingWorkersForSession(current.AccountScopeID, readID)
+			if err != nil {
+				return "", err
+			}
 		}
-		if workspace == "" {
-			return "", errors.New("target workspace required")
+		items := make([]map[string]any, 0, len(workers))
+		for _, w := range workers {
+			runs, cursor, err := s.sessions.ListWorkerRuns(current.AccountScopeID, w.ID, 20, mapString(args, "cursor"))
+			if err != nil {
+				return "", err
+			}
+			items = append(items, map[string]any{"worker": w, "runs": runs, "runs_cursor": cursor})
 		}
-		p, found, err := s.sessions.GetAutomationV2Proposal(current.AccountScopeID, current.UserID, workspace, readID)
-		if err != nil {
-			return "", err
-		}
-		out := map[string]any{"found": found, "state": "not_created", "instruction": tool.WorkerV2AuthoringInstructions}
-		if found {
-			out = map[string]any{"found": true, "proposal": p, "worker_review": p.AutomationV2Review, "automation_review": p.AutomationV2Review}
+		out := map[string]any{"found": len(items) > 0, "workers": items}
+		if len(items) == 1 {
+			for key, value := range items[0] {
+				out[key] = value
+			}
 		}
 		raw, err := json.Marshal(out)
-		return string(raw), err
-
-	case "progress":
-		if workspace == "" {
-			return "", errors.New("target workspace required")
-		}
-		progress, err := s.sessions.AutomationV2Progress(current.AccountScopeID, current.UserID, workspace, readID, mapString(args, "timezone"), mapString(args, "cursor"), time.Now().UnixMilli())
-		if err != nil {
-			return "", err
-		}
-		raw, err := json.Marshal(progress)
 		return string(raw), err
 
 	case "list":
@@ -725,8 +759,12 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 		if err != nil {
 			return "", err
 		}
+		views := make([]any, 0, len(res.Workers))
+		for _, worker := range res.Workers {
+			views = append(views, s.workerToolView(worker))
+		}
 		raw, err := json.Marshal(map[string]any{
-			"workers":     res.Workers,
+			"workers":     views,
 			"next_cursor": res.NextCursor,
 		})
 		return string(raw), err
@@ -745,7 +783,7 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 		}
 		out := map[string]any{
 			"found":  true,
-			"worker": w,
+			"worker": s.workerToolView(w),
 		}
 		if rev, ok := parseUint64Arg(args, "revision"); ok && rev > 0 {
 			snap, sFound, sErr := s.sessions.GetWorkerRevision(current.AccountScopeID, workerID, rev)
@@ -772,6 +810,10 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 		return s.executeCreateOrProposePendingWorker(readID, args, "manage_workers", true, profile...)
 
 	case "update":
+		budget, err := workerToolBudget(args)
+		if err != nil {
+			return "", err
+		}
 		workerID := strings.TrimSpace(firstNonEmptyString(mapString(args, "worker_id"), mapString(args, "id")))
 		if workerID == "" {
 			return "", errors.New("worker_id is required for update")
@@ -780,7 +822,14 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 		if !ok || expectedRevision == 0 {
 			return "", errors.New("expected_revision is required for update")
 		}
+		selectedModel, err := s.workerToolModel(current, args)
+		if err != nil {
+			return "", err
+		}
 		req := store.UpdateWorkerRequest{
+			Budget:        budget,
+			ModelProfile:  selectedModel,
+			ProposeModel:  selectedModel != nil,
 			ChangeSummary: strings.TrimSpace(mapString(args, "change_summary")),
 		}
 		if val, ok := args["name"].(string); ok {
@@ -830,6 +879,9 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 			"status": "updated",
 			"worker": w,
 		})
+		if selectedModel != nil || budget != nil {
+			return workerProposalToolOutput(w)
+		}
 		return string(raw), err
 
 	case "attach":
@@ -971,4 +1023,135 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 	default:
 		return "", errors.New("V1 automation operations are retired; V2 mutations require a Worker plan review and explicit user acceptance")
 	}
+}
+
+// pendingWorkersForSession reads the canonical worker store, including all pages.
+func (s *Service) pendingWorkersForSession(account, sessionID string) ([]store.WorkerRecord, error) {
+	var workers []store.WorkerRecord
+	query := store.ListWorkersQuery{Limit: 50, LifecycleState: store.WorkerLifecycleStatePending}
+	for {
+		page, err := s.sessions.ListWorkers(account, query)
+		if err != nil {
+			return nil, err
+		}
+		for _, w := range page.Workers {
+			if mapString(w.Metadata, "source_session_id") == sessionID {
+				workers = append(workers, w)
+			}
+		}
+		if page.NextCursor == "" {
+			return workers, nil
+		}
+		query.After = page.NextCursor
+	}
+}
+
+// ValidateWorkerModelPin is the shared native/API worker pin boundary. Provider
+// readiness is account-scoped through ctx; no HTTP subrequest is involved.
+func ValidateWorkerModelPin(ctx context.Context, providers *registry.Registry, catalog *model.Service, raw any) (*store.SessionModelProfileSnapshot, error) {
+	invalid := errors.New("invalid worker model; choose a connected provider, model and supported options from swarm_list_models")
+	args, ok := raw.(map[string]any)
+	if !ok || providers == nil || catalog == nil {
+		return nil, invalid
+	}
+	for key := range args {
+		if key != "provider" && key != "model" && key != "thinking" && key != "fast" {
+			return nil, invalid
+		}
+	}
+	provider, pOK := args["provider"].(string)
+	name, mOK := args["model"].(string)
+	thinking, tOK := args["thinking"].(string)
+	if !pOK || !mOK || !tOK || provider == "" || name == "" {
+		return nil, invalid
+	}
+	fast := false
+	if value, present := args["fast"]; present {
+		fast, ok = value.(bool)
+		if !ok {
+			return nil, invalid
+		}
+	}
+	statuses, err := providers.ListStatuses(ctx)
+	if err != nil {
+		return nil, err
+	}
+	runnable := false
+	for _, status := range statuses {
+		if status.ID == provider && status.Runnable {
+			runnable = true
+		}
+	}
+	if !runnable {
+		return nil, invalid
+	}
+	lookup, err := catalog.GetCatalog(provider, name)
+	if err != nil || !lookup.Found {
+		return nil, invalid
+	}
+	record := lookup.Record
+	allowed := thinking == "" && record.DefaultThinking == ""
+	for _, option := range record.ThinkingOptions {
+		if option == thinking {
+			allowed = true
+		}
+	}
+	if !allowed {
+		return nil, invalid
+	}
+	selection := store.ModelProfileSelection{Provider: provider, Model: name, Thinking: thinking}
+	if fast {
+		for _, mapping := range record.ServiceTierMappings {
+			if strings.EqualFold(mapping.SwarmSetting, "fast") {
+				selection.ServiceTier = strings.ToLower(strings.TrimSpace(mapping.Tier))
+				break
+			}
+		}
+		if selection.ServiceTier == "" {
+			return nil, invalid
+		}
+	}
+	return &store.SessionModelProfileSnapshot{Source: store.SessionModelProfileSourceTemporary, Action: selection, Plan: &selection}, nil
+}
+
+func (s *Service) workerToolModel(current store.SessionSnapshot, args map[string]any) (*store.SessionModelProfileSnapshot, error) {
+	raw, present := args["model"]
+	if !present {
+		return nil, nil
+	}
+	if raw == nil {
+		return &store.SessionModelProfileSnapshot{Source: store.SessionModelProfileSourceSwarmSettings, UseAccountDefault: true}, nil
+	}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: current.UserID, AccountScopeID: current.AccountScopeID, AccountScopeSource: identity.AccountScopeSourceServerState}
+	return ValidateWorkerModelPin(identity.ContextWithPrincipal(context.Background(), principal), s.providers, s.model, raw)
+}
+
+func (s *Service) workerToolView(w store.WorkerRecord) any {
+	profile := w.ModelProfile
+	pinned := profile != nil && !profile.UseAccountDefault
+	source := "role_default"
+	if pinned {
+		source = "pinned"
+	}
+	summary := map[string]any{"source": source, "pinned": pinned}
+	if !pinned {
+		resolved, err := s.ResolveWorkerRoleModelProfile(w.AccountScopeID, w.Role, nil)
+		if err != nil {
+			summary["error"] = err.Error()
+		} else {
+			profile = resolved
+		}
+	}
+	if profile != nil {
+		selection := profile.Action
+		if w.ExecutionMode == "plan" && profile.Plan != nil {
+			selection = *profile.Plan
+		}
+		summary["provider"], summary["model"], summary["thinking"] = selection.Provider, selection.Model, selection.Thinking
+		summary["fast"] = selection.ServiceTier == "fast" || selection.ServiceTier == "priority"
+	}
+	return struct {
+		store.WorkerRecord
+		Model map[string]any `json:"model"`
+	}{w, summary}
 }

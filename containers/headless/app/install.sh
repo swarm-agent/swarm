@@ -774,7 +774,7 @@ activate() {
 # swarmctl talks to Swarm's private socket, so it runs as Swarm's own user.
 # The machine commands (workspace, idle-off) need root itself, so root runs them directly.
 if [ "\$(id -un)" = $SERVICE_USER ]; then exec $OPT/current/bin/swarmctl "\$@"; fi
-if [ "\$(id -u)" = 0 ]; then case "\${1:-}" in workspace|idle-off) exec env LD_LIBRARY_PATH=$OPT/current/lib $OPT/current/bin/swarmctl "\$@" ;; esac; fi
+if [ "\$(id -u)" = 0 ]; then case "\${1:-}" in workspace|idle-off|client) exec env LD_LIBRARY_PATH=$OPT/current/lib $OPT/current/bin/swarmctl "\$@" ;; esac; fi
 cd / || exit 1
 exec runuser -u $SERVICE_USER -- env HOME=$SERVICE_HOME LD_LIBRARY_PATH=$OPT/current/lib $OPT/current/bin/swarmctl "\$@"
 WRAPPER
@@ -1068,6 +1068,21 @@ running_build_orphaned() {
   [[ -z $(git -C "$SRC" branch -r --contains "$1" 2>/dev/null) ]]
 }
 
+# Transcription runs on the host, not in the release build image. Check the
+# same system directories the daemon unit uses, not an interactive user's PATH.
+install_media_dependencies() (
+  export PATH="$OPT/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
+    return 0
+  fi
+  apt-get update -qq || return 1
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg >/dev/null || return 1
+  command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null || {
+    echo "swarm: ffmpeg and ffprobe are required for host media transcription" >&2
+    return 1
+  }
+)
+
 update() {
   load_conf
   if release_install; then
@@ -1089,12 +1104,12 @@ update() {
       # run flags) apply now.
       exec bash "$OPT/releases/$next/share/install.sh" finish-update
     fi
-    finish_update
+    finish_update || return 1
     return 0
   fi
   if [[ -n ${DEV_SOURCE:-} ]]; then
     echo "swarm: built from $DEV_SOURCE; not following $SWARM_REF (install.sh dev-sync off to resume)"
-    finish_update
+    finish_update || return 1
     return 0
   fi
   git -C "$SRC" fetch -q origin "$SWARM_REF"
@@ -1135,6 +1150,7 @@ update() {
 # runs, switch, and go back if it does not come up.
 finish_update() (
   load_conf
+  install_media_dependencies || return 1
   local commit running why sandboxed
   commit=$(target_commit)
   running=$(running_commit)
@@ -2441,6 +2457,7 @@ install_all() {
   step prerequisites "Installing Git and the tools Swarm uses"
   apt-get update -qq
   DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git curl ca-certificates gnupg iproute2 jq acl >/dev/null
+  install_media_dependencies
   # Docker only for environments (and the sandbox), or to build from source.
   if [[ $environments == on || $source == git ]]; then install_docker; fi
 

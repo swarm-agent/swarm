@@ -14,7 +14,7 @@ import (
 )
 
 // Purpose: ApplyWorkerAgent must retain role authority while reading fresh,
-// account-owned tool settings. A real Pebble store plus the production compiler
+// account-owned tool settings without implicit delegation. A real Pebble store plus the production compiler
 // is the narrowest boundary proving freshness and reviewer rejection without a provider.
 func TestWorkerCustomAgentContract(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "agents"))
@@ -46,7 +46,7 @@ func TestWorkerCustomAgentContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.Tools["bash"].Enabled || !disabled["bash"] || !resolved.Tools["manage_todos"].Enabled || !resolved.Tools["task"].Enabled {
+	if resolved.Tools["bash"].Enabled || !disabled["bash"] || !resolved.Tools["manage_todos"].Enabled || resolved.Tools["task"].Enabled {
 		t.Fatalf("incorrect tool overlay %+v", resolved)
 	}
 	if profile.Name != base.Name || !strings.Contains(profile.Prompt, custom.Prompt) {

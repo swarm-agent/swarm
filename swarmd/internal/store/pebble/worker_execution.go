@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ type WorkerRunAdmission struct {
 	ModelOverride          *SessionModelProfileSnapshot
 	ModelSource            string
 	ResolvedModelProfile   *SessionModelProfileSnapshot
+	WorkflowTriggerID      string
 	WorkerID               string
 	AutomationID           string
 	UserID                 string
@@ -74,23 +76,26 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 	if req.OccurrenceID != "" && req.IdempotencyKey != "" {
 		return WorkerRunRecord{}, fmt.Errorf("%w: use exactly one occurrence or idempotency key", ErrWorkerConflict)
 	}
-	switch req.RequestSource {
-	case "direct", "orchestrator", "test_run", "automation":
+	switch {
+	case req.RequestSource == "direct" || req.RequestSource == "orchestrator" || req.RequestSource == "test_run" || req.RequestSource == "automation" || req.RequestSource == "workflow_trigger" || IsWorkflowItemSource(req.RequestSource):
 		if req.OccurrenceID != "" {
 			return WorkerRunRecord{}, ErrWorkerConflict
 		}
 		if prompt, ok := req.Input["prompt"].(string); req.AutomationID == "" && (!ok || strings.TrimSpace(prompt) == "") {
 			return WorkerRunRecord{}, fmt.Errorf("%w: a non-empty direct request prompt is required", ErrWorkerConflict)
 		}
-	case "trigger":
+	case req.RequestSource == "trigger":
 		if req.AutomationID == "" || req.IdempotencyKey == "" || req.OccurrenceID != "" {
 			return WorkerRunRecord{}, ErrWorkerConflict
 		}
-	case "schedule":
+	case req.RequestSource == "schedule":
 		if req.AutomationID == "" || req.OccurrenceID == "" {
 			return WorkerRunRecord{}, ErrWorkerConflict
 		}
 	default:
+		return WorkerRunRecord{}, ErrWorkerConflict
+	}
+	if (req.RequestSource == "workflow_trigger") != (req.WorkflowTriggerID != "") {
 		return WorkerRunRecord{}, ErrWorkerConflict
 	}
 	inputBytes, err := json.Marshal(req.Input)
@@ -109,9 +114,10 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 	}
 	hash, err := hashWorkerPayload(struct {
 		Worker, Automation, User, Source, Occurrence string
+		WorkflowTrigger                              string `json:",omitempty"`
 		Input                                        json.RawMessage
 		ModelOverride                                *SessionModelProfileSnapshot `json:",omitempty"`
-	}{req.WorkerID, req.AutomationID, req.UserID, req.RequestSource, req.OccurrenceID, inputBytes, req.ModelOverride})
+	}{req.WorkerID, req.AutomationID, req.UserID, req.RequestSource, req.OccurrenceID, req.WorkflowTriggerID, inputBytes, req.ModelOverride})
 	if err != nil {
 		return WorkerRunRecord{}, err
 	}
@@ -283,7 +289,7 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 	now := time.Now().UnixMilli()
 	runID := GenerateWorkerRunID()
 	req.SessionID = "worker-execution-" + runID
-	receipt := WorkerRunRecord{ProjectID: req.ResolvedProjectID, ModelSource: req.ModelSource, ModelProfile: model, ID: runID, AccountScopeID: account, UserID: req.UserID, WorkerID: worker.ID, WorkerRevision: worker.Revision, AutomationID: req.AutomationID, AutomationRevision: automationRevision, OccurrenceID: req.OccurrenceID, WorkspaceID: workspaceID, WorkspaceSource: workspaceSource, Role: worker.Role, SessionID: req.SessionID, RequestSource: req.RequestSource, Input: acceptedInput, Status: "admitted", CreatedAt: now}
+	receipt := WorkerRunRecord{WorkflowTriggerID: req.WorkflowTriggerID, ProjectID: req.ResolvedProjectID, ModelSource: req.ModelSource, ModelProfile: model, ID: runID, AccountScopeID: account, UserID: req.UserID, WorkerID: worker.ID, WorkerRevision: worker.Revision, AutomationID: req.AutomationID, AutomationRevision: automationRevision, OccurrenceID: req.OccurrenceID, WorkspaceID: workspaceID, WorkspaceSource: workspaceSource, Role: worker.Role, SessionID: req.SessionID, RequestSource: req.RequestSource, Input: acceptedInput, Status: "admitted", CreatedAt: now}
 	m := &workerRealtimeMutation{accountScopeID: account, userID: req.UserID, workerID: worker.ID}
 	if err := ws.pinWorkerPlacement(account, req, worker, &receipt, m); err != nil {
 		return WorkerRunRecord{}, err
@@ -641,6 +647,23 @@ func (ws *WorkerStore) AcceptWorker(account, user, id string, revision uint64, b
 	if primary != "" {
 		w.LocalBindings = map[string]string{"primary": primary}
 	}
+	var budgetPolicy *WorkerBudgetPolicy
+	if w.Budget != nil {
+		// Match admission and SetLimits: workersMu precedes the account lock.
+		unlockBudget := ws.store.sessionMutations.lockSessions("account:" + account)
+		defer unlockBudget()
+		ss := NewSessionStore(ws.store)
+		existing, err := ss.GetWorkerBudget(account, id)
+		if err != nil {
+			return WorkerRecord{}, err
+		}
+		policy, err := ss.prepareWorkerBudget(account, id, existing.Revision, w.Budget.DailyUSD, w.Budget.DailyTokens)
+		if err != nil {
+			return WorkerRecord{}, err
+		}
+		budgetPolicy = &policy
+		w.Budget = nil
+	}
 	w.LifecycleState = resumeState
 	w.Revision++
 	w.UpdatedAt = now
@@ -654,6 +677,11 @@ func (ws *WorkerStore) AcceptWorker(account, user, id string, revision uint64, b
 		ChangeSummary:  "accepted worker proposal",
 	}
 	m := &workerRealtimeMutation{accountScopeID: account, userID: user, workerID: id}
+	if budgetPolicy != nil {
+		if err := m.put(workerBudgetKey(account, id), *budgetPolicy); err != nil {
+			return WorkerRecord{}, err
+		}
+	}
 	for _, a := range w.Automations {
 		if err = m.put(KeyWorkerByAutomation(account, a.ID), id); err != nil {
 			return WorkerRecord{}, err
@@ -846,3 +874,8 @@ func (ws *WorkerStore) WorkerRunAdmissionExists(account string, req WorkerRunAdm
 	}
 	return false, nil
 }
+
+var workflowItemSource = regexp.MustCompile(`^workflow/[A-Za-z0-9._:-]{1,200}/delivery/[A-Za-z0-9._:-]{1,200}/step/[a-z0-9][a-z0-9_-]{0,63}$`)
+
+// IsWorkflowItemSource identifies independently queued workflow jobs.
+func IsWorkflowItemSource(source string) bool { return workflowItemSource.MatchString(source) }

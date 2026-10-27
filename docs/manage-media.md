@@ -1,6 +1,7 @@
 # In-session media
 
 `manage_media` calls the daemon's existing media task service directly, not MCP.
+For narration, use `generate` with `kind: sound`, `operation: speech`, an explicit TTS `model`, `text` and `voice` (optional `style`, `language`, `format`); `models` lists voices/formats/limits, `get` returns audio and word- or segment-timing JSON with costs, and `save` writes both. With transcription unset, speech uses the connected Google provider’s first eligible audio-input catalog model in display-name order; if none is available, it returns audio without timings and notes `timings unavailable: no transcription model`.
 It is enabled for Designer (including Designer workers), disabled by default for
 other built-ins, and can be enabled on custom agents with
 `tools_on: ["manage_media"]`.

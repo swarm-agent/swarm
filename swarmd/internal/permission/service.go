@@ -595,6 +595,12 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 			return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: reason, Source: "session_access"}, nil
 		}
 	}
+	// The person's browser: the session's lease decides (browserToolRefusal).
+	if name := normalizePolicyToolName(input.ToolName); pebblestore.IsBrowserToolName(name) {
+		if reason := s.browserToolRefusal(sessionID, name, time.Now().UnixMilli()); reason != "" {
+			return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: reason, Source: "session_access"}, nil
+		}
+	}
 	if input.InputBoundary && explain.Decision != PolicyDecisionDeny {
 		return s.createPendingAuthorization(input, sessionID, RequirementClientTool, "client tool result required", "client_tool", "client tool call")
 	}
@@ -1697,6 +1703,12 @@ func authorizationRequirement(mode, toolName, toolArguments string) string {
 			return requirement
 		}
 		return "plan_manage"
+	case "manage_custom_agents":
+		var args map[string]any
+		if json.Unmarshal([]byte(toolArguments), &args) == nil && (args["action"] == "list" || args["action"] == "get") {
+			return "manage_custom_agents"
+		}
+		return "agent_change"
 	case "manage_agent":
 		if ShouldApproveManageAgentMutation(toolArguments) {
 			return "agent_change"
@@ -2629,6 +2641,27 @@ func (s *Service) machineToolRefusal(sessionID, name string) string {
 		return fmt.Sprintf("you already have %s access to the person's machine; use machine_run, machine_read and machine_write", machine)
 	case name != pebblestore.MachineToolRequestAccess && machine == pebblestore.SessionMachineNone:
 		return "you have no access to the person's machine; when they ask for something that needs it, call request_machine_access with your reason"
+	}
+	return ""
+}
+
+// browserToolRefusal is why a browser tool call may not reach the person's
+// app: manage_browser without a live lease. A request while one is live is
+// how the agent asks for more sites or more time, so it goes through.
+// The lease is the session's access record; past its end it counts as none.
+func (s *Service) browserToolRefusal(sessionID, name string, now int64) string {
+	var access pebblestore.SessionAccess
+	if s != nil && s.sessions != nil {
+		if session, found, err := s.sessions.GetSession(sessionID); err == nil && found {
+			access = pebblestore.SessionAccessFromMetadata(session.Metadata)
+		}
+	}
+	live := access.BrowserLeaseLive(now)
+	switch {
+	case name == pebblestore.BrowserToolManage && !live && access.Browser != "" && access.Browser != pebblestore.SessionBrowserNone:
+		return "the lease on the person's browser has ended; when they still want the work done, call request_browser_access again with your reason and the sites"
+	case name == pebblestore.BrowserToolManage && !live:
+		return "you have no lease on the person's browser; when they ask for something on the web that needs it, call request_browser_access with your reason and the sites"
 	}
 	return ""
 }

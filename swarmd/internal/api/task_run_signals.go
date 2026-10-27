@@ -4,6 +4,7 @@ import (
 	"log"
 	"strings"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/jobautomation"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -23,8 +24,8 @@ func taskRunJobID(projectID, taskID string) string {
 // task.run.cancelled when a run in a task's own session ends, so workflows
 // (job automations) follow the work of Swarm's own agents the way they follow
 // a worker job: the task's first run, and each follow-up sent into its
-// session. Only a task the person or their AI started (swarm_run_task) counts;
-// a task an agent created inside another run does not. It runs after the
+// session. Tasks started directly (swarm_run_task) or delegated by the primary
+// Orchestrator count; tasks created by other agent runs do not. It runs after the
 // task's own status was reconciled; prior is the task's status before that
 // (taskStatusBeforeRunEnd). A replayed or refused status write raises nothing.
 func (s *Server) signalTaskRunEnded(job sessionV3ExecutorJob, status string, result sessionruntime.SessionMutationResult, prior string) {
@@ -66,8 +67,14 @@ func (s *Server) signalTaskRunEnded(job sessionV3ExecutorJob, status string, res
 	if err != nil || !found || task == nil || task.SessionID != job.SessionID || task.Archived {
 		return
 	}
-	if !taskRunAgents[task.Agent] || task.WorkerRunID != "" || task.Design != nil || task.OriginSessionID != "" {
+	if !taskRunAgents[task.Agent] || task.WorkerRunID != "" || task.Design != nil {
 		return
+	}
+	if task.OriginSessionID != "" {
+		origin, found, err := s.sessions.GetSession(task.OriginSessionID)
+		if err != nil || !found || origin.AccountScopeID != account || origin.UserID != session.UserID || !taskRunPrimaryOrchestrator(origin) {
+			return
+		}
 	}
 	if prior == "planning" || prior == "pending_approval" {
 		return // a planning run is not the work
@@ -78,6 +85,12 @@ func (s *Server) signalTaskRunEnded(job sessionV3ExecutorJob, status string, res
 	if job.RunID == pebblestore.InitialTaskRunID(task.ID) {
 		followup = ""
 	}
+	attrs := map[string]string{"job_id": taskRunJobID(projectID, taskID), "role": task.Agent}
+	// Provider completion does not mean the reconciled task did its work.
+	if task.Status == "blocked" {
+		ended = jobautomation.StatusFailed
+		attrs["blocker_reason"] = task.LastError
+	}
 	severity := pebblestore.SignalSeverityInfo
 	if ended != jobautomation.StatusSucceeded {
 		severity = pebblestore.SignalSeverityWarning
@@ -86,16 +99,30 @@ func (s *Server) signalTaskRunEnded(job sessionV3ExecutorJob, status string, res
 	if task.AutomationID != "" {
 		source = jobautomation.RequestSourceAutomation
 	}
+	attrs["source"] = source
 	kind := "task.run." + ended
 	if _, err := s.signals.AppendOnce(pebblestore.Signal{
 		Kind: kind, Severity: severity, Source: pebblestore.SignalSourceSwarmd, Account: account,
 		Summary:  "Task " + controlMCPTruncate(task.Title, 120) + " (" + task.Agent + ") run " + ended,
 		DedupKey: "task.run:" + task.ID + ":" + followup,
 		Refs:     map[string]string{"project_id": projectID, "task_id": taskID, "session_id": job.SessionID, "run_id": job.RunID},
-		Attrs:    map[string]string{"job_id": taskRunJobID(projectID, taskID), "role": task.Agent, "source": source},
+		Attrs:    attrs,
 	}); err != nil {
 		log.Printf("swarmd signal %s not recorded: %v", kind, err)
 	}
+}
+
+// taskRunPrimaryOrchestrator uses the origin's persisted runtime identity, never
+// task input, to distinguish a person-driven conversation from delegated runs.
+func taskRunPrimaryOrchestrator(origin pebblestore.SessionSnapshot) bool {
+	profile, err := sessionV3AgentProfileFromMetadata(origin.Metadata)
+	return err == nil && profile.Name == agentruntime.SwarmOrchestratorAgentID && profile.Mode == agentruntime.ModePrimary &&
+		sessionsV3MetadataString(origin.Metadata, "agent_name") == agentruntime.SwarmOrchestratorAgentID &&
+		sessionsV3MetadataString(origin.Metadata, "resolved_agent_name") == agentruntime.SwarmOrchestratorAgentID &&
+		sessionsV3MetadataString(origin.Metadata, "agent_mode") == agentruntime.ModePrimary &&
+		sessionsV3MetadataString(origin.Metadata, "swarm_v3_execution_class") == "primary" &&
+		sessionsV3MetadataString(origin.Metadata, "parent_session_id") == "" &&
+		sessionsV3MetadataString(origin.Metadata, "worker_run_id") == ""
 }
 
 // taskStatusBeforeRunEnd is the status of the task whose own session job ran

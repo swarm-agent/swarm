@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -156,38 +155,8 @@ func ValidateAutomationV2Settings(a *AutomationV2Settings, now int64) error {
 		if _, err := time.LoadLocation(s.Timezone); err != nil {
 			return errors.New("explicit IANA timezone required")
 		}
-		fields := strings.Fields(s.Cron)
-		if len(fields) != 5 {
-			return errors.New("five cron fields required")
-		}
-		bounds := [][2]int{{0, 59}, {0, 23}, {1, 31}, {1, 12}, {0, 6}}
-		for i, f := range fields {
-			if f == "*" {
-				continue
-			}
-			step := strings.HasPrefix(f, "*/")
-			if step {
-				f = strings.TrimPrefix(f, "*/")
-			}
-			if f == "" {
-				return errors.New("invalid cron field")
-			}
-			for _, c := range f {
-				if c < '0' || c > '9' {
-					return errors.New("cron supports numeric fields, * and */n only; ranges, lists and names are unsupported, never approximate the requested cadence")
-				}
-			}
-			n, err := strconv.Atoi(f)
-			lo, hi := bounds[i][0], bounds[i][1]
-			if step {
-				lo, hi = 1, hi-lo+1
-			}
-			if err != nil || n < lo || n > hi {
-				return errors.New("cron field outside bounds")
-			}
-		}
-		if fields[2] != "*" && fields[4] != "*" {
-			return errors.New("both cron day fields cannot be restricted")
+		if _, err := ParseCron(s.Cron); err != nil {
+			return err
 		}
 	case "trigger", "":
 		if s.IntervalSeconds != 0 || s.Cron != "" {

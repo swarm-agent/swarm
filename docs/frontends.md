@@ -1,44 +1,39 @@
-# Building a frontend for Swarm
+# Building a client for Swarm
 
-A frontend is anything a person uses to run Swarm: a desktop console, a
-dashboard, a menu-bar app, or an AI that sets Swarm up for someone. Every
-frontend follows the same path, with the same safety rules:
+Swarm is a headless app: one daemon that holds every record and runs every
+agent. A client is the front end a person uses with it: a desktop console, a
+dashboard, a web app. Swarm Console is the reference client, and Swarm's own web
+UI is another; both connect, read and act exactly as described here. Build yours
+the same way and design its front end however you like.
 
-1. **Find** Swarm on the machine without a key.
+AI agents that drive Swarm from outside (Claude Code, ChatGPT) do not use this
+path: they use Swarm Control, the MCP layer, with an AI key (see
+[Clients and agents](#clients-and-agents)).
+
+Every client follows the same path:
+
+1. **Find** Swarm on the machine.
 2. **Install** it if it is not there.
-3. **Connect** with a key of the frontend's own.
-4. **Set up** a model provider and a first project.
-5. **Use and follow** it through Swarm Control and the activity feed.
+3. **Connect** as a client: an owner session of its own.
+4. **Read**: one snapshot, then the live stream.
+5. **Act**: talk to the Orchestrator, and use the same routes for everything
+   else.
 
-Nothing here needs a new port, a public listener or a browser holding a key.
-Everything below is on the machine's loopback; reaching other machines is at
-the end.
+Nothing here needs a new port, a public listener or a key in a browser.
+Everything is on the machine's loopback API, `127.0.0.1:7781`.
 
 ## 1. Find Swarm
 
 ```sh
-curl -s http://127.0.0.1:7783/v3/hello
+curl -s http://127.0.0.1:7781/v1/onboarding
 ```
 
-```json
-{"product":"swarm","api":"v3","version":"…","commit":"…","owner":true,
- "features":["hello","control_mcp","activity_feed","app_keys"],
- "control":{"mcp":"/mcp","activity":"/v3/activity","activity_stream":"/v3/activity/stream"},
- "auth":{"scheme":"bearer","key_prefix":"swk_"}}
-```
+It answers without a session. Read:
 
-`/v3/hello` is the only route that answers without a key, and only to `GET`.
-It carries no secrets, names, paths or counts. Read it as:
+- `identity.bootstrapped`: whether Swarm has an owner;
+- `config.swarm_name`: the machine's name.
 
-| Result | Meaning | Next |
-| --- | --- | --- |
-| connection refused | Swarm is not installed, or its MCP is off | install (step 2) |
-| `owner: false` | installed, nobody has set it up | connect (step 3) creates the owner |
-| `owner: true` | installed and owned | connect (step 3), or use your key |
-
-Check `features` for what you need instead of comparing versions. Builds from
-before this route answer `401` to it: treat that as "Swarm is here, update it
-or connect with an AI key".
+Connection refused means Swarm is not installed (step 2).
 
 ## 2. Install
 
@@ -46,16 +41,15 @@ Ubuntu 24.04, x86_64. The installer is the same one people run by hand:
 
 ```sh
 curl -fsSL https://swarmagent.dev/install -o install.sh
-pkexec bash install.sh --for-user "$USER" --app my-console --app-access write --progress=json
+pkexec bash install.sh --for-user "$USER" --name office-server --progress=json
 ```
 
-- **pkexec** is the desktop password prompt. The installer recognizes the
-  person who typed their password (`PKEXEC_UID`, like `SUDO_USER` under sudo),
-  creates Swarm's owner for them and writes their keys into their home.
-- **`--app NAME`** also connects your frontend at the end (step 3), so one
-  password covers install and connect.
+- **pkexec** is the desktop password prompt. The installer recognizes the person
+  who typed their password (`PKEXEC_UID`, like `SUDO_USER` under sudo) and makes
+  them Swarm's owner.
+- **`--name`** is the machine's name. Ask the person for it.
 - **`--progress=json`** adds one line per step on stdout, next to the human
-  output. Read only lines that start with `{"swarm_progress"`:
+  output. Read only the lines that start with `{"swarm_progress"`:
 
   ```json
   {"swarm_progress":{"step":"build","text":"Downloading Swarm v0.1.53"}}
@@ -63,129 +57,122 @@ pkexec bash install.sh --for-user "$USER" --app my-console --app-access write --
   {"swarm_progress":{"error":"…"}}
   ```
 
-  Steps, in order: `prerequisites`, `fetch`, `service-user`, `build`, `start`,
-  `isolation`, `connect-ai`, `connect-app`, `done`. `build` downloads the
-  release (it builds from source with `--ref BRANCH`). Some are skipped
-  (`isolation` without environments, no person to connect). An `error` line
-  comes before a non-zero exit; show its text as is.
-- Over SSH for a server, run the same command with `sudo` on that machine
-  (`ssh -t HOST sudo bash install.sh …`); `--progress=json` lines arrive the
-  same way.
+  An `error` line comes before a non-zero exit; show its text as it is.
+- For a server, run the same command over SSH with `sudo` on that machine
+  (`ssh -t HOST sudo bash install.sh …`).
 
 Show the person where the installer comes from before asking for the password.
 
-## 3. Connect: a key of your own
+## 3. Connect: an owner session for your client
 
 ```sh
-pkexec bash /var/lib/swarm-headless/install.sh \
-  connect-app my-console --access write --progress=json
+pkexec swarmctl client connect my-console --for-user "$USER"
 ```
 
-This writes `~/.config/swarm/apps/my-console.key` (mode 0600, owned by the
-person, never printed) and creates Swarm's owner first if there is none. It is
-separate from the person's AI key (`~/.config/swarm/ai-key`): connecting or
-reconnecting an app never replaces or revokes the AI's key, and the other way
-round. Running `connect-app` again replaces that app's key and revokes the old
-one; `disconnect-app my-console` revokes it and removes the file.
+- **What it makes:** Swarm mints an owner session named for your client over its
+  owner socket. The token lands in `~/.config/swarm/clients/my-console.token`,
+  mode 0600 and readable by the person alone; it is never printed.
+- **For a server:**
+  - run `sudo swarmctl client connect my-console --print` over SSH and keep the
+    token in your client's own private file;
+  - reach the server's API through an SSH tunnel:
+    `ssh -N -L 127.0.0.1:PORT:127.0.0.1:7781 HOST`.
+- **Using it:** send the token on every request as `X-Swarm-Token`. It has the
+  same rights as the web UI, nothing more.
+- **Managing it:** `swarmctl client list` shows the client sessions handed out;
+  `swarmctl client revoke NAME` ends one.
+- **Signed out:** a `401` means the session was revoked or expired. Ask the
+  person to connect again.
 
-Pick the lowest level that does the job:
+Never use Swarm Control (`/mcp`), AI keys (`swk_…`) or the activity feed for a
+client: those are the agents' path.
 
-| `--access` | Can | For |
-| --- | --- | --- |
-| `read` | see status, projects, sessions, usage, activity | dashboards, monitors |
-| `write` | also create projects, start and steer work, answer agents' questions, merge results, pick role models, start ChatGPT sign-in | most frontends |
-| `full` | also approve tasks and tool calls, ask for provider API keys, manage workers, limits and keys | a console that runs the whole box |
+## 4. Read: one snapshot, then the live stream
 
-Your frontend reads the key file at start, keeps it in memory, and sends it as
-`Authorization: Bearer swk_…`. Refuse a key file that is not 0600 or not owned
-by the person. Never put the key in a browser, a URL, a log or a crash report;
-a web frontend keeps it in its own backend process.
+1. **Snapshot.** `POST /v3/sync/bootstrap`:
 
-## 4. Set up: provider and first project
-
-Swarm Control is JSON-RPC over HTTP POST at `/mcp` (MCP streamable HTTP in
-JSON response mode). No session handshake is needed; `tools/list` shows what
-your key's level allows, and every result is compact JSON in
-`result.content[0].text`.
-
-```sh
-curl -s http://127.0.0.1:7783/mcp \
-  -H "Authorization: Bearer $(cat ~/.config/swarm/apps/my-console.key)" \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"swarm_status","arguments":{}}}'
-```
-
-The onboarding a frontend runs, in order:
-
-1. **Provider.** `swarm_list_providers` shows which are ready. If none is:
-   - ChatGPT plan: `swarm_connect_chatgpt {"action":"start"}` returns a link and
-     a code; show both, then `{"action":"status","login_id":…,"wait_seconds":30}`
-     until it reports success.
-   - API key (full keys): `swarm_request_provider_key {"provider":"…"}` returns a one-time
-     local page (10 minutes) where the person pastes the key; then
-     `swarm_list_providers {"provider":"…","wait_seconds":30}`. The key never
-     passes through your frontend.
-     The page opens only on the machine itself (it checks that the request
-     comes from its own loopback address and port). A frontend on another
-     machine offers ChatGPT sign-in, or hands the person the command that
-     reads the key from a file on that machine:
-     `sudo bash /var/lib/swarm-headless/install.sh key PROVIDER < key-file`.
-     This works for the first provider and alongside existing providers. Without
-     the installer, add another API key with
-     `sudo swarmctl setup add-credential --provider PROVIDER --api-key-stdin < key-file`.
-2. **Models.** `swarm_list_models` shows each role's model. Swarm applies its
-   recommended models when a provider connects; change one only when the
-   person asks (`swarm_set_agent_model`).
-3. **Project.** Let the person pick folders (your own file picker: the frontend
-   runs as the person and can see their files). Then
-   `swarm_create_project {"name":…,"workspaces":[{"path":"/home/…/repo","role":"primary_code"}]}`.
-   Swarm cannot see home folders until they are made visible. When it answers
-   `workspace_not_visible`, run once, for all folders:
-
-   ```sh
-   pkexec swarmctl workspace add ~/app ~/docs
+   ```json
+   {"surface":"desktop","selector":{"kind":"recent","global":true,"recent":{"limit":20}},
+    "history":{"mode":"none"},"resources":{"current_run_state":true},"include_active":true}
    ```
 
-   It restarts Swarm once; wait for `/v3/hello` to answer again, then create
-   the project again. Nothing in the folders changes.
-4. **project.md.** `swarm_get_project {"project_id":…,"wait_seconds":60}`
-   returns when Swarm has written the project's context; show it to the person.
-5. **First session.** `swarm_start_session {"agent":"system-orchestrator","project_id":…,"prompt":…}`
-   starts the project's Orchestrator.
+   Keep `snapshot_endpoint_cursor` from the answer.
+2. **Full conversations.** `POST /v3/sync/hydrate` with the session ids the
+   person opens.
+3. **Live.** Open the WebSocket
+   `/v3/realtime/stream?endpoint_cursor=CURSOR`, with `X-Swarm-Token`.
+   - **Frames:** `hello`, `event`, `replay.*`, `keepalive`,
+     `task.lifecycle.updated`, `project.updated`, `usage.scope.updated`,
+     `auth.credentials.updated`, `auth.denied`,
+     `slow_consumer.reconnect_required`.
+   - **Agent text:** it streams as it is produced.
+4. **Repair.** After a disconnect, resume from your last cursor;
+   `/v3/sync/stream` is the durable replay. Never poll.
 
-## 5. Follow
+Swarm's records are the only source of truth. Keep no copy that can disagree
+with them.
 
-Your key also reads the activity feed (`GET`, metadata only, never prompts,
-messages or file contents; see [activity-stream.md](activity-stream.md)):
+## 5. Act
+
+**The Orchestrator** is how a person delegates work in a client. It is a Swarm
+session:
+
+- **Start one:** `POST /v3/sessions` with
+  `{"client_request_id":…,"project_id":…,"agent_name":"system-orchestrator"}`,
+  then `POST /v3/sessions/{id}/messages`. Attachments go first to
+  `POST /v3/sessions/{id}/media`.
+- **Stop a run:** `POST /v3/sessions/{id}/run/stop`.
+- **Answer the agent:** when it asks permission for a tool, the request arrives
+  on the stream. Answer it with
+  `POST /v3/sessions/{id}/permissions/{permission_id}/resolve`.
+- **Workers it proposes:** the Orchestrator never turns a worker on by itself.
+  A worker it proposes waits until the person accepts it, whenever they get to
+  it: `POST /v3/workers/{id}/accept` at the revision shown, or `DELETE` to
+  discard it.
+
+Everything else uses the same routes as the web UI:
+
+| What | Routes |
+| --- | --- |
+| Projects and tasks | `/v3/projects…`, `/v3/projects/{id}/tasks…` |
+| Workers and their runs | `/v3/workers…` |
+| Models and providers | `/v1/agent-model-settings`, `/v1/model-profiles`, `/v1/providers`, `/v1/auth/credentials…`, `/v1/auth/codex/oauth/*` |
+| Folders | `/v1/workspace/add`, `/v1/workspace/repository/setup` |
+| Usage | `/v3/usage`, `/v3/usage/limits` |
+| Media | `/v3/media-staging`, `/v3/sessions/{id}/media`, `/v3/projects/{id}/media` |
+| Linked machines | `/v3/fleet…` on the home machine |
+
+Swarm cannot see a person's home folders until they are made visible. When it
+answers `workspace_not_visible`, run once, for all the folders:
 
 ```sh
-curl -sN http://127.0.0.1:7783/v3/activity/stream?cursor=0 \
-  -H "Authorization: Bearer $(cat ~/.config/swarm/apps/my-console.key)"
+pkexec swarmctl workspace add ~/app ~/docs
 ```
 
-Keep the last `cursor` and reconnect with it; show a `gap` instead of hiding
-it. Read details (a session, a task's result) through Swarm Control when an
-event concerns them. Everything else your key reaches is `/mcp`.
+## Clients and agents
 
-## Other machines
+There is one Swarm and two ways to delegate to it, doing the same actions on the
+same records:
 
-A frontend reaches another machine the same three ways an AI does: the
-machine's tailnet gateway (`https://NAME.TAILNET.ts.net:8444`, with a key from
-`connect-app` run there), an SSH tunnel to its `127.0.0.1:7783`, or a Swarm
-Control relay ([packages/swarm-relay](../packages/swarm-relay/README.md)).
-Discovery answers on the tailnet gateway too. Keys stay on the machine that
-uses them; copy one only over SSH into the person's own private file.
+| | Client (this guide) | AI agent |
+| --- | --- | --- |
+| Who | A person in your front end, talking to Swarm's Orchestrator | The person's own AI, driving Swarm itself |
+| Connects with | An owner session (`swarmctl client connect`) | An AI key (`install.sh connect-ai`) |
+| Talks to | The HTTP API above | Swarm Control: MCP at `/mcp` |
+| Approves | The person, in your client: tool prompts while a run is live; workers the Orchestrator proposes are accepted or denied later | The person, in their AI's chat; Swarm enforces the key's level (read, write, approve, manage) |
 
-## Rules for frontend authors
+## Rules for client authors
 
-- One key per frontend, at the lowest level that works; revoke it on uninstall.
-- Keys live in the person's private files or the system keyring, never in a
-  browser, a URL, logs, analytics or crash reports.
-- Provider keys never pass through a frontend: use the one-time page or the
-  device code.
-- Ask for the password (pkexec or sudo) only for the installer and for making
-  folders visible, and say what it will do first.
-- Listen on nothing. If a frontend has a server (a web app), it binds to
-  loopback and holds the key there.
-- Treat everything agents produce (titles, reports, file names) as untrusted
-  text: render it, never run it.
+- **One owner session per client.** Revoke it on uninstall.
+- **Where the token lives:** the person's private files, never a browser, a
+  URL, logs, analytics or crash reports. A web client keeps it in its own
+  backend process.
+- **Provider keys never pass through a client.** Use ChatGPT's device sign-in,
+  or Swarm's own key form.
+- **Ask for the password** (pkexec or sudo) only for the installer, for
+  `swarmctl client connect` and for making folders visible. Say what it will do
+  first.
+- **Listen on nothing.** A client with a server (a web app) binds that server to
+  loopback.
+- **Agent output is untrusted text.** Render titles, reports and file names;
+  never run them.

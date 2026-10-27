@@ -518,7 +518,7 @@ async function scenarioTasks(ctx) {
   const planned = await drive(ctx, orchestratorId, (p) => (p.kind === 'question'
     ? { action: 'allow_once', answer: 'Yes: one task, hello.txt with that one line, committed. Propose it now.' }
     : { action: 'allow_once', reason: 'Routine step of the requested proposal.' }), { maxMs: 180000 })
-  ctx.check('tasks.orchestrator_run', planned.reason === 'run_ended' && planned.outcome === 'finished', `wait ended: ${planned.reason} ${planned.outcome ?? ''}; decisions ${JSON.stringify(planned.decisions)}; last reply ${JSON.stringify(lastAssistant(planned.state).slice(0, 120))}`)
+  ctx.check('tasks.orchestrator_run', planned.reason === 'run_ended' && planned.outcome === 'finished', `wait ended: ${planned.reason} ${planned.outcome ?? ''}; decisions ${JSON.stringify(planned.decisions)}; last reply ${JSON.stringify(lastAssistant(planned.state).slice(0, 120))}${planned.state?.session?.error ? `; error ${planned.state.session.error}` : ''}`)
 
   let tasks = (await tool(ctx, 'swarm_list_tasks', { project_id: projectId })).tasks ?? []
   const task = tasks.find((t) => t.status === 'pending_approval') ?? tasks[0]

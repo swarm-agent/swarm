@@ -64,8 +64,8 @@ func emitStartupSignals(emitter *signals.Emitter, status sandbox.Status, headles
 
 // workerRunSignal raises worker.run.succeeded, worker.run.failed or
 // worker.run.cancelled when a worker run finishes. It names the worker and
-// run; the run's input, output and error text stay on the machine.
-func workerRunSignal(emitter *signals.Emitter) func(pebblestore.WorkerRecord, pebblestore.WorkerRunRecord) {
+// run. Explicit blocker reasons are included in the failure summary.
+func workerRunSignal(emitter *signals.Emitter, sessions *pebblestore.SessionStore) func(pebblestore.WorkerRecord, pebblestore.WorkerRunRecord) {
 	return func(worker pebblestore.WorkerRecord, run pebblestore.WorkerRunRecord) {
 		if run.Cleanup != nil && run.Cleanup.FailureReported {
 			kind, severity, summary := "job.cleanup_failed", pebblestore.SignalSeverityWarning, "Job finished but checkout cleanup repeatedly failed"
@@ -76,8 +76,23 @@ func workerRunSignal(emitter *signals.Emitter) func(pebblestore.WorkerRecord, pe
 			return
 		}
 		followup := run.FollowupRunID
-		if run.FollowupStatus == "interrupted" || run.FollowupStatus == "failed" {
-			run.Status = "failed"
+		// Follow-ups keep the original run receipt's status. Emit the latest
+		// outcome while retaining its follow-up identity for workflow rounds.
+		switch run.FollowupStatus {
+		case "completed":
+			// Every follow-up has its own lifecycle outcome, even when the
+			// original run succeeded. Only this exact execution can block it.
+			run.Status, run.Error = "succeeded", ""
+			snapshot, found, err := sessions.GetSession(run.SessionID)
+			if err != nil || !found || snapshot.AccountScopeID != run.AccountScopeID || snapshot.UserID != run.UserID {
+				run.Status, run.Error = "failed", "cannot verify follow-up session lifecycle"
+			} else if followup != "" && snapshot.Metadata["lifecycle_signal"] == "blocked" && snapshot.Metadata["lifecycle_signal_run_id"] == followup {
+				if reason, ok := snapshot.Metadata["blocker_reason"].(string); ok && strings.TrimSpace(reason) != "" {
+					run.Status, run.Error = "failed", "blocked: "+reason
+				}
+			}
+		case "interrupted", "failed":
+			run.Status, run.Error = "failed", run.FollowupError
 		}
 		severity := pebblestore.SignalSeverityInfo
 		if run.Status == "failed" {
@@ -100,14 +115,18 @@ func workerRunSignal(emitter *signals.Emitter) func(pebblestore.WorkerRecord, pe
 		if strings.Contains(run.Error, sandbox.ErrInterrupted.Error()) {
 			emitter.Emit(pebblestore.Signal{Kind: "job.sandbox_interrupted", Severity: pebblestore.SignalSeverityWarning, Account: run.AccountScopeID, Summary: "Job sandbox interrupted (OOM or container restart); uncommitted work preserved; retry with a follow-up", Refs: refs, DedupKey: "job.sandbox:" + run.ID})
 		}
+		summary := "Worker " + name + " run " + run.Status
+		if run.Status == "failed" && strings.HasPrefix(run.Error, "blocked: ") {
+			summary += ": " + run.Error
+		}
 		emitter.Emit(pebblestore.Signal{
 			Kind:     "worker.run." + run.Status,
 			Severity: severity,
 			Account:  run.AccountScopeID,
-			Summary:  "Worker " + name + " run " + run.Status,
+			Summary:  summary,
 			DedupKey: "worker.run:" + run.ID + ":" + followup,
 			Refs:     refs,
-			Attrs:    map[string]string{"source": run.RequestSource},
+			Attrs:    map[string]string{"source": run.RequestSource, "error": run.Error},
 		})
 	}
 }
