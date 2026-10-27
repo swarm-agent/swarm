@@ -437,7 +437,10 @@ func controlMCPReadFile(c *controlMCPCall, args map[string]any) (any, error) {
 func controlMCPGit(ctx context.Context, dir string, limit int, args ...string) (string, bool, error) {
 	stdout := &boundedCommandOutput{limit: limit}
 	stderr := &boundedCommandOutput{limit: 4 << 10}
-	full := append([]string{"-c", "core.fsmonitor=false", "-c", "core.quotepath=off"}, args...)
+	// A task worktree of a person's repository has its Git directory in their
+	// folder, owned by them: Git refuses it as "dubious ownership" unless the
+	// worktree itself is named safe, as the other daemon Git calls do.
+	full := append([]string{"-c", "safe.directory=" + dir, "-c", "core.fsmonitor=false", "-c", "core.quotepath=off"}, args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
 	cmd.Dir = dir
 	cmd.Env = append(gitenv.FilterIdentityOverrides(os.Environ()), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0")

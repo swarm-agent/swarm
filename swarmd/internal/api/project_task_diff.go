@@ -171,7 +171,7 @@ func readTaskDiff(ctx context.Context, dir string, answer *taskDiffAnswer, scope
 		return err
 	}
 	answer.FilesTruncated = filesTruncated && scope == ""
-	numstat, _, err := controlMCPGit(ctx, dir, 256<<10, append([]string{"diff", "--no-color", "--numstat", "-z", "-M", base, head}, pathspec...)...)
+	numstat, _, err := controlMCPGit(ctx, dir, 256<<10, append([]string{"diff", "--no-color", "--no-ext-diff", "--no-textconv", "--numstat", "-z", "-M", base, head}, pathspec...)...)
 	if err != nil {
 		return err
 	}
