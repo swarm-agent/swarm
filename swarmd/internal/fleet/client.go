@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // TokenHeader carries the home's owner session on the linked Swarm, as any
@@ -62,6 +63,53 @@ func (c *Client) Do(ctx context.Context, method, path string, body io.Reader, he
 		req.Header.Set(TokenHeader, c.token)
 	}
 	return c.http.Do(req)
+}
+
+// Upgrade opens a WebSocket using the same pinned TLS transport and link
+// session as Do. Redirects are never followed. The caller closes the stream.
+func (c *Client) Upgrade(ctx context.Context, path string, header http.Header) (*http.Response, io.ReadWriteCloser, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	timer := time.AfterFunc(10*time.Second, cancel)
+	defer timer.Stop()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+c.address+path, nil)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	req.Header = header.Clone()
+	for _, key := range []string{"Authorization", "Cookie", "Proxy-Authorization", TokenHeader} {
+		req.Header.Del(key)
+	}
+	req.Header.Set(TokenHeader, c.token)
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	resp, err := c.http.Transport.RoundTrip(req)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		resp.Body.Close()
+		cancel()
+		return nil, nil, &Error{Status: resp.StatusCode}
+	}
+	stream, ok := resp.Body.(io.ReadWriteCloser)
+	if !ok {
+		resp.Body.Close()
+		cancel()
+		return nil, nil, fmt.Errorf("the machine did not provide an upgraded connection")
+	}
+	return resp, &upgradedStream{ReadWriteCloser: stream, cancel: cancel}, nil
+}
+
+type upgradedStream struct {
+	io.ReadWriteCloser
+	cancel context.CancelFunc
+}
+
+func (s *upgradedStream) Close() error {
+	s.cancel()
+	return s.ReadWriteCloser.Close()
 }
 
 // JSON sends one request and decodes the JSON answer into out (when not nil).

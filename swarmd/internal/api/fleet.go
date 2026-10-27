@@ -469,6 +469,10 @@ func (s *Server) handleFleetForward(w http.ResponseWriter, r *http.Request, acco
 			header[k] = v
 		}
 	}
+	if fleetHeaderToken(r.Header, "Connection", "upgrade") && fleetHeaderToken(r.Header, "Upgrade", "websocket") {
+		s.forwardFleetWebSocket(w, r, client, machine, path, header)
+		return
+	}
 	resp, err := client.Do(r.Context(), r.Method, path, r.Body, header)
 	s.noteFleetContact(machine, err)
 	if err != nil {

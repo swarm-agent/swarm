@@ -7,6 +7,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 ## Unreleased
 
 - Send Gemini API tool declarations with only Gemini Schema fields: `oneOf` becomes `anyOf`, `const` becomes a one-value enum, and validation-only keywords such as `propertyNames` are left out, so the Orchestrator's workflow and custom-agent tools no longer stop its run on the Gemini API. Docs impact: none.
+- Forward linked machines' realtime WebSockets through the home over pinned TLS, using the home's link session and preserving owner access checks.
+  Docs impact: none.
 
 - Supply published standard-tier Gemini transcription rates (including Gemini 3.5 Flash-Lite) missing from model snapshots, retain speech alignment text usage when modality details omit it, and expose Lyria song prices without marking empty media price views verified. Conditional expiry/context-tier transcription rates remain unsupported. Docs impact: none.
 
