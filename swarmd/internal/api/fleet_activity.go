@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -201,6 +202,9 @@ type fleetActivityFeed struct {
 	out       chan fleetActivityFrame
 	mu        sync.Mutex
 	cursors   map[string]uint64
+	// startNow: machines without a given cursor that begin at their current
+	// head (start=now) instead of replaying their history.
+	startNow map[string]bool
 }
 
 func (f *fleetActivityFeed) push(ctx context.Context, event string, value any) bool {
@@ -220,6 +224,26 @@ func (f *fleetActivityFeed) cursor(name string) uint64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.cursors[name]
+}
+
+// beginNow moves a start=now machine to its current head once. A machine
+// that had a cursor needs none; an unreachable one is tried again later.
+func (f *fleetActivityFeed) beginNow(name string, head func() (uint64, error)) error {
+	f.mu.Lock()
+	now := f.startNow[name]
+	f.mu.Unlock()
+	if !now {
+		return nil
+	}
+	cursor, err := head()
+	if err != nil {
+		return err
+	}
+	f.mu.Lock()
+	f.cursors[name] = cursor
+	delete(f.startNow, name)
+	f.mu.Unlock()
+	return nil
 }
 
 func (f *fleetActivityFeed) advance(ctx context.Context, name string, cursor uint64) bool {
@@ -272,7 +296,18 @@ func (s *Server) serveFleetActivityStream(w http.ResponseWriter, r *http.Request
 		cancel()
 		wg.Wait()
 	}()
-	feed := &fleetActivityFeed{s: s, principal: principal, out: make(chan fleetActivityFrame, 64), cursors: cursors}
+	feed := &fleetActivityFeed{s: s, principal: principal, out: make(chan fleetActivityFrame, 64), cursors: cursors, startNow: map[string]bool{}}
+	if r.URL.Query().Get("start") == "now" {
+		names := []string{home}
+		for _, m := range machines {
+			names = append(names, m.name)
+		}
+		for _, name := range names {
+			if _, given := cursors[name]; !given {
+				feed.startNow[name] = true
+			}
+		}
+	}
 	sub := s.v3RealtimeOutbox.subscribe()
 	controller := http.NewResponseController(w)
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -391,6 +426,7 @@ func (f *fleetActivityFeed) followHome(ctx context.Context, closeAll context.Can
 		}
 		return false
 	}
+	_ = f.beginNow(name, f.s.sessions.CurrentRealtimeOutboxRevision)
 	for {
 		gap := f.s.followActivity(ctx, sub, f.principal, f.cursor(name), "", "", emit, nil, nil)
 		if gap == nil {
@@ -472,6 +508,17 @@ func fleetActivityShortError(err error) string {
 // readMachine reads one connection to a machine's feed. It returns resume
 // when the machine closed after a gap (its cursor moved to the gap's).
 func (f *fleetActivityFeed) readMachine(ctx context.Context, client *fleet.Client, name string, contact func(error), connected func() bool) (bool, error) {
+	// start=now: learn the machine's head from one page at an ahead cursor
+	// (Swarm answers it with the head), so its history is not replayed.
+	if err := f.beginNow(name, func() (uint64, error) {
+		page, err := f.s.fleetActivityMachinePage(ctx, f.principal, name, math.MaxUint64)
+		if err != nil {
+			return 0, err
+		}
+		return strconv.ParseUint(page.Cursor, 10, 64)
+	}); err != nil {
+		return false, err
+	}
 	upstream, cancel := context.WithCancel(ctx)
 	defer cancel()
 	path := activityStreamPath + "?cursor=" + strconv.FormatUint(f.cursor(name), 10)

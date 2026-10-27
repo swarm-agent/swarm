@@ -17,6 +17,7 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
     ("/media", "images, video and sound"),
     ("/agents", "models per role"),
     ("/fleet", "every machine, what needs you, spend"),
+    ("/live", "everything happening across the fleet, live"),
 ];
 
 #[derive(Debug, PartialEq)]
@@ -33,7 +34,7 @@ pub(super) enum Slash {
 pub(super) fn parse(text: &str) -> Slash {
     let text = text.trim();
     let (word, rest) = text.split_once(char::is_whitespace).map(|(w, r)| (w, r.trim())).unwrap_or((text, ""));
-    let names = ["/new", "/stop", "/theme", "/usage", "/settings", "/media", "/agents", "/fleet"];
+    let names = ["/new", "/stop", "/theme", "/usage", "/settings", "/media", "/agents", "/fleet", "/live"];
     let hits: Vec<&str> = names.iter().copied().filter(|n| n.starts_with(word) && word.len() > 1).collect();
     let name = if names.contains(&word) { word } else if hits.len() == 1 { hits[0] } else { return Slash::Unknown };
     match (name, rest) {
@@ -47,6 +48,7 @@ pub(super) fn parse(text: &str) -> Slash {
         ("/media", "") => Slash::Go(Page::Media),
         ("/agents", "") => Slash::Go(Page::Agents),
         ("/fleet", "") => Slash::Go(Page::Fleet),
+        ("/live", "") => Slash::Go(Page::Live),
         _ => Slash::Unknown,
     }
 }
@@ -181,6 +183,8 @@ mod tests {
         assert_eq!(parse("/theme"), Slash::Theme(None));
         assert_eq!(parse("/theme dark purple"), Slash::Theme(Some("dark purple".into())));
         assert_eq!(parse("/nope"), Slash::Unknown);
+        assert_eq!(parse("/live"), Slash::Go(Page::Live));
+        assert_eq!(parse("/li"), Slash::Go(Page::Live));
     }
 
     #[test]

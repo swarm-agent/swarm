@@ -42,7 +42,7 @@ impl Console {
                 let online = self.machines.iter().filter(|m| m.health != Health::Offline).count();
                 Some((format!("{online}/{}", self.machines.len()), t.faint, false))
             }
-            Page::Agents => None,
+            Page::Agents | Page::Live => None,
             Page::Automations => match &self.automations {
                 Some(Ok(b)) => {
                     let failed = Console::failing(b).len();

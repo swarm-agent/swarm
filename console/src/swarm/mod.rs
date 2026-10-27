@@ -5,6 +5,7 @@
 pub mod automations;
 pub mod client;
 pub mod live;
+pub mod live_stream;
 pub mod map;
 pub mod media;
 pub mod models;

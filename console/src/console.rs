@@ -22,6 +22,7 @@ mod automations;
 mod background;
 mod commands;
 mod fleet;
+mod fleet_live;
 mod live;
 mod markdown;
 mod media;
@@ -63,6 +64,8 @@ pub enum Page {
     Usage,
     /// The whole fleet: every machine, what needs you, spend.
     Fleet,
+    /// Console mode: everything happening across the fleet, live.
+    Live,
     Agents,
     /// The account's rules: this device, other devices, home, linked machines.
     Permissions,
@@ -74,7 +77,7 @@ pub enum Page {
 }
 
 impl Page {
-    const ALL: [Page; 9] = [Page::Sessions, Page::Media, Page::Usage, Page::Fleet, Page::Agents, Page::Permissions, Page::Automations, Page::Settings, Page::Search];
+    const ALL: [Page; 10] = [Page::Sessions, Page::Media, Page::Usage, Page::Fleet, Page::Live, Page::Agents, Page::Permissions, Page::Automations, Page::Settings, Page::Search];
 
     fn label(self) -> &'static str {
         match self {
@@ -82,6 +85,7 @@ impl Page {
             Page::Media => "Media",
             Page::Usage => "Usage",
             Page::Fleet => "Fleet",
+            Page::Live => "Live",
             Page::Agents => "Agents",
             Page::Permissions => "Permissions",
             Page::Automations => "Automations",
@@ -97,6 +101,7 @@ impl Page {
             Page::Media => Icon::Media,
             Page::Usage => Icon::Usage,
             Page::Fleet => Icon::Machine,
+            Page::Live => Icon::Live,
             Page::Agents => Icon::Agents,
             Page::Permissions => Icon::Shield,
             Page::Automations => Icon::Tasks,
@@ -130,6 +135,7 @@ actions!(
         GoUsage,
         GoAgents,
         GoFleet,
+        GoLive,
         GoSettings,
         Send,
         Complete,
@@ -317,6 +323,8 @@ pub struct Console {
     answers: HashMap<SharedString, HashMap<SharedString, String>>,
     /// The question whose "Custom response" waits for your typed answer.
     custom_for: Option<(SharedString, SharedString)>,
+    /// The Live page: the fleet stream, its lines and filters.
+    live_page: fleet_live::LivePage,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -470,6 +478,7 @@ impl Console {
             failure: None,
             answers: HashMap::new(),
             custom_for: None,
+            live_page: Default::default(),
         };
         if demo {
             // Three panes: one beside a stack of two, to show both split directions.
@@ -647,6 +656,9 @@ impl Console {
     }
     fn go_fleet(&mut self, _: &GoFleet, _: &mut Window, cx: &mut Context<Self>) {
         self.go(Page::Fleet, cx);
+    }
+    fn go_live(&mut self, _: &GoLive, _: &mut Window, cx: &mut Context<Self>) {
+        self.go(Page::Live, cx);
     }
     fn go_settings(&mut self, _: &GoSettings, _: &mut Window, cx: &mut Context<Self>) {
         self.go(Page::Settings, cx);
@@ -1446,6 +1458,7 @@ impl Render for Console {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _timed = Timed::new("render");
         self.ensure_composers(cx);
+        self.sync_live_page(cx);
         // The conversations open in panes are followed in full, from the moment
         // they open (watch sends nothing when the set is unchanged).
         if let Some(live) = &self.live {
@@ -1488,6 +1501,7 @@ impl Render for Console {
             .on_action(cx.listener(Self::go_usage))
             .on_action(cx.listener(Self::go_agents))
             .on_action(cx.listener(Self::go_fleet))
+            .on_action(cx.listener(Self::go_live))
             .on_action(cx.listener(Self::go_settings))
             .on_action(cx.listener(Self::go_search))
             .on_action(cx.listener(Self::go_automations))
@@ -1515,6 +1529,7 @@ impl Render for Console {
                         Page::Media => div().flex_1().min_w_0().child(self.render_media(cx)),
                         Page::Usage => div().flex_1().min_w_0().child(self.render_usage(cx)),
                         Page::Fleet => div().flex_1().min_w_0().child(self.render_fleet(cx)),
+                        Page::Live => div().flex_1().min_w_0().child(self.render_live(cx)),
                         Page::Agents => div().flex_1().min_w_0().child(self.render_agents(cx)),
                         Page::Permissions => div().flex_1().min_w_0().child(self.render_permissions(cx)),
                         Page::Automations => div().flex_1().min_w_0().child(self.render_automations(cx)),

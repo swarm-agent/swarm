@@ -337,9 +337,25 @@ pub fn line(name: &str, detail: &str, summary: &str, time: &str) -> Line {
         + if time.is_empty() { 0 } else { 3 + time.chars().count() };
     let room = LINE_MAX.saturating_sub(fixed + 1).max(16);
     let detail = shorten(detail, room);
-    let detail = if detail.is_empty() { String::new() } else { format!(" {detail}") };
-    let summary = if summary.is_empty() { String::new() } else { format!(" · {summary}") };
-    let time = if time.is_empty() { String::new() } else { format!(" · {time}") };
+    // Separators only between parts that are there: a line without a name
+    // starts with its detail.
+    let detail = match (name.is_empty(), detail.is_empty()) {
+        (_, true) => String::new(),
+        (true, false) => detail,
+        (false, false) => format!(" {detail}"),
+    };
+    let lead = name.is_empty() && detail.is_empty();
+    let summary = match (summary.is_empty(), lead) {
+        (true, _) => String::new(),
+        (false, true) => summary,
+        (false, false) => format!(" · {summary}"),
+    };
+    let lead = lead && summary.is_empty();
+    let time = match (time.is_empty(), lead) {
+        (true, _) => String::new(),
+        (false, true) => time,
+        (false, false) => format!(" · {time}"),
+    };
     Line {
         text: format!("{name}{detail}{summary}{time}"),
         name: name.len(),

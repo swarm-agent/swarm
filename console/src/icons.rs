@@ -57,6 +57,7 @@ pub enum Icon {
     ChevronRight,
     Copy,
     Shield,
+    Live,
 }
 
 impl Icon {
@@ -81,6 +82,7 @@ impl Icon {
             Icon::ChevronRight => "chevron-right",
             Icon::Copy => "copy",
             Icon::Shield => "shield",
+            Icon::Live => "live",
         }
     }
 
@@ -106,6 +108,7 @@ impl Icon {
             Icon::ChevronRight => "▸",
             Icon::Copy => "⧉",
             Icon::Shield => "⛨",
+            Icon::Live => "∿",
         }
     }
 
@@ -127,7 +130,7 @@ macro_rules! icon_table {
 static ICONS: &[(&str, &[u8])] = icon_table!(
     "sessions", "media", "usage", "agents", "settings", "search", "plus", "split-right",
     "split-down", "close", "collapse", "expand", "project", "machine", "tasks",
-    "chevron-down", "chevron-right", "copy", "shield",
+    "chevron-down", "chevron-right", "copy", "shield", "live",
 );
 
 /// Swarm's mark, the brand SVG as it is (its nested squares and their
@@ -164,7 +167,7 @@ mod tests {
             Icon::Sessions, Icon::Media, Icon::Usage, Icon::Agents, Icon::Settings, Icon::Search,
             Icon::Plus, Icon::SplitRight, Icon::SplitDown, Icon::Close, Icon::Collapse,
             Icon::Expand, Icon::Project, Icon::Machine, Icon::Tasks, Icon::ChevronDown,
-            Icon::ChevronRight, Icon::Copy, Icon::Shield,
+            Icon::ChevronRight, Icon::Copy, Icon::Shield, Icon::Live,
         ];
         for icon in all {
             for style in [IconStyle::Line, IconStyle::Solid, IconStyle::Pixel] {

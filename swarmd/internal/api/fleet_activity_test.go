@@ -199,6 +199,40 @@ func TestFleetActivityStreamMerges(t *testing.T) {
 	}
 }
 
+// Purpose: start=now begins every machine without a cursor at its current
+// head: old history is not replayed, new records arrive tagged.
+// Threat: a live view opening on a busy fleet floods its client with every
+// machine's whole history and is closed for falling behind.
+// Boundary: Server.handleFleetActivity with start=now.
+func TestFleetActivityStreamStartsNow(t *testing.T) {
+	a, b, server := fleetActivityTestLink(t)
+	fleetActivityTestSession(t, a, "home-old")
+	fleetActivityTestSession(t, b, "box-old")
+
+	frames, stop := fleetActivityTestOpen(t, server, "?start=now")
+	defer stop()
+	fleetActivityTestAwait(t, frames, 10*time.Second, "b online", fleetActivityTestIs("machine", "b", "state", "online"))
+	fleetActivityTestSession(t, a, "home-new")
+	fleetActivityTestSession(t, b, "box-new")
+	seen := fleetActivityTestAwait(t, frames, 10*time.Second, "both new sessions", func() func(fleetActivityTestFrame) bool {
+		got := map[string]bool{}
+		return func(f fleetActivityTestFrame) bool {
+			if f.event == "activity" {
+				got[f.data["session_id"].(string)] = true
+			}
+			return got["home-new"] && got["box-new"]
+		}
+	}())
+	for _, f := range seen {
+		if f.event == "activity" && (f.data["session_id"] == "home-old" || f.data["session_id"] == "box-old") {
+			t.Fatalf("start=now replayed history: %s", f.raw)
+		}
+		if f.event == "gap" {
+			t.Fatalf("start=now reported a gap: %s", f.raw)
+		}
+	}
+}
+
 // Purpose: a machine's gap is forwarded tagged with that machine and the
 // machine resumes from the gap's cursor without being called offline; a
 // machine that drops is announced offline and online again when it returns,
