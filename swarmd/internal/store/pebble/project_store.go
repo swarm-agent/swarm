@@ -188,7 +188,7 @@ func (s *SessionStore) GetProject(accountScopeID, id string) (*ProjectRecord, bo
 	return &record, true, nil
 }
 
-// ListProjects lists projects for an account scope ordered by updated_at descending.
+// ListProjects lists projects in account order; unlisted projects come first, newest first.
 func (s *SessionStore) ListProjects(accountScopeID string, limit int) ([]ProjectRecord, error) {
 	if s == nil || s.store == nil || s.store.db == nil {
 		return nil, errors.New("database not available")
@@ -216,9 +216,27 @@ func (s *SessionStore) ListProjects(accountScopeID string, limit int) ([]Project
 		return nil, err
 	}
 
-	// Sort updated_at descending
+	var order []string
+	if _, err := s.store.GetJSON(projectOrderKey(accountScopeID), &order); err != nil {
+		return nil, err
+	}
+	rank := make(map[string]int, len(order))
+	for i, id := range order {
+		rank[id] = i
+	}
 	sort.Slice(projects, func(i, j int) bool {
-		return projects[i].UpdatedAt > projects[j].UpdatedAt
+		a, aSet := rank[projects[i].ID]
+		b, bSet := rank[projects[j].ID]
+		if aSet != bSet {
+			return !aSet
+		}
+		if aSet {
+			return a < b
+		}
+		if projects[i].CreatedAt != projects[j].CreatedAt {
+			return projects[i].CreatedAt > projects[j].CreatedAt
+		}
+		return projects[i].ID < projects[j].ID
 	})
 
 	if len(projects) > limit {

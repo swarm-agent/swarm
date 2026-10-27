@@ -278,6 +278,7 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(WorkersPath+"/", s.handleWorkers)
 	mux.HandleFunc(WorkersEnsurePresetsPath, s.handleWorkersEnsurePresets)
 	mux.HandleFunc(ProjectsPath, s.handleProjects)
+	mux.HandleFunc(ProjectsPath+":order", s.handleProjects)
 	mux.HandleFunc(ProjectsPath+"/", s.handleProjects)
 	mux.HandleFunc("/v3/auth/tokens", s.handleAuthTokens)
 	mux.HandleFunc("/v3/auth/tokens/", s.handleAuthTokens)

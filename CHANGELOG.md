@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Keep project selection tied to IDs in Console and save account project order independently of edits, with tab dragging and move controls. Docs impact: document the project order API.
+
 - Refresh project.md automatically when project folders change and on request; show folder removal, live generation status and Markdown in Console. Docs impact: console/README.md and docs/frontends.md updated.
 
 - Add Swarm Console, the native desktop client (Rust, GPUI), under `console/`: onboarding that connects it as an owner client, projects, Orchestrator conversations, tasks, agents, usage, and linked machines through the home Swarm. It builds on its own and is not part of the Swarm release yet. Docs impact: new `console/README.md` and `console/AGENTS.md`.

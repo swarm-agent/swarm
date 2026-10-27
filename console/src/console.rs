@@ -176,9 +176,9 @@ pub struct Console {
     /// project).
     projects_tab: Option<String>,
     /// A project being renamed or whose project.md is being edited (its
-    /// index), the project.md field, and a project to select once listed.
-    project_rename: Option<usize>,
-    context_edit: Option<usize>,
+    /// ID), the project.md field, and a project to select once listed.
+    project_rename: Option<String>,
+    context_edit: Option<String>,
     folder_remove: Option<(String, String)>,
     context_input: Option<Entity<TextInput>>,
     pending_project: Option<String>,

@@ -60,7 +60,7 @@ func isAllowedProjectKey(accountScopeID string, key string) bool {
 	}
 	projectPrefix := KeyProjectAccountPrefix + accountPart + "/"
 	taskPrefix := KeyProjectTaskAccountPrefix + accountPart + "/"
-	return strings.HasPrefix(key, projectPrefix) || strings.HasPrefix(key, taskPrefix)
+	return key == projectOrderKey(accountScopeID) || strings.HasPrefix(key, projectPrefix) || strings.HasPrefix(key, taskPrefix)
 }
 
 func setProjectRealtimeMutationInBatch(batch *pebble.Batch, account string, m *projectRealtimeMutation, repositories ...*SessionStore) error {
@@ -79,6 +79,12 @@ func setProjectRealtimeMutationInBatch(batch *pebble.Batch, account string, m *p
 		data := m.writes[key]
 		if !isAllowedProjectKey(account, key) || !json.Valid(data) {
 			return ErrProjectInvalid
+		}
+		if key == projectOrderKey(account) {
+			if err := batch.Set([]byte(key), data, nil); err != nil {
+				return err
+			}
+			continue
 		}
 		if strings.HasPrefix(key, KeyProjectTaskAccountPrefix+keyPart(account)+"/") {
 			var task ProjectTaskRecord

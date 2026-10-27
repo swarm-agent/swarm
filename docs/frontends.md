@@ -206,3 +206,7 @@ The home Orchestrator uses `get_task` to read its status and report.
 ### Refreshing project.md
 
 `PATCH /v3/projects/{id}` with changed folder membership in `workspaces` starts a project.md refresh; unchanged membership and metadata-only edits do not. `POST /v3/projects/{id}/context:retry` with `expected_attempt` refreshes ready or failed context (409 for a stale attempt or an unexpired running claim). Refresh preserves applicable existing writing and uses the current folders' source evidence. Observe `context_generation` (`status`, `attempt`, `error`) through project snapshots and `project.updated` invalidation: new active attempts use `generating`; clients should also understand legacy `running` and `pending`. Claim and completion updates use the durable project realtime outbox. Do not poll.
+
+### Project order
+
+`PUT /v3/projects:order` accepts `{"project_ids":["project-id"],"client_request_id":"request-id"}` with owner access or `projects:write`. IDs must be unique and belong to the authenticated account; unknown or foreign IDs reject the whole change. `GET /v3/projects` (and MCP project listing) uses this account order. Projects omitted from the order appear first, newest-created first, with ID as the tie-breaker. Updating project metadata, folders or project.md does not move a project. An order change emits durable `project.updated`; clients refresh from Swarm rather than retaining a separate local order.

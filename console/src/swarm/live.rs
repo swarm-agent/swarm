@@ -140,6 +140,7 @@ pub enum Command {
     Reveal { session_id: String },
     /// Change a project's record (name, project.md): PATCH /v3/projects/{id}.
     PatchProject { project_id: String, body: Value },
+    OrderProjects { project_ids: Vec<String> },
     RefreshProjectContext { project_id: String, expected_attempt: u64 },
     Integrate { project_id: String, task_id: String, recover: bool },
     /// Accept a reviewed task that has nothing to merge (a report) as done.
@@ -466,6 +467,7 @@ fn perform(client: &Client, command: Command) -> (Option<u64>, &'static str, Res
         Command::Unarchive { session_id, project_id } => (None, "unarchive", unarchive(client, &session_id, &project_id)),
         Command::Reveal { .. } => (None, "reveal", Ok(json!({}))),
         Command::RefreshProjectContext { project_id, expected_attempt } => (None, "project", client.post(&format!("/v3/projects/{project_id}/context:retry"), json!({"expected_attempt": expected_attempt})).map_err(err)),
+        Command::OrderProjects { project_ids } => (None, "project", client.put("/v3/projects:order", json!({"project_ids": project_ids, "client_request_id": request_id("project-order")})).map_err(err)),
         Command::PatchProject { project_id, body } => (None, "project", client.patch(&format!("/v3/projects/{project_id}"), body).map_err(err)),
         Command::SetModel { session_id, choice } => (None, "model", models::set_session_model(client, &session_id, &choice, &request_id("model")).map_err(err)),
         Command::SetDefault { role, model } => (None, "default", models::set_default(client, &role, &model).map_err(err)),

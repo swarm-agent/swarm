@@ -14,7 +14,30 @@ use crate::onboarding::{Existing, Onboarding, OnboardingEvent};
 use crate::swarm::live::Command;
 use crate::swarm::target::Target;
 
+#[derive(Clone)]
+struct DraggedProject { id: String }
+
 impl Console {
+    pub(super) fn select_project(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(pi) = project_position(self.projects.iter().map(|p| p.id.as_ref()), id) else { return };
+        self.project = pi;
+        self.projects_tab = Some(id.to_string());
+        self.page = Page::Projects;
+        self.project_menu = false;
+        self.project_rename = None;
+        self.context_edit = None;
+        self.follow_theme(cx);
+        cx.notify();
+    }
+
+    fn move_project(&mut self, id: &str, offset: isize, cx: &mut Context<Self>) {
+        let ids: Vec<String> = self.projects.iter().filter(|p| !p.id.is_empty()).map(|p| p.id.to_string()).collect();
+        if let (Some(order), Some(live)) = (moved_order(ids, id, offset), &self.live) {
+            live.run(Command::OrderProjects { project_ids: order });
+        }
+        cx.notify();
+    }
+
     /// Swarm's mark (the brand SVG's four nested squares and opacities) at
     /// a small size: each square steps in by whole pixels, so the edges stay
     /// crisp where the SVG's fractional insets would blur into one blob.
@@ -122,11 +145,12 @@ impl Console {
             .iter()
             .enumerate()
             .map(|(pi, p)| {
+                let id = p.id.to_string();
                 let count = self.sessions.iter().filter(|s| s.project == pi).count();
                 let needs = self.needs_in(pi);
                 let on = pi == self.project;
                 div()
-                    .id(SharedString::from(format!("project-{pi}")))
+                    .id(SharedString::from(format!("project-{}", p.id)))
                     .px_3()
                     .py(px(5.))
                     .cursor_pointer()
@@ -136,10 +160,7 @@ impl Console {
                     .items_center()
                     .gap_2()
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.project = pi;
-                        this.follow_theme(cx);
-                        this.project_menu = false;
-                        cx.notify();
+                        this.select_project(&id, cx);
                     }))
                     .child(self.icon(Icon::Project, 13., if on { t.accent } else { t.faint }))
                     .child(div().flex_1().text_color(if on { t.text } else { t.muted }).child(p.name.clone()))
@@ -149,6 +170,7 @@ impl Console {
             })
             .collect();
         let name = self.projects[self.project].name.clone();
+        let folders_id = self.projects[self.project].id.to_string();
         Some(
             div()
                 .id("project-menu-backdrop")
@@ -177,9 +199,9 @@ impl Console {
                         .child(div().px_3().pt_1().pb_1().text_size(px(10.5)).text_color(t.faint).child("PROJECTS"))
                         .children(rows)
                         .child(div().h(px(1.)).my_1().bg(t.border))
-                        .child(entry("project-add-folders", format!("add folders to {name}…").into(), false).on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        .child(entry("project-add-folders", format!("add folders to {name}…").into(), false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.project_menu = false;
-                            this.add_project_folders(this.project, cx);
+                            this.add_project_folders(&folders_id, cx);
                         })))
                         .child(entry("project-new", "new project…".into(), false).on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.project_menu = false;
@@ -233,8 +255,8 @@ impl Console {
         self.start_onboarding(|o, cx| o.another_project(cx), cx);
     }
 
-    pub(super) fn add_project_folders(&mut self, pi: usize, cx: &mut Context<Self>) {
-        let Some(p) = self.projects.get(pi) else { return };
+    pub(super) fn add_project_folders(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(p) = self.projects.iter().find(|p| p.id.as_ref() == id) else { return };
         if p.id.is_empty() {
             return;
         }
@@ -258,9 +280,9 @@ impl Console {
         }
     }
 
-    fn start_project_rename(&mut self, pi: usize, window: &mut gpui::Window, cx: &mut Context<Self>) {
-        let Some(name) = self.projects.get(pi).map(|p| p.name.to_string()) else { return };
-        self.project_rename = Some(pi);
+    fn start_project_rename(&mut self, id: &str, window: &mut gpui::Window, cx: &mut Context<Self>) {
+        let Some(name) = self.projects.iter().find(|p| p.id.as_ref() == id).map(|p| p.name.to_string()) else { return };
+        self.project_rename = Some(id.to_string());
         if let Some(input) = &self.rename_input {
             input.update(cx, |f, cx| f.set_text(name, cx));
             window.focus(&input.focus_handle(cx));
@@ -270,9 +292,9 @@ impl Console {
 
     /// Enter in the name field while a project is being renamed.
     pub(super) fn finish_project_rename(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some(pi) = self.project_rename.take() else { return false };
+        let Some(id) = self.project_rename.take() else { return false };
         let name = self.rename_input.as_ref().map(|f| f.read(cx).text().trim().to_string()).unwrap_or_default();
-        if let (Some(p), false) = (self.projects.get(pi), name.is_empty()) {
+        if let (Some(p), false) = (self.projects.iter().find(|p| p.id.as_ref() == id.as_str()), name.is_empty()) {
             if let Some(live) = &self.live {
                 live.run(Command::PatchProject { project_id: p.id.to_string(), body: json!({"name": name}) });
             }
@@ -285,9 +307,9 @@ impl Console {
         self.project_rename.take().is_some()
     }
 
-    fn start_context_edit(&mut self, pi: usize, window: &mut gpui::Window, cx: &mut Context<Self>) {
-        let Some(context) = self.projects.get(pi).map(|p| p.context.to_string()) else { return };
-        self.context_edit = Some(pi);
+    fn start_context_edit(&mut self, id: &str, window: &mut gpui::Window, cx: &mut Context<Self>) {
+        let Some(context) = self.projects.iter().find(|p| p.id.as_ref() == id).map(|p| p.context.to_string()) else { return };
+        self.context_edit = Some(id.to_string());
         if let Some(input) = &self.context_input {
             input.update(cx, |f, cx| f.set_text(context, cx));
             window.focus(&input.focus_handle(cx));
@@ -296,9 +318,9 @@ impl Console {
     }
 
     fn save_context(&mut self, cx: &mut Context<Self>) {
-        let Some(pi) = self.context_edit.take() else { return };
+        let Some(id) = self.context_edit.take() else { return };
         let context = self.context_input.as_ref().map(|f| f.read(cx).text()).unwrap_or_default();
-        if let (Some(p), Some(live)) = (self.projects.get(pi), &self.live) {
+        if let (Some(p), Some(live)) = (self.projects.iter().find(|p| p.id.as_ref() == id.as_str()), &self.live) {
             live.run(Command::PatchProject { project_id: p.id.to_string(), body: json!({"project_context": context}) });
         }
         cx.notify();
@@ -311,12 +333,22 @@ impl Console {
         // tab until another is picked.
         let hover = t.hover;
         let tab = self.projects_tab.as_deref().and_then(|id| self.projects.iter().position(|p| p.id.as_ref() == id)).unwrap_or(self.project);
-        let tabs = div().flex().flex_wrap().gap_1().children(self.projects.iter().enumerate().map(|(pi, p)| {
+        let tabs = div().flex_none().flex().flex_wrap().gap_1().children(self.projects.iter().enumerate().map(|(pi, p)| {
             let on = pi == tab;
             let open = pi == self.project;
             let needs = self.needs_in(pi);
+            let ghost = self.ghost(p.name.clone());
+            let target_id = p.id.to_string();
             div()
-                .id(SharedString::from(format!("project-tab-{pi}")))
+                .id(SharedString::from(format!("project-tab-{}", p.id)))
+                .on_drag(DraggedProject { id: p.id.to_string() }, move |_, _, _, cx| cx.new(|_| ghost.clone()))
+                .on_drop(cx.listener(move |this, dragged: &DraggedProject, _, cx| {
+                    let from = this.projects.iter().position(|p| p.id.as_ref() == dragged.id.as_str());
+                    let to = this.projects.iter().position(|p| p.id.as_ref() == target_id.as_str());
+                    if let (Some(from), Some(to)) = (from, to) {
+                        this.move_project(&dragged.id, to as isize - from as isize, cx);
+                    }
+                }))
                 .px_3()
                 .py(px(5.))
                 .rounded(px(t.radius))
@@ -331,10 +363,7 @@ impl Console {
                 .on_click(cx.listener({
                     let id = p.id.to_string();
                     move |this, _: &ClickEvent, _, cx| {
-                    this.projects_tab = Some(id.clone());
-                    this.project_rename = None;
-                    this.context_edit = None;
-                    cx.notify();
+                    this.select_project(&id, cx);
                 }}))
                 .child(self.icon(Icon::Project, 12., if open { t.accent } else { t.faint }))
                 .child(div().text_color(if on { t.text } else { t.muted }).child(p.name.clone()))
@@ -359,7 +388,7 @@ impl Console {
                     .child(self.button("projects-new", "new project", true).on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.new_project(cx)))),
             )
             .child(div().text_size(px(11.)).text_color(t.faint).child("A project is a name and folders on a machine; project.md is what Swarm wrote about them, and every agent reads it. Swarm keeps all of it."))
-            .child(div().text_size(px(11.)).text_color(t.faint).child("The first project in the row is the one the app opens with. The row is Swarm's order, the last changed first: \"make default\" marks a project changed, which moves it to the front."))
+            .child(div().text_size(px(11.)).text_color(t.faint).child("The first project is the one the app opens with. Move projects to set Swarm's saved order. New projects appear first; edits never change the order."))
             .child(tabs)
             .children(cards)
     }
@@ -368,8 +397,8 @@ impl Console {
         let t = &self.theme;
         let p = &self.projects[pi];
         let on = pi == self.project;
-        let renaming = self.project_rename == Some(pi);
-        let editing = self.context_edit == Some(pi);
+        let renaming = self.project_rename.as_deref() == Some(p.id.as_ref());
+        let editing = self.context_edit.as_deref() == Some(p.id.as_ref());
         let field = |input: Option<gpui::Entity<crate::text_input::TextInput>>| {
             div()
                 .flex_1()
@@ -405,8 +434,7 @@ impl Console {
             .workspaces
             .iter()
             .zip(p.roles.iter().chain(std::iter::repeat(&SharedString::from(""))))
-            .enumerate()
-            .map(|(wi, (path, role))| {
+            .map(|(path, role)| {
                 let id = p.id.to_string();
                 let folder = path.to_string();
                 let confirming = self.folder_remove.as_ref() == Some(&(id.clone(), folder.clone()));
@@ -419,7 +447,7 @@ impl Console {
                     .child(div().text_color(t.faint).child("▸"))
                     .child(div().flex_1().min_w_0().truncate().text_color(t.text).child(path.clone()))
                     .child(div().text_size(px(10.5)).text_color(t.faint).child(role.replace('_', " ")))
-                    .child(self.button(SharedString::from(format!("remove-{pi}-{wi}")), if confirming { "confirm removal" } else { "remove" }, false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    .child(self.button(SharedString::from(format!("remove-{}-{path}", p.id)), if confirming { "confirm removal" } else { "remove" }, false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         if let Some(name) = &this.via {
                             this.notice = Some((format!("Change folders on {name} itself.").into(), true));
                         } else if confirming {
@@ -433,7 +461,7 @@ impl Console {
                         }
                         cx.notify();
                     })))
-                    .when(confirming, |d| d.child(self.button(SharedString::from(format!("cancel-remove-{pi}-{wi}")), "cancel", false).on_click(cx.listener(|this, _: &ClickEvent, _, cx| { this.folder_remove = None; cx.notify(); }))))
+                    .when(confirming, |d| d.child(self.button(SharedString::from(format!("cancel-remove-{}-{path}", p.id)), "cancel", false).on_click(cx.listener(|this, _: &ClickEvent, _, cx| { this.folder_remove = None; cx.notify(); }))))
                     .into_any_element()
             })
             .collect();
@@ -448,8 +476,8 @@ impl Console {
                     div()
                         .flex()
                         .gap_1()
-                        .child(self.button(SharedString::from(format!("project-{pi}-save-context")), "save project.md", true).on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.save_context(cx))))
-                        .child(self.button(SharedString::from(format!("project-{pi}-cancel-context")), "cancel", false).on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        .child(self.button(SharedString::from(format!("project-{}-save-context", p.id)), "save project.md", true).on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.save_context(cx))))
+                        .child(self.button(SharedString::from(format!("project-{}-cancel-context", p.id)), "cancel", false).on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.context_edit = None;
                             cx.notify();
                         }))),
@@ -461,20 +489,24 @@ impl Console {
             div().px_3().py_2().text_size(px(11.)).text_color(t.faint).child("Swarm has not written project.md yet.").into_any_element()
         } else {
             div()
-                .id(SharedString::from(format!("project-{pi}-context")))
-                .max_h(px(260.))
-                .overflow_y_scroll()
+                .id(SharedString::from(format!("project-{}-context", p.id)))
+                .w_full()
+                .min_w_0()
+                .flex_none()
                 .px_3()
                 .py_2()
                 .text_size(px(11.5))
                 .line_height(px(17.))
                 .text_color(t.muted)
-                .child(self.markdown(&p.context, usize::MAX, pi, cx))
+                .child(self.markdown(&p.context, usize::MAX, pi, cx).w_full())
                 .into_any_element()
         };
         div()
             .flex()
             .flex_col()
+            .flex_none()
+            .w_full()
+            .min_w_0()
             .rounded(px(t.radius + 2.))
             .border_1()
             .border_color(if on { alpha(t.accent, 0.5) } else { t.border })
@@ -492,33 +524,31 @@ impl Console {
                     .child(name)
                     .when(on, |d| d.child(div().text_size(px(10.5)).text_color(t.accent).child("open")))
                     .when(!on, |d| {
-                        d.child(self.button(SharedString::from(format!("project-{pi}-open")), "open", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.project = pi;
-                            this.follow_theme(cx);
-                            this.page = Page::Sessions;
-                            cx.notify();
+                        let id = p.id.to_string();
+                        d.child(self.button(SharedString::from(format!("project-{}-open", p.id)), "open", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.select_project(&id, cx);
                         })))
                     })
                     .when(pi != 0 && !p.id.is_empty(), |d| {
-                        // A touch of the record: Swarm then lists it first, and first opens.
-                        let (id, name) = (p.id.to_string(), p.name.to_string());
-                        d.child(self.button(SharedString::from(format!("project-{pi}-default")), "make default", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            if let Some(live) = &this.live {
-                                live.run(Command::PatchProject { project_id: id.clone(), body: json!({"name": name}) });
-                            }
-                            this.notice = Some(("Making it the default…".into(), false));
-                            cx.notify();
-                        })))
+                        let id = p.id.to_string();
+                        d.child(self.button(SharedString::from(format!("project-{}-front", p.id)), "move to front", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.move_project(&id, isize::MIN, cx))))
                     })
                     .when(pi == 0, |d| d.child(div().text_size(px(10.5)).text_color(t.faint).child("default")))
                     .when(!renaming, |d| {
-                        d.child(self.button(SharedString::from(format!("project-{pi}-rename")), "rename", false).on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.start_project_rename(pi, window, cx))))
+                        let id = p.id.to_string();
+                        d.child(self.button(SharedString::from(format!("project-{}-rename", p.id)), "rename", false).on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.start_project_rename(&id, window, cx))))
                     })
-                    .child(self.button(SharedString::from(format!("project-{pi}-folders")), "add folders", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.add_project_folders(pi, cx))))
+                    .child(self.button(SharedString::from(format!("project-{}-folders", p.id)), "add folders", false).on_click(cx.listener({ let id = p.id.to_string(); move |this, _: &ClickEvent, _, cx| this.add_project_folders(&id, cx) })))
                     .when(!editing && !p.id.is_empty(), |d| {
-                        d.child(self.button(SharedString::from(format!("project-{pi}-edit-context")), "edit project.md", false).on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.start_context_edit(pi, window, cx))))
+                        let id = p.id.to_string();
+                        d.child(self.button(SharedString::from(format!("project-{}-edit-context", p.id)), "edit project.md", false).on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.start_context_edit(&id, window, cx))))
                     }),
             )
+            .child(div().flex().gap_2().px_3().py_2().children([(-1, "move left"), (1, "move right")].into_iter().map(|(offset, label)| {
+                let id = p.id.to_string();
+                self.button(SharedString::from(format!("project-{}-{label}", p.id)), label, false)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.move_project(&id, offset, cx)))
+            })))
             .child(div().px_3().pt_2().text_size(px(10.5)).text_color(t.faint).child("FOLDERS"))
             .child(div().flex().flex_col().pb_1().children(folders))
             .child(div().px_3().pt_1().text_size(px(10.5)).text_color(t.faint).child("PROJECT.MD"))
@@ -526,11 +556,50 @@ impl Console {
             .when(matches!(p.context_generation.status.as_ref(), "ready" | "failed"), |d| {
                 let id = p.id.to_string();
                 let attempt = p.context_generation.attempt;
-                d.child(self.button(SharedString::from(format!("refresh-context-{pi}")), if p.context_generation.status.as_ref() == "failed" { "retry" } else { "refresh project.md" }, false).on_click(cx.listener(move |this, _: &ClickEvent, _, _| {
+                d.child(div().flex().px_3().child(self.button(SharedString::from(format!("refresh-context-{}", p.id)), if p.context_generation.status.as_ref() == "failed" { "retry" } else { "refresh project.md" }, false).on_click(cx.listener(move |this, _: &ClickEvent, _, _| {
                     if let Some(live) = &this.live { live.run(Command::RefreshProjectContext { project_id: id.clone(), expected_attempt: attempt }); }
-                })))
+                }))))
             })
             .child(context)
             .into_any_element()
+    }
+}
+
+fn project_position<'a>(ids: impl Iterator<Item = &'a str>, id: &str) -> Option<usize> {
+    ids.enumerate().find_map(|(index, value)| (value == id).then_some(index))
+}
+
+/// Map an ID-based action against the latest server order, never a captured index.
+fn moved_order(mut ids: Vec<String>, id: &str, offset: isize) -> Option<Vec<String>> {
+    let from = ids.iter().position(|value| value == id)?;
+    let to = from.saturating_add_signed(offset).min(ids.len() - 1);
+    let item = ids.remove(from);
+    ids.insert(to, item);
+    Some(ids)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{moved_order, project_position};
+
+    // Purpose: select_project resolves identity at click time. This pure lookup
+    // proves refreshed ordering cannot select a different project or a removed ID.
+    #[test]
+    fn selection_follows_id() {
+        assert_eq!(project_position(["a", "b"].into_iter(), "b"), Some(1));
+        assert_eq!(project_position(["b", "a"].into_iter(), "b"), Some(0));
+        assert_eq!(project_position(["a"].into_iter(), "b"), None);
+    }
+
+    // Purpose: moved_order is the pure command mapping boundary. A stale row's ID
+    // must still move that project after refresh, and a removed ID must do nothing.
+    #[test]
+    fn order_actions_follow_ids_after_refresh() {
+        let ids = || vec!["c".into(), "a".into(), "b".into()];
+        assert_eq!(moved_order(ids(), "a", -1).unwrap(), vec!["a", "c", "b"]);
+        assert_eq!(moved_order(ids(), "a", 1).unwrap(), vec!["c", "b", "a"]);
+        assert_eq!(moved_order(ids(), "b", isize::MIN).unwrap(), vec!["b", "c", "a"]);
+        assert_eq!(moved_order(ids(), "missing", 1), None);
+        assert_eq!(moved_order(Vec::new(), "a", 1), None);
     }
 }

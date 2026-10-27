@@ -1548,6 +1548,34 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 	rawPath := strings.TrimPrefix(r.URL.Path, ProjectsPath)
 	trimmed := strings.Trim(rawPath, "/")
 
+	if trimmed == ":order" {
+		if r.Method != http.MethodPut {
+			methodNotAllowed(w)
+			return
+		}
+		if !s.requireScopeAny(w, r, "projects:write") {
+			return
+		}
+		var req struct {
+			ProjectIDs      []string `json:"project_ids"`
+			ClientRequestID string   `json:"client_request_id"`
+		}
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if req.ProjectIDs == nil || strings.TrimSpace(req.ClientRequestID) == "" {
+			writeError(w, http.StatusBadRequest, errors.New("project_ids and client_request_id required"))
+			return
+		}
+		if err := db.SetProjectOrder(p.AccountScopeID, req.ProjectIDs); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ordered"})
+		return
+	}
+
 	// 1. Root /v3/projects
 	if trimmed == "" {
 		if r.Method == http.MethodGet {
