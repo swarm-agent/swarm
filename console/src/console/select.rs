@@ -47,7 +47,7 @@ pub(super) fn blocks(entry: &Entry) -> Vec<String> {
     match entry {
         Entry::User(text) => vec![text.to_string()],
         Entry::Assistant(text) => markdown::parse(text).into_iter().map(|b| b.text).collect(),
-        Entry::Tool { name, detail } => vec![format!("{name} {detail}")],
+        Entry::Tool { .. } => entry.tool_line(crate::data::now_ms()).map(|l| l.text).into_iter().collect(),
     }
 }
 
@@ -198,7 +198,7 @@ mod tests {
         let entries = vec![
             Entry::User("Fix the README".into()),
             Entry::Assistant("Done.\n\n- added a line\n- ran tests".into()),
-            Entry::Tool { name: "read".into(), detail: "README.md".into() },
+            Entry::tool("read", "README.md"),
         ];
         // From "the" in the first message to "added" in the second's list.
         let selection = Selection { pane: 0, anchor: (1, 1, 5), head: (0, 0, 4) };

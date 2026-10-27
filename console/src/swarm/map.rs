@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::data::{
     Assignment, Cell, Choice, ClientCall, Day, Entry, Health, LiveRef, Machine, ModelUse, Pending, Plan,
-    Credential, Found, Merge, PlanWindow, Project, Provider, Question, Role, RunClock, RunState, Session, SessionUse, Task, TaskStatus, Text, Tokens, Usage,
+    Credential, Found, Merge, PlanWindow, Project, Provider, Question, Role, RunClock, RunState, Session, SessionUse, Task, TaskStatus, Text, Tokens, ToolState, Usage,
 };
 
 pub(crate) fn s<'a>(v: &'a Value, key: &str) -> &'a str {
@@ -126,6 +126,17 @@ pub fn tool_detail(args: &Value) -> String {
                 .map(|q| q.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
         })
         .unwrap_or_default();
+    // A management call says what it did by its action, and where when it
+    // reaches a linked machine ("list · forge").
+    let detail = if detail.is_empty() {
+        let action = args.get("action").and_then(Value::as_str).unwrap_or("");
+        match args.get("machine").and_then(Value::as_str).filter(|m| !m.is_empty()) {
+            Some(machine) if !action.is_empty() => format!("{action} · {machine}"),
+            _ => action.to_string(),
+        }
+    } else {
+        detail
+    };
     let line = detail.lines().next().unwrap_or("").to_string();
     if line.chars().count() > 160 { line.chars().take(160).collect::<String>() + "…" } else { line }
 }
@@ -299,7 +310,7 @@ pub fn entry(m: &Value, first: bool) -> Vec<Entry> {
                 .map(|f| if s(f, "file_name").is_empty() { s(f, "modality").to_string() } else { s(f, "file_name").to_string() })
                 .collect();
             if !files.is_empty() {
-                out.push(Entry::Tool { name: "attached".into(), detail: files.join(", ").into() });
+                out.push(Entry::tool("attached", files.join(", ")));
             }
         }
         "assistant" => {
@@ -316,12 +327,57 @@ pub fn entry(m: &Value, first: bool) -> Vec<Entry> {
                 // result: its arguments beside its output).
                 let recorded = serde_json::from_str::<Value>(s(m, "content")).unwrap_or(Value::Null);
                 let args = call.get("arguments").or(call.get("input")).or(recorded.get("arguments")).cloned().unwrap_or(Value::Null);
-                out.push(Entry::Tool { name: name.to_string().into(), detail: tool_detail(&args).into() });
+                // Recent runs store the arguments as JSON text.
+                let args = match args {
+                    Value::String(text) => serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text)),
+                    other => other,
+                };
+                out.push(finished_tool(name, &args, &recorded, &meta, s(m, "content")));
             }
         }
         _ => {}
     }
     out
+}
+
+/// A finished tool call from its stored message: its arguments, and the
+/// result record Swarm stored as the content (or the content itself when it
+/// is not one), with its brief summary and duration.
+fn finished_tool(name: &str, args: &Value, recorded: &Value, meta: &Value, content: &str) -> Entry {
+    let is_record = recorded.is_object() && (recorded.get("call_id").is_some() || recorded.get("tool_name").is_some() || recorded.get("tool").is_some());
+    let (output, error) = if is_record {
+        let output = if s(recorded, "output").is_empty() { s(recorded, "completed_output") } else { s(recorded, "output") };
+        (output, if s(recorded, "error").is_empty() { s(meta, "error") } else { s(recorded, "error") })
+    } else {
+        (content, s(meta, "error"))
+    };
+    let ms = |v: &Value| v.get("duration_ms").and_then(Value::as_u64).filter(|n| *n > 0);
+    let call_id = [s(recorded, "call_id"), s(meta, "call_id"), s(meta, "tool_call_id")].into_iter().find(|x| !x.is_empty()).unwrap_or("");
+    let summary = super::tool_summary::summarize(name, args, output, error, None);
+    Entry::Tool {
+        name: name.to_string().into(),
+        detail: tool_detail(args).into(),
+        call_id: call_id.to_string().into(),
+        state: if error.trim().is_empty() { ToolState::Done } else { ToolState::Failed },
+        summary: (!summary.is_empty()).then(|| summary.into()),
+        duration_ms: ms(recorded).or_else(|| ms(meta)),
+        started_at: None,
+    }
+}
+
+/// A finished, failed or cancelled call from Swarm's terminal tool event.
+pub fn tool_event_end(kind: &str, payload: &Value) -> (ToolState, Option<Text>, Option<u64>) {
+    let state = match kind {
+        "session.tool.failed" => ToolState::Failed,
+        "session.tool.cancelled" | "session.tool.canceled" => ToolState::Cancelled,
+        _ if !s(payload, "error").is_empty() => ToolState::Failed,
+        _ => ToolState::Done,
+    };
+    let args = payload.get("arguments").cloned().unwrap_or(Value::Null);
+    let exit_code = payload.get("exit_code").and_then(Value::as_i64);
+    let summary = super::tool_summary::summarize(s(payload, "tool_name"), &args, s(payload, "output"), s(payload, "error"), exit_code);
+    let duration = payload.get("duration_ms").and_then(Value::as_u64).filter(|n| *n > 0);
+    (state, (!summary.is_empty()).then(|| summary.into()), duration)
 }
 
 /// A conversation from its message records, oldest first.
@@ -590,11 +646,30 @@ mod tests {
         ];
         let entries = entries(&messages);
         assert!(matches!(&entries[0], Entry::User(t) if t.as_ref() == "Add a line to README.md."));
-        assert!(matches!(&entries[1], Entry::Tool { name, detail } if name.as_ref() == "read" && detail.as_ref() == "/p/README.md"));
+        assert!(matches!(&entries[1], Entry::Tool { name, detail, .. } if name.as_ref() == "read" && detail.as_ref() == "/p/README.md"));
         assert!(matches!(&entries[2], Entry::Tool { detail, .. } if detail.as_ref() == "README.md, AGENTS.md"));
         assert!(matches!(&entries[3], Entry::Assistant(t) if t.as_ref() == "Added it."));
         let view = json!({"agentic_settings": {"effective_preference": {"model": "gpt-6.1-sol", "provider": "codex", "thinking": "high"}}});
         assert_eq!(model_line(&view), "gpt-6.1-sol · high");
+    }
+
+    #[test]
+    fn stored_tool_results_get_a_summary() {
+        let output = json!({"exit_code": 0, "output": "built\nok  pkg 0.4s\n"}).to_string();
+        let record = json!({"type": "v3_provider_tool_result", "tool_name": "bash", "call_id": "c9", "arguments": "{\"command\":\"go test ./pkg\"}", "output": output, "duration_ms": 2400}).to_string();
+        let got = entry(&json!({"role": "tool", "content": record, "metadata": {"tool_name": "bash", "call_id": "c9"}}), false);
+        let [Entry::Tool { detail, call_id, state, summary, duration_ms, .. }] = got.as_slice() else { panic!("one tool line") };
+        assert_eq!((detail.as_ref(), call_id.as_ref(), *state, *duration_ms), ("go test ./pkg", "c9", ToolState::Done, Some(2400)));
+        assert_eq!(summary.as_ref().map(|s| s.as_ref()), Some("exit 0 · ok pkg 0.4s"));
+        assert_eq!(got[0].tool_line(0).unwrap().text, "bash go test ./pkg · exit 0 · ok pkg 0.4s · 2.4s");
+
+        let failed = json!({"tool_name": "read", "call_id": "c10", "arguments": "{\"path\":\"/p/x.md\"}", "error": "open /p/x.md: no such file"}).to_string();
+        let got = entry(&json!({"role": "tool", "content": failed, "metadata": {"tool_name": "read"}}), false);
+        assert!(matches!(got.as_slice(), [Entry::Tool { state: ToolState::Failed, summary: Some(s), .. }] if s.as_ref() == "open /p/x.md: no such file"));
+
+        // Plain stored content (no record) is the output itself.
+        let got = entry(&json!({"role": "tool", "content": "a.rs\nb.rs\nc.rs", "metadata": {"tool_name": "glob", "tool_call": {"arguments": {"pattern": "*.rs"}}}}), false);
+        assert!(matches!(got.as_slice(), [Entry::Tool { summary: Some(s), .. }] if s.as_ref() == "3 files"));
     }
 
     #[test]

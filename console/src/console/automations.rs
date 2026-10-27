@@ -555,14 +555,19 @@ impl Console {
         match e {
             Entry::User(text) => div().px_3().py_2().rounded(px(t.radius)).bg(t.raised).text_color(t.text).line_height(px(19.)).child(text.clone()),
             Entry::Assistant(text) => div().flex().gap_2().px_3().child(div().text_color(t.faint).child("◆")).child(div().flex_1().min_w_0().text_color(t.text).line_height(px(19.)).child(text.clone())),
-            Entry::Tool { name, detail } => div()
-                .flex()
-                .gap_2()
-                .px_3()
-                .text_size(px(11.5))
-                .child(div().text_color(t.faint).child("└"))
-                .child(div().text_color(if name.as_ref() == "error" { t.err } else { t.info }).child(name.clone()))
-                .child(div().flex_1().min_w_0().text_color(t.faint).child(detail.clone())),
+            Entry::Tool { name, state, .. } => {
+                let failed = *state == crate::data::ToolState::Failed || name.as_ref() == "error";
+                let line = e.tool_line(crate::data::now_ms()).map(|l| l.text).unwrap_or_default();
+                let (head, rest) = line.split_at(name.len().min(line.len()));
+                div()
+                    .flex()
+                    .gap_2()
+                    .px_3()
+                    .text_size(px(11.5))
+                    .child(div().text_color(t.faint).child("└"))
+                    .child(div().flex_none().text_color(if failed { t.err } else { t.info }).child(head.to_string()))
+                    .child(div().flex_1().min_w_0().truncate().text_color(if failed { t.err } else { t.faint }).child(rest.trim_start().to_string()))
+            }
         }
     }
 

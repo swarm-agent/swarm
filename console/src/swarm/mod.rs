@@ -14,6 +14,7 @@ pub mod progress;
 pub mod realtime;
 pub mod repository;
 pub mod target;
+pub mod tool_summary;
 pub mod workflows;
 
 /// The name this app connects under: its session is

@@ -2,11 +2,11 @@
 
 use gpui::{
     AnyElement, ClickEvent, Context, Div, Entity, FocusHandle, Focusable, Hsla, SharedString,
-    Stateful, Subscription, Window, actions, div, prelude::*, px, svg,
+    Animation, AnimationExt, Stateful, Subscription, Window, actions, div, prelude::*, pulsating_between, px, svg,
 };
 
 use crate::data::{
-    self, Entry, Health, Machine, Media, Merge, Project, Role, RunState, Session, TaskStatus, Usage,
+    self, Entry, Health, Machine, Media, Merge, Project, Role, RunState, Session, TaskStatus, ToolState, Usage,
 };
 use crate::layout::{Axis, Node, PaneId};
 use crate::icons::{Icon, IconStyle};
@@ -14,6 +14,7 @@ use crate::onboarding::{Onboarding, OnboardingEvent};
 use crate::swarm::target::Target;
 use crate::theme::{Concept, Theme};
 use std::collections::HashSet;
+use std::time::Duration;
 
 mod agents;
 mod attach;
@@ -1190,21 +1191,44 @@ impl Console {
                 .child(self.markdown(text, pid, ei, cx).flex_1().text_color(t.text))
                 .child(self.copy_button(format!("copy-{pid}-{ei}"), text.clone(), cx))
                 .into_any_element(),
-            Entry::Tool { name, detail } => {
-                let color = if name.as_ref() == "error" { t.err } else { t.info };
+            Entry::Tool { name, state, call_id, .. } => {
+                let failed = *state == ToolState::Failed || name.as_ref() == "error";
+                let color = if failed { t.err } else { t.info };
+                let parts = entry.tool_line(data::now_ms()).unwrap_or_else(|| crate::swarm::tool_summary::line(name, "", "", ""));
+                let line: SharedString = parts.text.clone().into();
+                let runs: Vec<_> = [
+                    (parts.name, color),
+                    (parts.detail, t.muted),
+                    (parts.summary, if failed { t.err } else { t.faint }),
+                    (parts.time, t.faint),
+                ]
+                .into_iter()
+                .filter(|(len, _)| *len > 0)
+                .map(|(len, c)| self.plain_run(len, c))
+                .collect();
+                // A running call pulses; a finished one hangs off the text above.
+                let mark = if *state == ToolState::Running {
+                    div()
+                        .text_color(t.accent)
+                        .child("●")
+                        .with_animation(
+                            SharedString::from(format!("tool-run-{pid}-{ei}-{call_id}")),
+                            Animation::new(Duration::from_millis(1400)).repeat().with_easing(pulsating_between(0.25, 1.)),
+                            |dot, delta| dot.opacity(delta),
+                        )
+                        .into_any_element()
+                } else {
+                    div().text_color(t.faint).child("└").into_any_element()
+                };
                 div()
                     .group(SharedString::from(format!("entry-{pid}-{ei}")))
                     .flex()
                     .gap_2()
                     .px_3()
                     .text_size(px(11.5))
-                    .child(div().text_color(t.faint).child("└"))
-                    .child(div().flex_1().min_w_0().truncate().child({
-                        let line: SharedString = format!("{name} {detail}").into();
-                        let runs = vec![self.plain_run(name.len(), color), self.plain_run(line.len() - name.len(), t.faint)];
-                        self.selectable(pid, ei, 0, line, runs, vec![], cx)
-                    }))
-                    .child(self.copy_button(format!("copy-{pid}-{ei}"), SharedString::from(format!("{name} {detail}")), cx))
+                    .child(mark)
+                    .child(div().flex_1().min_w_0().truncate().child(self.selectable(pid, ei, 0, line.clone(), runs, vec![], cx)))
+                    .child(self.copy_button(format!("copy-{pid}-{ei}"), line, cx))
                     .into_any_element()
             }
         }

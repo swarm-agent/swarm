@@ -19,7 +19,7 @@ use super::models::{self, Catalog, Choice};
 use super::permissions::Rule;
 use super::realtime::Stream;
 use super::repository::{self, Prepared};
-use crate::data::{Assignment, Attachment, ClientCall, Entry, Machine, Pending, Project, Role, RunState, Session, Task, Usage};
+use crate::data::{Assignment, Attachment, ClientCall, Entry, Machine, Pending, Project, Role, RunState, Session, Task, ToolState, Usage};
 
 /// The machine, roles and usage change slowly: reread this often.
 const SLOW_EVERY: Duration = Duration::from_secs(30);
@@ -1199,31 +1199,32 @@ impl Model<'_> {
                 }
                 Ok(true)
             }
-            "session.tool.completed" | "session.tool.failed" | "session.tool.cancelled" => {
+            "session.tool.started" | "session.tool.completed" | "session.tool.failed" | "session.tool.cancelled" | "session.tool.canceled" => {
                 if let Some(d) = self.details.get_mut(sid) {
-                    let name = s(&payload, "tool_name");
-                    if !name.is_empty() {
-                        // A completed tool's text so far is its own segment; what follows streams anew.
+                    if !s(&payload, "tool_name").is_empty() {
+                        // The text before a tool call is its own segment; what follows streams anew.
                         if !d.live.is_empty() {
                             let text = std::mem::take(&mut d.live);
                             d.entries.push(Entry::Assistant(text.into()));
                         }
-                        let detail = if kind == "session.tool.failed" && !s(&payload, "error").is_empty() {
-                            s(&payload, "error").lines().next().unwrap_or("").to_string()
+                        if kind == "session.tool.started" {
+                            tool_started(&mut d.entries, &payload);
                         } else {
-                            map::tool_detail(payload.get("arguments").unwrap_or(&Value::Null))
-                        };
-                        d.entries.push(Entry::Tool { name: name.to_string().into(), detail: detail.into() });
+                            tool_ended(&mut d.entries, kind, &payload);
+                        }
                     }
                 }
                 Ok(true)
             }
+            // A running call's output so far: the line keeps showing it runs.
+            "session.tool.delta" => Ok(payload.get("run_intent").is_some()),
             "session.run.failed" => {
                 if let Some(d) = self.details.get_mut(sid) {
                     d.live.clear();
+                    run_ended(&mut d.entries);
                     let why = s(&payload, "error");
                     if !why.is_empty() {
-                        d.entries.push(Entry::Tool { name: "error".into(), detail: why.lines().next().unwrap_or("").to_string().into() });
+                        d.entries.push(Entry::tool("error", why.lines().next().unwrap_or("").to_string()));
                     }
                 }
                 Ok(true)
@@ -1231,6 +1232,13 @@ impl Model<'_> {
             "session.run.cancelled" | "session.run.interrupted" => {
                 if let Some(d) = self.details.get_mut(sid) {
                     d.live.clear();
+                    run_ended(&mut d.entries);
+                }
+                Ok(true)
+            }
+            "session.run.completed" => {
+                if let Some(d) = self.details.get_mut(sid) {
+                    run_ended(&mut d.entries);
                 }
                 Ok(true)
             }
@@ -1307,6 +1315,96 @@ impl Model<'_> {
     }
 }
 
+/// A tool event's call id; Swarm writes "tool_call" when the provider gave none.
+fn call_id(payload: &Value) -> &str {
+    match s(payload, "call_id") {
+        "tool_call" => "",
+        id => id,
+    }
+}
+
+/// What a tool call works on: from its arguments, else Swarm's display line.
+fn call_detail(payload: &Value) -> String {
+    let detail = map::tool_detail(payload.get("arguments").unwrap_or(&Value::Null));
+    if !detail.is_empty() {
+        return detail;
+    }
+    let display = s(payload, "tool_display");
+    if display == s(payload, "tool_name") { String::new() } else { display.to_string() }
+}
+
+/// The newest running line of a call: by its id, or by its name when Swarm
+/// gave it none.
+fn running_call(entries: &[Entry], id: &str, tool: &str) -> Option<usize> {
+    entries.iter().rposition(|e| match e {
+        Entry::Tool { call_id, name, state: ToolState::Running, .. } => {
+            if id.is_empty() { call_id.is_empty() && name.as_ref() == tool } else { call_id.as_ref() == id }
+        }
+        _ => false,
+    })
+}
+
+/// session.tool.started: a running line, once per call.
+fn tool_started(entries: &mut Vec<Entry>, payload: &Value) {
+    let (id, name) = (call_id(payload), s(payload, "tool_name"));
+    if !id.is_empty() && running_call(entries, id, name).is_some() {
+        return;
+    }
+    entries.push(Entry::Tool {
+        name: name.to_string().into(),
+        detail: call_detail(payload).into(),
+        call_id: id.to_string().into(),
+        state: ToolState::Running,
+        summary: None,
+        duration_ms: None,
+        started_at: Some(payload.get("recorded_at").and_then(Value::as_u64).unwrap_or_else(crate::data::now_ms)),
+    });
+}
+
+/// session.tool.completed, failed or cancelled: the call's running line
+/// ends with its summary and duration (a new line when it had none).
+fn tool_ended(entries: &mut Vec<Entry>, kind: &str, payload: &Value) {
+    let (id, name) = (call_id(payload), s(payload, "tool_name"));
+    let (new_state, new_summary, duration) = map::tool_event_end(kind, payload);
+    let ended_at = payload.get("recorded_at").and_then(Value::as_u64);
+    if let Some(i) = running_call(entries, id, name) {
+        if let Entry::Tool { detail, state, summary, duration_ms, started_at, .. } = &mut entries[i] {
+            // The finished call's own arguments say what it did better than a
+            // display label it started with ("manage_projects x2").
+            let finished = map::tool_detail(payload.get("arguments").unwrap_or(&Value::Null));
+            if !finished.is_empty() {
+                *detail = finished.into();
+            } else if detail.is_empty() {
+                *detail = call_detail(payload).into();
+            }
+            *state = new_state;
+            *summary = new_summary;
+            *duration_ms = duration.or_else(|| Some(ended_at?.checked_sub((*started_at)?)?));
+        }
+        return;
+    }
+    entries.push(Entry::Tool {
+        name: name.to_string().into(),
+        detail: call_detail(payload).into(),
+        call_id: id.to_string().into(),
+        state: new_state,
+        summary: new_summary,
+        duration_ms: duration,
+        started_at: None,
+    });
+}
+
+/// The run ended: a call Swarm never finished is no longer running.
+fn run_ended(entries: &mut [Entry]) {
+    for e in entries {
+        if let Entry::Tool { state, .. } = e {
+            if *state == ToolState::Running {
+                *state = ToolState::Cancelled;
+            }
+        }
+    }
+}
+
 /// The facts thread: the machine, roles, usage, themes and models, read every
 /// SLOW_EVERY and when asked (a command ran, usage changed), on their own so a
 /// conversation never waits for them. The catalog is big and changes only
@@ -1373,5 +1471,56 @@ mod tests {
         assert_eq!(text_file("take.wav"), None);
         assert_eq!(text_file("photo.png"), None);
         assert_eq!(text_file("Makefile"), None);
+    }
+
+    mod tools {
+        use super::super::{run_ended, tool_ended, tool_started};
+        use crate::data::{Entry, ToolState};
+        use serde_json::json;
+
+        fn only(entries: &[Entry]) -> (&str, &str, ToolState, Option<&str>, Option<u64>) {
+            match entries {
+                [Entry::Tool { name, detail, state, summary, duration_ms, .. }] => (name.as_ref(), detail.as_ref(), *state, summary.as_ref().map(|s| s.as_ref()), *duration_ms),
+                _ => panic!("expected one tool line, got {}", entries.len()),
+            }
+        }
+
+        #[test]
+        fn a_call_runs_then_ends_on_its_line() {
+            let mut e = Vec::new();
+            let args = json!({"command": "go test ./..."}).to_string();
+            tool_started(&mut e, &json!({"tool_name": "bash", "call_id": "c1", "arguments": args, "recorded_at": 1000}));
+            tool_started(&mut e, &json!({"tool_name": "bash", "call_id": "c1", "arguments": args, "recorded_at": 1000}));
+            assert_eq!(only(&e), ("bash", "go test ./...", ToolState::Running, None, None));
+            let output = json!({"exit_code": 0, "output": "ok  all\n"}).to_string();
+            tool_ended(&mut e, "session.tool.completed", &json!({"tool_name": "bash", "call_id": "c1", "arguments": args, "output": output, "duration_ms": 1234, "exit_code": 0}));
+            assert_eq!(only(&e), ("bash", "go test ./...", ToolState::Done, Some("exit 0 · ok all"), Some(1234)));
+            assert_eq!(e[0].tool_line(0).unwrap().text, "bash go test ./... · exit 0 · ok all · 1.2s");
+        }
+
+        #[test]
+        fn a_failure_without_a_start_is_its_own_line() {
+            let mut e = Vec::new();
+            tool_ended(&mut e, "session.tool.failed", &json!({"tool_name": "read", "call_id": "c2", "arguments": "{\"path\":\"/x/a.md\"}", "error": "no such file\nmore"}));
+            assert_eq!(only(&e), ("read", "/x/a.md", ToolState::Failed, Some("no such file"), None));
+        }
+
+        #[test]
+        fn duration_from_swarm_times_when_not_given() {
+            let mut e = Vec::new();
+            tool_started(&mut e, &json!({"tool_name": "search", "call_id": "c3", "tool_display": "search", "recorded_at": 5000}));
+            assert_eq!(e[0].tool_line(9500).unwrap().text, "search · 4s");
+            tool_ended(&mut e, "session.tool.completed", &json!({"tool_name": "search", "call_id": "c3", "output": "{\"count\":2}", "recorded_at": 7500}));
+            assert_eq!(only(&e).4, Some(2500));
+        }
+
+        #[test]
+        fn a_run_that_ends_stops_its_running_calls() {
+            let mut e = Vec::new();
+            tool_started(&mut e, &json!({"tool_name": "bash", "call_id": "tool_call", "arguments": "{\"command\":\"sleep 9\"}", "recorded_at": 1}));
+            run_ended(&mut e);
+            assert_eq!(only(&e).2, ToolState::Cancelled);
+            assert_eq!(e[0].tool_line(0).unwrap().text, "bash sleep 9 · stopped");
+        }
     }
 }

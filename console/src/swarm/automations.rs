@@ -361,7 +361,7 @@ pub fn latest_action(entries: &[crate::data::Entry]) -> String {
         .iter()
         .rev()
         .find_map(|e| match e {
-            crate::data::Entry::Tool { name, detail } => Some(format!("{name} {detail}").trim().to_string()),
+            crate::data::Entry::Tool { name, detail, .. } => Some(format!("{name} {detail}").trim().to_string()),
             _ => None,
         })
         .unwrap_or_default()
@@ -392,7 +392,7 @@ mod run_tests {
     #[test]
     fn the_latest_action() {
         use crate::data::Entry;
-        let e = vec![Entry::Tool { name: "bash".into(), detail: "ls".into() }, Entry::Assistant("ok".into()), Entry::Tool { name: "read".into(), detail: "a.md".into() }];
+        let e = vec![Entry::tool("bash", "ls"), Entry::Assistant("ok".into()), Entry::tool("read", "a.md")];
         assert_eq!(latest_action(&e), "read a.md");
     }
 }
@@ -407,7 +407,7 @@ mod transcript_tests {
     fn a_run_tool_message_shows_its_command() {
         let content = json!({"type": "v3_provider_tool_result", "tool_name": "bash", "arguments": "{\"command\":\"ls -la\"}"}).to_string();
         let got = crate::swarm::map::entry(&json!({"role": "tool", "content": content, "metadata": {"tool_name": "bash"}}), false);
-        assert!(matches!(got.as_slice(), [Entry::Tool { name, detail }] if name.as_ref() == "bash" && detail.as_ref() == "ls -la"));
+        assert!(matches!(got.as_slice(), [Entry::Tool { name, detail, .. }] if name.as_ref() == "bash" && detail.as_ref() == "ls -la"));
     }
 }
 

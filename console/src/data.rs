@@ -123,6 +123,15 @@ fn run(agent: Text, machine: usize, state: RunState, label: Text, age: Text, cos
     Run { agent, machine, state, label, age, cost }
 }
 
+/// Where a tool call stands, as Swarm's tool events say.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ToolState {
+    Running,
+    Done,
+    Failed,
+    Cancelled,
+}
+
 #[derive(Clone)]
 pub enum Entry {
     User(Text),
@@ -130,7 +139,48 @@ pub enum Entry {
     Tool {
         name: Text,
         detail: Text,
+        /// Swarm's call id ("" for notes such as attachments and errors).
+        call_id: Text,
+        state: ToolState,
+        /// A brief result, or a failure's reason: one short line.
+        summary: Option<Text>,
+        /// How long the call took, as Swarm recorded it.
+        duration_ms: Option<u64>,
+        /// When Swarm recorded the call's start (ms since the epoch), for
+        /// the time a running call has taken so far.
+        started_at: Option<u64>,
     },
+}
+
+impl Entry {
+    /// A finished tool line with no call behind it: a note (attached files,
+    /// an error) or a demo line.
+    pub fn tool(name: impl Into<Text>, detail: impl Into<Text>) -> Entry {
+        Entry::Tool { name: name.into(), detail: detail.into(), call_id: "".into(), state: ToolState::Done, summary: None, duration_ms: None, started_at: None }
+    }
+
+    /// A tool call as it is drawn: one line in its colored parts, its time
+    /// so far (running) or its duration (finished). None for other entries.
+    pub fn tool_line(&self, now_ms: u64) -> Option<crate::swarm::tool_summary::Line> {
+        use crate::swarm::tool_summary as ts;
+        let Entry::Tool { name, detail, state, summary, duration_ms, started_at, .. } = self else { return None };
+        let time = match state {
+            ToolState::Running => started_at.and_then(|at| ts::elapsed(now_ms.saturating_sub(at))).unwrap_or_default(),
+            _ => duration_ms.map(ts::duration).unwrap_or_default(),
+        };
+        let summary = match (state, summary) {
+            (_, Some(s)) if !s.is_empty() => s.to_string(),
+            (ToolState::Cancelled, _) => "stopped".into(),
+            (ToolState::Failed, _) => "failed".into(),
+            _ => String::new(),
+        };
+        Some(ts::line(name, detail, &summary, &time))
+    }
+}
+
+/// Now, in ms since the epoch (for a running tool call's time so far).
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
 /// A project: a name and folders on one or more machines. Sessions belong to one.
@@ -312,10 +362,10 @@ pub fn sessions() -> Vec<Session> {
             entries: vec![
                 Entry::User("Finish the automation rounds work and get a reviewer on it. Use forge for the heavy test run.".into()),
                 Entry::Assistant("Read project.md and the open branch. Three pieces left: the reopen step, round limits, and docs. I'll split them so they can land independently.".into()),
-                Entry::Tool { name: "finder".into(), detail: "search · automation reopen semantics · 6 files".into() },
-                Entry::Tool { name: "manage_projects".into(), detail: "propose_task × 3 · swarm-go".into() },
+                Entry::tool("finder", "search · automation reopen semantics · 6 files"),
+                Entry::tool("manage_projects", "propose_task × 3 · swarm-go"),
                 Entry::Assistant("The reopen step and docs are running. Round limits needs your approval because it changes a stored schema.".into()),
-                Entry::Tool { name: "fleet".into(), detail: "forge · run_task coder · integration tests".into() },
+                Entry::tool("fleet", "forge · run_task coder · integration tests"),
             ],
             tasks: vec![
                 Task { key: "".into(), session: "".into(), title: "Reopen step for blocked deliveries".into(), role: "coder".into(), machine: 0, status: TaskStatus::Running, activity: "editing automation/reopen.go · step 3 of 5".into(), report: "".into(), merge: Merge::None("".into()), runs: vec![run("coder".into(), 0, RunState::Running, "attempt 2".into(), "now".into(), 0.41), run("coder".into(), 0, RunState::Failed, "attempt 1 · tests failed".into(), "9m".into(), 0.21)] },
@@ -351,7 +401,7 @@ pub fn sessions() -> Vec<Session> {
             tokens: "97k".into(),
             entries: vec![
                 Entry::User("The sandbox scratch test flakes on CI. Find out why and fix it.".into()),
-                Entry::Tool { name: "finder".into(), detail: "reproduce · go test -run Scratch -count 20 · 3 failures".into() },
+                Entry::tool("finder", "reproduce · go test -run Scratch -count 20 · 3 failures"),
                 Entry::Assistant("The cleanup races the scratch unmount. Small, contained fix, so it goes straight to a coder on studio.".into()),
             ],
             tasks: vec![
@@ -379,7 +429,7 @@ pub fn sessions() -> Vec<Session> {
             tokens: "22k".into(),
             entries: vec![
                 Entry::User("Where are provider retries decided?".into()),
-                Entry::Tool { name: "finder".into(), detail: "search · retry backoff · 4 files".into() },
+                Entry::tool("finder", "search · retry backoff · 4 files"),
                 Entry::Assistant("In the provider adapters, not the orchestration layer. Backoff is bounded per adapter, and the run loop only sees the final error.".into()),
             ],
             tasks: vec![],
@@ -406,7 +456,7 @@ pub fn sessions() -> Vec<Session> {
             entries: vec![
                 Entry::User("Three hero directions, dark and ominous. Keep the canonical logo.".into()),
                 Entry::Assistant("Briefed the designer with the brand notes from project.md. Rendering three directions now.".into()),
-                Entry::Tool { name: "swarm_design".into(), detail: "count 3 · hero.html".into() },
+                Entry::tool("swarm_design", "count 3 · hero.html"),
             ],
             tasks: vec![
                 Task { key: "".into(), session: "".into(), title: "Hero directions ×3".into(), role: "designer".into(), machine: 1, status: TaskStatus::Running, activity: "rendering direction 3 of 3".into(), report: "".into(), merge: Merge::None("".into()), runs: vec![run("designer".into(), 1, RunState::Running, "directions".into(), "now".into(), 0.55)] },
@@ -434,7 +484,7 @@ pub fn sessions() -> Vec<Session> {
             tokens: "4k".into(),
             entries: vec![
                 Entry::User("Draft release notes from this week's merges.".into()),
-                Entry::Tool { name: "error".into(), detail: "lab is offline · last seen 1d ago".into() },
+                Entry::tool("error", "lab is offline · last seen 1d ago"),
             ],
             tasks: vec![],
             activity: vec![],
@@ -460,7 +510,7 @@ pub fn sessions() -> Vec<Session> {
             entries: vec![
                 Entry::User("Set up a nightly audit that opens a task when a dependency has a security fix.".into()),
                 Entry::Assistant("Created an automation on edge-1: every night at 02:00 a finder checks advisories and proposes a coder task when one applies.".into()),
-                Entry::Tool { name: "manage_automation".into(), detail: "create · nightly-audit · 02:00".into() },
+                Entry::tool("manage_automation", "create · nightly-audit · 02:00"),
             ],
             tasks: vec![
                 Task { key: "".into(), session: "".into(), title: "Bump ws to 8.21.3".into(), role: "coder".into(), machine: 2, status: TaskStatus::Completed, activity: "merged · 1 commit".into(), report: "".into(), merge: Merge::None("".into()), runs: vec![run("coder".into(), 2, RunState::Idle, "bump".into(), "2h".into(), 0.09)] },

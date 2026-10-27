@@ -162,7 +162,11 @@ impl Console {
         }
         if updates.is_empty() {
             // A running session's timer counts up between updates.
-            let running = self.panes.iter().any(|p| self.sessions[p.session].run.is_some_and(|r| r.active));
+            let running = self.panes.iter().any(|p| {
+                let s = &self.sessions[p.session];
+                s.run.is_some_and(|r| r.active)
+                    || s.entries.iter().rev().take(64).any(|e| matches!(e, Entry::Tool { state: crate::data::ToolState::Running, .. }))
+            });
             if running && self.ticked.elapsed() >= Duration::from_secs(1) {
                 self.ticked = std::time::Instant::now();
                 cx.notify();
@@ -440,7 +444,7 @@ impl Console {
             }
             (Some(si), Err(e)) => {
                 let s = &mut self.sessions[si];
-                s.entries.push(Entry::Tool { name: "error".into(), detail: e.clone().into() });
+                s.entries.push(Entry::tool("error", e.clone()));
                 s.state = RunState::Failed;
                 s.activity.clear();
                 self.notice = Some((format!("Could not start the session: {e}").into(), true));
