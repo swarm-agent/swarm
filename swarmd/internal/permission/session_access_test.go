@@ -85,3 +85,32 @@ func TestMachineToolsFollowTheSessionAccess(t *testing.T) {
 		}
 	}
 }
+
+// Purpose: AuthorizeToolCall must enforce per-machine session choices before
+// bypass or tasks=free. This service-layer test proves deny has no pending
+// record, ask persists the exact call, and full approves without a card.
+func TestFleetSessionAccessGate(t *testing.T) {
+	service, _ := openSubagentReservationTestServices(t)
+	lookup := sessionAccessLookup{}
+	for _, level := range []string{"none", "ask", "full"} {
+		lookup[level] = pebblestore.SessionSnapshot{ID: level, AccountScopeID: "acct", Metadata: map[string]any{pebblestore.SessionAccessMetadataKey: pebblestore.SessionAccessMetadata(pebblestore.SessionAccess{Tasks: "free", Fleet: map[string]string{"box": level}})}}
+	}
+	service.SetSessionResolver(lookup)
+	for _, tc := range []struct {
+		session, action string
+		want            AuthorizationDecision
+	}{{"none", "propose_task", AuthorizationDeny}, {"ask", "propose_task", AuthorizationPending}, {"full", "propose_task", AuthorizationApprove}, {"full", "integrate_task", AuthorizationDeny}} {
+		args := `{"machine":"box","action":"` + tc.action + `","title":"Fix it","agent":"coder"}`
+		got, err := service.AuthorizeToolCall(AuthorizationInput{SessionID: tc.session, AccountScopeID: "acct", RunID: "run", CallID: tc.session + tc.action, ToolName: "manage_projects", ToolArguments: args, Mode: "auto+bypass_permissions"})
+		if err != nil || got.Decision != tc.want {
+			t.Fatalf("%+v: %+v %v", tc, got, err)
+		}
+		if tc.want == AuthorizationPending {
+			if got.Record == nil || got.Record.ToolArguments != permissionStoredArguments(args) {
+				t.Fatalf("missing exact pending call: %+v", got)
+			}
+		} else if got.Record != nil {
+			t.Fatal("unexpected pending record")
+		}
+	}
+}

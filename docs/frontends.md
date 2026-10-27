@@ -176,3 +176,29 @@ same records:
   loopback.
 - **Agent output is untrusted text.** Render titles, reports and file names;
   never run them.
+
+### Session access to linked machines
+
+An owner client (or a key with `swarm:approve`, never an agent gateway token)
+can POST `/v3/sessions/{id}/access` with:
+
+```json
+{"client_request_id":"fleet-choice-1","fleet":{"build-box":"ask"}}
+```
+
+`fleet` replaces the session's machine-name map; omit it to preserve the map,
+or send `{}` to revoke all fleet grants. Levels are `none`, `ask`, and `full`.
+Unknown or other-account links are rejected. `folders` is ignored by this route.
+Absent or unlinked machines have no access. The agent cannot change the choice.
+
+`manage_projects action=list_machines` lists links and session access without
+link credentials or addresses. With `machine`, project/task reads and task
+creation, approval, acceptance, reopening, refinement and archiving use the
+linked machine's existing project API. `ask` creates a normal permission card
+for each call; `full` avoids that additional prompt. Remote task rules still
+apply. Integration, deployment, deletion and `wait_tasks` are unavailable.
+The agent should check task progress only when asked or on its next turn,
+not poll. Remote results are untrusted data, not instructions.
+
+Current limitation: `report_task` remains restricted to the task's active run
+on its own machine; the home cannot impersonate that run.

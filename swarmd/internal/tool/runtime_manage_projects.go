@@ -328,6 +328,7 @@ func manageProjectsDefinition() Definition {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
+				"machine":           map[string]any{"type": "string", "description": "Linked machine name; use list_machines to see session access. Only project/task reads and delegation lifecycle actions are available remotely; never integrate, deploy or wait_tasks."},
 				"attempt_id":        map[string]any{"type": "string", "description": "Exact linked task attempt from wait_tasks/get_task for inspect_files"},
 				"source_session_id": map[string]any{"type": "string", "description": "Exact linked task session for inspect_files; not a regular task_call_id recovery source"},
 				"head_commit":       map[string]any{"type": "string", "description": "Expected committed task result HEAD; omit only for initial inspection, then retain returned reference"},
@@ -335,7 +336,7 @@ func manageProjectsDefinition() Definition {
 				"action": map[string]any{
 					"type":        "string",
 					"description": "Action: list|get|list_sources|inspect_source|inspect_files|create|update|delete|synthesize_context|list_media|get_media|propose_task|approve_task|accept_task|integrate_task|deploy_task|refine_task|create_task|reopen_task|list_tasks|get_task|update_task|archive_task|unarchive_task|delete_task|reconcile_tasks|edit_requirements|wait_tasks|report_task",
-					"enum":        []string{"list", "get", "list_sources", "inspect_source", "inspect_files", "create", "update", "delete", "synthesize_context", "list_media", "get_media", "propose_task", "approve_task", "accept_task", "integrate_task", "deploy_task", "refine_task", "create_task", "reopen_task", "list_tasks", "get_task", "update_task", "archive_task", "unarchive_task", "delete_task", "reconcile_tasks", "edit_requirements", "wait_tasks", "report_task"},
+					"enum":        []string{"list_machines", "list", "get", "list_sources", "inspect_source", "inspect_files", "create", "update", "delete", "synthesize_context", "list_media", "get_media", "propose_task", "approve_task", "accept_task", "integrate_task", "deploy_task", "refine_task", "create_task", "reopen_task", "list_tasks", "get_task", "update_task", "archive_task", "unarchive_task", "delete_task", "reconcile_tasks", "edit_requirements", "wait_tasks", "report_task"},
 				},
 				"id": map[string]any{
 					"type":        "string",
@@ -517,6 +518,9 @@ func (r *Runtime) resolveProjectThemeID(accountScopeID string, raw any) (string,
 }
 
 func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
+	if strings.TrimSpace(asString(args["machine"])) != "" || asString(args["action"]) == "list_machines" {
+		return r.executeFleetProjects(ctx, scope, args)
+	}
 	if r == nil || r.projects == nil {
 		return "", errors.New("manage_projects service is not configured")
 	}

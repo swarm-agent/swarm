@@ -49,11 +49,12 @@ const (
 // space-separated) and when it ends (Unix ms); a lease past its end counts
 // as none.
 type SessionAccess struct {
-	Tasks        string `json:"tasks,omitempty"`
-	Machine      string `json:"machine,omitempty"`
-	Browser      string `json:"browser,omitempty"`
-	BrowserSites string `json:"browser_sites,omitempty"`
-	BrowserUntil int64  `json:"browser_until,omitempty"`
+	Fleet        map[string]string `json:"fleet,omitempty"`
+	Tasks        string            `json:"tasks,omitempty"`
+	Machine      string            `json:"machine,omitempty"`
+	Browser      string            `json:"browser,omitempty"`
+	BrowserSites string            `json:"browser_sites,omitempty"`
+	BrowserUntil int64             `json:"browser_until,omitempty"`
 }
 
 // BrowserLeaseLive reports whether the access holds a browser lease that
@@ -65,6 +66,21 @@ func (a SessionAccess) BrowserLeaseLive(now int64) bool {
 // NormalizeSessionAccess trims and checks an access choice. An empty field
 // leaves that setting unchanged.
 func NormalizeSessionAccess(access SessionAccess) (SessionAccess, error) {
+	if access.Fleet != nil {
+		fleet := make(map[string]string, len(access.Fleet))
+		for name, level := range access.Fleet {
+			if name == "" || strings.TrimSpace(name) != name {
+				return SessionAccess{}, fmt.Errorf("fleet machine name must be nonempty without surrounding whitespace")
+			}
+			switch level {
+			case SessionMachineNone, SessionMachineAsk, SessionMachineFull:
+			default:
+				return SessionAccess{}, fmt.Errorf("fleet access for %q must be none, ask or full", name)
+			}
+			fleet[name] = level
+		}
+		access.Fleet = fleet
+	}
 	access.Tasks = strings.ToLower(strings.TrimSpace(access.Tasks))
 	access.Machine = strings.ToLower(strings.TrimSpace(access.Machine))
 	switch access.Tasks {
@@ -93,6 +109,12 @@ func NormalizeSessionAccess(access SessionAccess) (SessionAccess, error) {
 // MergeSessionAccess applies a change: each non-empty field replaces the
 // stored one.
 func MergeSessionAccess(current, change SessionAccess) SessionAccess {
+	if change.Fleet != nil {
+		current.Fleet = make(map[string]string, len(change.Fleet))
+		for name, level := range change.Fleet {
+			current.Fleet[name] = level
+		}
+	}
 	if change.Tasks != "" {
 		current.Tasks = change.Tasks
 	}
@@ -112,6 +134,15 @@ func SessionAccessFromMetadata(metadata map[string]any) SessionAccess {
 	var access SessionAccess
 	switch raw := metadata[SessionAccessMetadataKey].(type) {
 	case map[string]any:
+		switch fleet := raw["fleet"].(type) {
+		case map[string]string:
+			access.Fleet = fleet
+		case map[string]any:
+			access.Fleet = make(map[string]string, len(fleet))
+			for name, value := range fleet {
+				access.Fleet[name], _ = value.(string)
+			}
+		}
 		access.Tasks, _ = raw["tasks"].(string)
 		access.Machine, _ = raw["machine"].(string)
 		access.Browser, _ = raw["browser"].(string)
@@ -141,6 +172,13 @@ func SessionAccessFromMetadata(metadata map[string]any) SessionAccess {
 // SessionAccessMetadata is the stored form of access.
 func SessionAccessMetadata(access SessionAccess) map[string]any {
 	out := map[string]any{}
+	if access.Fleet != nil {
+		fleet := make(map[string]any, len(access.Fleet))
+		for name, level := range access.Fleet {
+			fleet[name] = level
+		}
+		out["fleet"] = fleet
+	}
 	if access.Tasks != "" {
 		out["tasks"] = access.Tasks
 	}
@@ -163,4 +201,9 @@ func SessionAccessMetadata(access SessionAccess) map[string]any {
 // start delegated tasks without approval.
 func SessionTasksStartFreely(session SessionSnapshot) bool {
 	return SessionAccessFromMetadata(session.Metadata).Tasks == SessionTasksFree
+}
+
+// Empty reports whether no access choices were supplied.
+func (a SessionAccess) Empty() bool {
+	return a.Tasks == "" && a.Machine == "" && a.Browser == "" && a.BrowserSites == "" && a.BrowserUntil == 0 && a.Fleet == nil
 }

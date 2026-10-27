@@ -255,7 +255,7 @@ func controlMCPSessionSummary(session map[string]any) map[string]any {
 			summary["agent"] = agent
 		}
 		// What the person lets the session's agent do (its shield).
-		if access := pebblestore.SessionAccessFromMetadata(metadata); access != (pebblestore.SessionAccess{}) {
+		if access := pebblestore.SessionAccessFromMetadata(metadata); !access.Empty() {
 			summary["access"] = access
 		}
 		// A project's sessions (its orchestrator conversations and task

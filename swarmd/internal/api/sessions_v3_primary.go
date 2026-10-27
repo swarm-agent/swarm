@@ -939,6 +939,10 @@ func (s *Server) createSessionsV3Primary(w http.ResponseWriter, r *http.Request,
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		if err := s.validateFleetAccess(principal, normalized); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 		access = normalized
 	}
 	// managed_worktree_requested is a tolerated rolling-client field only. The
@@ -1056,7 +1060,7 @@ func (s *Server) createSessionsV3Primary(w http.ResponseWriter, r *http.Request,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
-	if access != (pebblestore.SessionAccess{}) {
+	if !access.Empty() {
 		session.Metadata[pebblestore.SessionAccessMetadataKey] = pebblestore.SessionAccessMetadata(access)
 	}
 	if appBinding, ok := r.Context().Value(applicationAgentContextKey{}).(applicationAgentBinding); ok {

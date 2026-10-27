@@ -588,6 +588,39 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 		// response and silently loses the product decision.
 		return s.createPendingAuthorization(input, sessionID, requirement, "ask_user requires an explicit user response", "user_input_policy", "ask user input")
 	}
+	// Fleet access is a per-call boundary, even under generic bypass.
+	if normalizePolicyToolName(input.ToolName) == "manage_projects" {
+		args := parsePermissionJSONMap(input.ToolArguments)
+		machine := strings.TrimSpace(mapStringAny(args["machine"]))
+		if machine != "" {
+			action := strings.ToLower(strings.TrimSpace(mapStringAny(args["action"])))
+			if action == "" {
+				action = "list"
+			}
+			if !tool.FleetProjectActionAllowed(action) {
+				return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: action + " is not available on a linked machine", Source: "session_access"}, nil
+			}
+			level := ""
+			if s.sessions != nil {
+				session, found, err := s.sessions.GetSession(sessionID)
+				if err != nil {
+					return AuthorizationResult{}, err
+				}
+				if found && session.AccountScopeID == input.AccountScopeID {
+					level = pebblestore.SessionAccessFromMetadata(session.Metadata).Fleet[machine]
+				}
+			}
+			if level != "ask" && level != "full" {
+				return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: fmt.Sprintf("the person has not given this session access to machine %q; ask them to grant it in their app", machine), Source: "session_access"}, nil
+			}
+			if explain.Decision != PolicyDecisionDeny {
+				if level == "ask" {
+					return s.createPendingAuthorization(input, sessionID, requirement, "Approve linked machine "+machine+" action "+action, "session_access", "ask each linked machine call")
+				}
+				return AuthorizationResult{Decision: AuthorizationApprove, Requirement: requirement, Reason: "full session access to linked machine", Source: "session_access"}, nil
+			}
+		}
+	}
 	// The person's machine: the session's access decides before any call
 	// reaches their app (machineToolRefusal).
 	if name := normalizePolicyToolName(input.ToolName); pebblestore.IsMachineToolName(name) {
