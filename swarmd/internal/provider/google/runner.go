@@ -574,6 +574,15 @@ func sanitizeGoogleToolSchemaValue(value any) any {
 	}
 }
 
+// googleToolSchemaFields are the Gemini API Schema fields passed through as is;
+// properties, enum, anyOf, oneOf and const are adapted separately.
+var googleToolSchemaFields = map[string]bool{
+	"type": true, "format": true, "title": true, "description": true, "nullable": true,
+	"maxItems": true, "minItems": true, "required": true, "minProperties": true, "maxProperties": true,
+	"minLength": true, "maxLength": true, "pattern": true, "example": true, "propertyOrdering": true,
+	"default": true, "items": true, "minimum": true, "maximum": true,
+}
+
 func sanitizeGoogleToolSchemaMap(schema map[string]any, inheritedProperties map[string]any) map[string]any {
 	out := make(map[string]any, len(schema)+2)
 	// Property names are data, not schema keywords (a tool may name a field "enum").
@@ -587,8 +596,22 @@ func sanitizeGoogleToolSchemaMap(schema map[string]any, inheritedProperties map[
 	}
 	for key, item := range schema {
 		switch key {
-		case "additionalProperties", "uniqueItems", "exclusiveMinimum", "exclusiveMaximum", "properties":
+		case "properties":
 			continue
+		case "oneOf":
+			// protobuf Schema has anyOf only. Exclusivity is enforced by the tool
+			// itself; the alternatives still describe the accepted shapes.
+			if _, hasAnyOf := schema["anyOf"]; !hasAnyOf {
+				out["anyOf"] = sanitizeGoogleToolSchemaAlternatives(item, properties)
+			}
+		case "const":
+			if _, hasEnum := schema["enum"]; !hasEnum {
+				if text, ok := item.(string); ok && text != "" {
+					out["enum"] = []string{text}
+				} else if encoded, err := json.Marshal(item); err == nil && string(encoded) != "null" {
+					out["enum"] = []string{string(encoded)}
+				}
+			}
 		case "enum":
 			// Google's parameters field uses protobuf Schema: enum is repeated
 			// string even for INTEGER/NUMBER schemas, unlike JSON Schema enums.
@@ -622,6 +645,11 @@ func sanitizeGoogleToolSchemaMap(schema map[string]any, inheritedProperties map[
 		case "anyOf":
 			out[key] = sanitizeGoogleToolSchemaAlternatives(item, properties)
 		default:
+			// The Gemini API refuses the whole request on a field its protobuf
+			// Schema does not define (propertyNames, allOf, $ref, ...).
+			if !googleToolSchemaFields[key] {
+				continue
+			}
 			out[key] = sanitizeGoogleToolSchemaValue(item)
 		}
 	}

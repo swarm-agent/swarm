@@ -80,3 +80,72 @@ func TestVertexPreservesCanonicalToolJSONSchemasOnWire(t *testing.T) {
 		}
 	}
 }
+
+func TestGoogleAPIToolSchemasUseOnlyGeminiSchemaFields(t *testing.T) {
+	// Purpose:
+	// - Requirement: every runtime tool declaration the Gemini API path sends
+	//   uses only fields of its protobuf Schema, with a single string type.
+	// - Threat/regression: one unknown field (oneOf, propertyNames) in any tool
+	//   makes Gemini refuse the whole request, so the agent holding it cannot run.
+	// - Authority: buildGoogleRequest and sanitizeGoogleToolSchemaMap.
+	// - Narrowest layer: the built request from the real runtime definitions.
+	request := provideriface.Request{Model: "gemini-test", Input: []map[string]any{{"role": "user", "content": "hi"}}}
+	for _, d := range (&tool.Runtime{}).Definitions() {
+		request.Tools = append(request.Tools, provideriface.ToolDefinition{Name: d.Name, Description: d.Description, Parameters: d.Parameters})
+	}
+	built, err := buildGoogleRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, f := range built.Tools[0].FunctionDeclarations {
+		seen[f.Name] = true
+		encoded, err := json.Marshal(f.Parameters)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var schema any
+		if err := json.Unmarshal(encoded, &schema); err != nil {
+			t.Fatal(err)
+		}
+		checkGeminiSchema(t, f.Name, schema)
+	}
+	for _, name := range []string{"manage_workflows", "manage_custom_agents"} {
+		if !seen[name] {
+			t.Fatalf("%s missing from runtime definitions", name)
+		}
+	}
+}
+
+func checkGeminiSchema(t *testing.T, path string, value any) {
+	t.Helper()
+	schema, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	for key, item := range schema {
+		switch key {
+		case "properties":
+			properties, _ := item.(map[string]any)
+			for name, property := range properties {
+				checkGeminiSchema(t, path+"."+name, property)
+			}
+		case "items":
+			checkGeminiSchema(t, path+"[]", item)
+		case "anyOf":
+			alternatives, _ := item.([]any)
+			for i, alternative := range alternatives {
+				checkGeminiSchema(t, fmt.Sprintf("%s|%d", path, i), alternative)
+			}
+		case "enum":
+		case "type":
+			if _, ok := item.(string); !ok {
+				t.Errorf("%s: type %v is not one string", path, item)
+			}
+		default:
+			if !googleToolSchemaFields[key] {
+				t.Errorf("%s: field %q is not in the Gemini API Schema", path, key)
+			}
+		}
+	}
+}
