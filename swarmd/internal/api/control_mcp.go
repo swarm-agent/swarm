@@ -192,6 +192,9 @@ type controlMCPCall struct {
 	request *http.Request
 	next    http.Handler
 	server  *Server
+	// workflowDelivery marks a workflow deliver step's call: integration is
+	// attempted once so the runner's durable attempt count stays exact.
+	workflowDelivery bool
 }
 
 // controlMCPToolError is reported to the model as a tool result with isError,

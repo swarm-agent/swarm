@@ -45,7 +45,8 @@ func integrationGit(t *testing.T, dir string, args ...string) string {
 // conflicts must surface through IntegrateProjectTask without changing delivery.
 // The inspection-timeout case injects only the assessment result, checking the
 // mutation's effective sandbox allowance and real HTTP/MCP refusal reason on
-// all three attempts, with no receipt or target mutation.
+// all three workflow attempts (one assessment each), with no receipt or target
+// mutation; an interactive call then retries once in-call and really merges.
 // The workflow case crosses toBranch and the real HTTP handler to prove the
 // recovery warning reaches the recorded outcome, not just the stored receipt.
 func TestProjectTaskIntegrateNativeAndHTTP(t *testing.T) {
@@ -139,7 +140,7 @@ func TestProjectTaskIntegrateNativeAndHTTP(t *testing.T) {
 				if got := worktreeruntime.DeliveryAssessmentBudget(context.Background()); got != 15*time.Second {
 					t.Fatalf("status budget %s", got)
 				}
-				call := &controlMCPCall{request: withTestPrincipal(httptest.NewRequest(http.MethodPost, "/mcp", nil)), server: f.server}
+				call := &controlMCPCall{request: withTestPrincipal(httptest.NewRequest(http.MethodPost, "/mcp", nil)), server: f.server, workflowDelivery: true}
 				handler := f.server.internalRouteHandler()
 				call.next = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if r.Method == http.MethodGet {
@@ -159,6 +160,27 @@ func TestProjectTaskIntegrateNativeAndHTTP(t *testing.T) {
 				if calls != 3 || unchanged.Integration != nil || integrationGit(t, source, "rev-parse", "HEAD") != base {
 					t.Fatal("timeout mutated delivery or lost attempts")
 				}
+				// Interactive caller (swarm_integrate_task / swarm_deliver_job):
+				// one timed-out assessment, then the real one, merges in one call.
+				interactive := 0
+				inspectIntegrationGitState = func(ctx context.Context, task pebblestore.ProjectTaskRecord, db *pebblestore.SessionStore) taskGitState {
+					interactive++
+					if interactive == 1 {
+						a := &pebblestore.TaskDeliveryAssessment{State: "unavailable", Freshness: "unknown", ReasonCode: "inspection_timeout", Reason: "Git inspection exceeded its time budget"}
+						return taskGitState{deliveryAssessment: a, actionNeeded: taskAssessmentAction(a)}
+					}
+					return original(ctx, task, db)
+				}
+				call.workflowDelivery = false
+				out, err := controlMCPIntegrate(call, map[string]any{"project_id": proj.ID, "task_id": task.ID}, "swarm_integrate_task", "swarm_list_tasks")
+				if err != nil || interactive != 2 {
+					t.Fatalf("interactive retry: assessments %d err %v", interactive, err)
+				}
+				receipt, _ := out.(map[string]any)["integration"].(map[string]any)
+				if receipt["resulting_target_head"] != head {
+					t.Fatalf("interactive result %#v", out)
+				}
+				integrationGit(t, source, "merge-base", "--is-ancestor", head, "HEAD")
 				return
 			}
 			if strings.HasPrefix(entry, "detached-") {

@@ -299,6 +299,8 @@ func (d jobAutomationDeliverer) toBranch(ctx context.Context, req jobautomation.
 	if err != nil {
 		return jobautomation.DeliverOutcome{}, err
 	}
+	// One integrate attempt per workflow attempt: the runner retries.
+	c.workflowDelivery = true
 	var response any
 	if projectID, taskID, ok := parseTaskJobID(req.Result.JobID); ok {
 		if req.To == jobautomation.DeliverPublish {
@@ -372,6 +374,17 @@ func (d jobAutomationDeliverer) Locate(ctx context.Context, folder string, spec 
 	return found, nil
 }
 
+// transientInspectionCode reports a delivery assessment that could not read
+// the Git state in time (or saw it move): nothing is wrong with the work, and
+// reading it again later may succeed.
+func transientInspectionCode(code string) bool {
+	switch code {
+	case "inspection_timeout", "inspection_cancelled", "capacity_exceeded", "heads_changed":
+		return true
+	}
+	return false
+}
+
 // Only proven Git safety refusals bypass the workflow's configured retries.
 // Known transient inspection failures use bounded automatic retries; other
 // failures (including publish/network/store failures) retain configured retries.
@@ -388,9 +401,10 @@ func workflowDeliveryError(err error) error {
 	if code == "" {
 		code = body.Delivery.ReasonCode
 	}
-	switch code {
-	case "inspection_timeout", "inspection_cancelled", "capacity_exceeded", "heads_changed":
+	if transientInspectionCode(code) {
 		return &jobautomation.TransientInspectionError{Reason: err.Error()}
+	}
+	switch code {
 	case "lane_branch_mismatch", "unresolved_recovery":
 		return &jobautomation.RefusedError{Reason: err.Error()}
 	}

@@ -2500,9 +2500,11 @@ func controlMCPUnobservedDelivery(err error) (map[string]any, bool) {
 	return delivery, true
 }
 
-// controlMCPIntegrate integrates once for the named tool. An unobserved
-// delivery preserves its structured reason for the workflow retry policy;
-// the refusal names callable tools rather than an internal HTTP route.
+// controlMCPIntegrate integrates for the named tool. For an interactive
+// caller an unobserved delivery is retried once in the same call; a workflow
+// deliver step (c.workflowDelivery) integrates once so its durable attempts
+// stay exact. A repeated refusal keeps its structured reason for the workflow
+// retry policy and names callable tools rather than an internal HTTP route.
 func controlMCPIntegrate(c *controlMCPCall, args map[string]any, tool, readTool string) (any, error) {
 	projectID, err := controlMCPID(args, "project_id")
 	if err != nil {
@@ -2535,6 +2537,9 @@ func controlMCPIntegrate(c *controlMCPCall, args map[string]any, tool, readTool 
 	}
 	path := "/v3/projects/" + projectID + "/tasks/" + taskID + "/integrate"
 	integrated, err := c.dispatch(http.MethodPost, path, nil, selection)
+	if _, unobserved := controlMCPUnobservedDelivery(err); unobserved && !c.workflowDelivery {
+		integrated, err = c.dispatch(http.MethodPost, path, nil, selection)
+	}
 	if delivery, unobserved := controlMCPUnobservedDelivery(err); unobserved {
 		reason, _ := delivery["reason"].(string)
 		if code, _ := delivery["reason_code"].(string); code != "" {

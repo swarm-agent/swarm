@@ -37,27 +37,33 @@ func TestTaskInspectionStatusNote(t *testing.T) {
 }
 
 // Requirement: retain machine-readable inspection failures through the MCP
-// adapter, without immediate hidden retries. Threat: string matching retries
-// real mismatches, or multiple assessments hide the durable attempt count.
+// adapter. Interactive callers retry an unobserved state once in-call; the
+// workflow path integrates once so its durable attempt count stays exact.
 // The local HTTP dispatch seam proves this translation without live services.
 func TestIntegrateInspectionCode(t *testing.T) {
-	for _, code := range []string{"inspection_timeout", "inspection_cancelled", "lane_branch_mismatch"} {
-		calls := 0
-		c := &controlMCPCall{request: httptest.NewRequest(http.MethodPost, "/mcp", nil)}
-		c.next = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			if r.Method == http.MethodGet {
-				fmt.Fprint(w, `{"tasks":[{"id":"task","session_id":"session","worktree_branch":"agent/task","base_branch":"dev"}]}`)
-				return
+	for _, workflow := range []bool{false, true} {
+		for _, code := range []string{"inspection_timeout", "inspection_cancelled", "lane_branch_mismatch"} {
+			calls := 0
+			c := &controlMCPCall{request: httptest.NewRequest(http.MethodPost, "/mcp", nil), workflowDelivery: workflow}
+			c.next = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.Method == http.MethodGet {
+					fmt.Fprint(w, `{"tasks":[{"id":"task","session_id":"session","worktree_branch":"agent/task","base_branch":"dev"}]}`)
+					return
+				}
+				calls++
+				w.WriteHeader(http.StatusConflict)
+				fmt.Fprintf(w, `{"error":"unobserved","delivery":{"freshness":"unknown","reason_code":%q,"reason":"Git state not read"}}`, code)
+			})
+			_, err := controlMCPIntegrate(c, map[string]any{"project_id": "project", "task_id": "task"}, "merge", "get")
+			var typed controlMCPToolError
+			want := 2
+			if workflow {
+				want = 1
 			}
-			calls++
-			w.WriteHeader(http.StatusConflict)
-			fmt.Fprintf(w, `{"error":"unobserved","delivery":{"freshness":"unknown","reason_code":%q,"reason":"Git state not read"}}`, code)
-		})
-		_, err := controlMCPIntegrate(c, map[string]any{"project_id": "project", "task_id": "task"}, "merge", "get")
-		var typed controlMCPToolError
-		if !errors.As(err, &typed) || typed.inspectionCode != code || calls != 1 {
-			t.Fatalf("code %s calls %d error %#v", code, calls, err)
+			if !errors.As(err, &typed) || typed.inspectionCode != code || calls != want {
+				t.Fatalf("workflow %v code %s calls %d error %#v", workflow, code, calls, err)
+			}
 		}
 	}
 }

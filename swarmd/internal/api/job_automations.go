@@ -131,7 +131,11 @@ func (s *Server) workerJobAutomationResult(ctx context.Context, workerID, runID,
 		role = runRole
 	}
 	b := outbox.NewBuilder("automation", 256<<20)
-	core, err := workerJobResultFromView(ctx, b.GitOutput, lastAttempt, workerID, workerName, runID, view)
+	// A job's workflows start whether or not its end-of-job Git assessment
+	// finished in time: an unread Git state is the deliver step's concern
+	// (it reassesses and retries), never a reason to hold the trigger back.
+	settled := lastAttempt || jobViewGitUnread(view)
+	core, err := workerJobResultFromView(ctx, b.GitOutput, settled, workerID, workerName, runID, view)
 	if errors.Is(err, outbox.ErrNotReady) {
 		return nil, jobautomation.ErrNotReady
 	}
@@ -164,6 +168,15 @@ func (s *Server) workerJobAutomationResult(ctx context.Context, workerID, runID,
 		out.Cost.Model, _ = controlMCPMap(view["model"])["model"].(string)
 	}
 	return out, nil
+}
+
+// jobViewGitUnread reports a job view whose delivery assessment could not
+// read the Git state (unavailable with a transient inspection reason).
+func jobViewGitUnread(view map[string]any) bool {
+	result := controlMCPMap(view["result"])
+	state, _ := result["delivery_state"].(string)
+	code, _ := result["delivery_reason_code"].(string)
+	return state == "unavailable" && transientInspectionCode(code)
 }
 
 func (s *Server) mediaJobResultForAutomation(sig pebblestore.Signal) (*jobautomation.Result, error) {
