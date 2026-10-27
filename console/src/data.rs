@@ -678,6 +678,9 @@ pub struct Media {
     pub session: Option<usize>,
     /// This app's copy of the file, once downloaded.
     pub file: Option<std::path::PathBuf>,
+    /// A small copy of an image for cards: the full image is decoded only to
+    /// preview it.
+    pub thumb: Option<std::path::PathBuf>,
     /// An image's width and height, read from the downloaded file.
     pub dims: Option<(u32, u32)>,
     pub title: Text,
@@ -694,14 +697,14 @@ pub struct Media {
 
 pub fn media() -> Vec<Media> {
     vec![
-        Media { id: "".into(), session_id: "".into(), session: None, file: None, dims: None, title: "Hero direction 1 · eclipse".into(), kind: MediaKind::Design, project: 1, machine: 1, model: "gemini-3.5-pro".into(), meta: "hero.html · 1440×900".into(), age: "31m".into(), hue: 0.72, pending: false },
-        Media { id: "".into(), session_id: "".into(), session: None, file: None, dims: None, title: "Hero direction 2 · swarm field".into(), kind: MediaKind::Design, project: 1, machine: 1, model: "gemini-3.5-pro".into(), meta: "hero.html · 1440×900".into(), age: "22m".into(), hue: 0.58, pending: false },
-        Media { id: "".into(), session_id: "".into(), session: None, file: None, dims: None, title: "Hero direction 3".into(), kind: MediaKind::Design, project: 1, machine: 1, model: "gemini-3.5-pro".into(), meta: "rendering".into(), age: "now".into(), hue: 0.66, pending: true },
-        Media { id: "".into(), session_id: "".into(), session: Some(0), file: None, dims: None, title: "Launch teaser".into(), kind: MediaKind::Video, project: 1, machine: 0, model: "veo-4".into(), meta: "12s · 1080p · sound".into(), age: "2h".into(), hue: 0.04, pending: false },
-        Media { id: "".into(), session_id: "".into(), session: Some(0), file: None, dims: None, title: "Logo mark, dark".into(), kind: MediaKind::Image, project: 1, machine: 0, model: "imagen-5".into(), meta: "2048² · png".into(), age: "1d".into(), hue: 0.0, pending: false },
-        Media { id: "".into(), session_id: "".into(), session: None, file: None, dims: None, title: "Notification chime".into(), kind: MediaKind::Sound, project: 2, machine: 2, model: "lyria-3".into(), meta: "1.4s · wav".into(), age: "2d".into(), hue: 0.36, pending: false },
-        Media { id: "".into(), session_id: "".into(), session: None, file: None, dims: None, title: "Fleet diagram".into(), kind: MediaKind::Image, project: 0, machine: 0, model: "imagen-5".into(), meta: "1600×900 · png".into(), age: "3d".into(), hue: 0.52, pending: false },
-        Media { id: "".into(), session_id: "".into(), session: None, file: None, dims: None, title: "Onboarding walkthrough".into(), kind: MediaKind::Video, project: 2, machine: 1, model: "veo-4".into(), meta: "48s · 1080p".into(), age: "4d".into(), hue: 0.12, pending: false },
+        Media { id: "".into(), session_id: "".into(), thumb: None, session: None, file: None, dims: None, title: "Hero direction 1 · eclipse".into(), kind: MediaKind::Design, project: 1, machine: 1, model: "gemini-3.5-pro".into(), meta: "hero.html · 1440×900".into(), age: "31m".into(), hue: 0.72, pending: false },
+        Media { id: "".into(), session_id: "".into(), thumb: None, session: None, file: None, dims: None, title: "Hero direction 2 · swarm field".into(), kind: MediaKind::Design, project: 1, machine: 1, model: "gemini-3.5-pro".into(), meta: "hero.html · 1440×900".into(), age: "22m".into(), hue: 0.58, pending: false },
+        Media { id: "".into(), session_id: "".into(), thumb: None, session: None, file: None, dims: None, title: "Hero direction 3".into(), kind: MediaKind::Design, project: 1, machine: 1, model: "gemini-3.5-pro".into(), meta: "rendering".into(), age: "now".into(), hue: 0.66, pending: true },
+        Media { id: "".into(), session_id: "".into(), thumb: None, session: Some(0), file: None, dims: None, title: "Launch teaser".into(), kind: MediaKind::Video, project: 1, machine: 0, model: "veo-4".into(), meta: "12s · 1080p · sound".into(), age: "2h".into(), hue: 0.04, pending: false },
+        Media { id: "".into(), session_id: "".into(), thumb: None, session: Some(0), file: None, dims: None, title: "Logo mark, dark".into(), kind: MediaKind::Image, project: 1, machine: 0, model: "imagen-5".into(), meta: "2048² · png".into(), age: "1d".into(), hue: 0.0, pending: false },
+        Media { id: "".into(), session_id: "".into(), thumb: None, session: None, file: None, dims: None, title: "Notification chime".into(), kind: MediaKind::Sound, project: 2, machine: 2, model: "lyria-3".into(), meta: "1.4s · wav".into(), age: "2d".into(), hue: 0.36, pending: false },
+        Media { id: "".into(), session_id: "".into(), thumb: None, session: None, file: None, dims: None, title: "Fleet diagram".into(), kind: MediaKind::Image, project: 0, machine: 0, model: "imagen-5".into(), meta: "1600×900 · png".into(), age: "3d".into(), hue: 0.52, pending: false },
+        Media { id: "".into(), session_id: "".into(), thumb: None, session: None, file: None, dims: None, title: "Onboarding walkthrough".into(), kind: MediaKind::Video, project: 2, machine: 1, model: "veo-4".into(), meta: "48s · 1080p".into(), age: "4d".into(), hue: 0.12, pending: false },
     ]
 }
 

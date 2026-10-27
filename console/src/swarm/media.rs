@@ -109,13 +109,39 @@ fn sha_of(url: &str) -> &str {
     url.split(['?', '&']).find_map(|part| part.strip_prefix("sha256=")).unwrap_or("")
 }
 
-/// Downloads one file `collect` asked for into the cache as STEM.EXT (EXT from
-/// the type Swarm serves it as). True when the file is there.
+/// The end of a small copy's name, beside its image.
+const THUMB: &str = ".thumb.png";
+/// A small copy's longest side, enough for a card on a large screen.
+const THUMB_SIDE: u32 = 480;
+
+fn thumb_of(file: &std::path::Path) -> PathBuf {
+    let mut name = file.as_os_str().to_owned();
+    name.push(THUMB);
+    PathBuf::from(name)
+}
+
+/// Writes an image's small copy beside it.
+fn make_thumb(file: &std::path::Path) -> bool {
+    let Ok(image) = image::open(file) else { return false };
+    let small = image.thumbnail(THUMB_SIDE, THUMB_SIDE);
+    let path = thumb_of(file);
+    let part = path.with_extension("part");
+    small.save_with_format(&part, image::ImageFormat::Png).is_ok() && std::fs::rename(&part, &path).is_ok()
+}
+
+/// Does one job `collect` asked for: with a url, downloads the file into the
+/// cache as STEM.EXT (EXT from the type Swarm serves it as) and makes an
+/// image's small copy; without one, STEM is a cached image that lacks its small
+/// copy. True when it is done.
 pub fn download(client: &Client, url: &str, stem: &str) -> bool {
+    if url.is_empty() {
+        return make_thumb(std::path::Path::new(stem));
+    }
     match client.get_bytes(url) {
         Ok((data, mime)) => {
             let mime = mime.split(';').next().unwrap_or("").trim().to_string();
-            store(&cache_dir().join(format!("{stem}.{}", ext_of(&mime))), &data).is_ok()
+            let path = cache_dir().join(format!("{stem}.{}", ext_of(&mime)));
+            store(&path, &data).is_ok() && (!mime.starts_with("image/") || make_thumb(&path))
         }
         Err(_) => false,
     }
@@ -133,6 +159,7 @@ pub fn collect(reads: &mut HashMap<String, Read>, tasks: &[(String, String, Medi
                 session_id: session_id.clone().into(),
                 session: None,
                 file: None,
+                thumb: None,
                 dims: None,
                 title: task.title.clone().into(),
                 kind: kind_of("", &task.agent),
@@ -161,7 +188,7 @@ pub fn collect(reads: &mut HashMap<String, Read>, tasks: &[(String, String, Medi
                 let key = if sha.is_empty() { s(d, "id") } else { &sha[..sha.len().min(12)] };
                 let cached = std::fs::read_dir(cache_dir()).ok().and_then(|dir| {
                     let prefix = format!("{}-{}-{key}.", task.task_id, n + 1);
-                    dir.filter_map(Result::ok).map(|e| e.path()).find(|p| p.file_name().and_then(|f| f.to_str()).is_some_and(|f| f.starts_with(&prefix) && !f.ends_with(".part")))
+                    dir.filter_map(Result::ok).map(|e| e.path()).find(|p| p.file_name().and_then(|f| f.to_str()).is_some_and(|f| f.starts_with(&prefix) && !f.ends_with(".part") && !f.ends_with(THUMB)))
                 });
                 let (file, media_type) = match cached {
                     Some(path) => (Some(path), String::new()),
@@ -189,6 +216,17 @@ pub fn collect(reads: &mut HashMap<String, Read>, tasks: &[(String, String, Medi
                 if let Some(cost) = d.get("cost_usd").and_then(Value::as_f64) {
                     meta.push(format!("${cost:.2}"));
                 }
+                let kind = kind_of(&media_type, &task.agent);
+                // A card shows a small copy; it is made off this thread.
+                let thumb = file.as_ref().filter(|_| kind == MediaKind::Image).and_then(|f| {
+                    let small = thumb_of(f);
+                    if small.exists() {
+                        return Some(small);
+                    }
+                    wanted.push((String::new(), f.to_string_lossy().into_owned()));
+                    missing = true;
+                    None
+                });
                 if let Some(size) = file.as_ref().and_then(|p| std::fs::metadata(p).ok()).map(|m| m.len()) {
                     meta.push(format!("{:.1} MB", size as f64 / (1 << 20) as f64));
                 }
@@ -198,8 +236,9 @@ pub fn collect(reads: &mut HashMap<String, Read>, tasks: &[(String, String, Medi
                     session: None,
                     dims: file.as_ref().and_then(|p| image_dims(p)),
                     file,
+                    thumb,
                     title: task.title.clone().into(),
-                    kind: kind_of(&media_type, &task.agent),
+                    kind,
                     project: 0,
                     machine: 0,
                     model: model.to_string().into(),
@@ -276,6 +315,21 @@ mod tests {
         assert_eq!(ext_of("image/jpeg"), "jpg");
         assert!(settled("completed") && !settled("in_progress"));
         assert!(is_media_agent("video") && !is_media_agent("coder"));
+    }
+
+    // A card's small copy of a large image is at most THUMB_SIDE on its long
+    // side and keeps the image's shape; the full image is left as it was.
+    #[test]
+    fn small_copies_of_images() {
+        let dir = std::env::temp_dir().join(format!("swarm-console-thumb-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("wide.png");
+        image::RgbImage::from_pixel(2752, 1536, image::Rgb([200, 120, 40])).save(&file).unwrap();
+        assert!(make_thumb(&file));
+        let small = image::image_dimensions(thumb_of(&file)).unwrap();
+        assert_eq!(small, (480, 268));
+        assert_eq!(image::image_dimensions(&file).unwrap(), (2752, 1536));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     // A settled task's ready deliverable is listed at once and its file is

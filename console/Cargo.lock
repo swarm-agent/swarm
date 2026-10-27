@@ -5195,6 +5195,7 @@ name = "swarm-console"
 version = "0.1.0"
 dependencies = [
  "gpui",
+ "image",
  "libc",
  "pulldown-cmark",
  "serde",

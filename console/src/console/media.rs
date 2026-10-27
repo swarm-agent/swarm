@@ -71,7 +71,7 @@ impl Console {
                             .items_center()
                             .justify_center()
                             .bg(hsla(m.hue, 0.35, l1, 1.0))
-                            .when_some(m.file.clone().filter(|_| m.kind == MediaKind::Image), |d, path| {
+                            .when_some(m.thumb.clone().filter(|_| m.kind == MediaKind::Image), |d, path| {
                                 d.child(gpui::img(path).absolute().top_0().left_0().size_full().object_fit(gpui::ObjectFit::Cover))
                             })
                             .child(
@@ -192,7 +192,7 @@ impl Console {
             MediaKind::Design => "◰",
         };
         let picture = match (&m.file, m.kind) {
-            (Some(path), MediaKind::Image) => gpui::img(path.clone()).w(px(w)).h(px(h)).object_fit(gpui::ObjectFit::Cover).into_any_element(),
+            (Some(_), MediaKind::Image) if m.thumb.is_some() => gpui::img(m.thumb.clone().unwrap_or_default()).w(px(w)).h(px(h)).object_fit(gpui::ObjectFit::Cover).into_any_element(),
             _ => div()
                 .size_full()
                 .flex()
