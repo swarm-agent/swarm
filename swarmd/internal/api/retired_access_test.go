@@ -28,7 +28,7 @@ func TestRetiredSessionAccess(t *testing.T) {
 		w := httptest.NewRecorder()
 		s.handleSessionV3Access(w, r, p, session.ID)
 		if method == "GET" {
-			if w.Code != 200 || !strings.Contains(w.Body.String(), `"tasks":"approve"`) {
+			if w.Code != 200 || !strings.Contains(w.Body.String(), `"tasks":"auto"`) {
 				t.Fatalf("read: %d %s", w.Code, w.Body.String())
 			}
 		} else if w.Code != 400 || !strings.Contains(w.Body.String(), "/v3/permissions") {

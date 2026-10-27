@@ -352,6 +352,15 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 		t.Fatal(err)
 	}
 	checkRetryUsage()
+	// The account's Start tasks rule waits for approval for this retry.
+	approveRules, err := store.GetAccountPermissions(p.AccountScopeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approveRules.Tasks = "approve"
+	if _, err := store.Underlying().SetAccountPermissions(p.AccountScopeID, approveRules.Revision, approveRules); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.CreateSessionForAccount(pebblestore.SessionSnapshot{ID: "ask-session", WorkspacePath: root, Metadata: map[string]any{"project_id": project, pebblestore.SessionAccessMetadataKey: map[string]any{"tasks": "ask"}}}, p.UserID, p.AccountScopeID); err != nil {
 		t.Fatal(err)
 	}
@@ -363,9 +372,12 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 	}
 	// Purpose: below the batch-confirmation threshold, approval intent must
 	// distinguish the account's approve setting from automatic retry approval.
-	accountRules := pebblestore.DefaultAccountPermissions()
+	accountRules, err := store.GetAccountPermissions(p.AccountScopeID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	accountRules.Tasks = "auto"
-	if _, err := store.Underlying().SetAccountPermissions(p.AccountScopeID, 0, accountRules); err != nil {
+	if _, err := store.Underlying().SetAccountPermissions(p.AccountScopeID, accountRules.Revision, accountRules); err != nil {
 		t.Fatal(err)
 	}
 	autoResult, err := server.ManageMedia(context.Background(), scope, map[string]any{"action": "retry", "job_id": result.(map[string]any)["job_id"], "count": float64(1)})
@@ -879,7 +891,7 @@ func TestManageMediaTaskApproval(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if setting != "auto" {
+			if setting == "approve" {
 				task, found, err := store.GetProjectTask(p.AccountScopeID, project, id)
 				if err != nil || !found || task.Status != "pending_approval" || view["status"] != "pending_approval" || view["message"] != "The task waits for approval." {
 					t.Fatalf("pending task %+v result %+v error %v", task, view, err)
