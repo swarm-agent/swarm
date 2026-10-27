@@ -23,6 +23,7 @@ mod background;
 mod commands;
 mod fleet;
 mod fleet_keys;
+mod devices;
 mod fleet_live;
 mod live;
 mod markdown;
@@ -328,6 +329,7 @@ pub struct Console {
     live_page: fleet_live::LivePage,
     /// The Fleet page's provider keys (the home's fleet key manager).
     keys_page: fleet_keys::KeysPage,
+    devices: devices::DevicesPage,
     /// Model settings being applied to linked machines from the Agents page.
     model_apply: agents::ModelApply,
 }
@@ -485,6 +487,7 @@ impl Console {
             custom_for: None,
             live_page: Default::default(),
             keys_page: Default::default(),
+            devices: Default::default(),
             model_apply: Default::default(),
         };
         if demo {
@@ -643,6 +646,9 @@ impl Console {
         }
         if page == Page::Permissions || page == Page::Agents {
             self.load_permissions();
+        }
+        if page == Page::Permissions {
+            self.load_devices(cx);
         }
         if page == Page::Fleet {
             self.load_fleet_keys(cx);
@@ -1470,6 +1476,7 @@ impl Render for Console {
         self.ensure_composers(cx);
         self.sync_live_page(cx);
         self.sync_fleet_keys(cx);
+        self.sync_devices(cx);
         self.sync_agents(cx);
         // The conversations open in panes are followed in full, from the moment
         // they open (watch sends nothing when the set is unchanged).
