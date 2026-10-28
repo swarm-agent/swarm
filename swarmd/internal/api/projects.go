@@ -2313,9 +2313,17 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			started := time.Now()
 			var reconcileElapsed time.Duration
 			var summaries = make(map[string]projectTaskBoardRelated)
+			// The stored integration facts, which a collection response clears,
+			// still say where each task's work is for its progress.
+			type storedIntegration struct {
+				integrated bool
+				commits    int
+			}
+			storedFacts := map[string]storedIntegration{}
 			tasks, stats, err := db.ReadProjectTaskBoard(p.AccountScopeID, projectID, archiveView == "archived", func(rows []pebblestore.ProjectTaskRecord, reader *pebblestore.ProjectTaskBoardReader) {
 				reconcileStart := time.Now()
 				for i := range rows {
+					storedFacts[rows[i].ID] = storedIntegration{integrated: rows[i].IsIntegrated, commits: rows[i].UnintegratedCommits}
 					// Delivery is deliberately unassessed on collection reads.
 					rows[i].IsIntegrated, rows[i].UnintegratedCommits = false, 0
 					reader.BindTask(&rows[i])
@@ -2386,6 +2394,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					sanitizedTasks[i].EnvironmentAttachments = s.taskEnvironmentProjection(r.Context(), principal, &sanitizedTasks[i])
 				}
 				board[i] = projectTaskBoardRow{ProjectTaskRecord: sanitizedTasks[i], BoardSummary: summaries[sanitizedTasks[i].ID]}
+				progressTask := tasks[i]
+				facts := storedFacts[progressTask.ID]
+				progressTask.IsIntegrated, progressTask.UnintegratedCommits = facts.integrated, facts.commits
+				board[i].Progress = s.taskProgressFor(p.AccountScopeID, progressTask, started.UnixMilli())
 			}
 			writeProjectTaskBoard(w, board, stats, started, reconcileElapsed)
 			return
@@ -3367,7 +3379,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			syncTaskSessionState(task, db)
 			hydrateTaskProgramStatus(task, db)
 			hydrateTaskPlanDocument(task, db)
-			detail := map[string]any{"task": sanitizeProjectTaskForClient(task), "model_preview": s.buildTaskModelPreview(p, task)}
+			detail := map[string]any{"task": taskWithProgress{Task: sanitizeProjectTaskForClient(task), Progress: s.taskProgressFor(p.AccountScopeID, *task, time.Now().UnixMilli())}, "model_preview": s.buildTaskModelPreview(p, task)}
 			if folderTask(task) && task.Integration != nil && task.Integration.State == "in_folder" {
 				g, err := taskResultGit(r.Context(), task.WorkspacePath, task.BaseCommit, task.Integration.SourceHead)
 				detail["base_commit"], detail["head"], detail["delivery_state"] = task.BaseCommit, task.Integration.SourceHead, "in_folder"

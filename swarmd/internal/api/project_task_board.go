@@ -30,6 +30,8 @@ type projectTaskBoardJob struct {
 type projectTaskBoardRow struct {
 	pebblestore.ProjectTaskRecord
 	BoardSummary projectTaskBoardRelated `json:"board_summary"`
+	// Progress is where the task is and what happened (task_progress.go).
+	Progress *taskProgress `json:"progress,omitempty"`
 }
 
 // MarshalJSON keeps the task's privacy-aware encoder without promoting it over
@@ -48,6 +50,11 @@ func (row projectTaskBoardRow) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 	fields["board_summary"] = summary
+	if row.Progress != nil {
+		if fields["progress"], err = json.Marshal(row.Progress); err != nil {
+			return nil, err
+		}
+	}
 	return json.Marshal(fields)
 }
 

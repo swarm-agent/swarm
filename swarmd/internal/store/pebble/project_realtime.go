@@ -28,6 +28,10 @@ type projectRealtimeMutation struct {
 	eventPayload   json.RawMessage
 	outbox         *V3RealtimeOutboxRecord
 	taskTransition *ProjectTaskStatusTransition
+	// notify publishes project.updated with no project or task write: a
+	// task's view changed through a record kept elsewhere (a workflow
+	// delivery of its job, or the evaluation of its job end).
+	notify bool
 }
 
 func (m *projectRealtimeMutation) put(key string, value any) error {
@@ -68,6 +72,9 @@ func setProjectRealtimeMutationInBatch(batch *pebble.Batch, account string, m *p
 		return ErrProjectInvalid
 	}
 	if len(m.writes) == 0 && len(m.deletes) == 0 {
+		if m.notify {
+			return nil
+		}
 		return ErrProjectInvalid
 	}
 	keys := make([]string, 0, len(m.writes))
@@ -166,7 +173,7 @@ func setProjectRealtimeMutationInBatch(batch *pebble.Batch, account string, m *p
 			return err
 		}
 	}
-	if len(repositories) > 0 {
+	if len(repositories) > 0 && (len(m.writes) > 0 || len(m.deletes) > 0) {
 		if err := setTaskSummariesInBatch(batch, repositories[0].store.db, m); err != nil {
 			return err
 		}
@@ -223,6 +230,51 @@ func (s *Store) publishProjectRealtime(m *projectRealtimeMutation) {
 	if observe != nil && m.taskTransition != nil {
 		observe(*m.taskTransition)
 	}
+}
+
+// NotifyProjectTaskChanged publishes project.updated for a task whose view
+// changed without a write to its record: a workflow delivery of its job
+// (created, a step started or finished, finished) or the evaluation of its
+// job end. Nothing but the event is written; clients read the task again.
+func (s *SessionStore) NotifyProjectTaskChanged(accountScopeID, projectID, taskID string) error {
+	if s == nil || s.store == nil || s.store.db == nil {
+		return errors.New("database not available")
+	}
+	accountScopeID, projectID, taskID = strings.TrimSpace(accountScopeID), strings.TrimSpace(projectID), strings.TrimSpace(taskID)
+	if accountScopeID == "" || projectID == "" {
+		return ErrProjectInvalid
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"project_id": projectID,
+		"account_id": accountScopeID,
+		"task_id":    taskID,
+		"action":     "task_progress",
+	})
+	mutation := &projectRealtimeMutation{accountScopeID: accountScopeID, projectID: projectID, eventPayload: payload, notify: true}
+	if err := s.store.commitProjectRealtime(mutation); err != nil {
+		return err
+	}
+	s.store.publishProjectRealtime(mutation)
+	return nil
+}
+
+// SetProjectTaskProgress installs fn, which computes a task's progress (its
+// state, summary, workflow and integration) for the outcomes wait_tasks
+// resumes the Orchestrator with. nil leaves progress out.
+func (s *Store) SetProjectTaskProgress(fn func(account string, task ProjectTaskRecord) any) {
+	s.projectPublisherMu.Lock()
+	s.projectTaskProgress = fn
+	s.projectPublisherMu.Unlock()
+}
+
+func (s *Store) taskProgress(account string, task ProjectTaskRecord) any {
+	s.projectPublisherMu.RLock()
+	fn := s.projectTaskProgress
+	s.projectPublisherMu.RUnlock()
+	if fn == nil {
+		return nil
+	}
+	return fn(account, task)
 }
 
 // ProjectTaskStatusTransition is one committed change of a project task's status.

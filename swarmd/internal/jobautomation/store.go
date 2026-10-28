@@ -177,6 +177,9 @@ type Store struct {
 	db  *pebblestore.Store
 	now func() time.Time
 	mu  sync.Mutex
+	// notify is told of every committed delivery and evaluation change.
+	notifyMu sync.RWMutex
+	notify   func(account, projectID, jobID string)
 }
 
 func NewStore(db *pebblestore.Store) *Store {
@@ -545,7 +548,24 @@ func (s *Store) putDeliveryLocked(d Delivery) error {
 	if err != nil {
 		return err
 	}
-	return batch.Commit(pebble.Sync)
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return err
+	}
+	s.notifyChange(d.Account, d.ProjectID(), d.JobID)
+	return nil
+}
+
+// ProjectID is the project of the delivery's job: its result's, or the one
+// a task, media or design job id names; "" for a job outside a project.
+func (d Delivery) ProjectID() string {
+	if d.Result.ProjectID != "" {
+		return d.Result.ProjectID
+	}
+	parts := strings.Split(d.JobID, "/")
+	if len(parts) == 3 && (parts[0] == KindTask || parts[0] == KindMedia || parts[0] == KindDesign) {
+		return parts[1]
+	}
+	return ""
 }
 
 // SaveDelivery writes a delivery's new state.

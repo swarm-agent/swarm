@@ -381,13 +381,25 @@ func followupOf(sig pebblestore.Signal) string {
 	return ""
 }
 
-func (r *Runner) consume(ctx context.Context, account string, sig pebblestore.Signal) error {
+func (r *Runner) consume(ctx context.Context, account string, sig pebblestore.Signal) (err error) {
 	if _, ok := jobEndKinds[sig.Kind]; !ok {
 		return nil
 	}
 	// Loop guard: a job an agent step started never triggers automations.
 	if sig.Attrs["source"] == RequestSourceAutomation {
 		return nil
+	}
+	// A task job end records its evaluation, the deliveries it matched or
+	// none, whichever way it ends here (no workflow, no result, no match),
+	// so its progress tells "none" from "not evaluated yet". An error is
+	// retried, so it records nothing.
+	matched := []string{}
+	if jobID := sig.Attrs["job_id"]; strings.HasPrefix(sig.Kind, "task.run.") && IsTaskJobID(jobID) {
+		defer func() {
+			if err == nil {
+				err = r.store.RecordEvaluation(account, sig.Refs["project_id"], jobID, followupOf(sig), sig.Seq, sig.At, matched)
+			}
+		}()
 	}
 	autos, err := r.store.List(account)
 	if err != nil {
@@ -472,6 +484,7 @@ func (r *Runner) consume(ctx context.Context, account string, sig pebblestore.Si
 		if err != nil {
 			return fmt.Errorf("record delivery: %w", err)
 		}
+		matched = append(matched, d.ID)
 		if created && d.State == StateBlocked {
 			// Terminal-at-creation deliveries are not dispatched; still publish
 			// their blocker and persist the normal completion timestamp.

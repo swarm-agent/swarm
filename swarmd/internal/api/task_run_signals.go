@@ -101,14 +101,34 @@ func (s *Server) signalTaskRunEnded(job sessionV3ExecutorJob, status string, res
 	}
 	attrs["source"] = source
 	kind := "task.run." + ended
-	if _, err := s.signals.AppendOnce(pebblestore.Signal{
+	sig, err := s.signals.AppendOnce(pebblestore.Signal{
 		Kind: kind, Severity: severity, Source: pebblestore.SignalSourceSwarmd, Account: account,
 		Summary:  "Task " + controlMCPTruncate(task.Title, 120) + " (" + task.Agent + ") run " + ended,
 		DedupKey: "task.run:" + task.ID + ":" + followup,
 		Refs:     map[string]string{"project_id": projectID, "task_id": taskID, "session_id": job.SessionID, "run_id": job.RunID},
 		Attrs:    attrs,
-	}); err != nil {
+	})
+	if err != nil {
 		log.Printf("swarmd signal %s not recorded: %v", kind, err)
+		return
+	}
+	if source != jobautomation.RequestSourceAutomation {
+		s.markTaskJobEnded(account, projectID, sig, followup)
+	}
+}
+
+// markTaskJobEnded records that a task's job end waits for the workflow
+// runner, so its progress says workflow "pending" until the runner records
+// what it matched ("none" when nothing). Only ends the runner reads (the
+// machine owner's account) are marked, so no end stays pending for good.
+func (s *Server) markTaskJobEnded(account, projectID string, sig pebblestore.Signal, followup string) {
+	store, err := s.jobAutomationStore()
+	if err != nil || account != s.OutboxAccount() {
+		return
+	}
+	jobID := sig.Attrs["job_id"]
+	if err := store.MarkJobEnded(account, projectID, jobID, followup, sig.Seq, sig.At); err != nil {
+		log.Printf("swarmd task progress: mark job end of %s: %v", jobID, err)
 	}
 }
 

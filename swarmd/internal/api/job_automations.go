@@ -36,6 +36,7 @@ const (
 // has none (the routes and tools answer 503).
 func (s *Server) SetJobAutomations(runner *jobautomation.Runner) {
 	s.jobAutomations = runner
+	s.installTaskProgress()
 }
 
 func (s *Server) jobAutomationStore() (*jobautomation.Store, error) {
