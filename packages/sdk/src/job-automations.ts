@@ -49,7 +49,7 @@ export interface JobDeliverable {
   /** "job" for the work's own output, or the id of the step that produced it. */
   from?: string;
 }
-export type JobDeliveryState = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'stopped' | 'blocked';
+export type JobDeliveryState = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'stopped' | 'blocked' | 'sent_back';
 export type JobReviewVerdict = 'ok' | 'block';
 /**
  * An agent step's `fixes` option (reviewer workers only; the only value).
@@ -240,6 +240,8 @@ export interface JobDelivery {
   head?: string;
   /** Why the delivery ended `blocked`, e.g. `rounds_exhausted`. */
   blocked_reason?: string;
+  /** Set when the delivery ended `sent_back`: a reopen step sent the work back (nothing was handed over); the follow-up's end starts a fresh delivery. */
+  sent_back?: { step: string; round: number; reason?: string };
   /** The reviewer fix commits the delivery head was moved to (agent steps with `fixes`). */
   fix_commits?: Array<{ sha: string; subject: string }>;
   steps: JobDeliveryStep[];

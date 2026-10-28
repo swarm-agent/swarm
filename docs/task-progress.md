@@ -46,7 +46,7 @@ workflow deliveries and its integration.
 |---|---|
 | `waiting` | not started: held by `Start tasks: approve`, or queued for capacity |
 | `working` | an agent is working on it (planning or running, a follow-up included) |
-| `workflow` | it finished and a workflow is taking it through its steps now |
+| `workflow` | it finished and a workflow is taking it through its steps now, or a workflow sent it back to its agent (`summary`: "workflow <name> sent back by <step> · round <n>: <reason>") and the follow-up has not started yet |
 | `not_integrated` | it finished with commits that are not in its target branch, and no workflow is running on it (none applied, or the ones that ran did not merge it) |
 | `integrated` | its commits are in its target branch (`integration.commit`, `integration.at`) |
 | `delivered` | a workflow delivered its result (a folder, a pull request, the outbox, or the owner's script after the review, e.g. a push), or a media task's files are ready |
@@ -63,8 +63,11 @@ workflow deliveries and its integration.
 - `pending`: the task ended and its job end has not been evaluated yet. A
   run that leaves the task working (a Swarm task waiting on the tasks it
   delegated) is not a job end and marks nothing.
-- `running`, `done`, `failed`, `blocked`: the state of the deliveries that
-  applied (the latest round per workflow).
+- `running`, `done`, `failed`, `blocked`, `sent_back`: the state of the
+  deliveries that applied (the latest round per workflow). `sent_back`: a
+  reopen step sent the work back (review findings, a failed push to rebase)
+  and nothing was handed over; each such delivery carries `sent_back`
+  (`step`, `round`, `reason`).
 - absent while the task has not ended.
 
 ### `history`

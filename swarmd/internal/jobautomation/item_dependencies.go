@@ -93,7 +93,9 @@ func (r *TriggerRunner) itemDependency(account string, items []ItemRecord, id st
 				ready = false
 				continue
 			}
-			if d.State != StateSucceeded {
+			// A sent_back delivery handed nothing over: like a succeeded
+			// one with a reopen, its follow-up's delivery is outstanding.
+			if d.State != StateSucceeded && d.State != StateSentBack {
 				reason := d.BlockedReason
 				if reason == "" {
 					reason = "workflow " + d.AutomationName + " " + d.State

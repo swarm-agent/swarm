@@ -52,6 +52,11 @@ const (
 	// StateBlocked ends a delivery whose reopen step ran out of rounds or
 	// had an unreadable review to send.
 	StateBlocked = "blocked"
+	// StateSentBack ends a delivery whose reopen step sent the work back
+	// into its own session (a review's findings, a failed push to rebase):
+	// nothing after it handed the work over, and the follow-up's end starts
+	// a fresh delivery. Delivery.SentBack says which step, round and why.
+	StateSentBack = "sent_back"
 )
 
 // ReasonRoundsExhausted is a reopen step's failure when another reopen
@@ -118,11 +123,26 @@ type Delivery struct {
 	// BlockedReason is why the delivery ended blocked (rounds_exhausted, or
 	// "review unreadable: <reviewer job id>").
 	BlockedReason string `json:"blocked_reason,omitempty"`
+	// SentBack is set when the delivery ended sent_back: the reopen step
+	// that sent the work back, its round and why it ran.
+	SentBack *SentBack `json:"sent_back,omitempty"`
 	// Spec is the workflow's result as the delivery started (Automation.Result).
 	Spec *ResultSpec `json:"result_spec,omitempty"`
 	// Produced is what this delivery's produce steps wrote (see
 	// CurrentDeliverables).
 	Produced []Deliverable `json:"produced,omitempty"`
+}
+
+// SentBack is how a delivery that ended sent_back sent the work back.
+type SentBack struct {
+	// Step is the reopen step that sent the follow-up.
+	Step string `json:"step"`
+	// Round is the reopen round the follow-up started (1 is the first).
+	Round int `json:"round"`
+	// Reason is why the step ran, from its conditions ("review verdict
+	// block", "push failed: exited with code 1"); "" when it ran
+	// unconditionally.
+	Reason string `json:"reason,omitempty"`
 }
 
 // ReopenRecord is what a reopen step left for the follow-up it sent, so the
@@ -187,7 +207,7 @@ func resetStep(step *StepRecord) {
 // Terminal reports whether a delivery or step state is final.
 func Terminal(state string) bool {
 	switch state {
-	case StateSucceeded, StateFailed, StateSkipped, StateStopped, StateBlocked:
+	case StateSucceeded, StateFailed, StateSkipped, StateStopped, StateBlocked, StateSentBack:
 		return true
 	}
 	return false
@@ -911,7 +931,7 @@ func (s *Store) rerunLocked(d Delivery) (Delivery, bool, error) {
 		return d, false, nil
 	}
 	if reset {
-		d.State, d.FinishedAt = StatePending, 0
+		d.State, d.FinishedAt, d.SentBack = StatePending, 0, nil
 	}
 	d.Reruns++
 	return d, true, s.putDeliveryLocked(d)

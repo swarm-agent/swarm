@@ -67,7 +67,7 @@ func TestTaskRunEndsStartWorkflowsScopedToTheirFolderAndRole(t *testing.T) {
 		t.Fatalf("deliveries = %+v, want only the coder flow", list)
 	}
 	first := list[0]
-	if first.State != StateSucceeded || first.Steps[1].Outcome["followup"] != "followup-1" || first.Steps[2].State != StateSkipped {
+	if first.State != StateSentBack || first.Steps[1].Outcome["followup"] != "followup-1" || first.Steps[2].State != StateSkipped {
 		t.Fatalf("first delivery = %s, steps %+v", first.State, first.Steps)
 	}
 	if len(h.agents.started) != 1 || h.agents.started[0].Result.JobID != "task/proj-1/task-1" || h.agents.started[0].Head != strings.Repeat("b", 40) {

@@ -68,7 +68,7 @@ func TestReopenSendsFindingsIntoTheJobsSessionAndTheFollowupEndIsTheNextRound(t 
 	h.process()
 
 	first := h.deliveries("worker/coder-1/run-1")[0]
-	if first.Round != 0 || first.State != StateSucceeded {
+	if first.Round != 0 || first.State != StateSentBack || first.SentBack == nil || first.SentBack.Step != "fix" || first.SentBack.Round != 1 {
 		t.Fatalf("first delivery = round %d state %s", first.Round, first.State)
 	}
 	fix := first.Steps[1]

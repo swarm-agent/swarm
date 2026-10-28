@@ -38,6 +38,9 @@ const (
 	workflowDone    = "done"
 	workflowFailed  = "failed"
 	workflowBlocked = "blocked"
+	// workflowSentBack: a reopen step sent the work back (review findings,
+	// a failed push to rebase); nothing was handed over.
+	workflowSentBack = "sent_back"
 )
 
 const (
@@ -67,6 +70,8 @@ type taskProgressDelivery struct {
 	Steps    int    `json:"steps"`
 	StepType string `json:"step_type"`
 	Round    int    `json:"round"`
+	// SentBack is the reopen step, round and reason of a sent_back delivery.
+	SentBack *jobautomation.SentBack `json:"sent_back,omitempty"`
 }
 
 type taskProgressIntegration struct {
@@ -137,6 +142,8 @@ func deliveryProgressState(state string) string {
 		return workflowFailed
 	case jobautomation.StateBlocked:
 		return workflowBlocked
+	case jobautomation.StateSentBack:
+		return workflowSentBack
 	}
 	return workflowRunning
 }
@@ -144,6 +151,14 @@ func deliveryProgressState(state string) string {
 // currentStep is the delivery's step to show (0-based): the one running or
 // waiting, else the one that failed or blocked it, else the last that ran.
 func currentStep(d jobautomation.Delivery) int {
+	if d.State == jobautomation.StateSentBack && d.SentBack != nil {
+		// A sent-back delivery stands at the reopen step that sent it.
+		for i, step := range d.Steps {
+			if step.ID == d.SentBack.Step {
+				return i
+			}
+		}
+	}
 	last := -1
 	for i, step := range d.Steps {
 		switch step.State {
@@ -152,7 +167,7 @@ func currentStep(d jobautomation.Delivery) int {
 		case jobautomation.StateFailed, jobautomation.StateStopped:
 			// A step allowed to fail (continue_on_failure) is not what
 			// the delivery stands at.
-			if d.State != jobautomation.StateSucceeded {
+			if d.State != jobautomation.StateSucceeded && d.State != jobautomation.StateSentBack {
 				return i
 			}
 		}
@@ -251,14 +266,14 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 	// or none / pending from the evaluation of the job end.
 	var workflow *taskProgressWorkflow
 	running := []jobautomation.Delivery{}
-	var failedDelivery *jobautomation.Delivery
+	var failedDelivery, sentBackDelivery *jobautomation.Delivery
 	if len(latest) > 0 || (ended && eval != nil) {
 		workflow = &taskProgressWorkflow{Deliveries: []taskProgressDelivery{}}
-		anyFailed, anyBlocked := false, false
+		anyFailed, anyBlocked, anySentBack := false, false, false
 		for i, d := range latest {
 			step := currentStep(d)
 			state := deliveryProgressState(d.State)
-			view := taskProgressDelivery{ID: d.ID, Workflow: d.AutomationName, State: state, Steps: len(d.Steps), Round: d.Round}
+			view := taskProgressDelivery{ID: d.ID, Workflow: d.AutomationName, State: state, Steps: len(d.Steps), Round: d.Round, SentBack: d.SentBack}
 			if len(d.Steps) > 0 {
 				view.Step, view.StepType = step+1, d.Steps[step].Type
 			}
@@ -276,6 +291,11 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 				if failedDelivery == nil {
 					failedDelivery = &latest[i]
 				}
+			case workflowSentBack:
+				anySentBack = true
+				if sentBackDelivery == nil {
+					sentBackDelivery = &latest[i]
+				}
 			}
 		}
 		switch {
@@ -287,6 +307,8 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 			workflow.State = workflowFailed
 		case anyBlocked:
 			workflow.State = workflowBlocked
+		case anySentBack:
+			workflow.State = workflowSentBack
 		case len(latest) > 0:
 			workflow.State = workflowDone
 		default:
@@ -457,6 +479,11 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 		if reason != "" {
 			out.Summary += ": " + reason
 		}
+	case sentBackDelivery != nil && workflow != nil && workflow.State == workflowSentBack:
+		// The work went back to its agent; the follow-up's end starts a
+		// fresh delivery. Nothing was handed over.
+		out.State = progressWorkflow
+		out.Summary = sentBackSummary(*sentBackDelivery)
 	case deliveredWhere != "" || mediaReady:
 		out.State = progressDelivered
 		out.Summary = firstNonEmptyString(deliveredWhere, "files ready")
@@ -492,6 +519,21 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 		out.UpdatedAt = now
 	}
 	return out
+}
+
+// sentBackSummary says a delivery sent its work back: the workflow, the
+// reopen step, its round and why it ran.
+func sentBackSummary(d jobautomation.Delivery) string {
+	what := "workflow " + d.AutomationName + " sent back"
+	sb := d.SentBack
+	if sb == nil {
+		return what
+	}
+	what += " by " + sb.Step + " · round " + strconv.Itoa(sb.Round)
+	if sb.Reason != "" {
+		what += ": " + sb.Reason
+	}
+	return what
 }
 
 func isProgressCommit(s string) bool {
@@ -607,6 +649,9 @@ func taskProgressHistory(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 		}
 		if d.FinishedAt > 0 {
 			what := "workflow " + d.AutomationName + " " + d.State
+			if d.State == jobautomation.StateSentBack {
+				what = sentBackSummary(d)
+			}
 			if d.BlockedReason != "" {
 				what += ": " + d.BlockedReason
 			}

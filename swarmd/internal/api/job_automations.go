@@ -967,6 +967,13 @@ func jobDeliveryView(d jobautomation.Delivery) map[string]any {
 	if d.BlockedReason != "" {
 		out["blocked_reason"] = d.BlockedReason
 	}
+	if sb := d.SentBack; sb != nil {
+		sent := map[string]any{"step": sb.Step, "round": sb.Round}
+		if sb.Reason != "" {
+			sent["reason"] = sb.Reason
+		}
+		out["sent_back"] = sent
+	}
 	// The reviewer fix commits the delivery head moved to (an agent step
 	// with fixes whose commits were applied).
 	fixes := []any{}

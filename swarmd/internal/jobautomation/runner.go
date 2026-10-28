@@ -677,7 +677,91 @@ func (r *Runner) runDelivery(ctx context.Context, account, id string) {
 			state = StateFailed
 		}
 	}
+	// A reopen step that sent the work back means nothing was handed over:
+	// the delivery ends sent_back, never succeeded, and the follow-up's end
+	// starts a fresh delivery. This includes a step allowed to fail
+	// (continue_on_failure, a push) whose failure the reopen sent back.
+	if sent := sentBack(d); sent != nil {
+		d.SentBack = sent
+		state = StateSentBack
+	}
 	r.finish(&d, state)
+}
+
+// sentBack is how the delivery sent its work back: the last reopen step that
+// sent a follow-up, its round and the conditions that made it run. nil when
+// no reopen step sent one.
+func sentBack(d Delivery) *SentBack {
+	var out *SentBack
+	for _, rec := range d.Steps {
+		if rec.Type != StepReopen || rec.State != StateSucceeded {
+			continue
+		}
+		if followup, _ := rec.Outcome["followup"].(string); followup == "" {
+			continue
+		}
+		round := outcomeInt(rec.Outcome["round"])
+		if round == 0 {
+			round = d.Round + 1
+		}
+		step, _ := d.step(rec.ID)
+		out = &SentBack{Step: rec.ID, Round: round, Reason: sentBackReason(d, step)}
+	}
+	return out
+}
+
+// sentBackReason describes the conditions a reopen step ran on: a verdict
+// ("review verdict block") or a failed step with its reason ("push failed:
+// exited with code 1"). Without conditions it is the from step's verdict,
+// when one was recorded.
+func sentBackReason(d Delivery, step Step) string {
+	record := func(id string) *StepRecord {
+		for i := range d.Steps {
+			if d.Steps[i].ID == id {
+				return &d.Steps[i]
+			}
+		}
+		return nil
+	}
+	var parts []string
+	for _, c := range step.If {
+		rec := record(c.Step)
+		if rec == nil {
+			continue
+		}
+		switch {
+		case c.Verdict != "":
+			parts = append(parts, c.Step+" verdict "+c.Verdict)
+		case c.Status == StateFailed:
+			why := c.Step + " failed"
+			if rec.Reason != "" {
+				why += ": " + rec.Reason
+			}
+			parts = append(parts, why)
+		}
+	}
+	if len(parts) == 0 && step.From != "" {
+		if rec := record(step.From); rec != nil {
+			if verdict, _ := rec.Outcome["verdict"].(string); verdict != "" {
+				parts = append(parts, step.From+" verdict "+verdict)
+			}
+		}
+	}
+	return truncate(strings.Join(parts, "; "), 300)
+}
+
+// outcomeInt reads a number from a step outcome, as recorded (int) or as
+// read back from the store (float64).
+func outcomeInt(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	}
+	return 0
 }
 
 // skipEmptyReview never infers emptiness from missing Git. Earlier produced
@@ -752,7 +836,7 @@ func (r *Runner) finish(d *Delivery, state string) {
 		log.Printf("swarmd job automations: save delivery %s: %v", d.ID, err)
 	}
 	severity := pebblestore.SignalSeverityInfo
-	if state != StateSucceeded {
+	if state != StateSucceeded && state != StateSentBack {
 		severity = pebblestore.SignalSeverityWarning
 	}
 	counts := map[string]int{}
@@ -780,9 +864,19 @@ func (r *Runner) finish(d *Delivery, state string) {
 		r.signal(*d, "automation.delivery.blocked", pebblestore.SignalSeverityWarning,
 			fmt.Sprintf("Automation %s blocked job %s after %d rounds: %s", d.AutomationName, d.JobID, d.Round-d.RoundBase, d.BlockedReason), "", attrs, "")
 	}
-	r.signal(*d, "automation.delivery.finished", severity, fmt.Sprintf("Automation %s %s for job %s", d.AutomationName, state, d.JobID), "", map[string]string{
+	attrs := map[string]string{
 		"automation": d.AutomationName, "state": state, "steps_succeeded": strconv.Itoa(counts[StateSucceeded]), "steps_failed": strconv.Itoa(counts[StateFailed]),
-	}, "")
+	}
+	summary := fmt.Sprintf("Automation %s %s for job %s", d.AutomationName, state, d.JobID)
+	if state == StateSentBack && d.SentBack != nil {
+		summary = fmt.Sprintf("Automation %s sent job %s back (step %s, round %d)", d.AutomationName, d.JobID, d.SentBack.Step, d.SentBack.Round)
+		attrs["sent_back_step"], attrs["round"] = d.SentBack.Step, strconv.Itoa(d.SentBack.Round)
+		if d.SentBack.Reason != "" {
+			summary += ": " + d.SentBack.Reason
+			attrs["reason"] = d.SentBack.Reason
+		}
+	}
+	r.signal(*d, "automation.delivery.finished", severity, summary, "", attrs, "")
 }
 
 // runStep runs one attempt of a step and records it. It reports whether the

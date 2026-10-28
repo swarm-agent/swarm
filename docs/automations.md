@@ -234,7 +234,8 @@ lane as having no commits since its captured base. Missing `git` alone is
 unknown, not empty, and does not skip review. Earlier work produced by another
 step remains a separate review target. Other agent steps and run steps still run.
 A skipped review has no verdict, so verdict conditions do not match; it also
-**does not match `status: succeeded`**. The delivery succeeds if nothing failed.
+**does not match `status: succeeded`**. The delivery succeeds if nothing failed
+and no reopen step sent the work back (see `sent_back` below).
 
 ```json
 { "id": "review", "type": "agent", "worker": "reviewer", "brief": "Review this change for security problems." }
@@ -535,11 +536,20 @@ automation, such as a stopped follow-up or a turn that committed nothing,
 creates none, and `automation.delivery.skipped` records why. A delivery
 keeps the steps of the revision it started with, its `round` (the reopens
 the automation already sent into the job), its `head` and, when it ended
-`blocked`, its `blocked_reason`.
+`blocked`, its `blocked_reason`. A delivery whose reopen step sent a
+follow-up ends `sent_back`, never `succeeded`: nothing after the reopen
+handed the work over, and the follow-up's end starts a fresh delivery. Its
+`sent_back` says which reopen step sent it (`step`), the round that
+follow-up started (`round`) and why the step ran (`reason`, from its
+conditions: `review verdict block`, or `push failed: exited with code 1: ...`
+when a push allowed to fail was sent back to rebase). This holds even when
+a step allowed to fail (`continue_on_failure`) failed before the reopen.
+A reopen step with no rounds left sends nothing and still ends the delivery
+`blocked`.
 
 Every delivery and step is recorded durably with its state (`pending`,
 `running`, `waiting` (a reopen step waiting for its job), `succeeded`,
-`failed`, `skipped`, `stopped` or, for a delivery, `blocked`), attempts, start and finish times, exit code, output line, log
+`failed`, `skipped`, `stopped` or, for a delivery, `blocked` or `sent_back`), attempts, start and finish times, exit code, output line, log
 tail and outcome. Each step also keeps `failures`: every failed attempt's
 `attempt`, `rerun`, `at` and `reason` (the newest 20), kept across reruns.
 A deliver step whose Git inspection did not finish in time (the machine is
@@ -676,7 +686,8 @@ and `step_id`:
 - `automation.step.failed` (severity warning; attrs: `step`, `reason` and
   `next`, the next allowed action: `rerun` or `fix the script`; while
   automatic retries remain, also `will_retry` and `retry_at`)
-- `automation.delivery.finished` (attrs: `state`, step counts)
+- `automation.delivery.finished` (attrs: `state`, step counts; for
+  `sent_back` also `sent_back_step`, `round` and `reason`, severity info)
 - `automation.delivery.skipped` (a job end created no delivery; attrs:
   `reason` `duplicate_head`, `head`, `followup`, `status`, and
   `delivery_state` of the delivery, named in `refs.delivery_id`, that

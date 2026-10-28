@@ -136,7 +136,7 @@ func TestWaitingDeliveriesOfOneJobNeverExceedMaxRounds(t *testing.T) {
 	reopened, blocked := 0, 0
 	for _, d := range list {
 		switch {
-		case d.State == StateSucceeded && d.Steps[1].State == StateSucceeded:
+		case d.State == StateSentBack && d.Steps[1].State == StateSucceeded:
 			reopened++
 		case d.State == StateBlocked && d.BlockedReason == ReasonRoundsExhausted && d.Steps[1].Outcome["followup"] == nil:
 			blocked++

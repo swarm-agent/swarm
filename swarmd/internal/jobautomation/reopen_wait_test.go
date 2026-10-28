@@ -90,7 +90,7 @@ func TestReopenWaitsForARunningJobThenSendsOnce(t *testing.T) {
 	}
 	d := h.deliveries("worker/coder-1/run-1")[0]
 	fix := d.Steps[1]
-	if d.State != StateSucceeded || fix.State != StateSucceeded || fix.Attempts != 1 || fix.Outcome["followup"] != "followup-1" {
+	if d.State != StateSentBack || fix.State != StateSucceeded || fix.Attempts != 1 || fix.Outcome["followup"] != "followup-1" {
 		t.Fatalf("delivery %s, reopen step = %+v", d.State, fix)
 	}
 	if len(reopener.sent) != 1 || reopener.calls != 3 || !strings.Contains(reopener.sent[0].Message, findings) {
