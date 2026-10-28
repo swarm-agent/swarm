@@ -71,6 +71,21 @@ func (m *Manager) DrainStatus() DrainStatus {
 	return m.drainStatusLocked()
 }
 
+// HeldSessions lists the sessions whose runs hold an execution lease now: the
+// live set a drain waits on (drainStatusLocked's blockers), whatever the drain
+// state. Session IDs may repeat across accounts.
+func (m *Manager) HeldSessions() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []string{}
+	for _, acc := range m.accounts {
+		for _, l := range acc.sessions {
+			out = append(out, l.sessionID)
+		}
+	}
+	return out
+}
+
 func (m *Manager) drainStatusLocked() DrainStatus {
 	out := m.drain
 	if out.EndReason == "expired" {

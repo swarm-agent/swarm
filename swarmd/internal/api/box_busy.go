@@ -11,8 +11,10 @@ import (
 )
 
 // boxBusy is what a restart of this daemon would interrupt, across every
-// account on the machine: agent runs in progress (session lifecycles),
-// unfinished worker runs and sandbox environment builds. Counts only.
+// account on the machine: agent runs in progress (sessions with an active
+// lifecycle or holding an execution lease, the set a drain waits on, which
+// includes project task runs and their follow-up runs), unfinished worker runs
+// and sandbox environment builds. Counts only.
 type boxBusy struct {
 	Followups         int  `json:"followups"`
 	Reviews           int  `json:"reviews"`
@@ -24,12 +26,20 @@ type boxBusy struct {
 
 func (s *Server) boxBusy() (boxBusy, error) {
 	var out boxBusy
+	running := map[string]struct{}{}
+	if manager := s.ExecutionCapacity(); manager != nil {
+		for _, id := range manager.HeldSessions() {
+			running[id] = struct{}{}
+		}
+	}
 	if s.sessions != nil {
 		active, err := s.sessions.ListActiveLifecycles(100_000)
 		if err != nil {
 			return out, errors.New("read active runs: " + err.Error())
 		}
-		out.Sessions = len(active)
+		for _, lifecycle := range active {
+			running[lifecycle.SessionID] = struct{}{}
+		}
 		out.Followups, out.Reviews, err = s.sessions.Store().WorkerStore().BoxExecutionCounts()
 		if err != nil {
 			return out, err
@@ -38,6 +48,7 @@ func (s *Server) boxBusy() (boxBusy, error) {
 			return out, errors.New("count unfinished worker runs: " + err.Error())
 		}
 	}
+	out.Sessions = len(running)
 	if s.sandboxEnvironments != nil {
 		building, err := s.sandboxEnvironments.CountBuilding()
 		if err != nil {
