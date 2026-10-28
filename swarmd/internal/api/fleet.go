@@ -37,6 +37,8 @@ import (
 //	GET    /v3/fleet/activity[/stream]       the fleet's merged activity
 //
 // Fleet keys, the fleet's provider key manager: fleet_keys.go.
+// Linked tasks, the home's records of tasks sent to machines and the
+// read-only view of their sessions: fleet_linked_tasks.go.
 
 const fleetPath = "/v3/fleet"
 
@@ -73,6 +75,8 @@ func (s *Server) registerFleetRoutes(mux *http.ServeMux) {
 	// writes for owners and swarm:approve, and the machine side only over the link.
 	mux.HandleFunc(fleetKeysPath, s.handleFleetKeys)
 	mux.HandleFunc(fleetKeysPath+"/", s.handleFleetKeys)
+	// Linked tasks read like the activity (fleet_linked_tasks.go).
+	s.registerFleetLinkedTaskRoutes(mux)
 }
 
 // swarmName is this Swarm's own name, the one the person gave it at setup

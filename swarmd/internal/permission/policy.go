@@ -1552,6 +1552,8 @@ func policyModeWithBypass(mode string, bypass bool) string {
 var manageProjectsReadOnlyActions = map[string]bool{
 	"list": true, "get": true, "list_sources": true, "inspect_source": true, "inspect_files": true,
 	"list_media": true, "get_media": true, "list_tasks": true, "get_task": true,
+	// The home's linked-task records and the read-only remote session view.
+	"list_linked_tasks": true, "read_task_session": true,
 }
 
 // IsManageProjectsReadOnlyAction reports whether the manage_projects call only

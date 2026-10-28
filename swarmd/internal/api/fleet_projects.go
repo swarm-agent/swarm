@@ -107,6 +107,9 @@ func (s *Server) CallFleetProject(ctx context.Context, p identity.Principal, mac
 	}
 	err = client.JSON(ctx, method, path, input, &result)
 	s.noteFleetContact(linked, err)
+	// What the link answered about tasks refreshes the home's linked-task
+	// records (fleet_linked_tasks.go); the linked wait reads through here too.
+	s.observeFleetLinkedTasks(p.AccountScopeID, machine, action, args, result, err)
 	if err != nil {
 		// The machine's own refusal (its status and message) tells the agent
 		// what to change; a call that never got an answer says only that.

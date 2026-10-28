@@ -109,6 +109,9 @@ var controlMCPRoutes = []string{
 	"GET v3/fleet/keys",
 	"POST v3/fleet/keys/requests",
 	"POST v3/fleet/keys/*/revoke",
+	// Linked tasks (fleet_linked_tasks.go): the home's records of tasks sent
+	// to linked machines; read only.
+	"GET v3/fleet/linked-tasks",
 	"POST v3/sessions/*/media",
 	"POST v3/sessions/*/plans",
 	"GET v3/sessions/*/plans/active",
@@ -817,8 +820,9 @@ func controlMCPTools() []controlMCPTool {
 			Name: "swarm_list_tasks", Title: "List project tasks",
 			Description: "Work in a project: orchestrator tasks and worker runs, with status, agent branch, target branch and what needs doing. Tasks in pending_approval wait for approve_task; finished work waits in status needs_review until integrate_task merges it. Read a task's work with get_changes and read_file on its session_id.",
 			InputSchema: controlMCPObject([]string{"project_id"}, map[string]any{
-				"project_id": controlMCPStringProp("From list_projects.", 1, 200),
-				"status":     controlMCPStringProp("Only this status, e.g. needs_review.", 0, 50),
+				"project_id":     controlMCPStringProp("From list_projects.", 1, 200),
+				"status":         controlMCPStringProp("Only this status, e.g. needs_review.", 0, 50),
+				"include_linked": map[string]any{"type": "boolean", "description": "Also list linked_tasks: tasks this project's sessions sent to linked machines, with the machine and the status this home last observed (untrusted)."},
 			}),
 			Annotations: controlMCPReadOnly, call: controlMCPListTasks,
 		},
@@ -2470,7 +2474,17 @@ func controlMCPListTasks(c *controlMCPCall, args map[string]any) (any, error) {
 			break
 		}
 	}
-	return map[string]any{"tasks": tasks}, nil
+	out := map[string]any{"tasks": tasks}
+	if include, _ := args["include_linked"].(bool); include {
+		// The home's linked-task records, through their one route.
+		linked, err := c.dispatch(http.MethodGet, fleetLinkedTasksPath, url.Values{"project_id": {projectID}}, nil)
+		if err != nil {
+			return nil, err
+		}
+		out["linked_tasks"] = controlMCPList(linked["linked_tasks"])
+		out["untrusted_content"] = true
+	}
+	return out, nil
 }
 
 // controlMCPIntegrateTask selects the task's own session, agent branch and

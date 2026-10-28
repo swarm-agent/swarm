@@ -111,6 +111,7 @@ import { MediaTaskCard, isCreativeMediaTask, type MediaTaskActions } from './med
 import { ProjectMediaTasks } from './project-media-tasks'
 import { mediaSelectionCards } from './media-selection'
 import { ArchivedTaskList } from './archived-task-list'
+import { LinkedTaskList } from './linked-task-list'
 import { unarchiveProjectTask } from '../runtime/project-task-unarchive'
 import { archiveProjectTask, projectTaskArchiveQueue } from '../runtime/project-task-archive'
 import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
@@ -6213,6 +6214,7 @@ export function OrchestrateView({
               </section>}
               {managementBusy && <span role="status" className="px-4 text-slate-400 text-[11px]">Updating tasks…</span>}
               {managementMessage && <span role="status" className="px-4 text-amber-300 text-[11px]">{managementMessage}</span>}
+              {selectedProjectId && <LinkedTaskList key={selectedProjectId} scope={{ projectId: selectedProjectId }} />}
               {archivedOpen && <div className="fixed inset-0 z-[100] bg-black/70 flex items-center justify-center p-4" onMouseDown={e => { if (e.target === e.currentTarget) { setArchivedOpen(false); archivedTriggerRef.current?.focus() } }}>
                 <section role="dialog" aria-modal="true" aria-labelledby="archived-tasks-title" className="swarm-local-dialog w-full max-w-xl max-h-[85vh] overflow-hidden flex flex-col rounded-xl border border-slate-700 bg-[#0a101e] p-4 text-white shadow-2xl">
                   <div className="flex items-center justify-between gap-3"><h2 id="archived-tasks-title" className="text-base font-semibold">Archived tasks</h2><button type="button" ref={archivedCloseRef} onClick={() => { setArchivedOpen(false); archivedTriggerRef.current?.focus() }} aria-label="Close archived tasks">Close</button></div>
@@ -6692,6 +6694,7 @@ export function OrchestrateView({
         // Keep the chat bounded to the page, below the optional worker header.
         <div className="swarm-conversation-panel flex min-h-0 shrink-0 flex-col">
         {activeNavTab === 'workers' && workerChatOpen && <div className="flex max-w-[440px] shrink-0 items-center justify-between gap-3 p-3 text-xs text-slate-300"><span>{workerCreationRequested ? 'Add worker: describe its job to Orchestrator below. Nothing runs until you approve.' : 'Discuss this worker with Orchestrator'}</span><button onClick={() => { setWorkerChatOpen(false); setWorkerCreationRequested(false) }}>Close</button></div>}
+        {admittedParentId && activeSessionId === admittedParentId && <LinkedTaskList key={activeSessionId} scope={{ sessionId: activeSessionId }} title="Sent to linked machines" />}
         <OrchestratorChatSidebar
         onOpenMediaArtifact={(artifact) => {
           const selected = toMediaLibraryItem(artifact)

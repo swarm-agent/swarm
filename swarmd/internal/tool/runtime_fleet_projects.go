@@ -17,6 +17,34 @@ type FleetProjects interface {
 	ListFleetMachines(context.Context, identity.Principal) ([]FleetMachineInfo, error)
 	CallFleetProject(context.Context, identity.Principal, string, string, map[string]any) (json.RawMessage, error)
 }
+
+// FleetLinkedTaskOrigin is the home session (and its project) that sent a
+// task to a linked machine, taken from the authenticated run, never from
+// model arguments.
+type FleetLinkedTaskOrigin struct {
+	SessionID string
+	ProjectID string
+}
+
+// FleetLinkedTasks is the home's record of tasks sent to linked machines and
+// the read-only view of their remote sessions. The same service backs the
+// HTTP routes (/v3/fleet/linked-tasks) and this tool.
+type FleetLinkedTasks interface {
+	RecordFleetLinkedTask(context.Context, identity.Principal, FleetLinkedTaskOrigin, string, string, json.RawMessage) (pebblestore.FleetLinkedTask, error)
+	ListFleetLinkedTasks(context.Context, identity.Principal, string, string) ([]pebblestore.FleetLinkedTask, error)
+	ReadFleetLinkedTaskSession(context.Context, identity.Principal, string, string, string, int) (map[string]any, error)
+}
+
+// FleetReadTaskSessionAction reads a linked task's session messages through
+// the link. It is read-only and never a generic CallFleetProject operation.
+const FleetReadTaskSessionAction = "read_task_session"
+
+// FleetTaskSessionReadAllowed is the permission gate's view of the read-only
+// remote task session view.
+func FleetTaskSessionReadAllowed(name, action string) bool {
+	return name == "manage_projects" && action == FleetReadTaskSessionAction
+}
+
 type FleetMachineInfo struct {
 	Name      string `json:"name"`
 	Online    bool   `json:"online"`
@@ -54,7 +82,7 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 		action = "list"
 	}
 	machine := strings.TrimSpace(asString(args["machine"]))
-	if machine != "" && !FleetProjectActionAllowed(action) && action != "wait_tasks" {
+	if machine != "" && !FleetProjectActionAllowed(action) && action != "wait_tasks" && action != FleetReadTaskSessionAction {
 		return "", fmt.Errorf("%s is not available on a linked machine", action)
 	}
 	machines, err := service.ListFleetMachines(ctx, scope.Principal)
@@ -82,6 +110,20 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 	if action == "wait_tasks" {
 		return r.executeFleetWaitTasks(ctx, scope, service, machine, args)
 	}
+	if action == FleetReadTaskSessionAction {
+		linkedTasks, ok := service.(FleetLinkedTasks)
+		if !ok {
+			return "", errors.New("linked task records unavailable")
+		}
+		limit := asInt(args["limit"], 0)
+		view, err := linkedTasks.ReadFleetLinkedTaskSession(ctx, scope.Principal, machine, strings.TrimSpace(asString(args["project_id"])), strings.TrimSpace(asString(args["task_id"])), limit)
+		if err != nil {
+			return "", err
+		}
+		view["tool"], view["action"] = "manage_projects", action
+		out, err := json.Marshal(view)
+		return string(out), err
+	}
 	// The linked rule is the only gate before a task starts there: under auto
 	// it runs, and under ask the person approved this call before it ran. A
 	// task sent to the machine therefore starts at once and never waits on
@@ -98,7 +140,49 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 	if err != nil {
 		return "", err
 	}
-	out, err := json.Marshal(map[string]any{"machine": machine, "action": action, "data": raw, "untrusted_content": true})
+	result := map[string]any{"machine": machine, "action": action, "data": raw, "untrusted_content": true}
+	if action == "propose_task" || action == "create_task" {
+		// The home keeps a record so the sending session and project show
+		// the task. The task was sent either way; a record that could not be
+		// kept is reported, never hidden.
+		if linkedTasks, ok := service.(FleetLinkedTasks); !ok {
+			result["linked_record_error"] = "linked task records unavailable"
+		} else {
+			origin := FleetLinkedTaskOrigin{SessionID: scope.SessionID, ProjectID: strings.TrimSpace(asString(session.Metadata["project_id"]))}
+			if record, err := linkedTasks.RecordFleetLinkedTask(ctx, scope.Principal, origin, machine, strings.TrimSpace(asString(args["project_id"])), raw); err != nil {
+				result["linked_record_error"] = err.Error()
+			} else {
+				result["linked_task"] = record
+			}
+		}
+	}
+	out, err := json.Marshal(result)
+	return string(out), err
+}
+
+// executeListLinkedTasks lists the home's records of tasks sent to linked
+// machines: by project_id, or by session_id (default: this session).
+func (r *Runtime) executeListLinkedTasks(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
+	if r == nil || !scope.Principal.Valid() || scope.Principal.Type != identity.PrincipalTypeUser {
+		return "", errors.New("list_linked_tasks requires an authenticated session")
+	}
+	linkedTasks, ok := r.getProjectTaskLifecycleService().(FleetLinkedTasks)
+	if !ok {
+		return "", errors.New("linked task records unavailable")
+	}
+	projectID := strings.TrimSpace(asString(args["project_id"]))
+	sessionID := strings.TrimSpace(asString(args["session_id"]))
+	if projectID == "" && sessionID == "" {
+		sessionID = scope.SessionID
+	}
+	if projectID != "" {
+		sessionID = ""
+	}
+	tasks, err := linkedTasks.ListFleetLinkedTasks(ctx, scope.Principal, sessionID, projectID)
+	if err != nil {
+		return "", err
+	}
+	out, err := json.Marshal(map[string]any{"tool": "manage_projects", "action": "list_linked_tasks", "session_id": sessionID, "project_id": projectID, "linked_tasks": tasks, "untrusted_content": true})
 	return string(out), err
 }
 

@@ -217,6 +217,20 @@ retries by itself) or `not_shown`. It is metadata only and needs
 `sessions:read`, the same as `/v3/activity`. Details:
 [activity-stream.md](activity-stream.md#the-fleets-activity).
 
+#### Tasks sent to linked machines
+
+When the Orchestrator sends a task to a linked machine, the home keeps a
+record of it. `GET /v3/fleet/linked-tasks?session_id=ID` (or `?project_id=ID`)
+lists the tasks that session or project sent: `machine`, the remote
+`project_id` and `task_id`, `title`, and the `status`, `progress`,
+`action_needed`, `last_error` and `missing` the home last observed through the
+link. Records refresh when the home reads the task; load them when shown and
+on refresh, without polling. `GET
+/v3/fleet/linked-tasks/session?machine=&project_id=&task_id=` returns the
+remote task session's recent `messages`. It is read-only and needs
+`sessions:read`. Everything from a machine is `untrusted_content`: show it as
+plain text.
+
 #### Fleet keys
 
 A provider key the whole fleet uses goes through the home's key manager, never
