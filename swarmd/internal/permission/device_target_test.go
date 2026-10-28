@@ -43,12 +43,23 @@ func TestDeviceTargetResolution(t *testing.T) {
 		p := store.DefaultAccountPermissions()
 		for _, d := range devices {
 			put(store.KeyIdentityClientSession(d.id), store.ClientSessionRecord{SessionID: d.id, AccountScopeID: "a", Device: d.name, ExpiresAt: now + 60000, LastSeenAt: now})
-			p.Devices[d.id] = store.DevicePermissionRule{Files: d.rule, Browser: d.rule}
+			rule := d.rule
+			if rule == "stored-ask" {
+				rule = "off"
+			}
+			p.Devices[d.id] = store.DevicePermissionRule{Files: rule, Browser: rule}
 		}
 		// Another account's connected device is never a fallback target.
 		put(store.KeyIdentityClientSession("other"), store.ClientSessionRecord{SessionID: "other", AccountScopeID: "b", Device: "theirs", ExpiresAt: now + 60000, LastSeenAt: now})
 		if _, err := db.SetAccountPermissions("a", 0, p); err != nil {
 			t.Fatal(err)
+		}
+		// stored-ask: a record written before device ask was removed (it
+		// cannot be set any more, and reads as off).
+		for _, d := range devices {
+			if d.rule == "stored-ask" {
+				put("account_permissions/a", map[string]any{"tasks": "auto", "devices": map[string]any{d.id: map[string]any{"files": "ask", "browser": "ask"}}})
+			}
 		}
 		return NewService(store.NewPermissionStore(db), nil, nil)
 	}
@@ -128,7 +139,7 @@ func TestDeviceTargetResolution(t *testing.T) {
 	}
 	for _, c := range []struct{ tool, rule, want, tools string }{
 		{"request_browser_access", "allowed", `browser rule for device "computer" is allowed`, "manage_browser"},
-		{"request_browser_access", "ask", `browser rule for device "computer" is ask`, "manage_browser"},
+		{"request_browser_access", "stored-ask", `browser rule for device "computer" is off`, "Permissions page"},
 		{"request_browser_access", "off", `browser rule for device "computer" is off`, "Permissions page"},
 		{"request_machine_access", "allowed", `files rule for device "computer" is allowed`, "machine_run"},
 		{"request_machine_access", "off", `files rule for device "computer" is off`, "Permissions page"},
@@ -139,7 +150,7 @@ func TestDeviceTargetResolution(t *testing.T) {
 			if got.Decision != AuthorizationDeny || got.Record != nil || !strings.Contains(got.Reason, c.want) || !strings.Contains(got.Reason, c.tools) {
 				t.Fatalf("%s with rule %s: %+v", c.tool, c.rule, got)
 			}
-			if strings.Contains(got.Reason, "cannot grant") != (c.rule == "off") {
+			if strings.Contains(got.Reason, "cannot grant") != (c.rule != "allowed") {
 				t.Fatalf("answer misreports the rule: %q", got.Reason)
 			}
 			noPending(t, svc)
