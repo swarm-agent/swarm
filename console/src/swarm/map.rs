@@ -303,7 +303,11 @@ pub fn entry(m: &Value, first: bool) -> Vec<Entry> {
             let content = s(m, "content");
             let text = if first || content.starts_with("# Mission") { objective(content) } else { content.trim().to_string() };
             if !text.is_empty() {
-                out.push(Entry::User(text.into()));
+                if meta.get("queued_note").and_then(Value::as_bool) == Some(true) && !s(m, "id").is_empty() {
+                    out.push(Entry::Queued { id: s(m, "id").to_string().into(), text: text.into() });
+                } else {
+                    out.push(Entry::User(text.into()));
+                }
             }
             let files: Vec<String> = list(m, "media")
                 .iter()
@@ -382,7 +386,28 @@ pub fn tool_event_end(kind: &str, payload: &Value) -> (ToolState, Option<Text>, 
 
 /// A conversation from its message records, oldest first.
 pub fn entries(messages: &[Value]) -> Vec<Entry> {
-    messages.iter().enumerate().flat_map(|(i, m)| entry(m, i == 0)).collect()
+    let mut out = Vec::new();
+    for (i, m) in messages.iter().enumerate() {
+        apply(&mut out, m, i == 0);
+    }
+    out
+}
+
+/// Adds one message record to a conversation. A delivery receipt Swarm
+/// writes when a queued message reached the model turns that message's
+/// queued entry into an ordinary one; it adds no entry of its own.
+pub fn apply(entries: &mut Vec<Entry>, m: &Value, first: bool) {
+    let meta = m.get("metadata").cloned().unwrap_or(Value::Null);
+    if s(m, "role") == "system" && s(&meta, "source") == "feedback_delivery" {
+        let id = s(&meta, "message_id");
+        if let Some(at) = entries.iter().position(|e| matches!(e, Entry::Queued { id: queued, .. } if !id.is_empty() && queued.as_ref() == id)) {
+            if let Entry::Queued { text, .. } = entries[at].clone() {
+                entries[at] = Entry::User(text);
+            }
+        }
+        return;
+    }
+    entries.extend(entry(m, first));
 }
 
 /// A project task (ProjectTaskRecord) as a card.
@@ -711,6 +736,28 @@ pub fn plans(chatgpt: Result<&Value, &str>) -> Vec<Plan> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // Purpose: a message Swarm queued during a run shows as queued until
+    // Swarm's delivery receipt names it, then as an ordinary message; the
+    // receipt adds no line of its own and touches no other message.
+    // Threat: a queued message shown as delivered too early, or never.
+    // Boundary: map::entry / map::apply over Swarm's message records.
+    #[test]
+    fn queued_message_turns_delivered_on_its_receipt() {
+        let mut got = entries(&[
+            json!({"id": "m1", "role": "user", "content": "start"}),
+            json!({"id": "m2", "role": "user", "content": "steer left", "metadata": {"feedback_note": true, "queued_note": true, "delivery_status": "queued"}}),
+            json!({"id": "m3", "role": "user", "content": "and right", "metadata": {"feedback_note": true, "queued_note": true}}),
+        ]);
+        assert!(matches!(&got[1], Entry::Queued { id, text } if id.as_ref() == "m2" && text.as_ref() == "steer left"));
+        apply(&mut got, &json!({"role": "system", "content": "Feedback m2 delivered", "metadata": {"source": "feedback_delivery", "message_id": "m2", "delivery_status": "delivered"}}), false);
+        assert_eq!(got.len(), 3);
+        assert!(matches!(&got[1], Entry::User(t) if t.as_ref() == "steer left"));
+        assert!(matches!(&got[2], Entry::Queued { id, .. } if id.as_ref() == "m3"));
+        apply(&mut got, &json!({"role": "system", "metadata": {"source": "feedback_delivery", "message_id": "unknown"}}), false);
+        assert_eq!(got.len(), 3);
+        assert!(matches!(&got[2], Entry::Queued { .. }));
+    }
 
     #[test]
     fn messages_become_entries() {

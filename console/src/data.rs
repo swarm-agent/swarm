@@ -472,6 +472,13 @@ pub enum ToolState {
 #[derive(Clone)]
 pub enum Entry {
     User(Text),
+    /// The person's message sent while a run was active: Swarm queued it for
+    /// the run's next step. It becomes a `User` entry once Swarm records that
+    /// it reached the model (a `feedback_delivery` receipt naming `id`).
+    Queued {
+        id: Text,
+        text: Text,
+    },
     Assistant(Text),
     Tool {
         name: Text,
@@ -1254,7 +1261,7 @@ mod tests {
 impl Session {
     /// How many of your messages in Swarm's record read `text`.
     pub fn sent_count(&self, text: &str) -> usize {
-        self.entries.iter().filter(|e| matches!(e, Entry::User(u) if u.trim() == text.trim())).count()
+        self.entries.iter().filter(|e| matches!(e, Entry::User(u) | Entry::Queued { text: u, .. } if u.trim() == text.trim())).count()
     }
 
     /// Drops the outbox messages Swarm's record now shows.

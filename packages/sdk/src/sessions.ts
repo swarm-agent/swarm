@@ -8,6 +8,24 @@ import type {
   SessionRecord,
 } from './types.js';
 
+/**
+ * The answer to `sendMessage`. `queued` is true when the session's run was active: the
+ * message was stored as a queued note for that run (`queued_for_run_id`) and no run was
+ * started (`run_intent` is absent). Otherwise `queued` is false and `run_intent` is the run
+ * the message started.
+ */
+export interface SessionMessageSendResult {
+  ok: boolean;
+  session_id: string;
+  queued: boolean;
+  queued_for_run_id?: string;
+  delivery_status?: 'queued';
+  message?: any;
+  run_intent?: any;
+  current_run_state?: any;
+  [key: string]: any;
+}
+
 function generateRequestId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return `sdk-session-${crypto.randomUUID()}`;
@@ -213,12 +231,19 @@ export class SwarmSessionsNamespace {
   }
 
   /**
-   * Appends a message to a session conversation.
+   * Appends a message to a session conversation (`POST /v3/sessions/{id}/messages`).
+   *
+   * To an idle session the message starts a run (`run_intent`). While the session's run is
+   * active, a plain text message is queued instead (`queued: true`, no `run_intent`): the
+   * running agent receives it with its next tool result, or, if the run ends without another
+   * tool call, it starts the next turn. Swarm then appends a `feedback_delivery` system message
+   * naming it (`metadata.message_id`). A queued message is ordinary user input: it never
+   * approves permissions or changes task scope on its own.
    */
   async sendMessage(
     sessionId: string,
     params: { content: string; role?: 'user'; client_request_id?: string }
-  ): Promise<any> {
+  ): Promise<SessionMessageSendResult> {
     const id = encodeURIComponent(sessionId.trim());
     const clientRequestId = params.client_request_id || generateRequestId();
     const res = await this.transport.request<any>(`/v3/sessions/${id}/messages`, {

@@ -1145,7 +1145,7 @@ impl Model<'_> {
                     if s(message, "role") == "assistant" {
                         d.live.clear();
                     }
-                    d.entries.extend(map::entry(message, first));
+                    map::apply(&mut d.entries, message, first);
                 }
                 Ok(true)
             }
@@ -1165,7 +1165,7 @@ impl Model<'_> {
                 if let Some(d) = self.details.get_mut(sid) {
                     d.live.clear();
                     if let Some(message) = payload.get("message") {
-                        d.entries.extend(map::entry(message, false));
+                        map::apply(&mut d.entries, message, false);
                     }
                 }
                 Ok(true)

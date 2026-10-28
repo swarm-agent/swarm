@@ -99,18 +99,22 @@ type sessionsV3ModelProfileApplyRequest struct {
 }
 
 type sessionsV3MessageRequest struct {
-	SendingClientSessionID string                                          `json:"-"`
-	ClientRequestID        string                                          `json:"client_request_id,omitempty"`
-	IdempotencyKey         string                                          `json:"idempotency_key,omitempty"`
-	MessageID              string                                          `json:"message_id,omitempty"`
-	RunID                  string                                          `json:"run_id,omitempty"`
-	Role                   string                                          `json:"role"`
-	Content                string                                          `json:"content"`
-	Metadata               map[string]any                                  `json:"metadata,omitempty"`
-	Media                  []pebblestore.SessionMediaReference             `json:"media,omitempty"`
-	VideoAttachments       []pebblestore.SessionVideoAttachmentReference   `json:"video_attachments,omitempty"`
-	ArtifactSelections     []pebblestore.SessionArtifactSelectionReference `json:"artifact_selections,omitempty"`
-	DispatchAuthority      map[string]any                                  `json:"dispatch_authority,omitempty"`
+	SendingClientSessionID string `json:"-"`
+	// queueWhileRunning is set only by POST /v3/sessions/{id}/messages: a
+	// person's message during an active run is queued as a note. Internal
+	// callers (task refinement, workspace definition) always start a turn.
+	queueWhileRunning  bool
+	ClientRequestID    string                                          `json:"client_request_id,omitempty"`
+	IdempotencyKey     string                                          `json:"idempotency_key,omitempty"`
+	MessageID          string                                          `json:"message_id,omitempty"`
+	RunID              string                                          `json:"run_id,omitempty"`
+	Role               string                                          `json:"role"`
+	Content            string                                          `json:"content"`
+	Metadata           map[string]any                                  `json:"metadata,omitempty"`
+	Media              []pebblestore.SessionMediaReference             `json:"media,omitempty"`
+	VideoAttachments   []pebblestore.SessionVideoAttachmentReference   `json:"video_attachments,omitempty"`
+	ArtifactSelections []pebblestore.SessionArtifactSelectionReference `json:"artifact_selections,omitempty"`
+	DispatchAuthority  map[string]any                                  `json:"dispatch_authority,omitempty"`
 }
 
 type sessionsV3StopRequest struct {
@@ -1775,6 +1779,7 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 	}
 	actor, _ := productActorFromRequest(r)
 	req.SendingClientSessionID = actor.ClientSessionID
+	req.queueWhileRunning = true
 	result, enqueueJob, err := s.acceptSessionsV3Message(principal, sessionID, req)
 	if err != nil {
 		if errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) {
@@ -1889,6 +1894,13 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	message.VideoAttachments, err = s.sessions.Store().ValidateSessionVideoAttachments(principal.AccountScopeID, session, message.VideoAttachments)
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, nil, err
+	}
+	// Delivery markers are written only by the runtime.
+	for _, key := range sessionsV3QueuedNoteReservedMetadata {
+		delete(message.Metadata, key)
+	}
+	if queued, ok, queueErr := s.acceptSessionsV3QueuedNote(principal, session, req, message); queueErr != nil || ok {
+		return queued, nil, queueErr
 	}
 	now := time.Now().UnixMilli()
 	runStatus, blockedReason := s.sessionsV3PrimaryRunIntentStatus(principal, session, req)
@@ -3467,7 +3479,7 @@ func sessionV3MutationResultResponse(result sessionruntime.SessionMutationResult
 }
 
 func sessionV3MessageMutationResponse(sessionID string, result sessionruntime.SessionMutationResult, currentRunState *pebblestore.V3SessionRunState) map[string]any {
-	return map[string]any{
+	response := map[string]any{
 		"ok":                true,
 		"session_id":        sessionID,
 		"session":           result.Session,
@@ -3480,6 +3492,10 @@ func sessionV3MessageMutationResponse(sessionID string, result sessionruntime.Se
 		"mutation":          sessionV3MutationResultResponse(result),
 		"realtime_outbox":   result.RealtimeOutbox,
 	}
+	for key, value := range sessionsV3QueuedMessageResponseFields(result.Message) {
+		response[key] = value
+	}
+	return response
 }
 
 func sessionV3MetadataMutationResponse(sessionID string, metadata map[string]any, result sessionruntime.SessionMutationResult) map[string]any {

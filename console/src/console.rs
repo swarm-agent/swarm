@@ -1109,7 +1109,7 @@ impl Console {
             (_, true) => "demo data",
             (None, false) => "starts a session in this project",
             (Some(_), false) if s.pending.as_ref().is_some_and(|p| p.question) => "your message answers the question above",
-            (Some(_), false) if s.state == RunState::Running => "Swarm is working · your message joins the run",
+            (Some(_), false) if s.state == RunState::Running => "Swarm is working · your message is queued for its next step",
             (Some(_), false) => "follow up in this session",
         };
         let composer = div()
@@ -1247,6 +1247,21 @@ impl Console {
                 .bg(t.raised)
                 .child(div().text_color(t.accent).child("›"))
                 .child(div().flex_1().min_w_0().line_height(px(19.)).child(self.selectable(pid, ei, 0, text.clone(), vec![self.plain_run(text.len(), t.text)], vec![], cx)))
+                .child(self.copy_button(format!("copy-{pid}-{ei}"), text.clone(), cx))
+                .into_any_element(),
+            // Swarm queued it for the running agent's next step; the label
+            // goes once Swarm records that it reached the model.
+            Entry::Queued { text, .. } => div()
+                .group(SharedString::from(format!("entry-{pid}-{ei}")))
+                .flex()
+                .gap_2()
+                .px_3()
+                .py_2()
+                .rounded(px(t.radius))
+                .bg(t.raised)
+                .child(div().text_color(t.faint).child("›"))
+                .child(div().flex_1().min_w_0().line_height(px(19.)).child(self.selectable(pid, ei, 0, text.clone(), vec![self.plain_run(text.len(), t.muted)], vec![], cx)))
+                .child(div().flex_none().text_size(px(11.5)).text_color(t.faint).child("queued"))
                 .child(self.copy_button(format!("copy-{pid}-{ei}"), text.clone(), cx))
                 .into_any_element(),
             Entry::Assistant(text) => div()

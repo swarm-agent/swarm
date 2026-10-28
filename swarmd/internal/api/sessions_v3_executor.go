@@ -86,7 +86,13 @@ type sessionV3ExecutorJob struct {
 	ResumeContext   bool
 	enqueuedAt      time.Time
 	activity        *sessionV3RunActivity
-	feedbackCursor  *uint64
+	// queuedNotes is the run's single claim cursor over feedback and queued
+	// notes; every delivery path claims through it, so a note reaches the
+	// model at most once per run.
+	queuedNotes *runruntime.QueuedNoteTracker
+	// historyQueuedNotes are queued notes this run carries in its context
+	// history (e.g. a follow-up turn); they are receipted after its first step.
+	historyQueuedNotes []pebblestore.MessageSnapshot
 	// StopCause is sessionruntime.PlanStoppedByUser for an explicit user run
 	// stop; it is recorded on the paused plan attempt.
 	StopCause string
@@ -231,6 +237,10 @@ type sessionV3Executor struct {
 	runStates        map[string]*sessionV3ExecutorRunState
 	recoveryConfirm  map[string]int64
 	recoveryCooldown map[string]int64
+	// queuedNoteRuns names, per session, the active run that accepts queued
+	// notes. Opened when a run becomes the session's active run; closed (under
+	// the session's message lock) when it finishes.
+	queuedNoteRuns map[string]sessionV3QueuedNoteRun
 
 	refillCh          chan struct{}
 	refillMu          sync.Mutex
@@ -351,6 +361,11 @@ func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 	if ctx.Err() != nil || e.server.isShuttingDown() {
 		return false
 	}
+	if job.queuedNotes == nil {
+		if cursor, cursorErr := e.sessionV3FeedbackCursor(job.SessionID); cursorErr == nil {
+			job.queuedNotes = runruntime.NewQueuedNoteTracker(cursor)
+		}
+	}
 	runKey := sessionV3ExecutorRunKey(job.SessionID, job.RunID)
 	e.mu.Lock()
 	if e.inFlightRuns[runKey] {
@@ -399,6 +414,7 @@ func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 	}
 	e.inFlightRuns[runKey] = true
 	e.activeBySession[job.SessionID] = job.RunID
+	e.openQueuedNotesLocked(job)
 	if e.runStates == nil {
 		e.runStates = make(map[string]*sessionV3ExecutorRunState)
 	}
@@ -417,6 +433,7 @@ func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 }
 
 func (e *sessionV3Executor) finish(job sessionV3ExecutorJob) {
+	e.closeQueuedNotes(job)
 	if strings.HasPrefix(job.SessionID, "worker-execution-") {
 		if snap, ok, err := e.server.sessions.GetSession(job.SessionID); err == nil && ok {
 			worker, _ := snap.Metadata["worker_id"].(string)
@@ -2763,7 +2780,16 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	if err != nil {
 		return sessionV3AssistantResponse{}, err
 	}
-	job.feedbackCursor = &feedbackCursor
+	if job.queuedNotes == nil {
+		job.queuedNotes = runruntime.NewQueuedNoteTracker(feedbackCursor)
+	}
+	// Queued notes already in this run's context (sent before it started, or
+	// carried by a follow-up turn) are receipted after its first step.
+	job.historyQueuedNotes, err = e.sessionV3UndeliveredHistoryQueuedNotes(job, feedbackCursor)
+	if err != nil {
+		return sessionV3AssistantResponse{}, err
+	}
+	job.queuedNotes.Advance(feedbackCursor)
 	messages, err := e.sessionV3ProviderContextMessages(job)
 	if err != nil {
 		return sessionV3AssistantResponse{}, err
@@ -3692,14 +3718,16 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 	if sink == nil {
 		return sessionV3ProviderLoopResult{}, errors.New("v3 durable progress sink is not configured")
 	}
-	feedbackCursor := job.feedbackCursor
-	if feedbackCursor == nil {
+	queuedNotes := job.queuedNotes
+	if queuedNotes == nil {
 		cursor, err := e.sessionV3FeedbackCursor(job.SessionID)
 		if err != nil {
 			return sessionV3ProviderLoopResult{}, err
 		}
-		feedbackCursor = &cursor
+		queuedNotes = runruntime.NewQueuedNoteTracker(cursor)
+		job.queuedNotes = queuedNotes
 	}
+	historyQueuedNotes := job.historyQueuedNotes
 	input := append([]map[string]any(nil), baseReq.Input...)
 	identicalCalls := sessionV3ProviderIdenticalToolCallTracker{}
 	toolProgression := &runruntime.ToolProgressionState{}
@@ -3750,12 +3778,17 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			if invokerErr != nil {
 				return sessionV3ProviderLoopResult{}, invokerErr
 			}
+			// Notes queued while a tool runs reach the model with that tool's
+			// result: the only mid-turn input some providers (CLI-driven ones
+			// calling tools through Swarm) accept.
+			toolInvoker = e.sessionV3QueuedNoteToolInvoker(job, toolInvoker)
 		}
 		if err := ctx.Err(); err != nil {
 			return sessionV3ProviderLoopResult{}, err
 		}
-		nextFeedbackCursor := *feedbackCursor
-		notes, err := e.sessionV3FeedbackSince(job.SessionID, &nextFeedbackCursor)
+		notes, err := queuedNotes.Claim(func(cursor *uint64) ([]pebblestore.MessageSnapshot, error) {
+			return e.sessionV3FeedbackSince(job.SessionID, cursor)
+		})
 		if err != nil {
 			return sessionV3ProviderLoopResult{}, err
 		}
@@ -3894,13 +3927,13 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		// Only this successful step's input is acknowledged. Notes queued while
 		// it was in flight wait for another eligible step; a final response does
 		// not reopen work merely to drain feedback.
-		if err := runruntime.RecordFeedbackDelivery(e.server.applySessionV3PrimaryMutation, job.SessionID, job.RunID, notes); err != nil {
+		if err := runruntime.RecordFeedbackDelivery(e.server.applySessionV3PrimaryMutation, job.SessionID, job.RunID, append(historyQueuedNotes, notes...)); err != nil {
 			return sessionV3ProviderLoopResult{}, err
 		}
+		historyQueuedNotes = nil
 		if err := runruntime.RecordProjectTaskDelivery(e.server.applySessionV3PrimaryMutation, job.SessionID, job.RunID, taskUpdates); err != nil {
 			return sessionV3ProviderLoopResult{}, err
 		}
-		*feedbackCursor = nextFeedbackCursor
 		if len(response.FunctionCalls) == 0 && !response.RestartTurn {
 			if planGuardArmed {
 				continue

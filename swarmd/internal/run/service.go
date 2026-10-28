@@ -2128,6 +2128,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 	}
 	var pendingFeedback []pebblestore.MessageSnapshot
+	var pendingToolResultFeedback []pebblestore.MessageSnapshot
 	taskUpdateCursor := ""
 	runtimeContextAt := time.Now()
 	for step := 1; ; step++ {
@@ -2655,6 +2656,12 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				return RunResult{}, receiptErr
 			}
 			pendingFeedback = nil
+		}
+		if err == nil && len(pendingToolResultFeedback) > 0 {
+			if receiptErr := RecordFeedbackDeliveryVia(options.ApplySessionMutation, sessionID, runID, FeedbackDeliveryToolResult, pendingToolResultFeedback); receiptErr != nil {
+				return RunResult{}, receiptErr
+			}
+			pendingToolResultFeedback = nil
 		}
 		if err := RecordProjectTaskDelivery(options.ApplySessionMutation, sessionID, runID, taskUpdates); err != nil {
 			return RunResult{}, err
@@ -3312,6 +3319,21 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				if refusalErr := planContextGuard.recordRefusal(); refusalErr != nil {
 					return RunResult{}, refusalErr
 				}
+			}
+		}
+		// Notes queued while the tools ran reach the model with their results,
+		// after the tool output, through the same claim cursor as the step-start
+		// path, so each note is delivered once. Receipts follow the next step.
+		if options.ApplySessionMutation != nil && len(nextInputFunctionOutputs) > 0 {
+			fresh, feedbackErr := s.sessions.ListSessionMessages(sessionID, feedbackCursor, 100)
+			if feedbackErr != nil {
+				return RunResult{}, feedbackErr
+			}
+			if notes := feedbackMessages(fresh, &feedbackCursor); len(notes) > 0 {
+				last := nextInputFunctionOutputs[len(nextInputFunctionOutputs)-1]
+				output, _ := last["output"].(string)
+				last["output"] = output + FormatQueuedNotesBlock(notes)
+				pendingToolResultFeedback = append(pendingToolResultFeedback, notes...)
 			}
 		}
 		nextInput = append(nextInput, nextInputFunctionCalls...)

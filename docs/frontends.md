@@ -126,6 +126,15 @@ session:
   `{"client_request_id":…,"project_id":…,"agent_name":"system-orchestrator"}`,
   then `POST /v3/sessions/{id}/messages`. Attachments go first to
   `POST /v3/sessions/{id}/media`.
+- **Steer a running agent:** keep the composer open while a run is active. A
+  plain text message sent then is queued, not a new run: the answer has
+  `queued: true` and `queued_for_run_id`, and the stored message has
+  `metadata.queued_note: true`. Show it as queued. The agent receives it with
+  its next tool result, or, if the run ends without one, it starts the next
+  turn. Swarm then appends a system message with
+  `metadata.source: "feedback_delivery"` and `metadata.message_id` naming it;
+  show the message as delivered from then on. A message with attachments still
+  waits for the run to end and starts its own.
 - **Stop a run:** `POST /v3/sessions/{id}/run/stop`.
 - **Answer the agent:** when it asks permission for a tool, the request arrives
   on the stream. Answer it with
