@@ -603,8 +603,10 @@ func (s *turnState) resultFailure() string {
 		}
 	}
 	subtype := s.result.Subtype
-	if subtype == "" {
-		subtype = "error"
+	if subtype == "" || subtype == "success" {
+		// Claude Code reports some failures (e.g. a session limit) as
+		// is_error with subtype "success"; the subtype says nothing then.
+		return "claude code turn failed" + errorDetail(detail)
 	}
 	return fmt.Sprintf("claude code turn failed (%s)%s", subtype, errorDetail(detail))
 }
