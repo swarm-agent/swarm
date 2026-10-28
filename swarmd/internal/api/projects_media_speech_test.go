@@ -320,3 +320,54 @@ func TestSpeechUnsetTranscription(t *testing.T) {
 		})
 	}
 }
+
+// Purpose: when the timing model refuses, the speech already made and paid
+// for stays on the job, which ends with the refusal's own reason instead of
+// failing and dropping the audio.
+func TestSpeechTimingRefusalKeepsSpeech(t *testing.T) {
+	db, err := pebblestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store := pebblestore.NewSessionStore(db)
+	auth := pebblestore.NewAuthStore(db)
+	if _, err := auth.UpsertCredential(pebblestore.AuthCredentialInput{Provider: "google", AccountScopeID: "account", Type: "api_key", APIKey: "test-key", SetActive: true}); err != nil {
+		t.Fatal(err)
+	}
+	var record pebblestore.ModelCatalogRecord
+	if err := json.Unmarshal([]byte(`{"provider":"google","model":"catalog-transcriber","catalog_modalities":{"inputs":["audio"],"outputs":["text"]}}`), &record); err != nil {
+		t.Fatal(err)
+	}
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "tts") {
+			_, _ = w.Write([]byte(`{"candidates":[{"finishReason":"STOP","content":{"parts":[{"inlineData":{"mimeType":"audio/L16;codec=pcm;rate=24000","data":"AAA="}}]}}],"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":25}}`))
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"code":400,"message":"Unsupported schema keyword maxItems","status":"INVALID_ARGUMENT"}}`))
+	}))
+	defer provider.Close()
+	audio := audiogen.NewService(auth, uisettings.NewService(pebblestore.NewUISettingsStore(db)), billingCatalog{record})
+	audio.SetBaseURL(provider.URL)
+	server := &Server{sessions: session.NewService(store, nil), audioGen: audio}
+	task := &pebblestore.ProjectTaskRecord{ID: "speech-task", ProjectID: "project", AccountID: "account", Title: "Speech", Agent: "sound", Operation: "speech", Model: "gemini-2.5-flash-preview-tts", Speech: &pebblestore.ProjectSpeechSettings{Text: "Hello", Voice: "Charon"}}
+	if err := server.admitSpeechTask("account", task, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutProjectTask("account", task); err != nil {
+		t.Fatal(err)
+	}
+	server.generateTaskSpeech(identity.Principal{AccountScopeID: "account", UserID: "user"}, task)
+	saved, found, err := store.GetProjectTask("account", "project", task.ID)
+	if err != nil || !found || saved.Status != "needs_review" || saved.LastError != "" || len(saved.Deliverables) != 2 {
+		t.Fatalf("task %+v err=%v", saved, err)
+	}
+	if saved.Deliverables[0].Status != "ready" || saved.Deliverables[1].Status != "failed" {
+		t.Fatalf("deliverables %+v", saved.Deliverables)
+	}
+	if !strings.Contains(saved.ActionNeeded, "word timings failed") || !strings.Contains(saved.ActionNeeded, "Unsupported schema keyword maxItems") {
+		t.Fatalf("action needed %q", saved.ActionNeeded)
+	}
+}

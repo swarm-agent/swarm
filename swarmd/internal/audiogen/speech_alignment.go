@@ -193,6 +193,19 @@ func (s *Service) alignGoogleSpeechChunk(ctx context.Context, key, model string,
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
+		// Google's own reason (never the request or the key), so a refusal
+		// says what to change.
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+		var refusal struct {
+			Error googleRPCStatus `json:"error"`
+		}
+		if json.Unmarshal(body, &refusal) == nil && strings.TrimSpace(refusal.Error.Message) != "" {
+			reason := strings.Join(strings.Fields(refusal.Error.Message), " ")
+			if len(reason) > 300 {
+				reason = reason[:300] + "…"
+			}
+			return answer, SpeechAlignmentResult{}, fmt.Errorf("speech timing provider returned HTTP %d: %s", response.StatusCode, reason)
+		}
 		return answer, SpeechAlignmentResult{}, fmt.Errorf("speech timing provider returned HTTP %d", response.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, (2<<20)+1))

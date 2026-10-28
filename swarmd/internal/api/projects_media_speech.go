@@ -132,15 +132,23 @@ func (s *Server) generateTaskSpeech(p identity.Principal, task *pebblestore.Proj
 			estimate = s.recordGeneratedTaskMedia(p, task, 1, pebblestore.MediaCostEstimateOptions{Provider: "google", Model: aligned.Model, Kind: "audio", Count: 1, Transcription: true, PromptTokens: aligned.PromptTokens, AudioInputTokens: aligned.AudioInputTokens, TextOutputTokens: aligned.OutputTokens}, "application/json", 0)
 		}
 		if err != nil {
-			if estimate.PriceStatus != "" {
-				_, _ = updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
-					if len(t.Deliverables) > 1 {
+			// The speech is made and paid for: it stays, and the job says its
+			// word timings failed and why, as when no timing model is set.
+			_, saveErr := updateProjectTaskWithRetry(db, p.AccountScopeID, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
+				if len(t.Deliverables) > 1 {
+					t.Deliverables[1].Status = "failed"
+					if estimate.PriceStatus != "" {
 						t.Deliverables[1].MediaCostEstimate = estimate
 					}
-					return nil
-				})
+				}
+				t.Status, t.LastError = "needs_review", ""
+				t.ActionNeeded = "Speech is ready; its word timings failed: " + err.Error()
+				t.WhatDidDo = []string{"Generated speech", "Word timings failed: " + err.Error()}
+				return nil
+			})
+			if saveErr != nil {
+				fail(saveErr)
 			}
-			fail(err)
 			return
 		}
 		timings = aligned.Timings

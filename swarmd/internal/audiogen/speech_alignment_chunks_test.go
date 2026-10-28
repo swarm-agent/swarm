@@ -75,3 +75,25 @@ func TestAlignGoogleSpeechUnknownDurationInvalidAudio(t *testing.T) {
 		t.Fatalf("error=%v model calls=%d", err, calls)
 	}
 }
+
+// Purpose: a speech timing refusal names Google's own reason (bounded), so a
+// failing job says what to change; a body without one keeps the plain status.
+func TestAlignGoogleSpeechRefusalReason(t *testing.T) {
+	for _, tc := range []struct {
+		body, want string
+	}{
+		{`{"error":{"code":400,"message":"Invalid JSON payload received.\n Unknown name \"responseJsonSchema\"","status":"INVALID_ARGUMENT"}}`, `speech timing provider returned HTTP 400: Invalid JSON payload received. Unknown name "responseJsonSchema"`},
+		{`not json`, "speech timing provider returned HTTP 400"},
+	} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(tc.body))
+		}))
+		s := &Service{googleBaseURL: server.URL}
+		_, _, err := s.alignGoogleSpeechChunk(context.Background(), "test-key", "test-model", SpeechResult{Bytes: []byte("RIFF"), MediaType: "audio/wav"})
+		server.Close()
+		if err == nil || err.Error() != tc.want {
+			t.Fatalf("err = %v, want %q", err, tc.want)
+		}
+	}
+}
