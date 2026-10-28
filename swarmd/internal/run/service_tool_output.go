@@ -376,18 +376,27 @@ func formatProviderManagedToolCompletedOutput(call tool.Call, result tool.Result
 }
 
 func compactStoredToolMessageContent(raw string) (string, bool) {
+	// A V3 provider record keeps its own format: V3 provider input only decodes
+	// run.v3.provider-tool-result.v1, so re-encoding it as tool history would
+	// drop the call and its result from the rebuilt history.
+	if v3Record, ok := decodeV3ProviderManagedToolResultRecord(raw); ok {
+		replacement, ok := compactedStoredToolOutput(v3Record.ToolName, v3Record.Output, v3Record.CompletedOutput)
+		if !ok {
+			return "", false
+		}
+		v3Record.Output = replacement
+		encoded, err := json.Marshal(v3Record)
+		if err != nil {
+			return "", false
+		}
+		return string(encoded), true
+	}
 	record, ok := decodeToolHistoryRecord(raw)
 	if !ok || record.Tool == "" || record.CallID == "" {
 		return "", false
 	}
-	if len(record.Output) <= 512 {
-		return "", false
-	}
-	replacement := record.CompletedOutput
-	if strings.TrimSpace(replacement) == "" || len(replacement) >= len(record.Output) {
-		replacement = summarizeToolOutput(record.Tool, record.Output, 300, 2)
-	}
-	if replacement == "" {
+	replacement, ok := compactedStoredToolOutput(record.Tool, record.Output, record.CompletedOutput)
+	if !ok {
 		return "", false
 	}
 	record.Output = replacement
@@ -396,6 +405,20 @@ func compactStoredToolMessageContent(raw string) (string, bool) {
 		return "", false
 	}
 	return string(encoded), true
+}
+
+func compactedStoredToolOutput(toolName, output, completedOutput string) (string, bool) {
+	if len(output) <= 512 {
+		return "", false
+	}
+	replacement := completedOutput
+	if strings.TrimSpace(replacement) == "" || len(replacement) >= len(output) {
+		replacement = summarizeToolOutput(toolName, output, 300, 2)
+	}
+	if replacement == "" {
+		return "", false
+	}
+	return replacement, true
 }
 
 func compactOlderToolMessagesForProviderContext(messages []pebblestore.MessageSnapshot, retainRecentCount int) []pebblestore.MessageSnapshot {
