@@ -103,7 +103,9 @@ git_forge() {
 # at a time per repository (a lock in its shared Git directory), and a fetch
 # that only lost a ref-lock race with another Git process is tried again. Any
 # other failure (network, auth, a missing branch) fails at once with Git's reason.
-fetch_lock_wait="${PUBLISH_GITHUB_LOCK_WAIT:-300}" fetch_tries="${PUBLISH_GITHUB_FETCH_TRIES:-5}"
+# The lock wait stays below swarmd's 2-minute limit for an update so a queued
+# update fails with this reason rather than being killed without one.
+fetch_lock_wait="${PUBLISH_GITHUB_LOCK_WAIT:-90}" fetch_tries="${PUBLISH_GITHUB_FETCH_TRIES:-5}"
 [[ $fetch_lock_wait =~ ^[0-9]+$ && $fetch_tries =~ ^[1-9][0-9]*$ ]] || die "PUBLISH_GITHUB_LOCK_WAIT and PUBLISH_GITHUB_FETCH_TRIES must be numbers"
 ref_lock_error='cannot lock ref|unable to create directory for|Unable to create .*\.lock'
 fetch_base() { # fetch_base REF: the forge's base branch into REF, under the folder's publish lock
@@ -112,7 +114,9 @@ fetch_base() { # fetch_base REF: the forge's base branch into REF, under the fol
   exec {lock_fd}>>"$lock" || die "cannot open the publish lock $lock"
   flock -w "$fetch_lock_wait" "$lock_fd" || die "another publish update held $lock for ${fetch_lock_wait}s"
   for ((try = 1; ; try++)); do
-    if out=$(git_forge fetch --quiet --no-tags "$git_base/$REPO.git" "+refs/heads/$base:$1" 2>&1); then
+    # Git does not get the lock descriptor: a detached auto gc/maintenance it
+    # starts would otherwise hold the lock until it finished.
+    if out=$(git_forge fetch --quiet --no-tags "$git_base/$REPO.git" "+refs/heads/$base:$1" 2>&1 {lock_fd}>&-); then
       [[ -z $out ]] || printf '%s\n' "$out" >&2
       break
     fi

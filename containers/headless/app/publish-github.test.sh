@@ -4,7 +4,7 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d)
-trap 'kill "${api_pid:-}" 2>/dev/null || true; rm -rf "$work"' EXIT
+trap 'kill "${api_pid:-}" $(cat "$work/detached" 2>/dev/null) 2>/dev/null || true; rm -rf "$work"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 # The job's folder with one commit, and the "GitHub" repository it pushes to.
@@ -115,6 +115,9 @@ if [[ -s $work/lock-fails ]]; then
   fi
 fi
 [[ ! -e $work/auth-fails ]] || { echo "fatal: Authentication failed for 'https://github.com/example/models.git/'" >&2; exit 128; }
+# Like Git's detached auto gc: a child in its own session that outlives the
+# fetch and keeps every descriptor the fetch did not close (but not stdio).
+if [[ -e $work/detach ]]; then setsid sleep 60 </dev/null >/dev/null 2>&1 & echo \$! > "$work/detached"; fi
 mkdir "$work/fetching" 2>/dev/null || echo overlap >> "$work/overlap"
 sleep 0.3
 "\$real" "\$@"; status=\$?
@@ -155,6 +158,23 @@ if out=$(update 2>&1); then fail "a failed fetch was reported as fetched: $out";
 [[ $(wc -l <"$work/fetches") == 1 ]] || fail "a non-lock fetch failure was retried: $out"
 grep -q "fetch of main from example/models failed: fatal: Authentication failed" <<<"$out" || fail "the fetch failure lost its reason: $out"
 rm -f "$work/auth-fails" "$work/fetches"
+
+# A child the fetch leaves running (Git's detached auto gc/maintenance) does not
+# keep the publish lock: it is free as soon as the update returns.
+touch "$work/detach"
+out=$(update 2>&1) || fail "an update with a detached fetch child failed: $out"
+[[ -s $work/detached ]] && kill -0 "$(cat "$work/detached")" 2>/dev/null || fail "the fetch child did not stay running"
+flock -n "$work/folder/.git/swarm-publish.lock" true || fail "a detached fetch child still holds the publish lock"
+kill "$(cat "$work/detached")"; rm -f "$work/detach" "$work/detached" "$work/fetches"
+
+# An update queued behind a held lock gives up with its reason, within the wait.
+exec {held}>>"$work/folder/.git/swarm-publish.lock"; flock "$held"
+if out=$(PUBLISH_GITHUB_LOCK_WAIT=1 update 2>&1); then fail "an update ran while the publish lock was held: $out"; fi
+grep -q "another publish update held .*swarm-publish.lock for 1s" <<<"$out" || fail "the lock wait did not say why: $out"
+[[ ! -e $work/fetches ]] || fail "an update fetched without the publish lock"
+exec {held}>&-
+# The default wait stays below swarmd's 2-minute update limit (publish.go).
+grep -q 'PUBLISH_GITHUB_LOCK_WAIT:-90}' "$here/publish-github.sh" || fail "the default lock wait is not 90s"
 
 # The removed land action is refused before any token request or push.
 before=$(wc -l <"$work/requests.log")
