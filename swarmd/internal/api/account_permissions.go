@@ -99,8 +99,26 @@ func (s *Server) handleAccountPermissions(w http.ResponseWriter, r *http.Request
 	if req.Tasks != nil {
 		current.Tasks = *req.Tasks
 	}
+	for _, patch := range req.Devices {
+		for _, value := range []*string{patch.Files, patch.Browser} {
+			if value != nil && *value == store.RuleAsk {
+				writeError(w, 400, store.ErrDeviceAskRetired)
+				return
+			}
+		}
+	}
 	for id, patch := range req.Devices {
 		rule := current.Device(id)
+		wasAsk := []string{}
+		for _, kind := range rule.WasAsk {
+			if (kind == "files" && patch.Files == nil) || (kind == "browser" && patch.Browser == nil) {
+				wasAsk = append(wasAsk, kind)
+			}
+		}
+		rule.WasAsk = nil
+		if len(wasAsk) > 0 {
+			rule.WasAsk = wasAsk
+		}
 		if patch.Files != nil {
 			rule.Files = *patch.Files
 		}
@@ -126,7 +144,8 @@ func (s *Server) handleAccountPermissions(w http.ResponseWriter, r *http.Request
 		}
 		rule := current.Link(name)
 		if patch.Work != nil {
-			rule.Work = *patch.Work
+			// allowed is the retired name of auto (older clients).
+			rule.Work = store.NormalizeLinkedRule(*patch.Work)
 		}
 		rule.Changed = store.PermissionChange{By: by, At: now}
 		current.Linked[name] = rule

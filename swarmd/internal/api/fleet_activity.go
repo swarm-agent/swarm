@@ -20,13 +20,14 @@ import (
 
 	"swarm/packages/swarmd/internal/fleet"
 	"swarm/packages/swarmd/internal/identity"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // The fleet's activity: one metadata-only feed on a home that merges its own
 // activity (activity.go, the same in-process subscription and outbox) with
 // each linked machine's GET /v3/activity/stream, read through the link as that
 // machine's home. Every frame names its machine; each machine keeps its own
-// cursor. A machine is read only while linked.{name}.work is ask or allowed.
+// cursor. A machine is read only while linked.{name}.work is ask or auto.
 // What a machine sends is untrusted: only the known metadata fields of an
 // activity record are kept, strings are clipped, and nothing is acted on.
 //
@@ -132,7 +133,7 @@ func (s *Server) fleetActivityRoster(p identity.Principal) (string, []fleetActiv
 		switch {
 		case machine.Name == home:
 			entry.shown, entry.reason = false, "it has this Swarm's own name"
-		case access.Link(machine.Name).Work != "ask" && access.Link(machine.Name).Work != "allowed":
+		case !pebblestore.LinkedWorkOn(access.Link(machine.Name).Work):
 			entry.shown, entry.reason = false, fleetActivityOffReason
 		}
 		machines = append(machines, entry)

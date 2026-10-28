@@ -31,6 +31,7 @@ type manageProjectStore interface {
 type ProjectTaskCreateInput struct {
 	MediaRetryOf        string                                   `json:"-"` // Set only by the shared media retry helper.
 	ManageMediaSource   bool                                     `json:"-"` // Only the in-process media bridge may set this.
+	StartTasksApprove   bool                                     `json:"-"` // The account Start tasks rule is approve: the new task waits, media included.
 	OriginSessionID     string                                   `json:"origin_session_id,omitempty"`
 	ID                  string                                   `json:"id,omitempty"`
 	SessionID           string                                   `json:"session_id,omitempty"`
@@ -417,7 +418,7 @@ func manageProjectsDefinition() Definition {
 				"cursor":            map[string]any{"type": "integer", "description": "Zero-based result offset"},
 				"auto_approve": map[string]any{
 					"type":        "boolean",
-					"description": "Set true to automatically deploy the task immediately upon creation for small tasks or Task Programs; structured plans require explicit user review in the task card",
+					"description": "Ignored: the account Start tasks rule decides. auto starts every new task at once (none waits); approve makes every new task wait for the person's approval",
 				},
 				"document_patch": map[string]any{
 					"type":        "object",
@@ -1017,7 +1018,6 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		planSummary := strings.TrimSpace(asString(args["plan_summary"]))
 		fullPlanMarkdown := strings.TrimSpace(asString(args["full_plan_markdown"]))
 		diffSummary := strings.TrimSpace(asString(args["diff_summary"]))
-		autoApprove, _ := args["auto_approve"].(bool)
 		// Account Start tasks is authoritative, regardless of tool arguments.
 		// A runtime without the session store (some agent roles) has no
 		// stored rules and follows the default.
@@ -1029,15 +1029,9 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 			}
 			access = stored
 		}
-		// approve: every new task waits for the person. auto: delegated and
-		// media work starts at once unless the call asks for a card that waits
-		// (auto_approve false); other tasks follow the call.
-		_, given := args["auto_approve"]
-		if access.Tasks != "auto" {
-			autoApprove = false
-		} else if (ManageProjectsDelegation(args) || ManageProjectsMediaTask(args)) && !given {
-			autoApprove = true
-		}
+		// approve: every new task waits for the person. auto: every task
+		// starts at once, whatever auto_approve says; nothing waits.
+		autoApprove := access.Tasks == pebblestore.RuleAuto
 
 		lifecycle := r.getProjectTaskLifecycleService()
 		if lifecycle == nil {
@@ -1078,6 +1072,7 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 			ContextMode:         contextMode,
 			Soundtrack:          soundtrack,
 			AutoApprove:         autoApprove,
+			StartTasksApprove:   !autoApprove,
 			PipelineStages:      stages,
 			Deliverables:        deliverables,
 			WhatDidDo:           whatDid,
@@ -1092,6 +1087,15 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		})
 		if err != nil {
 			return "", fmt.Errorf("create task: %w", err)
+		}
+		// Under auto a task that creation left waiting (a supplied structured
+		// plan, a large media batch) is approved here, so it never waits.
+		if autoApprove && createdTask.Status == "pending_approval" {
+			approved, err := lifecycle.ApproveProjectTask(ctx, p, projectID, createdTask.ID)
+			if err != nil {
+				return "", fmt.Errorf("start task under Start tasks auto: %w", err)
+			}
+			createdTask = approved
 		}
 		task := *createdTask
 

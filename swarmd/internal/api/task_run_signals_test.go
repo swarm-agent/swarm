@@ -80,6 +80,14 @@ func TestTaskRunOrchestratorWorkflowParity(t *testing.T) {
 	defer runtime.Close()
 	runtime.SetManageProjectStore(db)
 	runtime.SetProjectTaskLifecycleService(server)
+	// The native task must not start on creation: under Start tasks auto every
+	// task starts at once, so this account waits (approve).
+	hold := pebblestore.DefaultAccountPermissions()
+	hold.Tasks = "approve"
+	if _, err := db.Underlying().SetAccountPermissions(p.AccountScopeID, 0, hold); err != nil {
+		t.Fatal(err)
+	}
+	runtime.SetManageSessionService(server.sessions)
 	args, _ := json.Marshal(map[string]any{"action": "create_task", "project_id": project.ID, "task_id": "native-task", "title": "Fix code", "agent": "coder", "workspace_path": folder, "auto_approve": false})
 	nativeCtx := tool.WithVideoRunContext(ctx, tool.VideoRunContext{SessionID: origin.ID, RunID: originJob.RunID})
 	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(nativeCtx, tool.WorkspaceScope{SessionID: origin.ID, Principal: p}, tool.Call{Name: "manage_projects", Arguments: string(args)}); err != nil {

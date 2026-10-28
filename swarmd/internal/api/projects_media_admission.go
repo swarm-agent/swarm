@@ -31,7 +31,8 @@ func projectMediaBatchCount(variants, deliverables, slots int) (int, error) {
 
 // Evaluate the complete request, never a provider chunk. Generic auto_approve
 // is deliberately not confirmation of a large media batch: its persisted task
-// must be explicitly approved before dispatch.
+// must be explicitly approved before dispatch. Under Start tasks auto the
+// manage_projects tool approves it right after creation.
 func admitProjectMediaTask(task *pebblestore.ProjectTaskRecord) error {
 	if !isOrdinaryMediaAgent(task.Agent) || task.TaskProgram != nil || task.TaskProgramID != "" || task.PlanDocument != nil || task.PlanBinding != nil {
 		return nil

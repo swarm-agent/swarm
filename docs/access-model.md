@@ -52,10 +52,10 @@ the home Swarm follows the same values. Each rule names what it protects.
 
 | Place | Rule | What it allows | Values |
 |---|---|---|---|
-| device | Files and terminal | client tools that read and write files and run commands on that device, as the person, outside Swarm's sandbox (`machine_read`, `machine_write`, `machine_run`) | `off`, `ask`, `allowed` |
-| device | Browser | client tools that drive the device's browser (`manage_browser`) | `off`, `ask`, `allowed` |
-| home | Start tasks | delegating to the home's own agents; media tasks included | `approve` (every new task waits for approval), `auto` (starts at once unless the agent asks for a card that waits) |
-| linked | Hand it work, per machine | management tools with `machine`: projects, tasks, workflows and workers; workflow proposals and enable/disable, worker pause/resume/archive/delete | `off`, `ask`, `allowed` |
+| device | Files and terminal | client tools that read and write files and run commands on that device, as the person, outside Swarm's sandbox (`machine_read`, `machine_write`, `machine_run`) | `off`, `allowed` |
+| device | Browser | client tools that drive the device's browser (`manage_browser`) | `off`, `allowed` |
+| home | Start tasks | delegating to the home's own agents; media tasks included | `approve` (every new task waits for the person's approval before it starts), `auto` (every new task starts at once; none waits) |
+| linked | Hand it work, per machine | management tools with `machine`: projects, tasks, workflows and workers; workflow proposals and enable/disable, worker pause/resume/archive/delete | `off` (no work handed to it), `ask` (asks before sending a task there), `auto` (everything runs) |
 
 Fixed, not rules: a linked machine is never asked to integrate, deploy or
 delete projects, and never runs commands directly for the home. Agents inside the home
@@ -65,15 +65,47 @@ Remote workflow actions are `list`, `get`, `history`, `deliveries`, `propose`, `
 
 Worker lists return id, name, role, stored model (null if unset), enabled (idle or active), lifecycle state, and the latest run's state and timestamps (null if never run). History is read through the link with a bounded scan; incomplete history fails explicitly rather than presenting an older run as latest. Full definitions remain available through `get`.
 
-For linked work, reads proceed under `ask` or `allowed`; changes under `ask` wait for a normal permission request. `off` denies both. Secrets, AI keys and permission changes are never exposed through linked management tools, and the link itself refuses them: a home cannot add, read or verify provider credentials, finish a sign-in, use the vault, read or write a secret value, create AI keys or change a linked machine's permission rules through `/v3/fleet/machines/{name}/api/...` (listing secret names stays). Provider keys reach linked machines only through the home's fleet key manager (below).
+Swarm is not an ask-for-permission setup. The only approval is asking before
+tasks are sent: `Start tasks` `approve` on the home, and `ask` on a linked
+machine. Everything else runs.
 
-For devices, `ask` means each call waits for the person's decision as a normal permission
-request; `allowed` means it proceeds. Swarm enforces both, for every rule,
-including the device rules: a client runs a device tool only after Swarm has
-approved that exact call.
+**Start tasks.** Under `approve` every new task waits for the person's approval
+before it starts (media tasks included), and approving, accepting or deploying
+a task (`manage_projects` `approve_task`, `accept_task`, `deploy_task`) asks the
+person, even with permission bypass. Under `auto` no task waits: a new task
+starts at once whatever its `auto_approve` says, a task that creation would
+leave waiting (a supplied structured plan, a large media batch from
+`manage_projects`) is approved right away, and approving, deploying or
+integrating a task asks nobody. Creating a task never asks (the rule decides
+whether it waits), and integrating a task's work never asks (it starts no
+task). This rule is the only gate for these actions: saved tool rules and
+bypass do not change it, though an explicit deny rule still refuses.
+
+**Linked work.** `off` refuses everything for that machine. `ask` waits for the
+person's approval, as a normal permission request in the conversation, only
+before a task is sent or started there: `manage_projects` with `machine` and
+`propose_task`, `create_task`, `approve_task`, `accept_task`, `reopen_task` or
+`refine_task`. Every other linked action runs without asking: reads, task
+archive, workflow propose/enable/disable/delete and worker
+pause/resume/archive/delete. `auto` runs everything. A task sent to a linked
+machine under `ask` (once approved) or `auto` starts there at once; it does not
+wait on the machine as a card. Secrets, AI keys and permission changes are never exposed through linked management tools, and the link itself refuses them: a home cannot add, read or verify provider credentials, finish a sign-in, use the vault, read or write a secret value, create AI keys or change a linked machine's permission rules through `/v3/fleet/machines/{name}/api/...` (listing secret names stays). Provider keys reach linked machines only through the home's fleet key manager (below).
+
+**Devices.** `allowed` runs the call on the target device without asking;
+`off` refuses it. Device calls never wait for a person. A client runs a device
+tool only after Swarm has made that exact call ready for it, and only the
+target device's own client session completes it with the result.
 
 Defaults: a new device starts at `off` for both device rules; `Start tasks`
-starts at `auto` (tasks start as they did before these rules), so updating a Swarm never stalls its delegations; a newly linked machine starts at `ask`.
+starts at `auto`, so updating a Swarm never stalls its delegations; a newly
+linked machine starts at `auto`.
+
+Older values: a stored linked `allowed` reads as `auto`, and `PATCH` accepts
+`allowed` as another name for `auto` (older clients) but stores `auto`. A
+stored linked `ask` keeps meaning ask, now only before sending tasks. A stored
+device `ask` reads as `off` (the safe side) and the device's entry lists it in
+`was_ask` (`["files"]`, `["browser"]` or both) until that rule is changed on
+the device; `PATCH` refuses `ask` for a device rule.
 
 ## Fleet keys
 
@@ -140,7 +172,7 @@ What clients show must be what Swarm enforces.
   its client is connected now and whether the browser extension is attached;
   for a linked machine, whether it was reachable at its last contact and when;
   for `Start tasks`, how many tasks are waiting for approval. A client words
-  "allowed" on an unreachable machine as unavailable, not as allowed.
+  `auto` or `ask` on an unreachable machine as unavailable, not as allowed.
 - Each rule records who last changed it (device name, or AI key name), when,
   and when a call last used it.
 
@@ -155,20 +187,23 @@ What clients show must be what Swarm enforces.
   "devices": [
     {"id": "csess_…", "name": "desktop", "this_device": true, "home": true,
      "connected": true, "browser_attached": true,
-     "files": "ask", "browser": "off",
+     "files": "allowed", "browser": "off",
      "changed": {"by": "desktop", "at": 1793000000000}, "last_used": 1793000100000}
   ],
   "linked": [
-    {"name": "build-box", "work": "allowed", "reachable": true, "last_contact": 1793000200000,
+    {"name": "build-box", "work": "ask", "reachable": true, "last_contact": 1793000200000,
      "changed": {"by": "desktop", "at": 1793000000000}, "last_used": 1793000150000}
   ]
 }
 ```
 
-`this_device` is true for the caller's own client session. `PATCH
+`this_device` is true for the caller's own client session. A device entry has
+`was_ask` only when a rule stored as the retired `ask` now reads `off`. `PATCH
 /v3/permissions` takes `expected_revision`, `client_request_id` and only the
-rules to change (`tasks`, `devices.{id}.files|browser`, `linked.{name}.work`);
-unknown fields and values are refused. Changes publish a realtime frame so
+rules to change (`tasks`: `approve` or `auto`; `devices.{id}.files|browser`:
+`off` or `allowed`; `linked.{name}.work`: `off`, `ask` or `auto`, with `allowed`
+accepted as `auto`); unknown fields and other values are refused, and a device
+`ask` is refused with a message saying ask was removed. Changes publish a realtime frame so
 clients refresh. MCP exposes the same read, and the home/linked writes for keys
 with `swarm:approve`.
 
@@ -179,7 +214,9 @@ narrowing may be added later; it could only lower access below these rules.
 ## Clients
 
 One Permissions page, grouped in the order control flows: this device, other
-devices, home, linked machines. Each row shows what the rule protects, three
+devices, home, linked machines. Each row shows what the rule protects, its
 labelled choices (never a click that cycles), a "right now" line built from the
-live state, and who changed it and when. Device rows of other devices are
-read-only with "change these on that device".
+live state, and who changed it and when: two choices for a device rule (off,
+allowed), three for a linked machine (off, ask, auto) and two for Start tasks
+(approve, auto). Device rows of other devices are read-only with "change these
+on that device".

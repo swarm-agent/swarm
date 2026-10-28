@@ -29,7 +29,7 @@ func (s *Server) CallFleetWork(ctx context.Context, p identity.Principal, machin
 	if err != nil {
 		return nil, err
 	}
-	if level := access.Link(machine).Work; level != "ask" && level != "allowed" {
+	if !pebblestore.LinkedWorkOn(access.Link(machine).Work) {
 		return nil, fmt.Errorf("linked.%s.work is off", machine)
 	}
 	path, method := "/v3/workers", http.MethodGet

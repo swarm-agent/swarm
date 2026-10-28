@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 func (s *Service) authorizeDeviceCall(input AuthorizationInput) (AuthorizationResult, error) {
@@ -49,19 +51,17 @@ func (s *Service) authorizeDeviceCall(input AuthorizationInput) (AuthorizationRe
 		rule = p.Device(id).Browser
 		kind = "browser"
 	}
-	if rule != "ask" && rule != "allowed" {
+	if rule != pebblestore.RuleAllowed {
 		return deny(fmt.Sprintf("%s rule for device %q is off; change it on that device's Permissions page", kind, name))
 	}
-	execution := "awaiting_approval"
-	if rule == "allowed" {
-		if err := s.store.RecordPermissionUse(input.AccountScopeID, kind, id, now); err != nil {
-			return AuthorizationResult{}, err
-		}
-		execution = "ready"
+	// Device calls never wait on a person: an allowed call is recorded as
+	// ready, which only the target device's client completes with its result.
+	if err := s.store.RecordPermissionUse(input.AccountScopeID, kind, id, now); err != nil {
+		return AuthorizationResult{}, err
 	}
-	record, err := s.CreatePending(CreateInput{SessionID: input.SessionID, RunID: input.RunID, Step: input.Step, CallID: input.CallID, ToolName: input.ToolName, ToolArguments: input.ToolArguments, ToolCallArguments: input.ToolCallArguments, Requirement: RequirementClientTool, Mode: input.Mode, TargetDevice: id, Execution: execution})
+	record, err := s.CreatePending(CreateInput{SessionID: input.SessionID, RunID: input.RunID, Step: input.Step, CallID: input.CallID, ToolName: input.ToolName, ToolArguments: input.ToolArguments, ToolCallArguments: input.ToolCallArguments, Requirement: RequirementClientTool, Mode: input.Mode, TargetDevice: id, Execution: "ready"})
 	if err != nil {
 		return AuthorizationResult{}, err
 	}
-	return AuthorizationResult{Decision: AuthorizationPending, Requirement: RequirementClientTool, Source: "account_permissions", Reason: fmt.Sprintf("%s rule for device %q: %s", kind, name, rule), Record: &record}, nil
+	return AuthorizationResult{Decision: AuthorizationPending, Requirement: RequirementClientTool, Source: "account_permissions", Reason: fmt.Sprintf("%s rule for device %q: allowed", kind, name), Record: &record}, nil
 }

@@ -89,11 +89,12 @@ func TestFleetWorkCompact(t *testing.T) {
 
 // Purpose: AuthorizeToolCall and CallFleetWork must gate workflow disable and
 // worker pause before the pinned HTTP link changes durable remote state. Real
-// temporary stores prove off/ask leave records unchanged and exact approval or
-// allowed changes only the remote record, with one pending card per call.
+// temporary stores prove off leaves records unchanged, and ask, auto or the
+// retired allowed (stored as auto) change only the remote record without asking:
+// ask waits only before tasks are sent, never for workflow or worker changes.
 func TestFleetWorkMutationRules(t *testing.T) {
 	for _, kind := range []string{"manage_workflows", "manage_workers"} {
-		for _, level := range []string{"off", "ask", "allowed"} {
+		for _, level := range []string{"off", "ask", "auto", "allowed"} {
 			t.Run(kind+"/"+level, func(t *testing.T) {
 				home := newFleetTestSwarm(t, "home")
 				defer home.cleanup()
@@ -183,24 +184,7 @@ func TestFleetWorkMutationRules(t *testing.T) {
 					}
 					return
 				}
-				if level == "ask" {
-					if auth.Decision != permission.AuthorizationPending || auth.Record == nil {
-						t.Fatal(auth)
-					}
-					pending, err := perms.ListPending(session.ID, 10)
-					if err != nil || len(pending) != 1 {
-						t.Fatalf("pending %v %v", pending, err)
-					}
-					if !unchanged() {
-						t.Fatal("pending changed state")
-					}
-					if _, err := perms.Resolve(session.ID, auth.Record.ID, "approve", "owner approval"); err != nil {
-						t.Fatal(err)
-					}
-					if _, err := perms.WaitForResolution(ctx, session.ID, auth.Record.ID); err != nil {
-						t.Fatal(err)
-					}
-				} else if auth.Decision != permission.AuthorizationApprove {
+				if auth.Decision != permission.AuthorizationApprove || auth.Record != nil {
 					t.Fatal(auth)
 				}
 				if _, err := home.s.CallFleetWork(ctx, p, "build-box", kind, action, args); err != nil {

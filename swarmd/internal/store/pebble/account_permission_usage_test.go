@@ -13,7 +13,7 @@ func TestAccountPermissionUsage(t *testing.T) {
 	defer s.Close()
 	p := DefaultAccountPermissions()
 	p.Tasks = "auto"
-	p.Devices["d"] = DevicePermissionRule{Files: "allowed", Browser: "ask"}
+	p.Devices["d"] = DevicePermissionRule{Files: "allowed", Browser: "off"}
 	p.Linked["box"] = LinkedPermissionRule{Work: "ask"}
 	if _, err := s.SetAccountPermissions("a", 0, p); err != nil {
 		t.Fatal(err)
@@ -31,7 +31,7 @@ func TestAccountPermissionUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Device("d").LastUsed != 100 || got.Link("box").LastUsed != 100 || got.TasksLastUsed != 100 || got.Device("d").Browser != "ask" || got.Tasks != "auto" {
+	if got.Device("d").LastUsed != 100 || got.Link("box").LastUsed != 100 || got.TasksLastUsed != 100 || got.Device("d").Browser != "off" || got.Link("box").Work != "ask" || got.Tasks != "auto" {
 		t.Fatalf("usage: %+v", got)
 	}
 	if _, err := s.SetAccountPermissions("a", 1, p); err != ErrAccountPermissionsConflict {

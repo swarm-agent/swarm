@@ -8,10 +8,12 @@ import (
 
 // Purpose: AuthorizeToolCall must apply account device rules before generic
 // policy, bind execution to the message sender, and leave no pending work on
-// refusal. Temporary durable fixtures exercise the production gate directly.
+// refusal. Device calls never wait on a person: allowed records a ready call,
+// off (and a stored retired ask, which reads off) denies without a record.
+// Temporary durable fixtures exercise the production gate directly.
 func TestDeviceAccountAuthorization(t *testing.T) {
 	for _, tool := range []string{"machine_read", "machine_write", "machine_run", "manage_browser"} {
-		for _, rule := range []string{"off", "ask", "allowed"} {
+		for _, rule := range []string{"off", "stored-ask", "allowed"} {
 			t.Run(tool+"/"+rule, func(t *testing.T) {
 				db, err := store.Open(t.TempDir())
 				if err != nil {
@@ -30,9 +32,14 @@ func TestDeviceAccountAuthorization(t *testing.T) {
 				client := store.ClientSessionRecord{SessionID: "d", AccountScopeID: "a", Device: "computer", ExpiresAt: now + 60000, LastSeenAt: now}
 				put(store.KeyIdentityClientSession("d"), client)
 				p := store.DefaultAccountPermissions()
-				p.Devices["d"] = store.DevicePermissionRule{Files: rule, Browser: rule}
-				if _, err := db.SetAccountPermissions("a", 0, p); err != nil {
-					t.Fatal(err)
+				if rule == "stored-ask" {
+					// A record written before ask was removed.
+					put("account_permissions/a", map[string]any{"tasks": "auto", "devices": map[string]any{"d": map[string]any{"files": "ask", "browser": "ask"}}})
+				} else {
+					p.Devices["d"] = store.DevicePermissionRule{Files: rule, Browser: rule}
+					if _, err := db.SetAccountPermissions("a", 0, p); err != nil {
+						t.Fatal(err)
+					}
 				}
 				svc := NewService(store.NewPermissionStore(db), nil, nil)
 				in := AuthorizationInput{SessionID: "s", RunID: "r", AccountScopeID: "a", CallID: "c", ToolName: tool, ToolArguments: `{}`, Mode: "auto"}
@@ -40,16 +47,12 @@ func TestDeviceAccountAuthorization(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if rule == "off" {
+				if rule != "allowed" {
 					if got.Decision != AuthorizationDeny || got.Record != nil {
 						t.Fatalf("off: %+v", got)
 					}
 				} else {
-					want := "awaiting_approval"
-					if rule == "allowed" {
-						want = "ready"
-					}
-					if got.Decision != AuthorizationPending || got.Record == nil || got.Record.TargetDevice != "d" || got.Record.Execution != want {
+					if got.Decision != AuthorizationPending || got.Record == nil || got.Record.TargetDevice != "d" || got.Record.Execution != "ready" {
 						t.Fatalf("gate: %+v", got)
 					}
 				}

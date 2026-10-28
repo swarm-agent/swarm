@@ -648,7 +648,8 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		if err := admitProjectMediaTask(&task); err != nil {
 			return nil, err
 		}
-		if task.ManageMediaSource && !input.AutoApprove {
+		// Start tasks approve holds every new task, small media batches included.
+		if (task.ManageMediaSource || input.StartTasksApprove) && !input.AutoApprove {
 			task.AutoApprove = false
 			task.Status = "pending_approval"
 			task.ActionNeeded = "Review task and click Approve to start media generation"

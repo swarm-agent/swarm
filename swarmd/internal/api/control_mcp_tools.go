@@ -689,7 +689,7 @@ func controlMCPTools() []controlMCPTool {
 				"expected_revision": map[string]any{"type": "integer", "minimum": 0},
 				"client_request_id": map[string]any{"type": "string"},
 				"tasks":             map[string]any{"type": "string", "enum": []string{"approve", "auto"}},
-				"linked":            map[string]any{"type": "object", "additionalProperties": controlMCPObject([]string{"work"}, map[string]any{"work": map[string]any{"type": "string", "enum": []string{"off", "ask", "allowed"}}})},
+				"linked":            map[string]any{"type": "object", "additionalProperties": controlMCPObject([]string{"work"}, map[string]any{"work": map[string]any{"type": "string", "enum": []string{"off", "ask", "auto"}, "description": "off: no work handed to that machine; ask: asks before a task is sent or started there, everything else runs; auto: everything runs. allowed is accepted as auto."}})},
 			}),
 			Annotations: controlMCPDestructive, call: controlMCPSetPermissions,
 		},

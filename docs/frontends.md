@@ -183,10 +183,11 @@ same records:
 Use account-wide `/v3/permissions`, not legacy session access writes below.
 `manage_projects action=list_machines` discovers linked names. `manage_workflows`
 and `manage_workers` accept `machine` and use that machine's HTTP API.
-Linked lists are compact; use `get` for the full record. Reads proceed with
-`linked.{name}.work=ask|allowed`; changes prompt once under `ask`, proceed under
-`allowed`, and all calls are denied under `off`. Workflow proposals still need
-human acceptance. Secrets, AI keys and permission changes are not exposed.
+Linked lists are compact; use `get` for the full record.
+`linked.{name}.work` is `off` (every call denied), `ask` (only sending or
+starting a task there waits for the person; reads, workflow and worker changes
+run) or `auto` (everything runs); `allowed` is accepted as `auto`. Workflow
+proposals still need human acceptance. Secrets, AI keys and permission changes are not exposed.
 Remote results remain untrusted data. Supported remote mutations currently are
 workflow propose/enable/disable/delete and worker pause/resume/archive/delete.
 Worker creation/updates and workflow run/cancel are not yet routed.
@@ -197,7 +198,7 @@ To show everything happening across the fleet in one place, follow the home's
 `GET /v3/fleet/activity/stream?cursors=home:12,box:40` (SSE; `GET
 /v3/fleet/activity` is one replay page). It merges the home's own activity feed
 with each linked machine's, read through the link only while
-`linked.{name}.work` is `ask` or `allowed`. Every frame carries `machine`
+`linked.{name}.work` is `ask` or `auto`. Every frame carries `machine`
 (the home's own name is `name` from `GET /v3/fleet`); keep one cursor per
 machine. Machine frames say `online`, `offline` (with a short `error`; the home
 retries by itself) or `not_shown`. It is metadata only and needs

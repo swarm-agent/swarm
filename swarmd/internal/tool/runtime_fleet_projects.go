@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"swarm/packages/swarmd/internal/identity"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // FleetProjects keeps link credentials and transport entirely server-side.
@@ -75,8 +76,20 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 		raw, err := json.Marshal(map[string]any{"machines": machines})
 		return string(raw), err
 	}
-	if !linked || (access.Link(machine).Work != "ask" && access.Link(machine).Work != "allowed") {
+	if !linked || !pebblestore.LinkedWorkOn(access.Link(machine).Work) {
 		return "", fmt.Errorf("linked work rule for machine %q is off or the machine is not linked; check the Permissions page", machine)
+	}
+	// The linked rule is the only gate before a task starts there: under auto
+	// it runs, and under ask the person approved this call before it ran. A
+	// task sent to the machine therefore starts at once and never waits on
+	// the machine as a card.
+	if action == "propose_task" || action == "create_task" {
+		sent := make(map[string]any, len(args)+1)
+		for key, value := range args {
+			sent[key] = value
+		}
+		sent["auto_approve"] = true
+		args = sent
 	}
 	raw, err := service.CallFleetProject(ctx, scope.Principal, machine, action, args)
 	if err != nil {

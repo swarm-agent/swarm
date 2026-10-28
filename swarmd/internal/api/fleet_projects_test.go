@@ -152,6 +152,8 @@ func testFleetPermissionExecution(t *testing.T, ctx context.Context, home, remot
 		}
 		// Legacy session values above must not authorize execution; account rules do.
 		rule := map[string]string{"none": "off", "ask": "ask", "full": "allowed"}[level]
+		// allowed is the retired name of auto: stored and listed as auto.
+		shown := map[string]string{"off": "off", "ask": "ask", "allowed": "auto"}[rule]
 		account, err := home.s.sessions.Store().GetAccountPermissions(p.AccountScopeID)
 		if err != nil {
 			t.Fatal(err)
@@ -162,7 +164,7 @@ func testFleetPermissionExecution(t *testing.T, ctx context.Context, home, remot
 		}
 		scope := tool.WorkspaceScope{SessionID: id, Principal: p}
 		listing, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, tool.Call{Name: "manage_projects", Arguments: `{"action":"list_machines"}`})
-		if err != nil || !strings.Contains(listing, `"access":"`+rule+`"`) {
+		if err != nil || !strings.Contains(listing, `"access":"`+shown+`"`) {
 			t.Fatalf("list: %s %v", listing, err)
 		}
 		args := `{"action":"propose_task","machine":"box","project_id":"remote-project","title":"Gate ` + level + `","agent":"finder","auto_approve":false}`
@@ -190,6 +192,19 @@ func testFleetPermissionExecution(t *testing.T, ctx context.Context, home, remot
 		if level == "ask" {
 			if auth.Decision != permission.AuthorizationPending || auth.Record == nil {
 				t.Fatalf("ask: %+v", auth)
+			}
+			// ask waits only before sending tasks: reads, task archive and
+			// workflow or worker changes on that machine run without asking.
+			for _, other := range []struct{ name, args string }{
+				{"manage_projects", `{"action":"list_tasks","machine":"box","project_id":"remote-project"}`},
+				{"manage_projects", `{"action":"archive_task","machine":"box","project_id":"remote-project","task_id":"t"}`},
+				{"manage_workflows", `{"action":"propose","machine":"box"}`},
+				{"manage_workers", `{"action":"pause","machine":"box","id":"w"}`},
+			} {
+				got, err := perms.AuthorizeToolCall(permission.AuthorizationInput{SessionID: id, AccountScopeID: p.AccountScopeID, RunID: "run", CallID: "other-" + other.args, ToolName: other.name, ToolArguments: other.args, Mode: "auto"})
+				if err != nil || got.Decision != permission.AuthorizationApprove || got.Record != nil {
+					t.Fatalf("ask %s %s waited: %+v %v", other.name, other.args, got, err)
+				}
 			}
 			var pendingArgs map[string]any
 			if err := json.Unmarshal([]byte(auth.Record.ToolArguments), &pendingArgs); err != nil || pendingArgs["machine"] != "box" || pendingArgs["action"] != "propose_task" || pendingArgs["title"] != "Gate ask" {
@@ -234,6 +249,11 @@ func testFleetPermissionExecution(t *testing.T, ctx context.Context, home, remot
 		task, found, err := remote.s.sessions.Store().GetProjectTask(remote.account, "remote-project", result.Data.Task.ID)
 		if err != nil || !found || task.Title != "Gate "+level {
 			t.Fatalf("remote task: %+v %v %v", task, found, err)
+		}
+		// The person approved (ask) or nothing asks (auto): the task starts there
+		// even though the call said auto_approve false.
+		if task.Status == "pending_approval" {
+			t.Fatalf("linked task waits on the machine: %+v", task)
 		}
 		token, _, _ := home.s.fleetTokens.GetFleetLinkToken(home.account, "box")
 		if token == "" || strings.Contains(output, token) {

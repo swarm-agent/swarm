@@ -9,7 +9,7 @@ import (
 // or session metadata. The service/store layer proves pending versus execution
 // without requiring a remote machine, and off must create no executable record.
 func TestAccountLinkedWork(t *testing.T) {
-	for _, rule := range []string{"off", "ask", "allowed"} {
+	for _, rule := range []string{"off", "ask", "auto", "allowed"} {
 		t.Run(rule, func(t *testing.T) {
 			db, err := store.Open(t.TempDir())
 			if err != nil {
@@ -26,7 +26,7 @@ func TestAccountLinkedWork(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := map[string]AuthorizationDecision{"off": AuthorizationDeny, "ask": AuthorizationApprove, "allowed": AuthorizationApprove}[rule]
+			want := map[string]AuthorizationDecision{"off": AuthorizationDeny, "ask": AuthorizationApprove, "auto": AuthorizationApprove, "allowed": AuthorizationApprove}[rule]
 			if got.Decision != want {
 				t.Fatalf("%s: %+v", rule, got)
 			}

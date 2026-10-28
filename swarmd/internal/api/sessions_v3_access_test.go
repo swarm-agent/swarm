@@ -18,7 +18,7 @@ func TestSessionAccessInstructions(t *testing.T) {
 	if strings.Contains(got, "private-device") {
 		t.Fatal("cross-account device leak")
 	}
-	for _, want := range []string{"start automatically", "connected", "files and terminal off", "browser off"} {
+	for _, want := range []string{"starts at once; none waits", "connected", "files and terminal off", "browser off", "only approval is before tasks start", "default to auto"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("instructions %q lack %q", got, want)
 		}

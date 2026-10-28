@@ -69,10 +69,11 @@ whose compiled contract pre-approves the action.
 | `manage_todos` | list, summary | read-only | allow | unchanged | — |
 | `manage_todos` | create, update, delete*, reorder, batch | writes Swarm state (workspace todos) | allow | unchanged | Bookkeeping; `update` is not limited to the caller's session (owner list). |
 | `manage_projects` | list, get, list_sources, inspect_source, inspect_files, list_media, get_media, list_tasks, get_task | read-only | allow | allow | Reads the caller's projects and sources. |
-| `manage_projects` | propose_task / create_task, card waits for Approve, title and source given | creates a gated card | allow | allow | The card's Approve is the gate. |
-| `manage_projects` | propose_task / create_task, card waits for Approve, **no title or no source** | creates a gated card; small Router call to name it or pick the source | ask | **allow** | Owner decision: the Router call is accepted running cost; the card still waits for Approve. |
-| `manage_projects` | propose_task / create_task with `auto_approve`, plan agent, media agent/intent/operation, or no agent and no code/audit intent | starts work or spends at once | ask; **overlay: Orchestrator (allow)** | **ask** (`project_task_launch`) | Starts before any card Approve. |
-| `manage_projects` | approve_task, accept_task, deploy_task | starts a task's session (approves the card) | ask; **overlay: Orchestrator (allow)** | **ask** (`project_task_launch`) | The Orchestrator could approve its own cards. |
+| `manage_projects` | propose_task / create_task, card waits for Approve, title and source given | creates a task | allow | allow | Start tasks decides: `auto` starts it at once, `approve` keeps it waiting. |
+| `manage_projects` | propose_task / create_task, card waits for Approve, **no title or no source** | creates a gated card; small Router call to name it or pick the source | ask | **allow** | Owner decision: the Router call is accepted running cost; Start tasks decides whether the task waits. |
+| `manage_projects` | propose_task / create_task with `auto_approve`, plan agent, media agent/intent/operation, or no agent and no code/audit intent | starts work or spends at once | ask (`project_task_launch`) | **allow** (account Start tasks decides) | Start tasks `auto` starts every task (`auto_approve` is ignored); `approve` makes it wait. Creating never asks. |
+| `manage_projects` | approve_task, accept_task, deploy_task | starts a task's session (approves the card) | ask (`project_task_launch`) | **account Start tasks**: allow under `auto`; ask under `approve`, even with bypass | The Start tasks rule is the single gate; an explicit deny still refuses. |
+| `manage_projects` | integrate_task | merges a task's finished work | ask (`project_task_launch`) | **allow** | Starts no task, so it never asks. |
 | `manage_projects` | delete, delete_task, archive_task | deletes/archives | ask; **overlay: Orchestrator (allow)** | **ask** (`project_removal`) | Destructive. |
 | `manage_projects` | create, update, update_task, edit_requirements, refine_task, reopen_task, unarchive_task, reconcile_tasks, wait_tasks, report_task | writes Swarm state; reopen_task starts a new attempt; create may start context generation | ask; overlay: Orchestrator (allow) | unchanged | Listed for the owner. |
 | `manage_sessions` | inspect, list, list_by_state, search, get, read_messages, review_worktrees, git_status | read-only | allow | unchanged | — |
@@ -124,6 +125,12 @@ whose compiled contract pre-approves the action.
   pre-approves them, so they ask. A saved `deny` for `manage_projects` still
   blocks them; a remembered "always allow" from their prompt saves a rule for
   that identity only. Account bypass is unchanged.
+- The account `Start tasks` rule (`docs/access-model.md`) is now the single gate
+  for `project_task_launch`: creating a task and integrating never ask; under
+  `auto` approving, accepting and deploying run too; under `approve` they ask
+  the person even with bypass. Saved tool rules no longer change it; an
+  explicit deny still refuses. With `machine`, `linked.{name}.work` decides
+  instead (`ask` waits only before a task is sent or started there).
 
 ## Left asking, or left for the owner
 
@@ -132,8 +139,8 @@ policy), `webdownload`, media generation (default policy), `manage_memory`
 changes, worktree promotion, session commit/archive/unarchive/deploy, workspace
 catalog and map changes, skill update/delete, Action/connection/environment
 changes, worker changes and runs, `manage_agent` definition changes, task
-launches beyond the subagent budget, and the project launch/removal actions
-above.
+launches beyond the subagent budget, project removal, and starting a task
+under Start tasks `approve`.
 
 Recommended for an owner decision (not changed here):
 
@@ -171,7 +178,7 @@ behavior and needs an owner decision.
 | Orchestrator | `bash` (pre-approved, always auto mode) | Rarely: project chats have no checkout | Remove, or keep with prompts. |
 | Orchestrator | `manage_artifact`, `manage_video`, `manage_environments`, `manage_connections`, `manage_theme` | Partly (media requests, project themes) | Decide; `TestOrchestratorToolIsolationContract` asserts the opposite and currently fails. |
 | Orchestrator | `webfetch`, `websearch` | Research for planning | Keep. |
-| Orchestrator | `manage_projects` approve/deploy/delete | No: the person approves cards | Now asks; consider removing the actions. |
+| Orchestrator | `manage_projects` approve/deploy/delete | Under Start tasks `auto`, approve/deploy just run; delete asks | Delete asks; approve/deploy follow Start tasks. |
 | Swarm | `manage_theme`, `webdownload`, `manage_skill`, `manage_actions` | Occasionally | Keep with prompts for changes. |
 | AI sidechat | Inherits the parent's contract (Swarm: `write`, `edit`, `manage_sessions`, `manage_worktree`, `manage_theme`, `manage_skill`, `manage_actions`) | A sidechat answers questions | Narrow to read tools. |
 | Coder | `webdownload`, `webfetch`, `websearch` | Rarely, inside an isolated worktree | Consider removing `webdownload`. |

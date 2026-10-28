@@ -2,8 +2,10 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	store "swarm/packages/swarmd/internal/store/pebble"
 	"testing"
@@ -66,7 +68,11 @@ func TestAccountPermissionsHTTP(t *testing.T) {
 	if w.Code != 403 {
 		t.Fatalf("cross-device: %d %s", w.Code, w.Body.String())
 	}
-	w = call("PATCH", `{"expected_revision":0,"client_request_id":"own","devices":{"`+id+`":{"files":"ask"}}}`)
+	w = call("PATCH", `{"expected_revision":0,"client_request_id":"ask","devices":{"`+id+`":{"files":"ask"}}}`)
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "ask was removed") {
+		t.Fatalf("device ask: %d %s", w.Code, w.Body.String())
+	}
+	w = call("PATCH", `{"expected_revision":0,"client_request_id":"own","devices":{"`+id+`":{"files":"allowed"}}}`)
 	if w.Code != 200 {
 		t.Fatalf("own: %d %s", w.Code, w.Body.String())
 	}
@@ -86,9 +92,28 @@ func TestAccountPermissionsHTTP(t *testing.T) {
 		t.Fatalf("failed writes changed state: %+v", view)
 	}
 	for _, d := range view.Devices {
-		if d.ID == id && (d.Files != "ask" || d.Changed.By != "device-one" || d.Changed.At == 0) {
+		if d.ID == id && (d.Files != "allowed" || d.Changed.By != "device-one" || d.Changed.At == 0) {
 			t.Fatalf("stored rule: %+v", d)
 		}
+	}
+	// A browser ask stored before ask was removed reads off and says so; the
+	// next change of that rule on the device clears the note.
+	key := "account_permissions/" + url.PathEscape(strings.ToLower(strings.TrimSpace(actor.AccountScopeID)))
+	if err := s.sessions.Store().Underlying().PutJSON(key, map[string]any{"revision": 1, "tasks": "auto", "devices": map[string]any{id: map[string]any{"files": "allowed", "browser": "ask"}}}); err != nil {
+		t.Fatal(err)
+	}
+	w = call("GET", "")
+	if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range view.Devices {
+		if d.ID == id && (d.Browser != "off" || d.Files != "allowed" || len(d.WasAsk) != 1 || d.WasAsk[0] != "browser") {
+			t.Fatalf("stored ask: %s", w.Body.String())
+		}
+	}
+	w = call("PATCH", `{"expected_revision":1,"client_request_id":"browser","devices":{"`+id+`":{"browser":"off"}}}`)
+	if w.Code != 200 || strings.Contains(w.Body.String(), "was_ask") {
+		t.Fatalf("clear stored ask: %d %s", w.Code, w.Body.String())
 	}
 }
 
@@ -149,8 +174,29 @@ func TestAccountPermissionsLinkedLiveState(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &v); err != nil || w.Code != 200 || len(v.Linked) != 1 {
 		t.Fatalf("view: %d %s", w.Code, w.Body.String())
 	}
-	if !v.Linked[0].Reachable || v.Linked[0].LastContact == 0 || v.Linked[0].Work != "ask" {
+	if !v.Linked[0].Reachable || v.Linked[0].LastContact == 0 || v.Linked[0].Work != "auto" {
 		t.Fatalf("link state: %+v", v.Linked)
+	}
+	// Older clients send allowed; it is stored and answered as auto. ask and
+	// off are accepted; anything else is refused.
+	for _, tc := range []struct{ send, want string }{{"ask", "ask"}, {"allowed", "auto"}, {"off", "off"}, {"full", ""}} {
+		patch := `{"expected_revision":` + fmt.Sprint(v.Revision) + `,"client_request_id":"` + tc.send + `","linked":{"box":{"work":"` + tc.send + `"}}}`
+		r = requestWithTestPrincipalForAccount(httptest.NewRequest("PATCH", "/v3/permissions", strings.NewReader(patch)), home.user, home.account)
+		w = httptest.NewRecorder()
+		home.s.handleAccountPermissions(w, r)
+		if tc.want == "" {
+			if w.Code != 400 {
+				t.Fatalf("linked %s accepted: %d %s", tc.send, w.Code, w.Body.String())
+			}
+			continue
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &v); err != nil || w.Code != 200 || len(v.Linked) != 1 || v.Linked[0].Work != tc.want {
+			t.Fatalf("linked %s: %d %s", tc.send, w.Code, w.Body.String())
+		}
+		stored, err := home.s.sessions.Store().GetAccountPermissions(home.account)
+		if err != nil || stored.Linked["box"].Work != tc.want {
+			t.Fatalf("linked %s stored: %+v %v", tc.send, stored.Linked, err)
+		}
 	}
 	r = requestWithTestPrincipalForAccount(httptest.NewRequest("GET", "/v3/permissions", nil), home.user, "other-account")
 	w = httptest.NewRecorder()

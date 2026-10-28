@@ -611,18 +611,28 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 				return AuthorizationResult{}, err
 			}
 			level := access.Link(machine).Work
-			if level != "ask" && level != "allowed" {
+			if !pebblestore.LinkedWorkOn(level) {
 				return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: fmt.Sprintf("linked work rule for machine %q is off; change it on the Permissions page", machine), Source: "session_access"}, nil
 			}
 			if explain.Decision != PolicyDecisionDeny {
-				if level == "ask" && !tool.FleetWorkRead(action) {
-					return s.createPendingAuthorization(input, sessionID, requirement, "Approve linked machine "+machine+" action "+action, "account_permissions", "ask each linked machine call")
+				// ask waits for the person only before a task is sent or
+				// started on the machine; every other linked action runs.
+				if level == pebblestore.RuleAsk && tool.FleetTaskStart(name, action) {
+					return s.createPendingAuthorization(input, sessionID, requirement, "Send task to linked machine "+machine+" ("+action+")", "account_permissions", "ask before sending tasks to "+machine)
 				}
 				if err := s.store.RecordPermissionUse(input.AccountScopeID, "linked", machine, time.Now().UnixMilli()); err != nil {
 					return AuthorizationResult{}, err
 				}
 				return AuthorizationResult{Decision: AuthorizationApprove, Requirement: requirement, Reason: "linked work rule allows machine " + machine, Source: "account_permissions"}, nil
 			}
+		}
+	}
+	// Starting the home's own tasks: the account Start tasks rule is the single
+	// gate, with or without bypass and over generic manage_projects rules (an
+	// explicit deny still wins).
+	if explain.Decision != PolicyDecisionDeny && normalizePolicyToolName(input.ToolName) == "manage_projects" {
+		if result, handled, err := s.authorizeHomeTaskLaunch(input, sessionID, requirement); handled || err != nil {
+			return result, err
 		}
 	}
 	// The person's machine: the session's access decides before any call
