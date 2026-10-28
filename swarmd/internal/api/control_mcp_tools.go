@@ -824,7 +824,7 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_integrate_task", Title: "Integrate a reviewed task",
-			Description: "Merge a needs_review task's commits from its agent branch into its target branch in the project repository (a real git merge; nothing is pushed). Review the work first: read the task's session with get_session. Refused on conflicts or when there is nothing committed to integrate.",
+			Description: "Merge a needs_review task's commits from its agent branch into its target branch in the project repository (a real git merge; nothing is pushed). Review the work first: read the task's session with get_session. If the agent merged the target branch into its branch, the task's net change is integrated as one new commit (its merge history is not kept); the result's integration.warning says so. Refused on conflicts (the error names the files; ask the agent with swarm_send_message to rebase onto the target branch, then integrate again) or when there is nothing committed to integrate.",
 			InputSchema: controlMCPObject([]string{"project_id", "task_id"}, map[string]any{
 				"project_id": controlMCPStringProp("From list_projects.", 1, 200),
 				"task_id":    controlMCPStringProp("From list_tasks.", 1, 200),
@@ -2555,7 +2555,7 @@ func controlMCPIntegrate(c *controlMCPCall, args map[string]any, tool, readTool 
 		return nil, err
 	}
 	out := map[string]any{"status": integrated["status"], "task": controlMCPTaskSummary(controlMCPMap(integrated["task"]))}
-	if result := controlMCPPick(controlMCPMap(integrated["integration"]), "target_branch", "resulting_target_head", "warning"); len(result) > 0 {
+	if result := controlMCPPick(controlMCPMap(integrated["integration"]), "target_branch", "resulting_target_head", "commit", "warning"); len(result) > 0 {
 		out["integration"] = result
 	}
 	return out, nil

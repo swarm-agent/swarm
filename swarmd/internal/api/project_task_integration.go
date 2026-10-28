@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -100,8 +101,17 @@ func (s *Server) IntegrateProjectTask(ctx context.Context, p identity.Principal,
 			gitState = inspectIntegrationGitState(ctx, *task, db)
 		}
 	}
+	if a := gitState.deliveryAssessment; a != nil && a.Freshness == "observed" && projectTaskDeltaIntegrable(task, a) {
+		if gitState.isDirty || a.SourceDirty || a.TargetDirty {
+			return nil, &projectTaskIntegrationError{status: http.StatusConflict, err: errors.New("cannot integrate: " + taskDeliveryDirtyMessage(a)), delivery: a}
+		}
+		if (a.State == "history_rewritten" || a.State == "history_equivalent") && !slices.Contains(a.AllowedActions, "recover_integrate") {
+			return nil, &projectTaskIntegrationError{status: http.StatusConflict, err: errors.New(taskDeliveryNotActionableMessage(a)), delivery: a}
+		}
+		return s.integrateProjectTaskDelta(ctx, p, task, selectedSession, a, warning)
+	}
 	if gitState.deliveryAssessment == nil || gitState.deliveryAssessment.Freshness != "observed" || (gitState.deliveryAssessment.State != "candidate_work" && gitState.deliveryAssessment.State != "integrated") {
-		return nil, &projectTaskIntegrationError{status: http.StatusConflict, err: errors.New(taskDeliveryNotActionableMessage(projectID, taskID, gitState.deliveryAssessment)), delivery: gitState.deliveryAssessment}
+		return nil, &projectTaskIntegrationError{status: http.StatusConflict, err: errors.New(taskDeliveryNotActionableMessage(gitState.deliveryAssessment)), delivery: gitState.deliveryAssessment}
 	}
 	if a := gitState.deliveryAssessment; gitState.isDirty || a.SourceDirty || a.TargetDirty {
 		return nil, &projectTaskIntegrationError{status: http.StatusConflict, err: errors.New("cannot integrate: " + taskDeliveryDirtyMessage(a)), delivery: a}
@@ -258,4 +268,36 @@ func (s *Server) IntegrateProjectTask(ctx context.Context, p identity.Principal,
 		return nil, fmt.Errorf("Git integration verified at %s but task receipt persistence failed; reconcile task state without rerunning Git: %w", receipt.ResultingTargetHead, err)
 	}
 	return map[string]any{"status": "integrated", "task": sanitizeProjectTaskForClient(updated), "integration": map[string]any{"target_branch": parentState.BranchName, "previous_target_head": parentState.HeadCommit, "resulting_target_head": result.ResultingParentHead, "warning": receipt.Warning}}, nil
+}
+
+// projectTaskDeltaIntegrable reports whether integration must deliver the
+// task's recorded net change rather than its original commits: the branch
+// contains merges (its agent merged the target in) or its recorded base left
+// the target. A verified earlier recovery is included so a retry after a lost
+// response returns the same result instead of a refusal.
+func projectTaskDeltaIntegrable(task *pebblestore.ProjectTaskRecord, a *pebblestore.TaskDeliveryAssessment) bool {
+	switch a.State {
+	case "history_rewritten", "history_equivalent":
+		return true
+	case "recovered", "equivalent":
+		return task.Integration != nil
+	}
+	return false
+}
+
+// integrateProjectTaskDelta runs the same recovery as /recover-integrate,
+// pinned to the task's current revision and attempt and the heads its fresh
+// assessment observed, so callers that select only the session and branches
+// (MCP, native tools) can integrate a merged-up branch.
+func (s *Server) integrateProjectTaskDelta(ctx context.Context, p identity.Principal, task *pebblestore.ProjectTaskRecord, session pebblestore.SessionSnapshot, a *pebblestore.TaskDeliveryAssessment, warning string) (map[string]any, error) {
+	result, receipt, err := s.recoverProjectTaskDelta(ctx, p, projectTaskDeltaRecovery{Task: task, Session: session, Assessment: a, Revision: task.Revision, AttemptID: task.ActiveAttemptID, SourceHead: a.SourceOID, TargetHead: a.TargetOID, AgentGuidance: true})
+	if err != nil {
+		return nil, err
+	}
+	note := taskDeltaIntegratedNote(receipt)
+	if warning != "" {
+		note = strings.TrimSpace(warning + " " + note)
+	}
+	result["integration"] = map[string]any{"target_branch": receipt.TargetBranch, "previous_target_head": receipt.PreviousTargetHead, "resulting_target_head": receipt.ResultingTargetHead, "commit": receipt.RecoveredHead, "warning": note}
+	return result, nil
 }

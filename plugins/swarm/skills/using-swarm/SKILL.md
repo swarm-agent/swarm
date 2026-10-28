@@ -146,6 +146,11 @@ Finished work is not automatically integrated. After review and the person's
 authorization, `swarm_integrate_task` takes `project_id` and `task_id` and
 performs real Git integration. Conflicts and empty/uncommitted deliveries must
 remain failures; neither an agent summary nor a status string proves a merge.
+On a conflict (the error names the files), ask the agent with
+`swarm_send_message` to rebase its branch onto the target branch and resolve
+the conflict, then integrate again. If it merges the target in instead,
+`swarm_integrate_task` still integrates its net change, as one new commit
+(`integration.warning` says so; the branch's merge history is not kept).
 Publishing, pushing and deploying require the person's specific authorization.
 
 ## 7. Media

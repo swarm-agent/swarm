@@ -22,6 +22,8 @@ type TaskDeltaRecovery struct {
 	RetainedRef  string
 	Equivalent   bool
 	Conflict     string
+	// ConflictFiles names the paths merge-tree reported as conflicted.
+	ConflictFiles []string
 }
 
 func (s *Service) PrepareTaskDeltaRecovery(ctx context.Context, in TaskDeliveryInput) (TaskDeltaRecovery, error) {
@@ -99,6 +101,7 @@ func (s *Service) PrepareTaskDeltaRecovery(ctx context.Context, in TaskDeliveryI
 		result.Conflict = "Task delta conflicts with the captured target. Launch repair session to resolve the retained delta, then integrate."
 		if len(lines) == 2 {
 			result.Conflict += "\n" + lines[1]
+			result.ConflictFiles = recoveryConflictFiles(lines[1])
 		}
 	}
 	targetTree, err := d.run(in.SourcePath, "rev-parse", a.TargetOID+"^{tree}")
@@ -136,6 +139,26 @@ func (s *Service) PrepareTaskDeltaRecovery(ctx context.Context, in TaskDeliveryI
 		return TaskDeltaRecovery{}, fmt.Errorf("retain recovery source: %w", err)
 	}
 	return result, nil
+}
+
+// recoveryConflictFiles reads the conflicted-file section of merge-tree
+// --write-tree output ("<mode> <oid> <stage>\t<path>" lines up to the first
+// blank line) and returns each path once, in order.
+func recoveryConflictFiles(info string) []string {
+	var files []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(info, "\n") {
+		if strings.TrimSpace(line) == "" {
+			break
+		}
+		_, path, ok := strings.Cut(line, "\t")
+		if !ok || path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		files = append(files, path)
+	}
+	return files
 }
 
 func isRecoveryConflict(err error) bool {
