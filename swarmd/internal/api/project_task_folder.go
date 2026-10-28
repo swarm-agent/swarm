@@ -58,13 +58,14 @@ func swarmTaskOwnBranchContext(task *store.ProjectTaskRecord, targetAgent, mode 
 }
 
 // swarmFolderTaskNote explains a Swarm task that worked in the folder itself:
-// the folder is not a Git repository on a branch, so it had no branch of its
-// own. Empty for every other task.
+// the folder's repository had no branch with a commit to fork from (a detached
+// HEAD or an unborn branch), so it had no branch of its own. Empty for every
+// other task.
 func swarmFolderTaskNote(agent, worktreeBranch, baseCommit, workspacePath, sourcePath string) string {
 	if (agent != "" && !strings.EqualFold(agent, "swarm")) || worktreeBranch != "" || baseCommit != "" || workspacePath == "" || workspacePath != sourcePath {
 		return ""
 	}
-	return "The work was done in the folder itself, not on a branch of its own, because the folder is not a Git repository (or has no branch with a commit to fork from); its changes are already in the folder."
+	return "The work was done in the folder itself, not on a branch of its own, because the folder's repository had no branch with a commit to fork from (a detached HEAD or an unborn branch); its changes are already in the folder."
 }
 
 func captureFolderTaskBase(task *store.ProjectTaskRecord) error {

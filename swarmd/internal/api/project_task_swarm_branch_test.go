@@ -278,7 +278,7 @@ func TestSwarmProjectTaskWithoutABranchStaysAFolderTask(t *testing.T) {
 			t.Fatal(err)
 		}
 		note, _ := controlMCPMap(result)["worked_in_folder"].(string)
-		if !strings.Contains(note, "done in the folder itself") || !strings.Contains(note, "not a Git repository") {
+		if !strings.Contains(note, "done in the folder itself") || !strings.Contains(note, "no branch with a commit to fork from") || strings.Contains(note, "not a Git repository") {
 			t.Fatalf("result does not say the work was done in the folder: %+v", result)
 		}
 	})

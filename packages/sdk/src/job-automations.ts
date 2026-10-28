@@ -134,8 +134,8 @@ export interface JobAutomationStep {
    * reads the reviewed job's own worktree in place (`same`, read-only; it
    * starts only at exactly the reviewed head with nothing uncommitted, and its
    * verdict is a block if the worktree changes during the review) or gets its
-   * own checkout (`new`). A reviewer with `fixes`, the coder and any other
-   * worker use `new`; swarm, finder and designer work in the folder (`none`).
+   * own checkout (`new`). A reviewer with `fixes`, swarm, the coder and any
+   * other worker use `new`; finder and designer work in the folder (`none`).
    * The daemon refuses any other combination.
    */
   checkout?: JobAgentCheckout;

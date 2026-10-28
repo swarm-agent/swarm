@@ -9,10 +9,11 @@ Swarm runs AI agents on the person's computer or server for their work in
 their folders. Work gets done two ways, both first-class: delegate a goal to
 Swarm (`swarm_run_task`, section 4), which handles it itself or splits it
 across its coder, finder and designer, always on its own branch (nothing
-reaches the folder until `swarm_integrate_task`); or run one of Swarm's own agents directly
-(`swarm_run_task` with role coder, designer or finder, section 4; built in,
-nothing to deploy). Workers (`swarm_give_job`, section 8) are only the person's
-own. Add, when the person wants them: schedules (section 8),
+reaches the folder until `swarm_integrate_task`); or run one of Swarm's own
+agents directly (`swarm_run_task` with role coder, designer or finder,
+section 4; built in, nothing to deploy). Workers (`swarm_give_job`,
+section 8) are only the person's own. Add, when the person wants them:
+schedules (section 8),
 workflows that run when a task or job ends (section 8b) and environments, a folder's
 own container for its agents' commands with its secrets (section 3b).
 Use MCP tools (`swarm_*`; a client may prefix the connection name). Treat
