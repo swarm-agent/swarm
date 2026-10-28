@@ -11,6 +11,7 @@ import (
 
 	"swarm/packages/swarmd/internal/identity"
 	runruntime "swarm/packages/swarmd/internal/run"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
@@ -60,6 +61,26 @@ func (s *Server) MessageProjectTask(ctx context.Context, p identity.Principal, p
 	task, sessionID, err := s.projectTaskControlTarget(p, projectID, taskID)
 	if err != nil {
 		return tool.ProjectTaskMessageResult{}, err
+	}
+	// A retry with the key of an earlier message replays that delivery, never
+	// a second one, whatever the run state is now: first a reopen it made
+	// (the active attempt carries the key), then a note it queued in one of
+	// the task's sessions, even after that run has ended.
+	if active := task.ActiveAttempt(); active != nil && active.ClientRequestID == key {
+		reopened, err := s.ReopenProjectTask(ctx, p, projectID, taskID, tool.ProjectTaskFollowupInput{Feedback: in.Message, ClientRequestID: key, Revision: active.RequestRevision})
+		if err != nil {
+			return tool.ProjectTaskMessageResult{}, err
+		}
+		return tool.ProjectTaskMessageResult{TaskID: reopened.ID, DeliveredAs: tool.ProjectTaskMessageReopened, RunID: reopened.ExecutionRunID()}, nil
+	}
+	if noteSession, found, err := s.projectTaskMessageReplaySession(p, task, key); err != nil {
+		return tool.ProjectTaskMessageResult{}, err
+	} else if found {
+		runID, err := s.replayProjectTaskMessage(p, noteSession, key, in.Message)
+		if err != nil {
+			return tool.ProjectTaskMessageResult{}, err
+		}
+		return tool.ProjectTaskMessageResult{TaskID: task.ID, DeliveredAs: tool.ProjectTaskMessageQueued, RunID: runID}, nil
 	}
 	if sessionID != "" {
 		runID, queued, err := s.queueProjectTaskMessage(p, sessionID, key, in.Message)
@@ -181,6 +202,55 @@ func (s *Server) queueProjectTaskMessage(p identity.Principal, sessionID, key, m
 		return "", false, &projectTaskFollowupError{http.StatusConflict, errors.New("the task's run is starting and cannot take a message yet; try again shortly")}
 	}
 	return "", false, nil
+}
+
+// projectTaskMessageReplaySession finds the task session, current or of an
+// earlier attempt, where a message with key was already recorded.
+func (s *Server) projectTaskMessageReplaySession(p identity.Principal, task *pebblestore.ProjectTaskRecord, key string) (string, bool, error) {
+	seen := map[string]bool{}
+	candidates := []string{task.SessionID}
+	for _, attempt := range task.Attempts {
+		candidates = append(candidates, attempt.SessionID)
+	}
+	for _, sessionID := range candidates {
+		sessionID = strings.TrimSpace(sessionID)
+		if sessionID == "" || seen[sessionID] {
+			continue
+		}
+		seen[sessionID] = true
+		_, found, err := s.sessions.Store().GetV3SessionOperationIdempotencyRecord(p.AccountScopeID, sessionID, sessionruntime.SessionMutationAppendMessage, key)
+		if err != nil {
+			return "", false, err
+		}
+		if found {
+			return sessionID, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// replayProjectTaskMessage replays the queued note recorded with key in
+// sessionID. The key reused for a different message is refused.
+func (s *Server) replayProjectTaskMessage(p identity.Principal, sessionID, key, message string) (string, error) {
+	unlock := runruntime.LockClientToolConfirmations(sessionID)
+	defer unlock()
+	session, found, err := s.requireSessionV3Access(p, sessionID)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", &projectTaskFollowupError{http.StatusNotFound, errors.New("task session not found")}
+	}
+	req := sessionsV3MessageRequest{queueWhileRunning: true, ClientRequestID: key, IdempotencyKey: key, Role: "user", Content: message}
+	result, queued, err := s.acceptSessionsV3QueuedNote(p, session, req, pebblestore.MessageSnapshot{Role: "user", Content: message})
+	if err != nil {
+		return "", err
+	}
+	if !queued || result.Message == nil || !runruntime.IsQueuedNote(*result.Message) {
+		return "", &projectTaskFollowupError{http.StatusConflict, errors.New("client_request_id was already used for a different message")}
+	}
+	runID, _ := sessionsV3QueuedMessageResponseFields(result.Message)["queued_for_run_id"].(string)
+	return runID, nil
 }
 
 // handleProjectTaskControl serves POST .../tasks/{taskId}/message and /stop.

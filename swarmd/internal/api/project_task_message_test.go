@@ -83,7 +83,7 @@ func TestMessageTaskQueuesIntoTheRunningTaskRun(t *testing.T) {
 		if hasFunctionCallOutput(req.Input) {
 			return provideriface.Response{Text: "finished", StopReason: "stop"}
 		}
-		code, out := f.do(http.MethodPost, "/v3/projects/"+messageTaskProject+"/tasks/"+messageTaskID+"/message", `{"message":"`+steer+`"}`)
+		code, out := f.do(http.MethodPost, "/v3/projects/"+messageTaskProject+"/tasks/"+messageTaskID+"/message", `{"message":"`+steer+`","client_request_id":"steer-1"}`)
 		mu.Lock()
 		status, reply = code, out
 		mu.Unlock()
@@ -118,6 +118,29 @@ func TestMessageTaskQueuesIntoTheRunningTaskRun(t *testing.T) {
 	after, _, _ := f.sessions.Store().GetProjectTask(p.AccountScopeID, messageTaskProject, messageTaskID)
 	if after.Revision != before.Revision || len(after.Attempts) != len(before.Attempts) {
 		t.Fatalf("a queued message changed the task: revision %d -> %d, attempts %d -> %d", before.Revision, after.Revision, len(before.Attempts), len(after.Attempts))
+	}
+	// The run has ended. A retry with the same key replays the queued
+	// delivery: no reopen, no second note.
+	code, out = f.do(http.MethodPost, "/v3/projects/"+messageTaskProject+"/tasks/"+messageTaskID+"/message", `{"message":"`+steer+`","client_request_id":"steer-1"}`)
+	var retried tool.ProjectTaskMessageResult
+	if code != http.StatusOK || json.Unmarshal([]byte(out), &retried) != nil || retried != got {
+		t.Fatalf("retry after the run ended: %d %s, want the original %+v", code, out, got)
+	}
+	notes := 0
+	for _, m := range f.messages() {
+		if m.Content == steer {
+			notes++
+		}
+	}
+	if notes != 1 {
+		t.Fatalf("message stored %d times, want once", notes)
+	}
+	if again, _, _ := f.sessions.Store().GetProjectTask(p.AccountScopeID, messageTaskProject, messageTaskID); again.Revision != before.Revision || len(again.Attempts) != len(before.Attempts) {
+		t.Fatalf("a retried message changed the task: revision %d -> %d, attempts %d -> %d", before.Revision, again.Revision, len(before.Attempts), len(again.Attempts))
+	}
+	// The same key for a different message is refused.
+	if code, out := f.do(http.MethodPost, "/v3/projects/"+messageTaskProject+"/tasks/"+messageTaskID+"/message", `{"message":"something else","client_request_id":"steer-1"}`); code != http.StatusConflict {
+		t.Fatalf("reused key for a different message: %d %s", code, out)
 	}
 	// An empty message and an unknown task are refused without a write.
 	if code, _ := f.do(http.MethodPost, "/v3/projects/"+messageTaskProject+"/tasks/"+messageTaskID+"/message", `{"message":"  "}`); code != http.StatusBadRequest {
@@ -229,8 +252,17 @@ func TestMessageTaskReopensAFinishedTask(t *testing.T) {
 
 	f := newConfirmationFixture(t, filepath.Join(root, "store"), nil)
 	defer f.close()
-	f.runner.handler = func(context.Context, provideriface.Request, func(provideriface.StreamEvent)) (provideriface.Response, error) {
-		return provideriface.Response{Text: "done", StopReason: "stop"}, nil
+	// The reopened run stays active until the test ends, so a retry meets it
+	// running.
+	release := make(chan struct{})
+	defer close(release)
+	f.runner.handler = func(ctx context.Context, _ provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		select {
+		case <-release:
+			return provideriface.Response{Text: "done", StopReason: "stop"}, nil
+		case <-ctx.Done():
+			return provideriface.Response{}, ctx.Err()
+		}
 	}
 	orchestrator := f.createSession("orchestrator")
 	p := testPrincipal()
@@ -282,7 +314,7 @@ func TestMessageTaskReopensAFinishedTask(t *testing.T) {
 	before.EnsureTaskAttempts()
 	rt := messageTaskRuntime(t, f.server)
 
-	out, err := callManageProjects(t, rt, orchestrator, p, map[string]any{"action": "message_task", "project_id": proj.ID, "task_id": messageTaskID, "message": "also add a test"})
+	out, err := callManageProjects(t, rt, orchestrator, p, map[string]any{"action": "message_task", "project_id": proj.ID, "task_id": messageTaskID, "message": "also add a test", "client_request_id": "follow-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,6 +332,33 @@ func TestMessageTaskReopensAFinishedTask(t *testing.T) {
 	}
 	if _, ok, err := f.sessions.GetSessionRunIntent(after.SessionID, sent["run_id"].(string)); err != nil || !ok {
 		t.Fatalf("reopened run %v not recorded in the task session: %v %v", sent["run_id"], ok, err)
+	}
+
+	// A retry with the same key while the reopened run is active replays the
+	// reopen: no second attempt and no queued note on top of the follow-up.
+	if _, active, err := f.sessions.GetSessionActiveRunIntent(after.SessionID); err != nil || !active {
+		t.Fatalf("reopened run not active for the retry: %v %v", active, err)
+	}
+	retry, err := callManageProjects(t, rt, orchestrator, p, map[string]any{"action": "message_task", "project_id": proj.ID, "task_id": messageTaskID, "message": "also add a test", "client_request_id": "follow-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replayed map[string]any
+	if json.Unmarshal([]byte(retry), &replayed) != nil || replayed["delivered_as"] != tool.ProjectTaskMessageReopened || replayed["run_id"] != sent["run_id"] {
+		t.Fatalf("retry: %s, want the original %s", retry, out)
+	}
+	again, _, _ := db.GetProjectTask(p.AccountScopeID, proj.ID, messageTaskID)
+	if again.Revision != after.Revision || len(again.Attempts) != len(after.Attempts) {
+		t.Fatalf("retry reopened again: revision %d -> %d, attempts %d -> %d", after.Revision, again.Revision, len(after.Attempts), len(again.Attempts))
+	}
+	messages, err := f.sessions.ListSessionMessages(after.SessionID, 0, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range messages {
+		if runruntime.IsQueuedNote(m) {
+			t.Fatalf("retry queued a note on top of the reopen: %+v", m)
+		}
 	}
 }
 
