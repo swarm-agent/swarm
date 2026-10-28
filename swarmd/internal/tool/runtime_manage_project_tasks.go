@@ -178,9 +178,11 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 			return "", err
 		}
 		task.EnsureTaskAttempts()
-		if detail != ProjectTaskDetailFull {
+		if detail != ProjectTaskDetailFull && !scope.TaskHistoryOnly {
 			// The default answer is what the Orchestrator needs to decide;
 			// detail adds one section; full is the stored record below.
+			// Task follow-ups (history-only) always read the stored record
+			// with a page of attempt history (cursor/limit).
 			read := projectTaskRead{ProjectTaskRecord: *task, Progress: r.projectTaskProgress(account, *task), Worktree: projectTaskWorktreeResult(*task)}
 			result["task"] = compactProjectTask(read, false)
 			switch detail {

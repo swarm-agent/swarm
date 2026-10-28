@@ -553,6 +553,9 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		if err := r.authorizeTaskHistoryCall(scope, args); err != nil {
 			return "", err
 		}
+		// A task follow-up reads its task's stored record and attempt
+		// history; the compact default is the Orchestrator's.
+		scope.TaskHistoryOnly = true
 	}
 	p := scope.Principal
 	accountScopeID := strings.TrimSpace(p.AccountScopeID)

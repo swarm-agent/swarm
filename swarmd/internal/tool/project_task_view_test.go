@@ -591,3 +591,70 @@ func TestCompactProjectTaskAnswerLinked(t *testing.T) {
 		t.Fatalf("list changed: %v %s", err, out)
 	}
 }
+
+// Purpose: a task follow-up session (history-only manage_projects, whose
+// schema offers only cursor/limit and no detail) keeps reading its associated
+// task's stored record with a page of attempt history; cursor and limit page
+// that history. The compact default belongs to the Orchestrator only.
+// Threat: the compact default also answered follow-up sessions, leaving them
+// only the latest report summary with cursor/limit ignored, so their attempt
+// history was unreachable.
+// Owners: Runtime.executeManageProjects history-only detection
+// (scope.TaskHistoryOnly or the session's task metadata) and
+// authorizeTaskHistoryCall -> executeManageProjectTasksContext get_task, over
+// a real temp store with a bound follow-up session and attempt; the tool
+// entry is where the follow-up's answer is decided.
+func TestManageProjectsFollowupGetTaskPagesAttemptHistory(t *testing.T) {
+	db, store := openTaskViewStore(t)
+	const account, user, project, taskID, followup = "acct-followup", "user-followup", "proj-followup", "task-followup", "followup-session"
+	if err := db.PutJSON(pebblestore.KeySession(followup), pebblestore.SessionSnapshot{ID: followup, AccountScopeID: account, UserID: user, Mode: "auto", Metadata: map[string]any{
+		"resolved_agent_name": "swarm", "agent_mode": "primary", "role": "project_task", "project_id": project, "task_id": taskID, "task_attempt_id": "attempt-3",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutProject(account, &pebblestore.ProjectRecord{ID: project, AccountID: account, Name: "Followup"}); err != nil {
+		t.Fatal(err)
+	}
+	task := heavyFinishedTask(account, project, taskID)
+	task.ActiveAttemptID, task.SessionID = "attempt-3", followup
+	task.Attempts = append(task.Attempts, pebblestore.ProjectTaskAttempt{ID: "attempt-3", SessionID: followup, Role: "swarm", UserID: user, Status: "in_progress"})
+	if err := store.PutProjectTask(account, task); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRuntime(1)
+	defer r.Close()
+	r.SetManageSessionService(session.NewService(store, nil))
+	r.SetManageProjectStore(store)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: user, AccountScopeID: account}
+
+	page := func(scope WorkspaceScope, cursor, limit int) (ids []string, next float64, raw string) {
+		t.Helper()
+		raw, out, err := runManageProjects(t, r, scope, map[string]any{"action": "get_task", "project_id": project, "task_id": taskID, "cursor": cursor, "limit": limit})
+		if err != nil {
+			t.Fatalf("follow-up get_task cursor=%d limit=%d: %v", cursor, limit, err)
+		}
+		record, _ := out["task"].(map[string]any)
+		if record == nil || record["full_plan_markdown"] == nil || record["submission_hash"] == nil {
+			t.Fatalf("follow-up get_task is not the stored record: %.400s", raw)
+		}
+		attempts, _ := record["attempts"].([]any)
+		for _, a := range attempts {
+			ids = append(ids, a.(map[string]any)["id"].(string))
+		}
+		next, _ = out["next_cursor"].(float64)
+		return ids, next, raw
+	}
+	// The run marks the scope history-only; the session's own task metadata
+	// marks it too when the flag is absent.
+	for _, scope := range []WorkspaceScope{
+		{SessionID: followup, Principal: principal, TaskHistoryOnly: true},
+		{SessionID: followup, Principal: principal},
+	} {
+		if ids, next, raw := page(scope, 0, 2); strings.Join(ids, ",") != "attempt-1,attempt-2" || next != 2 {
+			t.Fatalf("history-only=%v first page: ids=%v next=%v %.300s", scope.TaskHistoryOnly, ids, next, raw)
+		}
+		if ids, next, raw := page(scope, 2, 2); strings.Join(ids, ",") != "attempt-3" || next != 0 {
+			t.Fatalf("history-only=%v second page: ids=%v next=%v %.300s", scope.TaskHistoryOnly, ids, next, raw)
+		}
+	}
+}
