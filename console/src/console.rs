@@ -298,8 +298,6 @@ pub struct Console {
     /// The run whose own view is open, and its actions.
     run_open: Option<automations::RunOpen>,
     run_entries: Option<Result<Vec<data::Entry>, String>>,
-    /// What the person last asked of each worker schedule and Swarm's answer.
-    schedule_asks: automations::ScheduleAsks,
     /// First run, shown instead of the console until it finishes.
     onboarding: Option<Entity<Onboarding>>,
     /// Focus the console on the next render (after onboarding closes).
@@ -463,7 +461,6 @@ impl Console {
             runs_failed_seen: None,
             run_open: None,
             run_entries: None,
-            schedule_asks: Default::default(),
             attachments: HashMap::new(),
             preview: None,
             selection: None,
