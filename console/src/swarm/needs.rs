@@ -182,13 +182,15 @@ pub fn tasks(project_id: &str, project: &str, board: &Value) -> Vec<TaskRef> {
         .collect()
 }
 
-/// A task waits on you when it asks for approval, or when a review of work
-/// you started is yours to do. Reviews a workflow or automation made are
-/// handled by that workflow.
+/// A task waits on you when it asks for approval, or when work is waiting to
+/// be merged: one started in a conversation, or one an outside AI asked for
+/// that has its own task session (and so a branch). Reviews a workflow or
+/// automation made are handled by that workflow; a media job without a
+/// session is read by whoever asked for it.
 fn waits_on_you(t: &TaskRef) -> bool {
     match t.status.as_str() {
         "pending_approval" => true,
-        "needs_review" => !t.automated && !t.origin.is_empty(),
+        "needs_review" => !t.automated && (!t.origin.is_empty() || !t.session_id.is_empty()),
         _ => false,
     }
 }
@@ -524,11 +526,16 @@ mod tests {
         let made = json!({"tasks": [
             {"id": "r1", "title": "Review this job", "status": "needs_review", "automation_id": "workflow:jdel_1.review", "created_at": 9000},
             {"id": "r2", "title": "Worker output", "status": "needs_review", "worker_run_id": "wrun_1", "origin_session_id": "orch-1", "created_at": 9000},
-            {"id": "a1", "title": "Run the media job", "status": "pending_approval", "automation_id": "workflow:jdel_2", "created_at": 9000}
+            {"id": "a1", "title": "Run the media job", "status": "pending_approval", "automation_id": "workflow:jdel_2", "created_at": 9000},
+            // An outside AI's job: no conversation, but its own task session
+            // and branch to merge. A media job with neither is not listed.
+            {"id": "c1", "title": "Fix the parser", "status": "needs_review", "session_id": "sess-c1", "created_at": 8000},
+            {"id": "m1", "title": "A hero image", "status": "needs_review", "agent": "image", "created_at": 9500}
         ]});
         let (count, items) = task_items(false, "social", &tasks("p2", "Socials", &made));
-        assert_eq!(count, 1);
-        assert_eq!(items[0].what, "Run the media job");
+        assert_eq!(count, 2);
+        assert_eq!(items.iter().map(|i| i.what.as_str()).collect::<Vec<_>>(), vec!["Run the media job", "Fix the parser"]);
+        assert_eq!(items[1].target, Target::Task { project_id: "p2".into(), task_id: "c1".into(), session_id: "sess-c1".into(), origin: "".into() });
     }
 
     #[test]

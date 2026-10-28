@@ -850,10 +850,10 @@ impl Model<'_> {
                 continue;
             }
             // Only a task the console shows needs its live assessment: one
-            // proposed in a conversation it lists. A busy machine has hundreds
-            // of other waiting tasks (workers', workflow reviews').
-            let origin = s(task, "origin_session_id");
-            if origin.is_empty() || !self.shells.contains_key(origin) {
+            // whose home session (map::task_home) it lists. A busy machine has
+            // hundreds of other waiting tasks (workers', workflow reviews').
+            let home = map::task_home(task);
+            if home.is_empty() || !self.shells.contains_key(home) {
                 continue;
             }
             let id = s(task, "id").to_string();
@@ -1010,6 +1010,17 @@ impl Model<'_> {
         self.shells.insert(id.to_string(), shell.clone());
         if !self.order.iter().any(|x| x == id) {
             self.order.insert(0, id.to_string());
+        }
+        // A session just listed (opened from the Fleet page) may be the home
+        // of a task waiting to merge: read its live assessment now.
+        let projects: Vec<String> = self
+            .tasks
+            .iter()
+            .filter(|(_, tasks)| tasks.iter().any(|t| s(t, "status") == "needs_review" && map::task_home(t) == id))
+            .map(|(pid, _)| pid.clone())
+            .collect();
+        for pid in projects {
+            self.read_tasks(&pid)?;
         }
         Ok(true)
     }
@@ -1280,7 +1291,20 @@ impl Model<'_> {
     fn session_of(&self, id: &str) -> Option<Session> {
         let shell = self.shells.get(id)?;
         let run = self.runs.get(id).cloned().unwrap_or(Value::Null);
-        let mut session = map::session(shell, &run, self.waiting.contains(id), &self.projects)?;
+        let pending = self.waiting.contains(id);
+        let mut session = match map::session(shell, &run, pending, &self.projects) {
+            Some(session) => session,
+            // Not a conversation: listed only as the home of a task no
+            // conversation started that waits to be merged (its changes and
+            // merge are on its card), in that task's project.
+            None => {
+                let (pid, _) = self.tasks.iter().find(|(_, tasks)| {
+                    tasks.iter().any(|t| s(t, "status") == "needs_review" && s(t, "origin_session_id").is_empty() && map::task_home(t) == id)
+                })?;
+                let project = self.projects.iter().position(|p| p.id.as_ref() == pid.as_str())?;
+                map::task_session(shell, &run, pending, project)
+            }
+        };
         if let Some(d) = self.details.get(id) {
             session.entries = d.entries.clone();
             if !d.live.is_empty() {
