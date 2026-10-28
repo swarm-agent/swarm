@@ -397,3 +397,85 @@ func TestQueuedNoteInDiscardedToolBatchStartsNextTurn(t *testing.T) {
 		t.Fatalf("provider calls = %d, want 2 (the failed batch's step and the follow-up)", len(requests))
 	}
 }
+
+// appendPlainFeedbackNote stores a feedback note the way background-command
+// reports and Orchestrator send_message trigger:false notes do: a user message
+// with feedback_note and no queued_note.
+func (f *queuedNoteFixture) appendPlainFeedbackNote(id, content string) {
+	session, ok, err := f.sessions.GetSession(f.sessionID)
+	if err != nil || !ok {
+		f.t.Errorf("session: %v %v", ok, err)
+		return
+	}
+	key := "plain-note:" + id
+	result, err := f.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID: f.sessionID, UserID: session.UserID, AccountScopeID: session.AccountScopeID,
+		ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key,
+		Kind: pebblestore.V3SessionMutationAppendMessage, NowUnixMs: 1,
+		Message: &pebblestore.MessageSnapshot{
+			ID: id, SessionID: f.sessionID, UserID: session.UserID, AccountScopeID: session.AccountScopeID,
+			Role: "user", Content: content, CreatedAt: 1,
+			Metadata: map[string]any{"source": "background_command", "feedback_note": true},
+		},
+	})
+	if err != nil || result.Error != nil || result.Conflict != nil {
+		f.t.Errorf("append plain note: %v %+v", err, result)
+	}
+}
+
+// Purpose: in the V3 executor, a feedback note that is not the person's queued
+// note (here shaped like a background command report) never appears inside a
+// tool result or the person-attributed block; it keeps its separate user
+// message at the next step and its user-message receipt, while the person's
+// queued note posted in the same step still rides on the tool result.
+// Threat: raw command or agent text presented to the model as the person's
+// message (prompt-injection escalation), or such a note dropped.
+// Boundary: sessionV3QueuedNoteToolInvoker -> QueuedNoteToolInvoker
+// (ClaimMatching IsQueuedNote), the step-boundary claim in
+// runProviderToolLoop, FormatQueuedNotesBlock.
+// Narrowest layer: the real executor and HTTP route with a scripted model.
+func TestNonPersonFeedbackNoteIsNotDeliveredInToolResult(t *testing.T) {
+	const steer = "person-steer-in-mixed-batch"
+	const report = "background-report-untrusted-output"
+	f := newQueuedNoteFixture(t, func(f *queuedNoteFixture, req provideriface.Request) provideriface.Response {
+		if hasFunctionCallOutput(req.Input) {
+			return provideriface.Response{Text: "finished", StopReason: "stop"}
+		}
+		f.appendPlainFeedbackNote("bg-note-1", report)
+		f.postDuringRun("steer-mixed", steer)
+		return provideriface.Response{FunctionCalls: []provideriface.FunctionCall{{CallID: "probe1", Name: "probe_tool", Arguments: `{}`}}}
+	})
+	f.say(f.sessionID, "start-mixed", "begin the task")
+
+	code, payload := f.queuedResponse()
+	if code != http.StatusOK || payload["queued"] != true {
+		t.Fatalf("mid-run message was not queued: %d %v", code, payload)
+	}
+	note := queuedNoteFromResponse(t, payload)
+	requests := f.requests()
+	if len(requests) != 2 {
+		t.Fatalf("provider calls = %d, want 2", len(requests))
+	}
+	if toolResults, userMessages := countInInput(requests[1].Input, report); toolResults != 0 || userMessages != 1 {
+		t.Fatalf("background note delivered %d times in tool results and %d as user messages, want 0 and 1", toolResults, userMessages)
+	}
+	if toolResults, userMessages := countInInput(requests[1].Input, steer); toolResults != 1 || userMessages != 0 {
+		t.Fatalf("person's note delivered %d times in tool results and %d as user messages, want 1 and 0", toolResults, userMessages)
+	}
+	for _, item := range requests[1].Input {
+		output := stringMapValue(item, "output")
+		if block := strings.Index(output, "<queued_message_from_the_person>"); block >= 0 && strings.Contains(output[block:], report) {
+			t.Fatalf("background note presented as the person's message: %q", output)
+		}
+	}
+	startRun := stableSessionsV3PrimaryRunID(f.sessionID, "start-mixed")
+	if receipts := f.receipts("bg-note-1"); len(receipts) != 1 || receipts[0].Metadata["delivery_channel"] != runruntime.FeedbackDeliveryUserTurn || receipts[0].Metadata["run_id"] != startRun {
+		t.Fatalf("background note receipts = %+v, want one user-message delivery in %s", receipts, startRun)
+	}
+	if receipts := f.receipts(note.ID); len(receipts) != 1 || receipts[0].Metadata["delivery_channel"] != runruntime.FeedbackDeliveryToolResult {
+		t.Fatalf("person's note receipts = %+v, want one tool-result delivery", receipts)
+	}
+	if intents := f.runIntents(); len(intents) != 1 {
+		t.Fatalf("run intents = %+v, want only the original run", intents)
+	}
+}

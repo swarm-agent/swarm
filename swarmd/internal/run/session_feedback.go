@@ -106,6 +106,14 @@ func (t *QueuedNoteTracker) Cursor() uint64 {
 // ReturnInFlight. The read and the advance are one critical section: two
 // concurrent claims never return the same note.
 func (t *QueuedNoteTracker) Claim(channel string, read func(cursor *uint64) ([]pebblestore.MessageSnapshot, error)) ([]pebblestore.MessageSnapshot, error) {
+	return t.ClaimMatching(channel, read, nil)
+}
+
+// ClaimMatching is Claim limited to notes for which keep reports true. Every
+// other note read past the cursor stays pending, unreceipted and withheld from
+// rebuilt history, as if handed back: the next unfiltered claim delivers it
+// through its own channel. A nil keep claims every note.
+func (t *QueuedNoteTracker) ClaimMatching(channel string, read func(cursor *uint64) ([]pebblestore.MessageSnapshot, error), keep func(pebblestore.MessageSnapshot) bool) ([]pebblestore.MessageSnapshot, error) {
 	if t == nil || read == nil {
 		return nil, nil
 	}
@@ -119,9 +127,15 @@ func (t *QueuedNoteTracker) Claim(channel string, read func(cursor *uint64) ([]p
 	if next > t.cursor {
 		t.cursor = next
 	}
-	notes := append(t.returned, fresh...)
+	candidates := append(t.returned, fresh...)
 	t.returned = nil
-	for _, note := range notes {
+	var notes []pebblestore.MessageSnapshot
+	for _, note := range candidates {
+		if keep != nil && !keep(note) {
+			t.returned = append(t.returned, note)
+			continue
+		}
+		notes = append(notes, note)
 		t.inFlight = append(t.inFlight, ClaimedQueuedNote{Note: note, Channel: channel})
 	}
 	return notes, nil
@@ -195,11 +209,18 @@ func (t *QueuedNoteTracker) Withholds(message pebblestore.MessageSnapshot) bool 
 	return false
 }
 
-// FormatQueuedNotesBlock renders notes as a clearly delimited section that
-// follows a tool's output. The content stays untrusted user text.
+// FormatQueuedNotesBlock renders the person's queued notes as a clearly
+// delimited section that follows a tool's output. The content stays untrusted
+// user text. Only IsQueuedNote messages (stored by the person's message route)
+// are attributed to the person; any other feedback note (a background command
+// report, an Orchestrator note) is never rendered here, so command or agent
+// text cannot be presented as the person's message.
 func FormatQueuedNotesBlock(notes []pebblestore.MessageSnapshot) string {
 	var b strings.Builder
 	for _, note := range notes {
+		if !IsQueuedNote(note) {
+			continue
+		}
 		content := strings.TrimSpace(note.Content)
 		if content == "" {
 			continue
@@ -252,7 +273,9 @@ func (i *QueuedNoteToolInvoker) ExecuteTool(ctx context.Context, invocation prov
 		// appended here could be dropped; the next boundary claims it instead.
 		return result, err
 	}
-	notes, claimErr := i.Tracker.Claim(FeedbackDeliveryToolResult, i.Read)
+	// Only the person's queued notes ride on tool results. Other feedback
+	// notes keep their separate user-message delivery at the next step.
+	notes, claimErr := i.Tracker.ClaimMatching(FeedbackDeliveryToolResult, i.Read, IsQueuedNote)
 	if claimErr != nil {
 		return result, claimErr
 	}
