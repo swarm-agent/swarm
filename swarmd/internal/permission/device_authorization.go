@@ -18,8 +18,11 @@ type deviceTarget struct {
 // the one named in the call's "device" argument, else the device that sent
 // the run's message. A run without a sending device (a delegated or started
 // run, or a message sent through the API) goes to the account's only
-// connected device; with several connected, the call must name one. It
-// returns a refusal reason when no single connected device matches.
+// connected device. With several connected it is refused: the device tool
+// schemas declare no "device" property (and reject unknown ones), so the
+// agent cannot pick one and the person must send the request from the
+// device to use. It returns a refusal reason when no single connected device
+// matches.
 func (s *Service) resolveDeviceTarget(input AuthorizationInput) (deviceTarget, string, error) {
 	session, run, clients, err := s.store.DeviceCallContext(input.SessionID, input.RunID)
 	if err != nil {
@@ -49,7 +52,7 @@ func (s *Service) resolveDeviceTarget(input AuthorizationInput) (deviceTarget, s
 		case 1:
 			return deviceTarget{id: connected[0].SessionID, name: connected[0].Device}, "", nil
 		default:
-			return deviceTarget{}, fmt.Sprintf("several devices are connected (%s); name one in the device argument", connectedDeviceNames(connected)), nil
+			return deviceTarget{}, fmt.Sprintf("several devices are connected (%s) and this run has no sending device to choose between them; the person sends the request from the device to use", connectedDeviceNames(connected)), nil
 		}
 	}
 	var found deviceTarget

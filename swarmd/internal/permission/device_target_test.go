@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"swarm/packages/swarmd/internal/agent"
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -14,7 +15,9 @@ import (
 // that device's account rule instead of a blanket refusal.
 // Regression: runs without a sender were refused with `target device "" is
 // not connected`, and request_browser_access was refused even when the
-// device's browser rule was allowed.
+// device's browser rule was allowed. Every call first passes the tool's
+// declared schema, as on the run path, so refusal guidance that relies on an
+// argument the schemas reject (a "device" property) is caught here.
 // Owners: Service.AuthorizeToolCall, resolveDeviceTarget,
 // authorizeDeviceCall and deviceAccessRequestAnswer over the durable
 // PermissionStore. The permission service with a temporary Pebble store is the
@@ -49,8 +52,22 @@ func TestDeviceTargetResolution(t *testing.T) {
 		}
 		return NewService(store.NewPermissionStore(db), nil, nil)
 	}
+	// call mirrors the run path (run/service_tools.go): a client tool call is
+	// validated against the tool's declared schema before authorization, so
+	// no case here can rely on arguments the model cannot actually send.
+	schemas := map[string]map[string]any{}
+	for _, def := range store.MachineClientTools() {
+		schemas[def.Name] = def.InputSchema
+	}
 	call := func(t *testing.T, svc *Service, callID, tool, args string) AuthorizationResult {
 		t.Helper()
+		schema, ok := schemas[tool]
+		if !ok {
+			t.Fatalf("%s is not a declared device tool", tool)
+		}
+		if _, err := agent.ValidateClientToolArguments(schema, args); err != nil {
+			t.Fatalf("%s arguments %s fail the tool schema: %v", tool, args, err)
+		}
 		got, err := svc.AuthorizeToolCall(AuthorizationInput{SessionID: "s", RunID: "r", AccountScopeID: "a", CallID: callID, ToolName: tool, ToolArguments: args, Mode: "auto"})
 		if err != nil {
 			t.Fatal(err)
@@ -80,16 +97,21 @@ func TestDeviceTargetResolution(t *testing.T) {
 		}
 		noPending(t, svc)
 	})
-	t.Run("no sender with several devices must name one", func(t *testing.T) {
+	t.Run("no sender with several devices is refused with followable guidance", func(t *testing.T) {
 		svc := setup(t, "", device{"d1", "laptop", "allowed"}, device{"d2", "desktop", "allowed"})
 		got := call(t, svc, "c", "machine_read", `{"path":"~/x"}`)
-		if got.Decision != AuthorizationDeny || got.Record != nil || !strings.Contains(got.Reason, `"desktop", "laptop"`) {
+		if got.Decision != AuthorizationDeny || got.Record != nil || !strings.Contains(got.Reason, `"desktop", "laptop"`) || !strings.Contains(got.Reason, "the person sends the request from the device to use") {
 			t.Fatalf("several devices: %+v", got)
 		}
+		// The guidance must not point at an argument the schemas reject.
+		if strings.Contains(got.Reason, "device argument") {
+			t.Fatalf("refusal names an unsendable argument: %q", got.Reason)
+		}
 		noPending(t, svc)
-		got = call(t, svc, "c2", "machine_read", `{"path":"~/x","device":"laptop"}`)
-		if got.Decision != AuthorizationPending || got.Record == nil || got.Record.TargetDevice != "d1" {
-			t.Fatalf("named device: %+v", got)
+		for name, schema := range schemas {
+			if _, err := agent.ValidateClientToolArguments(schema, `{"device":"laptop"}`); err == nil {
+				t.Fatalf("%s schema accepts a device argument; the refusal guidance is stale", name)
+			}
 		}
 	})
 	t.Run("a disconnected sender is not rerouted", func(t *testing.T) {
@@ -100,6 +122,10 @@ func TestDeviceTargetResolution(t *testing.T) {
 		}
 		noPending(t, svc)
 	})
+	requestArgs := map[string]string{
+		"request_browser_access": `{"reason":"r","sites":["example.com"]}`,
+		"request_machine_access": `{"reason":"r"}`,
+	}
 	for _, c := range []struct{ tool, rule, want, tools string }{
 		{"request_browser_access", "allowed", `browser rule for device "computer" is allowed`, "manage_browser"},
 		{"request_browser_access", "ask", `browser rule for device "computer" is ask`, "manage_browser"},
@@ -109,7 +135,7 @@ func TestDeviceTargetResolution(t *testing.T) {
 	} {
 		t.Run(c.tool+"/"+c.rule, func(t *testing.T) {
 			svc := setup(t, "", device{"d", "computer", c.rule})
-			got := call(t, svc, "c", c.tool, `{"reason":"r","sites":["example.com"]}`)
+			got := call(t, svc, "c", c.tool, requestArgs[c.tool])
 			if got.Decision != AuthorizationDeny || got.Record != nil || !strings.Contains(got.Reason, c.want) || !strings.Contains(got.Reason, c.tools) {
 				t.Fatalf("%s with rule %s: %+v", c.tool, c.rule, got)
 			}
