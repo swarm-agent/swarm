@@ -79,10 +79,10 @@ func TestOKReviewWithFailedPushSendsTheRebaseMessageAndCountsARound(t *testing.T
 			second = d
 		}
 	}
-	if second.Round != 1 || second.State != StateBlocked || second.BlockedReason != ReasonRoundsExhausted {
+	if second.Round != 1 || second.State != StateBlocked || second.BlockedReason != RoundsExhaustedReason("rebase") {
 		t.Fatalf("second delivery = round %d state %s reason %q", second.Round, second.State, second.BlockedReason)
 	}
-	if r := second.Steps[3]; r.State != StateFailed || r.Reason != ReasonRoundsExhausted || r.Outcome["followup"] != nil {
+	if r := second.Steps[3]; r.State != StateFailed || r.Reason != RoundsExhaustedReason("rebase") || r.Outcome["followup"] != nil {
 		t.Fatalf("rebase past max_rounds = %+v", r)
 	}
 	if len(reopener.sent) != 1 {

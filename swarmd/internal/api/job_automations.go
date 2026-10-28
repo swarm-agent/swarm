@@ -1147,7 +1147,12 @@ func (s *Server) handleJobAutomations(w http.ResponseWriter, r *http.Request) {
 	case rest == "import" && r.Method == http.MethodPost:
 		s.handleWorkflowTransfer(w, r, rest)
 	case rest == "" && r.Method == http.MethodGet:
-		out, err := s.ListWorkflows(workflowCallerFromRequest(r))
+		opts, err := workflowListOptions(r.URL.Query().Get)
+		if err != nil {
+			jobAutomationHTTPError(w, err)
+			return
+		}
+		out, err := s.ListWorkflows(workflowCallerFromRequest(r), opts)
 		if err != nil {
 			jobAutomationHTTPError(w, err)
 			return
@@ -1403,10 +1408,26 @@ func controlMCPSetAutomation(c *controlMCPCall, args map[string]any) (any, error
 	return out, nil
 }
 
-func (s *Server) ListWorkflows(caller WorkflowCaller) (any, error) {
+// ListWorkflows lists the account's workflows: by default each definition
+// with its last deliveries one compact line each (WorkflowListOptions selects
+// bounded detail or one delivery).
+func (s *Server) ListWorkflows(caller WorkflowCaller, opts WorkflowListOptions) (any, error) {
 	store, account, err := s.workflowAccount(caller)
 	if err != nil {
 		return nil, err
+	}
+	if opts.Detail != "" && opts.Detail != workflowDetailDeliveries {
+		return nil, controlMCPToolFailure("detail must be %q (or omitted for one line per delivery)", workflowDetailDeliveries)
+	}
+	if opts.DeliveryID != "" {
+		d, err := store.GetDelivery(account, opts.DeliveryID)
+		if errors.Is(err, jobautomation.ErrNotFound) {
+			return nil, workflowHistoryNotFound("no delivery %q", opts.DeliveryID)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"delivery": workflowDeliveryDetail(d)}, nil
 	}
 	list, err := store.List(account)
 	if err != nil {
@@ -1426,13 +1447,17 @@ func (s *Server) ListWorkflows(caller WorkflowCaller) (any, error) {
 		if err := workflowHistorySummary(store, account, a.ID, view); err != nil {
 			return nil, err
 		}
-		latest, err := store.ListDeliveries(account, jobautomation.DeliveryFilter{AutomationID: a.ID, Limit: 5})
+		latest, err := store.ListDeliveries(account, jobautomation.DeliveryFilter{AutomationID: a.ID, Limit: workflowListDeliveries})
 		if err != nil {
 			return nil, err
 		}
 		deliveries := []map[string]any{}
 		for _, d := range latest {
-			deliveries = append(deliveries, jobDeliveryView(d))
+			if opts.Detail == workflowDetailDeliveries {
+				deliveries = append(deliveries, workflowDeliveryDetail(d))
+			} else {
+				deliveries = append(deliveries, workflowDeliveryLine(d))
+			}
 		}
 		view["latest_deliveries"] = deliveries
 		out = append(out, view)
@@ -1648,7 +1673,7 @@ func controlMCPAutomationStepsSchema() map[string]any {
 				}}},
 			"from":                controlMCPStringProp("reopen: the earlier agent step whose findings are sent into the triggering task's or job's own session (as swarm_send_message or swarm_message_job does). Optional when message is set.", 0, 64),
 			"message":             controlMCPStringProp("reopen: text placed before the findings, or sent alone when from recorded none (an ok review) or from is omitted. {{steps.<id>.output}} is replaced by that earlier step's recorded output line.", 0, 4000),
-			"max_rounds":          map[string]any{"type": "integer", "minimum": 1, "maximum": jobautomation.MaxRounds, "description": "reopen: how many times this loop may reopen the job; past it the delivery ends blocked (rounds_exhausted). Default 2."},
+			"max_rounds":          map[string]any{"type": "integer", "minimum": 1, "maximum": jobautomation.MaxRounds, "description": "reopen: how many times this reopen step may reopen the job (each reopen step counts its own rounds; the job as a whole allows the sum of its reopen steps' max_rounds); past it the delivery ends blocked (rounds_exhausted: step <id>). Default 2."},
 			"command":             controlMCPStringProp("run: the machine owner's script, as an absolute path or a path relative to the folder (e.g. deliver/push.sh). It runs on the host as the daemon's user, in the folder, with the machine's own credentials, and only if the file (symlinks resolved) is owned by root and not writable by group or others; a relative path must resolve to a singly linked file inside the folder (prefer an absolute path in a directory only root can write). It gets the job's result JSON on stdin and SWARM_* variables; its last output line is the step's output. Only the machine's owner may set a run step (a full AI key); a write key is refused.", 0, 1024),
 			"args":                map[string]any{"type": "array", "maxItems": jobautomation.MaxStepArgs, "items": map[string]any{"type": "string"}},
 			"worker":              controlMCPStringProp("agent: one of Swarm's own agents (swarm, coder, finder, designer, reviewer), run as a task; reviewer is Swarm's native reviewer at the triggering job's exact head, read-only unless fixes is security. Any worker, including a custom reviewer, can be named by its worker id; no worker is deployed automatically.", 0, 200),
@@ -1707,8 +1732,11 @@ func controlMCPAutomationTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_list_workflows", Title: "List workflows",
-			Description: "This account's workflows, each exactly as Swarm runs it (scope, when, steps, revision), with its history count and last change (time, who; swarm_workflow_history reads revisions and swarm_restore_workflow restores them), latest deliveries (state, round, head, blocked reason) and their steps (state, attempts, exit code, output line, verdict and findings), and whether the machine-wide stop switch is on.",
-			InputSchema: controlMCPObject(nil, map[string]any{}), Annotations: controlMCPReadOnly, call: controlMCPListAutomations,
+			Description: "This account's workflows, each exactly as Swarm runs it (scope, when, steps, revision, enabled), with its history count and last change (time, who; swarm_workflow_history reads revisions and swarm_restore_workflow restores them), its last 3 deliveries one line each (delivery_id, job, state, round, head, blocked reason, and each step's state and verdict; no findings), and whether the machine-wide stop switch is on. For step detail (attempts, exit code, output, findings cut to 1500 characters) pass delivery_id for one delivery, or detail: \"deliveries\" for the last 3 of every workflow.",
+			InputSchema: controlMCPObject(nil, map[string]any{
+				"delivery_id": controlMCPStringProp("One delivery (a delivery_id from the listing) in bounded detail, instead of the list.", 0, 200),
+				"detail":      map[string]any{"type": "string", "enum": []string{workflowDetailDeliveries}, "description": "deliveries: each workflow's last 3 deliveries with their steps' outcomes (bounded), instead of one line each."},
+			}), Annotations: controlMCPReadOnly, call: controlMCPListAutomations,
 		},
 		{
 			Name: "swarm_delete_workflow", Title: "Delete a workflow",

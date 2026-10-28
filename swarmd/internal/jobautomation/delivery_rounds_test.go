@@ -72,7 +72,7 @@ func TestReopenRoundsContinueAcrossDeliveriesOfTheSameJob(t *testing.T) {
 			last = d
 		}
 	}
-	if last.Round != 2 || last.State != StateBlocked || last.BlockedReason != ReasonRoundsExhausted {
+	if last.Round != 2 || last.State != StateBlocked || last.BlockedReason != RoundsExhaustedReason("fix") {
 		t.Fatalf("last delivery = round %d state %s reason %q", last.Round, last.State, last.BlockedReason)
 	}
 	if len(reopener.sent) != 2 {

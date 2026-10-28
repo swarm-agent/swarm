@@ -151,7 +151,12 @@ export interface JobAutomationStep {
    * `from`, `message` or both; with no findings and no message it fails.
    */
   message?: string;
-  /** reopen: reopens allowed before the delivery ends `blocked` (`rounds_exhausted`); 1 to 5, default 2. */
+  /**
+   * reopen: reopens this step may send into the job before the delivery ends
+   * `blocked` (`rounds_exhausted: step <id>`); 1 to 5, default 2. Each reopen
+   * step counts its own rounds; the job as a whole allows the sum of its
+   * reopen steps' `max_rounds` (`rounds_exhausted: job`).
+   */
   max_rounds?: number;
   /**
    * agent: the agent writes the workflow's `result` file; Swarm checks it
@@ -185,7 +190,24 @@ export interface JobAutomation {
   updated_at: number;
   history_count?: number;
   last_change?: { time: number; who: string };
-  latest_deliveries?: JobDelivery[];
+  /**
+   * The last 3 deliveries, one line each (no findings or outputs); read one
+   * delivery's steps with {@link SwarmJobAutomationsNamespace.delivery}.
+   */
+  latest_deliveries?: JobDeliveryLine[];
+}
+
+/** One delivery as one line of a workflow listing. */
+export interface JobDeliveryLine {
+  delivery_id: string;
+  job_id: string;
+  state: JobDeliveryState;
+  round: number;
+  created_at: number;
+  head?: string;
+  blocked_reason?: string;
+  /** Each step's state, and the verdict an agent step's review recorded. */
+  steps: { id: string; state: JobDeliveryState; verdict?: 'ok' | 'block' }[];
 }
 
 export interface SetJobAutomationParams {

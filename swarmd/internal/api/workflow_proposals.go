@@ -20,7 +20,11 @@ func (s *Server) ManageWorkflows(ctx context.Context, p identity.Principal, sess
 	case "help":
 		return map[string]any{"guide": workflowHelp}, nil
 	case "list":
-		return s.ListWorkflows(caller)
+		opts, err := workflowListOptions(func(key string) string { return controlMCPString(args, key) })
+		if err != nil {
+			return nil, err
+		}
+		return s.ListWorkflows(caller, opts)
 	case "history":
 		return s.WorkflowHistory(caller, args)
 	case "get":
@@ -30,6 +34,14 @@ func (s *Server) ManageWorkflows(ctx context.Context, p identity.Principal, sess
 		}
 		return map[string]any{"automation": jobAutomationView(a)}, nil
 	case "deliveries":
+		// One line per delivery; delivery_id reads one in bounded detail.
+		opts, err := workflowListOptions(func(key string) string { return controlMCPString(args, key) })
+		if err != nil {
+			return nil, err
+		}
+		if opts.DeliveryID != "" {
+			return s.ListWorkflows(caller, WorkflowListOptions{DeliveryID: opts.DeliveryID})
+		}
 		store, account, err := s.workflowAccount(caller)
 		if err != nil {
 			return nil, err
@@ -40,9 +52,11 @@ func (s *Server) ManageWorkflows(ctx context.Context, p identity.Principal, sess
 		}
 		out := []map[string]any{}
 		for _, d := range list {
-			out = append(out, jobDeliveryView(d))
+			line := workflowDeliveryLine(d)
+			line["automation"] = d.AutomationName
+			out = append(out, line)
 		}
-		return map[string]any{"deliveries": out}, nil
+		return map[string]any{"deliveries": out, "next": "pass delivery_id for one delivery's steps in bounded detail"}, nil
 	case "propose":
 		data, err := json.Marshal(args)
 		if err != nil {

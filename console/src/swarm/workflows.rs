@@ -229,7 +229,9 @@ fn delivery(d: &Value) -> Delivery {
                     .map(|s| StepRun {
                         id: text(s, "id"),
                         state: text(s, "state"),
-                        verdict: s.get("outcome").map(|o| text(o, "verdict")).unwrap_or_default(),
+                        // The listing's one-line delivery carries the verdict
+                        // itself; a detailed delivery keeps it in its outcome.
+                        verdict: s.get("verdict").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| s.get("outcome").map(|o| text(o, "verdict")).unwrap_or_default()),
                     })
                     .collect()
             })
@@ -362,7 +364,7 @@ mod tests {
                 {"delivery_id": "d1", "job_id": "worker/worker_c/r1", "state": "succeeded", "round": 0, "created_at": 1,
                  "steps": [{"id": "review", "state": "succeeded", "outcome": {"verdict": "block"}}, {"id": "send-back", "state": "succeeded"}, {"id": "push", "state": "skipped"}]},
                 {"delivery_id": "d2", "job_id": "worker/worker_c/r1", "state": "succeeded", "round": 1, "created_at": 2,
-                 "steps": [{"id": "review", "state": "succeeded", "outcome": {"verdict": "ok"}}, {"id": "send-back", "state": "skipped"}, {"id": "push", "state": "succeeded"}]}
+                 "steps": [{"id": "review", "state": "succeeded", "verdict": "ok"}, {"id": "send-back", "state": "skipped"}, {"id": "push", "state": "succeeded"}]}
             ]
         })
     }

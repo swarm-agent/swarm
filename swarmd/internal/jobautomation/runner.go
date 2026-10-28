@@ -1295,19 +1295,11 @@ func (r *Runner) runReopen(ctx context.Context, d *Delivery, record *StepRecord,
 	if findings == "" && step.Message == "" {
 		return stepFailure{reason: "step " + step.From + " recorded no findings to send and the reopen step has no message", next: "fix the automation", refused: true}
 	}
-	// Rounds count per automation and job: read how many reopens the job
-	// has had in total now, so a delivery created before another delivery's
-	// reopen never overruns max_rounds.
-	sent, err := r.store.ReopenCount(d.Account, d.JobID, d.AutomationID)
-	if err != nil {
-		return stepFailure{reason: truncate("read the round count: "+err.Error(), 300), next: "rerun"}
-	}
-	d.Round = max(d.Round, sent)
-	used := d.Round - d.RoundBase
-	if used >= step.MaxRounds {
-		d.BlockedReason = ReasonRoundsExhausted
-		record.Output = fmt.Sprintf("%d of %d reopens used without an ok verdict; nothing was sent", used, step.MaxRounds)
-		return stepFailure{reason: ReasonRoundsExhausted, next: "swarm_message_job by hand, or swarm_deliver_job automation=true after a fix", refused: true}
+	// Rounds count per automation, job and reopen step: read how many
+	// reopens this step has sent into the job now, so a delivery created
+	// before another delivery's reopen never overruns max_rounds.
+	if failure := r.roundsExhausted(d, record, step); failure.reason != "" {
+		return failure
 	}
 	var parts []string
 	if step.Message != "" {
@@ -1327,7 +1319,7 @@ func (r *Runner) runReopen(ctx context.Context, d *Delivery, record *StepRecord,
 		if r.feed != nil {
 			changed = r.feed.Changed() // before asking, so a job end in between wakes us
 		}
-		sent, failure, busy := r.sendReopen(ctx, d, record, req, step.MaxRounds)
+		sent, failure, busy := r.sendReopen(ctx, d, record, req, step)
 		if sent || failure.reason != "" {
 			return failure
 		}
@@ -1364,6 +1356,53 @@ func (r *Runner) runReopen(ctx context.Context, d *Delivery, record *StepRecord,
 	}
 }
 
+// roundsExhausted reads the reopens the automation sent into the job and
+// fails the reopen step, blocking the delivery, when another reopen would
+// exceed the step's own max_rounds (its reopens only, past its re-run base)
+// or the job's overall bound: the sum of the definition's reopen steps'
+// max_rounds, over all of them past the delivery's RoundBase. The blocked
+// reason names the step that ran out.
+func (r *Runner) roundsExhausted(d *Delivery, record *StepRecord, step Step) stepFailure {
+	rounds, err := r.store.ReopenRounds(d.Account, d.JobID, d.AutomationID)
+	if err != nil {
+		return stepFailure{reason: truncate("read the round count: "+err.Error(), 300), next: "rerun"}
+	}
+	d.Round = max(d.Round, rounds.Total)
+	total := d.Round - d.RoundBase
+	used := rounds.Step(step.ID)
+	if base, ok := d.StepRoundBase[step.ID]; ok {
+		used -= base
+	} else if d.RoundBase > 0 {
+		// Re-run before rounds counted per step: its base is job-wide.
+		used = min(used, total)
+	}
+	next := "swarm_message_job by hand, or swarm_deliver_job automation=true after a fix"
+	if used >= step.MaxRounds {
+		reason := RoundsExhaustedReason(step.ID)
+		d.BlockedReason = reason
+		record.Output = fmt.Sprintf("%d of %d reopens of step %s used without an ok verdict; nothing was sent", used, step.MaxRounds, step.ID)
+		return stepFailure{reason: reason, next: next, refused: true}
+	}
+	if bound := jobRoundBound(d.Definition, step); total >= bound {
+		d.BlockedReason = ReasonJobRoundsExhausted
+		record.Output = fmt.Sprintf("%d of %d reopens over all reopen steps used; step %s sent nothing", total, bound, step.ID)
+		return stepFailure{reason: ReasonJobRoundsExhausted, next: next, refused: true}
+	}
+	return stepFailure{}
+}
+
+// jobRoundBound is the job's overall reopen bound: the sum of the reopen
+// steps' max_rounds (at least the running step's own).
+func jobRoundBound(definition []Step, running Step) int {
+	bound := 0
+	for _, s := range definition {
+		if s.Type == StepReopen {
+			bound += s.MaxRounds
+		}
+	}
+	return max(bound, running.MaxRounds)
+}
+
 // maxPlaceholderOutputBytes bounds one substituted step output line.
 const maxPlaceholderOutputBytes = 500
 
@@ -1392,18 +1431,11 @@ func reopenMessage(d Delivery, message string) string {
 // The round limit is checked again under reopenMu, right before sending:
 // another delivery of the same job may have sent a reopen while this one
 // waited, and the count and the send must not interleave.
-func (r *Runner) sendReopen(ctx context.Context, d *Delivery, record *StepRecord, req ReopenRequest, maxRounds int) (bool, stepFailure, string) {
+func (r *Runner) sendReopen(ctx context.Context, d *Delivery, record *StepRecord, req ReopenRequest, step Step) (bool, stepFailure, string) {
 	r.reopenMu.Lock()
 	defer r.reopenMu.Unlock()
-	count, err := r.store.ReopenCount(d.Account, d.JobID, d.AutomationID)
-	if err != nil {
-		return false, stepFailure{reason: truncate("read the round count: "+err.Error(), 300), next: "rerun"}, ""
-	}
-	d.Round = max(d.Round, count)
-	if used := d.Round - d.RoundBase; used >= maxRounds {
-		d.BlockedReason = ReasonRoundsExhausted
-		record.Output = fmt.Sprintf("%d of %d reopens used without an ok verdict; nothing was sent", used, maxRounds)
-		return false, stepFailure{reason: ReasonRoundsExhausted, next: "swarm_message_job by hand, or swarm_deliver_job automation=true after a fix", refused: true}, ""
+	if failure := r.roundsExhausted(d, record, step); failure.reason != "" {
+		return false, failure, ""
 	}
 	followup, err := r.reopen.Reopen(ctx, req)
 	if err != nil {
@@ -1420,7 +1452,7 @@ func (r *Runner) sendReopen(ctx context.Context, d *Delivery, record *StepRecord
 		}
 		return false, stepFailure{reason: truncate("could not send the follow-up: "+err.Error(), 300), next: "rerun"}, ""
 	}
-	if err := r.store.PutReopen(d.Account, d.JobID, followup, ReopenRecord{DeliveryID: d.ID, AutomationID: d.AutomationID, Round: d.Round, RoundBase: d.RoundBase}); err != nil {
+	if err := r.store.PutReopen(d.Account, d.JobID, followup, ReopenRecord{DeliveryID: d.ID, AutomationID: d.AutomationID, Step: step.ID, Round: d.Round, RoundBase: d.RoundBase}); err != nil {
 		return false, stepFailure{reason: truncate("record the reopen: "+err.Error(), 300), next: "rerun"}, ""
 	}
 	record.Reason = ""

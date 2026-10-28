@@ -170,8 +170,19 @@ func (s *Server) StopWorkflows(caller WorkflowCaller, stopped *bool) (jobautomat
 	}
 	return s.setJobAutomationsStopped(*stopped, caller.Principal.UserID)
 }
-func controlMCPListAutomations(c *controlMCPCall, _ map[string]any) (any, error) {
-	return c.workflowDispatch(http.MethodGet, JobAutomationsPath, nil, nil)
+func controlMCPListAutomations(c *controlMCPCall, args map[string]any) (any, error) {
+	opts, err := workflowListOptions(func(key string) string { return controlMCPString(args, key) })
+	if err != nil {
+		return nil, err
+	}
+	query := url.Values{}
+	if opts.DeliveryID != "" {
+		query.Set("delivery_id", opts.DeliveryID)
+	}
+	if opts.Detail != "" {
+		query.Set("detail", opts.Detail)
+	}
+	return c.workflowDispatch(http.MethodGet, JobAutomationsPath, query, nil)
 }
 func controlMCPDeleteAutomation(c *controlMCPCall, args map[string]any) (any, error) {
 	id := controlMCPString(args, "id")

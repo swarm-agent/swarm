@@ -168,11 +168,11 @@ func TestRoundsExhaustedBlocksTheDeliveryAndSignalsIt(t *testing.T) {
 			blocked = d
 		}
 	}
-	if blocked.Round != 1 || blocked.State != StateBlocked || blocked.BlockedReason != ReasonRoundsExhausted {
+	if blocked.Round != 1 || blocked.State != StateBlocked || blocked.BlockedReason != RoundsExhaustedReason("fix") {
 		t.Fatalf("delivery = round %d state %s reason %q", blocked.Round, blocked.State, blocked.BlockedReason)
 	}
 	fix := blocked.Steps[1]
-	if fix.State != StateFailed || fix.Reason != ReasonRoundsExhausted || fix.Attempts != 1 {
+	if fix.State != StateFailed || fix.Reason != RoundsExhaustedReason("fix") || fix.Attempts != 1 {
 		t.Fatalf("reopen step = %+v", fix)
 	}
 	if blocked.Steps[2].State != StateSkipped {
@@ -186,7 +186,7 @@ func TestRoundsExhaustedBlocksTheDeliveryAndSignalsIt(t *testing.T) {
 		t.Fatalf("blocked signals = %d", len(sigs))
 	}
 	sig := sigs[0]
-	if sig.Severity != "warning" || sig.Refs["job_id"] != "worker/coder-1/run-1" || sig.Refs["delivery_id"] != blocked.ID || sig.Attrs["reason"] != ReasonRoundsExhausted {
+	if sig.Severity != "warning" || sig.Refs["job_id"] != "worker/coder-1/run-1" || sig.Refs["delivery_id"] != blocked.ID || sig.Attrs["reason"] != RoundsExhaustedReason("fix") {
 		t.Fatalf("blocked signal = %+v", sig)
 	}
 	if f := sig.Attrs["findings"]; len(f) > 500 || !strings.HasPrefix(f, "1. high a.go:1 ") {

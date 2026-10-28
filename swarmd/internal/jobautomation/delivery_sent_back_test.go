@@ -183,7 +183,7 @@ func TestDeliveryWithRoundsExhaustedEndsBlockedNotSentBack(t *testing.T) {
 	if first.State != StateSentBack || first.SentBack == nil || first.SentBack.Round != 1 {
 		t.Fatalf("first delivery = %s %+v, want sent_back round 1", first.State, first.SentBack)
 	}
-	if second.State != StateBlocked || second.BlockedReason != ReasonRoundsExhausted || second.SentBack != nil {
+	if second.State != StateBlocked || second.BlockedReason != RoundsExhaustedReason("fix") || second.SentBack != nil {
 		t.Fatalf("exhausted delivery = %s reason %q sent_back %+v, want blocked rounds_exhausted", second.State, second.BlockedReason, second.SentBack)
 	}
 	if len(reopener.sent) != 1 || len(h.host.ran) != 0 {

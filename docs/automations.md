@@ -436,12 +436,19 @@ With `fixes`:
   when its timeout expires (`timed out after N seconds waiting for job ... to
   settle (...); nothing was sent`), when the stop switch is turned on while
   it waits, or, at once, when the job is cancelled; nothing is sent then.
-- `max_rounds` (default 2, at most 5) bounds the loop: once the job has had
-  `max_rounds` reopens from the automation in total, the step sends nothing, fails with reason
-  `rounds_exhausted`, and the delivery ends `blocked`
-  (`automation.delivery.blocked`). The count is checked again right before
-  each follow-up is sent, so several deliveries of one job that wait for it
-  together never send more than `max_rounds` reopens between them.
+- `max_rounds` (default 2, at most 5) bounds this reopen step: rounds count
+  per automation, job and reopen step id, so a `fix` loop and a `rebase` loop
+  each have their own budget. Once this step has sent `max_rounds` reopens
+  into the job, it sends nothing, fails with reason
+  `rounds_exhausted: step <id>` (naming the step that ran out), and the
+  delivery ends `blocked` (`automation.delivery.blocked`). The job as a whole
+  allows at most the sum of its reopen steps' `max_rounds`; past that any
+  reopen step fails with `rounds_exhausted: job`. The counts are checked
+  again right before each follow-up is sent, so several deliveries of one job
+  that wait for it together never send more than `max_rounds` reopens of one
+  step between them. Reopens recorded before rounds counted per step are
+  attributed to the step whose delivery recorded them; one that cannot be
+  attributed counts against every step.
 - An unreadable review is never sent: when the `from` step's outcome has
   `review_unreadable: true`, the step sends nothing into the coder's session,
   uses no round, fails with `review unreadable: <reviewer job id>`, and the
@@ -571,8 +578,8 @@ whatever its head, use `POST /v3/job-deliveries/{id}/rerun` (SDK
 `client.workflows.rerun`). Either way only failed or stopped steps (and
 the steps after them that did not run) run again; a succeeded step is never
 re-run. A `blocked` delivery re-runs from its first step with a new round
-budget of `max_rounds` reopens past those the job already had (a `run` step
-that already succeeded is still never re-run).
+budget: each reopen step gets `max_rounds` reopens past those it already
+sent (a `run` step that already succeeded is still never re-run).
 
 ## The result JSON
 
@@ -705,7 +712,13 @@ Design jobs now end with `design.job.completed`, `design.job.failed` or
 ## Who controls them
 
 - MCP: `swarm_set_workflow`, `swarm_list_workflows` (every workflow exactly as
-  Swarm runs it), `swarm_delete_workflow`, `swarm_stop_workflows`; `then` on
+  Swarm runs it, with its last 3 deliveries one line each: delivery id, job,
+  state, round, head, blocked reason and each step's state and verdict, no
+  findings; `delivery_id` reads one delivery's steps and `detail: "deliveries"`
+  every workflow's last 3, both bounded, findings cut to 1,500 characters; the
+  same options on `GET /v3/workflows` and the Orchestrator's
+  `manage_workflows` `list`, whose `deliveries` action also lists one line per
+  delivery), `swarm_delete_workflow`, `swarm_stop_workflows`; `then` on
   `swarm_give_job` and `swarm_schedule_job`; deliveries in `swarm_get_job`;
   `automation: true` on `swarm_deliver_job`.
 - API (`automations:read` to read, `automations:write` to change, and
@@ -871,8 +884,9 @@ the automation says so: there is no built-in review chain.
    `rebase` sends its message alone (an `ok` review has no findings), with
    the push script's last output line in place of `{{steps.push.output}}`,
    into the coder's session. That follow-up's end is the next round: the
-   rebased head is reviewed and pushed again. `rebase` and `fix` share the
-   job's round count, so `max_rounds` bounds both.
+   rebased head is reviewed and pushed again. `rebase` and `fix` each count
+   their own rounds, so work that needed both of `fix`'s send-backs still
+   gets `rebase`'s two; the job as a whole is bounded by 4 (2 + 2).
 
 `swarm_get_job` on the coder's job shows each delivery's round, head, state,
 blocked reason and the reviewer's applied fix commits, and each step's

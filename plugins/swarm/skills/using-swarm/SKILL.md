@@ -218,7 +218,8 @@ deploy, or alert), you can offer a workflow:
     most 80 changed lines, which move the delivery head only on `ok`.
   - A `reopen` step sends an agent step's findings back into the work's own
     session, so the same agent fixes its own work in its own worktree, at most
-    `max_rounds` times before the delivery ends `blocked`.
+    `max_rounds` times (each reopen step counts its own rounds) before the
+    delivery ends `blocked` (`rounds_exhausted: step <id>`).
   - A `run` step runs the machine owner's script on the host as the daemon's
     user, in the folder, with the machine's own credentials (it gets the
     result JSON on stdin and `SWARM_*` variables); its `command` is an
@@ -247,7 +248,8 @@ deploy, or alert), you can offer a workflow:
 - `swarm_give_job` / `swarm_schedule_job` take `then` with the same steps,
   for that job or that schedule's jobs only.
 - `swarm_list_workflows` shows every workflow exactly as Swarm runs it, with
-  its latest deliveries; `swarm_get_job` shows a job's deliveries and steps. A
+  its last 3 deliveries one line each; pass `delivery_id` for one delivery's
+  steps and findings (bounded); `swarm_get_job` shows a job's deliveries and steps. A
   failed step says why and what to do next; `swarm_deliver_job` with
   `automation: true` re-runs only the failed or stopped steps of a job's
   delivery.

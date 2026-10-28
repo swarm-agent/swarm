@@ -41,7 +41,7 @@ func (s *Server) CallFleetWork(ctx context.Context, p identity.Principal, machin
 		id = controlMCPString(args, "worker_id")
 	}
 	query := url.Values{}
-	for _, key := range []string{"limit", "cursor", "lifecycle_state"} {
+	for _, key := range []string{"limit", "cursor", "lifecycle_state", "delivery_id", "detail"} {
 		if v, ok := args[key]; ok {
 			query.Set(key, fmt.Sprint(v))
 		}
