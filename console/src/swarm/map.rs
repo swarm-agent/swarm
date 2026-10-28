@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::data::{
     Assignment, Busy, Choice, ClientCall, Day, Entry, Health, LiveRef, Machine, ModelUse, Pending, Plan,
-    Credential, Drain, Found, Merge, PlanWindow, Project, Provider, Question, Role, RunClock, RunState, RunsToday, Session, SessionUse, Task, TaskStatus, Text, Tokens, ToolState, UpdateState, Updates, Usage,
+    Credential, Drain, Found, PlanWindow, Progress, ProgressState, Project, Provider, Question, Role, RunClock, RunState, RunsToday, Session, SessionUse, Task, TaskStatus, Text, Tokens, ToolState, UpdateState, Updates, Usage,
 };
 
 pub(crate) fn s<'a>(v: &'a Value, key: &str) -> &'a str {
@@ -406,7 +406,7 @@ pub fn task(t: &Value) -> Task {
         activity: activity.into(),
         runs: vec![],
         report: task_report(t).into(),
-        merge: task_merge(t),
+        progress: task_progress(t),
     }
 }
 
@@ -422,17 +422,32 @@ fn task_report(t: &Value) -> String {
         .unwrap_or_default()
 }
 
-/// What the delivery assessment allows: merge when Swarm lists integrate (or
-/// a recovery) among the allowed actions; otherwise nothing, with its reason.
-fn task_merge(t: &Value) -> Merge {
-    let a = t.get("delivery_assessment").cloned().unwrap_or(Value::Null);
-    let allowed: Vec<&str> = a.get("allowed_actions").and_then(Value::as_array).map(|v| v.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-    if allowed.contains(&"integrate") {
-        Merge::Integrate
-    } else if allowed.contains(&"recover_integrate") {
-        Merge::Recover
-    } else {
-        Merge::None(s(&a, "reason").to_string().into())
+/// The task's tracked state (`progress`, docs/task-progress.md). A Swarm
+/// that does not track it gives only the task's status, so only what that
+/// status says for sure is shown: waiting, working or failed; a finished
+/// task's outcome stays unknown rather than guessed.
+fn task_progress(t: &Value) -> Progress {
+    let Some(p) = t.get("progress").filter(|p| p.is_object()) else {
+        let state = match s(t, "status") {
+            "pending_approval" | "queued" => ProgressState::Waiting,
+            "in_progress" | "planning" => ProgressState::Working,
+            "failed" => ProgressState::Failed,
+            _ => ProgressState::Unknown,
+        };
+        return Progress { state, ..Default::default() };
+    };
+    let history = list(p, "history")
+        .iter()
+        .filter_map(|h| {
+            let what = s(h, "what").trim();
+            (!what.is_empty()).then(|| (h.get("at").and_then(Value::as_u64).unwrap_or(0), what.to_string().into()))
+        })
+        .collect();
+    Progress {
+        state: ProgressState::of(s(p, "state")),
+        summary: s(p, "summary").trim().to_string().into(),
+        history,
+        updated_at: p.get("updated_at").and_then(Value::as_u64).unwrap_or(0),
     }
 }
 
@@ -1026,4 +1041,28 @@ mod project_context_tests {
         assert_eq!(missing[0].context_generation.label(), "Swarm has not written project.md yet.");
     }
 
+
+    #[test]
+    fn task_progress_from_swarm_and_without_it() {
+        use crate::data::ProgressState;
+        let t = super::task(&json!({"id": "t1", "status": "completed", "progress": {
+            "state": "not_integrated", "summary": "1 commit not in dev · no workflow", "updated_at": 900,
+            "history": [{"at": 100, "what": "started"}, {"at": 800, "what": "finished · 1 commit"}, {"at": 0, "what": "  "}]
+        }}));
+        assert_eq!(t.progress.state, ProgressState::NotIntegrated);
+        assert_eq!(t.progress.summary.as_ref(), "1 commit not in dev · no workflow");
+        assert_eq!(t.progress.history.len(), 2, "an empty entry is dropped");
+        assert_eq!(t.progress.updated_at, 900);
+        // An older Swarm without progress: only what the status says for sure.
+        let state = |status: &str| super::task(&json!({"id": "t", "status": status})).progress.state;
+        assert_eq!(state("pending_approval"), ProgressState::Waiting);
+        assert_eq!(state("in_progress"), ProgressState::Working);
+        assert_eq!(state("failed"), ProgressState::Failed);
+        assert_eq!(state("completed"), ProgressState::Unknown, "a finished task's outcome is not guessed");
+        assert_eq!(state("needs_review"), ProgressState::Unknown);
+        // The tray's order: what went wrong first; finished ones fold away.
+        assert!(ProgressState::Failed.rank() < ProgressState::NotIntegrated.rank());
+        assert!(ProgressState::NotIntegrated.rank() < ProgressState::Working.rank());
+        assert!(ProgressState::Integrated.finished() && !ProgressState::NotIntegrated.finished());
+    }
 }

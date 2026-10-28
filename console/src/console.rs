@@ -6,7 +6,7 @@ use gpui::{
 };
 
 use crate::data::{
-    self, Entry, Health, Machine, Media, Merge, Project, Role, RunState, Session, TaskStatus, ToolState, Usage,
+    self, Entry, Health, Machine, Media, Project, Role, RunState, Session, TaskStatus, ToolState, Usage,
 };
 use crate::layout::{Axis, Node, PaneId};
 use crate::icons::{Icon, IconStyle};
@@ -211,6 +211,9 @@ pub struct Console {
     icon_override: Option<IconStyle>,
     /// Tasks whose background sessions are listed, as (session, task).
     expanded: HashSet<(usize, usize)>,
+    /// Sessions whose tray lists every open task, and whose finished tasks are unfolded.
+    tray_all: HashSet<usize>,
+    tray_done: HashSet<usize>,
     /// Finished tasks' changes as read from Swarm, by task id.
     page: Page,
     roles: Vec<Role>,
@@ -420,6 +423,8 @@ impl Console {
                 .ok()
                 .and_then(|v| IconStyle::ALL.into_iter().find(|s| s.label() == v)),
             expanded: HashSet::new(),
+            tray_all: HashSet::new(),
+            tray_done: HashSet::new(),
             page: Page::Sessions,
             roles: if demo { data::roles() } else { vec![] },
             media: if demo { data::media() } else { vec![] },
@@ -1419,8 +1424,8 @@ impl Console {
             }))
     }
 
-    /// The decision a task waits on: approve or reject a proposal, merge a
-    /// finished one. Live sessions ask Swarm; demo data changes in place.
+    /// The decision a task waits on before it starts (Start tasks: approve),
+    /// or stopping it while it runs. Live sessions ask Swarm; demo data changes in place.
     fn task_actions(&self, si: usize, ti: usize, status: TaskStatus, key: &str, cx: &mut Context<Self>) -> Div {
         let live = self.sessions[si].live.is_some();
         let button = |label: &'static str, strong: bool, act: Act, demo: TaskStatus| {
@@ -1439,13 +1444,6 @@ impl Console {
             TaskStatus::PendingApproval => row
                 .child(button("approve", true, Act::Approve, TaskStatus::Running))
                 .child(button("reject", false, Act::Reject, TaskStatus::Rejected)),
-            // Finished work: merge when Swarm's assessment allows it; a task
-            // with nothing to merge (a report) is accepted as done.
-            TaskStatus::NeedsReview => match &self.sessions[si].tasks[ti].merge {
-                Merge::Integrate => row.child(button("merge", true, Act::Merge, TaskStatus::Completed)),
-                Merge::Recover => row.child(button("recover and merge", true, Act::Recover, TaskStatus::Completed)),
-                Merge::None(_) => row.child(button("mark done", true, Act::Done, TaskStatus::Completed)),
-            },
             TaskStatus::Running if live && !self.sessions[si].tasks[ti].session.is_empty() => {
                 row.child(button("stop", false, Act::Stop, TaskStatus::Failed))
             }

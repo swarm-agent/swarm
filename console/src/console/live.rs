@@ -18,9 +18,6 @@ use crate::text_input::{Pasted, TextInput};
 /// What a session's header buttons ask Swarm to do.
 #[derive(Clone, Copy)]
 pub(super) enum Act {
-    Merge,
-    Recover,
-    Done,
     Approve,
     Reject,
     Stop,
@@ -492,8 +489,6 @@ impl Console {
             }
             (None, Ok(_)) => {
                 let text = match what {
-                    "merge" => "Merged into the project's branch.",
-                    "done" => "Marked done.",
                     "approve" => "Approved; it starts now.",
                     "reject" => "Rejected.",
                     "deny" => "Denied.",
@@ -792,17 +787,12 @@ impl Console {
         self.acting = Some(si);
         self.failure = None;
         live.run(match act {
-            Act::Merge => Command::Integrate { project_id, task_id, recover: false },
-            Act::Recover => Command::Integrate { project_id, task_id, recover: true },
-            Act::Done => Command::Complete { project_id, task_id },
             Act::Approve => Command::Approve { project_id, task_id, approve: true },
             Act::Reject => Command::Approve { project_id, task_id, approve: false },
             Act::Stop => return,
         });
         self.notice = Some((
             match act {
-                Act::Merge | Act::Recover => "Merging…",
-                Act::Done => "Marking it done…",
                 Act::Approve => "Approving…",
                 _ => "Rejecting…",
             }

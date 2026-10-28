@@ -95,6 +95,7 @@ secrets.env
 !/docs/frontends.md
 !/docs/agent-tools.md
 !/docs/access-model.md
+!/docs/task-progress.md
 !/docs/task-program-probes/
 !/docs/task-program-probes/**
 /REPO_SHIP_READINESS_CHECKLIST.md

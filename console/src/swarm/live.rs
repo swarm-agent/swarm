@@ -119,8 +119,6 @@ pub enum Command {
     /// Answer the session's pending question, or allow or deny its pending tool call.
     Resolve { session_id: String, permission_id: String, allow: bool, answer: Option<String> },
     Approve { project_id: String, task_id: String, approve: bool },
-    /// Merge a task's commits into its base branch; `recover` takes Swarm's
-    /// recorded delta when the branch history was rewritten.
     /// Archive sessions (Swarm's batch route); each then leaves the list by
     /// its session.archived event.
     Archive { session_ids: Vec<String> },
@@ -139,9 +137,6 @@ pub enum Command {
     OrderProjects { project_ids: Vec<String> },
     DeleteProject { project_id: String },
     RefreshProjectContext { project_id: String, expected_attempt: u64 },
-    Integrate { project_id: String, task_id: String, recover: bool },
-    /// Accept a reviewed task that has nothing to merge (a report) as done.
-    Complete { project_id: String, task_id: String },
     Stop { session_id: String },
 }
 
@@ -418,8 +413,6 @@ fn perform(client: &Client, command: Command) -> (Option<u64>, &'static str, Res
             if approve { "approve" } else { "reject" },
             client.post(&format!("/v3/projects/{project_id}/tasks/{task_id}/{}", if approve { "approve" } else { "reject" }), json!({})).map_err(err),
         ),
-        Command::Integrate { project_id, task_id, recover } => (None, "merge", integrate(client, &project_id, &task_id, recover)),
-        Command::Complete { project_id, task_id } => (None, "done", client.post(&format!("/v3/projects/{project_id}/tasks/{task_id}/complete"), json!({})).map_err(err)),
         Command::Stop { session_id } => (None, "stop", stop(client, &session_id)),
         Command::Archive { session_ids } => (None, "archive", client.post("/v3/sessions:archive", json!({"session_ids": session_ids})).map_err(err)),
         Command::Rename { session_id, title } => (None, "rename", client.post(&format!("/v3/sessions/{session_id}/title"), json!({"title": title, "client_request_id": request_id("title")})).map_err(err)),
@@ -527,28 +520,6 @@ fn resolve(client: &Client, session_id: &str, permission_id: &str, body: Value) 
     client.post(&format!("/v3/sessions/{session_id}/permissions/{permission_id}/resolve"), body).map_err(err)
 }
 
-/// Merges a task's work the way the web UI does: from the task's own record
-/// and its live delivery assessment.
-fn integrate(client: &Client, project_id: &str, task_id: &str, recover: bool) -> Result<Value, String> {
-    let detail = client.get(&format!("/v3/projects/{project_id}/tasks/{task_id}")).map_err(err)?;
-    let task = detail.get("task").cloned().unwrap_or(Value::Null);
-    let assessment = task.get("delivery_assessment").cloned().unwrap_or(Value::Null);
-    let mut body = json!({
-        "session_id": s(&task, "session_id"),
-        "source_branch": s(&task, "worktree_branch"),
-        "target_branch": s(&task, "base_branch"),
-        "revision": task.get("revision").cloned().unwrap_or(Value::Null),
-    });
-    if !s(&task, "active_attempt_id").is_empty() {
-        body["attempt_id"] = json!(s(&task, "active_attempt_id"));
-    }
-    if !s(&assessment, "source_oid").is_empty() {
-        body["source_head"] = json!(s(&assessment, "source_oid"));
-        body["target_head"] = json!(s(&assessment, "target_oid"));
-    }
-    let route = if recover { "recover-integrate" } else { "integrate" };
-    client.post(&format!("/v3/projects/{project_id}/tasks/{task_id}/{route}"), body).map_err(err)
-}
 
 /// Brings an archived session back. Swarm checks the tombstone's version,
 /// which the project's archive lists.

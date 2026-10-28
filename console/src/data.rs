@@ -366,18 +366,83 @@ pub struct Task {
     /// What the task delivered, in its own words: the active attempt's summary
     /// (a Finder's report, a Coder's account of its commit).
     pub report: Text,
-    /// What Swarm's delivery assessment allows for finished work.
-    pub merge: Merge,
+    /// Where the task is and what happened to it, as Swarm tracks it
+    /// (docs/task-progress.md).
+    pub progress: Progress,
 }
 
-/// Swarm's word on a finished task's work (its delivery assessment): commits
-/// to integrate, a recorded delta to recover, or nothing to merge, with its
-/// reason (a report-only task, a lane Swarm cannot see).
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum Merge {
-    Integrate,
-    Recover,
-    None(Text),
+/// A task's tracked state (`progress` on Swarm's task record).
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Progress {
+    pub state: ProgressState,
+    /// One short line, as Swarm words it.
+    pub summary: Text,
+    /// What happened, oldest first: (Unix ms, what).
+    pub history: Vec<(u64, Text)>,
+    pub updated_at: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ProgressState {
+    Waiting,
+    Working,
+    Workflow,
+    NotIntegrated,
+    Integrated,
+    Delivered,
+    Done,
+    Failed,
+    /// A Swarm that tracks no progress, or a state this app does not know.
+    #[default]
+    Unknown,
+}
+
+impl ProgressState {
+    pub fn of(v: &str) -> ProgressState {
+        match v {
+            "waiting" => ProgressState::Waiting,
+            "working" => ProgressState::Working,
+            "workflow" => ProgressState::Workflow,
+            "not_integrated" => ProgressState::NotIntegrated,
+            "integrated" => ProgressState::Integrated,
+            "delivered" => ProgressState::Delivered,
+            "done" => ProgressState::Done,
+            "failed" => ProgressState::Failed,
+            _ => ProgressState::Unknown,
+        }
+    }
+
+    /// Finished one way or another: folded away in the session's tray.
+    pub fn finished(self) -> bool {
+        matches!(self, ProgressState::Integrated | ProgressState::Delivered | ProgressState::Done)
+    }
+
+    /// Order of open tasks in the tray: what went wrong first.
+    pub fn rank(self) -> u8 {
+        match self {
+            ProgressState::Failed => 0,
+            ProgressState::NotIntegrated => 1,
+            ProgressState::Workflow => 2,
+            ProgressState::Working => 3,
+            ProgressState::Waiting => 4,
+            ProgressState::Unknown => 5,
+            ProgressState::Integrated | ProgressState::Delivered | ProgressState::Done => 6,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ProgressState::Waiting => "waiting",
+            ProgressState::Working => "working",
+            ProgressState::Workflow => "workflow",
+            ProgressState::NotIntegrated => "not integrated",
+            ProgressState::Integrated => "integrated",
+            ProgressState::Delivered => "delivered",
+            ProgressState::Done => "done",
+            ProgressState::Failed => "failed",
+            ProgressState::Unknown => "",
+        }
+    }
 }
 
 /// One background session behind a task.
@@ -676,11 +741,11 @@ pub fn sessions() -> Vec<Session> {
                 Entry::tool("fleet", "forge · run_task coder · integration tests"),
             ],
             tasks: vec![
-                Task { key: "".into(), session: "".into(), title: "Reopen step for blocked deliveries".into(), role: "coder".into(), machine: 0, status: TaskStatus::Running, activity: "editing automation/reopen.go · step 3 of 5".into(), report: "".into(), merge: Merge::None("".into()), runs: vec![run("coder".into(), 0, RunState::Running, "attempt 2".into(), "now".into(), 0.41), run("coder".into(), 0, RunState::Failed, "attempt 1 · tests failed".into(), "9m".into(), 0.21)] },
-                Task { key: "".into(), session: "".into(), title: "Round limits on automation steps".into(), role: "coder".into(), machine: 0, status: TaskStatus::PendingApproval, activity: "waiting for your approval · changes a stored schema".into(), report: "".into(), merge: Merge::None("".into()), runs: vec![] },
-                Task { key: "".into(), session: "".into(), title: "Document conditions and rounds".into(), role: "swarm".into(), machine: 0, status: TaskStatus::NeedsReview, activity: "ready to merge · 2 commits".into(), report: "".into(), merge: Merge::None("".into()), runs: vec![run("swarm".into(), 0, RunState::Idle, "docs pass".into(), "4m".into(), 0.22), run("finder".into(), 0, RunState::Idle, "link check".into(), "3m".into(), 0.09)] },
-                Task { key: "".into(), session: "".into(), title: "Integration test sweep".into(), role: "coder".into(), machine: 1, status: TaskStatus::Running, activity: "go test ./... · 212 of 640 packages".into(), report: "".into(), merge: Merge::None("".into()), runs: vec![run("coder".into(), 1, RunState::Running, "test sweep".into(), "now".into(), 0.48)] },
-                Task { key: "".into(), session: "".into(), title: "Independent review of T-418".into(), role: "reviewer".into(), machine: 1, status: TaskStatus::Queued, activity: "starts when T-418 lands".into(), report: "".into(), merge: Merge::None("".into()), runs: vec![] },
+                Task { key: "".into(), session: "".into(), title: "Reopen step for blocked deliveries".into(), role: "coder".into(), machine: 0, status: TaskStatus::Running, activity: "editing automation/reopen.go · step 3 of 5".into(), report: "".into(), progress: Default::default(), runs: vec![run("coder".into(), 0, RunState::Running, "attempt 2".into(), "now".into(), 0.41), run("coder".into(), 0, RunState::Failed, "attempt 1 · tests failed".into(), "9m".into(), 0.21)] },
+                Task { key: "".into(), session: "".into(), title: "Round limits on automation steps".into(), role: "coder".into(), machine: 0, status: TaskStatus::PendingApproval, activity: "waiting for your approval · changes a stored schema".into(), report: "".into(), progress: Default::default(), runs: vec![] },
+                Task { key: "".into(), session: "".into(), title: "Document conditions and rounds".into(), role: "swarm".into(), machine: 0, status: TaskStatus::NeedsReview, activity: "ready to merge · 2 commits".into(), report: "".into(), progress: Default::default(), runs: vec![run("swarm".into(), 0, RunState::Idle, "docs pass".into(), "4m".into(), 0.22), run("finder".into(), 0, RunState::Idle, "link check".into(), "3m".into(), 0.09)] },
+                Task { key: "".into(), session: "".into(), title: "Integration test sweep".into(), role: "coder".into(), machine: 1, status: TaskStatus::Running, activity: "go test ./... · 212 of 640 packages".into(), report: "".into(), progress: Default::default(), runs: vec![run("coder".into(), 1, RunState::Running, "test sweep".into(), "now".into(), 0.48)] },
+                Task { key: "".into(), session: "".into(), title: "Independent review of T-418".into(), role: "reviewer".into(), machine: 1, status: TaskStatus::Queued, activity: "starts when T-418 lands".into(), report: "".into(), progress: Default::default(), runs: vec![] },
             ],
             activity: vec![
                 ("14:02".into(), "coder T-418 committed 2 files".into()),
@@ -713,7 +778,7 @@ pub fn sessions() -> Vec<Session> {
                 Entry::Assistant("The cleanup races the scratch unmount. Small, contained fix, so it goes straight to a coder on studio.".into()),
             ],
             tasks: vec![
-                Task { key: "".into(), session: "".into(), title: "Wait on the mount table before cleanup".into(), role: "coder".into(), machine: 0, status: TaskStatus::Running, activity: "go test -run Scratch -count 50 · 31 passed".into(), report: "".into(), merge: Merge::None("".into()), runs: vec![run("finder".into(), 0, RunState::Idle, "reproduce".into(), "5m".into(), 0.05), run("coder".into(), 0, RunState::Running, "fix".into(), "now".into(), 0.16)] },
+                Task { key: "".into(), session: "".into(), title: "Wait on the mount table before cleanup".into(), role: "coder".into(), machine: 0, status: TaskStatus::Running, activity: "go test -run Scratch -count 50 · 31 passed".into(), report: "".into(), progress: Default::default(), runs: vec![run("finder".into(), 0, RunState::Idle, "reproduce".into(), "5m".into(), 0.05), run("coder".into(), 0, RunState::Running, "fix".into(), "now".into(), 0.16)] },
             ],
             activity: vec![("14:01".into(), "coder T-430 edited sandbox/scratch.go".into())],
         },
@@ -767,8 +832,8 @@ pub fn sessions() -> Vec<Session> {
                 Entry::tool("swarm_design", "count 3 · hero.html"),
             ],
             tasks: vec![
-                Task { key: "".into(), session: "".into(), title: "Hero directions ×3".into(), role: "designer".into(), machine: 1, status: TaskStatus::Running, activity: "rendering direction 3 of 3".into(), report: "".into(), merge: Merge::None("".into()), runs: vec![run("designer".into(), 1, RunState::Running, "directions".into(), "now".into(), 0.55)] },
-                Task { key: "".into(), session: "".into(), title: "Lighthouse pass".into(), role: "finder".into(), machine: 2, status: TaskStatus::NeedsInput, activity: "asks: which pages should it audit?".into(), report: "".into(), merge: Merge::None("".into()), runs: vec![run("finder".into(), 2, RunState::NeedsYou, "lighthouse".into(), "2m".into(), 0.0)] },
+                Task { key: "".into(), session: "".into(), title: "Hero directions ×3".into(), role: "designer".into(), machine: 1, status: TaskStatus::Running, activity: "rendering direction 3 of 3".into(), report: "".into(), progress: Default::default(), runs: vec![run("designer".into(), 1, RunState::Running, "directions".into(), "now".into(), 0.55)] },
+                Task { key: "".into(), session: "".into(), title: "Lighthouse pass".into(), role: "finder".into(), machine: 2, status: TaskStatus::NeedsInput, activity: "asks: which pages should it audit?".into(), report: "".into(), progress: Default::default(), runs: vec![run("finder".into(), 2, RunState::NeedsYou, "lighthouse".into(), "2m".into(), 0.0)] },
             ],
             activity: vec![("13:40".into(), "designer rendered direction 2".into()), ("13:31".into(), "designer rendered direction 1".into())],
         },
@@ -821,8 +886,8 @@ pub fn sessions() -> Vec<Session> {
                 Entry::tool("manage_automation", "create · nightly-audit · 02:00"),
             ],
             tasks: vec![
-                Task { key: "".into(), session: "".into(), title: "Bump ws to 8.21.3".into(), role: "coder".into(), machine: 2, status: TaskStatus::Completed, activity: "merged · 1 commit".into(), report: "".into(), merge: Merge::None("".into()), runs: vec![run("coder".into(), 2, RunState::Idle, "bump".into(), "2h".into(), 0.09)] },
-                Task { key: "".into(), session: "".into(), title: "Advisory feed check".into(), role: "finder".into(), machine: 2, status: TaskStatus::Failed, activity: "advisory feed timed out".into(), report: "".into(), merge: Merge::None("".into()), runs: vec![run("finder".into(), 2, RunState::Failed, "check".into(), "2h".into(), 0.01)] },
+                Task { key: "".into(), session: "".into(), title: "Bump ws to 8.21.3".into(), role: "coder".into(), machine: 2, status: TaskStatus::Completed, activity: "merged · 1 commit".into(), report: "".into(), progress: Default::default(), runs: vec![run("coder".into(), 2, RunState::Idle, "bump".into(), "2h".into(), 0.09)] },
+                Task { key: "".into(), session: "".into(), title: "Advisory feed check".into(), role: "finder".into(), machine: 2, status: TaskStatus::Failed, activity: "advisory feed timed out".into(), report: "".into(), progress: Default::default(), runs: vec![run("finder".into(), 2, RunState::Failed, "check".into(), "2h".into(), 0.01)] },
             ],
             activity: vec![("02:00".into(), "automation nightly-audit ran".into()), ("02:04".into(), "T-12 completed".into())],
         },
