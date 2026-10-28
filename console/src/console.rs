@@ -822,14 +822,6 @@ impl Console {
             .sum::<usize>()
             + self.waiting_workers().len()
             + self.proposed_workflows();
-        // This window's own conversations, and, in home's window, the
-        // whole fleet's list from the Fleet page when it says more.
-        let fleet = crate::swarm::needs::Count::of(self.needs.iter().map(crate::swarm::needs::Reading::waiting));
-        let needs_text = if self.via.is_none() && fleet.known > 0 {
-            format!("{needs} need you here · {} on the fleet", fleet.text())
-        } else {
-            format!("{needs} need you")
-        };
         let (cost, unknown) = crate::data::spend_today(&self.machines);
         let (link, link_bad) = self.link_text();
         let sep = || div().text_color(t.border_strong).child("│");
@@ -855,7 +847,7 @@ impl Console {
                     .child(sep())
                     .child(self.fleet_status(cx))
                     .child(sep())
-                    .child(div().text_color(t.warn).child(needs_text))
+                    .child(div().text_color(t.warn).child(format!("{needs} need you")))
                     .child(sep())
                     .child(format!("${cost:.2}{} today", if unknown { " + ?" } else { "" })),
             )
