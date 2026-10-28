@@ -134,13 +134,19 @@ func (s *Server) workerJobAutomationResult(ctx context.Context, workerID, runID,
 	// A job's workflows start whether or not its end-of-job Git assessment
 	// finished in time: an unread Git state is the deliver step's concern
 	// (it reassesses and retries), never a reason to hold the trigger back.
-	settled := lastAttempt || jobViewGitUnread(view)
-	core, err := workerJobResultFromView(ctx, b.GitOutput, settled, workerID, workerName, runID, view)
+	// That holds only once the job's head is known: without a head or
+	// commits the result has no branch to deliver, so the job end is
+	// retried as for any unsettled assessment.
+	unread := !lastAttempt && jobViewGitUnread(view)
+	core, err := workerJobResultFromView(ctx, b.GitOutput, lastAttempt || unread, workerID, workerName, runID, view)
 	if errors.Is(err, outbox.ErrNotReady) {
 		return nil, jobautomation.ErrNotReady
 	}
 	if err != nil {
 		return nil, err
+	}
+	if unread && core.head == "" && len(controlMCPList(core.result["commits"])) == 0 {
+		return nil, jobautomation.ErrNotReady
 	}
 	out := core.automationResult(ctx, b, role)
 	// A resolved head is delivery identity even when the task assessment has
