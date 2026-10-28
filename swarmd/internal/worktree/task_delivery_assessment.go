@@ -145,18 +145,25 @@ func deliveryUnknown(a pebblestore.TaskDeliveryAssessment, code, reason, freshne
 // Assessment budgets. Every Git read is one process; when the project's
 // sandbox is active each is a container exec (a gVisor exec costs a few
 // hundred milliseconds where host Git costs a few), so the sandboxed budget is
-// sized for roughly fifteen such reads with headroom. Starting a cold sandbox
-// is not part of either budget: it is warmed first, under its own bound.
+// sized for roughly fifteen such reads with headroom. A merge (a mutating
+// delivery) gets more: on a busy machine (agents rendering, load well above
+// the core count) starting each Git process slows by orders of magnitude, and
+// the 3 s host status budget failed every workflow merge there although each
+// read takes milliseconds when idle. Status reads keep the short budgets.
+// Starting a cold sandbox is not part of any budget: it is warmed first, under
+// its own bound.
 var (
-	deliveryHostBudget      = 3 * time.Second
-	deliverySandboxedBudget = 15 * time.Second
-	deliveryWarmTimeout     = 2 * time.Minute
+	deliveryHostBudget          = 3 * time.Second
+	deliveryHostExecutionBudget = 30 * time.Second
+	deliverySandboxedBudget     = 15 * time.Second
+	deliveryWarmTimeout         = 2 * time.Minute
 )
 
 type deliveryExecutionKey struct{}
 
-// WithDeliveryExecution gives a mutating delivery's sandbox assessment twice
-// the status-read allowance, without making read-only status calls wait longer.
+// WithDeliveryExecution gives a mutating delivery's assessment a larger
+// allowance (twice the status read in the sandbox, deliveryHostExecutionBudget
+// on the host), without making read-only status calls wait longer.
 func WithDeliveryExecution(ctx context.Context) context.Context {
 	return context.WithValue(ctx, deliveryExecutionKey{}, true)
 }
@@ -164,8 +171,11 @@ func WithDeliveryExecution(ctx context.Context) context.Context {
 // DeliveryAssessmentBudget returns the effective Git inspection allowance.
 func DeliveryAssessmentBudget(ctx context.Context) time.Duration {
 	budget := deliveryBudgetFor()
-	if execution, _ := ctx.Value(deliveryExecutionKey{}).(bool); execution && sandbox.Default().Active() {
-		budget *= 2
+	if execution, _ := ctx.Value(deliveryExecutionKey{}).(bool); execution {
+		if sandbox.Default().Active() {
+			return budget * 2
+		}
+		return deliveryHostExecutionBudget
 	}
 	return budget
 }
@@ -178,7 +188,8 @@ func deliveryBudgetFor() time.Duration {
 }
 
 // AssessTaskDelivery caps the entire inspection at its time budget (three
-// seconds for host Git, fifteen when Git runs in the project's sandbox) and one
+// seconds for host Git, fifteen when Git runs in the project's sandbox; a merge
+// gets thirty, DeliveryAssessmentBudget) and one
 // MiB, admits at most two analyses per repository and shares only exact OID
 // tuples. There is no durable or cross-request cache and no Git writes.
 func AssessTaskDelivery(parent context.Context, in TaskDeliveryInput) pebblestore.TaskDeliveryAssessment {
