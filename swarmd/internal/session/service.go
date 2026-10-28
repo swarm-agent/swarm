@@ -27,6 +27,21 @@ type Service struct {
 	planLifecycleMu       sync.Mutex
 	planLifecycleSessions map[string]*sync.Mutex
 	counter               atomic.Uint64
+	// tombstoneObserver releases per-conversation runtime resources (such as
+	// background commands) once a conversation is archived or deleted.
+	tombstoneObserver func(sessionID, kind string)
+}
+
+// SetTombstoneObserver installs a callback run after sessions are durably
+// archived or deleted. It runs under the service mutation lock and must not
+// block or call back into the service.
+func (s *Service) SetTombstoneObserver(observer func(sessionID, kind string)) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.tombstoneObserver = observer
+	s.mu.Unlock()
 }
 
 type CreateSessionOptions struct {
@@ -508,6 +523,11 @@ func (s *Service) tombstoneSessionsWithEventsExpected(sessionIDs []string, kind 
 		}
 		if err := s.store.DeleteSessions(normalizedIDs); err != nil {
 			return nil, err
+		}
+	}
+	if s.tombstoneObserver != nil {
+		for _, sessionID := range normalizedIDs {
+			s.tombstoneObserver(sessionID, kind)
 		}
 	}
 	if len(sessions) == 0 || s.events == nil {

@@ -52,3 +52,52 @@ this tool cannot change grants. Normal tool permission checks still apply.
 Self-targeting is refused even with a grant: an agent cannot message/rerun
 its own job, start its own worker (including by name), or message/rerun the
 job whose workflow delivery contains it as a step or fan-out item.
+
+# Native agent tools: background commands (`bash`)
+
+Long commands an agent starts with `bash` are not lost when they outrun the
+call's time limit. This applies to every Swarm agent in a conversation.
+
+- **At the limit.** A command still running when the call reaches
+  `timeout_ms` moves to the background instead of being stopped. The call
+  answers with `backgrounded: true`, `status: "running"`, a `background_id`,
+  and the output so far. It carries no `exit_code`: the command is neither a
+  pass nor a failure yet.
+- **Explicitly.** `background: true` starts the command and returns its
+  `background_id` at once. The agent keeps working.
+- **Report back.** When a background command ends, its exit code and the end
+  of its output (the last 4 KiB) are added to the conversation that started
+  it. A conversation that is running sees the update on its next step. An idle
+  conversation is woken by it (a new run starts). If the run ends before the
+  update reaches the model, the update wakes the conversation again. A task's
+  conversation is never restarted outside its task lifecycle: there the update
+  is recorded without waking it.
+- **Read or stop by id.** Call `bash` with `background_id` and
+  `command: "status"` to read its state (`running`, `exited`, `timed_out`,
+  `killed`, `failed`), exit code and retained output, or `command: "kill"` to
+  stop it. A killed command does not report back.
+
+Limits:
+
+| Limit | Value |
+| --- | --- |
+| Running background commands per conversation | 4 |
+| Running background commands per account | 16 |
+| Retained output per command | last 256 KiB; earlier output dropped, `truncated: true` |
+| Longest run of a background command | 4 hours, then stopped and reported as timed out |
+| Finished commands kept for reading by id | 16 per conversation |
+
+Over a cap, `background: true` is refused with the reason and nothing starts.
+A command that reaches its limit over a cap is stopped as before
+(`timed_out: true`, with `background_error` giving the reason).
+
+Stopping a conversation's run, or archiving or deleting the conversation,
+kills its background commands and their processes (host, sandbox or lease).
+None of them reports back. A background command keeps its lease while it
+runs. Nothing crosses conversations: another conversation, even of the same
+account, cannot read, kill or receive one.
+
+Background commands live in the daemon's memory. A daemon restart stops them
+without a report. They are not available for `committed_source` validation (a
+validation passes only when it ends), for disposable reviews, or in managed
+execution; those stay foreground and report `timed_out` at the limit.

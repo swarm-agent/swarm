@@ -223,6 +223,7 @@ type Runtime struct {
 	projectTaskDeployer  ProjectTaskDeployer
 	projectTaskLifecycle ProjectTaskLifecycleService
 	customAgentLifecycle CustomAgentLifecycleService
+	background           *backgroundCommands
 }
 
 type manageSessionController interface {
@@ -614,14 +615,17 @@ func NewRuntime(maxParallel int) *Runtime {
 	if maxParallel <= 0 {
 		maxParallel = 4
 	}
-	return &Runtime{
+	r := &Runtime{
 		maxParallel:       maxParallel,
 		searchCoordinator: NewSearchCoordinator(defaultSearchResidentRoots),
 		animationJobs:     make(map[string]context.CancelFunc),
 		httpClient: &http.Client{
 			Timeout: maxWebFetchTimeout + 5*time.Second,
 		},
+		background: newBackgroundCommands(),
 	}
+	r.background.report = r.reportBackgroundCommand
+	return r
 }
 
 func (r *Runtime) LongSessionSnapshot() map[string]any {
@@ -1039,9 +1043,11 @@ func (r *Runtime) Definitions() []Definition {
 						"minItems":    1,
 						"description": "Ordered plain-English effects. Prefer one concise, human-scannable sentence for routine commands; do not narrate obvious shell mechanics, output capture, exit status, working directory, lack of source edits, or generic artifacts. Use multiple concise items only for distinct material effects. Name concrete filesystem mutations, processes, listeners, ports, network exposure, privileges, destructive actions, and other consequential changes when present.",
 					},
-					"category":   map[string]any{"type": "string", "enum": []string{"read", "write", "update", "delete"}, "description": "Overall effect category: read only observes state; write creates new state, resources, or processes; update is a non-removal in-place mutation; delete removes state and always requires critical=true. Use the highest-impact applicable category."},
-					"critical":   map[string]any{"type": "boolean", "description": "Set true when the user should pay special attention before execution, including public listeners or network exposure, destructive or privileged operations, security-sensitive changes, or other unusually consequential effects."},
-					"timeout_ms": map[string]any{"type": "integer", "description": "Timeout in milliseconds (default 120000, max 1800000 = 30 minutes; larger values use the max). The call waits for the command up to this limit for every provider; at the limit the command is stopped and the result reports timed_out."},
+					"category":      map[string]any{"type": "string", "enum": []string{"read", "write", "update", "delete"}, "description": "Overall effect category: read only observes state; write creates new state, resources, or processes; update is a non-removal in-place mutation; delete removes state and always requires critical=true. Use the highest-impact applicable category."},
+					"critical":      map[string]any{"type": "boolean", "description": "Set true when the user should pay special attention before execution, including public listeners or network exposure, destructive or privileged operations, security-sensitive changes, or other unusually consequential effects."},
+					"timeout_ms":    map[string]any{"type": "integer", "description": "Timeout in milliseconds (default 120000, max 1800000 = 30 minutes; larger values use the max). The call waits for the command up to this limit for every provider. In a conversation, a command still running at the limit moves to the background (the result has backgrounded=true and a background_id) and reports back when it ends; elsewhere it is stopped and the result reports timed_out."},
+					"background":    map[string]any{"type": "boolean", "description": "Start the command in the background: the call returns at once with a background_id and you keep working. When the command ends, its exit code and the end of its output are added to this conversation (seen on your next step, or waking the conversation if idle)."},
+					"background_id": map[string]any{"type": "string", "description": "Id of a background command of this conversation. With it, command is status (read its state, exit code and retained output) or kill (stop it)."},
 				},
 				"required":             []string{"command", "explanation", "category", "critical"},
 				"additionalProperties": false,
@@ -2073,6 +2079,9 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 			return r.executeManagedGit(ctx, scope, *managed, name, args)
 		}
 		if name == "bash" {
+			if _, ok := args["background"]; ok || stringValue(args["background_id"]) != "" {
+				return "", errors.New("background commands are not available in managed execution; run the command in the foreground")
+			}
 			return r.executeManagedBash(ctx, scope, *managed, args, func(chunk string) {
 				if onProgress != nil {
 					onProgress(Progress{Stage: "output", Output: chunk})
@@ -2093,6 +2102,10 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return executeWrite(scope, args)
 	case "bash":
 		if _, selected := args["committed_source"]; selected {
+			// A validation passes only when it ends: never background it.
+			if _, ok := args["background"]; ok || stringValue(args["background_id"]) != "" {
+				return "", errors.New("committed_source validation runs in the foreground; background is not allowed")
+			}
 			return r.executeCommittedSourceBash(ctx, scope, args, func(chunk string) {
 				if onProgress != nil && strings.TrimSpace(chunk) != "" {
 					onProgress(Progress{Stage: "output", Output: strings.TrimSpace(chunk)})
@@ -2108,7 +2121,7 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		} else if strings.TrimSpace(scope.PrimaryPath) == "" && r.projectConversationWithoutWorkspace(scope) {
 			return "", errProjectWithoutWorkspace
 		}
-		return executeBash(ctx, scope, args, func(chunk string) {
+		return r.executeBashTool(ctx, scope, args, func(chunk string) {
 			if onProgress == nil {
 				return
 			}
@@ -2941,6 +2954,9 @@ func (r *Runtime) executeFind(parent context.Context, scope WorkspaceScope, args
 }
 
 func (r *Runtime) Close() error {
+	if r != nil && r.background != nil {
+		r.background.stopAll()
+	}
 	if r == nil || r.searchCoordinator == nil {
 		return nil
 	}

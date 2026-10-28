@@ -1089,8 +1089,12 @@ func summarizeBashToolOutput(raw string) string {
 	timedOut := mapBool(payload, "timed_out")
 	truncated := mapBool(payload, "truncated")
 	output := strings.TrimSpace(mapString(payload, "output"))
+	backgroundStatus := ""
+	if mapBool(payload, "backgrounded") {
+		backgroundStatus = mapString(payload, "status")
+	}
 
-	if command == "" && output == "" && !timedOut && exitCode == 0 {
+	if command == "" && output == "" && !timedOut && exitCode == 0 && backgroundStatus == "" {
 		return ""
 	}
 
@@ -1100,6 +1104,11 @@ func summarizeBashToolOutput(raw string) string {
 	}
 	notes := make([]string, 0, 3)
 	switch {
+	case backgroundStatus == "running":
+		// Still running: neither a pass nor a failure yet.
+		notes = append(notes, "running in background "+mapString(payload, "background_id"))
+	case backgroundStatus == "killed":
+		notes = append(notes, "background command killed")
 	case timedOut:
 		notes = append(notes, "timed out")
 	case exitCode != 0:

@@ -121,6 +121,7 @@ type Server struct {
 	v3LivePatchEnabled      bool
 	v3SyncCursors           *v3SyncCursorKeyring
 	v3SessionExecutor       *sessionV3Executor
+	backgroundCommands      backgroundCommandLifecycle
 	planLifecycle           *sessionruntime.PlanLifecycleService
 	sessions                *sessionruntime.Service
 	workspace               *workspace.Service

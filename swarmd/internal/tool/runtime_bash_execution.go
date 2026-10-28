@@ -23,19 +23,22 @@ func executeBash(parent context.Context, scope WorkspaceScope, args map[string]a
 	return executeBashCommand(parent, scope, args, command, onDelta)
 }
 
+// executeBashCommand runs one command in the foreground: at its limit it is
+// stopped and the result reports timed_out. Committed-source validation and
+// other daemon-internal callers use this path; it never moves to the
+// background, so a validation can never be reported before it ends.
 func executeBashCommand(parent context.Context, scope WorkspaceScope, args map[string]any, command string, onDelta func(string)) (string, error) {
-	if scope.ReadOnlyBash {
-		if _, err := sandbox.ReadOnlyCommand(command); err != nil {
-			return "", err
-		}
-		if sandbox.Default() == nil || !sandbox.Default().Active() {
-			return "", fmt.Errorf("read-only bash requires an active sandbox")
-		}
+	prepared, timeout, capture, streamWriter, err := prepareBashExec(parent, scope, args, command, onDelta)
+	if err != nil {
+		return "", err
 	}
-	command = strings.TrimSpace(command)
-	if command == "" {
-		return "", errors.New("bash requires command")
-	}
+	outcome := prepared.run(parent, timeout, func(chunk []byte) { _, _ = streamWriter.Write(chunk) })
+	streamWriter.Flush()
+	return foregroundOutcomeResponse(parent, strings.TrimSpace(command), capture, streamWriter, outcome, prepared.mode)
+}
+
+// bashTimeout is the call's limit from timeout_ms, bounded by maxBashTimeout.
+func bashTimeout(args map[string]any) time.Duration {
 	timeout := time.Duration(asInt(args["timeout_ms"], int(defaultBashTimeout.Milliseconds()))) * time.Millisecond
 	if timeout <= 0 {
 		timeout = defaultBashTimeout
@@ -43,61 +46,100 @@ func executeBashCommand(parent context.Context, scope WorkspaceScope, args map[s
 	if timeout > maxBashTimeout {
 		timeout = maxBashTimeout
 	}
-	if strings.TrimSpace(scope.PrimaryPath) == "" {
-		return "", errors.New("bash workspace path is required")
-	}
-	if scope.ReviewCheckout != "" && (sandbox.Default() == nil || !sandbox.Default().Active()) {
-		return "", sandbox.ErrSandboxRequired
-	}
-	if leaseID, err := bashLease(parent, scope, args, timeout, onDelta); err != nil {
-		return "", err
-	} else if leaseID != "" {
-		return executeLeasedBash(parent, sandbox.Leases(), leaseID, scope, command, timeout, onDelta)
-	}
-	if manager := sandbox.Default(); manager != nil && (manager.Active() || manager.Enforced()) {
-		return executeSandboxedBash(parent, manager, scope, command, timeout, onDelta)
-	}
+	return timeout
+}
 
-	// This is disposable command scratch, not daemon state. Let Go select the
-	// platform temp root (honoring TMPDIR when supplied) so direct, desktop,
-	// container, and service launches all work without a service-manager contract.
-	tempDir, err := os.MkdirTemp("", "swarm-command-")
-	if err != nil {
-		return "", fmt.Errorf("create private command temp directory: %w", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	ctx, cancel := context.WithTimeout(parent, timeout)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "bash", "-lc", command)
-	cmd.Dir = scope.PrimaryPath
-	cmd.Env = hostCommandEnvironment(scope, commandEnvironment(os.Environ(), tempDir))
-	cmd.WaitDelay = time.Second
-	prepareCommandForCancellation(cmd)
-
-	capture := newCappedBuffer(maxBashOutputViewerBytes)
-	streamWriter := newBashStreamWriter(capture, maxBashOutputViewerBytes, onDelta)
-	cmd.Stdout = streamWriter
-	cmd.Stderr = streamWriter
-
-	stopWatchingCancel := watchCommandCancellation(ctx, cmd)
-	defer stopWatchingCancel()
-
-	err = cmd.Run()
-	streamWriter.Flush()
-
-	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
-	exitCode := 0
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		} else {
-			exitCode = -1
+// prepareBashExec validates the call and selects its execution path (lease,
+// sandbox or host) without starting the command. The returned exec runs the
+// command once on the context and budget its caller chooses.
+func prepareBashExec(parent context.Context, scope WorkspaceScope, args map[string]any, command string, onDelta func(string)) (bashExec, time.Duration, *cappedBuffer, *bashStreamWriter, error) {
+	if scope.ReadOnlyBash {
+		if _, err := sandbox.ReadOnlyCommand(command); err != nil {
+			return bashExec{}, 0, nil, nil, err
+		}
+		if sandbox.Default() == nil || !sandbox.Default().Active() {
+			return bashExec{}, 0, nil, nil, fmt.Errorf("read-only bash requires an active sandbox")
 		}
 	}
-	return bashResponse(command, capture, streamWriter, exitCode, timedOut, err, "host")
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return bashExec{}, 0, nil, nil, errors.New("bash requires command")
+	}
+	timeout := bashTimeout(args)
+	if strings.TrimSpace(scope.PrimaryPath) == "" {
+		return bashExec{}, 0, nil, nil, errors.New("bash workspace path is required")
+	}
+	if scope.ReviewCheckout != "" && (sandbox.Default() == nil || !sandbox.Default().Active()) {
+		return bashExec{}, 0, nil, nil, sandbox.ErrSandboxRequired
+	}
+	capture := newCappedBuffer(maxBashOutputViewerBytes)
+	streamWriter := newBashStreamWriter(capture, maxBashOutputViewerBytes, onDelta)
+	if leaseID, err := bashLease(parent, scope, args, timeout, onDelta); err != nil {
+		return bashExec{}, 0, nil, nil, err
+	} else if leaseID != "" {
+		return leasedBashExec(sandbox.Leases(), leaseID, scope, command), timeout, capture, streamWriter, nil
+	}
+	if manager := sandbox.Default(); manager != nil && (manager.Active() || manager.Enforced()) {
+		prepared, err := sandboxedBashExec(manager, scope, command)
+		if err != nil {
+			return bashExec{}, 0, nil, nil, err
+		}
+		return prepared, timeout, capture, streamWriter, nil
+	}
+	return hostBashExec(scope, command), timeout, capture, streamWriter, nil
+}
+
+// bashChunkWriter adapts an output callback to io.Writer. It is a pointer so
+// os/exec sees one writer for stdout and stderr and keeps their order.
+type bashChunkWriter struct{ write func([]byte) }
+
+func (w *bashChunkWriter) Write(p []byte) (int, error) {
+	w.write(p)
+	return len(p), nil
+}
+
+// hostBashExec runs the command as a host process (explicit sandbox off).
+func hostBashExec(scope WorkspaceScope, command string) bashExec {
+	return bashExec{mode: "host", run: func(parent context.Context, budget time.Duration, write func([]byte)) bashOutcome {
+		// This is disposable command scratch, not daemon state. Let Go select the
+		// platform temp root (honoring TMPDIR when supplied) so direct, desktop,
+		// container, and service launches all work without a service-manager contract.
+		tempDir, err := os.MkdirTemp("", "swarm-command-")
+		if err != nil {
+			return bashOutcome{fail: fmt.Errorf("create private command temp directory: %w", err)}
+		}
+		defer os.RemoveAll(tempDir)
+
+		ctx, cancel := context.WithTimeout(parent, budget)
+		defer cancel()
+
+		cmd := exec.CommandContext(ctx, "bash", "-lc", command)
+		cmd.Dir = scope.PrimaryPath
+		cmd.Env = hostCommandEnvironment(scope, commandEnvironment(os.Environ(), tempDir))
+		cmd.WaitDelay = time.Second
+		prepareCommandForCancellation(cmd)
+
+		out := &bashChunkWriter{write: write}
+		cmd.Stdout = out
+		cmd.Stderr = out
+
+		stopWatchingCancel := watchCommandCancellation(ctx, cmd)
+		defer stopWatchingCancel()
+
+		err = cmd.Run()
+
+		timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
+		exitCode := 0
+		if err != nil {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				exitCode = exitErr.ExitCode()
+			} else {
+				exitCode = -1
+			}
+		}
+		return bashOutcome{exitCode: exitCode, timedOut: timedOut, execErr: err}
+	}}
 }
 
 // sandboxBashScript merges stderr into stdout (preserving order, as the host
@@ -111,21 +153,19 @@ rc=$?
 rm -rf "$d"
 exit $rc`
 
-// executeSandboxedBash runs the command in the project's sandbox. The daemon's
+// sandboxedBashExec runs the command in the project's sandbox. The daemon's
 // environment is not passed in; the working directory is the same path as on
 // the host because the project is mounted at its own path.
-func executeSandboxedBash(parent context.Context, manager *sandbox.Manager, scope WorkspaceScope, command string, timeout time.Duration, onDelta func(string)) (string, error) {
+func sandboxedBashExec(manager *sandbox.Manager, scope WorkspaceScope, command string) (bashExec, error) {
 	sandboxScope, err := manager.CommandScope(scope.PrimaryPath)
 	if err != nil {
-		return "", fmt.Errorf("bash sandbox: %w", err)
+		return bashExec{}, fmt.Errorf("bash sandbox: %w", err)
 	}
-	capture := newCappedBuffer(maxBashOutputViewerBytes)
-	streamWriter := newBashStreamWriter(capture, maxBashOutputViewerBytes, onDelta)
 	argv := []string{"bash", "-c", sandboxBashScript, "swarm-bash", command}
 	if scope.ReadOnlyBash {
 		argv, err = sandbox.ReadOnlyCommand(command)
 		if err != nil {
-			return "", err
+			return bashExec{}, err
 		}
 	}
 	execute := manager.Exec
@@ -134,28 +174,45 @@ func executeSandboxedBash(parent context.Context, manager *sandbox.Manager, scop
 			return manager.ExecReadOnly(ctx, sc, command, req)
 		}
 	}
-	result, runErr := execute(parent, sandboxScope, sandbox.ExecRequest{
-		Command:    argv,
-		WorkingDir: scope.PrimaryPath,
-		Timeout:    timeout,
-		MaxTimeout: maxBashTimeout,
-		MaxOutput:  maxBashOutputViewerBytes,
-		OnOutput:   func(chunk []byte) { _, _ = streamWriter.Write(chunk) },
-	})
-	streamWriter.Flush()
 	executionMode := "docker"
 	if manager.Local() {
 		executionMode = "bubblewrap"
 	}
+	return bashExec{mode: executionMode, run: func(ctx context.Context, budget time.Duration, write func([]byte)) bashOutcome {
+		result, runErr := execute(ctx, sandboxScope, sandbox.ExecRequest{
+			Command:    argv,
+			WorkingDir: scope.PrimaryPath,
+			Timeout:    budget,
+			MaxTimeout: maxDuration(budget, maxBashTimeout),
+			MaxOutput:  maxBashOutputViewerBytes,
+			OnOutput:   write,
+		})
+		return sandboxOutcome(ctx, result, runErr, func(err error) error { return fmt.Errorf("bash sandbox execution failed: %w", err) })
+	}}, nil
+}
+
+// sandboxOutcome maps a sandbox or lease exec result to a bash outcome.
+func sandboxOutcome(ctx context.Context, result *provider.ExecResult, runErr error, wrap func(error) error) bashOutcome {
+	exitCode := 0
+	if result != nil {
+		exitCode = result.ExitCode
+	}
 	switch {
 	case errors.Is(runErr, provider.ErrOperationTimedOut):
-		return bashResponse(command, capture, streamWriter, result.ExitCode, true, nil, executionMode)
+		return bashOutcome{exitCode: exitCode, timedOut: true}
 	case errors.Is(runErr, provider.ErrOperationCancelled):
-		return "", fmt.Errorf("bash execution cancelled: %w", parent.Err())
+		return bashOutcome{exitCode: -1, fail: fmt.Errorf("bash execution cancelled: %w", ctx.Err())}
 	case runErr != nil:
-		return "", fmt.Errorf("bash sandbox execution failed: %w", runErr)
+		return bashOutcome{exitCode: -1, fail: wrap(runErr)}
 	}
-	return bashResponse(command, capture, streamWriter, result.ExitCode, false, nil, executionMode)
+	return bashOutcome{exitCode: exitCode}
+}
+
+func maxDuration(a, b time.Duration) time.Duration {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // bashLease is the lease a command runs in: the one named by environment,
@@ -237,30 +294,20 @@ func autoLease(ctx context.Context, manager *sandbox.Manager, scope WorkspaceSco
 	}
 }
 
-// executeLeasedBash runs the command in one of the agent's leases. The folder
+// leasedBashExec runs the command in one of the agent's leases. The folder
 // is mounted at its own path there, so the working directory is unchanged.
-func executeLeasedBash(parent context.Context, manager *sandbox.Manager, leaseID string, scope WorkspaceScope, command string, timeout time.Duration, onDelta func(string)) (string, error) {
-	capture := newCappedBuffer(maxBashOutputViewerBytes)
-	streamWriter := newBashStreamWriter(capture, maxBashOutputViewerBytes, onDelta)
-	result, runErr := manager.ExecLease(parent, leaseID, strings.TrimSpace(scope.SessionID), sandbox.ExecRequest{
-		Command:    []string{"bash", "-c", sandboxBashScript, "swarm-bash", command},
-		WorkingDir: scope.PrimaryPath,
-		Timeout:    timeout,
-		MaxTimeout: maxBashTimeout,
-		MaxOutput:  maxBashOutputViewerBytes,
-		OnOutput:   func(chunk []byte) { _, _ = streamWriter.Write(chunk) },
-	})
-	streamWriter.Flush()
-	mode := "lease " + leaseID
-	switch {
-	case errors.Is(runErr, provider.ErrOperationTimedOut):
-		return bashResponse(command, capture, streamWriter, result.ExitCode, true, nil, mode)
-	case errors.Is(runErr, provider.ErrOperationCancelled):
-		return "", fmt.Errorf("bash execution cancelled: %w", parent.Err())
-	case runErr != nil:
-		return "", fmt.Errorf("bash in lease %s failed: %w", leaseID, runErr)
-	}
-	return bashResponse(command, capture, streamWriter, result.ExitCode, false, nil, mode)
+func leasedBashExec(manager *sandbox.Manager, leaseID string, scope WorkspaceScope, command string) bashExec {
+	return bashExec{mode: "lease " + leaseID, run: func(ctx context.Context, budget time.Duration, write func([]byte)) bashOutcome {
+		result, runErr := manager.ExecLease(ctx, leaseID, strings.TrimSpace(scope.SessionID), sandbox.ExecRequest{
+			Command:    []string{"bash", "-c", sandboxBashScript, "swarm-bash", command},
+			WorkingDir: scope.PrimaryPath,
+			Timeout:    budget,
+			MaxTimeout: maxDuration(budget, maxBashTimeout),
+			MaxOutput:  maxBashOutputViewerBytes,
+			OnOutput:   write,
+		})
+		return sandboxOutcome(ctx, result, runErr, func(err error) error { return fmt.Errorf("bash in lease %s failed: %w", leaseID, err) })
+	}}
 }
 
 func bashResponse(command string, capture *cappedBuffer, streamWriter *bashStreamWriter, exitCode int, timedOut bool, err error, executionMode ...string) (string, error) {

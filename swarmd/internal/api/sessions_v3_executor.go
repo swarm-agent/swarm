@@ -450,6 +450,9 @@ func (e *sessionV3Executor) finish(job sessionV3ExecutorJob) {
 		delete(e.activeBySession, job.SessionID)
 	}
 	e.mu.Unlock()
+	if e.server != nil && e.server.backgroundCommands != nil {
+		e.server.backgroundCommands.SessionRunEnded(job.SessionID, job.RunID)
+	}
 	e.refillPendingBacklog()
 }
 
@@ -730,6 +733,11 @@ func (e *sessionV3Executor) CancelRun(job sessionV3ExecutorJob, reason string) (
 	e.mu.Unlock()
 	if cancel != nil {
 		cancel(cause)
+	}
+	// Stopping a conversation's run stops the commands it left running in
+	// the background; none of them reports back.
+	if e.server != nil && e.server.backgroundCommands != nil {
+		e.server.backgroundCommands.StopSessionBackgroundCommands(job.SessionID, reason)
 	}
 	if e.server != nil && e.server.deployments != nil {
 		wsIDs := make(map[string]bool)

@@ -829,7 +829,7 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 	sandboxMgr.SetEnvironmentResolver(sandboxEnvironmentResolver{store: sandboxEnvironments})
 	if leaseMgr != nil {
 		leaseMgr.SetEnvironmentResolver(sandboxEnvironmentResolver{store: sandboxEnvironments})
-		leaseMgr.SetLeasePolicy(leaseLimit(sandboxEnvironments), leaseOwnerRunning(pebblestore.NewSessionStore(store)))
+		leaseMgr.SetLeasePolicy(leaseLimit(sandboxEnvironments), leaseOwnerRunning(pebblestore.NewSessionStore(store), toolRuntime.SessionBackgroundCommandsRunning))
 	}
 	apiServer.SetSandboxEnvironmentStore(sandboxEnvironments)
 	secretSlots := pebblestore.NewSecretSlotStore(store)
@@ -976,6 +976,12 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 	apiServer.SetAITaskEnqueuer(aiTaskDispatcher)
 	toolRuntime.SetManageSessionRealtimePublisher(apiServer.PublishCommittedV3RealtimeOutbox)
 	toolRuntime.SetManageSessionController(apiServer)
+	// Background bash commands: stopping a run or archiving/deleting its
+	// conversation kills them; a run's end re-delivers an undelivered report.
+	apiServer.SetBackgroundCommandLifecycle(toolRuntime)
+	sessionSvc.SetTombstoneObserver(func(sessionID, kind string) {
+		toolRuntime.StopSessionBackgroundCommands(sessionID, "conversation "+kind)
+	})
 	artifactMetadata.SetPublisher(apiServer.PublishCommittedV3RealtimeOutbox)
 	apiServer.SetCodexAccountClient(codexClient)
 	apiServer.SetClaudeCodeUsageClient(claudeCodeCLI)

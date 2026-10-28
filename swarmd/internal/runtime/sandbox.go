@@ -126,8 +126,13 @@ func leaseLimit(envs *pebblestore.SandboxEnvironmentStore) sandbox.LeaseLimit {
 }
 
 // leaseOwnerRunning reports whether an agent session still has a run.
-func leaseOwnerRunning(sessions *pebblestore.SessionStore) sandbox.LeaseOwnerRunning {
+// leaseOwnerRunning keeps a lease while its conversation has an active run or
+// a background command still running in it.
+func leaseOwnerRunning(sessions *pebblestore.SessionStore, backgroundRunning func(sessionID string) bool) sandbox.LeaseOwnerRunning {
 	return func(owner string) (bool, error) {
+		if backgroundRunning != nil && backgroundRunning(owner) {
+			return true, nil
+		}
 		_, active, err := sessions.GetV3SessionActiveRunIntent(owner)
 		return active, err
 	}
