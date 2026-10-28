@@ -166,8 +166,7 @@ func (s *Service) alignGoogleSpeechChunk(ctx context.Context, key, model string,
 	} else {
 		audioPart = map[string]any{"inlineData": map[string]string{"mimeType": audio.MediaType, "data": base64.StdEncoding.EncodeToString(audio.Bytes)}}
 	}
-	schema := videotranscription.StructuredTranscriptJSONSchema()
-	schema["properties"].(map[string]any)["words"] = map[string]any{"type": "array", "items": map[string]any{"type": "object", "required": []string{"text", "start_ms", "end_ms"}, "properties": map[string]any{"text": map[string]string{"type": "string"}, "start_ms": map[string]string{"type": "integer"}, "end_ms": map[string]string{"type": "integer"}}}}
+	schema := speechTimingSchema()
 	body := map[string]any{
 		"contents": []any{map[string]any{"parts": []any{
 			audioPart,
@@ -197,10 +196,23 @@ func (s *Service) alignGoogleSpeechChunk(ctx context.Context, key, model string,
 		// says what to change.
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 64<<10))
 		var refusal struct {
-			Error googleRPCStatus `json:"error"`
+			Error struct {
+				googleRPCStatus
+				Details []struct {
+					FieldViolations []struct {
+						Field       string `json:"field"`
+						Description string `json:"description"`
+					} `json:"fieldViolations"`
+				} `json:"details"`
+			} `json:"error"`
 		}
 		if json.Unmarshal(body, &refusal) == nil && strings.TrimSpace(refusal.Error.Message) != "" {
 			reason := strings.Join(strings.Fields(refusal.Error.Message), " ")
+			for _, detail := range refusal.Error.Details {
+				for _, violation := range detail.FieldViolations {
+					reason += " (" + strings.TrimSpace(violation.Field) + ": " + strings.Join(strings.Fields(violation.Description), " ") + ")"
+				}
+			}
 			if len(reason) > 300 {
 				reason = reason[:300] + "…"
 			}
@@ -267,4 +279,23 @@ func (s *Service) alignGoogleSpeechChunk(ctx context.Context, key, model string,
 		return answer, result, videotranscription.ErrInvalidTranscript
 	}
 	return videotranscription.GeneratedTranscript{Summary: transcript.Summary, Language: transcript.Language, DurationMs: transcript.DurationMs, ContentEmpty: transcript.ContentEmpty, Segments: transcript.Segments, Words: transcript.Words}, result, nil
+}
+
+// speechTimingSchema is the answer shape for Gemini's JSON schema field:
+// types and required fields only. Item caps and numeric bounds make Gemini
+// refuse the request, so the transcript normalizer enforces them instead.
+func speechTimingSchema() map[string]any {
+	str, integer := map[string]any{"type": "string"}, map[string]any{"type": "integer"}
+	object := func(required []string, properties map[string]any) map[string]any {
+		return map[string]any{"type": "object", "required": required, "properties": properties}
+	}
+	segment := object([]string{"start_ms", "end_ms", "speech", "audio", "visual", "on_screen_text"}, map[string]any{
+		"start_ms": integer, "end_ms": integer, "speech": str, "audio": str, "visual": str, "on_screen_text": str,
+	})
+	word := object([]string{"text", "start_ms", "end_ms"}, map[string]any{"text": str, "start_ms": integer, "end_ms": integer})
+	return object([]string{"summary", "language", "duration_ms", "content_empty", "segments"}, map[string]any{
+		"summary": str, "language": str, "duration_ms": integer, "content_empty": map[string]any{"type": "boolean"},
+		"segments": map[string]any{"type": "array", "items": segment},
+		"words":    map[string]any{"type": "array", "items": word},
+	})
 }

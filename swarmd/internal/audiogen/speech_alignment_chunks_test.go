@@ -83,6 +83,7 @@ func TestAlignGoogleSpeechRefusalReason(t *testing.T) {
 		body, want string
 	}{
 		{`{"error":{"code":400,"message":"Invalid JSON payload received.\n Unknown name \"responseJsonSchema\"","status":"INVALID_ARGUMENT"}}`, `speech timing provider returned HTTP 400: Invalid JSON payload received. Unknown name "responseJsonSchema"`},
+		{`{"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.rpc.BadRequest","fieldViolations":[{"field":"generation_config.response_json_schema","description":"too many states"}]}]}}`, "speech timing provider returned HTTP 400: Request contains an invalid argument. (generation_config.response_json_schema: too many states)"},
 		{`not json`, "speech timing provider returned HTTP 400"},
 	} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// Purpose: the alignment wire boundary must send JSON Schema in Gemini's JSON
+// Purpose: the alignment wire boundary must send a bounds-free JSON Schema in Gemini's JSON
 // schema field and retain all billed modalities, including thinking, on parse
 // failures, including the single parse retry. Recover omitted TEXT detail from
 // aggregate prompt usage without double-counting audio. A fake server proves the adapter
@@ -30,6 +30,9 @@ func TestSpeechAlignmentWire(t *testing.T) {
 				schema, ok := config["responseJsonSchema"].(map[string]any)
 				if !ok || schema["properties"] == nil {
 					t.Error("missing JSON schema")
+				}
+				if encoded, _ := json.Marshal(schema); strings.Contains(string(encoded), "maxItems") || strings.Contains(string(encoded), "minimum") || strings.Contains(string(encoded), "additionalProperties") {
+					t.Errorf("schema carries bounds Gemini refuses: %s", encoded)
 				}
 				text := `{"duration_ms":1000,"segments":[{"start_ms":0,"end_ms":1000,"speech":"Hello"}],"words":[{"text":"Hello","start_ms":0,"end_ms":1000}]}`
 				if invalid {
