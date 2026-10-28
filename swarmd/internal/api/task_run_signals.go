@@ -21,7 +21,8 @@ func taskRunJobID(projectID, taskID string) string {
 }
 
 // signalTaskRunEnded records task.run.succeeded, task.run.failed or
-// task.run.cancelled when a run in a task's own session ends, so workflows
+// task.run.cancelled when a run in a task's own session ends with the task in
+// a result state (taskRunLeftResult), so workflows
 // (job automations) follow the work of Swarm's own agents the way they follow
 // a worker job: the task's first run, and each follow-up sent into its
 // session. Tasks started directly (swarm_run_task) or delegated by the primary
@@ -79,6 +80,12 @@ func (s *Server) signalTaskRunEnded(job sessionV3ExecutorJob, status string, res
 	if prior == "planning" || prior == "pending_approval" {
 		return // a planning run is not the work
 	}
+	// A run ending is not the task ending: a run that pends its goal on its
+	// delegated tasks (wait_tasks), or any run that leaves the task without a
+	// result, records nothing. The run that does finish the task records it.
+	if !taskRunLeftResult(task.Status) {
+		return
+	}
 	// The task's first run is the task's end; every later run in its session
 	// (a follow-up, or a reopened attempt) is named by its run id.
 	followup := job.RunID
@@ -115,6 +122,21 @@ func (s *Server) signalTaskRunEnded(job sessionV3ExecutorJob, status string, res
 	if source != jobautomation.RequestSourceAutomation {
 		s.markTaskJobEnded(account, projectID, sig, followup)
 	}
+}
+
+// taskRunLeftResult reports whether a run left the task, as reconciled, in a
+// result state: needs_review, completed, failed, blocked or cancelled. The
+// task's job ends only then. A run that leaves it in_progress, queued or
+// waiting on its delegated tasks (a pended wait_tasks goal) is not the task's
+// end, whatever the run's own status: a failed run of a task that is still
+// running records nothing either (the reconciled task is failed when that
+// run was its work).
+func taskRunLeftResult(taskStatus string) bool {
+	switch taskStatus {
+	case "needs_review", "completed", "failed", "blocked", "cancelled":
+		return true
+	}
+	return false
 }
 
 // markTaskJobEnded records that a task's job end waits for the workflow

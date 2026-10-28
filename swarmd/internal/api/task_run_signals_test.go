@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/jobautomation"
 	"swarm/packages/swarmd/internal/modelprofile"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -350,5 +351,168 @@ func TestTaskRunDeclaredBlockerWorkflowOutcome(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// Purpose: a task's job ends when the task ends, not when one of its runs
+// ends. A Swarm-role task that pends its goal on delegated tasks (or any run
+// that leaves the task in_progress or queued) must record no task.run signal
+// and no job-end mark, so workflows scoped to the task (a review loop) never
+// fire on unfinished work; the later run that leaves it needs_review records
+// task.run.succeeded named by its run id. A coder task's first run ending
+// needs_review, and a task that ends blocked (task.run.failed), still record
+// as before; a failed run of a task that is still running records nothing.
+// Threat: a review loop reviewing and sending back a task at a head that has
+// none of its work, spending a send-back round (seen live with a pended
+// wait_tasks goal).
+// Owners: sessionV3Executor.recordRunStatus -> reconcileProjectTaskRunLifecycle
+// -> Server.signalTaskRunEnded (taskRunLeftResult) -> markTaskJobEnded over a
+// temporary store, read back from the signal feed and the workflow store.
+// An unpublished checkpoint plan binding is the real reconciliation path that
+// leaves a completed run's task in_progress; the failed-run and blocked cases
+// call signalTaskRunEnded directly, after reconciliation, as its callers do.
+// No provider is involved.
+func TestTaskJobEndsOnlyWhenTheTaskEnds(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	db := server.sessions.Store()
+	p := testPrincipal()
+	// The machine owner is the test principal, so job ends are marked.
+	identities := pebblestore.NewIdentityStore(db.Underlying())
+	actor := testActorContext()
+	if _, err := identities.CreateBootstrapIdentityRecords(pebblestore.BootstrapIdentityRecords{User: actor.User, AccountScope: actor.AccountScope, AccountUser: actor.AccountUser, CurrentSelection: pebblestore.CurrentSelectionRecord{UserID: actor.UserID, CreatedAt: actor.User.CreatedAt, UpdatedAt: actor.User.CreatedAt}}); err != nil {
+		t.Fatal(err)
+	}
+	server.identitySessions = identity.NewSessionService(identities, pebblestore.NewIdentitySessionStore(db.Underlying()))
+	if got := server.OutboxAccount(); got != p.AccountScopeID {
+		t.Fatalf("fixture: owner account = %q, want %q", got, p.AccountScopeID)
+	}
+	feed := pebblestore.NewSignalStore(db.Underlying())
+	server.SetSignalStore(feed)
+	runner := newAutomationRunner(t, server, db.Underlying(), feed, p.AccountScopeID, newAutomationHost(t))
+	exec := newSessionV3Executor(server)
+	const projectID = "proj-ends"
+	taskSignals := func(taskID string) []pebblestore.Signal {
+		t.Helper()
+		page, err := feed.ListAfter(0, 100, pebblestore.SignalFilter{Account: p.AccountScopeID, KindPrefixes: []string{"task.run"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []pebblestore.Signal
+		for _, sig := range page.Signals {
+			if sig.Refs["task_id"] == taskID {
+				out = append(out, sig)
+			}
+		}
+		return out
+	}
+	mark := func(taskID string) (jobautomation.JobEvaluation, bool) {
+		t.Helper()
+		e, found, err := runner.Store().JobEvaluation(p.AccountScopeID, taskRunJobID(projectID, taskID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return e, found
+	}
+	run := func(session pebblestore.SessionSnapshot, runID string, statuses ...string) sessionV3ExecutorJob {
+		t.Helper()
+		job := sessionV3ExecutorJob{Principal: p, SessionID: session.ID, RunID: runID, EpochID: "epoch-00000000000000000001"}
+		for _, status := range statuses {
+			if _, err := exec.recordRunStatus(job, status, "", "session.run."+status); err != nil {
+				t.Fatalf("record %s %s: %v", runID, status, err)
+			}
+		}
+		return job
+	}
+	status := func(taskID string) string {
+		t.Helper()
+		stored, found, err := db.GetProjectTask(p.AccountScopeID, projectID, taskID)
+		if err != nil || !found {
+			t.Fatalf("task %s: %v %v", taskID, found, err)
+		}
+		return stored.Status
+	}
+	newTask := func(task pebblestore.ProjectTaskRecord) (pebblestore.SessionSnapshot, pebblestore.ProjectTaskRecord) {
+		t.Helper()
+		session := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "job-end-"+task.ID, task.ID, t.TempDir(), pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+		task.ProjectID = projectID
+		return session, taskSessionFixture(t, server, session, task)
+	}
+	pending, running, completed := sessionruntime.RunIntentPendingExecutor, sessionruntime.RunIntentRunning, sessionruntime.RunIntentCompleted
+
+	// A Swarm task whose run ends while its work is still going on.
+	session, task := newTask(pebblestore.ProjectTaskRecord{ID: "task_swarm", Agent: "swarm", Status: "in_progress", PlanBinding: &pebblestore.ProjectTaskPlanBinding{PlanID: "plan-unpublished"}})
+	run(session, task.ExecutionRunID(), pending, running, completed, completed)
+	if got := status(task.ID); got != "in_progress" {
+		t.Fatalf("fixture: paused task status = %q, want in_progress", got)
+	}
+	if got := taskSignals(task.ID); len(got) != 0 {
+		t.Fatalf("paused run recorded %+v", got)
+	}
+	if e, found := mark(task.ID); found {
+		t.Fatalf("paused run marked a job end: %+v", e)
+	}
+	// A failed run of a task that is still running records nothing either.
+	server.signalTaskRunEnded(sessionV3ExecutorJob{Principal: p, SessionID: session.ID, RunID: "run-stale"}, sessionruntime.RunIntentFailed, sessionruntime.SessionMutationResult{}, "in_progress")
+	if got := taskSignals(task.ID); len(got) != 0 {
+		t.Fatalf("failed run of a running task recorded %+v", got)
+	}
+	if _, found := mark(task.ID); found {
+		t.Fatal("failed run of a running task marked a job end")
+	}
+	// The later run that finishes it records the job end, named by its run id.
+	if _, err := db.UpdateProjectTask(p.AccountScopeID, projectID, task.ID, func(r *pebblestore.ProjectTaskRecord) error {
+		r.PlanBinding = nil
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run(session, "run-finish", pending, running, completed, completed)
+	if got := status(task.ID); got != "needs_review" {
+		t.Fatalf("finished task status = %q, want needs_review", got)
+	}
+	got := taskSignals(task.ID)
+	if len(got) != 1 || got[0].Kind != "task.run.succeeded" || got[0].DedupKey != "task.run:"+task.ID+":run-finish" || got[0].Refs["run_id"] != "run-finish" || got[0].Attrs["role"] != "swarm" {
+		t.Fatalf("finishing run signals = %+v", got)
+	}
+	if e, found := mark(task.ID); !found || e.Followup != "run-finish" || e.Seq != got[0].Seq || e.Evaluated() {
+		t.Fatalf("finishing run job-end mark = %+v found=%v", e, found)
+	}
+
+	// A queued task's completed run leaves it queued: nothing.
+	session, task = newTask(pebblestore.ProjectTaskRecord{ID: "task_queued", Agent: "swarm", Status: "queued"})
+	run(session, task.ExecutionRunID(), pending, running, completed)
+	if got := status(task.ID); got != "queued" {
+		t.Fatalf("fixture: queued task status = %q", got)
+	}
+	if got := taskSignals(task.ID); len(got) != 0 {
+		t.Fatalf("queued task recorded %+v", got)
+	}
+	if _, found := mark(task.ID); found {
+		t.Fatal("queued task marked a job end")
+	}
+
+	// A coder task's first run ending needs_review records the job end.
+	session, task = newTask(pebblestore.ProjectTaskRecord{ID: "task_coder", Agent: "coder", Status: "in_progress"})
+	run(session, task.ExecutionRunID(), pending, running, completed)
+	if got := status(task.ID); got != "needs_review" {
+		t.Fatalf("coder task status = %q", got)
+	}
+	got = taskSignals(task.ID)
+	if len(got) != 1 || got[0].Kind != "task.run.succeeded" || got[0].DedupKey != "task.run:"+task.ID+":" || got[0].Attrs["role"] != "coder" {
+		t.Fatalf("coder first run signals = %+v", got)
+	}
+	if e, found := mark(task.ID); !found || e.Followup != "" || e.Seq != got[0].Seq {
+		t.Fatalf("coder job-end mark = %+v found=%v", e, found)
+	}
+
+	// A task that ends blocked records failed, with its reason.
+	session, task = newTask(pebblestore.ProjectTaskRecord{ID: "task_blocked", Agent: "swarm", Status: "blocked", LastError: "missing input"})
+	server.signalTaskRunEnded(sessionV3ExecutorJob{Principal: p, SessionID: session.ID, RunID: task.ExecutionRunID()}, completed, sessionruntime.SessionMutationResult{}, "in_progress")
+	got = taskSignals(task.ID)
+	if len(got) != 1 || got[0].Kind != "task.run.failed" || got[0].Attrs["blocker_reason"] != "missing input" || got[0].DedupKey != "task.run:"+task.ID+":" {
+		t.Fatalf("blocked task signals = %+v", got)
+	}
+	if e, found := mark(task.ID); !found || e.Seq != got[0].Seq {
+		t.Fatalf("blocked job-end mark = %+v found=%v", e, found)
 	}
 }

@@ -107,6 +107,13 @@ task and job ends after it was created. Tasks and jobs started by a workflow
 (`swarm_send_message` into a task's session, `swarm_message_job` for a job)
 ends again and does.
 
+A task's run ending is its job end only when the run leaves the task with a
+result: `needs_review`, `completed`, `failed`, `blocked` or `cancelled`. A run
+that leaves the task `in_progress` or `queued` (a Swarm task that pends its
+goal on the tasks it delegated, `manage_projects` `wait_tasks`) ends nothing,
+whatever the run's own status. The later run that finishes the task is the job
+end, named by its run id as a follow-up.
+
 Each step has an `id`, a `type` (`run`, `agent`, `reopen` or `deliver`),
 `timeout_seconds` (default 600, at most 3600), `continue_on_failure` (default
 false: a failed step stops the steps after it, which are recorded as

@@ -60,7 +60,9 @@ workflow deliveries and its integration.
 - `none`: the task ended and Swarm found no enabled workflow that applies to
   it. Recorded when the job end is evaluated, so it is never confused with
   "not evaluated yet".
-- `pending`: the task ended and its job end has not been evaluated yet.
+- `pending`: the task ended and its job end has not been evaluated yet. A
+  run that leaves the task working (a Swarm task waiting on the tasks it
+  delegated) is not a job end and marks nothing.
 - `running`, `done`, `failed`, `blocked`: the state of the deliveries that
   applied (the latest round per workflow).
 - absent while the task has not ended.
