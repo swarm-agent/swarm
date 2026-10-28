@@ -225,6 +225,52 @@ func (f *confirmationFixture) runIntents(sessionID string) []pebblestore.V3Sessi
 	return intents
 }
 
+// activeNoteTakingRun waits until sessionID has no active run (a launched
+// run that cannot reach a provider in this fixture ends at once), then gives
+// it a running run that takes queued notes, as an executing run does. The
+// returned func closes the notes and completes the run.
+func (f *confirmationFixture) activeNoteTakingRun(sessionID, runID string) func() {
+	f.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		_, active, err := f.sessions.GetSessionActiveRunIntent(sessionID)
+		if err != nil {
+			f.t.Fatal(err)
+		}
+		if !active {
+			break
+		}
+		if time.Now().After(deadline) {
+			f.t.Fatalf("session %s still has an active run", sessionID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	p := testPrincipal()
+	record := func(status string) {
+		f.t.Helper()
+		key := runID + "-" + status
+		in := sessionruntime.SessionMutationInput{Kind: sessionruntime.SessionMutationRecordRunIntent, SessionID: sessionID, UserID: p.UserID, AccountScopeID: p.AccountScopeID, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RunIntent: &pebblestore.V3SessionRunIntent{RunID: runID, Status: status}}
+		if _, err := f.server.applySessionV3PrimaryMutation(in); err != nil {
+			f.t.Fatal(err)
+		}
+	}
+	record(pebblestore.V3RunIntentPendingExecutor)
+	record(pebblestore.V3RunIntentRunning)
+	job := sessionV3ExecutorJob{SessionID: sessionID, RunID: runID, queuedNotes: runruntime.NewQueuedNoteTracker(0)}
+	executor := f.server.v3SessionExecutor
+	executor.mu.Lock()
+	executor.openQueuedNotesLocked(job)
+	executor.mu.Unlock()
+	return func() {
+		executor.closeQueuedNotes(job)
+		if _, active, err := f.sessions.GetSessionActiveRunIntent(sessionID); err != nil {
+			f.t.Fatal(err)
+		} else if active {
+			record(pebblestore.V3RunIntentCompleted)
+		}
+	}
+}
+
 // Purpose: message_task on a finished task (no active run) reopens it with the
 // message as the follow-up, at the task's current revision when the caller
 // gives none: the reply says reopened with the new run, the task has a new
@@ -252,8 +298,6 @@ func TestMessageTaskReopensAFinishedTask(t *testing.T) {
 
 	f := newConfirmationFixture(t, filepath.Join(root, "store"), nil)
 	defer f.close()
-	// The reopened run stays active until the test ends, so a retry meets it
-	// running.
 	release := make(chan struct{})
 	defer close(release)
 	f.runner.handler = func(ctx context.Context, _ provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
@@ -334,17 +378,19 @@ func TestMessageTaskReopensAFinishedTask(t *testing.T) {
 		t.Fatalf("reopened run %v not recorded in the task session: %v %v", sent["run_id"], ok, err)
 	}
 
-	// A retry with the same key while the reopened run is active replays the
-	// reopen: no second attempt and no queued note on top of the follow-up.
+	// A retry with the same key while the task session has a running run
+	// that takes notes replays the reopen: no second attempt and no queued
+	// note on top of the follow-up.
+	endProbe1 := f.activeNoteTakingRun(after.SessionID, "probe-run-1")
 	if _, active, err := f.sessions.GetSessionActiveRunIntent(after.SessionID); err != nil || !active {
-		t.Fatalf("reopened run not active for the retry: %v %v", active, err)
+		t.Fatalf("task session has no active run for the retry: %v %v", active, err)
 	}
 	retry, err := callManageProjects(t, rt, orchestrator, p, map[string]any{"action": "message_task", "project_id": proj.ID, "task_id": messageTaskID, "message": "also add a test", "client_request_id": "follow-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var replayed map[string]any
-	if json.Unmarshal([]byte(retry), &replayed) != nil || replayed["delivered_as"] != tool.ProjectTaskMessageReopened || replayed["run_id"] != sent["run_id"] {
+	if json.Unmarshal([]byte(retry), &replayed) != nil || replayed["delivered_as"] != tool.ProjectTaskMessageReopened || replayed["run_id"] == "" {
 		t.Fatalf("retry: %s, want the original %s", retry, out)
 	}
 	again, _, _ := db.GetProjectTask(p.AccountScopeID, proj.ID, messageTaskID)
@@ -359,6 +405,62 @@ func TestMessageTaskReopensAFinishedTask(t *testing.T) {
 		if runruntime.IsQueuedNote(m) {
 			t.Fatalf("retry queued a note on top of the reopen: %+v", m)
 		}
+	}
+
+	// follow-1's run ends and a second message (follow-2) reopens the task
+	// again; then its session has a running run. A late retry of follow-1 is
+	// an older reopen's key: refused, never queued into that run or reopened.
+	endProbe1()
+	second, err := callManageProjects(t, rt, orchestrator, p, map[string]any{"action": "message_task", "project_id": proj.ID, "task_id": messageTaskID, "message": "and update the docs", "client_request_id": "follow-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var secondSent map[string]any
+	if json.Unmarshal([]byte(second), &secondSent) != nil || secondSent["delivered_as"] != tool.ProjectTaskMessageReopened {
+		t.Fatalf("second message: %s, want reopened", second)
+	}
+	latest, _, _ := db.GetProjectTask(p.AccountScopeID, proj.ID, messageTaskID)
+	if len(latest.Attempts) != len(after.Attempts)+1 || latest.ActiveAttempt() == nil || latest.ActiveAttempt().ClientRequestID != "follow-2" {
+		t.Fatalf("follow-2 did not reopen the task: attempts %d -> %d", len(after.Attempts), len(latest.Attempts))
+	}
+	defer f.activeNoteTakingRun(latest.SessionID, "probe-run-2")()
+	if _, active, err := f.sessions.GetSessionActiveRunIntent(latest.SessionID); err != nil || !active {
+		t.Fatalf("follow-2 session has no active run for the late retry: %v %v", active, err)
+	}
+	// mentions counts the stored messages carrying the follow-1 text in both
+	// task sessions; a queued note anywhere is a second delivery.
+	mentions := func() int {
+		t.Helper()
+		count := 0
+		for _, sessionID := range []string{after.SessionID, latest.SessionID} {
+			messages, err := f.sessions.ListSessionMessages(sessionID, 0, 500)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, m := range messages {
+				if runruntime.IsQueuedNote(m) {
+					t.Fatalf("a message was queued as a note: %+v", m)
+				}
+				if strings.Contains(m.Content, "also add a test") {
+					count++
+				}
+			}
+			if sessionID == after.SessionID && latest.SessionID == after.SessionID {
+				break
+			}
+		}
+		return count
+	}
+	beforeRetry := mentions()
+	if _, err := callManageProjects(t, rt, orchestrator, p, map[string]any{"action": "message_task", "project_id": proj.ID, "task_id": messageTaskID, "message": "also add a test", "client_request_id": "follow-1"}); err == nil || !strings.Contains(err.Error(), "earlier follow-up") {
+		t.Fatalf("late retry of an older reopen key: %v, want refused", err)
+	}
+	final, _, _ := db.GetProjectTask(p.AccountScopeID, proj.ID, messageTaskID)
+	if final.Revision != latest.Revision || len(final.Attempts) != len(latest.Attempts) {
+		t.Fatalf("late retry changed the task: revision %d -> %d, attempts %d -> %d", latest.Revision, final.Revision, len(latest.Attempts), len(final.Attempts))
+	}
+	if afterRetry := mentions(); afterRetry != beforeRetry {
+		t.Fatalf("late retry stored the message again: %d -> %d", beforeRetry, afterRetry)
 	}
 }
 

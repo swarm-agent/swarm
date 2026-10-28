@@ -62,16 +62,24 @@ func (s *Server) MessageProjectTask(ctx context.Context, p identity.Principal, p
 	if err != nil {
 		return tool.ProjectTaskMessageResult{}, err
 	}
-	// A retry with the key of an earlier message replays that delivery, never
-	// a second one, whatever the run state is now: first a reopen it made
-	// (the active attempt carries the key), then a note it queued in one of
-	// the task's sessions, even after that run has ended.
+	// A retry with the key of an earlier message never delivers it twice,
+	// whatever the run state is now: a reopen it made is replayed while its
+	// attempt is the active one and refused once superseded; a note it queued
+	// in one of the task's sessions is replayed even after that run ended.
 	if active := task.ActiveAttempt(); active != nil && active.ClientRequestID == key {
 		reopened, err := s.ReopenProjectTask(ctx, p, projectID, taskID, tool.ProjectTaskFollowupInput{Feedback: in.Message, ClientRequestID: key, Revision: active.RequestRevision})
 		if err != nil {
 			return tool.ProjectTaskMessageResult{}, err
 		}
 		return tool.ProjectTaskMessageResult{TaskID: reopened.ID, DeliveredAs: tool.ProjectTaskMessageReopened, RunID: reopened.ExecutionRunID()}, nil
+	}
+	// The key of an earlier reopen that is no longer the active attempt was
+	// already delivered; it is refused, as reopen refuses a historical
+	// follow-up, never queued or reopened again.
+	for _, attempt := range task.Attempts {
+		if attempt.ClientRequestID == key {
+			return tool.ProjectTaskMessageResult{}, &projectTaskFollowupError{http.StatusConflict, errors.New("client_request_id belongs to an earlier follow-up that was already delivered; retrieve history instead of resending")}
+		}
 	}
 	if noteSession, found, err := s.projectTaskMessageReplaySession(p, task, key); err != nil {
 		return tool.ProjectTaskMessageResult{}, err
