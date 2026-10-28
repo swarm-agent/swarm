@@ -204,13 +204,14 @@ deploy, or alert), you can offer a workflow:
   starts when a task you gave with `swarm_run_task` ends (and again after each
   follow-up in its session), or when a worker job ends.
   - An `agent` step puts another agent on the work: one of Swarm's own agents
-    (`swarm`, `coder`, `finder`, `designer`) as a task (the coder in its own
-    worktree at the work's head, the others in the folder), `reviewer`, or a
-    worker id. Its `checkout` says where the agent works; leave it out for the
-    default: a reviewer is a new session in the work's own worktree, read-only
-    (`same`; `new` gives it its own checkout), the coder and other workers get
-    their own worktree (`new`), swarm, finder and designer work in the folder
-    (`none`). A reviewer reviews
+    (`swarm`, `coder`, `finder`, `designer`) as a task (swarm and the coder in
+    their own worktree at the work's head, finder and designer in the folder),
+    `reviewer`, or a worker id. Its `checkout` says where the agent works; leave
+    it out for the default: a reviewer is a new session in the work's own
+    worktree, read-only (`same`; `new` gives it its own checkout), swarm, the
+    coder and other workers get their own worktree (`new`, the only value for
+    swarm and the coder), finder and designer work in the folder (`none`). A
+    reviewer reviews
     the exact head and records a verdict, `ok` or `block`, with findings; only
     with `fixes: "security"` on its step may it commit small security fixes, at
     most 80 changed lines, which move the delivery head only on `ok`.
