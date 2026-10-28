@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -818,4 +819,73 @@ func TestBackgroundBashDeletingConversationStopsAutomationChildCommands(t *testi
 	}
 	f.runtime.StopSessionBackgroundCommands("s-bystander", "test cleanup")
 	waitDone(t, bystander)
+}
+
+func TestBackgroundBashReportWakesWhenRunEndsBetweenStateReadAndPin(t *testing.T) {
+	// Purpose: a command that ends just as its conversation's run ends still
+	// wakes the conversation with its report.
+	// Threat: delivery read the run as active and pinned the report as a
+	// non-triggering note; the run finished in between, and its finish step
+	// (SessionRunEnded) found no pending note yet. The report sat in the
+	// transcript and the idle conversation was never woken.
+	// Owners: Runtime.deliverBackgroundReport, pinBackgroundNote,
+	// redeliverPendingNote, SessionRunEnded.
+	// Layer: the window sits between two statements of the delivery path, so
+	// the test ends the run (durable completion, then the executor's
+	// SessionRunEnded call) at exactly that point through the delivery seam,
+	// over a real store and a real process.
+	f := newBGFixture(t, "s-edge")
+	f.startRun(t, "s-edge", "run-1")
+	var once sync.Once
+	f.runtime.background.afterRunStateRead = func(sessionID, runID string) {
+		once.Do(func() {
+			if sessionID != "s-edge" || runID != "run-1" {
+				t.Errorf("delivery read run %s/%s, want s-edge/run-1", sessionID, runID)
+			}
+			f.endRun(t, "s-edge", "run-1")
+			f.runtime.SessionRunEnded("s-edge", "run-1")
+		})
+	}
+	payload, err := f.bash(t, "s-edge", map[string]any{"command": "echo edge-out; exit 5", "background": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := payload["background_id"].(string)
+	if id == "" {
+		t.Fatalf("no background id: %#v", payload)
+	}
+	f.waitReported(t, id)
+	select {
+	case got := <-f.controller.enqueued:
+		if !strings.HasPrefix(got, "s-edge|") {
+			t.Fatalf("woke the wrong conversation: %s", got)
+		}
+	case <-time.After(bgTestWait):
+		t.Fatal("report pinned to a run that ended did not wake the idle conversation")
+	}
+	expectNoWake(t, f)
+	var wake *pebblestore.MessageSnapshot
+	for _, m := range f.backgroundMessages(t, "s-edge") {
+		if m.Metadata["feedback_note"] != true {
+			m := m
+			if wake != nil {
+				t.Fatal("more than one wake report")
+			}
+			wake = &m
+		}
+	}
+	if wake == nil || !strings.Contains(wake.Content, "exited with code 5") || !strings.Contains(wake.Content, "edge-out") {
+		t.Fatalf("wake report missing or lacks result: %+v", wake)
+	}
+	state, ok, err := f.sessions.GetSessionRunState("s-edge")
+	if err != nil || !ok || !state.Active || state.SourceMessageID != wake.ID {
+		t.Fatalf("wake did not record a run intent for the report: %+v ok=%v err=%v", state, ok, err)
+	}
+	c := f.command(t, "s-edge", id)
+	c.mu.Lock()
+	pending := c.pendingNoteID
+	c.mu.Unlock()
+	if pending != "" {
+		t.Fatalf("note still pending on the ended run: %s", pending)
+	}
 }

@@ -180,6 +180,9 @@ type backgroundCommands struct {
 	byID      map[string]*backgroundCommand
 	bySession map[string][]*backgroundCommand
 	report    func(*backgroundCommand, string)
+	// afterRunStateRead, when set (tests only), runs between delivery reading
+	// the conversation's active run and pinning the report to it.
+	afterRunStateRead func(sessionID, runID string)
 }
 
 func newBackgroundCommands() *backgroundCommands {
@@ -709,6 +712,9 @@ func (r *Runtime) deliverBackgroundReport(c *backgroundCommand, endedRunID strin
 	}
 	running := ok && (state.Active || state.Status == pebblestore.V3RunIntentWaitingTasks) && state.RunID != endedRunID
 	if running {
+		if hook := r.background.afterRunStateRead; hook != nil {
+			hook(c.sessionID, state.RunID)
+		}
 		return r.pinBackgroundNote(c, state.RunID)
 	}
 	session, found, err := r.sessions.GetSession(c.sessionID)
@@ -763,14 +769,49 @@ func (r *Runtime) pinBackgroundNote(c *backgroundCommand, runID string) error {
 	if err := r.applyBackgroundMessage(c, key, &msg, nil); err != nil {
 		return err
 	}
-	if runID != "" {
-		c.mu.Lock()
-		if !c.stopped {
-			c.pendingNoteID, c.pendingNoteRunID = id, runID
-		}
-		c.mu.Unlock()
+	if runID == "" {
+		return nil
 	}
+	c.mu.Lock()
+	if !c.stopped {
+		c.pendingNoteID, c.pendingNoteRunID = id, runID
+	}
+	c.mu.Unlock()
+	// The run may have ended between reading its state and recording the
+	// pending note; its SessionRunEnded then found nothing to re-deliver.
+	// Re-read the state now that the note is recorded: if that run is no
+	// longer the active one, re-deliver here. Whichever of this check and
+	// SessionRunEnded claims the pending note first re-delivers it, once.
+	state, ok, err := r.getSessionRunState(c.sessionID)
+	if err != nil {
+		return err
+	}
+	if ok && (state.Active || state.Status == pebblestore.V3RunIntentWaitingTasks) && state.RunID == runID {
+		return nil
+	}
+	r.redeliverPendingNote(c, id, runID)
 	return nil
+}
+
+// redeliverPendingNote claims a note pinned to runID, which has ended, and
+// unless that run's provider recorded its delivery, delivers the report again
+// through the registry's report route (the same one a command's completion
+// uses). A note already claimed by another caller is left alone.
+func (r *Runtime) redeliverPendingNote(c *backgroundCommand, noteID, runID string) {
+	_, delivered, err := r.sessions.GetV3MessageByID(c.sessionID, "feedback-delivery:"+noteID+":"+runID)
+	if err != nil {
+		log.Printf("swarmd background command %s delivery check: %v", c.id, err)
+		return
+	}
+	c.mu.Lock()
+	claimed := c.pendingNoteID == noteID && c.pendingNoteRunID == runID
+	if claimed {
+		c.pendingNoteID, c.pendingNoteRunID = "", ""
+	}
+	c.mu.Unlock()
+	if claimed && !delivered && r.background.report != nil {
+		r.background.report(c, runID)
+	}
 }
 
 // wakeWithBackgroundReport appends the report with a new run intent and
@@ -864,20 +905,6 @@ func (r *Runtime) SessionRunEnded(sessionID, runID string) {
 		c.mu.Lock()
 		noteID := c.pendingNoteID
 		c.mu.Unlock()
-		_, delivered, err := r.sessions.GetV3MessageByID(c.sessionID, "feedback-delivery:"+noteID+":"+runID)
-		if err != nil {
-			log.Printf("swarmd background command %s delivery check: %v", c.id, err)
-			continue
-		}
-		c.mu.Lock()
-		if c.pendingNoteID == noteID {
-			c.pendingNoteID, c.pendingNoteRunID = "", ""
-		}
-		c.mu.Unlock()
-		// Re-deliver through the registry's report route, the same one a
-		// command's completion uses, so every delivery has one path.
-		if !delivered && r.background.report != nil {
-			r.background.report(c, runID)
-		}
+		r.redeliverPendingNote(c, noteID, runID)
 	}
 }
