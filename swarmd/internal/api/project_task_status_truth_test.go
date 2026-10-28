@@ -169,19 +169,29 @@ func TestStopTaskLeavesTheTaskStoppedNotFailed(t *testing.T) {
 }
 
 // outcomeCountsWant is seedOutcomeProject's default listing plus one stopped
-// task, by outcome: pushed is done; sent-back and busy are in progress;
-// blocked and plain (ready to integrate, no workflow) need attention;
-// abandoned (stale) and the stopped task are stopped. Raw status counts say
-// needs_review 4 for the same tasks.
-var outcomeCountsWant = map[string]float64{"done": 1, "in_progress": 2, "waiting": 0, "needs_attention": 2, "stopped": 2}
+// task, by outcome: pushed and finder (finished, nothing to integrate) are
+// done; sent-back and busy are in progress; blocked and plain (ready to
+// integrate, no workflow) need attention; abandoned (stale) and the stopped
+// task are stopped. Raw status counts say needs_review 5 for the same tasks.
+var outcomeCountsWant = map[string]float64{"done": 2, "in_progress": 2, "waiting": 0, "needs_attention": 2, "idle": 0, "stopped": 2}
+
+// outcomeCountsIdleWant is the same listing read 8 days later: blocked and
+// plain still hold work never handed over but finished over 7 days ago, so
+// they are idle, not attention; finder stays done.
+var outcomeCountsIdleWant = map[string]float64{"done": 2, "in_progress": 2, "waiting": 0, "needs_attention": 0, "idle": 2, "stopped": 2}
 
 func checkOutcomeCounts(t *testing.T, where string, answer map[string]any) {
 	t.Helper()
+	checkOutcomeCountsAre(t, where, answer, outcomeCountsWant)
+}
+
+func checkOutcomeCountsAre(t *testing.T, where string, answer map[string]any, want map[string]float64) {
+	t.Helper()
 	counts, _ := answer["outcome_counts"].(map[string]any)
-	if len(counts) != len(outcomeCountsWant) {
-		t.Fatalf("%s outcome_counts = %v, want %v", where, answer["outcome_counts"], outcomeCountsWant)
+	if len(counts) != len(want) {
+		t.Fatalf("%s outcome_counts = %v, want %v", where, answer["outcome_counts"], want)
 	}
-	for bucket, n := range outcomeCountsWant {
+	for bucket, n := range want {
 		if counts[bucket] != n {
 			t.Fatalf("%s outcome_counts[%s] = %v, want %v (all %v)", where, bucket, counts[bucket], n, counts)
 		}
@@ -224,16 +234,73 @@ func TestListTasksCountsByOutcomeOnThisMachine(t *testing.T) {
 	}
 	answer := decodeToolAnswer(t, out)
 	// The counts cover every matching task, not only the page.
-	if rows, _ := answer["tasks"].([]any); len(rows) != 2 || answer["total"] != float64(7) {
+	if rows, _ := answer["tasks"].([]any); len(rows) != 2 || answer["total"] != float64(8) {
 		t.Fatalf("page: %s", out)
 	}
 	checkOutcomeCounts(t, "home", answer)
 }
 
+// Purpose: a finished task needs attention only while it has work to hand
+// over (commits or a blocked workflow, not integrated or delivered) and
+// finished within the last 7 days; one that finished longer ago counts as
+// idle, and a finished task with nothing to integrate is done at any age.
+// Threat: the live report: "633 needing attention" from tasks that finished
+// long ago with no workflow, waiting on nobody. Owners: computeTaskProgress
+// (taskProgressIdle) through the store progress hook, and
+// pebblestore.ProjectTaskCountBucket, over real task and job automation
+// stores read with the progress clock 8 days on.
+func TestListTasksCountsOldFinishedTasksAsIdleOnThisMachine(t *testing.T) {
+	w := newWaitWorkflowFixture(t)
+	db := w.f.s.sessions.Store()
+	seedOutcomeProject(t, db, w.store, w.f.account, w.f.user, "proj-idle", w.folder)
+	seedStoppedOutcomeTask(t, db, w.f.account, "proj-idle")
+	moveTaskProgressClockBy(t, 8*24*time.Hour)
+	runtime := tool.NewRuntime(1)
+	t.Cleanup(func() { _ = runtime.Close() })
+	runtime.SetManageSessionService(w.f.s.sessions)
+	runtime.SetManageProjectStore(db)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	raw, _ := json.Marshal(map[string]any{"action": "list_tasks", "project_id": "proj-idle", "limit": float64(2)})
+	out, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, tool.WorkspaceScope{Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: w.f.user, AccountScopeID: w.f.account}}, tool.Call{Name: "manage_projects", Arguments: string(raw)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkOutcomeCountsAre(t, "home idle", decodeToolAnswer(t, out), outcomeCountsIdleWant)
+}
+
+// Purpose: the idle rule of TestListTasksCountsOldFinishedTasksAsIdleOnThisMachine
+// holds on a linked machine: its task list route counts with the same
+// progress and bucket rule, and the home passes the counts on. Owners: the
+// machine's projectTaskOutcomeCounts and compactFleetTaskList at home, over
+// the real pinned link between two in-process daemons.
+func TestListTasksCountsOldFinishedTasksAsIdleOnLinkedMachine(t *testing.T) {
+	home := newFleetTestSwarm(t, "home")
+	defer home.cleanup()
+	remote := newFleetTestSwarm(t, "remote")
+	defer remote.cleanup()
+	body, _ := json.Marshal(map[string]string{"code": remote.invite(t), "name": "box"})
+	if status, out := home.call(t, http.MethodPost, "/v3/fleet/machines", string(body), false); status != http.StatusCreated {
+		t.Fatalf("link: %d %v", status, out)
+	}
+	autos := jobautomation.NewStore(remote.s.sessions.Store().Underlying())
+	remote.s.SetJobAutomations(jobautomation.NewRunner(jobautomation.Options{Store: autos}))
+	seedOutcomeProject(t, remote.s.sessions.Store(), autos, remote.account, remote.user, "remote-idle", t.TempDir())
+	seedStoppedOutcomeTask(t, remote.s.sessions.Store(), remote.account, "remote-idle")
+	moveTaskProgressClockBy(t, 8*24*time.Hour)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	raw, err := home.s.CallFleetProject(ctx, identity.Principal{Type: identity.PrincipalTypeUser, UserID: home.user, AccountScopeID: home.account}, "box", "list_tasks", map[string]any{"project_id": "remote-idle", "limit": float64(2)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkOutcomeCountsAre(t, "linked idle", decodeToolAnswer(t, string(raw)), outcomeCountsIdleWant)
+}
+
 // Purpose: a linked machine's list_tasks counts the same way: the machine's
 // task list route computes outcome_counts from its own task progress, the
 // home passes them on and leaves out the raw status_counts (needs_review
-// 4). Threat as TestListTasksCountsByOutcomeOnThisMachine, across the link.
+// 5). Threat as TestListTasksCountsByOutcomeOnThisMachine, across the link.
 // Owners: the machine's task list route (projectTaskOutcomeCounts) and
 // compactFleetTaskList at home, over the real pinned link between two
 // in-process daemons.

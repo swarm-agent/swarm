@@ -17,12 +17,18 @@ import (
 const (
 	// taskStaleAfterMillis is how long an in_progress or blocked task may go
 	// without an active run before its progress says stale.
-	taskStaleAfterMillis    int64 = 24 * 60 * 60 * 1000
+	taskStaleAfterMillis int64 = 24 * 60 * 60 * 1000
+	// taskIdleAfterMillis is how long ago a finished task last changed
+	// before its progress says idle: nobody is waiting on it any more.
+	taskIdleAfterMillis     int64 = 7 * 24 * 60 * 60 * 1000
 	maxTaskOutcome                = 120
 	outcomeReadyToIntegrate       = "ready to integrate"
-	outcomeIntegrated             = "integrated"
-	outcomeWorkflowPending        = "workflow pending"
-	outcomeStopped                = "stopped"
+	// outcomeFinished: the agent finished with nothing to hand over (no
+	// commits, nothing delivered or ready): progress state done.
+	outcomeFinished        = "finished"
+	outcomeIntegrated      = "integrated"
+	outcomeWorkflowPending = "workflow pending"
+	outcomeStopped         = "stopped"
 )
 
 // taskProgressNow is the clock task progress (and its stale flag) is read at.
@@ -30,10 +36,11 @@ var taskProgressNow = time.Now
 
 // taskProgressOutcome is the task's outcome: from its latest delivery
 // (running <step>, sent_back (round n), pushed <head12>, delivered <target>,
-// blocked <reason>, failed <step>); else integrated, delivered or ready to
-// integrate once its agent finished. "" while the task has not finished and
-// no workflow ran for it.
-func taskProgressOutcome(class string, latest []jobautomation.Delivery, workflow *taskProgressWorkflow, integrated bool, deliveredWhere string) string {
+// blocked <reason>, failed <step>); else integrated, delivered, or once its
+// agent finished: finished when its progress state is done (nothing to
+// integrate, the same decision get_task's summary reads), else ready to
+// integrate. "" while the task has not finished and no workflow ran for it.
+func taskProgressOutcome(class, state string, latest []jobautomation.Delivery, workflow *taskProgressWorkflow, integrated bool, deliveredWhere string) string {
 	if class == progressStopped {
 		// The person's stop is the latest thing that happened to the work.
 		return outcomeStopped
@@ -77,6 +84,8 @@ func taskProgressOutcome(class string, latest []jobautomation.Delivery, workflow
 		return outcomeIntegrated
 	case deliveredWhere != "":
 		return clipOutcome("delivered " + strings.TrimPrefix(deliveredWhere, "delivered to "))
+	case class == "finished" && state == progressDone:
+		return outcomeFinished
 	case class == "finished":
 		return outcomeReadyToIntegrate
 	}
@@ -129,7 +138,7 @@ func (s *Server) projectTaskOutcomeCounts(account string, tasks []pebblestore.Pr
 	counts := pebblestore.NewProjectTaskOutcomeCounts()
 	for _, task := range tasks {
 		p := s.taskProgressFor(account, task, now)
-		counts[pebblestore.ProjectTaskCountBucket(task.Status, p.Outcome, p.Stale)]++
+		counts[pebblestore.ProjectTaskCountBucket(task.Status, p.Outcome, p.Stale, p.Idle)]++
 	}
 	return counts
 }
@@ -148,6 +157,16 @@ func taskProgressStale(task pebblestore.ProjectTaskRecord, runActive bool, lastR
 	}
 	last := max(task.UpdatedAt, lastRunAt)
 	return last > 0 && now-last > taskStaleAfterMillis
+}
+
+// taskProgressIdle reports whether a finished (not working, waiting, failed
+// or stopped) task has not changed for taskIdleAfterMillis: updatedAt is its
+// progress's latest change.
+func taskProgressIdle(task pebblestore.ProjectTaskRecord, updatedAt, now int64) bool {
+	if taskStatusClass(task.Status) != "finished" {
+		return false
+	}
+	return updatedAt > 0 && now-updatedAt > taskIdleAfterMillis
 }
 
 // markTaskProgressStale sets p.Stale from the task's session run state. A run

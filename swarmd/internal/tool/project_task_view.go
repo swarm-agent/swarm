@@ -79,6 +79,7 @@ type projectTaskProgressRead struct {
 	Summary  string `json:"summary"`
 	Outcome  string `json:"outcome"`
 	Stale    bool   `json:"stale"`
+	Idle     bool   `json:"idle"`
 	Workflow *struct {
 		State      string `json:"state"`
 		Deliveries []struct {

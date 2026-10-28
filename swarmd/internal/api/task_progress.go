@@ -58,7 +58,11 @@ type taskProgress struct {
 	Outcome string `json:"outcome,omitempty"`
 	// Stale marks an in_progress or blocked task with no active run for
 	// taskStaleAfterMillis (taskProgressStale).
-	Stale       bool                     `json:"stale,omitempty"`
+	Stale bool `json:"stale,omitempty"`
+	// Idle marks a finished task that has not changed for
+	// taskIdleAfterMillis (taskProgressIdle): list counts put one with
+	// work still to hand over under idle, not needs_attention.
+	Idle        bool                     `json:"idle,omitempty"`
 	Workflow    *taskProgressWorkflow    `json:"workflow,omitempty"`
 	Integration *taskProgressIntegration `json:"integration,omitempty"`
 	History     []taskProgressEvent      `json:"history"`
@@ -521,7 +525,7 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 		out.Summary = "finished, nothing to integrate"
 	}
 	out.Summary = oneLineProgress(out.Summary, maxProgressSummary)
-	out.Outcome = taskProgressOutcome(class, latest, workflow, integrated, deliveredWhere)
+	out.Outcome = taskProgressOutcome(class, out.State, latest, workflow, integrated, deliveredWhere)
 	out.Workflow = workflow
 	out.Integration = integration
 	out.History = taskProgressHistory(task, deliveries, eval, ended, commits, branch, integrated, integratedCommit, target)
@@ -532,6 +536,7 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 	if out.UpdatedAt == 0 {
 		out.UpdatedAt = now
 	}
+	out.Idle = taskProgressIdle(task, out.UpdatedAt, now)
 	return out
 }
 

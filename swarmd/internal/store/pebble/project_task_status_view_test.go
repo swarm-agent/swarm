@@ -11,10 +11,14 @@ import (
 // reason; quota, shutdown or other cancellations and failed runs are not. A
 // task counts by its outcome once its run ended: pushed/delivered/integrated
 // are done, running/sent_back/workflow pending in progress, blocked, failed
-// and ready to integrate need attention; a stopped or stale task is stopped
-// whatever its outcome; a failed status needs attention even after an
-// earlier push. Threat: needs_review counted as waiting for review, a stop
-// counted as a failure, or a quota cancellation hidden as a stop. Owners:
+// and ready to integrate need attention; finished (nothing to integrate) is
+// done; a finished task idle for over 7 days with work never handed over is
+// idle, not attention, while idle never hides a failed/blocked status or a
+// stop; a stopped or stale task is stopped whatever its outcome; a failed
+// status needs attention even after an earlier push. Threat: needs_review
+// counted as waiting for review, hundreds of long-finished tasks called
+// "needing attention", a stop counted as a failure, or a quota cancellation
+// hidden as a stop. Owners:
 // ProjectTaskRunStoppedByPerson and ProjectTaskCountBucket (pure; the api
 // tests prove the wiring).
 func TestProjectTaskStoppedAndCountRules(t *testing.T) {
@@ -35,41 +39,55 @@ func TestProjectTaskStoppedAndCountRules(t *testing.T) {
 	}
 	for _, c := range []struct {
 		status, outcome string
-		stale           bool
+		stale, idle     bool
 		want            string
 	}{
-		{"needs_review", "pushed 0123456789ab", false, ProjectTaskCountDone},
-		{"needs_review", "delivered folder", false, ProjectTaskCountDone},
-		{"needs_review", "integrated", false, ProjectTaskCountDone},
-		{"completed", "", false, ProjectTaskCountDone},
-		{"needs_review", "sent_back (round 2)", false, ProjectTaskCountInProgress},
-		{"needs_review", "running review", false, ProjectTaskCountInProgress},
-		{"needs_review", "workflow pending", false, ProjectTaskCountInProgress},
-		{"in_progress", "", false, ProjectTaskCountInProgress},
-		{"queued", "", false, ProjectTaskCountWaiting},
-		{"pending_approval", "", false, ProjectTaskCountWaiting},
-		{"needs_review", "blocked rounds_exhausted: step send-back", false, ProjectTaskCountNeedsAttention},
-		{"needs_review", "failed push", false, ProjectTaskCountNeedsAttention},
-		{"needs_review", "ready to integrate", false, ProjectTaskCountNeedsAttention},
-		{"needs_review", "", false, ProjectTaskCountNeedsAttention},
-		{"failed", "pushed 0123456789ab", false, ProjectTaskCountNeedsAttention},
-		{"blocked", "", false, ProjectTaskCountNeedsAttention},
-		{ProjectTaskStatusStopped, "stopped", false, ProjectTaskCountStopped},
-		{ProjectTaskStatusStopped, "pushed 0123456789ab", false, ProjectTaskCountStopped},
-		{"in_progress", "", true, ProjectTaskCountStopped},
-		{"blocked", "", true, ProjectTaskCountStopped},
+		{"needs_review", "pushed 0123456789ab", false, false, ProjectTaskCountDone},
+		{"needs_review", "delivered folder", false, false, ProjectTaskCountDone},
+		{"needs_review", "integrated", false, false, ProjectTaskCountDone},
+		{"completed", "", false, false, ProjectTaskCountDone},
+		{"needs_review", "sent_back (round 2)", false, false, ProjectTaskCountInProgress},
+		{"needs_review", "running review", false, false, ProjectTaskCountInProgress},
+		{"needs_review", "workflow pending", false, false, ProjectTaskCountInProgress},
+		{"in_progress", "", false, false, ProjectTaskCountInProgress},
+		{"queued", "", false, false, ProjectTaskCountWaiting},
+		{"pending_approval", "", false, false, ProjectTaskCountWaiting},
+		{"needs_review", "blocked rounds_exhausted: step send-back", false, false, ProjectTaskCountNeedsAttention},
+		{"needs_review", "failed push", false, false, ProjectTaskCountNeedsAttention},
+		{"needs_review", "ready to integrate", false, false, ProjectTaskCountNeedsAttention},
+		{"needs_review", "", false, false, ProjectTaskCountNeedsAttention},
+		{"failed", "pushed 0123456789ab", false, false, ProjectTaskCountNeedsAttention},
+		{"blocked", "", false, false, ProjectTaskCountNeedsAttention},
+		{ProjectTaskStatusStopped, "stopped", false, false, ProjectTaskCountStopped},
+		{ProjectTaskStatusStopped, "pushed 0123456789ab", false, false, ProjectTaskCountStopped},
+		{"in_progress", "", true, false, ProjectTaskCountStopped},
+		{"blocked", "", true, false, ProjectTaskCountStopped},
+		// A finished task with nothing to integrate is done, recent or old.
+		{"needs_review", "finished", false, false, ProjectTaskCountDone},
+		{"needs_review", "finished", false, true, ProjectTaskCountDone},
+		// Work never handed over, finished over 7 days ago: idle, not
+		// attention; a handed-over or running one keeps its bucket.
+		{"needs_review", "ready to integrate", false, true, ProjectTaskCountIdle},
+		{"needs_review", "blocked rounds_exhausted: step send-back", false, true, ProjectTaskCountIdle},
+		{"needs_review", "", false, true, ProjectTaskCountIdle},
+		{"needs_review", "pushed 0123456789ab", false, true, ProjectTaskCountDone},
+		{"needs_review", "sent_back (round 2)", false, true, ProjectTaskCountInProgress},
+		// Idle never hides a failed or blocked status, or a stop.
+		{"failed", "ready to integrate", false, true, ProjectTaskCountNeedsAttention},
+		{"blocked", "", false, true, ProjectTaskCountNeedsAttention},
+		{ProjectTaskStatusStopped, "stopped", false, true, ProjectTaskCountStopped},
 	} {
-		if got := ProjectTaskCountBucket(c.status, c.outcome, c.stale); got != c.want {
-			t.Fatalf("bucket(%q, %q, stale=%v) = %q, want %q", c.status, c.outcome, c.stale, got, c.want)
+		if got := ProjectTaskCountBucket(c.status, c.outcome, c.stale, c.idle); got != c.want {
+			t.Fatalf("bucket(%q, %q, stale=%v, idle=%v) = %q, want %q", c.status, c.outcome, c.stale, c.idle, got, c.want)
 		}
 	}
 	counts := NewProjectTaskOutcomeCounts()
-	for _, bucket := range []string{ProjectTaskCountDone, ProjectTaskCountInProgress, ProjectTaskCountWaiting, ProjectTaskCountNeedsAttention, ProjectTaskCountStopped} {
+	for _, bucket := range []string{ProjectTaskCountDone, ProjectTaskCountInProgress, ProjectTaskCountWaiting, ProjectTaskCountNeedsAttention, ProjectTaskCountIdle, ProjectTaskCountStopped} {
 		if n, ok := counts[bucket]; !ok || n != 0 {
 			t.Fatalf("zero counts miss %s: %v", bucket, counts)
 		}
 	}
-	if len(counts) != 5 {
+	if len(counts) != 6 {
 		t.Fatalf("zero counts = %v", counts)
 	}
 }

@@ -22,7 +22,9 @@ const outcomeTestHead = "0123456789abcdef0123456789abcdef01234567"
 //   - pushed: its delivery reviewed it and ran the push step at outcomeTestHead
 //   - sent-back: its delivery sent the work back (round 2)
 //   - blocked: its delivery ran out of rounds
-//   - plain: no workflow ran for it
+//   - plain: no workflow ran for it; one commit on its branch not integrated
+//   - finder: a read-only finder task, no workflow, no commits, nothing to
+//     hand over (finished, nothing to integrate)
 //   - task_wf_r1..r3: reviewer tasks a workflow started for pushed
 //   - abandoned: in_progress, no run, untouched for more than a day (stale)
 //   - busy: in_progress with an active run in its session (not stale)
@@ -41,9 +43,11 @@ func seedOutcomeProject(t *testing.T, db *pebblestore.SessionStore, autos *jobau
 			t.Fatal(err)
 		}
 	}
-	for _, id := range []string{"pushed", "sent-back", "blocked", "plain"} {
+	for _, id := range []string{"pushed", "sent-back", "blocked"} {
 		put(pebblestore.ProjectTaskRecord{ID: id, Agent: "coder", Status: "needs_review"})
 	}
+	put(pebblestore.ProjectTaskRecord{ID: "plain", Agent: "coder", Status: "needs_review", WorktreeBranch: "agent/plain", BaseBranch: "dev", UnintegratedCommits: 1})
+	put(pebblestore.ProjectTaskRecord{ID: "finder", Agent: "finder", Status: "needs_review"})
 	for _, id := range []string{"task_wf_r1", "task_wf_r2", "task_wf_r3"} {
 		put(pebblestore.ProjectTaskRecord{ID: id, Agent: "reviewer", Status: "completed", AutomationID: "workflow:" + id, ReviewJob: taskRunJobID(projectID, "pushed")})
 	}
@@ -128,7 +132,7 @@ func checkOutcomeListing(t *testing.T, where string, rows map[string]map[string]
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	if strings.Join(ids, ",") != "abandoned,blocked,busy,plain,pushed,sent-back" {
+	if strings.Join(ids, ",") != "abandoned,blocked,busy,finder,plain,pushed,sent-back" {
 		t.Fatalf("%s default listing = %v", where, ids)
 	}
 	if n, _ := answer["workflow_tasks"].(float64); n != 3 {
@@ -143,6 +147,8 @@ func checkOutcomeListing(t *testing.T, where string, rows map[string]map[string]
 		"sent-back": "sent_back (round 2)",
 		"blocked":   "blocked rounds_exhausted: step send-back",
 		"plain":     "ready to integrate",
+		// Nothing to integrate: finished, as get_task says.
+		"finder": "finished",
 	}
 	for id, outcome := range want {
 		if rows[id]["outcome"] != outcome {
@@ -172,7 +178,14 @@ func checkOutcomeListing(t *testing.T, where string, rows map[string]map[string]
 // over a day from now.
 func moveTaskProgressClock(t *testing.T) {
 	t.Helper()
-	later := time.Now().Add(25 * time.Hour)
+	moveTaskProgressClockBy(t, 25*time.Hour)
+}
+
+// moveTaskProgressClockBy reads task progress (stale and idle flags) by
+// later than now.
+func moveTaskProgressClockBy(t *testing.T, by time.Duration) {
+	t.Helper()
+	later := time.Now().Add(by)
 	previous := taskProgressNow
 	taskProgressNow = func() time.Time { return later }
 	t.Cleanup(func() { taskProgressNow = previous })
@@ -184,7 +197,9 @@ func moveTaskProgressClock(t *testing.T) {
 // they review (reviews: 3) and in workflow_tasks; include_workflow_tasks
 // lists them; each row carries outcome from the task's latest workflow
 // delivery (pushed <head12>, sent_back (round n), blocked <reason>) or, with
-// no workflow, ready to integrate; an in_progress task with no active run for
+// no workflow, ready to integrate when it has commits and finished (as
+// get_task's "finished, nothing to integrate") when it has none; an
+// in_progress task with no active run for
 // over a day is stale: true while one with an active run is not; rows drop
 // project_id and archived:false; limit is at most 50.
 // Threat: the live failure: a 16 KB answer of reviewer rows, needs_review
@@ -221,13 +236,21 @@ func TestOrchestratorListTasksSaysWhatHappenedOnThisMachine(t *testing.T) {
 	}
 	rows, answer := outcomeTestRows(t, raw)
 	checkOutcomeListing(t, "home", rows, answer)
+	// get_task of the no-commit finder says the same thing as its row.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	getRaw, _ := json.Marshal(map[string]any{"action": "get_task", "project_id": "proj-out", "task_id": "finder"})
+	got, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, tool.Call{Name: "manage_projects", Arguments: string(getRaw)})
+	if err != nil || !strings.Contains(got, "finished, nothing to integrate") {
+		t.Fatalf("get_task finder: %v %s", err, got)
+	}
 
 	raw, err = list(map[string]any{"include_workflow_tasks": true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	rows, answer = outcomeTestRows(t, raw)
-	if len(rows) != 9 || rows["task_wf_r2"] == nil || answer["workflow_tasks"] != nil || answer["workflow_tasks_hint"] != nil || rows["pushed"]["reviews"] != nil {
+	if len(rows) != 10 || rows["task_wf_r2"] == nil || answer["workflow_tasks"] != nil || answer["workflow_tasks_hint"] != nil || rows["pushed"]["reviews"] != nil {
 		t.Fatalf("include_workflow_tasks listing: %d rows %v", len(rows), answer)
 	}
 	if _, err := list(map[string]any{"limit": float64(51)}); err == nil || !strings.Contains(err.Error(), "between 1 and 50") {
@@ -289,7 +312,7 @@ func TestOrchestratorListTasksSaysWhatHappenedOnLinkedMachine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rows, _ := outcomeTestRows(t, raw); len(rows) != 9 || rows["task_wf_r1"] == nil {
+	if rows, _ := outcomeTestRows(t, raw); len(rows) != 10 || rows["task_wf_r1"] == nil {
 		t.Fatalf("linked include_workflow_tasks: %d rows", len(rows))
 	}
 	for _, args := range []map[string]any{{"limit": float64(51)}, {"include_workflow_tasks": "yes"}} {

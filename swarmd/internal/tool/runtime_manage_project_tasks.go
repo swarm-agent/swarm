@@ -446,11 +446,11 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 			// in the same buckets as a linked machine's list.
 			counts := pebblestore.NewProjectTaskOutcomeCounts()
 			for _, task := range page.Counted {
-				outcome, stale := "", false
+				outcome, stale, idle := "", false, false
 				if progress := r.projectTaskProgress(account, task); progress != nil {
-					outcome, stale = progress.Outcome, progress.Stale
+					outcome, stale, idle = progress.Outcome, progress.Stale, progress.Idle
 				}
-				counts[pebblestore.ProjectTaskCountBucket(task.Status, outcome, stale)]++
+				counts[pebblestore.ProjectTaskCountBucket(task.Status, outcome, stale, idle)]++
 			}
 			result["outcome_counts"] = counts
 			result["tasks"], result["count"], result["total"] = rows, len(rows), page.Total

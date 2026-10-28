@@ -32,9 +32,14 @@ const (
 	ProjectTaskCountInProgress = "in_progress"
 	// ProjectTaskCountWaiting: queued, or waiting for approval to start.
 	ProjectTaskCountWaiting = "waiting"
-	// ProjectTaskCountNeedsAttention: blocked, failed, or ready to integrate
-	// with no workflow handing it over.
+	// ProjectTaskCountNeedsAttention: blocked, failed, or finished within the
+	// last 7 days with work to hand over (ready to integrate, a workflow
+	// that blocked or failed) and no workflow handing it over.
 	ProjectTaskCountNeedsAttention = "needs_attention"
+	// ProjectTaskCountIdle: finished over 7 days ago (progress idle) with
+	// work never handed over: nobody is waiting on it, so it is not called
+	// attention.
+	ProjectTaskCountIdle = "idle"
 	// ProjectTaskCountStopped: stopped by the person, or stale (no active run
 	// for a day).
 	ProjectTaskCountStopped = "stopped"
@@ -43,13 +48,13 @@ const (
 // NewProjectTaskOutcomeCounts is a zero count for every bucket, so a reader
 // sees every bucket and never infers one from a missing key.
 func NewProjectTaskOutcomeCounts() map[string]int {
-	return map[string]int{ProjectTaskCountDone: 0, ProjectTaskCountInProgress: 0, ProjectTaskCountWaiting: 0, ProjectTaskCountNeedsAttention: 0, ProjectTaskCountStopped: 0}
+	return map[string]int{ProjectTaskCountDone: 0, ProjectTaskCountInProgress: 0, ProjectTaskCountWaiting: 0, ProjectTaskCountNeedsAttention: 0, ProjectTaskCountIdle: 0, ProjectTaskCountStopped: 0}
 }
 
 // ProjectTaskCountBucket is the bucket of one task from its status and its
-// progress outcome and stale flag. It is the one rule list counts use on this
-// machine and on linked machines.
-func ProjectTaskCountBucket(status, outcome string, stale bool) string {
+// progress outcome, stale and idle flags. It is the one rule list counts use
+// on this machine and on linked machines.
+func ProjectTaskCountBucket(status, outcome string, stale, idle bool) string {
 	if status == ProjectTaskStatusStopped || stale {
 		return ProjectTaskCountStopped
 	}
@@ -67,11 +72,15 @@ func ProjectTaskCountBucket(status, outcome string, stale bool) string {
 	// work is.
 	word, _, _ := strings.Cut(strings.TrimSpace(outcome), " ")
 	switch word {
-	case "pushed", "delivered", "integrated":
+	case "pushed", "delivered", "integrated", "finished":
+		// "finished": nothing to integrate or deliver.
 		return ProjectTaskCountDone
 	case "running", "sent_back", "workflow":
 		// "workflow pending": its workflows were not evaluated yet.
 		return ProjectTaskCountInProgress
+	}
+	if idle {
+		return ProjectTaskCountIdle
 	}
 	return ProjectTaskCountNeedsAttention
 }
