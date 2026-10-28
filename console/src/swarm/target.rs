@@ -1,9 +1,10 @@
 //! The machine Swarm runs on: this computer, or a server reached over SSH.
 //!
 //! Root steps (the installer, connecting this app, making folders visible)
-//! go through pkexec, the desktop password prompt, on this computer, and through
-//! sudo over SSH on a server. The app's client session (its token) is read
-//! from the person's private files and checked first.
+//! go through sudo: on this computer `sudo -n`, then the app's own password
+//! prompt when sudo needs a password (see `root`); on a server, `sudo -n` over
+//! SSH. The app's client session (its token) is read from the person's
+//! private files and checked first.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -11,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use super::APP_NAME;
+use super::root::{self, AskPassword, Outcome, Password};
 
 /// Swarm's loopback API on the machine.
 pub const API_PORT: u16 = 7781;
@@ -193,55 +195,43 @@ impl Target {
         }
     }
 
-    /// Runs a root command, passing each stdout line to `on_line`.
-    pub fn run_root(&self, args: &[String], mut on_line: impl FnMut(String)) -> Result<(), String> {
-        let mut cmd = match self {
-            Target::Local => {
-                let mut c = Command::new("pkexec");
-                c.args(args);
-                c
-            }
+    /// Runs a root command, passing each stdout line to `on_line`. On this
+    /// computer `sudo -n` runs it when sudo needs nothing; otherwise `ask`
+    /// (the app's password prompt) is asked, again after a wrong password,
+    /// until it runs or the person cancels. A server never asks: `sudo -n`
+    /// over SSH, as `check_server` made sure works.
+    pub fn run_root(&self, args: &[String], ask: &dyn AskPassword, mut on_line: impl FnMut(String)) -> Result<(), String> {
+        match self {
             Target::Ssh { .. } => {
                 let mut c = self.ssh();
                 c.arg(format!("sudo -n -- {}", args.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ")));
-                c
+                let (code, errs, _) = run_lines(c, None, &mut on_line)?;
+                match code {
+                    Some(0) => Ok(()),
+                    _ => Err(errs.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("it stopped with an error").trim_start_matches("error: ").to_string()),
+                }
             }
-        };
-        let mut child = cmd
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("could not start {}: {e}", args.first().map(String::as_str).unwrap_or("")))?;
-        let stderr = child.stderr.take();
-        let errs = std::thread::spawn(move || {
-            let mut s = String::new();
-            if let Some(mut e) = stderr {
-                let _ = e.read_to_string(&mut s);
+            Target::Local => {
+                let mut c = Command::new("sudo");
+                c.args(root::sudo_without_password(args));
+                let (code, errs, printed) = run_lines(c, None, &mut on_line)?;
+                let mut result = root::outcome(code, &errs, printed, false);
+                while matches!(result, Outcome::NeedsPassword | Outcome::WrongPassword) {
+                    let retry = (result == Outcome::WrongPassword).then_some(root::WRONG_PASSWORD);
+                    let Some(password) = ask.ask(&root::summary(args), &root::command_line(args), retry) else {
+                        return Err(root::CANCELLED.into());
+                    };
+                    let mut c = Command::new("sudo");
+                    c.args(root::sudo_with_password(args));
+                    let (code, errs, printed) = run_lines(c, Some(password), &mut on_line)?;
+                    result = root::outcome(code, &errs, printed, true);
+                }
+                match result {
+                    Outcome::Done => Ok(()),
+                    other => Err(root::message(&other)),
+                }
             }
-            s
-        });
-        if let Some(out) = child.stdout.take() {
-            for line in BufReader::new(out).lines().map_while(Result::ok) {
-                on_line(line);
-            }
         }
-        let status = child.wait().map_err(|e| e.to_string())?;
-        let errs = errs.join().unwrap_or_default();
-        if status.success() {
-            return Ok(());
-        }
-        if matches!(self, Target::Local) && status.code() == Some(126) {
-            return Err("The password prompt was closed, so nothing changed.".into());
-        }
-        if matches!(self, Target::Local) && status.code() == Some(127) {
-            return Err(format!(
-                "Your desktop could not show a password prompt for this app, so nothing changed. Open Swarm Console from your desktop's app menu, or run this in a terminal and press Connect again: sudo {}",
-                args.join(" ")
-            ));
-        }
-        let last = errs.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("it stopped with an error");
-        Err(last.trim_start_matches("error: ").to_string())
     }
 
     /// Puts the installer on the machine and returns its path there.
@@ -307,20 +297,20 @@ impl Target {
     /// Makes this app a client of the machine's Swarm: as root, Swarm mints an
     /// owner session named for this app. Here it lands in the person's config;
     /// from a server it is printed over SSH and kept in this PC's private folder.
-    pub fn connect(&self) -> Result<String, String> {
+    pub fn connect(&self, ask: &dyn AskPassword) -> Result<String, String> {
         let person = self.person();
         let device = this_computer();
         match self {
             Target::Local => {
                 let args: Vec<String> = [SWARMCTL, "client", "connect", APP_NAME, "--device", &device, "--for-user", &person].map(String::from).to_vec();
                 let mut usage = false;
-                self.run_root(&args, |line| usage |= line.trim() == "Usage:").map_err(|e| older(usage, e))?;
+                self.run_root(&args, ask, |line| usage |= line.trim() == "Usage:").map_err(|e| older(usage, e))?;
             }
             Target::Ssh { .. } => {
                 let args: Vec<String> = [SWARMCTL, "client", "connect", APP_NAME, "--device", &device, "--print"].map(String::from).to_vec();
                 let mut token = String::new();
                 let mut usage = false;
-                self.run_root(&args, |line| {
+                self.run_root(&args, ask, |line| {
                     usage |= line.trim() == "Usage:";
                     if token.is_empty() && line.trim().len() > 20 && !line.contains(' ') {
                         token = line.trim().to_string();
@@ -416,6 +406,40 @@ impl Target {
             }
         }
     }
+}
+
+/// Runs `cmd`, passing each stdout line to `on_line`; returns its exit code,
+/// its stderr and whether it printed anything. With a password, the password
+/// and a newline are the only bytes written to its stdin, which then closes
+/// (sudo -S reads exactly that line), and the password is wiped at once.
+fn run_lines(mut cmd: Command, password: Option<Password>, on_line: &mut dyn FnMut(String)) -> Result<(Option<i32>, String, bool), String> {
+    cmd.stdin(if password.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let program = cmd.get_program().to_string_lossy().to_string();
+    let mut child = cmd.spawn().map_err(|e| format!("could not start {program}: {e}"))?;
+    if let Some(password) = password {
+        if let Some(mut stdin) = child.stdin.take() {
+            // A write error means sudo already stopped; its exit says why.
+            let _ = stdin.write_all(password.as_bytes()).and_then(|_| stdin.write_all(b"\n"));
+        }
+        drop(password);
+    }
+    let stderr = child.stderr.take();
+    let errs = std::thread::spawn(move || {
+        let mut s = String::new();
+        if let Some(mut e) = stderr {
+            let _ = e.read_to_string(&mut s);
+        }
+        s
+    });
+    let mut printed = false;
+    if let Some(out) = child.stdout.take() {
+        for line in BufReader::new(out).lines().map_while(Result::ok) {
+            printed = true;
+            on_line(line);
+        }
+    }
+    let status = child.wait().map_err(|e| e.to_string())?;
+    Ok((status.code(), errs.join().unwrap_or_default(), printed))
 }
 
 fn walk_repos(dir: &Path, depth: usize, found: &mut Vec<String>) {

@@ -41,12 +41,16 @@ Ubuntu 24.04, x86_64. The installer is the same one people run by hand:
 
 ```sh
 curl -fsSL https://swarmagent.dev/install -o install.sh
-pkexec bash install.sh --for-user "$USER" --name office-server --progress=json
+sudo bash install.sh --for-user "$USER" --name office-server --progress=json
 ```
 
-- **pkexec** is the desktop password prompt. The installer recognizes the person
-  who typed their password (`PKEXEC_UID`, like `SUDO_USER` under sudo) and makes
-  them Swarm's owner.
+- **The password.** Try `sudo -n` first (a cached sudo or a NOPASSWD rule
+  needs nothing). When sudo needs a password, ask for it in your own client,
+  naming the command, and give it to `sudo -S -k -p '' -- COMMAND` on stdin
+  only, never in argv, the environment, a file or a log. Desktops without a
+  polkit agent cannot show pkexec's prompt. The installer recognizes the person
+  behind sudo (`SUDO_USER`, or `PKEXEC_UID` under pkexec) and makes them
+  Swarm's owner.
 - **`--name`** is the machine's name. Ask the person for it.
 - **`--progress=json`** adds one line per step on stdout, next to the human
   output. Read only the lines that start with `{"swarm_progress"`:
@@ -66,7 +70,7 @@ Show the person where the installer comes from before asking for the password.
 ## 3. Connect: an owner session for your client
 
 ```sh
-pkexec swarmctl client connect my-console --for-user "$USER"
+sudo swarmctl client connect my-console --for-user "$USER"
 ```
 
 - **What it makes:** Swarm mints an owner session named for your client over its
@@ -144,11 +148,16 @@ Everything else uses the same routes as the web UI:
 | Linked machines | `/v3/fleet…` on the home machine |
 
 Swarm cannot see a person's home folders until they are made visible. When it
-answers `workspace_not_visible`, run once, for all the folders:
+answers `workspace_not_visible`, run once, for all the folders, then add them
+again:
 
 ```sh
-pkexec swarmctl workspace add ~/app ~/docs
+sudo swarmctl workspace add /srv/app /srv/docs
 ```
+
+It binds the folders into the running Swarm at once, without a restart, and
+says "Swarm can use the folders now". Only when that is impossible does it
+restart Swarm once nothing runs, and says why.
 
 ## Clients and agents
 
@@ -170,9 +179,9 @@ same records:
   backend process.
 - **Provider keys never pass through a client.** Use ChatGPT's device sign-in,
   or Swarm's own key form.
-- **Ask for the password** (pkexec or sudo) only for the installer, for
+- **Ask for the password** only for the installer, for
   `swarmctl client connect` and for making folders visible. Say what it will do
-  first.
+  first, pass it to sudo only, and keep nothing of it.
 - **Listen on nothing.** A client with a server (a web app) binds that server to
   loopback.
 - **Agent output is untrusted text.** Render titles, reports and file names;

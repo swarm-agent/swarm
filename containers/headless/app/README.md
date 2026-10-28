@@ -183,7 +183,12 @@ from outside: `sudo install.sh workspace add ~/my-app` (run by the person, or
 by the AI setting the machine up; `--for-user NAME` when not run through sudo)
 binds exactly that folder, a Git repository or not, owned by that person, into
 the service at its real path, gives Swarm's user access to it
-(the owner keeps full rights on what Swarm creates) and restarts Swarm.
+(the owner keeps full rights on what Swarm creates) and mounts it into the
+running Swarm at once (`systemctl bind`), so Swarm and every agent sandbox it
+starts afterwards see it without a restart. The unit drop-in keeps it there
+after later restarts. Only when the live mount is impossible does it say why
+and restart Swarm once nothing runs. `workspace remove` unmounts the folder the
+same way.
 Swarm itself never changes the machine. That folder's agent sandbox runs as its
 owner (with Swarm's group), so what agents create stays the person's, while
 Swarm keeps running as `swarm`. Then register the folder in place

@@ -11,6 +11,7 @@ use crate::data::{
 use crate::layout::{Axis, Node, PaneId};
 use crate::icons::{Icon, IconStyle};
 use crate::onboarding::{Onboarding, OnboardingEvent};
+use crate::password_prompt::PasswordPrompt;
 use crate::swarm::target::Target;
 use crate::theme::{Concept, Theme};
 use std::collections::HashSet;
@@ -335,6 +336,8 @@ pub struct Console {
     keys_page: fleet_keys::KeysPage,
     /// Model settings being applied to linked machines from the Agents page.
     model_apply: agents::ModelApply,
+    /// The password prompt root steps started here use (adding folders).
+    password: Entity<PasswordPrompt>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -493,6 +496,7 @@ impl Console {
             live_page: Default::default(),
             keys_page: Default::default(),
             model_apply: Default::default(),
+            password: cx.new(|cx| PasswordPrompt::new(Theme::for_concept(concept), cx)),
         };
         if demo {
             // Three panes: one beside a stack of two, to show both split directions.
@@ -563,6 +567,8 @@ impl Console {
             let (theme, icons) = (self.theme.clone(), self.icon_style());
             onboarding.update(cx, |o, cx| o.set_theme(theme, icons, cx));
         }
+        let theme = self.theme.clone();
+        self.password.update(cx, |p, cx| p.set_theme(theme, cx));
         cx.notify();
     }
 
@@ -1555,6 +1561,7 @@ impl Render for Console {
             .children(self.render_fleet_popover(cx))
             .children(self.render_project_menu(cx))
             .children(self.render_preview(cx))
+            .child(self.password.clone())
     }
 }
 

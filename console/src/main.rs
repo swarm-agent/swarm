@@ -8,6 +8,7 @@ mod fleet_config;
 mod icons;
 mod onboarding;
 mod machine;
+mod password_prompt;
 mod swarm;
 mod text_input;
 mod layout;
@@ -30,6 +31,8 @@ fn main() {
     }
     Application::new().with_assets(icons::Assets).run(|cx: &mut App| {
         cx.bind_keys([
+            KeyBinding::new("enter", password_prompt::Submit, Some("PasswordPrompt")),
+            KeyBinding::new("escape", password_prompt::Cancel, Some("PasswordPrompt")),
             KeyBinding::new("enter", onboarding::Continue, Some("Onboarding")),
             KeyBinding::new("escape", onboarding::Back, Some("Onboarding")),
             KeyBinding::new("enter", console::Send, Some("Composer")),

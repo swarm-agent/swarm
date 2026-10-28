@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 
 use crate::icons::{Icon, IconStyle};
 use crate::fleet_config::{FleetConfig, THIS_PC};
+use crate::password_prompt::PasswordPrompt;
 use crate::swarm::client::{self, Client};
 use crate::swarm::fleet;
 use crate::swarm::progress::{self, Event as Progress};
@@ -165,6 +166,9 @@ pub struct Onboarding {
     existing: Option<Existing>,
     /// Home and access as chosen here, saved before the provider step.
     draft: FleetConfig,
+    /// The password prompt every root step here uses (install, connect,
+    /// making folders visible).
+    password: Entity<PasswordPrompt>,
 }
 
 impl EventEmitter<OnboardingEvent> for Onboarding {}
@@ -214,6 +218,7 @@ fn hello(api: &str) -> Hello {
 impl Onboarding {
     pub fn new(theme: Theme, icons: IconStyle, target: Target, cx: &mut Context<Self>) -> Self {
         let colors = input_colors(&theme);
+        let password = cx.new(|cx| PasswordPrompt::new(theme.clone(), cx));
         let mut this = Onboarding {
             name: cx.new(|cx| TextInput::new("my-project", colors, cx)),
             swarm_name: cx.new(|cx| TextInput::new("office-server", colors, cx)),
@@ -244,6 +249,7 @@ impl Onboarding {
             first: true,
             existing: None,
             draft: FleetConfig::default(),
+            password,
         };
         this.pending_focus = Some(this.focus.clone());
         if let Ok(stage) = std::env::var("SWARM_CONSOLE_ONBOARDING_DEMO") {
@@ -257,6 +263,8 @@ impl Onboarding {
         for input in [&self.name, &self.swarm_name, &self.server, &self.folder, &self.key, &self.code_view, &self.link_view] {
             input.update(cx, |i, _| i.set_colors(colors));
         }
+        let prompt_theme = theme.clone();
+        self.password.update(cx, |p, cx| p.set_theme(prompt_theme, cx));
         self.theme = theme;
         self.icons = icons;
         cx.notify();
@@ -371,10 +379,12 @@ impl Onboarding {
     fn connect(&mut self, cx: &mut Context<Self>) {
         self.go(Stage::Connecting, cx);
         let target = self.target.clone();
+        let asker = self.password.update(cx, |p, cx| p.asker(cx));
         self.run(
             cx,
             move || {
-                let token = target.connect()?;
+                let token = target.connect(&asker)?;
+                drop(asker);
                 let client = Client::new(target.api(), token);
                 client.get("/v3/projects?limit=1").map_err(|e| e.to_string())?;
                 Ok::<_, String>(client)
@@ -404,6 +414,7 @@ impl Onboarding {
         self.named = true;
         let extra = std::env::var("SWARM_CONSOLE_INSTALL_ARGS").unwrap_or_default();
         let (tx, rx) = mpsc::channel::<Result<Progress, Result<(), String>>>();
+        let asker = self.password.update(cx, |p, cx| p.asker(cx));
         std::thread::spawn(move || {
             let result = (|| {
                 let installer = target.stage_installer()?;
@@ -418,12 +429,13 @@ impl Onboarding {
                 }
                 args.extend(extra.split_whitespace().map(String::from));
                 let line_tx = tx.clone();
-                target.run_root(&args, move |line| {
+                target.run_root(&args, &asker, move |line| {
                     if let Some(event) = progress::parse_line(&line) {
                         let _ = line_tx.send(Ok(event));
                     }
                 })
             })();
+            drop(asker);
             let _ = tx.send(Err(result));
         });
         self.task = Some(cx.spawn(async move |this, cx| {
@@ -472,6 +484,7 @@ impl Onboarding {
             return;
         }
         let target = self.target.clone();
+        let asker = self.password.update(cx, |p, cx| p.asker(cx));
         self.run(
             cx,
             move || {
@@ -483,7 +496,8 @@ impl Onboarding {
                     }
                     std::thread::sleep(Duration::from_secs(1));
                 }
-                let token = target.connect()?;
+                let token = target.connect(&asker)?;
+                drop(asker);
                 let client = Client::new(&api, token);
                 client.get("/v3/projects?limit=1").map_err(|e| e.to_string())?;
                 Ok::<_, String>((client, hello(&api)))
@@ -941,21 +955,24 @@ impl Onboarding {
     }
 
     /// Swarm runs as its own user and cannot see inside a home folder: as
-    /// root (`swarmctl workspace add`), the app lets it read exactly these
-    /// folders, waits for Swarm's restart, then creates the project. On this
-    /// PC that is the one password prompt; on a server, nothing to answer.
+    /// root (`swarmctl workspace add`, every folder in one call), the app
+    /// lets it read exactly these folders, then creates the project. On this
+    /// PC that is at most one password, in the app's own prompt; on a server,
+    /// nothing to answer. swarmctl makes the folders visible to the running
+    /// Swarm; only when it cannot does it restart Swarm, which is waited for.
     fn make_visible(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {
         let target = self.target.clone();
-        let note = format!("Letting Swarm read {} (Swarm restarts once)…", paths.join(", "));
+        let note = format!("Letting Swarm read {}…", paths.join(", "));
+        let asker = self.password.update(cx, |p, cx| p.asker(cx));
         self.run(
             cx,
             move || {
-                let mut args: Vec<String> = vec![crate::swarm::target::SWARMCTL.into(), "workspace".into(), "add".into()];
-                args.extend(paths);
-                args.extend(["--for-user".to_string(), target.person()]);
-                target.run_root(&args, |_| {})?;
-                // Swarm restarts to apply the folder list; wait until it answers.
-                std::thread::sleep(Duration::from_secs(2));
+                let args = crate::swarm::folders::workspace_add_argv(&paths, &target.person());
+                let ran = target.run_root(&args, &asker, |_| {});
+                drop(asker);
+                ran?;
+                // After a restart (when the running Swarm could not be
+                // changed in place) wait until it answers again.
                 for _ in 0..90 {
                     if client::running(&target.api()) {
                         return Ok(());
@@ -1174,7 +1191,7 @@ impl Onboarding {
             _ => Stage::Welcome,
         };
         if std::env::var("SWARM_CONSOLE_ONBOARDING_ERROR").is_ok() {
-            self.error = Some("The password prompt was closed, so nothing changed.".into());
+            self.error = Some(crate::swarm::root::CANCELLED.into());
         }
     }
 
@@ -2067,6 +2084,7 @@ impl Render for Onboarding {
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::primary))
             .on_action(cx.listener(Self::back))
+            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -2079,6 +2097,7 @@ impl Render for Onboarding {
             .text_size(px(13.))
             .child(card)
             .child(div().text_size(px(11.)).text_color(t.faint).child(hint))
+            .child(self.password.clone())
     }
 }
 

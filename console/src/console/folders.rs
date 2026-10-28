@@ -3,6 +3,11 @@
 //! starts at the home folder and lists repositories with an AGENTS.md or
 //! CLAUDE.md first; ticks hold while moving between directories. Nothing
 //! here goes through the onboarding (swarm::folders).
+//!
+//! Folders Swarm cannot read yet are given access in place: "Give Swarm
+//! access" runs `swarmctl workspace add` for all of them as one root step
+//! (the password prompt when sudo needs one), then adds the same folders to
+//! the project again and shows what came of it.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -23,6 +28,13 @@ pub(super) struct Pick {
     adding: bool,
     /// What the last add came to, or Swarm's refusal.
     result: Option<Result<Outcome, String>>,
+    /// "Give Swarm access" is running, and why it last did not get done.
+    granting: bool,
+    grant_error: Option<String>,
+    /// Access was given for this result's unreadable folders already.
+    granted: bool,
+    /// The exact command is unfolded.
+    show_command: bool,
 }
 
 #[derive(Clone, Default)]
@@ -105,6 +117,8 @@ impl Console {
         let paths: Vec<String> = pick.selected.iter().cloned().collect();
         pick.adding = true;
         pick.result = None;
+        pick.grant_error = None;
+        pick.granted = false;
         let current = self.project_folders(&id);
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -120,6 +134,65 @@ impl Console {
                             pick.result = Some(Ok(Outcome { added: a.added, invisible: a.invisible, need_first_commit: a.need_first_commit, notes: a.notes }));
                         }
                         Err(e) => pick.result = Some(Err(e)),
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Lets Swarm read the folders it could not (one root step for all of
+    /// them), then adds those same folders to the project again.
+    fn give_access(&mut self, cx: &mut Context<Self>) {
+        let Some(client) = self.live.as_ref().map(|l| l.client()) else { return };
+        let asker = self.password.update(cx, |p, cx| p.asker(cx));
+        let Some(pick) = &mut self.folders.pick else { return };
+        let Some(Ok(before)) = pick.result.clone() else { return };
+        if pick.granting || before.invisible.is_empty() {
+            return;
+        }
+        let id = pick.project_id.clone();
+        let paths = before.invisible.clone();
+        pick.granting = true;
+        pick.grant_error = None;
+        // The first add's folders may not be in the live list yet: keep them.
+        let current = folders::merged(&self.project_folders(&id), &before.added);
+        let target = Target::Local;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut said = Vec::new();
+                    let ran = target.run_root(&folders::workspace_add_argv(&paths, &target.person()), &asker, |line| said.push(line));
+                    drop(asker);
+                    ran?;
+                    let mut added = folders::add(&client, &id, &current, &paths)?;
+                    let mut notes = folders::access_notes(&said);
+                    notes.append(&mut added.notes);
+                    added.notes = notes;
+                    Ok::<_, String>(added)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if let Some(pick) = &mut this.folders.pick {
+                    pick.granting = false;
+                    match result {
+                        Ok(a) => {
+                            for p in &a.added {
+                                pick.selected.remove(p);
+                            }
+                            let mut o = before;
+                            o.added.extend(a.added);
+                            o.notes.extend(a.notes);
+                            o.need_first_commit.extend(a.need_first_commit);
+                            o.invisible = a.invisible;
+                            pick.result = Some(Ok(o));
+                            pick.granted = true;
+                        }
+                        Err(e) => pick.grant_error = Some(e),
                     }
                 }
                 cx.notify();
@@ -294,8 +367,36 @@ impl Console {
                     result.push(div().text_size(px(11.)).text_color(t.muted).child(note.clone()));
                 }
                 if !o.invisible.is_empty() {
-                    result.push(div().text_size(px(11.)).text_color(t.warn).child("Swarm cannot read these yet. Run this in a terminal, then add them again:"));
-                    result.push(div().px_2().py_1().rounded(px(t.radius)).bg(t.panel).text_size(px(11.)).text_color(t.text).child(folders::visible_command(&o.invisible)));
+                    let n = o.invisible.len();
+                    let person = Target::Local.person();
+                    let mut line = div().flex().items_center().gap_2();
+                    if pick.granted {
+                        // Access was given and Swarm still cannot read them.
+                        line = line.child(div().flex_1().text_size(px(11.)).text_color(t.warn).child(format!("Swarm still can't read {} after access was given.", o.invisible.join(", "))));
+                    } else if !local {
+                        line = line.child(div().flex_1().text_size(px(11.)).text_color(t.warn).child(format!("Swarm can't read {n} of these folders yet; run the command below on that machine, then add them again.")));
+                    } else {
+                        line = line.child(div().flex_1().text_size(px(11.)).text_color(t.warn).child(format!("Swarm can't read {n} of these folder{} yet.", if n == 1 { "" } else { "s" })));
+                        line = if pick.granting {
+                            line.child(div().text_size(px(11.)).text_color(t.info).child("giving access…"))
+                        } else {
+                            line.child(self.button("folders-give-access", "Give Swarm access", true).on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.give_access(cx))))
+                        };
+                    }
+                    let shown = pick.show_command;
+                    line = line.child(self.button("folders-show-command", if shown { "hide command" } else { "command" }, false).on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        if let Some(p) = &mut this.folders.pick {
+                            p.show_command = !p.show_command;
+                        }
+                        cx.notify();
+                    })));
+                    result.push(line);
+                    if let Some(e) = &pick.grant_error {
+                        result.push(div().text_size(px(11.)).text_color(t.err).child(format!("Not done: {e}")));
+                    }
+                    if shown {
+                        result.push(div().px_2().py_1().rounded(px(t.radius)).bg(t.surface).text_size(px(11.)).text_color(t.text).child(folders::visible_command(&o.invisible, &person)));
+                    }
                 }
                 if !o.need_first_commit.is_empty() {
                     result.push(div().text_size(px(11.)).text_color(t.warn).child(format!(

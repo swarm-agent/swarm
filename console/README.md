@@ -34,11 +34,22 @@ screen.
 
 Without a session for its machine, the app opens onboarding: one centered
 card that finds Swarm (`GET /healthz`, no session), installs it or connects
-to it (one password prompt: `pkexec` here, `sudo` over SSH on a server; Swarm
-mints the app an owner session with `swarmctl client connect`), connects a
-model provider (ChatGPT sign-in, or an API key typed here and sent to Swarm
-once), creates the first project from folders you pick (one more password
-prompt makes them visible to Swarm) and waits for Swarm to write project.md.
+to it (Swarm mints the app an owner session with `swarmctl client connect`),
+connects a model provider (ChatGPT sign-in, or an API key typed here and sent
+to Swarm once), creates the first project from folders you pick (`swarmctl
+workspace add` makes them visible to Swarm, all in one call, without
+restarting it) and waits for Swarm to write project.md.
+
+Root steps on this computer run through `sudo`: `sudo -n` first (a cached sudo
+or a NOPASSWD rule needs nothing), otherwise the app's own password prompt,
+which names the exact command, and passes the password to `sudo -S` on its
+stdin only. The password is never stored, logged or kept after the call, and
+no polkit agent is needed. On a server, root steps are `sudo -n` over SSH.
+
+On the Projects page, folders Swarm cannot read yet show "Give Swarm access":
+one root step for all of them, then the same folders are added to the project
+again. The exact command stays one click away for people who run it
+themselves.
 Agents work only in a Git repository with a first commit, so the app readies
 each folder the way Swarm's web UI does: an empty folder gets an empty
 first commit from Swarm (`/v1/workspace/repository/setup`); a folder with

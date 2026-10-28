@@ -18,6 +18,7 @@ pub mod fleet_models;
 pub mod progress;
 pub mod realtime;
 pub mod repository;
+pub mod root;
 pub mod target;
 pub mod tool_summary;
 pub mod workflows;

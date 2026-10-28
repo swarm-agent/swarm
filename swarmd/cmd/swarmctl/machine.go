@@ -253,7 +253,11 @@ func machineWorkspaceGrant(path, owner string) error {
 	}
 	return nil
 }
-func machineWorkspaceApply(paths []string) error {
+
+// machineWorkspaceApply saves the folder list in the unit drop-in (so every
+// later start of Swarm sees exactly these folders), then makes the change in
+// the running Swarm: mount are the folders to show, unmount the folder to hide.
+func machineWorkspaceApply(paths, mount, unmount []string) error {
 	drop := filepath.Join(machineUnits, machineDaemon+".d", "50-workspaces.conf")
 	if len(paths) == 0 {
 		if err := os.Remove(drop); err != nil && !os.IsNotExist(err) {
@@ -269,12 +273,108 @@ func machineWorkspaceApply(paths []string) error {
 			return err
 		}
 	}
+	return machineWorkspaceTakeEffect(mount, unmount)
+}
+
+// machineWorkspaceTakeEffect reloads the saved unit and changes the running
+// Swarm in place: each new folder is bind-mounted into Swarm's own mount
+// namespace at its real path (what BindPaths= does at start), each removed one
+// is unmounted there. Agent sandboxes are started by Swarm from inside that
+// namespace, so every sandbox started afterwards sees the same folders. Only
+// when that is impossible is Swarm restarted, on the wait-for-idle path.
+func machineWorkspaceTakeEffect(mount, unmount []string) error {
 	if err := machineRun("systemctl", "daemon-reload"); err != nil {
 		return err
 	}
 	if exec.Command("systemctl", "is-active", "-q", machineDaemon).Run() != nil {
+		fmt.Println("Swarm is not running; the folder list takes effect when it starts.")
 		return nil
 	}
+	err := machineWorkspaceLive(mount, unmount)
+	if err == nil {
+		if len(mount) > 0 {
+			fmt.Println("Swarm can use the folders now; it was not restarted.")
+		} else {
+			fmt.Println("Swarm no longer sees the folder; it was not restarted.")
+		}
+		return nil
+	}
+	fmt.Printf("The running Swarm could not be changed in place (%v); the change takes effect after Swarm restarts.\n", err)
+	return machineWorkspaceRestart()
+}
+
+// machineWorkspaceRestart is replaced in tests; it waits until Swarm is idle.
+var machineWorkspaceRestart = machineWorkspaceRestartWhenIdle
+
+// machineWorkspaceMountPoint runs inside Swarm's mount namespace. It makes the
+// folder's mount point there when it is missing: under the read-only tmpfs
+// that hides home folders (ProtectHome=tmpfs) it lifts read-only on that tmpfs
+// only for the mkdir and puts it back. Anything else is refused, and the
+// caller falls back to a restart.
+const machineWorkspaceMountPoint = `
+p=$1
+[ -d "$p" ] && exit 0
+a=$(dirname "$p")
+while [ ! -d "$a" ]; do a=$(dirname "$a"); done
+m=$(findmnt -n -o TARGET -T "$a")
+if [ "$(findmnt -n -o FSTYPE --mountpoint "$m")" != tmpfs ]; then
+  echo "$a is not on Swarm's private folder tree" >&2
+  exit 1
+fi
+ro=0
+case ",$(findmnt -n -o OPTIONS --mountpoint "$m")," in *,ro,*) ro=1 ;; esac
+[ "$ro" = 0 ] || mount -o remount,bind,rw "$m"
+rc=0
+mkdir -p -m 0755 "$p" || rc=$?
+[ "$ro" = 0 ] || mount -o remount,bind,ro "$m"
+exit $rc
+`
+
+// machineWorkspaceLive changes the running Swarm without a restart, or says
+// why it cannot.
+func machineWorkspaceLive(mount, unmount []string) error {
+	out, err := exec.Command("systemctl", "show", "-p", "MainPID", "--value", machineDaemon).Output()
+	if err != nil {
+		return fmt.Errorf("cannot read Swarm's process: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil || pid <= 0 {
+		return fmt.Errorf("Swarm's process is not known")
+	}
+	ns := []string{"--target", strconv.Itoa(pid), "--mount", "--"}
+	inside := func(args ...string) *exec.Cmd {
+		return exec.Command("nsenter", append(append([]string{}, ns...), args...)...)
+	}
+	for _, p := range unmount {
+		if out, err := inside("umount", p).CombinedOutput(); err != nil {
+			return fmt.Errorf("%s could not be unmounted: %s", p, machineFirstLine(out, err))
+		}
+	}
+	for _, p := range mount {
+		// Already mounted read-write at exactly this path: nothing to do.
+		if out, err := inside("findmnt", "-n", "-o", "OPTIONS", "--mountpoint", p).Output(); err == nil && strings.HasPrefix(strings.TrimSpace(string(out)), "rw") {
+			continue
+		}
+		if out, err := inside("sh", "-eu", "-c", machineWorkspaceMountPoint, "swarm-mount-point", p).CombinedOutput(); err != nil {
+			return fmt.Errorf("no mount point for %s: %s", p, machineFirstLine(out, err))
+		}
+		// systemctl bind takes the folder from the machine's own view (Swarm's
+		// hides home folders) and mounts it read-write at the same path.
+		if out, err := exec.Command("systemctl", "bind", machineDaemon, p, p).CombinedOutput(); err != nil {
+			return fmt.Errorf("%s could not be mounted: %s", p, machineFirstLine(out, err))
+		}
+	}
+	return nil
+}
+
+func machineFirstLine(out []byte, err error) string {
+	if s := strings.TrimSpace(strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0]); s != "" {
+		return s
+	}
+	return err.Error()
+}
+
+func machineWorkspaceRestartWhenIdle() error {
 	limit := 900
 	if s := os.Getenv("RESTART_WAIT_SECONDS"); s != "" {
 		n, err := strconv.Atoi(s)
@@ -331,8 +431,8 @@ func cmdMachineWorkspace(args []string) error {
 	}
 	switch args[0] {
 	case "add":
-		// Several folders in one call apply (and restart Swarm) once, so an app
-		// adding a project's folders asks for one password, not one per folder.
+		// Several folders in one call apply once, so an app adding a project's
+		// folders asks for one password, not one per folder.
 		adds, who, err := machineWorkspaceAddArgs(args[1:])
 		if err != nil {
 			return err
@@ -362,7 +462,7 @@ func cmdMachineWorkspace(args []string) error {
 				return err
 			}
 		}
-		if err = machineWorkspaceApply(paths); err != nil {
+		if err = machineWorkspaceApply(paths, adds, nil); err != nil {
 			return err
 		}
 		for i, p := range adds {
@@ -400,7 +500,7 @@ func cmdMachineWorkspace(args []string) error {
 				_ = exec.Command("setfacl", "-R", "-d", "-x", fmt.Sprintf("u:%d", st.Uid), p).Run()
 			}
 		}
-		if err = machineWorkspaceApply(kept); err != nil {
+		if err = machineWorkspaceApply(kept, nil, []string{p}); err != nil {
 			return err
 		}
 		fmt.Printf("%s is no longer visible to Swarm.\n", p)

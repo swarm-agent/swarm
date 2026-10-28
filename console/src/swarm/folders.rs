@@ -115,18 +115,23 @@ pub struct Added {
     pub notes: Vec<String>,
 }
 
-/// The project's folder list with `adding` appended: the first folder of a
-/// project with none becomes its primary code folder.
-pub fn with_added(current: &[(String, String)], adding: &[String]) -> Vec<Value> {
-    let mut out: Vec<Value> = current.iter().map(|(p, r)| json!({"path": p, "role": r})).collect();
+/// The project's folders with `adding` appended, each once: the first folder
+/// of a project with none becomes its primary code folder.
+pub fn merged(current: &[(String, String)], adding: &[String]) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = current.to_vec();
     for p in adding {
-        if current.iter().any(|(c, _)| c == p) {
+        if out.iter().any(|(c, _)| c == p) {
             continue;
         }
         let role = if out.is_empty() { "primary_code" } else { "auxiliary" };
-        out.push(json!({"path": p, "role": role}));
+        out.push((p.clone(), role.to_string()));
     }
     out
+}
+
+/// The project's folder list with `adding` appended, as Swarm takes it.
+pub fn with_added(current: &[(String, String)], adding: &[String]) -> Vec<Value> {
+    merged(current, adding).iter().map(|(p, r)| json!({"path": p, "role": r})).collect()
 }
 
 /// The project's folder list without `removing`; when its primary code
@@ -169,10 +174,26 @@ pub fn add(client: &Client, project_id: &str, current: &[(String, String)], path
     Ok(out)
 }
 
-/// The command that lets Swarm read folders it cannot see yet.
-pub fn visible_command(paths: &[String]) -> String {
-    let quoted: Vec<String> = paths.iter().map(|p| if p.contains(' ') { format!("'{p}'") } else { p.clone() }).collect();
-    format!("sudo swarmctl workspace add {}", quoted.join(" "))
+/// The root command that lets Swarm read folders it cannot see yet: every
+/// folder in one `swarmctl workspace add`, so one password covers them all.
+pub fn workspace_add_argv(paths: &[String], person: &str) -> Vec<String> {
+    let mut args: Vec<String> = [super::target::SWARMCTL, "workspace", "add"].map(String::from).to_vec();
+    args.extend(paths.iter().cloned());
+    if !person.is_empty() {
+        args.extend(["--for-user".to_string(), person.to_string()]);
+    }
+    args
+}
+
+/// That command as a person would type it in a terminal.
+pub fn visible_command(paths: &[String], person: &str) -> String {
+    super::root::command_line(&workspace_add_argv(paths, person))
+}
+
+/// The lines of swarmctl's answer worth showing: whether Swarm can use the
+/// folders now or after a restart.
+pub fn access_notes(lines: &[String]) -> Vec<String> {
+    lines.iter().map(|l| l.trim()).filter(|l| l.starts_with("Swarm ") || l.starts_with("The running Swarm")).map(String::from).collect()
 }
 
 #[cfg(test)]
@@ -227,6 +248,20 @@ mod tests {
         assert_eq!(without(&cur, &["/b".into()]), vec![json!({"path": "/a", "role": "primary_code"})]);
         // The primary goes: the first one left takes its role.
         assert_eq!(without(&cur, &["/a".into()]), vec![json!({"path": "/b", "role": "primary_code"})]);
-        assert_eq!(visible_command(&["/srv/work/x".into(), "/srv/work/my notes".into()]), "sudo swarmctl workspace add /srv/work/x '/srv/work/my notes'");
+        // Folders already listed keep their place; new ones are added once.
+        assert_eq!(merged(&cur, &["/c".into(), "/a".into(), "/c".into()]).len(), 3);
+    }
+
+    #[test]
+    fn one_root_command_for_every_folder() {
+        let paths: Vec<String> = vec!["/srv/work/x".into(), "/srv/work/my notes".into()];
+        assert_eq!(
+            workspace_add_argv(&paths, "dev"),
+            ["/usr/local/bin/swarmctl", "workspace", "add", "/srv/work/x", "/srv/work/my notes", "--for-user", "dev"].map(String::from).to_vec()
+        );
+        assert_eq!(workspace_add_argv(&paths[..1], ""), ["/usr/local/bin/swarmctl", "workspace", "add", "/srv/work/x"].map(String::from).to_vec());
+        assert_eq!(visible_command(&paths, "dev"), "sudo /usr/local/bin/swarmctl workspace add /srv/work/x '/srv/work/my notes' --for-user dev");
+        let out: Vec<String> = ["/srv/work/x is visible to Swarm (owner dev).", "Swarm can use the folders now; it was not restarted."].map(String::from).to_vec();
+        assert_eq!(access_notes(&out), vec!["Swarm can use the folders now; it was not restarted.".to_string()]);
     }
 }

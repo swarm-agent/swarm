@@ -94,6 +94,20 @@ impl TextInput {
         cx.notify();
     }
 
+    /// Empties the field and hands over what was typed (a password on its
+    /// way to sudo): the field keeps nothing of it.
+    pub fn take_text(&mut self, cx: &mut Context<Self>) -> String {
+        let taken = std::mem::replace(&mut self.content, "".into());
+        self.selected_range = 0..0;
+        self.marked_range = None;
+        cx.notify();
+        taken.to_string()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.content.is_empty()
+    }
+
     pub fn set_colors(&mut self, colors: InputColors) {
         self.colors = colors;
     }
@@ -198,7 +212,8 @@ impl TextInput {
 
     /// On Linux, selected text is what middle-click pastes.
     fn publish_primary(&self, cx: &mut Context<Self>) {
-        if !self.selected_range.is_empty() {
+        // A secret (a key, a password) never reaches a clipboard.
+        if !self.selected_range.is_empty() && !self.secret {
             cx.write_to_primary(ClipboardItem::new_string(self.content[self.selected_range.clone()].to_string()));
         }
     }
@@ -239,14 +254,14 @@ impl TextInput {
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.selected_range.is_empty() {
+        if !self.selected_range.is_empty() && !self.secret {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
             ));
         }
     }
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.selected_range.is_empty() {
+        if !self.selected_range.is_empty() && !self.secret {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
             ));
