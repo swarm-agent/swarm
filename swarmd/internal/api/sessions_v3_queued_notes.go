@@ -149,8 +149,9 @@ func (e *sessionV3Executor) queuedNoteRunID(sessionID string) string {
 	return e.queuedNoteRuns[strings.TrimSpace(sessionID)].runID
 }
 
-// sessionV3QueuedNoteToolInvoker appends claimed notes to tool results and
-// receipts them as delivered with a tool result.
+// sessionV3QueuedNoteToolInvoker appends claimed notes to tool results. The
+// run loop receipts them after the provider step that consumed the result
+// succeeds, or hands them back when that step never happens.
 func (e *sessionV3Executor) sessionV3QueuedNoteToolInvoker(job sessionV3ExecutorJob, inner provideriface.ToolInvoker) provideriface.ToolInvoker {
 	if inner == nil || job.queuedNotes == nil {
 		return inner
@@ -160,9 +161,6 @@ func (e *sessionV3Executor) sessionV3QueuedNoteToolInvoker(job sessionV3Executor
 		Tracker: job.queuedNotes,
 		Read: func(cursor *uint64) ([]pebblestore.MessageSnapshot, error) {
 			return e.sessionV3FeedbackSince(job.SessionID, cursor)
-		},
-		Delivered: func(notes []pebblestore.MessageSnapshot) error {
-			return runruntime.RecordFeedbackDeliveryVia(e.server.applySessionV3PrimaryMutation, job.SessionID, job.RunID, runruntime.FeedbackDeliveryToolResult, notes)
 		},
 	}
 }
@@ -206,8 +204,10 @@ func (e *sessionV3Executor) closeQueuedNotes(job sessionV3ExecutorJob) {
 		log.Printf("warning: queued notes for session %q after run %q could not be read: %v", job.SessionID, job.RunID, err)
 		return
 	}
+	// Notes handed back (placed in input that no successful provider step
+	// consumed) come first: they were sent before anything still unclaimed.
 	var pending []pebblestore.MessageSnapshot
-	for _, note := range notes {
+	for _, note := range append(entry.tracker.Returned(), notes...) {
 		if runruntime.IsQueuedNote(note) {
 			pending = append(pending, note)
 		}

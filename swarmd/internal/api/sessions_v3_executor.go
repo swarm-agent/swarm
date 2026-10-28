@@ -3727,6 +3727,10 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		queuedNotes = runruntime.NewQueuedNoteTracker(cursor)
 		job.queuedNotes = queuedNotes
 	}
+	// A note is receipted only after a successful provider step whose input
+	// carried it. However the loop ends, notes still in flight were not
+	// consumed: hand them back so closeQueuedNotes starts the next turn.
+	defer queuedNotes.ReturnInFlight()
 	historyQueuedNotes := job.historyQueuedNotes
 	input := append([]map[string]any(nil), baseReq.Input...)
 	identicalCalls := sessionV3ProviderIdenticalToolCallTracker{}
@@ -3786,7 +3790,7 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		if err := ctx.Err(); err != nil {
 			return sessionV3ProviderLoopResult{}, err
 		}
-		notes, err := queuedNotes.Claim(func(cursor *uint64) ([]pebblestore.MessageSnapshot, error) {
+		notes, err := queuedNotes.Claim(runruntime.FeedbackDeliveryUserTurn, func(cursor *uint64) ([]pebblestore.MessageSnapshot, error) {
 			return e.sessionV3FeedbackSince(job.SessionID, cursor)
 		})
 		if err != nil {
@@ -3924,13 +3928,18 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		if feedbackOutcome.Status == sessionruntime.RunIntentFailed || feedbackOutcome.Status == sessionruntime.RunIntentCancelled {
 			return sessionV3ProviderLoopResult{}, errors.New(feedbackOutcome.Reason)
 		}
-		// Only this successful step's input is acknowledged. Notes queued while
-		// it was in flight wait for another eligible step; a final response does
-		// not reopen work merely to drain feedback.
-		if err := runruntime.RecordFeedbackDelivery(e.server.applySessionV3PrimaryMutation, job.SessionID, job.RunID, append(historyQueuedNotes, notes...)); err != nil {
+		// Only this successful step's input is acknowledged: notes it carried as
+		// user messages or in tool results (including results a CLI provider
+		// consumed mid-step). Notes queued while it was in flight wait for
+		// another eligible step; a final response does not reopen work merely to
+		// drain feedback.
+		if err := runruntime.RecordFeedbackDelivery(e.server.applySessionV3PrimaryMutation, job.SessionID, job.RunID, historyQueuedNotes); err != nil {
 			return sessionV3ProviderLoopResult{}, err
 		}
 		historyQueuedNotes = nil
+		if err := runruntime.RecordClaimedFeedbackDelivery(e.server.applySessionV3PrimaryMutation, job.SessionID, job.RunID, queuedNotes.TakeInFlight()); err != nil {
+			return sessionV3ProviderLoopResult{}, err
+		}
 		if err := runruntime.RecordProjectTaskDelivery(e.server.applySessionV3PrimaryMutation, job.SessionID, job.RunID, taskUpdates); err != nil {
 			return sessionV3ProviderLoopResult{}, err
 		}
@@ -4155,6 +4164,8 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 				return sessionV3ProviderLoopResult{}, runnerErr
 			}
 			runner = refreshedRunner
+			// The input carrying this batch's tool results is replaced.
+			queuedNotes.ReturnInFlight()
 			input = e.sessionV3ProviderContinuationInput(job, false)
 			if len(input) == 0 {
 				return sessionV3ProviderLoopResult{}, errors.New("v3 plan context guard compaction produced empty continuation input")
@@ -4207,6 +4218,8 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 				return sessionV3ProviderLoopResult{}, err
 			}
 			runner = refreshedRunner
+			// The input carrying this batch's tool results is replaced.
+			queuedNotes.ReturnInFlight()
 			input, err = e.sessionV3ProviderRestartInput(ctx, job, resolved, strings.TrimSpace(firstNonEmpty(toolResults[len(toolResults)-1].Output, sessionsV3LatestFunctionCallOutput(input), toolResults[len(toolResults)-1].TextForModel)))
 			if err != nil {
 				return sessionV3ProviderLoopResult{}, err
@@ -4759,6 +4772,20 @@ func (e *sessionV3Executor) sessionV3ProviderContinuationInput(job sessionV3Exec
 	messages, err := e.sessionV3ProviderContextMessages(job)
 	if err != nil || len(messages) == 0 {
 		return nil
+	}
+	// Notes the run has not delivered yet are left to its claim path, so a
+	// rebuilt input never carries one twice.
+	if job.queuedNotes != nil {
+		kept := messages[:0]
+		for _, message := range messages {
+			if !job.queuedNotes.Withholds(message) {
+				kept = append(kept, message)
+			}
+		}
+		messages = kept
+		if len(messages) == 0 {
+			return nil
+		}
 	}
 	return sessionsV3ProviderInputWithOptions(messages, sessionsV3ProviderInputOptions{SuppressNativeReplay: !nativeReplayAllowed})
 }

@@ -59,20 +59,10 @@ func (l *queuedNoteLog) read(cursor *uint64) ([]pebblestore.MessageSnapshot, err
 func TestQueuedNoteToolInvokerDeliversEachNoteOnce(t *testing.T) {
 	log := &queuedNoteLog{}
 	tracker := NewQueuedNoteTracker(0)
-	var mu sync.Mutex
-	var delivered []string
 	invoker := &QueuedNoteToolInvoker{
 		Inner:   queuedNoteStubInvoker{result: provideriface.ToolExecutionResult{Output: `{"status":"ok"}`}},
 		Tracker: tracker,
 		Read:    log.read,
-		Delivered: func(notes []pebblestore.MessageSnapshot) error {
-			mu.Lock()
-			defer mu.Unlock()
-			for _, note := range notes {
-				delivered = append(delivered, note.ID)
-			}
-			return nil
-		},
 	}
 	log.add("note-a", "first steer")
 	log.add("note-b", "second steer")
@@ -101,8 +91,17 @@ func TestQueuedNoteToolInvokerDeliversEachNoteOnce(t *testing.T) {
 			t.Fatalf("queued block must follow the tool output: %q", result.TextForModel)
 		}
 	}
-	if total != 2 || len(delivered) != 2 {
-		t.Fatalf("notes delivered %d times with %d receipts, want 2 and 2", total, len(delivered))
+	inFlight := tracker.TakeInFlight()
+	if total != 2 || len(inFlight) != 2 {
+		t.Fatalf("notes placed %d times with %d in flight, want 2 and 2", total, len(inFlight))
+	}
+	for _, claimed := range inFlight {
+		if claimed.Channel != FeedbackDeliveryToolResult {
+			t.Fatalf("claimed channel = %q, want %q", claimed.Channel, FeedbackDeliveryToolResult)
+		}
+	}
+	if again := tracker.TakeInFlight(); len(again) != 0 {
+		t.Fatalf("in-flight notes taken twice: %+v", again)
 	}
 
 	log.add("note-c", "third steer")
@@ -118,5 +117,63 @@ func TestQueuedNoteToolInvokerDeliversEachNoteOnce(t *testing.T) {
 	next, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "n", Name: "read"})
 	if err != nil || strings.Count(next.TextForModel, "third steer") != 1 {
 		t.Fatalf("the next tool result must carry the note once: %q %v", next.TextForModel, err)
+	}
+}
+
+// Purpose: a claimed note is not delivered until a provider step that carried
+// it succeeds. When the input carrying it is discarded first, ReturnInFlight
+// hands it back unreceipted: rebuilt history must withhold it, the next claim
+// returns it ahead of newer notes on the new channel, and it can be taken for
+// a receipt exactly once.
+// Threat: a note receipted (and shown delivered) although no provider saw it,
+// then skipped by the claim cursor and silently dropped; or delivered twice
+// once by rebuilt history and once by the claim path.
+// Boundary: QueuedNoteTracker.Claim / TakeInFlight / ReturnInFlight /
+// Returned / Withholds.
+// Narrowest layer: the tracker over an in-memory log; the executor wiring is
+// covered by the api package's failure tests.
+func TestQueuedNoteTrackerHandsBackDiscardedNotes(t *testing.T) {
+	log := &queuedNoteLog{}
+	tracker := NewQueuedNoteTracker(0)
+	log.add("note-a", "first")
+	claimed, err := tracker.Claim(FeedbackDeliveryToolResult, log.read)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim = %+v %v", claimed, err)
+	}
+	if !tracker.Withholds(claimed[0]) {
+		t.Fatal("an in-flight note must be withheld from rebuilt history")
+	}
+	tracker.ReturnInFlight()
+	if inFlight := tracker.TakeInFlight(); len(inFlight) != 0 {
+		t.Fatalf("handed-back note still in flight: %+v", inFlight)
+	}
+	if returned := tracker.Returned(); len(returned) != 1 || returned[0].ID != "note-a" {
+		t.Fatalf("returned = %+v, want note-a", returned)
+	}
+	if !tracker.Withholds(claimed[0]) {
+		t.Fatal("a handed-back note must stay withheld until delivered")
+	}
+
+	log.add("note-b", "second")
+	again, err := tracker.Claim(FeedbackDeliveryUserTurn, log.read)
+	if err != nil || len(again) != 2 || again[0].ID != "note-a" || again[1].ID != "note-b" {
+		t.Fatalf("reclaim = %+v %v, want note-a then note-b", again, err)
+	}
+	if len(tracker.Returned()) != 0 {
+		t.Fatal("reclaimed notes still listed as returned")
+	}
+	taken := tracker.TakeInFlight()
+	if len(taken) != 2 || taken[0].Channel != FeedbackDeliveryUserTurn {
+		t.Fatalf("taken = %+v, want both on the user-turn channel", taken)
+	}
+	if tracker.Withholds(taken[0].Note) {
+		t.Fatal("a delivered note must not be withheld from rebuilt history")
+	}
+	tracker.ReturnInFlight()
+	if len(tracker.Returned()) != 0 {
+		t.Fatal("delivered notes were handed back")
+	}
+	if !tracker.Withholds(pebblestore.MessageSnapshot{ID: "later", Role: "user", GlobalSeq: 99, Metadata: map[string]any{"feedback_note": true}}) {
+		t.Fatal("an unclaimed note must be withheld from rebuilt history")
 	}
 }
