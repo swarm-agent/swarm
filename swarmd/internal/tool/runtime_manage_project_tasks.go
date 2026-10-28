@@ -321,6 +321,38 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 				return "", err
 			}
 		}
+		if action == "list_tasks" {
+			// The same selection as the task list route and linked machines:
+			// current tasks by default, newest updated first, one page.
+			scopeName, err := pebblestore.NormalizeProjectTaskScope(asString(args["scope"]))
+			if err != nil {
+				return "", err
+			}
+			if scopeName == "" {
+				scopeName = pebblestore.ProjectTaskScopeCurrent
+			}
+			all, scanTruncated, err := r.projects.ListProjectTaskRecordsForList(account, projectID)
+			if err != nil {
+				return "", err
+			}
+			filter := pebblestore.ProjectTaskListFilter{
+				Statuses: pebblestore.ParseProjectTaskStatuses(asString(args["status"])),
+				Query:    asString(args["query"]), Agent: strings.TrimSpace(asString(args["agent"])), Group: strings.TrimSpace(asString(args["group"])),
+				Scope: scopeName, IncludeArchived: asBool(args["include_archived"]), Limit: limit, Cursor: cursor,
+			}
+			page := filter.Select(all, projectTaskListNow().UnixMilli())
+			rows := make([]projectTaskListRow, 0, len(page.Tasks))
+			for _, task := range page.Tasks {
+				rows = append(rows, projectTaskSummary(task))
+			}
+			result["tasks"], result["count"], result["total"] = rows, len(rows), page.Total
+			result["scope"], result["cursor"], result["limit"] = scopeName, page.Cursor, limit
+			result["scan_truncated"] = scanTruncated
+			if page.HasNext {
+				result["next_cursor"] = page.NextCursor
+			}
+			break
+		}
 		// The store has a hard scan bound of 10,000. A full page of 1000
 		// records is explicitly flagged; never imply a complete inventory.
 		tasks, err := r.projects.ListProjectTasks(account, projectID, 1000)
@@ -391,6 +423,9 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 	return string(raw), err
 }
 
+// projectTaskListNow is the clock list_tasks measures the current scope against.
+var projectTaskListNow = time.Now
+
 // projectTaskListRow is deliberately independent of the persisted record: adding
 // media or plan fields to storage must never expand list/mutation tool output.
 type projectTaskListRow struct {
@@ -408,6 +443,7 @@ type projectTaskListRow struct {
 	Group             string `json:"group,omitempty"`
 	Order             int    `json:"order"`
 	Priority          string `json:"priority,omitempty"`
+	UpdatedAt         int64  `json:"updated_at,omitempty"`
 }
 
 func projectTaskSummary(t pebblestore.ProjectTaskRecord) projectTaskListRow {
@@ -415,7 +451,7 @@ func projectTaskSummary(t pebblestore.ProjectTaskRecord) projectTaskListRow {
 	if len(title) > 256 {
 		title = title[:256]
 	}
-	return projectTaskListRow{ID: t.ID, ProjectID: t.ProjectID, Revision: t.Revision, Title: string(title), Status: t.Status, Archived: t.Archived, Agent: t.Agent, SessionID: t.SessionID, TaskProgramID: t.TaskProgramID, WorktreeBranch: t.WorktreeBranch, SourceWorkspaceID: t.SourceWorkspace.WorkspaceID, Group: t.Group, Order: t.Order, Priority: t.Priority}
+	return projectTaskListRow{ID: t.ID, ProjectID: t.ProjectID, Revision: t.Revision, Title: string(title), Status: t.Status, Archived: t.Archived, Agent: t.Agent, SessionID: t.SessionID, TaskProgramID: t.TaskProgramID, WorktreeBranch: t.WorktreeBranch, SourceWorkspaceID: t.SourceWorkspace.WorkspaceID, Group: t.Group, Order: t.Order, Priority: t.Priority, UpdatedAt: t.UpdatedAt}
 }
 
 func projectTaskInteger(args map[string]any, key string, min, max int) (int, error) {

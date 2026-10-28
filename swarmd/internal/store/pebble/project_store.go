@@ -1127,6 +1127,39 @@ func (s *SessionStore) ListProjectTasks(accountScopeID, projectID string, limit 
 	return tasks, nil
 }
 
+// ListProjectTaskRecordsForList reads every task record of a project, up to
+// the store's 10,000-record scan bound, without hydrating attempts or plans.
+// It is for list selection: callers filter and page before any detail read.
+// truncated reports that the scan bound was reached.
+func (s *SessionStore) ListProjectTaskRecordsForList(accountScopeID, projectID string) ([]ProjectTaskRecord, bool, error) {
+	if s == nil || s.store == nil || s.store.db == nil {
+		return nil, false, errors.New("database not available")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	projectID = strings.TrimSpace(projectID)
+	if accountScopeID == "" || projectID == "" {
+		return nil, false, errors.New("account scope id and project id are required")
+	}
+	const scanBound = 10000
+	scanned := 0
+	var tasks []ProjectTaskRecord
+	err := s.store.IteratePrefix(ProjectTaskPrefix(accountScopeID, projectID), scanBound, func(_ string, value []byte) error {
+		scanned++
+		var rec ProjectTaskRecord
+		if err := json.Unmarshal(value, &rec); err != nil {
+			return nil
+		}
+		if rec.AccountID == accountScopeID && rec.ProjectID == projectID {
+			tasks = append(tasks, rec)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return tasks, scanned >= scanBound, nil
+}
+
 // ListRecentProjectTasks returns the newest `limit` tasks of a project, newest
 // first. Only the returned tasks are hydrated with attempt outcome and plan
 // document, so per-call work stays bounded by limit rather than project size.

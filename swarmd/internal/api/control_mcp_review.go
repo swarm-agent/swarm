@@ -94,14 +94,14 @@ func controlMCPReviewTools(sessionID map[string]any) []controlMCPTool {
 // ---- task approval ---------------------------------------------------------
 
 func (c *controlMCPCall) projectTask(projectID, taskID string) (map[string]any, error) {
-	response, err := c.dispatch(http.MethodGet, "/v3/projects/"+projectID+"/tasks", nil, nil)
-	if err != nil {
+	// Read the one task, not the board, which a large project cannot return.
+	response, err := c.dispatch(http.MethodGet, "/v3/projects/"+projectID+"/tasks/"+taskID, nil, nil)
+	var toolErr controlMCPToolError
+	if err != nil && !(errors.As(err, &toolErr) && toolErr.status == http.StatusNotFound) {
 		return nil, controlMCPNotFound(err, "project", projectID, "swarm_list_projects")
 	}
-	for _, raw := range controlMCPList(response["tasks"]) {
-		if task := controlMCPMap(raw); task != nil && task["id"] == taskID {
-			return task, nil
-		}
+	if task := controlMCPMap(response["task"]); err == nil && task != nil && task["id"] == taskID && task["archived"] != true {
+		return task, nil
 	}
 	return nil, controlMCPToolFailure("task %q not found in project %q (see swarm_list_tasks)", taskID, projectID)
 }

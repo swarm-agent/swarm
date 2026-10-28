@@ -388,10 +388,10 @@ func (s *SessionStore) ListProjectTaskSummaries(account, project string, archive
 }
 
 func (s *SessionStore) ListProjectTaskSummariesWithRelated(account, project string, archived bool) ([]ProjectTaskRecord, map[string]ProjectTaskRelatedSummary, ProjectTaskReadStats, error) {
-	return s.readProjectTaskSummaries(account, project, archived, nil)
+	return s.readProjectTaskSummaries(account, project, archived, nil, nil)
 }
 
-func (s *SessionStore) readProjectTaskSummaries(account, project string, archived bool, consume func([]ProjectTaskRecord, *ProjectTaskBoardReader)) ([]ProjectTaskRecord, map[string]ProjectTaskRelatedSummary, ProjectTaskReadStats, error) {
+func (s *SessionStore) readProjectTaskSummaries(account, project string, archived bool, selectRows func([]ProjectTaskRecord) []ProjectTaskRecord, consume func([]ProjectTaskRecord, *ProjectTaskBoardReader)) ([]ProjectTaskRecord, map[string]ProjectTaskRelatedSummary, ProjectTaskReadStats, error) {
 	account, project = strings.TrimSpace(account), strings.TrimSpace(project)
 	var stats ProjectTaskReadStats
 	if account == "" || project == "" {
@@ -449,6 +449,11 @@ func (s *SessionStore) readProjectTaskSummaries(account, project string, archive
 	}
 	if len(rows) != state.Counts[partition] {
 		return nil, nil, stats, ErrProjectTaskSummaryCorrupt
+	}
+	// Selection runs on the compact rows alone, before any related read, so a
+	// bounded page never hydrates the rest of the board.
+	if selectRows != nil {
+		rows = selectRows(rows)
 	}
 	start = time.Now()
 	reader := newProjectTaskBoardReader(snapshot, account, rows, &stats)

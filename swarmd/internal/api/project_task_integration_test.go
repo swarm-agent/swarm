@@ -144,7 +144,7 @@ func TestProjectTaskIntegrateNativeAndHTTP(t *testing.T) {
 				handler := f.server.internalRouteHandler()
 				call.next = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if r.Method == http.MethodGet {
-						writeJSON(w, 200, map[string]any{"tasks": []any{task}})
+						writeJSON(w, 200, map[string]any{"task": task})
 						return
 					}
 					handler.ServeHTTP(w, r)

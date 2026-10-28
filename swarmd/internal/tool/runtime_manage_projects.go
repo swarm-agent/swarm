@@ -23,6 +23,7 @@ type manageProjectStore interface {
 	PutProjectTask(accountScopeID string, task *pebblestore.ProjectTaskRecord) error
 	GetProjectTask(accountScopeID, projectID, taskID string) (*pebblestore.ProjectTaskRecord, bool, error)
 	ListProjectTasks(accountScopeID, projectID string, limit int) ([]pebblestore.ProjectTaskRecord, error)
+	ListProjectTaskRecordsForList(accountScopeID, projectID string) ([]pebblestore.ProjectTaskRecord, bool, error)
 	UpdateProjectTask(accountScopeID, projectID, taskID string, mutate func(*pebblestore.ProjectTaskRecord) error) (*pebblestore.ProjectTaskRecord, error)
 	DeleteProjectTask(accountScopeID, projectID, taskID string) error
 }
@@ -402,7 +403,7 @@ func manageProjectsDefinition() Definition {
 				},
 				"status": map[string]any{
 					"type":        "string",
-					"description": "Read-only task status filter for list_tasks; status changes require canonical lifecycle actions",
+					"description": "Read-only task status filter for list_tasks, one or comma-separated; status changes require canonical lifecycle actions",
 				},
 				"update_kind":       map[string]any{"type": "string", "enum": []string{"progress", "attention", "wake_request"}, "description": "report_task only: progress is informational; attention flags actionable input; wake_request explicitly requests Orchestrator attention. Recorded is not delivered or accepted."},
 				"summary":           map[string]any{"type": "string", "maxLength": 4000, "description": "report_task only: bounded task update, treated as untrusted data. Ownership is derived from the authenticated active task run; never supply parent/session/attempt IDs."},
@@ -412,7 +413,8 @@ func manageProjectsDefinition() Definition {
 				"priority":          map[string]any{"type": "string", "description": "Task organization: low|medium|high|urgent"},
 				"group":             map[string]any{"type": "string", "description": "Task grouping label (empty clears)"},
 				"order":             map[string]any{"type": "integer", "description": "Nonnegative task order within group"},
-				"include_archived":  map[string]any{"type": "boolean", "description": "Include archived task records in list_tasks"},
+				"include_archived":  map[string]any{"type": "boolean", "description": "Include archived task records in list_tasks (home machine)"},
+				"scope":             map[string]any{"type": "string", "enum": []string{"current", "all"}, "description": "list_tasks: current (default) is running, waiting, or finished in the last 24 hours, newest updated first; all is every unarchived task, paged with cursor"},
 				"query":             map[string]any{"type": "string", "description": "Case-insensitive title/description search"},
 				"limit":             map[string]any{"type": "integer", "description": "Page size, maximum 100"},
 				"cursor":            map[string]any{"type": "integer", "description": "Zero-based result offset"},

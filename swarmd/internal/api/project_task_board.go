@@ -2,9 +2,12 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -89,9 +92,61 @@ func projectTaskBoardSummary(task *pebblestore.ProjectTaskRecord, reader *pebble
 	return out
 }
 
-func writeProjectTaskBoard(w http.ResponseWriter, rows []projectTaskBoardRow, stats pebblestore.ProjectTaskReadStats, started time.Time, reconcile time.Duration) {
+// projectTaskListNow is the clock the current scope is measured against.
+var projectTaskListNow = time.Now
+
+// projectTaskListParams are the query parameters that select a filtered page
+// instead of the whole board.
+var projectTaskListParams = []string{"status", "exclude_status", "query", "agent", "origin_session_id", "limit", "cursor", "scope"}
+
+// projectTaskListFilterFromQuery reads the list parameters. paged is false
+// when none is present, so a caller without parameters keeps the full board.
+func projectTaskListFilterFromQuery(q url.Values, archivedView bool) (pebblestore.ProjectTaskListFilter, bool, error) {
+	var f pebblestore.ProjectTaskListFilter
+	paged := false
+	for _, key := range projectTaskListParams {
+		if q.Has(key) {
+			paged = true
+		}
+	}
+	if !paged {
+		return f, false, nil
+	}
+	var err error
+	if f.Scope, err = pebblestore.NormalizeProjectTaskScope(q.Get("scope")); err != nil {
+		return f, true, err
+	}
+	if archivedView {
+		if f.Scope != "" {
+			return f, true, errors.New("scope applies to tasks that are not archived; omit it with view=archived")
+		}
+		f.IncludeArchived = true
+	} else if f.Scope == "" {
+		f.Scope = pebblestore.ProjectTaskScopeAll
+	}
+	if f.Limit, err = pebblestore.ParseProjectTaskListLimit(q.Get("limit")); err != nil {
+		return f, true, err
+	}
+	if f.Cursor, err = pebblestore.ParseProjectTaskListCursor(q.Get("cursor")); err != nil {
+		return f, true, err
+	}
+	f.Statuses = pebblestore.ParseProjectTaskStatuses(q.Get("status"))
+	f.ExcludeStatuses = pebblestore.ParseProjectTaskStatuses(q.Get("exclude_status"))
+	f.Query = strings.TrimSpace(q.Get("query"))
+	f.Agent = strings.TrimSpace(q.Get("agent"))
+	f.OriginSessionID = strings.TrimSpace(q.Get("origin_session_id"))
+	f.WorkerOnly = q.Get("worker_only") == "true"
+	f.WorkerID = strings.TrimSpace(q.Get("worker_id"))
+	return f, true, nil
+}
+
+func writeProjectTaskBoard(w http.ResponseWriter, rows []projectTaskBoardRow, page map[string]any, stats pebblestore.ProjectTaskReadStats, started time.Time, reconcile time.Duration) {
 	encodeStart := time.Now()
-	body, err := json.Marshal(map[string]any{"tasks": rows, "count": len(rows)})
+	response := map[string]any{"tasks": rows, "count": len(rows)}
+	for key, value := range page {
+		response[key] = value
+	}
+	body, err := json.Marshal(response)
 	encode := time.Since(encodeStart)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)

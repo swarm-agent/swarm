@@ -39,7 +39,6 @@ const (
 	controlMCPToolOutputLimit = 300
 	controlMCPMaxModels       = 40
 	controlMCPMaxChildren     = 20
-	controlMCPMaxTasks        = 30
 	// project.md as read by get_project and written by update_project_context.
 	// Generated documents are at most 12,000 bytes; edits get headroom.
 	controlMCPMaxProjectContextChars = 50000
@@ -818,10 +817,15 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_list_tasks", Title: "List project tasks",
-			Description: "Work in a project: orchestrator tasks and worker runs, with status, agent branch, target branch and what needs doing. Tasks in pending_approval wait for approve_task; finished work waits in status needs_review until integrate_task merges it. Read a task's work with get_changes and read_file on its session_id.",
+			Description: "Work in a project: orchestrator tasks and worker runs, with status, agent branch, target branch and what needs doing. By default it lists current tasks (running, waiting, or finished in the last 24 hours), newest updated first, 25 per page; total says how many match. Use scope all with cursor (from next_cursor) to page through history. Tasks in pending_approval wait for approve_task; finished work waits in status needs_review until integrate_task merges it. Read a task's work with get_changes and read_file on its session_id.",
 			InputSchema: controlMCPObject([]string{"project_id"}, map[string]any{
 				"project_id":     controlMCPStringProp("From list_projects.", 1, 200),
-				"status":         controlMCPStringProp("Only this status, e.g. needs_review.", 0, 50),
+				"status":         controlMCPStringProp("Only these statuses, one or comma-separated, e.g. needs_review or in_progress,queued.", 0, 200),
+				"query":          controlMCPStringProp("Only tasks whose title or description contains this text.", 0, 200),
+				"agent":          controlMCPStringProp("Only tasks for this agent, e.g. coder.", 0, 50),
+				"scope":          map[string]any{"type": "string", "enum": []string{pebblestore.ProjectTaskScopeCurrent, pebblestore.ProjectTaskScopeAll}, "description": "current (default): running, waiting, or finished in the last 24 hours. all: every task that is not archived."},
+				"limit":          map[string]any{"type": "integer", "minimum": 1, "maximum": pebblestore.ProjectTaskListMaxLimit, "description": "Tasks per page. Default 25."},
+				"cursor":         controlMCPStringProp("next_cursor from the previous page.", 0, 20),
 				"include_linked": map[string]any{"type": "boolean", "description": "Also list linked_tasks: tasks this project's sessions sent to linked machines, with the machine and the status this home last observed (untrusted)."},
 			}),
 			Annotations: controlMCPReadOnly, call: controlMCPListTasks,
@@ -1313,7 +1317,9 @@ func (c *controlMCPCall) sessionChildren(sessionID string, metadata map[string]a
 	children := []map[string]any{}
 	projectID, _ := metadata["project_id"].(string)
 	if role, _ := metadata["role"].(string); role == "project_orchestrator" && controlMCPSafeID.MatchString(projectID) && !controlMCPReservedIDs[projectID] {
-		response, err := c.dispatch(http.MethodGet, "/v3/projects/"+projectID+"/tasks", nil, nil)
+		// The route selects this session's tasks; the board is never read.
+		query := url.Values{"origin_session_id": {sessionID}, "scope": {pebblestore.ProjectTaskScopeAll}, "limit": {strconv.Itoa(controlMCPMaxChildren)}}
+		response, err := c.dispatch(http.MethodGet, "/v3/projects/"+projectID+"/tasks", query, nil)
 		if err != nil {
 			return nil
 		}
@@ -2458,23 +2464,44 @@ func controlMCPListTasks(c *controlMCPCall, args map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	response, err := c.dispatch(http.MethodGet, "/v3/projects/"+projectID+"/tasks", nil, nil)
+	// The task list route filters and pages; this tool never reads the board.
+	query := url.Values{"scope": {pebblestore.ProjectTaskScopeCurrent}, "limit": {strconv.Itoa(pebblestore.ProjectTaskListDefaultLimit)}}
+	for _, key := range []string{"status", "query", "agent", "scope", "cursor"} {
+		if value := controlMCPString(args, key); value != "" {
+			query.Set(key, value)
+		}
+	}
+	if raw, ok := args["limit"]; ok {
+		limit, isNumber := raw.(float64)
+		if !isNumber || limit != float64(int(limit)) || limit < 1 || limit > pebblestore.ProjectTaskListMaxLimit {
+			return nil, controlMCPToolFailure("limit must be an integer from 1 to %d", pebblestore.ProjectTaskListMaxLimit)
+		}
+		query.Set("limit", strconv.Itoa(int(limit)))
+	}
+	response, err := c.dispatch(http.MethodGet, "/v3/projects/"+projectID+"/tasks", query, nil)
 	if err != nil {
+		var toolErr controlMCPToolError
+		if errors.As(err, &toolErr) && toolErr.status == http.StatusBadRequest {
+			return nil, err
+		}
 		return nil, controlMCPNotFound(err, "project", projectID, "swarm_list_projects")
 	}
-	only := controlMCPString(args, "status")
 	tasks := []map[string]any{}
 	for _, raw := range controlMCPList(response["tasks"]) {
-		task := controlMCPMap(raw)
-		if task == nil || task["archived"] == true || (only != "" && task["status"] != only) {
-			continue
-		}
-		tasks = append(tasks, controlMCPTaskSummary(task))
-		if len(tasks) >= controlMCPMaxTasks {
-			break
+		if task := controlMCPMap(raw); task != nil {
+			summary := controlMCPTaskSummary(task)
+			if updated, ok := task["updated_at"]; ok {
+				summary["updated_at"] = updated
+			}
+			tasks = append(tasks, summary)
 		}
 	}
-	out := map[string]any{"tasks": tasks}
+	out := map[string]any{"tasks": tasks, "count": len(tasks)}
+	for _, key := range []string{"total", "next_cursor", "scope"} {
+		if value, ok := response[key]; ok {
+			out[key] = value
+		}
+	}
 	if include, _ := args["include_linked"].(bool); include {
 		// The home's linked-task records, through their one route.
 		linked, err := c.dispatch(http.MethodGet, fleetLinkedTasksPath, url.Values{"project_id": {projectID}}, nil)
@@ -2528,17 +2555,14 @@ func controlMCPIntegrate(c *controlMCPCall, args map[string]any, tool, readTool 
 	if err != nil {
 		return nil, err
 	}
-	response, err := c.dispatch(http.MethodGet, "/v3/projects/"+projectID+"/tasks", nil, nil)
-	if err != nil {
+	// Read the one task, not the board, which a large project cannot return.
+	response, err := c.dispatch(http.MethodGet, "/v3/projects/"+projectID+"/tasks/"+taskID, nil, nil)
+	var toolErr controlMCPToolError
+	if err != nil && !(errors.As(err, &toolErr) && toolErr.status == http.StatusNotFound) {
 		return nil, err
 	}
-	var task map[string]any
-	for _, raw := range controlMCPList(response["tasks"]) {
-		if candidate := controlMCPMap(raw); candidate != nil && candidate["id"] == taskID {
-			task = candidate
-		}
-	}
-	if task == nil {
+	task := controlMCPMap(response["task"])
+	if err != nil || task == nil || task["id"] != taskID || task["archived"] == true {
 		return nil, controlMCPToolFailure("task %s not found in project %s (see list_tasks)", taskID, projectID)
 	}
 	selection := map[string]any{}

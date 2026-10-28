@@ -2324,7 +2324,22 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				commits    int
 			}
 			storedFacts := map[string]storedIntegration{}
-			tasks, stats, err := db.ReadProjectTaskBoard(p.AccountScopeID, projectID, archiveView == "archived", func(rows []pebblestore.ProjectTaskRecord, reader *pebblestore.ProjectTaskBoardReader) {
+			// With any list parameter the response is one filtered page,
+			// selected before rows are hydrated; without one it is the board.
+			listFilter, paged, filterErr := projectTaskListFilterFromQuery(r.URL.Query(), archiveView == "archived")
+			if filterErr != nil {
+				writeError(w, http.StatusBadRequest, filterErr)
+				return
+			}
+			var listPage pebblestore.ProjectTaskListPage
+			var selectRows func([]pebblestore.ProjectTaskRecord) []pebblestore.ProjectTaskRecord
+			if paged {
+				selectRows = func(rows []pebblestore.ProjectTaskRecord) []pebblestore.ProjectTaskRecord {
+					listPage = listFilter.Select(rows, projectTaskListNow().UnixMilli())
+					return listPage.Tasks
+				}
+			}
+			tasks, stats, err := db.ReadProjectTaskBoardSelected(p.AccountScopeID, projectID, archiveView == "archived", selectRows, func(rows []pebblestore.ProjectTaskRecord, reader *pebblestore.ProjectTaskBoardReader) {
 				reconcileStart := time.Now()
 				for i := range rows {
 					storedFacts[rows[i].ID] = storedIntegration{integrated: rows[i].IsIntegrated, commits: rows[i].UnintegratedCommits}
@@ -2348,7 +2363,18 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			}
 			workerOnly := r.URL.Query().Get("worker_only") == "true"
 			targetWorkerID := strings.TrimSpace(r.URL.Query().Get("worker_id"))
-			if workerOnly || targetWorkerID != "" {
+			if paged && len(listFilter.Statuses)+len(listFilter.ExcludeStatuses) > 0 {
+				// Selection read the recorded status; a row whose reconciled
+				// status no longer matches is not returned under that filter.
+				kept := tasks[:0]
+				for _, t := range tasks {
+					if listFilter.MatchesStatus(t.Status) {
+						kept = append(kept, t)
+					}
+				}
+				tasks = kept
+			}
+			if !paged && (workerOnly || targetWorkerID != "") {
 				filtered := make([]pebblestore.ProjectTaskRecord, 0, len(tasks))
 				for _, t := range tasks {
 					if t.WorkerID == "" {
@@ -2403,7 +2429,17 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				progressTask.IsIntegrated, progressTask.UnintegratedCommits = facts.integrated, facts.commits
 				board[i].Progress = s.taskProgressFor(p.AccountScopeID, progressTask, started.UnixMilli())
 			}
-			writeProjectTaskBoard(w, board, stats, started, reconcileElapsed)
+			var pageFields map[string]any
+			if paged {
+				pageFields = map[string]any{"total": listPage.Total, "cursor": strconv.Itoa(listPage.Cursor), "limit": listFilter.Limit, "status_counts": listPage.StatusCounts}
+				if listFilter.Scope != "" {
+					pageFields["scope"] = listFilter.Scope
+				}
+				if listPage.HasNext {
+					pageFields["next_cursor"] = strconv.Itoa(listPage.NextCursor)
+				}
+			}
+			writeProjectTaskBoard(w, board, pageFields, stats, started, reconcileElapsed)
 			return
 		}
 

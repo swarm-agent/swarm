@@ -230,7 +230,7 @@ func TestDeliverJobWithoutAutomationsIsUnchanged(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/v3/projects/proj-1/tasks":
 			writeJSON(w, 200, map[string]any{"tasks": []any{map[string]any{"id": "task-1", "session_id": "sess-1", "worktree_branch": "agent/run-1", "base_branch": "main"}}})
 		case r.Method == http.MethodGet && r.URL.Path == "/v3/projects/proj-1/tasks/task-1":
-			writeJSON(w, 200, map[string]any{"task": map[string]any{"id": "task-1", "status": "needs_review"}})
+			writeJSON(w, 200, map[string]any{"task": map[string]any{"id": "task-1", "status": "needs_review", "session_id": "sess-1", "worktree_branch": "agent/run-1", "base_branch": "main"}})
 		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v3/projects/proj-1/tasks/task-1/"):
 			writeJSON(w, 200, map[string]any{"task": map[string]any{"id": "task-1"}, "integration": map[string]any{"state": "integrated", "resulting_target_head": strings.Repeat("d", 40)}})
 		default:

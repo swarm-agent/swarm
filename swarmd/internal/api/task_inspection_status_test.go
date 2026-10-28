@@ -48,7 +48,7 @@ func TestIntegrateInspectionCode(t *testing.T) {
 			c.next = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				if r.Method == http.MethodGet {
-					fmt.Fprint(w, `{"tasks":[{"id":"task","session_id":"session","worktree_branch":"agent/task","base_branch":"dev"}]}`)
+					fmt.Fprint(w, `{"task":{"id":"task","session_id":"session","worktree_branch":"agent/task","base_branch":"dev"}}`)
 					return
 				}
 				calls++

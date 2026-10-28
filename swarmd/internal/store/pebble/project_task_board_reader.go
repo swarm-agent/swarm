@@ -28,7 +28,15 @@ func newProjectTaskBoardReader(reader pebble.Reader, account string, rows []Proj
 }
 
 func (s *SessionStore) ReadProjectTaskBoard(account, project string, archived bool, consume func([]ProjectTaskRecord, *ProjectTaskBoardReader)) ([]ProjectTaskRecord, ProjectTaskReadStats, error) {
-	rows, _, stats, err := s.readProjectTaskSummaries(account, project, archived, consume)
+	rows, _, stats, err := s.readProjectTaskSummaries(account, project, archived, nil, consume)
+	return rows, stats, err
+}
+
+// ReadProjectTaskBoardSelected is ReadProjectTaskBoard with selectRows applied
+// to the compact rows before plans, programs and sessions are read, so only
+// the selected rows are hydrated and passed to consume.
+func (s *SessionStore) ReadProjectTaskBoardSelected(account, project string, archived bool, selectRows func([]ProjectTaskRecord) []ProjectTaskRecord, consume func([]ProjectTaskRecord, *ProjectTaskBoardReader)) ([]ProjectTaskRecord, ProjectTaskReadStats, error) {
+	rows, _, stats, err := s.readProjectTaskSummaries(account, project, archived, selectRows, consume)
 	return rows, stats, err
 }
 

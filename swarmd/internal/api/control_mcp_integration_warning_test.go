@@ -17,7 +17,7 @@ func TestControlMCPIntegrateDeliveryResult(t *testing.T) {
 		c.next = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			if r.Method == http.MethodGet {
-				_, _ = w.Write([]byte(`{"tasks":[{"id":"task","session_id":"session","worktree_branch":"agent/task","base_branch":"dev"}]}`))
+				_, _ = w.Write([]byte(`{"task":{"id":"task","session_id":"session","worktree_branch":"agent/task","base_branch":"dev"}}`))
 			} else if rejected {
 				w.WriteHeader(http.StatusConflict)
 				_, _ = w.Write([]byte(`{"error":"mismatch","delivery":{"freshness":"unknown","reason_code":"lane_branch_mismatch","reason":"detached"}}`))
