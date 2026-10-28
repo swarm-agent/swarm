@@ -67,14 +67,9 @@ fn read_of(d: TaskDiff) -> Read {
 pub(super) type ChangesByTask = HashMap<String, Changes>;
 
 impl Console {
-    /// Finished work in a task session of its own has changes to look at,
-    /// whether or not Swarm offers to merge it now (its reason shows beside
-    /// it). Media jobs have no session; reviewers change nothing.
+    /// Finished work with commits to merge has changes to look at.
     fn has_changes(&self, si: usize, task: &Task) -> bool {
-        self.sessions[si].live.is_some()
-            && !task.key.is_empty()
-            && task.status == TaskStatus::NeedsReview
-            && (matches!(task.merge, Merge::Integrate | Merge::Recover) || (!task.session.is_empty() && task.role.as_ref() != "reviewer"))
+        self.sessions[si].live.is_some() && !task.key.is_empty() && task.status == TaskStatus::NeedsReview && matches!(task.merge, Merge::Integrate | Merge::Recover)
     }
 
     fn task_project(&self, si: usize) -> String {

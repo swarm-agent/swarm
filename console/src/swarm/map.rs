@@ -167,19 +167,9 @@ pub fn run_clock(run: &Value, last_message_at: u64) -> RunClock {
 pub fn session(shell: &Value, run: &Value, pending: bool, projects: &[Project]) -> Option<Session> {
     let project_id = orchestrator_project(shell)?;
     let project = projects.iter().position(|p| p.id.as_ref() == project_id)?;
-    Some(session_in(shell, run, pending, project))
-}
-
-/// A task's own session (no conversation started its task) in the project
-/// (by index) its task is in, listed while the task waits to be merged.
-pub fn task_session(shell: &Value, run: &Value, pending: bool, project: usize) -> Session {
-    session_in(shell, run, pending, project)
-}
-
-fn session_in(shell: &Value, run: &Value, pending: bool, project: usize) -> Session {
     let clock = run_clock(run, n(shell, "last_message_at") as u64);
     let failed = matches!(s(run, "status"), "failed") || !s(run, "error").is_empty();
-    Session {
+    Some(Session {
         live: Some(LiveRef { task_id: "".into(), session_id: s(shell, "id").to_string().into() }),
         title: if s(shell, "title").is_empty() { "Untitled".into() } else { s(shell, "title").to_string().into() },
         project,
@@ -208,7 +198,7 @@ fn session_in(shell: &Value, run: &Value, pending: bool, project: usize) -> Sess
         calls: vec![],
         outbox: vec![],
         run: Some(clock),
-    }
+    })
 }
 
 /// Tools this app runs on your machine for the Orchestrator.
@@ -447,19 +437,9 @@ fn task_merge(t: &Value) -> Merge {
     }
 }
 
-/// The session a task's card shows in: the conversation that started it,
-/// or, for a task no conversation started (one an outside AI asked for), its
-/// own task session. "" when it has neither (a media job).
-pub fn task_home(t: &Value) -> &str {
-    match s(t, "origin_session_id") {
-        "" => s(t, "session_id"),
-        origin => origin,
-    }
-}
-
-/// The cards of one conversation: the project's tasks whose home it is.
+/// The cards of one conversation: the project's tasks it started.
 pub fn session_tasks(project_tasks: &[Value], session_id: &str) -> Vec<Task> {
-    project_tasks.iter().filter(|t| !session_id.is_empty() && task_home(t) == session_id).map(task).collect()
+    project_tasks.iter().filter(|t| s(t, "origin_session_id") == session_id).map(task).collect()
 }
 
 /// The model line for a session header from its view's agentic settings:
@@ -777,16 +757,6 @@ mod tests {
         assert_eq!(tasks[0].key.as_ref(), "task_b4784618");
         assert_eq!(tasks[0].status, TaskStatus::PendingApproval);
         assert_eq!(tasks[0].role.as_ref(), "coder");
-        // A task no conversation started shows in its own task session; one
-        // a conversation started never does, and a media job has no home.
-        let board = [
-            json!({"id": "t_ai", "session_id": "77d9a980", "agent": "coder", "status": "needs_review", "title": "Asked by an outside AI"}),
-            json!({"id": "t_conv", "session_id": "aa11", "origin_session_id": "s1", "status": "needs_review"}),
-            json!({"id": "t_media", "agent": "image", "status": "needs_review"}),
-        ];
-        assert_eq!(session_tasks(&board, "77d9a980").iter().map(|t| t.key.to_string()).collect::<Vec<_>>(), ["t_ai"]);
-        assert!(session_tasks(&board, "aa11").is_empty());
-        assert!(session_tasks(&board, "").is_empty());
     }
 
     #[test]
