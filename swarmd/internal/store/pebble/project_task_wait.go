@@ -220,6 +220,19 @@ const (
 	V3ProjectTaskRemoteWorkOff     = "linked_work_off"
 )
 
+// ProjectTaskNotStartedReason says why a task has no run to wait on yet and
+// what happens next. A pending_approval task is started by the person in the
+// app; the agent never chases that approval.
+func ProjectTaskNotStartedReason(status string) string {
+	if status == "pending_approval" {
+		return "is pending_approval and has not started: the person starts it in the app. Do not ask for or chase the approval; wait_tasks on it once it runs"
+	}
+	if strings.TrimSpace(status) == "" {
+		status = "unknown"
+	}
+	return "has not started yet (status " + status + "); wait_tasks on it once it runs"
+}
+
 var ErrProjectTaskWaitNotReady = errors.New("project task wait has no actionable outcome")
 var ErrProjectTaskWaitStale = errors.New("project task wait owner is no longer current")
 
@@ -314,13 +327,16 @@ func (s *SessionStore) prepareProjectTaskWait(input *V3SessionMutationInput) err
 			if err != nil {
 				return err
 			}
-			if !ok || task.AccountID != input.AccountScopeID || task.ProjectID != op.ProjectID || task.Archived {
-				return errors.New("wait task is not an authorized linked project task")
+			if !ok || task.AccountID != input.AccountScopeID || task.ProjectID != op.ProjectID {
+				return fmt.Errorf("task %s is not a task of project %s; list_tasks shows its tasks", id, op.ProjectID)
+			}
+			if task.Archived {
+				return fmt.Errorf("task %s is archived; unarchive_task it first, or wait on another task", id)
 			}
 			task.EnsureTaskAttempts()
 			a := task.ActiveAttempt()
 			if a == nil || a.SessionID == "" {
-				return errors.New("wait task has no delegated attempt; obtain task approval/deployment first")
+				return fmt.Errorf("task %s %s", id, ProjectTaskNotStartedReason(task.Status))
 			}
 			if owned, err := s.projectTaskWaitAttemptOwned(input.AccountScopeID, input.UserID, op.ProjectID, id, a.SessionID); err != nil {
 				return err
@@ -524,7 +540,7 @@ func (s *SessionStore) prepareRemoteProjectTaskWait(input *V3SessionMutationInpu
 			return errors.New("wait_tasks requires distinct task IDs")
 		}
 		if target.AttemptID == "" || target.SessionID == "" {
-			return errors.New("wait task has no delegated attempt; obtain task approval/deployment first")
+			return fmt.Errorf("task %s on %s has not started yet; wait_tasks on it once it runs", target.TaskID, op.Machine)
 		}
 		seen[target.TaskID] = true
 		wait.Tasks = append(wait.Tasks, target)

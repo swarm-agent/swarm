@@ -116,12 +116,15 @@ func TestManageProjectsListTasksCurrentNewestFirstOnLargeProject(t *testing.T) {
 	if agent, _ := list(map[string]any{"agent": "finder", "scope": "all"}); ids(agent) != "fresh-review" {
 		t.Fatalf("agent filter = %s", ids(agent))
 	}
-	// All 1,003 tasks are reachable by paging, newest first.
-	all, _ := list(map[string]any{"scope": "all", "limit": float64(100)})
-	if all.Total != 1003 || all.Count != 100 || all.NextCursor == nil || *all.NextCursor != 100 || !strings.HasPrefix(ids(all), "fresh-done,fresh-review,fresh-build,") {
+	// All 1,003 tasks are reachable by paging, newest first, at most 50 a page.
+	all, _ := list(map[string]any{"scope": "all", "limit": float64(50)})
+	if all.Total != 1003 || all.Count != 50 || all.NextCursor == nil || *all.NextCursor != 50 || !strings.HasPrefix(ids(all), "fresh-done,fresh-review,fresh-build,") {
 		t.Fatalf("history page: total %d count %d next %v", all.Total, all.Count, all.NextCursor)
 	}
-	tail, _ := list(map[string]any{"scope": "all", "limit": float64(100), "cursor": float64(1000)})
+	if _, err := runtime.executeManageProjects(context.Background(), scope, map[string]any{"action": "list_tasks", "project_id": project, "limit": float64(100)}); err == nil || !strings.Contains(err.Error(), "between 1 and 50") {
+		t.Fatalf("limit above 50: %v", err)
+	}
+	tail, _ := list(map[string]any{"scope": "all", "limit": float64(50), "cursor": float64(1000)})
 	if tail.Count != 3 || tail.NextCursor != nil || tail.Tasks[2].ID != "history-0000" {
 		t.Fatalf("last page: %s next %v", ids(tail), tail.NextCursor)
 	}
@@ -131,7 +134,7 @@ func TestManageProjectsListTasksCurrentNewestFirstOnLargeProject(t *testing.T) {
 	// Another account sees nothing of this project.
 	other := scope
 	other.Principal.AccountScopeID = "acct-other"
-	if _, err := runtime.executeManageProjects(context.Background(), other, map[string]any{"action": "list_tasks", "project_id": project}); err == nil || !strings.Contains(err.Error(), "project not found") {
+	if _, err := runtime.executeManageProjects(context.Background(), other, map[string]any{"action": "list_tasks", "project_id": project}); err == nil || !strings.Contains(err.Error(), `project "proj-large" not found`) {
 		t.Fatalf("cross-account list: %v", err)
 	}
 }

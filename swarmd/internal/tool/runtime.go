@@ -2103,6 +2103,27 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 			return "", errors.New("managed execution uses a prepared checkout; this host-bound tool cannot access that checkout; use Bash inside the assigned environment")
 		}
 	}
+	// A project conversation's bash/read/search/find without a folder run in
+	// the project's primary_code folder, under the same catalog authority as
+	// an explicit path (project_default_folder.go). The session stays unbound.
+	if _, validation := args["committed_source"]; projectDefaultFolderTool(name) && strings.TrimSpace(scope.PrimaryPath) == "" && !validation &&
+		(name != "bash" || stringValue(args["workspace_path"]) == "") {
+		primary, err := r.projectPrimaryFolder(scope)
+		if err != nil {
+			return "", err
+		}
+		switch {
+		case primary == "":
+		case name == "bash":
+			repo, err := r.recoveryRepository(scope, primary)
+			if err != nil {
+				return "", err
+			}
+			scope.PrimaryPath = repo
+		case projectDefaultFolderApplies(name, primary, args):
+			scope.PrimaryPath, scope.Roots = primary, []string{primary}
+		}
+	}
 	switch name {
 	case "read":
 		return executeRead(scope, args)

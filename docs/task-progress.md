@@ -55,6 +55,18 @@ workflow deliveries and its integration.
 
 `summary` is one short line for a client to show as is.
 
+### `outcome` and `stale`
+
+`outcome` is what happened to the task's work, read from its latest workflow
+delivery: `running <step>`, `sent_back (round n)`, `pushed <head12>` (a run
+step after the review, such as the owner's push script), `delivered <target>`,
+`blocked <reason>` or `failed <step>`; `workflow pending` while the task's end
+is not evaluated yet. With no workflow it is `integrated`, `delivered <where>`
+or, once the agent finished, `ready to integrate`; absent before then.
+
+`stale` is `true` on an `in_progress` or `blocked` task whose session has had
+no active run, and which has not changed, for 24 hours.
+
 ### `workflow.state`, one of
 
 - `none`: the task ended and Swarm found no enabled workflow that applies to

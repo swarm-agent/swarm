@@ -34,14 +34,14 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 		projectID = strings.TrimSpace(asString(args["id"]))
 	}
 	if projectID == "" {
-		return "", errors.New("project_id is required")
+		return "", fmt.Errorf("project_id is required for %s; manage_projects action=list lists your projects and their ids", action)
 	}
 	project, found, err := r.projects.GetProject(account, projectID)
 	if err != nil {
 		return "", err
 	}
 	if !found || project == nil {
-		return "", errors.New("project not found")
+		return "", projectNotFoundError(projectID)
 	}
 	result := map[string]any{"tool": "manage_projects", "action": action, "project_id": projectID, "status": "ok"}
 	taskID := strings.TrimSpace(asString(args["task_id"]))
@@ -58,6 +58,9 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 		}
 		if err := json.Unmarshal(raw, &ids); err != nil || len(ids) == 0 || len(ids) > 16 {
 			return "", errors.New("task_ids must contain 1-16 task IDs")
+		}
+		if err := r.checkProjectTaskWaitIDs(account, projectID, ids); err != nil {
+			return "", err
 		}
 		until, err := pebblestore.NormalizeProjectTaskWaitUntil(asString(args["until"]))
 		if err != nil {
@@ -171,7 +174,7 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 			return "", err
 		}
 		if !found || task == nil {
-			return "", errors.New("task not found")
+			return "", projectTaskNotFoundError(projectID, taskID)
 		}
 		detail, err := ProjectTaskDetail(args)
 		if err != nil {
@@ -349,9 +352,13 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 		}
 		result["task"] = projectTaskSummary(*updated)
 	case "list_tasks", "reconcile_tasks":
-		limit := 25
+		limit := pebblestore.ProjectTaskListDefaultLimit
 		if _, ok := args["limit"]; ok {
-			limit, err = projectTaskInteger(args, "limit", 1, 100)
+			maxLimit := 100
+			if action == "list_tasks" {
+				maxLimit = pebblestore.ProjectTaskAgentListMaxLimit
+			}
+			limit, err = projectTaskInteger(args, "limit", 1, maxLimit)
 			if err != nil {
 				return "", err
 			}
@@ -384,15 +391,29 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 				Statuses: pebblestore.ParseProjectTaskStatuses(asString(args["status"])),
 				Query:    asString(args["query"]), Agent: strings.TrimSpace(asString(args["agent"])), Group: strings.TrimSpace(asString(args["group"])),
 				Scope: scopeName, IncludeArchived: asBool(args["include_archived"]), Limit: limit, Cursor: cursor,
+				// The person's work: tasks a workflow started (its reviewer
+				// runs) are counted on their task unless asked for.
+				ExcludeWorkflowTasks: !asBool(args["include_workflow_tasks"]),
 			}
 			page := filter.Select(all, projectTaskListNow().UnixMilli())
 			rows := make([]projectTaskListRow, 0, len(page.Tasks))
 			for _, task := range page.Tasks {
-				rows = append(rows, projectTaskSummary(task))
+				row := projectTaskSummary(task)
+				if progress := r.projectTaskProgress(account, task); progress != nil {
+					row.Outcome, row.Stale = clipBytes(progress.Outcome, projectTaskTextBytes), progress.Stale
+				}
+				row.Reviews = page.Reviews[task.ID]
+				rows = append(rows, row)
 			}
 			result["tasks"], result["count"], result["total"] = rows, len(rows), page.Total
 			result["scope"], result["cursor"], result["limit"] = scopeName, page.Cursor, limit
 			result["scan_truncated"] = scanTruncated
+			if filter.ExcludeWorkflowTasks {
+				result["workflow_tasks"] = page.WorkflowTasks
+				if page.WorkflowTasks > 0 {
+					result["workflow_tasks_hint"] = WorkflowTasksHint
+				}
+			}
 			if page.HasNext {
 				result["next_cursor"] = page.NextCursor
 			}
@@ -598,12 +619,17 @@ var projectTaskListNow = time.Now
 // projectTaskListRow is deliberately independent of the persisted record: adding
 // media or plan fields to storage must never expand list/mutation tool output.
 type projectTaskListRow struct {
-	ID                string `json:"id"`
-	ProjectID         string `json:"project_id"`
-	Revision          int    `json:"revision"`
-	Title             string `json:"title"`
-	Status            string `json:"status"`
-	Archived          bool   `json:"archived"`
+	ID       string `json:"id"`
+	Revision int    `json:"revision"`
+	Title    string `json:"title"`
+	Status   string `json:"status"`
+	// Outcome is what happened to the task's work (task progress outcome);
+	// Stale flags an in_progress or blocked task with no active run for 24 h;
+	// Reviews counts its workflow reviewer tasks the list left out.
+	Outcome           string `json:"outcome,omitempty"`
+	Stale             bool   `json:"stale,omitempty"`
+	Reviews           int    `json:"reviews,omitempty"`
+	Archived          bool   `json:"archived,omitempty"`
 	Agent             string `json:"agent,omitempty"`
 	SessionID         string `json:"session_id,omitempty"`
 	TaskProgramID     string `json:"task_program_id,omitempty"`
@@ -620,7 +646,7 @@ func projectTaskSummary(t pebblestore.ProjectTaskRecord) projectTaskListRow {
 	if len(title) > 256 {
 		title = title[:256]
 	}
-	return projectTaskListRow{ID: t.ID, ProjectID: t.ProjectID, Revision: t.Revision, Title: string(title), Status: t.Status, Archived: t.Archived, Agent: t.Agent, SessionID: t.SessionID, TaskProgramID: t.TaskProgramID, WorktreeBranch: t.WorktreeBranch, SourceWorkspaceID: t.SourceWorkspace.WorkspaceID, Group: t.Group, Order: t.Order, Priority: t.Priority, UpdatedAt: t.UpdatedAt}
+	return projectTaskListRow{ID: t.ID, Revision: t.Revision, Title: string(title), Status: t.Status, Archived: t.Archived, Agent: t.Agent, SessionID: t.SessionID, TaskProgramID: t.TaskProgramID, WorktreeBranch: t.WorktreeBranch, SourceWorkspaceID: t.SourceWorkspace.WorkspaceID, Group: t.Group, Order: t.Order, Priority: t.Priority, UpdatedAt: t.UpdatedAt}
 }
 
 func projectTaskInteger(args map[string]any, key string, min, max int) (int, error) {

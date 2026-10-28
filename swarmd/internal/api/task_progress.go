@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"swarm/packages/swarmd/internal/jobautomation"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -49,8 +48,14 @@ const (
 )
 
 type taskProgress struct {
-	State       string                   `json:"state"`
-	Summary     string                   `json:"summary"`
+	State   string `json:"state"`
+	Summary string `json:"summary"`
+	// Outcome is what happened to the task's work, from its latest workflow
+	// delivery (taskProgressOutcome); "" while nothing has happened yet.
+	Outcome string `json:"outcome,omitempty"`
+	// Stale marks an in_progress or blocked task with no active run for
+	// taskStaleAfterMillis (taskProgressStale).
+	Stale       bool                     `json:"stale,omitempty"`
 	Workflow    *taskProgressWorkflow    `json:"workflow,omitempty"`
 	Integration *taskProgressIntegration `json:"integration,omitempty"`
 	History     []taskProgressEvent      `json:"history"`
@@ -508,6 +513,7 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 		out.Summary = "finished, nothing to integrate"
 	}
 	out.Summary = oneLineProgress(out.Summary, maxProgressSummary)
+	out.Outcome = taskProgressOutcome(class, latest, workflow, integrated, deliveredWhere)
 	out.Workflow = workflow
 	out.Integration = integration
 	out.History = taskProgressHistory(task, deliveries, eval, ended, commits, branch, integrated, integratedCommit, target)
@@ -677,6 +683,7 @@ func taskProgressHistory(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 func (s *Server) taskProgressFor(account string, task pebblestore.ProjectTaskRecord, now int64) *taskProgress {
 	deliveries, eval := s.taskProgressRecords(account, task)
 	p := computeTaskProgress(task, deliveries, eval, now)
+	s.markTaskProgressStale(&p, task, now)
 	return &p
 }
 
@@ -745,7 +752,7 @@ func (s *Server) installTaskProgress() {
 	}
 	if underlying := db.Underlying(); underlying != nil {
 		underlying.SetProjectTaskProgress(func(account string, task pebblestore.ProjectTaskRecord) any {
-			return s.taskWaitProgressFor(account, task, time.Now().UnixMilli())
+			return s.taskWaitProgressFor(account, task, taskProgressNow().UnixMilli())
 		})
 		// The startup reconciliation ran before the hook existed and left
 		// settled waits on finished tasks undecided; decide them now.

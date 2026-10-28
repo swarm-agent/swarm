@@ -2418,6 +2418,11 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			for i := range tasks {
 				sanitizedTasks[i] = *sanitizeProjectTaskForClient(&tasks[i])
 			}
+			var reviews map[string]int
+			reviewsPartial := false
+			if paged && listFilter.ExcludeWorkflowTasks {
+				reviews, reviewsPartial = projectTaskHiddenReviews(db, p.AccountScopeID, projectID, listPage)
+			}
 			board := make([]projectTaskBoardRow, len(sanitizedTasks))
 			for i := range sanitizedTasks {
 				if principal, ok := PrincipalFromRequest(r); ok && len(sanitizedTasks[i].EnvironmentAttachments) > 0 {
@@ -2427,13 +2432,20 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				progressTask := tasks[i]
 				facts := storedFacts[progressTask.ID]
 				progressTask.IsIntegrated, progressTask.UnintegratedCommits = facts.integrated, facts.commits
-				board[i].Progress = s.taskProgressFor(p.AccountScopeID, progressTask, started.UnixMilli())
+				board[i].Progress = s.taskProgressFor(p.AccountScopeID, progressTask, taskProgressNow().UnixMilli())
+				board[i].Reviews = reviews[sanitizedTasks[i].ID]
 			}
 			var pageFields map[string]any
 			if paged {
 				pageFields = map[string]any{"total": listPage.Total, "cursor": strconv.Itoa(listPage.Cursor), "limit": listFilter.Limit, "status_counts": listPage.StatusCounts}
 				if listFilter.Scope != "" {
 					pageFields["scope"] = listFilter.Scope
+				}
+				if listFilter.ExcludeWorkflowTasks {
+					pageFields["workflow_tasks"] = listPage.WorkflowTasks
+					if reviewsPartial {
+						pageFields["reviews_partial"] = true
+					}
 				}
 				if listPage.HasNext {
 					pageFields["next_cursor"] = strconv.Itoa(listPage.NextCursor)

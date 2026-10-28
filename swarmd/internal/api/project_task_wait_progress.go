@@ -34,8 +34,13 @@ func (s *Server) taskWaitProgressFor(account string, task pebblestore.ProjectTas
 		}
 		if p.Workflow.State != workflowRunning {
 			p.Workflow.State = workflowPending
+			// Nothing was handed over yet: the workflow decides next.
+			if p.Outcome == outcomeReadyToIntegrate || p.Outcome == "" {
+				p.Outcome = outcomeWorkflowPending
+			}
 		}
 	}
+	s.markTaskProgressStale(&p, task, now)
 	return &p
 }
 

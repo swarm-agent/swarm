@@ -300,7 +300,7 @@ func TestFleetListTasksForwardsFiltersOnLargeProject(t *testing.T) {
 	row := current["tasks"].([]any)[0].(map[string]any)
 	for key := range row {
 		switch key {
-		case "id", "project_id", "title", "status", "archived", "agent", "session_id", "updated_at":
+		case "id", "title", "status", "agent", "session_id", "updated_at", "outcome", "stale", "reviews":
 		default:
 			t.Fatalf("linked row carries %q: %v", key, row)
 		}

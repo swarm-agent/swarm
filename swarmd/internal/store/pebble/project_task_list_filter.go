@@ -15,6 +15,9 @@ const (
 
 	ProjectTaskListDefaultLimit = 25
 	ProjectTaskListMaxLimit     = 100
+	// ProjectTaskAgentListMaxLimit bounds one page of the Orchestrator's
+	// list_tasks, on this machine and on linked machines.
+	ProjectTaskAgentListMaxLimit = 50
 
 	// ProjectTaskRecentFinishMillis is how long a finished task stays current.
 	ProjectTaskRecentFinishMillis int64 = 24 * 60 * 60 * 1000
@@ -44,8 +47,33 @@ type ProjectTaskListFilter struct {
 	WorkerOnly      bool
 	Scope           string
 	IncludeArchived bool
-	Limit           int
-	Cursor          int
+	// ExcludeWorkflowTasks leaves out tasks a workflow step started (its
+	// reviewer runs and other agent steps). The page counts them instead:
+	// Reviews per reviewed task and WorkflowTasks for those left out.
+	ExcludeWorkflowTasks bool
+	Limit                int
+	Cursor               int
+}
+
+// projectTaskWorkflowIDPrefix starts the id of every task a workflow agent
+// step starts (api.startBuiltinAgentStep).
+const projectTaskWorkflowIDPrefix = "task_wf_"
+
+// ProjectTaskWorkflowSpawned reports whether a workflow step started t, such
+// as a reviewer run: its automation is a workflow's, or its id is a workflow
+// step's (kept when a follow-up relaunch clears the automation).
+func ProjectTaskWorkflowSpawned(t ProjectTaskRecord) bool {
+	return strings.HasPrefix(t.AutomationID, "workflow:") || strings.HasPrefix(t.ID, projectTaskWorkflowIDPrefix)
+}
+
+// ProjectTaskReviewedTaskID is the task of t's own project that the reviewer
+// task t reviews (its review job is "task/<project>/<task>"), or "".
+func ProjectTaskReviewedTaskID(t ProjectTaskRecord) string {
+	parts := strings.Split(strings.TrimSpace(t.ReviewJob), "/")
+	if len(parts) != 3 || parts[0] != "task" || parts[1] != t.ProjectID || parts[2] == "" {
+		return ""
+	}
+	return parts[2]
 }
 
 // ProjectTaskListPage is one page of a filtered task list, newest-updated first.
@@ -56,6 +84,12 @@ type ProjectTaskListPage struct {
 	NextCursor   int
 	HasNext      bool
 	StatusCounts map[string]int
+	// With ExcludeWorkflowTasks: HiddenWorkflowTasks are the workflow tasks
+	// the other filters matched and the page left out (WorkflowTasks of
+	// them), and Reviews counts those that review a task, by reviewed task id.
+	Reviews             map[string]int
+	WorkflowTasks       int
+	HiddenWorkflowTasks []ProjectTaskRecord
 }
 
 // ParseProjectTaskStatuses splits one or comma-separated statuses.
@@ -167,9 +201,19 @@ func (f ProjectTaskListFilter) Select(tasks []ProjectTaskRecord, nowMillis int64
 	if limit > ProjectTaskListMaxLimit {
 		limit = ProjectTaskListMaxLimit
 	}
-	page := ProjectTaskListPage{StatusCounts: map[string]int{}}
+	page := ProjectTaskListPage{StatusCounts: map[string]int{}, Reviews: map[string]int{}}
 	matched := make([]ProjectTaskRecord, 0)
 	for _, t := range tasks {
+		if f.ExcludeWorkflowTasks && ProjectTaskWorkflowSpawned(t) {
+			if f.matchesExceptStatus(t, nowMillis) && f.MatchesStatus(t.Status) {
+				page.WorkflowTasks++
+				page.HiddenWorkflowTasks = append(page.HiddenWorkflowTasks, t)
+				if reviewed := ProjectTaskReviewedTaskID(t); reviewed != "" {
+					page.Reviews[reviewed]++
+				}
+			}
+			continue
+		}
 		if !f.matchesExceptStatus(t, nowMillis) {
 			continue
 		}

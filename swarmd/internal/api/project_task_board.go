@@ -35,6 +35,9 @@ type projectTaskBoardRow struct {
 	BoardSummary projectTaskBoardRelated `json:"board_summary"`
 	// Progress is where the task is and what happened (task_progress.go).
 	Progress *taskProgress `json:"progress,omitempty"`
+	// Reviews counts the workflow reviewer tasks of this task a page left
+	// out (include_workflow_tasks=false).
+	Reviews int `json:"-"`
 }
 
 // MarshalJSON keeps the task's privacy-aware encoder without promoting it over
@@ -57,6 +60,9 @@ func (row projectTaskBoardRow) MarshalJSON() ([]byte, error) {
 		if fields["progress"], err = json.Marshal(row.Progress); err != nil {
 			return nil, err
 		}
+	}
+	if row.Reviews > 0 {
+		fields["reviews"] = json.RawMessage(strconv.Itoa(row.Reviews))
 	}
 	return json.Marshal(fields)
 }
@@ -92,12 +98,48 @@ func projectTaskBoardSummary(task *pebblestore.ProjectTaskRecord, reader *pebble
 	return out
 }
 
+// projectTaskHiddenReviewReads bounds the full task reads one page makes to
+// count reviews whose board summary does not carry the reviewed task.
+const projectTaskHiddenReviewReads = 200
+
+// projectTaskHiddenReviews counts, per reviewed task, the workflow reviewer
+// tasks a page left out (include_workflow_tasks=false). Board summaries do
+// not carry a reviewer's review job, so a hidden workflow task without one is
+// read in full (at most projectTaskHiddenReviewReads per page); partial
+// reports that the bound left some uncounted.
+func projectTaskHiddenReviews(db *pebblestore.SessionStore, account, projectID string, page pebblestore.ProjectTaskListPage) (map[string]int, bool) {
+	reviews := map[string]int{}
+	reads, partial := 0, false
+	for _, hidden := range page.HiddenWorkflowTasks {
+		target := pebblestore.ProjectTaskReviewedTaskID(hidden)
+		if target == "" && hidden.ReviewJob == "" {
+			if reads >= projectTaskHiddenReviewReads {
+				partial = true
+				continue
+			}
+			reads++
+			full, found, err := db.GetProjectTask(account, projectID, hidden.ID)
+			if err != nil {
+				partial = true
+				continue
+			}
+			if found && full != nil {
+				target = pebblestore.ProjectTaskReviewedTaskID(*full)
+			}
+		}
+		if target != "" {
+			reviews[target]++
+		}
+	}
+	return reviews, partial
+}
+
 // projectTaskListNow is the clock the current scope is measured against.
 var projectTaskListNow = time.Now
 
 // projectTaskListParams are the query parameters that select a filtered page
 // instead of the whole board.
-var projectTaskListParams = []string{"status", "exclude_status", "query", "agent", "origin_session_id", "limit", "cursor", "scope"}
+var projectTaskListParams = []string{"status", "exclude_status", "query", "agent", "origin_session_id", "limit", "cursor", "scope", "include_workflow_tasks"}
 
 // projectTaskListFilterFromQuery reads the list parameters. paged is false
 // when none is present, so a caller without parameters keeps the full board.
@@ -137,6 +179,16 @@ func projectTaskListFilterFromQuery(q url.Values, archivedView bool) (pebblestor
 	f.OriginSessionID = strings.TrimSpace(q.Get("origin_session_id"))
 	f.WorkerOnly = q.Get("worker_only") == "true"
 	f.WorkerID = strings.TrimSpace(q.Get("worker_id"))
+	// Workflow tasks (reviewer runs and other workflow agent steps) are
+	// listed unless the caller asks to leave them out, as the Orchestrator's
+	// list_tasks does; they are then counted on the task they review.
+	switch value := strings.TrimSpace(q.Get("include_workflow_tasks")); value {
+	case "", "true":
+	case "false":
+		f.ExcludeWorkflowTasks = true
+	default:
+		return f, true, fmt.Errorf("include_workflow_tasks must be true or false, not %q", value)
+	}
 	return f, true, nil
 }
 

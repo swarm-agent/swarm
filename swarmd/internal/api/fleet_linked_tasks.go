@@ -145,8 +145,23 @@ func (s *Server) ReadFleetLinkedTaskSession(ctx context.Context, p identity.Prin
 	if err != nil {
 		return nil, linkedTaskFail(http.StatusInternalServerError, "read permissions: %v", err)
 	}
-	if !pebblestore.LinkedWorkOn(access.Link(machine).Work) {
-		return nil, linkedTaskFail(http.StatusForbidden, "linked work rule for machine %q is off; check the Permissions page", machine)
+	// A wrong name or a rule that is off answers with the linked machines
+	// and their access, so the caller can pick one or say which rule is off.
+	machines, err := s.ListFleetMachines(ctx, p)
+	if err != nil {
+		return nil, linkedTaskFail(http.StatusInternalServerError, "%v", err)
+	}
+	known := false
+	for i := range machines {
+		machines[i].Access = access.Link(machines[i].Name).Work
+		known = known || machines[i].Name == machine
+	}
+	if !known || !pebblestore.LinkedWorkOn(access.Link(machine).Work) {
+		status := http.StatusForbidden
+		if !known {
+			status = http.StatusNotFound
+		}
+		return nil, linkedTaskFail(status, "%v", tool.FleetMachineUnavailableError(machine, machines, known))
 	}
 	client, linked, status, err := s.fleetMachineClient(p.AccountScopeID, machine)
 	if err != nil {

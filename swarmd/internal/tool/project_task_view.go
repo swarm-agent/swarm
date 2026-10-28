@@ -77,6 +77,8 @@ func ProjectTaskDetail(args map[string]any) (string, error) {
 type projectTaskProgressRead struct {
 	State    string `json:"state"`
 	Summary  string `json:"summary"`
+	Outcome  string `json:"outcome"`
+	Stale    bool   `json:"stale"`
 	Workflow *struct {
 		State      string `json:"state"`
 		Deliveries []struct {

@@ -52,12 +52,50 @@ type FleetMachineInfo struct {
 	Access    string `json:"access"`
 }
 
+// fleetProjectActions are the project actions a linked machine serves through
+// CallFleetProject.
+var fleetProjectActions = []string{"list", "get", "list_tasks", "get_task", "propose_task", "create_task", "approve_task", "accept_task", "reopen_task", "refine_task", "archive_task"}
+
 func FleetProjectActionAllowed(action string) bool {
-	switch action {
-	case "list", "get", "list_tasks", "get_task", "propose_task", "create_task", "approve_task", "accept_task", "reopen_task", "refine_task", "archive_task":
-		return true
+	for _, allowed := range fleetProjectActions {
+		if action == allowed {
+			return true
+		}
 	}
 	return false
+}
+
+// FleetActionUnavailableError says an action is not served on a linked
+// machine and lists what is: the project actions, wait_tasks and
+// read_task_session.
+func FleetActionUnavailableError(action string) error {
+	allowed := append(append([]string(nil), fleetProjectActions...), "wait_tasks", FleetReadTaskSessionAction)
+	return fmt.Errorf("%s is not available on a linked machine; with machine, use one of: %s", action, strings.Join(allowed, ", "))
+}
+
+// FleetMachineUnavailableError says why work cannot go to machine and lists
+// the linked machines with their linked work access, so the agent can pick a
+// machine by name or tell the person which rule is off.
+func FleetMachineUnavailableError(machine string, machines []FleetMachineInfo, linked bool) error {
+	listed := make([]string, 0, len(machines))
+	for _, m := range machines {
+		state := "online"
+		if !m.Online {
+			state = "offline"
+		}
+		listed = append(listed, fmt.Sprintf("%s (linked work %s, %s)", m.Name, firstNonEmptyText(m.Access, "off"), state))
+	}
+	known := "no machines are linked"
+	if len(listed) > 0 {
+		known = "linked machines: " + strings.Join(listed, "; ")
+	}
+	if machine == "" {
+		return fmt.Errorf("machine is required; %s", known)
+	}
+	if !linked {
+		return fmt.Errorf("no linked machine is named %q; %s", machine, known)
+	}
+	return fmt.Errorf("linked work for machine %q is off, so tasks cannot be sent or read there; the person turns it on for that machine in the app's Permissions page; %s", machine, known)
 }
 func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
 	if r == nil || r.sessions == nil || !scope.Principal.Valid() || scope.Principal.Type != identity.PrincipalTypeUser {
@@ -83,7 +121,7 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 	}
 	machine := strings.TrimSpace(asString(args["machine"]))
 	if machine != "" && !FleetProjectActionAllowed(action) && action != "wait_tasks" && action != FleetReadTaskSessionAction {
-		return "", fmt.Errorf("%s is not available on a linked machine", action)
+		return "", FleetActionUnavailableError(action)
 	}
 	machines, err := service.ListFleetMachines(ctx, scope.Principal)
 	if err != nil {
@@ -105,7 +143,7 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 		return string(raw), err
 	}
 	if !linked || !pebblestore.LinkedWorkOn(access.Link(machine).Work) {
-		return "", fmt.Errorf("linked work rule for machine %q is off or the machine is not linked; check the Permissions page", machine)
+		return "", FleetMachineUnavailableError(machine, machines, linked)
 	}
 	if action == "wait_tasks" {
 		return r.executeFleetWaitTasks(ctx, scope, service, machine, args)
@@ -272,7 +310,7 @@ func (r *Runtime) executeFleetWaitTasks(ctx context.Context, scope WorkspaceScop
 		task.EnsureTaskAttempts()
 		attempt := task.ActiveAttempt()
 		if attempt == nil || attempt.ID == "" || attempt.SessionID == "" {
-			return "", fmt.Errorf("task %s on %s has no delegated attempt; obtain task approval/deployment first", id, machine)
+			return "", fmt.Errorf("task %s on %s %s", id, machine, pebblestore.ProjectTaskNotStartedReason(task.Status))
 		}
 		targets = append(targets, pebblestore.V3ProjectTaskWaitTarget{TaskID: id, AttemptID: attempt.ID, SessionID: attempt.SessionID})
 	}

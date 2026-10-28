@@ -47,7 +47,7 @@ func (s *Server) ListFleetMachines(ctx context.Context, p identity.Principal) ([
 // project API. Task models, workspaces and lifecycle remain owned by that API.
 func (s *Server) CallFleetProject(ctx context.Context, p identity.Principal, machine, action string, args map[string]any) (json.RawMessage, error) {
 	if !tool.FleetProjectActionAllowed(action) {
-		return nil, fmt.Errorf("%s is not available on a linked machine", action)
+		return nil, tool.FleetActionUnavailableError(action)
 	}
 	if s.fleet == nil || s.fleetTokens == nil {
 		return nil, errors.New("fleet service unavailable")
@@ -136,10 +136,18 @@ func (s *Server) CallFleetProject(ctx context.Context, p identity.Principal, mac
 }
 
 // fleetTaskListQuery forwards the list filters to the machine's task list
-// route. It asks for current tasks, one page of 25, unless told otherwise, so
-// the machine filters and pages and never returns its whole board.
+// route. It asks for current tasks, one page of 25 (at most 50), without
+// workflow tasks, unless told otherwise, so the machine filters and pages and
+// never returns its whole board.
 func fleetTaskListQuery(args map[string]any) (url.Values, error) {
-	q := url.Values{"scope": {pebblestore.ProjectTaskScopeCurrent}, "limit": {strconv.Itoa(pebblestore.ProjectTaskListDefaultLimit)}}
+	q := url.Values{"scope": {pebblestore.ProjectTaskScopeCurrent}, "limit": {strconv.Itoa(pebblestore.ProjectTaskListDefaultLimit)}, "include_workflow_tasks": {"false"}}
+	switch v := args["include_workflow_tasks"].(type) {
+	case nil:
+	case bool:
+		q.Set("include_workflow_tasks", strconv.FormatBool(v))
+	default:
+		return nil, errors.New("include_workflow_tasks must be true or false")
+	}
 	text := func(key string) (string, error) {
 		switch v := args[key].(type) {
 		case nil:
@@ -183,8 +191,8 @@ func fleetTaskListQuery(args map[string]any) (url.Values, error) {
 	if _, err := pebblestore.NormalizeProjectTaskScope(q.Get("scope")); err != nil {
 		return nil, err
 	}
-	if _, err := pebblestore.ParseProjectTaskListLimit(q.Get("limit")); err != nil {
-		return nil, err
+	if limit, err := pebblestore.ParseProjectTaskListLimit(q.Get("limit")); err != nil || limit > pebblestore.ProjectTaskAgentListMaxLimit {
+		return nil, fmt.Errorf("limit must be an integer from 1 to %d", pebblestore.ProjectTaskAgentListMaxLimit)
 	}
 	if _, err := pebblestore.ParseProjectTaskListCursor(q.Get("cursor")); err != nil {
 		return nil, err
@@ -193,17 +201,23 @@ func fleetTaskListQuery(args map[string]any) (url.Values, error) {
 }
 
 // compactFleetTaskList keeps the page facts and the list-row fields of each
-// task (projectTaskListRow's identity fields); full records stay in get_task.
+// task (projectTaskListRow's identity fields), with the outcome and stale
+// flag the machine computed and its count of reviewer tasks; full records
+// stay in get_task.
 func compactFleetTaskList(raw json.RawMessage) (json.RawMessage, error) {
 	var data map[string]any
 	if err := json.Unmarshal(raw, &data); err != nil {
 		return nil, err
 	}
 	out := map[string]any{}
-	for _, key := range []string{"total", "next_cursor", "cursor", "limit", "scope", "status_counts"} {
+	for _, key := range []string{"total", "next_cursor", "cursor", "limit", "scope", "status_counts", "workflow_tasks"} {
 		if v, ok := data[key]; ok {
 			out[key] = v
 		}
+	}
+	// The hint is this machine's text, written from the machine's count.
+	if hidden, _ := out["workflow_tasks"].(float64); hidden > 0 {
+		out["workflow_tasks_hint"] = tool.WorkflowTasksHint
 	}
 	rows, _ := data["tasks"].([]any)
 	if len(rows) > pebblestore.ProjectTaskListMaxLimit {
@@ -216,12 +230,29 @@ func compactFleetTaskList(raw json.RawMessage) (json.RawMessage, error) {
 			return nil, errors.New("invalid linked task record")
 		}
 		item := map[string]any{}
-		for _, key := range []string{"id", "project_id", "title", "status", "archived", "agent", "session_id", "updated_at"} {
+		for _, key := range []string{"id", "title", "status", "agent", "session_id", "updated_at"} {
 			if v, ok := record[key]; ok {
 				if text, ok := v.(string); ok && len([]rune(text)) > 256 {
 					v = string([]rune(text)[:256])
 				}
 				item[key] = v
+			}
+		}
+		if archived, _ := record["archived"].(bool); archived {
+			item["archived"] = true
+		}
+		if reviews, _ := record["reviews"].(float64); reviews > 0 && reviews == float64(int(reviews)) {
+			item["reviews"] = int(reviews)
+		}
+		if progress, ok := record["progress"].(map[string]any); ok {
+			if outcome, _ := progress["outcome"].(string); strings.TrimSpace(outcome) != "" {
+				if r := []rune(outcome); len(r) > 300 {
+					outcome = string(r[:300])
+				}
+				item["outcome"] = outcome
+			}
+			if stale, _ := progress["stale"].(bool); stale {
+				item["stale"] = true
 			}
 		}
 		tasks = append(tasks, item)
