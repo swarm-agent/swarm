@@ -499,6 +499,20 @@ impl Entry {
     /// A tool call as it is drawn: one line in its colored parts, its time
     /// so far (running) or its duration (finished). None for other entries.
     pub fn tool_line(&self, now_ms: u64) -> Option<crate::swarm::tool_summary::Line> {
+        let (name, detail, summary, time) = self.tool_parts(now_ms)?;
+        Some(crate::swarm::tool_summary::line(name, detail, &summary, &time))
+    }
+
+    /// A tool call as it is drawn in a conversation: the name with its
+    /// summary and time on one row, the detail under it. None for other
+    /// entries.
+    pub fn tool_stack(&self, now_ms: u64) -> Option<crate::swarm::tool_summary::Stacked> {
+        let (name, detail, summary, time) = self.tool_parts(now_ms)?;
+        Some(crate::swarm::tool_summary::stacked(name, detail, &summary, &time))
+    }
+
+    /// A tool call's name, detail, summary (or what its state says) and time.
+    fn tool_parts(&self, now_ms: u64) -> Option<(&str, &str, String, String)> {
         use crate::swarm::tool_summary as ts;
         let Entry::Tool { name, detail, state, summary, duration_ms, started_at, .. } = self else { return None };
         let time = match state {
@@ -511,7 +525,7 @@ impl Entry {
             (ToolState::Failed, _) => "failed".into(),
             _ => String::new(),
         };
-        Some(ts::line(name, detail, &summary, &time))
+        Some((name.as_ref(), detail.as_ref(), summary, time))
     }
 }
 

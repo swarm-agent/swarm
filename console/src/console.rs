@@ -1028,12 +1028,24 @@ impl Console {
                     })),
             );
 
-        let mut entries = s
-            .entries
-            .iter()
-            .enumerate()
-            .map(|(ei, entry)| self.render_entry(pid, ei, entry, cx))
-            .collect::<Vec<_>>();
+        // Consecutive tool calls read as one tight stack, not separate blocks.
+        let mut entries: Vec<AnyElement> = Vec::new();
+        let mut tools: Vec<AnyElement> = Vec::new();
+        let stack = |tools: Vec<AnyElement>| div().flex().flex_col().gap(px(3.)).children(tools).into_any_element();
+        for (ei, entry) in s.entries.iter().enumerate() {
+            let drawn = self.render_entry(pid, ei, entry, cx);
+            if matches!(entry, Entry::Tool { .. }) {
+                tools.push(drawn);
+                continue;
+            }
+            if !tools.is_empty() {
+                entries.push(stack(std::mem::take(&mut tools)));
+            }
+            entries.push(drawn);
+        }
+        if !tools.is_empty() {
+            entries.push(stack(tools));
+        }
         // Sent, not in Swarm's record yet.
         let base = s.entries.len();
         entries.extend(s.outbox.iter().enumerate().map(|(i, (text, _))| self.render_entry(pid, base + i, &Entry::User(text.clone()), cx)));
@@ -1249,18 +1261,29 @@ impl Console {
             Entry::Tool { name, state, call_id, .. } => {
                 let failed = *state == ToolState::Failed || name.as_ref() == "error";
                 let color = if failed { t.err } else { t.info };
-                let parts = entry.tool_line(data::now_ms()).unwrap_or_else(|| crate::swarm::tool_summary::line(name, "", "", ""));
-                let line: SharedString = parts.text.clone().into();
-                let runs: Vec<_> = [
-                    (parts.name, color),
-                    (parts.detail, t.muted),
-                    (parts.summary, if failed { t.err } else { t.faint }),
-                    (parts.time, t.faint),
-                ]
-                .into_iter()
-                .filter(|(len, _)| *len > 0)
-                .map(|(len, c)| self.plain_run(len, c))
-                .collect();
+                let rows = entry.tool_stack(data::now_ms()).unwrap_or_else(|| crate::swarm::tool_summary::stacked(name, "", "", ""));
+                let copy: SharedString = rows.copy.clone().into();
+                let tail_runs: Vec<_> = [(rows.summary, if failed { t.err } else { t.faint }), (rows.time, t.faint)]
+                    .into_iter()
+                    .filter(|(len, _)| *len > 0)
+                    .map(|(len, c)| self.plain_run(len, c))
+                    .collect();
+                // Row one: the name, and on the right its summary and time,
+                // which a long detail never pushes off.
+                let head = div()
+                    .flex()
+                    .gap_2()
+                    .child(div().flex_1().min_w_0().truncate().child(self.selectable(pid, ei, 0, rows.name.clone().into(), vec![self.plain_run(rows.name.len(), color)], vec![], cx)))
+                    .when(!rows.tail.is_empty(), |d| d.child(div().flex_none().child(self.selectable(pid, ei, 1, rows.tail.clone().into(), tail_runs, vec![], cx))));
+                // Row two, under the name: the detail, wrapped to two lines.
+                let detail = (!rows.detail.is_empty()).then(|| {
+                    div()
+                        .min_w_0()
+                        .text_color(t.muted)
+                        .line_clamp(2)
+                        .text_ellipsis()
+                        .child(self.selectable(pid, ei, 2, rows.detail.clone().into(), vec![self.plain_run(rows.detail.len(), t.muted)], vec![], cx))
+                });
                 // A running call pulses; a finished one hangs off the text above.
                 let mark = if *state == ToolState::Running {
                     div()
@@ -1282,8 +1305,8 @@ impl Console {
                     .px_3()
                     .text_size(px(11.5))
                     .child(mark)
-                    .child(div().flex_1().min_w_0().truncate().child(self.selectable(pid, ei, 0, line.clone(), runs, vec![], cx)))
-                    .child(self.copy_button(format!("copy-{pid}-{ei}"), line, cx))
+                    .child(div().flex_1().min_w_0().flex().flex_col().gap(px(1.)).child(head).children(detail))
+                    .child(self.copy_button(format!("copy-{pid}-{ei}"), copy, cx))
                     .into_any_element()
             }
         }

@@ -8,6 +8,9 @@ use serde_json::{Map, Value};
 pub const SUMMARY_MAX: usize = 60;
 /// The longest whole tool line (name, detail, summary, time), in characters.
 pub const LINE_MAX: usize = 100;
+/// The longest detail drawn under a stacked tool line, in characters (with
+/// its ellipsis): about two rows; the row clamps it to two lines as well.
+pub const DETAIL_MAX: usize = 200;
 
 /// `text` on one line: control characters and runs of spaces become one
 /// space, cut to `max` characters with an ellipsis.
@@ -337,6 +340,48 @@ pub fn line(name: &str, detail: &str, summary: &str, time: &str) -> Line {
         + if time.is_empty() { 0 } else { 3 + time.chars().count() };
     let room = LINE_MAX.saturating_sub(fixed + 1).max(16);
     let detail = shorten(detail, room);
+    joined(name, detail, summary, time)
+}
+
+/// A tool call as it is stacked: row one is the name with the summary and
+/// time on the right (never cut for the detail's sake); row two is the
+/// detail, at most [`DETAIL_MAX`] characters, empty when there is none.
+/// `copy` is the whole call on one line, its detail uncut.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Stacked {
+    pub name: String,
+    /// "summary · time", in its parts' byte lengths for coloring.
+    pub tail: String,
+    pub summary: usize,
+    pub time: usize,
+    pub detail: String,
+    pub copy: String,
+}
+
+pub fn stacked(name: &str, detail: &str, summary: &str, time: &str) -> Stacked {
+    let name = shorten(name, 40);
+    let summary = shorten(summary, SUMMARY_MAX);
+    let time = shorten(time, 12);
+    // One line, nothing cut: never longer than the detail itself.
+    let whole = shorten(detail, detail.chars().count());
+    let copy = joined(name.clone(), whole.clone(), summary.clone(), time.clone()).text;
+    let time = match (summary.is_empty(), time.is_empty()) {
+        (_, true) => String::new(),
+        (true, false) => time,
+        (false, false) => format!(" · {time}"),
+    };
+    Stacked {
+        tail: format!("{summary}{time}"),
+        summary: summary.len(),
+        time: time.len(),
+        detail: shorten(&whole, DETAIL_MAX),
+        name,
+        copy,
+    }
+}
+
+/// The parts on one line, separators only between parts that are there.
+fn joined(name: String, detail: String, summary: String, time: String) -> Line {
     // Separators only between parts that are there: a line without a name
     // starts with its detail.
     let detail = match (name.is_empty(), detail.is_empty()) {
@@ -511,5 +556,36 @@ mod tests {
         assert!(long.text.chars().count() <= LINE_MAX, "{}", long.text);
         assert_eq!(long.name + long.detail + long.summary + long.time, long.text.len());
         assert_eq!(line("attached", "a.png", "", "").text, "attached a.png");
+    }
+
+    #[test]
+    fn a_stacked_call_keeps_its_summary_and_time_beside_a_long_detail() {
+        // A long command no longer pushes the summary and time off row one.
+        let command = format!("cd console && cargo test {}", "--features x ".repeat(40));
+        let s = stacked("bash", &command, "exit 0 · ok", "12.3s");
+        assert_eq!(s.name, "bash");
+        assert_eq!(s.tail, "exit 0 · ok · 12.3s");
+        assert_eq!(s.summary + s.time, s.tail.len());
+        assert_eq!(&s.tail[..s.summary], "exit 0 · ok");
+        assert_eq!(&s.tail[s.summary..], " · 12.3s");
+        // Row two: clamped with an ellipsis, on one line.
+        assert_eq!(s.detail.chars().count(), DETAIL_MAX);
+        assert!(s.detail.ends_with('…'));
+        assert!(s.detail.starts_with("cd console && cargo test --features x"));
+        // Copy: the whole call, its detail uncut.
+        assert_eq!(s.copy, format!("bash {} · exit 0 · ok · 12.3s", shorten(&command, usize::from(u16::MAX))));
+        assert!(!s.copy.contains('…'));
+    }
+
+    #[test]
+    fn a_stacked_call_without_parts() {
+        let s = stacked("search", "", "", "4s");
+        assert_eq!((s.tail.as_str(), s.summary, s.time), ("4s", 0, 2));
+        assert_eq!(s.detail, "");
+        assert_eq!(s.copy, "search · 4s");
+        let s = stacked("read", "a\n  b.rs", "3 lines", "");
+        assert_eq!((s.tail.as_str(), s.detail.as_str(), s.copy.as_str()), ("3 lines", "a b.rs", "read a b.rs · 3 lines"));
+        let s = stacked("attached", "a.png", "", "");
+        assert_eq!((s.tail.as_str(), s.copy.as_str()), ("", "attached a.png"));
     }
 }

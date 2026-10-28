@@ -47,7 +47,8 @@ pub(super) fn blocks(entry: &Entry) -> Vec<String> {
     match entry {
         Entry::User(text) => vec![text.to_string()],
         Entry::Assistant(text) => markdown::parse(text).into_iter().map(|b| b.text).collect(),
-        Entry::Tool { .. } => entry.tool_line(crate::data::now_ms()).map(|l| l.text).into_iter().collect(),
+        // Name, then summary and time (row one), then the detail (row two).
+        Entry::Tool { .. } => entry.tool_stack(crate::data::now_ms()).map(|s| vec![s.name, s.tail, s.detail]).unwrap_or_default(),
     }
 }
 
@@ -206,6 +207,9 @@ mod tests {
         let same = Selection { pane: 0, anchor: (2, 0, 0), head: (2, 0, 4) };
         assert_eq!(selected_text(&same, &entries), "read");
         assert_eq!(same.range_in(1, 2, 0, 14), None, "another pane");
+        // The stacked tool call: its name, then its detail on row two.
+        let whole = Selection { pane: 0, anchor: (2, 0, 0), head: (2, 2, 9) };
+        assert_eq!(selected_text(&whole, &entries), "read\n\nREADME.md");
     }
 
     #[test]
