@@ -106,13 +106,16 @@ type projectTaskProgressRead struct {
 type projectTaskRead struct {
 	pebblestore.ProjectTaskRecord
 	Progress *projectTaskProgressRead `json:"progress,omitempty"`
-	// Worktree is this machine's read of the task's committed result when
-	// no delivery assessment is present (the store never persists one).
+	// Worktree is this machine's read of the task's own branch when no
+	// delivery assessment is present (the store never persists one). It is
+	// nil for tasks without a worktree branch (folder tasks), which answer
+	// from their stored integration receipt.
 	Worktree *projectTaskWorktree `json:"-"`
 }
 
-// projectTaskWorktree is the task worktree's committed result: its head,
-// the commits after the task's base and the files they change.
+// projectTaskWorktree is the task branch's committed result: the head of
+// refs/heads/<WorktreeBranch>, the commits after the task's base and the
+// files they change.
 type projectTaskWorktree struct {
 	Head    string
 	Commits int

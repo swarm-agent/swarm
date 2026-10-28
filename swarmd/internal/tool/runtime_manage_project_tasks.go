@@ -501,18 +501,33 @@ func (r *Runtime) boundProjectTaskPlan(scope WorkspaceScope, task *pebblestore.P
 	return plan, nil
 }
 
-var projectTaskCommitID = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
+var (
+	projectTaskCommitID   = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
+	projectTaskBranchName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._/-]*$`)
+)
+
+// projectTaskOwnBranch reports whether branch is a plain branch name that can
+// be resolved as refs/heads/<branch> without Git reading it as anything else.
+func projectTaskOwnBranch(branch string) bool {
+	return len(branch) <= 200 && projectTaskBranchName.MatchString(branch) && !strings.Contains(branch, "..") && !strings.Contains(branch, "//") && !strings.HasSuffix(branch, "/") && !strings.HasSuffix(branch, ".") && !strings.HasSuffix(branch, ".lock")
+}
 
 // projectTaskWorktreeResult reads a finished task's committed result from its
-// own stored worktree path with read-only Git: head, commits after its base
-// and the files they change. Only the stored path and a validated base commit
-// reach Git, never model arguments. nil when there is nothing to read.
+// own branch with read-only Git: the head of refs/heads/<WorktreeBranch>,
+// commits after its base and the files they change. Only tasks that own a
+// worktree branch are read, and only that branch, never the checkout's HEAD:
+// a folder task works in the person's own folder, whose later commits (by the
+// person or other tasks) are not this task's output, and a worktree whose
+// checkout moved off the task branch would misreport the same way. Those
+// tasks answer from their stored integration receipt instead. Only the stored
+// path, a validated branch and a validated base commit reach Git, never model
+// arguments. nil when there is nothing to read.
 func projectTaskWorktreeResult(t pebblestore.ProjectTaskRecord) *projectTaskWorktree {
-	if t.DeliveryAssessment != nil || !projectTaskCommitID.MatchString(t.BaseCommit) || !filepath.IsAbs(t.WorkspacePath) || projectTaskStatusClass(t.Status) != "finished" {
+	if t.DeliveryAssessment != nil || !projectTaskOwnBranch(t.WorktreeBranch) || !projectTaskCommitID.MatchString(t.BaseCommit) || !filepath.IsAbs(t.WorkspacePath) || projectTaskStatusClass(t.Status) != "finished" {
 		return nil
 	}
 	root := filepath.Clean(t.WorkspacePath)
-	head, err := projectTaskGit(root, "rev-parse", "--verify", "HEAD^{commit}")
+	head, err := projectTaskGit(root, "rev-parse", "--verify", "refs/heads/"+t.WorktreeBranch+"^{commit}")
 	if err != nil || !projectTaskCommitID.MatchString(head) {
 		return nil
 	}

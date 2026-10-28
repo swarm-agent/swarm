@@ -236,6 +236,121 @@ func TestManageProjectsGetTaskCompactByDefault(t *testing.T) {
 	}
 }
 
+// Purpose: get_task reports only a task's own committed output. A folder task
+// (no worktree branch, working in the person's folder) answers with the head
+// frozen in its integration receipt at completion; a worktree task answers
+// from refs/heads/<its branch>, not whatever the checkout's HEAD is now.
+// Threat: the live read used the checkout's HEAD on every get_task, so later
+// folder commits by the person or other tasks, or a checkout moved to another
+// branch, were reported as this task's head, files and detail=files list,
+// breaking the rule that folder delivery is frozen when the run ends.
+// Owners: projectTaskWorktreeResult (branch-only, refs/heads read) and
+// compactProjectTask / projectTaskFilesDetail through
+// Runtime.executeManageProjects get_task, over a temp Pebble store and real
+// temp Git repositories; the tool entry is the narrowest layer that proves the
+// agent-visible answer.
+func TestManageProjectsGetTaskResultIsTheTasksOwn(t *testing.T) {
+	_, store := openTaskViewStore(t)
+	const account, project = "acct-own", "proj-own"
+	if err := store.PutProject(account, &pebblestore.ProjectRecord{ID: project, AccountID: account, Name: "Own"}); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRuntime(1)
+	defer r.Close()
+	r.SetManageProjectStore(store)
+	scope := WorkspaceScope{Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-own", AccountScopeID: account}}
+	commitFile := func(dir, name string) string {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		testGit(t, dir, "add", name)
+		testGit(t, dir, "commit", "-q", "-m", "add "+name)
+		return testGit(t, dir, "rev-parse", "HEAD")
+	}
+	read := func(taskID string, extra map[string]any) (string, ProjectTaskView) {
+		t.Helper()
+		args := map[string]any{"action": "get_task", "project_id": project, "task_id": taskID}
+		for k, v := range extra {
+			args[k] = v
+		}
+		raw, _, err := runManageProjects(t, r, scope, args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var view struct {
+			Task ProjectTaskView `json:"task"`
+		}
+		if err := json.Unmarshal([]byte(raw), &view); err != nil {
+			t.Fatal(err)
+		}
+		return raw, view.Task
+	}
+
+	// Folder task: launched at base, finished at taskHead, then the folder
+	// moves on with a commit that is not the task's.
+	folder := t.TempDir()
+	testGit(t, folder, "init", "-q", "-b", "dev")
+	testGit(t, folder, "commit", "-q", "--allow-empty", "-m", "base")
+	base := testGit(t, folder, "rev-parse", "HEAD")
+	taskHead := commitFile(folder, "task.go")
+	folderTask := heavyFinishedTask(account, project, "folder-task")
+	folderTask.Status, folderTask.WorktreeBranch, folderTask.DeliveryAssessment = "completed", "", nil
+	folderTask.WorkspacePath, folderTask.BaseBranch, folderTask.BaseCommit = folder, "dev", base
+	folderTask.SourceWorkspace.Path, folderTask.SourceWorkspace.WorkspaceID, folderTask.SourceWorkspace.WorkspaceGeneration, folderTask.SourceWorkspace.Provenance = folder, "ws-own", 1, "unique_project_workspace"
+	folderTask.Integration = &pebblestore.ProjectTaskIntegration{State: "in_folder", SourceHead: taskHead, SourceBranch: "dev", TargetBranch: "dev", PreviousTargetHead: base, ResultingTargetHead: taskHead, TargetWorkspacePath: folder}
+	if err := store.PutProjectTask(account, folderTask); err != nil {
+		t.Fatal(err)
+	}
+	later := commitFile(folder, "later.go")
+	raw, v := read("folder-task", nil)
+	if v.Result == nil || v.Result.Head != taskHead || v.Result.Files != 0 || v.Result.Commits != 0 || strings.Contains(raw, later) {
+		t.Fatalf("folder task reports the folder's later commit: %s", raw)
+	}
+	if raw, _ := read("folder-task", map[string]any{"detail": "files"}); strings.Contains(raw, "later.go") || strings.Contains(raw, later) || strings.Contains(raw, "task.go") {
+		t.Fatalf("folder task detail=files reads the live folder: %s", raw)
+	}
+
+	// Worktree task whose checkout moved off its branch onto another one
+	// with its own commit: the answer is still the task branch's.
+	wt, wtBase, wtHead := taskWorktree(t)
+	testGit(t, wt, "checkout", "-q", "-b", "elsewhere")
+	other := commitFile(wt, "other.go")
+	moved := heavyFinishedTask(account, project, "moved-task")
+	moved.DeliveryAssessment, moved.WorkspacePath, moved.BaseCommit = nil, wt, wtBase
+	if err := store.PutProjectTask(account, moved); err != nil {
+		t.Fatal(err)
+	}
+	raw, v = read("moved-task", nil)
+	if v.Result == nil || v.Result.Head != wtHead || v.Result.Files != 2 || v.Result.Commits != 3 || strings.Contains(raw, other) {
+		t.Fatalf("moved checkout misreports the task branch: %s", raw)
+	}
+	if raw, _ := read("moved-task", map[string]any{"detail": "files"}); strings.Contains(raw, "other.go") || !strings.Contains(raw, `"files":["parser.go","parser_test.go"]`) {
+		t.Fatalf("moved checkout detail=files: %s", raw)
+	}
+
+	// A branch name Git could read as something else is never resolved.
+	if _, err := store.UpdateProjectTask(account, project, "moved-task", func(task *pebblestore.ProjectTaskRecord) error {
+		task.WorktreeBranch = "../elsewhere"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if raw, v := read("moved-task", nil); v.Result != nil && (v.Result.Head != "" || v.Result.Files != 0) {
+		t.Fatalf("invalid branch still read Git: %s", raw)
+	}
+}
+
+func testGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false"}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v %s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // heavyLifecycle returns a fully planned task, as the real lifecycle does.
 type heavyLifecycle struct{ approved int }
 
