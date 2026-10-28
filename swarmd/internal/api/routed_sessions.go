@@ -600,10 +600,17 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 		writeRoutedSessionError(w, err)
 		return
 	}
-	message := pebblestore.MessageSnapshot{Role: "user", Content: req.Input, Media: mediaReferences, VideoAttachments: videoAttachments, ArtifactSelections: artifactSelections}
+	// The device that sent the first message is recorded on its message and
+	// run exactly as the messages route records it, so device tools in that
+	// run reach the sending device. A replay with the same request returns the
+	// stored session before this point (routedSessionReplay), so the device
+	// that created the session stays recorded.
+	actor, _ := productActorFromRequest(r)
+	sendingClientSessionID := strings.TrimSpace(actor.ClientSessionID)
+	message := pebblestore.MessageSnapshot{SendingClientSessionID: sendingClientSessionID, Role: "user", Content: req.Input, Media: mediaReferences, VideoAttachments: videoAttachments, ArtifactSelections: artifactSelections}
 	messageKey := "routed-message:" + clientRequestID
 	runStatus, blockedReason := s.sessionsV3PrimaryRunIntentStatus(principal, candidate, sessionsV3MessageRequest{})
-	runIntent := &pebblestore.V3SessionRunIntent{RunID: stableSessionsV3PrimaryRunID(sessionID, messageKey), Status: runStatus, BlockedReason: blockedReason}
+	runIntent := &pebblestore.V3SessionRunIntent{SendingClientSessionID: sendingClientSessionID, RunID: stableSessionsV3PrimaryRunID(sessionID, messageKey), Status: runStatus, BlockedReason: blockedReason}
 	createHash, err := routedSessionCreateHash(candidate, message, runIntent, requestHash)
 	if err != nil {
 		writeRoutedSessionError(w, err)
