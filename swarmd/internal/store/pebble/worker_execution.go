@@ -551,7 +551,7 @@ func (ws *WorkerStore) unfinishedWorkerRuns(account, id, autoID string) ([]Worke
 		if r.AccountScopeID != account || (id != "" && r.WorkerID != id) {
 			return nil, ErrWorkerConflict
 		}
-		if (r.Status == "admitted" || r.Status == "queued" || r.Status == "preparing" || r.Status == "running") && (autoID == "" || r.AutomationID == autoID) {
+		if (r.Status == "admitted" || r.Status == "queued" || r.Status == "preparing" || r.Status == "running" || r.Status == WorkerRunStatusWaiting) && (autoID == "" || r.AutomationID == autoID) {
 			result = append(result, r)
 		}
 	}

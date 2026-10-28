@@ -10,7 +10,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
+	"swarm/packages/swarmd/internal/providerlimit"
 	"swarm/packages/swarmd/internal/sandbox"
 	pebble "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -33,6 +35,36 @@ type ItemRecord struct {
 	JobID string `json:"job_id,omitempty"`
 	Error string `json:"error,omitempty"`
 	Brief string `json:"brief,omitempty"`
+	// RetryAt (unix ms) and LimitWaits describe an item in itemLimitWaiting:
+	// its job ended on the provider's usage, rate or session limit, and a new
+	// job starts for it at RetryAt.
+	RetryAt    int64 `json:"retry_at,omitempty"`
+	LimitWaits int   `json:"limit_waits,omitempty"`
+}
+
+// itemLimitWaiting is an item waiting for its provider's limit to reset. It
+// is pending, not failed: the items after it wait rather than fail.
+const itemLimitWaiting = "waiting_for_limit"
+
+// limitItem records an item whose job ended on the provider's limit as
+// waiting for the reset it states (else a bounded backoff). ok is false for
+// any other failure, and once the item waited maxProviderLimitWaits times
+// (failure is then the final reason).
+func limitItem(item *ItemRecord, failure string, now time.Time) (string, bool) {
+	if !providerlimit.Is(failure) {
+		return failure, false
+	}
+	if item.LimitWaits >= maxProviderLimitWaits {
+		return providerlimit.Exhausted(item.LimitWaits, failure), false
+	}
+	item.LimitWaits++
+	until, stated := providerlimit.ResetAt(failure, now)
+	if !stated {
+		until = now.Add(providerlimit.Backoff(item.LimitWaits))
+	}
+	item.State, item.RetryAt = itemLimitWaiting, until.UnixMilli()
+	item.Error = truncate(providerlimit.Waiting(until, stated, failure), 300)
+	return "", true
 }
 
 func (s *Step) normalizeForEach() error {
@@ -281,19 +313,30 @@ func (r *TriggerRunner) tickItems(ctx context.Context) {
 						item.State = "started"
 						changed = previouslyChanged
 					} else if failure != "" {
-						item.State, item.Error = "failed", failure
+						kind := "workflow.item.waiting"
+						if reason, waiting := limitItem(item, failure, r.now()); !waiting {
+							item.State, item.Error, kind = "failed", reason, "workflow.item.failed"
+						}
 						if err := s.putDeliveryLocked(d); err != nil {
 							return err
 						}
 						changed = false
 						if r.Signal != nil {
-							r.Signal(a, "workflow.item.failed", strconv.Itoa(item.Index))
+							r.Signal(a, kind, strconv.Itoa(item.Index))
 						}
 					}
 				}
 			}
 			for j := range rec.Items {
 				item := &rec.Items[j]
+				if item.State == itemLimitWaiting {
+					// A new job starts once the provider's limit has reset.
+					if r.now().UnixMilli() < item.RetryAt || active >= step.ForEach.MaxParallel {
+						continue
+					}
+					item.State, item.JobID, item.Error, item.RetryAt = "queued", "", "", 0
+					changed = true
+				}
 				if item.After != "" && (item.State == "queued" || strings.HasPrefix(item.State, "waiting for ")) {
 					ready, failure := r.itemDependency(d.Account, rec.Items, item.After)
 					if failure != "" {
@@ -311,7 +354,11 @@ func (r *TriggerRunner) tickItems(ctx context.Context) {
 					continue
 				}
 				digest := sha256.Sum256([]byte(d.Account + "/" + d.ID + "/" + step.ID + "/" + strconv.Itoa(item.Index)))
-				item.State, item.JobID, item.Error = r.advanceQueued(ctx, a, item.Brief, hex.EncodeToString(digest[:]))
+				key := hex.EncodeToString(digest[:])
+				if item.LimitWaits > 0 {
+					key += ".limit" + strconv.Itoa(item.LimitWaits) // a new job, not the limited one replayed
+				}
+				item.State, item.JobID, item.Error = r.advanceQueued(ctx, a, item.Brief, key)
 				if item.State == "started" {
 					active++
 				}

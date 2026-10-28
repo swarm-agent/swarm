@@ -76,10 +76,11 @@ func (s *WorkerExecutionService) recordReviewResult(r store.WorkerRunRecord) err
 	if r.Role != store.WorkerRoleReviewer {
 		return nil
 	}
-	if r.Status == "failed" && providerlimit.Is(r.Error) {
-		// The provider's usage, rate or session limit stopped the reviewer:
-		// it gave no verdict, so none is recorded (never a block); a
-		// workflow step that started it waits for the reset and reruns.
+	if r.Status == "failed" && (providerlimit.Is(r.Error) || providerlimit.IsExhausted(r.Error)) {
+		// The provider's usage, rate or session limit stopped the reviewer
+		// (a reviewer run waits for the reset and reruns, so this is one
+		// that gave up waiting or ended outside that path): it gave no
+		// verdict, so none is recorded, never a block.
 		return nil
 	}
 	snapshot, found, err := s.host.runs.sessions.GetSession(r.SessionID)

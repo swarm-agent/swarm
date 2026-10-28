@@ -194,6 +194,15 @@ type TriggerRunner struct {
 	Secret       func(Automation) (string, error)
 	Signal       func(Automation, string, string)
 	Client       *http.Client
+	// Now is the runner's clock (time.Now when nil).
+	Now func() time.Time
+}
+
+func (r *TriggerRunner) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
 }
 
 func (r *TriggerRunner) Run(ctx context.Context) {

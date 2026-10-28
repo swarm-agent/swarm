@@ -1193,6 +1193,14 @@ func (s *WorkerExecutionService) workerRunIntent(r store.WorkerRunRecord) (store
 	if err != nil || !exists {
 		return intent, false, err
 	}
+	if r.LimitRunID != "" {
+		// After a provider limit the job's run is its latest rerun, or the
+		// limited run itself until that rerun is recorded.
+		if intent, found, err := s.host.runs.sessions.GetSessionRunIntent(r.SessionID, limitRerunID(r)); err != nil || found {
+			return intent, found, err
+		}
+		return s.host.runs.sessions.GetSessionRunIntent(r.SessionID, r.LimitRunID)
+	}
 	plan, found, err := s.host.runs.sessions.GetActivePlan(r.SessionID)
 	if err != nil {
 		return intent, false, err
@@ -1227,6 +1235,9 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 	if !found {
 		return store.ErrWorkerConflict
 	}
+	if current.Status == store.WorkerRunStatusWaiting {
+		return nil // Waiting for the provider's limit; reconcile reruns it.
+	}
 	if store.AutomationV2Terminal(current.Status) {
 		if current.Status == "failed" && strings.HasPrefix(current.Error, "run stalled:") {
 			return nil // Watchdog failures retain review work for follow-up.
@@ -1236,7 +1247,7 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 		}
 		return s.retryReviewCleanup(current)
 	}
-	intent, found, err := s.workerRunIntent(r)
+	intent, found, err := s.workerRunIntent(current) // current: its limit-rerun state picks the run
 	if err != nil {
 		return err
 	}
@@ -1344,8 +1355,14 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 			current.Error = invalid
 		}
 	case sessions.RunIntentFailed, sessions.RunIntentExpired, sessions.RunIntentInterrupted, sessions.RunIntentDispatchBlocked:
+		// A provider's usage, rate or session limit is not the job failing:
+		// the run waits for the reset and runs again in its session.
+		waiting, reason, err := s.waitForProviderLimit(ws, current, intent.RunID, workerExecutionFailureReason(intent), time.Now())
+		if err != nil || waiting {
+			return err
+		}
 		current.Status = "failed"
-		current.Error = workerExecutionFailureReason(intent)
+		current.Error = reason
 	case sessions.RunIntentCancelled:
 		lifecycle, ok, err := s.host.runs.sessions.GetLifecycle(r.SessionID)
 		if err != nil {
@@ -1557,6 +1574,12 @@ func (s *WorkerExecutionService) reconcileWorkerRuns(ctx context.Context, ws *st
 		}
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if r.Status == store.WorkerRunStatusWaiting {
+			if e := s.rerunAfterProviderLimit(ctx, ws, w, r, budgetHeld, time.Now()); e != nil {
+				failures = append(failures, e)
+			}
+			continue
 		}
 		if settled, watchdogErr := s.watchdogRun(r, time.Now()); settled || watchdogErr != nil {
 			if watchdogErr != nil {

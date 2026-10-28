@@ -6,7 +6,7 @@ import (
 )
 
 func itemPending(item ItemRecord) bool {
-	return item.State == "queued" || item.State == "started" || strings.HasPrefix(item.State, "waiting for ")
+	return item.State == "queued" || item.State == "started" || item.State == itemLimitWaiting || strings.HasPrefix(item.State, "waiting for ")
 }
 
 // Validate the entire graph before persisting any queue or dispatching any job.

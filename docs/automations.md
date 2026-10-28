@@ -646,6 +646,15 @@ and `step_id`:
   and runs a new job after the reset the provider states (else a backoff of
   5 minutes doubling to an hour, at most 12 waits), using none of its
   `retries`; attrs also `provider_limit` and `retry_at`.
+
+  The same holds below the step. A direct-role worker job (Coder, Finder,
+  Designer, Reviewer) whose run ends on a provider limit is `waiting` (its
+  `queue_reason` says until when) and runs again in its own session at the
+  reset; a stopped reviewer then records the verdict of that rerun. A
+  `for_each` item whose job ends on one is `waiting_for_limit` (signal
+  `workflow.item.waiting`), the items after it keep waiting, and a new job
+  starts for it after the reset. Swarm's own quotas and budgets are not
+  provider limits. Swarm-role (plan) worker jobs still fail on a limit.
 - `automation.step.succeeded` (attrs: `step`, `output`)
 - `automation.step.failed` (severity warning; attrs: `step`, `reason` and
   `next`, the next allowed action: `rerun` or `fix the script`; while

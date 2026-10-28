@@ -179,12 +179,19 @@ type WorkerRunRecord struct {
 	WorkspaceID     string `json:"workspace_id,omitempty"`
 	WorkspaceSource string `json:"workspace_source,omitempty"`
 	// Role is the worker role pinned at admission (empty means swarm).
-	Role                string                         `json:"role,omitempty"`
-	SessionID           string                         `json:"session_id,omitempty"`
-	RequestSource       string                         `json:"request_source"` // "direct", "schedule", "trigger", "test_run", "orchestrator", "automation"
-	Input               map[string]any                 `json:"input,omitempty"`
-	Status              string                         `json:"status"` // "admitted", "running", "succeeded", "failed", "cancelled"
-	QueueReason         string                         `json:"queue_reason,omitempty"`
+	Role          string         `json:"role,omitempty"`
+	SessionID     string         `json:"session_id,omitempty"`
+	RequestSource string         `json:"request_source"` // "direct", "schedule", "trigger", "test_run", "orchestrator", "automation"
+	Input         map[string]any `json:"input,omitempty"`
+	Status        string         `json:"status"` // "admitted", "queued", "preparing", "running", "waiting", "succeeded", "failed", "cancelled"
+	QueueReason   string         `json:"queue_reason,omitempty"`
+	// RetryAt (unix ms), LimitWaits and LimitRunID describe a run that is
+	// "waiting": its session run ended on the provider's usage, rate or
+	// session limit (run LimitRunID), and it runs again in its session at
+	// RetryAt. QueueReason says what it waits for.
+	RetryAt             int64                          `json:"retry_at,omitempty"`
+	LimitWaits          int                            `json:"limit_waits,omitempty"`
+	LimitRunID          string                         `json:"limit_run_id,omitempty"`
 	FollowupError       string                         `json:"followup_error,omitempty"`
 	SandboxCleanupDone  bool                           `json:"sandbox_cleanup_done,omitempty"`
 	SandboxCleanupError string                         `json:"sandbox_cleanup_error,omitempty"`
@@ -1520,7 +1527,7 @@ func (ws *WorkerStore) DeleteWorker(account, user, workerID string, expectedRevi
 		return err
 	}
 	for _, r := range runs {
-		if r.Status == "running" || r.Status == "admitted" || r.Status == "queued" || r.Status == "preparing" {
+		if r.Status == "running" || r.Status == "admitted" || r.Status == "queued" || r.Status == "preparing" || r.Status == WorkerRunStatusWaiting {
 			return errors.New("cannot delete worker with active runs")
 		}
 	}
@@ -2595,7 +2602,7 @@ func (ws *WorkerStore) recordWorkerRun(account string, run WorkerRunRecord, sett
 		run.Status = "admitted"
 	}
 	switch run.Status {
-	case "admitted", "queued", "preparing", "running", "succeeded", "failed", "cancelled":
+	case "admitted", "queued", "preparing", "running", WorkerRunStatusWaiting, "succeeded", "failed", "cancelled":
 	default:
 		return WorkerRunRecord{}, fmt.Errorf("invalid run status: %q", run.Status)
 	}

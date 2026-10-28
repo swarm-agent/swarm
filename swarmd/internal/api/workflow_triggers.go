@@ -190,6 +190,11 @@ func (s *Server) workflowTriggerRunner(repository *jobautomation.Store) jobautom
 				return "", errors.New("item job missing")
 			}
 			if run.Status == "failed" || run.Status == "cancelled" {
+				// The run's reason lets the item tell a provider's limit
+				// (it waits and reruns) from the job failing.
+				if reason := strings.TrimSpace(run.Error); reason != "" {
+					return "worker job " + run.Status + ": " + reason, nil
+				}
 				return "worker job " + run.Status, nil
 			}
 			return "", nil

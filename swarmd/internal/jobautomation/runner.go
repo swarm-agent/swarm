@@ -898,7 +898,7 @@ func (r *Runner) providerLimitWait(record *StepRecord, jobID string, outcome Age
 	detail := truncate(strings.TrimSpace(outcome.Error), 200)
 	record.Outcome = map[string]any{"limited_job_id": jobID, "status": outcome.Status, "provider_limit": detail}
 	if record.LimitWaits >= maxProviderLimitWaits {
-		return stepFailure{reason: truncate(fmt.Sprintf("the provider's limit was still in effect after %d waits for its reset: %s", record.LimitWaits, detail), 300),
+		return stepFailure{reason: truncate(providerlimit.Exhausted(record.LimitWaits, detail), 300),
 			next: "rerun once the provider's limit has reset", refused: true}, true
 	}
 	record.LimitWaits++
@@ -907,11 +907,7 @@ func (r *Runner) providerLimitWait(record *StepRecord, jobID string, outcome Age
 	if !stated {
 		until = now.Add(providerlimit.Backoff(record.LimitWaits))
 	}
-	when := until.UTC().Format(time.RFC3339)
-	if !stated {
-		when += "; the provider stated no reset time"
-	}
-	return stepFailure{reason: truncate("waiting for the provider's limit to reset (until "+when+"): "+detail, 300),
+	return stepFailure{reason: truncate(providerlimit.Waiting(until, stated, detail), 300),
 		next: "none: the step runs again after the reset", limitUntil: until.UnixMilli()}, true
 }
 

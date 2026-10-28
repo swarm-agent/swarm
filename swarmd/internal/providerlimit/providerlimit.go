@@ -6,6 +6,7 @@
 package providerlimit
 
 import (
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -19,20 +20,61 @@ const MaxResetWait = 8 * 24 * time.Hour
 // resetMargin is added to a stated reset so the rerun starts after it.
 const resetMargin = time.Minute
 
-// phrases mark a provider limit. Swarm's own account budget ("daily usage
-// limit exceeded ($…)") is the owner's cap, not a provider limit, and is
-// excluded by Is.
+// phrases mark a provider limit. A bare "quota exceeded" or "limit reached"
+// is not one: Swarm's own storage, media and artifact quotas and its worker
+// and gateway caps use those words.
 var phrases = []string{
 	"session limit", "usage limit", "rate limit", "rate_limit", "ratelimit", "rate-limit",
-	"too many requests", "hit your limit", "weekly limit", "quota exceeded",
+	"too many requests", "hit your limit", "weekly limit",
 	"exceeded your current quota", "resource_exhausted", "status 429", "status=429", "status: 429", "http 429",
+}
+
+// swarmOwned mark Swarm's own caps, which are the owner's settings or
+// Swarm's storage bounds, never a provider limit: the account's daily
+// budget, worker budgets, storage/media/artifact quotas, trigger and
+// gateway-token rate limits.
+var swarmOwned = []string{
+	"daily usage limit exceeded", "daily spending limit", "spending limit reached", "worker budget",
+	"artifact v3 git:", "artifactgit:", "artifact v3 author:", "artifact storage quota", "session media", "media staging",
+	"trigger rate limit", "gateway token", "end user's", "rate limits are", "active rate limits",
+}
+
+// exhaustedPrefix starts the failure recorded when a job gave up waiting:
+// its provider's limit was still in effect after the bounded number of waits.
+const exhaustedPrefix = "the provider's limit was still in effect after "
+
+// Exhausted is the final failure of a job that waited waits times for its
+// provider's limit to reset and found it still in effect. It is not a limit
+// to wait on again (Is is false), and it is not a reviewer's verdict.
+func Exhausted(waits int, msg string) string {
+	return fmt.Sprintf("%s%d waits for its reset: %s", exhaustedPrefix, waits, strings.TrimSpace(msg))
+}
+
+// IsExhausted reports whether msg is the failure Exhausted records.
+func IsExhausted(msg string) bool {
+	return strings.HasPrefix(strings.TrimSpace(msg), exhaustedPrefix)
+}
+
+// Waiting is the reason recorded while a job waits for its provider's limit
+// to reset at until; stated is false when the wait is a backoff.
+func Waiting(until time.Time, stated bool, msg string) string {
+	when := until.UTC().Format(time.RFC3339)
+	if !stated {
+		when += "; the provider stated no reset time"
+	}
+	return "waiting for the provider's limit to reset (until " + when + "): " + strings.TrimSpace(msg)
 }
 
 // Is reports whether msg is a provider usage, rate or session limit.
 func Is(msg string) bool {
 	lower := strings.ToLower(msg)
-	if strings.TrimSpace(lower) == "" || strings.Contains(lower, "daily usage limit exceeded ($") {
+	if strings.TrimSpace(lower) == "" || IsExhausted(msg) {
 		return false
+	}
+	for _, p := range swarmOwned {
+		if strings.Contains(lower, p) {
+			return false
+		}
 	}
 	for _, p := range phrases {
 		if strings.Contains(lower, p) {

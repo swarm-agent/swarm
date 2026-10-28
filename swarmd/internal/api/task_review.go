@@ -42,7 +42,7 @@ func (s *Server) repairTaskReview(task *pebblestore.ProjectTaskRecord) (*pebbles
 	// A reviewer whose provider turn ended on a usage, rate or session limit
 	// gave no verdict: none is recorded (never a block), its checkout is
 	// cleaned up, and the workflow step that started it waits for the reset.
-	if (task.Status == "failed" || task.Status == "blocked") && providerlimit.Is(task.LastError) {
+	if (task.Status == "failed" || task.Status == "blocked") && (providerlimit.Is(task.LastError) || providerlimit.IsExhausted(task.LastError)) {
 		if executionErr == nil {
 			if err := execution.CleanupTaskReview(task); err != nil {
 				return nil, err

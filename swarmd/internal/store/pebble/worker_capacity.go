@@ -6,6 +6,11 @@ import (
 	"strings"
 )
 
+// WorkerRunStatusWaiting is a run whose session run ended on the provider's
+// usage, rate or session limit: it holds no capacity and runs again in its
+// session at RetryAt. It is unfinished, so the scheduler keeps observing it.
+const WorkerRunStatusWaiting = "waiting"
+
 // ReserveWorkerCapacity atomically reserves box-wide capacity across accounts.
 // A limit of 0 (the default) is no box-wide limit: every run is admitted.
 // Queued receipts remain durable and are retried by worker reconciliation before
@@ -30,9 +35,10 @@ func (ws *WorkerStore) ReserveWorkerCapacity(r WorkerRunRecord, limit int) (bool
 	if current.Status == "preparing" || current.Status == "running" {
 		return true, nil
 	}
-	if current.Status != "admitted" && current.Status != "queued" {
+	if current.Status != "admitted" && current.Status != "queued" && current.Status != WorkerRunStatusWaiting {
 		return false, ErrWorkerConflict
 	}
+	waiting := current.Status == WorkerRunStatusWaiting
 	prefix := keyWorkerReservationPrefix
 	it, err := ws.store.db.NewIter(&pebble.IterOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix + "\xff")})
 	if err != nil {
@@ -47,7 +53,14 @@ func (ws *WorkerStore) ReserveWorkerCapacity(r WorkerRunRecord, limit int) (bool
 		return false, err
 	}
 	admitted := limit <= 0 || active < limit
-	if admitted {
+	if waiting {
+		// A run waiting for its provider's limit resumes running in its own
+		// session, or keeps waiting (unchanged) until capacity frees.
+		if !admitted {
+			return false, nil
+		}
+		current.Status, current.QueueReason, current.RetryAt = "running", "", 0
+	} else if admitted {
 		current.Status, current.QueueReason = "preparing", ""
 	} else {
 		current.Status, current.QueueReason = "queued", "box worker concurrency limit reached; waiting for an active run to finish"
