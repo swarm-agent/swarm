@@ -21,7 +21,7 @@ const (
 	mediaKindVideoIteration  = "video_iteration"
 	mediaKindAudioGeneration = "audio_generation"
 
-	DefaultVideoGenerationModel = "veo-3.1-generate-preview"
+	DefaultVideoGenerationModel = "gemini-omni-1.1-flash"
 	DefaultVideoIterationModel  = "gemini-omni-1.1-flash"
 	DefaultAudioGenerationModel = "lyria-3.5"
 )
@@ -350,15 +350,15 @@ func (s *Server) mediaCatalogResponse(caps imagegen.Capabilities, extraStatuses 
 
 func videoModelPriority(option mediaCatalogOption) int {
 	switch option.Model {
-	case "veo-3.1-generate-preview":
-		return 1
-	case "veo-3.1-fast-generate-preview":
-		return 2
-	case "veo-3.1-lite-generate-preview":
-		return 3
 	case "gemini-omni-1.1-flash":
-		return 4
+		return 1
 	case "gemini-omni-flash-preview":
+		return 2
+	case "veo-3.1-generate-preview":
+		return 3
+	case "veo-3.1-fast-generate-preview":
+		return 4
+	case "veo-3.1-lite-generate-preview":
 		return 5
 	case "google/veo-3.1":
 		return 20

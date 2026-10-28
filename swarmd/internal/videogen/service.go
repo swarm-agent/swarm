@@ -22,7 +22,7 @@ const (
 	ProviderGoogleGemini = "google"
 	ProviderOpenRouter   = "openrouter"
 
-	DefaultVideoGenerationModel = "veo-3.1-generate-preview"
+	DefaultVideoGenerationModel = "gemini-omni-1.1-flash"
 	DefaultVideoIterationModel  = "gemini-omni-1.1-flash"
 
 	managedVideoMaxBytes            = 100 << 20

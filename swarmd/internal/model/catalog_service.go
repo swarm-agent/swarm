@@ -187,6 +187,11 @@ type swarmSnapshotModel struct {
 	Swarm            struct {
 		Recommendations []swarmSnapshotRecommendation `json:"recommendations"`
 	} `json:"swarm"`
+	// A model past its provider's shutdown is not offered (retiredSnapshotModel).
+	AvailabilityStatus string `json:"availability_status"`
+	Lifecycle          struct {
+		ExpirationDate string `json:"expiration_date"`
+	} `json:"lifecycle"`
 	Routing struct {
 		TopProviderContextWindowTokens *int `json:"top_provider_context_window_tokens"`
 		TopProviderMaxOutputTokens     *int `json:"top_provider_max_output_tokens"`
@@ -836,6 +841,9 @@ func decodeSwarmSnapshotRecords(payload []byte, nowMs, expiresAt int64, source, 
 		providerID := canonicalCatalogProviderID(model.ProviderID)
 		modelID := strings.TrimSpace(model.ModelID)
 		if providerID == "" || modelID == "" {
+			continue
+		}
+		if retiredSnapshotModel(model, nowMs) {
 			continue
 		}
 		contextWindow := modelDefaultContextWindow(model.ProviderSpecific, providerID, firstPositiveInt(model.Limits.ContextWindowTokens, model.Routing.TopProviderContextWindowTokens))
@@ -1913,4 +1921,18 @@ func canonicalCatalogModelID(providerID, modelID string) string {
 		}
 	}
 	return modelID
+}
+
+// retiredSnapshotModel reports a model its provider has shut down: the
+// catalog says retired, or its expiration date (YYYY-MM-DD, UTC) has come.
+// Calls to it fail at the provider, so it is never offered or defaulted to.
+func retiredSnapshotModel(model swarmSnapshotModel, nowMs int64) bool {
+	if strings.EqualFold(strings.TrimSpace(model.AvailabilityStatus), "retired") {
+		return true
+	}
+	expiration := strings.TrimSpace(model.Lifecycle.ExpirationDate)
+	if len(expiration) < 10 {
+		return false
+	}
+	return expiration[:10] <= time.UnixMilli(nowMs).UTC().Format("2006-01-02")
 }

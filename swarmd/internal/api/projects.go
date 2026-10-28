@@ -798,7 +798,7 @@ func (s *Server) resolveTaskModelPreference(p identity.Principal, task *pebblest
 				defaultMediaModel = "imagen-3.0-generate-002"
 			}
 		case "video":
-			defaultMediaModel = "veo-3.1-generate-preview"
+			defaultMediaModel = DefaultVideoGenerationModel
 		case "sound", "audio":
 			defaultMediaModel = "lyria-3.5"
 		}
@@ -950,7 +950,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 					}
 				}
 				if videoModel == "" {
-					videoModel = "veo-3.1-generate-preview"
+					videoModel = DefaultVideoGenerationModel
 				}
 				vOpts := s.getVideoModelOptions(videoModel)
 				ar := task.AspectRatio
