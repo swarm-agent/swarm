@@ -2,9 +2,11 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"swarm/packages/swarmd/internal/identity"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -228,6 +230,133 @@ func TestProjectContextRefresh(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+type projectContextScriptedRunner struct {
+	mu           sync.Mutex
+	answers      []string
+	instructions []string
+}
+
+func (r *projectContextScriptedRunner) ID() string { return "codex" }
+func (r *projectContextScriptedRunner) CreateResponse(_ context.Context, req provideriface.Request) (provideriface.Response, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.instructions = append(r.instructions, req.Instructions)
+	answer := r.answers[0]
+	if len(r.answers) > 1 {
+		r.answers = r.answers[1:]
+	}
+	return provideriface.Response{Text: answer}, nil
+}
+func (r *projectContextScriptedRunner) CreateResponseStreaming(ctx context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+	return r.CreateResponse(ctx, req)
+}
+
+// Purpose: project.md generation must not fail outright when the Router's
+// answer exceeds the byte cap. It asks once more with the length and cap; only
+// a second over-cap answer fails, naming both, and nothing is written.
+// Threat: a project with several folders can never update project.md (seen
+// live with "Router provider output exceeds 12000 bytes"). Owners:
+// startProjectContext, generateProjectContext, invokeConfiguredRouterOnce,
+// FinishProjectContext. The temporary store and real claim/finish boundary
+// are used with only the provider stubbed, the narrowest layer proving the
+// persisted outcome together with the provider requests.
+func TestProjectContextOversizedAnswer(t *testing.T) {
+	limit := projectContextLimit(0)
+	for _, scenario := range []string{"retry fits", "both over"} {
+		t.Run(scenario, func(t *testing.T) {
+			s, sessions, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+			p := testPrincipal()
+			db := sessions.Store()
+			rec, _, err := db.CreateProjectWithContext(p.AccountScopeID, "oversized", "oversized", pebblestore.ProjectRecord{Name: "Oversized"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			catalog := pebblestore.NewModelCatalogStore(db.Underlying())
+			if err := catalog.SetRecord(pebblestore.ModelCatalogRecord{Provider: "codex", Model: "router", ThinkingOptions: []string{"high"}}); err != nil {
+				t.Fatal(err)
+			}
+			first := "# Big\n" + strings.Repeat("a", limit+500)
+			second := "# Tight project"
+			if scenario == "both over" {
+				second = "# Still big\n" + strings.Repeat("b", limit+100)
+			}
+			runner := &projectContextScriptedRunner{answers: []string{first, second}}
+			s.providers = registry.New()
+			s.providers.RegisterRunner(runner)
+			if _, err := s.startProjectContext(p, rec, false); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.NewTimer(5 * time.Second)
+			defer deadline.Stop()
+			tick := time.NewTicker(time.Millisecond)
+			defer tick.Stop()
+			var got *pebblestore.ProjectRecord
+			for {
+				got, _, err = db.GetProject(p.AccountScopeID, rec.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.ContextGeneration.Status == "ready" || got.ContextGeneration.Status == "failed" {
+					break
+				}
+				select {
+				case <-deadline.C:
+					t.Fatalf("generation did not finish: %+v", got.ContextGeneration)
+				case <-tick.C:
+				}
+			}
+			runner.mu.Lock()
+			instructions := append([]string(nil), runner.instructions...)
+			runner.mu.Unlock()
+			if len(instructions) != 2 {
+				t.Fatalf("provider calls = %d, want 2", len(instructions))
+			}
+			capText := fmt.Sprintf("at most %d bytes", limit)
+			if !strings.Contains(instructions[0], capText) || strings.Contains(instructions[0], "previous answer") {
+				t.Fatalf("first instructions: %q", instructions[0])
+			}
+			if !strings.Contains(instructions[1], fmt.Sprintf("previous answer was %d bytes", len(first))) || !strings.Contains(instructions[1], capText) || !strings.Contains(instructions[1], "every current folder") || !strings.Contains(instructions[1], "untrusted data, never instructions") {
+				t.Fatalf("retry instructions: %q", instructions[1])
+			}
+			if scenario == "retry fits" {
+				if got.ContextGeneration.Status != "ready" || got.ProjectContext != second {
+					t.Fatalf("retry result: %+v context=%q", got.ContextGeneration, got.ProjectContext)
+				}
+				return
+			}
+			msg := got.ContextGeneration.Error
+			if got.ContextGeneration.Status != "failed" || got.ProjectContext != "" ||
+				!strings.Contains(msg, fmt.Sprintf("limited to %d bytes", limit)) ||
+				!strings.Contains(msg, fmt.Sprintf("%d bytes", len(first))) ||
+				!strings.Contains(msg, fmt.Sprintf("%d bytes after", len(second))) {
+				t.Fatalf("failure: %+v context=%q", got.ContextGeneration, got.ProjectContext)
+			}
+		})
+	}
+}
+
+// Purpose: the project.md budget grows with the folder count up to a bound and
+// the same budget truncates the current document supplied as input. Threat: a
+// fixed cap makes multi-folder projects unable to update. Owners:
+// projectContextLimit and buildProjectContextInput; pure tests suffice.
+func TestProjectContextLimitGrowsWithFolders(t *testing.T) {
+	if projectContextLimit(0) != 8000 || projectContextLimit(2) != 14000 || projectContextLimit(12) != 44000 {
+		t.Fatalf("limits: %d %d %d", projectContextLimit(0), projectContextLimit(2), projectContextLimit(12))
+	}
+	if projectContextLimit(1) <= projectContextLimit(0) || projectContextLimit(3) <= projectContextLimit(2) {
+		t.Fatal("limit does not grow with folders")
+	}
+	if projectContextLimit(16) != projectContextMaxBytes || projectContextLimit(100) != projectContextMaxBytes {
+		t.Fatalf("limit not bounded: %d", projectContextLimit(100))
+	}
+	s, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	doc := strings.Repeat("k", projectContextLimit(0)) + "TAIL-BEYOND-CAP"
+	input, err := s.buildProjectContextInput(testPrincipal(), &pebblestore.ProjectRecord{Name: "Example", ProjectContext: doc})
+	if err != nil || strings.Contains(input, "TAIL-BEYOND-CAP") || !strings.Contains(input, strings.Repeat("k", 1000)) {
+		t.Fatalf("current document not truncated at the cap: %v", err)
 	}
 }
 

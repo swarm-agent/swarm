@@ -97,6 +97,16 @@ func normalizeConfiguredRouterJSONResponse(raw string) string {
 	return body
 }
 
+// routerOutputTooLargeError reports an over-limit answer with its length so a
+// caller can ask once for a shorter answer instead of failing blind.
+type routerOutputTooLargeError struct {
+	Limit, Length int
+}
+
+func (e *routerOutputTooLargeError) Error() string {
+	return fmt.Sprintf("Router provider output exceeds %d bytes (got %d)", e.Limit, e.Length)
+}
+
 func (s *Server) invokeConfiguredRouterOnce(ctx context.Context, principal identity.Principal, instructions, input string, maxOutputBytes int, allowSwarmFallback ...bool) (configuredRouterResponse, error) {
 	if s == nil || s.providers == nil {
 		return configuredRouterResponse{}, errors.New("provider registry is not configured")
@@ -191,7 +201,7 @@ func (s *Server) invokeConfiguredRouterOnce(ctx context.Context, principal ident
 		return configuredRouterResponse{}, errors.New("Router provider requested a tool or another turn")
 	}
 	if len(response.Text) > maxOutputBytes {
-		return configuredRouterResponse{}, fmt.Errorf("Router provider output exceeds %d bytes", maxOutputBytes)
+		return configuredRouterResponse{RouterAlert: alert}, &routerOutputTooLargeError{Limit: maxOutputBytes, Length: len(response.Text)}
 	}
 	raw := strings.TrimSpace(response.Text)
 	if raw == "" {

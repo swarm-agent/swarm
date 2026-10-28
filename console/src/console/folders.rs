@@ -376,7 +376,7 @@ impl Console {
                     } else if !local {
                         line = line.child(div().flex_1().text_size(px(11.)).text_color(t.warn).child(format!("Swarm can't read {n} of these folders yet; run the command below on that machine, then add them again.")));
                     } else {
-                        line = line.child(div().flex_1().text_size(px(11.)).text_color(t.warn).child(format!("Swarm can't read {n} of these folder{} yet.", if n == 1 { "" } else { "s" })));
+                        line = line.child(div().flex_1().text_size(px(11.)).text_color(t.warn).child(if n == 1 && o.added.is_empty() && o.need_first_commit.is_empty() { "Swarm can't read this folder yet.".to_string() } else { format!("Swarm can't read {n} of these folders yet.") }));
                         line = if pick.granting {
                             line.child(div().text_size(px(11.)).text_color(t.info).child("giving access…"))
                         } else {
