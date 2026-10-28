@@ -118,6 +118,18 @@ func TestTaskProgressStates(t *testing.T) {
 				Definition: []jobautomation.Step{{ID: "pr", Type: jobautomation.StepDeliver, To: jobautomation.DeliverPublish}},
 				Steps:      []jobautomation.StepRecord{{ID: "pr", Type: jobautomation.StepDeliver, State: jobautomation.StateSucceeded, StartedAt: 4300, FinishedAt: 4400, Outcome: map[string]any{"to": "publish", "where": "https://forge.example/pr/1"}}}}},
 			state: progressDelivered, workflow: workflowDone, summary: "pull request https://forge.example/pr/1"},
+		{name: "the owner's push script delivered it after review", task: finished(), eval: evaluated("", "jdel_3"),
+			deliveries: []jobautomation.Delivery{{ID: "jdel_3", AutomationID: "auto-3", AutomationName: "review and push", State: jobautomation.StateSucceeded,
+				Definition: []jobautomation.Step{{ID: "review", Type: jobautomation.StepAgent, Worker: "reviewer"}, {ID: "push", Type: jobautomation.StepRun}},
+				Steps: []jobautomation.StepRecord{step("review", jobautomation.StepAgent, jobautomation.StateSucceeded, 4300, 4400),
+					{ID: "push", Type: jobautomation.StepRun, State: jobautomation.StateSucceeded, StartedAt: 4500, FinishedAt: 4600, Output: "PUSHED 7ec9a8e"}}}},
+			state: progressDelivered, workflow: workflowDone, summary: "push: PUSHED 7ec9a8e"},
+		{name: "a check script before the review is not a delivery", task: finished(), eval: evaluated("", "jdel_1"),
+			deliveries: []jobautomation.Delivery{reviewAndMerge(jobautomation.StateSucceeded,
+				jobautomation.StepRecord{ID: "check", Type: jobautomation.StepRun, State: jobautomation.StateSucceeded, StartedAt: 4300, FinishedAt: 4400, Output: "ok"},
+				step("review", jobautomation.StepAgent, jobautomation.StateSucceeded, 4500, 4600),
+				step("merge", jobautomation.StepDeliver, jobautomation.StateSkipped, 0, 0))},
+			state: progressNotIntegrated, workflow: workflowDone},
 		{name: "integrated by the person", task: func() pebblestore.ProjectTaskRecord {
 			task := progressTask("completed")
 			task.IsIntegrated = true

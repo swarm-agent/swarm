@@ -49,7 +49,7 @@ workflow deliveries and its integration.
 | `workflow` | it finished and a workflow is taking it through its steps now |
 | `not_integrated` | it finished with commits that are not in its target branch, and no workflow is running on it (none applied, or the ones that ran did not merge it) |
 | `integrated` | its commits are in its target branch (`integration.commit`, `integration.at`) |
-| `delivered` | a workflow delivered its result (a folder, a pull request, the outbox), or a media task's files are ready |
+| `delivered` | a workflow delivered its result (a folder, a pull request, the outbox, or the owner's script after the review, e.g. a push), or a media task's files are ready |
 | `done` | it finished with nothing to integrate (a report, an audit, no commits) |
 | `failed` | its last attempt failed, or a workflow ended failed or blocked; `summary` says why |
 
