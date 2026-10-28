@@ -47,6 +47,7 @@ type Service struct {
 	summaryRealtimePublish           func(sessionID string, summary pebblestore.PermissionSummary) error
 	permissionRealtimePublish        func(sessionID string, record pebblestore.PermissionRecord) error
 	sessions                         sessionLookup
+	clientSessions                   ClientSessionLister
 	followupCheckpointPolicyResolver func(accountScopeID string) (string, error)
 	notifications                    *notification.Service
 	signals                          *signals.Emitter

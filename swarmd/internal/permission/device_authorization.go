@@ -1,6 +1,7 @@
 package permission
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -8,6 +9,21 @@ import (
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
+
+// ClientSessionLister lists client sessions (devices). The daemon passes the
+// identity session store on the secrets database, the same store the API
+// authenticates client tokens and reports devices from.
+type ClientSessionLister interface {
+	ListClientSessions() ([]pebblestore.ClientSessionRecord, error)
+}
+
+// SetClientSessionLister sets where device calls find connected devices.
+func (s *Service) SetClientSessionLister(lister ClientSessionLister) {
+	if s == nil {
+		return
+	}
+	s.clientSessions = lister
+}
 
 // deviceTarget is the connected device a device tool call goes to.
 type deviceTarget struct {
@@ -24,12 +40,19 @@ type deviceTarget struct {
 // device to use. It returns a refusal reason when no single connected device
 // matches.
 func (s *Service) resolveDeviceTarget(input AuthorizationInput) (deviceTarget, string, error) {
-	session, run, clients, err := s.store.DeviceCallContext(input.SessionID, input.RunID)
+	session, run, err := s.store.DeviceCallContext(input.SessionID, input.RunID)
 	if err != nil {
 		return deviceTarget{}, "", err
 	}
 	if session.AccountScopeID == "" || session.AccountScopeID != input.AccountScopeID {
 		return deviceTarget{}, "device call account does not match the session", nil
+	}
+	if s.clientSessions == nil {
+		return deviceTarget{}, "", errors.New("device calls need a client session source; none is configured")
+	}
+	clients, err := s.clientSessions.ListClientSessions()
+	if err != nil {
+		return deviceTarget{}, "", err
 	}
 	target := strings.TrimSpace(run.SendingClientSessionID)
 	args := parsePermissionJSONMap(input.ToolArguments)

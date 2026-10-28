@@ -20,6 +20,11 @@ func TestDeviceAccountAuthorization(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer db.Close()
+				secrets, err := store.Open(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer secrets.Close()
 				put := func(key string, v any) {
 					t.Helper()
 					if err := db.PutJSON(key, v); err != nil {
@@ -30,7 +35,9 @@ func TestDeviceAccountAuthorization(t *testing.T) {
 				put(store.KeyV3SessionRunIntent("s", "r"), store.V3SessionRunIntent{SessionID: "s", RunID: "r", SendingClientSessionID: "d"})
 				now := time.Now().UnixMilli()
 				client := store.ClientSessionRecord{SessionID: "d", AccountScopeID: "a", Device: "computer", ExpiresAt: now + 60000, LastSeenAt: now}
-				put(store.KeyIdentityClientSession("d"), client)
+				if err := secrets.PutJSON(store.KeyIdentityClientSession("d"), client); err != nil {
+					t.Fatal(err)
+				}
 				p := store.DefaultAccountPermissions()
 				if rule == "stored-ask" {
 					// A record written before ask was removed.
@@ -42,6 +49,7 @@ func TestDeviceAccountAuthorization(t *testing.T) {
 					}
 				}
 				svc := NewService(store.NewPermissionStore(db), nil, nil)
+				svc.SetClientSessionLister(store.NewIdentitySessionStore(secrets))
 				in := AuthorizationInput{SessionID: "s", RunID: "r", AccountScopeID: "a", CallID: "c", ToolName: tool, ToolArguments: `{}`, Mode: "auto"}
 				got, err := svc.AuthorizeToolCall(in)
 				if err != nil {

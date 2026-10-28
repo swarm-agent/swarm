@@ -3205,6 +3205,9 @@ func (s *SessionStore) validateV3CheckpointBoundaryRunTransition(sessionID strin
 		return V3SessionRunIntent{}, fmt.Errorf("checkpoint boundary source run %q changed before ownership assignment", source.RunID)
 	}
 	incoming.Status = source.Status
+	if existing.SendingClientSessionID != "" {
+		incoming.SendingClientSessionID = existing.SendingClientSessionID
+	}
 	if incoming.CreatedAt == 0 {
 		incoming.CreatedAt = source.CreatedAt
 	}
@@ -3227,6 +3230,12 @@ func (s *SessionStore) validateV3RunIntentTransition(sessionID string, incoming 
 	if ok {
 		incoming.TaskWaitOwnerRunID = existing.TaskWaitOwnerRunID
 		incoming.TaskUpdateRootRunID = existing.TaskUpdateRootRunID
+		// The sending device is fixed by the message that started the run;
+		// later writes (executor claim, progress, terminal) rebuild the
+		// intent without it and must not erase it.
+		if existing.SendingClientSessionID != "" {
+			incoming.SendingClientSessionID = existing.SendingClientSessionID
+		}
 		if existing.CreatedAt != 0 {
 			incoming.CreatedAt = existing.CreatedAt
 		} else if incoming.CreatedAt == 0 {

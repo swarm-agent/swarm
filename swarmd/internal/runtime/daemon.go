@@ -395,6 +395,9 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 		return nil, fmt.Errorf("migrate v3 run-state index: %w", err)
 	}
 	permissionSvc := permission.NewService(pebblestore.NewPermissionStore(store), events, hub.Publish)
+	// Devices are client sessions, kept on the secrets database with the rest
+	// of the identity session store (see identitySessionSvc below).
+	permissionSvc.SetClientSessionLister(pebblestore.NewIdentitySessionStore(secretStore))
 	if cfg.LockPermissionPolicy {
 		permissionSvc.LockPolicy()
 		log.Printf("swarmd permission policy locked by --lock-permission-policy; bypass is off and policy changes are refused until restart")

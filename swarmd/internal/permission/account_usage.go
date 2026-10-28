@@ -20,7 +20,7 @@ func (s *Service) recordResolvedRuleUse(record store.PermissionRecord, at int64)
 	if kind == "" {
 		return nil
 	}
-	session, _, _, err := s.store.DeviceCallContext(record.SessionID, record.RunID)
+	session, _, err := s.store.DeviceCallContext(record.SessionID, record.RunID)
 	if err != nil {
 		return err
 	}

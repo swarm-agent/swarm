@@ -20,8 +20,9 @@ import (
 // argument the schemas reject (a "device" property) is caught here.
 // Owners: Service.AuthorizeToolCall, resolveDeviceTarget,
 // authorizeDeviceCall and deviceAccessRequestAnswer over the durable
-// PermissionStore. The permission service with a temporary Pebble store is the
+// PermissionStore. The permission service with temporary Pebble stores is the
 // narrowest layer that holds the run intent, client sessions and account rules.
+// Client sessions live in a separate secrets store, as the daemon wires them.
 func TestDeviceTargetResolution(t *testing.T) {
 	type device struct{ id, name, rule string }
 	setup := func(t *testing.T, sender string, devices ...device) *Service {
@@ -31,6 +32,17 @@ func TestDeviceTargetResolution(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { db.Close() })
+		secrets, err := store.Open(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { secrets.Close() })
+		putClient := func(c store.ClientSessionRecord) {
+			t.Helper()
+			if err := secrets.PutJSON(store.KeyIdentityClientSession(c.SessionID), c); err != nil {
+				t.Fatal(err)
+			}
+		}
 		put := func(key string, v any) {
 			t.Helper()
 			if err := db.PutJSON(key, v); err != nil {
@@ -42,7 +54,7 @@ func TestDeviceTargetResolution(t *testing.T) {
 		now := time.Now().UnixMilli()
 		p := store.DefaultAccountPermissions()
 		for _, d := range devices {
-			put(store.KeyIdentityClientSession(d.id), store.ClientSessionRecord{SessionID: d.id, AccountScopeID: "a", Device: d.name, ExpiresAt: now + 60000, LastSeenAt: now})
+			putClient(store.ClientSessionRecord{SessionID: d.id, AccountScopeID: "a", Device: d.name, ExpiresAt: now + 60000, LastSeenAt: now})
 			rule := d.rule
 			if rule == "stored-ask" {
 				rule = "off"
@@ -50,7 +62,7 @@ func TestDeviceTargetResolution(t *testing.T) {
 			p.Devices[d.id] = store.DevicePermissionRule{Files: rule, Browser: rule}
 		}
 		// Another account's connected device is never a fallback target.
-		put(store.KeyIdentityClientSession("other"), store.ClientSessionRecord{SessionID: "other", AccountScopeID: "b", Device: "theirs", ExpiresAt: now + 60000, LastSeenAt: now})
+		putClient(store.ClientSessionRecord{SessionID: "other", AccountScopeID: "b", Device: "theirs", ExpiresAt: now + 60000, LastSeenAt: now})
 		if _, err := db.SetAccountPermissions("a", 0, p); err != nil {
 			t.Fatal(err)
 		}
@@ -61,7 +73,9 @@ func TestDeviceTargetResolution(t *testing.T) {
 				put("account_permissions/a", map[string]any{"tasks": "auto", "devices": map[string]any{d.id: map[string]any{"files": "ask", "browser": "ask"}}})
 			}
 		}
-		return NewService(store.NewPermissionStore(db), nil, nil)
+		svc := NewService(store.NewPermissionStore(db), nil, nil)
+		svc.SetClientSessionLister(store.NewIdentitySessionStore(secrets))
+		return svc
 	}
 	// call mirrors the run path (run/service_tools.go): a client tool call is
 	// validated against the tool's declared schema before authorization, so
