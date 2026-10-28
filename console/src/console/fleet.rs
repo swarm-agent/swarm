@@ -5,8 +5,8 @@
 
 use gpui::{AnyElement, ClickEvent, Context, Div, SharedString, Stateful, div, prelude::*, px};
 
-use super::{AgentsFocus, Console, Open, Page, alpha};
-use crate::swarm::needs::{self, Item, Target};
+use super::{AgentsFocus, Console, Open, Page};
+use crate::swarm::needs::{self, Target};
 use crate::data::{Health, Machine};
 
 impl Console {
@@ -208,112 +208,18 @@ impl Console {
         cx.notify();
     }
 
-    /// An item on home opens here; one on a linked machine opens that
-    /// machine's window, which opens the item once connected.
-    fn open_item(&mut self, item: Item, cx: &mut Context<Self>) {
-        if item.home {
-            self.open_target(item.target, cx);
-        } else {
-            self.open_machine_at(item.machine, Some(item.target), cx);
-        }
-    }
-
-    /// The machine an item belongs to, as the page names it.
-    fn item_machine(&self, item: &Item) -> String {
-        if item.home {
-            self.machines.first().map(|m| m.name.to_string()).unwrap_or_default()
-        } else {
-            item.machine.clone()
-        }
-    }
-
     pub(super) fn render_fleet(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = &self.theme;
         let hover = t.hover;
-        let now = super::now_ms();
         let fleet_read = self.via.is_none() && !self.needs.is_empty();
-        let waiting = needs::Count::of(self.needs.iter().map(needs::Reading::waiting));
         let failed = needs::Count::of(self.needs.iter().map(|r| r.failed_today));
         let attention = needs::attention(&self.machines);
-        let glance = if fleet_read {
-            needs::glance(self.machines.len(), attention, waiting, failed)
-        } else {
-            format!("{} machine{} · {attention} need{} attention", self.machines.len(), if self.machines.len() == 1 { "" } else { "s" }, if attention == 1 { "s" } else { "" })
-        };
-        let items = needs::merged(&self.needs);
+        let mut glance = format!("{} machine{} · {attention} need{} attention", self.machines.len(), if self.machines.len() == 1 { "" } else { "s" }, if attention == 1 { "s" } else { "" });
+        if fleet_read {
+            glance.push_str(&format!(" · {} failed today", failed.text()));
+        }
 
         let cards: Vec<_> = (0..self.machines.len()).map(|mi| self.machine_card(mi, cx)).collect();
-
-        let rows: Vec<AnyElement> = items
-            .iter()
-            .enumerate()
-            .map(|(i, item)| {
-                let kind_color = match item.kind {
-                    needs::Kind::FailedRun => t.err,
-                    needs::Kind::Permission => t.warn,
-                    needs::Kind::Task => t.info,
-                };
-                let open = item.clone();
-                div()
-                    .id(SharedString::from(format!("need-{i}")))
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .py(px(4.))
-                    .border_b_1()
-                    .border_color(alpha(t.border, 0.6))
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(hover))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_item(open.clone(), cx)))
-                    .child(
-                        div()
-                            .w(px(96.))
-                            .flex_none()
-                            .truncate()
-                            .text_size(px(11.))
-                            .text_color(if item.home { t.accent } else { t.muted })
-                            .child(self.item_machine(item)),
-                    )
-                    .child(div().w(px(72.)).flex_none().text_size(px(10.5)).text_color(kind_color).child(item.kind.label()))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .child(div().text_color(t.text).child(item.what.clone()))
-                    )
-                    .child(div().max_w(px(320.)).min_w_0().truncate().text_size(px(11.)).text_color(t.faint).child(item.detail.clone()))
-                    .child(
-                        div()
-                            .w(px(40.))
-                            .flex_none()
-                            .text_size(px(10.5))
-                            .text_color(t.faint)
-                            .child(if item.at > 0 { super::ago(now.saturating_sub(item.at)) } else { "—".into() }),
-                    )
-                    .into_any_element()
-            })
-            .collect();
-
-        // What is known to wait but not listed, and what could not be read.
-        let mut notes: Vec<String> = Vec::new();
-        for r in &self.needs {
-            let name = if r.home { self.machines.first().map(|m| m.name.to_string()).unwrap_or_default() } else { r.machine.clone() };
-            let listed = |k: needs::Kind| r.items.iter().filter(|i| i.kind == k).count();
-            for (count, kind, what) in [
-                (r.waiting_sessions, needs::Kind::Permission, "sessions waiting"),
-                (r.waiting_tasks, needs::Kind::Task, "tasks waiting"),
-                (r.failed_today, needs::Kind::FailedRun, "runs failed today"),
-            ] {
-                if let Some(n) = count.filter(|n| *n > listed(kind)) {
-                    notes.push(format!("{name}: {n} {what}, {} listed", listed(kind)));
-                }
-            }
-            if !r.unread.is_empty() {
-                notes.push(format!("{name}: not read: {}", r.unread.join("; ")));
-            }
-        }
 
         let (spent, spend_unknown) = crate::data::spend_today(&self.machines);
         let spend_rows = self.machines.iter().map(|m| {
@@ -331,18 +237,6 @@ impl Console {
                 }))
         });
 
-        let needs_body: AnyElement = if self.via.is_some() {
-            self.note_line("This window shows one linked machine. What needs you across the fleet is on home's window.").into_any_element()
-        } else if self.link == super::Link::Demo {
-            self.note_line("The demo set reads no Swarm.").into_any_element()
-        } else if self.needs.is_empty() {
-            self.note_line("Reading every machine…").into_any_element()
-        } else if rows.is_empty() {
-            self.note_line("Nothing waits on you and no run failed today.").into_any_element()
-        } else {
-            div().flex().flex_col().children(rows).into_any_element()
-        };
-
         div()
             .id("fleet-page")
             .size_full()
@@ -357,9 +251,9 @@ impl Console {
                     .flex_col()
                     .gap_1()
                     .child(div().text_size(px(16.)).text_color(t.text).child("Fleet"))
-                    .child(div().text_color(if waiting.known > 0 || failed.known > 0 { t.warn } else { t.muted }).child(glance))
+                    .child(div().text_color(if failed.known > 0 || attention > 0 { t.warn } else { t.muted }).child(glance))
                     .child(div().text_size(px(11.)).text_color(t.faint).child(
-                        "Each machine as its own Swarm reports it, read through home every 20 seconds. Click an item to open it where it is.",
+                        "Each machine as its own Swarm reports it, read through home every 20 seconds.",
                     )),
             )
             .child(self.section("MACHINES", Some(self.machines.len())).px_0())
@@ -394,28 +288,6 @@ impl Console {
                                 .hover(move |s| s.bg(hover))
                                 .child(div().text_color(t.muted).child("+ link a machine"))
                                 .child(div().text_size(px(10.5)).child("with a code from sudo swarmctl fleet invite")),
-                        )
-                    }),
-            )
-            .child(self.section("NEEDS YOU", fleet_read.then_some(items.len())).px_0())
-            .child(
-                div()
-                    .rounded(px(t.radius + 2.))
-                    .border_1()
-                    .border_color(t.border)
-                    .bg(t.surface)
-                    .child(needs_body)
-                    .when(!notes.is_empty(), |d| {
-                        d.child(
-                            div()
-                                .px_3()
-                                .py_2()
-                                .flex()
-                                .flex_col()
-                                .gap(px(2.))
-                                .text_size(px(10.5))
-                                .text_color(t.faint)
-                                .children(notes.into_iter().map(|n| div().child(n))),
                         )
                     }),
             )

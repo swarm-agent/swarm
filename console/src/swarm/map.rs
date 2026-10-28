@@ -407,7 +407,6 @@ pub fn task(t: &Value) -> Task {
         runs: vec![],
         report: task_report(t).into(),
         merge: task_merge(t),
-        head: t.get("delivery_assessment").map(|a| s(a, "source_oid")).unwrap_or("").to_string().into(),
     }
 }
 
@@ -1027,11 +1026,4 @@ mod project_context_tests {
         assert_eq!(missing[0].context_generation.label(), "Swarm has not written project.md yet.");
     }
 
-    #[test]
-    fn task_head_and_merge_come_from_the_delivery_assessment() {
-        let t = super::task(&json!({"id": "t1", "status": "needs_review", "delivery_assessment": {"source_oid": "abc123", "allowed_actions": ["integrate"]}}));
-        assert_eq!((t.head.as_ref(), &t.merge), ("abc123", &crate::data::Merge::Integrate));
-        let none = super::task(&json!({"id": "t2", "status": "running"}));
-        assert_eq!(none.head.as_ref(), "");
-    }
 }

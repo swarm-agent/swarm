@@ -35,10 +35,6 @@ impl Console {
                 Some((format!("${today:.2}{}", if unknown { "+?" } else { "" }), t.faint, false))
             }
             Page::Fleet => {
-                let waiting = crate::swarm::needs::Count::of(self.needs.iter().map(crate::swarm::needs::Reading::waiting));
-                if waiting.known > 0 {
-                    return Some((format!("{} waiting", waiting.text()), t.warn, true));
-                }
                 let online = self.machines.iter().filter(|m| m.health != Health::Offline).count();
                 Some((format!("{online}/{}", self.machines.len()), t.faint, false))
             }

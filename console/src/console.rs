@@ -20,7 +20,6 @@ mod agents;
 mod attach;
 mod automations;
 mod background;
-mod changes;
 mod commands;
 mod fleet;
 mod fleet_keys;
@@ -213,7 +212,6 @@ pub struct Console {
     /// Tasks whose background sessions are listed, as (session, task).
     expanded: HashSet<(usize, usize)>,
     /// Finished tasks' changes as read from Swarm, by task id.
-    changes: changes::ChangesByTask,
     page: Page,
     roles: Vec<Role>,
     media: Vec<Media>,
@@ -422,7 +420,6 @@ impl Console {
                 .ok()
                 .and_then(|v| IconStyle::ALL.into_iter().find(|s| s.label() == v)),
             expanded: HashSet::new(),
-            changes: HashMap::new(),
             page: Page::Sessions,
             roles: if demo { data::roles() } else { vec![] },
             media: if demo { data::media() } else { vec![] },
