@@ -69,7 +69,8 @@ remote tasks.
   off or it is unlinked (re-read from the home's own records on a heartbeat
   interval), unresolved rows become `linked_work_off`. Both are actionable.
 - The executor's yield starts the watcher; after a restart, linked waits resume
-  when the fleet store is configured. These two bounded timers are the only
+  from `Daemon.Run` (`ResumeLinkedTaskWaits`) once the server is fully
+  configured, never from a setter. These two bounded timers are the only
   timers; neither schedules provider work.
 
 ## Authenticated task reports

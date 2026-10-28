@@ -1342,6 +1342,9 @@ func (d *Daemon) Run() error {
 		if err := d.apiServer.StartFleetListener(); err != nil {
 			log.Printf("swarmd fleet: %v", err)
 		}
+		// Linked task waits from before a restart resume only now, after
+		// every setter has run (watchers read the node key and fleet links).
+		d.apiServer.ResumeLinkedTaskWaits()
 	}
 	log.Printf("swarmd listener topology api_listen=%q", d.httpServer.Addr)
 

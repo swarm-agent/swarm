@@ -411,20 +411,30 @@ func TestRemoteTaskWaitHoldsNoCapacityAndDoesNotPoll(t *testing.T) {
 // Purpose: a linked wait survives a daemon restart. Requirement: a
 // waiting_tasks intent committed with no watcher running (the daemon stopped
 // after the commit, before or during the yield) is picked up from the durable
-// status index when the fleet store is set at startup (SetFleet ->
-// resumeRemoteTaskWaits), exactly one watcher runs even if recovery repeats,
-// and a later remote outcome wakes the goal once. Threat: a goal stranded in
-// waiting_tasks forever after restart, or duplicate wakes. Boundary: the
-// startup hook over the same durable store; this proves recovery from durable
-// state, not a full process restart of a provider-backed daemon.
+// status index by ResumeLinkedTaskWaits (called by Daemon.Run once every
+// setter has run), exactly one watcher runs even if recovery repeats, and a
+// later remote outcome wakes the goal once. The setters run first in the
+// daemon's order (SetFleet before SetSwarmStore) and must start no watcher:
+// a watcher started from SetFleet reads the node key while SetSwarmStore
+// writes it (a data race; a nil store reports the machine offline). Threat: a
+// goal stranded in waiting_tasks forever after restart, duplicate wakes, or
+// watchers racing startup wiring. Boundary: the startup hook over the same
+// durable store; this proves recovery from durable state, not a full process
+// restart of a provider-backed daemon.
 func TestRemoteTaskWaitResumesAfterRestart(t *testing.T) {
 	h := newRemoteWaitHarness(t, "t1")
 	h.commitWait(t, "t1")
 	if n := h.watchers(); n != 0 {
 		t.Fatalf("watchers before recovery: %d", n)
 	}
+	swarmStore := h.home.s.swarmStore
 	h.home.s.SetFleet(h.home.s.fleet, h.home.s.fleetTokens)
-	h.home.s.resumeRemoteTaskWaits()
+	if n := h.watchers(); n != 0 {
+		t.Fatalf("SetFleet started %d watcher(s) before the server was fully configured", n)
+	}
+	h.home.s.SetSwarmStore(swarmStore)
+	h.home.s.ResumeLinkedTaskWaits()
+	h.home.s.ResumeLinkedTaskWaits()
 	if n := h.watchers(); n != 1 {
 		t.Fatalf("watchers after recovery: %d, want exactly 1", n)
 	}

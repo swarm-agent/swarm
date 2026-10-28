@@ -90,9 +90,13 @@ func (s *Server) watchRemoteTaskWait(sessionID, runID string) {
 	}()
 }
 
-// resumeRemoteTaskWaits starts watchers for linked-machine waits persisted
-// before a restart. The durable status index is the authority.
-func (s *Server) resumeRemoteTaskWaits() {
+// ResumeLinkedTaskWaits starts watchers for linked-machine waits persisted
+// before a restart. The durable status index is the authority. Call it only
+// after the server is fully configured (the daemon does so in Run, before
+// serving): watchers read the fleet store, the node key and the session
+// services without synchronisation against their setters. Repeated calls
+// start no second watcher for a run.
+func (s *Server) ResumeLinkedTaskWaits() {
 	if s == nil || s.sessions == nil {
 		return
 	}
