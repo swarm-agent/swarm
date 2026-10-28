@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -118,6 +119,50 @@ func TestManagedExecutionDispatch(t *testing.T) {
 			}
 			if _, err := os.Stat(filepath.Join(scope.PrimaryPath, ".git")); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("host git changed: %v", err)
+			}
+		})
+	}
+}
+
+// Requirement: managed execution refuses only a request to background a
+// command (background:true or a background_id); background:false is an
+// ordinary foreground command and runs in the managed environment.
+// Threat: the refusal checked only that the key was present, so an agent
+// spelling out the default (background:false) could not run anything there.
+// Owner: executeOne's managed bash branch. The recording lease double is the
+// narrowest layer that observes whether the command reached the lease.
+func TestManagedExecutionBackgroundFlag(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		extra   map[string]any
+		refused bool
+	}{
+		{"background_false_runs", map[string]any{"background": false}, false},
+		{"background_true_refused", map[string]any{"background": true}, true},
+		{"background_id_refused", map[string]any{"background_id": "bg_x", "command": "status"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, scope, _, deployments := newManagedExecutionFixture(t)
+			args := map[string]any{"command": "true", "category": "read", "critical": false, "explanation": []string{"Run a no-op"}}
+			for k, v := range tc.extra {
+				args[k] = v
+			}
+			raw, _ := json.Marshal(args)
+			_, err := r.executeOne(context.Background(), scope, Call{Name: "bash", Arguments: string(raw)}, nil)
+			if tc.refused {
+				if err == nil || !strings.Contains(err.Error(), "not available in managed execution") {
+					t.Fatalf("err = %v, want managed background refusal", err)
+				}
+				if deployments.calls != 0 {
+					t.Fatalf("refused request reached the lease %d times", deployments.calls)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("background:false refused: %v", err)
+			}
+			if deployments.calls != 1 {
+				t.Fatalf("lease calls = %d, want 1", deployments.calls)
 			}
 		})
 	}

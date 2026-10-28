@@ -183,6 +183,9 @@ type backgroundCommands struct {
 	// afterRunStateRead, when set (tests only), runs between delivery reading
 	// the conversation's active run and pinning the report to it.
 	afterRunStateRead func(sessionID, runID string)
+	// beforeWake, when set (tests only), runs between delivery reading the
+	// conversation as idle and writing the wake.
+	beforeWake func(sessionID string)
 }
 
 func newBackgroundCommands() *backgroundCommands {
@@ -706,17 +709,42 @@ func (r *Runtime) deliverBackgroundReport(c *backgroundCommand, endedRunID strin
 	} else if found && (tomb.Archived || tomb.Deleted) {
 		return nil
 	}
-	state, ok, err := r.getSessionRunState(c.sessionID)
-	if err != nil {
-		return err
-	}
-	running := ok && (state.Active || state.Status == pebblestore.V3RunIntentWaitingTasks) && state.RunID != endedRunID
-	if running {
-		if hook := r.background.afterRunStateRead; hook != nil {
-			hook(c.sessionID, state.RunID)
+	// A run can start between reading the conversation as idle and writing
+	// the wake (another command's wake, a person's message, a task run); the
+	// store then refuses the wake's second active run and nothing was
+	// written. Read the state again and pin the report to that run instead.
+	for attempt := 1; ; attempt++ {
+		state, ok, err := r.getSessionRunState(c.sessionID)
+		if err != nil {
+			return err
 		}
-		return r.pinBackgroundNote(c, state.RunID)
+		if ok && (state.Active || state.Status == pebblestore.V3RunIntentWaitingTasks) && state.RunID != endedRunID {
+			if hook := r.background.afterRunStateRead; hook != nil {
+				hook(c.sessionID, state.RunID)
+			}
+			return r.pinBackgroundNote(c, state.RunID)
+		}
+		err = r.deliverBackgroundReportToIdle(c)
+		var refused *backgroundWakeRefusedError
+		if err == nil || !errors.As(err, &refused) || attempt >= backgroundDeliveryAttempts {
+			return err
+		}
 	}
+}
+
+// backgroundDeliveryAttempts bounds how often delivery re-reads the run state
+// after its wake was refused because a run started meanwhile.
+const backgroundDeliveryAttempts = 3
+
+// backgroundWakeRefusedError reports that the wake's message and run intent
+// were not written (the mutation was refused as a whole), so delivery may try
+// again without duplicating the report.
+type backgroundWakeRefusedError struct{ err error }
+
+func (e *backgroundWakeRefusedError) Error() string { return e.err.Error() }
+func (e *backgroundWakeRefusedError) Unwrap() error { return e.err }
+
+func (r *Runtime) deliverBackgroundReportToIdle(c *backgroundCommand) error {
 	session, found, err := r.sessions.GetSession(c.sessionID)
 	if err != nil {
 		return err
@@ -731,6 +759,9 @@ func (r *Runtime) deliverBackgroundReport(c *backgroundCommand, endedRunID strin
 		// A task's conversation is started only through its task lifecycle:
 		// keep the report durable in the conversation without waking it.
 		return r.pinBackgroundNote(c, "")
+	}
+	if hook := r.background.beforeWake; hook != nil {
+		hook(c.sessionID)
 	}
 	return r.wakeWithBackgroundReport(c)
 }
@@ -836,7 +867,7 @@ func (r *Runtime) wakeWithBackgroundReport(c *backgroundCommand) error {
 		UpdatedAt:       now,
 	}
 	if err := r.applyBackgroundMessage(c, "background-command:"+id, &msg, intent); err != nil {
-		return err
+		return &backgroundWakeRefusedError{err: err}
 	}
 	if !r.sessionController.EnqueueSessionRun(c.principal, c.sessionID, runID, "") {
 		return fmt.Errorf("failed to enqueue run %s for session %s", runID, c.sessionID)
@@ -907,4 +938,11 @@ func (r *Runtime) SessionRunEnded(sessionID, runID string) {
 		c.mu.Unlock()
 		r.redeliverPendingNote(c, noteID, runID)
 	}
+}
+
+// backgroundRequested reports whether bash arguments ask for background
+// behaviour: background:true, or a background_id to read or kill. An explicit
+// background:false is an ordinary foreground command.
+func backgroundRequested(args map[string]any) bool {
+	return asBool(args["background"]) || stringValue(args["background_id"]) != ""
 }

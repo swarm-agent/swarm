@@ -2079,7 +2079,7 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 			return r.executeManagedGit(ctx, scope, *managed, name, args)
 		}
 		if name == "bash" {
-			if _, ok := args["background"]; ok || stringValue(args["background_id"]) != "" {
+			if backgroundRequested(args) {
 				return "", errors.New("background commands are not available in managed execution; run the command in the foreground")
 			}
 			return r.executeManagedBash(ctx, scope, *managed, args, func(chunk string) {
@@ -2103,7 +2103,7 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 	case "bash":
 		if _, selected := args["committed_source"]; selected {
 			// A validation passes only when it ends: never background it.
-			if _, ok := args["background"]; ok || stringValue(args["background_id"]) != "" {
+			if backgroundRequested(args) {
 				return "", errors.New("committed_source validation runs in the foreground; background is not allowed")
 			}
 			return r.executeCommittedSourceBash(ctx, scope, args, func(chunk string) {

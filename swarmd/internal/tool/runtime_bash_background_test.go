@@ -889,3 +889,81 @@ func TestBackgroundBashReportWakesWhenRunEndsBetweenStateReadAndPin(t *testing.T
 		t.Fatalf("note still pending on the ended run: %s", pending)
 	}
 }
+
+func TestBackgroundBashReportPinsToRunStartedBeforeWake(t *testing.T) {
+	// Purpose: a command whose conversation starts a run just as the report
+	// is delivered still gets its exit code and output to the conversation,
+	// exactly once, as a note pinned to the run that started.
+	// Threat: delivery read the conversation as idle and wrote a wake with a
+	// new run intent; a run started in between (another command's wake, a
+	// person's message, a task run), the store refused a second active run,
+	// the error was only logged, and the report was lost.
+	// Owners: Runtime.deliverBackgroundReport, wakeWithBackgroundReport,
+	// pinBackgroundNote, SessionRunEnded.
+	// Layer: the window sits between two statements of the delivery path, so
+	// the test starts the run at exactly that point through the delivery
+	// seam, over a real store (which refuses the second active run) and a
+	// real process.
+	f := newBGFixture(t, "s-mirror")
+	var once sync.Once
+	f.runtime.background.beforeWake = func(sessionID string) {
+		once.Do(func() {
+			if sessionID != "s-mirror" {
+				t.Errorf("wake for %s, want s-mirror", sessionID)
+			}
+			f.startRun(t, "s-mirror", "run-2")
+		})
+	}
+	payload, err := f.bash(t, "s-mirror", map[string]any{"command": "echo mirror-out; exit 4", "background": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := payload["background_id"].(string)
+	if id == "" {
+		t.Fatalf("no background id: %#v", payload)
+	}
+	f.waitReported(t, id)
+	c := f.command(t, "s-mirror", id)
+	var reports []pebblestore.MessageSnapshot
+	deadline := time.Now().Add(bgTestWait)
+	for time.Now().Before(deadline) {
+		c.mu.Lock()
+		pending := c.pendingNoteRunID
+		c.mu.Unlock()
+		if reports = f.backgroundMessages(t, "s-mirror"); len(reports) > 0 && pending != "" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(reports) != 1 {
+		t.Fatalf("reports in conversation = %d, want exactly 1 (report lost when a run started before the wake)", len(reports))
+	}
+	note := reports[0]
+	if note.Metadata["feedback_note"] != true {
+		t.Fatalf("report is not a note to the running run: %+v", note.Metadata)
+	}
+	if !strings.Contains(note.Content, "exited with code 4") || !strings.Contains(note.Content, "mirror-out") {
+		t.Fatalf("report lacks result: %q", note.Content)
+	}
+	c.mu.Lock()
+	pendingID, pendingRun := c.pendingNoteID, c.pendingNoteRunID
+	c.mu.Unlock()
+	if pendingID != note.ID || pendingRun != "run-2" {
+		t.Fatalf("pending note = %q on %q, want %q on run-2", pendingID, pendingRun, note.ID)
+	}
+	expectNoWake(t, f)
+	if state, ok, err := f.sessions.GetSessionRunState("s-mirror"); err != nil || !ok || state.RunID != "run-2" || !state.Active {
+		t.Fatalf("run-2 no longer the active run: %+v ok=%v err=%v", state, ok, err)
+	}
+	// run-2 ends without reading the note: the run-end path still covers it.
+	f.endRun(t, "s-mirror", "run-2")
+	f.runtime.SessionRunEnded("s-mirror", "run-2")
+	select {
+	case got := <-f.controller.enqueued:
+		if !strings.HasPrefix(got, "s-mirror|") {
+			t.Fatalf("woke the wrong conversation: %s", got)
+		}
+	case <-time.After(bgTestWait):
+		t.Fatal("note pinned to run-2 was not re-delivered when run-2 ended unread")
+	}
+}
