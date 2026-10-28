@@ -154,6 +154,34 @@ type StepRecord struct {
 	Next       string         `json:"next,omitempty"`
 	Outcome    map[string]any `json:"outcome,omitempty"`
 	LogTail    string         `json:"log_tail,omitempty"`
+	// Failures keeps each failed attempt's reason, newest last (at most
+	// maxStepFailures). A rerun keeps them, so an attempt that failed
+	// before the rerun still says why.
+	Failures []AttemptFailure `json:"failures,omitempty"`
+}
+
+// AttemptFailure is one failed attempt of a step.
+type AttemptFailure struct {
+	Attempt int    `json:"attempt"`
+	Rerun   int    `json:"rerun,omitempty"`
+	At      int64  `json:"at"`
+	Reason  string `json:"reason"`
+}
+
+// maxStepFailures bounds the failed attempts a step record keeps.
+const maxStepFailures = 20
+
+// recordFailure appends one failed attempt's reason, keeping the newest.
+func (r *StepRecord) recordFailure(rerun int, at int64, reason string) {
+	r.Failures = append(r.Failures, AttemptFailure{Attempt: r.Attempts, Rerun: rerun, At: at, Reason: reason})
+	if extra := len(r.Failures) - maxStepFailures; extra > 0 {
+		r.Failures = append([]AttemptFailure(nil), r.Failures[extra:]...)
+	}
+}
+
+// resetStep makes a step pending again for a rerun, keeping its failures.
+func resetStep(step *StepRecord) {
+	*step = StepRecord{ID: step.ID, Type: step.Type, State: StatePending, Failures: step.Failures}
 }
 
 // Terminal reports whether a delivery or step state is final.
@@ -850,7 +878,7 @@ func (s *Store) rerunLocked(d Delivery) (Delivery, bool, error) {
 		// budget; a run step that already succeeded is never run again.
 		for i := range d.Steps {
 			if step := &d.Steps[i]; step.Type != StepRun || step.State != StateSucceeded {
-				*step = StepRecord{ID: step.ID, Type: step.Type, State: StatePending}
+				resetStep(step)
 				reset = true
 			}
 		}
@@ -877,7 +905,7 @@ func (s *Store) rerunLocked(d Delivery) (Delivery, bool, error) {
 		default:
 			continue
 		}
-		*step = StepRecord{ID: step.ID, Type: step.Type, State: StatePending}
+		resetStep(step)
 	}
 	if !reset && !itemsReset {
 		return d, false, nil

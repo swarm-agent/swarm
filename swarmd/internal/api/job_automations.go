@@ -933,6 +933,9 @@ func jobDeliveryView(d jobautomation.Delivery) map[string]any {
 		if len(step.Outcome) > 0 {
 			view["outcome"] = step.Outcome
 		}
+		if len(step.Failures) > 0 {
+			view["failures"] = step.Failures
+		}
 		if step.Items != nil {
 			items := make([]map[string]any, 0, len(step.Items))
 			for _, item := range step.Items {

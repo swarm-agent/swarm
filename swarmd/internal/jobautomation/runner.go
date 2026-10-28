@@ -818,7 +818,7 @@ func (r *Runner) runStep(ctx context.Context, d *Delivery, i int, step Step) boo
 	}
 	timedOut := errors.Is(stepCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
 	cancel()
-	if ctx.Err() != nil && (!failure.inspectionTransient || record.Attempts >= 3) {
+	if ctx.Err() != nil && (!failure.inspectionTransient || record.Attempts >= maxInspectionAttempts) {
 		// The daemon is stopping: never exhaust retries because of shutdown.
 		// Keep the final attempt running for resume on the next start.
 		// Earlier inspection cancellations persist their backoff below.
@@ -854,11 +854,13 @@ func (r *Runner) runStep(ctx context.Context, d *Delivery, i int, step Step) boo
 		return false
 	}
 	record.State, record.Reason, record.Next = StateFailed, failure.reason, failure.next
+	record.recordFailure(d.Reruns, record.FinishedAt, failure.reason)
 	retry := !failure.refused && record.Attempts-record.LimitWaits <= d.Retries
 	if failure.inspectionTransient {
-		// Three durable attempts, with the existing 15s/30s backoff. At
-		// 30s per sandbox assessment this is roughly two minutes total.
-		retry = record.Attempts < 3
+		// A busy machine (or a job with large media) can keep Git
+		// inspection over its time budget for a long spell: wait it out
+		// with growing backoff (see maxInspectionAttempts) before failing.
+		retry = record.Attempts < maxInspectionAttempts
 	}
 	if retry {
 		record.State = StatePending
@@ -890,6 +892,13 @@ func agentIdempotencyKey(d Delivery, stepID string) string {
 	}
 	return key
 }
+
+// maxInspectionAttempts bounds the attempts of a deliver step whose Git
+// inspection did not finish (timeout, cancellation, capacity, moving heads).
+// With defaultBackoff (15s doubling to a 10-minute cap) the waits between
+// ten attempts add up to about 45 minutes, outlasting a slow spell rather
+// than failing within the first minute of it.
+const maxInspectionAttempts = 10
 
 type stepFailure struct {
 	reason, next        string

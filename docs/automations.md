@@ -531,7 +531,12 @@ the automation already sent into the job), its `head` and, when it ended
 Every delivery and step is recorded durably with its state (`pending`,
 `running`, `waiting` (a reopen step waiting for its job), `succeeded`,
 `failed`, `skipped`, `stopped` or, for a delivery, `blocked`), attempts, start and finish times, exit code, output line, log
-tail and outcome. A daemon restart
+tail and outcome. Each step also keeps `failures`: every failed attempt's
+`attempt`, `rerun`, `at` and `reason` (the newest 20), kept across reruns.
+A deliver step whose Git inspection did not finish in time (the machine is
+busy, or the job is large) tries again up to 10 times with growing waits
+(15 seconds doubling to 10 minutes, about 45 minutes in all) before it
+fails. A daemon restart
 resumes unfinished deliveries at the first step that is not finished; a
 finished step is never run again.
 
