@@ -109,6 +109,43 @@ func (m *Manager) safeDirectories() []string {
 	return append([]string(nil), dirs...)
 }
 
+// worktreeSafeDirectory is the task worktree a Git command runs in, when that
+// worktree belongs to a folder another uid owns: its Git directory lives in
+// that person's repository, so Git refuses the worktree as "dubious
+// ownership" unless the worktree itself is named safe. Git before 2.46 matches
+// safe.directory exactly, so the entries above (the folder, the bucket) do not
+// cover it, and the bucket may well be the daemon's own. "" otherwise.
+func (m *Manager) worktreeSafeDirectory(target string) string {
+	if m == nil || strings.TrimSpace(target) == "" {
+		return ""
+	}
+	roots, layout, err := m.projectRoots()
+	if err != nil || layout.Bucket == nil || layout.WorktreesRoot == "" {
+		return ""
+	}
+	owner := m.owner
+	if owner == nil {
+		owner = fileOwnerUID
+	}
+	clean := filepath.Clean(target)
+	for _, root := range roots {
+		bucket, err := layout.Bucket(root)
+		if err != nil || bucket == "" {
+			continue
+		}
+		dir := filepath.Join(layout.WorktreesRoot, bucket)
+		rel, err := filepath.Rel(dir, clean)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if uid, ok := owner(root); !ok || uid == m.cfg.UID {
+			return ""
+		}
+		return filepath.Join(dir, strings.Split(rel, string(filepath.Separator))[0])
+	}
+	return ""
+}
+
 // AppendSafeDirectoryEnv adds safe.directory entries for dirs to env in Git's
 // GIT_CONFIG_COUNT / GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n form, continuing a
 // count the environment already carries.
