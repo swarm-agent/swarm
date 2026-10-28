@@ -433,3 +433,79 @@ func TestProjectTaskWaitProgressFrom(t *testing.T) {
 		t.Fatalf("garbage read as %+v", got)
 	}
 }
+
+// Purpose: a follow-up reopen (ReopenProjectTask) keeps a settled wait on the
+// task while the follow-up launches. Requirement: the reservation write
+// (ReserveTaskFollowupWithRepositories through UpdateProjectTask, which
+// reconciles waits before the launch creates the attempt's session) leaves
+// the wait asleep, neither ready nor superseded; once the session exists the
+// ownership check applies: this owner's delegated session for the task is
+// followed (the row names the new attempt), and a session owned by another
+// task ends the row as superseded. Threat: a follow-up ending the wait as
+// superseded before anything ran, or a reserved attempt redirecting the wait
+// to a session it does not own. Authority: ReserveTaskFollowup (real
+// reservation path) and the wake branch of prepareProjectTaskWait over a
+// temporary real store.
+func TestProjectTaskWaitSettledFollowsReservedFollowup(t *testing.T) {
+	reserve := func(t *testing.T) (*taskWaitFixture, string) {
+		t.Helper()
+		f, progress := newSettledWaitFixture(t, filepath.Join(t.TempDir(), "store"), "task", "other")
+		f.register("", "task")
+		progress.set("task", workflowProgress("running", 1, "agent", 0, ""))
+		f.setTask("task", func(t *ProjectTaskRecord) { t.Status, t.Attempts[0].Status = "needs_review", "needs_review" })
+		f.mustSleep("before the follow-up")
+		progress.set("task", workflowProgress("done", 1, "agent", 0, ""))
+		task, ok, err := f.db.GetProjectTask("account", "project", "task")
+		if err != nil || !ok {
+			t.Fatalf("task: %v %v", ok, err)
+		}
+		reserved, err := f.db.ReserveTaskFollowup("account", "project", "task", "user", "followup-1", "Address the review.", task.Revision, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a := reserved.ActiveAttempt()
+		if a == nil || a.ID == "a1" || a.LaunchState != ProjectTaskAttemptLaunchReserved || a.SessionID != "task-followup-"+a.ID {
+			t.Fatalf("reservation: %+v", a)
+		}
+		// The reservation's own write reconciled the waits; so does this.
+		if out := f.reconcile(); out != nil {
+			t.Fatalf("reserved follow-up ended the wait: %v", out)
+		}
+		return f, a.SessionID
+	}
+	createSession := func(f *taskWaitFixture, session, taskID string) {
+		f.apply(V3SessionMutationInput{SessionID: session, Kind: V3SessionMutationCreateSession, ClientRequestID: "create-" + session, Session: &SessionSnapshot{ID: session, Mode: "auto", Metadata: map[string]any{"project_id": "project", "task_id": taskID}}})
+	}
+	launched := func(f *taskWaitFixture) {
+		f.setTask("task", func(t *ProjectTaskRecord) { t.ActiveAttempt().LaunchState = "launched" })
+	}
+	t.Run("owned_session_followed", func(t *testing.T) {
+		f, session := reserve(t)
+		createSession(f, session, "task")
+		launched(f)
+		f.mustSleep("follow-up launched and running")
+		f.setTask("task", func(t *ProjectTaskRecord) {
+			t.Status, t.ActiveAttempt().Status, t.ActiveAttempt().Summary = "needs_review", "needs_review", "Addressed."
+		})
+		out := f.reconcile()
+		if out == nil {
+			t.Fatal("follow-up end did not wake")
+		}
+		row := outcomeRow(t, out, 0)
+		if row["status"] != "needs_review" || row["session_id"] != session || row["pinned_attempt_id"] != "a1" || row["attempt_id"] == "a1" {
+			t.Fatalf("followed row: %v", row)
+		}
+	})
+	t.Run("foreign_session_superseded", func(t *testing.T) {
+		f, session := reserve(t)
+		createSession(f, session, "other")
+		launched(f)
+		out := f.reconcile()
+		if out == nil {
+			t.Fatal("foreign follow-up session did not end the row")
+		}
+		if row := outcomeRow(t, out, 0); row["status"] != "superseded" || row["attempt_id"] != "a1" || row["session_id"] != "child-task" {
+			t.Fatalf("foreign follow-up followed: %v", row)
+		}
+	})
+}

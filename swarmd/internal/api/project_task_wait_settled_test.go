@@ -535,3 +535,114 @@ func TestTaskWaitUnmarkedEndDoesNotHoldTheWait(t *testing.T) {
 		}
 	})
 }
+
+// taskRun records run's intent in the task's session at status.
+func (w *waitWorkflowFixture) taskRun(t *testing.T, run, status string) {
+	t.Helper()
+	in := pebblestore.V3SessionMutationInput{SessionID: "task-session", Kind: pebblestore.V3SessionMutationRecordRunIntent, ClientRequestID: "task-run-" + run + "-" + status, RunIntent: &pebblestore.V3SessionRunIntent{RunID: run, Status: status}}
+	in.AccountScopeID, in.UserID, in.PayloadHash = w.f.account, w.f.user, in.ClientRequestID
+	if _, err := w.f.s.sessions.Store().ApplyV3SessionMutation(in); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// sendBack records the first end's delivery as the runner leaves it after a
+// review BLOCK: the delivery finished with its reopen step succeeded for the
+// follow-up run-2, and the first end evaluated with that delivery. Before
+// that, as reopenTask does, the follow-up's run intent is pending in the
+// task's own session. The task record is not touched: production keeps its
+// attempt and its stored needs_review.
+func (w *waitWorkflowFixture) sendBack(t *testing.T, auto jobautomation.Automation, jobID string, now int64) {
+	t.Helper()
+	w.taskRun(t, "run-2", pebblestore.V3RunIntentPendingExecutor)
+	d, _, err := w.store.CreateDelivery(auto, jobautomation.Result{JobID: jobID, Kind: jobautomation.KindTask, ProjectID: "proj-1", RunID: "task-1", Folder: w.folder, Status: jobautomation.StatusSucceeded})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.State, d.FinishedAt = jobautomation.StateSucceeded, now
+	d.Steps[0].State = jobautomation.StateSucceeded
+	d.Steps[1].State, d.Steps[1].Outcome = jobautomation.StateSucceeded, map[string]any{"followup": "run-2"}
+	if err := w.store.SaveDelivery(d); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.store.RecordEvaluation(w.f.account, "proj-1", jobID, "", 1, now, []string{d.ID}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Purpose: a workflow send-back (or rebase) keeps a settled wait asleep for
+// the whole rework, decided from durable records, not the in-memory run end
+// window. Requirement: after the first end was evaluated with a delivery
+// whose reopen step sent the follow-up run-2, and with no run end window open
+// and the task left needs_review on its original attempt (as reopenTask leaves
+// it), the wait does not wake while run-2's intent in the task's session is
+// pending or running; when run-2 ended and its end was marked, it still does
+// not wake until the runner evaluated that end; and a run-2 that ended
+// without its end ever being marked does not hold the wait for good.
+// Threat: the Orchestrator woken (and a fresh wait_tasks returning at once)
+// with nothing pushed while the coder reworks; a lost signal stalling a goal.
+// Authority: Server.taskEndAwaitsWorkflows / taskFollowupRunLive and the
+// store's wake branch, with the real project publisher reconciling the
+// durable wait over real session, task and job automation stores.
+func TestTaskWaitSendBackHoldsTheWaitDuringRework(t *testing.T) {
+	setup := func(t *testing.T) (*waitWorkflowFixture, string, int64) {
+		t.Helper()
+		w := newWaitWorkflowFixture(t)
+		auto := w.workflow(t)
+		w.localWait(t)
+		jobID := taskRunJobID("proj-1", "task-1")
+		now := time.Now().UnixMilli()
+		if err := w.store.MarkJobEnded(w.f.account, "proj-1", jobID, "", 1, now); err != nil {
+			t.Fatal(err)
+		}
+		w.finishTask(t)
+		w.f.s.reconcileProjectTaskWaits(w.f.account, "proj-1")
+		if w.woke(t) {
+			t.Fatal("woke with the first end marked and not evaluated")
+		}
+		w.sendBack(t, auto, jobID, now)
+		for _, status := range []string{"", pebblestore.V3RunIntentRunning} {
+			if status != "" {
+				w.taskRun(t, "run-2", status)
+			}
+			w.f.s.reconcileProjectTaskWaits(w.f.account, "proj-1")
+			w.f.s.reconcileProjectTaskWaits("", "")
+			if w.woke(t) {
+				t.Fatalf("woke during the rework (run-2 %s)", firstNonEmptyString(status, "pending"))
+			}
+			if got := workflowState(w.f.s.taskWaitProgressFor(w.f.account, w.currentTask(t), time.Now().UnixMilli())); got != workflowPending {
+				t.Fatalf("rework progress: workflow %q, want pending", got)
+			}
+		}
+		if task := w.currentTask(t); task.Status != "needs_review" || task.ActiveAttemptID != "initial" {
+			t.Fatalf("fixture changed the task as production does not: %+v", task)
+		}
+		return w, jobID, now
+	}
+	t.Run("follow_up_end_evaluated", func(t *testing.T) {
+		w, jobID, now := setup(t)
+		w.taskRun(t, "run-2", pebblestore.V3RunIntentCompleted)
+		if err := w.store.MarkJobEnded(w.f.account, "proj-1", jobID, "run-2", 2, now); err != nil {
+			t.Fatal(err)
+		}
+		w.f.s.reconcileProjectTaskWaits(w.f.account, "proj-1")
+		if w.woke(t) {
+			t.Fatal("woke with the follow-up end marked and not evaluated")
+		}
+		if err := w.store.RecordEvaluation(w.f.account, "proj-1", jobID, "run-2", 2, now, nil); err != nil {
+			t.Fatal(err)
+		}
+		w.f.s.reconcileProjectTaskWaits(w.f.account, "proj-1")
+		if !w.woke(t) {
+			t.Fatalf("follow-up end evaluated did not wake: %+v", w.goalIntent(t, "run-1"))
+		}
+	})
+	t.Run("follow_up_end_never_marked", func(t *testing.T) {
+		w, _, _ := setup(t)
+		w.taskRun(t, "run-2", pebblestore.V3RunIntentCompleted)
+		w.f.s.reconcileProjectTaskWaits("", "")
+		if !w.woke(t) {
+			t.Fatalf("an unmarked follow-up end held the wait: %+v", w.goalIntent(t, "run-1"))
+		}
+	})
+}

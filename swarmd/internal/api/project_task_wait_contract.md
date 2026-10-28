@@ -31,10 +31,12 @@ changing the run.
   yet is not ready. The task progress the wait reads
   (`Server.taskWaitProgressFor`) reports `pending` while the task's latest end
   awaits the workflow runner: once marked, from the runner's evaluation record;
-  before that, only while the run end is being settled
-  (`Server.settleTaskRunEnd`: status write, then job end signal) and an enabled
-  workflow could match the task's folder, or a send-back/rebase was sent for a
-  follow-up whose end is not evaluated yet. That window is in memory; closing
+  while a send-back/rebase follow-up (named by the delivery's reopen step) has
+  a live run intent in the task's session, from that durable record (a reopen
+  keeps the task's attempt and its stored `needs_review`); otherwise only while
+  the run end is being settled (`Server.settleTaskRunEnd`: status write, then
+  job end signal) and an enabled workflow could match the task's folder, or
+  that follow-up's end is not marked yet. That window is in memory; closing
   it without a mark publishes `project.updated` so waits are re-checked. An
   end that is never marked (no signal store, a failed signal write, a crash, a
   restart) is never inferred pending. Ready under `until=finished`: `needs_review` or
@@ -57,6 +59,8 @@ changing the run.
   rebase, a follow-up) keeps the wait on that task: the row follows the new
   attempt when its session is still the owner's delegated session for the task
   (`attempt_id`/`session_id` name it, `pinned_attempt_id` the one selected).
+  A follow-up attempt reserved before its session exists is still in progress
+  (neither ready nor superseded); ownership is checked once the session exists.
   Under `until=finished` a different active attempt is `superseded`.
 - Startup reconciles persisted waits, then the existing pending-executor backlog
   handles committed continuations. A process crash before publication is repaired

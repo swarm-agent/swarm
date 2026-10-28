@@ -51,34 +51,65 @@ func (s *Server) taskEndAwaitsWorkflows(account string, task pebblestore.Project
 	if s == nil || s.sessions == nil || task.AutomationID != "" || account == "" || account != s.OutboxAccount() || task.SessionID == "" {
 		return false
 	}
-	// Only while the task's run end is being settled and its job end has
-	// not been marked: everything after is read from the runner's records.
-	if !s.taskRunEndUnmarked(task.SessionID) {
-		return false
-	}
 	session, found, err := s.sessions.GetSession(task.SessionID)
 	if err != nil || !found || session.AccountScopeID != account || !s.taskRunEndIsJobEnd(account, &task, session.UserID) {
 		return false
 	}
+	// The window: the task's run end is being settled and its job end has
+	// not been marked. Everything after the mark is read from the runner's
+	// records (an unevaluated mark is pending in computeTaskProgress).
+	unmarked := s.taskRunEndUnmarked(task.SessionID)
 	// A send-back or rebase that went out for a follow-up whose end is not
-	// evaluated yet: the work went back to the agent, and the previous
-	// round's finished delivery is not where it ends. The follow-up is named
-	// by the run id the reopen started, the id its job end is marked with
-	// (jobautomation matches reopen outcomes to job ends the same way). The
-	// session's latest run is not used: not every run in a task's session is
-	// a job end.
+	// marked yet: the work went back to the agent, and the previous round's
+	// finished delivery is not where it ends. A reopen keeps the task's
+	// attempt and its stored status (needs_review), so this is read from
+	// durable records: the delivery's reopen step names the follow-up run
+	// (the id its job end is marked with; jobautomation matches reopen
+	// outcomes to job ends the same way), and while that run's intent in the
+	// task's session is live the work is outstanding. Once the run ended,
+	// only the window holds it until the end is marked: a run whose end is
+	// never marked (a crash, a failed signal) does not hold a wait for good.
+	// The session's latest run is not used: not every run in a task's
+	// session is a job end.
 	for _, d := range latestDeliveries(deliveries) {
 		for _, step := range d.Steps {
 			followup, _ := step.Outcome["followup"].(string)
-			if step.Type == jobautomation.StepReopen && step.State == jobautomation.StateSucceeded && followup != "" && (eval == nil || eval.Followup != followup) {
+			if step.Type != jobautomation.StepReopen || step.State != jobautomation.StateSucceeded || followup == "" || (eval != nil && eval.Followup == followup) {
+				continue
+			}
+			if s.taskFollowupRunLive(task.SessionID, followup) {
+				return true
+			}
+			if unmarked {
 				return s.noteTaskRunEndHeld(task.SessionID)
 			}
 		}
+	}
+	if !unmarked {
+		return false
 	}
 	// No end of this task was marked yet: one will be evaluated only if a
 	// workflow could apply to it.
 	if eval == nil && len(deliveries) == 0 && s.taskWorkflowsMayApply(account, task) {
 		return s.noteTaskRunEndHeld(task.SessionID)
+	}
+	return false
+}
+
+// taskFollowupRunLive reports whether the follow-up run a reopen started in
+// the task's session has a durable intent that has not ended.
+func (s *Server) taskFollowupRunLive(sessionID, runID string) bool {
+	intent, found, err := s.sessions.Store().GetV3SessionRunIntent(sessionID, runID)
+	if err != nil {
+		log.Printf("swarmd task wait: read follow-up run %s: %v", runID, err)
+		return false
+	}
+	if !found {
+		return false
+	}
+	switch intent.Status {
+	case pebblestore.V3RunIntentPendingExecutor, pebblestore.V3RunIntentRunning, pebblestore.V3RunIntentWaitingTasks:
+		return true
 	}
 	return false
 }

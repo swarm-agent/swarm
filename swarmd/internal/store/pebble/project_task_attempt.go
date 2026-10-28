@@ -108,6 +108,10 @@ func InitialTaskRunID(taskID string) string {
 
 // ReserveTaskFollowup runs inside UpdateProjectTask's account/project lock. Identity
 // is durable before any worktree, V3 mutation, or enqueue side effect.
+// ProjectTaskAttemptLaunchReserved is a follow-up attempt reserved before its
+// session is launched.
+const ProjectTaskAttemptLaunchReserved = "reserved"
+
 func (s *SessionStore) ReserveTaskFollowup(account, project, taskID, user, key, request string, revision int, now int64) (*ProjectTaskRecord, error) {
 	return s.ReserveTaskFollowupWithRecovery(account, project, taskID, user, key, request, revision, now, nil)
 }
@@ -278,7 +282,7 @@ func (s *SessionStore) ReserveTaskFollowupWithRepositories(account, project, tas
 		if origin != "" {
 			t.OriginSessionID = origin
 		}
-		a := ProjectTaskAttempt{ID: id, ClientRequestID: key, PayloadHash: hash, RequestRevision: revision, UserID: user, Request: request, SessionID: "task-followup-" + id, RunID: "desktop-v3-run:task-followup-" + id, Role: "swarm", CreatedAt: now, Status: "in_progress", LaunchState: "reserved", Recovery: recovery, RepositoryContinuations: append([]ProjectTaskRepositoryContinuation(nil), repositories...)}
+		a := ProjectTaskAttempt{ID: id, ClientRequestID: key, PayloadHash: hash, RequestRevision: revision, UserID: user, Request: request, SessionID: "task-followup-" + id, RunID: "desktop-v3-run:task-followup-" + id, Role: "swarm", CreatedAt: now, Status: "in_progress", LaunchState: ProjectTaskAttemptLaunchReserved, Recovery: recovery, RepositoryContinuations: append([]ProjectTaskRepositoryContinuation(nil), repositories...)}
 		t.Attempts = append(t.Attempts, a)
 		t.ActiveAttemptID, t.SessionID, t.Status, t.Agent = id, a.SessionID, "in_progress", "swarm"
 		t.WorkspacePath = t.SourceWorkspace.Path

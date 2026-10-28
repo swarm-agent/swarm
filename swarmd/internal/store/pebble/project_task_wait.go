@@ -359,18 +359,36 @@ func (s *SessionStore) prepareProjectTaskWait(input *V3SessionMutationInput) err
 			task.EnsureTaskAttempts()
 			a := task.ActiveAttempt()
 			current := a != nil && a.ID == target.AttemptID && a.SessionID == target.SessionID
+			launching := false
 			// A reopen of the same task (send-back, rebase, follow-up) is
 			// followed under until=settled when its session is still this
-			// owner's delegated session for this task.
+			// owner's delegated session for this task. A follow-up attempt
+			// reserved before its session is created (the reservation write
+			// reconciles waits before the launch) is still pending; ownership
+			// is checked once its session exists (the launch's own task write
+			// reconciles the waits again).
 			if !current && follow && a != nil && a.ID != "" && a.SessionID != "" {
-				if current, err = s.projectTaskWaitAttemptOwned(input.AccountScopeID, input.UserID, owner.TaskWait.ProjectID, target.TaskID, a.SessionID); err != nil {
-					return err
+				if a.LaunchState == ProjectTaskAttemptLaunchReserved {
+					_, exists, err := s.GetSession(a.SessionID)
+					if err != nil {
+						return err
+					}
+					launching = !exists
 				}
-				if current {
-					attemptID, sessionID = a.ID, a.SessionID
+				if !launching {
+					if current, err = s.projectTaskWaitAttemptOwned(input.AccountScopeID, input.UserID, owner.TaskWait.ProjectID, target.TaskID, a.SessionID); err != nil {
+						return err
+					}
+					if current {
+						attemptID, sessionID = a.ID, a.SessionID
+					}
 				}
 			}
-			if !current {
+			if launching {
+				// Not ready and not superseded: the row keeps the attempt
+				// last verified, as no session is there to own yet.
+				status, summary = "in_progress", "A follow-up attempt is launching; the wait follows it once its session exists."
+			} else if !current {
 				status, summary = "superseded", "Selected attempt was superseded; explicitly select the replacement if needed."
 			} else {
 				status, summary = task.Status, a.Summary
