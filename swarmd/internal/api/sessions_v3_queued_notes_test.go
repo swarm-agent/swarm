@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	runruntime "swarm/packages/swarmd/internal/run"
@@ -477,5 +478,128 @@ func TestNonPersonFeedbackNoteIsNotDeliveredInToolResult(t *testing.T) {
 	}
 	if intents := f.runIntents(); len(intents) != 1 {
 		t.Fatalf("run intents = %+v, want only the original run", intents)
+	}
+}
+
+// queuedNoteCheckpointRunner serves canonical checkpoint startup input with no
+// transcript, as the run service's BuildPlanCheckpointRunInput does.
+type queuedNoteCheckpointRunner struct {
+	*runruntime.Service
+	input []map[string]any
+}
+
+func (r queuedNoteCheckpointRunner) BuildPlanCheckpointRunInput(string, string, runruntime.RunRequest, runruntime.RunStartMeta) ([]map[string]any, bool, error) {
+	return append([]map[string]any(nil), r.input...), true, nil
+}
+
+// Purpose: a queued note left unreceipted by a stopped run (which starts no
+// follow-up) is receipted by a later run only when that run's successful
+// provider step carried it. A checkpoint run, whose startup input is the
+// canonical checkpoint payload without the transcript, carries the note
+// explicitly as a user message and only then receipts it.
+// Threat: a note marked delivered (and shown delivered in clients) by a run
+// whose input never contained it, and so never sent to any model.
+// Boundary: sessionV3UndeliveredHistoryQueuedNotes and
+// carrySessionV3HistoryQueuedNotes in providerAssistantResponse, the
+// sessionV3NotesCarriedBy receipt filter in runProviderToolLoop,
+// closeQueuedNotes for a cancelled run.
+// Narrowest layer: the real executor, HTTP route and stop path with a scripted
+// model and a checkpoint input builder; the omission happens in context
+// selection that only the executor performs.
+func TestQueuedNoteFromStoppedRunIsCarriedByCheckpointRunBeforeReceipt(t *testing.T) {
+	const steer = "steer-left-by-a-stopped-run"
+	const checkpointInput = "checkpoint-start-input-only"
+	f := newQueuedNoteFixture(t, func(*queuedNoteFixture, provideriface.Request) provideriface.Response {
+		return provideriface.Response{Text: "unused", StopReason: "stop"}
+	})
+	service, ok := f.server.runner.(*runruntime.Service)
+	if !ok {
+		t.Fatalf("fixture runner is %T, want *run.Service", f.server.runner)
+	}
+	f.server.runner = queuedNoteCheckpointRunner{Service: service, input: []map[string]any{{"role": "user", "content": checkpointInput}}}
+	entered := make(chan struct{}, 1)
+	f.runner.handler = func(ctx context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if raw, _ := json.Marshal(req.Input); strings.Contains(string(raw), checkpointInput) {
+			return provideriface.Response{Text: "checkpoint step done", StopReason: "stop"}, nil
+		}
+		f.postDuringRun("steer-stopped", steer)
+		entered <- struct{}{}
+		<-ctx.Done()
+		return provideriface.Response{}, ctx.Err()
+	}
+
+	body, _ := json.Marshal(map[string]any{"client_request_id": "start-stopped", "role": "user", "content": "begin the task"})
+	if code, out := f.do(http.MethodPost, "/v3/sessions/"+f.sessionID+"/messages", string(body)); code != http.StatusOK {
+		t.Fatalf("message: %d %s", code, out)
+	}
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first run never reached the provider")
+	}
+	stoppedRun := stableSessionsV3PrimaryRunID(f.sessionID, "start-stopped")
+	if _, cancelled, err := f.server.v3SessionExecutor.CancelRun(sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: f.sessionID, RunID: stoppedRun}, "the person stopped the run"); err != nil || !cancelled {
+		t.Fatalf("CancelRun: cancelled=%v err=%v", cancelled, err)
+	}
+	f.waitRun(f.sessionID, stoppedRun, sessionruntime.RunIntentCancelled)
+	code, payload := f.queuedResponse()
+	if code != http.StatusOK || payload["queued"] != true {
+		t.Fatalf("mid-run message was not queued: %d %v", code, payload)
+	}
+	note := queuedNoteFromResponse(t, payload)
+	if receipts := f.receipts(note.ID); len(receipts) != 0 {
+		t.Fatalf("the stopped run receipted the note: %+v", receipts)
+	}
+	if intents := f.runIntents(); len(intents) != 1 {
+		t.Fatalf("run intents = %+v, want no follow-up after a stop", intents)
+	}
+
+	session, ok, err := f.sessions.GetSession(f.sessionID)
+	if err != nil || !ok {
+		t.Fatalf("session: %v %v", ok, err)
+	}
+	const key = "checkpoint-after-stop"
+	checkpointRun := stableSessionsV3PrimaryRunID(f.sessionID, key)
+	result, err := f.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID: f.sessionID, UserID: session.UserID, AccountScopeID: session.AccountScopeID,
+		ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key,
+		Kind: sessionruntime.SessionMutationRecordRunIntent, NowUnixMs: time.Now().UnixMilli(),
+		RunIntent: &pebblestore.V3SessionRunIntent{
+			SessionID: f.sessionID, UserID: session.UserID, AccountScopeID: session.AccountScopeID,
+			RunID: checkpointRun, RunSessionID: f.sessionID, ParentSessionID: f.sessionID,
+			PlanID: "plan-queued", CheckpointID: "checkpoint-queued", AttemptID: "attempt-queued",
+			Status: sessionruntime.RunIntentPendingExecutor, CreatedAt: time.Now().UnixMilli(), UpdatedAt: time.Now().UnixMilli(),
+		},
+	})
+	if err != nil || result.Error != nil || result.Conflict != nil {
+		t.Fatalf("record checkpoint run intent: %v %+v", err, result)
+	}
+	if !f.server.v3SessionExecutor.EnqueueRun(sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: f.sessionID, RunID: checkpointRun, PlanID: "plan-queued", CheckpointID: "checkpoint-queued", AttemptID: "attempt-queued", ParentSessionID: f.sessionID}) {
+		t.Fatal("checkpoint run was not enqueued")
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var checkpointReq *provideriface.Request
+	for checkpointReq == nil && time.Now().Before(deadline) {
+		for _, req := range f.requests() {
+			if raw, _ := json.Marshal(req.Input); strings.Contains(string(raw), checkpointInput) {
+				req := req
+				checkpointReq = &req
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if checkpointReq == nil {
+		t.Fatal("the checkpoint run never reached the provider")
+	}
+	for time.Now().Before(deadline) && len(f.receipts(note.ID)) == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if toolResults, userMessages := countInInput(checkpointReq.Input, steer); toolResults != 0 || userMessages != 1 {
+		t.Fatalf("checkpoint input carried the note %d times in tool results and %d as user messages, want 0 and 1: %v", toolResults, userMessages, checkpointReq.Input)
+	}
+	receipts := f.receipts(note.ID)
+	if len(receipts) != 1 || receipts[0].Metadata["run_id"] != checkpointRun {
+		t.Fatalf("receipts = %+v, want exactly one in checkpoint run %s", receipts, checkpointRun)
 	}
 }

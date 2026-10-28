@@ -2847,6 +2847,9 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		}
 		baseReq.Input = input
 	}
+	// Checkpoint startup and bounded handoff inputs omit the transcript; carry
+	// undelivered queued notes explicitly so their receipts mean delivery.
+	baseReq.Input, job.historyQueuedNotes = carrySessionV3HistoryQueuedNotes(baseReq.Input, job.historyQueuedNotes)
 	requestEventType := "session.provider.request_started"
 	if suffix := strings.TrimSpace(requestPhaseSuffix); suffix != "" {
 		requestEventType += "." + suffix
@@ -3933,7 +3936,9 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		// consumed mid-step). Notes queued while it was in flight wait for
 		// another eligible step; a final response does not reopen work merely to
 		// drain feedback.
-		if err := runruntime.RecordFeedbackDelivery(e.server.applySessionV3PrimaryMutation, job.SessionID, job.RunID, historyQueuedNotes); err != nil {
+		// A history note is receipted only if this step's input carried it;
+		// any other stays undelivered for a later run.
+		if err := runruntime.RecordFeedbackDelivery(e.server.applySessionV3PrimaryMutation, job.SessionID, job.RunID, sessionV3NotesCarriedBy(req.Input, historyQueuedNotes)); err != nil {
 			return sessionV3ProviderLoopResult{}, err
 		}
 		historyQueuedNotes = nil

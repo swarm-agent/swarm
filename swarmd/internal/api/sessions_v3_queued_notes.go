@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"log"
 	"sort"
 	"strings"
@@ -243,6 +244,54 @@ func (e *sessionV3Executor) startQueuedNoteFollowup(job sessionV3ExecutorJob, fi
 		},
 	})
 	return err
+}
+
+// carrySessionV3HistoryQueuedNotes makes a run's initial provider input carry
+// every undelivered queued note in its context. Transcript-built input already
+// holds them; checkpoint startup input (canonical checkpoint payload only) and
+// the bounded handoff (summary plus latest turn) may not, so a missing note is
+// appended as an ordinary user message. It returns the input and the notes it
+// now carries.
+func carrySessionV3HistoryQueuedNotes(input []map[string]any, notes []pebblestore.MessageSnapshot) ([]map[string]any, []pebblestore.MessageSnapshot) {
+	var carried []pebblestore.MessageSnapshot
+	for _, note := range notes {
+		text := strings.TrimSpace(note.Content)
+		if text == "" {
+			continue
+		}
+		if !sessionV3InputCarriesText(input, text) {
+			input = append(input, map[string]any{"role": "user", "content": []map[string]any{{"type": "input_text", "text": note.Content}}})
+		}
+		carried = append(carried, note)
+	}
+	return input, carried
+}
+
+// sessionV3NotesCarriedBy returns the notes whose text is in input. Only these
+// may be receipted for a successful step that sent input.
+func sessionV3NotesCarriedBy(input []map[string]any, notes []pebblestore.MessageSnapshot) []pebblestore.MessageSnapshot {
+	var carried []pebblestore.MessageSnapshot
+	for _, note := range notes {
+		if text := strings.TrimSpace(note.Content); text != "" && sessionV3InputCarriesText(input, text) {
+			carried = append(carried, note)
+		}
+	}
+	return carried
+}
+
+func sessionV3InputCarriesText(input []map[string]any, text string) bool {
+	encoded, err := json.Marshal(text)
+	if err != nil || len(encoded) < 2 {
+		return false
+	}
+	needle := string(encoded[1 : len(encoded)-1])
+	for _, item := range input {
+		raw, err := json.Marshal(item)
+		if err == nil && strings.Contains(string(raw), needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // sessionV3UndeliveredHistoryQueuedNotes returns queued notes at or before
