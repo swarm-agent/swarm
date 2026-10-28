@@ -22,6 +22,7 @@ const (
 	outcomeReadyToIntegrate       = "ready to integrate"
 	outcomeIntegrated             = "integrated"
 	outcomeWorkflowPending        = "workflow pending"
+	outcomeStopped                = "stopped"
 )
 
 // taskProgressNow is the clock task progress (and its stale flag) is read at.
@@ -33,6 +34,10 @@ var taskProgressNow = time.Now
 // integrate once its agent finished. "" while the task has not finished and
 // no workflow ran for it.
 func taskProgressOutcome(class string, latest []jobautomation.Delivery, workflow *taskProgressWorkflow, integrated bool, deliveredWhere string) string {
+	if class == progressStopped {
+		// The person's stop is the latest thing that happened to the work.
+		return outcomeStopped
+	}
 	if len(latest) > 0 {
 		d := latest[0]
 		for _, candidate := range latest {
@@ -115,6 +120,18 @@ func deliveryHandover(d jobautomation.Delivery) string {
 		}
 	}
 	return out
+}
+
+// projectTaskOutcomeCounts counts tasks by what happened to their work
+// (pebblestore.ProjectTaskCountBucket over each one's progress outcome), the
+// counts a task list answers with next to its raw status counts.
+func (s *Server) projectTaskOutcomeCounts(account string, tasks []pebblestore.ProjectTaskRecord, now int64) map[string]int {
+	counts := pebblestore.NewProjectTaskOutcomeCounts()
+	for _, task := range tasks {
+		p := s.taskProgressFor(account, task, now)
+		counts[pebblestore.ProjectTaskCountBucket(task.Status, p.Outcome, p.Stale)]++
+	}
+	return counts
 }
 
 func clipOutcome(text string) string {

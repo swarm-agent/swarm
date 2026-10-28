@@ -25,7 +25,7 @@ const sessionV3QueuedNoteHistoryWindow = 200
 
 // sessionsV3QueuedNoteReservedMetadata are delivery markers only the runtime
 // writes; caller-supplied values are dropped.
-var sessionsV3QueuedNoteReservedMetadata = []string{"feedback_note", runruntime.QueuedNoteMetadataKey, runruntime.QueuedNoteRunMetadataKey, runruntime.QueuedNoteStatusMetadata}
+var sessionsV3QueuedNoteReservedMetadata = []string{"feedback_note", runruntime.QueuedNoteMetadataKey, runruntime.QueuedNoteRunMetadataKey, runruntime.QueuedNoteStatusMetadata, pebblestore.ProjectTaskMessageSourceMetadata}
 
 // sessionsV3QueuedNoteRunStatus stands in for the run status in a queued
 // note's idempotency hash: a queued note records no run intent.
@@ -77,6 +77,11 @@ func (s *Server) acceptSessionsV3QueuedNote(principal identity.Principal, sessio
 	message.Metadata[runruntime.QueuedNoteStatusMetadata] = runruntime.QueuedNoteStatusQueued
 	if runID != "" {
 		message.Metadata[runruntime.QueuedNoteRunMetadataKey] = runID
+	}
+	// Like the markers above, the source is added after the payload hash: a
+	// retry of the same message replays whatever its source.
+	if source := strings.TrimSpace(req.queuedNoteSource); source != "" {
+		message.Metadata[pebblestore.ProjectTaskMessageSourceMetadata] = source
 	}
 	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID: session.ID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID,

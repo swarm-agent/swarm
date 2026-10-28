@@ -299,6 +299,13 @@ func (s *Server) reconcileProjectTaskRunLifecycleWithCapture(job sessionV3Execut
 			if t.Status != "in_progress" && t.Status != "planning" {
 				return nil
 			}
+			// The person's stop is not a failure: the task is stopped and a
+			// message resumes it. A paused planning run keeps its own path.
+			if t.Status == "in_progress" && pebblestore.ProjectTaskRunStoppedByPerson(status, reason) {
+				t.Status = pebblestore.ProjectTaskStatusStopped
+				t.ActionNeeded = projectTaskStoppedAction
+				return nil
+			}
 			t.Status = "failed"
 			if t.LastError == "" && reason != "" {
 				t.LastError = reason

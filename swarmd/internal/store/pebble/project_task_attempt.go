@@ -186,12 +186,17 @@ func (s *SessionStore) ReserveTaskFollowupWithRepositories(account, project, tas
 				switch state.Status {
 				case V3RunIntentCompleted:
 					t.Status = "needs_review"
-				case V3RunIntentFailed, V3RunIntentCancelled, V3RunIntentExpired, V3RunIntentInterrupted, V3RunIntentDispatchBlocked:
+				case V3RunIntentCancelled:
+					t.Status = "failed"
+					if ProjectTaskRunStoppedByPerson(state.Status, state.BlockedReason) {
+						t.Status = ProjectTaskStatusStopped
+					}
+				case V3RunIntentFailed, V3RunIntentExpired, V3RunIntentInterrupted, V3RunIntentDispatchBlocked:
 					t.Status = "failed"
 				}
 			}
 		}
-		if t.Archived || (t.Status != "needs_review" && t.Status != "completed" && t.Status != "failed" && t.Status != "blocked") {
+		if t.Archived || (t.Status != "needs_review" && t.Status != "completed" && t.Status != "failed" && t.Status != "blocked" && t.Status != ProjectTaskStatusStopped) {
 			return errors.New("task is running or requires structured review; follow-up rejected without mutation")
 		}
 		if t.Status == "blocked" {

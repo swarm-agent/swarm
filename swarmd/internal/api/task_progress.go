@@ -27,6 +27,9 @@ const (
 	progressDelivered     = "delivered"
 	progressDone          = "done"
 	progressFailed        = "failed"
+	// progressStopped: the person stopped the task's run; a message resumes
+	// it. Not a failure.
+	progressStopped = "stopped"
 )
 
 // Workflow states (workflow.state and each delivery's state).
@@ -93,10 +96,12 @@ type taskProgressEvent struct {
 	What string `json:"what"`
 }
 
-// taskStatusClass sorts a task status into waiting, working, failed or
-// finished.
+// taskStatusClass sorts a task status into waiting, working, stopped, failed
+// or finished.
 func taskStatusClass(status string) string {
 	switch status {
+	case pebblestore.ProjectTaskStatusStopped:
+		return progressStopped
 	case "pending_approval", "queued", "pending":
 		return progressWaiting
 	case "planning", "in_progress", "running", "starting", "generating", "swarming", "publishing":
@@ -264,7 +269,7 @@ func oneLineProgress(s string, limit int) string {
 // It reads nothing else.
 func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobautomation.Delivery, eval *jobautomation.JobEvaluation, now int64) taskProgress {
 	class := taskStatusClass(task.Status)
-	ended := class == "finished" || class == progressFailed
+	ended := class == "finished" || class == progressFailed || class == progressStopped
 	latest := latestDeliveries(deliveries)
 
 	// Workflow: the deliveries that applied (latest round per workflow),
@@ -444,6 +449,9 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 		default:
 			out.Summary = who + " working"
 		}
+	case class == progressStopped:
+		out.State = progressStopped
+		out.Summary = "stopped by the person; message_task resumes it"
 	case len(running) > 0:
 		out.State = progressWorkflow
 		d := running[0]
@@ -608,6 +616,9 @@ func taskProgressHistory(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 		what := endWhat(status, commits, branch)
 		if status == jobautomation.StatusFailed && task.LastError != "" {
 			what = "failed: " + task.LastError
+		}
+		if taskStatusClass(task.Status) == progressStopped {
+			what = "stopped by the person"
 		}
 		add(at, what)
 	}

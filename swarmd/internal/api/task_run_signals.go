@@ -140,7 +140,8 @@ func (s *Server) taskRunEndIsJobEnd(account string, task *pebblestore.ProjectTas
 // waiting on its delegated tasks (a pended wait_tasks goal) is not the task's
 // end, whatever the run's own status: a failed run of a task that is still
 // running records nothing either (the reconciled task is failed when that
-// run was its work).
+// run was its work). A stopped task (the person's stop) did not end either:
+// it stays resumable, raises no job end and so never counts as a failure.
 func taskRunLeftResult(taskStatus string) bool {
 	switch taskStatus {
 	case "needs_review", "completed", "failed", "blocked", "cancelled":

@@ -32,7 +32,9 @@ import (
 
 const (
 	projectTaskMessageMaxBytes = 32000
-	projectTaskStopReason      = "user stopped task"
+	projectTaskStopReason      = pebblestore.ProjectTaskStopReason
+	// projectTaskStoppedAction is a stopped task's next step.
+	projectTaskStoppedAction = "Stopped by the person; message_task resumes it."
 )
 
 // MessageProjectTask delivers message to a task: queued in its running run,
@@ -194,7 +196,7 @@ func (s *Server) queueProjectTaskMessage(p identity.Principal, sessionID, key, m
 	if sessionEnded(session) {
 		return "", false, &projectTaskFollowupError{http.StatusConflict, errSessionV3Ended}
 	}
-	req := sessionsV3MessageRequest{queueWhileRunning: true, ClientRequestID: key, IdempotencyKey: key, Role: "user", Content: message}
+	req := sessionsV3MessageRequest{queueWhileRunning: true, queuedNoteSource: pebblestore.ProjectTaskMessageSourceTask, ClientRequestID: key, IdempotencyKey: key, Role: "user", Content: message}
 	result, queued, err := s.acceptSessionsV3QueuedNote(p, session, req, pebblestore.MessageSnapshot{Role: "user", Content: message})
 	if err != nil {
 		return "", false, err
@@ -249,7 +251,7 @@ func (s *Server) replayProjectTaskMessage(p identity.Principal, sessionID, key, 
 	if !found {
 		return "", &projectTaskFollowupError{http.StatusNotFound, errors.New("task session not found")}
 	}
-	req := sessionsV3MessageRequest{queueWhileRunning: true, ClientRequestID: key, IdempotencyKey: key, Role: "user", Content: message}
+	req := sessionsV3MessageRequest{queueWhileRunning: true, queuedNoteSource: pebblestore.ProjectTaskMessageSourceTask, ClientRequestID: key, IdempotencyKey: key, Role: "user", Content: message}
 	result, queued, err := s.acceptSessionsV3QueuedNote(p, session, req, pebblestore.MessageSnapshot{Role: "user", Content: message})
 	if err != nil {
 		return "", err

@@ -52,6 +52,7 @@ workflow deliveries and its integration.
 | `delivered` | a workflow delivered its result (a folder, a pull request, the outbox, or the owner's script after the review, e.g. a push), or a media task's files are ready |
 | `done` | it finished with nothing to integrate (a report, an audit, no commits) |
 | `failed` | its last attempt failed, or a workflow ended failed or blocked; `summary` says why |
+| `stopped` | the person stopped its run (`stop_task`, or the stop in its session); task status `stopped`, not a failure, and `message_task` resumes it |
 
 `summary` is one short line for a client to show as is.
 
@@ -62,7 +63,23 @@ delivery: `running <step>`, `sent_back (round n)`, `pushed <head12>` (a run
 step after the review, such as the owner's push script), `delivered <target>`,
 `blocked <reason>` or `failed <step>`; `workflow pending` while the task's end
 is not evaluated yet. With no workflow it is `integrated`, `delivered <where>`
-or, once the agent finished, `ready to integrate`; absent before then.
+or, once the agent finished, `ready to integrate`; absent before then. A
+stopped task's outcome is `stopped`.
+
+A task list page (`GET /v3/projects/{id}/tasks` with list parameters, and
+`manage_projects list_tasks` here and on linked machines) counts its tasks by
+outcome in `outcome_counts`, every bucket present: `done` (pushed, delivered,
+integrated, completed), `in_progress` (working, running, sent back, workflow
+pending), `waiting` (queued, waiting for approval), `needs_attention`
+(blocked, failed, ready to integrate with no workflow handing it over) and
+`stopped` (stopped or stale). The route keeps its raw `status_counts`; agent
+lists do not carry them.
+
+`get_task` also shows the last 3 messages sent to the task (`message_task`
+notes and follow-ups), the first 80 characters of each, with `state`
+`queued` (with the run it waits for), `delivered` (with the run whose model
+received it) or `reopened` (with the follow-up run). The task route answers
+them as `messages`.
 
 `stale` is `true` on an `in_progress` or `blocked` task whose session has had
 no active run, and which has not changed, for 24 hours.

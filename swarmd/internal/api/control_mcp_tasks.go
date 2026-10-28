@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // Delegation in one hop: an outside AI (the person's own Claude, ChatGPT or
@@ -24,6 +26,7 @@ import (
 var controlMCPTaskSettled = map[string]bool{
 	"needs_review": true, "completed": true, "failed": true, "blocked": true,
 	"rejected": true, "needs_input": true, "pending_approval": true, "cancelled": true, "superseded": true,
+	pebblestore.ProjectTaskStatusStopped: true,
 }
 
 const controlMCPTaskReportChars = 4000
@@ -42,7 +45,7 @@ func (c *controlMCPCall) taskNext(task map[string]any) string {
 		if can("swarm_task_result") {
 			return "the task is finished: read swarm_task_result for its output and actual integration evidence"
 		}
-	case "failed", "blocked", "cancelled", "superseded":
+	case "failed", "blocked", "cancelled", "superseded", pebblestore.ProjectTaskStatusStopped:
 		if can("swarm_task_result") && can("swarm_get_session") && can("swarm_send_message") && can("swarm_run_task") {
 			return "inspect swarm_task_result and swarm_get_session before continuing with swarm_send_message where supported; swarm_run_task creates a new task receipt"
 		}

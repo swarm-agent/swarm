@@ -84,6 +84,9 @@ type ProjectTaskListPage struct {
 	NextCursor   int
 	HasNext      bool
 	StatusCounts map[string]int
+	// Counted are the tasks StatusCounts counts (every filter but status and
+	// paging), so a caller can count them by outcome (ProjectTaskCountBucket).
+	Counted []ProjectTaskRecord
 	// With ExcludeWorkflowTasks: HiddenWorkflowTasks are the workflow tasks
 	// the other filters matched and the page left out (WorkflowTasks of
 	// them), and Reviews counts those that review a task, by reviewed task id.
@@ -218,6 +221,7 @@ func (f ProjectTaskListFilter) Select(tasks []ProjectTaskRecord, nowMillis int64
 			continue
 		}
 		page.StatusCounts[t.Status]++
+		page.Counted = append(page.Counted, t)
 		if f.MatchesStatus(t.Status) {
 			matched = append(matched, t)
 		}

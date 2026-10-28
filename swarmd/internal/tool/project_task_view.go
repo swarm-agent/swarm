@@ -114,6 +114,9 @@ type projectTaskRead struct {
 	// a folder task delivered in_folder; for a linked machine, the task
 	// route's top-level commits/files for that same range. nil otherwise.
 	Worktree *projectTaskWorktree `json:"-"`
+	// Messages are what was sent to the task and whether it arrived
+	// (pebblestore.ProjectTaskMessages), newest last.
+	Messages []pebblestore.ProjectTaskMessage `json:"-"`
 }
 
 // projectTaskWorktree is the task branch's committed result: the head of
@@ -139,8 +142,12 @@ type ProjectTaskView struct {
 	Integration string                `json:"integration,omitempty"`
 	LastError   string                `json:"last_error,omitempty"`
 	PlanBinding *projectTaskPlanGuard `json:"plan_binding,omitempty"`
-	NextAction  string                `json:"next_action"`
-	More        string                `json:"more"`
+	// Messages are the last messages sent to the task (message_task, or a
+	// follow-up), each with its delivery: queued, delivered (with the run
+	// that received it) or reopened.
+	Messages   []pebblestore.ProjectTaskMessage `json:"messages,omitempty"`
+	NextAction string                           `json:"next_action"`
+	More       string                           `json:"more"`
 }
 
 type projectTaskProgress struct {
@@ -225,6 +232,8 @@ func projectTaskPlanGuardFor(t *pebblestore.ProjectTaskRecord) *projectTaskPlanG
 // projectTaskStatusClass sorts a status the way task progress does.
 func projectTaskStatusClass(status string) string {
 	switch status {
+	case pebblestore.ProjectTaskStatusStopped:
+		return "stopped"
 	case "pending_approval":
 		return "approval"
 	case "queued", "pending":
@@ -251,6 +260,8 @@ func projectTaskNext(t *pebblestore.ProjectTaskRecord, progress *projectTaskProg
 		return "wait_tasks", "starts when capacity frees"
 	case "working":
 		return "wait_tasks", "agent finishes, then its result is ready to review"
+	case "stopped":
+		return "message_task", "stopped by the person; message_task resumes it"
 	case "failed":
 		if remote {
 			return "read_task_session", "read why it stopped, then reopen_task with feedback"
@@ -400,6 +411,18 @@ func compactProjectTask(read projectTaskRead, remote bool) ProjectTaskView {
 		view.Result = result
 	}
 	view.Integration = integration
+	if n := len(read.Messages); n > 0 {
+		messages := read.Messages[max(n-pebblestore.ProjectTaskMessagesShown, 0):]
+		view.Messages = make([]pebblestore.ProjectTaskMessage, 0, len(messages))
+		for _, m := range messages {
+			// A linked machine's answer is bounded here as well.
+			if r := []rune(m.Text); len(r) > pebblestore.ProjectTaskMessageTextRunes {
+				m.Text = string(r[:pebblestore.ProjectTaskMessageTextRunes])
+			}
+			m.State, m.RunID = clipBytes(m.State, 16), clipBytes(m.RunID, 160)
+			view.Messages = append(view.Messages, m)
+		}
+	}
 	view.NextAction, view.Progress.Next = projectTaskNext(t, p, integration, result.Commits, remote)
 	fitProjectTaskView(&view)
 	return view
@@ -457,6 +480,8 @@ func projectTaskRowNext(t pebblestore.ProjectTaskRecord) string {
 		return "approve_task"
 	case "waiting", "working":
 		return "wait_tasks"
+	case "stopped":
+		return "message_task"
 	case "failed":
 		return "get_task"
 	}
@@ -655,8 +680,9 @@ func CompactProjectTaskAnswer(action, detail string, raw json.RawMessage) (json.
 			} `json:"resolved_model"`
 			ResolutionError string `json:"resolution_error"`
 		} `json:"model_preview"`
-		Commits json.RawMessage `json:"commits"`
-		Files   json.RawMessage `json:"files"`
+		Commits  json.RawMessage                  `json:"commits"`
+		Files    json.RawMessage                  `json:"files"`
+		Messages []pebblestore.ProjectTaskMessage `json:"messages"`
 	}
 	if err := json.Unmarshal(raw, &answer); err != nil {
 		return nil, errors.New("linked machine returned an invalid task answer")
@@ -683,6 +709,7 @@ func CompactProjectTaskAnswer(action, detail string, raw json.RawMessage) (json.
 	}
 	if action == "get_task" {
 		answer.Task.Worktree = linkedTaskRange(answer.Task.ProjectTaskRecord, answer.Commits, answer.Files)
+		answer.Task.Messages = answer.Messages
 		out["task"] = compactProjectTask(*answer.Task, true)
 		task := answer.Task.ProjectTaskRecord
 		switch detail {

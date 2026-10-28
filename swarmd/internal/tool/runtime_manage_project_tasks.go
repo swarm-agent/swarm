@@ -215,6 +215,15 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 			// Task follow-ups (history-only) always read the stored record
 			// with a page of attempt history (cursor/limit).
 			read := projectTaskRead{ProjectTaskRecord: *task, Progress: r.projectTaskProgress(account, *task), Worktree: projectTaskWorktreeResult(*task)}
+			if reader, ok := r.projects.(interface {
+				ProjectTaskMessages(*pebblestore.ProjectTaskRecord) ([]pebblestore.ProjectTaskMessage, error)
+			}); ok {
+				messages, err := reader.ProjectTaskMessages(task)
+				if err != nil {
+					return "", err
+				}
+				read.Messages = messages
+			}
 			result["task"] = compactProjectTask(read, false)
 			switch detail {
 			case ProjectTaskDetailPlan:
@@ -433,6 +442,17 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 				row.Reviews = page.Reviews[task.ID]
 				rows = append(rows, row)
 			}
+			// Counts follow what happened to each task's work (its outcome),
+			// in the same buckets as a linked machine's list.
+			counts := pebblestore.NewProjectTaskOutcomeCounts()
+			for _, task := range page.Counted {
+				outcome, stale := "", false
+				if progress := r.projectTaskProgress(account, task); progress != nil {
+					outcome, stale = progress.Outcome, progress.Stale
+				}
+				counts[pebblestore.ProjectTaskCountBucket(task.Status, outcome, stale)]++
+			}
+			result["outcome_counts"] = counts
 			result["tasks"], result["count"], result["total"] = rows, len(rows), page.Total
 			result["scope"], result["cursor"], result["limit"] = scopeName, page.Cursor, limit
 			result["scan_truncated"] = scanTruncated

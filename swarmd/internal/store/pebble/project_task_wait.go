@@ -490,7 +490,7 @@ func projectTaskWaitReadiness(status string, wait *V3ProjectTaskWait, progress *
 			return true, true
 		}
 		return true, false
-	case "failed", "blocked", "needs_input", "pending_approval", "cancelled", "superseded", V3ProjectTaskRemoteUnreachable, V3ProjectTaskRemoteWorkOff:
+	case "failed", "blocked", "needs_input", "pending_approval", "cancelled", "superseded", ProjectTaskStatusStopped, V3ProjectTaskRemoteUnreachable, V3ProjectTaskRemoteWorkOff:
 		return true, true
 	}
 	return false, false

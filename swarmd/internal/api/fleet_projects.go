@@ -203,14 +203,16 @@ func fleetTaskListQuery(args map[string]any) (url.Values, error) {
 // compactFleetTaskList keeps the page facts and the list-row fields of each
 // task (projectTaskListRow's identity fields), with the outcome and stale
 // flag the machine computed and its count of reviewer tasks; full records
-// stay in get_task.
+// stay in get_task. The counts are the machine's outcome_counts, the same
+// buckets as list_tasks on this machine; raw status counts are left out
+// (needs_review only says a run ended, not that anyone must review it).
 func compactFleetTaskList(raw json.RawMessage) (json.RawMessage, error) {
 	var data map[string]any
 	if err := json.Unmarshal(raw, &data); err != nil {
 		return nil, err
 	}
 	out := map[string]any{}
-	for _, key := range []string{"total", "next_cursor", "cursor", "limit", "scope", "status_counts", "workflow_tasks"} {
+	for _, key := range []string{"total", "next_cursor", "cursor", "limit", "scope", "outcome_counts", "workflow_tasks"} {
 		if v, ok := data[key]; ok {
 			out[key] = v
 		}

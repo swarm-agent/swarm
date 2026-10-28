@@ -583,7 +583,7 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db projectTaskLif
 				// transitions to needs_review for user review and git integration,
 				// NEVER directly to completed! A successful explicit retry may finish
 				// before a reader observes its intermediate in_progress state.
-				if task.Status == "in_progress" || task.Status == "failed" || task.Status == "blocked" || (task.Status == "needs_review" && task.ActionNeeded == "Launching task-linked Swarm follow-up") {
+				if task.Status == "in_progress" || task.Status == "failed" || task.Status == "blocked" || task.Status == pebblestore.ProjectTaskStatusStopped || (task.Status == "needs_review" && task.ActionNeeded == "Launching task-linked Swarm follow-up") {
 					if task.Integration == nil || task.Integration.Error == "" {
 						task.LastError = ""
 					}
@@ -601,7 +601,10 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db projectTaskLif
 					}
 				}
 			case pebblestore.V3RunIntentFailed, pebblestore.V3RunIntentCancelled, pebblestore.V3RunIntentExpired, pebblestore.V3RunIntentInterrupted, pebblestore.V3RunIntentDispatchBlocked:
-				if task.Status == "in_progress" {
+				if task.Status == "in_progress" && pebblestore.ProjectTaskRunStoppedByPerson(runState.Status, runState.BlockedReason) {
+					task.Status = pebblestore.ProjectTaskStatusStopped
+					task.ActionNeeded = projectTaskStoppedAction
+				} else if task.Status == "in_progress" {
 					task.Status = "failed"
 					if runState.BlockedReason != "" && task.LastError == "" {
 						task.LastError = runState.BlockedReason
@@ -2437,7 +2440,9 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			}
 			var pageFields map[string]any
 			if paged {
-				pageFields = map[string]any{"total": listPage.Total, "cursor": strconv.Itoa(listPage.Cursor), "limit": listFilter.Limit, "status_counts": listPage.StatusCounts}
+				pageFields = map[string]any{"total": listPage.Total, "cursor": strconv.Itoa(listPage.Cursor), "limit": listFilter.Limit, "status_counts": listPage.StatusCounts,
+					// needs_review only says a run ended; these say where the work is.
+					"outcome_counts": s.projectTaskOutcomeCounts(p.AccountScopeID, listPage.Counted, taskProgressNow().UnixMilli())}
 				if listFilter.Scope != "" {
 					pageFields["scope"] = listFilter.Scope
 				}
@@ -3434,6 +3439,14 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			// The wait view of progress, so a home waiting on this task through a
 			// link (get_task) reads the same workflow state as a local wait.
 			detail := map[string]any{"task": taskWithProgress{Task: sanitizeProjectTaskForClient(task), Progress: s.taskWaitProgressFor(p.AccountScopeID, *task, time.Now().UnixMilli())}, "model_preview": s.buildTaskModelPreview(p, task)}
+			// What was sent to the task (message_task notes and follow-ups)
+			// and whether it arrived, so a linked get_task can show it.
+			if messages, err := db.ProjectTaskMessages(task); err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			} else if len(messages) > 0 {
+				detail["messages"] = messages
+			}
 			if folderTask(task) && task.Integration != nil && task.Integration.State == "in_folder" {
 				g, err := taskResultGit(r.Context(), task.WorkspacePath, task.BaseCommit, task.Integration.SourceHead)
 				detail["base_commit"], detail["head"], detail["delivery_state"] = task.BaseCommit, task.Integration.SourceHead, "in_folder"

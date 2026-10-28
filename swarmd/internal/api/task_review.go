@@ -80,7 +80,7 @@ func (s *Server) repairTaskReview(task *pebblestore.ProjectTaskRecord) (*pebbles
 	}
 	review := pebblestore.ParseJobReview(report, task.StartCommit, taskRunJobID(task.ProjectID, task.ID), model, task.UpdatedAt)
 	switch task.Status {
-	case "failed", "blocked", "rejected", "cancelled", "superseded", "needs_input", "pending_approval":
+	case "failed", "blocked", "rejected", "cancelled", "superseded", "needs_input", "pending_approval", pebblestore.ProjectTaskStatusStopped:
 		review.Verdict = "block"
 		if review.Reason == "" {
 			review.Reason = "reviewer task " + task.Status

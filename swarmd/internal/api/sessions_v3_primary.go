@@ -103,7 +103,10 @@ type sessionsV3MessageRequest struct {
 	// queueWhileRunning is set only by POST /v3/sessions/{id}/messages: a
 	// person's message during an active run is queued as a note. Internal
 	// callers (task refinement, workspace definition) always start a turn.
-	queueWhileRunning  bool
+	queueWhileRunning bool
+	// queuedNoteSource names who queued a note (message_task) on the
+	// stored note; set only by internal callers, never from request JSON.
+	queuedNoteSource   string
 	ClientRequestID    string                                          `json:"client_request_id,omitempty"`
 	IdempotencyKey     string                                          `json:"idempotency_key,omitempty"`
 	MessageID          string                                          `json:"message_id,omitempty"`

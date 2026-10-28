@@ -63,7 +63,7 @@ func (s *Server) recoverProjectTaskDelta(ctx context.Context, p identity.Princip
 	if a == nil || a.Freshness != "observed" || attempt != task.ActiveAttemptID || source != a.SourceOID || task.Archived {
 		return nil, nil, conflictErr(errors.New("recovery attempt/source unavailable or changed; refresh task"))
 	}
-	if task.Status != "completed" && task.Status != "needs_review" && task.Status != "failed" && task.Status != "blocked" {
+	if task.Status != "completed" && task.Status != "needs_review" && task.Status != "failed" && task.Status != "blocked" && task.Status != pebblestore.ProjectTaskStatusStopped {
 		return nil, nil, conflictErr(errors.New("stop task execution before recovering its committed delta"))
 	}
 	active, activeFound, activeErr := db.GetV3SessionActiveRunIntent(session.ID)
