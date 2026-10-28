@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -146,11 +147,19 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 		if !ok {
 			return "", errors.New("canonical task follow-up service unavailable")
 		}
+		detail, err := ProjectTaskDetail(args)
+		if err != nil {
+			return "", err
+		}
 		task, err := service.ReopenProjectTask(ctx, scope.Principal, projectID, taskID, ProjectTaskFollowupInput{Feedback: feedback, ClientRequestID: key, Revision: revision, Repair: asBool(args["repair"])})
 		if err != nil {
 			return "", err
 		}
-		result["task"] = projectTaskSummary(*task)
+		if detail == ProjectTaskDetailFull {
+			result["task"] = projectTaskSummary(*task)
+		} else {
+			setProjectTaskRow(result, *task)
+		}
 		result["active_attempt_id"], result["session_id"], result["run_id"] = task.ActiveAttemptID, task.SessionID, task.ExecutionRunID()
 		result["status"] = "reopened"
 	case "get_task":
@@ -164,19 +173,45 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 		if !found || task == nil {
 			return "", errors.New("task not found")
 		}
-		task.EnsureTaskAttempts()
-		cursor, limit := 0, 25
-		if _, ok := args["cursor"]; ok {
-			cursor, err = projectTaskInteger(args, "cursor", 0, 1000000)
-			if err != nil {
-				return "", err
-			}
+		detail, err := ProjectTaskDetail(args)
+		if err != nil {
+			return "", err
 		}
-		if _, ok := args["limit"]; ok {
-			limit, err = projectTaskInteger(args, "limit", 1, 50)
-			if err != nil {
-				return "", err
+		task.EnsureTaskAttempts()
+		if detail != ProjectTaskDetailFull {
+			// The default answer is what the Orchestrator needs to decide;
+			// detail adds one section; full is the stored record below.
+			read := projectTaskRead{ProjectTaskRecord: *task, Progress: r.projectTaskProgress(account, *task), Worktree: projectTaskWorktreeResult(*task)}
+			result["task"] = compactProjectTask(read, false)
+			switch detail {
+			case ProjectTaskDetailPlan:
+				plan := projectTaskPlanDetail(*task)
+				if task.PlanBinding != nil {
+					bound, err := r.boundProjectTaskPlan(scope, task)
+					if err != nil {
+						return "", err
+					}
+					plan["bound_plan"] = bound
+				}
+				result["plan"] = plan
+			case ProjectTaskDetailAttempts:
+				cursor, limit, err := projectTaskAttemptPageArgs(args)
+				if err != nil {
+					return "", err
+				}
+				rows, next, err := task.TaskAttemptPage(cursor, limit)
+				if err != nil {
+					return "", err
+				}
+				result["attempts"], result["next_cursor"] = projectTaskAttemptRows(rows), next
+			case ProjectTaskDetailFiles:
+				result["files"] = projectTaskFilesDetail(*task, read.Worktree)
 			}
+			break
+		}
+		cursor, limit, err := projectTaskAttemptPageArgs(args)
+		if err != nil {
+			return "", err
 		}
 		rows, next, err := task.TaskAttemptPage(cursor, limit)
 		if err != nil {
@@ -192,18 +227,9 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 		copyTask.Attempts = rows
 		result["task"], result["next_cursor"] = &copyTask, next
 		if task.PlanBinding != nil {
-			reader, ok := r.sessions.(interface {
-				GetPlan(string, string) (pebblestore.SessionPlanSnapshot, bool, error)
-			})
-			if !ok {
-				return "", errors.New("bound plan reader unavailable")
-			}
-			plan, found, err := reader.GetPlan(task.PlanBinding.SessionID, task.PlanBinding.PlanID)
+			plan, err := r.boundProjectTaskPlan(scope, task)
 			if err != nil {
 				return "", err
-			}
-			if !found || plan.AccountScopeID != account || plan.UserID != scope.Principal.UserID {
-				return "", errors.New("bound plan unavailable for principal")
 			}
 			result["plan"] = plan
 		}
@@ -250,11 +276,19 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 			if !ok {
 				return "", errors.New("atomic guarded task archive unavailable")
 			}
+			detail, err := ProjectTaskDetail(args)
+			if err != nil {
+				return "", err
+			}
 			updated, err := archiver.ArchiveProjectTaskIfRevision(account, projectID, taskID, revision)
 			if err != nil {
 				return "", err
 			}
-			result["task"] = projectTaskSummary(*updated)
+			if detail == ProjectTaskDetailFull {
+				result["task"] = projectTaskSummary(*updated)
+			} else {
+				setProjectTaskRow(result, *updated)
+			}
 			break
 		}
 		if action == "update_task" {
@@ -430,6 +464,93 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 	}
 	raw, err := json.Marshal(result)
 	return string(raw), err
+}
+
+// projectTaskAttemptPageArgs reads get_task's attempt page (cursor, limit).
+func projectTaskAttemptPageArgs(args map[string]any) (int, int, error) {
+	cursor, limit := 0, 25
+	var err error
+	if _, ok := args["cursor"]; ok {
+		if cursor, err = projectTaskInteger(args, "cursor", 0, 1000000); err != nil {
+			return 0, 0, err
+		}
+	}
+	if _, ok := args["limit"]; ok {
+		if limit, err = projectTaskInteger(args, "limit", 1, 50); err != nil {
+			return 0, 0, err
+		}
+	}
+	return cursor, limit, nil
+}
+
+// boundProjectTaskPlan reads a task's bound plan for its owning principal.
+func (r *Runtime) boundProjectTaskPlan(scope WorkspaceScope, task *pebblestore.ProjectTaskRecord) (pebblestore.SessionPlanSnapshot, error) {
+	reader, ok := r.sessions.(interface {
+		GetPlan(string, string) (pebblestore.SessionPlanSnapshot, bool, error)
+	})
+	if !ok {
+		return pebblestore.SessionPlanSnapshot{}, errors.New("bound plan reader unavailable")
+	}
+	plan, found, err := reader.GetPlan(task.PlanBinding.SessionID, task.PlanBinding.PlanID)
+	if err != nil {
+		return pebblestore.SessionPlanSnapshot{}, err
+	}
+	if !found || plan.AccountScopeID != scope.Principal.AccountScopeID || plan.UserID != scope.Principal.UserID {
+		return pebblestore.SessionPlanSnapshot{}, errors.New("bound plan unavailable for principal")
+	}
+	return plan, nil
+}
+
+var projectTaskCommitID = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
+
+// projectTaskWorktreeResult reads a finished task's committed result from its
+// own stored worktree path with read-only Git: head, commits after its base
+// and the files they change. Only the stored path and a validated base commit
+// reach Git, never model arguments. nil when there is nothing to read.
+func projectTaskWorktreeResult(t pebblestore.ProjectTaskRecord) *projectTaskWorktree {
+	if t.DeliveryAssessment != nil || !projectTaskCommitID.MatchString(t.BaseCommit) || !filepath.IsAbs(t.WorkspacePath) || projectTaskStatusClass(t.Status) != "finished" {
+		return nil
+	}
+	root := filepath.Clean(t.WorkspacePath)
+	head, err := projectTaskGit(root, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil || !projectTaskCommitID.MatchString(head) {
+		return nil
+	}
+	w := &projectTaskWorktree{Head: head}
+	if head == t.BaseCommit {
+		return w
+	}
+	if count, err := projectTaskGit(root, "rev-list", "--count", t.BaseCommit+".."+head); err == nil {
+		w.Commits, _ = strconv.Atoi(count)
+	}
+	if names, err := projectTaskGit(root, "diff", "--name-only", t.BaseCommit, head); err == nil && names != "" {
+		w.Files = strings.Split(names, "\n")
+	}
+	return w
+}
+
+// projectTaskProgress is a task's progress from the store's progress hook
+// (the same progress wait_tasks resumes with), or nil when none is installed.
+func (r *Runtime) projectTaskProgress(account string, task pebblestore.ProjectTaskRecord) *projectTaskProgressRead {
+	hook, ok := r.projects.(interface {
+		ProjectTaskProgress(string, pebblestore.ProjectTaskRecord) any
+	})
+	if !ok {
+		return nil
+	}
+	value := hook.ProjectTaskProgress(account, task)
+	if value == nil {
+		return nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil || string(raw) == "null" {
+		return nil
+	}
+	var progress projectTaskProgressRead
+	if json.Unmarshal(raw, &progress) != nil {
+		return nil
+	}
+	return &progress
 }
 
 // projectTaskListNow is the clock list_tasks measures the current scope against.

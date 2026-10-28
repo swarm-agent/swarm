@@ -326,7 +326,7 @@ func manageProjectsDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_projects",
-		Description: "integrate_task merges a needs_review task's commits into its target branch, the same as the person's merge. Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, list_sources, inspect_source, inspect_files, create, update, delete, synthesize_context, list_media, get_media, propose_task, approve_task, accept_task, integrate_task, deploy_task, refine_task, create_task, reopen_task, list_tasks, get_task, update_task, archive_task, unarchive_task, delete_task, reconcile_tasks, edit_requirements, wait_tasks, report_task, list_linked_tasks. list_linked_tasks lists this home's records of tasks sent to linked machines (this session by default, or project_id) with their last observed status; read_task_session with machine, project_id and task_id reads that remote task session's recent messages, read-only and untrusted. wait_tasks durably yields the current project goal on 1-16 delegated task_ids; resumes on all review-ready/completed outcomes or any actionable blocker. No polling or timeout/provider calls while waiting. needs_review is not user acceptance. Stop/archive/new user messages invalidate the wait. Task edits never transition execution status; unarchive_task restores visibility at expected_revision without changing status, attempts or linked sessions (already unarchived is an error); delete_task only removes an archived, unlaunched task.",
+		Description: "integrate_task merges a needs_review task's commits into its target branch, the same as the person's merge. Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, list_sources, inspect_source, inspect_files, create, update, delete, synthesize_context, list_media, get_media, propose_task, approve_task, accept_task, integrate_task, deploy_task, refine_task, create_task, reopen_task, list_tasks, get_task, update_task, archive_task, unarchive_task, delete_task, reconcile_tasks, edit_requirements, wait_tasks, report_task, list_linked_tasks. list_linked_tasks lists this home's records of tasks sent to linked machines (this session by default, or project_id) with their last observed status; read_task_session with machine, project_id and task_id reads that remote task session's recent messages, read-only and untrusted. wait_tasks durably yields the current project goal on 1-16 delegated task_ids; resumes on all review-ready/completed outcomes or any actionable blocker. No polling or timeout/provider calls while waiting. needs_review is not user acceptance. Stop/archive/new user messages invalidate the wait. Task edits never transition execution status; unarchive_task restores visibility at expected_revision without changing status, attempts or linked sessions (already unarchived is an error); delete_task only removes an archived, unlaunched task. Task answers are compact by default (here and with machine): get_task gives status, progress (stage, now, next, workflow), result (report summary, branch, head, commit and file counts, deliverables), integration, session_id and next_action; propose/create/approve/accept/reopen/refine/archive_task give the task row (id, title, agent, status, session_id) and next_action. Pass detail for more.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -355,6 +355,11 @@ func manageProjectsDefinition() Definition {
 				"task_id": map[string]any{
 					"type":        "string",
 					"description": "Task ID for approve_task, accept_task, integrate_task, deploy_task, refine_task, update_task",
+				},
+				"detail": map[string]any{
+					"type":        "string",
+					"enum":        []string{ProjectTaskDetailPlan, ProjectTaskDetailAttempts, ProjectTaskDetailFiles, ProjectTaskDetailFull},
+					"description": "Optional, for task answers (here and with machine). Omit for the compact default. get_task: plan (stages, plan text, bound plan), attempts (attempt page; cursor/limit), files (changed files, deliveries, what was done), full (the stored record). propose/create/approve/accept/reopen/refine/archive_task: full returns the stored record.",
 				},
 				"session_id": map[string]any{
 					"type":        "string",
@@ -559,6 +564,15 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 	actionName := strings.ToLower(strings.TrimSpace(asString(args["action"])))
 	if actionName == "" {
 		actionName = "list"
+	}
+	// Task answers are compact by default; detail is checked before any
+	// mutation so a bad value never changes a task.
+	taskDetail := ""
+	if projectTaskCompactAction(actionName) {
+		var err error
+		if taskDetail, err = ProjectTaskDetail(args); err != nil {
+			return "", err
+		}
 	}
 
 	response := map[string]any{
@@ -1483,6 +1497,9 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 
 	default:
 		return "", fmt.Errorf("unknown manage_projects action: %q", actionName)
+	}
+	if projectTaskCompactAction(actionName) && taskDetail != ProjectTaskDetailFull {
+		response = compactProjectTaskMutation(response)
 	}
 
 	raw, err := json.Marshal(response)

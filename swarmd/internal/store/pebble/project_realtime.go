@@ -306,6 +306,16 @@ func (s *Store) taskProgress(account string, task ProjectTaskRecord) any {
 	return fn(account, task)
 }
 
+// ProjectTaskProgress is a task's progress as the installed progress hook
+// computes it (the same progress wait_tasks resumes with); nil when no hook
+// is installed. The Orchestrator's get_task reads it.
+func (s *SessionStore) ProjectTaskProgress(account string, task ProjectTaskRecord) any {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	return s.store.taskProgress(account, task)
+}
+
 // ProjectTaskStatusTransition is one committed change of a project task's status.
 type ProjectTaskStatusTransition struct {
 	AccountScopeID string

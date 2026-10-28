@@ -124,6 +124,23 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 		out, err := json.Marshal(view)
 		return string(out), err
 	}
+	// Task answers are compact by default, the same shape as this machine's;
+	// detail is this tool's own argument and is never sent to the machine.
+	detail := ""
+	if projectTaskCompactAction(action) {
+		if detail, err = ProjectTaskDetail(args); err != nil {
+			return "", err
+		}
+	}
+	if _, ok := args["detail"]; ok {
+		sent := make(map[string]any, len(args))
+		for key, value := range args {
+			if key != "detail" {
+				sent[key] = value
+			}
+		}
+		args = sent
+	}
 	// The linked rule is the only gate before a task starts there: under auto
 	// it runs, and under ask the person approved this call before it ran. A
 	// task sent to the machine therefore starts at once and never waits on
@@ -151,10 +168,21 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 			origin := FleetLinkedTaskOrigin{SessionID: scope.SessionID, ProjectID: strings.TrimSpace(asString(session.Metadata["project_id"]))}
 			if record, err := linkedTasks.RecordFleetLinkedTask(ctx, scope.Principal, origin, machine, strings.TrimSpace(asString(args["project_id"])), raw); err != nil {
 				result["linked_record_error"] = err.Error()
-			} else {
+			} else if detail == ProjectTaskDetailFull {
 				result["linked_task"] = record
+			} else {
+				result["linked_task_id"] = record.TaskID
 			}
 		}
+	}
+	// The full answer was recorded above; the agent reads the compact one.
+	// A task the machine accepted stays reported as sent even when its
+	// answer cannot be read; the error says so instead of hiding the send.
+	if compact, err := CompactProjectTaskAnswer(action, detail, raw); err != nil {
+		delete(result, "data")
+		result["data_error"] = err.Error()
+	} else {
+		result["data"] = compact
 	}
 	out, err := json.Marshal(result)
 	return string(out), err
