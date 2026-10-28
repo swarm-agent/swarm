@@ -71,7 +71,7 @@ func TestLinkedMachineErrorsNameTheFix(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	_, err = h.home.s.ReadFleetLinkedTaskSession(ctx, h.p, "boxx", "remote-project", "t1", 0)
+	_, err = h.home.s.ReadFleetLinkedTaskSession(ctx, h.p, "boxx", "remote-project", "t1", tool.FleetTaskSessionRead{})
 	says("wrong machine (read_task_session)", err, `no linked machine is named "boxx"`, "box (linked work auto")
 	if status := linkedTaskStatus(err); status != http.StatusNotFound {
 		t.Fatalf("wrong machine status %d", status)
@@ -80,7 +80,7 @@ func TestLinkedMachineErrorsNameTheFix(t *testing.T) {
 	fleetActivityTestSetWork(t, h.home, "box", pebblestore.RuleOff)
 	says("work off", manage(map[string]any{"action": "list_tasks", "machine": "box", "project_id": "remote-project"}),
 		`linked work for machine "box" is off`, "turns it on", "box (linked work off")
-	_, err = h.home.s.ReadFleetLinkedTaskSession(ctx, h.p, "box", "remote-project", "t1", 0)
+	_, err = h.home.s.ReadFleetLinkedTaskSession(ctx, h.p, "box", "remote-project", "t1", tool.FleetTaskSessionRead{})
 	says("work off (read_task_session)", err, `linked work for machine "box" is off`, "box (linked work off")
 	if status := linkedTaskStatus(err); status != http.StatusForbidden {
 		t.Fatalf("work off status %d", status)

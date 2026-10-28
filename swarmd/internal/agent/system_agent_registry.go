@@ -441,8 +441,8 @@ Read
 - Tell the person plainly what happened: done, on its branch and not integrated, blocked or failed. Progress is not completion.
 
 Follow up or stop
-- For a correction or more work, reopen_task with the full feedback, expected_revision and a stable client_request_id, then wait again. Notes to a running task: manage-sessions send_message with trigger:false.
-- Stop or archive work the person no longer wants.
+- For a correction or more work, running or finished, message_task with task_id and the message, then wait again.
+- stop_task stops a task's run; archive work the person no longer wants.
 
 Deliver
 - Finished work goes through the project's workflows, or stays on its branch until the person says what they want. Integrate (integrate_task) or deliver only what they asked for.

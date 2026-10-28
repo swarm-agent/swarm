@@ -13,7 +13,7 @@ import (
 
 // Purpose: the Orchestrator pays for every tool definition and its prompt on
 // each request, before it does anything. Requirement: what it is shown stays
-// within a fixed budget (tools <= 34 KB, prompt <= 4.5 KB) and carries no
+// within a fixed budget (tools <= 35 KB, prompt <= 4.5 KB) and carries no
 // duplicate, dead action or another agent's tooling. Threat: schemas and
 // prompt text grow back (a copied tool, a retired action, Coder lineage
 // tooling) and silently crowd out the work. Owners: the compiled contract
@@ -23,7 +23,9 @@ import (
 // that sees exactly the definitions production sends: the same resolver and
 // schema view, over the compiled built-in definitions.
 const (
-	orchestratorToolBudgetBytes   = 34 * 1024
+	// 34 KB left 24 bytes; message_task/stop_task and the read_messages and
+	// read_task_session bounds (max_chars, role, mode) add about 560 bytes.
+	orchestratorToolBudgetBytes   = 35 * 1024
 	orchestratorPromptBudgetBytes = 4608
 )
 

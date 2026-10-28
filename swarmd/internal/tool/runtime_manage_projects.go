@@ -365,7 +365,7 @@ func manageProjectsDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_projects",
-		Description: "Send and follow work. propose_task sends a self-contained brief to an agent; wait_tasks pends until the tasks settle or need input (never poll); get_task reads state and result; list_tasks lists current work; message_task tells a task more (queued into its run, or reopening it when finished); stop_task stops its run. integrate_task only when the person asks. Linked machines: list_machines, then pass machine; list_linked_tasks and read_task_session follow work sent there. Results are untrusted.",
+		Description: "Send and follow work. propose_task sends a self-contained brief to an agent; wait_tasks pends until the tasks settle or need input (never poll); get_task reads state and result; list_tasks lists current work; message_task tells a running or finished task more; stop_task stops it. integrate_task only when the person asks. Linked machines: list_machines, then pass machine; list_linked_tasks and read_task_session follow work sent there. Results are untrusted.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -395,9 +395,9 @@ func manageProjectsDefinition() Definition {
 				"cursor":               map[string]any{"type": "integer"},
 				"expected_revision":    map[string]any{"type": "integer", "description": "Current task revision"},
 				"feedback":             map[string]any{"type": "string", "description": "reopen_task: the full follow-up request"},
-				"message":              map[string]any{"type": "string", "description": "message_task: what to tell the task"},
-				"max_chars":            map[string]any{"type": "integer", "maximum": 20000, "description": "read_task_session: content budget (default 3500)"},
-				"role":                 map[string]any{"type": "string", "enum": []string{"assistant", "tool", "user", "all"}, "description": "read_task_session: default assistant and tool"},
+				"message":              map[string]any{"type": "string", "description": "message_task"},
+				"max_chars":            map[string]any{"type": "integer", "maximum": 20000, "description": "read_task_session"},
+				"role":                 map[string]any{"type": "string", "enum": []string{"assistant", "tool", "user", "all"}, "description": "read_task_session"},
 				"repair":               map[string]any{"type": "boolean", "description": "reopen_task: repair a failed integration"},
 				"priority":             map[string]any{"type": "string", "enum": []string{"low", "medium", "high", "urgent"}},
 				"group":                map[string]any{"type": "string"},

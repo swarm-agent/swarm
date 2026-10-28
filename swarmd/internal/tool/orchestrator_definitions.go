@@ -121,7 +121,7 @@ func orchestratorManageSessionsDefinition(definition Definition) Definition {
 		copied["description"] = "send_message: bounded wait for the launched run; if still running, report pending instead of polling get."
 		properties["wait_seconds"] = copied
 	}
-	definition.Description = "Sessions: list, search, get, read_messages, archive, stop. Follow tasks with manage_projects. Note to a running task: send_message with trigger:false and a stable client_request_id; read_messages shows its feedback_delivery receipt."
+	definition.Description = "Sessions: list, search, get, read_messages, archive, stop. Follow tasks with manage_projects; tell a task more with message_task."
 	definition.Parameters = parameters
 	return definition
 }
