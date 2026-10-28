@@ -492,23 +492,15 @@ func (r queuedNoteCheckpointRunner) BuildPlanCheckpointRunInput(string, string, 
 	return append([]map[string]any(nil), r.input...), true, nil
 }
 
-// Purpose: a queued note left unreceipted by a stopped run (which starts no
-// follow-up) is receipted by a later run only when that run's successful
-// provider step carried it. A checkpoint run, whose startup input is the
-// canonical checkpoint payload without the transcript, carries the note
-// explicitly as a user message and only then receipts it.
-// Threat: a note marked delivered (and shown delivered in clients) by a run
-// whose input never contained it, and so never sent to any model.
-// Boundary: sessionV3UndeliveredHistoryQueuedNotes and
-// carrySessionV3HistoryQueuedNotes in providerAssistantResponse, the
-// sessionV3NotesCarriedBy receipt filter in runProviderToolLoop,
-// closeQueuedNotes for a cancelled run.
-// Narrowest layer: the real executor, HTTP route and stop path with a scripted
-// model and a checkpoint input builder; the omission happens in context
-// selection that only the executor performs.
-func TestQueuedNoteFromStoppedRunIsCarriedByCheckpointRunBeforeReceipt(t *testing.T) {
-	const steer = "steer-left-by-a-stopped-run"
-	const checkpointInput = "checkpoint-start-input-only"
+// stoppedRunThenCheckpoint drives the real executor through: a run whose model
+// call lets the person queue note, the person stopping that run, then a
+// checkpoint run whose startup input is checkpointInput only (no transcript).
+// It returns the queued note, the checkpoint run's provider request, the
+// checkpoint run ID and how many delivery receipts existed while that request
+// was in flight.
+func stoppedRunThenCheckpoint(t *testing.T, note, checkpointInput string) (*queuedNoteFixture, pebblestore.MessageSnapshot, provideriface.Request, string, int) {
+	t.Helper()
+	const marker = "checkpoint-startup-marker"
 	f := newQueuedNoteFixture(t, func(*queuedNoteFixture, provideriface.Request) provideriface.Response {
 		return provideriface.Response{Text: "unused", StopReason: "stop"}
 	})
@@ -516,13 +508,22 @@ func TestQueuedNoteFromStoppedRunIsCarriedByCheckpointRunBeforeReceipt(t *testin
 	if !ok {
 		t.Fatalf("fixture runner is %T, want *run.Service", f.server.runner)
 	}
-	f.server.runner = queuedNoteCheckpointRunner{Service: service, input: []map[string]any{{"role": "user", "content": checkpointInput}}}
+	f.server.runner = queuedNoteCheckpointRunner{Service: service, input: []map[string]any{{"role": "user", "content": marker + " " + checkpointInput}}}
 	entered := make(chan struct{}, 1)
+	var receiptsDuringStep atomic.Int64
+	receiptsDuringStep.Store(-1)
 	f.runner.handler = func(ctx context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
-		if raw, _ := json.Marshal(req.Input); strings.Contains(string(raw), checkpointInput) {
+		if raw, _ := json.Marshal(req.Input); strings.Contains(string(raw), marker) {
+			count := 0
+			for _, message := range f.messages() {
+				if message.Role == "system" && message.Metadata["source"] == "feedback_delivery" {
+					count++
+				}
+			}
+			receiptsDuringStep.Store(int64(count))
 			return provideriface.Response{Text: "checkpoint step done", StopReason: "stop"}, nil
 		}
-		f.postDuringRun("steer-stopped", steer)
+		f.postDuringRun("note-before-stop", note)
 		entered <- struct{}{}
 		<-ctx.Done()
 		return provideriface.Response{}, ctx.Err()
@@ -546,8 +547,8 @@ func TestQueuedNoteFromStoppedRunIsCarriedByCheckpointRunBeforeReceipt(t *testin
 	if code != http.StatusOK || payload["queued"] != true {
 		t.Fatalf("mid-run message was not queued: %d %v", code, payload)
 	}
-	note := queuedNoteFromResponse(t, payload)
-	if receipts := f.receipts(note.ID); len(receipts) != 0 {
+	queued := queuedNoteFromResponse(t, payload)
+	if receipts := f.receipts(queued.ID); len(receipts) != 0 {
 		t.Fatalf("the stopped run receipted the note: %+v", receipts)
 	}
 	if intents := f.runIntents(); len(intents) != 1 {
@@ -577,26 +578,71 @@ func TestQueuedNoteFromStoppedRunIsCarriedByCheckpointRunBeforeReceipt(t *testin
 	if !f.server.v3SessionExecutor.EnqueueRun(sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: f.sessionID, RunID: checkpointRun, PlanID: "plan-queued", CheckpointID: "checkpoint-queued", AttemptID: "attempt-queued", ParentSessionID: f.sessionID}) {
 		t.Fatal("checkpoint run was not enqueued")
 	}
-
-	deadline := time.Now().Add(5 * time.Second)
+	f.waitRun(f.sessionID, checkpointRun, sessionruntime.RunIntentCompleted)
 	var checkpointReq *provideriface.Request
-	for checkpointReq == nil && time.Now().Before(deadline) {
-		for _, req := range f.requests() {
-			if raw, _ := json.Marshal(req.Input); strings.Contains(string(raw), checkpointInput) {
-				req := req
-				checkpointReq = &req
-			}
+	for _, req := range f.requests() {
+		if raw, _ := json.Marshal(req.Input); strings.Contains(string(raw), marker) {
+			req := req
+			checkpointReq = &req
 		}
-		time.Sleep(10 * time.Millisecond)
 	}
 	if checkpointReq == nil {
 		t.Fatal("the checkpoint run never reached the provider")
 	}
-	for time.Now().Before(deadline) && len(f.receipts(note.ID)) == 0 {
-		time.Sleep(10 * time.Millisecond)
-	}
+	return f, queued, *checkpointReq, checkpointRun, int(receiptsDuringStep.Load())
+}
+
+// Purpose: a queued note left unreceipted by a stopped run (which starts no
+// follow-up) is receipted by a later run only when that run's successful
+// provider step carried it. A checkpoint run, whose startup input is the
+// canonical checkpoint payload without the transcript, carries the note
+// explicitly as a user message and only then receipts it.
+// Threat: a note marked delivered (and shown delivered in clients) by a run
+// whose input never contained it, and so never sent to any model.
+// Boundary: sessionV3UndeliveredHistoryQueuedNotes and
+// carrySessionV3HistoryQueuedNotes in providerAssistantResponse, the history
+// receipt in runProviderToolLoop, closeQueuedNotes for a cancelled run.
+// Narrowest layer: the real executor, HTTP route and stop path with a scripted
+// model and a checkpoint input builder; the omission happens in context
+// selection that only the executor performs.
+func TestQueuedNoteFromStoppedRunIsCarriedByCheckpointRunBeforeReceipt(t *testing.T) {
+	const steer = "steer-left-by-a-stopped-run"
+	f, note, checkpointReq, checkpointRun, during := stoppedRunThenCheckpoint(t, steer, "checkpoint-start-input-only")
 	if toolResults, userMessages := countInInput(checkpointReq.Input, steer); toolResults != 0 || userMessages != 1 {
 		t.Fatalf("checkpoint input carried the note %d times in tool results and %d as user messages, want 0 and 1: %v", toolResults, userMessages, checkpointReq.Input)
+	}
+	if during != 0 {
+		t.Fatalf("%d receipts existed before the checkpoint step succeeded, want 0", during)
+	}
+	receipts := f.receipts(note.ID)
+	if len(receipts) != 1 || receipts[0].Metadata["run_id"] != checkpointRun {
+		t.Fatalf("receipts = %+v, want exactly one in checkpoint run %s", receipts, checkpointRun)
+	}
+}
+
+// Purpose: whether a later run carries a queued note is decided by message
+// ID, never by searching input text. A short note ("no") whose text also
+// occurs inside the canonical checkpoint input ("not", "no") must still be
+// appended as its own user message, and receipted only after that step
+// succeeds.
+// Threat: a substring match treats the note as already present, skips it, and
+// then receipts it as delivered although the model never saw it.
+// Boundary: carrySessionV3HistoryQueuedNotes with the replayed-ID set from
+// providerAssistantResponse / sessionV3ProviderInitialContextInput, and the
+// history receipt in runProviderToolLoop.
+// Narrowest layer: the real executor and stop path with a scripted model and
+// checkpoint input builder, where context selection happens.
+func TestShortQueuedNoteIsCarriedByIDNotByInputText(t *testing.T) {
+	f, note, checkpointReq, checkpointRun, during := stoppedRunThenCheckpoint(t, "no", "do not stop; no shortcuts")
+	if len(checkpointReq.Input) < 2 {
+		t.Fatalf("checkpoint input = %v, want the canonical input plus the note", checkpointReq.Input)
+	}
+	last, _ := json.Marshal(checkpointReq.Input[len(checkpointReq.Input)-1])
+	if string(last) != `{"content":[{"text":"no","type":"input_text"}],"role":"user"}` {
+		t.Fatalf("the note was not carried as its own user message: last input item %s (input %v)", last, checkpointReq.Input)
+	}
+	if during != 0 {
+		t.Fatalf("%d receipts existed before the checkpoint step succeeded, want 0", during)
 	}
 	receipts := f.receipts(note.ID)
 	if len(receipts) != 1 || receipts[0].Metadata["run_id"] != checkpointRun {

@@ -2813,11 +2813,15 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		return sessionV3AssistantResponse{}, err
 	}
 	messages = trimSessionV3History(messages, resolved.Limits.MaxHistoryMessages)
+	// replayedIDs are the messages this input replays as their own items;
+	// checkpoint startup replays none.
+	var replayedIDs map[string]bool
 	if contextSelection != sessionV3ProviderContextCheckpointStartup {
 		input, err = e.sessionsV3ProviderInput(resolved, messages)
 		if err != nil {
 			return sessionV3AssistantResponse{}, err
 		}
+		replayedIDs = sessionV3MessageIDs(messages)
 	}
 	if len(input) == 0 {
 		return sessionV3AssistantResponse{}, errors.New("v3 provider input is empty")
@@ -2841,15 +2845,15 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		baseReq.NativeContinuationAllowed = false
 		baseReq.ForceFreshProviderContext = true
 	} else {
-		input, err = e.sessionV3ProviderInitialContextInput(job, resolved, messages, baseReq, input, contextSelection)
+		input, replayedIDs, err = e.sessionV3ProviderInitialContextInput(job, resolved, messages, baseReq, input, contextSelection)
 		if err != nil {
 			return sessionV3AssistantResponse{}, err
 		}
 		baseReq.Input = input
 	}
 	// Checkpoint startup and bounded handoff inputs omit the transcript; carry
-	// undelivered queued notes explicitly so their receipts mean delivery.
-	baseReq.Input, job.historyQueuedNotes = carrySessionV3HistoryQueuedNotes(baseReq.Input, job.historyQueuedNotes)
+	// undelivered queued notes by message ID so their receipts mean delivery.
+	baseReq.Input, job.historyQueuedNotes = carrySessionV3HistoryQueuedNotes(baseReq.Input, job.historyQueuedNotes, replayedIDs)
 	requestEventType := "session.provider.request_started"
 	if suffix := strings.TrimSpace(requestPhaseSuffix); suffix != "" {
 		requestEventType += "." + suffix
@@ -3936,9 +3940,10 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		// consumed mid-step). Notes queued while it was in flight wait for
 		// another eligible step; a final response does not reopen work merely to
 		// drain feedback.
-		// A history note is receipted only if this step's input carried it;
-		// any other stays undelivered for a later run.
-		if err := runruntime.RecordFeedbackDelivery(e.server.applySessionV3PrimaryMutation, job.SessionID, job.RunID, sessionV3NotesCarriedBy(req.Input, historyQueuedNotes)); err != nil {
+		// History notes are exactly the IDs carrySessionV3HistoryQueuedNotes
+		// put in this run's initial input, which this first successful step
+		// sent; a note it could not carry is absent and stays undelivered.
+		if err := runruntime.RecordFeedbackDelivery(e.server.applySessionV3PrimaryMutation, job.SessionID, job.RunID, historyQueuedNotes); err != nil {
 			return sessionV3ProviderLoopResult{}, err
 		}
 		historyQueuedNotes = nil
@@ -4895,21 +4900,24 @@ func (e *sessionV3Executor) sessionV3ProviderCheckpointStartupInput(job sessionV
 	return input, sessionV3ProviderContextCheckpointStartup, nil
 }
 
-func (e *sessionV3Executor) sessionV3ProviderInitialContextInput(job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, messages []pebblestore.MessageSnapshot, req provideriface.Request, canonicalInput []map[string]any, selection sessionV3ProviderContextSelection) ([]map[string]any, error) {
+// sessionV3ProviderInitialContextInput also returns the IDs of the messages it
+// replayed as their own items (never those only summarised in a handoff), so
+// queued-note delivery is tracked by message ID rather than input text.
+func (e *sessionV3Executor) sessionV3ProviderInitialContextInput(job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, messages []pebblestore.MessageSnapshot, req provideriface.Request, canonicalInput []map[string]any, selection sessionV3ProviderContextSelection) ([]map[string]any, map[string]bool, error) {
 	if selection == sessionV3ProviderContextCheckpointStartup {
 		// BuildPlanCheckpointRunInput is the complete checkpoint-start authority.
 		// A compatible chain receives it as additive input; an incompatible
 		// provider/model starts a fresh chain with this same input. Neither case
 		// uses the compact mid-conversation handoff packet.
-		return append([]map[string]any(nil), canonicalInput...), nil
+		return append([]map[string]any(nil), canonicalInput...), nil, nil
 	}
 	if sessionV3ProviderRequiresBoundedHandoff(req) {
 		handoffInput, err := e.sessionV3ProviderHandoffInput(job, resolved, messages, req)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if len(handoffInput) == 0 {
-			return nil, errors.New("v3 provider handoff input is empty")
+			return nil, nil, errors.New("v3 provider handoff input is empty")
 		}
 		// The handoff is bounded historical context, not the current instruction.
 		// Replay the latest user turn (and its tool replies) separately so neither
@@ -4932,21 +4940,21 @@ func (e *sessionV3Executor) sessionV3ProviderInitialContextInput(job sessionV3Ex
 				}
 				current, err := e.sessionsV3ProviderInputForLineage(resolved, active, req.ProviderLineageID, false)
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
-				return append(handoffInput, current...), nil
+				return append(handoffInput, current...), sessionV3MessageIDs(active), nil
 			}
 		}
-		return handoffInput, nil
+		return handoffInput, nil, nil
 	}
 	input, err := e.sessionsV3ProviderInputForLineage(resolved, messages, req.ProviderLineageID, req.NativeContinuationAllowed && !req.ForceFreshProviderContext)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(input) == 0 {
-		return nil, errors.New("v3 provider input is empty")
+		return nil, nil, errors.New("v3 provider input is empty")
 	}
-	return append([]map[string]any(nil), input...), nil
+	return append([]map[string]any(nil), input...), sessionV3MessageIDs(messages), nil
 }
 
 func (e *sessionV3Executor) sessionV3ProviderRestartInput(ctx context.Context, job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, toolOutput string) ([]map[string]any, error) {

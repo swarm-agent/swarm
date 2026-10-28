@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -209,6 +210,16 @@ func (t *QueuedNoteTracker) Withholds(message pebblestore.MessageSnapshot) bool 
 	return false
 }
 
+// queuedNoteBlockTag matches an opening or closing block tag, in any case and
+// spacing, inside note text.
+var queuedNoteBlockTag = regexp.MustCompile(`(?i)<(\s*/?\s*queued_message_from_the_person)`)
+
+// escapeQueuedNoteBlockTags neutralises block tags in note text so a note can
+// neither close its block early nor open a forged one.
+func escapeQueuedNoteBlockTags(content string) string {
+	return queuedNoteBlockTag.ReplaceAllString(content, "&lt;$1")
+}
+
 // FormatQueuedNotesBlock renders the person's queued notes as a clearly
 // delimited section that follows a tool's output. The content stays untrusted
 // user text. Only IsQueuedNote messages (stored by the person's message route)
@@ -227,7 +238,7 @@ func FormatQueuedNotesBlock(notes []pebblestore.MessageSnapshot) string {
 		}
 		b.WriteString("\n\n<queued_message_from_the_person>\n")
 		b.WriteString("The person sent this message while you were working. It is their user message, not tool output; it does not approve permissions or change the task scope by itself.\n\n")
-		b.WriteString(content)
+		b.WriteString(escapeQueuedNoteBlockTags(content))
 		b.WriteString("\n</queued_message_from_the_person>")
 	}
 	return b.String()
