@@ -30,9 +30,14 @@ changing the run.
   running (any step, send-back and rebase rounds included) or not evaluated
   yet is not ready. The task progress the wait reads
   (`Server.taskWaitProgressFor`) reports `pending` while the task's latest end
-  awaits the workflow runner: no end marked yet when an enabled workflow could
-  match the task's folder, or a send-back/rebase sent for a follow-up whose end
-  is not evaluated yet. Ready under `until=finished`: `needs_review` or
+  awaits the workflow runner: once marked, from the runner's evaluation record;
+  before that, only while the run end is being settled
+  (`Server.settleTaskRunEnd`: status write, then job end signal) and an enabled
+  workflow could match the task's folder, or a send-back/rebase was sent for a
+  follow-up whose end is not evaluated yet. That window is in memory; closing
+  it without a mark publishes `project.updated` so waits are re-checked. An
+  end that is never marked (no signal store, a failed signal write, a crash, a
+  restart) is never inferred pending. Ready under `until=finished`: `needs_review` or
   `completed`, whatever the workflow.
 - Rows carry `workflow_state`, `workflow`, `workflow_step`/`workflow_steps`,
   `workflow_step_type`, `workflow_round` and `integration_state` when the task

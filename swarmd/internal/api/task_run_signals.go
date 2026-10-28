@@ -161,7 +161,9 @@ func (s *Server) markTaskJobEnded(account, projectID string, sig pebblestore.Sig
 	jobID := sig.Attrs["job_id"]
 	if err := store.MarkJobEnded(account, projectID, jobID, followup, sig.Seq, sig.At); err != nil {
 		log.Printf("swarmd task progress: mark job end of %s: %v", jobID, err)
+		return
 	}
+	s.noteTaskJobEndMarked(sig.Refs["session_id"])
 }
 
 // taskRunPrimaryOrchestrator uses the origin's persisted runtime identity, never

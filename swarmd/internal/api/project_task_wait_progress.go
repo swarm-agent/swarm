@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"swarm/packages/swarmd/internal/jobautomation"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -19,6 +20,11 @@ import (
 // reconciles waits). In that window the progress alone would say "no
 // workflow" (first end) or show the previous round's finished delivery (a
 // send-back or rebase round), and a wait would wake with nothing landed.
+// The inference holds only while that window is open (settleTaskRunEnd):
+// once the end is marked the runner's evaluation record says pending, and
+// an end that is never marked (no signal store, a failed signal write, a
+// run that is not a job end, a crash, an end from before marking existed)
+// is not inferred to be pending at all, so no wait is held on it for good.
 func (s *Server) taskWaitProgressFor(account string, task pebblestore.ProjectTaskRecord, now int64) *taskProgress {
 	deliveries, eval := s.taskProgressRecords(account, task)
 	p := computeTaskProgress(task, deliveries, eval, now)
@@ -45,6 +51,11 @@ func (s *Server) taskEndAwaitsWorkflows(account string, task pebblestore.Project
 	if s == nil || s.sessions == nil || task.AutomationID != "" || account == "" || account != s.OutboxAccount() || task.SessionID == "" {
 		return false
 	}
+	// Only while the task's run end is being settled and its job end has
+	// not been marked: everything after is read from the runner's records.
+	if !s.taskRunEndUnmarked(task.SessionID) {
+		return false
+	}
 	session, found, err := s.sessions.GetSession(task.SessionID)
 	if err != nil || !found || session.AccountScopeID != account || !s.taskRunEndIsJobEnd(account, &task, session.UserID) {
 		return false
@@ -60,13 +71,117 @@ func (s *Server) taskEndAwaitsWorkflows(account string, task pebblestore.Project
 		for _, step := range d.Steps {
 			followup, _ := step.Outcome["followup"].(string)
 			if step.Type == jobautomation.StepReopen && step.State == jobautomation.StateSucceeded && followup != "" && (eval == nil || eval.Followup != followup) {
-				return true
+				return s.noteTaskRunEndHeld(task.SessionID)
 			}
 		}
 	}
 	// No end of this task was marked yet: one will be evaluated only if a
 	// workflow could apply to it.
-	return eval == nil && len(deliveries) == 0 && s.taskWorkflowsMayApply(account, task)
+	if eval == nil && len(deliveries) == 0 && s.taskWorkflowsMayApply(account, task) {
+		return s.noteTaskRunEndHeld(task.SessionID)
+	}
+	return false
+}
+
+// taskRunEndWindow is one task session's run end being settled: the status
+// write (reconcileProjectTaskRunLifecycle) and the job end signal
+// (signalTaskRunEnded). In memory only: a restart closes every window, so a
+// crash between the two never leaves a task pending.
+type taskRunEndWindow struct {
+	open   int
+	marked bool // the job end was marked for the workflow runner
+	held   bool // a progress read inferred pending in this window
+}
+
+// settleTaskRunEnd reconciles a run end into its task and signals the job
+// end, with the task's run end window open around both. When the window
+// closes without the end marked after a read inferred pending, the task's
+// project is told it changed (project.updated), which reconciles its waits
+// again: the wait wakes by the task's records alone.
+func (s *Server) settleTaskRunEnd(job sessionV3ExecutorJob, status, reason string, result sessionruntime.SessionMutationResult) error {
+	prior := s.taskStatusBeforeRunEnd(job)
+	defer s.openTaskRunEnd(job)()
+	err := s.reconcileProjectTaskRunLifecycle(job, status, reason)
+	if err == nil {
+		s.signalTaskRunEnded(job, status, result, prior)
+	}
+	return err
+}
+
+// openTaskRunEnd opens the run end window of job's session when it is a
+// project task's session and returns the function that closes it.
+func (s *Server) openTaskRunEnd(job sessionV3ExecutorJob) func() {
+	if s == nil || s.sessions == nil || job.SessionID == "" {
+		return func() {}
+	}
+	session, ok, err := s.sessions.GetSession(job.SessionID)
+	if err != nil || !ok {
+		return func() {}
+	}
+	projectID := sessionsV3MetadataString(session.Metadata, "project_id")
+	taskID := firstNonEmptyString(sessionsV3MetadataString(session.Metadata, "task_id"), sessionsV3MetadataString(session.Metadata, "project_task_id"))
+	account := firstNonEmptyString(strings.TrimSpace(job.Principal.AccountScopeID), session.AccountScopeID)
+	if projectID == "" || taskID == "" || account == "" {
+		return func() {}
+	}
+	s.taskRunEndMu.Lock()
+	if s.taskRunEnds == nil {
+		s.taskRunEnds = map[string]*taskRunEndWindow{}
+	}
+	w := s.taskRunEnds[job.SessionID]
+	if w == nil {
+		w = &taskRunEndWindow{}
+		s.taskRunEnds[job.SessionID] = w
+	}
+	w.open++
+	s.taskRunEndMu.Unlock()
+	return func() {
+		s.taskRunEndMu.Lock()
+		w.open--
+		release := w.open == 0
+		recheck := release && w.held && !w.marked
+		if release {
+			delete(s.taskRunEnds, job.SessionID)
+		}
+		s.taskRunEndMu.Unlock()
+		if !recheck {
+			return
+		}
+		if err := s.sessions.Store().NotifyProjectTaskChanged(account, projectID, taskID); err != nil {
+			log.Printf("swarmd task wait: re-check waits after an unmarked end of %s: %v", taskID, err)
+			s.reconcileProjectTaskWaits(account, projectID)
+		}
+	}
+}
+
+// taskRunEndUnmarked reports whether the session's run end window is open
+// and its job end not marked yet.
+func (s *Server) taskRunEndUnmarked(sessionID string) bool {
+	s.taskRunEndMu.Lock()
+	defer s.taskRunEndMu.Unlock()
+	w := s.taskRunEnds[sessionID]
+	return w != nil && w.open > 0 && !w.marked
+}
+
+// noteTaskRunEndHeld records that a read inferred pending in the session's
+// open window, so closing it unmarked re-checks the waits. Always true.
+func (s *Server) noteTaskRunEndHeld(sessionID string) bool {
+	s.taskRunEndMu.Lock()
+	defer s.taskRunEndMu.Unlock()
+	if w := s.taskRunEnds[sessionID]; w != nil {
+		w.held = true
+	}
+	return true
+}
+
+// noteTaskJobEndMarked records that the session's run end was marked for
+// the workflow runner: its progress is read from the runner's records now.
+func (s *Server) noteTaskJobEndMarked(sessionID string) {
+	s.taskRunEndMu.Lock()
+	defer s.taskRunEndMu.Unlock()
+	if w := s.taskRunEnds[sessionID]; w != nil {
+		w.marked = true
+	}
 }
 
 // taskWorkflowsMayApply reports whether an enabled workflow of the account

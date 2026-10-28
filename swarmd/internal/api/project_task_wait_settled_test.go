@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/jobautomation"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
@@ -29,8 +31,20 @@ func newWaitWorkflowFixture(t *testing.T) *waitWorkflowFixture {
 	}
 	store := jobautomation.NewStore(f.s.sessions.Store().Underlying())
 	f.s.SetJobAutomations(jobautomation.NewRunner(jobautomation.Options{Store: store}))
-	fleetActivityTestSession(t, f, "task-session")
+	// The task's own session, named by its project and task as delegated
+	// task sessions are.
+	snapshot := pebblestore.SessionSnapshot{ID: "task-session", UserID: f.user, AccountScopeID: f.account, Metadata: map[string]any{"project_id": "proj-1", "task_id": "task-1"}}
+	if _, err := f.s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{Kind: sessionruntime.SessionMutationCreateSession, SessionID: "task-session", UserID: f.user, AccountScopeID: f.account, Session: &snapshot, ClientRequestID: "task-session", IdempotencyKey: "task-session", PayloadHash: "task-session", NowUnixMs: 1000}); err != nil {
+		t.Fatal(err)
+	}
 	return &waitWorkflowFixture{f: f, store: store, folder: t.TempDir()}
+}
+
+// endWindow opens the task session's run end window, as settleTaskRunEnd
+// does around the status write and the job end signal; the returned
+// function closes it.
+func (w *waitWorkflowFixture) endWindow() func() {
+	return w.f.s.openTaskRunEnd(sessionV3ExecutorJob{Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: w.f.user, AccountScopeID: w.f.account}, SessionID: "task-session", RunID: pebblestore.InitialTaskRunID("task-1")})
 }
 
 // task is a coder task that finished its first run (needs_review), as the
@@ -65,7 +79,10 @@ func workflowState(p *taskProgress) string {
 // not been evaluated against the workflows, closing the window in which the
 // task is already needs_review but its job end is not marked yet (the status
 // write reconciles waits before signalTaskRunEnded marks the end).
-// Requirement: with a workflow that could apply and no evaluation, pending;
+// Requirement: inferred pending holds only inside that run end window
+// (settleTaskRunEnd); outside it, an unmarked end is never pending (see
+// TestTaskWaitUnmarkedEndDoesNotHoldTheWait). Inside it: with a workflow
+// that could apply and no evaluation, pending;
 // after the runner evaluated the end with nothing matched, none (ready); a
 // send-back that went out for a follow-up whose end is not evaluated is
 // pending, also once the follow-up finished, until that end is evaluated. Negative: no workflow for the folder,
@@ -83,6 +100,11 @@ func TestTaskWaitProgressPendingUntilEndEvaluated(t *testing.T) {
 	}
 	auto := w.workflow(t)
 	later := time.Now().UnixMilli() + 1
+	if got := workflowState(w.f.s.taskWaitProgressFor(w.f.account, w.task(later), later)); got == workflowPending {
+		t.Fatal("an unmarked end with no run end in flight was inferred pending")
+	}
+	closeWindow := w.endWindow()
+	defer closeWindow()
 	if got := workflowState(w.f.s.taskWaitProgressFor(w.f.account, w.task(later), later)); got != workflowPending {
 		t.Fatalf("first end not evaluated yet: workflow %q, want pending", got)
 	}
@@ -316,4 +338,152 @@ func TestRemoteTaskWaitUnreachableThenBack(t *testing.T) {
 	if row["status"] != "needs_review" || row["workflow_state"] != workflowDone {
 		t.Fatalf("outcome after the machine came back: %v", row)
 	}
+}
+
+// localWait puts task-1 (in_progress, in the workflow's folder, delegated in
+// task-session) in project proj-1 and registers a settled wait on it for a
+// project Orchestrator goal running run-1.
+func (w *waitWorkflowFixture) localWait(t *testing.T) {
+	t.Helper()
+	db := w.f.s.sessions.Store()
+	if err := db.PutProject(w.f.account, &pebblestore.ProjectRecord{ID: "proj-1", Name: "Project"}); err != nil {
+		t.Fatal(err)
+	}
+	task := w.task(time.Now().UnixMilli())
+	task.Status, task.Attempts[0].Status = "in_progress", "in_progress"
+	// The store accepts only a complete source binding; the folder is its
+	// workspace path then.
+	task.SourceWorkspace = pebblestore.ProjectTaskSource{}
+	if err := db.PutProjectTask(w.f.account, &task); err != nil {
+		t.Fatal(err)
+	}
+	goal := map[string]any{"swarm_v3_project_id": "proj-1", "project_id": "proj-1", "agent_name": "system-orchestrator", "resolved_agent_name": "system-orchestrator"}
+	for _, in := range []pebblestore.V3SessionMutationInput{
+		{SessionID: "goal", Kind: pebblestore.V3SessionMutationCreateSession, ClientRequestID: "create-goal", Session: &pebblestore.SessionSnapshot{ID: "goal", Mode: "auto", Metadata: goal}},
+		{SessionID: "goal", Kind: pebblestore.V3SessionMutationRecordRunIntent, ClientRequestID: "pending-goal", RunIntent: &pebblestore.V3SessionRunIntent{RunID: "run-1", Status: pebblestore.V3RunIntentPendingExecutor}},
+		{SessionID: "goal", Kind: pebblestore.V3SessionMutationRecordRunIntent, ClientRequestID: "run-goal", RunIntent: &pebblestore.V3SessionRunIntent{RunID: "run-1", Status: pebblestore.V3RunIntentRunning}},
+		{SessionID: "goal", Kind: pebblestore.V3SessionMutationRecordRunIntent, EventType: "session.run.waiting_tasks", ClientRequestID: "task-wait:run-1", TaskWait: &pebblestore.V3ProjectTaskWaitMutation{RunID: "run-1", ProjectID: "proj-1", TaskIDs: []string{"task-1"}}},
+	} {
+		in.AccountScopeID, in.UserID, in.PayloadHash = w.f.account, w.f.user, in.ClientRequestID
+		if _, err := db.ApplyV3SessionMutation(in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := w.goalIntent(t, "run-1"); got.Status != pebblestore.V3RunIntentWaitingTasks {
+		t.Fatalf("wait not registered: %+v", got)
+	}
+}
+
+func (w *waitWorkflowFixture) goalIntent(t *testing.T, run string) pebblestore.V3SessionRunIntent {
+	t.Helper()
+	intent, _, err := w.f.s.sessions.Store().GetV3SessionRunIntent("goal", run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return intent
+}
+
+func (w *waitWorkflowFixture) woke(t *testing.T) bool {
+	t.Helper()
+	_, found, err := w.f.s.sessions.Store().GetV3SessionRunIntent("goal", pebblestore.ProjectTaskWaitResumeID("run-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return found
+}
+
+// finishTask moves task-1 to needs_review the way the run end's status write
+// does; the write reconciles the project's waits.
+func (w *waitWorkflowFixture) finishTask(t *testing.T) {
+	t.Helper()
+	if _, err := w.f.s.sessions.Store().UpdateProjectTask(w.f.account, "proj-1", "task-1", func(task *pebblestore.ProjectTaskRecord) error {
+		task.Status, task.Attempts[0].Status = "needs_review", "needs_review"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (w *waitWorkflowFixture) currentTask(t *testing.T) pebblestore.ProjectTaskRecord {
+	t.Helper()
+	task, found, err := w.f.s.sessions.Store().GetProjectTask(w.f.account, "proj-1", "task-1")
+	if err != nil || !found {
+		t.Fatalf("task: %v %v", found, err)
+	}
+	return *task
+}
+
+// Purpose: inferred "pending" (a finished task with an applicable workflow
+// whose job end is not marked yet) is bounded by the run end being settled,
+// so a settled wait on such a task never stalls forever.
+// Requirement: while the run end window is open the status write does not
+// wake the wait; when the window closes with the end never marked (no
+// signal store, a failed signal write, a run end that is not a job end), the
+// waits are re-checked and the wait wakes with no workflow pending; when the
+// end was marked, closing the window does not wake it early and the runner's
+// evaluation (nothing matched) wakes it. With no window open at all (a crash
+// between the status write and the signal, a restart, an end from before
+// marking existed) the unmarked end is not pending and the startup
+// reconciliation wakes the wait.
+// Threat: the Orchestrator's goal stalled with no wake and no visible reason
+// (reviewer finding: unbounded inference from workflow definitions).
+// Authority: Server.openTaskRunEnd / taskEndAwaitsWorkflows / markTaskJobEnded
+// with the real project publisher (ConfigureProjectRealtime) reconciling the
+// durable wait in a real store; the narrowest layer owning both the window
+// and the wake.
+func TestTaskWaitUnmarkedEndDoesNotHoldTheWait(t *testing.T) {
+	t.Run("window_closes_unmarked", func(t *testing.T) {
+		w := newWaitWorkflowFixture(t)
+		w.workflow(t)
+		w.localWait(t)
+		closeWindow := w.endWindow()
+		w.finishTask(t)
+		w.f.s.reconcileProjectTaskWaits(w.f.account, "proj-1")
+		if w.woke(t) {
+			t.Fatal("woke while the run end was being settled")
+		}
+		if got := workflowState(w.f.s.taskWaitProgressFor(w.f.account, w.currentTask(t), time.Now().UnixMilli())); got != workflowPending {
+			t.Fatalf("in the window: workflow %q, want pending", got)
+		}
+		closeWindow() // the end was never marked
+		if !w.woke(t) {
+			t.Fatalf("closing the window unmarked did not wake the wait: %+v", w.goalIntent(t, "run-1"))
+		}
+		if got := workflowState(w.f.s.taskWaitProgressFor(w.f.account, w.currentTask(t), time.Now().UnixMilli())); got == workflowPending {
+			t.Fatal("still pending after the window closed")
+		}
+	})
+	t.Run("window_closes_marked", func(t *testing.T) {
+		w := newWaitWorkflowFixture(t)
+		w.workflow(t)
+		w.localWait(t)
+		closeWindow := w.endWindow()
+		w.finishTask(t)
+		jobID := taskRunJobID("proj-1", "task-1")
+		now := time.Now().UnixMilli()
+		w.f.s.markTaskJobEnded(w.f.account, "proj-1", pebblestore.Signal{Seq: 7, At: now, Refs: map[string]string{"session_id": "task-session"}, Attrs: map[string]string{"job_id": jobID}}, "")
+		closeWindow()
+		w.f.s.reconcileProjectTaskWaits(w.f.account, "proj-1")
+		if w.woke(t) {
+			t.Fatal("woke with the end marked and not evaluated")
+		}
+		if err := w.store.RecordEvaluation(w.f.account, "proj-1", jobID, "", 7, now, nil); err != nil {
+			t.Fatal(err)
+		}
+		if !w.woke(t) {
+			t.Fatalf("evaluation with nothing matched did not wake: %+v", w.goalIntent(t, "run-1"))
+		}
+	})
+	t.Run("no_window_restart", func(t *testing.T) {
+		w := newWaitWorkflowFixture(t)
+		w.workflow(t)
+		w.localWait(t)
+		// The status write happened (and the daemon stopped) without the
+		// end ever being marked; startup reconciles every wait.
+		w.finishTask(t)
+		w.f.s.reconcileProjectTaskWaits("", "")
+		if !w.woke(t) {
+			t.Fatalf("unmarked end with nothing in flight held the wait: %+v", w.goalIntent(t, "run-1"))
+		}
+	})
 }
