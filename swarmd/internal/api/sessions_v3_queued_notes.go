@@ -15,8 +15,8 @@ import (
 
 // A person's message posted while the session's run is active is queued: it is
 // stored as a non-triggering note (no run intent), reaches the running model
-// with its next tool result, and, if the run ends without one, starts the next
-// turn. Notes are untrusted user content; they never approve permissions or
+// as the person's own message alongside its next tool result (never inside
+// it), and, if the run ends without one, starts the next turn. Notes are untrusted user content; they never approve permissions or
 // change task scope on their own.
 
 // sessionV3QueuedNoteHistoryWindow bounds the tail scanned for queued notes a
@@ -149,15 +149,15 @@ func (e *sessionV3Executor) queuedNoteRunID(sessionID string) string {
 	return e.queuedNoteRuns[strings.TrimSpace(sessionID)].runID
 }
 
-// sessionV3QueuedNoteToolInvoker appends claimed notes to tool results. The
-// run loop receipts them after the provider step that consumed the result
-// succeeds, or hands them back when that step never happens.
-func (e *sessionV3Executor) sessionV3QueuedNoteToolInvoker(job sessionV3ExecutorJob, inner provideriface.ToolInvoker) provideriface.ToolInvoker {
-	if inner == nil || job.queuedNotes == nil {
-		return inner
+// sessionV3QueuedNoteUserInput lets a provider that calls tools mid-step
+// claim the person's queued notes for its own user-input channel. The run
+// loop receipts them after that provider step succeeds, or hands them back
+// when it does not.
+func (e *sessionV3Executor) sessionV3QueuedNoteUserInput(job sessionV3ExecutorJob) provideriface.QueuedUserInput {
+	if job.queuedNotes == nil {
+		return nil
 	}
-	return &runruntime.QueuedNoteToolInvoker{
-		Inner:   inner,
+	return &runruntime.QueuedNoteUserInput{
 		Tracker: job.queuedNotes,
 		Read: func(cursor *uint64) ([]pebblestore.MessageSnapshot, error) {
 			return e.sessionV3FeedbackSince(job.SessionID, cursor)

@@ -3789,10 +3789,6 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			if invokerErr != nil {
 				return sessionV3ProviderLoopResult{}, invokerErr
 			}
-			// Notes queued while a tool runs reach the model with that tool's
-			// result: the only mid-turn input some providers (CLI-driven ones
-			// calling tools through Swarm) accept.
-			toolInvoker = e.sessionV3QueuedNoteToolInvoker(job, toolInvoker)
 		}
 		if err := ctx.Err(); err != nil {
 			return sessionV3ProviderLoopResult{}, err
@@ -3834,6 +3830,12 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			planGuardFreshContext = false
 		}
 		req.ToolInvoker = toolInvoker
+		// A provider that calls tools mid-step through its own user-input
+		// channel (Claude Code's stdin) gets the person's notes queued while a
+		// tool runs as their own turn alongside that tool's result.
+		if toolsEnabled {
+			req.QueuedUserInput = e.sessionV3QueuedNoteUserInput(job)
+		}
 		// Runtime context is part of the provider request properties and therefore
 		// must remain byte-stable while this epoch's response chain is active.
 		req = req.WithRuntimeContext(resolved.Preference.Provider, runtimeContextAt)
@@ -3936,8 +3938,8 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			return sessionV3ProviderLoopResult{}, errors.New(feedbackOutcome.Reason)
 		}
 		// Only this successful step's input is acknowledged: notes it carried as
-		// user messages or in tool results (including results a CLI provider
-		// consumed mid-step). Notes queued while it was in flight wait for
+		// user messages, including those a CLI provider took mid-step through
+		// its own user-input channel. Notes queued while it was in flight wait for
 		// another eligible step; a final response does not reopen work merely to
 		// drain feedback.
 		// History notes are exactly the IDs carrySessionV3HistoryQueuedNotes

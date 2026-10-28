@@ -2128,7 +2128,6 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 	}
 	var pendingFeedback []pebblestore.MessageSnapshot
-	var pendingToolResultFeedback []pebblestore.MessageSnapshot
 	taskUpdateCursor := ""
 	runtimeContextAt := time.Now()
 	for step := 1; ; step++ {
@@ -2656,12 +2655,6 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				return RunResult{}, receiptErr
 			}
 			pendingFeedback = nil
-		}
-		if err == nil && len(pendingToolResultFeedback) > 0 {
-			if receiptErr := RecordFeedbackDeliveryVia(options.ApplySessionMutation, sessionID, runID, FeedbackDeliveryToolResult, pendingToolResultFeedback); receiptErr != nil {
-				return RunResult{}, receiptErr
-			}
-			pendingToolResultFeedback = nil
 		}
 		if err := RecordProjectTaskDelivery(options.ApplySessionMutation, sessionID, runID, taskUpdates); err != nil {
 			return RunResult{}, err
@@ -3321,44 +3314,20 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				}
 			}
 		}
-		// Notes queued while the tools ran reach the model with their results,
-		// after the tool output, through the same claim cursor as the step-start
-		// path, so each note is delivered once. Receipts follow the next step.
+		// Notes queued while the tools ran reach the model as the person's own
+		// user message, right after the tool results in the same request (never
+		// inside a tool's output), through the same claim cursor as the
+		// step-start path, so each note is delivered once. Receipts follow the
+		// next step.
 		var feedbackUserItems []map[string]any
 		if options.ApplySessionMutation != nil && len(nextInputFunctionOutputs) > 0 {
 			fresh, feedbackErr := s.sessions.ListSessionMessages(sessionID, feedbackCursor, 100)
 			if feedbackErr != nil {
 				return RunResult{}, feedbackErr
 			}
-			// Only the person's queued notes are attributed to the person in a
-			// tool result. Other feedback notes (background reports,
-			// Orchestrator notes) keep their separate user message.
-			var queued []pebblestore.MessageSnapshot
 			for _, note := range feedbackMessages(fresh, &feedbackCursor) {
-				if IsQueuedNote(note) {
-					queued = append(queued, note)
-					continue
-				}
 				feedbackUserItems = append(feedbackUserItems, map[string]any{"role": "user", "content": []map[string]any{{"type": "input_text", "text": note.Content}}})
 				pendingFeedback = append(pendingFeedback, note)
-			}
-			if len(queued) > 0 {
-				lastOutput := -1
-				for i := range nextInputFunctionOutputs {
-					if _, ok := nextInputFunctionOutputs[i]["output"].(string); ok {
-						lastOutput = i
-					}
-				}
-				if lastOutput >= 0 {
-					output, _ := nextInputFunctionOutputs[lastOutput]["output"].(string)
-					nextInputFunctionOutputs[lastOutput]["output"] = output + FormatQueuedNotesBlock(queued)
-					pendingToolResultFeedback = append(pendingToolResultFeedback, queued...)
-				} else {
-					for _, note := range queued {
-						feedbackUserItems = append(feedbackUserItems, map[string]any{"role": "user", "content": []map[string]any{{"type": "input_text", "text": note.Content}}})
-					}
-					pendingFeedback = append(pendingFeedback, queued...)
-				}
 			}
 		}
 		nextInput = append(nextInput, nextInputFunctionCalls...)

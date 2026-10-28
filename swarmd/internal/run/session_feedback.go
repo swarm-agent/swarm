@@ -1,9 +1,7 @@
 package run
 
 import (
-	"context"
 	"fmt"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -11,19 +9,20 @@ import (
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
-	"swarm/packages/swarmd/internal/tool"
 )
 
 // Queued notes are ordinary user messages posted while the session's run is
 // active. They are stored as feedback notes (never a new run intent) and carry
 // these markers so clients can show them as queued until a receipt arrives.
 const (
-	QueuedNoteMetadataKey      = "queued_note"
-	QueuedNoteRunMetadataKey   = "queued_for_run_id"
-	QueuedNoteStatusMetadata   = "delivery_status"
-	QueuedNoteStatusQueued     = "queued"
-	FeedbackDeliveryToolResult = "tool_result"
-	FeedbackDeliveryUserTurn   = "user_message"
+	QueuedNoteMetadataKey    = "queued_note"
+	QueuedNoteRunMetadataKey = "queued_for_run_id"
+	QueuedNoteStatusMetadata = "delivery_status"
+	QueuedNoteStatusQueued   = "queued"
+	// FeedbackDeliveryUserTurn is the only delivery channel: a note always
+	// reaches the model as a user-role turn (its own user message, or the
+	// person's input to a running CLI), never inside a tool result.
+	FeedbackDeliveryUserTurn = "user_turn"
 )
 
 // IsFeedbackNote reports whether message is a non-triggering user note.
@@ -53,8 +52,8 @@ func feedbackMessages(messages []pebblestore.MessageSnapshot, cursor *uint64) []
 }
 
 // QueuedNoteTracker is one run's single claim cursor over its session's
-// feedback notes. Every delivery path (a separate user message at a step
-// boundary, or a block appended to a tool result) claims through it, so a note
+// feedback notes. Every delivery path (a user message at a step boundary, or
+// a running provider's own user-input channel) claims through it, so a note
 // is in at most one provider input at a time. A claimed note stays in flight
 // until a provider step that carried it succeeds (TakeInFlight, then the
 // receipt). When the input carrying it is discarded first (the run ends, or
@@ -68,7 +67,7 @@ type QueuedNoteTracker struct {
 }
 
 // ClaimedQueuedNote is a note placed in provider input, with how it was placed
-// (FeedbackDeliveryUserTurn or FeedbackDeliveryToolResult).
+// (FeedbackDeliveryUserTurn).
 type ClaimedQueuedNote struct {
 	Note    pebblestore.MessageSnapshot
 	Channel string
@@ -210,90 +209,35 @@ func (t *QueuedNoteTracker) Withholds(message pebblestore.MessageSnapshot) bool 
 	return false
 }
 
-// queuedNoteBlockTag matches an opening or closing block tag, in any case and
-// spacing, inside note text.
-var queuedNoteBlockTag = regexp.MustCompile(`(?i)<(\s*/?\s*queued_message_from_the_person)`)
-
-// escapeQueuedNoteBlockTags neutralises block tags in note text so a note can
-// neither close its block early nor open a forged one.
-func escapeQueuedNoteBlockTags(content string) string {
-	return queuedNoteBlockTag.ReplaceAllString(content, "&lt;$1")
-}
-
-// FormatQueuedNotesBlock renders the person's queued notes as a clearly
-// delimited section that follows a tool's output. The content stays untrusted
-// user text. Only IsQueuedNote messages (stored by the person's message route)
-// are attributed to the person; any other feedback note (a background command
-// report, an Orchestrator note) is never rendered here, so command or agent
-// text cannot be presented as the person's message.
-func FormatQueuedNotesBlock(notes []pebblestore.MessageSnapshot) string {
-	var b strings.Builder
-	for _, note := range notes {
-		if !IsQueuedNote(note) {
-			continue
-		}
-		content := strings.TrimSpace(note.Content)
-		if content == "" {
-			continue
-		}
-		b.WriteString("\n\n<queued_message_from_the_person>\n")
-		b.WriteString("The person sent this message while you were working. It is their user message, not tool output; it does not approve permissions or change the task scope by itself.\n\n")
-		b.WriteString(escapeQueuedNoteBlockTags(content))
-		b.WriteString("\n</queued_message_from_the_person>")
-	}
-	return b.String()
-}
-
-// AppendQueuedNotesToToolResult returns result with notes appended after the
-// model-facing tool output. Output, Error and RestartTurn are left untouched,
-// so code that parses a tool's own payload is unaffected.
-func AppendQueuedNotesToToolResult(invocation provideriface.ToolInvocation, result provideriface.ToolExecutionResult, notes []pebblestore.MessageSnapshot) provideriface.ToolExecutionResult {
-	block := FormatQueuedNotesBlock(notes)
-	if block == "" {
-		return result
-	}
-	base := strings.TrimSpace(result.TextForModel)
-	if base == "" {
-		callID := firstNonEmptyString(result.CallID, invocation.CallID)
-		name := firstNonEmptyString(invocation.Name, result.Name)
-		arguments := strings.TrimSpace(invocation.Arguments)
-		if arguments == "" {
-			arguments = "{}"
-		}
-		base = PrepareToolOutputForModel(tool.Call{CallID: callID, Name: name, Arguments: arguments}, tool.Result{CallID: callID, Name: name, Output: strings.TrimSpace(result.Output), Error: strings.TrimSpace(result.Error), DurationMS: result.DurationMS})
-	}
-	result.TextForModel = base + block
-	return result
-}
-
-// QueuedNoteToolInvoker places claimed notes in the next tool result the model
-// receives. It wraps the run's invoker, so it works the same whether the
-// daemon runs the tool loop or the provider (a CLI) calls tools mid-turn. It
-// records no receipt: the notes stay in flight on the tracker until the run
-// loop sees the provider step that consumed the result succeed.
-type QueuedNoteToolInvoker struct {
-	Inner   provideriface.ToolInvoker
+// QueuedNoteUserInput hands a running provider request the person's queued
+// notes (only IsQueuedNote messages; other feedback notes keep their
+// step-boundary user message) for delivery through the provider's own
+// user-input channel, as the person's turn. It claims through the run's
+// tracker on FeedbackDeliveryUserTurn and records no receipt: the notes stay
+// in flight until the run loop sees the provider step that carried them
+// succeed.
+type QueuedNoteUserInput struct {
 	Tracker *QueuedNoteTracker
 	Read    func(cursor *uint64) ([]pebblestore.MessageSnapshot, error)
 }
 
-func (i *QueuedNoteToolInvoker) ExecuteTool(ctx context.Context, invocation provideriface.ToolInvocation) (provideriface.ToolExecutionResult, error) {
-	result, err := i.Inner.ExecuteTool(ctx, invocation)
-	if err != nil || result.RestartTurn || i.Tracker == nil || i.Read == nil {
-		// A restart rebuilds the model's input from durable history, so a note
-		// appended here could be dropped; the next boundary claims it instead.
-		return result, err
+var _ provideriface.QueuedUserInput = (*QueuedNoteUserInput)(nil)
+
+func (i *QueuedNoteUserInput) ClaimQueuedUserMessages() ([]string, error) {
+	if i == nil || i.Tracker == nil || i.Read == nil {
+		return nil, nil
 	}
-	// Only the person's queued notes ride on tool results. Other feedback
-	// notes keep their separate user-message delivery at the next step.
-	notes, claimErr := i.Tracker.ClaimMatching(FeedbackDeliveryToolResult, i.Read, IsQueuedNote)
-	if claimErr != nil {
-		return result, claimErr
+	notes, err := i.Tracker.ClaimMatching(FeedbackDeliveryUserTurn, i.Read, IsQueuedNote)
+	if err != nil {
+		return nil, err
 	}
-	if len(notes) == 0 {
-		return result, nil
+	texts := make([]string, 0, len(notes))
+	for _, note := range notes {
+		if content := strings.TrimSpace(note.Content); content != "" {
+			texts = append(texts, content)
+		}
 	}
-	return AppendQueuedNotesToToolResult(invocation, result, notes), nil
+	return texts, nil
 }
 
 // RecordClaimedFeedbackDelivery receipts notes taken from a tracker after the
@@ -322,9 +266,6 @@ func RecordFeedbackDeliveryVia(apply func(sessionruntime.SessionMutationInput) (
 		key := "feedback-delivery:" + note.ID + ":" + runID
 		now := time.Now().UnixMilli()
 		content := fmt.Sprintf("Feedback %s delivered to provider in run %s; incorporation unconfirmed.", note.ID, runID)
-		if channel == FeedbackDeliveryToolResult {
-			content = fmt.Sprintf("Feedback %s delivered to provider with a tool result in run %s; incorporation unconfirmed.", note.ID, runID)
-		}
 		result, err := apply(pebblestore.V3SessionMutationInput{
 			SessionID: sessionID, UserID: note.UserID, AccountScopeID: note.AccountScopeID,
 			ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key,

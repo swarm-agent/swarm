@@ -69,6 +69,7 @@ type turnPlan struct {
 	env      []string
 	workDir  string
 	stdin    []byte
+	input    *turnInput
 	bridge   *mcpBridge
 	restart  *restartSignal
 	correlat *toolUseCorrelator
@@ -122,6 +123,7 @@ func (r *Runner) run(ctx context.Context, req provideriface.Request, onEvent fun
 func (r *Runner) planTurn(ctx context.Context, req provideriface.Request, workDir string) (turnPlan, error) {
 	plan := turnPlan{
 		workDir:      workDir,
+		input:        &turnInput{},
 		restart:      &restartSignal{},
 		correlat:     newToolUseCorrelator(),
 		onRateLimits: r.cli.RecordRateLimits,
@@ -152,7 +154,11 @@ func (r *Runner) planTurn(ctx context.Context, req provideriface.Request, workDi
 
 	toolsEnabled := len(req.Tools) > 0 && !strings.EqualFold(strings.TrimSpace(req.ToolChoice), "none")
 	if toolsEnabled {
-		bridge, err := newMCPBridge(ctx, req.Tools, req.ToolInvoker, plan.correlat, plan.restart.Trigger)
+		invoker := req.ToolInvoker
+		if invoker != nil && req.QueuedUserInput != nil {
+			invoker = &queuedInputToolInvoker{inner: invoker, source: req.QueuedUserInput, input: plan.input}
+		}
+		bridge, err := newMCPBridge(ctx, req.Tools, invoker, plan.correlat, plan.restart.Trigger)
 		if err != nil {
 			return turnPlan{}, err
 		}
@@ -308,20 +314,27 @@ func executeTurn(ctx context.Context, path string, plan turnPlan, model string, 
 		})
 	})
 
-	// The whole epoch input is one user message; closing stdin lets the CLI exit
-	// as soon as that turn finishes. Write concurrently so a large transcript can
-	// never deadlock against unread stdout.
+	// The whole epoch input is the first user message. Stdin stays open while
+	// the turn runs so the person's queued messages can follow as their own
+	// user messages (queuedInputToolInvoker); it closes when the turn's result
+	// arrives, which lets the CLI exit. Write concurrently so a large
+	// transcript can never deadlock against unread stdout.
+	plan.input.attach(stdin)
 	writeDone := make(chan error, 1)
 	go func() {
-		_, err := stdin.Write(plan.stdin)
-		writeDone <- firstError(err, stdin.Close())
+		writeDone <- plan.input.write(plan.stdin)
 	}()
 
 	state := newTurnState(model, plan.correlat)
 	state.onRateLimits = plan.onRateLimits
+	state.onResult = func() {
+		// Never block the stdout reader on the input lock.
+		go plan.input.close()
+	}
 	readErr := readStream(ctx, stdout, state, onEvent)
+	closeErr := plan.input.close()
 	waitErr := cmd.Wait()
-	writeErr := <-writeDone
+	writeErr := firstError(<-writeDone, closeErr)
 
 	if err := ctx.Err(); err != nil {
 		return provideriface.Response{}, err
@@ -346,7 +359,122 @@ func executeTurn(ctx context.Context, path string, plan turnPlan, model string, 
 	if failure := state.resultFailure(); failure != "" {
 		return provideriface.Response{}, errors.New(failure)
 	}
+	if err := plan.input.deliveryError(); err != nil {
+		// A queued message was claimed but could not reach the CLI: fail the
+		// step so the run hands it back instead of receipting it.
+		return provideriface.Response{}, fmt.Errorf("send queued message to claude code: %w", err)
+	}
 	return state.response(), nil
+}
+
+// turnInput is the CLI's stdin for one turn. Writes and the close share one
+// lock, so a message is either written before the input closes or not
+// claimed at all.
+type turnInput struct {
+	mu          sync.Mutex
+	w           io.WriteCloser
+	closed      bool
+	closeErr    error
+	deliveryErr error
+}
+
+func (in *turnInput) attach(w io.WriteCloser) {
+	in.mu.Lock()
+	in.w = w
+	in.mu.Unlock()
+}
+
+func (in *turnInput) write(line []byte) error {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if in.closed || in.w == nil {
+		return errors.New("claude code input is closed")
+	}
+	_, err := in.w.Write(line)
+	return err
+}
+
+// close ends the CLI's input once; later calls return the first result.
+func (in *turnInput) close() error {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if in.closed {
+		return in.closeErr
+	}
+	in.closed = true
+	if in.w != nil {
+		in.closeErr = in.w.Close()
+	}
+	return in.closeErr
+}
+
+func (in *turnInput) deliveryError() error {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return in.deliveryErr
+}
+
+// deliverQueued claims the person's queued messages and writes each to the
+// CLI as a stream-json user message, the channel Claude Code itself uses for
+// input queued during a turn, so the model sees it as the person's own turn
+// with the next tool result. It claims nothing once the input has closed (the
+// turn already ended): those messages stay queued for the run.
+func (in *turnInput) deliverQueued(source provideriface.QueuedUserInput) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if in.closed || in.w == nil || in.deliveryErr != nil {
+		return
+	}
+	texts, err := source.ClaimQueuedUserMessages()
+	if err != nil {
+		in.deliveryErr = err
+		return
+	}
+	for _, text := range texts {
+		line, err := streamJSONUserMessage(text)
+		if err == nil {
+			_, err = in.w.Write(line)
+		}
+		if err != nil {
+			in.deliveryErr = err
+			return
+		}
+	}
+}
+
+// streamJSONUserMessage encodes text as one stream-json input line.
+func streamJSONUserMessage(text string) ([]byte, error) {
+	message, err := json.Marshal(map[string]any{
+		"type": "user",
+		"message": map[string]any{
+			"role":    "user",
+			"content": []map[string]any{{"type": "text", "text": text}},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return append(message, '\n'), nil
+}
+
+// queuedInputToolInvoker runs each tool, then, before the CLI receives the
+// result, writes the person's messages queued meanwhile to the CLI's stdin.
+// The tool result itself is returned unchanged.
+type queuedInputToolInvoker struct {
+	inner  provideriface.ToolInvoker
+	source provideriface.QueuedUserInput
+	input  *turnInput
+}
+
+func (i *queuedInputToolInvoker) ExecuteTool(ctx context.Context, invocation provideriface.ToolInvocation) (provideriface.ToolExecutionResult, error) {
+	result, err := i.inner.ExecuteTool(ctx, invocation)
+	if err != nil || result.RestartTurn {
+		// A restart rebuilds the turn from durable history; the next claim
+		// delivers the messages instead.
+		return result, err
+	}
+	i.input.deliverQueued(i.source)
+	return result, nil
 }
 
 func readStream(ctx context.Context, stdout io.Reader, state *turnState, onEvent func(provideriface.StreamEvent)) error {
@@ -398,6 +526,8 @@ type turnState struct {
 	stopReason    string
 
 	onRateLimits func(json.RawMessage)
+	// onResult runs when the turn's result line arrives.
+	onResult func()
 
 	lastCallUsage map[string]any
 	callUsages    []map[string]any
@@ -507,6 +637,9 @@ func (s *turnState) handleLine(raw []byte, onEvent func(provideriface.StreamEven
 			TotalCostUSD: line.TotalCostUSD,
 			NumTurns:     line.NumTurns,
 			Errors:       line.Errors,
+		}
+		if s.onResult != nil {
+			s.onResult()
 		}
 	}
 }

@@ -209,6 +209,21 @@ type Request struct {
 	ParallelToolCalls bool
 	WorkspacePath     string
 	ToolInvoker       ToolInvoker
+	// QueuedUserInput, when set, hands out the person's messages queued while
+	// this request runs. A provider that calls tools mid-request and has a
+	// real user-input channel (Claude Code's stream-json stdin) delivers them
+	// there as the person's own turn alongside the next tool result. It must
+	// never place them inside a tool result. Providers without such a
+	// channel ignore it; the run delivers the notes later.
+	QueuedUserInput QueuedUserInput
+}
+
+// QueuedUserInput is a source of the person's queued messages for a running
+// provider request. Each claimed message is in flight from then on: the run
+// receipts it only after this request succeeds and hands it back otherwise.
+// Claim only when the message can be placed in model input at once.
+type QueuedUserInput interface {
+	ClaimQueuedUserMessages() ([]string, error)
 }
 
 func (r Request) EffectiveProviderCacheKey() string {

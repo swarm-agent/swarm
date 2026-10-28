@@ -132,16 +132,21 @@ func countInInput(input []map[string]any, text string) (toolResults, userMessage
 
 // Purpose: a message the person sends while the session's run is active is
 // queued, not a new turn: the POST answers queued, no run intent is recorded,
-// and the note reaches the running model appended to its very next tool result,
-// exactly once, after the tool's own output, then gets one delivery receipt.
-// Threat: a mid-run message lost, starting a competing run, or delivered twice
-// (as a tool-result block and again as a user turn).
-// Boundary: acceptSessionsV3QueuedNote (handleSessionV3PrimaryMessages),
-// sessionV3QueuedNoteToolInvoker / runruntime.QueuedNoteToolInvoker in
-// runProviderToolLoop, RecordFeedbackDeliveryVia, closeQueuedNotes.
+// and the note reaches the running model in the very next request, as the
+// person's own user message item placed after the tool call's
+// function_call_output (the OpenAI Responses input shape the openai runner
+// forwards unchanged), never inside that tool output, exactly once, then gets
+// one user_turn delivery receipt.
+// Threat: the person's words wrapped in tool output, which the model rightly
+// treats as untrusted and refuses (live: "end your reply with BANANA" was
+// ignored); a mid-run message lost, starting a competing run, or delivered
+// twice.
+// Boundary: acceptSessionsV3QueuedNote (handleSessionV3PrimaryMessages), the
+// step-boundary claim in runProviderToolLoop, RecordClaimedFeedbackDelivery,
+// closeQueuedNotes.
 // Narrowest layer: the real executor, run loop, tool invoker and HTTP route
 // with a scripted model, since the contract spans all of them.
-func TestQueuedMessageDuringRunIsAppendedToNextToolResultOnce(t *testing.T) {
+func TestQueuedMessageDuringRunReachesNextRequestAsUserItemAfterToolResult(t *testing.T) {
 	const steer = "steer-toward-the-blue-door"
 	f := newQueuedNoteFixture(t, func(f *queuedNoteFixture, req provideriface.Request) provideriface.Response {
 		if hasFunctionCallOutput(req.Input) {
@@ -175,25 +180,103 @@ func TestQueuedMessageDuringRunIsAppendedToNextToolResultOnce(t *testing.T) {
 		t.Fatalf("provider calls = %d, want 2 (tool call, then answer)", len(requests))
 	}
 	toolResults, userMessages := countInInput(requests[1].Input, steer)
-	if toolResults != 1 || userMessages != 0 {
-		t.Fatalf("note delivered %d times in tool results and %d as user messages; want exactly once with the tool result", toolResults, userMessages)
+	if toolResults != 0 || userMessages != 1 {
+		t.Fatalf("note delivered %d times in tool results and %d as user messages; want only once, as a user message", toolResults, userMessages)
 	}
-	for _, item := range requests[1].Input {
+	outputAt, noteAt := -1, -1
+	for i, item := range requests[1].Input {
 		if stringMapValue(item, "type") == "function_call_output" && stringMapValue(item, "call_id") == "probe1" {
-			output := stringMapValue(item, "output")
-			block := strings.Index(output, "<queued_message_from_the_person>")
-			if block <= 0 || !strings.Contains(output[:block], "not available to this agent") {
-				t.Fatalf("queued block must follow the tool's own output: %q", output)
+			outputAt = i
+		}
+		if item["role"] == "user" {
+			if raw, _ := json.Marshal(item["content"]); strings.Contains(string(raw), steer) {
+				noteAt = i
 			}
 		}
 	}
+	if outputAt < 0 || noteAt <= outputAt {
+		t.Fatalf("the note must be a user item after the tool result (tool result at %d, note at %d): %v", outputAt, noteAt, requests[1].Input)
+	}
+	if got, _ := json.Marshal(requests[1].Input[noteAt]); string(got) != `{"content":[{"text":"`+steer+`","type":"input_text"}],"role":"user"}` {
+		t.Fatalf("note item = %s, want the person's text alone in a user message", got)
+	}
 
 	receipts := f.receipts(note.ID)
-	if len(receipts) != 1 || receipts[0].Metadata["delivery_status"] != "delivered" || receipts[0].Metadata["delivery_channel"] != runruntime.FeedbackDeliveryToolResult || receipts[0].Metadata["run_id"] != startRun {
-		t.Fatalf("receipts = %+v, want one tool_result delivery in %s", receipts, startRun)
+	if len(receipts) != 1 || receipts[0].Metadata["delivery_status"] != "delivered" || receipts[0].Metadata["delivery_channel"] != "user_turn" || receipts[0].Metadata["run_id"] != startRun {
+		t.Fatalf("receipts = %+v, want one user_turn delivery in %s", receipts, startRun)
 	}
 	if intents := f.runIntents(); len(intents) != 1 || intents[0].RunID != startRun {
 		t.Fatalf("run intents = %+v, want only the original run (no competing or follow-up run)", intents)
+	}
+}
+
+// Purpose: a provider that calls tools itself mid-step (Claude Code through
+// its MCP bridge) gets the person's note queued while a tool ran from the
+// request's QueuedUserInput, to send through its own user-input channel, in
+// the same run: the tool result the provider receives does not contain the
+// note, the note is receipted once on user_turn after that step succeeds, and
+// no follow-up turn starts.
+// Threat: the note folded into the tool output (the model refuses it), lost,
+// or delivered twice (mid-step and again in a follow-up turn).
+// Boundary: sessionV3QueuedNoteUserInput / runruntime.QueuedNoteUserInput set
+// on the request in runProviderToolLoop, RecordClaimedFeedbackDelivery,
+// closeQueuedNotes.
+// Narrowest layer: the real executor, tool invoker and HTTP route with a
+// scripted provider that invokes a tool and then claims, as the claudecode
+// runner does after each tool result.
+func TestQueuedMessageReachesMidStepProviderThroughItsUserInput(t *testing.T) {
+	const steer = "end your final reply with the single word BANANA"
+	var (
+		mu         sync.Mutex
+		claimed    []string
+		toolOutput string
+		claimErr   error
+	)
+	f := newQueuedNoteFixture(t, func(*queuedNoteFixture, provideriface.Request) provideriface.Response {
+		return provideriface.Response{Text: "unused", StopReason: "stop"}
+	})
+	f.runner.handler = func(ctx context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		f.postDuringRun("steer-mid-step", steer)
+		if req.ToolInvoker == nil || req.QueuedUserInput == nil {
+			return provideriface.Response{Text: "no mid-step channel", StopReason: "stop"}, nil
+		}
+		// probe_tool is not offered: the invoker records a durable refusal,
+		// a real tool result boundary that executes nothing.
+		result, err := req.ToolInvoker.ExecuteTool(ctx, provideriface.ToolInvocation{CallID: "probe1", Name: "probe_tool", Arguments: `{}`})
+		texts, cErr := req.QueuedUserInput.ClaimQueuedUserMessages()
+		mu.Lock()
+		claimed, claimErr = texts, firstNonNilErr(err, cErr)
+		toolOutput = result.Output + result.TextForModel
+		mu.Unlock()
+		return provideriface.Response{Text: "done BANANA", StopReason: "stop"}, nil
+	}
+	f.say(f.sessionID, "start-mid", "begin the task")
+
+	code, payload := f.queuedResponse()
+	if code != http.StatusOK || payload["queued"] != true {
+		t.Fatalf("mid-run message was not queued: %d %v", code, payload)
+	}
+	note := queuedNoteFromResponse(t, payload)
+	mu.Lock()
+	defer mu.Unlock()
+	if claimErr != nil {
+		t.Fatal(claimErr)
+	}
+	if len(claimed) != 1 || claimed[0] != steer {
+		t.Fatalf("provider claimed %q, want the person's note once", claimed)
+	}
+	if strings.Contains(toolOutput, steer) {
+		t.Fatalf("the tool result carried the note: %q", toolOutput)
+	}
+	startRun := stableSessionsV3PrimaryRunID(f.sessionID, "start-mid")
+	if receipts := f.receipts(note.ID); len(receipts) != 1 || receipts[0].Metadata["delivery_channel"] != "user_turn" || receipts[0].Metadata["run_id"] != startRun {
+		t.Fatalf("receipts = %+v, want one user_turn delivery in %s", receipts, startRun)
+	}
+	if intents := f.runIntents(); len(intents) != 1 {
+		t.Fatalf("run intents = %+v, want only the original run (the note was delivered in it)", intents)
+	}
+	if n := len(f.requests()); n != 1 {
+		t.Fatalf("provider calls = %d, want 1", n)
 	}
 }
 
@@ -311,17 +394,17 @@ func (f *queuedNoteFixture) assertHandedToNextTurn(note pebblestore.MessageSnaps
 	}
 }
 
-// Purpose: a note appended to a tool result is receipted only after the next
-// provider step that carries that result succeeds. When that step fails, the
-// note gets no receipt in the failed run and is handed to the next turn.
+// Purpose: a note sent with the request after a tool result is receipted only
+// after that provider step succeeds. When that step fails, the note gets no
+// receipt in the failed run and is handed to the next turn.
 // Threat: a note marked delivered (and shown delivered in clients) although no
 // provider response consumed it, then skipped by the claim cursor and dropped.
-// Boundary: QueuedNoteToolInvoker (claim only), runProviderToolLoop
-// (TakeInFlight after a successful step, deferred ReturnInFlight),
-// closeQueuedNotes (Returned notes start the follow-up).
+// Boundary: the step-boundary claim in runProviderToolLoop (TakeInFlight
+// after a successful step, deferred ReturnInFlight), closeQueuedNotes
+// (Returned notes start the follow-up).
 // Narrowest layer: the real executor and HTTP route with a scripted model
 // whose second step fails.
-func TestQueuedNoteInToolResultIsNotReceiptedWhenNextStepFails(t *testing.T) {
+func TestQueuedNoteIsNotReceiptedWhenNextStepFails(t *testing.T) {
 	const steer = "steer-when-the-next-step-fails"
 	// Call 1 posts the note and calls a tool; call 2 (carrying the tool
 	// result) fails; call 3 is the follow-up turn.
@@ -346,14 +429,10 @@ func TestQueuedNoteInToolResultIsNotReceiptedWhenNextStepFails(t *testing.T) {
 		t.Fatalf("mid-run message was not queued: %d %v", code, payload)
 	}
 	note := queuedNoteFromResponse(t, payload)
-	sawInToolResult := false
-	for _, req := range f.requests() {
-		if toolResults, _ := countInInput(req.Input, steer); toolResults == 1 {
-			sawInToolResult = true
-		}
-	}
-	if !sawInToolResult {
-		t.Fatal("the failing step's input never carried the note in a tool result")
+	if requests := f.requests(); len(requests) < 2 {
+		t.Fatalf("provider calls = %d, want the failing step", len(requests))
+	} else if toolResults, userMessages := countInInput(requests[1].Input, steer); toolResults != 0 || userMessages != 1 {
+		t.Fatalf("the failing step carried the note %d times in tool results and %d as user messages, want 0 and 1", toolResults, userMessages)
 	}
 	f.assertHandedToNextTurn(note, failedRun, steer)
 }
@@ -424,16 +503,14 @@ func (f *queuedNoteFixture) appendPlainFeedbackNote(id, content string) {
 	}
 }
 
-// Purpose: in the V3 executor, a feedback note that is not the person's queued
-// note (here shaped like a background command report) never appears inside a
-// tool result or the person-attributed block; it keeps its separate user
-// message at the next step and its user-message receipt, while the person's
-// queued note posted in the same step still rides on the tool result.
-// Threat: raw command or agent text presented to the model as the person's
-// message (prompt-injection escalation), or such a note dropped.
-// Boundary: sessionV3QueuedNoteToolInvoker -> QueuedNoteToolInvoker
-// (ClaimMatching IsQueuedNote), the step-boundary claim in
-// runProviderToolLoop, FormatQueuedNotesBlock.
+// Purpose: in the V3 executor, neither a feedback note that is not the
+// person's (here shaped like a background command report) nor the person's
+// queued note posted in the same step ever appears inside a tool result: each
+// is its own user message in the next request, receipted once on user_turn.
+// Threat: raw command or the person's text folded into tool output, or a note
+// dropped.
+// Boundary: the step-boundary claim in runProviderToolLoop,
+// RecordClaimedFeedbackDelivery.
 // Narrowest layer: the real executor and HTTP route with a scripted model.
 func TestNonPersonFeedbackNoteIsNotDeliveredInToolResult(t *testing.T) {
 	const steer = "person-steer-in-mixed-batch"
@@ -460,21 +537,15 @@ func TestNonPersonFeedbackNoteIsNotDeliveredInToolResult(t *testing.T) {
 	if toolResults, userMessages := countInInput(requests[1].Input, report); toolResults != 0 || userMessages != 1 {
 		t.Fatalf("background note delivered %d times in tool results and %d as user messages, want 0 and 1", toolResults, userMessages)
 	}
-	if toolResults, userMessages := countInInput(requests[1].Input, steer); toolResults != 1 || userMessages != 0 {
-		t.Fatalf("person's note delivered %d times in tool results and %d as user messages, want 1 and 0", toolResults, userMessages)
-	}
-	for _, item := range requests[1].Input {
-		output := stringMapValue(item, "output")
-		if block := strings.Index(output, "<queued_message_from_the_person>"); block >= 0 && strings.Contains(output[block:], report) {
-			t.Fatalf("background note presented as the person's message: %q", output)
-		}
+	if toolResults, userMessages := countInInput(requests[1].Input, steer); toolResults != 0 || userMessages != 1 {
+		t.Fatalf("person's note delivered %d times in tool results and %d as user messages, want 0 and 1", toolResults, userMessages)
 	}
 	startRun := stableSessionsV3PrimaryRunID(f.sessionID, "start-mixed")
 	if receipts := f.receipts("bg-note-1"); len(receipts) != 1 || receipts[0].Metadata["delivery_channel"] != runruntime.FeedbackDeliveryUserTurn || receipts[0].Metadata["run_id"] != startRun {
-		t.Fatalf("background note receipts = %+v, want one user-message delivery in %s", receipts, startRun)
+		t.Fatalf("background note receipts = %+v, want one user-turn delivery in %s", receipts, startRun)
 	}
-	if receipts := f.receipts(note.ID); len(receipts) != 1 || receipts[0].Metadata["delivery_channel"] != runruntime.FeedbackDeliveryToolResult {
-		t.Fatalf("person's note receipts = %+v, want one tool-result delivery", receipts)
+	if receipts := f.receipts(note.ID); len(receipts) != 1 || receipts[0].Metadata["delivery_channel"] != runruntime.FeedbackDeliveryUserTurn || receipts[0].Metadata["run_id"] != startRun {
+		t.Fatalf("person's note receipts = %+v, want one user-turn delivery in %s", receipts, startRun)
 	}
 	if intents := f.runIntents(); len(intents) != 1 {
 		t.Fatalf("run intents = %+v, want only the original run", intents)

@@ -235,7 +235,7 @@ export class SwarmSessionsNamespace {
    *
    * To an idle session the message starts a run (`run_intent`). While the session's run is
    * active, a plain text message is queued instead (`queued: true`, no `run_intent`): the
-   * running agent receives it with its next tool result, or, if the run ends without another
+   * running agent receives it as your message alongside its next tool result, or, if the run ends without another
    * tool call, it starts the next turn. Swarm then appends a `feedback_delivery` system message
    * naming it (`metadata.message_id`). A queued message is ordinary user input: it never
    * approves permissions or changes task scope on its own.

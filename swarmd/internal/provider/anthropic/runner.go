@@ -630,6 +630,25 @@ func buildAnthropicMessages(input []map[string]any, mediaContract provideriface.
 					}
 					blocks = append(blocks, anthropicapi.ContentBlockParamUnion{OfToolResult: &block})
 				}
+				// User input that follows the tool results (a message the
+				// person queued while the tools ran, tool media) belongs to
+				// the same user turn: its own blocks after the tool_result
+				// blocks, never inside a tool result's content.
+				for i+1 < len(input) {
+					next := input[i+1]
+					if _, typed := stringField(next, "type"); typed {
+						break
+					}
+					if role, _ := stringField(next, "role"); !strings.EqualFold(strings.TrimSpace(role), "user") {
+						break
+					}
+					userBlocks, err := buildAnthropicContentBlocks(next["content"], "user", mediaContract, &mediaCount)
+					if err != nil {
+						return nil, err
+					}
+					blocks = append(blocks, userBlocks...)
+					i++
+				}
 				if len(blocks) > 0 {
 					messages = append(messages, anthropicapi.NewUserMessage(blocks...))
 				}
