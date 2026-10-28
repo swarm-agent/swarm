@@ -99,9 +99,37 @@ git_forge() {
 
 # Update (before a job starts, for a folder publishing with sync): bring the
 # forge's base branch into the folder and print where the job starts.
+# Job starts, pushes and agents fetch into the same folder at once: one update
+# at a time per repository (a lock in its shared Git directory), and a fetch
+# that only lost a ref-lock race with another Git process is tried again. Any
+# other failure (network, auth, a missing branch) fails at once with Git's reason.
+fetch_lock_wait="${PUBLISH_GITHUB_LOCK_WAIT:-300}" fetch_tries="${PUBLISH_GITHUB_FETCH_TRIES:-5}"
+[[ $fetch_lock_wait =~ ^[0-9]+$ && $fetch_tries =~ ^[1-9][0-9]*$ ]] || die "PUBLISH_GITHUB_LOCK_WAIT and PUBLISH_GITHUB_FETCH_TRIES must be numbers"
+ref_lock_error='cannot lock ref|unable to create directory for|Unable to create .*\.lock'
+fetch_base() { # fetch_base REF: the forge's base branch into REF, under the folder's publish lock
+  local lock out try
+  lock="$(git_folder rev-parse --path-format=absolute --git-common-dir)/swarm-publish.lock" || die "$folder is not a Git repository"
+  exec {lock_fd}>>"$lock" || die "cannot open the publish lock $lock"
+  flock -w "$fetch_lock_wait" "$lock_fd" || die "another publish update held $lock for ${fetch_lock_wait}s"
+  for ((try = 1; ; try++)); do
+    if out=$(git_forge fetch --quiet --no-tags "$git_base/$REPO.git" "+refs/heads/$base:$1" 2>&1); then
+      [[ -z $out ]] || printf '%s\n' "$out" >&2
+      break
+    fi
+    printf '%s\n' "$out" >&2
+    if (( try >= fetch_tries )) || ! grep -Eq "$ref_lock_error" <<<"$out"; then
+      exec {lock_fd}>&-
+      die "fetch of $base from $REPO failed${out:+: $(tail -n1 <<<"$out")}"
+    fi
+    echo "publish-github: fetch of $base lost a ref lock to another Git process; trying again ($try of $fetch_tries)" >&2
+    sleep "$(( try / 5 )).$(( try * 2 % 10 ))"
+  done
+  exec {lock_fd}>&-
+}
+
 if [[ $action == update ]]; then
   ref="refs/swarm/publish/$base"
-  git_forge fetch --quiet --no-tags "$git_base/$REPO.git" "+refs/heads/$base:$ref" || die "fetch of $base from $REPO failed"
+  fetch_base "$ref"
   echo "$(git_folder rev-parse --verify "$ref^{commit}") $base"
   exit 0
 fi

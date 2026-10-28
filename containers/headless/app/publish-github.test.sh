@@ -99,6 +99,63 @@ out=$(PUBLISH_GITHUB_CONF="$work/publish-github.conf" PUBLISH_GITHUB_API="http:/
 jq -se 'any(.[]; .url == "/app/installations/7/access_tokens" and (.body | fromjson | .permissions == {"contents":"read","metadata":"read"}))' "$work/requests.log" >/dev/null \
   || fail "update asked for more than read access"
 
+# Updates race in one folder (job starts, a push, agents' own fetches). A git
+# shim in front of the real one marks each forge fetch, can hold it open to
+# expose overlap, and can fail it with a ref-lock error or an auth error.
+mkdir -p "$work/bin"
+cat > "$work/bin/git" <<EOF
+#!/usr/bin/env bash
+real=$(command -v git)
+[[ " \$* " == *" fetch "* ]] || exec "\$real" "\$@"
+echo fetch >> "$work/fetches"
+if [[ -s $work/lock-fails ]]; then
+  n=\$(cat "$work/lock-fails"); echo \$((n - 1)) > "$work/lock-fails"
+  if (( n > 0 )); then
+    echo "error: cannot lock ref 'refs/swarm/publish/main': unable to create directory for .git/refs/swarm/publish/main" >&2; exit 1
+  fi
+fi
+[[ ! -e $work/auth-fails ]] || { echo "fatal: Authentication failed for 'https://github.com/example/models.git/'" >&2; exit 128; }
+mkdir "$work/fetching" 2>/dev/null || echo overlap >> "$work/overlap"
+sleep 0.3
+"\$real" "\$@"; status=\$?
+rmdir "$work/fetching" 2>/dev/null
+exit \$status
+EOF
+chmod +x "$work/bin/git"
+update() {
+  PATH="$work/bin:$PATH" PUBLISH_GITHUB_CONF="$work/publish-github.conf" PUBLISH_GITHUB_API="http://127.0.0.1:$(cat "$work/port")" PUBLISH_GITHUB_GIT="file://$work/git" \
+    SWARM_PUBLISH_ACTION=update SWARM_PUBLISH_FOLDER="$work/folder" SWARM_PUBLISH_BASE_BRANCH=dev bash "$here/publish-github.sh"
+}
+
+# Concurrent updates of one folder all succeed, one fetch at a time.
+pids=()
+for i in 1 2 3 4; do update >"$work/update.$i" 2>&1 & pids+=($!); done
+for i in 1 2 3 4; do wait "${pids[$((i - 1))]}" || fail "concurrent update $i failed: $(cat "$work/update.$i")"; done
+for i in 1 2 3 4; do [[ $(tail -n1 "$work/update.$i") == "$merged main" ]] || fail "concurrent update $i printed: $(cat "$work/update.$i")"; done
+[[ ! -e $work/overlap ]] || fail "publish fetches into one folder overlapped"
+[[ $(wc -l <"$work/fetches") == 4 ]] || fail "concurrent updates did not each fetch once"
+
+# A fetch that lost a ref lock to another Git process is tried again.
+rm -f "$work/fetches"; echo 2 > "$work/lock-fails"
+out=$(update 2>&1) || fail "an update did not retry a ref-lock error: $out"
+[[ $(tail -n1 <<<"$out") == "$merged main" ]] || fail "retried update printed: $out"
+[[ $(wc -l <"$work/fetches") == 3 ]] || fail "a ref-lock error was not retried twice then fetched: $out"
+grep -q "trying again (2 of 5)" <<<"$out" || fail "the retry is not reported: $out"
+
+# A ref-lock error that never clears gives up after the bounded tries.
+rm -f "$work/fetches"; echo 99 > "$work/lock-fails"
+if out=$(PUBLISH_GITHUB_FETCH_TRIES=3 update 2>&1); then fail "a lasting ref-lock error was reported as fetched: $out"; fi
+[[ $(wc -l <"$work/fetches") == 3 ]] || fail "a lasting ref-lock error was not tried exactly 3 times: $out"
+grep -q "fetch of main from example/models failed: error: cannot lock ref" <<<"$out" || fail "the lasting lock error is not named: $out"
+rm -f "$work/lock-fails"
+
+# Any other fetch failure (auth, network) is not retried and keeps its reason.
+rm -f "$work/fetches"; touch "$work/auth-fails"
+if out=$(update 2>&1); then fail "a failed fetch was reported as fetched: $out"; fi
+[[ $(wc -l <"$work/fetches") == 1 ]] || fail "a non-lock fetch failure was retried: $out"
+grep -q "fetch of main from example/models failed: fatal: Authentication failed" <<<"$out" || fail "the fetch failure lost its reason: $out"
+rm -f "$work/auth-fails" "$work/fetches"
+
 # The removed land action is refused before any token request or push.
 before=$(wc -l <"$work/requests.log")
 if out=$(SWARM_PUBLISH_ACTION=land run 2>&1); then fail "land action accepted: $out"; fi
