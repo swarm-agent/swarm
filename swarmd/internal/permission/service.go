@@ -635,18 +635,15 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 			return result, err
 		}
 	}
-	// The person's machine: the session's access decides before any call
-	// reaches their app (machineToolRefusal).
-	if name := normalizePolicyToolName(input.ToolName); pebblestore.IsMachineToolName(name) {
-		if reason := s.machineToolRefusal(sessionID, name); reason != "" {
-			return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: reason, Source: "session_access"}, nil
+	// A request for the person's machine or browser: access is the target
+	// device's account rule, so the request is answered from that rule and
+	// never reaches their app (deviceAccessRequestAnswer).
+	if name := normalizePolicyToolName(input.ToolName); name == pebblestore.MachineToolRequestAccess || name == pebblestore.BrowserToolRequestAccess {
+		reason, err := s.deviceAccessRequestAnswer(input)
+		if err != nil {
+			return AuthorizationResult{}, err
 		}
-	}
-	// The person's browser: the session's lease decides (browserToolRefusal).
-	if name := normalizePolicyToolName(input.ToolName); pebblestore.IsBrowserToolName(name) {
-		if reason := s.browserToolRefusal(sessionID, name, time.Now().UnixMilli()); reason != "" {
-			return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: reason, Source: "session_access"}, nil
-		}
+		return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: reason, Source: "account_permissions"}, nil
 	}
 	if input.InputBoundary && explain.Decision != PolicyDecisionDeny {
 		return s.createPendingAuthorization(input, sessionID, RequirementClientTool, "client tool result required", "client_tool", "client tool call")
@@ -2718,21 +2715,4 @@ func (s *Service) sessionTasksStartFreely(sessionID string) bool {
 	}
 	access, err := s.store.GetAccountPermissions(session.AccountScopeID)
 	return err == nil && access.Tasks == "auto"
-}
-
-// machineToolRefusal says why a machine tool call may not reach the person's
-// app, or "" when it may. Without machine access only the request goes
-// through; with access the request is refused, so the person is never asked
-// twice. Whether each command runs at once or waits for the person (access
-// ask or full) is their app's to enforce, since it runs the command.
-func (s *Service) machineToolRefusal(sessionID, name string) string {
-	return "change the files and terminal rule on that device's Permissions page (/v3/permissions); request_machine_access cannot grant access"
-}
-
-// browserToolRefusal is why a browser tool call may not reach the person's
-// app: manage_browser without a live lease. A request while one is live is
-// how the agent asks for more sites or more time, so it goes through.
-// The lease is the session's access record; past its end it counts as none.
-func (s *Service) browserToolRefusal(sessionID, name string, now int64) string {
-	return "change the browser rule on that device's Permissions page (/v3/permissions); request_browser_access cannot grant access"
 }
