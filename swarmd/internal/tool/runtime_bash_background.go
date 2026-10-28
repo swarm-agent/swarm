@@ -225,7 +225,12 @@ func (b *backgroundCommands) adopt(c *backgroundCommand) error {
 		return fmt.Errorf("this account already has %d background commands running (limit %d)", account, maxBackgroundCommandsPerAccount)
 	}
 	c.mu.Lock()
-	if c.finished() || c.stopped {
+	// The completing goroutine sets state and decides whether to report under
+	// c.mu, but closes done only after unlocking. Testing state (not only
+	// done) closes that window: once the outcome is recorded the command is
+	// never adopted, so a "moved to the background" answer always has a
+	// report coming.
+	if c.state != backgroundStateRunning || c.finished() || c.stopped {
 		c.mu.Unlock()
 		return errBackgroundCommandEnded
 	}

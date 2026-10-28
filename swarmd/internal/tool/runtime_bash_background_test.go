@@ -48,6 +48,7 @@ type bgFixture struct {
 	runtime    *Runtime
 	sessions   *sessionruntime.Service
 	store      *pebblestore.SessionStore
+	db         *pebblestore.Store
 	controller *bgFakeController
 	workspace  string
 	principal  identity.Principal
@@ -73,6 +74,7 @@ func newBGFixture(t *testing.T, sessionIDs ...string) *bgFixture {
 	f := &bgFixture{
 		sessions:   sessionruntime.NewService(store, events),
 		store:      store,
+		db:         db,
 		controller: &bgFakeController{enqueued: make(chan string, 16)},
 		workspace:  workspace,
 		principal:  identity.Principal{Type: identity.PrincipalTypeUser, UserID: "bg-user", AccountScopeID: "bg-account"},
@@ -690,4 +692,130 @@ func TestBackgroundBashRefusedWhereItCannotReportOrMustNotDetach(t *testing.T) {
 	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
 		t.Fatal("refused command ran")
 	}
+}
+
+func TestBackgroundBashAdoptRefusesCommandWhoseOutcomeIsRecorded(t *testing.T) {
+	// Purpose: a command that ends right at its time limit is either adopted
+	// before its outcome is recorded (and then reports back) or not adopted
+	// at all (and the call answers in the foreground). It is never answered
+	// "moved to the background" with no report coming.
+	// Threat: the completing goroutine in launch records the state and
+	// decides report=false under c.mu, then unlocks before close(c.done).
+	// If adopt only checked done it adopted the command in that window: the
+	// tool said "moved to the background" and the report was silently lost.
+	// Owner: backgroundCommands.adopt (the timer branch of the bash tool calls
+	// it). Layer: the window sits between two statements of one goroutine, so
+	// the test builds that exact state directly instead of racing a process.
+	f := newBGFixture(t, "s-race")
+	newCommand := func() *backgroundCommand {
+		return f.runtime.background.start(context.Background(), f.scope("s-race"), "true", "host", &bashOutputSink{tail: newTailBuffer(1024)}, false)
+	}
+
+	ended := newCommand()
+	defer ended.cancel()
+	// The goroutine's locked section: outcome and state recorded, report
+	// decided while not adopted. done is still open.
+	ended.mu.Lock()
+	ended.outcome = bashOutcome{exitCode: 0}
+	ended.state = backgroundStateExited
+	willReport := ended.adopted && !ended.stopped && !ended.killed
+	ended.mu.Unlock()
+	if willReport || ended.finished() {
+		t.Fatal("fixture is not in the unlock-before-close window")
+	}
+	if err := f.runtime.background.adopt(ended); !errors.Is(err, errBackgroundCommandEnded) {
+		t.Fatalf("adopt in the window = %v, want errBackgroundCommandEnded", err)
+	}
+	ended.mu.Lock()
+	adopted := ended.adopted
+	ended.mu.Unlock()
+	if adopted {
+		t.Fatal("command adopted after its report decision: its report would be lost")
+	}
+	if _, err := f.runtime.background.get("s-race", ended.id); err == nil {
+		t.Fatal("refused command registered in the conversation")
+	}
+	if f.runtime.SessionBackgroundCommandsRunning("s-race") {
+		t.Fatal("refused command counted as running")
+	}
+
+	// Control: a command whose outcome is not yet recorded is adopted, so the
+	// check does not refuse every command at the limit.
+	running := newCommand()
+	if err := f.runtime.background.adopt(running); err != nil {
+		t.Fatalf("adopt of a running command: %v", err)
+	}
+	if _, err := f.runtime.background.get("s-race", running.id); err != nil {
+		t.Fatalf("adopted command not readable: %v", err)
+	}
+	f.runtime.StopSessionBackgroundCommands("s-race", "test cleanup")
+}
+
+func TestBackgroundBashDeletingConversationStopsAutomationChildCommands(t *testing.T) {
+	// Purpose: deleting a conversation also deletes its automation child
+	// sessions; their background commands must be killed and forgotten too.
+	// Threat: children were deleted without notifying the tombstone observer,
+	// so their commands ran on for up to the hard limit, their completion was
+	// silently dropped, and lease liveness kept their leases.
+	// Owners: session.Service.tombstoneSessionsWithEventsExpected (delete
+	// funnel and observer), Runtime.StopSessionBackgroundCommands.
+	// Layer: the real session service delete path over a real store holding
+	// the automation occurrence that links the child, with a real process.
+	f := newBGFixture(t, "s-parent", "s-child", "s-bystander")
+	f.sessions.SetTombstoneObserver(func(sessionID, kind string) {
+		f.runtime.StopSessionBackgroundCommands(sessionID, "conversation "+kind)
+	})
+	// The occurrence record that links an automation child to its authoring
+	// conversation (layout of SessionStore.ListAutomationV2ChildSessionIDs).
+	occurrenceKey := fmt.Sprintf("automation/v2/occurrence/%x/%x/%s", f.principal.AccountScopeID, "s-parent", "occ-1")
+	if err := f.db.PutJSON(occurrenceKey, pebblestore.AutomationV2Occurrence{ID: "occ-1", SessionID: "s-child"}); err != nil {
+		t.Fatal(err)
+	}
+	children, err := f.store.ListAutomationV2ChildSessionIDs(f.principal.AccountScopeID, "s-parent")
+	if err != nil || len(children) != 1 || children[0] != "s-child" {
+		t.Fatalf("child link = %v, %v; want [s-child]", children, err)
+	}
+
+	start := func(sessionID string) (string, int, *backgroundCommand) {
+		pidFile := filepath.Join(t.TempDir(), "pid")
+		payload, err := f.bash(t, sessionID, map[string]any{"command": "sleep 30 & echo $! > '" + pidFile + "'; wait", "background": true, "category": "write"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := payload["background_id"].(string)
+		return id, readPID(t, pidFile), f.command(t, sessionID, id)
+	}
+	childID, childPID, child := start("s-child")
+	_, bystanderPID, bystander := start("s-bystander")
+	defer func() { _ = syscall.Kill(bystanderPID, syscall.SIGKILL) }()
+
+	if _, err := f.sessions.DeleteSessionsWithEvents([]string{"s-parent"}); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, child)
+	deadline := time.Now().Add(bgTestWait)
+	for processAlive(childPID) && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if processAlive(childPID) {
+		_ = syscall.Kill(childPID, syscall.SIGKILL)
+		t.Fatalf("child background process %d survived its deletion", childPID)
+	}
+	if f.runtime.SessionBackgroundCommandsRunning("s-child") {
+		t.Fatal("deleted child still running for lease liveness")
+	}
+	if _, err := f.runtime.background.get("s-child", childID); err == nil {
+		t.Fatal("deleted child's command still readable")
+	}
+	select {
+	case got := <-f.reported:
+		t.Fatalf("killed child command reported %s", got)
+	case <-time.After(200 * time.Millisecond):
+	}
+	// An unrelated conversation is untouched.
+	if bystander.finished() || !processAlive(bystanderPID) {
+		t.Fatal("deleting another conversation stopped an unrelated command")
+	}
+	f.runtime.StopSessionBackgroundCommands("s-bystander", "test cleanup")
+	waitDone(t, bystander)
 }

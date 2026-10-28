@@ -510,6 +510,7 @@ func (s *Service) tombstoneSessionsWithEventsExpected(sessionIDs []string, kind 
 			}
 		}
 	}
+	var deletedChildIDs []string
 	if kind == "archived" {
 		err := s.store.ArchiveSessions(normalizedIDs)
 		if err != nil {
@@ -518,7 +519,9 @@ func (s *Service) tombstoneSessionsWithEventsExpected(sessionIDs []string, kind 
 	} else {
 		for _, session := range sessions {
 			if childIDs, err := s.store.ListAutomationV2ChildSessionIDs(session.AccountScopeID, session.ID); err == nil && len(childIDs) > 0 {
-				_ = s.store.DeleteSessions(childIDs)
+				if s.store.DeleteSessions(childIDs) == nil {
+					deletedChildIDs = append(deletedChildIDs, childIDs...)
+				}
 			}
 		}
 		if err := s.store.DeleteSessions(normalizedIDs); err != nil {
@@ -526,7 +529,9 @@ func (s *Service) tombstoneSessionsWithEventsExpected(sessionIDs []string, kind 
 		}
 	}
 	if s.tombstoneObserver != nil {
-		for _, sessionID := range normalizedIDs {
+		// Deleted automation children lose their conversation too, so their
+		// runtime resources (background commands, lease liveness) are released.
+		for _, sessionID := range append(deletedChildIDs, normalizedIDs...) {
 			s.tombstoneObserver(sessionID, kind)
 		}
 	}
