@@ -1244,6 +1244,8 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 		// outcome is reconciled here without another provider step.
 		e.publishTaskWaitState(job)
 		e.server.reconcileProjectTaskWaits(job.Principal.AccountScopeID, "")
+		// A wait on a linked machine's tasks is resolved from that machine.
+		e.server.watchRemoteTaskWait(job.SessionID, job.RunID)
 		return
 	}
 	if errors.Is(err, errSessionV3StaleProviderAttempt) {

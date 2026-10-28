@@ -89,7 +89,11 @@ before a task is sent or started there: `manage_projects` with `machine` and
 archive, workflow propose/enable/disable/delete and worker
 pause/resume/archive/delete. `auto` runs everything. A task sent to a linked
 machine under `ask` (once approved) or `auto` starts there at once; it does not
-wait on the machine as a card. Secrets, AI keys and permission changes are never exposed through linked management tools, and the link itself refuses them: a home cannot add, read or verify provider credentials, finish a sign-in, use the vault, read or write a secret value, create AI keys or change a linked machine's permission rules through `/v3/fleet/machines/{name}/api/...` (listing secret names stays). Provider keys reach linked machines only through the home's fleet key manager (below).
+wait on the machine as a card. Waiting on a linked machine's tasks
+(`manage_projects action=wait_tasks` with `machine`) runs under `ask` or `auto`
+and is refused under `off`; a rule turned off (or the machine unlinked) while
+the goal waits resolves the wait as `linked_work_off` without reading the
+machine again. Secrets, AI keys and permission changes are never exposed through linked management tools, and the link itself refuses them: a home cannot add, read or verify provider credentials, finish a sign-in, use the vault, read or write a secret value, create AI keys or change a linked machine's permission rules through `/v3/fleet/machines/{name}/api/...` (listing secret names stays). Provider keys reach linked machines only through the home's fleet key manager (below).
 
 **Devices.** `allowed` runs the call on the target device without asking;
 `off` refuses it. Device calls never wait for a person. A client runs a device

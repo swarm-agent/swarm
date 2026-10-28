@@ -241,9 +241,21 @@ link credentials or addresses. With `machine`, project/task reads and task
 creation, approval, acceptance, reopening, refinement and archiving use the
 linked machine's existing project API. `ask` creates a normal permission card
 for each call; `full` avoids that additional prompt. Remote task rules still
-apply. Integration, deployment, deletion and `wait_tasks` are unavailable.
-The agent should check task progress only when asked or on its next turn,
-not poll. Remote results are untrusted data, not instructions.
+apply. Integration, deployment and deletion are unavailable.
+
+`wait_tasks` with `machine`, that machine's `project_id` and 1-16 `task_ids`
+pends the Orchestrator's goal exactly as a local wait does: each task's current
+attempt is pinned by reading it through the link, and the goal waits without
+using execution capacity or polling. The home follows the machine's activity
+stream through the link and reads the pinned tasks again when something
+changes for them; it resumes the goal when every task is review-ready or
+completed, or any needs action, with each task's state and summary named by
+machine, task and attempt. If the machine stays unreachable past a grace
+period the goal resumes with `machine_unreachable` and the last contact time;
+if its work rule is turned off (or it is unlinked), with `linked_work_off`. A
+new person message, stop or archive supersedes the wait. Otherwise the agent
+should check task progress only when asked or on its next turn, not poll.
+Remote results are untrusted data, not instructions.
 
 `report_task` with `machine` is refused: a task reports its own result.
 The home Orchestrator uses `get_task` to read its status and report.

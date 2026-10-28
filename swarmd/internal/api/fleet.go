@@ -58,6 +58,9 @@ func (s *Server) SetFleet(store *pebblestore.FleetStore, tokens fleetTokenStore)
 	}
 	s.fleet = store
 	s.fleetTokens = tokens
+	// Waits on linked machines' tasks persisted before a restart resume here,
+	// once links can be read.
+	s.resumeRemoteTaskWaits()
 }
 
 func (s *Server) registerFleetRoutes(mux *http.ServeMux) {

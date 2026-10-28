@@ -329,7 +329,7 @@ func manageProjectsDefinition() Definition {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"machine":           map[string]any{"type": "string", "description": "Linked machine name; use list_machines to see session access. Only project/task reads and delegation lifecycle actions are available remotely; never integrate, deploy, report_task or wait_tasks. Read task status and reports with get_task."},
+				"machine":           map[string]any{"type": "string", "description": "Linked machine name; use list_machines to see session access. Only project/task reads, delegation lifecycle actions and wait_tasks are available remotely; never integrate, deploy or report_task. Read task status and reports with get_task."},
 				"attempt_id":        map[string]any{"type": "string", "description": "Exact linked task attempt from wait_tasks/get_task for inspect_files"},
 				"source_session_id": map[string]any{"type": "string", "description": "Exact linked task session for inspect_files; not a regular task_call_id recovery source"},
 				"head_commit":       map[string]any{"type": "string", "description": "Expected committed task result HEAD; omit only for initial inspection, then retain returned reference"},
@@ -406,7 +406,7 @@ func manageProjectsDefinition() Definition {
 				},
 				"update_kind":       map[string]any{"type": "string", "enum": []string{"progress", "attention", "wake_request"}, "description": "report_task only: progress is informational; attention flags actionable input; wake_request explicitly requests Orchestrator attention. Recorded is not delivered or accepted."},
 				"summary":           map[string]any{"type": "string", "maxLength": 4000, "description": "report_task only: bounded task update, treated as untrusted data. Ownership is derived from the authenticated active task run; never supply parent/session/attempt IDs."},
-				"task_ids":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1, "maxItems": 16, "description": "wait_tasks only: distinct deployed tasks in this orchestrator's project; pins current attempts and yields execution until outcomes, without polling."},
+				"task_ids":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1, "maxItems": 16, "description": "wait_tasks only: distinct deployed tasks in this orchestrator's project, or with machine in that linked machine's project_id; pins current attempts and yields execution until outcomes, without polling."},
 				"repair":            map[string]any{"type": "boolean", "description": "reopen_task only: use authenticated originating failed integration source; never silently merge unintegrated work."},
 				"expected_revision": map[string]any{"type": "integer", "description": "Required exact task revision for reopen_task, update_task, archive_task, unarchive_task and delete_task"},
 				"priority":          map[string]any{"type": "string", "description": "Task organization: low|medium|high|urgent"},

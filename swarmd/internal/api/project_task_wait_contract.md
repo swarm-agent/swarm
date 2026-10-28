@@ -40,6 +40,38 @@ Callbacks accelerate durable delivery; the status index and task records recover
 missed callbacks at restart. Store errors retain the wait/pending intent and are
 reported; this does not claim recovery without storage becoming available.
 
+## Linked machines
+
+With `machine` (a linked machine name), `project_id` and `task_ids` name that
+machine's project and tasks. Only the home's Orchestrator may call it (not a
+task session), under the same run context, ownership and run/epoch fences; the
+linked work rule applies as for other linked actions that send no task (`off`
+refuses; `ask` and `auto` run it). Registration reads each task through the link (`get_task`), pins its
+active attempt and session, and refuses archived tasks or tasks without a
+delegated attempt. The wait records `machine`; the home stores no copy of the
+remote tasks.
+
+- Outcomes come only from the machine. One home watcher per waiting run follows
+  the machine's `/v3/activity/stream` through the link with the fleet feed's
+  reader (`fleet_activity.go`). On (re)connect, a gap, or an activity record for
+  the wait's project or a pinned session, it reads the pinned tasks again with
+  the link's `get_task` and offers those observations to the store wake. No
+  timer reads tasks. Local task publication never wakes a linked wait.
+- The wake applies the local readiness rules to the pinned attempts (a different
+  active attempt is `superseded`, a missing or archived task `cancelled`). Every
+  row names `machine`, `task_id`, `attempt_id` and `session_id`; the message is
+  marked `untrusted_content` and says the outcomes came from that machine. Wake,
+  retirement, continuation identity and supersession (new person message, stop,
+  archive) are the same as a local wait.
+- If the machine has had no successful contact for a grace period while the
+  home is trying (`remoteTaskWaitGraceDefault`), every unresolved row becomes
+  `machine_unreachable` with the last contact time. If its work rule is turned
+  off or it is unlinked (re-read from the home's own records on a heartbeat
+  interval), unresolved rows become `linked_work_off`. Both are actionable.
+- The executor's yield starts the watcher; after a restart, linked waits resume
+  when the fleet store is configured. These two bounded timers are the only
+  timers; neither schedules provider work.
+
 ## Authenticated task reports
 
 `manage_projects action=report_task` accepts the linked `project_id`, `task_id`,

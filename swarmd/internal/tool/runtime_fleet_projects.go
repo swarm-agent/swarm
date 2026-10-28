@@ -54,7 +54,7 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 		action = "list"
 	}
 	machine := strings.TrimSpace(asString(args["machine"]))
-	if machine != "" && !FleetProjectActionAllowed(action) {
+	if machine != "" && !FleetProjectActionAllowed(action) && action != "wait_tasks" {
 		return "", fmt.Errorf("%s is not available on a linked machine", action)
 	}
 	machines, err := service.ListFleetMachines(ctx, scope.Principal)
@@ -79,6 +79,9 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 	if !linked || !pebblestore.LinkedWorkOn(access.Link(machine).Work) {
 		return "", fmt.Errorf("linked work rule for machine %q is off or the machine is not linked; check the Permissions page", machine)
 	}
+	if action == "wait_tasks" {
+		return r.executeFleetWaitTasks(ctx, scope, service, machine, args)
+	}
 	// The linked rule is the only gate before a task starts there: under auto
 	// it runs, and under ask the person approved this call before it ran. A
 	// task sent to the machine therefore starts at once and never waits on
@@ -96,5 +99,78 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 		return "", err
 	}
 	out, err := json.Marshal(map[string]any{"machine": machine, "action": action, "data": raw, "untrusted_content": true})
+	return string(out), err
+}
+
+// FleetWaitPermissionAllowed is the permission gate's view of remote waiting:
+// wait_tasks with machine reads the machine's tasks through the link and pends
+// this home's goal. It is never a generic CallFleetProject operation.
+func FleetWaitPermissionAllowed(name, action string) bool {
+	return name == "manage_projects" && action == "wait_tasks"
+}
+
+// executeFleetWaitTasks pins each selected task's current attempt by reading it
+// through the link (get_task), then durably pends this run exactly as a local
+// wait does. Outcomes later arrive from the machine's activity stream and the
+// same link reads; the agent never polls.
+func (r *Runtime) executeFleetWaitTasks(ctx context.Context, scope WorkspaceScope, service FleetProjects, machine string, args map[string]any) (string, error) {
+	run, ok := VideoRunContextFromContext(ctx)
+	if !ok || run.SessionID != scope.SessionID {
+		return "", errors.New("wait_tasks requires trusted current provider run context")
+	}
+	projectID := strings.TrimSpace(asString(args["project_id"]))
+	if projectID == "" {
+		return "", errors.New("project_id is required")
+	}
+	var ids []string
+	raw, err := json.Marshal(args["task_ids"])
+	if err != nil {
+		return "", err
+	}
+	if err := json.Unmarshal(raw, &ids); err != nil || len(ids) == 0 || len(ids) > 16 {
+		return "", errors.New("task_ids must contain 1-16 task IDs")
+	}
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if strings.TrimSpace(id) == "" || id != strings.TrimSpace(id) || seen[id] {
+			return "", errors.New("wait_tasks requires distinct task IDs")
+		}
+		seen[id] = true
+	}
+	targets := make([]pebblestore.V3ProjectTaskWaitTarget, 0, len(ids))
+	for _, id := range ids {
+		read, err := service.CallFleetProject(ctx, scope.Principal, machine, "get_task", map[string]any{"project_id": projectID, "task_id": id})
+		if err != nil {
+			return "", err
+		}
+		var response struct {
+			Task pebblestore.ProjectTaskRecord `json:"task"`
+		}
+		if err := json.Unmarshal(read, &response); err != nil || response.Task.ID != id || response.Task.ProjectID != projectID {
+			return "", fmt.Errorf("%s returned an unexpected record for task %s", machine, id)
+		}
+		task := response.Task
+		if task.Archived {
+			return "", fmt.Errorf("task %s on %s is archived", id, machine)
+		}
+		task.EnsureTaskAttempts()
+		attempt := task.ActiveAttempt()
+		if attempt == nil || attempt.ID == "" || attempt.SessionID == "" {
+			return "", fmt.Errorf("task %s on %s has no delegated attempt; obtain task approval/deployment first", id, machine)
+		}
+		targets = append(targets, pebblestore.V3ProjectTaskWaitTarget{TaskID: id, AttemptID: attempt.ID, SessionID: attempt.SessionID})
+	}
+	key := "task-wait:" + run.RunID
+	payload, _ := json.Marshal(targets)
+	mutation, err := r.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
+		SessionID: scope.SessionID, UserID: scope.Principal.UserID, AccountScopeID: scope.Principal.AccountScopeID,
+		Kind: pebblestore.V3SessionMutationRecordRunIntent, EventType: "session.run.waiting_tasks",
+		ClientRequestID: key, PayloadHash: machine + "\x00" + projectID + string(payload),
+		TaskWait: &pebblestore.V3ProjectTaskWaitMutation{RunID: run.RunID, ProjectID: projectID, TaskIDs: ids, Machine: machine, RemoteTargets: targets},
+	})
+	if err != nil {
+		return "", err
+	}
+	out, err := json.Marshal(map[string]any{"tool": "manage_projects", "action": "wait_tasks", "machine": machine, "project_id": projectID, "status": "waiting_tasks", "run_id": run.RunID, "next_action": "yield_until_task_outcome", "event_seq": mutation.PrimarySeq, "task_ids": ids, "tasks": targets, "untrusted_content": true})
 	return string(out), err
 }

@@ -117,6 +117,10 @@ type Server struct {
 	v3RealtimeOutbox        *v3RealtimeOutboxHub
 	sessionChanges          *sessionChangeNotifier // wakes session long-polls after a V3 change commits
 	activityStreams         atomic.Int64
+	remoteTaskWaitMu        sync.Mutex      // linked-machine task waits (project_task_wait_remote.go)
+	remoteTaskWaitRuns      map[string]bool // one watcher per waiting run
+	remoteTaskWaitGrace     time.Duration   // unreachable grace; zero means the default
+	remoteTaskWaitRules     time.Duration   // work-rule re-read period; zero means the default
 	v3LiveHub               *v3LiveHub
 	v3LivePatchEnabled      bool
 	v3SyncCursors           *v3SyncCursorKeyring

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"log"
 
-	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -22,17 +21,7 @@ func (s *Server) reconcileProjectTaskWaits(account, project string) {
 	if s == nil || s.sessions == nil {
 		return
 	}
-	err := s.sessions.Store().ReconcileProjectTaskWaits(account, project, func(result pebblestore.V3SessionMutationResult) {
-		if result.RealtimeOutbox != nil {
-			if err := s.publishCommittedV3RealtimeOutbox(*result.RealtimeOutbox); err != nil {
-				log.Print("task wait outbox publication failed; durable recovery retained")
-			}
-		}
-		if e := s.v3SessionExecutor; e != nil && result.RunIntent != nil {
-			intent := result.RunIntent
-			e.EnqueueRun(sessionV3ExecutorJob{SessionID: intent.SessionID, RunID: intent.RunID, SourceMessageID: intent.SourceMessageID, EpochID: intent.EpochID, ResumeContext: true, Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: intent.UserID, AccountScopeID: intent.AccountScopeID}})
-		}
-	})
+	err := s.sessions.Store().ReconcileProjectTaskWaits(account, project, s.publishProjectTaskWake)
 	if err != nil {
 		log.Printf("project task wait reconciliation failed: %v", err)
 	}

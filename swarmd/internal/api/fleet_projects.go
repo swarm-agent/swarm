@@ -112,7 +112,7 @@ func (s *Server) CallFleetProject(ctx context.Context, p identity.Principal, mac
 		// what to change; a call that never got an answer says only that.
 		var refused *fleet.Error
 		if errors.As(err, &refused) {
-			return nil, fmt.Errorf("%s refused %s: %s", machine, action, refused.Error())
+			return nil, fmt.Errorf("%s refused %s: %w", machine, action, refused)
 		}
 		return nil, fmt.Errorf("could not reach linked machine %s", machine)
 	}
