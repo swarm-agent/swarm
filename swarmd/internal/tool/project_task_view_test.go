@@ -236,21 +236,25 @@ func TestManageProjectsGetTaskCompactByDefault(t *testing.T) {
 	}
 }
 
-// Purpose: get_task reports only a task's own committed output. A folder task
-// (no worktree branch, working in the person's folder) answers with the head
-// frozen in its integration receipt at completion; a worktree task answers
-// from refs/heads/<its branch>, not whatever the checkout's HEAD is now.
+// Purpose: get_task reports a task's own committed output and all of it. A
+// folder task (no worktree branch, working in the person's folder) delivered
+// in_folder answers with base..the head frozen in its integration receipt at
+// completion, including the files it committed (as the task route does); a
+// worktree task answers from refs/heads/<its branch>, not whatever the
+// checkout's HEAD is now.
 // Threat: the live read used the checkout's HEAD on every get_task, so later
 // folder commits by the person or other tasks, or a checkout moved to another
 // branch, were reported as this task's head, files and detail=files list,
-// breaking the rule that folder delivery is frozen when the run ends.
-// Owners: projectTaskWorktreeResult (branch-only, refs/heads read) and
+// breaking the rule that folder delivery is frozen when the run ends; and a
+// folder task that committed files reported files 0 and an empty list,
+// including when progress (no unintegrated commits) overrode the count.
+// Owners: projectTaskWorktreeResult (fixed-range read) and
 // compactProjectTask / projectTaskFilesDetail through
 // Runtime.executeManageProjects get_task, over a temp Pebble store and real
 // temp Git repositories; the tool entry is the narrowest layer that proves the
 // agent-visible answer.
 func TestManageProjectsGetTaskResultIsTheTasksOwn(t *testing.T) {
-	_, store := openTaskViewStore(t)
+	db, store := openTaskViewStore(t)
 	const account, project = "acct-own", "proj-own"
 	if err := store.PutProject(account, &pebblestore.ProjectRecord{ID: project, AccountID: account, Name: "Own"}); err != nil {
 		t.Fatal(err)
@@ -304,11 +308,30 @@ func TestManageProjectsGetTaskResultIsTheTasksOwn(t *testing.T) {
 	}
 	later := commitFile(folder, "later.go")
 	raw, v := read("folder-task", nil)
-	if v.Result == nil || v.Result.Head != taskHead || v.Result.Files != 0 || v.Result.Commits != 0 || strings.Contains(raw, later) {
-		t.Fatalf("folder task reports the folder's later commit: %s", raw)
+	if v.Result == nil || v.Result.Head != taskHead || v.Result.Files != 1 || v.Result.Commits != 1 || strings.Contains(raw, later) {
+		t.Fatalf("folder task result is not exactly its own commit: %s", raw)
 	}
-	if raw, _ := read("folder-task", map[string]any{"detail": "files"}); strings.Contains(raw, "later.go") || strings.Contains(raw, later) || strings.Contains(raw, "task.go") {
-		t.Fatalf("folder task detail=files reads the live folder: %s", raw)
+	if raw, _ := read("folder-task", map[string]any{"detail": "files"}); strings.Contains(raw, "later.go") || strings.Contains(raw, later) || !strings.Contains(raw, `"files":["task.go"]`) {
+		t.Fatalf("folder task detail=files is not its own range: %s", raw)
+	}
+	// Progress reports no unintegrated commits for an in_folder task; that
+	// must not erase the task's own count.
+	db.SetProjectTaskProgress(func(string, pebblestore.ProjectTaskRecord) any {
+		return map[string]any{"state": "integrated", "summary": "integrated in the folder", "integration": map[string]any{"state": "integrated", "branch": "dev", "commits": 0}}
+	})
+	if raw, v := read("folder-task", nil); v.Result == nil || v.Result.Files != 1 || v.Result.Commits != 1 || v.Result.Head != taskHead || v.NextAction != "none" {
+		t.Fatalf("progress erased the folder task's own count: %s", raw)
+	}
+	db.SetProjectTaskProgress(nil)
+	// A folder task without a frozen in_folder receipt is never read live.
+	if _, err := store.UpdateProjectTask(account, project, "folder-task", func(task *pebblestore.ProjectTaskRecord) error {
+		task.Integration = nil
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if raw, v := read("folder-task", nil); strings.Contains(raw, later) || strings.Contains(raw, taskHead) || (v.Result != nil && v.Result.Files != 0) {
+		t.Fatalf("folder task without a receipt read the live folder: %s", raw)
 	}
 
 	// Worktree task whose checkout moved off its branch onto another one
@@ -463,10 +486,12 @@ func TestManageProjectsTaskMutationsAnswerCompactRow(t *testing.T) {
 // this machine's: get_task within its budget with the decision fields,
 // mutations to the row with the resolved model as one field, detail=full
 // byte-identical to what the machine answered, and an answer without a task
-// reduced to its top-level text and numbers.
+// reduced to its top-level text and numbers. A linked folder task's counts
+// come from the route's top-level commits/files (its frozen range).
 // Threat: the linked forward passed every non-list answer through raw
 // (~3.7 KB per propose_task, ~8 KB per get_task), and a malformed answer
-// could be forwarded as-is.
+// could be forwarded as-is; a linked folder task that committed files
+// reported files 0.
 // Owners: CompactProjectTaskAnswer, the compactor executeFleetProjects
 // applies after the home records the linked task. Pure function over the
 // task routes' JSON shape; the two-daemon path is covered in the api tests.
@@ -529,6 +554,38 @@ func TestCompactProjectTaskAnswerLinked(t *testing.T) {
 	if _, err := CompactProjectTaskAnswer("get_task", "", json.RawMessage(`[not json`)); err == nil {
 		t.Fatal("malformed answer accepted")
 	}
+	// A linked folder task delivered in_folder: the route lists its frozen
+	// range at top level, and the default view counts it.
+	folder := heavyFinishedTask("remote-account", "remote-project", "remote-folder")
+	folder.Status, folder.WorktreeBranch, folder.DeliveryAssessment, folder.UnintegratedCommits = "completed", "", nil, 0
+	folderHead := strings.Repeat("d", 40)
+	folder.Integration = &pebblestore.ProjectTaskIntegration{State: "in_folder", SourceHead: folderHead, SourceBranch: "dev"}
+	folderAnswer, _ := json.Marshal(map[string]any{"task": folder, "base_commit": folder.BaseCommit, "head": folderHead, "delivery_state": "in_folder",
+		"commits": []any{map[string]any{"sha": folderHead, "subject": "add task.go"}}, "files": []string{"task.go"}})
+	folderView, err := CompactProjectTaskAnswer("get_task", "", folderAnswer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fv struct {
+		Task ProjectTaskView `json:"task"`
+	}
+	if err := json.Unmarshal(folderView, &fv); err != nil || fv.Task.Result == nil || fv.Task.Result.Files != 1 || fv.Task.Result.Commits != 1 || fv.Task.Result.Head != folderHead {
+		t.Fatalf("linked folder task counts: %v %s", err, folderView)
+	}
+	if files, err := CompactProjectTaskAnswer("get_task", ProjectTaskDetailFiles, folderAnswer); err != nil || !strings.Contains(string(files), `"files":["task.go"]`) || !strings.Contains(string(files), `"commit_list"`) {
+		t.Fatalf("linked folder detail=files: %v %s", err, files)
+	}
+	// Lists not in the route's shape are ignored, never guessed.
+	bad, _ := json.Marshal(map[string]any{"task": folder, "commits": "three", "files": []string{"task.go"}})
+	if out, err := CompactProjectTaskAnswer("get_task", "", bad); err == nil {
+		var bv struct {
+			Task ProjectTaskView `json:"task"`
+		}
+		if err := json.Unmarshal(out, &bv); err != nil || (bv.Task.Result != nil && bv.Task.Result.Files != 0) {
+			t.Fatalf("malformed linked lists counted: %s", out)
+		}
+	}
+
 	// Non-task actions keep their own compaction (list, list_tasks).
 	if out, err := CompactProjectTaskAnswer("list", "", json.RawMessage(`{"projects":[]}`)); err != nil || string(out) != `{"projects":[]}` {
 		t.Fatalf("list changed: %v %s", err, out)

@@ -106,10 +106,11 @@ type projectTaskProgressRead struct {
 type projectTaskRead struct {
 	pebblestore.ProjectTaskRecord
 	Progress *projectTaskProgressRead `json:"progress,omitempty"`
-	// Worktree is this machine's read of the task's own branch when no
-	// delivery assessment is present (the store never persists one). It is
-	// nil for tasks without a worktree branch (folder tasks), which answer
-	// from their stored integration receipt.
+	// Worktree is the task's own committed range when no delivery
+	// assessment is present (the store never persists one): on this machine
+	// base..refs/heads/<WorktreeBranch>, or base..Integration.SourceHead for
+	// a folder task delivered in_folder; for a linked machine, the task
+	// route's top-level commits/files for that same range. nil otherwise.
 	Worktree *projectTaskWorktree `json:"-"`
 }
 
@@ -371,7 +372,12 @@ func compactProjectTask(read projectTaskRead, remote bool) ProjectTaskView {
 	}
 	if p != nil && p.Integration != nil {
 		integration = p.Integration.State
-		result.Commits = p.Integration.Commits
+		if read.Worktree == nil {
+			// Without the task's own range, progress's count is the best
+			// known; with it, the range is the task's commit count (an
+			// in_folder task has no unintegrated commits but did commit).
+			result.Commits = p.Integration.Commits
+		}
 		if result.Branch == "" {
 			result.Branch = p.Integration.Branch
 		}
@@ -597,6 +603,36 @@ func projectTaskFilesDetail(t pebblestore.ProjectTaskRecord, worktree *projectTa
 	return out
 }
 
+// linkedTaskRange is the task's own committed range as a linked machine's
+// task route reports it: for a folder task delivered in_folder, its top-level
+// commits and files list base..Integration.SourceHead. nil when the answer
+// carries neither list, the task has a delivery assessment, or the lists are
+// not the route's shape.
+func linkedTaskRange(t pebblestore.ProjectTaskRecord, commits, files json.RawMessage) *projectTaskWorktree {
+	if t.DeliveryAssessment != nil {
+		return nil
+	}
+	present := func(raw json.RawMessage) bool { return len(raw) > 0 && string(raw) != "null" }
+	if !present(commits) && !present(files) {
+		return nil
+	}
+	w := &projectTaskWorktree{}
+	if t.Integration != nil {
+		w.Head = t.Integration.SourceHead
+	}
+	if present(commits) {
+		var list []json.RawMessage
+		if json.Unmarshal(commits, &list) != nil {
+			return nil
+		}
+		w.Commits = len(list)
+	}
+	if present(files) && json.Unmarshal(files, &w.Files) != nil {
+		return nil
+	}
+	return w
+}
+
 // CompactProjectTaskAnswer compacts a linked machine's answer to a task
 // action (the task routes' JSON) into the same view this machine's tools
 // return. detail "full" returns the answer unchanged; other details add their
@@ -644,6 +680,7 @@ func CompactProjectTaskAnswer(action, detail string, raw json.RawMessage) (json.
 		out["status"] = answer.Status
 	}
 	if action == "get_task" {
+		answer.Task.Worktree = linkedTaskRange(answer.Task.ProjectTaskRecord, answer.Commits, answer.Files)
 		out["task"] = compactProjectTask(*answer.Task, true)
 		task := answer.Task.ProjectTaskRecord
 		switch detail {
@@ -656,12 +693,9 @@ func CompactProjectTaskAnswer(action, detail string, raw json.RawMessage) (json.
 			}
 			out["attempts"] = projectTaskAttemptRows(attempts)
 		case ProjectTaskDetailFiles:
-			files := projectTaskFilesDetail(task, nil)
+			files := projectTaskFilesDetail(task, answer.Task.Worktree)
 			if len(answer.Commits) > 0 && string(answer.Commits) != "null" {
-				files["commits"] = answer.Commits
-			}
-			if len(answer.Files) > 0 && string(answer.Files) != "null" {
-				files["changed"] = answer.Files
+				files["commit_list"] = answer.Commits
 			}
 			out["files"] = files
 		}

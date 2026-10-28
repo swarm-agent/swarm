@@ -512,33 +512,55 @@ func projectTaskOwnBranch(branch string) bool {
 	return len(branch) <= 200 && projectTaskBranchName.MatchString(branch) && !strings.Contains(branch, "..") && !strings.Contains(branch, "//") && !strings.HasSuffix(branch, "/") && !strings.HasSuffix(branch, ".") && !strings.HasSuffix(branch, ".lock")
 }
 
-// projectTaskWorktreeResult reads a finished task's committed result from its
-// own branch with read-only Git: the head of refs/heads/<WorktreeBranch>,
-// commits after its base and the files they change. Only tasks that own a
-// worktree branch are read, and only that branch, never the checkout's HEAD:
-// a folder task works in the person's own folder, whose later commits (by the
-// person or other tasks) are not this task's output, and a worktree whose
-// checkout moved off the task branch would misreport the same way. Those
-// tasks answer from their stored integration receipt instead. Only the stored
-// path, a validated branch and a validated base commit reach Git, never model
+// projectTaskFolderDelivered reports whether t worked in the person's own
+// folder (no worktree branch, the source folder itself, as api.folderTask)
+// and its delivery was frozen when the run ended: integration state in_folder
+// with the folder head recorded then.
+func projectTaskFolderDelivered(t pebblestore.ProjectTaskRecord) bool {
+	return t.WorktreeBranch == "" && t.WorkspacePath != "" && t.WorkspacePath == t.SourceWorkspace.Path && t.Agent != "reviewer" &&
+		t.Integration != nil && t.Integration.State == "in_folder" && projectTaskCommitID.MatchString(t.Integration.SourceHead)
+}
+
+// projectTaskWorktreeResult reads a task's committed result with read-only
+// Git over a range that belongs to the task, never the checkout's HEAD:
+//   - a worktree task, once finished: base..refs/heads/<WorktreeBranch>, so a
+//     checkout moved off the task branch does not misreport;
+//   - a folder task delivered in_folder: base..Integration.SourceHead, the
+//     head frozen when its run ended (as the task route reports it), so later
+//     folder commits by the person or other tasks are never its output.
+//
+// Other tasks answer from their stored integration receipt. Only the stored
+// path, a validated branch and validated commit IDs reach Git, never model
 // arguments. nil when there is nothing to read.
 func projectTaskWorktreeResult(t pebblestore.ProjectTaskRecord) *projectTaskWorktree {
-	if t.DeliveryAssessment != nil || !projectTaskOwnBranch(t.WorktreeBranch) || !projectTaskCommitID.MatchString(t.BaseCommit) || !filepath.IsAbs(t.WorkspacePath) || projectTaskStatusClass(t.Status) != "finished" {
+	if t.DeliveryAssessment != nil || !projectTaskCommitID.MatchString(t.BaseCommit) || !filepath.IsAbs(t.WorkspacePath) {
 		return nil
 	}
 	root := filepath.Clean(t.WorkspacePath)
+	if projectTaskFolderDelivered(t) {
+		return projectTaskRangeResult(root, t.BaseCommit, t.Integration.SourceHead)
+	}
+	if !projectTaskOwnBranch(t.WorktreeBranch) || projectTaskStatusClass(t.Status) != "finished" {
+		return nil
+	}
 	head, err := projectTaskGit(root, "rev-parse", "--verify", "refs/heads/"+t.WorktreeBranch+"^{commit}")
 	if err != nil || !projectTaskCommitID.MatchString(head) {
 		return nil
 	}
+	return projectTaskRangeResult(root, t.BaseCommit, head)
+}
+
+// projectTaskRangeResult counts the commits base..head and the files they
+// change. base and head are validated commit IDs.
+func projectTaskRangeResult(root, base, head string) *projectTaskWorktree {
 	w := &projectTaskWorktree{Head: head}
-	if head == t.BaseCommit {
+	if head == base {
 		return w
 	}
-	if count, err := projectTaskGit(root, "rev-list", "--count", t.BaseCommit+".."+head); err == nil {
+	if count, err := projectTaskGit(root, "rev-list", "--count", base+".."+head, "--"); err == nil {
 		w.Commits, _ = strconv.Atoi(count)
 	}
-	if names, err := projectTaskGit(root, "diff", "--name-only", t.BaseCommit, head); err == nil && names != "" {
+	if names, err := projectTaskGit(root, "diff", "--no-renames", "--name-only", base, head, "--"); err == nil && names != "" {
 		w.Files = strings.Split(names, "\n")
 	}
 	return w
