@@ -4422,6 +4422,7 @@ func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3Re
 	}
 	builder, ok := e.server.runner.(interface {
 		NewProviderManagedToolInvoker(runruntime.ProviderManagedToolInvokerConfig) provideriface.ToolInvoker
+		WorkerToolPolicyOverlay(accountScopeID, sessionID string, profile pebblestore.AgentProfile) (*permission.Policy, error)
 	})
 	if !ok || builder == nil {
 		return nil, errors.New("run service does not support provider-managed tool execution")
@@ -4438,36 +4439,90 @@ func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3Re
 	if err != nil {
 		return nil, err
 	}
+	// A worker job's run is gated by the worker's own tool contract, the same
+	// for its first run, an owner follow-up and a workflow reopen; nil for any
+	// other session.
+	workerPolicy, err := builder.WorkerToolPolicyOverlay(principal.AccountScopeID, job.SessionID, resolved.AgentProfile)
+	if err != nil {
+		return nil, fmt.Errorf("resolve worker tool permissions: %w", err)
+	}
+	workerRun := workerPolicy != nil
 	invoker := builder.NewProviderManagedToolInvoker(runruntime.ProviderManagedToolInvokerConfig{
-		SessionID:            job.SessionID,
-		PermissionSessionID:  job.SessionID,
-		RunID:                job.RunID,
-		SourceMessageID:      e.sessionV3SourceMessageID(job),
-		Step:                 step,
-		SessionMode:          resolved.Session.Mode,
-		WorkspacePath:        workspacePath,
-		WorkspaceRoots:       roots,
-		WorkspaceOriginPath:  workspacePath,
-		WorkspaceOriginRoots: roots,
-		WorkspaceName:        resolved.Session.WorkspaceName,
-		Principal:            principal,
-		Emit:                 e.emitSessionV3ProviderToolEvent(job),
-		ApplySessionMutation: e.applySessionV3ProviderToolMutation(job),
-		ProviderManagedV3:    true,
-		AgentProfile:         resolved.AgentProfile,
-		ToolProgression:      toolProgression,
-		ProviderID:           resolved.Preference.Provider,
-		Model:                resolved.Preference.Model,
-		MediaContract:        resolved.MediaContract,
-		PlanContextGuard:     planContextGuard,
-		OfferedTools:         sessionV3OfferedToolNames(offered),
+		SessionID:              job.SessionID,
+		PermissionSessionID:    job.SessionID,
+		RunID:                  job.RunID,
+		SourceMessageID:        e.sessionV3SourceMessageID(job),
+		Step:                   step,
+		SessionMode:            resolved.Session.Mode,
+		WorkspacePath:          workspacePath,
+		WorkspaceRoots:         roots,
+		WorkspaceOriginPath:    workspacePath,
+		WorkspaceOriginRoots:   roots,
+		WorkspaceName:          resolved.Session.WorkspaceName,
+		Principal:              principal,
+		Emit:                   e.emitSessionV3ProviderToolEvent(job),
+		ApplySessionMutation:   e.applySessionV3ProviderToolMutation(job),
+		ProviderManagedV3:      true,
+		AgentProfile:           resolved.AgentProfile,
+		ToolProgression:        toolProgression,
+		ProviderID:             resolved.Preference.Provider,
+		Model:                  resolved.Preference.Model,
+		MediaContract:          resolved.MediaContract,
+		PlanContextGuard:       planContextGuard,
+		OfferedTools:           sessionV3OfferedToolNames(offered),
+		Policy:                 workerPolicy,
+		FailOnUnattendedDenial: workerRun,
 	})
 	if invoker == nil {
 		return nil, errors.New("provider-managed tool invoker is not configured")
 	}
 	// Calls are gated and executed in job.SessionID's own workspace scope, so
 	// the permission gate may resolve that scope for path-reading bash reads.
-	return runruntime.BindToolExecutionSession(invoker, job.SessionID, principal), nil
+	invoker = runruntime.BindToolExecutionSession(invoker, job.SessionID, principal)
+	if workerRun {
+		invoker = sessionV3UnattendedDenialInvoker{inner: invoker, fail: func(denial error) { e.failRunWithCause(job, denial) }}
+	}
+	return invoker, nil
+}
+
+// sessionV3CancelledByUnattendedDenial names a worker run ended because a tool
+// call needed an interactive approval nobody can give.
+const sessionV3CancelledByUnattendedDenial = "a permission its unattended worker cannot request"
+
+// sessionV3UnattendedDenialInvoker ends a worker run as soon as a call is
+// refused as an unattended prompt. The provider would otherwise hand the
+// refusal to the model as tool output, and the model would report itself
+// blocked and wait for a person.
+type sessionV3UnattendedDenialInvoker struct {
+	inner provideriface.ToolInvoker
+	fail  func(error)
+}
+
+func (i sessionV3UnattendedDenialInvoker) ExecuteTool(ctx context.Context, invocation provideriface.ToolInvocation) (provideriface.ToolExecutionResult, error) {
+	result, err := i.inner.ExecuteTool(ctx, invocation)
+	var denied *runruntime.UnattendedPermissionDeniedError
+	if errors.As(err, &denied) && i.fail != nil {
+		i.fail(denied)
+	}
+	return result, err
+}
+
+// failRunWithCause ends the run's context with cause. The run is not marked
+// stopped, so it is recorded failed with the cause as its reason.
+func (e *sessionV3Executor) failRunWithCause(job sessionV3ExecutorJob, denial error) {
+	if e == nil || denial == nil {
+		return
+	}
+	runKey := sessionV3ExecutorRunKey(job.SessionID, job.RunID)
+	e.mu.Lock()
+	var cancel context.CancelCauseFunc
+	if state := e.runStates[runKey]; state != nil {
+		cancel = state.cancel
+	}
+	e.mu.Unlock()
+	if cancel != nil {
+		cancel(&sessionV3RunCancelledError{By: sessionV3CancelledByUnattendedDenial, Reason: denial.Error()})
+	}
 }
 
 func (e *sessionV3Executor) sessionV3SourceMessageID(job sessionV3ExecutorJob) string {

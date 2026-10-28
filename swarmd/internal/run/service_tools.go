@@ -2001,6 +2001,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				}
 			}
 		case permission.AuthorizationDeny:
+			recordUnattendedDenial(ctx, toolCalls[i].Name, auth)
 			status := "denied"
 			if strings.EqualFold(auth.Source, "builtin") {
 				status = "blocked"

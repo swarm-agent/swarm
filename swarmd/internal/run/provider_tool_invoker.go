@@ -99,6 +99,12 @@ type ProviderManagedToolInvokerConfig struct {
 	// permission gating or execution: hiding a tool from the model is not
 	// enforcement, because a model can name a tool it was never shown.
 	OfferedTools []string
+	// Policy is the permission overlay applied to every call (nil: none).
+	Policy *permission.Policy
+	// FailOnUnattendedDenial makes a call refused as an unattended worker
+	// prompt return *UnattendedPermissionDeniedError after its result is
+	// recorded, so the caller can end the run with that reason.
+	FailOnUnattendedDenial bool
 }
 
 type terminalPlanToolState struct {
@@ -163,6 +169,7 @@ type providerToolInvokerConfig struct {
 	artifactRunContext      *tool.ArtifactRunContext
 	artifactV3AuthorContext *tool.ArtifactV3AuthorRunContext
 	offeredTools            map[string]struct{}
+	failOnUnattendedDenial  bool
 }
 
 func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerConfig {
@@ -193,7 +200,18 @@ func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerCon
 		artifactRunContext:      cloneArtifactRunContext(config.ArtifactRunContext),
 		artifactV3AuthorContext: tool.BindArtifactV3AuthorRunContext(config.ArtifactV3AuthorContext, strings.TrimSpace(config.RunID)),
 		offeredTools:            offeredToolSet(config.OfferedTools),
+		policy:                  clonePermissionPolicy(config.Policy),
+		failOnUnattendedDenial:  config.FailOnUnattendedDenial,
 	}
+}
+
+func clonePermissionPolicy(policy *permission.Policy) *permission.Policy {
+	if policy == nil {
+		return nil
+	}
+	cloned := *policy
+	cloned.Rules = append([]permission.PolicyRule(nil), policy.Rules...)
+	return &cloned
 }
 
 func offeredToolSet(names []string) map[string]struct{} {
@@ -676,6 +694,11 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 		refused := tool.Result{CallID: call.CallID, Name: call.Name, Error: fmt.Sprintf("tool %q is not available to this agent", call.Name)}
 		return s.completeProviderManagedToolCall(config, call, metadata, refused, 0)
 	}
+	var unattended *unattendedDenialRecorder
+	if config.failOnUnattendedDenial {
+		unattended = &unattendedDenialRecorder{}
+		ctx = withUnattendedDenialRecorder(ctx, unattended)
+	}
 	if canonicalToolName(call.Name) == "compact" {
 		if config.planContextGuard == nil || !config.planContextGuard.DecisionActive() || config.planContextGuard.FinalizationOnly() {
 			return tool.Result{}, 0, errors.New("compact rejected: no armed plan context guard compaction decision is active")
@@ -965,7 +988,16 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 		}
 	}
 
-	return s.completeProviderManagedToolCall(config, call, metadata, result, permissionWaitMS)
+	completed, waitMS, err := s.completeProviderManagedToolCall(config, call, metadata, result, permissionWaitMS)
+	if err != nil {
+		return completed, waitMS, err
+	}
+	if denial := unattended.recorded(); denial != nil {
+		// The refusal is already recorded as this call's result; the run
+		// itself must now end with it.
+		return completed, waitMS, denial
+	}
+	return completed, waitMS, nil
 }
 
 // completeProviderManagedToolCall emits, stores and returns a finished call.

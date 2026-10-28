@@ -707,7 +707,7 @@ func (s *Service) createPendingAuthorization(input AuthorizationInput, sessionID
 	if err != nil {
 		var denied *workerPromptDeniedError
 		if errors.As(err, &denied) {
-			return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: err.Error(), Source: "worker_noninteractive"}, nil
+			return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: err.Error(), Source: WorkerNonInteractiveSource}, nil
 		}
 		return AuthorizationResult{}, err
 	}

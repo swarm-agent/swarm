@@ -5,6 +5,10 @@ import (
 	"strings"
 )
 
+// WorkerNonInteractiveSource is the authorization source of a call refused
+// because an unattended run would otherwise need an interactive prompt.
+const WorkerNonInteractiveSource = "worker_noninteractive"
+
 type workerPromptDeniedError struct{ tool, requirement, reason string }
 
 func (e *workerPromptDeniedError) Error() string {
@@ -12,6 +16,27 @@ func (e *workerPromptDeniedError) Error() string {
 		return e.reason
 	}
 	return fmt.Sprintf("%s denied: unattended worker jobs cannot request interactive permission (%s). This operation is outside the job's approved authority; use an authorized workspace path and stay within the write lane. Host-side tools cannot see sandbox temp paths: use bash inside the sandbox. For network or other restricted operations, report the missing authority instead of retrying for approval", e.tool, e.requirement)
+}
+
+// WorkerRunSession reports whether sessionID is a worker job's session, by its
+// canonical worker run receipt. It does not depend on how the current run was
+// started (first run, owner follow-up or workflow reopen).
+func (s *Service) WorkerRunSession(sessionID string) (bool, error) {
+	if s == nil || s.sessions == nil || s.store == nil {
+		return false, nil
+	}
+	snapshot, ok, err := s.sessions.GetSession(strings.TrimSpace(sessionID))
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+	_, found, err := s.store.WorkerRunForSession(snapshot.AccountScopeID, snapshot.ID)
+	if err != nil {
+		return false, err
+	}
+	return found, nil
 }
 
 func (s *Service) workerIdentity(sessionID string) (worker, run string) {
