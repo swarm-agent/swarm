@@ -244,7 +244,7 @@ impl Console {
     // Rendering
 
     /// A tick box with its label.
-    fn tick(&self, id: impl Into<SharedString>, label: String, on: bool) -> Stateful<Div> {
+    pub(super) fn tick(&self, id: impl Into<SharedString>, label: String, on: bool) -> Stateful<Div> {
         let t = &self.theme;
         let hover = t.hover;
         div()

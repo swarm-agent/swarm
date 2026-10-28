@@ -1,7 +1,7 @@
 //! Projects: the title bar's project menu (switch, add folders, a new
 //! project, the Projects page) and the Projects page itself: each project's
 //! folders and project.md, a rename, an edit of project.md. A new project
-//! and more folders go through the onboarding's project step, which readies
+//! goes through the onboarding's project step, which readies
 //! folders the way the first run does. Everything else is Swarm's record,
 //! changed with PATCH /v3/projects/{id}.
 
@@ -10,7 +10,7 @@ use serde_json::json;
 
 use super::{Console, Link, Page, alpha};
 use crate::icons::Icon;
-use crate::onboarding::{Existing, Onboarding, OnboardingEvent};
+use crate::onboarding::{Onboarding, OnboardingEvent};
 use crate::swarm::live::Command;
 use crate::swarm::target::Target;
 
@@ -202,7 +202,8 @@ impl Console {
                         .child(div().h(px(1.)).my_1().bg(t.border))
                         .child(entry("project-add-folders", format!("add folders to {name}…").into(), false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.project_menu = false;
-                            this.add_project_folders(&folders_id, cx);
+                            this.select_project(&folders_id, cx);
+                            this.open_folder_pick(&folders_id, cx);
                         })))
                         .child(entry("project-new", "new project…".into(), false).on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.project_menu = false;
@@ -254,19 +255,6 @@ impl Console {
 
     pub(super) fn new_project(&mut self, cx: &mut Context<Self>) {
         self.start_onboarding(|o, cx| o.another_project(cx), cx);
-    }
-
-    pub(super) fn add_project_folders(&mut self, id: &str, cx: &mut Context<Self>) {
-        let Some(p) = self.projects.iter().find(|p| p.id.as_ref() == id) else { return };
-        if p.id.is_empty() {
-            return;
-        }
-        let existing = Existing {
-            id: p.id.to_string(),
-            name: p.name.to_string(),
-            workspaces: p.workspaces.iter().zip(p.roles.iter()).map(|(path, role)| json!({"path": path.to_string(), "role": role.to_string()})).collect(),
-        };
-        self.start_onboarding(move |o, cx| o.add_folders_to(existing, cx), cx);
     }
 
     /// After a snapshot: the project onboarding just made or changed is the
@@ -431,41 +419,6 @@ impl Console {
         } else {
             div().flex_1().min_w_0().text_size(px(14.)).text_color(t.text).child(p.name.clone()).into_any_element()
         };
-        let folders: Vec<AnyElement> = p
-            .workspaces
-            .iter()
-            .zip(p.roles.iter().chain(std::iter::repeat(&SharedString::from(""))))
-            .map(|(path, role)| {
-                let id = p.id.to_string();
-                let folder = path.to_string();
-                let confirming = self.folder_remove.as_ref() == Some(&(id.clone(), folder.clone()));
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .py(px(4.))
-                    .child(div().text_color(t.faint).child("▸"))
-                    .child(div().flex_1().min_w_0().truncate().text_color(t.text).child(path.clone()))
-                    .child(div().text_size(px(10.5)).text_color(t.faint).child(role.replace('_', " ")))
-                    .child(self.button(SharedString::from(format!("remove-{}-{path}", p.id)), if confirming { "confirm removal" } else { "remove" }, false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        if let Some(name) = &this.via {
-                            this.notice = Some((format!("Change folders on {name} itself.").into(), true));
-                        } else if confirming {
-                            if let (Some(project), Some(live)) = (this.projects.iter().find(|p| p.id.as_ref() == id.as_str()), &this.live) {
-                                let folders: Vec<_> = project.workspaces.iter().zip(project.roles.iter()).filter(|(path, _)| path.as_ref() != folder.as_str()).map(|(path, role)| json!({"path": path.to_string(), "role": role.to_string()})).collect();
-                                live.run(Command::PatchProject { project_id: id.clone(), body: json!({"workspaces": folders}) });
-                            }
-                            this.folder_remove = None;
-                        } else {
-                            this.folder_remove = Some((id.clone(), folder.clone()));
-                        }
-                        cx.notify();
-                    })))
-                    .when(confirming, |d| d.child(self.button(SharedString::from(format!("cancel-remove-{}-{path}", p.id)), "cancel", false).on_click(cx.listener(|this, _: &ClickEvent, _, cx| { this.folder_remove = None; cx.notify(); }))))
-                    .into_any_element()
-            })
-            .collect();
         let context: AnyElement = if editing {
             div()
                 .flex()
@@ -539,7 +492,6 @@ impl Console {
                         let id = p.id.to_string();
                         d.child(self.button(SharedString::from(format!("project-{}-rename", p.id)), "rename", false).on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.start_project_rename(&id, window, cx))))
                     })
-                    .child(self.button(SharedString::from(format!("project-{}-folders", p.id)), "add folders", false).on_click(cx.listener({ let id = p.id.to_string(); move |this, _: &ClickEvent, _, cx| this.add_project_folders(&id, cx) })))
                     .when(!editing && !p.id.is_empty(), |d| {
                         let id = p.id.to_string();
                         d.child(self.button(SharedString::from(format!("project-{}-edit-context", p.id)), "edit project.md", false).on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.start_context_edit(&id, window, cx))))
@@ -571,8 +523,7 @@ impl Console {
                     }))))
                 }
             })
-            .child(div().px_3().pt_2().text_size(px(10.5)).text_color(t.faint).child("FOLDERS"))
-            .child(div().flex().flex_col().pb_1().children(folders))
+            .child(self.render_project_folders(p.id.as_ref(), cx))
             .child(div().px_3().pt_1().text_size(px(10.5)).text_color(t.faint).child("PROJECT.MD"))
             .child(div().px_3().py_2().child(p.context_generation.label()))
             .when(matches!(p.context_generation.status.as_ref(), "ready" | "failed"), |d| {

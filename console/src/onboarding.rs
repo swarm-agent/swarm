@@ -2176,15 +2176,6 @@ impl Onboarding {
         self.first = false;
         self.detect(cx);
     }
-
-    /// The project step adds folders to `existing` instead of making a project.
-    pub fn add_folders_to(&mut self, existing: Existing, cx: &mut Context<Self>) {
-        let name = existing.name.clone();
-        self.name.update(cx, |n, cx| n.set_text(name, cx));
-        self.first = false;
-        self.existing = Some(existing);
-        self.detect(cx);
-    }
 }
 
 impl Onboarding {

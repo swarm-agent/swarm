@@ -23,6 +23,7 @@ mod background;
 mod commands;
 mod fleet;
 mod fleet_keys;
+mod folders;
 mod fleet_live;
 mod live;
 mod markdown;
@@ -199,7 +200,7 @@ pub struct Console {
     /// ID), the project.md field, and a project to select once listed.
     project_rename: Option<String>,
     context_edit: Option<String>,
-    folder_remove: Option<(String, String)>,
+    folders: folders::FolderState,
     context_input: Option<Entity<TextInput>>,
     pending_project: Option<String>,
     /// Sessions picked in the sidebar for one action, by session id.
@@ -413,7 +414,7 @@ impl Console {
             deleted_project: None,
             project_rename: None,
             context_edit: None,
-            folder_remove: None,
+            folders: Default::default(),
             context_input: None,
             pending_project: None,
             picked: std::collections::HashSet::new(),
