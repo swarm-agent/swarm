@@ -37,8 +37,10 @@ card that finds Swarm (`GET /healthz`, no session), installs it or connects
 to it (Swarm mints the app an owner session with `swarmctl client connect`),
 connects a model provider (ChatGPT sign-in, or an API key typed here and sent
 to Swarm once), creates the first project from folders you pick (`swarmctl
-workspace add` makes them visible to Swarm, all in one call, without
-restarting it) and waits for Swarm to write project.md.
+workspace add` makes them visible to Swarm in one call, mounting them into
+the running Swarm when it can; the first folder in a home folder still
+restarts Swarm once, waiting until it is idle) and waits for Swarm to write
+project.md.
 
 Root steps on this computer run through `sudo`: `sudo -n` first (a cached sudo
 or a NOPASSWD rule needs nothing), otherwise the app's own password prompt,
