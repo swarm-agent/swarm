@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -42,9 +43,13 @@ echo "nsenter $*" >> "$SHIM_LOG"
 shift 4
 case "$1" in
 findmnt)
+  if [ "$4" = FSTYPE,FSROOT ]; then
+    [ "$SHIM_HOME" = none ] && exit 1
+    echo "${SHIM_HOME:-tmpfs /}"; exit 0
+  fi
   if [ -n "$SHIM_VISIBLE" ]; then echo "rw,relatime"; exit 0; fi
   exit 1 ;;
-sh) exec "$@" ;;
+sh) [ -n "$SHIM_SH_OK" ] && exit 0; exec "$@" ;;
 umount)
   if [ -n "$SHIM_UMOUNT_FAIL" ]; then echo "umount: $2: target is busy." >&2; exit 32; fi
   exit 0 ;;
@@ -60,7 +65,7 @@ exit 92
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	logPath = filepath.Join(root, "log")
 	t.Setenv("SHIM_LOG", logPath)
-	for _, k := range []string{"SHIM_INACTIVE", "SHIM_BIND_FAIL", "SHIM_VISIBLE", "SHIM_UMOUNT_FAIL"} {
+	for _, k := range []string{"SHIM_INACTIVE", "SHIM_BIND_FAIL", "SHIM_VISIBLE", "SHIM_UMOUNT_FAIL", "SHIM_HOME", "SHIM_SH_OK"} {
 		t.Setenv(k, "")
 	}
 	n := 0
@@ -83,7 +88,7 @@ func workspaceLiveLog(t *testing.T, path string) string {
 func TestWorkspaceAddMountsLiveWithoutRestart(t *testing.T) {
 	logPath, restarts := workspaceLiveShims(t)
 	a, b := t.TempDir(), t.TempDir()
-	if err := machineWorkspaceTakeEffect([]string{a, b}, nil); err != nil {
+	if err := machineWorkspaceTakeEffect([]string{a, b}, nil, true); err != nil {
 		t.Fatal(err)
 	}
 	if *restarts != 0 {
@@ -107,7 +112,7 @@ func TestWorkspaceAddMountsLiveWithoutRestart(t *testing.T) {
 func TestWorkspaceAddSkipsFolderAlreadyMounted(t *testing.T) {
 	logPath, restarts := workspaceLiveShims(t)
 	t.Setenv("SHIM_VISIBLE", "1")
-	if err := machineWorkspaceTakeEffect([]string{"/srv/a"}, nil); err != nil {
+	if err := machineWorkspaceTakeEffect([]string{"/srv/a"}, nil, true); err != nil {
 		t.Fatal(err)
 	}
 	log := workspaceLiveLog(t, logPath)
@@ -120,7 +125,7 @@ func TestWorkspaceAddFallsBackToIdleRestart(t *testing.T) {
 	logPath, restarts := workspaceLiveShims(t)
 	t.Setenv("SHIM_BIND_FAIL", "Operation not supported")
 	a := t.TempDir()
-	if err := machineWorkspaceTakeEffect([]string{a}, nil); err != nil {
+	if err := machineWorkspaceTakeEffect([]string{a}, nil, true); err != nil {
 		t.Fatal(err)
 	}
 	if *restarts != 1 {
@@ -135,7 +140,7 @@ func TestWorkspaceAddFallsBackToIdleRestart(t *testing.T) {
 func TestWorkspaceAddUnknownProcessRestarts(t *testing.T) {
 	logPath, restarts := workspaceLiveShims(t)
 	t.Setenv("SHIM_PID", "0")
-	if err := machineWorkspaceTakeEffect([]string{"/srv/a"}, nil); err != nil {
+	if err := machineWorkspaceTakeEffect([]string{"/srv/a"}, nil, true); err != nil {
 		t.Fatal(err)
 	}
 	log := workspaceLiveLog(t, logPath)
@@ -147,7 +152,7 @@ func TestWorkspaceAddUnknownProcessRestarts(t *testing.T) {
 func TestWorkspaceChangeWhileStoppedNeitherMountsNorRestarts(t *testing.T) {
 	logPath, restarts := workspaceLiveShims(t)
 	t.Setenv("SHIM_INACTIVE", "3")
-	if err := machineWorkspaceTakeEffect([]string{"/srv/a"}, nil); err != nil {
+	if err := machineWorkspaceTakeEffect([]string{"/srv/a"}, nil, true); err != nil {
 		t.Fatal(err)
 	}
 	log := workspaceLiveLog(t, logPath)
@@ -158,17 +163,105 @@ func TestWorkspaceChangeWhileStoppedNeitherMountsNorRestarts(t *testing.T) {
 
 func TestWorkspaceRemoveUnmountsLiveOrRestarts(t *testing.T) {
 	logPath, restarts := workspaceLiveShims(t)
-	if err := machineWorkspaceTakeEffect(nil, []string{"/srv/a"}); err != nil {
+	if err := machineWorkspaceTakeEffect(nil, []string{"/srv/a"}, true); err != nil {
 		t.Fatal(err)
 	}
 	if *restarts != 0 || !strings.Contains(workspaceLiveLog(t, logPath), "nsenter --target 4242 --mount -- umount /srv/a") {
 		t.Fatalf("restarts=%d log:\n%s", *restarts, workspaceLiveLog(t, logPath))
 	}
 	t.Setenv("SHIM_UMOUNT_FAIL", "1")
-	if err := machineWorkspaceTakeEffect(nil, []string{"/srv/a"}); err != nil {
+	if err := machineWorkspaceTakeEffect(nil, []string{"/srv/a"}, true); err != nil {
 		t.Fatal(err)
 	}
 	if *restarts != 1 {
 		t.Fatalf("busy unmount did not fall back to restart: %d", *restarts)
+	}
+}
+
+// Purpose: a running Swarm started with the installed ProtectHome=yes sees
+// home folders as systemd's shared, mode-0000 inaccessible node. Nothing can be
+// mounted there for it, and writing a mount point there would leak empty
+// folders into every other service using that node. The first add (no earlier
+// ProtectHome=tmpfs drop-in) and a namespace whose home is not a private tmpfs
+// must both take the idle restart, never claim success, and never enter the
+// namespace to write.
+func TestWorkspaceAddUnderHiddenHomeRestartsInstead(t *testing.T) {
+	logPath, restarts := workspaceLiveShims(t)
+	if err := machineWorkspaceTakeEffect([]string{"/root/project"}, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	log := workspaceLiveLog(t, logPath)
+	if *restarts != 1 || strings.Contains(log, "nsenter") || strings.Contains(log, "systemctl bind") {
+		t.Fatalf("first home add: restarts=%d log:\n%s", *restarts, log)
+	}
+
+	// The drop-in existed, but the running namespace still has the
+	// inaccessible node at /root (it was never restarted with it).
+	t.Setenv("SHIM_HOME", "tmpfs /systemd/inaccessible/dir")
+	err := machineWorkspaceLive([]string{"/root/project"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "/root is hidden") {
+		t.Fatalf("hidden home not refused: %v", err)
+	}
+	if err := machineWorkspaceTakeEffect([]string{"/root/project"}, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	log = workspaceLiveLog(t, logPath)
+	if *restarts != 2 || strings.Contains(log, "sh -eu") || strings.Contains(log, "systemctl bind") {
+		t.Fatalf("hidden namespace: restarts=%d log:\n%s", *restarts, log)
+	}
+
+	// With a private tmpfs home, the same folder mounts live (the mount
+	// point step itself is covered by TestWorkspaceMountPointRefusesSharedNode).
+	t.Setenv("SHIM_HOME", "")
+	t.Setenv("SHIM_SH_OK", "1")
+	if err := machineWorkspaceTakeEffect([]string{"/root/project"}, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	if *restarts != 2 || !strings.Contains(workspaceLiveLog(t, logPath), "systemctl bind "+machineDaemon+" /root/project /root/project") {
+		t.Fatalf("private home: restarts=%d log:\n%s", *restarts, workspaceLiveLog(t, logPath))
+	}
+}
+
+// Folders outside home are unaffected by ProtectHome, so the first add of one
+// still needs no restart. (/srv/a: the mount-point step is shimmed; a temp
+// dir may itself sit under home.)
+func TestWorkspaceFirstAddOutsideHomeStaysLive(t *testing.T) {
+	_, restarts := workspaceLiveShims(t)
+	t.Setenv("SHIM_SH_OK", "1")
+	if err := machineWorkspaceTakeEffect([]string{"/srv/a"}, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if *restarts != 0 {
+		t.Fatalf("restarted %d times", *restarts)
+	}
+}
+
+// The in-namespace mount-point script must refuse a tmpfs that is a bind of a
+// shared node (FSROOT not /) without creating anything or remounting it.
+func TestWorkspaceMountPointRefusesSharedNode(t *testing.T) {
+	root := t.TempDir()
+	bin := filepath.Join(root, "bin")
+	if err := os.Mkdir(bin, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"findmnt": "#!/bin/sh\ncase \"$*\" in\n*-T*) echo " + root + " ;;\n*FSTYPE,FSROOT*) echo 'tmpfs  /systemd/inaccessible/dir' ;;\n*) echo ro ;;\nesac\n",
+		"mount":   "#!/bin/sh\necho mount >> " + filepath.Join(root, "mounts") + "\n",
+	} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	target := filepath.Join(root, "home", "x")
+	cmd := exec.Command("sh", "-eu", "-c", machineWorkspaceMountPoint, "swarm-mount-point", target)
+	cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "not on Swarm's private folder tree") {
+		t.Fatalf("shared node accepted: %v %s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(root, "home")); !os.IsNotExist(err) {
+		t.Fatalf("mount point was created: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "mounts")); !os.IsNotExist(err) {
+		t.Fatal("the shared node was remounted")
 	}
 }

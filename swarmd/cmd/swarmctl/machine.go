@@ -259,6 +259,11 @@ func machineWorkspaceGrant(path, owner string) error {
 // the running Swarm: mount are the folders to show, unmount the folder to hide.
 func machineWorkspaceApply(paths, mount, unmount []string) error {
 	drop := filepath.Join(machineUnits, machineDaemon+".d", "50-workspaces.conf")
+	// Without an earlier drop-in, the running Swarm started with the
+	// installed ProtectHome=yes: its home folders are the shared inaccessible
+	// node, and only a restart shows them as the private tmpfs.
+	before, _ := os.ReadFile(drop)
+	homeShown := strings.Contains(string(before), "\nProtectHome=tmpfs\n")
 	if len(paths) == 0 {
 		if err := os.Remove(drop); err != nil && !os.IsNotExist(err) {
 			return err
@@ -273,7 +278,20 @@ func machineWorkspaceApply(paths, mount, unmount []string) error {
 			return err
 		}
 	}
-	return machineWorkspaceTakeEffect(mount, unmount)
+	return machineWorkspaceTakeEffect(mount, unmount, homeShown)
+}
+
+// machineHomeRoots are the folders ProtectHome= replaces in Swarm's view.
+var machineHomeRoots = []string{"/home", "/root", "/run/user"}
+
+// machineWorkspaceHomeRoot is the ProtectHome= folder p sits under, or "".
+func machineWorkspaceHomeRoot(p string) string {
+	for _, r := range machineHomeRoots {
+		if p == r || strings.HasPrefix(p, r+"/") {
+			return r
+		}
+	}
+	return ""
 }
 
 // machineWorkspaceTakeEffect reloads the saved unit and changes the running
@@ -282,7 +300,9 @@ func machineWorkspaceApply(paths, mount, unmount []string) error {
 // is unmounted there. Agent sandboxes are started by Swarm from inside that
 // namespace, so every sandbox started afterwards sees the same folders. Only
 // when that is impossible is Swarm restarted, on the wait-for-idle path.
-func machineWorkspaceTakeEffect(mount, unmount []string) error {
+// homeShown: the running Swarm was started with ProtectHome=tmpfs (an earlier
+// drop-in), so folders under home can be mounted into it.
+func machineWorkspaceTakeEffect(mount, unmount []string, homeShown bool) error {
 	if err := machineRun("systemctl", "daemon-reload"); err != nil {
 		return err
 	}
@@ -290,7 +310,18 @@ func machineWorkspaceTakeEffect(mount, unmount []string) error {
 		fmt.Println("Swarm is not running; the folder list takes effect when it starts.")
 		return nil
 	}
-	err := machineWorkspaceLive(mount, unmount)
+	var err error
+	if !homeShown {
+		for _, p := range mount {
+			if r := machineWorkspaceHomeRoot(p); r != "" {
+				err = fmt.Errorf("Swarm was started with %s hidden, and only a restart lets it see folders there", r)
+				break
+			}
+		}
+	}
+	if err == nil {
+		err = machineWorkspaceLive(mount, unmount)
+	}
 	if err == nil {
 		if len(mount) > 0 {
 			fmt.Println("Swarm can use the folders now; it was not restarted.")
@@ -317,7 +348,9 @@ p=$1
 a=$(dirname "$p")
 while [ ! -d "$a" ]; do a=$(dirname "$a"); done
 m=$(findmnt -n -o TARGET -T "$a")
-if [ "$(findmnt -n -o FSTYPE --mountpoint "$m")" != tmpfs ]; then
+# Only a tmpfs of its own (FSROOT /): a bind of a shared node such as
+# systemd's inaccessible directory must never be written to.
+if [ "$(findmnt -rn -o FSTYPE,FSROOT --mountpoint "$m")" != "tmpfs /" ]; then
   echo "$a is not on Swarm's private folder tree" >&2
   exit 1
 fi
@@ -348,6 +381,25 @@ func machineWorkspaceLive(mount, unmount []string) error {
 	for _, p := range unmount {
 		if out, err := inside("umount", p).CombinedOutput(); err != nil {
 			return fmt.Errorf("%s could not be unmounted: %s", p, machineFirstLine(out, err))
+		}
+	}
+	// A home folder can be mounted only where ProtectHome=tmpfs gave Swarm a
+	// private tmpfs; under ProtectHome=yes it is systemd's shared, mode-0000
+	// inaccessible node (a bind, so its FSROOT is not /).
+	checked := map[string]bool{}
+	for _, p := range mount {
+		r := machineWorkspaceHomeRoot(p)
+		if r == "" || checked[r] {
+			continue
+		}
+		checked[r] = true
+		out, err := inside("findmnt", "-n", "-o", "FSTYPE,FSROOT", "--mountpoint", r).Output()
+		if err != nil {
+			// Not a mount of its own: Swarm sees the machine's own folder.
+			continue
+		}
+		if strings.Join(strings.Fields(string(out)), " ") != "tmpfs /" {
+			return fmt.Errorf("%s is hidden from the running Swarm, and only a restart lets it see folders there", r)
 		}
 	}
 	for _, p := range mount {

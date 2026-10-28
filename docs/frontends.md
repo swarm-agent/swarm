@@ -157,7 +157,10 @@ sudo swarmctl workspace add /srv/app /srv/docs
 
 It binds the folders into the running Swarm at once, without a restart, and
 says "Swarm can use the folders now". Only when that is impossible does it
-restart Swarm once nothing runs, and says why.
+restart Swarm once nothing runs, and says why. The first folder in a person's
+home is one such case: Swarm was started with every home folder hidden, and
+only a restart gives it the private home view that later folders are bound
+into live.
 
 ## Clients and agents
 

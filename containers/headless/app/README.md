@@ -187,7 +187,10 @@ the service at its real path, gives Swarm's user access to it
 running Swarm at once (`systemctl bind`), so Swarm and every agent sandbox it
 starts afterwards see it without a restart. The unit drop-in keeps it there
 after later restarts. Only when the live mount is impossible does it say why
-and restart Swarm once nothing runs. `workspace remove` unmounts the folder the
+and restart Swarm once nothing runs; the first home folder always takes that
+restart, because the running Swarm still has every home hidden
+(`ProtectHome=yes`) until it starts with the drop-in's `ProtectHome=tmpfs`.
+`workspace remove` unmounts the folder the
 same way.
 Swarm itself never changes the machine. That folder's agent sandbox runs as its
 owner (with Swarm's group), so what agents create stays the person's, while
