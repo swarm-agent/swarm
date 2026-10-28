@@ -909,7 +909,7 @@ func modeCapabilityInstructions(mode string, bypassPermissions bool, agentProfil
 			}
 			filtered = append(filtered, line)
 		}
-		lines = append(filtered, "Orchestrator expectation: author and revise structured plans yourself through manage_projects task cards; wait for exact-card user acceptance before implementation.")
+		lines = append(filtered, "Orchestrator expectation: delegate work through manage_projects tasks and follow it with wait_tasks; do not implement it yourself.")
 	}
 	return strings.Join(lines, "\n")
 }

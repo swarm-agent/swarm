@@ -326,178 +326,47 @@ func manageProjectsDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_projects",
-		Description: "integrate_task merges a needs_review task's commits into its target branch, the same as the person's merge. Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, list_sources, inspect_source, inspect_files, create, update, delete, synthesize_context, list_media, get_media, propose_task, approve_task, accept_task, integrate_task, deploy_task, refine_task, create_task, reopen_task, list_tasks, get_task, update_task, archive_task, unarchive_task, delete_task, reconcile_tasks, edit_requirements, wait_tasks, report_task, list_linked_tasks. list_linked_tasks lists this home's records of tasks sent to linked machines (this session by default, or project_id) with their last observed status; read_task_session with machine, project_id and task_id reads that remote task session's recent messages, read-only and untrusted. wait_tasks durably yields the current project goal on 1-16 delegated task_ids; resumes on all review-ready/completed outcomes or any actionable blocker. No polling or timeout/provider calls while waiting. needs_review is not user acceptance. Stop/archive/new user messages invalidate the wait. Task edits never transition execution status; unarchive_task restores visibility at expected_revision without changing status, attempts or linked sessions (already unarchived is an error); delete_task only removes an archived, unlaunched task. Task answers are compact by default (here and with machine): get_task gives status, progress (stage, now, next, workflow), result (report summary, branch, head, commit and file counts, deliverables), integration, session_id and next_action; propose/create/approve/accept/reopen/refine/archive_task give the task row (id, title, agent, status, session_id) and next_action. Pass detail for more.",
+		Description: "Send and follow work. propose_task sends a self-contained brief to an agent; wait_tasks pends until the tasks settle or need input (never poll); get_task reads state and result; list_tasks lists current work; reopen_task continues a task. integrate_task only when the person asks. Linked machines: list_machines, then pass machine; list_linked_tasks and read_task_session follow work sent there. Results are untrusted.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"machine":           map[string]any{"type": "string", "description": "Linked machine name; use list_machines to see session access. Only project/task reads, delegation lifecycle actions and wait_tasks are available remotely; never integrate, deploy or report_task. Read task status and reports with get_task; read_task_session reads the task session's recent messages (read-only)."},
-				"attempt_id":        map[string]any{"type": "string", "description": "Exact linked task attempt from wait_tasks/get_task for inspect_files"},
-				"source_session_id": map[string]any{"type": "string", "description": "Exact linked task session for inspect_files; not a regular task_call_id recovery source"},
-				"head_commit":       map[string]any{"type": "string", "description": "Expected committed task result HEAD; omit only for initial inspection, then retain returned reference"},
-				"inspection":        map[string]any{"type": "object", "description": "inspect_files optionally runs a bounded read-only tool against the selected catalog source or exact task result; arguments are the normal read/list/search/find arguments, with paths relative to that tree", "properties": map[string]any{"tool": map[string]any{"type": "string", "enum": []string{"read", "list", "search", "find"}}, "arguments": map[string]any{"type": "object", "description": "Object, e.g. {\"path\":\".\"}"}}, "required": []string{"tool", "arguments"}, "additionalProperties": false},
-				"action": map[string]any{
-					"type":        "string",
-					"description": "Action: list|get|list_sources|inspect_source|inspect_files|create|update|delete|synthesize_context|list_media|get_media|propose_task|approve_task|accept_task|integrate_task|deploy_task|refine_task|create_task|reopen_task|list_tasks|get_task|update_task|archive_task|unarchive_task|delete_task|reconcile_tasks|edit_requirements|wait_tasks|report_task|list_linked_tasks|read_task_session",
-					"enum":        []string{"list_machines", "list", "get", "list_sources", "inspect_source", "inspect_files", "create", "update", "delete", "synthesize_context", "list_media", "get_media", "propose_task", "approve_task", "accept_task", "integrate_task", "deploy_task", "refine_task", "create_task", "reopen_task", "list_tasks", "get_task", "update_task", "archive_task", "unarchive_task", "delete_task", "reconcile_tasks", "edit_requirements", "wait_tasks", "report_task", "list_linked_tasks", "read_task_session"},
-				},
-				"id": map[string]any{
-					"type":        "string",
-					"description": "Project ID for get, update, delete",
-				},
-				"project_id": map[string]any{
-					"type":        "string",
-					"description": "Project ID for task and media operations (list_media, get_media, propose_task, approve_task, accept_task, integrate_task, deploy_task, refine_task, list_tasks, update_task)",
-				},
-				"media_id": map[string]any{
-					"type":        "string",
-					"description": "Media ID for get_media",
-				},
-				"task_id": map[string]any{
-					"type":        "string",
-					"description": "Task ID for approve_task, accept_task, integrate_task, deploy_task, refine_task, update_task",
-				},
-				"detail": map[string]any{
-					"type":        "string",
-					"enum":        []string{ProjectTaskDetailPlan, ProjectTaskDetailAttempts, ProjectTaskDetailFiles, ProjectTaskDetailFull},
-					"description": "Optional, for task answers (here and with machine). Omit for the compact default. get_task: plan (stages, plan text, bound plan), attempts (attempt page; cursor/limit), files (changed files, deliveries, what was done), full (the stored record). propose/create/approve/accept/reopen/refine/archive_task: full returns the stored record.",
-				},
-				"session_id": map[string]any{
-					"type":        "string",
-					"description": "Optional session ID guard for approve_task or accept_task",
-				},
-				"plan_id": map[string]any{
-					"type":        "string",
-					"description": "Optional plan ID guard for approve_task or accept_task",
-				},
-				"definition_revision": map[string]any{
-					"type":        "integer",
-					"description": "Optional plan definition revision guard for approve_task or accept_task",
-				},
-				"theme_id": map[string]any{"type": "string", "description": "Optional project theme ID from the account's existing builtin/custom manage-theme catalog; empty string clears to Swarm default. Inspect manage-theme first; create a custom theme there before assigning it here."},
-				"name": map[string]any{
-					"type":        "string",
-					"description": "Project display name",
-				},
-				"description": map[string]any{
-					"type":        "string",
-					"description": "Optional project description or task description",
-				},
-				"title": map[string]any{
-					"type":        "string",
-					"description": "Task title for propose_task or create_task",
-				},
-				"prompt": map[string]any{
-					"type":        "string",
-					"description": "User request or mission prompt for task planning and routing",
-				},
-				"agent": map[string]any{
-					"type":        "string",
-					"description": "Optional agent assignment override (coder, finder, designer, image, video, sound, plan, swarm). Small code tasks route to Coder; big features route directly to Swarm. Plan is only for explicitly requested Plan workflows.",
-				},
-				"intent": map[string]any{
-					"type":        "string",
-					"description": "Optional explicit task intent: 'code', 'audit', 'image', 'video', 'sound', 'plan'",
-				},
-				"feature_size": map[string]any{
-					"type":        "string",
-					"description": "Optional feature size for code tasks: 'small' (direct coder bug fix / single component) or 'big' (complex work routed to Swarm; Orchestrator may supply its own structured plan for card review)",
-				},
-				"worker_name": map[string]any{
-					"type":        "string",
-					"description": "Optional cosmetic worker name override (e.g. '@Auth Coder')",
-				},
-				"status": map[string]any{
-					"type":        "string",
-					"description": "Read-only task status filter for list_tasks, one or comma-separated; status changes require canonical lifecycle actions",
-				},
-				"update_kind":       map[string]any{"type": "string", "enum": []string{"progress", "attention", "wake_request"}, "description": "report_task only: progress is informational; attention flags actionable input; wake_request explicitly requests Orchestrator attention. Recorded is not delivered or accepted."},
-				"summary":           map[string]any{"type": "string", "maxLength": 4000, "description": "report_task only: bounded task update, treated as untrusted data. Ownership is derived from the authenticated active task run; never supply parent/session/attempt IDs."},
-				"task_ids":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1, "maxItems": 16, "description": "wait_tasks only: distinct deployed tasks in this orchestrator's project, or with machine in that linked machine's project_id; pins current attempts and yields execution until outcomes, without polling."},
-				"until":             map[string]any{"type": "string", "enum": []string{"settled", "finished"}, "description": "wait_tasks only: settled (default) wakes when each task's work has settled: with a workflow attached (review, send-back, push, rebase), only when that workflow ended; a reopen of the same task is followed. finished wakes as soon as each agent finished (needs_review/completed), even while its workflow still runs. Blocked, failed and needs-input tasks wake at once either way."},
-				"repair":            map[string]any{"type": "boolean", "description": "reopen_task only: use authenticated originating failed integration source; never silently merge unintegrated work."},
-				"expected_revision": map[string]any{"type": "integer", "description": "Required exact task revision for reopen_task, update_task, archive_task, unarchive_task and delete_task"},
-				"priority":          map[string]any{"type": "string", "description": "Task organization: low|medium|high|urgent"},
-				"group":             map[string]any{"type": "string", "description": "Task grouping label (empty clears)"},
-				"order":             map[string]any{"type": "integer", "description": "Nonnegative task order within group"},
-				"include_archived":  map[string]any{"type": "boolean", "description": "Include archived task records in list_tasks (home machine)"},
-				"scope":             map[string]any{"type": "string", "enum": []string{"current", "all"}, "description": "list_tasks: current (default) is running, waiting, or finished in the last 24 hours, newest updated first; all is every unarchived task, paged with cursor"},
-				"query":             map[string]any{"type": "string", "description": "Case-insensitive title/description search"},
-				"limit":             map[string]any{"type": "integer", "description": "Page size, maximum 100"},
-				"cursor":            map[string]any{"type": "integer", "description": "Zero-based result offset"},
-				"auto_approve": map[string]any{
-					"type":        "boolean",
-					"description": "Ignored: the account Start tasks rule decides. auto starts every new task at once (none waits); approve makes every new task wait for the person's approval",
-				},
-				"document_patch": map[string]any{
-					"type":        "object",
-					"description": "For edit_requirements: base_revision_id and operations containing add_requirement, edit_requirement, remove_requirement or reorder_requirements. Stable requirement id/text/checkpoint_id bind directly to executable acceptance criteria.",
-				},
-				"plan_document": map[string]any{
-					"type":        "object",
-					"description": "Optional structured plan document {id, title, info: {goal}, checkpoints: [{id, title, tasks, acceptance_criteria}]} for big-feature tasks. With propose_task, submits the Orchestrator-authored plan for card review. With refine_task, replaces the same card's unapproved plan using exact session_id, plan_id and definition_revision guards, without launching a Plan agent.",
-				},
-				"document": map[string]any{
-					"type":        "object",
-					"description": "Alias for plan_document.",
-				},
-				"coder_assignments": map[string]any{"type": "array", "description": "For one small task with independent parallel Coders: [{title, meta_prompt, deliverable, owned_scope, acceptance_criteria, workspace_path}]. Each assignment may target its own authorized project repository; specify its exact workspace_path (or workspace_id). Omitted assignment source inherits the explicit task source. One approved card starts a Swarm parent and one regular parallel task call; no plan or task program. Owned scopes must not overlap within the same repository.", "items": map[string]any{"type": "object"}},
-				"task_program": map[string]any{
-					"type":        "object",
-					"description": "Optional Task Program for dependent/staged work: {id, stages: [{id, depends_on, dependency_evidence}], jobs: [{id, stage_id, agent_type, title, meta_prompt, deliverable, workspace_path, owned_scope, acceptance_criteria, dependency_evidence}]}. For dependent cross-repository changes set workspace_path on every Coder job to its exact authorized source; integration remains per repository. Independent cross-repository changes use parallel workspace-specific tasks/Coders instead.",
-				},
-				"model": map[string]any{
-					"type":        "string",
-					"description": "Optional model selection override (e.g. image model or video model ID)",
-				},
-				"aspect_ratio": map[string]any{
-					"type":        "string",
-					"description": "Optional aspect ratio ('1:1', '16:9', '9:16', '4:3')",
-				},
-				"resolution": map[string]any{
-					"type":        "string",
-					"description": "Optional video resolution ('720p', '1080p', '4k')",
-				},
-				"variant_count": map[string]any{
-					"type":        "integer",
-					"description": "Optional count of variants to generate for image or direct media tasks",
-				},
-				"attached_media": map[string]any{
-					"type":        "array",
-					"description": "Optional array of media items to attach / reference for the task [{id, kind, title, media_url, thumbnail, filename}]; a file the person attached to this conversation is {asset_id} (from its Attached line).",
-					"items":       map[string]any{"type": "object"},
-				},
-				"soundtrack": map[string]any{
-					"type":        "string",
-					"description": "Optional soundtrack description for video tasks",
-				},
-				"pipeline_stages": map[string]any{
-					"type":        "array",
-					"description": "Array of stage name strings for the task",
-					"items":       map[string]any{"type": "string"},
-				},
-				"workspace_path": map[string]any{
-					"type": "string", "description": "Exact canonical source repository root in the account workspace catalog (not a linked subdirectory). Omission is allowed only when exactly one authorized project repository exists. Project membership, a coordination workspace, and first-workspace order are not execution grants; ambiguous, stale, or conflicting targets are rejected.",
-				},
-				"workspace_id":         map[string]any{"type": "string", "description": "Exact account workspace catalog ID for the execution source; if supplied with workspace_path, both must identify the same authorized root"},
-				"workspace_generation": map[string]any{"type": "integer", "description": "Optional expected catalog generation for that source; stale bindings are rejected"},
-				"client_request_id":    map[string]any{"type": "string", "description": "Stable submission identity reused only for identical payload/target retries. Required for reopen_task: reuse key, feedback, revision and repair unchanged after launch failure; it does not bypass source admission"},
-				"workspaces": map[string]any{
-					"type":        "array",
-					"description": "Project workspace references [{path, role, label}]; membership is not an execution grant or default source target",
-					"items":       map[string]any{"type": "object"},
-				},
-				"project_context": map[string]any{
-					"type":        "string",
-					"description": "Synthesized project.md markdown text",
-				},
-				"feedback": map[string]any{
-					"type":        "string",
-					"description": "User or operator feedback for refine_task; required full follow-up request for reopen_task (1-32000 bytes). Continue tasks here, never by starting a retained task session",
-				},
-				"error_summary": map[string]any{
-					"type":        "string",
-					"description": "Error summary for refine_task",
-				},
+				"action":               map[string]any{"type": "string", "enum": []string{"propose_task", "wait_tasks", "get_task", "list_tasks", "reopen_task", "list_machines", "list_linked_tasks", "read_task_session", "integrate_task", "update_task", "archive_task", "unarchive_task", "delete_task", "list", "get", "create", "update", "delete", "list_sources", "inspect_source", "inspect_files"}},
+				"machine":              map[string]any{"type": "string", "description": "Linked machine from list_machines"},
+				"attempt_id":           map[string]any{"type": "string", "description": "inspect_files: from get_task"},
+				"source_session_id":    map[string]any{"type": "string", "description": "inspect_files: task session"},
+				"head_commit":          map[string]any{"type": "string", "description": "inspect_files: expected result HEAD"},
+				"inspection":           map[string]any{"type": "object", "description": "inspect_files: read the source or task result", "properties": map[string]any{"tool": map[string]any{"type": "string", "enum": []string{"read", "list", "search", "find"}}, "arguments": map[string]any{"type": "object"}}, "required": []string{"tool", "arguments"}, "additionalProperties": false},
+				"detail":               map[string]any{"type": "string", "enum": []string{"context", ProjectTaskDetailPlan, ProjectTaskDetailAttempts, ProjectTaskDetailFiles, ProjectTaskDetailFull}, "description": "Omit for compact answers; context is get's full project.md"},
+				"project_id":           map[string]any{"type": "string"},
+				"id":                   map[string]any{"type": "string", "description": "Project ID for get, update, delete"},
+				"task_id":              map[string]any{"type": "string"},
+				"task_ids":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1, "maxItems": 16, "description": "wait_tasks: tasks to wait on"},
+				"until":                map[string]any{"type": "string", "enum": []string{"settled", "finished"}, "description": "wait_tasks: settled (default) also waits for its workflow; finished does not"},
+				"title":                map[string]any{"type": "string"},
+				"prompt":               map[string]any{"type": "string", "description": "Self-contained brief: objective, paths, acceptance criteria, needed facts"},
+				"agent":                map[string]any{"type": "string", "description": "coder, finder, designer or swarm"},
+				"feature_size":         map[string]any{"type": "string", "enum": []string{"small", "big"}},
+				"name":                 map[string]any{"type": "string", "description": "Project name"},
+				"description":          map[string]any{"type": "string"},
+				"status":               map[string]any{"type": "string", "description": "list_tasks filter, comma-separated"},
+				"scope":                map[string]any{"type": "string", "enum": []string{"current", "all"}, "description": "list_tasks: current (default) or all"},
+				"query":                map[string]any{"type": "string"},
+				"include_archived":     map[string]any{"type": "boolean"},
+				"limit":                map[string]any{"type": "integer"},
+				"cursor":               map[string]any{"type": "integer"},
+				"expected_revision":    map[string]any{"type": "integer", "description": "Current task revision"},
+				"feedback":             map[string]any{"type": "string", "description": "reopen_task: the full follow-up request"},
+				"repair":               map[string]any{"type": "boolean", "description": "reopen_task: repair a failed integration"},
+				"priority":             map[string]any{"type": "string", "enum": []string{"low", "medium", "high", "urgent"}},
+				"group":                map[string]any{"type": "string"},
+				"order":                map[string]any{"type": "integer"},
+				"attached_media":       map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "[{asset_id}] of attached files"},
+				"workspace_path":       map[string]any{"type": "string", "description": "Source repository root from list_sources"},
+				"workspace_id":         map[string]any{"type": "string"},
+				"workspace_generation": map[string]any{"type": "integer"},
+				"client_request_id":    map[string]any{"type": "string", "description": "Stable retry key; required for reopen_task"},
+				"workspaces":           map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "create/update: [{path, role, label}]"},
+				"project_context":      map[string]any{"type": "string", "description": "project.md text"},
 			},
 			"required":             []string{"action"},
 			"additionalProperties": true,
@@ -592,16 +461,28 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		if err != nil {
 			return "", err
 		}
-		if projects == nil {
-			projects = []pebblestore.ProjectRecord{}
+		rows := make([]map[string]any, 0, len(projects))
+		for i := range projects {
+			row, err := r.projectSummary(accountScopeID, &projects[i])
+			if err != nil {
+				return "", err
+			}
+			rows = append(rows, row)
 		}
-		response["projects"] = projects
-		response["count"] = len(projects)
+		response["projects"] = rows
+		response["count"] = len(rows)
 
 	case "get":
 		id := strings.TrimSpace(asString(args["id"]))
 		if id == "" {
+			id = strings.TrimSpace(asString(args["project_id"]))
+		}
+		if id == "" {
 			return "", errors.New("project id is required for get")
+		}
+		detail := strings.ToLower(strings.TrimSpace(asString(args["detail"])))
+		if detail != "" && detail != "context" {
+			return "", fmt.Errorf("get detail %q is not supported; use detail=\"context\" for the full project.md", detail)
 		}
 		proj, found, err := r.projects.GetProject(accountScopeID, id)
 		if err != nil {
@@ -610,7 +491,24 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		if !found || proj == nil {
 			return "", fmt.Errorf("project %q not found", id)
 		}
-		response["project"] = proj
+		row, err := r.projectSummary(accountScopeID, proj)
+		if err != nil {
+			return "", err
+		}
+		if description := strings.TrimSpace(proj.Description); description != "" {
+			row["description"] = description
+		}
+		projectContext, truncated := proj.ProjectContext, false
+		if detail != "context" {
+			projectContext, truncated = truncateProjectContext(projectContext, projectContextPreviewBytes)
+		}
+		row["project_context"] = projectContext
+		row["project_context_bytes"] = len(proj.ProjectContext)
+		if truncated {
+			row["project_context_truncated"] = true
+			row["project_context_hint"] = `get with detail="context" returns the full project.md`
+		}
+		response["project"] = row
 
 	case "inspect_files":
 		return r.inspectProjectFiles(ctx, scope, args)

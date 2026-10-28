@@ -5629,7 +5629,7 @@ func (e *sessionV3Executor) resolveSessionV3ProviderTools(accountScopeID string,
 	if err != nil {
 		return nil, err
 	}
-	definitions := sessionsV3ProviderToolDefinitions(e.server.runner.ListAgentToolDefinitionsForAccount(accountScopeID))
+	definitions := sessionsV3ProviderToolDefinitions(runruntime.AgentShownToolDefinitions(agentProfile, e.server.runner.ListAgentToolDefinitionsForAccount(accountScopeID)))
 	if len(definitions) == 0 {
 		return nil, nil
 	}

@@ -176,7 +176,7 @@ behavior and needs an owner decision.
 | Role | Has | Job needs it? | Recommendation |
 |---|---|---|---|
 | Orchestrator | `bash` (pre-approved, always auto mode) | Rarely: project chats have no checkout | Remove, or keep with prompts. |
-| Orchestrator | `manage_artifact`, `manage_video`, `manage_environments`, `manage_connections`, `manage_theme` | Partly (media requests, project themes) | Decide; `TestOrchestratorToolIsolationContract` asserts the opposite and currently fails. |
+| Orchestrator | `manage_artifact`, `manage_video`, `manage_environments`, `manage_connections` | Partly (media requests) | Decide; `TestOrchestratorToolIsolationContract` asserts the opposite and currently fails. `manage_theme`, `manage_worktree` and `manage_automation` are no longer in its contract. |
 | Orchestrator | `webfetch`, `websearch` | Research for planning | Keep. |
 | Orchestrator | `manage_projects` approve/deploy/delete | Under Start tasks `auto`, approve/deploy just run; delete asks | Delete asks; approve/deploy follow Start tasks. |
 | Swarm | `manage_theme`, `webdownload`, `manage_skill`, `manage_actions` | Occasionally | Keep with prompts for changes. |

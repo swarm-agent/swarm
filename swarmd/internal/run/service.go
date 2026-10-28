@@ -1798,7 +1798,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	if checkpointRunContext {
 		input = append(input, checkpointRunInput...)
 	}
-	rawToolDefinitions := convertToolDefinitions(s.ListAgentToolDefinitionsForAccount(options.Principal.AccountScopeID))
+	rawToolDefinitions := convertToolDefinitions(AgentShownToolDefinitions(agentProfile, s.ListAgentToolDefinitionsForAccount(options.Principal.AccountScopeID)))
 	rawCustomToolDefinitions := convertToolDefinitions(s.customAgentToolDefinitionsForAccount(options.Principal.AccountScopeID))
 	toolDefinitions := filterToolDefinitions(rawToolDefinitions, effectiveDisabledTools)
 	if taskHistoryOnly {

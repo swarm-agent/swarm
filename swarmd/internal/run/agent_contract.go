@@ -47,6 +47,17 @@ func (s *Service) listAgentToolDefinitionsForAccount(accountScopeID string) []to
 	return out
 }
 
+// AgentShownToolDefinitions is the code-owned view of tool schemas an agent is
+// shown. The Orchestrator sees its own trimmed schemas for shared tools; every
+// other agent sees the definitions unchanged. It never grants a tool: the
+// agent's resolved contract still decides which definitions are sent.
+func AgentShownToolDefinitions(profile pebblestore.AgentProfile, definitions []tool.Definition) []tool.Definition {
+	if agentruntime.IsSwarmOrchestratorAgentName(profile.Name) {
+		return tool.OrchestratorDefinitions(definitions)
+	}
+	return definitions
+}
+
 func (s *Service) customAgentToolDefinitions() []tool.Definition {
 	return s.customAgentToolDefinitionsForAccount("")
 }

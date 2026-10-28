@@ -1447,7 +1447,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "manage_workspace",
-			Description: "Workspace catalog and Workspace Map manager. Call action='help' for workflow guidance.",
+			Description: "Workspace catalog and Workspace Map manager.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
