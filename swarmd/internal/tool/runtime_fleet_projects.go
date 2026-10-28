@@ -32,7 +32,16 @@ type FleetLinkedTaskOrigin struct {
 type FleetLinkedTasks interface {
 	RecordFleetLinkedTask(context.Context, identity.Principal, FleetLinkedTaskOrigin, string, string, json.RawMessage) (pebblestore.FleetLinkedTask, error)
 	ListFleetLinkedTasks(context.Context, identity.Principal, string, string) ([]pebblestore.FleetLinkedTask, error)
-	ReadFleetLinkedTaskSession(context.Context, identity.Principal, string, string, string, int) (map[string]any, error)
+	ReadFleetLinkedTaskSession(context.Context, identity.Principal, string, string, string, FleetTaskSessionRead) (map[string]any, error)
+}
+
+// FleetTaskSessionRead bounds a linked task session read: how many of the
+// latest messages, their total content size, and which role ("" is assistant
+// and tool messages; "all" is every role). Zero values take the defaults.
+type FleetTaskSessionRead struct {
+	Limit    int
+	MaxChars int
+	Role     string
 }
 
 // FleetReadTaskSessionAction reads a linked task's session messages through
@@ -54,7 +63,7 @@ type FleetMachineInfo struct {
 
 // fleetProjectActions are the project actions a linked machine serves through
 // CallFleetProject.
-var fleetProjectActions = []string{"list", "get", "list_tasks", "get_task", "propose_task", "create_task", "approve_task", "accept_task", "reopen_task", "refine_task", "archive_task"}
+var fleetProjectActions = []string{"list", "get", "list_tasks", "get_task", "propose_task", "create_task", "approve_task", "accept_task", "reopen_task", "refine_task", "archive_task", "message_task", "stop_task"}
 
 func FleetProjectActionAllowed(action string) bool {
 	for _, allowed := range fleetProjectActions {
@@ -153,8 +162,8 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 		if !ok {
 			return "", errors.New("linked task records unavailable")
 		}
-		limit := asInt(args["limit"], 0)
-		view, err := linkedTasks.ReadFleetLinkedTaskSession(ctx, scope.Principal, machine, strings.TrimSpace(asString(args["project_id"])), strings.TrimSpace(asString(args["task_id"])), limit)
+		read := FleetTaskSessionRead{Limit: asInt(args["limit"], 0), MaxChars: asInt(args["max_chars"], 0), Role: strings.TrimSpace(asString(args["role"]))}
+		view, err := linkedTasks.ReadFleetLinkedTaskSession(ctx, scope.Principal, machine, strings.TrimSpace(asString(args["project_id"])), strings.TrimSpace(asString(args["task_id"])), read)
 		if err != nil {
 			return "", err
 		}

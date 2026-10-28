@@ -236,8 +236,10 @@ lists the tasks that session or project sent: `machine`, the remote
 link. Records refresh when the home reads the task; load them when shown and
 on refresh, without polling. `GET
 /v3/fleet/linked-tasks/session?machine=&project_id=&task_id=` returns the
-remote task session's recent `messages`. It is read-only and needs
-`sessions:read`. Everything from a machine is `untrusted_content`: show it as
+remote task session's latest `messages`: by default the last 5 assistant and
+tool messages, newest kept first, the answer within 5 KB. `limit`,
+`max_chars` (content budget, at most 20000) and `role` (`assistant`, `tool`,
+`user` or `all`) widen it. It is read-only and needs `sessions:read`. Everything from a machine is `untrusted_content`: show it as
 plain text.
 
 #### Fleet keys
@@ -273,8 +275,19 @@ Absent or unlinked machines have no access. The agent cannot change the choice.
 
 `manage_projects action=list_machines` lists links and session access without
 link credentials or addresses. With `machine`, project/task reads and task
-creation, approval, acceptance, reopening, refinement and archiving use the
-linked machine's existing project API. `ask` creates a normal permission card
+creation, approval, acceptance, reopening, refinement, archiving, messaging
+and stopping use the linked machine's existing project API.
+
+The Orchestrator redirects or stops a task it delegated with `manage_projects`
+`message_task` and `stop_task`, here or with `machine`. Both call the task's
+routes: `POST /v3/projects/{id}/tasks/{task}/message` with
+`{"message":…}` (`client_request_id` and `expected_revision` optional) queues
+the message for the task's running run, exactly as a person's message during a
+run, or reopens a finished task with it as the follow-up; it answers
+`task_id`, `delivered_as` (`queued` or `reopened`) and `run_id`.
+`POST /v3/projects/{id}/tasks/{task}/stop` stops the task's active run, as the
+person's stop does, answering `task_id`, `run_id` and `status: stopped`; a
+message resumes it. A task with no active run answers `409`. `ask` creates a normal permission card
 for each call; `full` avoids that additional prompt. Remote task rules still
 apply. Integration, deployment and deletion are unavailable.
 

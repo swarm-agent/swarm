@@ -31,14 +31,15 @@ func FleetWorkActionAllowed(name, action string) bool {
 
 // FleetTaskStart reports whether a linked action sends or starts agent work on
 // the machine: creating or proposing a task (it may start at once), approving
-// it, sending it back (reopen) or re-planning it (refine). Under
-// linked.{name}.work ask only these wait for the person; everything else runs.
+// it, sending it back (reopen), messaging it (which may reopen it) or
+// re-planning it (refine). Under linked.{name}.work ask only these wait for
+// the person; everything else, including stop_task, runs.
 func FleetTaskStart(name, action string) bool {
 	if name != "manage_projects" {
 		return false
 	}
 	switch action {
-	case "propose_task", "create_task", "approve_task", "accept_task", "reopen_task", "refine_task":
+	case "propose_task", "create_task", "approve_task", "accept_task", "reopen_task", "message_task", "refine_task":
 		return true
 	}
 	return false

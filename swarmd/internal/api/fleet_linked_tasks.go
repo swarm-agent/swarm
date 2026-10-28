@@ -25,8 +25,8 @@ import (
 // session view reads the task's remote session through the same link.
 //
 //	GET /v3/fleet/linked-tasks?session_id=ID | ?project_id=ID   the records
-//	GET /v3/fleet/linked-tasks/session?machine=&project_id=&task_id=[&limit=]
-//	                                                           the remote task session's recent messages
+//	GET /v3/fleet/linked-tasks/session?machine=&project_id=&task_id=[&limit=&max_chars=&role=]
+//	                                                           the remote task session's latest messages
 //
 // The session view needs sessions:read, the records sessions:read or
 // projects:read; gateway tokens read neither.
@@ -36,9 +36,17 @@ const (
 	fleetLinkedTasksPath       = "/v3/fleet/linked-tasks"
 	fleetLinkedTaskSessionPath = "/v3/fleet/linked-tasks/session"
 
-	fleetLinkedTaskSessionDefaultLimit = 20
-	fleetLinkedTaskSessionMaxLimit     = 100
-	fleetLinkedTaskMessageMaxChars     = 4000
+	// A read defaults to the latest few assistant/tool messages, its whole
+	// reply within 5 KB; max_chars raises the content budget to 20 KB.
+	fleetLinkedTaskSessionDefaultLimit    = 5
+	fleetLinkedTaskSessionMaxLimit        = 100
+	fleetLinkedTaskSessionDefaultMaxChars = 3500
+	fleetLinkedTaskSessionMaxChars        = 20000
+	// fleetLinkedTaskSessionScanLimit is how many of the latest remote
+	// messages a role-filtered read looks through.
+	fleetLinkedTaskSessionScanLimit     = 100
+	fleetLinkedTaskSessionTitleBytes    = 160
+	fleetLinkedTaskSessionProgressBytes = 300
 )
 
 // linkedTaskError carries the HTTP status the routes answer with.
@@ -127,9 +135,10 @@ func (s *Server) ListFleetLinkedTasks(_ context.Context, p identity.Principal, s
 	return nil, linkedTaskFail(http.StatusBadRequest, "session_id or project_id is required")
 }
 
-// ReadFleetLinkedTaskSession reads the recent messages of a linked task's
-// session on its machine. Read-only: it sends nothing and controls nothing.
-func (s *Server) ReadFleetLinkedTaskSession(ctx context.Context, p identity.Principal, machine, projectID, taskID string, limit int) (map[string]any, error) {
+// ReadFleetLinkedTaskSession reads the latest messages of a linked task's
+// session on its machine, bounded by read (fleetLinkedTaskSessionRead).
+// Read-only: it sends nothing and controls nothing.
+func (s *Server) ReadFleetLinkedTaskSession(ctx context.Context, p identity.Principal, machine, projectID, taskID string, read tool.FleetTaskSessionRead) (map[string]any, error) {
 	if s == nil || s.fleet == nil || s.fleetTokens == nil || s.sessions == nil {
 		return nil, linkedTaskFail(http.StatusServiceUnavailable, "fleet service unavailable")
 	}
@@ -137,10 +146,10 @@ func (s *Server) ReadFleetLinkedTaskSession(ctx context.Context, p identity.Prin
 	if machine == "" || projectID == "" || taskID == "" {
 		return nil, linkedTaskFail(http.StatusBadRequest, "machine, project_id and task_id are required")
 	}
-	if limit <= 0 {
-		limit = fleetLinkedTaskSessionDefaultLimit
+	read, err := normalizeFleetTaskSessionRead(read)
+	if err != nil {
+		return nil, linkedTaskFail(http.StatusBadRequest, "%v", err)
 	}
-	limit = min(limit, fleetLinkedTaskSessionMaxLimit)
 	access, err := s.sessions.Store().GetAccountPermissions(p.AccountScopeID)
 	if err != nil {
 		return nil, linkedTaskFail(http.StatusInternalServerError, "read permissions: %v", err)
@@ -188,7 +197,8 @@ func (s *Server) ReadFleetLinkedTaskSession(ctx context.Context, p identity.Prin
 	observed := linkedTaskObservation(answer.Task)
 	view := map[string]any{
 		"machine": machine, "project_id": projectID, "task_id": taskID,
-		"title": observed.Title, "status": observed.Status, "progress": observed.Progress,
+		"title": clipLinkedTaskText(observed.Title, fleetLinkedTaskSessionTitleBytes), "status": observed.Status,
+		"progress":  clipLinkedTaskText(observed.Progress, fleetLinkedTaskSessionProgressBytes),
 		"read_only": true, "untrusted_content": true,
 	}
 	if observed.RemoteSessionID == "" {
@@ -199,7 +209,11 @@ func (s *Server) ReadFleetLinkedTaskSession(ctx context.Context, p identity.Prin
 		Messages     []pebblestore.MessageSnapshot `json:"messages"`
 		HasMoreOlder bool                          `json:"has_more_older"`
 	}
-	path := "/v3/sessions/" + url.PathEscape(observed.RemoteSessionID) + "/messages?tail=true&limit=" + strconv.Itoa(limit)
+	fetch := read.Limit
+	if read.Role != "all" {
+		fetch = fleetLinkedTaskSessionScanLimit
+	}
+	path := "/v3/sessions/" + url.PathEscape(observed.RemoteSessionID) + "/messages?tail=true&limit=" + strconv.Itoa(fetch)
 	err = client.JSON(ctx, http.MethodGet, path, nil, &page)
 	s.noteFleetContact(linked, err)
 	if err != nil {
@@ -212,21 +226,116 @@ func (s *Server) ReadFleetLinkedTaskSession(ctx context.Context, p identity.Prin
 		}
 		return nil, linkedTaskFail(http.StatusBadGateway, "could not reach linked machine %s", machine)
 	}
-	messages := make([]map[string]any, 0, len(page.Messages))
-	for _, message := range page.Messages {
-		content, truncated := message.Content, false
-		if utf8.RuneCountInString(content) > fleetLinkedTaskMessageMaxChars {
-			content, truncated = string([]rune(content)[:fleetLinkedTaskMessageMaxChars]), true
+	messages, more := boundLinkedTaskMessages(page.Messages, read)
+	view["messages"] = messages
+	view["has_more_older"] = page.HasMoreOlder || more
+	view["role"], view["max_chars"] = read.Role, read.MaxChars
+	return view, nil
+}
+
+// normalizeFleetTaskSessionRead applies the read defaults and limits.
+func normalizeFleetTaskSessionRead(read tool.FleetTaskSessionRead) (tool.FleetTaskSessionRead, error) {
+	if read.Limit < 0 || read.MaxChars < 0 {
+		return read, errors.New("limit and max_chars must be positive")
+	}
+	if read.Limit == 0 {
+		read.Limit = fleetLinkedTaskSessionDefaultLimit
+	}
+	read.Limit = min(read.Limit, fleetLinkedTaskSessionMaxLimit)
+	if read.MaxChars == 0 {
+		read.MaxChars = fleetLinkedTaskSessionDefaultMaxChars
+	}
+	read.MaxChars = min(read.MaxChars, fleetLinkedTaskSessionMaxChars)
+	switch read.Role = strings.ToLower(strings.TrimSpace(read.Role)); read.Role {
+	case "":
+		read.Role = "assistant,tool"
+	case "assistant", "tool", "user", "all":
+	default:
+		return read, errors.New("role must be assistant, tool, user or all")
+	}
+	return read, nil
+}
+
+// boundLinkedTaskMessages keeps the latest read.Limit messages of read.Role
+// whose encoded content fits read.MaxChars in total, newest first, so the
+// newest work is always kept; the oldest kept one may be cut. more reports
+// that matching messages were left out.
+func boundLinkedTaskMessages(page []pebblestore.MessageSnapshot, read tool.FleetTaskSessionRead) ([]map[string]any, bool) {
+	matches := func(role string) bool {
+		switch read.Role {
+		case "all":
+			return true
+		case "assistant,tool":
+			return role == "assistant" || role == "tool"
 		}
+		return role == read.Role
+	}
+	var picked []map[string]any
+	used, more := 0, false
+	for i := len(page) - 1; i >= 0; i-- {
+		message := page[i]
+		if !matches(message.Role) {
+			continue
+		}
+		remain := read.MaxChars - used
+		if len(picked) >= read.Limit || remain <= 0 {
+			more = true
+			break
+		}
+		content, truncated := fitLinkedTaskContent(message.Content, remain)
+		used += encodedLinkedTaskLen(content)
 		item := map[string]any{"id": message.ID, "role": message.Role, "content": content, "global_seq": message.GlobalSeq, "created_at": message.CreatedAt}
 		if truncated {
 			item["truncated"] = true
 		}
-		messages = append(messages, item)
+		picked = append(picked, item)
 	}
-	view["messages"] = messages
-	view["has_more_older"] = page.HasMoreOlder
-	return view, nil
+	for i, j := 0, len(picked)-1; i < j; i, j = i+1, j-1 {
+		picked[i], picked[j] = picked[j], picked[i]
+	}
+	if picked == nil {
+		picked = []map[string]any{}
+	}
+	return picked, more
+}
+
+// fitLinkedTaskContent cuts text, on a rune boundary, until its JSON
+// encoding fits budget bytes.
+func fitLinkedTaskContent(text string, budget int) (string, bool) {
+	if encodedLinkedTaskLen(text) <= budget {
+		return text, false
+	}
+	cut := min(len(text), budget)
+	for cut > 0 {
+		for cut > 0 && cut < len(text) && !utf8.RuneStart(text[cut]) {
+			cut--
+		}
+		over := encodedLinkedTaskLen(text[:cut]) - budget
+		if over <= 0 {
+			break
+		}
+		cut -= over
+		if cut < 0 {
+			cut = 0
+		}
+	}
+	return text[:cut], true
+}
+
+func encodedLinkedTaskLen(text string) int {
+	raw, _ := json.Marshal(text)
+	return len(raw)
+}
+
+func clipLinkedTaskText(text string, maxBytes int) string {
+	if len(text) <= maxBytes {
+		return text
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut]
 }
 
 func linkedTaskObservation(task pebblestore.ProjectTaskRecord) pebblestore.FleetLinkedTaskObservation {
@@ -323,7 +432,16 @@ func (s *Server) handleFleetLinkedTasks(w http.ResponseWriter, r *http.Request) 
 			}
 			limit = parsed
 		}
-		view, err := s.ReadFleetLinkedTaskSession(r.Context(), principal, query.Get("machine"), query.Get("project_id"), query.Get("task_id"), limit)
+		maxChars := 0
+		if raw := strings.TrimSpace(query.Get("max_chars")); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 1 {
+				writeError(w, http.StatusBadRequest, errors.New("max_chars must be a positive integer"))
+				return
+			}
+			maxChars = parsed
+		}
+		view, err := s.ReadFleetLinkedTaskSession(r.Context(), principal, query.Get("machine"), query.Get("project_id"), query.Get("task_id"), tool.FleetTaskSessionRead{Limit: limit, MaxChars: maxChars, Role: query.Get("role")})
 		if err != nil {
 			writeError(w, linkedTaskStatus(err), err)
 			return

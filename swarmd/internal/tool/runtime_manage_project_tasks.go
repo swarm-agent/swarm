@@ -165,6 +165,34 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 		}
 		result["active_attempt_id"], result["session_id"], result["run_id"] = task.ActiveAttemptID, task.SessionID, task.ExecutionRunID()
 		result["status"] = "reopened"
+	case "message_task", "stop_task":
+		if taskID == "" {
+			return "", errors.New("task_id is required")
+		}
+		service, ok := r.projectTaskLifecycle.(ProjectTaskControlService)
+		if !ok {
+			return "", errors.New("task message and stop service unavailable")
+		}
+		if action == "stop_task" {
+			stopped, err := service.StopProjectTask(ctx, scope.Principal, projectID, taskID)
+			if err != nil {
+				return "", err
+			}
+			out, err := json.Marshal(map[string]any{"tool": "manage_projects", "action": action, "task_id": stopped.TaskID, "run_id": stopped.RunID, "status": stopped.Status, "next_action": stopped.Next})
+			return string(out), err
+		}
+		revision := 0
+		if _, ok := args["expected_revision"]; ok {
+			if revision, err = projectTaskInteger(args, "expected_revision", 1, 1<<30); err != nil {
+				return "", err
+			}
+		}
+		sent, err := service.MessageProjectTask(ctx, scope.Principal, projectID, taskID, ProjectTaskMessageInput{Message: asString(args["message"]), ClientRequestID: strings.TrimSpace(asString(args["client_request_id"])), Revision: revision})
+		if err != nil {
+			return "", err
+		}
+		out, err := json.Marshal(map[string]any{"tool": "manage_projects", "action": action, "task_id": sent.TaskID, "delivered_as": sent.DeliveredAs, "run_id": sent.RunID})
+		return string(out), err
 	case "get_task":
 		if taskID == "" {
 			return "", errors.New("task_id is required")

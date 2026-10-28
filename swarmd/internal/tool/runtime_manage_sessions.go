@@ -36,7 +36,7 @@ const (
 )
 
 func manageSessionsDefinition() Definition {
-	return Definition{Type: "function", Name: "manage-sessions", Description: "Durable V3 session manager (deploy, list, commit, archive, unarchive, search). Card results render automatically. Task-to-Orchestrator reports use manage_projects report_task; send_message (including trigger:false) is not a task reporting or wake channel. To continue a task, use manage_projects get_task then reopen_task with its exact revision and a stable retry key; triggering send_message to any task-linked session is rejected before writes. For running-task feedback use send_message with trigger:false and a stable client_request_id. Notes never reopen tasks or approve scope changes. saved/queued is not delivered or incorporated: read_messages for a feedback_delivery receipt matching message_id; delivered means a provider step returned successfully, not that scope was incorporated.", Parameters: map[string]any{
+	return Definition{Type: "function", Name: "manage-sessions", Description: "Durable V3 session manager (deploy, list, commit, archive, unarchive, search). Card results render automatically. Task-to-Orchestrator reports use manage_projects report_task; send_message (including trigger:false) is not a task reporting or wake channel. To tell a task more, running or finished, use manage_projects message_task (stop_task stops its run); triggering send_message to any task-linked session is rejected before writes. Notes never reopen tasks or approve scope changes. saved/queued is not delivered or incorporated: read_messages for a feedback_delivery receipt matching message_id; delivered means a provider step returned successfully, not that scope was incorporated.", Parameters: map[string]any{
 		"type": "object", "required": []string{"action"}, "additionalProperties": true,
 		"properties": map[string]any{
 			"action":                    map[string]any{"type": "string", "description": "inspect|list|list_by_state|review_worktrees|search|get|read_messages|git_status|commit|archive|unarchive|deploy|create|stop|pause|send_message|compact"},
@@ -65,6 +65,12 @@ func manageSessionsDefinition() Definition {
 			"request_id":                map[string]any{"type": "string"},
 			"cursor":                    map[string]any{"type": "string"},
 			"limit":                     map[string]any{"type": "integer"},
+			"max_chars":                 map[string]any{"type": "integer", "minimum": 1, "maximum": manageSessionsMaxChars, "description": "read_messages/search: total content characters returned (default 12000)."},
+			"role":                      map[string]any{"type": "string", "description": "read_messages/search: only messages of this role (user, assistant, tool, system). send_message: message role (default user)."},
+			"mode":                      map[string]any{"type": "string", "description": "read_messages: tail (default, the latest), before (before_seq), after (after_seq) or around (around_seq). create: session mode."},
+			"before_seq":                map[string]any{"type": "integer", "description": "read_messages mode=before / search: read messages older than this seq."},
+			"after_seq":                 map[string]any{"type": "integer", "description": "read_messages mode=after: read messages newer than this seq."},
+			"around_seq":                map[string]any{"type": "integer", "description": "read_messages mode=around: read messages around this seq."},
 			"expected_updated_at_by_id": map[string]any{"type": "object", "maxProperties": manageSessionsMaxMutationBatch, "additionalProperties": map[string]any{"type": "integer"}},
 		},
 	}}

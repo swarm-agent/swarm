@@ -4091,6 +4091,11 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectTaskFollowup(w, r, p, projectID, segments[2])
 		return
 	}
+	// 7b'. Message or stop a task: POST /v3/projects/{id}/tasks/{taskId}/message | /stop
+	if len(segments) == 4 && segments[1] == "tasks" && (segments[3] == "message" || segments[3] == "stop") {
+		s.handleProjectTaskControl(w, r, p, projectID, segments[2], segments[3])
+		return
+	}
 	// 7c. Complete task: POST /v3/projects/{id}/tasks/{taskId}/complete
 	if len(segments) == 4 && segments[1] == "tasks" && segments[3] == "complete" {
 		taskID := segments[2]
