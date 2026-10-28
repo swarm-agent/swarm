@@ -17,8 +17,9 @@ Install it on your Linux PC or server. Choose how to use it:
 
 Through MCP, your AI can get work done in your folders two ways:
 
-- **Delegate a goal to Swarm.** It plans the work and splits it across its
-  coder, finder and designer.
+- **Delegate a goal to Swarm.** It handles the work itself or splits it across
+  its coder, finder and designer, always on its own branch; nothing reaches
+  your folder until `swarm_integrate_task`.
 - **Give work directly to an agent:** the **coder** (code), **designer** (UI
   and HTML designs), **finder** (research and audits), or **media** (images,
   video, sound). Use your own workers for jobs with standing instructions,
@@ -134,7 +135,7 @@ stream, and talk to the Orchestrator over the HTTP API.
 | `swarm_connect_chatgpt`, `swarm_connect_claude_code` | sign in with your ChatGPT plan, or use your Claude plan through Claude Code |
 | `swarm_set_agent_model` | change a role's model (only when you ask) |
 | `swarm_create_project` | a project: a name and your folders (nothing in them is changed) |
-| `swarm_run_task`, `swarm_wait_task`, `swarm_task_result` | delegate a goal to Swarm, which splits it across its coder, finder and designer |
+| `swarm_run_task`, `swarm_wait_task`, `swarm_task_result` | delegate a goal to Swarm, which handles it itself or splits it across its coder, finder and designer, on its own branch until `swarm_integrate_task` |
 | `swarm_give_job` | give one of your own workers a job in a project's folder; use `swarm_run_task` with a role for built-in agents |
 | `swarm_get_job` | wait for it; the result: branch, commits, files, report, cost, diff, transcript |
 | `swarm_message_job` | a follow-up in the same job: more to do, a correction, a redo |

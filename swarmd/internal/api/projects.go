@@ -1310,7 +1310,11 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 	}
 
 	var admission *pebblestore.WorktreeAdmissionEvidence
-	if task.Agent == "reviewer" || targetAgent == "coder" || mode == sessionruntime.ModePlan || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" || task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
+	// A Swarm task in a Git repository on a branch works on its own branch,
+	// exactly as a coder task does; only a folder it cannot fork from keeps
+	// the folder behavior.
+	swarmOwnBranch := task.Agent != "reviewer" && mode != sessionruntime.ModePlan && strings.EqualFold(targetAgent, "swarm") && swarmTaskForksBranch(wsPath)
+	if swarmOwnBranch || task.Agent == "reviewer" || targetAgent == "coder" || mode == sessionruntime.ModePlan || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" || task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
 		if s.worktrees == nil {
 			return errors.New("worktree service is not configured; coding task requires worktree isolation")
 		}
@@ -1453,7 +1457,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		seedMsg += "\n\n## Planning phase\nInvestigate only as needed, then submit a complete executable structured plan using exit_plan_mode. Include ordered checkpoints, concrete tasks and acceptance criteria. This project task must show the submitted plan for user approval before any implementation. Do not write implementation files or execute the task in this phase. For coding deliverables, include a checkpoint task_program with a Coder job, explicit workspace-relative owned_scope, implementation instructions, deliverable, acceptance_criteria and dependency_evidence. The approved checkpoint must launch that program rather than implementing directly in the planner workspace. Preserve every user requirement, including committing changes. Complete the checkpoint through the plan lifecycle only after verifying the returned deliverable; completing subtasks alone is not checkpoint completion."
 	}
 	msgID := fmt.Sprintf("msg_%s_seed", sessionID)
-	seedMsg += projectTaskFollowupContext(task) + projectTaskEnvironmentContext(task)
+	seedMsg += projectTaskFollowupContext(task) + projectTaskEnvironmentContext(task) + swarmTaskOwnBranchContext(task, targetAgent, mode)
 	msg := pebblestore.MessageSnapshot{
 		ID:             msgID,
 		SessionID:      sessionID,

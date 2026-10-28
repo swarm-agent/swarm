@@ -118,9 +118,11 @@ func TestSystemAgentRegistryRejectsMissingDuplicateAndInvalidDefinitions(t *test
 // Requirement: registry reconciliation preserves account model context while
 // restoring immutable role authority; Designer has exactly one contract
 // (read/search, swarm_design, scoped Git) and the primary agents carry
-// swarm_design instead of manage_design. Threat: stale snapshots grant tools,
-// Designer regains checkout write/edit, Bash or artifact authoring, or a
-// retired design tool stays reachable. Owners: SystemAgentRegistry,
+// swarm_design instead of manage_design; Swarm carries the scoped Git tools to
+// commit in its own worktree. Threat: stale snapshots grant tools,
+// Designer regains checkout write/edit, Bash or artifact authoring, a
+// retired design tool stays reachable, or a Swarm task cannot commit the
+// work on its own branch. Owners: SystemAgentRegistry,
 // designerAgentProfileForParent, SwarmAgentToolContract and
 // SwarmOrchestratorAgentToolContract; this direct contract test is the
 // narrowest layer, with malformed/stale snapshots as input.
@@ -341,6 +343,13 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	// Designer), enabled for the Orchestrator; manage_design is gone from both.
 	if cfg := SwarmAgentToolContract().Tools["swarm_design"]; cfg.Enabled == nil || *cfg.Enabled {
 		t.Fatalf("Swarm swarm_design must be explicitly disabled: %+v", cfg)
+	}
+	// A Swarm project task works on its own branch and must commit its work
+	// there with the scoped Git tools (not bash), or nothing is delivered.
+	for _, name := range []string{"git_status", "git_diff", "git_add", "git_commit"} {
+		if cfg := swarm.ToolContract.Tools[name]; cfg.Enabled == nil || !*cfg.Enabled {
+			t.Fatalf("Swarm scoped Git tool %q must be enabled: %+v", name, cfg)
+		}
 	}
 	if cfg := SwarmOrchestratorAgentToolContract().Tools["swarm_design"]; cfg.Enabled == nil || !*cfg.Enabled {
 		t.Fatalf("Orchestrator swarm_design must be enabled: %+v", cfg)

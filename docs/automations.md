@@ -291,8 +291,8 @@ each agent works where it should:
 |---|---|---|
 | reviewer | `same` | `same`, `new` |
 | reviewer with `fixes` | `new` | `new` (it commits) |
-| `coder`, any other worker | `new` | `new` |
-| `swarm`, `finder`, `designer` | `none` | `none` |
+| `coder`, `swarm`, any other worker | `new` | `new` |
+| `finder`, `designer` | `none` | `none` |
 
 - `same`: a new reviewer session in the worktree of the job the step
   follows, where that job did its work. Nothing is copied or allocated, and
@@ -306,10 +306,12 @@ each agent works where it should:
   `block` ("the work changed during the review"), so an `ok` never pushes
   code nobody reviewed.
 - `new`: the agent's own worktree at the job's head (a reviewer's is a
-  detached, disposable checkout removed when it ends).
-- `none`: the folder itself. Swarm, finder and designer tasks always work
-  there; the job's commits are the folder's branches (its branch and head
-  are in the brief).
+  detached, disposable checkout removed when it ends). A `swarm` task works
+  on its own branch there, as a coder does; only in a folder that is not a
+  Git repository on a branch does it work in the folder itself.
+- `none`: the folder itself. Finder and designer tasks always work there;
+  the job's commits are the folder's branches (its branch and head are in
+  the brief).
 
 To have the job's own agent continue in its own worktree, use a `reopen`
 step: it sends a follow-up into the job's own session. The daemon refuses

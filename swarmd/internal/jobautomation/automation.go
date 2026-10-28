@@ -47,9 +47,10 @@ const (
 )
 
 // BuiltinAgents are the agents that come with Swarm. An agent step that names
-// one runs it as a task (swarm_run_task): the coder in its own worktree of the
-// folder started at the delivery head, the reviewer read-only at that head,
-// the others in the folder itself; other names identify custom workers.
+// one runs it as a task (swarm_run_task): the coder and swarm in their own
+// worktree of the folder started at the delivery head, the reviewer read-only
+// at that head, finder and designer in the folder itself; other names identify
+// custom workers.
 var BuiltinAgents = map[string]bool{"coder": true, "designer": true, "finder": true, "swarm": true, "reviewer": true}
 
 // IsBuiltinAgent reports whether an agent step's worker names a built-in agent.
@@ -72,10 +73,13 @@ const (
 //
 //	reviewer:                   same (also new)
 //	reviewer with fixes:         new  (it commits)
-//	swarm, finder, designer:     none (they work in the folder, as their
+//	finder, designer:            none (they work in the folder, as their
 //	                             tasks always do; the job's commits are
 //	                             the folder's branches)
-//	coder, any other worker:     new
+//	swarm, coder, other workers: new  (a swarm task works on its own
+//	                             branch, as a coder does; only in a folder
+//	                             that is not a Git repository on a branch
+//	                             does it work in the folder itself)
 func CheckoutFor(step Step, role string) string {
 	if step.Checkout != "" {
 		return step.Checkout
@@ -84,7 +88,7 @@ func CheckoutFor(step Step, role string) string {
 	switch {
 	case step.Fixes != "":
 		return CheckoutNew
-	case worker == "finder" || worker == "swarm" || worker == "designer":
+	case worker == "finder" || worker == "designer":
 		return CheckoutNone
 	case worker == "reviewer" || role == "reviewer":
 		return CheckoutSame
@@ -496,9 +500,9 @@ func (s *Step) normalizeAgent() error {
 	switch {
 	case s.Fixes != "" && s.Checkout != CheckoutNew:
 		return invalid("step %s: a reviewer with fixes commits, so it works in its own worktree: checkout must be new", s.ID)
-	case worker == "coder" && s.Checkout != CheckoutNew:
-		return invalid("step %s: coder changes files, so it works in its own worktree: checkout must be new (to have the job's own agent continue in its worktree, use a reopen step)", s.ID)
-	case (worker == "finder" || worker == "swarm" || worker == "designer") && s.Checkout != CheckoutNone:
+	case (worker == "coder" || worker == "swarm") && s.Checkout != CheckoutNew:
+		return invalid("step %s: %s changes files, so it works in its own worktree: checkout must be new (to have the job's own agent continue in its worktree, use a reopen step)", s.ID, worker)
+	case (worker == "finder" || worker == "designer") && s.Checkout != CheckoutNone:
 		return invalid("step %s: %s works in the folder (checkout none), as its tasks always do; the job's commits are the folder's branches, named in its brief", s.ID, worker)
 	case (worker == "reviewer" || !IsBuiltinAgent(worker)) && s.Checkout == CheckoutNone:
 		return invalid("step %s: a worker always works in a worktree: checkout must be same (a reviewer) or new", s.ID)

@@ -151,11 +151,12 @@ func TestScopeRoleAndBuiltinAgentSteps(t *testing.T) {
 
 // Requirement: an agent step says where its agent works (checkout), and
 // without one each agent works where it should: a reviewer in the reviewed
-// job's own worktree (same), a reviewer with fixes and the coder in their own
-// worktree (new), swarm, finder and designer in the folder (none), as their
+// job's own worktree (same), a reviewer with fixes, the coder and swarm in
+// their own worktree (new), finder and designer in the folder (none), as their
 // tasks always do. Only a reviewer may read another job's worktree, and no
 // agent that changes files may share one.
-// Threat: a coder writing in another job's worktree, a reviewer given a copy
+// Threat: a coder or swarm writing in another job's worktree or straight into
+// the person's folder (checkout none), a reviewer given a copy
 // of the work by default, or a step whose checkout silently means something
 // else than it says.
 // Owners: Step.normalizeAgent, CheckoutFor, NonReviewerCheckoutError.
@@ -185,7 +186,8 @@ func TestAgentStepCheckout(t *testing.T) {
 		{Step{Worker: "coder"}, "", CheckoutNew},
 		{Step{Worker: "designer"}, "", CheckoutNone},
 		{Step{Worker: "finder"}, "", CheckoutNone},
-		{Step{Worker: "Swarm"}, "", CheckoutNone},
+		{Step{Worker: "Swarm"}, "", CheckoutNew},
+		{Step{Worker: "swarm", Checkout: CheckoutNew}, "", CheckoutNew},
 		{Step{Worker: "wkr_2"}, "coder", CheckoutNew},
 	} {
 		got, err := set(c.step)
@@ -201,6 +203,8 @@ func TestAgentStepCheckout(t *testing.T) {
 		"fixes in place":       {Worker: "reviewer", Fixes: FixesSecurity, Checkout: CheckoutSame},
 		"coder in place":       {Worker: "coder", Checkout: CheckoutSame},
 		"coder in the folder":  {Worker: "coder", Checkout: CheckoutNone},
+		"swarm in the folder":  {Worker: "swarm", Checkout: CheckoutNone},
+		"swarm in place":       {Worker: "swarm", Checkout: CheckoutSame},
 		"finder in a worktree": {Worker: "finder", Checkout: CheckoutSame},
 		"designer in worktree": {Worker: "designer", Checkout: CheckoutNew},
 		"worker in the folder": {Worker: "wkr_1", Checkout: CheckoutNone},

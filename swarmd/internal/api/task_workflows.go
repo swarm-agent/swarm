@@ -189,7 +189,7 @@ func taskResultGit(ctx context.Context, worktree, base, head string) (*jobautoma
 // startBuiltinAgentStep runs an agent step that names one of Swarm's own
 // agents as a task in the folder, in the triggering job's project, exactly as
 // swarm_run_task would: the step's brief with the triggering job's result. A
-// coder's worktree starts at the delivery head, so its commits descend from
+// coder's or swarm's worktree starts at the delivery head, so its commits descend from
 // the work it follows. The task records the workflow that started it, so its
 // end never triggers workflows.
 func (s *Server) startBuiltinAgentStep(ctx context.Context, req jobautomation.AgentRequest) (string, error) {
@@ -230,7 +230,7 @@ func (s *Server) startBuiltinAgentStep(ctx context.Context, req jobautomation.Ag
 		title = req.Worker + " step"
 	}
 	start := workflowTaskStart{AutomationID: "workflow:" + req.IdempotencyKey}
-	if strings.EqualFold(req.Worker, "coder") && req.Result.Git != nil && controlMCPCommitID.MatchString(req.Head) {
+	if (strings.EqualFold(req.Worker, "coder") || strings.EqualFold(req.Worker, "swarm")) && req.Result.Git != nil && controlMCPCommitID.MatchString(req.Head) {
 		start.StartCommit = req.Head
 	}
 	if strings.EqualFold(req.Worker, "reviewer") {

@@ -323,6 +323,9 @@ func controlMCPTaskResult(c *controlMCPCall, args map[string]any) (any, error) {
 	out := controlMCPPick(task, "title", "status", "session_id", "workspace_path", "worktree_branch", "base_branch", "base_commit", "diff_summary", "is_integrated", "unintegrated_commits")
 	out["task_id"] = taskID
 	out["role"] = task["agent"]
+	if note := swarmFolderTaskNote(controlMCPString(task, "agent"), controlMCPString(task, "worktree_branch"), controlMCPString(task, "base_commit"), controlMCPString(task, "workspace_path"), controlMCPString(controlMCPMap(task["source_workspace"]), "path")); note != "" {
+		out["worked_in_folder"] = note
+	}
 	if task["agent"] == "reviewer" && controlMCPString(task, "worker_id") == "" && c.server != nil && c.server.sessions != nil && c.server.sessions.Store() != nil {
 		p, ok := PrincipalFromRequest(c.request)
 		if !ok {
