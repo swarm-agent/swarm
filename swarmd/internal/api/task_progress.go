@@ -446,7 +446,9 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 		out.Summary = firstNonEmptyString(deliveredWhere, "files ready")
 	case commits > 0:
 		out.State = progressNotIntegrated
-		out.Summary = plural(commits, "commit") + " on " + firstNonEmptyString(branch, "its branch") + ", not integrated"
+		// The state first, then whether a workflow applied: a long branch
+		// name may be cut where a client shows one line.
+		out.Summary = "not integrated"
 		if workflow != nil {
 			switch workflow.State {
 			case workflowNone:
@@ -457,6 +459,7 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 				out.Summary += " · workflows done"
 			}
 		}
+		out.Summary += " · " + plural(commits, "commit") + " on " + firstNonEmptyString(branch, "its branch")
 	default:
 		out.State = progressDone
 		out.Summary = "finished, nothing to integrate"

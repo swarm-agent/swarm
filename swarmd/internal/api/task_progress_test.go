@@ -76,7 +76,7 @@ func TestTaskProgressStates(t *testing.T) {
 		{name: "working", task: progressTask("in_progress"), state: progressWorking, summary: "coder working"},
 		{name: "planning", task: progressTask("planning"), state: progressWorking, summary: "planning"},
 		{name: "not integrated, no workflow", task: finished(), eval: evaluated(""), state: progressNotIntegrated, workflow: workflowNone,
-			summary: "2 commits on agent/task-1, not integrated · no workflow", integration: progressNotIntegrated, historyIncl: "finished · 2 commits on agent/task-1"},
+			summary: "not integrated · no workflow · 2 commits on agent/task-1", integration: progressNotIntegrated, historyIncl: "finished · 2 commits on agent/task-1"},
 		{name: "not integrated, workflows not evaluated yet", task: finished(), eval: &jobautomation.JobEvaluation{JobID: "task/proj-1/task-1", Seq: 7, EndedAt: 4000},
 			state: progressNotIntegrated, workflow: workflowPending, summary: "not evaluated yet", integration: progressNotIntegrated},
 		{name: "finished before job ends were recorded", task: finished(), state: progressNotIntegrated, summary: "not integrated", integration: progressNotIntegrated},
