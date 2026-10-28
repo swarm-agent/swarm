@@ -2096,9 +2096,14 @@ func manageThemePermissionChangeCount(toolArguments string) (int, bool) {
 	}
 }
 
+// ActionSessionAllow is the action a workspace-scope card offers ("Allow This
+// Session"). It approves the pending request without saving a policy rule;
+// the run gate then grants the path for that chat session only.
+const ActionSessionAllow = "session_allow"
+
 func normalizeResolveAction(action string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(action)) {
-	case "", ActionAllowOnce, "approve", "allow", "yes":
+	case "", ActionAllowOnce, "approve", "allow", "yes", ActionSessionAllow:
 		return ActionAllowOnce, nil
 	case ActionDenyOnce, "deny", "reject", "no":
 		return ActionDenyOnce, nil

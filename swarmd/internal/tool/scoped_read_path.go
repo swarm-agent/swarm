@@ -43,7 +43,7 @@ func ResolveExistingReadPath(scope WorkspaceScope, requested string) (string, er
 	if err := refuseRootContainingStorage(resolved); err != nil {
 		return "", err
 	}
-	if !workspaceGitAdminAllowed(scope, resolved) || !pathWithinAllowedRoots(resolveAllowedRoots(scope), resolved) {
+	if !workspaceGitAdminAllowed(scope, resolved) || !pathWithinAllowedRoots(resolveReadableRoots(scope), resolved) {
 		return "", fmt.Errorf("path %q escapes workspace scope", requested)
 	}
 	info, err := os.Stat(resolved)

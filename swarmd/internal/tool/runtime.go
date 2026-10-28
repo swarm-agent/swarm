@@ -252,6 +252,11 @@ type WorkspaceScope struct {
 	// ReadOnlyRoots contains narrowly authenticated paths that filesystem reads
 	// may access without treating them as workspace roots or mutation targets.
 	ReadOnlyRoots []string
+	// DescendantReadRoots are worktree roots of the session's own delegated
+	// descendant tasks, proven from durable worktree ownership and lineage by
+	// the run gate. Filesystem reads may access them; they never become
+	// workspace roots, mutation targets or task/action workspace paths.
+	DescendantReadRoots []string
 	// ReadOnlyBash is set by the compiled agent boundary, never tool arguments.
 	ReadOnlyBash bool
 	// MutationScopes contains the task-owned workspace-relative paths that may
@@ -479,6 +484,7 @@ func WithWorkspaceScope(parent context.Context, scope WorkspaceScope) context.Co
 	}
 	normalized := normalizeWorkspaceScope(scope.PrimaryPath, scope.Roots)
 	normalized.ReadOnlyRoots = append([]string(nil), scope.ReadOnlyRoots...)
+	normalized.DescendantReadRoots = append([]string(nil), scope.DescendantReadRoots...)
 	normalized.ReadOnlyBash = scope.ReadOnlyBash
 	normalized.ReviewCheckout = strings.TrimSpace(scope.ReviewCheckout)
 	normalized.MutationScopes = append([]string(nil), scope.MutationScopes...)
@@ -544,6 +550,7 @@ func workspaceScopeFromContext(ctx context.Context, workspacePath string) Worksp
 		scope.ReadOnlyBash = override.ReadOnlyBash
 		scope.ReviewCheckout = strings.TrimSpace(override.ReviewCheckout)
 		scope.ReadOnlyRoots = append([]string(nil), override.ReadOnlyRoots...)
+		scope.DescendantReadRoots = append([]string(nil), override.DescendantReadRoots...)
 		scope.MutationScopes = append([]string(nil), override.MutationScopes...)
 		scope.RejectScopeExpansion = override.RejectScopeExpansion
 		scope.ExplicitRepositoryRecovery = override.ExplicitRepositoryRecovery
@@ -553,6 +560,7 @@ func workspaceScopeFromContext(ctx context.Context, workspacePath string) Worksp
 	}
 	normalized := normalizeWorkspaceScope(override.PrimaryPath, override.Roots)
 	normalized.ReadOnlyRoots = append([]string(nil), override.ReadOnlyRoots...)
+	normalized.DescendantReadRoots = append([]string(nil), override.DescendantReadRoots...)
 	normalized.ReadOnlyBash = normalized.ReadOnlyBash || override.ReadOnlyBash
 	normalized.ReviewCheckout = strings.TrimSpace(override.ReviewCheckout)
 	normalized.MutationScopes = append([]string(nil), override.MutationScopes...)
@@ -10530,6 +10538,32 @@ func resolveAllowedRoots(scope WorkspaceScope) []string {
 		return []string{normalized.PrimaryPath}
 	}
 	return nil
+}
+
+// resolveReadableRoots extends the allowed roots with descendant task
+// worktrees. Use it only where the caller reads files; mutation authority is
+// decided separately by workspaceMutationAllowed.
+func resolveReadableRoots(scope WorkspaceScope) []string {
+	roots := resolveAllowedRoots(scope)
+	if len(scope.DescendantReadRoots) == 0 {
+		return roots
+	}
+	seen := make(map[string]struct{}, len(roots)+len(scope.DescendantReadRoots))
+	for _, root := range roots {
+		seen[root] = struct{}{}
+	}
+	for _, root := range scope.DescendantReadRoots {
+		root = normalizeScopePath(root)
+		if root == "" {
+			continue
+		}
+		if _, ok := seen[root]; ok {
+			continue
+		}
+		seen[root] = struct{}{}
+		roots = append(roots, root)
+	}
+	return roots
 }
 
 func pathWithinAllowedRoots(roots []string, candidate string) bool {

@@ -53,6 +53,14 @@ func (s *Service) gateWorkspaceScopeCalls(
 	permissionWaitMS := int64(0)
 
 	hostScope := workspaceScopeForGate(workspaceCtx, principal, sessionID)
+	// Worktrees of this session's own descendant tasks are readable without a
+	// prompt. They are proven per call from durable ownership and lineage,
+	// kept read-only, and survive scope resyncs within this batch.
+	descendantRoots := []string(nil)
+	if workspaceCtx != nil {
+		descendantRoots = append(descendantRoots, workspaceCtx.Scope.DescendantReadRoots...)
+	}
+	lineage := s.descendantWorktreeLineage()
 	for i := range calls {
 		results[i] = tool.Result{
 			CallID: strings.TrimSpace(calls[i].CallID),
@@ -70,6 +78,16 @@ func (s *Service) gateWorkspaceScopeCalls(
 			approvedCalls = append(approvedCalls, call)
 			approvedIndexes = append(approvedIndexes, i)
 			continue
+		}
+		if workspaceCtx != nil {
+			if roots, extended, ok := resolveDescendantReadRoots(lineage, principal, sessionID, hostScope, call, request); ok {
+				descendantRoots = append(descendantRoots, roots...)
+				workspaceCtx.Scope.DescendantReadRoots = append([]string(nil), descendantRoots...)
+				hostScope = extended
+				approvedCalls = append(approvedCalls, call)
+				approvedIndexes = append(approvedIndexes, i)
+				continue
+			}
 		}
 
 		permissionResult, decision, approved, err := s.requestWorkspaceScopePermission(
@@ -101,6 +119,9 @@ func (s *Service) gateWorkspaceScopeCalls(
 		}
 		if changed {
 			scopeChanged = true
+		}
+		if workspaceCtx != nil {
+			workspaceCtx.Scope.DescendantReadRoots = append([]string(nil), descendantRoots...)
 		}
 		hostScope = workspaceScopeForGate(workspaceCtx, principal, sessionID)
 		approvedCalls = append(approvedCalls, call)

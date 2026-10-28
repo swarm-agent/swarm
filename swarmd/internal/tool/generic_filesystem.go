@@ -55,7 +55,9 @@ func openRootedWorkspacePath(scope WorkspaceScope, requested string) (*rootedWor
 	}
 
 	var selectedRoot, selectedRelative string
-	for _, allowedRoot := range resolveAllowedRoots(scope) {
+	// Descendant task worktrees are readable here; mutable is computed below
+	// from the mutable roots only, so writes into them stay rejected.
+	for _, allowedRoot := range resolveReadableRoots(scope) {
 		allowedRoot, err = filepath.Abs(filepath.Clean(strings.TrimSpace(allowedRoot)))
 		if err != nil || allowedRoot == "" {
 			continue

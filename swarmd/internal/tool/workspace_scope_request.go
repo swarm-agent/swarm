@@ -21,10 +21,12 @@ var ErrWorkspaceScopeExpansionRejected = errors.New("workspace scope expansion r
 
 func ScopeExpansionForCall(scope WorkspaceScope, call Call) (ScopeExpansionRequest, bool, error) {
 	readOnlyRoots := append([]string(nil), scope.ReadOnlyRoots...)
+	descendantReadRoots := append([]string(nil), scope.DescendantReadRoots...)
 	mutationScopes := append([]string(nil), scope.MutationScopes...)
 	rejectScopeExpansion := scope.RejectScopeExpansion
 	scope = normalizeWorkspaceScope(scope.PrimaryPath, scope.Roots)
 	scope.ReadOnlyRoots = readOnlyRoots
+	scope.DescendantReadRoots = descendantReadRoots
 	scope.MutationScopes = mutationScopes
 	scope.RejectScopeExpansion = rejectScopeExpansion
 	if strings.TrimSpace(scope.PrimaryPath) == "" {
@@ -97,7 +99,21 @@ func pathAllowedForScopeCall(scope WorkspaceScope, toolName, candidate string) b
 	if scopeCallMutatesWorkspace(toolName) {
 		return workspaceMutationAllowed(scope, candidate)
 	}
+	if ScopeCallReadsOnly(toolName) {
+		return pathWithinAllowedRoots(resolveReadableRoots(scope), candidate)
+	}
 	return pathWithinAllowedRoots(resolveAllowedRoots(scope), candidate)
+}
+
+// ScopeCallReadsOnly reports whether a scope-checked tool only reads the
+// filesystem. Only these calls may use descendant task worktree read roots.
+func ScopeCallReadsOnly(toolName string) bool {
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "read", "list", "search", "find", "agentic_search":
+		return true
+	default:
+		return false
+	}
 }
 
 func scopeCallMutatesWorkspace(toolName string) bool {
