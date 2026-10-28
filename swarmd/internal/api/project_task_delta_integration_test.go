@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -57,6 +58,25 @@ func writeDeltaTally(t *testing.T, dir string, changes map[int]string) {
 // line the task changed, so the task's net change truly conflicts.
 func newDeltaIntegrationFixture(t *testing.T, conflict bool) *deltaIntegrationFixture {
 	t.Helper()
+	return newDeltaFixture(t, func(source, child string) {
+		writeDeltaTally(t, child, map[int]string{18: "line 18 task"})
+		integrationGit(t, child, "commit", "-am", "task change")
+		writeDeltaTally(t, source, map[int]string{2: "line 2 other task"})
+		integrationGit(t, source, "commit", "-am", "other task change")
+		// The agent merged the target in instead of rebasing.
+		integrationGit(t, child, "merge", "--no-edit", "dev")
+		if conflict {
+			writeDeltaTally(t, source, map[int]string{2: "line 2 other task", 18: "line 18 target"})
+			integrationGit(t, source, "commit", "-am", "conflicting target change")
+		}
+	})
+}
+
+// newDeltaFixture creates the target repository (dev, one base commit of
+// tally.sh), the task lane at the allocator location on agent/task, and the
+// task's store records; history builds the task and target commits.
+func newDeltaFixture(t *testing.T, history func(source, child string)) *deltaIntegrationFixture {
+	t.Helper()
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	root, err := filepath.EvalSymlinks(t.TempDir())
@@ -85,16 +105,7 @@ func newDeltaIntegrationFixture(t *testing.T, conflict bool) *deltaIntegrationFi
 	}
 	child := filepath.Join(laneParent, worktreeruntime.WorkspaceIdentityForSession(sessionID))
 	integrationGit(t, source, "worktree", "add", "-b", "agent/task", child)
-	writeDeltaTally(t, child, map[int]string{18: "line 18 task"})
-	integrationGit(t, child, "commit", "-am", "task change")
-	writeDeltaTally(t, source, map[int]string{2: "line 2 other task"})
-	integrationGit(t, source, "commit", "-am", "other task change")
-	// The agent merged the target in instead of rebasing.
-	integrationGit(t, child, "merge", "--no-edit", "dev")
-	if conflict {
-		writeDeltaTally(t, source, map[int]string{2: "line 2 other task", 18: "line 18 target"})
-		integrationGit(t, source, "commit", "-am", "conflicting target change")
-	}
+	history(source, child)
 
 	f := newConfirmationFixture(t, filepath.Join(root, "store"), nil)
 	t.Cleanup(f.close)
@@ -303,4 +314,207 @@ func TestIntegrateProjectTaskRefusesConflictingMergedUpBranch(t *testing.T) {
 	if retained := integrationGit(t, x.source, "rev-parse", updated.Integration.RecoveryRef); retained != updated.Integration.RecoveredHead {
 		t.Fatalf("retained repair commit %s, receipt %s", retained, updated.Integration.RecoveredHead)
 	}
+}
+
+// resolvedSameLineHistory is the reported live case: another task changed
+// line 10 of tally.sh to NAME=alpha on dev; this task changed the same line to
+// NAME=beta and added notes.txt; its agent merged dev in and resolved the
+// conflict keeping NAME=beta (a two-parent merge commit).
+func resolvedSameLineHistory(t *testing.T, source, child string) {
+	t.Helper()
+	writeDeltaTally(t, child, map[int]string{10: "NAME=beta"})
+	if err := os.WriteFile(filepath.Join(child, "notes.txt"), []byte("notes\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	integrationGit(t, child, "add", "tally.sh", "notes.txt")
+	integrationGit(t, child, "commit", "-m", "task B")
+	writeDeltaTally(t, source, map[int]string{10: "NAME=alpha"})
+	integrationGit(t, source, "commit", "-am", "task A")
+	cmd := exec.Command("git", "-C", child, "merge", "--no-edit", "dev")
+	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "CONFLICT") {
+		t.Fatalf("premise: merge should conflict: %v %s", err, out)
+	}
+	writeDeltaTally(t, child, map[int]string{10: "NAME=beta"})
+	integrationGit(t, child, "add", "tally.sh")
+	integrationGit(t, child, "commit", "--no-edit")
+	if parents := integrationGit(t, child, "rev-list", "--parents", "-n", "1", "HEAD"); len(strings.Fields(parents)) != 3 {
+		t.Fatalf("premise: task head is not a merge commit: %s", parents)
+	}
+}
+
+// assertTargetUnchanged checks that a refusal left the target branch head,
+// tally.sh and the target checkout exactly as before.
+func (x *deltaIntegrationFixture) assertTargetUnchanged(t *testing.T, before []byte) {
+	t.Helper()
+	if head := integrationGit(t, x.source, "rev-parse", "HEAD"); head != x.targetHead {
+		t.Fatalf("target head moved: %s", head)
+	}
+	after, err := os.ReadFile(filepath.Join(x.source, "tally.sh"))
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("target working tree changed: %q %v", after, err)
+	}
+	if status := integrationGit(t, x.source, "status", "--porcelain", "--untracked-files=all"); status != "" {
+		t.Fatalf("target checkout not clean: %q", status)
+	}
+}
+
+func assertAgentConflictGuidance(t *testing.T, err error) *projectTaskIntegrationError {
+	t.Helper()
+	if err == nil {
+		t.Fatal("conflicting change was integrated")
+	}
+	message := err.Error()
+	for _, want := range []string{"tally.sh", "swarm_send_message", "rebase its branch agent/task onto dev", "not merge", "Nothing was changed on dev"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("refusal lacks %q: %s", want, message)
+		}
+	}
+	for _, raw := range []string{"merge-tree", "/v3/", "recover-integrate", "CONFLICT (content)"} {
+		if strings.Contains(message, raw) {
+			t.Fatalf("refusal contains raw/unreachable %q: %s", raw, message)
+		}
+	}
+	var failure *projectTaskIntegrationError
+	if !errors.As(err, &failure) || failure.status != http.StatusConflict {
+		t.Fatalf("not a 409 integration failure: %#v", err)
+	}
+	if delivery, ok := failure.delivery.(*pebblestore.TaskDeliveryAssessment); !ok || delivery.State != "conflict" || len(delivery.Files) != 1 || delivery.Files[0] != "tally.sh" {
+		t.Fatalf("delivery: %#v", failure.delivery)
+	}
+	return failure
+}
+
+// Purpose: a branch whose agent merged the target in and resolved a same-line
+// conflict must integrate its resolution. Regression (seen live): recovery
+// 3-way merged from the task's recorded base, ignoring the merge the branch
+// already contains, so the resolved branch was refused as conflicting with the
+// line it had already resolved. Owners: IntegrateProjectTask →
+// recoverProjectTaskDelta → worktree.PrepareTaskDeltaRecovery (taskDeltaBase).
+// Real Git and a real store are required: the defect is in which commit
+// merge-tree uses as its base. Cases: (a) the resolved branch integrates as one
+// single-parent commit with the branch's resolution and file; (a2) a later
+// target change elsewhere still merges 3-way; (b) a later target change over
+// the same line is refused with the file named and the target untouched.
+func TestIntegrateProjectTaskDeliversResolvedMergedUpBranch(t *testing.T) {
+	t.Run("resolved-same-line", func(t *testing.T) {
+		x := newDeltaFixture(t, func(source, child string) { resolvedSameLineHistory(t, source, child) })
+		result, err := x.f.server.IntegrateProjectTask(context.Background(), testPrincipal(), x.project, x.task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		head, _ := result["integration"].(map[string]any)["resulting_target_head"].(string)
+		x.assertResolvedIntegrated(t, result, head, map[int]string{10: "NAME=beta"})
+	})
+	t.Run("target-moved-elsewhere-after-merge", func(t *testing.T) {
+		x := newDeltaFixture(t, func(source, child string) {
+			resolvedSameLineHistory(t, source, child)
+			writeDeltaTally(t, source, map[int]string{2: "line 2 later", 10: "NAME=alpha"})
+			integrationGit(t, source, "commit", "-am", "later target change elsewhere")
+		})
+		result, err := x.f.server.IntegrateProjectTask(context.Background(), testPrincipal(), x.project, x.task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		head, _ := result["integration"].(map[string]any)["resulting_target_head"].(string)
+		x.assertResolvedIntegrated(t, result, head, map[int]string{2: "line 2 later", 10: "NAME=beta"})
+	})
+	t.Run("target-moved-same-line-after-merge", func(t *testing.T) {
+		x := newDeltaFixture(t, func(source, child string) {
+			resolvedSameLineHistory(t, source, child)
+			writeDeltaTally(t, source, map[int]string{10: "NAME=gamma"})
+			integrationGit(t, source, "commit", "-am", "later target change on the same line")
+		})
+		before, err := os.ReadFile(filepath.Join(x.source, "tally.sh"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = x.f.server.IntegrateProjectTask(context.Background(), testPrincipal(), x.project, x.task.ID)
+		assertAgentConflictGuidance(t, err)
+		x.assertTargetUnchanged(t, before)
+		if _, statErr := os.Stat(filepath.Join(x.source, "notes.txt")); !os.IsNotExist(statErr) {
+			t.Fatalf("refused task file reached the target: %v", statErr)
+		}
+	})
+}
+
+func (x *deltaIntegrationFixture) assertResolvedIntegrated(t *testing.T, result map[string]any, head string, tally map[int]string) {
+	t.Helper()
+	if result["status"] != "recovered" {
+		t.Fatalf("status: %#v", result)
+	}
+	if got := integrationGit(t, x.source, "rev-parse", "HEAD"); got != head || head == x.targetHead {
+		t.Fatalf("target head %s, reported %s, previous %s", got, head, x.targetHead)
+	}
+	if count := integrationGit(t, x.source, "rev-list", "--count", x.targetHead+"..HEAD"); count != "1" {
+		t.Fatalf("expected exactly one new target commit, got %s", count)
+	}
+	if parents := integrationGit(t, x.source, "rev-list", "--parents", "-n", "1", "HEAD"); len(strings.Fields(parents)) != 2 || strings.Fields(parents)[1] != x.targetHead {
+		t.Fatalf("integrated commit is not one single-parent commit on the previous target: %s", parents)
+	}
+	contents, err := os.ReadFile(filepath.Join(x.source, "tally.sh"))
+	if err != nil || string(contents) != string(deltaTally(tally)) {
+		t.Fatalf("target tally.sh: %q %v", contents, err)
+	}
+	if notes, err := os.ReadFile(filepath.Join(x.source, "notes.txt")); err != nil || string(notes) != "notes\n" {
+		t.Fatalf("target notes.txt: %q %v", notes, err)
+	}
+	if status := integrationGit(t, x.source, "status", "--porcelain", "--untracked-files=all"); status != "" {
+		t.Fatalf("target checkout not clean: %q", status)
+	}
+	updated, _, _ := x.f.sessions.Store().GetProjectTask(testPrincipal().AccountScopeID, x.project, x.task.ID)
+	if updated.Integration == nil || updated.Integration.State != "recovered" || updated.Integration.RecoveredHead != head || updated.Integration.RecoveryBase != x.baseHead {
+		t.Fatalf("receipt: %#v", updated.Integration)
+	}
+}
+
+// Purpose: an ordinary (unmerged) task branch that conflicts with the target
+// must be refused as a 409 whose text an AI can act on (the conflicting files,
+// nothing changed on the target, ask the agent to rebase and resolve), not raw
+// git merge-tree output reported as HTTP 400. Owners: IntegrateProjectTask's
+// PrepareTaskIntegration conflict branch and worktree.preflightSourceMerge
+// (TaskIntegrationConflictError.Files); the MCP case crosses controlMCPIntegrate
+// and the real HTTP route with an AI-key scoped request. Real Git produces the
+// genuine conflict; the target head, file and checkout must stay unchanged.
+func TestIntegrateProjectTaskPlainConflictGuidesAgentRebase(t *testing.T) {
+	plain := func(source, child string) {
+		writeDeltaTally(t, child, map[int]string{10: "NAME=beta"})
+		integrationGit(t, child, "commit", "-am", "task B")
+		writeDeltaTally(t, source, map[int]string{10: "NAME=alpha"})
+		integrationGit(t, source, "commit", "-am", "task A")
+	}
+	t.Run("service", func(t *testing.T) {
+		x := newDeltaFixture(t, plain)
+		before, _ := os.ReadFile(filepath.Join(x.source, "tally.sh"))
+		_, err := x.f.server.IntegrateProjectTask(context.Background(), testPrincipal(), x.project, x.task.ID)
+		assertAgentConflictGuidance(t, err)
+		x.assertTargetUnchanged(t, before)
+		updated, _, _ := x.f.sessions.Store().GetProjectTask(testPrincipal().AccountScopeID, x.project, x.task.ID)
+		if updated.Integration == nil || updated.Integration.State != "conflict" || updated.Integration.Error != err.Error() {
+			t.Fatalf("conflict receipt: %#v", updated.Integration)
+		}
+	})
+	t.Run("mcp", func(t *testing.T) {
+		x := newDeltaFixture(t, plain)
+		before, _ := os.ReadFile(filepath.Join(x.source, "tally.sh"))
+		scopes, err := aiKeyScopes("write")
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := requestWithScopedToken(withTestPrincipal(httptest.NewRequest(http.MethodPost, "/mcp", nil)), &pebblestore.ScopedTokenRecord{Scopes: scopes})
+		call := &controlMCPCall{request: request, server: x.f.server, next: x.f.server.internalRouteHandler()}
+		_, err = controlMCPIntegrate(call, map[string]any{"project_id": x.project, "task_id": x.task.ID}, "swarm_integrate_task", "swarm_list_tasks")
+		if err == nil {
+			t.Fatal("conflicting branch was integrated through MCP")
+		}
+		message := err.Error()
+		for _, want := range []string{"409", "tally.sh", "swarm_send_message", "rebase its branch agent/task onto dev"} {
+			if !strings.Contains(message, want) {
+				t.Fatalf("MCP refusal lacks %q: %s", want, message)
+			}
+		}
+		if strings.Contains(message, "merge-tree") || strings.Contains(message, "HTTP 400") {
+			t.Fatalf("MCP refusal is raw Git: %s", message)
+		}
+		x.assertTargetUnchanged(t, before)
+	})
 }

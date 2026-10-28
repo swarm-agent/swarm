@@ -145,6 +145,47 @@ type TaskIntegrationConflictError struct {
 	SessionID string `json:"session_id,omitempty"`
 	Commit    string `json:"commit"`
 	Detail    string `json:"detail"`
+	// Files names the conflicted paths when the preflight could list them.
+	Files []string `json:"files,omitempty"`
+}
+
+// preflightSourceMerge checks that the whole source merges into the parent
+// head without writing anything. A content conflict (merge-tree exit 1) is a
+// TaskIntegrationConflictError naming the conflicted files; any other failure
+// stays an ordinary preflight error.
+func preflightSourceMerge(parentPath, parentHead string, entry TaskIntegrationEntry) error {
+	ctx := sandbox.WithGitCommandTimeout(context.Background(), gitCommandTimeout)
+	out, err := sandbox.GitCombinedOutput(ctx, parentPath, nil, "merge-tree", "--write-tree", "--name-only", "--no-messages", parentHead, entry.HeadCommit)
+	if err == nil {
+		return nil
+	}
+	output := strings.TrimSpace(string(out))
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		// Output: the merged tree, then one conflicted path per line.
+		lines := strings.Split(output, "\n")
+		var files []string
+		seen := map[string]bool{}
+		for _, line := range lines[1:] {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				break
+			}
+			if !seen[line] {
+				seen[line] = true
+				files = append(files, line)
+			}
+		}
+		detail := "merge conflict"
+		if len(files) > 0 {
+			detail = "merge conflict in " + strings.Join(files, ", ")
+		}
+		return &TaskIntegrationConflictError{SessionID: entry.SessionID, Commit: entry.HeadCommit, Detail: detail, Files: files}
+	}
+	if output == "" {
+		output = err.Error()
+	}
+	return fmt.Errorf("preflight source merge: git merge-tree: %s", output)
 }
 
 func (e *TaskIntegrationConflictError) Error() string {
@@ -659,8 +700,8 @@ func (s *Service) PrepareTaskIntegration(parentPath, expectedParentBranch, expec
 		if len(plan.Entries) != 1 || len(entry.OwnedScopes) != 0 {
 			return TaskIntegrationPlan{}, errors.New("ancestry-preserving integration requires one whole-worktree source")
 		}
-		if _, err := runGit(parentPath, "merge-tree", "--write-tree", plan.ParentHead, entry.HeadCommit); err != nil {
-			return TaskIntegrationPlan{}, fmt.Errorf("preflight source merge: %w", err)
+		if err := preflightSourceMerge(parentPath, plan.ParentHead, entry); err != nil {
+			return TaskIntegrationPlan{}, err
 		}
 		plan.MergeHead = entry.HeadCommit
 		return plan, nil

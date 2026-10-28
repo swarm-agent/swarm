@@ -235,8 +235,14 @@ func (s *Server) IntegrateProjectTask(ctx context.Context, p identity.Principal,
 		receipt.Error = fmt.Sprintf("prepare integration failed: %v", err)
 		var conflict *worktreeruntime.TaskIntegrationConflictError
 		if errors.As(err, &conflict) {
+			// The caller is often an AI through MCP: say which files conflict
+			// and how to get the task's agent to resolve them, not raw Git.
+			receipt.Error = taskDeltaConflictMessage(conflict.Files, selection.SourceBranch, selection.TargetBranch)
 			a := *gitState.deliveryAssessment
 			a.State, a.ReasonCode, a.Reason = "conflict", "merge_conflict", receipt.Error
+			if len(conflict.Files) > 0 {
+				a.Files = conflict.Files
+			}
 			return nil, &projectTaskIntegrationError{status: http.StatusConflict, err: errors.New(receipt.Error), delivery: &a}
 		}
 		return nil, integrationFailure(http.StatusBadRequest, errors.New(receipt.Error))

@@ -66,16 +66,20 @@ func (s *Service) PrepareTaskDeltaRecovery(ctx context.Context, in TaskDeliveryI
 	if err != nil || paths == "" || len(strings.Split(strings.TrimSuffix(paths, "\x00"), "\x00")) > 512 {
 		return result, errors.New("recorded task delta is empty, unavailable or exceeds the 512-path recovery limit")
 	}
+	deltaBase, err := d.taskDeltaBase(in.SourcePath, a)
+	if err != nil {
+		return result, err
+	}
 	tree, err := d.run(in.SourcePath, "rev-parse", a.SourceOID+"^{tree}")
 	if err != nil {
 		return result, err
 	}
-	// Squash *only* base..source. This synthetic commit is not an assertion
+	// Squash *only* deltaBase..source. This synthetic commit is not an assertion
 	// that any original source commit was merged or patch-equivalent.
-	// Use a target-tree commit parented to the recorded base. Its sole merge
-	// base with the squashed delta is therefore exactly that recorded base,
-	// even on Git versions without merge-tree --merge-base support.
-	delta, err := d.run(in.SourcePath, "commit-tree", tree, "-p", a.BaseOID, "-m", "Prepare recorded task net delta")
+	// Use a target-tree commit parented to the same base. Its sole merge base
+	// with the squashed delta is therefore exactly deltaBase, even on Git
+	// versions without merge-tree --merge-base support.
+	delta, err := d.run(in.SourcePath, "commit-tree", tree, "-p", deltaBase, "-m", "Prepare recorded task net delta")
 	if err != nil {
 		return result, fmt.Errorf("prepare task delta: %w", err)
 	}
@@ -83,7 +87,7 @@ func (s *Service) PrepareTaskDeltaRecovery(ctx context.Context, in TaskDeliveryI
 	if err != nil {
 		return result, err
 	}
-	targetSide, err := d.run(in.SourcePath, "commit-tree", currentTree, "-p", a.BaseOID, "-m", "Prepare current target tree for task delta")
+	targetSide, err := d.run(in.SourcePath, "commit-tree", currentTree, "-p", deltaBase, "-m", "Prepare current target tree for task delta")
 	if err != nil {
 		return result, err
 	}
@@ -116,6 +120,9 @@ func (s *Service) PrepareTaskDeltaRecovery(ctx context.Context, in TaskDeliveryI
 		return result, nil
 	}
 	message := "Recover recorded task delta\n\nOriginal-base: " + a.BaseOID + "\nOriginal-source: " + a.SourceOID
+	if deltaBase != a.BaseOID {
+		message += "\nDelta-base: " + deltaBase
+	}
 	if result.Conflict != "" {
 		message += "\nSwarm-Recovery-Conflict: unresolved"
 	}
@@ -125,7 +132,14 @@ func (s *Service) PrepareTaskDeltaRecovery(ctx context.Context, in TaskDeliveryI
 	}
 	// Deterministic identity bounds retained refs across retries; update-ref CAS
 	// avoids replacing any preexisting prepared source with different bytes.
-	digest := sha256.Sum256([]byte(strings.Join([]string{a.AccountID, a.TaskID, a.AttemptID, a.BaseOID, a.SourceOID, a.TargetOID}, "\x00")))
+	// A distinct delta base gets its own retained ref, so a repair commit kept by
+	// an earlier recorded-base preparation of the same tuple is never mistaken
+	// for this one; recorded-base preparations keep their existing identity.
+	identity := []string{a.AccountID, a.TaskID, a.AttemptID, a.BaseOID, a.SourceOID, a.TargetOID}
+	if deltaBase != a.BaseOID {
+		identity = append(identity, deltaBase)
+	}
+	digest := sha256.Sum256([]byte(strings.Join(identity, "\x00")))
 	result.RetainedRef = "refs/swarm/task-recovery/" + hex.EncodeToString(digest[:])
 	previous, lookupErr := d.run(in.SourcePath, "rev-parse", "--verify", result.RetainedRef+"^{commit}")
 	if lookupErr == nil {
@@ -139,6 +153,37 @@ func (s *Service) PrepareTaskDeltaRecovery(ctx context.Context, in TaskDeliveryI
 		return TaskDeltaRecovery{}, fmt.Errorf("retain recovery source: %w", err)
 	}
 	return result, nil
+}
+
+// taskDeltaBase is the 3-way base for the task's net change. Normally that is
+// the recorded base. When the branch merged a later target commit in (the
+// recorded base is an ancestor of the unique merge base of source and target),
+// the merge base is used instead: the delta is then exactly what the branch
+// changed relative to the target it merged, including the agent's conflict
+// resolutions, and target changes after that merge still merge 3-way. A
+// recorded base that left the target is never an ancestor of a merge base,
+// so base_not_on_target keeps the recorded base.
+func (d *deliveryInspector) taskDeltaBase(path string, a pebblestore.TaskDeliveryAssessment) (string, error) {
+	bases, err := d.run(path, "merge-base", "--all", a.SourceOID, a.TargetOID)
+	if err != nil {
+		if isRecoveryConflict(err) {
+			// Exit 1: no common ancestor.
+			return a.BaseOID, nil
+		}
+		return "", fmt.Errorf("task delta merge base unavailable: %w", err)
+	}
+	fields := strings.Fields(bases)
+	if len(fields) != 1 || !validCommitID(fields[0]) || fields[0] == a.BaseOID || fields[0] == a.SourceOID {
+		// Criss-cross histories have no single base to prefer; keep the record.
+		return a.BaseOID, nil
+	}
+	if _, err := d.run(path, "merge-base", "--is-ancestor", a.BaseOID, fields[0]); err != nil {
+		if isRecoveryConflict(err) {
+			return a.BaseOID, nil
+		}
+		return "", fmt.Errorf("task delta merge base ancestry unavailable: %w", err)
+	}
+	return fields[0], nil
 }
 
 // recoveryConflictFiles reads the conflicted-file section of merge-tree
