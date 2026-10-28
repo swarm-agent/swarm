@@ -98,19 +98,14 @@ impl Console {
             Some(Err(e)) => return page.child(div().text_color(t.err).child(e)),
             Some(Ok(board)) => board,
         };
-        let groups: Vec<Div> = board
-            .groups
-            .into_iter()
-            .map(|g| {
-                let rows: Vec<Div> = if g.rows.is_empty() {
-                    vec![div().px_3().py_2().text_size(px(11.)).text_color(t.faint).child(g.empty)]
-                } else {
-                    g.rows.into_iter().map(|row| self.permission_row(row, cx)).collect()
-                };
-                self.settings_group(g.title, g.note, rows)
-            })
-            .collect();
-        page.children(groups).children(self.devices_section(cx))
+        page.children(board.groups.into_iter().map(|g| {
+            let rows: Vec<Div> = if g.rows.is_empty() {
+                vec![div().px_3().py_2().text_size(px(11.)).text_color(t.faint).child(g.empty)]
+            } else {
+                g.rows.into_iter().map(|row| self.permission_row(row, cx)).collect()
+            };
+            self.settings_group(g.title, g.note, rows)
+        }))
     }
 
     /// One rule: its title and choices, what it protects, right now, and
