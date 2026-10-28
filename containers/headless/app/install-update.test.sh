@@ -97,7 +97,7 @@ INSTALLER=$work/installer
 cat >"$INSTALLER" <<EOF
 #!/usr/bin/env bash
 case \$1 in
-  finish-update) echo finish-update >>"$log" ;;
+  finish-update) echo "finish-update\${2:+ \$2}" >>"$log" ;;
   build-release) [[ -f "$work/build-fails" ]] && exit 1; bash "$here/package-mcp.sh" "$OPT/releases/\$2"; mkdir -p "$OPT/releases/\$2/bin"; ln -sf "$(command -v node)" "$OPT/releases/\$2/bin/node"; printf '#!/bin/sh\n' >"$OPT/releases/\$2/bin/swarmd"; chmod +x "$OPT/releases/\$2/bin/swarmd"; echo "build \$2" >>"$log" ;;
 esac
 EOF
@@ -129,8 +129,12 @@ echo "[$(status ai-review pending swarm-go-ai-review[bot])]" >"$work/statuses/$c
 run_update
 [[ $(state state) == waiting_review && $(git -C "$SRC" rev-parse HEAD) == "$c1" ]] || fail "an unreviewed commit was taken: $(cat "$UPDATE_STATE")"
 reviewed "$c3" success
-run_update
-[[ $(git -C "$SRC" rev-parse HEAD) == "$c3" ]] && grep -qx finish-update "$log" || fail "a reviewed commit was not taken"
+# The timer's update (--automatic) hands its intent to the fetched installer;
+# an unknown argument is refused before anything is fetched.
+(update --bogus) 2>/dev/null && fail 'update accepted an unknown argument'
+[[ $(git -C "$SRC" rev-parse HEAD) == "$c1" ]] || fail 'a refused update moved the checkout'
+(update --automatic) || true
+[[ $(git -C "$SRC" rev-parse HEAD) == "$c3" ]] && grep -qx 'finish-update --automatic' "$log" || fail "a reviewed commit was not taken automatically: $(cat "$log")"
 
 # 3. While anything runs, the new build waits next to the running one.
 busy=true
@@ -138,6 +142,50 @@ finish_update && fail 'busy drain unexpectedly activated'
 [[ $(state state) == blocked && $(running_commit) == "$c1" ]] || fail "Swarm was restarted while work ran: $(cat "$UPDATE_STATE")"
 grep -q "^activate" "$log" && fail "activated while busy"
 grep -qx "build $c3" "$log" || fail "the update did not build while work ran"
+
+# 3b. Purpose: automatic updates (the timer, finish_update --automatic) are
+# idle-only. An admission drain holds every new run, including the runs that
+# running work needs to finish (child tasks, a workflow's next step), so a
+# drain started on a busy machine could only end at its deadline. Threat: the
+# timer drains a busy machine for UPDATE_DRAIN_SECONDS. finish_update is the
+# narrowest layer that owns the build -> busy check -> drain order; the daemon
+# (local_api) is the harness stand-in that records every drain request.
+# A busy machine: built, state waiting with the candidate, no drain, no switch.
+: >"$log"
+busy=true
+rc=0; finish_update --automatic >/dev/null 2>&1 || rc=$?
+[[ $rc == 0 ]] || fail "a busy automatic update failed ($rc)"
+[[ $(state state) == waiting && $(state candidate) == "$c3" ]] || fail "a busy automatic update did not wait: $(cat "$UPDATE_STATE")"
+[[ $(state reason) == 'busy (1 running); tries again at the next update' ]] || fail "wrong busy reason: $(state reason)"
+! grep -q '^drain ' "$log" || fail "an automatic update drained a busy machine: $(cat "$log")"
+! grep -q '^activate' "$log" && [[ $(running_commit) == "$c1" ]] || fail 'a busy automatic update switched'
+grep -qx "build $c3" "$log" && grep -qx busy "$log" || fail "the automatic update did not build first and ask busy: $(cat "$log")"
+# Unknown busy status is not idle: it waits and does not drain either.
+: >"$log"
+(busy_error=7; finish_update --automatic >/dev/null 2>&1) || fail 'an automatic update with unknown busy status failed'
+[[ $(state state) == waiting && $(state reason) == *'busy status unavailable'* ]] || fail "unknown busy status did not wait: $(cat "$UPDATE_STATE")"
+! grep -q '^drain ' "$log" || fail 'an automatic update drained with unknown busy status'
+(busy=null; finish_update --automatic >/dev/null 2>&1) || fail 'an automatic update with invalid busy status failed'
+[[ $(state reason) == *'busy status invalid'* ]] && ! grep -q '^drain ' "$log" || fail 'invalid busy status was taken as idle'
+# A person's update on the same busy machine keeps draining (and here, the
+# stand-in drain times out, so it blocks without switching).
+: >"$log"
+rc=0; finish_update >/dev/null 2>&1 || rc=$?
+[[ $rc != 0 && $(state state) == blocked ]] || fail "a manual update on a busy machine did not drain and wait: $(cat "$UPDATE_STATE")"
+grep -q '^drain /v3/box/drain -X POST' "$log" || fail "a manual update on a busy machine did not drain: $(cat "$log")"
+! grep -qx busy "$log" || fail 'a manual update asked busy instead of draining'
+[[ $(running_commit) == "$c1" ]] || fail 'a timed-out manual drain switched'
+# An idle machine: the automatic update drains (ready at once) and switches.
+(
+  : >"$log"
+  busy=false
+  finish_update --automatic >/dev/null 2>&1 || fail 'an idle automatic update failed'
+  [[ $(state state) == installed && $(running_commit) == "$c3" ]] || fail "an idle automatic update did not switch: $(cat "$UPDATE_STATE")"
+  grep -q '^drain /v3/box/drain -X POST' "$log" || fail "an idle automatic update did not drain: $(cat "$log")"
+  [[ $(grep -m1 -E '^(busy|drain )' "$log") == busy ]] || fail 'the automatic update drained before asking busy'
+  grep -qx "activate $c3" "$log" || fail 'the idle automatic update bypassed activation'
+)
+ln -sfn "$OPT/releases/$c1" "$OPT/current"
 
 # Compatibility invariant: finish_update may use the older busy endpoint only
 # after an HTTP 404, and cleanup_update_drain must not touch an unowned drain.

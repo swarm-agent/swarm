@@ -48,8 +48,8 @@
 # Later: `install.sh update` takes the newest commit of the branch that passed
 # Swarm's AI review, builds it while work runs and restarts Swarm into it only
 # when nothing runs, going back to the build before if it does not come up
-# (`install.sh auto-update on`, or --auto-update, runs it every 5 minutes;
-# off by default); `install.sh channel BRANCH` switches the branch it
+# (`install.sh auto-update on`, or --auto-update, runs it every 5 minutes,
+# idle-only: while anything runs it waits for the next run; off by default); `install.sh channel BRANCH` switches the branch it
 # follows and keeps everything else; `install.sh reset-login` deletes the login
 # so you can create a new one (Swarm itself and your work are kept).
 # `install.sh daemon-env` keeps settings for Swarm itself (such as the X
@@ -284,7 +284,9 @@ Readiness is generation-bound and checked again immediately before restart.
                    update state (machine.update) and what runs (busy).
   auto-update [on|off] [--checks CONTEXT=APP[,...]|none] [--hook PATH]
                    show automatic updates, or turn them on or off (off by
-                   default): on runs update every 5 minutes. --checks names
+                   default): on runs update every 5 minutes, idle-only:
+                   while anything runs it starts no drain and waits for
+                   the next run (update by hand drains and waits). --checks names
                    the commit statuses a commit needs and the GitHub App that
                    must post each (default ai-review=swarm-go-ai-review[bot];
                    none updates without checks). --hook names a root-owned
@@ -888,7 +890,11 @@ dev_sync() {
 #    commit; a missing one waits for it;
 # then builds it next to the running build while work goes on, and restarts
 # Swarm into it only when nothing runs (GET /v3/box/busy: agent runs, worker
-# runs, environment builds). If the new build does not come up (ready, its
+# runs, environment builds). The timer runs `install.sh update --automatic`:
+# an automatic update is idle-only, so while anything runs it does not start
+# the admission drain (which would hold the new runs that running work needs
+# to finish) and waits for the next timer run instead. A person's
+# `install.sh update` drains and waits. If the new build does not come up (ready, its
 # sandbox on as before, the setup page answering) within two minutes, Swarm goes
 # back to the build it ran before and never retries that commit. Each step is
 # written to $UPDATE_STATE, which the machine summary (and its status in the
@@ -1083,7 +1089,18 @@ install_media_dependencies() (
   }
 )
 
+# --automatic: started by the update timer, not a person (see finish_update).
+update_mode_arg() {
+  case ${1:-} in
+    '') ;;
+    --automatic) echo --automatic ;;
+    *) die "usage: install.sh $2 [--automatic]" ;;
+  esac
+}
+
 update() {
+  local automatic
+  automatic=$(update_mode_arg "${1:-}" update) || return 1
   load_conf
   if release_install; then
     # Released builds: the newest release on GitHub. Releases only move
@@ -1102,14 +1119,14 @@ update() {
       fi
       # Continue in the new release's own installer, so its changes (units,
       # run flags) apply now.
-      exec bash "$OPT/releases/$next/share/install.sh" finish-update
+      exec bash "$OPT/releases/$next/share/install.sh" finish-update ${automatic:+"$automatic"}
     fi
-    finish_update || return 1
+    finish_update ${automatic:+"$automatic"} || return 1
     return 0
   fi
   if [[ -n ${DEV_SOURCE:-} ]]; then
     echo "swarm: built from $DEV_SOURCE; not following $SWARM_REF (install.sh dev-sync off to resume)"
-    finish_update || return 1
+    finish_update ${automatic:+"$automatic"} || return 1
     return 0
   fi
   git -C "$SRC" fetch -q origin "$SWARM_REF"
@@ -1141,14 +1158,41 @@ update() {
     echo "swarm: ${head:0:9} -> ${new:0:9} passed its checks"
     # Continue in the installer just fetched, not this already-loaded copy, so
     # changes to the installer itself (units, firewall, run flags) apply now.
-    exec bash "$INSTALLER" finish-update
+    exec bash "$INSTALLER" finish-update ${automatic:+"$automatic"}
   fi
-  finish_update
+  finish_update ${automatic:+"$automatic"}
+}
+
+# Whether an automatic update must leave a busy machine alone; prints why.
+# Fails (go on) only when Swarm says it is idle, or when it keeps exiting and
+# so runs nothing (the drain below handles that). Anything unknown is busy.
+automatic_update_deferred() {
+  local out answer n=0 field value
+  if ! out=$(local_api /v3/box/busy 2>/dev/null); then
+    daemon_crashing && return 1
+    echo "busy status unavailable; tries again at the next update"
+    return 0
+  fi
+  answer=$(json_get busy <<<"$out" || true)
+  [[ $answer == false ]] && return 1
+  if [[ $answer != true ]]; then
+    echo "busy status invalid; tries again at the next update"
+    return 0
+  fi
+  for field in sessions worker_runs environment_builds; do
+    value=$(json_get "$field" <<<"$out" || true)
+    [[ $value =~ ^[0-9]+$ ]] && n=$((n + value))
+  done
+  echo "busy ($n running); tries again at the next update"
 }
 
 # Bring the services to the checkout's commit: build it, wait until nothing
-# runs, switch, and go back if it does not come up.
+# runs, switch, and go back if it does not come up. With --automatic (the
+# update timer), a busy machine is not drained: the build waits and the next
+# timer run tries again.
 finish_update() (
+  local automatic
+  automatic=$(update_mode_arg "${1:-}" finish-update) || exit 1
   load_conf
   install_media_dependencies || return 1
   local commit running why sandboxed
@@ -1171,6 +1215,13 @@ finish_update() (
   if ! bash "$INSTALLER" build-release "$commit"; then
     update_state failed "building ${commit:0:9} failed; Swarm keeps running ${running:0:9} and tries again at the next update" "$commit"
     return 1
+  fi
+  # An automatic update is idle-only: draining a busy machine holds the new
+  # runs its running work needs (child tasks, a workflow's next step), so it
+  # could only end at the drain deadline.
+  if [[ $automatic == --automatic ]] && why=$(automatic_update_deferred); then
+    update_state waiting "$why" "$commit"
+    return 0
   fi
   local drain drain_rc=0 limit=${UPDATE_DRAIN_SECONDS:-7200}
   [[ $limit =~ ^[0-9]+$ && $limit -ge 1 && $limit -le 86400 ]] || die "UPDATE_DRAIN_SECONDS must be 1..86400"
@@ -1308,7 +1359,7 @@ auto_update() {
   if [[ -n $hook ]]; then conf_set UPDATE_HOOK "$hook"; else sed -i '/^UPDATE_HOOK=/d' "$CONF"; fi
   install_units
   if [[ $mode == on ]]; then
-    echo "Automatic updates are on: every 5 minutes Swarm takes the newest commit of $SWARM_REF that passed ${checks:-$DEFAULT_UPDATE_CHECKS}, builds it while work runs and restarts into it only when nothing runs."
+    echo "Automatic updates are on: every 5 minutes Swarm takes the newest commit of $SWARM_REF that passed ${checks:-$DEFAULT_UPDATE_CHECKS}, builds it while work runs and restarts into it only when nothing runs (idle-only: while anything runs it waits for the next run)."
   else
     echo "Automatic updates are off; install.sh update updates by hand (with the same checks)."
   fi
@@ -1552,7 +1603,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash $INSTALLER update
+ExecStart=/bin/bash $INSTALLER update --automatic
 UNIT
   cat > "$UNITS/swarm-headless-update.timer" <<'UNIT'
 [Unit]
@@ -2719,8 +2770,8 @@ main() {
     -*) install_all "$@" ;;
     reinstall) shift; reinstall_all "$@" ;;
     uninstall) shift; uninstall_all "$@" ;;
-    update) update ;;
-    finish-update) finish_update ;;
+    update) shift; update "$@" ;;
+    finish-update) shift; finish_update "$@" ;;
     build-release) shift; load_conf; build_release "${1:?build-release needs a commit}" ;;
     idle-off) shift; exec "$SWARMCTL" idle-off "$@" ;;
     idle-off-check) idle_off_check ;;

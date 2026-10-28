@@ -129,8 +129,12 @@ directories); agent worktrees under `/var/lib/swarm`; projects in
 `/var/lib/swarm-headless/project`. `swarmctl` (in `/usr/local/bin`) runs as
 the `swarm` user, e.g. `sudo swarmctl remote approve CODE`.
 **Updates.** Automatic updates are opt-in: `install.sh auto-update on` (or
-`--auto-update` at install) runs `install.sh update` every 5 minutes; it can
-also be run by hand. An update takes the newest commit of the branch only when
+`--auto-update` at install) runs `install.sh update --automatic` every 5
+minutes; `install.sh update` can also be run by hand. Automatic updates are
+idle-only: while anything runs, the built commit waits (state `waiting`,
+`busy (N running)`) and the next timer run tries again; no admission drain is
+started, so running work can still start the runs it needs to finish. A
+person's `install.sh update` drains and waits (see below). An update takes the newest commit of the branch only when
 it contains the running build (never a downgrade) and passed its checks on
 GitHub: by default Swarm's AI review (`ai-review`, accepted only from the
 `swarm-go-ai-review` GitHub App); a failed review blocks the commit and a
@@ -372,7 +376,10 @@ it in your cloud console to resume. Disk/storage charges may continue.
 ### Update admission drain
 
 After building, `install.sh update` requests `POST /v3/box/drain` before
-activation. New V3 run intents remain durably pending; existing execution
+activation. An automatic update (`--automatic`, the timer) first checks
+`GET /v3/box/busy` and requests the drain only when Swarm is idle; busy, or
+an unknown status, records `waiting` with the candidate commit and leaves the
+daemon untouched until the next timer run. New V3 run intents remain durably pending; existing execution
 owners, including parked parents, finish without being cancelled. The admission
 fence remains closed until daemon restart. Only the installer installs binaries
 and performs the privileged restart.
