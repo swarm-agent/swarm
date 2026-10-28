@@ -373,7 +373,9 @@ func TestRemoteTaskWaitRegistrationRefusals(t *testing.T) {
 // the box reports no busy session for it; a remote task change that the
 // machine's activity stream does not report is not read, even across many
 // work-rule ticks, and the same change is read once the stream reports
-// activity for the pinned session. Threat: a waiting goal that keeps a run slot
+// activity for the pinned session. (Every canonical task write commits a
+// project.updated record that the stream does report, so the unreported change
+// is written to the task's record directly, with no outbox record.) Threat: a waiting goal that keeps a run slot
 // or re-reads the machine on a timer (the live failure this replaces: repeated
 // get_task calls). Boundary: Server.followRemoteTaskWait (its only timers are
 // the rule re-read and the unreachable deadline) and Server.boxBusy, the
@@ -393,11 +395,14 @@ func TestRemoteTaskWaitHoldsNoCapacityAndDoesNotPoll(t *testing.T) {
 	}
 	time.Sleep(200 * time.Millisecond) // let the watcher's stream connect
 	// The task finishes on the machine, but nothing reports it on the stream.
-	if _, err := h.remote.s.sessions.Store().UpdateProjectTask(h.remote.account, "remote-project", "t1", func(task *pebblestore.ProjectTaskRecord) error {
-		task.Status = "needs_review"
-		task.Attempts[0].Summary = "Silently done."
-		return nil
-	}); err != nil {
+	remoteDB := h.remote.s.sessions.Store()
+	task, found, err := remoteDB.GetProjectTask(h.remote.account, "remote-project", "t1")
+	if err != nil || !found {
+		t.Fatalf("remote task: %v %v", found, err)
+	}
+	task.Status = "needs_review"
+	task.Attempts[0].Summary = "Silently done."
+	if err := remoteDB.Underlying().PutJSON(pebblestore.KeyProjectTask(h.remote.account, "remote-project", "t1"), task); err != nil {
 		t.Fatal(err)
 	}
 	// 20 rule ticks (50ms each): a polling watcher would have read and woken.

@@ -83,14 +83,20 @@ remote tasks.
   the machine's `/v3/activity/stream` through the link with the fleet feed's
   reader (`fleet_activity.go`). On (re)connect, a gap, or an activity record for
   the wait's project or a pinned session, it reads the pinned tasks again with
-  the link's `get_task` and offers those observations to the store wake. No
-  timer reads tasks. Local task publication never wakes a linked wait.
+  the link's `get_task` and offers those observations to the store wake. The
+  machine's feed carries its `project.updated` records as metadata-only
+  activity (`kind`, `project_id`, `state=changed`) for an explicit user of the
+  project's account (not an application gateway): every task write, workflow
+  delivery transition and job-end mark or evaluation commits one, so a workflow
+  that ends with a run step, as blocked or failed, or with nothing matched is
+  read even though no session on the machine records it. No timer reads tasks. Local task publication never wakes a linked wait.
 - The wake applies the local readiness rules to the observations, including the
   workflow and integration progress the machine's `get_task` reports (a
   reopened attempt is followed under `until=settled` and `superseded` under
-  `until=finished`; a missing or archived task is `cancelled`). A workflow step
-  that records no session activity on the machine (a run step, a merge) is read
-  on the next activity, gap or reconnect, not on a timer. Every
+  `until=finished`; a missing or archived task is `cancelled`). A machine
+  older than this feed sends no `project.updated` activity: there a workflow
+  end with no session activity is read only on the next activity, gap or
+  reconnect. Every
   row names `machine`, `task_id`, `attempt_id` and `session_id`; the message is
   marked `untrusted_content` and says the outcomes came from that machine. Wake,
   retirement, continuation identity and supersession (new person message, stop,

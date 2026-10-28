@@ -189,14 +189,20 @@ func (s *Store) SetProjectPublisher(publish func(V3RealtimeOutboxRecord)) {
 	s.projectPublisher = publish
 }
 
+// ProjectRealtimeSessionID is the internal session a project's project.updated
+// events are committed under. It is lowercase to satisfy canonical session
+// validation.
+func ProjectRealtimeSessionID(accountScopeID, projectID string) string {
+	return "__project__:" + strings.ToLower(strings.TrimSpace(accountScopeID)) + ":" + strings.ToLower(strings.TrimSpace(projectID))
+}
+
 func (s *Store) commitProjectRealtime(m *projectRealtimeMutation) error {
 	requestID := uuid.NewString()
 	payload := m.eventPayload
 	if len(payload) == 0 {
 		payload = json.RawMessage(`{}`)
 	}
-	// Session ID is lowercase to satisfy canonical session validation
-	sessionID := "__project__:" + strings.ToLower(strings.TrimSpace(m.accountScopeID)) + ":" + strings.ToLower(strings.TrimSpace(m.projectID))
+	sessionID := ProjectRealtimeSessionID(m.accountScopeID, m.projectID)
 	result, err := NewSessionStore(s).ApplyV3SessionMutation(V3SessionMutationInput{
 		SessionID:       sessionID,
 		AccountScopeID:  m.accountScopeID,

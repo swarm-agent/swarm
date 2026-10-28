@@ -215,13 +215,21 @@ func (h *remoteWaitHarness) remoteWorkflow(t *testing.T) (*jobautomation.Store, 
 	return store, d
 }
 
-func pushed(t *testing.T, store *jobautomation.Store, d jobautomation.Delivery) {
+// endDelivery ends the machine's delivery the way the runner does after its
+// last step (the push run step): only the delivery record is saved, no session
+// on the machine records anything.
+func endDelivery(t *testing.T, store *jobautomation.Store, d jobautomation.Delivery, state string) {
 	t.Helper()
-	d.State, d.FinishedAt = jobautomation.StateSucceeded, time.Now().UnixMilli()
-	d.Steps[0].State, d.Steps[1].State = jobautomation.StateSucceeded, jobautomation.StateSucceeded
+	d.State, d.FinishedAt = state, time.Now().UnixMilli()
+	d.Steps[0].State, d.Steps[1].State = jobautomation.StateSucceeded, state
 	if err := store.SaveDelivery(d); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func pushed(t *testing.T, store *jobautomation.Store, d jobautomation.Delivery) {
+	t.Helper()
+	endDelivery(t, store, d, jobautomation.StateSucceeded)
 }
 
 // waitUntil calls wait_tasks with machine=box and until.
@@ -242,29 +250,70 @@ func (h *remoteWaitHarness) waitUntil(t *testing.T, until string, ids ...string)
 }
 
 // Purpose: a linked-machine wait wakes when the task's work on the machine
-// settled, read from the progress the machine reports through get_task.
+// settled, read from the progress the machine reports through get_task, even
+// when the workflow's end records no session activity on the machine.
 // Requirement: the observation carries the workflow and integration progress;
 // needs_review with the machine's workflow running does not wake the home;
-// the workflow ending (pushed) wakes it once with workflow_state in the row;
-// the registration result reports until=settled. Threat: the home's
-// Orchestrator woken when only the remote coder finished. Boundary: tool
-// executeFleetWaitTasks, Server.followRemoteTaskWait (observe) and the remote
-// task detail route (taskWaitProgressFor) over two in-process daemons.
+// the workflow ending wakes it once with workflow_state in the row, whether it
+// pushed (done), ran out of rounds (blocked) or failed; the registration
+// result reports until=settled. After the coder's session ends nothing but
+// the machine's delivery record changes: the wake must come from the
+// machine's project.updated activity (job automation notify ->
+// NotifyProjectTaskChanged -> activity feed), not from session events.
+// Threat: the home's Orchestrator woken when only the remote coder finished,
+// or never woken once the workflow ended by a run step or as blocked/failed
+// (heartbeats keep the link up, so the unreachable deadline never fires).
+// Boundary: tool executeFleetWaitTasks, Server.followRemoteTaskWait, the
+// machine's activityPage and its task detail route (taskWaitProgressFor) over
+// two in-process daemons.
 func TestRemoteTaskWaitSettledWakesAtWorkflowEnd(t *testing.T) {
-	h := newRemoteWaitHarness(t, "t1")
-	store, d := h.remoteWorkflow(t)
-	if result := h.waitUntil(t, "", "t1"); result["until"] != pebblestore.ProjectTaskWaitUntilSettled {
-		t.Fatalf("registration result: %v", result)
+	for _, end := range []struct{ delivery, workflow string }{
+		{jobautomation.StateSucceeded, workflowDone},
+		{jobautomation.StateBlocked, workflowBlocked},
+		{jobautomation.StateFailed, workflowFailed},
+	} {
+		t.Run(end.workflow, func(t *testing.T) {
+			h := newRemoteWaitHarness(t, "t1")
+			store, d := h.remoteWorkflow(t)
+			if result := h.waitUntil(t, "", "t1"); result["until"] != pebblestore.ProjectTaskWaitUntilSettled {
+				t.Fatalf("registration result: %v", result)
+			}
+			h.home.s.watchRemoteTaskWait(remoteWaitGoal, "run-1")
+			time.Sleep(200 * time.Millisecond)
+			h.finish(t, "t1", "needs_review", "Ready.", "")
+			h.noWake(t, 400*time.Millisecond, "needs_review while the machine's workflow runs")
+			endDelivery(t, store, d, end.delivery) // no session activity follows
+			row := remoteWaitRow(t, h.awaitWake(t), 0)
+			if row["status"] != "needs_review" || row["workflow_state"] != end.workflow || row["workflow"] != "review loop" || row["machine"] != "box" {
+				t.Fatalf("%s row: %v", end.workflow, row)
+			}
+		})
 	}
-	h.home.s.watchRemoteTaskWait(remoteWaitGoal, "run-1")
+}
+
+// Purpose: a linked wait wakes when the machine's runner evaluated the task's
+// end and no workflow matched ("none"), which writes only an evaluation
+// record on the machine. Requirement: with the job end marked and not yet
+// evaluated the wait sleeps; the evaluation with nothing matched wakes it,
+// with no session activity after it. Threat: a wait stuck on a machine whose
+// workflows did not apply to the task. Boundary: as above.
+func TestRemoteTaskWaitSettledWakesWhenNoWorkflowMatched(t *testing.T) {
+	h := newRemoteWaitHarness(t, "t1")
+	store := jobautomation.NewStore(h.remote.s.sessions.Store().Underlying())
+	h.remote.s.SetJobAutomations(jobautomation.NewRunner(jobautomation.Options{Store: store}))
+	jobID := taskRunJobID("remote-project", "t1")
+	if err := store.MarkJobEnded(h.remote.account, "remote-project", jobID, "", 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	h.register(t, "t1")
 	time.Sleep(200 * time.Millisecond)
 	h.finish(t, "t1", "needs_review", "Ready.", "")
-	h.noWake(t, 400*time.Millisecond, "needs_review while the machine's workflow runs")
-	pushed(t, store, d)
-	h.touch(t, "rs-t1", "pushed")
-	row := remoteWaitRow(t, h.awaitWake(t), 0)
-	if row["status"] != "needs_review" || row["workflow_state"] != workflowDone || row["workflow"] != "review loop" || row["machine"] != "box" {
-		t.Fatalf("pushed row: %v", row)
+	h.noWake(t, 400*time.Millisecond, "needs_review with the end not evaluated")
+	if err := store.RecordEvaluation(h.remote.account, "remote-project", jobID, "", 1, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	if row := remoteWaitRow(t, h.awaitWake(t), 0); row["status"] != "needs_review" || row["workflow_state"] != workflowNone {
+		t.Fatalf("none row: %v", row)
 	}
 }
 
@@ -304,8 +353,7 @@ func TestRemoteTaskWaitResumeKeepsSettledRule(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	h.finish(t, "t1", "needs_review", "Ready.", "")
 	h.noWake(t, 400*time.Millisecond, "recovered wait woke while the workflow runs")
-	pushed(t, store, d)
-	h.touch(t, "rs-t1", "pushed")
+	pushed(t, store, d) // no session activity follows
 	if row := remoteWaitRow(t, h.awaitWake(t), 0); row["workflow_state"] != workflowDone {
 		t.Fatalf("outcome after recovery: %v", row)
 	}

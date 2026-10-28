@@ -429,7 +429,8 @@ func (f *fleetActivityFeed) followHome(ctx context.Context, closeAll context.Can
 	}
 	_ = f.beginNow(name, f.s.sessions.CurrentRealtimeOutboxRevision)
 	for {
-		gap := f.s.followActivity(ctx, sub, f.principal, f.cursor(name), "", "", emit, nil, nil)
+		// handleFleetActivity refuses gateway tokens: project records are shown.
+		gap := f.s.followActivity(ctx, sub, f.principal, f.cursor(name), "", "", true, emit, nil, nil)
 		if gap == nil {
 			closeAll()
 			return
@@ -658,7 +659,7 @@ type fleetActivityPageGap struct {
 // serveFleetActivityPage is one bounded replay page per machine, read in
 // parallel; a machine that does not answer keeps its cursor.
 func (s *Server) serveFleetActivityPage(w http.ResponseWriter, r *http.Request, principal identity.Principal, home string, machines []fleetActivityMachine, cursors map[string]uint64) {
-	events, next, gap, err := s.activityPage(principal, cursors[home], "", "")
+	events, next, gap, err := s.activityPage(principal, cursors[home], "", "", true)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, errors.New("activity replay failed"))
 		return

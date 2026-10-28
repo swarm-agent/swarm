@@ -2,6 +2,8 @@
 
 `GET /v3/activity/stream?cursor=0&project=...&worker=...` is a metadata-only SSE feed over the existing durable V3 realtime outbox. It uses the same authenticated principal and `sessions:read` scope as session reads, checks account/user ownership, and checks session read access for session-bound records. No second event store is created.
 
+`project.updated` records (a project or task write, a workflow delivery transition, a task's job-end mark or evaluation) are account-scoped like projects: they appear as `kind: "project.updated"`, `state: "changed"` with only `project_id` set (empty `session_id`) for every explicit user of the project's account, and never for an application gateway token. A linked machine's wait follower uses them to read a task again when the task's workflow ends without session activity.
+
 Each `activity` frame contains `seq`, `at` (Unix milliseconds), `kind`, `session_id`, `job_id`, `worker_id`, `worker_name`, `project_id`, `state`, and `summary`. Unavailable identity fields are empty strings. `seq` increases in the global outbox sequence; filtered activity need not have consecutive sequence numbers. Summaries are fixed event labels, never provider text. Tool events add `tool_name` and, for read/write/edit, `file_path`; arguments, output, file contents, prompts, messages, review reasons and publish output are excluded.
 
 ## Delivery and recovery

@@ -36,6 +36,9 @@ type activityEvent struct {
 
 // No free-form summaries, messages, output, or arbitrary payload maps cross this boundary.
 func activityMetadata(row sessionruntime.RealtimeOutboxRecord) (activityEvent, bool) {
+	if row.Event.EventType == pebblestore.ProjectUpdatedEventType {
+		return projectActivityMetadata(row)
+	}
 	if row.Event.EventType == pebblestore.WorkerUpdatedEventType {
 		var metadata pebblestore.WorkerRealtimePayload
 		if json.Unmarshal(row.Event.Payload, &metadata) != nil {
@@ -129,7 +132,30 @@ func activityMetadata(row sessionruntime.RealtimeOutboxRecord) (activityEvent, b
 	return event, true
 }
 
-func (s *Server) activityPage(principal identity.Principal, cursor uint64, project, worker string) ([]activityEvent, uint64, bool, error) {
+// projectActivityMetadata is a project.updated record as activity: only that
+// the project (or one of its tasks, its workflow deliveries or job-end
+// evaluations) changed, so a reader such as a linked wait reads it again. The
+// payload's project must be the record's own project session; records without
+// one (the project order) are not activity.
+func projectActivityMetadata(row sessionruntime.RealtimeOutboxRecord) (activityEvent, bool) {
+	var payload struct {
+		ProjectID string `json:"project_id"`
+	}
+	if json.Unmarshal(row.Event.Payload, &payload) != nil {
+		return activityEvent{}, false
+	}
+	project := strings.TrimSpace(payload.ProjectID)
+	if project == "" || row.AccountScopeID == "" || row.SessionID != pebblestore.ProjectRealtimeSessionID(row.AccountScopeID, project) {
+		return activityEvent{}, false
+	}
+	return activityEvent{Seq: row.EndpointSeq, At: row.CreatedAt, Kind: pebblestore.ProjectUpdatedEventType, ProjectID: project, State: "changed", Summary: pebblestore.ProjectUpdatedEventType}, true
+}
+
+// activityPage reads the principal's activity after cursor. projects admits
+// project.updated records of the principal's account: projects are account
+// scoped, so every explicit user of the account may read them, as the project
+// routes allow; an application gateway (confined to one project) may not.
+func (s *Server) activityPage(principal identity.Principal, cursor uint64, project, worker string, projects bool) ([]activityEvent, uint64, bool, error) {
 	head, err := s.sessions.CurrentRealtimeOutboxRevision()
 	if err != nil {
 		return nil, cursor, false, err
@@ -151,7 +177,15 @@ func (s *Server) activityPage(principal identity.Principal, cursor uint64, proje
 			return nil, head, true, nil
 		}
 		cursor = row.EndpointSeq
-		if row.AccountScopeID != principal.AccountScopeID || row.UserID != principal.UserID {
+		if row.AccountScopeID != principal.AccountScopeID {
+			continue
+		}
+		if row.Event.EventType == pebblestore.ProjectUpdatedEventType {
+			// Committed by the store, not by a user: account-scoped.
+			if !projects || principal.Type != identity.PrincipalTypeUser {
+				continue
+			}
+		} else if row.UserID != principal.UserID {
 			continue
 		}
 		event, ok := activityMetadata(row)
@@ -199,8 +233,9 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	project, worker := r.URL.Query().Get("project"), r.URL.Query().Get("worker")
+	projects := !fleetActivityGatewayCaller(r)
 	if r.URL.Path == activityPagePath {
-		events, next, gap, err := s.activityPage(principal, cursor, project, worker)
+		events, next, gap, err := s.activityPage(principal, cursor, project, worker, projects)
 		if err != nil {
 			http.Error(w, "activity replay failed", http.StatusInternalServerError)
 			return
@@ -250,7 +285,7 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 		}
 		return controller.Flush() == nil
 	}
-	if gap := s.followActivity(r.Context(), sub, principal, cursor, project, worker, send, ticker.C, heartbeat); gap != nil {
+	if gap := s.followActivity(r.Context(), sub, principal, cursor, project, worker, projects, send, ticker.C, heartbeat); gap != nil {
 		send("gap", map[string]any{"from": gap.From, "to": gap.To, "cursor": strconv.FormatUint(gap.Cursor, 10)})
 	}
 }
@@ -267,14 +302,14 @@ type activityGap struct {
 // subscription overflowed (resume at the last delivered cursor) or the cursor
 // is expired or ahead (resume at the head). beat runs on each heartbeat tick;
 // a nil heartbeat channel never ticks.
-func (s *Server) followActivity(ctx context.Context, sub *v3RealtimeOutboxSubscriber, principal identity.Principal, cursor uint64, project, worker string, emit func(kind string, value any) bool, heartbeat <-chan time.Time, beat func() bool) *activityGap {
+func (s *Server) followActivity(ctx context.Context, sub *v3RealtimeOutboxSubscriber, principal identity.Principal, cursor uint64, project, worker string, projects bool, emit func(kind string, value any) bool, heartbeat <-chan time.Time, beat func() bool) *activityGap {
 	for {
 		select {
 		case slow := <-sub.slow:
 			return &activityGap{From: cursor + 1, To: slow.EndpointSeq, Cursor: cursor}
 		default:
 		}
-		events, next, expired, err := s.activityPage(principal, cursor, project, worker)
+		events, next, expired, err := s.activityPage(principal, cursor, project, worker, projects)
 		if err != nil {
 			return nil
 		}
@@ -320,6 +355,10 @@ func (s *Server) followActivity(ctx context.Context, sub *v3RealtimeOutboxSubscr
 // Only absent, never tombstoned, worker sessions can use admission ownership.
 // An existing session's ACL denial must not fall back to worker ownership.
 func (s *Server) authorizeActivityEvent(p identity.Principal, row sessionruntime.RealtimeOutboxRecord, event activityEvent) (bool, error) {
+	if row.Event.EventType == pebblestore.ProjectUpdatedEventType {
+		// activityPage admitted it for this account's user; it names no session.
+		return event.SessionID == "" && row.AccountScopeID == p.AccountScopeID && p.Type == identity.PrincipalTypeUser, nil
+	}
 	if event.SessionID != "" {
 		_, exists, err := s.sessions.GetSession(event.SessionID)
 		if err != nil {
