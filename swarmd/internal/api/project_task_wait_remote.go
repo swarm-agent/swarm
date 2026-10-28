@@ -214,11 +214,27 @@ func (s *Server) followRemoteTaskWait(parent context.Context, owner pebblestore.
 			if json.Unmarshal(raw, &response) != nil || response.Task.ID != target.TaskID {
 				return nil, false
 			}
+			// The task's progress (workflow, integration) as the machine
+			// computed it; it decides whether the work there has settled.
+			var progress struct {
+				Task struct {
+					Progress json.RawMessage `json:"progress"`
+				} `json:"task"`
+			}
+			_ = json.Unmarshal(raw, &progress)
 			task := response.Task
 			task.EnsureTaskAttempts()
 			o := pebblestore.V3ProjectTaskRemoteObservation{TaskID: target.TaskID, Archived: task.Archived || task.ProjectID != wait.ProjectID, Title: task.Title, Status: task.Status, LastError: task.LastError, ActionNeeded: task.ActionNeeded}
+			if len(progress.Task.Progress) > 0 {
+				o.Progress = pebblestore.ProjectTaskWaitProgressFrom(progress.Task.Progress)
+			}
 			if a := task.ActiveAttempt(); a != nil {
 				o.AttemptID, o.SessionID, o.AttemptSummary = a.ID, a.SessionID, a.Summary
+				// A reopen of the task (followed under until=settled) runs
+				// in this session: its activity concerns the wait too.
+				if a.SessionID != "" && len(pinned) < 4*len(wait.Tasks) {
+					pinned[a.SessionID] = true
+				}
 			}
 			out = append(out, o)
 		}

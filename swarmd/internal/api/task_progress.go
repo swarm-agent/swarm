@@ -675,6 +675,13 @@ func taskProgressHistory(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 // taskProgressFor reads a task's deliveries and evaluation and computes its
 // progress. A waiting task has neither, so nothing is read for it.
 func (s *Server) taskProgressFor(account string, task pebblestore.ProjectTaskRecord, now int64) *taskProgress {
+	deliveries, eval := s.taskProgressRecords(account, task)
+	p := computeTaskProgress(task, deliveries, eval, now)
+	return &p
+}
+
+// taskProgressRecords reads a task's job deliveries and evaluation.
+func (s *Server) taskProgressRecords(account string, task pebblestore.ProjectTaskRecord) ([]jobautomation.Delivery, *jobautomation.JobEvaluation) {
 	var deliveries []jobautomation.Delivery
 	var eval *jobautomation.JobEvaluation
 	if store, err := s.jobAutomationStore(); err == nil && taskStatusClass(task.Status) != progressWaiting {
@@ -690,8 +697,7 @@ func (s *Server) taskProgressFor(account string, task pebblestore.ProjectTaskRec
 			log.Printf("swarmd task progress: read evaluation of %s: %v", jobID, err)
 		}
 	}
-	p := computeTaskProgress(task, deliveries, eval, now)
-	return &p
+	return deliveries, eval
 }
 
 // taskWithProgress is a task as a client reads it, with its progress.
@@ -739,7 +745,7 @@ func (s *Server) installTaskProgress() {
 	}
 	if underlying := db.Underlying(); underlying != nil {
 		underlying.SetProjectTaskProgress(func(account string, task pebblestore.ProjectTaskRecord) any {
-			return s.taskProgressFor(account, task, time.Now().UnixMilli())
+			return s.taskWaitProgressFor(account, task, time.Now().UnixMilli())
 		})
 	}
 }

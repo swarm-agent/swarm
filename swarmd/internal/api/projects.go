@@ -3419,7 +3419,9 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			syncTaskSessionState(task, db)
 			hydrateTaskProgramStatus(task, db)
 			hydrateTaskPlanDocument(task, db)
-			detail := map[string]any{"task": taskWithProgress{Task: sanitizeProjectTaskForClient(task), Progress: s.taskProgressFor(p.AccountScopeID, *task, time.Now().UnixMilli())}, "model_preview": s.buildTaskModelPreview(p, task)}
+			// The wait view of progress, so a home waiting on this task through a
+			// link (get_task) reads the same workflow state as a local wait.
+			detail := map[string]any{"task": taskWithProgress{Task: sanitizeProjectTaskForClient(task), Progress: s.taskWaitProgressFor(p.AccountScopeID, *task, time.Now().UnixMilli())}, "model_preview": s.buildTaskModelPreview(p, task)}
 			if folderTask(task) && task.Integration != nil && task.Integration.State == "in_folder" {
 				g, err := taskResultGit(r.Context(), task.WorkspacePath, task.BaseCommit, task.Integration.SourceHead)
 				detail["base_commit"], detail["head"], detail["delivery_state"] = task.BaseCommit, task.Integration.SourceHead, "in_folder"

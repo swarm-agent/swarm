@@ -7,6 +7,11 @@ Tasks must belong to that project/account and have a linked same-user execution
 session. Registration pins the current attempt and session. It does not approve,
 deploy, reopen, accept, or grant source access to a task.
 
+Optional `until` selects what the wait waits for and is stored with it:
+`settled` (default) waits until each task's work has settled; `finished` keeps
+the status-only rule (the agent finished). Any other value is refused without
+changing the run.
+
 ## Lifecycle
 
 - Registration crosses `ApplyV3SessionMutation`, storing `waiting_tasks` and the
@@ -14,10 +19,24 @@ deploy, reopen, accept, or grant source access to a task.
 - The provider tool loop yields immediately. Executor cleanup releases the
   execution lease. Waiting is inactive, nonterminal, and not an elapsed-time
   reason to schedule provider work.
-- Committed project/task publication reconciles matching waits. All selected
-  attempts must be `needs_review` or `completed`, or one must have an actionable
+- Committed project/task publication (including workflow delivery and job-end
+  evaluation changes, which publish `project.updated`) reconciles matching
+  waits. All selected tasks must be ready, or one must have an actionable
   blocked, failed, cancelled, needs-input, pending-approval, removed/archived, or
   superseded outcome. Other rows retain their nonterminal status.
+- Ready under `until=settled`: `needs_review` or `completed` with no workflow
+  attached, or with its workflow ended (`workflow.state` done or none; failed
+  or blocked, including out of rounds, are also actionable). A workflow that is
+  running (any step, send-back and rebase rounds included) or not evaluated
+  yet is not ready. The task progress the wait reads
+  (`Server.taskWaitProgressFor`) reports `pending` while the task's latest end
+  awaits the workflow runner: no end marked yet when an enabled workflow could
+  match the task's folder, or a send-back/rebase sent for a follow-up whose end
+  is not evaluated yet. Ready under `until=finished`: `needs_review` or
+  `completed`, whatever the workflow.
+- Rows carry `workflow_state`, `workflow`, `workflow_step`/`workflow_steps`,
+  `workflow_step_type`, `workflow_round` and `integration_state` when the task
+  has them.
 - A single canonical mutation retires the wait, appends a bounded system result
   identifying project/tasks/attempts/sessions, and creates a deterministic
   `pending_executor` continuation. `needs_review` means implementation-ready,
@@ -29,7 +48,11 @@ deploy, reopen, accept, or grant source access to a task.
   existing active-run admission/stop rules apply.
 - Stop can cancel an inactive wait, including its exact continuation if outcome
   publication won the race. Archive retires waiting state; restore does not revive
-  it. Reopening a task does not retarget an existing wait to a different attempt.
+  it. Under `until=settled` a reopen of the same task (a workflow send-back or
+  rebase, a follow-up) keeps the wait on that task: the row follows the new
+  attempt when its session is still the owner's delegated session for the task
+  (`attempt_id`/`session_id` name it, `pinned_attempt_id` the one selected).
+  Under `until=finished` a different active attempt is `superseded`.
 - Startup reconciles persisted waits, then the existing pending-executor backlog
   handles committed continuations. A process crash before publication is repaired
   from task and wait records. Running continuations retain the existing restart
@@ -57,8 +80,12 @@ remote tasks.
   the wait's project or a pinned session, it reads the pinned tasks again with
   the link's `get_task` and offers those observations to the store wake. No
   timer reads tasks. Local task publication never wakes a linked wait.
-- The wake applies the local readiness rules to the pinned attempts (a different
-  active attempt is `superseded`, a missing or archived task `cancelled`). Every
+- The wake applies the local readiness rules to the observations, including the
+  workflow and integration progress the machine's `get_task` reports (a
+  reopened attempt is followed under `until=settled` and `superseded` under
+  `until=finished`; a missing or archived task is `cancelled`). A workflow step
+  that records no session activity on the machine (a run step, a merge) is read
+  on the next activity, gap or reconnect, not on a timer. Every
   row names `machine`, `task_id`, `attempt_id` and `session_id`; the message is
   marked `untrusted_content` and says the outcomes came from that machine. Wake,
   retirement, continuation identity and supersession (new person message, stop,

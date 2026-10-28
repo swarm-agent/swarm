@@ -58,13 +58,21 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 		if err := json.Unmarshal(raw, &ids); err != nil || len(ids) == 0 || len(ids) > 16 {
 			return "", errors.New("task_ids must contain 1-16 task IDs")
 		}
+		until, err := pebblestore.NormalizeProjectTaskWaitUntil(asString(args["until"]))
+		if err != nil {
+			return "", err
+		}
 		key := "task-wait:" + run.RunID
 		payload, _ := json.Marshal(ids)
+		hash := projectID + string(payload)
+		if until != pebblestore.ProjectTaskWaitUntilSettled {
+			hash += "\x00" + until
+		}
 		mutation, err := r.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
 			SessionID: scope.SessionID, UserID: scope.Principal.UserID, AccountScopeID: account,
 			Kind: pebblestore.V3SessionMutationRecordRunIntent, EventType: "session.run.waiting_tasks",
-			ClientRequestID: key, PayloadHash: projectID + string(payload),
-			TaskWait: &pebblestore.V3ProjectTaskWaitMutation{RunID: run.RunID, ProjectID: projectID, TaskIDs: ids},
+			ClientRequestID: key, PayloadHash: hash,
+			TaskWait: &pebblestore.V3ProjectTaskWaitMutation{RunID: run.RunID, ProjectID: projectID, TaskIDs: ids, Until: until},
 		})
 		if err != nil {
 			return "", err
@@ -72,6 +80,7 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 		result["status"], result["run_id"], result["next_action"] = "waiting_tasks", run.RunID, "yield_until_task_outcome"
 		result["event_seq"] = mutation.PrimarySeq
 		result["task_ids"] = ids
+		result["until"] = until
 	case "edit_requirements":
 		task, found, err := r.projects.GetProjectTask(account, projectID, taskID)
 		if err != nil {

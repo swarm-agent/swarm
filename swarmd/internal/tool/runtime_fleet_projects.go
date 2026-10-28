@@ -206,6 +206,10 @@ func (r *Runtime) executeFleetWaitTasks(ctx context.Context, scope WorkspaceScop
 	if projectID == "" {
 		return "", errors.New("project_id is required")
 	}
+	until, err := pebblestore.NormalizeProjectTaskWaitUntil(asString(args["until"]))
+	if err != nil {
+		return "", err
+	}
 	var ids []string
 	raw, err := json.Marshal(args["task_ids"])
 	if err != nil {
@@ -246,15 +250,19 @@ func (r *Runtime) executeFleetWaitTasks(ctx context.Context, scope WorkspaceScop
 	}
 	key := "task-wait:" + run.RunID
 	payload, _ := json.Marshal(targets)
+	hash := machine + "\x00" + projectID + string(payload)
+	if until != pebblestore.ProjectTaskWaitUntilSettled {
+		hash += "\x00" + until
+	}
 	mutation, err := r.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
 		SessionID: scope.SessionID, UserID: scope.Principal.UserID, AccountScopeID: scope.Principal.AccountScopeID,
 		Kind: pebblestore.V3SessionMutationRecordRunIntent, EventType: "session.run.waiting_tasks",
-		ClientRequestID: key, PayloadHash: machine + "\x00" + projectID + string(payload),
-		TaskWait: &pebblestore.V3ProjectTaskWaitMutation{RunID: run.RunID, ProjectID: projectID, TaskIDs: ids, Machine: machine, RemoteTargets: targets},
+		ClientRequestID: key, PayloadHash: hash,
+		TaskWait: &pebblestore.V3ProjectTaskWaitMutation{RunID: run.RunID, ProjectID: projectID, TaskIDs: ids, Machine: machine, RemoteTargets: targets, Until: until},
 	})
 	if err != nil {
 		return "", err
 	}
-	out, err := json.Marshal(map[string]any{"tool": "manage_projects", "action": "wait_tasks", "machine": machine, "project_id": projectID, "status": "waiting_tasks", "run_id": run.RunID, "next_action": "yield_until_task_outcome", "event_seq": mutation.PrimarySeq, "task_ids": ids, "tasks": targets, "untrusted_content": true})
+	out, err := json.Marshal(map[string]any{"tool": "manage_projects", "action": "wait_tasks", "machine": machine, "project_id": projectID, "status": "waiting_tasks", "run_id": run.RunID, "next_action": "yield_until_task_outcome", "event_seq": mutation.PrimarySeq, "task_ids": ids, "tasks": targets, "until": until, "untrusted_content": true})
 	return string(out), err
 }

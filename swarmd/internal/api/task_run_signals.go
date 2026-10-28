@@ -68,14 +68,8 @@ func (s *Server) signalTaskRunEnded(job sessionV3ExecutorJob, status string, res
 	if err != nil || !found || task == nil || task.SessionID != job.SessionID || task.Archived {
 		return
 	}
-	if !taskRunAgents[task.Agent] || task.WorkerRunID != "" || task.Design != nil {
+	if !s.taskRunEndIsJobEnd(account, task, session.UserID) {
 		return
-	}
-	if task.OriginSessionID != "" {
-		origin, found, err := s.sessions.GetSession(task.OriginSessionID)
-		if err != nil || !found || origin.AccountScopeID != account || origin.UserID != session.UserID || !taskRunPrimaryOrchestrator(origin) {
-			return
-		}
 	}
 	if prior == "planning" || prior == "pending_approval" {
 		return // a planning run is not the work
@@ -122,6 +116,22 @@ func (s *Server) signalTaskRunEnded(job sessionV3ExecutorJob, status string, res
 	if source != jobautomation.RequestSourceAutomation {
 		s.markTaskJobEnded(account, projectID, sig, followup)
 	}
+}
+
+// taskRunEndIsJobEnd reports whether a run of task in its own session (owned
+// by userID) ends as a workflow job end: a task of one of Swarm's own agents,
+// started directly or delegated by the primary Orchestrator.
+func (s *Server) taskRunEndIsJobEnd(account string, task *pebblestore.ProjectTaskRecord, userID string) bool {
+	if task == nil || !taskRunAgents[task.Agent] || task.WorkerRunID != "" || task.Design != nil {
+		return false
+	}
+	if task.OriginSessionID != "" {
+		origin, found, err := s.sessions.GetSession(task.OriginSessionID)
+		if err != nil || !found || origin.AccountScopeID != account || origin.UserID != userID || !taskRunPrimaryOrchestrator(origin) {
+			return false
+		}
+	}
+	return true
 }
 
 // taskRunLeftResult reports whether a run left the task, as reconciled, in a
