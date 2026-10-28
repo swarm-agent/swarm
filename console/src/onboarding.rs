@@ -1467,9 +1467,9 @@ impl Onboarding {
                         .flex_col()
                         .gap_1()
                         .pt_2()
-                        .child(line("This computer: its files and terminal, and its browser, each off, ask or allowed."))
-                        .child(line("This Swarm: whether new tasks wait for your approval or start on their own."))
-                        .child(line("Linked machines: whether this Swarm may hand each one work."))
+                        .child(line("This computer: its files and terminal, and its browser, each off or on."))
+                        .child(line("This Swarm: whether it asks you before sending a task, or sends it on its own."))
+                        .child(line("Linked machines: off, ask before sending it a task, or auto."))
                         .into_any_element(),
                     footer(None, primary(self, "access-continue", "Continue", true, cx)),
                 )

@@ -9,10 +9,12 @@ use serde_json::{Value, json};
 
 use super::map::{list, s};
 
-/// Device and linked rules: off, ask for each call, allowed.
-pub const LEVELS: &[(&str, &str)] = &[("off", "off"), ("ask", "ask"), ("allowed", "allowed")];
+/// A device rule: off or on (no asking: docs/access-model.md).
+pub const DEVICE: &[(&str, &str)] = &[("off", "off"), ("allowed", "on")];
+/// A linked machine: off, ask before sending it a task, or auto.
+pub const LINKED: &[(&str, &str)] = &[("off", "off"), ("ask", "ask before sending tasks"), ("auto", "auto")];
 /// Start tasks: each new task waits for approval, or starts on its own.
-pub const TASKS: &[(&str, &str)] = &[("approve", "approve first"), ("auto", "auto")];
+pub const TASKS: &[(&str, &str)] = &[("approve", "ask before sending tasks"), ("auto", "auto")];
 
 /// One rule Swarm stores, as PATCH /v3/permissions names it.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -151,7 +153,7 @@ fn device_rows(d: &Value, read_only: bool, now: u64) -> Vec<Row> {
             rule: Rule::Files(id.clone()),
             title: title("Files and terminal"),
             protects: format!("Client tools that read and write files and run commands on {name}, as you, outside Swarm's sandbox (machine_read, machine_write, machine_run)."),
-            choices: LEVELS,
+            choices: DEVICE,
             value: files,
             read_only,
             now: files_now,
@@ -162,7 +164,7 @@ fn device_rows(d: &Value, read_only: bool, now: u64) -> Vec<Row> {
             rule: Rule::Browser(id),
             title: title("Browser"),
             protects: format!("Client tools that drive {name}'s browser (manage_browser)."),
-            choices: LEVELS,
+            choices: DEVICE,
             value: browser,
             read_only,
             now: browser_now,
@@ -173,13 +175,12 @@ fn device_rows(d: &Value, read_only: bool, now: u64) -> Vec<Row> {
 }
 
 /// A device rule right now: off, unavailable while its client is away, or
-/// what ask and allowed do. True when it has no effect now.
+/// what on does. True when it has no effect now.
 fn device_now(value: &str, name: &str, connected: bool, what: &str, allowed: &str) -> (String, bool) {
     match value {
         "off" => (format!("Right now: off, no agent reaches {what}."), false),
-        "ask" | "allowed" if !connected => (format!("Right now: unavailable, {name} is not connected."), true),
-        "ask" => ("Right now: each call waits for your approval.".into(), false),
-        "allowed" => (format!("Right now: allowed, {allowed}."), false),
+        "allowed" if !connected => (format!("Right now: unavailable, {name} is not connected."), true),
+        "allowed" => (format!("Right now: on, {allowed}."), false),
         other => (unknown(other), true),
     }
 }
@@ -209,7 +210,11 @@ fn tasks_row(home: &Value, now: u64) -> Row {
 
 fn linked_row(m: &Value, now: u64) -> Row {
     let name = s(m, "name");
-    let value = s(m, "work").to_string();
+    // An older Swarm calls auto "allowed".
+    let value = match s(m, "work") {
+        "allowed" => "auto".to_string(),
+        v => v.to_string(),
+    };
     let contact = match time(m, "last_contact") {
         0 => "never reached".to_string(),
         at => format!("last contact {}", ago(now, at)),
@@ -217,16 +222,16 @@ fn linked_row(m: &Value, now: u64) -> Row {
     let reachable = flag(m, "reachable");
     let (line, away) = match value.as_str() {
         "off" => (format!("Right now: off, no work is handed to {name}."), false),
-        "ask" | "allowed" if !reachable => (format!("Right now: unavailable, {name} can't be reached ({contact})."), true),
-        "ask" => (format!("Right now: each call to {name} waits for your approval ({contact})."), false),
-        "allowed" => (format!("Right now: allowed, work goes to {name} ({contact})."), false),
+        "ask" | "auto" if !reachable => (format!("Right now: unavailable, {name} can't be reached ({contact})."), true),
+        "ask" => (format!("Right now: a new task for {name} waits for your approval; everything else runs ({contact})."), false),
+        "auto" => (format!("Right now: work goes to {name} on its own ({contact})."), false),
         other => (unknown(other), true),
     };
     Row {
         rule: Rule::Work(name.to_string()),
         title: name.to_string(),
-        protects: format!("Handing {name} work: reading its projects, tasks, workflows and workers; creating, approving, accepting, reopening, refining and archiving tasks there."),
-        choices: LEVELS,
+        protects: format!("Handing {name} work: its projects, tasks, workflows and workers. Only sending it a new task can wait for you."),
+        choices: LINKED,
         value,
         read_only: false,
         now: line,
@@ -284,9 +289,9 @@ mod tests {
             "home": {"name": "desktop", "tasks": "approve", "waiting_tasks": 2, "last_used": NOW - 3 * MIN},
             "devices": [
                 {"id": "csess_a", "name": "desktop", "this_device": true, "home": true, "connected": true,
-                 "files": "ask", "browser": "off", "changed": {"by": "desktop", "at": NOW - 12 * MIN}, "last_used": NOW - 3 * MIN},
+                 "files": "allowed", "browser": "off", "changed": {"by": "desktop", "at": NOW - 12 * MIN}, "last_used": NOW - 3 * MIN},
                 {"id": "csess_b", "name": "laptop", "this_device": false, "home": false, "connected": false,
-                 "files": "allowed", "browser": "ask", "changed": {"by": "", "at": 0}, "last_used": 0}
+                 "files": "allowed", "browser": "allowed", "changed": {"by": "", "at": 0}, "last_used": 0}
             ],
             "linked": [
                 {"name": "social", "work": "allowed", "reachable": false, "last_contact": NOW - 12 * MIN, "changed": {"by": "desktop", "at": NOW - 2 * 60 * MIN}, "last_used": 0},
@@ -303,7 +308,7 @@ mod tests {
         assert_eq!(titles, ["This device · desktop · runs this Swarm", "Other devices", "Home · desktop", "Linked machines"]);
         let mine = &b.groups[0].rows;
         assert_eq!(mine.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(), ["Files and terminal", "Browser"]);
-        assert_eq!((mine[0].rule.clone(), mine[0].value.as_str(), mine[0].read_only), (Rule::Files("csess_a".into()), "ask", false));
+        assert_eq!((mine[0].rule.clone(), mine[0].value.as_str(), mine[0].read_only), (Rule::Files("csess_a".into()), "allowed", false));
         assert_eq!(mine[1].rule, Rule::Browser("csess_a".into()));
         let other = &b.groups[1].rows;
         assert_eq!(other[0].title, "laptop · Files and terminal");
@@ -316,7 +321,7 @@ mod tests {
     fn right_now_words_the_live_state() {
         let b = board(&answer(), NOW).unwrap();
         let mine = &b.groups[0].rows;
-        assert_eq!(mine[0].now, "Right now: each call waits for your approval.");
+        assert_eq!(mine[0].now, "Right now: on, commands and file changes run on desktop as you.");
         assert_eq!(mine[1].now, "Right now: off, no agent reaches its browser.");
         // Allowed on a device that is away is unavailable, not allowed.
         let laptop = &b.groups[1].rows;
@@ -327,20 +332,21 @@ mod tests {
         let social = &b.groups[3].rows[0];
         assert_eq!((social.now.as_str(), social.unavailable), ("Right now: unavailable, social can't be reached (last contact 12 min ago).", true));
         let build = &b.groups[3].rows[1];
-        assert_eq!((build.now.as_str(), build.unavailable), ("Right now: each call to build-box waits for your approval (last contact just now).", false));
+        assert_eq!((build.now.as_str(), build.unavailable), ("Right now: a new task for build-box waits for your approval; everything else runs (last contact just now).", false));
     }
 
     #[test]
     fn right_now_for_the_other_values() {
-        assert_eq!(device_now("allowed", "desktop", true, "x", "commands run").0, "Right now: allowed, commands run.");
-        assert_eq!(device_now("ask", "desktop", false, "x", "y"), ("Right now: unavailable, desktop is not connected.".into(), true));
+        assert_eq!(device_now("allowed", "desktop", true, "x", "commands run").0, "Right now: on, commands run.");
+        assert_eq!(device_now("allowed", "desktop", false, "x", "y"), ("Right now: unavailable, desktop is not connected.".into(), true));
         assert_eq!(device_now("full", "desktop", true, "x", "y"), ("Right now: Swarm stores \"full\", which this app does not know.".into(), true));
         let auto = tasks_row(&json!({"tasks": "auto", "waiting_tasks": 1}), NOW);
         assert_eq!(auto.now, "Right now: new tasks start on their own; 1 still waiting for approval.");
         let none = tasks_row(&json!({"tasks": "approve", "waiting_tasks": 0}), NOW);
         assert_eq!(none.now, "Right now: new tasks wait for your approval; none waiting.");
         let fresh = linked_row(&json!({"name": "edge", "work": "allowed", "reachable": true, "last_contact": NOW - 5 * MIN}), NOW);
-        assert_eq!(fresh.now, "Right now: allowed, work goes to edge (last contact 5 min ago).");
+        assert_eq!(fresh.now, "Right now: work goes to edge on its own (last contact 5 min ago).", "an older Swarm's allowed is auto");
+        assert_eq!(fresh.value, "auto");
         let never = linked_row(&json!({"name": "edge", "work": "ask", "reachable": false, "last_contact": 0}), NOW);
         assert_eq!(never.now, "Right now: unavailable, edge can't be reached (never reached).");
         let off = linked_row(&json!({"name": "edge", "work": "off", "reachable": false}), NOW);
@@ -373,8 +379,8 @@ mod tests {
     #[test]
     fn patches_name_one_rule() {
         assert_eq!(Rule::Tasks.patch("auto", 7, "r1"), json!({"tasks": "auto", "expected_revision": 7, "client_request_id": "r1"}));
-        assert_eq!(Rule::Files("csess_a".into()).patch("ask", 7, "r2"), json!({"devices": {"csess_a": {"files": "ask"}}, "expected_revision": 7, "client_request_id": "r2"}));
+        assert_eq!(Rule::Files("csess_a".into()).patch("allowed", 7, "r2"), json!({"devices": {"csess_a": {"files": "allowed"}}, "expected_revision": 7, "client_request_id": "r2"}));
         assert_eq!(Rule::Browser("csess_a".into()).patch("off", 8, "r3"), json!({"devices": {"csess_a": {"browser": "off"}}, "expected_revision": 8, "client_request_id": "r3"}));
-        assert_eq!(Rule::Work("social".into()).patch("allowed", 9, "r4"), json!({"linked": {"social": {"work": "allowed"}}, "expected_revision": 9, "client_request_id": "r4"}));
+        assert_eq!(Rule::Work("social".into()).patch("auto", 9, "r4"), json!({"linked": {"social": {"work": "auto"}}, "expected_revision": 9, "client_request_id": "r4"}));
     }
 }
