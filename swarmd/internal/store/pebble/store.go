@@ -46,6 +46,7 @@ type Store struct {
 	projectPublisher            func(V3RealtimeOutboxRecord)
 	projectTaskStatusObserver   func(ProjectTaskStatusTransition)
 	projectTaskProgress         func(account string, task ProjectTaskRecord) any
+	projectTaskProgressAwaited  bool
 	mediaRecoveryPending        bool
 	beforeProjectTaskUpdateHook func(taskID string) error
 	signalsMu                   sync.Mutex

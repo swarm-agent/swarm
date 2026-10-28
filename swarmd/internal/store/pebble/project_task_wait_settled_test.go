@@ -302,13 +302,19 @@ func TestProjectTaskWaitUntilFinishedKeepsStatusRule(t *testing.T) {
 	})
 }
 
-// Purpose: a daemon restart while waiting keeps the wait's rule. Requirement:
-// the persisted until survives reopening the store; the startup reconciliation
-// (ReconcileProjectTaskWaits("", "")) does not wake a settled wait while the
-// workflow runs and wakes it when the workflow ends; a finished wait still
-// wakes on needs_review. Threat: a restart waking every wait early, or losing
-// until. Authority: the persisted V3SessionRunIntent.TaskWait and the
-// startup reconciliation over a reopened real store.
+// Purpose: a daemon restart while waiting keeps the wait's rule, in the
+// daemon's real startup order. Requirement: the persisted until survives
+// reopening the store; the daemon declares the progress hook awaited
+// (AwaitProjectTaskProgress, right after opening the store), runs the startup
+// reconciliation (ReconcileProjectTaskWaits("", "")) before the hook exists,
+// and installs the hook later (SetJobAutomations). A settled wait on a
+// needs_review task is not woken by that hook-less reconciliation, nor after
+// the hook reports the workflow running, and wakes when the workflow ends; a
+// finished wait still wakes on needs_review without the hook. Threat: every
+// auto-update restart waking settled waits with nothing landed, or losing
+// until. Authority: the persisted V3SessionRunIntent.TaskWait, the store's
+// progress-awaited gate and the startup reconciliation over a reopened real
+// store.
 func TestProjectTaskWaitRuleSurvivesRestart(t *testing.T) {
 	for _, until := range []string{ProjectTaskWaitUntilSettled, ProjectTaskWaitUntilFinished} {
 		t.Run(until, func(t *testing.T) {
@@ -324,8 +330,7 @@ func TestProjectTaskWaitRuleSurvivesRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			f.db = NewSessionStore(reopened)
-			progress := &waitProgressStub{m: map[string]any{"task": workflowProgress("running", 3, "run", 0, "not_integrated")}}
-			progress.install(reopened)
+			reopened.AwaitProjectTaskProgress() // as the daemon does on open
 			if got := f.intent("parent", "run-1"); got.Status != V3RunIntentWaitingTasks || got.TaskWait == nil || got.TaskWait.Until != until {
 				t.Fatalf("persisted wait after restart: %+v", got.TaskWait)
 			}
@@ -335,6 +340,9 @@ func TestProjectTaskWaitRuleSurvivesRestart(t *testing.T) {
 				}
 				return
 			}
+			f.mustSleep("startup reconciliation before the progress hook")
+			progress := &waitProgressStub{m: map[string]any{"task": workflowProgress("running", 3, "run", 0, "not_integrated")}}
+			progress.install(reopened)
 			f.mustSleep("restart while the workflow runs")
 			progress.set("task", workflowProgress("done", 3, "run", 0, "integrated"))
 			if out := f.reconcile(); out == nil || outcomeRow(t, out, 0)["integration_state"] != "integrated" {

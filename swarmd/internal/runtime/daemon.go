@@ -266,6 +266,9 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 		_ = lk.Release()
 		return nil, err
 	}
+	// The wait progress hook is installed with job automations
+	// (Server.SetJobAutomations), after the startup wait reconciliation.
+	store.AwaitProjectTaskProgress()
 	historyContext, cancelHistory := context.WithTimeout(context.Background(), 2*time.Minute)
 	historyErr := pebblestore.NewSessionStore(store).CompleteRepositoryHistoryMaintenance(historyContext)
 	cancelHistory()

@@ -747,5 +747,8 @@ func (s *Server) installTaskProgress() {
 		underlying.SetProjectTaskProgress(func(account string, task pebblestore.ProjectTaskRecord) any {
 			return s.taskWaitProgressFor(account, task, time.Now().UnixMilli())
 		})
+		// The startup reconciliation ran before the hook existed and left
+		// settled waits on finished tasks undecided; decide them now.
+		s.reconcileProjectTaskWaits("", "")
 	}
 }

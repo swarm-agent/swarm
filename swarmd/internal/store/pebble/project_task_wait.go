@@ -340,6 +340,10 @@ func (s *SessionStore) prepareProjectTaskWait(input *V3SessionMutationInput) err
 	rows := make([]map[string]any, 0, len(owner.TaskWait.Tasks))
 	allReady, actionable := true, false
 	follow := !projectTaskWaitFinished(owner.TaskWait)
+	// Settled readiness of a finished task needs its progress; while the
+	// daemon has not installed the progress hook yet (startup), it is not
+	// decided.
+	progressPending := follow && s.store.projectTaskProgressPending()
 	for _, target := range owner.TaskWait.Tasks {
 		task, ok, err := s.GetProjectTask(input.AccountScopeID, owner.TaskWait.ProjectID, target.TaskID)
 		if err != nil {
@@ -401,6 +405,9 @@ func (s *SessionStore) prepareProjectTaskWait(input *V3SessionMutationInput) err
 			}
 		}
 		ready, needsAction := projectTaskWaitReadiness(status, owner.TaskWait, waitProgress)
+		if progressPending && ready && !needsAction {
+			ready = false
+		}
 		actionable = actionable || needsAction
 		if !ready {
 			allReady = false

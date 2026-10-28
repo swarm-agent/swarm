@@ -24,13 +24,21 @@ type waitWorkflowFixture struct {
 
 func newWaitWorkflowFixture(t *testing.T) *waitWorkflowFixture {
 	t.Helper()
+	w := newWaitWorkflowFixtureBeforeAutomations(t)
+	w.f.s.SetJobAutomations(jobautomation.NewRunner(jobautomation.Options{Store: w.store}))
+	return w
+}
+
+// newWaitWorkflowFixtureBeforeAutomations is the fixture before the daemon
+// installed job automations (and with them the wait progress hook).
+func newWaitWorkflowFixtureBeforeAutomations(t *testing.T) *waitWorkflowFixture {
+	t.Helper()
 	f := newFleetTestSwarm(t, "local")
 	t.Cleanup(f.cleanup)
 	if f.s.OutboxAccount() != f.account {
 		t.Fatalf("fixture account %q is not the machine owner's %q", f.account, f.s.OutboxAccount())
 	}
 	store := jobautomation.NewStore(f.s.sessions.Store().Underlying())
-	f.s.SetJobAutomations(jobautomation.NewRunner(jobautomation.Options{Store: store}))
 	// The task's own session, named by its project and task as delegated
 	// task sessions are.
 	snapshot := pebblestore.SessionSnapshot{ID: "task-session", UserID: f.user, AccountScopeID: f.account, Metadata: map[string]any{"project_id": "proj-1", "task_id": "task-1"}}
@@ -643,6 +651,69 @@ func TestTaskWaitSendBackHoldsTheWaitDuringRework(t *testing.T) {
 		w.f.s.reconcileProjectTaskWaits("", "")
 		if !w.woke(t) {
 			t.Fatalf("an unmarked follow-up end held the wait: %+v", w.goalIntent(t, "run-1"))
+		}
+	})
+}
+
+// Purpose: a daemon restart (every auto-update) does not wake a local
+// until=settled wait before the wait can read task progress. Requirement:
+// in the daemon's order (the store is told the progress hook is awaited right
+// after it opens, the startup reconciliation runs from newSessionV3Executor,
+// and SetJobAutomations installs the hook later), a wait on a needs_review
+// task whose job end is marked is not woken by the task write or the startup
+// reconciliation before the hook exists. Installing the hook reconciles the
+// waits itself: with the workflow not evaluated yet the wait still sleeps and
+// wakes when the runner's evaluation (nothing matched) lands; with the end
+// already evaluated before the restart, installing the hook alone wakes it.
+// Threat: every persisted settled wait woken at startup with nothing landed
+// (the hook-less read treats "no progress" as "no workflow"), or left
+// undecided after the hook arrives. Authority: Store.AwaitProjectTaskProgress
+// / SetProjectTaskProgress, the store's wake branch and
+// Server.installTaskProgress over real session, task and job automation
+// stores; the narrowest layer that owns the hook installation and the wake.
+func TestTaskWaitStartupBeforeProgressHookDoesNotWake(t *testing.T) {
+	setup := func(t *testing.T, evaluated bool) (*waitWorkflowFixture, string, int64) {
+		t.Helper()
+		w := newWaitWorkflowFixtureBeforeAutomations(t)
+		w.f.s.sessions.Store().Underlying().AwaitProjectTaskProgress() // as daemon.go does on open
+		w.workflow(t)
+		w.localWait(t)
+		jobID := taskRunJobID("proj-1", "task-1")
+		now := time.Now().UnixMilli()
+		if err := w.store.MarkJobEnded(w.f.account, "proj-1", jobID, "", 1, now); err != nil {
+			t.Fatal(err)
+		}
+		if evaluated {
+			if err := w.store.RecordEvaluation(w.f.account, "proj-1", jobID, "", 1, now, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		w.finishTask(t)
+		w.f.s.reconcileProjectTaskWaits("", "") // the executor's startup reconciliation
+		if w.woke(t) {
+			t.Fatal("woke before the progress hook was installed")
+		}
+		return w, jobID, now
+	}
+	t.Run("workflow_not_evaluated", func(t *testing.T) {
+		w, jobID, now := setup(t, false)
+		w.f.s.SetJobAutomations(jobautomation.NewRunner(jobautomation.Options{Store: w.store}))
+		if w.woke(t) {
+			t.Fatal("woke on installing the hook while the workflow is pending")
+		}
+		if err := w.store.RecordEvaluation(w.f.account, "proj-1", jobID, "", 1, now, nil); err != nil {
+			t.Fatal(err)
+		}
+		w.f.s.reconcileProjectTaskWaits(w.f.account, "proj-1")
+		if !w.woke(t) {
+			t.Fatalf("evaluation did not wake: %+v", w.goalIntent(t, "run-1"))
+		}
+	})
+	t.Run("evaluated_before_restart", func(t *testing.T) {
+		w, _, _ := setup(t, true)
+		w.f.s.SetJobAutomations(jobautomation.NewRunner(jobautomation.Options{Store: w.store}))
+		if !w.woke(t) {
+			t.Fatalf("installing the hook did not decide the wait: %+v", w.goalIntent(t, "run-1"))
 		}
 	})
 }

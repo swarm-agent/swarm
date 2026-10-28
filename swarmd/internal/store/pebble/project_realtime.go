@@ -270,7 +270,30 @@ func (s *SessionStore) NotifyProjectTaskChanged(accountScopeID, projectID, taskI
 func (s *Store) SetProjectTaskProgress(fn func(account string, task ProjectTaskRecord) any) {
 	s.projectPublisherMu.Lock()
 	s.projectTaskProgress = fn
+	if fn != nil {
+		s.projectTaskProgressAwaited = false
+	}
 	s.projectPublisherMu.Unlock()
+}
+
+// AwaitProjectTaskProgress declares that a progress hook will be installed
+// (SetProjectTaskProgress) later in startup. Until it is, an until=settled
+// wait does not decide a finished (needs_review/completed) task: without
+// progress it cannot tell a running workflow from none, so the startup
+// reconciliation must not wake it. Whoever installs the hook reconciles the
+// waits afterwards.
+func (s *Store) AwaitProjectTaskProgress() {
+	s.projectPublisherMu.Lock()
+	if s.projectTaskProgress == nil {
+		s.projectTaskProgressAwaited = true
+	}
+	s.projectPublisherMu.Unlock()
+}
+
+func (s *Store) projectTaskProgressPending() bool {
+	s.projectPublisherMu.RLock()
+	defer s.projectPublisherMu.RUnlock()
+	return s.projectTaskProgressAwaited && s.projectTaskProgress == nil
 }
 
 func (s *Store) taskProgress(account string, task ProjectTaskRecord) any {
