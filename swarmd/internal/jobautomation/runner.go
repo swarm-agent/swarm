@@ -120,6 +120,11 @@ type AgentOutcome struct {
 	// fix, its own checkout) could not be read; "" when it was read. A
 	// reviewer allowed to fix fails closed on it with an OK verdict.
 	ResultError string
+	// LimitUntil (unix ms) is set when the job has not ended but waits for
+	// its provider's limit to reset and reruns itself then (a worker run in
+	// status waiting); Error is what it waits for. The step waits for the
+	// same job until then instead of holding its timeout.
+	LimitUntil int64
 }
 
 // AgentRunner starts a job for an agent step and waits for it to end.
@@ -891,6 +896,19 @@ const maxProviderLimitWaits = 12
 // step waits for the reset the provider states (else a bounded backoff) and
 // then starts a new job. ok is false for any other ending.
 func (r *Runner) providerLimitWait(record *StepRecord, jobID string, outcome AgentOutcome) (stepFailure, bool) {
+	if outcome.LimitUntil > 0 {
+		// The job waits for the reset itself and reruns then (it bounds
+		// its own waits): the step waits for the same job, using none of
+		// its retries, and reads its outcome after the reset.
+		detail := truncate(strings.TrimSpace(outcome.Error), 200)
+		record.Outcome = map[string]any{"job_id": jobID, "status": outcome.Status, "provider_limit": detail}
+		record.LimitWaits++
+		reason := detail
+		if !strings.HasPrefix(reason, "waiting for the provider's limit to reset") {
+			reason = providerlimit.Waiting(time.UnixMilli(outcome.LimitUntil), true, detail)
+		}
+		return stepFailure{reason: truncate(reason, 300), next: "none: the job runs again after the reset", limitUntil: outcome.LimitUntil}, true
+	}
 	status := NormalizeStatus(outcome.Status)
 	if status == StatusSucceeded || status == StatusCancelled || !providerlimit.Is(outcome.Error) {
 		return stepFailure{}, false

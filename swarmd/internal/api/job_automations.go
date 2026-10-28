@@ -421,6 +421,16 @@ func (a jobAutomationAgents) Wait(ctx context.Context, account, jobID string) (j
 		status, _ := run["status"].(string)
 		followup, _ := run["followup_status"].(string)
 		settled := (status == "succeeded" || status == "failed" || status == "cancelled") && followup != "running" && followup != "queued"
+		if status == pebblestore.WorkerRunStatusWaiting {
+			// The run waits for its provider's limit to reset and reruns
+			// itself then: the step waits for it until the reset rather
+			// than inside its timeout. A reset already due is the worker
+			// scheduler's to start within seconds, so Wait keeps reading.
+			if until := jobAutomationInt64(run["retry_at"]); until > time.Now().UnixMilli() {
+				reason, _ := run["queue_reason"].(string)
+				return jobautomation.AgentOutcome{JobID: jobID, Status: status, Error: reason, LimitUntil: until}, nil
+			}
+		}
 		if settled {
 			if followup == "failed" || followup == "interrupted" {
 				status = "failed"
@@ -470,6 +480,23 @@ func (a jobAutomationAgents) Wait(ctx context.Context, account, jobID string) (j
 		case <-time.After(2 * time.Second):
 		}
 	}
+}
+
+// jobAutomationInt64 reads a whole number from a decoded JSON value; 0 when
+// it is absent or not a number.
+func jobAutomationInt64(v any) int64 {
+	switch n := v.(type) {
+	case float64:
+		return int64(n)
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	case json.Number:
+		i, _ := n.Int64()
+		return i
+	}
+	return 0
 }
 
 // maxReviewFixCommits bounds the fix commits read from a reviewer's checkout;

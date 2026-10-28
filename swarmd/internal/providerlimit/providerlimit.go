@@ -50,9 +50,10 @@ func Exhausted(waits int, msg string) string {
 	return fmt.Sprintf("%s%d waits for its reset: %s", exhaustedPrefix, waits, strings.TrimSpace(msg))
 }
 
-// IsExhausted reports whether msg is the failure Exhausted records.
+// IsExhausted reports whether msg carries the failure Exhausted records,
+// also when a caller prefixed it ("worker job failed: …").
 func IsExhausted(msg string) bool {
-	return strings.HasPrefix(strings.TrimSpace(msg), exhaustedPrefix)
+	return strings.Contains(strings.ToLower(msg), exhaustedPrefix)
 }
 
 // Waiting is the reason recorded while a job waits for its provider's limit

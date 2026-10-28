@@ -650,11 +650,14 @@ and `step_id`:
   The same holds below the step. A direct-role worker job (Coder, Finder,
   Designer, Reviewer) whose run ends on a provider limit is `waiting` (its
   `queue_reason` says until when) and runs again in its own session at the
-  reset; a stopped reviewer then records the verdict of that rerun. A
-  `for_each` item whose job ends on one is `waiting_for_limit` (signal
-  `workflow.item.waiting`), the items after it keep waiting, and a new job
-  starts for it after the reset. Swarm's own quotas and budgets are not
-  provider limits. Swarm-role (plan) worker jobs still fail on a limit.
+  reset; a stopped reviewer then records the verdict of that rerun. An
+  agent step backed by such a worker waits with its run until the reset
+  (same reason and `retry_at`, no new job, no timeout) and then reads that
+  job's outcome. A `for_each` item whose job ends on one is
+  `waiting_for_limit` (signal `workflow.item.waiting`), the items after it
+  keep waiting, and a new job starts for it after the reset; an item whose
+  worker run already gave up after its 12 waits fails. Swarm's own quotas
+  and budgets are not provider limits. Swarm-role (plan) worker jobs still fail on a limit.
 - `automation.step.succeeded` (attrs: `step`, `output`)
 - `automation.step.failed` (severity warning; attrs: `step`, `reason` and
   `next`, the next allowed action: `rerun` or `fix the script`; while

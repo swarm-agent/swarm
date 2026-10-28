@@ -66,6 +66,11 @@ func TestIsAndResetAt(t *testing.T) {
 	if Is(gaveUp) || !IsExhausted(gaveUp) || IsExhausted("You've hit your session limit") {
 		t.Fatalf("exhausted %q: Is=%v IsExhausted=%v", gaveUp, Is(gaveUp), IsExhausted(gaveUp))
 	}
+	// A caller's prefix (a for_each item's "worker job failed: …") keeps it
+	// a given-up failure, never a limit to wait on again.
+	if prefixed := "worker job failed: " + gaveUp; Is(prefixed) || !IsExhausted(prefixed) {
+		t.Fatalf("prefixed exhausted %q: Is=%v IsExhausted=%v", prefixed, Is(prefixed), IsExhausted(prefixed))
+	}
 	if got := Waiting(time.Date(2026, 10, 27, 16, 1, 0, 0, time.UTC), true, " limit "); got != "waiting for the provider's limit to reset (until 2026-10-27T16:01:00Z): limit" {
 		t.Fatalf("waiting = %q", got)
 	}

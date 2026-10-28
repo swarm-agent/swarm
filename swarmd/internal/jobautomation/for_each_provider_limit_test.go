@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"swarm/packages/swarmd/internal/providerlimit"
 )
 
 // Requirement: a workflow fan-out (for_each) item whose worker job ends on
@@ -13,8 +15,9 @@ import (
 // the item that depends on it keeps waiting instead of failing, nothing
 // starts before the reset (also after a restart), and after the reset a new
 // job starts for the item (a new idempotency key). A failure that is not a
-// provider limit, Swarm's own artifact quota among them, still fails the
-// item and its dependent.
+// provider limit, Swarm's own artifact quota among them, or a worker run that
+// already gave up waiting ("worker job failed: the provider's limit was still
+// in effect after 12 waits …"), still fails the item and its dependent.
 // Threat: a limited item failed (workflow.item.failed) and failed every item
 // waiting on it through itemDependency, leaving the plan stuck.
 // Owners: TriggerRunner.tickItems (limitItem, itemPending, itemDependency)
@@ -28,6 +31,9 @@ func TestForEachItemWaitsForProviderLimitAndReruns(t *testing.T) {
 	}{
 		{"session limit", limit, true},
 		{"swarm quota", "worker job failed: artifact v3 git: quota exceeded", false},
+		// The worker run already gave up after its own bounded waits: the
+		// item fails, it does not wait (and start up to 12 more waits).
+		{"worker run gave up", "worker job failed: " + providerlimit.Exhausted(12, "You've hit your session limit · resets 4pm (UTC)"), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
