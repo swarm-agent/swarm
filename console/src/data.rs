@@ -364,16 +364,87 @@ impl TaskWait {
         }
         badge
     }
+
+    /// The badge on a narrow pane: "⏳ 2" (the full text is its tooltip).
+    pub fn short_badge(&self) -> String {
+        match self.tasks.len() {
+            0 => "⏳".to_string(),
+            n => format!("⏳ {n}"),
+        }
+    }
 }
 
-/// The composer's state badge beside send/stop, so Working, Waiting and Idle
-/// read at a glance: "● Working", "⏳ Waiting · 2 tasks on forge", none idle.
+/// The composer's badge beside send/stop while the run waits on tasks:
+/// "⏳ Waiting · 2 tasks on forge". None otherwise: while it works the stop
+/// button already says so, and idle needs no badge.
 pub fn composer_badge(state: RunState, wait: Option<&TaskWait>) -> Option<String> {
     match state {
-        RunState::Running => Some("● Working".to_string()),
         RunState::Waiting => Some(wait.map(TaskWait::badge).unwrap_or_else(|| "⏳ Waiting".to_string())),
         _ => None,
     }
+}
+
+/// The badge's short form for a narrow pane ("⏳ 2"), when there is a badge.
+pub fn composer_badge_short(state: RunState, wait: Option<&TaskWait>) -> Option<String> {
+    match state {
+        RunState::Waiting => Some(wait.map(TaskWait::short_badge).unwrap_or_else(|| "⏳".to_string())),
+        _ => None,
+    }
+}
+
+/// The widths (px) of what sits in the composer's bottom row. `fixed` is what
+/// always shows (permissions, model, send/stop and the gaps between them);
+/// an empty hint or no badge is 0.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ComposerRow {
+    pub fixed: f32,
+    pub hint: f32,
+    pub commands: f32,
+    pub badge: f32,
+    pub badge_short: f32,
+    /// Between two items.
+    pub gap: f32,
+}
+
+/// What of the composer's bottom row shows at a width.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ComposerFit {
+    pub commands: bool,
+    pub hint: bool,
+    /// The badge as "⏳ 2" instead of its full text.
+    pub badge_short: bool,
+}
+
+/// Fits the composer's bottom row in `width`: as it narrows, "/ commands"
+/// goes first, then the hint, then the badge shortens. Send/stop is part of
+/// `fixed` and never gives way; below even that, the model label truncates.
+pub fn composer_fit(width: f32, row: ComposerRow) -> ComposerFit {
+    let item = |w: f32| if w > 0. { w + row.gap } else { 0. };
+    let need = |fit: ComposerFit| {
+        row.fixed
+            + if fit.commands { item(row.commands) } else { 0. }
+            + if fit.hint { item(row.hint) } else { 0. }
+            + item(if fit.badge_short { row.badge_short } else { row.badge })
+    };
+    let steps = [
+        ComposerFit { commands: true, hint: true, badge_short: false },
+        ComposerFit { commands: false, hint: true, badge_short: false },
+        ComposerFit { commands: false, hint: false, badge_short: false },
+    ];
+    steps.into_iter().find(|fit| need(*fit) <= width).unwrap_or(ComposerFit { commands: false, hint: false, badge_short: true })
+}
+
+/// About how wide a line of the console's monospaced text is, in px: emoji
+/// and other wide symbols take two cells. Enough to decide what fits.
+pub fn text_width(text: &str, font_px: f32) -> f32 {
+    let cells: usize = text
+        .chars()
+        .map(|c| match c as u32 {
+            0x2300..=0x23FF | 0x2600..=0x27BF | 0x1F000.. => 2,
+            _ => 1,
+        })
+        .sum();
+    cells as f32 * font_px * 0.6
 }
 
 /// The composer's hint text. Idle shows none; the badge carries the run's
@@ -1392,13 +1463,14 @@ mod tests {
         assert_eq!(clock(4_000_000), "1h 06m");
     }
 
-    // Purpose: the composer says Working / Waiting / Idle at a glance.
-    // Requirement: a running run badges "● Working"; a waiting run badges its
-    // task count (and machine when linked); idle and failed have no badge; the
+    // Purpose: the composer says Waiting at a glance and nothing redundant.
+    // Requirement: a waiting run badges its task count (and machine when
+    // linked); a running run has no badge (its stop button already says it is
+    // working); idle and failed have no badge; the short badge is "⏳ N"; the
     // idle hint is empty (no filler text) while the others still say what a
-    // message does. Threat: the waiting state hiding in faint hint text, or
-    // filler hints returning. Pure functions are the narrowest layer for the
-    // text; the GPUI row only places it.
+    // message does. Threat: the waiting state hiding in faint hint text, the
+    // redundant "● Working" badge returning, or filler hints returning. Pure
+    // functions are the narrowest layer for the text; the GPUI row only places it.
     #[test]
     fn composer_badge_and_hint_name_the_run_state() {
         let wait = TaskWait { project_id: "p".into(), machine: "forge".into(), tasks: vec![("t1".into(), "Fix login".into()), ("t2".into(), "".into())], ..Default::default() };
@@ -1406,15 +1478,62 @@ mod tests {
         let here = TaskWait { tasks: vec![("t1".into(), "".into())], ..Default::default() };
         assert_eq!(composer_badge(RunState::Waiting, Some(&here)).as_deref(), Some("⏳ Waiting · 1 task"));
         assert_eq!(composer_badge(RunState::Waiting, None).as_deref(), Some("⏳ Waiting"));
-        assert_eq!(composer_badge(RunState::Running, None).as_deref(), Some("● Working"));
+        assert_eq!(composer_badge(RunState::Running, None), None);
+        assert_eq!(composer_badge(RunState::Running, Some(&wait)), None);
         assert_eq!(composer_badge(RunState::Idle, None), None);
         assert_eq!(composer_badge(RunState::Failed, None), None);
+        assert_eq!(composer_badge_short(RunState::Waiting, Some(&wait)).as_deref(), Some("⏳ 2"));
+        assert_eq!(composer_badge_short(RunState::Waiting, None).as_deref(), Some("⏳"));
+        assert_eq!(composer_badge_short(RunState::Running, Some(&wait)), None);
+        assert_eq!(composer_badge_short(RunState::Idle, None), None);
         assert_eq!(composer_hint(false, true, false, RunState::Idle), "");
         assert_eq!(composer_hint(false, true, false, RunState::Waiting), "a message from you ends the wait");
         assert_eq!(composer_hint(false, true, false, RunState::Running), "your message is queued for its next step");
         assert_eq!(composer_hint(false, true, true, RunState::Idle), "your message answers the question above");
         assert_eq!(composer_hint(false, false, false, RunState::Idle), "starts a session in this project");
         assert_eq!(composer_hint(true, true, false, RunState::Idle), "demo data");
+    }
+
+    // Purpose: the composer's bottom row never overflows a narrow pane.
+    // Requirement: as the width shrinks, "/ commands" goes first, then the
+    // hint, then the badge shortens; send/stop (in `fixed`) is never dropped,
+    // and every step is the widest that fits. Threat: send/stop pushed out of
+    // a narrow pane, or items dropped out of order. `composer_fit` is the pure
+    // rule the row renders from, the narrowest layer that decides it.
+    #[test]
+    fn composer_fit_drops_commands_then_hint_then_shortens_badge() {
+        let row = ComposerRow { fixed: 200., hint: 150., commands: 60., badge: 120., badge_short: 30., gap: 10. };
+        let all = ComposerFit { commands: true, hint: true, badge_short: false };
+        let no_commands = ComposerFit { commands: false, hint: true, badge_short: false };
+        let no_hint = ComposerFit { commands: false, hint: false, badge_short: false };
+        let short = ComposerFit { commands: false, hint: false, badge_short: true };
+        // Everything: 200 + 160 + 70 + 130 = 560.
+        assert_eq!(composer_fit(560., row), all);
+        assert_eq!(composer_fit(2000., row), all);
+        assert_eq!(composer_fit(559., row), no_commands);
+        // Without "/ commands": 490.
+        assert_eq!(composer_fit(490., row), no_commands);
+        assert_eq!(composer_fit(489., row), no_hint);
+        // Without the hint: 330.
+        assert_eq!(composer_fit(330., row), no_hint);
+        assert_eq!(composer_fit(329., row), short);
+        // Narrower than even send/stop and the rest: still short, never more dropped.
+        assert_eq!(composer_fit(0., row), short);
+        // Narrowing never brings an item back.
+        let mut last = all;
+        for w in (0..=600).rev() {
+            let fit = composer_fit(w as f32, row);
+            assert!(!(fit.commands && !last.commands) && !(fit.hint && !last.hint) && !(!fit.badge_short && last.badge_short), "{w}: {fit:?} after {last:?}");
+            last = fit;
+        }
+        // No badge (idle or working): the hint stays as long as it fits.
+        let idle = ComposerRow { badge: 0., badge_short: 0., ..row };
+        assert_eq!(composer_fit(430., idle), all);
+        assert_eq!(composer_fit(360., idle), no_commands);
+        assert_eq!(composer_fit(359., idle).hint, false);
+        // Rough widths: wide symbols take two cells.
+        assert!((text_width("ab", 10.) - 12.).abs() < 0.01);
+        assert!((text_width("⏳ 2", 10.) - 24.).abs() < 0.01);
     }
 }
 

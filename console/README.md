@@ -206,15 +206,18 @@ a separate profile and the extension loaded, for trying it out.
   waiting on 2 task(s) on forge: …") and when it ends ("Wait ended: tasks
   settled.", "Wait ended by your message.", "Wait ended: stopped.") as a
   compact `⏳` status line, from history as well as live.
-- **Composer:** beside send/stop a badge says how the run stands: `● Working`
-  while it runs, `⏳ Waiting · 2 tasks on forge` (task count, and the linked
-  machine) while it waits, none when idle. While Swarm says the run is
+- **Composer:** beside send/stop a badge says when the run waits on tasks:
+  `⏳ Waiting · 2 tasks on forge` (task count, and the linked machine). No
+  badge while it runs (the stop button says so) or when idle. The text box
+  grows by whole rows as it wraps, up to twelve rows. While Swarm says the run is
   active, send becomes stop (`POST /v3/sessions/{id}/run/stop`; the notice
   is Swarm's own answer). While it waits, send stays (a message ends the
   wait) and `■ stop wait` cancels it: Swarm's session detail lists no
   active run while it waits, so the console posts `run/stop` with the
-  waiting run's `run_id` from the run state. Idle shows no hint text; on a
-  narrow pane `/ commands` gives way before the badge. Typing `/` lists the
+  waiting run's `run_id` from the run state. Idle shows no hint text. The
+  bottom row never overflows the pane: as it narrows, `/ commands` goes
+  first, then the hint, then the badge shortens to `⏳ 2` (its full text on
+  hover), then the model name truncates; send/stop always shows. Typing `/` lists the
   commands: `/new`, `/new bottom`, `/stop`, `/compact`, `/context`,
   `/theme`, `/usage`, `/settings`, `/media`, `/agents`, `/fleet`, `/live`;
   a unique prefix is enough (`/com`, `/con`; `/c` alone is ambiguous), tab

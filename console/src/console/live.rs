@@ -628,6 +628,7 @@ impl Console {
         }
         let open: Vec<usize> = self.panes.iter().map(|p| p.id.0).collect();
         self.composers.retain(|id, _| open.contains(id));
+        self.composer_widths.borrow_mut().retain(|id, _| open.contains(id));
     }
 
     /// Sends the pane's message: the first one starts the session in Swarm.

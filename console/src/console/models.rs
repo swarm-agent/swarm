@@ -251,7 +251,10 @@ impl Console {
         div()
             .id(SharedString::from(format!("model-{pid}")))
             .flex()
-            .flex_none()
+            // On a pane too narrow for the rest of the composer's row, the
+            // label truncates rather than pushing send/stop out.
+            .flex_shrink()
+            .min_w_0()
             .items_center()
             .gap_1()
             .px_1()
@@ -261,8 +264,8 @@ impl Console {
             .when(open, |d| d.bg(hover))
             .text_color(if s.model_choice.is_some() { t.accent } else { t.muted })
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_picker(PickerScope::Session { si, pid }, window, cx)))
-            .child("◆")
-            .child(label)
+            .child(div().flex_none().child("◆"))
+            .child(div().min_w_0().truncate().child(label))
             .into_any_element()
     }
 

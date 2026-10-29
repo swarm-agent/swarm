@@ -7,7 +7,7 @@ use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, FocusHandle, Focusable, GlobalElementId, Hsla, LayoutId, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, SharedString, Style,
-    TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill, point, prelude::*, px,
+    TextRun, TextStyle, UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill, point, prelude::*, px,
     relative, size,
 };
 use unicode_segmentation::*;
@@ -536,8 +536,13 @@ impl Laid {
         line.size(self.line_height).height
     }
 
+    /// Rows on screen: each paragraph's wrapped rows, at least one.
+    pub fn rows(&self) -> usize {
+        rows(self.lines.iter().map(|l| l.wrap_boundaries().len()))
+    }
+
     pub fn height(&self) -> Pixels {
-        self.lines.iter().map(|l| self.height_of(l)).fold(px(0.), |a, b| a + b)
+        field_height(self.rows(), self.line_height)
     }
 
     /// Where a byte index sits: x, y (top of its row) relative to the field.
@@ -573,6 +578,35 @@ impl Laid {
     }
 }
 
+/// Rows of text from each paragraph's wrap count (a paragraph wrapped once
+/// is two rows); an empty field is one row.
+fn rows(wraps: impl IntoIterator<Item = usize>) -> usize {
+    wraps.into_iter().map(|w| w + 1).sum::<usize>().max(1)
+}
+
+/// How tall the field is for `rows` rows: whole rows, never less than one.
+fn field_height(rows: usize, line_height: Pixels) -> Pixels {
+    line_height * rows.max(1) as f32
+}
+
+/// The font size and row height the field is shaped and drawn with.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Metrics {
+    font_size: Pixels,
+    line_height: Pixels,
+}
+
+impl Metrics {
+    /// From the field's own text style. Read it in `request_layout`, where the
+    /// field's style (its line height, the console's font) is in effect: GPUI
+    /// runs the measure closure later, under the window's default style, so
+    /// reading the style there sized the field with another font and row
+    /// height than it is drawn with (the first wrap grew it by part of a row).
+    fn of(style: &TextStyle, rem_size: Pixels) -> Self {
+        Metrics { font_size: style.font_size.to_pixels(rem_size), line_height: style.line_height_in_pixels(rem_size) }
+    }
+}
+
 struct PrepaintState {
     laid: Option<Laid>,
     cursor: Option<PaintQuad>,
@@ -588,11 +622,11 @@ impl IntoElement for TextElement {
 }
 
 impl TextElement {
-    /// Shapes the field's text (or its placeholder) wrapped at `width`.
-    fn lay_out(&self, width: Pixels, window: &mut Window, cx: &mut App) -> (Laid, bool) {
+    /// Shapes the field's text (or its placeholder) wrapped at `width`, in
+    /// the field's own text style (`style`, read where it is in effect).
+    fn lay_out(&self, width: Pixels, style: &TextStyle, window: &mut Window, cx: &mut App) -> (Laid, bool) {
         let input = self.input.read(cx);
         let content = input.content.clone();
-        let style = window.text_style();
         let placeholder = content.is_empty();
         let (display_text, text_color) = if placeholder {
             (input.placeholder.clone(), input.colors.placeholder)
@@ -619,8 +653,7 @@ impl TextElement {
         } else {
             vec![run]
         };
-        let font_size = style.font_size.to_pixels(window.rem_size());
-        let line_height = window.line_height();
+        let Metrics { font_size, line_height } = Metrics::of(style, window.rem_size());
         let lines = window
             .text_system()
             // A read-only field (a sign-in code, a link) stays on one line.
@@ -652,17 +685,19 @@ impl Element for TextElement {
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut style = Style::default();
         style.size.width = relative(1.).into();
-        // As tall as the wrapped text: the field grows as you type.
+        // As tall as the wrapped text: the field grows as you type. The text
+        // style is read here, not in the closure (see `Metrics::of`).
         let element = TextElement { input: self.input.clone() };
+        let text_style = window.text_style();
+        let line_height = Metrics::of(&text_style, window.rem_size()).line_height;
         let id = window.request_measured_layout(style, move |known, available, window, cx| {
             let width = known.width.or(match available.width {
                 gpui::AvailableSpace::Definite(w) => Some(w),
                 _ => None,
             });
-            let line_height = window.line_height();
             let height = match width {
-                Some(w) => element.lay_out(w, window, cx).0.height().max(line_height),
-                None => line_height,
+                Some(w) => element.lay_out(w, &text_style, window, cx).0.height(),
+                None => field_height(1, line_height),
             };
             size(width.unwrap_or(px(0.)), height)
         });
@@ -678,7 +713,8 @@ impl Element for TextElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        let (laid, placeholder) = self.lay_out(bounds.size.width, window, cx);
+        let text_style = window.text_style();
+        let (laid, placeholder) = self.lay_out(bounds.size.width, &text_style, window, cx);
         let input = self.input.read(cx);
         let selected_range = input.selected_range.clone();
         let cursor_at = input.cursor_offset();
@@ -826,5 +862,45 @@ mod paste_tests {
         assert_eq!(file_uris("file:///srv/share/My%20Pics/a.png\nfile:///tmp/b.mp4\n"), Some(vec!["/srv/share/My Pics/a.png".into(), "/tmp/b.mp4".into()]));
         assert_eq!(file_uris("look at file:///tmp/a.png"), None);
         assert_eq!(file_uris("/etc/hosts"), None);
+    }
+}
+
+#[cfg(test)]
+mod height_tests {
+    use super::*;
+
+    // Purpose: the composer grows by whole rows from the very first wrap.
+    // Requirement: text wrapped once (two rows) is exactly two full row
+    // heights on the first computation, one row is one row height, and the
+    // height comes from the field's own text style (the console's 12.5px font
+    // and the field's 20px rows), not the window default GPUI applies when it
+    // runs the measure closure. Threat: the first wrap growing the box by only
+    // part of a row (the second row hidden), or not shrinking back to one row.
+    // `rows`, `field_height` and `Metrics::of` are what `TextElement`'s
+    // measured layout and `Laid::height` compute from; shaping itself needs a
+    // window, so these pure functions are the narrowest layer.
+    #[test]
+    fn first_wrap_is_two_full_rows_in_the_fields_own_style() {
+        let rem = px(16.);
+        // The composer: the console's root text size, the field's row height.
+        let field = TextStyle { font_size: px(12.5).into(), line_height: px(20.).into(), ..Default::default() };
+        let m = Metrics::of(&field, rem);
+        assert_eq!(m, Metrics { font_size: px(12.5), line_height: px(20.) });
+        // The window default is another row height: measuring with it was the bug.
+        assert_ne!(Metrics::of(&TextStyle::default(), rem).line_height, m.line_height);
+
+        // One paragraph, not wrapped: one row.
+        assert_eq!(rows([0]), 1);
+        assert_eq!(field_height(rows([0]), m.line_height), px(20.));
+        // The same paragraph after its first wrap: two full rows, at once.
+        assert_eq!(rows([1]), 2);
+        assert_eq!(field_height(rows([1]), m.line_height), px(40.));
+        // Back to one row when the wrap goes away.
+        assert_eq!(field_height(rows([0]), m.line_height), px(20.));
+        // Empty, several paragraphs, later wraps.
+        assert_eq!(field_height(rows([]), m.line_height), px(20.));
+        assert_eq!(field_height(0, m.line_height), px(20.));
+        assert_eq!(rows([0, 0]), 2);
+        assert_eq!(field_height(rows([1, 2]), m.line_height), px(100.));
     }
 }

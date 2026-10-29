@@ -311,6 +311,9 @@ pub struct Console {
     _live: Option<gpui::Task<()>>,
     /// Each pane's message box, by pane id.
     composers: HashMap<usize, Entity<TextInput>>,
+    /// Each pane's composer bottom row width at its last layout (px), so the
+    /// row drops what does not fit (`data::composer_fit`).
+    composer_widths: std::rc::Rc<std::cell::RefCell<HashMap<usize, f32>>>,
     /// New sessions waiting for Swarm's receipt: draft id → session index.
     drafts: HashMap<u64, usize>,
     next_draft: u64,
@@ -370,6 +373,30 @@ impl Drop for Timed {
 
 fn alpha(color: Hsla, a: f32) -> Hsla {
     Hsla { a, ..color }
+}
+
+/// A hover tooltip of one line of text (a shortened badge's full text).
+struct TextTooltip {
+    text: SharedString,
+    bg: Hsla,
+    fg: Hsla,
+    border: Hsla,
+}
+
+impl Render for TextTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_1()
+            .rounded(px(4.))
+            .border_1()
+            .border_color(self.border)
+            .bg(self.bg)
+            .text_color(self.fg)
+            .text_size(px(11.))
+            .whitespace_nowrap()
+            .child(self.text.clone())
+    }
 }
 
 impl Console {
@@ -485,6 +512,7 @@ impl Console {
             live: None,
             _live: None,
             composers: HashMap::new(),
+            composer_widths: Default::default(),
             drafts: HashMap::new(),
             next_draft: 0,
             rank: HashMap::new(),
@@ -1123,9 +1151,35 @@ impl Console {
         } else {
             send().into_any_element()
         };
-        // Working / Waiting at a glance, beside send/stop (none when idle).
-        let badge = s.live.as_ref().and(data::composer_badge(s.state, s.waiting_on.as_ref())).map(|label| {
-            let color = if s.state == RunState::Waiting { t.accent } else { t.info };
+        // Waiting on tasks at a glance, beside send/stop. Working has none:
+        // the stop button says it.
+        let badge_full = s.live.as_ref().and(data::composer_badge(s.state, s.waiting_on.as_ref()));
+        let badge_short = s.live.as_ref().and(data::composer_badge_short(s.state, s.waiting_on.as_ref()));
+        let hint = data::composer_hint(self.link == Link::Demo, s.live.is_some(), s.pending.as_ref().is_some_and(|p| p.question), s.state);
+        // On a narrow pane "/ commands" goes first, then the hint, then the
+        // badge shortens; send/stop always shows. Widths are estimates of the
+        // row's 10.5px monospaced text plus each item's padding.
+        let fit = {
+            const FONT: f32 = 10.5;
+            const GAP: f32 = 12.;
+            let w = |text: &str| data::text_width(text, FONT);
+            let model = if !s.model.is_empty() { s.model.to_string() } else if s.live.is_none() { "default model".to_string() } else { String::new() };
+            let send_or_stop_w = if running { w("■ stop") + 18. } else if waiting { w("■ stop wait") + w("⏎ send") + 40. } else { w("⏎ send") + 18. };
+            let row = data::ComposerRow {
+                fixed: 11. + 4. + w("permissions") + 8. + if model.is_empty() { 0. } else { w("◆") + 4. + w(&model) + 8. } + send_or_stop_w + 3. * GAP,
+                hint: if hint.is_empty() { 0. } else { w(hint) },
+                commands: w("/ commands"),
+                badge: badge_full.as_deref().map_or(0., |b| data::text_width(b, 11.) + 18.),
+                badge_short: badge_short.as_deref().map_or(0., |b| data::text_width(b, 11.) + 18.),
+                gap: GAP,
+            };
+            // Unknown until the row's first layout: show everything; the row
+            // clips rather than overflows, and the next frame fits it.
+            self.composer_widths.borrow().get(&pid).map_or(data::ComposerFit { commands: true, hint: true, badge_short: false }, |width| data::composer_fit(*width, row))
+        };
+        let badge = badge_full.map(|full| {
+            let color = t.accent;
+            let label = if fit.badge_short { badge_short.clone().unwrap_or_default() } else { full.clone() };
             div()
                 .id(SharedString::from(format!("composer-badge-{pid}")))
                 .flex_none()
@@ -1139,9 +1193,26 @@ impl Console {
                 .border_color(alpha(color, 0.5))
                 .text_size(px(11.))
                 .text_color(color)
+                .when(fit.badge_short, |d| {
+                    let (bg, fg, border) = (t.surface, t.text, t.border);
+                    d.tooltip(move |_, cx| cx.new(|_| TextTooltip { text: full.clone().into(), bg, fg, border }).into())
+                })
                 .child(label)
         });
-        let hint = data::composer_hint(self.link == Link::Demo, s.live.is_some(), s.pending.as_ref().is_some_and(|p| p.question), s.state);
+        let widths = self.composer_widths.clone();
+        // Records the row's width after layout; a change redraws so the fit follows.
+        let measure = gpui::canvas(
+            move |bounds, window, _| {
+                let width = f32::from(bounds.size.width);
+                let old = widths.borrow_mut().insert(pid, width);
+                if old.is_none_or(|old| (old - width).abs() >= 0.5) {
+                    window.refresh();
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full();
         let composer = div()
             .flex_none()
             .p_2()
@@ -1179,17 +1250,23 @@ impl Console {
                             }),
                     )
                     .child(
+                        // Never wider than the pane: what does not fit is
+                        // dropped (`fit`), and the model label truncates last.
                         div()
+                            .relative()
                             .flex()
                             .items_center()
                             .gap_3()
+                            .min_w_0()
+                            .overflow_hidden()
                             .text_size(px(10.5))
                             .text_color(t.faint)
+                            .child(measure)
                             .child(self.permissions_chip(pid, cx))
                             .child(self.model_button(si, pid, cx))
-                            .child(div().flex_1().min_w_0().truncate().child(hint))
-                            // On a narrow pane this gives way first, never the badge.
-                            .child(div().flex_shrink().min_w_0().overflow_hidden().whitespace_nowrap().child("/ commands"))
+                            // Holds send/stop to the right when the hint is dropped.
+                            .child(div().flex_1().min_w_0().truncate().when(fit.hint, |d| d.child(hint)))
+                            .when(fit.commands, |d| d.child(div().flex_none().whitespace_nowrap().child("/ commands")))
                             .children(badge)
                             .child(div().flex_none().child(send_or_stop)),
                     ),
