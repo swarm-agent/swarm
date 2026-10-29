@@ -249,11 +249,11 @@ provider. It reads a task's worktree with Git only for the uncommitted case
 below: at most once per stall episode and 20 tasks per check, and only for
 finished tasks that changed in the last 24 hours.
 
-A task is **not** stalled while it has an armed wait: a run asleep on
-`wait_tasks` (the task watch wakes it), a background command still running,
-a running or waiting workflow step, or a provider-limit wait (a workflow
-step's, or the task's own `limit_waiting`) until its reset plus
-`stall_after_minutes`. It **is** stalled when:
+A task is **not** stalled while it has an armed wait: an idle conversation
+with an active task watch (`wait_tasks`; the watch starts its next turn), a
+background command still running, a running or waiting workflow step, or a
+provider-limit wait (a workflow step's, or the task's own `limit_waiting`)
+until its reset plus `stall_after_minutes`. It **is** stalled when:
 
 - it is unfinished with no active run, no queued run, no workflow step and no
   armed wait, and nothing changed for `stall_after_minutes` (limits; default

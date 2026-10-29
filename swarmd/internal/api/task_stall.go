@@ -264,10 +264,21 @@ func (s *Server) taskStallVerdict(ctx context.Context, account string, task pebb
 		return v, true
 	}
 
-	// Armed waits: a run asleep on its delegated tasks (the task watch wakes
-	// it) and a background command (it reports back when it ends).
+	// Armed waits: an idle conversation watching its delegated tasks (the
+	// watch starts its next turn; a run left by the retired pending wait is
+	// converted to a watch at startup) and a background command (it reports
+	// back when it ends). An active run is judged on its own below.
 	if stateFound && state.Status == pebblestore.V3RunIntentWaitingTasks {
 		return v, true
+	}
+	if !stateFound || !state.Active {
+		watches, err := db.ListV3SessionTaskWatches(task.SessionID)
+		if err != nil {
+			return taskStallVerdict{}, false
+		}
+		if len(watches) > 0 {
+			return v, true
+		}
 	}
 	if s.taskSessionBackgroundRunning(task.SessionID) {
 		return v, true
@@ -601,7 +612,7 @@ func (s *Server) alertTaskStall(ctx context.Context, account string, task pebble
 // wakeTaskDelegator sends text into the Orchestrator conversation that
 // delegated the task, through the session messages route as the machine
 // owner: an idle conversation starts a turn, a running one gets it as a
-// queued note, and one asleep on wait_tasks wakes. The request id is the
+// queued note (its task watches stay). The request id is the
 // episode's, so it is sent once.
 func (s *Server) wakeTaskDelegator(ctx context.Context, task pebblestore.ProjectTaskRecord, episode, kind, text string) {
 	origin := strings.TrimSpace(task.OriginSessionID)

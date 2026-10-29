@@ -268,7 +268,8 @@ func (b stallFakeBackground) SessionRunEnded(string, string)                   {
 func (b stallFakeBackground) SessionBackgroundCommandsRunning(id string) bool  { return b.running[id] }
 
 // Purpose: armed waits are not stalls. A task in a provider-limit wait (until
-// its reset plus STALL_AFTER), a task watch (a run asleep on wait_tasks), a
+// its reset plus STALL_AFTER), a task watch (an idle conversation watching
+// its delegated task with wait_tasks), a
 // running review step and a pending background command raise nothing however
 // long they last; each has a positive control showing the same task stalls
 // once the wait is gone (the limit's reset passed, the background command
@@ -276,7 +277,7 @@ func (b stallFakeBackground) SessionBackgroundCommandsRunning(id string) bool  {
 // Threat: alerts on healthy long work (a weekly limit, a long review), which
 // would teach people to ignore task.stalled.
 // Boundary: Server.CheckStalledTasks over real deliveries in the workflow
-// store, real V3 run intents (including a registered task wait) and the
+// store, real V3 run intents and a registered task watch on an idle run, and the
 // background-command registry interface the tool runtime implements.
 func TestTaskStallArmedWaitsAreNotStalled(t *testing.T) {
 	f := newStallFixture(t, filepath.Join(t.TempDir(), "armed.pebble"))
@@ -322,7 +323,10 @@ func TestTaskStallArmedWaitsAreNotStalled(t *testing.T) {
 		{SessionID: "watcher", Kind: pebblestore.V3SessionMutationCreateSession, ClientRequestID: "create-watcher", Session: &pebblestore.SessionSnapshot{ID: "watcher", Mode: "auto", Metadata: watchMeta}},
 		{SessionID: "watcher", Kind: pebblestore.V3SessionMutationRecordRunIntent, ClientRequestID: "pending-watcher", RunIntent: &pebblestore.V3SessionRunIntent{RunID: "run-w", Status: pebblestore.V3RunIntentPendingExecutor}},
 		{SessionID: "watcher", Kind: pebblestore.V3SessionMutationRecordRunIntent, ClientRequestID: "run-watcher", RunIntent: &pebblestore.V3SessionRunIntent{RunID: "run-w", Status: pebblestore.V3RunIntentRunning}},
-		{SessionID: "watcher", Kind: pebblestore.V3SessionMutationRecordRunIntent, EventType: "session.run.waiting_tasks", ClientRequestID: "task-wait:run-w", TaskWait: &pebblestore.V3ProjectTaskWaitMutation{RunID: "run-w", ProjectID: "proj-watch", TaskIDs: []string{"task_watched"}}},
+		// run-w watches its delegated task (wait_tasks) and ends normally:
+		// watching never pends the run, so the conversation is idle with a watch.
+		{SessionID: "watcher", Kind: pebblestore.V3SessionMutationAppendMessage, EventType: "session.task_watch.started", ClientRequestID: "task-watch:run-w", TaskWait: &pebblestore.V3ProjectTaskWaitMutation{RunID: "run-w", ProjectID: "proj-watch", TaskIDs: []string{"task_watched"}}},
+		{SessionID: "watcher", Kind: pebblestore.V3SessionMutationRecordRunIntent, EventType: "session.run.completed", ClientRequestID: "done-watcher", RunIntent: &pebblestore.V3SessionRunIntent{RunID: "run-w", Status: pebblestore.V3RunIntentCompleted}},
 	} {
 		in.AccountScopeID, in.UserID, in.PayloadHash = p.AccountScopeID, p.UserID, in.ClientRequestID
 		if _, err := db.ApplyV3SessionMutation(in); err != nil {
@@ -333,8 +337,11 @@ func TestTaskStallArmedWaitsAreNotStalled(t *testing.T) {
 	if err := db.PutProjectTask(f.account, &watcher); err != nil {
 		t.Fatal(err)
 	}
-	if state, _, _ := db.GetV3SessionRunState("watcher"); state.Status != pebblestore.V3RunIntentWaitingTasks {
-		t.Fatalf("watch not registered: %+v", state)
+	if state, _, _ := db.GetV3SessionRunState("watcher"); state.Active || state.Status == pebblestore.V3RunIntentWaitingTasks {
+		t.Fatalf("watching left the run pending: %+v", state)
+	}
+	if watches, err := db.ListV3SessionTaskWatches("watcher"); err != nil || len(watches) != 1 {
+		t.Fatalf("watch not registered: %+v err=%v", watches, err)
 	}
 
 	later := now.Add(2 * time.Hour)
