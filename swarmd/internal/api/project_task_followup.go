@@ -13,6 +13,7 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
+	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
 func projectTaskFollowupContext(task *pebblestore.ProjectTaskRecord) string {
@@ -235,6 +236,13 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 	}
 	if !req.Repair && !retry && task.WorkspacePath != "" && task.WorkspacePath != task.SourceWorkspace.Path {
 		origin, inspectErr := s.worktrees.InspectTaskWorkspace(task.WorkspacePath)
+		checkpoint := ""
+		if inspectErr == nil {
+			var checkpointErr error
+			if origin, checkpoint, checkpointErr = s.checkpointRetainedTaskWorktree(p, task, req, origin); checkpointErr != nil {
+				return nil, checkpointErr
+			}
+		}
 		if inspectErr != nil || !origin.Clean {
 			return nil, &projectTaskFollowupError{409, errors.New("retained task worktree unavailable or dirty; preserve and commit its work before reopening")}
 		}
@@ -249,6 +257,9 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 		}
 		if origin.HeadCommit != comparisonBase {
 			candidate := &pebblestore.ProjectTaskRecoverySource{Kind: "retained_continuation", SessionID: task.SessionID, WorkspacePath: task.WorkspacePath, Branch: task.WorktreeBranch, BaseCommit: task.BaseCommit, HeadCommit: origin.HeadCommit, TargetBranch: task.BaseBranch, TargetHead: state.HeadCommit}
+			if checkpoint != "" && checkpoint == origin.HeadCommit {
+				candidate.CheckpointCommit = checkpoint
+			}
 			if err := s.validateProjectTaskRecovery(p, task, candidate); err != nil {
 				return nil, &projectTaskFollowupError{403, err}
 			}
@@ -394,7 +405,7 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 			return nil, &projectTaskFollowupError{500, err}
 		}
 	}
-	err = s.deployProjectTaskExecution(p, proj, task, "in_progress", a.Request)
+	err = s.deployProjectTaskExecution(p, proj, task, "in_progress", projectTaskFollowupPrompt(a))
 	launchErr := err
 	updated, persistErr := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(current *pebblestore.ProjectTaskRecord) error {
 		if current.ActiveAttemptID != task.ActiveAttemptID || current.SessionID != task.SessionID {
@@ -427,6 +438,78 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 		return nil, &projectTaskFollowupError{503, launchErr}
 	}
 	return updated, nil
+}
+
+// retainedTaskCheckpointer is the worktree service's preservation of a stopped
+// task's uncommitted work.
+type retainedTaskCheckpointer interface {
+	CheckpointTaskWorkspace(workspacePath, branch, taskID, message string) (worktreeruntime.TaskCheckpoint, error)
+}
+
+// checkpointRetainedTaskWorktree preserves the edits a stopped run left
+// uncommitted in the task's own retained worktree, so the follow-up continues
+// from them instead of refusing the reopen. It returns the worktree state to
+// continue from and the checkpoint commit at its HEAD ("" when none).
+//
+// A clean worktree is never committed; its HEAD is reported only when it is
+// this task's checkpoint, so a retried reopen (whose first try committed and
+// then failed later) still says so. A dirty worktree is committed only when
+// the reopen names the task's current revision, its worktree is on the task
+// branch, no run is writing to it, and it is the task's own retained attempt
+// (validateRetainedTaskSourceOwner); otherwise nothing is written and the
+// reopen is refused.
+func (s *Server) checkpointRetainedTaskWorktree(p identity.Principal, task *pebblestore.ProjectTaskRecord, req tool.ProjectTaskFollowupInput, origin worktreeruntime.TaskWorkspaceState) (worktreeruntime.TaskWorkspaceState, string, error) {
+	checkpointer, ok := s.worktrees.(retainedTaskCheckpointer)
+	if !ok || task.WorktreeBranch == "" {
+		return origin, "", nil
+	}
+	message := fmt.Sprintf("Checkpoint interrupted work of task %s\n\nThe task's run stopped with these edits uncommitted. Swarm committed them\non the task branch before continuing the task.", task.ID)
+	if origin.Clean {
+		if origin.BranchName != task.WorktreeBranch {
+			return origin, "", nil
+		}
+		found, err := checkpointer.CheckpointTaskWorkspace(task.WorkspacePath, task.WorktreeBranch, task.ID, message)
+		if err != nil {
+			return origin, "", &projectTaskFollowupError{409, fmt.Errorf("inspect retained task worktree: %w", err)}
+		}
+		return found.State, found.Commit, nil
+	}
+	if origin.BranchName != task.WorktreeBranch {
+		return origin, "", &projectTaskFollowupError{409, fmt.Errorf("retained task worktree is dirty and on %q, not the task branch %q; restore its branch before reopening", origin.BranchName, task.WorktreeBranch)}
+	}
+	if req.Revision != task.Revision {
+		return origin, "", &projectTaskFollowupError{409, errors.New("stale or missing task revision")}
+	}
+	if task.SessionID != "" {
+		run, active, err := s.sessions.Store().GetV3SessionActiveRunIntent(task.SessionID)
+		if err != nil {
+			return origin, "", &projectTaskFollowupError{500, err}
+		}
+		if active && (run.Status == pebblestore.V3RunIntentPendingExecutor || run.Status == pebblestore.V3RunIntentRunning) {
+			return origin, "", &projectTaskFollowupError{409, errors.New("task session is still running; its retained worktree is not committed while a run can write to it")}
+		}
+	}
+	owner := &pebblestore.ProjectTaskRecoverySource{Kind: "retained_continuation", SessionID: task.SessionID, WorkspacePath: task.WorkspacePath, Branch: task.WorktreeBranch, BaseCommit: task.BaseCommit, TargetBranch: task.BaseBranch}
+	if _, err := s.validateRetainedTaskSourceOwner(p, task, owner, false); err != nil {
+		return origin, "", &projectTaskFollowupError{403, err}
+	}
+	made, err := checkpointer.CheckpointTaskWorkspace(task.WorkspacePath, task.WorktreeBranch, task.ID, message)
+	if err != nil {
+		return origin, "", &projectTaskFollowupError{409, fmt.Errorf("could not preserve the retained task worktree's uncommitted work: %w", err)}
+	}
+	return made.State, made.Commit, nil
+}
+
+// projectTaskFollowupPrompt is the follow-up's request, plus a note when a
+// checkpoint commit holds the edits the previous run left uncommitted.
+func projectTaskFollowupPrompt(a *pebblestore.ProjectTaskAttempt) string {
+	if a == nil {
+		return ""
+	}
+	if a.Recovery == nil || a.Recovery.CheckpointCommit == "" {
+		return a.Request
+	}
+	return a.Request + "\n\n" + fmt.Sprintf("Note: the previous run of this task stopped before it committed its edits. Swarm preserved them in checkpoint commit %s on %s; your work starts from it.", a.Recovery.CheckpointCommit, a.Recovery.Branch)
 }
 
 // History pages retain all attempts; board sanitization bounds only its preview.

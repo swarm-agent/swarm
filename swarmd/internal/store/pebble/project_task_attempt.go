@@ -53,6 +53,10 @@ type ProjectTaskRecoverySource struct {
 	TargetHead    string `json:"target_head"`
 	PreparedHead  string `json:"prepared_head,omitempty"`
 	PreparedRef   string `json:"prepared_ref,omitempty"`
+	// CheckpointCommit is the commit the daemon made on the retained task
+	// branch to preserve edits a stopped run left uncommitted
+	// (retained_continuation only). It is HeadCommit when set.
+	CheckpointCommit string `json:"checkpoint_commit,omitempty"`
 }
 
 // EnsureTaskAttempts is an idempotent, evidence-only upgrade of single-session tasks.

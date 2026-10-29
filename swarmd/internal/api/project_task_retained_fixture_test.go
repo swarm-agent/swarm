@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"swarm/packages/swarmd/internal/appstorage"
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -45,8 +46,9 @@ func seedRetainedTask(t *testing.T, server *Server, sessions *sessionruntime.Ser
 	t.Helper()
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	// Task worktrees live at the allocator's own path for their branch.
+	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
 	source := filepath.Join(root, "source")
-	child := filepath.Join(root, "child")
 	if err := os.MkdirAll(source, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -60,6 +62,15 @@ func seedRetainedTask(t *testing.T, server *Server, sessions *sessionruntime.Ser
 	integrationGit(t, source, "add", "tracked.txt")
 	integrationGit(t, source, "commit", "-m", "base")
 	base := integrationGit(t, source, "rev-parse", "HEAD")
+	laneParent, err := appstorage.WorktreeDataDir(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	laneID, err := worktreeruntime.WorkspaceIdentityForRequestedBranch(retainedTaskBranch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := filepath.Join(laneParent, laneID)
 	integrationGit(t, source, "worktree", "add", "-b", retainedTaskBranch, child)
 
 	db := sessions.Store()
