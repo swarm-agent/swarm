@@ -533,6 +533,36 @@ func withoutTaskWatch(watches []V3SessionTaskWatch, watchID string) []V3SessionT
 // cancel=true or cancel_watch) or the person's stop. TaskIDs narrows it to
 // those tasks (a watch left with none ends); WatchID, Machine and ProjectID
 // narrow which watches. Nothing matching is an error, never a silent success.
+// projectTaskWatchInCancelScope: the watch is on the cancel's machine,
+// project and (when named) watch id.
+func projectTaskWatchInCancelScope(w V3SessionTaskWatch, machine, projectID, watchID string) bool {
+	return (watchID == "" || w.WatchID == watchID) && (machine == "" || w.Wait.Machine == machine) && (projectID == "" || w.Wait.ProjectID == projectID)
+}
+
+// ProjectTaskWatchCancelTargets lists, sorted, the watches a cancel on
+// machine/project/watch id and task ids (empty: all) would end or narrow:
+// the same selection prepareProjectTaskWatchCancel applies.
+func ProjectTaskWatchCancelTargets(watches []V3SessionTaskWatch, machine, projectID, watchID string, taskIDs []string) []string {
+	wanted := map[string]bool{}
+	for _, id := range taskIDs {
+		wanted[strings.TrimSpace(id)] = true
+	}
+	var out []string
+	for _, w := range watches {
+		if !projectTaskWatchInCancelScope(w, machine, projectID, watchID) {
+			continue
+		}
+		for _, target := range w.Wait.Tasks {
+			if len(wanted) == 0 || wanted[target.TaskID] {
+				out = append(out, w.WatchID)
+				break
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 func (s *SessionStore) prepareProjectTaskWatchCancel(input *V3SessionMutationInput, parent SessionSnapshot) error {
 	op := input.TaskWait
 	if parent.AccountScopeID != input.AccountScopeID || parent.UserID != input.UserID {
@@ -549,7 +579,7 @@ func (s *SessionStore) prepareProjectTaskWatchCancel(input *V3SessionMutationInp
 	var sets, deletes, kept []V3SessionTaskWatch
 	var removedTitles, removedIDs []string
 	for _, w := range existing {
-		if (op.WatchID != "" && w.WatchID != op.WatchID) || (op.Machine != "" && w.Wait.Machine != op.Machine) || (op.ProjectID != "" && w.Wait.ProjectID != op.ProjectID) {
+		if !projectTaskWatchInCancelScope(w, op.Machine, op.ProjectID, op.WatchID) {
 			kept = append(kept, w)
 			continue
 		}

@@ -300,3 +300,39 @@ func TestTaskWatchSubsetOfEndedWatchIsANewWatch(t *testing.T) {
 		t.Fatal("W_A ended though task-1 is still in progress")
 	}
 }
+
+// Purpose: a second cancel_watch in the same run ends the re-registered
+// watch instead of replaying the first cancellation.
+// Requirement: in run-1, wait_tasks [task-1], cancel_watch [task-1],
+// wait_tasks [task-1] (a new generation watch), cancel_watch [task-1]: the
+// second cancel returns cancelled, the new watch record is gone, and
+// settling task-1 afterwards delivers no outcome for either watch.
+// Threat: reviewer finding: the cancel idempotency key named only run,
+// machine, project, watch id and task ids, so the second cancel replayed the
+// first one's stored result without running prepareProjectTaskWatchCancel;
+// the tool reported "cancelled" while the new watch kept running.
+// Authority: tool cancelProjectTaskWatches (key over the targeted watch ids,
+// replay check), pebblestore.ProjectTaskWatchCancelTargets and
+// prepareProjectTaskWatchCancel, through the real tool runtime, server and
+// store.
+func TestTaskWatchSecondCancelInTheSameRunEndsTheNewWatch(t *testing.T) {
+	w := newWatchToolFixture(t, "in_progress")
+	first, _ := w.call(t, "wait_tasks")["watch_id"].(string)
+	if got := w.call(t, "cancel_watch"); got["status"] != "cancelled" || w.active(t, first) {
+		t.Fatalf("first cancel: %v active=%v", got, w.active(t, first))
+	}
+	second, _ := w.call(t, "wait_tasks")["watch_id"].(string)
+	if second == "" || second == first || !w.active(t, second) {
+		t.Fatalf("re-watch after cancel: %q (first %q)", second, first)
+	}
+	if got := w.call(t, "cancel_watch"); got["status"] != "cancelled" {
+		t.Fatalf("second cancel: %v", got)
+	}
+	if w.active(t, second) {
+		t.Fatal("second cancel reported cancelled but the new watch is still active")
+	}
+	w.setStatus(t, "needs_review")
+	if w.delivered(t, first) || w.delivered(t, second) {
+		t.Fatalf("a cancelled watch delivered: first=%v second=%v", w.delivered(t, first), w.delivered(t, second))
+	}
+}

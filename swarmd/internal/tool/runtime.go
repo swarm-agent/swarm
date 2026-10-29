@@ -290,6 +290,7 @@ type manageSessionService interface {
 	ApplySessionMutation(input pebblestore.V3SessionMutationInput) (pebblestore.V3SessionMutationResult, error)
 	GetV3MessageByID(sessionID, messageID string) (pebblestore.MessageSnapshot, bool, error)
 	GetV3SessionTaskWatch(sessionID, watchID string) (pebblestore.V3SessionTaskWatch, bool, error)
+	ListV3SessionTaskWatches(sessionID string) ([]pebblestore.V3SessionTaskWatch, error)
 	GetActivePlan(sessionID string) (pebblestore.SessionPlanSnapshot, bool, error)
 	ListMessages(sessionID string, afterGlobalSeq uint64, limit int) ([]pebblestore.MessageSnapshot, error)
 	ListTopSessionsByWorkspace(workspacePaths []string, perWorkspaceLimit int) ([]pebblestore.WorkspaceSessionList, error)

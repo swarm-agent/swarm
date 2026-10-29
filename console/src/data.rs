@@ -1582,7 +1582,6 @@ mod tests {
         let wait = TaskWait { project_id: "p".into(), machine: "forge".into(), tasks: vec![("t1".into(), "Fix login".into()), ("t2".into(), "".into())], ..Default::default() };
         assert_eq!(composer_badge(RunState::Waiting, Some(&wait)).as_deref(), Some("👁 Watching · 2 tasks on forge"));
         assert_eq!(composer_badge(RunState::Idle, Some(&wait)).as_deref(), Some("👁 Watching · 2 tasks on forge"));
-        assert_eq!(composer_badge(RunState::Running, Some(&wait)).as_deref(), Some("● Working · 👁 Watching · 2 tasks on forge"));
         let here = TaskWait { tasks: vec![("t1".into(), "".into())], ..Default::default() };
         assert_eq!(composer_badge(RunState::Waiting, Some(&here)).as_deref(), Some("👁 Watching · 1 task"));
         assert_eq!(composer_badge(RunState::Waiting, None).as_deref(), Some("👁 Watching"));

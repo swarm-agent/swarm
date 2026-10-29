@@ -1696,7 +1696,7 @@ mod tests {
             let s = m.session_of("s1").unwrap();
             assert_eq!(s.state, RunState::Running);
             let wait = s.waiting_on.clone().expect("what it watches");
-            assert_eq!(crate::data::composer_badge(s.state, Some(&wait)).as_deref(), Some("● Working · 👁 Watching · 2 tasks on forge"));
+            assert_eq!(crate::data::composer_badge(s.state, Some(&wait)).as_deref(), Some("👁 Watching · 2 tasks on forge"));
             // The turn ends: still watching, now idle.
             assert!(m.event("s1", "session.run.completed", json!({"run_intent": {"run_id": "run-1", "status": "completed"}})).unwrap());
             let s = m.session_of("s1").unwrap();

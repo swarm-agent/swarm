@@ -175,11 +175,20 @@ func (r *Runtime) cancelProjectTaskWatches(scope WorkspaceScope, runID, machine,
 		}
 	}
 	op := &pebblestore.V3ProjectTaskWaitMutation{Cancel: true, CancelledBy: pebblestore.ProjectTaskWaitEndedByAgent, Machine: machine, ProjectID: projectID, TaskIDs: ids, WatchID: strings.TrimSpace(asString(args["watch_id"]))}
+	// The key also names the watches this cancel targets (a watch id carries
+	// its generation), so cancelling a re-registered watch is a new
+	// cancellation, not a replay of the one that ended its predecessor. A
+	// retried call targeting the same watches replays.
+	watches, err := r.sessions.ListV3SessionTaskWatches(scope.SessionID)
+	if err != nil {
+		return "", err
+	}
+	targets := pebblestore.ProjectTaskWatchCancelTargets(watches, machine, projectID, op.WatchID, ids)
 	sorted := append([]string(nil), ids...)
 	sort.Strings(sorted)
-	sum := sha256.Sum256([]byte(strings.Join([]string{runID, machine, projectID, op.WatchID, strings.Join(sorted, "\x00")}, "\x01")))
+	sum := sha256.Sum256([]byte(strings.Join([]string{runID, machine, projectID, op.WatchID, strings.Join(sorted, "\x00"), strings.Join(targets, "\x00")}, "\x01")))
 	key := "task-watch-cancel:" + hex.EncodeToString(sum[:16])
-	_, err := r.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
+	_, err = r.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
 		SessionID: scope.SessionID, UserID: scope.Principal.UserID, AccountScopeID: scope.Principal.AccountScopeID,
 		Kind: pebblestore.V3SessionMutationAppendMessage, EventType: "session.task_watch.cancelled",
 		ClientRequestID: key, PayloadHash: key, TaskWait: op,
@@ -192,6 +201,17 @@ func (r *Runtime) cancelProjectTaskWatches(scope WorkspaceScope, runID, machine,
 	}
 	cancelled := op.CancelledTaskIDs
 	if len(cancelled) == 0 {
+		// A replay: report success only if none of the targeted watches is
+		// still active (the committed cancellation ended them).
+		for _, id := range targets {
+			w, active, err := r.sessions.GetV3SessionTaskWatch(scope.SessionID, id)
+			if err != nil {
+				return "", err
+			}
+			if active && len(pebblestore.ProjectTaskWatchCancelTargets([]pebblestore.V3SessionTaskWatch{w}, machine, projectID, op.WatchID, ids)) > 0 {
+				return "", errors.New("a matching watch is still active; nothing was cancelled, call cancel_watch again")
+			}
+		}
 		cancelled = ids
 	}
 	result := map[string]any{"tool": "manage_projects", "action": "wait_tasks", "project_id": projectID, "status": "cancelled", "task_ids": cancelled}
