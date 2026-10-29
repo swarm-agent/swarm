@@ -891,10 +891,12 @@ dev_sync() {
 # then builds it next to the running build while work goes on, and restarts
 # Swarm into it only when nothing runs (GET /v3/box/busy: agent runs, worker
 # runs, environment builds). The timer runs `install.sh update --automatic`:
-# an automatic update is idle-only, so while anything runs it does not start
-# the admission drain (which would hold the new runs that running work needs
-# to finish) and waits for the next timer run instead. A person's
-# `install.sh update` drains and waits. If the new build does not come up (ready, its
+# while anything runs it does not start the admission drain (which would hold
+# the new runs that running work needs to finish) and waits for the next timer
+# run instead, but only for UPDATE_BUSY_WAIT_SECONDS (default 30 min): a
+# machine that is never idle then drains, capped by UPDATE_BUSY_DRAIN_SECONDS
+# (default 20 min; see finish_update), and swarmd raises one update.starved
+# signal per wait. A person's `install.sh update` drains and waits. If the new build does not come up (ready, its
 # sandbox on as before, the setup page answering) within two minutes, Swarm goes
 # back to the build it ran before and never retries that commit. Each step is
 # written to $UPDATE_STATE, which the machine summary (and its status in the
@@ -902,6 +904,7 @@ dev_sync() {
 # when a commit is installed, blocked or rolled back.
 UPDATE_STATE=$OPT/update-state.json
 UPDATE_BAD=$STATE/update-bad
+UPDATE_BUSY_SINCE=$STATE/update-busy-since
 DEFAULT_UPDATE_CHECKS='ai-review=swarm-go-ai-review[bot]'
 LOCAL_API_SOCKET=/var/lib/swarmd/local-transport/api.sock
 
@@ -1186,10 +1189,53 @@ automatic_update_deferred() {
   echo "busy ($n running); tries again at the next update"
 }
 
+now_seconds() { date +%s; }
+
+# When an automatic update first found the machine busy (unix seconds). Kept
+# across newer candidates, so a branch that moves while the machine stays busy
+# cannot restart the clock; removed once the machine is idle or updated.
+update_busy_since() {
+  local since
+  since=$(cat "$UPDATE_BUSY_SINCE" 2>/dev/null || true)
+  if [[ ! $since =~ ^[0-9]+$ ]]; then
+    since=$(now_seconds)
+    echo "$since" >"$UPDATE_BUSY_SINCE"
+  fi
+  echo "$since"
+}
+
+# A setting in seconds (1..86400), or die naming it.
+update_seconds() {
+  local name=$1 value=$2
+  [[ $value =~ ^[0-9]+$ && $value -ge 1 && $value -le 86400 ]] || die "$name must be 1..86400"
+  echo "$value"
+}
+
+# update.reason during a drain: how much still runs and since when new runs
+# are held, from the daemon's drain status DRAIN (GET/POST /v3/box/drain).
+drain_reason() {
+  local drain=$1 running builds since
+  running=$(json_get blockers.length <<<"$drain" || true)
+  builds=$(json_get environment_builds <<<"$drain" || true)
+  [[ $running =~ ^[0-9]+$ ]] || running=0
+  [[ $builds =~ ^[0-9]+$ ]] && running=$((running + builds))
+  since=$(json_get since <<<"$drain" || true)
+  since=${since%%.*}
+  [[ -z $since || $since == *Z ]] || since+=Z
+  echo "draining for update, $running running, held since ${since:-unknown}"
+}
+
 # Bring the services to the checkout's commit: build it, wait until nothing
 # runs, switch, and go back if it does not come up. With --automatic (the
-# update timer), a busy machine is not drained: the build waits and the next
-# timer run tries again.
+# update timer), a busy machine is not drained at first: the build waits and
+# the next timer run tries again. Once updates have waited on a busy machine
+# for UPDATE_BUSY_WAIT_SECONDS (default 30 min), it drains anyway: new runs are
+# held (they queue as pending runs and start after the restart), running ones
+# finish, then Swarm switches. At UPDATE_BUSY_DRAIN_SECONDS (default 20 min)
+# into that drain, it switches with runs still going only when the daemon says
+# every one of them resumes after a restart; otherwise it keeps holding and
+# says why, until the drain's own limit (UPDATE_DRAIN_SECONDS) reopens
+# admission and the wait starts over.
 finish_update() (
   local automatic
   automatic=$(update_mode_arg "${1:-}" finish-update) || exit 1
@@ -1199,6 +1245,7 @@ finish_update() (
   commit=$(target_commit)
   running=$(running_commit)
   if [[ $running == "$commit" ]]; then
+    rm -f "$UPDATE_BUSY_SINCE"
     if release_install; then
       update_state current "running $(awk '{print $1}' "$RELEASE_TARGET"), the newest release"
     else
@@ -1216,14 +1263,24 @@ finish_update() (
     update_state failed "building ${commit:0:9} failed; Swarm keeps running ${running:0:9} and tries again at the next update" "$commit"
     return 1
   fi
-  # An automatic update is idle-only: draining a busy machine holds the new
-  # runs its running work needs (child tasks, a workflow's next step), so it
-  # could only end at the drain deadline.
-  if [[ $automatic == --automatic ]] && why=$(automatic_update_deferred); then
-    update_state waiting "$why" "$commit"
-    return 0
+  # An automatic update waits for an idle machine first: draining a busy
+  # machine holds the new runs its running work needs (child tasks, a
+  # workflow's next step). Past the bound it drains anyway, capped (above).
+  local starved_since='' bound cap
+  if [[ $automatic == --automatic ]]; then
+    if why=$(automatic_update_deferred); then
+      bound=$(update_seconds UPDATE_BUSY_WAIT_SECONDS "${UPDATE_BUSY_WAIT_SECONDS:-1800}") || exit 1
+      starved_since=$(update_busy_since)
+      if (( $(now_seconds) - starved_since < bound )); then
+        update_state waiting "$why" "$commit"
+        return 0
+      fi
+      cap=$(update_seconds UPDATE_BUSY_DRAIN_SECONDS "${UPDATE_BUSY_DRAIN_SECONDS:-1200}") || exit 1
+    else
+      rm -f "$UPDATE_BUSY_SINCE"
+    fi
   fi
-  local drain drain_rc=0 limit=${UPDATE_DRAIN_SECONDS:-7200}
+  local drain drain_rc=0 limit=${UPDATE_DRAIN_SECONDS:-7200} drain_started=$SECONDS busy_now
   [[ $limit =~ ^[0-9]+$ && $limit -ge 1 && $limit -le 86400 ]] || die "UPDATE_DRAIN_SECONDS must be 1..86400"
   UPDATE_DRAIN_GENERATION=''
   UPDATE_DRAIN_CLAIM=''
@@ -1232,7 +1289,7 @@ finish_update() (
   trap 'exit 143' TERM
   # Capture HTTP status separately from curl's exit code: only a real 404
   # permits the older idle check, never a transport/auth/server failure.
-  drain=$(local_api /v3/box/drain -X POST -H 'Content-Type: application/json' -d "{\"max_seconds\":$limit}" -w $'\n%{http_code}' 2>/dev/null) || drain_rc=$?
+  drain=$(local_api /v3/box/drain -X POST -H 'Content-Type: application/json' -d "{\"max_seconds\":$limit${starved_since:+,\"waiting_since\":$starved_since}}" -w $'\n%{http_code}' 2>/dev/null) || drain_rc=$?
   if [[ $drain_rc == 22 && ${drain##*$'\n'} == 404 ]]; then
     local deadline=$((SECONDS + limit)) remaining pause request_timeout busy_status
     update_state draining "draining the older way (no drain endpoint on the running daemon)" "$commit"
@@ -1277,11 +1334,28 @@ finish_update() (
       [[ $(json_get generation <<<"$drain") == "$UPDATE_DRAIN_GENERATION" ]] || return 1
       [[ $(json_get ready <<<"$drain") == true ]] && break
       if [[ $(json_get timed_out <<<"$drain") == true ]]; then
+        if [[ -n $starved_since ]]; then
+          # Admission reopens; the wait for an idle machine starts over, so
+          # new work is not held again right away.
+          now_seconds >"$UPDATE_BUSY_SINCE"
+          update_state waiting "drain for update reached its $((limit / 60)) min limit with runs that cannot resume after a restart still going; new runs start again and the update waits for an idle machine (drains again after $((bound / 60)) min busy)" "$commit"
+          return 0
+        fi
         update_state blocked "drain timed out; running jobs were not stopped: $drain" "$commit"
         return 1
       fi
       [[ $(json_get draining <<<"$drain") == true ]] || return 1
-      update_state draining "waiting for existing runs: $drain" "$commit"
+      why=$(drain_reason "$drain")
+      if [[ -n $starved_since ]] && (( SECONDS - drain_started >= cap )); then
+        # Past the cap: switch now only if a restart loses nothing.
+        busy_now=$(local_api /v3/box/busy 2>/dev/null || true)
+        if [[ $(json_get restart_resumable <<<"$busy_now" || true) == true ]]; then
+          update_state draining "$why; past the $((cap / 60)) min cap and every running run resumes after a restart, so updating now" "$commit"
+          break
+        fi
+        why+="; past the $((cap / 60)) min cap, but running runs cannot resume after a restart (a restart interrupts agent runs and environment builds), so new runs stay held until they finish"
+      fi
+      update_state draining "$why" "$commit"
       sleep 5
       drain=$(local_api /v3/box/drain) || {
         update_state blocked "drain status unavailable; daemon left running" "$commit"
@@ -1316,7 +1390,7 @@ finish_update() (
 verify_update_or_rollback() {
   local commit=$1 running=$2 sandboxed=$3
   if [[ ${4:-false} != true ]] && came_up "$commit" "$sandboxed"; then
-    rm -f "$UPDATE_BAD"
+    rm -f "$UPDATE_BAD" "$UPDATE_BUSY_SINCE"
     update_state installed "${running:0:9} -> ${commit:0:9}" "$commit"
     clean_up_after_switch
     return 0
@@ -1359,7 +1433,7 @@ auto_update() {
   if [[ -n $hook ]]; then conf_set UPDATE_HOOK "$hook"; else sed -i '/^UPDATE_HOOK=/d' "$CONF"; fi
   install_units
   if [[ $mode == on ]]; then
-    echo "Automatic updates are on: every 5 minutes Swarm takes the newest commit of $SWARM_REF that passed ${checks:-$DEFAULT_UPDATE_CHECKS}, builds it while work runs and restarts into it only when nothing runs (idle-only: while anything runs it waits for the next run)."
+    echo "Automatic updates are on: every 5 minutes Swarm takes the newest commit of $SWARM_REF that passed ${checks:-$DEFAULT_UPDATE_CHECKS}, builds it while work runs and restarts into it when nothing runs. If the machine stays busy for ${UPDATE_BUSY_WAIT_SECONDS:-1800} s, it holds new runs (they start after the restart), lets running ones finish and then updates."
   else
     echo "Automatic updates are off; install.sh update updates by hand (with the same checks)."
   fi

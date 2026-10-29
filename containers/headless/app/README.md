@@ -130,11 +130,23 @@ directories); agent worktrees under `/var/lib/swarm`; projects in
 the `swarm` user, e.g. `sudo swarmctl remote approve CODE`.
 **Updates.** Automatic updates are opt-in: `install.sh auto-update on` (or
 `--auto-update` at install) runs `install.sh update --automatic` every 5
-minutes; `install.sh update` can also be run by hand. Automatic updates are
-idle-only: while anything runs, the built commit waits (state `waiting`,
-`busy (N running)`) and the next timer run tries again; no admission drain is
-started, so running work can still start the runs it needs to finish. A
-person's `install.sh update` drains and waits (see below). An update takes the newest commit of the branch only when
+minutes; `install.sh update` can also be run by hand. Automatic updates wait
+for an idle machine first: while anything runs, the built commit waits (state
+`waiting`, `busy (N running)`) and the next timer run tries again; no
+admission drain is started, so running work can still start the runs it needs
+to finish. A machine that is never idle cannot hold updates off for good: once
+updates have waited `UPDATE_BUSY_WAIT_SECONDS` (`install.env`, default 1800)
+on a busy machine, across newer commits too, the timer drains (state
+`draining`, `draining for update, N running, held since TIME`). New runs are
+held, not refused: they stay queued and start after the restart. Running runs
+finish, then Swarm switches. At `UPDATE_BUSY_DRAIN_SECONDS` (default 1200) into
+that drain it switches with runs still going only if `GET /v3/box/busy` says
+`restart_resumable` (every run still going resumes after a restart). Agent runs
+in progress and environment builds do not resume (a restart interrupts them),
+so while one runs it keeps holding and says why, up to `UPDATE_DRAIN_SECONDS`;
+at that limit admission reopens and the wait starts over. Swarm raises one
+`update.starved` signal (warning) per wait that passes the bound. A person's
+`install.sh update` drains and waits (see below). An update takes the newest commit of the branch only when
 it contains the running build (never a downgrade) and passed its checks on
 GitHub: by default Swarm's AI review (`ai-review`, accepted only from the
 `swarm-go-ai-review` GitHub App); a failed review blocks the commit and a
@@ -387,7 +399,10 @@ After building, `install.sh update` requests `POST /v3/box/drain` before
 activation. An automatic update (`--automatic`, the timer) first checks
 `GET /v3/box/busy` and requests the drain only when Swarm is idle; busy, or
 an unknown status, records `waiting` with the candidate commit and leaves the
-daemon untouched until the next timer run. New V3 run intents remain durably pending; existing execution
+daemon untouched until the next timer run, until updates have waited
+`UPDATE_BUSY_WAIT_SECONDS` (see Updates above). That drain request carries
+`waiting_since` (unix seconds when the wait began); swarmd records one
+`update.starved` signal per `waiting_since`. New V3 run intents remain durably pending; existing execution
 owners, including parked parents, finish without being cancelled. The admission
 fence remains closed until daemon restart. Only the installer installs binaries
 and performs the privileged restart.

@@ -20,6 +20,10 @@ import (
 // next steps running work needs. The handler (Server.handleBoxBusy ->
 // boxBusy) over the real permission service's capacity manager is the
 // narrowest layer joining both authorities.
+// restart_resumable is what a starved automatic update checks at its drain
+// cap before restarting with runs still going: an agent run holding a lease
+// is interrupted by a restart (recoverDurableRuns), so it must say false while
+// one is held, and true once nothing would be lost.
 func TestBoxBusyCountsHeldExecutionLeases(t *testing.T) {
 	server, _, permissionSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	get := func() boxBusy {
@@ -35,8 +39,8 @@ func TestBoxBusyCountsHeldExecutionLeases(t *testing.T) {
 		}
 		return out
 	}
-	if idle := get(); idle.Busy || idle.Sessions != 0 {
-		t.Fatalf("nothing held but busy: %+v", idle)
+	if idle := get(); idle.Busy || idle.Sessions != 0 || !idle.RestartResumable {
+		t.Fatalf("nothing held but busy or not restart-safe: %+v", idle)
 	}
 
 	manager := permissionSvc.ExecutionCapacity()
@@ -49,14 +53,14 @@ func TestBoxBusyCountsHeldExecutionLeases(t *testing.T) {
 	if blockers := manager.DrainStatus().Blockers; len(blockers) != 1 {
 		t.Fatalf("drain blockers = %+v, want the held run", blockers)
 	}
-	if busy := get(); !busy.Busy || busy.Sessions != 1 {
-		t.Fatalf("held lease without lifecycle reported idle: %+v", busy)
+	if busy := get(); !busy.Busy || busy.Sessions != 1 || busy.RestartResumable {
+		t.Fatalf("held lease without lifecycle reported idle or restart-safe: %+v", busy)
 	}
 
 	if err := lease.Release(); err != nil {
 		t.Fatalf("release lease: %v", err)
 	}
-	if idle := get(); idle.Busy || idle.Sessions != 0 {
+	if idle := get(); idle.Busy || idle.Sessions != 0 || !idle.RestartResumable {
 		t.Fatalf("released lease still busy: %+v", idle)
 	}
 }

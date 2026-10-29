@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"swarm/packages/swarmd/internal/executioncapacity"
@@ -78,6 +79,10 @@ func (s *Server) handleBoxDrain(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		var body struct {
 			MaxSeconds int `json:"max_seconds"`
+			// WaitingSince (unix seconds) is set by an automatic update that
+			// drains because its candidate waited past the bound on a busy
+			// machine: when it first found the machine busy.
+			WaitingSince int64 `json:"waiting_since"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -85,6 +90,10 @@ func (s *Server) handleBoxDrain(w http.ResponseWriter, r *http.Request) {
 		}
 		if body.MaxSeconds < 0 || body.MaxSeconds > 86400 {
 			writeError(w, http.StatusBadRequest, errors.New("max_seconds must be between 0 (default 7200) and 86400"))
+			return
+		}
+		if body.WaitingSince < 0 || body.WaitingSince > time.Now().Add(time.Minute).Unix() {
+			writeError(w, http.StatusBadRequest, errors.New("waiting_since must be a past unix time in seconds"))
 			return
 		}
 		s.envBuildMu.Lock()
@@ -101,6 +110,15 @@ func (s *Server) handleBoxDrain(w http.ResponseWriter, r *http.Request) {
 			if _, err := s.signals.Append(pebblestore.Signal{Source: pebblestore.SignalSourceSwarmd, Kind: "update.drain.started", Severity: pebblestore.SignalSeverityInfo, Summary: "New executions held for installer update", DedupKey: "update.drain:" + status.Since.Format(time.RFC3339Nano)}); err != nil {
 				writeError(w, http.StatusInternalServerError, err)
 				return
+			}
+			// One signal per waiting episode, however many attempts or drains
+			// it takes: the episode is named by when the wait began.
+			if body.WaitingSince > 0 {
+				since := time.Unix(body.WaitingSince, 0).UTC()
+				if _, err := s.signals.AppendOnce(pebblestore.Signal{Source: pebblestore.SignalSourceSwarmd, Kind: "update.starved", Severity: pebblestore.SignalSeverityWarning, Summary: "Update waited past its bound on a busy machine; draining for update", DedupKey: "update.starved:" + strconv.FormatInt(body.WaitingSince, 10), Attrs: map[string]string{"waiting_since": since.Format(time.RFC3339)}}); err != nil {
+					writeError(w, http.StatusInternalServerError, err)
+					return
+				}
 			}
 		}
 		writeJSON(w, http.StatusOK, status)

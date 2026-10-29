@@ -15,6 +15,13 @@ import (
 // lifecycle or holding an execution lease, the set a drain waits on, which
 // includes project task runs and their follow-up runs), unfinished worker runs
 // and sandbox environment builds. Counts only.
+//
+// RestartResumable says whether every item counted resumes after a restart.
+// Durable worker runs, follow-ups and reviews without a live agent turn do
+// (ReconcileWorker picks them up at startup). Agent runs in progress do not:
+// startup records them interrupted (sessionV3Executor.recoverDurableRuns).
+// Environment builds do not either: startup cancels them. A run still held
+// by admission is a pending intent, not counted here, and runs after restart.
 type boxBusy struct {
 	Followups         int  `json:"followups"`
 	Reviews           int  `json:"reviews"`
@@ -22,6 +29,7 @@ type boxBusy struct {
 	Sessions          int  `json:"sessions"`
 	WorkerRuns        int  `json:"worker_runs"`
 	EnvironmentBuilds int  `json:"environment_builds"`
+	RestartResumable  bool `json:"restart_resumable"`
 }
 
 func (s *Server) boxBusy() (boxBusy, error) {
@@ -57,6 +65,7 @@ func (s *Server) boxBusy() (boxBusy, error) {
 		out.EnvironmentBuilds = building
 	}
 	out.Busy = out.Sessions+out.WorkerRuns+out.EnvironmentBuilds+out.Followups+out.Reviews > 0
+	out.RestartResumable = out.Sessions == 0 && out.EnvironmentBuilds == 0
 	return out, nil
 }
 
