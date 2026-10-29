@@ -150,36 +150,86 @@ func TestReopenRetryAfterCheckpointMakesNoSecondCommit(t *testing.T) {
 	}
 }
 
-// Purpose: the checkpoint never writes where the existing refusals protect
-// work: a retained worktree that is missing, a dirty worktree on another
-// branch, a task session that is still running, and a reopen at a stale
-// revision are all refused as before, with no commit on any branch, the
-// edits still uncommitted in place, and no new attempt. The repair path
-// keeps its own clean-source rule.
-// Threat: the daemon committing into a worktree a live run is writing to,
-// onto a branch that is not the task's, or for a request that is then
-// refused, or recreating a lost worktree's work from nothing.
+// setRetainedTaskStatus sets the task's recorded status, as the scheduler
+// leaves it while its run is live.
+func setRetainedTaskStatus(t *testing.T, f *confirmationFixture, r retainedTask, status string) {
+	t.Helper()
+	if _, err := f.sessions.Store().UpdateProjectTask(r.p.AccountScopeID, r.projectID, r.taskID, func(task *pebblestore.ProjectTaskRecord) error {
+		task.Status = status
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// recordWaitingTasksRun records the task session's run as active and
+// waiting on the tasks it delegated (waiting_tasks), at the durable run-state
+// record every active-run reader uses (GetV3SessionRunState,
+// GetV3SessionActiveRunIntent). The canonical wait_tasks mutation admits
+// only project conversations, which carry no worktree, so this fixture
+// writes the record the forge's interrupted swarm task had directly.
+func recordWaitingTasksRun(t *testing.T, f *confirmationFixture, r retainedTask) {
+	t.Helper()
+	now := time.Now().UnixMilli()
+	state := pebblestore.V3SessionRunState{SessionID: r.sessionID, UserID: r.p.UserID, AccountScopeID: r.p.AccountScopeID, RunID: "live-run", Active: true, Status: pebblestore.V3RunIntentWaitingTasks, CreatedAt: now, StartedAt: now, UpdatedAt: now}
+	if err := f.sessions.Store().Underlying().PutJSON(pebblestore.KeyV3SessionRunIntentActive(r.sessionID), state); err != nil {
+		t.Fatal(err)
+	}
+	if run, active, err := f.sessions.Store().GetV3SessionActiveRunIntent(r.sessionID); err != nil || !active || run.Status != pebblestore.V3RunIntentWaitingTasks {
+		t.Fatalf("waiting_tasks run not active: %+v %v %v", run, active, err)
+	}
+}
+
+// Purpose: the checkpoint never writes where a refusal protects work or
+// where the follow-up is refused anyway: a retained worktree that is
+// missing, a dirty worktree on another branch, a task session with an active
+// run in any state (pending, running, or waiting_tasks on its delegated
+// tasks, with the task left in_progress or already marked failed), an
+// in_progress task whose run has not finished (the reservation's status
+// rule), and a reopen at a stale revision are all refused with no commit on any
+// branch, the edits still uncommitted in place, and the task unchanged. The
+// repair path keeps its own clean-source rule.
+// Threat: the daemon committing into a worktree a live run can still write
+// to or resume into, onto a branch that is not the task's, or for a request
+// the reservation then refuses (review finding: an in_progress task whose run
+// was waiting_tasks passed the checkpoint's pending/running check, was
+// committed, and only then refused by ReserveTaskFollowupWithRepositories).
 // Owners: Server.ReopenProjectTask and checkpointRetainedTaskWorktree
-// (before any Git write), over real Git and the task store.
+// (before any Git write: CheckTaskFollowupAdmission, the any-active-run
+// check, validateRetainedTaskSourceOwner), over real Git and the task store.
 func TestReopenCheckpointKeepsUnsafeRefusals(t *testing.T) {
 	type refusal struct {
 		name    string
-		prepare func(t *testing.T, f *confirmationFixture, r retainedTask) (revision int, branch string)
+		prepare func(t *testing.T, f *confirmationFixture, r retainedTask) (branch string)
 		want    string
 		repair  bool
+		stale   bool
 	}
 	for _, tc := range []refusal{
-		{name: "missing worktree", want: "retained task worktree unavailable or dirty", prepare: func(t *testing.T, _ *confirmationFixture, r retainedTask) (int, string) {
+		{name: "missing worktree", want: "retained task worktree unavailable or dirty", prepare: func(t *testing.T, _ *confirmationFixture, r retainedTask) string {
 			if err := os.RemoveAll(r.child); err != nil {
 				t.Fatal(err)
 			}
-			return r.initialTaskRevision, r.branch
+			return r.branch
 		}},
-		{name: "other branch", want: "not the task branch", prepare: func(t *testing.T, _ *confirmationFixture, r retainedTask) (int, string) {
+		{name: "other branch", want: "not the task branch", prepare: func(t *testing.T, _ *confirmationFixture, r retainedTask) string {
 			integrationGit(t, r.child, "checkout", "-q", "-b", "agent/elsewhere")
-			return r.initialTaskRevision, "agent/elsewhere"
+			return "agent/elsewhere"
 		}},
-		{name: "running session", want: "still running", prepare: func(t *testing.T, f *confirmationFixture, r retainedTask) (int, string) {
+		{name: "waiting on delegated tasks", want: "task is running or requires structured review", prepare: func(t *testing.T, f *confirmationFixture, r retainedTask) string {
+			setRetainedTaskStatus(t, f, r, "in_progress")
+			recordWaitingTasksRun(t, f, r)
+			return r.branch
+		}},
+		{name: "waiting on delegated tasks after a failed mark", want: "still running (waiting_tasks)", prepare: func(t *testing.T, f *confirmationFixture, r retainedTask) string {
+			recordWaitingTasksRun(t, f, r)
+			return r.branch
+		}},
+		{name: "in progress without a finished run", want: "task is running or requires structured review", prepare: func(t *testing.T, f *confirmationFixture, r retainedTask) string {
+			setRetainedTaskStatus(t, f, r, "in_progress")
+			return r.branch
+		}},
+		{name: "running session", want: "task session still has an active run", prepare: func(t *testing.T, f *confirmationFixture, r retainedTask) string {
 			for _, in := range []sessionruntime.SessionMutationInput{
 				{ClientRequestID: "live-pending", RunIntent: &pebblestore.V3SessionRunIntent{RunID: "live-run", Status: pebblestore.V3RunIntentPendingExecutor}},
 				{ClientRequestID: "live-running", RunIntent: &pebblestore.V3SessionRunIntent{RunID: "live-run", Status: pebblestore.V3RunIntentRunning}},
@@ -190,21 +240,23 @@ func TestReopenCheckpointKeepsUnsafeRefusals(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			return r.initialTaskRevision, r.branch
+			return r.branch
 		}},
-		{name: "stale revision", want: "stale or missing task revision", prepare: func(*testing.T, *confirmationFixture, retainedTask) (int, string) {
-			return 0, retainedTaskBranch
+		{name: "stale revision", want: "stale or missing task revision", stale: true, prepare: func(_ *testing.T, _ *confirmationFixture, r retainedTask) string {
+			return r.branch
 		}},
-		{name: "repair path", want: "repair requires originating failed integration receipt", repair: true, prepare: func(_ *testing.T, _ *confirmationFixture, r retainedTask) (int, string) {
-			return r.initialTaskRevision, r.branch
+		{name: "repair path", want: "repair requires originating failed integration receipt", repair: true, prepare: func(_ *testing.T, _ *confirmationFixture, r retainedTask) string {
+			return r.branch
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f, r := newCheckpointFixture(t)
 			defer f.close()
-			revision, branch := tc.prepare(t, f, r)
-			if tc.name == "stale revision" {
-				revision = r.initialTaskRevision + 5
+			branch := tc.prepare(t, f, r)
+			baseline := r.task(t, f.server)
+			revision := baseline.Revision
+			if tc.stale {
+				revision += 5
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
@@ -223,8 +275,8 @@ func TestReopenCheckpointKeepsUnsafeRefusals(t *testing.T) {
 				}
 			}
 			after := r.task(t, f.server)
-			if after.Revision != r.initialTaskRevision || len(after.Attempts) != r.initialAttemptsCount || after.Status != "failed" {
-				t.Fatalf("refused reopen changed the task: revision %d -> %d, attempts %d -> %d, status %s", r.initialTaskRevision, after.Revision, r.initialAttemptsCount, len(after.Attempts), after.Status)
+			if after.Revision != baseline.Revision || len(after.Attempts) != len(baseline.Attempts) || after.Status != baseline.Status || after.ActiveAttemptID != baseline.ActiveAttemptID {
+				t.Fatalf("refused reopen changed the task: revision %d -> %d, attempts %d -> %d, status %s -> %s", baseline.Revision, after.Revision, len(baseline.Attempts), len(after.Attempts), baseline.Status, after.Status)
 			}
 		})
 	}

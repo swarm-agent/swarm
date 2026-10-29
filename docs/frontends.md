@@ -335,7 +335,8 @@ run, or reopens a finished task with it as the follow-up; it answers
 A task whose run stopped mid-edit (failed, for example on a provider limit,
 or stopped) can be continued this way, or with `reopen_task` / `POST
 .../tasks/{task}/reopen`: when the task's own retained worktree holds
-uncommitted edits and no run is active in its session, Swarm commits every
+uncommitted edits, no run is active in its session (including one waiting on
+its delegated tasks) and the reopen would be admitted, Swarm commits every
 change, untracked files included, as one checkpoint commit on the task's agent
 branch. The commit uses the repository's Git identity, as the agent's
 `git_commit` does, and carries a `Swarm-Task-Checkpoint: <task id>` trailer.
@@ -343,8 +344,10 @@ The follow-up then continues from that commit. Its attempt's `recovery`
 receipt has `checkpoint_commit`, and its prompt says a checkpoint commit holds
 the interrupted edits. A retry with the same `client_request_id` makes no
 second commit. A missing retained worktree, one on another branch, a session
-that is still running, a stale revision and `repair` are still refused, with
-nothing committed.
+with an active run (pending, running or `waiting_tasks`), an `in_progress` task
+whose run has not finished, a stale revision and `repair` are still refused,
+with nothing committed: every rule that would refuse the reopen is checked
+before the commit.
 `POST /v3/projects/{id}/tasks/{task}/stop` stops the task's active run, as the
 person's stop does, answering `task_id`, `run_id` and `status: stopped`; a
 message resumes it. A task with no active run answers `409`. `ask` creates a normal permission card

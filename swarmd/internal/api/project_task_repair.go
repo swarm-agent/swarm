@@ -118,8 +118,10 @@ func (s *Server) validateRetainedTaskSourceOwner(p identity.Principal, task *peb
 	if !found || owned.ID != source.SessionID || owned.UserID != p.UserID || owned.AccountScopeID != p.AccountScopeID || owned.Metadata["project_id"] != task.ProjectID || owned.Metadata["task_id"] != task.ID || owned.Metadata["swarm_v3_source_workspace_path"] != binding.Path || owned.Metadata["swarm_v3_source_workspace_id"] != binding.WorkspaceID || fmt.Sprint(owned.Metadata["swarm_v3_source_workspace_generation"]) != fmt.Sprint(binding.WorkspaceGeneration) || !owned.WorktreeEnabled || owned.WorktreeRootPath != source.WorkspacePath || owned.WorktreeBranch != source.Branch || owned.WorktreeBaseBranch != source.TargetBranch || owned.Metadata["swarm_v3_worktree_owner_session_id"] != owned.ID || owned.Metadata["base_commit"] != source.BaseCommit {
 		return nil, errors.New("repair originating session ownership/source mismatch")
 	}
-	run, running, err := s.sessions.Store().GetV3SessionActiveRunIntent(source.SessionID)
-	if err != nil || (running && (run.Status == pebblestore.V3RunIntentPendingExecutor || run.Status == pebblestore.V3RunIntentRunning)) {
+	// Any active run (pending, running or waiting on its delegated tasks)
+	// can still write to the retained worktree.
+	_, running, err := s.sessions.Store().GetV3SessionActiveRunIntent(source.SessionID)
+	if err != nil || running {
 		return nil, errors.New("retained source still has an active writer")
 	}
 	claims, err := s.sessions.Store().InspectWorktreeOwnership(p.AccountScopeID, p.UserID, []string{source.WorkspacePath})

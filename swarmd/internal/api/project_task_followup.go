@@ -239,7 +239,7 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 		checkpoint := ""
 		if inspectErr == nil {
 			var checkpointErr error
-			if origin, checkpoint, checkpointErr = s.checkpointRetainedTaskWorktree(p, task, req, origin); checkpointErr != nil {
+			if origin, checkpoint, checkpointErr = s.checkpointRetainedTaskWorktree(p, task, req, origin, state, sources); checkpointErr != nil {
 				return nil, checkpointErr
 			}
 		}
@@ -453,12 +453,16 @@ type retainedTaskCheckpointer interface {
 //
 // A clean worktree is never committed; its HEAD is reported only when it is
 // this task's checkpoint, so a retried reopen (whose first try committed and
-// then failed later) still says so. A dirty worktree is committed only when
-// the reopen names the task's current revision, its worktree is on the task
-// branch, no run is writing to it, and it is the task's own retained attempt
-// (validateRetainedTaskSourceOwner); otherwise nothing is written and the
-// reopen is refused.
-func (s *Server) checkpointRetainedTaskWorktree(p identity.Principal, task *pebblestore.ProjectTaskRecord, req tool.ProjectTaskFollowupInput, origin worktreeruntime.TaskWorkspaceState) (worktreeruntime.TaskWorkspaceState, string, error) {
+// then failed later) still says so. A dirty worktree is committed only after
+// every check that could refuse this follow-up later has passed: the
+// worktree is on the task branch, the store's admission rules accept the
+// request (CheckTaskFollowupAdmission: key, revision, status, plans, task
+// program), no run of the task session is active in any state, it is the
+// task's own retained attempt (validateRetainedTaskSourceOwner), and the
+// continuation's source, target and repository rules hold. Otherwise nothing
+// is written and the reopen is refused. state is the source workspace
+// (the continuation's target) and sources the follow-up's program sources.
+func (s *Server) checkpointRetainedTaskWorktree(p identity.Principal, task *pebblestore.ProjectTaskRecord, req tool.ProjectTaskFollowupInput, origin, state worktreeruntime.TaskWorkspaceState, sources []pebblestore.ProjectTaskSource) (worktreeruntime.TaskWorkspaceState, string, error) {
 	checkpointer, ok := s.worktrees.(retainedTaskCheckpointer)
 	if !ok || task.WorktreeBranch == "" {
 		return origin, "", nil
@@ -477,21 +481,55 @@ func (s *Server) checkpointRetainedTaskWorktree(p identity.Principal, task *pebb
 	if origin.BranchName != task.WorktreeBranch {
 		return origin, "", &projectTaskFollowupError{409, fmt.Errorf("retained task worktree is dirty and on %q, not the task branch %q; restore its branch before reopening", origin.BranchName, task.WorktreeBranch)}
 	}
-	if req.Revision != task.Revision {
-		return origin, "", &projectTaskFollowupError{409, errors.New("stale or missing task revision")}
+	// Everything that would refuse this follow-up after the commit is checked
+	// first: a refused reopen must leave the task branch as it was.
+	if !p.Valid() || p.Type != "user" || task.BaseCommit == "" {
+		return origin, "", &projectTaskFollowupError{403, errors.New("incomplete task repair identity")}
 	}
+	db := s.sessions.Store()
+	// The reservation's own admission rules: key, revision, a status reopen
+	// admits (an in_progress task whose run is still active is refused),
+	// plans and task programs.
+	if err := db.CheckTaskFollowupAdmission(p.AccountScopeID, task.ProjectID, task.ID, req.ClientRequestID, req.Revision); err != nil {
+		return origin, "", &projectTaskFollowupError{409, err}
+	}
+	// Any active run, in any state (waiting_tasks included), can still write
+	// to the worktree or resume into it.
 	if task.SessionID != "" {
-		run, active, err := s.sessions.Store().GetV3SessionActiveRunIntent(task.SessionID)
+		run, active, err := db.GetV3SessionActiveRunIntent(task.SessionID)
 		if err != nil {
 			return origin, "", &projectTaskFollowupError{500, err}
 		}
-		if active && (run.Status == pebblestore.V3RunIntentPendingExecutor || run.Status == pebblestore.V3RunIntentRunning) {
-			return origin, "", &projectTaskFollowupError{409, errors.New("task session is still running; its retained worktree is not committed while a run can write to it")}
+		if active {
+			return origin, "", &projectTaskFollowupError{409, fmt.Errorf("task session is still running (%s); its retained worktree is not committed while a run can write to it", run.Status)}
 		}
 	}
+	if task.Integration != nil && (task.Integration.State == "recovered" || task.Integration.State == "equivalent") {
+		// The follow-up would not continue from a retained branch whose work
+		// was already delivered, so a checkpoint there would go unused.
+		return origin, "", &projectTaskFollowupError{409, errors.New("retained task worktree is dirty after its work was delivered; resolve its edits before reopening")}
+	}
 	owner := &pebblestore.ProjectTaskRecoverySource{Kind: "retained_continuation", SessionID: task.SessionID, WorkspacePath: task.WorkspacePath, Branch: task.WorktreeBranch, BaseCommit: task.BaseCommit, TargetBranch: task.BaseBranch}
-	if _, err := s.validateRetainedTaskSourceOwner(p, task, owner, false); err != nil {
+	validator, err := s.validateRetainedTaskSourceOwner(p, task, owner, false)
+	if err != nil {
 		return origin, "", &projectTaskFollowupError{403, err}
+	}
+	// validateProjectTaskRecovery's source and target rules for the
+	// continuation the checkpoint becomes.
+	if state.BranchName != task.BaseBranch {
+		return origin, "", &projectTaskFollowupError{403, errors.New("repair captured target changed or dirty")}
+	}
+	if descends, err := validator.TaskCommitDescendsFrom(task.WorkspacePath, task.BaseCommit, origin.HeadCommit); err != nil || !descends {
+		return origin, "", &projectTaskFollowupError{403, errors.New("repair source does not descend from captured base")}
+	}
+	// A coordinator continuation with repository results is refused for
+	// explicit reconciliation; the checkpoint always makes one.
+	repositories, err := s.resolveTaskRepositoryContinuations(p, task, sources)
+	if err != nil {
+		return origin, "", &projectTaskFollowupError{409, err}
+	}
+	if len(repositories) > 0 {
+		return origin, "", &projectTaskFollowupError{409, errors.New("coordinator and repository results require explicit reconciliation")}
 	}
 	made, err := checkpointer.CheckpointTaskWorkspace(task.WorkspacePath, task.WorktreeBranch, task.ID, message)
 	if err != nil {

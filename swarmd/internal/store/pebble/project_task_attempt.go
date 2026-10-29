@@ -124,6 +124,112 @@ func (s *SessionStore) ReserveTaskFollowupWithRecovery(account, project, taskID,
 	return s.ReserveTaskFollowupWithRepositories(account, project, taskID, user, key, request, revision, now, recovery, nil, origins...)
 }
 
+// CheckTaskFollowupAdmission applies, read-only, the admission rules a new
+// follow-up reservation under key must pass (ReserveTaskFollowupWithRepositories):
+// a reusable key, the task's current revision, a status reopen admits, no
+// pending or running run, and no plan or task program awaiting review. A
+// caller about to change the task's worktree for the follow-up checks it
+// first, so a request the reservation would refuse changes nothing. The
+// reservation re-applies the same rules atomically.
+func (s *SessionStore) CheckTaskFollowupAdmission(account, project, taskID, key string, revision int) error {
+	t, found, err := s.GetProjectTask(account, project, taskID)
+	if err != nil {
+		return err
+	}
+	if !found || t == nil || t.AccountID != account || t.ProjectID != project {
+		return errors.New("task identity mismatch")
+	}
+	t.EnsureTaskAttempts()
+	for _, a := range t.Attempts {
+		if a.ClientRequestID == key {
+			return errors.New("client_request_id already names a follow-up of this task")
+		}
+	}
+	return s.taskFollowupAdmission(account, t, revision)
+}
+
+// taskFollowupAdmission is the follow-up admission shared by the reservation
+// and CheckTaskFollowupAdmission. It may settle t.Status from a finished run.
+func (s *SessionStore) taskFollowupAdmission(account string, t *ProjectTaskRecord, revision int) error {
+	if t.Status == "in_progress" && t.SessionID != "" {
+		state, found, err := s.GetV3SessionRunState(t.SessionID)
+		if err != nil {
+			return err
+		}
+		if found && state.AccountScopeID == account && !state.Active {
+			switch state.Status {
+			case V3RunIntentCompleted:
+				t.Status = "needs_review"
+			case V3RunIntentCancelled:
+				t.Status = "failed"
+				if ProjectTaskRunStoppedByPerson(state.Status, state.BlockedReason) {
+					t.Status = ProjectTaskStatusStopped
+				}
+			case V3RunIntentFailed, V3RunIntentExpired, V3RunIntentInterrupted, V3RunIntentDispatchBlocked:
+				t.Status = "failed"
+			}
+		}
+	}
+	if t.Archived || (t.Status != "needs_review" && t.Status != "completed" && t.Status != "failed" && t.Status != "blocked" && t.Status != ProjectTaskStatusStopped) {
+		return errors.New("task is running or requires structured review; follow-up rejected without mutation")
+	}
+	if t.Status == "blocked" {
+		sess, found, err := s.GetSession(t.SessionID)
+		if err != nil {
+			return err
+		}
+		if !found || sess.AccountScopeID != account || sess.Metadata["lifecycle_signal"] != "blocked" || sess.Metadata["lifecycle_signal_run_id"] != t.ExecutionRunID() {
+			return errors.New("blocked task requires structured lifecycle resolution")
+		}
+	}
+	if revision <= 0 || revision != t.Revision {
+		return errors.New("stale or missing task revision")
+	}
+	if t.SessionID != "" {
+		active, found, err := s.GetV3SessionActiveRunIntent(t.SessionID)
+		if err != nil {
+			return err
+		}
+		if found && (active.Status == V3RunIntentPendingExecutor || active.Status == V3RunIntentRunning) {
+			return errors.New("task session still has an active run")
+		}
+	}
+	if t.SessionID != "" {
+		activePlan, found, err := s.GetActivePlan(t.SessionID)
+		if err != nil {
+			return err
+		}
+		if found && activePlan.PlanID != "" {
+			plan, exists, err := s.GetPlan(t.SessionID, activePlan.PlanID)
+			if err != nil {
+				return err
+			}
+			if !exists || plan.AccountScopeID != account || plan.ApprovalState != "approved" {
+				return errors.New("current session plan requires review")
+			}
+		}
+	}
+	if t.TaskProgramID != "" && t.SessionID != "" {
+		program, found, err := s.GetTaskProgram(t.SessionID, t.TaskProgramID)
+		if err != nil {
+			return err
+		}
+		if !found || program.State == TaskProgramStateRunning || program.State == TaskProgramStateDeclared {
+			return errors.New("task program has unresolved active work")
+		}
+	}
+	if t.PlanBinding != nil {
+		plan, found, err := s.GetPlan(t.PlanBinding.SessionID, t.PlanBinding.PlanID)
+		if err != nil {
+			return err
+		}
+		if !found || plan.AccountScopeID != account || plan.ApprovalState != "approved" {
+			return errors.New("prior plan requires structured review")
+		}
+	}
+	return nil
+}
+
 func (s *SessionStore) ReserveTaskFollowupWithRepositories(account, project, taskID, user, key, request string, revision int, now int64, recovery *ProjectTaskRecoverySource, repositories []ProjectTaskRepositoryContinuation, origins ...string) (*ProjectTaskRecord, error) {
 	if strings.TrimSpace(user) == "" || strings.TrimSpace(key) == "" || len(key) > 128 {
 		return nil, errors.New("user and bounded client_request_id required")
@@ -181,81 +287,8 @@ func (s *SessionStore) ReserveTaskFollowupWithRepositories(account, project, tas
 			t.ProgramSources = sources
 			return nil
 		}
-		if t.Status == "in_progress" && t.SessionID != "" {
-			state, found, err := s.GetV3SessionRunState(t.SessionID)
-			if err != nil {
-				return err
-			}
-			if found && state.AccountScopeID == account && !state.Active {
-				switch state.Status {
-				case V3RunIntentCompleted:
-					t.Status = "needs_review"
-				case V3RunIntentCancelled:
-					t.Status = "failed"
-					if ProjectTaskRunStoppedByPerson(state.Status, state.BlockedReason) {
-						t.Status = ProjectTaskStatusStopped
-					}
-				case V3RunIntentFailed, V3RunIntentExpired, V3RunIntentInterrupted, V3RunIntentDispatchBlocked:
-					t.Status = "failed"
-				}
-			}
-		}
-		if t.Archived || (t.Status != "needs_review" && t.Status != "completed" && t.Status != "failed" && t.Status != "blocked" && t.Status != ProjectTaskStatusStopped) {
-			return errors.New("task is running or requires structured review; follow-up rejected without mutation")
-		}
-		if t.Status == "blocked" {
-			sess, found, err := s.GetSession(t.SessionID)
-			if err != nil {
-				return err
-			}
-			if !found || sess.AccountScopeID != account || sess.Metadata["lifecycle_signal"] != "blocked" || sess.Metadata["lifecycle_signal_run_id"] != t.ExecutionRunID() {
-				return errors.New("blocked task requires structured lifecycle resolution")
-			}
-		}
-		if revision <= 0 || revision != t.Revision {
-			return errors.New("stale or missing task revision")
-		}
-		if t.SessionID != "" {
-			active, found, err := s.GetV3SessionActiveRunIntent(t.SessionID)
-			if err != nil {
-				return err
-			}
-			if found && (active.Status == V3RunIntentPendingExecutor || active.Status == V3RunIntentRunning) {
-				return errors.New("task session still has an active run")
-			}
-		}
-		if t.SessionID != "" {
-			activePlan, found, err := s.GetActivePlan(t.SessionID)
-			if err != nil {
-				return err
-			}
-			if found && activePlan.PlanID != "" {
-				plan, exists, err := s.GetPlan(t.SessionID, activePlan.PlanID)
-				if err != nil {
-					return err
-				}
-				if !exists || plan.AccountScopeID != account || plan.ApprovalState != "approved" {
-					return errors.New("current session plan requires review")
-				}
-			}
-		}
-		if t.TaskProgramID != "" && t.SessionID != "" {
-			program, found, err := s.GetTaskProgram(t.SessionID, t.TaskProgramID)
-			if err != nil {
-				return err
-			}
-			if !found || program.State == TaskProgramStateRunning || program.State == TaskProgramStateDeclared {
-				return errors.New("task program has unresolved active work")
-			}
-		}
-		if t.PlanBinding != nil {
-			plan, found, err := s.GetPlan(t.PlanBinding.SessionID, t.PlanBinding.PlanID)
-			if err != nil {
-				return err
-			}
-			if !found || plan.AccountScopeID != account || plan.ApprovalState != "approved" {
-				return errors.New("prior plan requires structured review")
-			}
+		if err := s.taskFollowupAdmission(account, t, revision); err != nil {
+			return err
 		}
 		if recovery != nil && (recovery.SessionID != t.SessionID || recovery.WorkspacePath != t.WorkspacePath || recovery.Branch != t.WorktreeBranch || recovery.BaseCommit != t.BaseCommit || recovery.TargetBranch != t.BaseBranch || recovery.HeadCommit == "" || recovery.HeadCommit == recovery.BaseCommit || recovery.TargetHead == "") {
 			return errors.New("repair evidence does not match originating task attempt")
