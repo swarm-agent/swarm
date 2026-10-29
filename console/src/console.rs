@@ -18,6 +18,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 mod agents;
+mod at_work;
 mod attach;
 mod automations;
 mod background;
@@ -336,6 +337,9 @@ pub struct Console {
     custom_for: Option<(SharedString, SharedString)>,
     /// The Live page: the fleet stream, its lines and filters.
     live_page: fleet_live::LivePage,
+    /// The fleet's agents at work (GET /v3/fleet/agents on the home): the
+    /// composer's count and the Live page's panel.
+    at_work: at_work::AtWork,
     /// The Fleet page's provider keys (the home's fleet key manager).
     keys_page: fleet_keys::KeysPage,
     /// Model settings being applied to linked machines from the Agents page.
@@ -525,6 +529,7 @@ impl Console {
             answers: HashMap::new(),
             custom_for: None,
             live_page: Default::default(),
+            at_work: Default::default(),
             keys_page: Default::default(),
             model_apply: Default::default(),
             password: cx.new(|cx| PasswordPrompt::new(Theme::for_concept(concept), cx)),
@@ -1167,8 +1172,11 @@ impl Console {
         let badge_full = s.live.as_ref().and(data::composer_badge(s.state, s.waiting_on.as_ref()));
         let badge_short = s.live.as_ref().and(data::composer_badge_short(s.state, s.waiting_on.as_ref()));
         let hint = data::composer_hint(self.link == Link::Demo, s.live.is_some(), s.pending.as_ref().is_some_and(|p| p.question), s.state);
-        // On a narrow pane "/ commands" goes first, then the hint, then the
-        // badge shortens; send/stop always shows. Widths are estimates of the
+        // The fleet's agents at work (at_work.rs); none until Swarm answered.
+        let at_work = self.at_work_label();
+        // On a narrow pane "/ commands" goes first, then the agents count
+        // shortens, then the hint goes, then the badge shortens; send/stop
+        // always shows. Widths are estimates of the
         // row's 10.5px monospaced text plus each item's padding.
         let fit = {
             const FONT: f32 = 10.5;
@@ -1193,6 +1201,8 @@ impl Console {
                 commands: w("/ commands"),
                 badge: badge_full.as_deref().map_or(0., |b| data::text_width(b, 11.) + PAD),
                 badge_short: badge_short.as_deref().map_or(0., |b| data::text_width(b, 11.) + PAD),
+                agents: at_work.as_ref().map_or(0., |i| w(&i.full) + 10.),
+                agents_short: at_work.as_ref().map_or(0., |i| w(&i.short) + 10.),
                 actions: actions(if waiting { "■ stop wait" } else { "■ stop" }, "⏎ send"),
                 actions_compact: actions("■", "⏎"),
                 gap: GAP,
@@ -1311,6 +1321,7 @@ impl Console {
                                     // Holds the rest to the right when the hint is dropped.
                                     .child(div().flex_1().min_w_0().truncate().when(fit.hint, |d| d.child(hint)))
                                     .when(fit.commands, |d| d.child(div().flex_none().whitespace_nowrap().child("/ commands")))
+                                    .children(self.at_work_indicator(pid, fit.agents_short, cx))
                                     .children(badge),
                             )
                             .child(div().flex_none().child(send_or_stop)),

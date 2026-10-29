@@ -403,6 +403,10 @@ pub struct ComposerRow {
     pub commands: f32,
     pub badge: f32,
     pub badge_short: f32,
+    /// The agents-at-work count ("● 3 agents · forge 2 · pc 1") and its
+    /// short form ("● 3"); 0 before Swarm's first answer.
+    pub agents: f32,
+    pub agents_short: f32,
     /// Send/stop with their labels ("■ stop wait", "⏎ send").
     pub actions: f32,
     /// Send/stop as bare symbols ("■", "⏎").
@@ -416,6 +420,9 @@ pub struct ComposerRow {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ComposerFit {
     pub commands: bool,
+    /// The agents count as "● 3" instead of its full text; it is never
+    /// dropped.
+    pub agents_short: bool,
     pub hint: bool,
     /// The badge as "⏳ 2" instead of its full text.
     pub badge_short: bool,
@@ -426,12 +433,13 @@ pub struct ComposerFit {
 
 impl ComposerFit {
     /// Everything, at full length.
-    pub const ALL: ComposerFit = ComposerFit { commands: true, hint: true, badge_short: false, permissions: true, compact: false };
+    pub const ALL: ComposerFit = ComposerFit { commands: true, agents_short: false, hint: true, badge_short: false, permissions: true, compact: false };
 }
 
 /// Fits the composer's bottom row in `width`: as it narrows, "/ commands"
-/// goes first, then the hint, then the badge shortens, then the permissions
-/// chip goes, then send/stop shows only its symbols. Send/stop is never
+/// goes first, then the agents count shortens to "● 3", then the hint goes,
+/// then the badge shortens, then the permissions chip goes, then send/stop
+/// shows only its symbols. Send/stop and the agents count are never
 /// dropped; below the last step only the model label truncates, and the
 /// row's layout keeps send/stop outside the part that clips.
 pub fn composer_fit(width: f32, row: ComposerRow) -> ComposerFit {
@@ -441,16 +449,18 @@ pub fn composer_fit(width: f32, row: ComposerRow) -> ComposerFit {
             + if fit.permissions { item(row.permissions) } else { 0. }
             + if fit.commands { item(row.commands) } else { 0. }
             + if fit.hint { item(row.hint) } else { 0. }
+            + item(if fit.agents_short { row.agents_short } else { row.agents })
             + item(if fit.badge_short { row.badge_short } else { row.badge })
             + if fit.compact { row.actions_compact } else { row.actions }
     };
     let all = ComposerFit::ALL;
     let no_commands = ComposerFit { commands: false, ..all };
-    let no_hint = ComposerFit { hint: false, ..no_commands };
+    let agents_short = ComposerFit { agents_short: true, ..no_commands };
+    let no_hint = ComposerFit { hint: false, ..agents_short };
     let short = ComposerFit { badge_short: true, ..no_hint };
     let no_permissions = ComposerFit { permissions: false, ..short };
     let compact = ComposerFit { compact: true, ..no_permissions };
-    [all, no_commands, no_hint, short, no_permissions].into_iter().find(|fit| need(*fit) <= width).unwrap_or(compact)
+    [all, no_commands, agents_short, no_hint, short, no_permissions].into_iter().find(|fit| need(*fit) <= width).unwrap_or(compact)
 }
 
 /// About how wide a line of the console's monospaced text is, in px: emoji
@@ -1593,10 +1603,12 @@ mod tests {
     // the row renders from, the narrowest layer that decides it.
     #[test]
     fn composer_fit_drops_commands_then_hint_then_shortens_badge() {
-        let row = ComposerRow { model: 80., permissions: 90., hint: 150., commands: 60., badge: 120., badge_short: 30., actions: 140., actions_compact: 40., gap: 10. };
+        let row = ComposerRow { model: 80., permissions: 90., hint: 150., commands: 60., badge: 120., badge_short: 30., agents: 0., agents_short: 0., actions: 140., actions_compact: 40., gap: 10. };
         let all = ComposerFit::ALL;
         let no_commands = ComposerFit { commands: false, ..all };
-        let no_hint = ComposerFit { hint: false, ..no_commands };
+        // No agents count yet (Swarm has not answered): its step changes nothing.
+        let agents_short = ComposerFit { agents_short: true, ..no_commands };
+        let no_hint = ComposerFit { hint: false, ..agents_short };
         let short = ComposerFit { badge_short: true, ..no_hint };
         let no_permissions = ComposerFit { permissions: false, ..short };
         let compact = ComposerFit { compact: true, ..no_permissions };
@@ -1623,6 +1635,7 @@ mod tests {
         for w in (0..=800).rev() {
             let fit = composer_fit(w as f32, row);
             let back = (fit.commands && !last.commands)
+                || (!fit.agents_short && last.agents_short)
                 || (fit.hint && !last.hint)
                 || (!fit.badge_short && last.badge_short)
                 || (fit.permissions && !last.permissions)
@@ -1644,6 +1657,41 @@ mod tests {
         // Rough widths: wide symbols take two cells.
         assert!((text_width("ab", 10.) - 12.).abs() < 0.01);
         assert!((text_width("⏳ 2", 10.) - 24.).abs() < 0.01);
+    }
+
+    // Purpose: the agents count plugs into the same width rule: after
+    // "/ commands" goes it shortens to "● 3", before the hint is dropped; it
+    // is never dropped, and at any width the row's fixed items (model,
+    // agents, send/stop) need no more than the compact fit, so the count
+    // never pushes send/stop out. Threat: the new item crowding send/stop off
+    // a narrow pane, or the hint dropped while the full count still shows.
+    // Boundary: composer_fit, the pure rule the row renders from.
+    #[test]
+    fn composer_fit_shortens_the_agents_count_before_dropping_the_hint() {
+        let row = ComposerRow { model: 80., permissions: 90., hint: 150., commands: 60., badge: 0., badge_short: 0., agents: 200., agents_short: 40., actions: 100., actions_compact: 40., gap: 10. };
+        let all = ComposerFit::ALL;
+        let no_commands = ComposerFit { commands: false, ..all };
+        let agents_short = ComposerFit { agents_short: true, ..no_commands };
+        let no_hint = ComposerFit { hint: false, ..agents_short };
+        // Everything: 90 + 100 + 160 + 70 + 210 + 100 = 730.
+        assert_eq!(composer_fit(730., row), all);
+        assert_eq!(composer_fit(729., row), no_commands);
+        // Without "/ commands": 660; the count shortens next (to 500)...
+        assert_eq!(composer_fit(659., row), agents_short);
+        assert!(composer_fit(659., row).hint, "the hint stays while the short count fits");
+        assert_eq!(composer_fit(500., row), agents_short);
+        // ...and only then does the hint go (340).
+        assert_eq!(composer_fit(499., row), no_hint);
+        // Narrower than anything: the short count stays with compact send/stop.
+        let tiny = composer_fit(0., row);
+        assert!(tiny.agents_short && tiny.compact && !tiny.hint && !tiny.commands);
+        let mut last = all;
+        for w in (0..=900).rev() {
+            let fit = composer_fit(w as f32, row);
+            assert!(!(!fit.agents_short && last.agents_short), "{w}: the count grew back");
+            assert!(fit.hint || fit.agents_short, "{w}: the hint dropped while the full count shows");
+            last = fit;
+        }
     }
 }
 

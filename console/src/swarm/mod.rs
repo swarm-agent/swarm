@@ -2,6 +2,7 @@
 //! its HTTP API as the owner and its realtime stream. Everything here blocks;
 //! views run it on the background executor.
 
+pub mod agents;
 pub mod automations;
 pub mod client;
 pub mod context;

@@ -19,7 +19,7 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
     ("/media", "images, video and sound"),
     ("/agents", "models per role"),
     ("/fleet", "every machine, what needs you, spend"),
-    ("/live", "everything happening across the fleet, live"),
+    ("/live", "agents at work and everything happening across the fleet, live"),
 ];
 
 #[derive(Debug, PartialEq)]

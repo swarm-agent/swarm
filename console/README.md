@@ -228,9 +228,13 @@ a separate profile and the extension loaded, for trying it out.
   wait) and `■ stop wait` cancels it: Swarm's session detail lists no
   active run while it waits, so the console posts `run/stop` with the
   waiting run's `run_id` from the run state. Idle shows no hint text. The
-  bottom row never overflows the pane: as it narrows, `/ commands` goes
-  first, then the hint, then the badge shortens to `⏳ 2` (its full text on
-  hover), then the permissions chip goes, then send/stop shows only `■` / `⏎`
+  bottom row also counts the agents at work across the fleet:
+  `● 3 agents · forge 2 · pc 1` (dim `0 agents` when none; a fleet of one
+  machine shows no split; machines that could not be read are named on
+  hover). A click opens the Live page's panel. The bottom row never
+  overflows the pane: as it narrows, `/ commands` goes first, then the
+  agents count shortens to `● 3`, then the hint goes, then the badge
+  shortens to `⏳ 2` (its full text on hover), then the permissions chip goes, then send/stop shows only `■` / `⏎`
   (names on hover), and the model name truncates. Send/stop sits outside the
   part of the row that clips, so the rest never pushes it out. Typing `/` lists the
   commands: `/new`, `/new bottom`, `/stop`, `/compact`, `/context`,
@@ -258,6 +262,25 @@ a separate profile and the extension loaded, for trying it out.
   shows above the composer and in the status bar ("Compacted: 62% of
   context before; Swarm measures the new size on the next turn."), or
   Swarm's refusal (for example while a run is active).
+- **Live** (`/live`, in the home's window): **Agents at work** above the
+  fleet's event stream. Its header counts the agents working, tool calls per
+  minute, and the tasks that landed and failed today (from local midnight);
+  each machine shows how many agents it runs, or why it could not be read.
+  Each running agent has a card: agent, machine, task title (else the
+  session's), elapsed time counting up, what it does now ("edit
+  console/src/data.rs", "bash: go test ./..."), a strip of its last tool
+  calls colored by kind, its reads, edits, commands and commits, and the
+  files it edited. A task a workflow takes shows its pipeline, Code → Review
+  → Fix → Push → Landed, the current step lit and the round on Fix. A click
+  opens the task or conversation (a linked machine's in that machine's
+  window). With nothing running it says "All quiet" and lists the last
+  finished jobs with their state (`landed`, `done`, `needs you`, …). The
+  count and panel are Swarm's one answer (`GET /v3/fleet/agents` on the
+  home), read on connect and reconnect, when a realtime frame or a fleet
+  stream record says a run started, ended or moved, and after a gap; one
+  read at a time, never on a timer. Tool records from the stream patch the
+  cards between reads. The fleet stream stays open while the home's window
+  is connected, so linked machines' counts stay current on every page.
 - **Usage:** each sign-in plan's limit windows (`GET /v1/codex/account/usage`),
   then 30 days of tokens, spend at API prices, turns, each day, each model
   and recent sessions (`GET /v3/usage`, today and 30 days).

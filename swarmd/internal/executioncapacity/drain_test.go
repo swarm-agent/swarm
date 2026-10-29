@@ -133,6 +133,39 @@ func TestDrainAdmissionFence(t *testing.T) {
 // Purpose: concurrent drain and Acquire must linearize: a grant is either a
 // visible blocker or stays queued. Testing the shared lock directly is narrower
 // and deterministic compared with timing an installer against a live daemon.
+// Purpose: HeldRuns names each held lease's account, session and run (the
+// fleet's agents read filters it by account), the same set HeldSessions
+// counts, in a stable order; a released lease leaves it at once.
+// Threat: another account's runs listed as this account's agents, or a
+// finished run still shown. Boundary: Manager.HeldRuns over real leases.
+func TestHeldRunsNamesAccountSessionAndRun(t *testing.T) {
+	m := NewManager(ManagerConfig{})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	first, err := m.Acquire(ctx, AcquireRequest{AccountScopeID: "b", SessionID: "s2", RunID: "r2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := m.Acquire(ctx, AcquireRequest{AccountScopeID: "a", SessionID: "s1", RunID: "r1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := m.HeldRuns()
+	if len(got) != 2 || got[0] != (DrainBlocker{Account: "a", Session: "s1", Run: "r1"}) || got[1] != (DrainBlocker{Account: "b", Session: "s2", Run: "r2"}) || len(m.HeldSessions()) != 2 {
+		t.Fatalf("held runs = %+v", got)
+	}
+	if err := second.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.HeldRuns(); len(got) != 1 || got[0].Account != "b" {
+		t.Fatalf("after release: %+v", got)
+	}
+	_ = first.Release()
+	if got := m.HeldRuns(); len(got) != 0 {
+		t.Fatalf("after both released: %+v", got)
+	}
+}
+
 func TestDrainConcurrentAdmission(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		m := NewManager(ManagerConfig{})

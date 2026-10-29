@@ -162,11 +162,12 @@ impl Console {
         }
         if updates.is_empty() {
             // A running session's timer counts up between updates.
-            let running = self.panes.iter().any(|p| {
-                let s = &self.sessions[p.session];
-                s.run.is_some_and(|r| r.active)
-                    || s.entries.iter().rev().take(64).any(|e| matches!(e, Entry::Tool { state: crate::data::ToolState::Running, .. }))
-            });
+            let running = self.at_work_ticking()
+                || self.panes.iter().any(|p| {
+                    let s = &self.sessions[p.session];
+                    s.run.is_some_and(|r| r.active)
+                        || s.entries.iter().rev().take(64).any(|e| matches!(e, Entry::Tool { state: crate::data::ToolState::Running, .. }))
+                });
             if running && self.ticked.elapsed() >= Duration::from_secs(1) {
                 self.ticked = std::time::Instant::now();
                 cx.notify();
@@ -174,7 +175,7 @@ impl Console {
             return;
         }
         if std::env::var_os("SWARM_CONSOLE_TRACE").is_some() {
-            let kinds: Vec<&str> = updates.iter().map(|u| match u { Update::Snapshot(_) => "snapshot", Update::Session(_) => "session", Update::Facts(_) => "facts", Update::Lost(_) => "lost", Update::Done { .. } => "done", Update::Review { .. } => "review", Update::Hold { .. } => "hold", Update::AutomationsChanged => "automations", Update::PermissionsChanged => "permissions", Update::RunActivity(_) => "run" }).collect();
+            let kinds: Vec<&str> = updates.iter().map(|u| match u { Update::Snapshot(_) => "snapshot", Update::Session(_) => "session", Update::Facts(_) => "facts", Update::Lost(_) => "lost", Update::Done { .. } => "done", Update::Review { .. } => "review", Update::Hold { .. } => "hold", Update::AutomationsChanged => "automations", Update::PermissionsChanged => "permissions", Update::RunActivity(_) => "run", Update::AgentsChanged => "agents" }).collect();
             eprintln!("pump {:?} {}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0), kinds.join(","));
         }
         for update in updates {
@@ -222,6 +223,7 @@ impl Console {
                     }
                 }
                 Update::AutomationsChanged => self.load_automations(cx),
+                Update::AgentsChanged => self.refresh_at_work(cx),
                 // Read again once the page has shown them; otherwise on opening it.
                 Update::PermissionsChanged => {
                     if self.permissions.is_some() || self.page == Page::Permissions {

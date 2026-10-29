@@ -1,9 +1,11 @@
-//! The Live page (console mode): everything happening across the fleet, one
+//! The Live page (console mode): the agents at work across the fleet
+//! (at_work.rs, from GET /v3/fleet/agents) above everything happening, one
 //! compact line per event, newest at the bottom. It reads the home's merged
 //! GET /v3/fleet/activity/stream (swarm::live_stream); the connection is
-//! open only while this page shows in the home's window, and its
-//! per-machine cursors stay in memory so a reconnect, or opening the page
-//! again, resumes where it was.
+//! open while the home's window is connected (not only while this page
+//! shows), because its records also keep the composer's agents count
+//! current for linked machines. Its per-machine cursors stay in memory so a
+//! reconnect resumes where it was.
 
 use std::ops::Range;
 use std::rc::Rc;
@@ -61,16 +63,19 @@ impl Console {
         }
     }
 
-    /// Opens the stream while the page shows and closes it when it does not
-    /// (called on every render, so every way of changing pages counts).
+    /// Opens the stream once the home's window is connected and closes it
+    /// when it no longer is (called on every render).
     pub(super) fn sync_live_page(&mut self, cx: &mut Context<Self>) {
         if self.link == Link::Demo {
             if self.page == Page::Live && self.live_page.feed.lines().is_empty() {
                 demo(&mut self.live_page.feed, super::now_ms());
             }
+            if self.at_work.now.is_none() {
+                self.refresh_at_work(cx);
+            }
             return;
         }
-        let want = self.page == Page::Live && self.live_note().is_none();
+        let want = self.live_note().is_none();
         let p = &self.live_page;
         if want && p.conn.is_none() && matches!(p.stream, Stream::Closed) {
             self.open_live_stream(cx);
@@ -142,14 +147,25 @@ impl Console {
         let now = super::now_ms();
         let at_bottom = self.live_at_bottom();
         let mut fell_off = 0usize;
+        // For the agents panel, applied once the feed is done with the batch.
+        let mut records = Vec::new();
+        let mut reread = false;
         for event in batch {
             let p = &mut self.live_page;
             match event {
                 Event::Connected => {
                     p.feed.connected();
                     p.stream = Stream::Streaming;
+                    // (Re)connected: records may have been missed; read again.
+                    reread = true;
                 }
                 Event::Frame(frame) => {
+                    match &frame {
+                        ls::Frame::Activity(a) => records.push(a.clone()),
+                        // Records lost, or a machine came, went or changed: read again.
+                        ls::Frame::Gap { .. } | ls::Frame::Machine { .. } => reread = true,
+                        ls::Frame::Cursor { .. } => {}
+                    }
                     fell_off += p.feed.apply(frame, now).iter().filter(|l| p.filter.shows(l)).count();
                 }
                 Event::Dropped { reason, retry_in } => p.stream = Stream::Retrying { reason, secs: retry_in.as_secs().max(1) },
@@ -158,6 +174,12 @@ impl Console {
                     p.conn = None;
                 }
             }
+        }
+        for a in &records {
+            self.at_work_activity(a, cx);
+        }
+        if reread {
+            self.refresh_at_work(cx);
         }
         // Scrolled up while old lines fall off the top: keep the same lines
         // in view.
@@ -184,7 +206,7 @@ impl Console {
     }
 
     /// One stable color per machine, readable on the theme.
-    fn machine_color(&self, name: &str) -> Hsla {
+    pub(super) fn machine_color(&self, name: &str) -> Hsla {
         let dark = self.theme.bg.l < 0.5;
         gpui::hsla(self.live_page.feed.hue(name), if dark { 0.6 } else { 0.55 }, if dark { 0.7 } else { 0.38 }, 1.)
     }
@@ -320,9 +342,10 @@ impl Console {
 
     pub(super) fn render_live(&self, cx: &mut Context<Self>) -> AnyElement {
         let t = &self.theme;
-        let title = div().text_size(px(16.)).text_color(t.text).child("Live");
+        let title = div().text_size(px(13.)).text_color(t.muted).child("Everything happening");
         let page = div().id("live-page").size_full().flex().flex_col().p_4().gap_3();
         if let Some(note) = self.live_note() {
+            let title = div().text_size(px(16.)).text_color(t.text).child("Live");
             return page.child(title).child(div().text_color(t.faint).child(note)).into_any_element();
         }
         let p = &self.live_page;
@@ -404,7 +427,8 @@ impl Console {
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.live_jump(cx)))
                 .child("↓ jump to live")
         });
-        page.child(header)
+        page.child(self.render_at_work(cx))
+            .child(header)
             .child(self.live_filters(cx))
             .child(
                 div()

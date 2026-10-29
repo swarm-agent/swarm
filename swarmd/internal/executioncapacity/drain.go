@@ -125,6 +125,29 @@ func (m *Manager) heldSessionsLocked() []string {
 	return out
 }
 
+// HeldRuns is HeldSessions with each lease's account and run: the runs
+// holding an execution lease now, ordered by account, session and run.
+func (m *Manager) HeldRuns() []DrainBlocker {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []DrainBlocker{}
+	for account, acc := range m.accounts {
+		for _, l := range acc.sessions {
+			out = append(out, DrainBlocker{Account: account, Session: l.sessionID, Run: l.runID})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Account != out[j].Account {
+			return out[i].Account < out[j].Account
+		}
+		if out[i].Session != out[j].Session {
+			return out[i].Session < out[j].Session
+		}
+		return out[i].Run < out[j].Run
+	})
+	return out
+}
+
 func (m *Manager) drainStatusLocked() DrainStatus {
 	out := m.drain
 	if out.EndReason == "expired" {

@@ -71,6 +71,8 @@ func (s *Server) registerFleetRoutes(mux *http.ServeMux) {
 	// The fleet's activity reads like /v3/activity (sessions:read), not as an owner route.
 	mux.HandleFunc(fleetActivityPagePath, s.handleFleetActivity)
 	mux.HandleFunc(fleetActivityStreamPath, s.handleFleetActivity)
+	// The agents at work read like the activity too (fleet_agents.go).
+	mux.HandleFunc(fleetAgentsPath, s.handleFleetAgents)
 	// Fleet keys authorize per route (fleet_keys.go): reads like the activity,
 	// writes for owners and swarm:approve, and the machine side only over the link.
 	mux.HandleFunc(fleetKeysPath, s.handleFleetKeys)

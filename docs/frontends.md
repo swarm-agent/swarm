@@ -226,6 +226,42 @@ retries by itself) or `not_shown`. It is metadata only and needs
 `sessions:read`, the same as `/v3/activity`. Details:
 [activity-stream.md](activity-stream.md#the-fleets-activity).
 
+#### The fleet's agents at work
+
+To show how many agents run now and what each is doing, read the home's
+`GET /v3/fleet/agents` (`sessions:read`; gateway tokens are refused; it is
+not open to AI keys). One answer covers the home and each machine linked for
+the account, read through the link in parallel (5 seconds each) only while
+`linked.{name}.work` is `ask` or `auto`:
+
+- `agents`: one entry per run holding an execution lease now (the same set
+  `swarm_status` counts as `running_now`): `machine`, `agent`, `session_id`,
+  `run_id`, `title`, the task's `project_id`, `task_id` and `task_title` when
+  the run is a task's, `worker_name`, `started_at`, `now` (the last tool call:
+  `kind` read/edit/command/commit/other, `tool`, a one-line `target` such as
+  a path or a command's first line, `state` running/done/failed), `timeline`
+  (the last 12 calls, oldest first), `counts` (`reads`, `edits`, `commands`,
+  `commits`, `other`, `last_minute`), `files` (edited, newest first, at most
+  24) and `files_total`, and `stage` when a workflow takes the task: `step`
+  `code`, `review`, `fix` (with `round`), `push` or `landed`, from the task's
+  `progress`. `partial` says the run had more tool events than were read
+  (the newest 2048).
+- `machines`: the home and each linked machine with `state` `online`,
+  `offline` (`reason` says why) or `not_shown` (`reason`: its work rule is
+  off), `agents`, `landed_today` and `failed_today`.
+- `recent`: the latest finished tasks (at most 8, newest first) with their
+  derived `state` (`landed`, `done`, `needs_you`, …) and `reason`.
+- `totals`: `agents`, `tool_calls_last_minute`, `landed_today`,
+  `failed_today`.
+
+"Today" starts at `since` (Unix ms; the client's local midnight), else at the
+UTC day. `scope=machine` answers for that machine alone: what a home reads
+from a linked machine. Read it once connected and again when a run starts,
+ends or moves (realtime `task.lifecycle.updated`, `session.run.*` events, the
+fleet activity's `session.run.*`, `job.*` and machine frames) and after a
+reconnect or a gap; one read at a time, never on a timer. Tool records from
+the fleet activity may patch the shown answer between reads.
+
 #### Tasks sent to linked machines
 
 When the Orchestrator sends a task to a linked machine, the home keeps a

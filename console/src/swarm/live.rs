@@ -77,6 +77,10 @@ pub enum Update {
     PermissionsChanged,
     /// The watched run's session moved (a message, an action): read it again.
     RunActivity(String),
+    /// A run started, ended or moved on this machine, or the stream
+    /// (re)connected: read the fleet's agents at work again
+    /// (GET /v3/fleet/agents).
+    AgentsChanged,
     /// An action in your browser the extension found critical: it waits for
     /// you (the request stays open until you do it or deny it).
     Hold { permission_id: String, why: String },
@@ -665,6 +669,8 @@ fn follow(client: &Client, watched: &Mutex<HashSet<String>>, tx: &Sender<Update>
     m.hydrate_watched(watched, &mut subscribed, &commands)?;
     trace(&format!("hydrate first {:?}", t0.elapsed()));
     tx.send(Update::Snapshot(m.snapshot())).map_err(|_| "the console is gone".to_string())?;
+    // Connected or reconnected: what runs is read again, not carried over.
+    tx.send(Update::AgentsChanged).map_err(|_| "the console is gone".to_string())?;
     loop {
         // Wait for a frame, then keep draining for one paint's worth of time
         // (COALESCE), so a burst of patches becomes one update. A frame about
@@ -673,6 +679,7 @@ fn follow(client: &Client, watched: &Mutex<HashSet<String>>, tx: &Sender<Update>
         let mut automations_changed = false;
         let mut permissions_changed = false;
         let mut run_moved = false;
+        let mut agents_changed = false;
         let mut whole = false;
         let first = match frames.recv_timeout(Duration::from_millis(250)) {
             Ok(f) => Some(f),
@@ -693,6 +700,9 @@ fn follow(client: &Client, watched: &Mutex<HashSet<String>>, tx: &Sender<Update>
             // A rule changed (here or anywhere): the console reads them again.
             if kind == "permissions.updated" {
                 permissions_changed = true;
+            }
+            if super::agents::realtime_moves_runs(&kind, s(&frame, "event_type")) {
+                agents_changed = true;
             }
             if !sid.is_empty() && run_sub.as_deref() == Some(sid.as_str()) {
                 run_moved = true;
@@ -717,6 +727,9 @@ fn follow(client: &Client, watched: &Mutex<HashSet<String>>, tx: &Sender<Update>
             return Ok(());
         }
         if permissions_changed && tx.send(Update::PermissionsChanged).is_err() {
+            return Ok(());
+        }
+        if agents_changed && tx.send(Update::AgentsChanged).is_err() {
             return Ok(());
         }
         if run_moved {
