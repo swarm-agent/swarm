@@ -96,11 +96,6 @@ func ProjectTaskWatchID(sessionID, runID, machine, projectID, until string, task
 	return "watch-" + hex.EncodeToString(sum[:12])
 }
 
-// ProjectTaskWatchResumeID is the deterministic run a fired watch starts.
-func ProjectTaskWatchResumeID(watchID string) string {
-	return ProjectTaskWaitResumeID(watchID)
-}
-
 func (w V3SessionTaskWatch) summary() V3TaskWatchSummary {
 	ids := make([]string, 0, len(w.Wait.Tasks))
 	for _, target := range w.Wait.Tasks {
