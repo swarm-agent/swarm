@@ -25,7 +25,11 @@ import (
 const (
 	// 34 KB left 24 bytes; message_task/stop_task and the read_messages and
 	// read_task_session bounds (max_chars, role, mode) add about 560 bytes.
-	orchestratorToolBudgetBytes   = 35 * 1024
+	// 35 KB left about 140; resolve_task_permission (permission_id,
+	// decision, reason) and the linked reads machine_status,
+	// get_task_session and activity (since_cursor), which let the home see a
+	// stalled linked task and answer it in the chat, add about 400.
+	orchestratorToolBudgetBytes   = 35*1024 + 512
 	orchestratorPromptBudgetBytes = 4608
 )
 

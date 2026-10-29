@@ -274,10 +274,11 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 		// task state (pebblestore.ProjectTaskDeliverableStatus), the same
 		// word the compact view and detail=files show.
 		outcome, stale, idle := "", false, false
+		var live *pebblestore.ProjectTaskLive
 		if progress := r.projectTaskProgress(account, *task); progress != nil {
-			outcome, stale, idle = progress.Outcome, progress.Stale, progress.Idle
+			outcome, stale, idle, live = progress.Outcome, progress.Stale, progress.Idle, progress.Live
 		}
-		state, _ := pebblestore.ProjectTaskState(*task, outcome, stale, idle)
+		state, _ := pebblestore.ProjectTaskStateLive(*task, outcome, stale, idle, live)
 		copyTask.ShowDeliverablesForState(state)
 		result["task"], result["next_cursor"] = &copyTask, next
 		if task.PlanBinding != nil {
@@ -449,13 +450,19 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 			for _, task := range page.Tasks {
 				row := projectTaskSummary(task)
 				outcome, stale, idle := "", false, false
+				var live *pebblestore.ProjectTaskLive
 				if progress := r.projectTaskProgress(account, task); progress != nil {
-					outcome, stale, idle = progress.Outcome, progress.Stale, progress.Idle
+					outcome, stale, idle, live = progress.Outcome, progress.Stale, progress.Idle, progress.Live
 					row.Outcome, row.Stale = clipBytes(progress.Outcome, projectTaskTextBytes), progress.Stale
 				}
 				// The same decision as get_task and the needs_attention count.
-				row.NeedsAttention = pebblestore.ProjectTaskNeedsAttention(task, outcome, stale, idle)
-				row.State, _ = pebblestore.ProjectTaskState(task, outcome, stale, idle)
+				row.NeedsAttention = pebblestore.ProjectTaskNeedsAttentionLive(task, outcome, stale, idle, live)
+				row.State, _ = pebblestore.ProjectTaskStateLive(task, outcome, stale, idle, live)
+				if pebblestore.ProjectTaskLiveApplies(task, live) {
+					// A run waiting on a person or held: say why on the row.
+					_, reason := pebblestore.ProjectTaskStateLive(task, outcome, stale, idle, live)
+					row.StateReason = clipBytes(reason, projectTaskTextBytes)
+				}
 				row.Reviews = page.Reviews[task.ID]
 				rows = append(rows, row)
 			}
@@ -464,10 +471,11 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 			counts := pebblestore.NewProjectTaskOutcomeCounts()
 			for _, task := range page.Counted {
 				outcome, stale, idle := "", false, false
+				var live *pebblestore.ProjectTaskLive
 				if progress := r.projectTaskProgress(account, task); progress != nil {
-					outcome, stale, idle = progress.Outcome, progress.Stale, progress.Idle
+					outcome, stale, idle, live = progress.Outcome, progress.Stale, progress.Idle, progress.Live
 				}
-				counts[pebblestore.ProjectTaskBucket(task, outcome, stale, idle)]++
+				counts[pebblestore.ProjectTaskBucketLive(task, outcome, stale, idle, live)]++
 			}
 			result["outcome_counts"] = counts
 			result["tasks"], result["count"], result["total"] = rows, len(rows), page.Total
@@ -688,10 +696,13 @@ type projectTaskListRow struct {
 	// same word get_task shows): what a reader reports. Outside list_tasks
 	// (which reads each task's outcome) it is set only when the run status
 	// alone decides it; a task whose run ended needs get_task.
-	State    string `json:"state,omitempty"`
-	ID       string `json:"id"`
-	Revision int    `json:"revision"`
-	Title    string `json:"title"`
+	State string `json:"state,omitempty"`
+	// StateReason says why, set when the run's live state decides the
+	// state (waiting on a pending request, or held).
+	StateReason string `json:"state_reason,omitempty"`
+	ID          string `json:"id"`
+	Revision    int    `json:"revision"`
+	Title       string `json:"title"`
 	// RunStatus is the status of the task's agent run (needs_review only
 	// means the run ended), not the task's state.
 	RunStatus string `json:"run_status"`

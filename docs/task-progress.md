@@ -126,6 +126,28 @@ and `idle`, using the same bucket as the list counts):
 | `not_integrated` | finished with commits never handed over | outcome `ready to integrate` (reason names the branch); a blocked/failed workflow or unknown outcome once idle | `needs_attention` within 7 days, `idle` after |
 | `stopped` | stopped by the person, or no active run for a day | run status `stopped`, outcome `stopped`, or `stale` | `stopped` |
 
+**A working run that is not moving.** A run status of `running` does not say
+the run moves: nothing writes the task record while its run waits. So the
+progress also reads the run's live records on the task's machine
+(`progress.live`, `pebblestore.ProjectTaskStateLive` and
+`ProjectTaskBucketLive`, applied only while the run status says the agent
+works):
+
+| live | `task_state` | `task_state_reason` | count bucket |
+|---|---|---|---|
+| a pending permission or question in the task's session (not a client tool's call) | `needs_you` | `waiting for approval (permission <id>): <tool>: <argument summary>`, or `waiting for an answer (permission <id>): ask_user: <question>`; `(+n more)` when several wait | `needs_attention` |
+| an update drain holds a run that was admitted but has not started (or waits for admission) | `waiting` | `held: update drain since <RFC 3339 time>` | `waiting` |
+| the run waits in the account's execution admission queue | `waiting` | `held: execution admission (<active> of <limit> runs active, <n> waiting)` | `waiting` |
+
+`progress.live.request` carries the oldest pending request: `permission_id`,
+`session_id`, `kind` (`permission` or `question`), `tool`, `summary` (the
+command, question, path or compact arguments, at most 120 characters, from the
+stored sanitized arguments) and `requested_at`. `get_task` shows it as
+`pending_request` with `next_action: resolve_task_permission`; `list_tasks`
+rows add `state_reason` and the request. A linked machine's `list_tasks` and
+`get_task` carry its own `task_state`, reason and request through unchanged.
+Answering it is `manage_projects action=resolve_task_permission` (below).
+
 `landed` requires a handover: a workflow step that pushed (`pushed <sha>`) or
 delivered (`delivered <target>`), or the commits being in the target branch
 (`integrated`). A failed run status wins over an earlier push (`needs_you`). A
@@ -262,6 +284,19 @@ delivery step, an integration) publishes `project.updated` for the task's
 project, so clients read the task again; nothing is polled.
 
 ## The Orchestrator
+
+A wait also wakes when a selected task's run starts waiting on a person (live
+`needs_you` with a request): its outcome row carries `task_state`,
+`task_state_reason` and `pending_request`. On a linked machine the session's
+`permission.summary.updated` event reaches the home through the machine's
+activity stream (as metadata: kind, session, `state: needs_you`, never the
+request's text), and the home then reads the task with `get_task`; nothing is
+polled. The Orchestrator tells the person what is asked and answers with
+`resolve_task_permission` (`project_id`, `task_id`, `permission_id`,
+`decision` `approve` or `deny`, optional `reason`, which is also a
+question's answer; `machine` for linked work) only on their word or under a
+rule that allows it. Each answer covers that one request; no lasting rule is
+saved. See docs/access-model.md for its rule and confinement.
 
 `wait_tasks` resumes the Orchestrator with each task's `progress`. When a task
 it delegated ends `not_integrated` with workflow state `none`, it tells the

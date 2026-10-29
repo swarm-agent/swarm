@@ -604,7 +604,7 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 			if action == "" {
 				action = "list"
 			}
-			if !tool.FleetWorkActionAllowed(name, action) && !tool.FleetWaitPermissionAllowed(name, action) && !tool.FleetTaskSessionReadAllowed(name, action) && !tool.FleetEnvironmentPermissionAllowed(name, action) && !tool.FleetAgentsReadAllowed(name, action) {
+			if !tool.FleetWorkActionAllowed(name, action) && !tool.FleetWaitPermissionAllowed(name, action) && !tool.FleetTaskSessionReadAllowed(name, action) && !tool.FleetEnvironmentPermissionAllowed(name, action) && !tool.FleetAgentsReadAllowed(name, action) && !tool.FleetTaskPermissionAllowed(name, action) {
 				return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: action + " is not available on a linked machine", Source: "session_access"}, nil
 			}
 			access, err := s.store.GetAccountPermissions(input.AccountScopeID)
@@ -626,11 +626,36 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 				if level == pebblestore.RuleAsk && tool.FleetEnvironmentChange(name, action) {
 					return s.createPendingAuthorization(input, sessionID, requirement, "Change a folder environment on linked machine "+machine+" ("+action+")", "account_permissions", "ask before changing environments on "+machine)
 				}
+				// Answering a task's pending request lets its run go on (or
+				// stops it): under ask the person decides in this chat.
+				if level == pebblestore.RuleAsk && tool.FleetTaskPermissionAllowed(name, action) {
+					return s.createPendingAuthorization(input, sessionID, requirement, "Answer a request of a task on linked machine "+machine+" ("+strings.ToLower(strings.TrimSpace(mapStringAny(args["decision"])))+")", "account_permissions", "ask before answering task requests on "+machine)
+				}
 				if err := s.store.RecordPermissionUse(input.AccountScopeID, "linked", machine, time.Now().UnixMilli()); err != nil {
 					return AuthorizationResult{}, err
 				}
 				return AuthorizationResult{Decision: AuthorizationApprove, Requirement: requirement, Reason: "linked work rule allows machine " + machine, Source: "account_permissions"}, nil
 			}
+		}
+	}
+	// Answering a pending request of the home's own task: the account Start
+	// tasks rule decides, as for starting one (auto runs; approve asks the
+	// person in this chat). An explicit deny still wins.
+	if explain.Decision != PolicyDecisionDeny && normalizePolicyToolName(input.ToolName) == "manage_projects" {
+		args := parsePermissionJSONMap(input.ToolArguments)
+		if strings.ToLower(strings.TrimSpace(mapStringAny(args["action"]))) == tool.ResolveTaskPermissionAction && strings.TrimSpace(mapStringAny(args["machine"])) == "" {
+			tasks := pebblestore.RuleAuto
+			if s.store != nil {
+				access, err := s.store.GetAccountPermissions(input.AccountScopeID)
+				if err != nil {
+					return AuthorizationResult{}, err
+				}
+				tasks = access.Tasks
+			}
+			if tasks == pebblestore.RuleAuto {
+				return AuthorizationResult{Decision: AuthorizationApprove, Requirement: requirement, Reason: "Start tasks is auto", Source: "account_permissions"}, nil
+			}
+			return s.createPendingAuthorization(input, sessionID, requirement, "Start tasks is approve: approve answering this task's request", "account_permissions", "ask before answering task requests")
 		}
 	}
 	// Starting the home's own tasks: the account Start tasks rule is the single

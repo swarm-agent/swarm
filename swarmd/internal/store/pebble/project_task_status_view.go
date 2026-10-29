@@ -238,6 +238,104 @@ func projectTaskState(task ProjectTaskRecord, outcome string, stale, idle bool) 
 	return ProjectTaskStateNeedsYou, "run ended; outcome unknown"
 }
 
+// ProjectTaskLive is what a working task's run is doing right now, read by
+// the task progress from the machine's live records rather than the task
+// record: waiting on a pending permission or question (state needs_you, with
+// the request), or held before it can run by an update drain or execution
+// admission (state waiting, reason "held: …"). It changes a task's state
+// only while the record's status says its run works (ProjectTaskLiveApplies):
+// a run status of running alone does not say the run is moving.
+type ProjectTaskLive struct {
+	State   string                     `json:"state"`
+	Reason  string                     `json:"reason"`
+	Request *ProjectTaskPendingRequest `json:"request,omitempty"`
+}
+
+// ProjectTaskPendingRequest is the oldest pending permission or question a
+// task's run waits on: its id (what resolves it), the session it belongs to,
+// the tool and a short summary of its arguments. Pending counts every
+// pending request of the session when there is more than one.
+type ProjectTaskPendingRequest struct {
+	PermissionID string `json:"permission_id"`
+	SessionID    string `json:"session_id"`
+	Kind         string `json:"kind"` // permission or question
+	Tool         string `json:"tool"`
+	Summary      string `json:"summary"`
+	RequestedAt  int64  `json:"requested_at,omitempty"`
+	Pending      int    `json:"pending,omitempty"`
+}
+
+// Kinds of a pending request.
+const (
+	ProjectTaskRequestPermission = "permission"
+	ProjectTaskRequestQuestion   = "question"
+)
+
+// ProjectTaskLiveApplies reports whether live decides task's state: a
+// needs_you or waiting live state of a task that is not archived and whose
+// run status says its agent works.
+func ProjectTaskLiveApplies(task ProjectTaskRecord, live *ProjectTaskLive) bool {
+	if live == nil || task.Archived || (live.State != ProjectTaskStateNeedsYou && live.State != ProjectTaskStateWaiting) {
+		return false
+	}
+	switch task.Status {
+	case "planning", "in_progress", "running", "starting", "generating", "swarming", "publishing":
+		return true
+	}
+	return false
+}
+
+// ProjectTaskBucketLive is ProjectTaskBucket with the run's live state: a run
+// waiting on a person counts needs_attention, a held run waiting.
+func ProjectTaskBucketLive(task ProjectTaskRecord, outcome string, stale, idle bool, live *ProjectTaskLive) string {
+	if ProjectTaskLiveApplies(task, live) {
+		if live.State == ProjectTaskStateNeedsYou {
+			return ProjectTaskCountNeedsAttention
+		}
+		return ProjectTaskCountWaiting
+	}
+	return ProjectTaskBucket(task, outcome, stale, idle)
+}
+
+// ProjectTaskNeedsAttentionLive is ProjectTaskNeedsAttention with the run's
+// live state.
+func ProjectTaskNeedsAttentionLive(task ProjectTaskRecord, outcome string, stale, idle bool, live *ProjectTaskLive) bool {
+	return ProjectTaskBucketLive(task, outcome, stale, idle, live) == ProjectTaskCountNeedsAttention
+}
+
+// ProjectTaskStateLive is ProjectTaskState with the run's live state, in the
+// same bucket as ProjectTaskBucketLive. Every surface that has a task's
+// progress reads its state through this.
+func ProjectTaskStateLive(task ProjectTaskRecord, outcome string, stale, idle bool, live *ProjectTaskLive) (string, string) {
+	if ProjectTaskLiveApplies(task, live) {
+		return live.State, clipProjectTaskStateReason(live.Reason)
+	}
+	return ProjectTaskState(task, outcome, stale, idle)
+}
+
+// ProjectTaskProgressLive reads the live state from a task progress value
+// (the progress hook's answer, or a linked machine's progress). nil when
+// there is none.
+func ProjectTaskProgressLive(progress any) *ProjectTaskLive {
+	if progress == nil {
+		return nil
+	}
+	raw, ok := progress.(json.RawMessage)
+	if !ok {
+		var err error
+		if raw, err = json.Marshal(progress); err != nil {
+			return nil
+		}
+	}
+	var view struct {
+		Live *ProjectTaskLive `json:"live"`
+	}
+	if json.Unmarshal(raw, &view) != nil || view.Live == nil || view.Live.State == "" {
+		return nil
+	}
+	return view.Live
+}
+
 func clipProjectTaskStateReason(text string) string {
 	text = strings.Join(strings.Fields(text), " ")
 	if r := []rune(text); len(r) > 160 {

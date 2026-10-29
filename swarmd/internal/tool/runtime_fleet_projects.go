@@ -48,6 +48,23 @@ type FleetTaskSessionRead struct {
 // the link. It is read-only and never a generic CallFleetProject operation.
 const FleetReadTaskSessionAction = "read_task_session"
 
+// ResolveTaskPermissionAction answers one pending permission or question of a
+// task's run: on a linked machine (a task this home sent there) or of the
+// home's own task.
+const ResolveTaskPermissionAction = "resolve_task_permission"
+
+// TaskPermissionResolver is the service behind resolve_task_permission (the
+// server's ResolveTaskPermission): machine "" is the home's own task.
+type TaskPermissionResolver interface {
+	ResolveTaskPermission(ctx context.Context, p identity.Principal, machine, projectID, taskID, permissionID, action, reason string) (map[string]any, error)
+}
+
+// FleetTaskPermissionAllowed is the permission gate's view of answering a
+// linked task's pending request.
+func FleetTaskPermissionAllowed(name, action string) bool {
+	return name == "manage_projects" && action == ResolveTaskPermissionAction
+}
+
 // FleetTaskSessionReadAllowed is the permission gate's view of the read-only
 // remote task session view.
 func FleetTaskSessionReadAllowed(name, action string) bool {
@@ -59,6 +76,31 @@ type FleetMachineInfo struct {
 	Online    bool   `json:"online"`
 	LastError string `json:"last_error,omitempty"`
 	Access    string `json:"access"`
+	// Status is the machine's one-line status (list_machines only, for a
+	// machine whose linked work rule is not off); StatusError says why it
+	// could not be read.
+	Status      *FleetMachineStatusLine `json:"status,omitempty"`
+	StatusError string                  `json:"status_error,omitempty"`
+}
+
+// FleetMachineStatusLine is a linked machine's status in one line, from its
+// own box summary: runs now, whether it drains for an update (and since
+// when), its update state and how many sessions wait on a person. Untrusted.
+type FleetMachineStatusLine struct {
+	Status        string `json:"status,omitempty"`
+	Running       int    `json:"running"`
+	Draining      bool   `json:"draining"`
+	DrainingSince string `json:"draining_since,omitempty"`
+	Update        string `json:"update,omitempty"`
+	Blocked       int    `json:"blocked"`
+	Summary       string `json:"summary"`
+}
+
+// FleetMachineStatusReader reads a linked machine's status through the link
+// (its box summary, the data MCP swarm_status shows).
+type FleetMachineStatusReader interface {
+	ReadFleetMachineStatus(ctx context.Context, p identity.Principal, machine string) (map[string]any, error)
+	FleetMachineStatusLine(ctx context.Context, p identity.Principal, machine string) (*FleetMachineStatusLine, error)
 }
 
 // fleetProjectActions are the project actions a linked machine serves through
@@ -78,7 +120,7 @@ func FleetProjectActionAllowed(action string) bool {
 // machine and lists what is: the project actions, wait_tasks and
 // read_task_session.
 func FleetActionUnavailableError(action string) error {
-	allowed := append(append([]string(nil), fleetProjectActions...), "wait_tasks", FleetReadTaskSessionAction)
+	allowed := append(append([]string(nil), fleetProjectActions...), "wait_tasks", FleetReadTaskSessionAction, ResolveTaskPermissionAction)
 	return fmt.Errorf("%s is not available on a linked machine; with machine, use one of: %s", action, strings.Join(allowed, ", "))
 }
 
@@ -129,7 +171,7 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 		action = "list"
 	}
 	machine := strings.TrimSpace(asString(args["machine"]))
-	if machine != "" && !FleetProjectActionAllowed(action) && action != "wait_tasks" && action != FleetReadTaskSessionAction {
+	if machine != "" && !FleetProjectActionAllowed(action) && action != "wait_tasks" && action != FleetReadTaskSessionAction && action != ResolveTaskPermissionAction {
 		return "", FleetActionUnavailableError(action)
 	}
 	machines, err := service.ListFleetMachines(ctx, scope.Principal)
@@ -148,7 +190,21 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 		}
 	}
 	if action == "list_machines" {
-		raw, err := json.Marshal(map[string]any{"machines": machines})
+		// Each machine whose linked work rule is not off says how it is: what
+		// runs, whether it drains for an update, what waits on a person.
+		if reader, ok := service.(FleetMachineStatusReader); ok {
+			for i := range machines {
+				if !pebblestore.LinkedWorkOn(machines[i].Access) {
+					continue
+				}
+				if line, err := reader.FleetMachineStatusLine(ctx, scope.Principal, machines[i].Name); err != nil {
+					machines[i].StatusError = clipBytes(err.Error(), 300)
+				} else {
+					machines[i].Status = line
+				}
+			}
+		}
+		raw, err := json.Marshal(map[string]any{"machines": machines, "untrusted_content": true})
 		return string(raw), err
 	}
 	if !linked || !pebblestore.LinkedWorkOn(access.Link(machine).Work) {
@@ -156,6 +212,9 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 	}
 	if action == "wait_tasks" {
 		return r.executeFleetWaitTasks(ctx, scope, service, machine, args)
+	}
+	if action == ResolveTaskPermissionAction {
+		return r.executeResolveTaskPermission(ctx, scope, machine, args)
 	}
 	if action == FleetReadTaskSessionAction {
 		linkedTasks, ok := service.(FleetLinkedTasks)
@@ -232,6 +291,38 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 		result["data"] = compact
 	}
 	out, err := json.Marshal(result)
+	return string(out), err
+}
+
+// executeResolveTaskPermission answers one pending request of a task's run
+// (machine "" is the home's own task). Only the home's Orchestrator calls it:
+// a delegated task never answers requests, its own or another's. The
+// permission service already applied the rule (linked.{name}.work, or Start
+// tasks for the home's own tasks).
+func (r *Runtime) executeResolveTaskPermission(ctx context.Context, scope WorkspaceScope, machine string, args map[string]any) (string, error) {
+	if r == nil || r.sessions == nil || !scope.Principal.Valid() || scope.Principal.Type != identity.PrincipalTypeUser {
+		return "", errors.New("resolve_task_permission requires an authenticated session")
+	}
+	session, found, err := r.sessions.GetSession(scope.SessionID)
+	if err != nil {
+		return "", err
+	}
+	if !found || session.AccountScopeID != scope.Principal.AccountScopeID || session.UserID != scope.Principal.UserID {
+		return "", errors.New("session ownership mismatch")
+	}
+	if scope.TaskHistoryOnly || asString(session.Metadata["task_id"]) != "" || asString(session.Metadata["project_task_id"]) != "" {
+		return "", errors.New("resolve_task_permission is only available to the home's Orchestrator")
+	}
+	resolver, ok := r.getProjectTaskLifecycleService().(TaskPermissionResolver)
+	if !ok {
+		return "", errors.New("task permission service unavailable")
+	}
+	view, err := resolver.ResolveTaskPermission(ctx, scope.Principal, machine, strings.TrimSpace(asString(args["project_id"])), strings.TrimSpace(asString(args["task_id"])), strings.TrimSpace(asString(args["permission_id"])), asString(args["decision"]), asString(args["reason"]))
+	if err != nil {
+		return "", err
+	}
+	view["tool"], view["action"] = "manage_projects", ResolveTaskPermissionAction
+	out, err := json.Marshal(view)
 	return string(out), err
 }
 

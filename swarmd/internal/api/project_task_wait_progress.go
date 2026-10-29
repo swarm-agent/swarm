@@ -41,6 +41,7 @@ func (s *Server) taskWaitProgressFor(account string, task pebblestore.ProjectTas
 		}
 	}
 	s.markTaskProgressStale(&p, task, now)
+	s.markTaskProgressLive(&p, account, task)
 	markTaskProgressAttention(&p, task)
 	return &p
 }

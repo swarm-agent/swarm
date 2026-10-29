@@ -145,7 +145,7 @@ func (s *Server) projectTaskOutcomeCounts(account string, tasks []pebblestore.Pr
 	counts := pebblestore.NewProjectTaskOutcomeCounts()
 	for _, task := range tasks {
 		p := s.taskProgressFor(account, task, now)
-		counts[pebblestore.ProjectTaskBucket(task, p.Outcome, p.Stale, p.Idle)]++
+		counts[pebblestore.ProjectTaskBucketLive(task, p.Outcome, p.Stale, p.Idle, p.Live)]++
 	}
 	return counts
 }

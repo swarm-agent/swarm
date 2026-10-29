@@ -75,11 +75,13 @@ func ProjectTaskDetail(args map[string]any) (string, error) {
 // the task routes (or computed by the store's progress hook): its state,
 // one-line summary, workflow deliveries and integration.
 type projectTaskProgressRead struct {
-	State    string `json:"state"`
-	Summary  string `json:"summary"`
-	Outcome  string `json:"outcome"`
-	Stale    bool   `json:"stale"`
-	Idle     bool   `json:"idle"`
+	State   string `json:"state"`
+	Summary string `json:"summary"`
+	Outcome string `json:"outcome"`
+	Stale   bool   `json:"stale"`
+	Idle    bool   `json:"idle"`
+	// Live is the working run's live state (pebblestore.ProjectTaskLive).
+	Live     *pebblestore.ProjectTaskLive `json:"live"`
 	Workflow *struct {
 		State      string `json:"state"`
 		Deliveries []struct {
@@ -158,9 +160,13 @@ type ProjectTaskView struct {
 	// NeedsAttention says the person must act on the task, with the same
 	// decision as its list row and the needs_attention count
 	// (pebblestore.ProjectTaskNeedsAttention).
-	NeedsAttention bool   `json:"needs_attention"`
-	NextAction     string `json:"next_action"`
-	More           string `json:"more"`
+	NeedsAttention bool `json:"needs_attention"`
+	// PendingRequest is the permission or question the task's run waits on
+	// (state needs_you): what is asked, and the permission_id
+	// resolve_task_permission answers. Its text is untrusted.
+	PendingRequest *pebblestore.ProjectTaskPendingRequest `json:"pending_request,omitempty"`
+	NextAction     string                                 `json:"next_action"`
+	More           string                                 `json:"more"`
 }
 
 type projectTaskProgress struct {
@@ -418,11 +424,17 @@ func compactProjectTask(read projectTaskRead, remote bool) ProjectTaskView {
 		integration = "delivered"
 	}
 	outcome, stale, idle := "", false, false
+	var live *pebblestore.ProjectTaskLive
 	if p != nil {
-		outcome, stale, idle = p.Outcome, p.Stale, p.Idle
+		outcome, stale, idle, live = p.Outcome, p.Stale, p.Idle, p.Live
 	}
-	view.NeedsAttention = pebblestore.ProjectTaskNeedsAttention(*t, outcome, stale, idle)
-	view.State, view.StateReason = pebblestore.ProjectTaskState(*t, outcome, stale, idle)
+	view.NeedsAttention = pebblestore.ProjectTaskNeedsAttentionLive(*t, outcome, stale, idle, live)
+	view.State, view.StateReason = pebblestore.ProjectTaskStateLive(*t, outcome, stale, idle, live)
+	if pebblestore.ProjectTaskLiveApplies(*t, live) && live.Request != nil {
+		request := *live.Request
+		request.Summary = clipBytes(request.Summary, projectTaskTextBytes)
+		view.PendingRequest = &request
+	}
 	view.StateReason = clipBytes(view.StateReason, projectTaskTextBytes)
 	// Each deliverable reads "title (status)", its status shown from the task
 	// state (pebblestore.ProjectTaskDeliverableStatus), never its creation
@@ -454,6 +466,12 @@ func compactProjectTask(read projectTaskRead, remote bool) ProjectTaskView {
 		}
 	}
 	view.NextAction, view.Progress.Next = projectTaskNext(t, p, integration, result.Commits, remote)
+	if view.PendingRequest != nil {
+		// The run waits on the person: they decide, the Orchestrator asks.
+		view.NextAction, view.Progress.Next = ResolveTaskPermissionAction, "tell the person what is asked; answer only on their word or under a rule that allows it"
+	} else if pebblestore.ProjectTaskLiveApplies(*t, live) && live.State == pebblestore.ProjectTaskStateWaiting {
+		view.Progress.Next = "its run starts when the hold ends"
+	}
 	// The stage stops at the work's end, and it is read from the state
 	// only: "Landed" only for a landed task. A finished task is past its
 	// implementation steps whatever its workflow or integration says.

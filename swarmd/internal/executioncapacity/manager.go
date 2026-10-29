@@ -301,6 +301,24 @@ func (m *Manager) ActiveLeaseForSession(accountScopeID, sessionID string) Lease 
 	return l
 }
 
+// SessionWaiting reports whether a run of the session waits in the account's
+// admission queue (not admitted yet, or a parked lease waiting to come back).
+func (m *Manager) SessionWaiting(accountScopeID, sessionID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	acc := m.accounts[strings.TrimSpace(accountScopeID)]
+	if acc == nil {
+		return false
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	for _, w := range acc.waiters {
+		if w.req.SessionID == sessionID || (w.reacquire != nil && w.reacquire.sessionID == sessionID) {
+			return true
+		}
+	}
+	return false
+}
+
 // TotalActive returns the count of active executions for an account.
 func (m *Manager) TotalActive(accountScopeID string) int {
 	return m.Snapshot(accountScopeID).TotalActive

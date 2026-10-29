@@ -269,6 +269,14 @@ func fleetTaskListQuery(args map[string]any) (url.Values, error) {
 	return q, nil
 }
 
+// clipFleetTaskText bounds text a linked machine reported, on a rune boundary.
+func clipFleetTaskText(text string, runes int) string {
+	if r := []rune(text); len(r) > runes {
+		return string(r[:runes])
+	}
+	return text
+}
+
 // compactFleetTaskList keeps the page facts and the list-row fields of each
 // task (projectTaskListRow's identity fields), with the outcome, stale and
 // needs_attention flags the machine computed and its count of reviewer
@@ -355,8 +363,28 @@ func compactFleetTaskList(raw json.RawMessage) (json.RawMessage, error) {
 				}
 				item["task_state_reason"] = reason
 			}
+			// The machine's own state and reason (its task progress, which
+			// reads its live records: a pending request, an update drain),
+			// carried through as it gave them.
+			if state, _ := progress["task_state"].(string); state != "" {
+				item["state"] = clipFleetTaskText(state, 32)
+			}
+			// As on this machine's rows, the reason is shown when the run's
+			// live state decides the state (waiting on a person, or held).
+			if live := pebblestore.ProjectTaskProgressLive(progress); live != nil {
+				if reason, _ := progress["task_state_reason"].(string); strings.TrimSpace(reason) != "" {
+					item["state_reason"] = clipFleetTaskText(reason, 300)
+				}
+				if live.Request != nil {
+					request := *live.Request
+					request.PermissionID, request.SessionID, request.Kind, request.Tool = clipFleetTaskText(request.PermissionID, 200), clipFleetTaskText(request.SessionID, 200), clipFleetTaskText(request.Kind, 32), clipFleetTaskText(request.Tool, 80)
+					request.Summary = clipFleetTaskText(request.Summary, 300)
+					item["pending_request"] = request
+				}
+			}
 		}
-		if stateTask.ID != "" {
+		if _, given := item["state"]; !given && stateTask.ID != "" {
+			// A machine that reports no state: the same rule over what it reported.
 			item["state"], _ = pebblestore.ProjectTaskState(stateTask, stateOutcome, stateStale, stateIdle)
 		}
 		tasks = append(tasks, item)

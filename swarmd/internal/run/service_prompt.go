@@ -617,9 +617,12 @@ func (s *Service) projectContextPromptBlock(scope tool.WorkspaceScope) string {
 
 	// Append the newest tasks & deliverables so orchestrator understands references like "picture 2", "variant 1", etc.
 	if tasks, err := db.ListRecentProjectTasks(accountScopeID, matchedProject.ID, 10); err == nil && len(tasks) > 0 {
-		sb.WriteString(recentProjectTasksPromptBlock(tasks, func(t pebblestore.ProjectTaskRecord) (string, bool, bool) {
-			return pebblestore.ProjectTaskProgressFlags(db.ProjectTaskProgress(accountScopeID, t))
-		}))
+		live := map[string]*pebblestore.ProjectTaskLive{}
+		sb.WriteString(recentProjectTasksPromptBlockLive(tasks, func(t pebblestore.ProjectTaskRecord) (string, bool, bool) {
+			progress := db.ProjectTaskProgress(accountScopeID, t)
+			live[t.ID] = pebblestore.ProjectTaskProgressLive(progress)
+			return pebblestore.ProjectTaskProgressFlags(progress)
+		}, func(t pebblestore.ProjectTaskRecord) *pebblestore.ProjectTaskLive { return live[t.ID] }))
 	}
 
 	return strings.TrimSpace(sb.String())
@@ -632,6 +635,13 @@ func (s *Service) projectContextPromptBlock(scope tool.WorkspaceScope) string {
 // A non-media deliverable's stored status is a creation placeholder, so it
 // is shown from the task state (pebblestore.ProjectTaskDeliverableStatus).
 func recentProjectTasksPromptBlock(tasks []pebblestore.ProjectTaskRecord, progressOf func(pebblestore.ProjectTaskRecord) (string, bool, bool)) string {
+	return recentProjectTasksPromptBlockLive(tasks, progressOf, nil)
+}
+
+// recentProjectTasksPromptBlockLive is recentProjectTasksPromptBlock with each
+// task's live state (pebblestore.ProjectTaskStateLive), read after its
+// progress: a run waiting on a person or held says so.
+func recentProjectTasksPromptBlockLive(tasks []pebblestore.ProjectTaskRecord, progressOf func(pebblestore.ProjectTaskRecord) (string, bool, bool), liveOf func(pebblestore.ProjectTaskRecord) *pebblestore.ProjectTaskLive) string {
 	var sb strings.Builder
 	sb.WriteString("\n\n## Recent Project Tasks & Deliverables\n")
 	sb.WriteString("Snapshot when this turn started; read live with manage_projects list_tasks before reporting status.\n")
@@ -640,7 +650,11 @@ func recentProjectTasksPromptBlock(tasks []pebblestore.ProjectTaskRecord, progre
 		if progressOf != nil {
 			outcome, stale, idle = progressOf(t)
 		}
-		state, reason := pebblestore.ProjectTaskState(t, outcome, stale, idle)
+		var live *pebblestore.ProjectTaskLive
+		if liveOf != nil {
+			live = liveOf(t)
+		}
+		state, reason := pebblestore.ProjectTaskStateLive(t, outcome, stale, idle, live)
 		label := state
 		if reason = strings.TrimSpace(reason); reason != "" {
 			label += ": " + reason

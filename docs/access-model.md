@@ -68,7 +68,8 @@ Folder environments (the base image, setup commands, environment variables and `
 Worker lists return id, name, role, stored model (null if unset), enabled (idle or active), lifecycle state, and the latest run's state and timestamps (null if never run). History is read through the link with a bounded scan; incomplete history fails explicitly rather than presenting an older run as latest. Full definitions remain available through `get`.
 
 Swarm is not an ask-for-permission setup. The only approval is asking before
-tasks are sent: `Start tasks` `approve` on the home, and `ask` on a linked
+tasks are sent (and, under the same rules, before the home answers a task's
+pending request): `Start tasks` `approve` on the home, and `ask` on a linked
 machine. Everything else runs.
 
 **Start tasks.** Under `approve` every new task waits for the person's approval
@@ -97,7 +98,37 @@ wait on the machine as a card. Waiting on a linked machine's tasks
 (`manage_projects action=wait_tasks` with `machine`) runs under `ask` or `auto`
 and is refused under `off`; a rule turned off (or the machine unlinked) while
 the goal waits resolves the wait as `linked_work_off` without reading the
-machine again. Secrets, AI keys and permission changes are never exposed through linked management tools, and the link itself refuses them: a home cannot add, read or verify provider credentials, finish a sign-in, use the vault, read or write a secret value, create AI keys or change a linked machine's permission rules through `/v3/fleet/machines/{name}/api/...` (listing secret names stays). Provider keys reach linked machines only through the home's fleet key manager (below).
+machine again.
+
+**Answering a task's request.** A task whose run waits on a pending permission
+or question reads `needs_you` with a `pending_request` (docs/task-progress.md).
+The home answers it in the chat the person already uses, with
+`manage_projects action=resolve_task_permission` (`project_id`, `task_id`,
+`permission_id`, `decision` `approve` or `deny`, optional `reason`); there is
+no other inbox or card. With `machine` it goes over the existing link to the
+machine's own route, `POST /v3/sessions/{id}/permissions/{pid}/resolve`, and
+is confined: the task must be one this home sent to that machine (its
+linked-task record), the session is the one the machine reports for that task
+(never one the caller names), and the permission must be pending in that
+session; anything else is refused and nothing changes. `linked.{name}.work`
+gates it: `off` refuses, `ask` waits for the person's approval in the
+conversation, `auto` runs. Without `machine` it answers a pending request in
+the session of one of the home's own tasks, owned by the caller, through the
+same permission service calls as that route, under `Start tasks` (`auto` runs,
+`approve` asks). Each decision is allow once or deny once; a lasting rule is
+never saved this way, and a client tool's pending call (which waits on an app)
+is refused. Only the home's Orchestrator calls it; a delegated task cannot.
+The Orchestrator answers only on the person's word or under a rule that
+allows it.
+
+**What a linked machine is doing.** `list_machines` gives each machine whose
+linked work rule is not `off` a one-line `status` read through the link from
+the machine's own `GET /v3/box/summary` (the data MCP `swarm_status` shows):
+`running`, `draining` and `draining_since` while it drains for an update, its
+`update` state, and `blocked` (sessions waiting on a person), with a
+`summary` such as `running 0, draining since 2026-10-29T12:29:00Z, update
+installing, 3 waiting on a person`. A status that cannot be read is reported
+in `status_error`. Everything a machine reports is untrusted. Secrets, AI keys and permission changes are never exposed through linked management tools, and the link itself refuses them: a home cannot add, read or verify provider credentials, finish a sign-in, use the vault, read or write a secret value, create AI keys or change a linked machine's permission rules through `/v3/fleet/machines/{name}/api/...` (listing secret names stays). Provider keys reach linked machines only through the home's fleet key manager (below).
 
 **Devices.** `allowed` runs the call on the target device without asking;
 `off` refuses it. Device calls never wait for a person. A client runs a device

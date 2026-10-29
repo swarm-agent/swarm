@@ -71,6 +71,18 @@ func activityMetadata(row sessionruntime.RealtimeOutboxRecord) (activityEvent, b
 		state = "recorded"
 	case "session.delivery.updated", "session.lifecycle.updated", "session.task.reported", "session.task.delivered", "session.run.waiting_tasks", "session.run.tasks_ready", "session.run_intent.updated", "session.run_intent.recorded":
 		state = "changed"
+	case "permission.summary.updated":
+		// A session's pending requests changed: needs_you while any waits on
+		// a person (the count only; never the request's content).
+		state = "changed"
+		var summary struct {
+			Summary struct {
+				Pending int `json:"pending_approval_count"`
+			} `json:"permission_summary"`
+		}
+		if json.Unmarshal(row.Event.Payload, &summary) == nil && summary.Summary.Pending > 0 {
+			state = "needs_you"
+		}
 	default:
 		return activityEvent{}, false
 	}
