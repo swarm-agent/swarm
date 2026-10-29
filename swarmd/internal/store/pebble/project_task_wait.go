@@ -26,6 +26,30 @@ type V3ProjectTaskWait struct {
 	Machine   string                    `json:"machine,omitempty"`
 	Until     string                    `json:"until,omitempty"`
 	Tasks     []V3ProjectTaskWaitTarget `json:"tasks"`
+	// Notice is the line shown to the person while the conversation waits
+	// (ProjectTaskWaitNotice). It is information only, never an approval.
+	Notice string `json:"notice,omitempty"`
+}
+
+// ProjectTaskWaitNotice is the human-readable line for a pended wait: which
+// tasks it waits on, when it wakes and that a new message ends it. Titles may
+// be untrusted (linked machines); they are clipped to one line each.
+func ProjectTaskWaitNotice(titles []string, machine, until string) string {
+	names := make([]string, 0, len(titles))
+	for _, title := range titles {
+		if title = strings.Join(strings.Fields(title), " "); title != "" {
+			names = append(names, clipProjectTaskWaitTitle(title))
+		}
+	}
+	where := ""
+	if machine = strings.TrimSpace(machine); machine != "" {
+		where = " on " + machine
+	}
+	wake := "settle"
+	if until == ProjectTaskWaitUntilFinished {
+		wake = "finish"
+	}
+	return fmt.Sprintf("This conversation is now waiting on %d task(s)%s: %s. It wakes when they %s; a new message ends the wait.", len(titles), where, strings.Join(names, ", "), wake)
 }
 
 // What a wait waits for. Settled ("" in records written before until existed)
@@ -183,8 +207,11 @@ type V3ProjectTaskWaitMutation struct {
 	// Linked-machine waits (trusted runtime only). Registration supplies the
 	// attempts the runtime pinned by reading each task through the link; a
 	// wake supplies what it then observed, or why the wait cannot continue.
-	Machine            string
-	RemoteTargets      []V3ProjectTaskWaitTarget
+	Machine       string
+	RemoteTargets []V3ProjectTaskWaitTarget
+	// RemoteTitles are the titles the machine reported for RemoteTargets (same
+	// order; untrusted), used only for the wait's notice.
+	RemoteTitles       []string
 	RemoteObservations []V3ProjectTaskRemoteObservation
 	RemoteResolution   *V3ProjectTaskRemoteResolution
 }
@@ -317,6 +344,7 @@ func (s *SessionStore) prepareProjectTaskWait(input *V3SessionMutationInput) err
 			return errors.New("wait_tasks requires the running project orchestrator and 1-16 project tasks")
 		}
 		wait := &V3ProjectTaskWait{ProjectID: op.ProjectID, Until: until}
+		titles := make([]string, 0, len(op.TaskIDs))
 		seen := map[string]bool{}
 		for _, id := range op.TaskIDs {
 			if id == "" || seen[id] {
@@ -344,7 +372,9 @@ func (s *SessionStore) prepareProjectTaskWait(input *V3SessionMutationInput) err
 				return errors.New("wait task attempt ownership mismatch")
 			}
 			wait.Tasks = append(wait.Tasks, V3ProjectTaskWaitTarget{TaskID: id, AttemptID: a.ID, SessionID: a.SessionID})
+			titles = append(titles, projectTaskWaitNoticeTitle(task.Title, id))
 		}
+		wait.Notice = ProjectTaskWaitNotice(titles, "", until)
 		owner.Status, owner.TaskWait = V3RunIntentWaitingTasks, wait
 		input.RunIntent = &owner
 		input.EventType = "session.run.waiting_tasks"
@@ -518,6 +548,15 @@ func clipProjectTaskWaitTitle(title string) string {
 	return string([]rune(title)[:min(len([]rune(title)), 200)])
 }
 
+// projectTaskWaitNoticeTitle names a task in the wait notice: its title, or
+// its id when it has none.
+func projectTaskWaitNoticeTitle(title, taskID string) string {
+	if strings.TrimSpace(title) == "" {
+		return taskID
+	}
+	return title
+}
+
 func clipProjectTaskWaitSummary(summary string) string {
 	if len(summary) > 2000 {
 		summary = string([]rune(summary)[:min(len([]rune(summary)), 500)])
@@ -533,7 +572,11 @@ func (s *SessionStore) prepareRemoteProjectTaskWait(input *V3SessionMutationInpu
 	if owner.Status != V3RunIntentRunning || strings.TrimSpace(op.ProjectID) == "" || len(op.RemoteTargets) < 1 || len(op.RemoteTargets) > 16 || len(op.TaskIDs) != len(op.RemoteTargets) {
 		return errors.New("wait_tasks requires the running Orchestrator and 1-16 linked project tasks")
 	}
+	if len(op.RemoteTitles) != 0 && len(op.RemoteTitles) != len(op.RemoteTargets) {
+		return errors.New("linked task titles must match the linked task targets")
+	}
 	wait := &V3ProjectTaskWait{ProjectID: op.ProjectID, Machine: op.Machine, Until: until}
+	titles := make([]string, 0, len(op.RemoteTargets))
 	seen := map[string]bool{}
 	for i, target := range op.RemoteTargets {
 		if target.TaskID == "" || seen[target.TaskID] || op.TaskIDs[i] != target.TaskID {
@@ -544,7 +587,13 @@ func (s *SessionStore) prepareRemoteProjectTaskWait(input *V3SessionMutationInpu
 		}
 		seen[target.TaskID] = true
 		wait.Tasks = append(wait.Tasks, target)
+		title := ""
+		if len(op.RemoteTitles) != 0 {
+			title = op.RemoteTitles[i]
+		}
+		titles = append(titles, projectTaskWaitNoticeTitle(title, target.TaskID))
 	}
+	wait.Notice = ProjectTaskWaitNotice(titles, op.Machine, until)
 	owner.Status, owner.TaskWait = V3RunIntentWaitingTasks, wait
 	input.RunIntent = &owner
 	input.EventType = "session.run.waiting_tasks"

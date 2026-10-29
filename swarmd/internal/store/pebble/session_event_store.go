@@ -519,6 +519,7 @@ type v3SessionEventReplayPayload struct {
 	Status             string                        `json:"status,omitempty"`
 	BlockedReason      string                        `json:"blocked_reason,omitempty"`
 	Error              string                        `json:"error,omitempty"`
+	Notice             string                        `json:"notice,omitempty"`
 	HasActivePlan      bool                          `json:"has_active_plan,omitempty"`
 	ActivePlan         *SessionPlanSnapshot          `json:"active_plan,omitempty"`
 	Artifact           *V3ArtifactProjection         `json:"artifact,omitempty"`
@@ -4103,6 +4104,9 @@ func (input V3SessionMutationInput) v3EventPayload(seq uint64, session SessionSn
 		payload.BlockedReason = intent.BlockedReason
 		if intent.Status == V3RunIntentFailed {
 			payload.Error = intent.BlockedReason
+		}
+		if intent.Status == V3RunIntentWaitingTasks && intent.TaskWait != nil {
+			payload.Notice = intent.TaskWait.Notice
 		}
 	}
 	if turnUsage.RunID != "" {

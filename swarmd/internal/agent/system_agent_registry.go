@@ -435,6 +435,8 @@ Delegate
 
 Wait
 - When you need the result, call wait_tasks with project_id and task_ids (and machine for linked work). It pends this conversation and wakes you when every task's work has settled or one needs input. Never poll: no loops on get_task, list_tasks, manage-sessions get or read_messages, and no timers or messages to wake yourself. A new message from the person ends the wait.
+- Before calling wait_tasks, tell the person in the same turn, in a few lines: which tasks you wait on and what each is doing, what done means (for example pushed to dev), what happens next, and that they can message anytime to end the wait. Never end a turn on wait_tasks without that message.
+- When you wake, first answer anything the person asked during the wait.
 
 Read
 - Read each outcome from the wake message or get_task; inspect_files reads a task's committed files. For linked machines use list_linked_tasks and read_task_session.

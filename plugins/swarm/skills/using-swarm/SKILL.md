@@ -125,6 +125,10 @@ waiting, not start a duplicate task.
 ## 5. Follow and review
 
 Use `swarm_wait_task` with `project_id`, `task_id` and `wait_seconds`.
+Before waiting, tell the person in a few lines which task you wait on and what
+it is doing, what done means (for example pushed to `dev`), what happens next,
+and that they can interrupt anytime. After the wait, first answer anything they
+asked meanwhile.
 Read `swarm_task_result` (`include_diff` when reviewing changes) and
 `swarm_get_session` for progress, messages and pending decisions. Follow the
 returned authorized next actions:

@@ -26,31 +26,38 @@ func projectTaskNotFoundError(projectID, taskID string) error {
 
 // checkProjectTaskWaitIDs validates wait_tasks ids on this machine before the
 // wait is recorded: each distinct, a task of the project, not archived and
-// started. The error names the first bad id and what to do.
-func (r *Runtime) checkProjectTaskWaitIDs(account, projectID string, ids []string) error {
+// started. The error names the first bad id and what to do. It returns each
+// task's title (its id when untitled), in ids order, for the wait notice.
+func (r *Runtime) checkProjectTaskWaitIDs(account, projectID string, ids []string) ([]string, error) {
+	titles := make([]string, 0, len(ids))
 	seen := map[string]bool{}
 	for _, id := range ids {
 		if strings.TrimSpace(id) == "" || id != strings.TrimSpace(id) {
-			return fmt.Errorf("task_ids has an empty or padded id %q; pass ids as list_tasks shows them", id)
+			return nil, fmt.Errorf("task_ids has an empty or padded id %q; pass ids as list_tasks shows them", id)
 		}
 		if seen[id] {
-			return fmt.Errorf("task_ids lists %s twice; pass each task once", id)
+			return nil, fmt.Errorf("task_ids lists %s twice; pass each task once", id)
 		}
 		seen[id] = true
 		task, found, err := r.projects.GetProjectTask(account, projectID, id)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if !found || task == nil {
-			return projectTaskNotFoundError(projectID, id)
+			return nil, projectTaskNotFoundError(projectID, id)
 		}
 		if task.Archived {
-			return fmt.Errorf("task %s is archived; unarchive_task it first, or wait on another task", id)
+			return nil, fmt.Errorf("task %s is archived; unarchive_task it first, or wait on another task", id)
 		}
 		task.EnsureTaskAttempts()
 		if a := task.ActiveAttempt(); a == nil || a.SessionID == "" {
-			return errors.New("task " + id + " " + pebblestore.ProjectTaskNotStartedReason(task.Status))
+			return nil, errors.New("task " + id + " " + pebblestore.ProjectTaskNotStartedReason(task.Status))
 		}
+		title := task.Title
+		if strings.TrimSpace(title) == "" {
+			title = id
+		}
+		titles = append(titles, title)
 	}
-	return nil
+	return titles, nil
 }

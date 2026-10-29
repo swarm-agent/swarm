@@ -856,7 +856,7 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_wait_task", Title: "Wait for a task to settle",
-			Description: "Returns when the task settles: needs_review (work done, ready to integrate), completed, failed, blocked, needs_input (the agent asked something), pending_approval, or at the deadline (timed_out). Call again to keep waiting.",
+			Description: "Returns when the task settles: needs_review (work done, ready to integrate), completed, failed, blocked, needs_input (the agent asked something), pending_approval, or at the deadline (timed_out). Call again to keep waiting. Before waiting, tell the person which task you wait on and what done means.",
 			InputSchema: controlMCPObject([]string{"project_id", "task_id"}, map[string]any{
 				"project_id":   controlMCPStringProp("From list_projects.", 1, 200),
 				"task_id":      controlMCPStringProp("From run_task or list_tasks.", 1, 200),

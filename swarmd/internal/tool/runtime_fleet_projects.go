@@ -301,6 +301,7 @@ func (r *Runtime) executeFleetWaitTasks(ctx context.Context, scope WorkspaceScop
 		seen[id] = true
 	}
 	targets := make([]pebblestore.V3ProjectTaskWaitTarget, 0, len(ids))
+	titles := make([]string, 0, len(ids))
 	for _, id := range ids {
 		read, err := service.CallFleetProject(ctx, scope.Principal, machine, "get_task", map[string]any{"project_id": projectID, "task_id": id})
 		if err != nil {
@@ -322,6 +323,12 @@ func (r *Runtime) executeFleetWaitTasks(ctx context.Context, scope WorkspaceScop
 			return "", fmt.Errorf("task %s on %s %s", id, machine, pebblestore.ProjectTaskNotStartedReason(task.Status))
 		}
 		targets = append(targets, pebblestore.V3ProjectTaskWaitTarget{TaskID: id, AttemptID: attempt.ID, SessionID: attempt.SessionID})
+		// The machine's title (untrusted) names the task in the wait notice.
+		title := task.Title
+		if strings.TrimSpace(title) == "" {
+			title = id
+		}
+		titles = append(titles, title)
 	}
 	key := "task-wait:" + run.RunID
 	payload, _ := json.Marshal(targets)
@@ -333,11 +340,11 @@ func (r *Runtime) executeFleetWaitTasks(ctx context.Context, scope WorkspaceScop
 		SessionID: scope.SessionID, UserID: scope.Principal.UserID, AccountScopeID: scope.Principal.AccountScopeID,
 		Kind: pebblestore.V3SessionMutationRecordRunIntent, EventType: "session.run.waiting_tasks",
 		ClientRequestID: key, PayloadHash: hash,
-		TaskWait: &pebblestore.V3ProjectTaskWaitMutation{RunID: run.RunID, ProjectID: projectID, TaskIDs: ids, Machine: machine, RemoteTargets: targets, Until: until},
+		TaskWait: &pebblestore.V3ProjectTaskWaitMutation{RunID: run.RunID, ProjectID: projectID, TaskIDs: ids, Machine: machine, RemoteTargets: targets, RemoteTitles: titles, Until: until},
 	})
 	if err != nil {
 		return "", err
 	}
-	out, err := json.Marshal(map[string]any{"tool": "manage_projects", "action": "wait_tasks", "machine": machine, "project_id": projectID, "status": "waiting_tasks", "run_id": run.RunID, "next_action": "yield_until_task_outcome", "event_seq": mutation.PrimarySeq, "task_ids": ids, "tasks": targets, "until": until, "untrusted_content": true})
+	out, err := json.Marshal(map[string]any{"tool": "manage_projects", "action": "wait_tasks", "machine": machine, "project_id": projectID, "status": "waiting_tasks", "run_id": run.RunID, "next_action": "yield_until_task_outcome", "event_seq": mutation.PrimarySeq, "task_ids": ids, "tasks": targets, "until": until, "notice": pebblestore.ProjectTaskWaitNotice(titles, machine, until), "untrusted_content": true})
 	return string(out), err
 }

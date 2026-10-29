@@ -59,7 +59,8 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 		if err := json.Unmarshal(raw, &ids); err != nil || len(ids) == 0 || len(ids) > 16 {
 			return "", errors.New("task_ids must contain 1-16 task IDs")
 		}
-		if err := r.checkProjectTaskWaitIDs(account, projectID, ids); err != nil {
+		titles, err := r.checkProjectTaskWaitIDs(account, projectID, ids)
+		if err != nil {
 			return "", err
 		}
 		until, err := pebblestore.NormalizeProjectTaskWaitUntil(asString(args["until"]))
@@ -85,6 +86,7 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 		result["event_seq"] = mutation.PrimarySeq
 		result["task_ids"] = ids
 		result["until"] = until
+		result["notice"] = pebblestore.ProjectTaskWaitNotice(titles, "", until)
 	case "edit_requirements":
 		task, found, err := r.projects.GetProjectTask(account, projectID, taskID)
 		if err != nil {

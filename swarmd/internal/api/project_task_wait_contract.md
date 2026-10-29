@@ -16,6 +16,13 @@ changing the run.
 
 - Registration crosses `ApplyV3SessionMutation`, storing `waiting_tasks` and the
   subscription on the owning run. The run ID and epoch bind the parent goal.
+- The wait stores a one-line `notice` (`ProjectTaskWaitNotice`: "This
+  conversation is now waiting on N task(s): <titles>. It wakes when they
+  settle; a new message ends the wait."). The tool result returns it, and the
+  `session.run.waiting_tasks` event carries it as top-level `notice` and in
+  `run_intent.task_wait.notice`, so a client can show the person why the
+  conversation waits even when the Orchestrator said nothing. It is
+  information only, never an approval. Linked-machine titles are untrusted.
 - The provider tool loop yields immediately. Executor cleanup releases the
   execution lease. Waiting is inactive, nonterminal, and not an elapsed-time
   reason to schedule provider work.
