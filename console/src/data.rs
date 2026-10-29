@@ -312,8 +312,41 @@ pub fn spend_today(machines: &[Machine]) -> (f64, bool) {
 pub enum RunState {
     Running,
     NeedsYou,
+    /// Asleep on `wait_tasks` (run intent status `waiting_tasks`): not
+    /// working, woken when the tasks settle or by a message from you.
+    Waiting,
     Idle,
     Failed,
+}
+
+/// What a conversation waiting on tasks waits for: its run's task wait.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct TaskWait {
+    pub project_id: Text,
+    /// The linked machine the tasks run on ("" for this machine).
+    pub machine: Text,
+    /// (task id, its title once known).
+    pub tasks: Vec<(Text, Text)>,
+}
+
+impl TaskWait {
+    /// One line: "waiting for tasks: Fix the build, Add docs · on forge".
+    pub fn line(&self) -> String {
+        const SHOWN: usize = 3;
+        fn shown(task: &(Text, Text)) -> &str {
+            let (id, title) = task;
+            if title.is_empty() { id.as_ref() } else { title.as_ref() }
+        }
+        let names: Vec<&str> = self.tasks.iter().take(SHOWN).map(shown).collect();
+        let mut line = if names.is_empty() { "waiting for tasks".to_string() } else { format!("waiting for tasks: {}", names.join(", ")) };
+        if self.tasks.len() > SHOWN {
+            line.push_str(&format!(" +{} more", self.tasks.len() - SHOWN));
+        }
+        if !self.machine.is_empty() {
+            line.push_str(&format!(" · on {}", self.machine));
+        }
+        line
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -676,6 +709,8 @@ pub struct Session {
     /// shows them, so a poll that read the conversation just before your
     /// message arrived never hides it.
     pub outbox: Vec<(Text, usize)>,
+    /// While the run is asleep on tasks: what it waits for.
+    pub waiting_on: Option<TaskWait>,
 }
 
 /// A call to your machine (machine_run, machine_read, machine_write,
@@ -795,6 +830,7 @@ pub fn sessions() -> Vec<Session> {
             pinned: false,
             calls: vec![],
             outbox: vec![],
+            waiting_on: None,
             run: None,
             title: "Ship job automations".into(),
             project: 0,
@@ -835,6 +871,7 @@ pub fn sessions() -> Vec<Session> {
             pinned: false,
             calls: vec![],
             outbox: vec![],
+            waiting_on: None,
             run: None,
             title: "Fix flaky sandbox test".into(),
             project: 0,
@@ -863,6 +900,7 @@ pub fn sessions() -> Vec<Session> {
             pinned: false,
             calls: vec![],
             outbox: vec![],
+            waiting_on: None,
             run: None,
             title: "Where do retries live?".into(),
             project: 0,
@@ -889,6 +927,7 @@ pub fn sessions() -> Vec<Session> {
             pinned: false,
             calls: vec![],
             outbox: vec![],
+            waiting_on: None,
             run: None,
             title: "Landing page refresh".into(),
             project: 1,
@@ -918,6 +957,7 @@ pub fn sessions() -> Vec<Session> {
             pinned: false,
             calls: vec![],
             outbox: vec![],
+            waiting_on: None,
             run: None,
             title: "Release notes draft".into(),
             project: 1,
@@ -943,6 +983,7 @@ pub fn sessions() -> Vec<Session> {
             pinned: false,
             calls: vec![],
             outbox: vec![],
+            waiting_on: None,
             run: None,
             title: "Nightly dependency audit".into(),
             project: 2,

@@ -475,6 +475,10 @@ type V3SessionRunState struct {
 	RunSessionID         string `json:"run_session_id,omitempty"`
 	ParentSessionID      string `json:"parent_session_id,omitempty"`
 	ResumeContext        bool   `json:"resume_context,omitempty"`
+	// TaskWait is what a waiting_tasks run is asleep on (the intent's task
+	// wait), so a snapshot alone tells clients what it waits for. Nil for
+	// every other status.
+	TaskWait *V3ProjectTaskWait `json:"task_wait,omitempty"`
 }
 
 type V3SessionReplay struct {
@@ -3120,7 +3124,18 @@ func v3SessionRunStateFromIntent(intent V3SessionRunIntent) V3SessionRunState {
 		RunSessionID:    strings.TrimSpace(intent.RunSessionID),
 		ParentSessionID: strings.TrimSpace(intent.ParentSessionID),
 		ResumeContext:   intent.ResumeContext,
+		TaskWait:        v3RunStateTaskWait(status, intent.TaskWait),
 	}
+}
+
+// v3RunStateTaskWait copies a waiting run's task wait into its run state.
+func v3RunStateTaskWait(status string, wait *V3ProjectTaskWait) *V3ProjectTaskWait {
+	if status != V3RunIntentWaitingTasks || wait == nil {
+		return nil
+	}
+	copied := *wait
+	copied.Tasks = append([]V3ProjectTaskWaitTarget(nil), wait.Tasks...)
+	return &copied
 }
 
 func v3SessionRunStateWithPreviousTiming(state V3SessionRunState, previous V3SessionRunState, previousOK bool) V3SessionRunState {

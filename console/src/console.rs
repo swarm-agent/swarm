@@ -698,6 +698,7 @@ impl Console {
         match state {
             RunState::Running => ("●", t.ok),
             RunState::NeedsYou => ("◆", t.warn),
+            RunState::Waiting => ("◷", t.accent),
             RunState::Idle => ("○", t.faint),
             RunState::Failed => ("✕", t.err),
         }
@@ -988,6 +989,9 @@ impl Console {
                             parts.push(self.projects[s.project].name.to_string());
                         }
                         parts.push(machine.to_string());
+                        if let Some(wait) = s.waiting_on.as_ref().filter(|_| s.state == RunState::Waiting) {
+                            parts.push(wait.line());
+                        }
                         if let Some(run) = s.run {
                             let (this_run, all) = run.times(now_ms());
                             if run.active {
@@ -1110,6 +1114,7 @@ impl Console {
             (None, false) => "starts a session in this project",
             (Some(_), false) if s.pending.as_ref().is_some_and(|p| p.question) => "your message answers the question above",
             (Some(_), false) if s.state == RunState::Running => "Swarm is working · your message is queued for its next step",
+            (Some(_), false) if s.state == RunState::Waiting => "Waiting for tasks · a message from you ends the wait",
             (Some(_), false) => "follow up in this session",
         };
         let composer = div()

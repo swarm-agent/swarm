@@ -46,6 +46,7 @@ impl Console {
                     let state = match r.state {
                         RunState::Running => "running",
                         RunState::NeedsYou => "asks you",
+                        RunState::Waiting => "waiting",
                         RunState::Idle => "finished",
                         RunState::Failed => "failed",
                     };

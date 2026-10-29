@@ -44,6 +44,7 @@ pub(super) fn draft(project: usize) -> Session {
         pinned: false,
         calls: vec![],
         outbox: vec![],
+        waiting_on: None,
         run: None,
     }
 }

@@ -311,3 +311,95 @@ func TestProjectTaskWaitRemoteRegistrationRefusals(t *testing.T) {
 		})
 	}
 }
+
+// Purpose: a run asleep on wait_tasks must read as waiting, not running, from
+// the durable run state that sync snapshots serve (current_run_state_by_session),
+// and must say what it waits on, so a client that reconnects or restarts shows
+// the wait without having seen the live event. Requirement: the waiting run's
+// state is inactive with status waiting_tasks and carries the task wait (task,
+// attempt, session; the machine for linked work); after the store reopens it
+// still does; once the wait wakes, the continuation is active again and carries
+// no task wait. Threat: a client treating a pended Orchestrator as working, or
+// losing what it waits on across a restart. Authority: v3SessionRunStateFromIntent
+// via ApplyV3SessionMutation and GetV3SessionRunState; a temporary real store is
+// the narrowest layer that proves the persisted state across a reopen.
+func TestProjectTaskWaitRunStateReportsWaiting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "store")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &taskWaitFixture{t: t, db: NewSessionStore(store)}
+	if err := f.db.PutProject("account", &ProjectRecord{ID: "project", Name: "Project"}); err != nil {
+		t.Fatal(err)
+	}
+	f.apply(V3SessionMutationInput{SessionID: "parent", Kind: V3SessionMutationCreateSession, ClientRequestID: "create-parent", Session: &SessionSnapshot{ID: "parent", Mode: "auto", Metadata: map[string]any{"swarm_v3_project_id": "project", "agent_name": "system-orchestrator", "resolved_agent_name": "system-orchestrator", "project_id": "project"}}})
+	f.apply(V3SessionMutationInput{SessionID: "parent", Kind: V3SessionMutationRecordRunIntent, ClientRequestID: "pending-parent", RunIntent: &V3SessionRunIntent{RunID: "run-1", Status: V3RunIntentPendingExecutor}})
+	f.apply(V3SessionMutationInput{SessionID: "parent", Kind: V3SessionMutationRecordRunIntent, ClientRequestID: "run-parent", RunIntent: &V3SessionRunIntent{RunID: "run-1", Status: V3RunIntentRunning}})
+	f.apply(V3SessionMutationInput{SessionID: "child", Kind: V3SessionMutationCreateSession, ClientRequestID: "create-child", Session: &SessionSnapshot{ID: "child", Mode: "auto", Metadata: map[string]any{"project_id": "project", "task_id": "task"}}})
+	if err := f.db.PutProjectTask("account", &ProjectTaskRecord{ID: "task", ProjectID: "project", AccountID: "account", Title: "Local task", Agent: "coder", Status: "running", SessionID: "child", ActiveAttemptID: "a1", Attempts: []ProjectTaskAttempt{{ID: "a1", SessionID: "child", Role: "coder", Status: "running"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if running, ok, err := f.db.GetV3SessionRunState("parent"); err != nil || !ok || !running.Active || running.TaskWait != nil {
+		t.Fatalf("running state before the wait: %+v %v %v", running, ok, err)
+	}
+	f.apply(V3SessionMutationInput{SessionID: "parent", Kind: V3SessionMutationRecordRunIntent, EventType: "session.run.waiting_tasks", ClientRequestID: "task-wait:run-1", TaskWait: &V3ProjectTaskWaitMutation{RunID: "run-1", ProjectID: "project", TaskIDs: []string{"task"}}})
+	want := V3ProjectTaskWaitTarget{TaskID: "task", AttemptID: "a1", SessionID: "child"}
+	assertWaiting := func(label string) {
+		t.Helper()
+		state, ok, err := f.db.GetV3SessionRunState("parent")
+		if err != nil || !ok {
+			t.Fatalf("%s: run state %v %v", label, ok, err)
+		}
+		if state.Active || state.Status != V3RunIntentWaitingTasks || state.RunID != "run-1" {
+			t.Fatalf("%s: waiting run reported as %+v", label, state)
+		}
+		if state.TaskWait == nil || state.TaskWait.ProjectID != "project" || state.TaskWait.Machine != "" || len(state.TaskWait.Tasks) != 1 || state.TaskWait.Tasks[0] != want {
+			t.Fatalf("%s: task wait %+v", label, state.TaskWait)
+		}
+		raw, _ := json.Marshal(state)
+		var wire map[string]any
+		_ = json.Unmarshal(raw, &wire)
+		if wire["active"] != false || wire["status"] != "waiting_tasks" || wire["task_wait"] == nil {
+			t.Fatalf("%s: wire state %s", label, raw)
+		}
+	}
+	assertWaiting("live")
+	// A restart: the waiting state comes back from the store alone.
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	f.db = NewSessionStore(store)
+	assertWaiting("reopened")
+	// The wait ends: the continuation runs again and no task wait remains.
+	if _, err := f.db.UpdateProjectTask("account", "project", "task", func(t *ProjectTaskRecord) error {
+		t.Status = "needs_review"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	woke := 0
+	if err := f.db.ReconcileProjectTaskWaits("account", "project", func(V3SessionMutationResult) { woke++ }); err != nil || woke != 1 {
+		t.Fatalf("wake: %v %d", err, woke)
+	}
+	state, ok, err := f.db.GetV3SessionRunState("parent")
+	if err != nil || !ok || !state.Active || state.Status == V3RunIntentWaitingTasks || state.TaskWait != nil || state.RunID != ProjectTaskWaitResumeID("run-1") {
+		t.Fatalf("after wake: %+v %v %v", state, ok, err)
+	}
+}
+
+// Purpose: a linked-machine wait names its machine in the run state, so a
+// client can say where the awaited work runs. Authority and layer as above.
+func TestProjectTaskWaitRunStateNamesMachine(t *testing.T) {
+	f := newTaskWaitFixture(t, "home", map[string]any{})
+	f.apply(remoteTaskWaitRegistration(V3ProjectTaskWaitTarget{TaskID: "t1", AttemptID: "a1", SessionID: "rs1"}))
+	state, ok, err := f.db.GetV3SessionRunState("home")
+	if err != nil || !ok || state.Active || state.Status != V3RunIntentWaitingTasks || state.TaskWait == nil || state.TaskWait.Machine != "box" || len(state.TaskWait.Tasks) != 1 || state.TaskWait.Tasks[0].TaskID != "t1" {
+		t.Fatalf("remote waiting state: %+v %v %v", state, ok, err)
+	}
+}

@@ -884,7 +884,8 @@ impl Model<'_> {
     /// them. True when something was read.
     fn hydrate_watched(&mut self, watched: &Mutex<HashSet<String>>, subscribed: &mut HashSet<String>, commands: &Sender<Value>) -> Result<bool, String> {
         let open: HashSet<String> = watched.lock().map(|w| w.clone()).unwrap_or_default();
-        let mut active: Vec<String> = self.runs.iter().filter(|(_, r)| map::run_clock(r, 0).active).map(|(id, _)| id.clone()).collect();
+        // A conversation asleep on tasks stays subscribed, so its wake shows.
+        let mut active: Vec<String> = self.runs.iter().filter(|(_, r)| map::run_clock(r, 0).active || map::task_wait(r).is_some()).map(|(id, _)| id.clone()).collect();
         active.retain(|id| self.shells.contains_key(id));
         let mut wanted: Vec<String> = open.iter().filter(|id| self.shells.contains_key(*id)).cloned().collect();
         for id in active {
@@ -1268,6 +1269,10 @@ impl Model<'_> {
             let tasks: Vec<Task> = self.tasks.get(project.id.as_ref()).map(|t| map::session_tasks(t, id)).unwrap_or_default();
             session.tasks = tasks;
         }
+        if let Some(wait) = session.waiting_on.as_mut() {
+            let project: &[Value] = self.tasks.get(wait.project_id.as_ref()).map(Vec::as_slice).unwrap_or(&[]);
+            name_waited_tasks(wait, &session.tasks, project);
+        }
         Some(session)
     }
 
@@ -1282,6 +1287,27 @@ impl Model<'_> {
             themes: None,
             media: self.media.clone(),
             catalog: None,
+        }
+    }
+}
+
+/// Titles for the tasks a conversation waits on, from its own tasks or its
+/// wait's project. A wait on a linked machine names that machine's tasks,
+/// which this machine's records do not hold: those keep their ids.
+fn name_waited_tasks(wait: &mut crate::data::TaskWait, own: &[Task], project: &[Value]) {
+    if !wait.machine.is_empty() {
+        return;
+    }
+    for (id, title) in wait.tasks.iter_mut() {
+        let id: &str = id.as_ref();
+        let found = own
+            .iter()
+            .find(|t| { let key: &str = t.key.as_ref(); key == id })
+            .map(|t| t.title.to_string())
+            .or_else(|| project.iter().find(|t| s(t, "id") == id).map(|t| s(t, "title").to_string()))
+            .unwrap_or_default();
+        if !found.is_empty() {
+            *title = found.into();
         }
     }
 }
@@ -1492,6 +1518,99 @@ mod tests {
             run_ended(&mut e);
             assert_eq!(only(&e).2, ToolState::Cancelled);
             assert_eq!(e[0].tool_line(0).unwrap().text, "bash sleep 9 · stopped");
+        }
+    }
+
+    // Purpose: an Orchestrator asleep on wait_tasks shows as Waiting, not
+    // Running, whether the console learns it from Swarm's snapshot (after a
+    // reconnect or restart) or from the live event that pends the run, and it
+    // shows Running again once the run resumes. Threat: a pended conversation
+    // looking busy, or the wait being lost when the console reconnects.
+    // Authority: Model::event and Model::session_of over map::session; the
+    // model is the narrowest layer that joins run state, tasks and titles.
+    // None of these events reach Swarm, so the client is never contacted.
+    mod waiting {
+        use super::super::{Client, Model, map};
+        use crate::data::{RunState, Text};
+        use serde_json::{Value, json};
+        use std::collections::{HashMap, HashSet};
+        use std::sync::mpsc;
+
+        fn model(client: &Client, run: Value) -> Model<'_> {
+            let projects = map::projects(&json!({"projects": [{"id": "proj_1", "name": "App", "workspaces": [{"path": "/p/app"}]}]}));
+            let mut m = Model {
+                client,
+                kind: "home",
+                projects,
+                order: vec!["s1".into()],
+                shells: HashMap::new(),
+                runs: HashMap::new(),
+                waiting: HashSet::new(),
+                details: HashMap::new(),
+                tasks: HashMap::new(),
+                media: Vec::new(),
+                media_reads: HashMap::new(),
+                media_fetching: HashSet::new(),
+                media_fetch: mpsc::channel().0,
+                assessed: HashMap::new(),
+                facts_kick: mpsc::channel().0,
+            };
+            m.shells.insert("s1".into(), json!({"id": "s1", "title": "Ship it", "metadata": {"role": "project_orchestrator", "project_id": "proj_1"}}));
+            m.tasks.insert("proj_1".into(), vec![json!({"id": "t1", "title": "Fix the build", "origin_session_id": "s1", "agent": "coder", "status": "running"})]);
+            m.runs.insert("s1".into(), run);
+            m
+        }
+
+        fn waiting_state(machine: &str) -> Value {
+            json!({"run_id": "run-1", "active": false, "status": "waiting_tasks", "task_wait": {"project_id": "proj_1", "machine": machine, "tasks": [{"task_id": "t1", "attempt_id": "a1", "session_id": "c1"}]}})
+        }
+
+        #[test]
+        fn a_snapshot_waiting_on_tasks_reads_as_waiting() {
+            let client = Client::new("http://127.0.0.1:9", "unused");
+            let m = model(&client, waiting_state(""));
+            let s = m.session_of("s1").unwrap();
+            assert_eq!(s.state, RunState::Waiting);
+            assert!(!s.run.unwrap().active, "a waiting run's clock does not tick");
+            let wait = s.waiting_on.expect("what it waits on");
+            assert_eq!(wait.tasks, vec![(Text::from("t1"), Text::from("Fix the build"))]);
+            assert_eq!(wait.line(), "waiting for tasks: Fix the build");
+        }
+
+        #[test]
+        fn a_wait_on_a_linked_machine_names_the_machine() {
+            let client = Client::new("http://127.0.0.1:9", "unused");
+            let m = model(&client, waiting_state("forge"));
+            let s = m.session_of("s1").unwrap();
+            assert_eq!(s.state, RunState::Waiting);
+            // Its tasks live on that machine: this machine's same-id task does not name them.
+            assert_eq!(s.waiting_on.unwrap().line(), "waiting for tasks: t1 · on forge");
+        }
+
+        #[test]
+        fn live_events_move_a_run_into_the_wait_and_out_again() {
+            let client = Client::new("http://127.0.0.1:9", "unused");
+            let mut m = model(&client, json!({"run_id": "run-1", "active": true, "status": "running", "started_at": 1000}));
+            assert_eq!(m.session_of("s1").unwrap().state, RunState::Running);
+
+            // The run pends on wait_tasks: the event carries its run intent (no `active`).
+            let intent = json!({"run_id": "run-1", "status": "waiting_tasks", "task_wait": {"project_id": "proj_1", "tasks": [{"task_id": "t1"}]}});
+            assert!(m.event("s1", "session.run.waiting_tasks", json!({"run_intent": intent})).unwrap());
+            let s = m.session_of("s1").unwrap();
+            assert_eq!(s.state, RunState::Waiting);
+            assert_eq!(s.waiting_on.unwrap().tasks[0].1.as_ref(), "Fix the build");
+
+            // The tasks settle and the run resumes: Running again, nothing awaited.
+            let resumed = json!({"run_id": "run-1:resume", "status": "running", "created_at": 2000});
+            assert!(m.event("s1", "session.run_intent.updated", json!({"run_intent": resumed})).unwrap());
+            let s = m.session_of("s1").unwrap();
+            assert_eq!(s.state, RunState::Running);
+            assert!(s.waiting_on.is_none());
+
+            // And it finishes: Idle.
+            let done = json!({"run_id": "run-1:resume", "status": "completed", "created_at": 2000});
+            assert!(m.event("s1", "session.run.completed", json!({"run_intent": done})).unwrap());
+            assert_eq!(m.session_of("s1").unwrap().state, RunState::Idle);
         }
     }
 }

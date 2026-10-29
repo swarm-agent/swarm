@@ -5,7 +5,7 @@
 use gpui::{ClickEvent, Context, Div, Focusable, SharedString, Stateful, div, prelude::*, px};
 
 use super::{Console, Link, Open, Page, RenameCancel, RenameSave, ago, alpha, now_ms, panes};
-use crate::data::TaskStatus;
+use crate::data::{RunState, TaskStatus};
 use crate::swarm::live::Command;
 
 impl Console {
@@ -51,6 +51,7 @@ impl Console {
                     (n, 0) => format!("{lead} · {n} tasks"),
                     (n, r) => format!("{lead} · {r}/{n} running"),
                 };
+                let detail = if s.state == RunState::Waiting { format!("{detail} · waiting for tasks") } else { detail };
                 let sid = s.live.as_ref().map(|l| l.session_id.to_string());
                 let picked = sid.as_ref().is_some_and(|id| self.picked.contains(id));
                 let picking = !self.picked.is_empty();

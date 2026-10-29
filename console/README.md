@@ -189,6 +189,14 @@ a separate profile and the extension loaded, for trying it out.
   row's badge is the task's state and reason (`progress.task_state`, e.g.
   "landed · pushed 5711ae410abc"), not its run status; a Swarm that gives no
   state shows its progress summary or run status as before.
+- **Run states:** a session's glyph says how its run stands: `●` running,
+  `◆` needs you, `◷` waiting, `○` idle, `✕` failed. Waiting is an
+  Orchestrator asleep on `wait_tasks` (Swarm's run state `waiting_tasks`,
+  `active: false`): no timer ticks, the pane header names the tasks it waits
+  on (and the linked machine they run on) from the run state's `task_wait`,
+  and the composer says a message from you ends the wait. It comes from the
+  sync snapshot, so it survives a reconnect or restart; when the tasks settle
+  or you write, the run shows as running again.
 - **Composer:** while Swarm says the run is active, send becomes stop
   (`POST /v3/sessions/{id}/run/stop`; the notice is Swarm's own answer). Typing `/` lists the
   commands: `/new`, `/new bottom`, `/stop`, `/theme`, `/usage`,

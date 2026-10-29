@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::data::{
     Assignment, Busy, Choice, ClientCall, Day, Entry, Health, LiveRef, Machine, ModelUse, Pending, Plan,
-    Credential, Drain, Found, PlanWindow, Progress, ProgressState, Project, Provider, Question, Role, RunClock, RunState, RunsToday, Session, SessionUse, Task, TaskState, TaskStatus, Text, Tokens, ToolState, UpdateState, Updates, Usage,
+    Credential, Drain, Found, PlanWindow, Progress, ProgressState, Project, Provider, Question, Role, RunClock, RunState, RunsToday, Session, SessionUse, Task, TaskState, TaskStatus, TaskWait, Text, Tokens, ToolState, UpdateState, Updates, Usage,
 };
 
 pub(crate) fn s<'a>(v: &'a Value, key: &str) -> &'a str {
@@ -156,9 +156,26 @@ pub fn orchestrator_project(shell: &Value) -> Option<String> {
 /// current_run_state_by_session, or a session's active_run_intent).
 pub fn run_clock(run: &Value, last_message_at: u64) -> RunClock {
     let ms = |k: &str| run.get(k).and_then(Value::as_f64).unwrap_or(0.) as u64;
+    // A run asleep on wait_tasks is not active: Swarm reports it so, and a
+    // run intent (which has no `active`) says so by its status.
     let active = run.get("active").and_then(Value::as_bool).unwrap_or(false)
-        || matches!(s(run, "status"), "pending_executor" | "running" | "dispatch_blocked" | "waiting_tasks");
+        || matches!(s(run, "status"), "pending_executor" | "running" | "dispatch_blocked");
     RunClock { active, started_at: ms("started_at"), cumulative_ms: ms("cumulative_duration_ms"), last_ms: ms("duration_ms"), last_message_at }
+}
+
+/// What a run asleep on tasks waits for: its `task_wait` while its status is
+/// `waiting_tasks` (sync's run state or a run intent carry both). None for
+/// any other run. Titles are left for the caller, who knows the tasks.
+pub fn task_wait(run: &Value) -> Option<TaskWait> {
+    if s(run, "status") != "waiting_tasks" {
+        return None;
+    }
+    let wait = run.get("task_wait").cloned().unwrap_or(Value::Null);
+    Some(TaskWait {
+        project_id: s(&wait, "project_id").to_string().into(),
+        machine: s(&wait, "machine").to_string().into(),
+        tasks: list(&wait, "tasks").iter().map(|t| s(t, "task_id")).filter(|id| !id.is_empty()).map(|id| (id.to_string().into(), "".into())).collect(),
+    })
 }
 
 /// A session as the sync snapshot lists it (its shell and run state), in its
@@ -169,6 +186,7 @@ pub fn session(shell: &Value, run: &Value, pending: bool, projects: &[Project]) 
     let project = projects.iter().position(|p| p.id.as_ref() == project_id)?;
     let clock = run_clock(run, n(shell, "last_message_at") as u64);
     let failed = matches!(s(run, "status"), "failed") || !s(run, "error").is_empty();
+    let waiting_on = task_wait(run);
     Some(Session {
         live: Some(LiveRef { task_id: "".into(), session_id: s(shell, "id").to_string().into() }),
         title: if s(shell, "title").is_empty() { "Untitled".into() } else { s(shell, "title").to_string().into() },
@@ -179,6 +197,8 @@ pub fn session(shell: &Value, run: &Value, pending: bool, projects: &[Project]) 
             RunState::Running
         } else if pending {
             RunState::NeedsYou
+        } else if waiting_on.is_some() {
+            RunState::Waiting
         } else if failed {
             RunState::Failed
         } else {
@@ -197,6 +217,7 @@ pub fn session(shell: &Value, run: &Value, pending: bool, projects: &[Project]) 
         pinned: shell.get("metadata").and_then(|m| m.get("pinned")).and_then(Value::as_bool).unwrap_or(false),
         calls: vec![],
         outbox: vec![],
+        waiting_on,
         run: Some(clock),
     })
 }
@@ -820,6 +841,32 @@ mod tests {
         assert_eq!(tasks[0].key.as_ref(), "task_b4784618");
         assert_eq!(tasks[0].status, TaskStatus::PendingApproval);
         assert_eq!(tasks[0].role.as_ref(), "coder");
+    }
+
+    // Purpose: Swarm's run state for a run asleep on wait_tasks (status
+    // waiting_tasks, active false) maps to Waiting with what it waits on, not
+    // to Running, so the state survives a reconnect from the snapshot alone.
+    // A question still comes first. Authority: run_clock, task_wait, session.
+    #[test]
+    fn a_run_waiting_on_tasks_is_waiting_not_running() {
+        let projects = projects(&json!({"projects": [{"id": "proj_1", "name": "App", "workspaces": [{"path": "/p/app"}]}]}));
+        let shell = json!({"id": "s1", "title": "Ship it", "metadata": {"role": "project_orchestrator", "project_id": "proj_1"}});
+        let waiting = json!({"active": false, "status": "waiting_tasks", "task_wait": {"project_id": "proj_1", "machine": "forge", "tasks": [{"task_id": "t1"}, {"task_id": "t2"}]}});
+        assert!(!run_clock(&waiting, 0).active);
+        let got = session(&shell, &waiting, false, &projects).unwrap();
+        assert_eq!(got.state, RunState::Waiting);
+        let wait = got.waiting_on.unwrap();
+        assert_eq!((wait.project_id.as_ref(), wait.machine.as_ref(), wait.tasks.len()), ("proj_1", "forge", 2));
+        assert_eq!(wait.line(), "waiting for tasks: t1, t2 · on forge");
+        // A run intent from a live event has no `active`: its status decides.
+        let intent = json!({"status": "waiting_tasks"});
+        assert!(!run_clock(&intent, 0).active);
+        assert_eq!(session(&shell, &intent, false, &projects).unwrap().state, RunState::Waiting);
+        assert_eq!(session(&shell, &waiting, true, &projects).unwrap().state, RunState::NeedsYou);
+        // Running and finished runs wait on nothing.
+        assert!(task_wait(&json!({"active": true, "status": "running"})).is_none());
+        assert_eq!(session(&shell, &json!({"status": "running"}), false, &projects).unwrap().state, RunState::Running);
+        assert_eq!(session(&shell, &json!({"status": "completed"}), false, &projects).unwrap().state, RunState::Idle);
     }
 
     #[test]
