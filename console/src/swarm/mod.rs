@@ -4,6 +4,7 @@
 
 pub mod automations;
 pub mod client;
+pub mod context;
 pub mod live;
 pub mod live_stream;
 pub mod map;

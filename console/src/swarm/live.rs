@@ -140,6 +140,11 @@ pub enum Command {
     /// `waiting_run_id`: the run asleep on tasks ("" for none). Swarm's
     /// session detail lists only an active run, so a wait is stopped by this id.
     Stop { session_id: String, waiting_run_id: String },
+    /// Read a conversation's context (see `context::read`).
+    ReadContext { session_id: String },
+    /// Compact a conversation now, setting its auto-compact threshold first
+    /// when one is given (see `context::compact`).
+    Compact { session_id: String, note: String, threshold: Option<f64> },
 }
 
 pub struct Live {
@@ -306,7 +311,7 @@ impl Live {
                 _ => None,
             };
             // The rules change nothing the model holds: no reread after them.
-            let quiet = matches!(command, Command::ReadPermissions | Command::SetPermission { .. });
+            let quiet = matches!(command, Command::ReadPermissions | Command::SetPermission { .. } | Command::ReadContext { .. });
             let (draft, what, result) = perform(&client, command);
             let ok = result.is_ok();
             let _ = tx.send(Update::Done { draft, what, result });
@@ -416,6 +421,9 @@ fn perform(client: &Client, command: Command) -> (Option<u64>, &'static str, Res
             client.post(&format!("/v3/projects/{project_id}/tasks/{task_id}/{}", if approve { "approve" } else { "reject" }), json!({})).map_err(err),
         ),
         Command::Stop { session_id, waiting_run_id } => (None, "stop", stop(client, &session_id, &waiting_run_id)),
+        // Both answers name their session, a failure included (as `error`).
+        Command::ReadContext { session_id } => (None, "context", Ok(super::context::read(client, &session_id))),
+        Command::Compact { session_id, note, threshold } => (None, "compact", Ok(super::context::compact(client, &session_id, &note, threshold))),
         Command::Archive { session_ids } => (None, "archive", client.post("/v3/sessions:archive", json!({"session_ids": session_ids})).map_err(err)),
         Command::Rename { session_id, title } => (None, "rename", client.post(&format!("/v3/sessions/{session_id}/title"), json!({"title": title, "client_request_id": request_id("title")})).map_err(err)),
         Command::Pin { session_id, pinned } => (None, if pinned { "pin" } else { "unpin" }, client.post(&format!("/v3/sessions/{session_id}/metadata"), json!({"metadata": {"pinned": pinned}, "client_request_id": request_id("pin")})).map_err(err)),

@@ -11,6 +11,8 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
     ("/new", "new session in a pane to the right"),
     ("/new bottom", "new session in a pane below"),
     ("/stop", "stop this session's run"),
+    ("/compact", "compact this conversation's context; /compact 5% also sets auto-compact"),
+    ("/context", "what this conversation's context holds"),
     ("/theme", "appearance; /theme <what> asks Swarm to change the project's theme"),
     ("/usage", "tokens, plan limits and spend"),
     ("/settings", "settings"),
@@ -26,21 +28,87 @@ pub(super) enum Slash {
     Stop,
     /// Appearance, or a request for Swarm to change the theme.
     Theme(Option<String>),
+    /// Compact the context now; with a threshold, Swarm's auto-compact
+    /// threshold (percent of the context left) is set first.
+    Compact { threshold: Option<f64>, note: String },
+    /// Open or close the conversation's context panel.
+    Context,
     Go(Page),
     Unknown,
+}
+
+/// A leading number the way JavaScript's parseFloat reads one ("5", "2.5",
+/// "5abc" is 5), so `/compact` reads thresholds as Swarm's web UI does.
+fn leading_number(text: &str) -> Option<f64> {
+    let mut end = 0;
+    let (mut digits, mut dot, mut exp) = (false, false, false);
+    for (i, c) in text.char_indices() {
+        let ok = match c {
+            '0'..='9' => {
+                digits = true;
+                true
+            }
+            '+' | '-' => i == 0 || matches!(text[..i].chars().last(), Some('e' | 'E')),
+            '.' if !dot && !exp => {
+                dot = true;
+                true
+            }
+            'e' | 'E' if digits && !exp => {
+                exp = true;
+                true
+            }
+            _ => false,
+        };
+        if !ok {
+            break;
+        }
+        end = i + c.len_utf8();
+    }
+    // Trailing "e", "e-" or "." are not part of the number.
+    let mut number = &text[..end];
+    while let Some(last) = number.chars().last().filter(|c| matches!(*c, 'e' | 'E' | '+' | '-')) {
+        number = &number[..number.len() - last.len_utf8()];
+    }
+    number.parse::<f64>().ok().filter(|n| n.is_finite())
+}
+
+/// "5%" as a threshold, clamped to 0..=100 (0 turns auto-compact off).
+fn threshold_token(token: &str) -> Option<f64> {
+    let raw = token.trim().strip_suffix('%')?.trim();
+    let n = leading_number(raw)?;
+    Some(n.clamp(0., 100.))
+}
+
+/// `/compact`'s words, as Swarm's web UI reads them
+/// (`web/src/features/desktop/chat/services/compact-command.ts`): a first
+/// word like "5%" (or "threshold 5%") is the threshold; the rest is the note.
+fn compact(rest: &str) -> Slash {
+    let mut words: Vec<&str> = rest.split_whitespace().collect();
+    let mut threshold = words.first().and_then(|w| threshold_token(w));
+    if threshold.is_some() {
+        words.remove(0);
+    } else if words.len() >= 2 && words[0].eq_ignore_ascii_case("threshold") {
+        threshold = threshold_token(words[1]);
+        if threshold.is_some() {
+            words = words.split_off(2);
+        }
+    }
+    Slash::Compact { threshold, note: words.join(" ") }
 }
 
 /// What a typed line asks for. A unique prefix is enough ("/us" is /usage).
 pub(super) fn parse(text: &str) -> Slash {
     let text = text.trim();
     let (word, rest) = text.split_once(char::is_whitespace).map(|(w, r)| (w, r.trim())).unwrap_or((text, ""));
-    let names = ["/new", "/stop", "/theme", "/usage", "/settings", "/media", "/agents", "/fleet", "/live"];
+    let names = ["/new", "/stop", "/compact", "/context", "/theme", "/usage", "/settings", "/media", "/agents", "/fleet", "/live"];
     let hits: Vec<&str> = names.iter().copied().filter(|n| n.starts_with(word) && word.len() > 1).collect();
     let name = if names.contains(&word) { word } else if hits.len() == 1 { hits[0] } else { return Slash::Unknown };
     match (name, rest) {
         ("/new", "" | "side" | "right") => Slash::New(Open::Right),
         ("/new", "bottom" | "below" | "down") => Slash::New(Open::Down),
         ("/stop", "") => Slash::Stop,
+        ("/compact", rest) => compact(rest),
+        ("/context", "") => Slash::Context,
         ("/theme", "") => Slash::Theme(None),
         ("/theme", what) => Slash::Theme(Some(what.to_string())),
         ("/usage", "") => Slash::Go(Page::Usage),
@@ -98,6 +166,8 @@ impl Console {
                     self.notice = Some(("This session has not started.".into(), true));
                 }
             }
+            Slash::Compact { threshold, note } => self.compact(si, threshold, note, cx),
+            Slash::Context => self.toggle_context(pid, cx),
             Slash::Theme(None) => self.page = Page::Settings,
             Slash::Theme(Some(what)) => {
                 let message = format!("Change this project's theme: {what}");
@@ -185,6 +255,37 @@ mod tests {
         assert_eq!(parse("/nope"), Slash::Unknown);
         assert_eq!(parse("/live"), Slash::Go(Page::Live));
         assert_eq!(parse("/li"), Slash::Go(Page::Live));
+    }
+
+    #[test]
+    fn compact_reads_like_the_web() {
+        let c = |threshold: Option<f64>, note: &str| Slash::Compact { threshold, note: note.into() };
+        assert_eq!(parse("/compact"), c(None, ""));
+        assert_eq!(parse("/compact 5%"), c(Some(5.), ""));
+        assert_eq!(parse("/compact 5% keep task ids"), c(Some(5.), "keep task ids"));
+        assert_eq!(parse("/compact keep task ids"), c(None, "keep task ids"));
+        assert_eq!(parse("/compact threshold 12.5% keep ids"), c(Some(12.5), "keep ids"));
+        assert_eq!(parse("/compact 150%"), c(Some(100.), ""));
+        assert_eq!(parse("/compact 0%"), c(Some(0.), ""));
+        assert_eq!(parse("/compact 5abc%"), c(Some(5.), ""), "parseFloat reads the leading number");
+        assert_eq!(parse("/compact %"), c(None, "%"));
+        assert_eq!(parse("/compact keep 5%"), c(None, "keep 5%"), "only the first word is a threshold");
+        assert_eq!(parse("/context"), Slash::Context);
+        // Unique prefixes: /com and /con are distinct; /c and /co could be either.
+        assert_eq!(parse("/com"), c(None, ""));
+        assert_eq!(parse("/com 5%"), c(Some(5.), ""));
+        assert_eq!(parse("/con"), Slash::Context);
+        assert_eq!(parse("/c"), Slash::Unknown);
+        assert_eq!(parse("/co"), Slash::Unknown);
+        // Existing commands keep their prefixes.
+        assert_eq!(parse("/st"), Slash::Stop);
+        assert_eq!(parse("/se"), Slash::Go(Page::Settings));
+        assert_eq!(parse("/us"), Slash::Go(Page::Usage));
+        assert_eq!(parse("/context now"), Slash::Unknown);
+        let names: Vec<&str> = matching("/compact 5% keep").into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, vec!["/compact"]);
+        let names: Vec<&str> = matching("/co").into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, vec!["/compact", "/context"]);
     }
 
     #[test]

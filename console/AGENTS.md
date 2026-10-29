@@ -42,7 +42,10 @@ Same routes as Swarm's web UI (`web/src` at the repository root), no others:
 - The Orchestrator inside the app is a Swarm session driven over HTTP:
   `POST /v3/sessions`, `POST /v3/sessions/{id}/messages`,
   `POST /v3/sessions/{id}/run/stop`,
-  `POST /v3/sessions/{id}/permissions/{pid}/resolve`.
+  `POST /v3/sessions/{id}/permissions/{pid}/resolve`. Its context and
+  compaction: `GET /v3/sessions/{id}` (usage summary, context window),
+  `POST /v3/sessions/{id}/compact`, and `POST /v3/sessions/{id}/metadata`
+  (`context_compaction_threshold_percent`).
 - Projects and tasks: `/v3/projects…`, `/v3/projects/{id}/tasks…`.
 - Models, providers, sign-in: `/v1/agent-model-settings`, `/v1/providers`,
   `/v1/auth/codex/oauth/*`, `/v1/onboarding`.

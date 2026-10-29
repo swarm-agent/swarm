@@ -210,8 +210,31 @@ a separate profile and the extension loaded, for trying it out.
   active run while it waits, so the console posts `run/stop` with the
   waiting run's `run_id` from the run state. Idle shows no hint text; on a
   narrow pane `/ commands` gives way before the badge. Typing `/` lists the
-  commands: `/new`, `/new bottom`, `/stop`, `/theme`, `/usage`,
-  `/settings`, `/media`, `/agents`, `/fleet`; tab completes, enter runs.
+  commands: `/new`, `/new bottom`, `/stop`, `/compact`, `/context`,
+  `/theme`, `/usage`, `/settings`, `/media`, `/agents`, `/fleet`, `/live`;
+  a unique prefix is enough (`/com`, `/con`; `/c` alone is ambiguous), tab
+  completes, enter runs.
+- **Context:** the pane header's `ctx` meter shows how much of the model's
+  context window the conversation used at its latest provider request
+  ("ctx 62% · 124k / 200k"; "— / 200k" before Swarm has measured it), from
+  the session detail (`GET /v3/sessions/{id}`: `usage_summary`,
+  `context_window`). It is read when a pane opens a conversation and after
+  each finished turn, never on a timer, and takes the warning color once the context
+  left is at or below the auto-compact threshold. Clicking it (or
+  `/context`) opens a panel: tokens in use of the window, the latest
+  request's input, cache, output and thinking tokens, the model, the last
+  compaction (Swarm's checkpoint among the recent messages: origin, age,
+  number) and the auto-compact threshold, with **Compact now**. Swarm
+  reports totals only: what the prompt, project.md, the task list, memory,
+  history or tool output each take is not in its answers, so the panel says
+  so instead of guessing. `/compact [N%] [note]` reads like the web's
+  (`/compact 5%`, `/compact threshold 5%`, `/compact 5% keep task ids`): a
+  threshold first sets the session's `context_compaction_threshold_percent`
+  (`POST /v3/sessions/{id}/metadata`; `0%` turns it off), then Swarm
+  compacts (`POST /v3/sessions/{id}/compact` with the note). The result
+  shows above the composer and in the status bar ("Compacted: 62% of
+  context before; Swarm measures the new size on the next turn."), or
+  Swarm's refusal (for example while a run is active).
 - **Usage:** each sign-in plan's limit windows (`GET /v1/codex/account/usage`),
   then 30 days of tokens, spend at API prices, turns, each day, each model
   and recent sessions (`GET /v3/usage`, today and 30 days).

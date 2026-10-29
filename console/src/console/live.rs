@@ -250,6 +250,7 @@ impl Console {
         if let Some(live) = &self.live {
             live.watch(self.panes.iter().filter_map(|p| self.sessions[p.session].live.as_ref()).map(|l| l.session_id.to_string()));
         }
+        self.want_contexts();
         cx.notify();
     }
 
@@ -468,6 +469,7 @@ impl Console {
                 }
                 self.notice = Some((text.into(), false));
             }
+            (None, Ok(answer)) if what == "context" || what == "compact" => self.context_done(what, answer),
             (None, Ok(_)) if what == "model" => self.notice = Some(("This chat uses that model now.".into(), false)),
             (None, Ok(answer)) if what == "delete project" => {
                 self.deleted_project = answer.get("id").and_then(|v| v.as_str())

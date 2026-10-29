@@ -22,6 +22,7 @@ mod attach;
 mod automations;
 mod background;
 mod commands;
+mod context;
 mod fleet;
 mod fleet_keys;
 mod folders;
@@ -338,6 +339,8 @@ pub struct Console {
     model_apply: agents::ModelApply,
     /// The password prompt root steps started here use (adding folders).
     password: Entity<PasswordPrompt>,
+    /// Each conversation's context as Swarm last reported it, and compactions.
+    contexts: context::Contexts,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -497,6 +500,7 @@ impl Console {
             keys_page: Default::default(),
             model_apply: Default::default(),
             password: cx.new(|cx| PasswordPrompt::new(Theme::for_concept(concept), cx)),
+            contexts: Default::default(),
         };
         if demo {
             // Three panes: one beside a stack of two, to show both split directions.
@@ -1011,6 +1015,7 @@ impl Console {
                         parts.join(" · ")
                     }),
             )
+            .children(self.context_meter(si, pid, cx))
             .children(self.session_actions(si, pid, cx))
             .child(
                 self.icon_button(SharedString::from(format!("pane-right-{pid}")), Icon::SplitRight)
@@ -1227,6 +1232,7 @@ impl Console {
                     .children(entries),
             )
             .children(background)
+            .children(self.render_context(si, pid, cx))
             .children(self.failure.as_ref().filter(|(fs, _)| *fs == si).map(|(_, text)| {
                 div()
                     .flex_none()
