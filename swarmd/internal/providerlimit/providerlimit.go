@@ -17,6 +17,11 @@ import (
 // limit is the longest a provider states).
 const MaxResetWait = 8 * 24 * time.Hour
 
+// MaxWaits bounds how many times one job (a workflow agent step, a worker
+// run, a project task) waits for its provider's limit to reset before it
+// fails with Exhausted.
+const MaxWaits = 12
+
 // resetMargin is added to a stated reset so the rerun starts after it.
 const resetMargin = time.Minute
 

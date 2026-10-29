@@ -114,6 +114,9 @@ func setProjectRealtimeMutationInBatch(batch *pebble.Batch, account string, m *p
 				if err := setDesignJobActiveIndex(batch, account, previous, task); err != nil {
 					return err
 				}
+				if err := setTaskLimitWaitIndex(batch, account, previous, task); err != nil {
+					return err
+				}
 				if found {
 					if err := repository.bindTaskUsageInBatch(batch, account, *prior); err != nil {
 						return err
@@ -162,6 +165,9 @@ func setProjectRealtimeMutationInBatch(batch *pebble.Batch, account string, m *p
 			}
 			if found {
 				if err := setTaskEnvironmentIndex(batch, prior, ProjectTaskRecord{}); err != nil {
+					return err
+				}
+				if err := setTaskLimitWaitIndex(batch, account, prior, ProjectTaskRecord{}); err != nil {
 					return err
 				}
 				if err := setDesignJobActiveIndex(batch, account, prior, ProjectTaskRecord{}); err != nil {

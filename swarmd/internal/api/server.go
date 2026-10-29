@@ -123,6 +123,10 @@ type Server struct {
 	remoteTaskWaitRules     time.Duration                // work-rule re-read period; zero means the default
 	taskRunEndMu            sync.Mutex                   // task run ends in flight (project_task_wait_progress.go)
 	taskRunEnds             map[string]*taskRunEndWindow // by task session id; in memory only
+	taskLimitMu             sync.Mutex                   // provider-limit task waits (project_task_limit_wait.go)
+	taskLimitOpMu           sync.Mutex                   // one limit-wait continue or cancel at a time
+	taskLimitTimers         map[string]*time.Timer       // one wake per waiting task; the task record is the authority
+	taskLimitClock          func() time.Time             // test seam; nil means time.Now
 	v3LiveHub               *v3LiveHub
 	v3LivePatchEnabled      bool
 	v3SyncCursors           *v3SyncCursorKeyring

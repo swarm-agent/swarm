@@ -1007,8 +1007,8 @@ type stepFailure struct {
 }
 
 // maxProviderLimitWaits bounds how many times one agent step waits for a
-// provider's limit to reset before it fails.
-const maxProviderLimitWaits = 12
+// provider's limit to reset before it fails (the bound every limit wait uses).
+const maxProviderLimitWaits = providerlimit.MaxWaits
 
 // providerLimitWait classifies an agent job that ended on a provider's usage,
 // rate or session limit. It is never a failure or a reviewer's verdict: the

@@ -48,6 +48,9 @@ func (s *SessionStore) prepareTaskExecutionContinuation(input V3SessionMutationI
 	attempt.RunID = intent.RunID
 	attempt.Summary, attempt.SummaryRunID = "", ""
 	task.Status, task.LastError, task.ActionNeeded = "in_progress", "", ""
+	// A continuation ends a provider-limit wait (the wait's own continuation,
+	// or the person's message) in the same commit as its run intent.
+	task.LimitRetryAt, task.LimitReason = 0, ""
 	task.Revision++
 	task.UpdatedAt = now
 	task.CaptureActiveAttempt()

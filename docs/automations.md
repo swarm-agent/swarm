@@ -700,6 +700,10 @@ and `step_id`:
   keep waiting, and a new job starts for it after the reset; an item whose
   worker run already gave up after its 12 waits fails. Swarm's own quotas
   and budgets are not provider limits. Swarm-role (plan) worker jobs still fail on a limit.
+  A project task's own run (its first run or a follow-up in its session,
+  outside a worker) waits the same way, with the same bound, and continues in
+  its own session at the reset; see
+  [task progress](task-progress.md#waiting-for-a-providers-usage-limit).
 - `automation.step.succeeded` (attrs: `step`, `output`)
 - `automation.step.failed` (severity warning; attrs: `step`, `reason` and
   `next`, the next allowed action: `rerun` or `fix the script`; while

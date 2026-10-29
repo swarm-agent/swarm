@@ -14,8 +14,8 @@ import (
 )
 
 // maxWorkerLimitWaits bounds how many times one worker run waits for its
-// provider's limit to reset before it fails.
-const maxWorkerLimitWaits = 12
+// provider's limit to reset before it fails (the bound every limit wait uses).
+const maxWorkerLimitWaits = providerlimit.MaxWaits
 
 // workerLimitRerunMessage resumes a job in its own session once the
 // provider's limit that stopped it has reset.

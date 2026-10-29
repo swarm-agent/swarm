@@ -123,6 +123,18 @@ func (s *Server) StopProjectTask(_ context.Context, p identity.Principal, projec
 	if err != nil {
 		return tool.ProjectTaskStopResult{}, err
 	}
+	// A task waiting for its provider's limit has no active run; the stop
+	// cancels the wait instead, so nothing continues it.
+	if task.Status == pebblestore.ProjectTaskStatusLimitWaiting {
+		cancelled, err := s.cancelProjectTaskLimitWait(p.AccountScopeID, task.ProjectID, task.ID)
+		if err != nil {
+			return tool.ProjectTaskStopResult{}, &projectTaskFollowupError{http.StatusInternalServerError, err}
+		}
+		if cancelled {
+			return tool.ProjectTaskStopResult{TaskID: task.ID, RunID: task.LimitRunID, Status: "stopped", Next: "message_task resumes it"}, nil
+		}
+		// The wait ended meanwhile (its continuation started): stop that run.
+	}
 	if sessionID == "" {
 		return tool.ProjectTaskStopResult{}, &projectTaskFollowupError{http.StatusConflict, errors.New("task has no session to stop")}
 	}

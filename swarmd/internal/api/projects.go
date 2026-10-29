@@ -371,6 +371,11 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db projectTaskLif
 	if task.Status == "pending_approval" || (task.Status == "queued" && task.WorkerID == "") {
 		return
 	}
+	// A task waiting for its provider's limit keeps its wait: its session's
+	// latest run is the one the limit stopped, and the wait continues it.
+	if task.Status == pebblestore.ProjectTaskStatusLimitWaiting {
+		return
+	}
 
 	// Live execution outranks workflow and Git labels, including nested programs.
 	// Keep blocker/review detail available while the owning session repairs it.
@@ -3753,6 +3758,16 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeError(w, http.StatusConflict, err)
 			return
+		}
+		if segments[3] == "archive" && archived != nil && archived.Status == pebblestore.ProjectTaskStatusLimitWaiting {
+			// Archiving a task cancels its provider-limit wait.
+			if _, err := s.cancelProjectTaskLimitWait(p.AccountScopeID, projectID, archived.ID); err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			if current, found, err := db.GetProjectTask(p.AccountScopeID, projectID, archived.ID); err == nil && found {
+				archived = current
+			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"task": sanitizeProjectTaskForClient(archived)})
 		return

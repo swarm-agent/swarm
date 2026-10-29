@@ -331,6 +331,12 @@ func compactFleetTaskList(raw json.RawMessage) (json.RawMessage, error) {
 		stateTask.AutomationID, _ = record["automation_id"].(string)
 		stateTask.WorktreeBranch, _ = record["worktree_branch"].(string)
 		stateTask.Archived, _ = record["archived"].(bool)
+		if reason, _ := record["limit_reason"].(string); stateTask.Status == pebblestore.ProjectTaskStatusLimitWaiting {
+			if r := []rune(reason); len(r) > 300 {
+				reason = string(r[:300])
+			}
+			stateTask.LimitReason = reason
+		}
 		stateOutcome, stateStale, stateIdle := "", false, false
 		if archived, _ := record["archived"].(bool); archived {
 			item["archived"] = true
@@ -386,6 +392,22 @@ func compactFleetTaskList(raw json.RawMessage) (json.RawMessage, error) {
 		if _, given := item["state"]; !given && stateTask.ID != "" {
 			// A machine that reports no state: the same rule over what it reported.
 			item["state"], _ = pebblestore.ProjectTaskState(stateTask, stateOutcome, stateStale, stateIdle)
+		}
+		if stateTask.ID != "" && stateTask.Status == pebblestore.ProjectTaskStatusLimitWaiting {
+			// Waiting on the provider's limit: say until when, in the machine's
+			// own words when it gave them. A live or stall reason stays.
+			_, hasReason := item["state_reason"]
+			_, stalled := item["task_state_reason"]
+			if !hasReason && !stalled {
+				reason := ""
+				if progress, ok := record["progress"].(map[string]any); ok {
+					reason, _ = progress["task_state_reason"].(string)
+				}
+				if strings.TrimSpace(reason) == "" {
+					_, reason = pebblestore.ProjectTaskState(stateTask, stateOutcome, stateStale, stateIdle)
+				}
+				item["state_reason"] = clipFleetTaskText(reason, 300)
+			}
 		}
 		tasks = append(tasks, item)
 	}

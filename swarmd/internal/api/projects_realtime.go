@@ -315,7 +315,8 @@ func (s *Server) reconcileProjectTaskRunLifecycleWithCapture(job sessionV3Execut
 		})
 		return err
 	case sessionruntime.RunIntentFailed, sessionruntime.RunIntentExpired, sessionruntime.RunIntentInterrupted, sessionruntime.RunIntentDispatchBlocked:
-		_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+		waited := false
+		updated, err := db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
 			if t.SessionID != job.SessionID || t.ActiveAttemptID != task.ActiveAttemptID || !projectTaskCurrentRunEvent(db, accountScopeID, job, status) || (t.Status == "planning" && t.ExecutionRunID() != job.RunID) {
 				return nil
 			}
@@ -324,6 +325,21 @@ func (s *Server) reconcileProjectTaskRunLifecycleWithCapture(job sessionV3Execut
 			}
 			if t.Status != "in_progress" && t.Status != "planning" {
 				return nil
+			}
+			// A run that ended on its provider's usage limit waits for the
+			// reset and continues in the same session (project_task_limit_wait.go).
+			if status == sessionruntime.RunIntentFailed {
+				waiting, failure := projectTaskLimitWait(t, job.RunID, session.Preference.Provider, reason, s.taskLimitNow())
+				if waiting {
+					waited = true
+					return nil
+				}
+				if failure != reason {
+					t.Status = "failed"
+					t.LastError = failure
+					t.ActionNeeded = "Action Needed: Run failed (" + failure + "). Retry task."
+					return nil
+				}
 			}
 			t.Status = "failed"
 			if t.LastError == "" && reason != "" {
@@ -336,6 +352,10 @@ func (s *Server) reconcileProjectTaskRunLifecycleWithCapture(job sessionV3Execut
 			}
 			return nil
 		})
+		if err == nil && waited && updated != nil {
+			s.armProjectTaskLimitWait(accountScopeID, projectID, taskID, updated.LimitRetryAt)
+			s.signalTaskLimitWait(accountScopeID, updated)
+		}
 		return err
 	}
 	return nil

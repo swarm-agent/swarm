@@ -549,6 +549,11 @@ type ProjectTaskRecord struct {
 	Order               int                          `json:"order,omitempty"`
 	Archived            bool                         `json:"archived"`
 	LastError           string                       `json:"last_error,omitempty"`
+	LimitWaits          int                          `json:"limit_waits,omitempty"`    // provider-limit waits of the task (project_task_limit_wait.go)
+	LimitAt             int64                        `json:"limit_at,omitempty"`       // when LimitRunID stopped on the limit (unix ms)
+	LimitRetryAt        int64                        `json:"limit_retry_at,omitempty"` // limit_waiting: the session continues then (unix ms)
+	LimitRunID          string                       `json:"limit_run_id,omitempty"`
+	LimitReason         string                       `json:"limit_reason,omitempty"`
 	FeedbackHistory     []string                     `json:"feedback_history,omitempty"`
 	AspectRatio         string                       `json:"aspect_ratio,omitempty"`
 	Resolution          string                       `json:"resolution,omitempty"`

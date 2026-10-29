@@ -121,7 +121,7 @@ func taskStatusClass(status string) string {
 	switch status {
 	case pebblestore.ProjectTaskStatusStopped:
 		return progressStopped
-	case "pending_approval", "queued", "pending":
+	case "pending_approval", "queued", "pending", pebblestore.ProjectTaskStatusLimitWaiting:
 		return progressWaiting
 	case "planning", "in_progress", "running", "starting", "generating", "swarming", "publishing":
 		return progressWorking
@@ -454,6 +454,8 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 		out.State = progressWaiting
 		if task.Status == "pending_approval" {
 			out.Summary = "waiting for approval (Start tasks)"
+		} else if task.Status == pebblestore.ProjectTaskStatusLimitWaiting {
+			out.Summary = firstNonEmptyString(task.LimitReason, "waiting for the provider's limit to reset")
 		} else {
 			out.Summary = "queued"
 		}
@@ -595,6 +597,9 @@ func taskProgressHistory(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 		}
 		add(a.CreatedAt, what)
 	}
+	if task.LimitAt > 0 {
+		add(task.LimitAt, "run stopped on the provider's usage limit; the task continues after the reset")
+	}
 	// Job ends: each follow-up's end the deliveries were made for, and the
 	// latest end from the evaluation (or, without one, the task itself).
 	ends := map[string]bool{}
@@ -733,7 +738,9 @@ func markTaskProgressAttention(p *taskProgress, task pebblestore.ProjectTaskReco
 func (s *Server) taskProgressRecords(account string, task pebblestore.ProjectTaskRecord) ([]jobautomation.Delivery, *jobautomation.JobEvaluation) {
 	var deliveries []jobautomation.Delivery
 	var eval *jobautomation.JobEvaluation
-	if store, err := s.jobAutomationStore(); err == nil && taskStatusClass(task.Status) != progressWaiting {
+	// A task waiting for its provider's limit ran already: its deliveries
+	// (a reviewer's send-back round, say) still apply.
+	if store, err := s.jobAutomationStore(); err == nil && (taskStatusClass(task.Status) != progressWaiting || task.Status == pebblestore.ProjectTaskStatusLimitWaiting) {
 		jobID := taskProgressJobID(task)
 		if list, err := store.JobDeliveries(account, jobID); err == nil {
 			deliveries = list

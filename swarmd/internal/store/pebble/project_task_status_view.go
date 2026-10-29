@@ -68,7 +68,9 @@ func ProjectTaskCountBucket(status, outcome string, stale, idle bool) string {
 	case "pending_approval", "needs_input":
 		// Waiting for the person's approval or answer.
 		return ProjectTaskCountNeedsAttention
-	case "queued", "pending":
+	case "queued", "pending", ProjectTaskStatusLimitWaiting:
+		// Queued for capacity, or waiting for its provider's limit to
+		// reset: it continues by itself.
 		return ProjectTaskCountWaiting
 	case "planning", "in_progress", "running", "starting", "generating", "swarming", "publishing":
 		return ProjectTaskCountInProgress
@@ -127,7 +129,9 @@ const (
 	// ProjectTaskStateRunning: an agent or a workflow (running, sent back,
 	// not evaluated yet) still works on it. Count bucket in_progress.
 	ProjectTaskStateRunning = "running"
-	// ProjectTaskStateWaiting: queued for capacity. Count bucket waiting.
+	// ProjectTaskStateWaiting: queued for capacity, or waiting for its
+	// provider's usage limit to reset (it continues by itself at the reset).
+	// Count bucket waiting.
 	ProjectTaskStateWaiting = "waiting"
 	// ProjectTaskStateNeedsYou: the person must act: approval, a question,
 	// a blocked or failed run or workflow (including sent back until its
@@ -175,6 +179,13 @@ func projectTaskState(task ProjectTaskRecord, outcome string, stale, idle bool) 
 		}
 		return ProjectTaskStateStopped, "stopped by the person; a message resumes it"
 	case ProjectTaskCountWaiting:
+		if task.Status == ProjectTaskStatusLimitWaiting {
+			reason := strings.TrimSpace(task.LimitReason)
+			if reason == "" {
+				reason = "waiting for the provider's limit to reset"
+			}
+			return ProjectTaskStateWaiting, clipProjectTaskStateReason(reason) + "; continues by itself"
+		}
 		return ProjectTaskStateWaiting, "queued; starts when capacity frees"
 	case ProjectTaskCountInProgress:
 		switch word {

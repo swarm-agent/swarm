@@ -82,8 +82,10 @@ func (s *Server) signalTaskRunEnded(job sessionV3ExecutorJob, status string, res
 	}
 	// The task's first run is the task's end; every later run in its session
 	// (a follow-up, or a reopened attempt) is named by its run id.
-	followup := job.RunID
-	if job.RunID == pebblestore.InitialTaskRunID(task.ID) {
+	// A continuation after a provider limit (run id <run>.limit<n>) ends the
+	// run it continues, not a new follow-up.
+	followup := pebblestore.ProjectTaskLimitRunBase(job.RunID)
+	if followup == pebblestore.InitialTaskRunID(task.ID) {
 		followup = ""
 	}
 	attrs := map[string]string{"job_id": taskRunJobID(projectID, taskID), "role": task.Agent}

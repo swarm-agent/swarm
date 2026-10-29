@@ -44,7 +44,7 @@ workflow deliveries and its integration.
 
 | state | meaning |
 |---|---|
-| `waiting` | not started: held by `Start tasks: approve`, or queued for capacity |
+| `waiting` | not started: held by `Start tasks: approve`, or queued for capacity; or its run stopped on the provider's usage limit and it continues by itself at the reset (task status `limit_waiting`, `summary` says until when) |
 | `working` | an agent is working on it (planning or running, a follow-up included) |
 | `workflow` | it finished and a workflow is taking it through its steps now, or a workflow sent it back to its agent (`summary`: "workflow <name> sent back by <step> · round <n>: <reason>") and the follow-up has not started yet |
 | `not_integrated` | it finished with commits that are not in its target branch, and no workflow is running on it (none applied, or the ones that ran did not merge it) |
@@ -119,7 +119,7 @@ and `idle`, using the same bucket as the list counts):
 | state | meaning | produced by | count bucket |
 |---|---|---|---|
 | `running` | an agent or workflow still works on it | run status planning/in_progress/running/…; or outcome `running <step>`, `sent_back (round n)`, `workflow pending` | `in_progress` |
-| `waiting` | queued for capacity | run status `queued`/`pending` | `waiting` |
+| `waiting` | queued for capacity, or waiting for the provider's usage limit to reset | run status `queued`/`pending`, or `limit_waiting` (reason: "waiting for the provider's limit to reset (until …): provider …; continues by itself"; linked-machine `list_tasks` rows add it as `state_reason`) | `waiting` |
 | `needs_you` | the person must act | run status `pending_approval`, `needs_input`, `failed`, `blocked` (and other failures); outcome `blocked …` (including sent back until its rounds ran out) or `failed …` | `needs_attention` |
 | `landed` | the work was handed over | outcome `pushed <sha>`, `delivered <target>`, `integrated` (reason names the SHA or target) | `done` |
 | `done` | finished with nothing to hand over | outcome `finished`; run status `completed`, `rejected`, `superseded`; an archived task or a workflow step's own task | `done` |
@@ -152,6 +152,34 @@ Answering it is `manage_projects action=resolve_task_permission` (below).
 delivered (`delivered <target>`), or the commits being in the target branch
 (`integrated`). A failed run status wins over an earlier push (`needs_you`). A
 `landed` or `done` task is never counted `needs_attention`.
+
+#### Waiting for a provider's usage limit
+
+When a task's run (its first run or a follow-up in its session) ends on the
+provider's usage limit (a Claude Code session or weekly limit, or a provider
+429 or quota), the task is not failed. Its status is `limit_waiting` and its
+`task_state` is `waiting`, with a reason naming the provider and the reset
+time. The reset is read from the message when it states one ("resets 1:50pm
+(UTC)" waits until 13:51 UTC). Otherwise the task backs off for 5 minutes,
+doubling to at most an hour. The record carries `limit_waits`, `limit_at`,
+`limit_retry_at`, `limit_run_id` and `limit_reason`. One `task.limit_wait`
+signal (a warning; refs `project_id`, `task_id`, `session_id`, `run_id`;
+attrs `retry_at`, `job_id`, `role`) is recorded when the wait starts. A
+continuation that hits the limit again does not record another.
+
+At the reset, the same task session continues by itself in its retained
+worktree. Its message tells the agent that its run stopped on a usage limit
+at that time, and to check `git status`, finish what it was doing and
+commit. Uncommitted edits stay where they are. The continuation's run id is
+`<run>.limit<n>`, and its end is the job end of the run it continues. The
+wait is durable: after a restart it continues at its reset time, not at
+startup. After 12 waits on one task (the same bound as workflow steps and
+worker runs), the task fails with "the provider's limit was still in effect
+after 12 waits for its reset: …". `stop_task`, or archiving the task,
+cancels the wait: the task is `stopped` and `message_task` resumes it. A
+message the person sends in the task's own session continues it at once.
+Reviewer tasks and worker jobs keep their own limit handling (see
+[automations](automations.md)).
 
 `get_task`'s `progress.stage` follows the state, never an implementation step
 once the work is finished: `landed` is `Landed`, `done` is `Done`,

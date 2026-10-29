@@ -1370,6 +1370,9 @@ func (d *Daemon) Run() error {
 		// Linked task waits from before a restart resume only now, after
 		// every setter has run (watchers read the node key and fleet links).
 		d.apiServer.ResumeLinkedTaskWaits()
+		// Project tasks waiting for a provider's limit re-arm at their own
+		// reset time, never at startup.
+		d.apiServer.ResumeProjectTaskLimitWaits()
 	}
 	log.Printf("swarmd listener topology api_listen=%q", d.httpServer.Addr)
 
