@@ -22,11 +22,37 @@ type Limits struct {
 	DelegationWaves      int     `json:"delegation_waves"`
 	ActiveChildren       int     `json:"active_children"`
 	SwarmChildren        int     `json:"swarm_children"`
+	// StallAfterMinutes is how long an unfinished task may go without any
+	// change, run, queued run, workflow step or armed wait before it counts
+	// as stalled; RunSilentMinutes is how long an active run may go without
+	// a new event (while not on a tool, background command or approval).
+	// See docs/task-progress.md ("Stalled tasks"). Zero selects the default.
+	StallAfterMinutes int `json:"stall_after_minutes"`
+	RunSilentMinutes  int `json:"run_silent_minutes"`
+}
+
+// Stall detection defaults and bounds (minutes).
+const (
+	DefaultStallAfterMinutes = 20
+	DefaultRunSilentMinutes  = 30
+	maxStallMinutes          = 24 * 60
+)
+
+// fillStallDefaults gives a record written before the stall limits existed
+// (or a write that left them out) the defaults.
+func (l *Limits) fillStallDefaults() {
+	if l.StallAfterMinutes == 0 {
+		l.StallAfterMinutes = DefaultStallAfterMinutes
+	}
+	if l.RunSilentMinutes == 0 {
+		l.RunSilentMinutes = DefaultRunSilentMinutes
+	}
 }
 
 func DefaultLimits() Limits {
 	return Limits{ProjectCacheBytes: 10 << 30, WorkerJobConcurrency: 100, DelegationWaves: 5, ActiveChildren: 5, SwarmChildren: 5,
-		HelperConcurrency: 4, HelpersPerJob: 20, HelperTimeoutSeconds: 300, HelperTokens: 32000}
+		HelperConcurrency: 4, HelpersPerJob: 20, HelperTimeoutSeconds: 300, HelperTokens: 32000,
+		StallAfterMinutes: DefaultStallAfterMinutes, RunSilentMinutes: DefaultRunSilentMinutes}
 }
 
 var ErrLimitsConflict = errors.New("limits revision conflict")
@@ -52,6 +78,9 @@ func (l Limits) Validate() error {
 	if l.HelperTokens < 1 || l.HelperTokens > 1000000000 {
 		return errors.New("helper_tokens must be 1..1000000000")
 	}
+	if l.StallAfterMinutes < 0 || l.StallAfterMinutes > maxStallMinutes || l.RunSilentMinutes < 0 || l.RunSilentMinutes > maxStallMinutes {
+		return errors.New("stall_after_minutes and run_silent_minutes must be 1..1440 (0 selects the default)")
+	}
 	if l.WorkerJobConcurrency < 1 || l.WorkerJobConcurrency > 10000 || l.DelegationWaves < 0 || l.DelegationWaves > 256 || l.ActiveChildren < 1 || l.ActiveChildren > 256 || l.SwarmChildren < 1 || l.SwarmChildren > 256 || l.JobTokens < 0 || l.JobTokens > 1000000000 || math.IsNaN(l.JobCostUSD) || math.IsInf(l.JobCostUSD, 0) || l.JobCostUSD < 0 || l.JobCostUSD > 1000000 {
 		return errors.New("limits exceed hard bounds: concurrency 1..10000, waves 0..256, children 1..256, job tokens 0..1000000000, job USD 0..1000000")
 	}
@@ -66,6 +95,7 @@ func (s *Store) GetLimits(account string) (Limits, error) {
 	if l.ProjectCacheBytes == 0 {
 		l.ProjectCacheBytes = DefaultLimits().ProjectCacheBytes
 	}
+	l.fillStallDefaults()
 	if err != nil || found {
 		return l, err
 	}
@@ -115,6 +145,7 @@ func (s *Store) SetLimits(account string, expected uint64, l Limits) (Limits, er
 	if l.ProjectCacheBytes == 0 {
 		l.ProjectCacheBytes = DefaultLimits().ProjectCacheBytes
 	}
+	l.fillStallDefaults()
 	l.Revision = expected + 1
 	return l, s.PutJSON("limits/"+keyPart(account), l)
 }

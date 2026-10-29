@@ -1471,6 +1471,10 @@ func (d *Daemon) Run() error {
 		go d.jobAutomations.Run(d.bgCtx)
 		go d.apiServer.RunWorkflowTriggers(d.bgCtx)
 	}
+	if d.apiServer != nil && d.bgCtx != nil {
+		// Unfinished tasks either move, recover or raise one task.stalled.
+		go d.apiServer.RunTaskStallDetector(d.bgCtx)
+	}
 	// Start only V2, after listeners succeed; never migrate or execute V1 records.
 	if d.automationV2Scheduler != nil {
 		if err := d.StartAutomationV2Scheduling(context.Background()); err != nil {

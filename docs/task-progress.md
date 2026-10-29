@@ -187,6 +187,74 @@ finished, sent back, merged, delivered, failed), integration (merged into the
 target at a commit), Start tasks approval. Bounded (the most recent 50 entries);
 times are Unix ms.
 
+## Stalled tasks
+
+An unfinished task either makes progress, recovers by itself, or produces
+exactly one alert that names its state. swarmd checks every unarchived agent
+task once a minute (and once at start). The check reads only Swarm's own
+records: the task, its session's run state and last event, its workflow
+deliveries, pending approvals and background commands. It never calls a
+provider. It reads a task's worktree with Git only for the uncommitted case
+below: at most once per stall episode and 20 tasks per check, and only for
+finished tasks that changed in the last 24 hours.
+
+A task is **not** stalled while it has an armed wait: a run asleep on
+`wait_tasks` (the task watch wakes it), a background command still running,
+a running or waiting workflow step, or a provider-limit wait until its reset
+plus `stall_after_minutes`. It **is** stalled when:
+
+- it is unfinished with no active run, no queued run, no workflow step and no
+  armed wait, and nothing changed for `stall_after_minutes` (limits; default
+  20). This covers a pending approval (a tool's, or Start tasks) and a queued
+  run held by an update drain or an admission refusal;
+- or an active run has had no new event for `run_silent_minutes` (default
+  30), with no tool call in flight, no background command and no approval
+  waiting.
+
+Two known shapes recover by themselves, each once:
+
+- **Review exhausted.** The review loop used its automatic rounds and the
+  reviewer still blocks. The reviewer's last findings go into the task's own
+  session as a new turn: one extra round. If that round also ends blocked,
+  the findings go to whoever delegated the task, stating that review is
+  exhausted.
+- **Ended uncommitted.** The run ended with uncommitted changes in its
+  worktree and nothing is committed, so no review or next step can start.
+  One automatic turn in the same session asks the agent to finish, run the
+  tests and commit, or say why not. This happens once per head: never two
+  nudges for the same head, also after a restart.
+
+Every other stall, and a recovery that did not work, raises **one** signal
+per task per stall episode: kind `task.stalled`, severity warning, dedup key
+`task.stalled:<task>:<episode>`, refs `project_id`, `task_id`, `session_id`,
+attrs `stall`, `machine`, `title` and `since`. The summary names the task,
+the machine and the precise state:
+
+| `stall` | Summary says |
+| --- | --- |
+| `approval` | waiting on an approval for TOOL since T (or on Start tasks approval) |
+| `held` | held by an update drain since T, or by admission (its reason) |
+| `provider_limit` | waiting on a provider limit until T (passed) |
+| `review_exhausted` | review exhausted, after one extra round |
+| `ended_uncommitted` | ended uncommitted, after one commit nudge |
+| `no_next_step` | no run and no next step for N min |
+| `run_silent` | a run with no events for N min |
+
+The signal reaches swarm-watch (and its Telegram relay) through the signal
+feed. The same text goes into the Orchestrator conversation that delegated
+the task (`origin_session_id`) as a message: it starts a turn there, joins a
+running turn as a note, or wakes a `wait_tasks` wait. While the task is
+stalled, `progress.task_state` keeps its word and `task_state_reason` reads
+`stalled: …`. This holds on the task routes, `get_task`, `list_tasks`, the
+Orchestrator's task block and linked machines' task lists. When the task
+moves again (any change to the task, its run or its workflow), swarmd emits
+`task.unstalled` (severity info) and the episode ends; a later stall is a
+new episode with its own one alert.
+
+Each step is keyed durably by the episode (the signal's dedup key, the
+wake's request id, the recovery receipts), so a restart, including one
+between the signal and the wake, sends nothing twice.
+
 ## Live
 
 Every change to any input of `progress` (task status, an attempt, a workflow

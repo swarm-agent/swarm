@@ -18,6 +18,11 @@ MCP exposes `swarm_get_limits` and `swarm_set_limits`. The SDK exposes
 | delegation_waves | 5 | 0–256 |
 | active_children | 5 | 1–256 |
 | swarm_children | 5 | 1–256 |
+| stall_after_minutes | 20 | 1–1440 (0 = default) |
+| run_silent_minutes | 30 | 1–1440 (0 = default) |
+
+`stall_after_minutes` and `run_silent_minutes` set when an unfinished task
+counts as stalled (docs/task-progress.md, "Stalled tasks").
 
 Worker concurrency counts admitted and running jobs across this account's workers.
 An excess admission is refused, not queued; retry after capacity is released.

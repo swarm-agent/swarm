@@ -717,6 +717,16 @@ and `step_id`:
   `automation: true`; for an unreadable review, first read the reviewer
   job's session)
 
+A delivery that ends `rounds_exhausted` does not leave its task idle. The
+stall check (docs/task-progress.md, "Stalled tasks") sends the reviewer's
+last findings into the task's session as one extra round. If the review
+still blocks after it, the findings go to the Orchestrator that delegated
+the task, with one `task.stalled` signal (`stall: review_exhausted`). A
+task whose workflow step is running or waiting (a provider-limit wait
+included, until its reset plus `stall_after_minutes`) is never counted as
+stalled. A waiting step that has not run again by then is counted as
+stalled (`stall: provider_limit`).
+
 Design jobs now end with `design.job.completed`, `design.job.failed` or
 `design.job.cancelled`, and a stopped media job with `media.job.cancelled`.
 

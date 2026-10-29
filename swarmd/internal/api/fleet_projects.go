@@ -347,6 +347,14 @@ func compactFleetTaskList(raw json.RawMessage) (json.RawMessage, error) {
 			stateOutcome, _ = progress["outcome"].(string)
 			stateStale, _ = progress["stale"].(bool)
 			stateIdle, _ = progress["idle"].(bool)
+			// A stall is the linked machine's own decision (its stall check,
+			// docs/task-progress.md "Stalled tasks"): pass its reason through.
+			if reason, _ := progress["task_state_reason"].(string); strings.HasPrefix(reason, "stalled: ") {
+				if r := []rune(reason); len(r) > 300 {
+					reason = string(r[:300])
+				}
+				item["task_state_reason"] = reason
+			}
 		}
 		if stateTask.ID != "" {
 			item["state"], _ = pebblestore.ProjectTaskState(stateTask, stateOutcome, stateStale, stateIdle)

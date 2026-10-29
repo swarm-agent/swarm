@@ -153,7 +153,12 @@ type Server struct {
 	outboxStatus            func() outbox.Status
 	jobAutomations          *jobautomation.Runner
 	jobAutomationCallFn     func(context.Context) (*controlMCPCall, error)
-	publishConfig           string
+	// Stall detection (task_stall.go): taskStallGitFn replaces the worktree
+	// read in tests; the cache keeps one Git read per task episode.
+	taskStallGitFn    func(context.Context, pebblestore.ProjectTaskRecord) (taskStallGit, bool)
+	taskStallGitMu    sync.Mutex
+	taskStallGitCache map[string]taskStallGit
+	publishConfig     string
 	// outboxDelivery writes a workflow deliver step's files to the outbox.
 	outboxDelivery              OutboxDeliveryWriter
 	secretValues                secretValueSetter

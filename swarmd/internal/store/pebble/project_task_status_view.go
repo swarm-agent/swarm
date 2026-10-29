@@ -155,6 +155,16 @@ const (
 // in_progress, waiting waiting, needs_you needs_attention, stopped stopped,
 // not_integrated needs_attention (or idle once 7 days old).
 func ProjectTaskState(task ProjectTaskRecord, outcome string, stale, idle bool) (string, string) {
+	state, reason := projectTaskState(task, outcome, stale, idle)
+	// A stalled task keeps its state word (and so its count bucket); its
+	// reason names the stall. Landed and stopped tasks are never stalled.
+	if task.Stall.Applies(task) && state != ProjectTaskStateLanded && state != ProjectTaskStateStopped {
+		return state, "stalled: " + clipProjectTaskStateReason(task.Stall.Reason)
+	}
+	return state, reason
+}
+
+func projectTaskState(task ProjectTaskRecord, outcome string, stale, idle bool) (string, string) {
 	outcome = strings.TrimSpace(outcome)
 	word, _, _ := strings.Cut(outcome, " ")
 	bucket := ProjectTaskBucket(task, outcome, stale, idle)

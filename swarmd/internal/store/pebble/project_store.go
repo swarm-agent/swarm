@@ -577,8 +577,12 @@ type ProjectTaskRecord struct {
 	TaskProgramID       string                       `json:"task_program_id,omitempty"`
 	TaskProgramStatus   *TaskProgramRecord           `json:"task_program_status,omitempty"`
 	Design              *ProjectTaskDesignJob        `json:"design,omitempty"` // a design job: the daemon design pipeline, not an agent session
-	CreatedAt           int64                        `json:"created_at"`
-	UpdatedAt           int64                        `json:"updated_at"`
+	// Stall is the stall detector's marker (SetProjectTaskStall): why the
+	// task stopped moving. It applies only while UpdatedAt is unchanged
+	// (ProjectTaskStall.Applies); every ordinary task write clears it.
+	Stall     *ProjectTaskStall `json:"stall,omitempty"`
+	CreatedAt int64             `json:"created_at"`
+	UpdatedAt int64             `json:"updated_at"`
 }
 
 func (t *ProjectTaskRecord) Validate() error {
@@ -894,6 +898,8 @@ func (s *SessionStore) persistProjectTaskMetadataLocked(accountScopeID string, t
 	}
 	// Git observations must be recomputed, never persisted as delivery authority.
 	task.DeliveryAssessment = nil
+	// A task write is a change: a stall marker never survives it.
+	task.Stall = nil
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	if accountScopeID == "" {
 		return nil, errors.New("account scope id is required")

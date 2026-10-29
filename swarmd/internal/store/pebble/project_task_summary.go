@@ -105,7 +105,7 @@ func compactProjectTask(task ProjectTaskRecord) ProjectTaskRecord {
 		AspectRatio: task.AspectRatio, Resolution: task.Resolution, VariantCount: task.VariantCount, DurationSeconds: task.DurationSeconds,
 		Model: task.Model, Provider: task.Provider, Thinking: task.Thinking, ServiceTier: task.ServiceTier, ContextMode: task.ContextMode,
 		Operation: task.Operation, RouterAlert: taskSummaryBrief(task.RouterAlert), PlanBinding: task.PlanBinding,
-		TaskProgramID: task.TaskProgramID, TaskProgram: task.TaskProgram, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt,
+		TaskProgramID: task.TaskProgramID, TaskProgram: task.TaskProgram, Stall: task.Stall, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt,
 	}
 	task.Description, task.LastError = taskSummaryBrief(task.Description), taskSummaryBrief(task.LastError)
 	task.PlanSummary, task.ContextPoolSummary = taskSummaryBrief(task.PlanSummary), taskSummaryBrief(task.ContextPoolSummary)
