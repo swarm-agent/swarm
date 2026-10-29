@@ -478,12 +478,7 @@ func (r *Runtime) executeFleetWaitTasks(ctx context.Context, scope WorkspaceScop
 		}
 		titles = append(titles, title)
 	}
-	payload, _ := json.Marshal(targets)
-	hash := machine + "\x00" + projectID + string(payload)
-	if until != pebblestore.ProjectTaskWaitUntilSettled {
-		hash += "\x00" + until
-	}
-	result, err := r.registerProjectTaskWatch(scope, &pebblestore.V3ProjectTaskWaitMutation{RunID: run.RunID, ProjectID: projectID, TaskIDs: ids, Machine: machine, RemoteTargets: targets, RemoteTitles: titles, Until: until}, hash, ids, titles)
+	result, err := r.registerProjectTaskWatch(scope, &pebblestore.V3ProjectTaskWaitMutation{RunID: run.RunID, ProjectID: projectID, TaskIDs: ids, Machine: machine, RemoteTargets: targets, RemoteTitles: titles, Until: until}, ids, titles)
 	if err != nil {
 		return "", err
 	}

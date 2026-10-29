@@ -66,12 +66,7 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 		if err != nil {
 			return "", err
 		}
-		payload, _ := json.Marshal(ids)
-		hash := projectID + string(payload)
-		if until != pebblestore.ProjectTaskWaitUntilSettled {
-			hash += "\x00" + until
-		}
-		watch, err := r.registerProjectTaskWatch(scope, &pebblestore.V3ProjectTaskWaitMutation{RunID: run.RunID, ProjectID: projectID, TaskIDs: ids, Until: until}, hash, ids, titles)
+		watch, err := r.registerProjectTaskWatch(scope, &pebblestore.V3ProjectTaskWaitMutation{RunID: run.RunID, ProjectID: projectID, TaskIDs: ids, Until: until}, ids, titles)
 		if err != nil {
 			return "", err
 		}

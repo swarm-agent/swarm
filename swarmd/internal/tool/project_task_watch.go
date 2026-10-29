@@ -77,7 +77,9 @@ func projectTaskWatchIDs(args map[string]any) ([]string, error) {
 
 // registerProjectTaskWatch commits the watch and answers with status
 // watching. Tasks already watched by this conversation are not watched twice.
-func (r *Runtime) registerProjectTaskWatch(scope WorkspaceScope, op *pebblestore.V3ProjectTaskWaitMutation, hash string, ids, titles []string) (map[string]any, error) {
+func (r *Runtime) registerProjectTaskWatch(scope WorkspaceScope, op *pebblestore.V3ProjectTaskWaitMutation, ids, titles []string) (map[string]any, error) {
+	// The key names the run and the task set (order-free), so a repeated call
+	// replays the same registration whatever order it lists the tasks in.
 	key := projectTaskWatchRequestKey(op.RunID, op.Machine, op.ProjectID, op.Until, ids)
 	result := map[string]any{"tool": "manage_projects", "action": "wait_tasks", "project_id": op.ProjectID, "status": "watching", "task_ids": ids, "until": op.Until}
 	if op.Machine != "" {
@@ -86,7 +88,7 @@ func (r *Runtime) registerProjectTaskWatch(scope WorkspaceScope, op *pebblestore
 	_, err := r.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
 		SessionID: scope.SessionID, UserID: scope.Principal.UserID, AccountScopeID: scope.Principal.AccountScopeID,
 		Kind: pebblestore.V3SessionMutationAppendMessage, EventType: "session.task_watch.started",
-		ClientRequestID: key, PayloadHash: hash, TaskWait: op,
+		ClientRequestID: key, PayloadHash: key, TaskWait: op,
 	})
 	switch {
 	case errors.Is(err, pebblestore.ErrProjectTaskAlreadyWatched):
@@ -98,8 +100,10 @@ func (r *Runtime) registerProjectTaskWatch(scope WorkspaceScope, op *pebblestore
 	}
 	watchID, watched := op.RegisteredWatchID, op.RegisteredTitles
 	if watchID == "" {
-		// A retried call replays the committed registration.
+		// A repeated call in this run replays the committed registration:
+		// nothing new is watched.
 		watchID, watched = pebblestore.ProjectTaskWatchID(scope.SessionID, op.RunID, op.Machine, op.ProjectID, op.Until, ids), titles
+		result["already_watching"] = true
 	} else if len(op.RegisteredTaskIDs) < len(ids) {
 		covered := map[string]bool{}
 		for _, id := range op.RegisteredTaskIDs {

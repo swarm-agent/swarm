@@ -10,21 +10,23 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 )
 
-// Purpose: when the Orchestrator pends its conversation on wait_tasks, the
-// person must be able to see why, even if the Orchestrator wrote nothing
-// first. Requirement: a local wait_tasks result carries a one-line notice
-// naming every waited task by title, and the
-// committed session.run.waiting_tasks event carries status waiting_tasks and
-// the same notice (top-level and in run_intent.task_wait) for clients to show.
-// A refused wait records no intent and emits no waiting event.
-// Threat: the live failure: the conversation silently stops on a tool call
-// and the person is left asking "why are we waiting?".
-// Owners: executeManageProjectTasksContext (wait_tasks), checkProjectTaskWaitIDs,
-// SessionStore.prepareProjectTaskWait (ProjectTaskWaitNotice) and the V3 event
-// payload (v3EventPayload). The tool entry over a real Pebble store is the
-// narrowest layer that returns the agent-visible result and commits the
-// durable event together.
-func TestWaitTasksNoticeNamesTasksInResultAndEvent(t *testing.T) {
+// Purpose: wait_tasks watches the tasks and returns at once, so the
+// Orchestrator goes on and answers the person in the same turn.
+// Requirement: a local wait_tasks result has status watching, a watch_id and
+// a one-line notice naming every watched task and telling the AI to reply and
+// end its turn; the run intent is untouched (still running, no task wait, no
+// waiting_tasks event); a session.task_watch.started event carries the
+// notice and the conversation's task_watches. Calling it again on watched
+// tasks is idempotent (already_watching, no second event); the watch_tasks
+// alias works; cancel_watch ends the watch. A refused call records nothing.
+// Threat: the live failure of the pending model: a silent turn ended on the
+// tool call, re-waits pending the conversation again, duplicate wakes.
+// Owners: executeManageProjectTasksContext (wait_tasks), registerProjectTaskWatch,
+// cancelProjectTaskWatches, normalizeProjectTaskWatchArgs and
+// SessionStore.prepareProjectTaskWait over a real Pebble store: the tool entry
+// is the narrowest layer that returns the agent-visible result and commits
+// the durable event together.
+func TestWaitTasksWatchesAndReturnsAtOnce(t *testing.T) {
 	f := newProjectFolderFixture(t)
 	account, user, chat := f.scope.Principal.AccountScopeID, f.scope.Principal.UserID, f.scope.SessionID
 	for _, in := range []pebblestore.V3SessionMutationInput{
@@ -56,69 +58,108 @@ func TestWaitTasksNoticeNamesTasksInResultAndEvent(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(tool.WithVideoRunContext(context.Background(), tool.VideoRunContext{SessionID: chat, RunID: "run-1"}), 20*time.Second)
 	defer cancel()
-	wait := func(ids ...string) (string, error) {
-		raw, _ := json.Marshal(map[string]any{"action": "wait_tasks", "project_id": "proj-folders", "task_ids": ids})
-		return f.runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, f.scope, tool.Call{Name: "manage_projects", Arguments: string(raw)})
+	call := func(action string, extra map[string]any, ids ...string) (map[string]any, error) {
+		args := map[string]any{"action": action, "project_id": "proj-folders"}
+		if len(ids) > 0 {
+			args["task_ids"] = ids
+		}
+		for k, v := range extra {
+			args[k] = v
+		}
+		raw, _ := json.Marshal(args)
+		out, err := f.runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, f.scope, tool.Call{Name: "manage_projects", Arguments: string(raw)})
+		if err != nil {
+			return nil, err
+		}
+		var result map[string]any
+		if err := json.Unmarshal([]byte(out), &result); err != nil {
+			t.Fatalf("result %s: %v", out, err)
+		}
+		return result, nil
 	}
-	waitingEvents := func() []pebblestore.V3SessionEvent {
-		events, err := f.store.ListV3SessionEvents(chat, 0, 200)
+	events := func(eventType string) []pebblestore.V3SessionEvent {
+		all, err := f.store.ListV3SessionEvents(chat, 0, 200)
 		if err != nil {
 			t.Fatal(err)
 		}
 		var out []pebblestore.V3SessionEvent
-		for _, event := range events {
-			if event.EventType == "session.run.waiting_tasks" {
+		for _, event := range all {
+			if event.EventType == eventType {
 				out = append(out, event)
 			}
 		}
 		return out
 	}
+	runUnchanged := func(label string) {
+		t.Helper()
+		intent, _, err := f.store.GetV3SessionRunIntent(chat, "run-1")
+		if err != nil || intent.Status != pebblestore.V3RunIntentRunning || intent.TaskWait != nil {
+			t.Fatalf("%s changed the run: %+v %v", label, intent, err)
+		}
+		if got := events("session.run.waiting_tasks"); len(got) != 0 {
+			t.Fatalf("%s emitted waiting events: %+v", label, got)
+		}
+	}
 
-	// Negative: a refused wait (one task not started) records nothing.
-	if out, err := wait("t1", "t3"); err == nil {
-		t.Fatalf("wait on an unstarted task accepted: %s", out)
+	// Negative: a refused call (one task not started) records nothing.
+	if out, err := call("wait_tasks", nil, "t1", "t3"); err == nil {
+		t.Fatalf("watch on an unstarted task accepted: %v", out)
 	}
-	if got := waitingEvents(); len(got) != 0 {
-		t.Fatalf("refused wait emitted waiting events: %+v", got)
+	if got := events("session.task_watch.started"); len(got) != 0 {
+		t.Fatalf("refused call emitted watch events: %+v", got)
 	}
-	if intent, _, err := f.store.GetV3SessionRunIntent(chat, "run-1"); err != nil || intent.Status != pebblestore.V3RunIntentRunning || intent.TaskWait != nil {
-		t.Fatalf("refused wait changed the run: %+v %v", intent, err)
-	}
+	runUnchanged("refused call")
 
-	out, err := wait("t1", "t2")
+	result, err := call("wait_tasks", nil, "t1", "t2")
 	if err != nil {
 		t.Fatal(err)
 	}
-	const want = "This conversation is now waiting on 2 task(s): Fix login, Research cache. It wakes when they settle; a new message ends the wait."
-	var result map[string]any
-	if err := json.Unmarshal([]byte(out), &result); err != nil {
-		t.Fatal(err)
+	const want = "Watching 2 task(s): Fix login, Research cache. Reply to the person now and end your turn; a new turn starts with the outcomes when they settle."
+	if result["status"] != "watching" || result["notice"] != want || result["watch_id"] == "" || result["next_action"] != nil {
+		t.Fatalf("wait_tasks result: %v", result)
 	}
-	if result["status"] != "waiting_tasks" || result["next_action"] != "yield_until_task_outcome" || result["notice"] != want {
-		t.Fatalf("wait_tasks result: %s", out)
-	}
-	intent, ok, err := f.store.GetV3SessionRunIntent(chat, "run-1")
-	if err != nil || !ok || intent.Status != pebblestore.V3RunIntentWaitingTasks || intent.TaskWait == nil || intent.TaskWait.Notice != want {
-		t.Fatalf("durable wait: %+v %v %v", intent, ok, err)
-	}
-	events := waitingEvents()
-	if len(events) != 1 {
-		t.Fatalf("waiting events: %+v", events)
+	runUnchanged("wait_tasks")
+	started := events("session.task_watch.started")
+	if len(started) != 1 {
+		t.Fatalf("watch events: %+v", started)
 	}
 	var payload struct {
-		Status    string `json:"status"`
-		Notice    string `json:"notice"`
-		RunIntent struct {
-			Status   string `json:"status"`
-			TaskWait struct {
-				Notice string `json:"notice"`
-			} `json:"task_wait"`
-		} `json:"run_intent"`
+		Notice      string `json:"notice"`
+		TaskWatches []struct {
+			WatchID string   `json:"watch_id"`
+			TaskIDs []string `json:"task_ids"`
+			Titles  []string `json:"titles"`
+		} `json:"task_watches"`
 	}
-	if err := json.Unmarshal(events[0].Payload, &payload); err != nil {
+	if err := json.Unmarshal(started[0].Payload, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Status != "waiting_tasks" || payload.Notice != want || payload.RunIntent.Status != "waiting_tasks" || payload.RunIntent.TaskWait.Notice != want {
-		t.Fatalf("waiting event payload: %s", events[0].Payload)
+	if payload.Notice != "Watching 2 tasks: Fix login, Research cache." || len(payload.TaskWatches) != 1 || payload.TaskWatches[0].WatchID != result["watch_id"] || len(payload.TaskWatches[0].TaskIDs) != 2 {
+		t.Fatalf("watch event payload: %s", started[0].Payload)
 	}
+
+	// Watching again (also through the watch_tasks alias) changes nothing.
+	again, err := call("watch_tasks", nil, "t2", "t1")
+	if err != nil || again["status"] != "watching" || again["already_watching"] != true {
+		t.Fatalf("re-watch: %v %v", again, err)
+	}
+	if got := events("session.task_watch.started"); len(got) != 1 {
+		t.Fatalf("re-watch emitted a second event: %d", len(got))
+	}
+	if watches, err := f.store.ListV3SessionTaskWatches(chat); err != nil || len(watches) != 1 {
+		t.Fatalf("watches after re-watch: %+v %v", watches, err)
+	}
+
+	// cancel_watch ends it; a second cancel finds nothing and says so.
+	cancelled, err := call("cancel_watch", nil, "t1", "t2")
+	if err != nil || cancelled["status"] != "cancelled" {
+		t.Fatalf("cancel_watch: %v %v", cancelled, err)
+	}
+	if watches, err := f.store.ListV3SessionTaskWatches(chat); err != nil || len(watches) != 0 {
+		t.Fatalf("watches after cancel: %+v %v", watches, err)
+	}
+	if _, err := call("wait_tasks", map[string]any{"cancel": true}, "t1"); err == nil {
+		t.Fatal("cancel of nothing reported success")
+	}
+	runUnchanged("cancel")
 }

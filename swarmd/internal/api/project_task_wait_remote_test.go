@@ -23,7 +23,16 @@ type remoteWaitHarness struct {
 	home, remote *fleetTestSwarm
 	p            identity.Principal
 	runtime      *tool.Runtime
+	// quiet runs the same tool without starting the linked-machine follower
+	// (as if the daemon stopped right after the watch was recorded).
+	quiet   *tool.Runtime
+	watchID string
 }
+
+// quietLifecycle is the home server without its follower hook.
+type quietLifecycle struct{ *Server }
+
+func (quietLifecycle) FollowTaskWatch(string, string) {}
 
 const remoteWaitGoal = "home-goal"
 
@@ -66,7 +75,30 @@ func newRemoteWaitHarness(t *testing.T, tasks ...string) *remoteWaitHarness {
 	t.Cleanup(func() { _ = h.runtime.Close() })
 	h.runtime.SetManageSessionService(home.s.sessions)
 	h.runtime.SetProjectTaskLifecycleService(home.s)
+	h.quiet = tool.NewRuntime(1)
+	t.Cleanup(func() { _ = h.quiet.Close() })
+	h.quiet.SetManageSessionService(home.s.sessions)
+	h.quiet.SetProjectTaskLifecycleService(quietLifecycle{home.s})
 	return h
+}
+
+// endRun ends the goal's run, so the conversation is idle and a ready watch
+// fires at once.
+func (h *remoteWaitHarness) endRun(t *testing.T, run string) {
+	t.Helper()
+	in := pebblestore.V3SessionMutationInput{SessionID: remoteWaitGoal, AccountScopeID: h.home.account, UserID: h.home.user, Kind: pebblestore.V3SessionMutationRecordRunIntent, ClientRequestID: "end-" + run, PayloadHash: "end-" + run, RunIntent: &pebblestore.V3SessionRunIntent{RunID: run, Status: pebblestore.V3RunIntentCompleted}}
+	if _, err := h.home.s.sessions.Store().ApplyV3SessionMutation(in); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (h *remoteWaitHarness) watches(t *testing.T) []pebblestore.V3SessionTaskWatch {
+	t.Helper()
+	watches, err := h.home.s.sessions.Store().ListV3SessionTaskWatches(remoteWaitGoal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return watches
 }
 
 func (h *remoteWaitHarness) createGoal(t *testing.T, id string, metadata map[string]any) {
@@ -87,10 +119,15 @@ func (h *remoteWaitHarness) createGoal(t *testing.T, id string, metadata map[str
 // wait calls manage_projects wait_tasks with machine=box as the running goal.
 func (h *remoteWaitHarness) wait(t *testing.T, session string, ids ...string) (string, error) {
 	t.Helper()
+	return h.waitWith(t, h.runtime, session, ids...)
+}
+
+func (h *remoteWaitHarness) waitWith(t *testing.T, runtime *tool.Runtime, session string, ids ...string) (string, error) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(tool.WithVideoRunContext(context.Background(), tool.VideoRunContext{SessionID: session, RunID: "run-1"}), 20*time.Second)
 	defer cancel()
 	args, _ := json.Marshal(map[string]any{"action": "wait_tasks", "machine": "box", "project_id": "remote-project", "task_ids": ids})
-	return h.runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, tool.WorkspaceScope{SessionID: session, Principal: h.p}, tool.Call{Name: "manage_projects", Arguments: string(args)})
+	return runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, tool.WorkspaceScope{SessionID: session, Principal: h.p}, tool.Call{Name: "manage_projects", Arguments: string(args)})
 }
 
 func (h *remoteWaitHarness) intent(t *testing.T, run string) (pebblestore.V3SessionRunIntent, bool) {
@@ -139,9 +176,12 @@ func (h *remoteWaitHarness) awaitWake(t *testing.T) map[string]any {
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
-		if next, ok := h.intent(t, pebblestore.ProjectTaskWaitResumeID("run-1")); ok {
-			if next.Status != pebblestore.V3RunIntentPendingExecutor || next.TaskWaitOwnerRunID != "run-1" {
+		if next, ok := h.intent(t, pebblestore.ProjectTaskWatchResumeID(h.watchID)); ok {
+			if next.Status != pebblestore.V3RunIntentPendingExecutor || !next.ResumeContext {
 				t.Fatalf("continuation: %+v", next)
+			}
+			if n := len(h.watches(t)); n != 0 {
+				t.Fatalf("fired watch kept: %d", n)
 			}
 			messages, err := h.home.s.sessions.Store().ListMessages(remoteWaitGoal, 0, 100)
 			if err != nil {
@@ -164,40 +204,58 @@ func (h *remoteWaitHarness) awaitWake(t *testing.T) map[string]any {
 	return nil
 }
 
+// register records the watch through the tool (which starts the follower),
+// then ends the registering run as the Orchestrator's turn does.
 func (h *remoteWaitHarness) register(t *testing.T, ids ...string) {
 	t.Helper()
-	h.commitWait(t, ids...)
-	// The executor's yield hook (sessions_v3_executor.go) starts this watcher.
-	h.home.s.watchRemoteTaskWait(remoteWaitGoal, "run-1")
+	h.registerWith(t, h.runtime, ids...)
+	h.endRun(t, "run-1")
 }
 
-// commitWait runs the tool and checks the durable waiting_tasks intent, without
-// starting the watcher (as if the daemon stopped right after the commit).
+// commitWait records the watch without starting the follower (as if the
+// daemon stopped right after the commit), then ends the run.
 func (h *remoteWaitHarness) commitWait(t *testing.T, ids ...string) {
 	t.Helper()
-	out, err := h.wait(t, remoteWaitGoal, ids...)
+	h.registerWith(t, h.quiet, ids...)
+	h.endRun(t, "run-1")
+}
+
+// registerWith runs the tool and checks the result and the durable watch: the
+// run keeps running (the tool never pends it).
+func (h *remoteWaitHarness) registerWith(t *testing.T, runtime *tool.Runtime, ids ...string) {
+	t.Helper()
+	out, err := h.waitWith(t, runtime, remoteWaitGoal, ids...)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var result map[string]any
-	if err := json.Unmarshal([]byte(out), &result); err != nil || result["next_action"] != "yield_until_task_outcome" || result["machine"] != "box" || result["untrusted_content"] != true {
+	if err := json.Unmarshal([]byte(out), &result); err != nil || result["status"] != "watching" || result["next_action"] != nil || result["machine"] != "box" || result["untrusted_content"] != true || !strings.HasPrefix(asTestString(result["notice"]), "Watching ") {
 		t.Fatalf("registration result: %s %v", out, err)
 	}
-	waiting, _ := h.intent(t, "run-1")
-	if waiting.Status != pebblestore.V3RunIntentWaitingTasks || waiting.TaskWait == nil || waiting.TaskWait.Machine != "box" || len(waiting.TaskWait.Tasks) != len(ids) || waiting.TaskWait.Tasks[0].AttemptID != "attempt-"+ids[0] || waiting.TaskWait.Tasks[0].SessionID != "rs-"+ids[0] {
-		t.Fatalf("registration intent: %+v", waiting)
+	h.watchID, _ = result["watch_id"].(string)
+	if run, _ := h.intent(t, "run-1"); run.Status != pebblestore.V3RunIntentRunning || run.TaskWait != nil {
+		t.Fatalf("registration changed the run: %+v", run)
 	}
+	watches := h.watches(t)
+	if len(watches) != 1 || watches[0].WatchID != h.watchID || watches[0].Wait.Machine != "box" || len(watches[0].Wait.Tasks) != len(ids) || watches[0].Wait.Tasks[0].AttemptID != "attempt-"+ids[0] || watches[0].Wait.Tasks[0].SessionID != "rs-"+ids[0] {
+		t.Fatalf("registration watch: %+v", watches)
+	}
+}
+
+func asTestString(v any) string {
+	s, _ := v.(string)
+	return s
 }
 
 // noWake asserts (for a bounded window) that the goal was not woken.
 func (h *remoteWaitHarness) noWake(t *testing.T, window time.Duration, why string) {
 	t.Helper()
 	time.Sleep(window)
-	if _, ok := h.intent(t, pebblestore.ProjectTaskWaitResumeID("run-1")); ok {
+	if _, ok := h.intent(t, pebblestore.ProjectTaskWatchResumeID(h.watchID)); ok {
 		t.Fatalf("woke: %s", why)
 	}
-	if owner, _ := h.intent(t, "run-1"); owner.Status != pebblestore.V3RunIntentWaitingTasks {
-		t.Fatalf("wait left waiting_tasks (%s): %+v", why, owner)
+	if n := len(h.watches(t)); n != 1 {
+		t.Fatalf("watch ended without firing (%s): %d", why, n)
 	}
 }
 
@@ -217,23 +275,19 @@ func remoteWaitRow(t *testing.T, out map[string]any, i int) map[string]any {
 	return rows[i].(map[string]any)
 }
 
-// Purpose: an Orchestrator that delegated to a linked machine can pend its
-// goal until that work ends, exactly as for local tasks. Requirement: the wait
-// pins the remote attempts through the link, stays pending (no wake) while the
-// task runs, and when the remote task reaches needs_review the home learns it
+// Purpose: an Orchestrator that delegated to a linked machine can watch that
+// work, exactly as for local tasks. Requirement: the watch pins the remote
+// attempts through the link, fires nothing while the task runs, and when the remote task reaches needs_review the home learns it
 // from the machine's activity stream plus a link get_task and wakes the goal
 // with machine/task/attempt/status/summary, marked untrusted. Threat: an
 // Orchestrator stranded waiting, or remote text delivered as trusted.
-// Boundary: tool executeFleetWaitTasks, Server.watchRemoteTaskWait and the
+// Boundary: tool executeFleetWaitTasks, Server.watchRemoteTaskWatch and the
 // store wake over two in-process daemons linked like production.
 func TestRemoteTaskWaitWakesOnReview(t *testing.T) {
 	h := newRemoteWaitHarness(t, "t1", "t2")
 	h.register(t, "t1", "t2")
 	h.finish(t, "t1", "completed", "First done.", "")
-	time.Sleep(300 * time.Millisecond)
-	if _, ok := h.intent(t, pebblestore.ProjectTaskWaitResumeID("run-1")); ok {
-		t.Fatal("woke while a selected task still runs")
-	}
+	h.noWake(t, 300*time.Millisecond, "a selected task still runs")
 	h.finish(t, "t2", "needs_review", "Ready for review.", "")
 	out := h.awaitWake(t)
 	if out["machine"] != "box" || out["untrusted_content"] != true || out["all_ready"] != true || !strings.Contains(out["guidance"].(string), "linked machine box") {
@@ -245,9 +299,6 @@ func TestRemoteTaskWaitWakesOnReview(t *testing.T) {
 	}
 	if first := remoteWaitRow(t, out, 0); first["status"] != "completed" || first["summary"] != "First done." {
 		t.Fatalf("first row: %v", first)
-	}
-	if owner, _ := h.intent(t, "run-1"); owner.Status != pebblestore.V3RunIntentCompleted {
-		t.Fatalf("wait not retired: %+v", owner)
 	}
 }
 
@@ -281,29 +332,49 @@ func TestRemoteTaskWaitMachineUnreachable(t *testing.T) {
 	}
 }
 
-// Purpose: a new person message supersedes the wait; a later remote outcome
-// produces no wake or continuation. Threat: stale remote results resuming a
-// goal the person already redirected.
-func TestRemoteTaskWaitSupersededByUserMessage(t *testing.T) {
+// Purpose: a linked-machine watch is never ended by the person's message,
+// and its outcomes that settle while the person's turn runs are delivered
+// right after that turn. Requirement: a user message (with its run) leaves
+// the watch; the remote task reaching needs_review while that run is active
+// produces no continuation; ending the run and the executor's post-run hook
+// (deliverSessionTaskWatches, which kicks the follower) delivers the outcome
+// exactly once. Threat: the retired model where a message cancelled the wait
+// and the outcome was lost, or an outcome injected mid-turn. Boundary: tool
+// executeFleetWaitTasks, Server.followRemoteTaskWait with its kick and the
+// store's active-run deferral over two in-process daemons.
+func TestRemoteTaskWatchSurvivesUserMessageAndDeliversAfterTheRun(t *testing.T) {
 	h := newRemoteWaitHarness(t, "t1")
 	h.register(t, "t1")
-	in := pebblestore.V3SessionMutationInput{SessionID: remoteWaitGoal, AccountScopeID: h.home.account, UserID: h.home.user, Kind: pebblestore.V3SessionMutationAppendMessage, ClientRequestID: "user-message", PayloadHash: "user-message", Message: &pebblestore.MessageSnapshot{ID: "user-message", Role: "user", Content: "Change of plan."}}
-	if _, err := h.home.s.sessions.Store().ApplyV3SessionMutation(in); err != nil {
-		t.Fatal(err)
+	time.Sleep(200 * time.Millisecond) // let the follower's stream connect
+	store := h.home.s.sessions.Store()
+	for _, in := range []pebblestore.V3SessionMutationInput{
+		{SessionID: remoteWaitGoal, Kind: pebblestore.V3SessionMutationAppendMessage, ClientRequestID: "user-message", Message: &pebblestore.MessageSnapshot{ID: "user-message", Role: "user", Content: "Are we still pending?"}, RunIntent: &pebblestore.V3SessionRunIntent{RunID: "run-2", Status: pebblestore.V3RunIntentPendingExecutor}},
+		{SessionID: remoteWaitGoal, Kind: pebblestore.V3SessionMutationRecordRunIntent, ClientRequestID: "run-2-running", RunIntent: &pebblestore.V3SessionRunIntent{RunID: "run-2", Status: pebblestore.V3RunIntentRunning}},
+	} {
+		in.AccountScopeID, in.UserID, in.PayloadHash = h.home.account, h.home.user, in.ClientRequestID
+		if _, err := store.ApplyV3SessionMutation(in); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if owner, _ := h.intent(t, "run-1"); owner.Status != pebblestore.V3RunIntentCancelled {
-		t.Fatalf("wait not cancelled: %+v", owner)
+	if n := len(h.watches(t)); n != 1 {
+		t.Fatalf("the person's message ended the watch: %d", n)
 	}
 	h.finish(t, "t1", "needs_review", "Done.", "")
-	time.Sleep(500 * time.Millisecond)
-	if _, ok := h.intent(t, pebblestore.ProjectTaskWaitResumeID("run-1")); ok {
-		t.Fatal("superseded wait produced a continuation")
+	h.noWake(t, 500*time.Millisecond, "outcome delivered into the person's running turn")
+	h.endRun(t, "run-2")
+	h.home.s.deliverSessionTaskWatches(remoteWaitGoal) // the executor's finish hook
+	if row := remoteWaitRow(t, h.awaitWake(t), 0); row["status"] != "needs_review" || row["summary"] != "Done." {
+		t.Fatalf("outcome after the run: %v", row)
 	}
-	messages, _ := h.home.s.sessions.Store().ListMessages(remoteWaitGoal, 0, 100)
+	messages, _ := store.ListMessages(remoteWaitGoal, 0, 100)
+	outcomes := 0
 	for _, m := range messages {
 		if strings.HasPrefix(m.Content, "Delegated project task outcomes:") {
-			t.Fatalf("superseded wait delivered outcomes: %s", m.Content)
+			outcomes++
 		}
+	}
+	if outcomes != 1 {
+		t.Fatalf("outcome messages: %d", outcomes)
 	}
 }
 
@@ -330,8 +401,8 @@ func TestRemoteTaskWaitWorkRule(t *testing.T) {
 	if _, err := h.wait(t, remoteWaitGoal, "t1"); err == nil || !strings.Contains(err.Error(), "off") {
 		t.Fatalf("registration with work off: %v", err)
 	}
-	if owner, _ := h.intent(t, "run-1"); owner.Status != pebblestore.V3RunIntentRunning || owner.TaskWait != nil {
-		t.Fatalf("refused registration changed the run: %+v", owner)
+	if owner, _ := h.intent(t, "run-1"); owner.Status != pebblestore.V3RunIntentRunning || owner.TaskWait != nil || len(h.watches(t)) != 0 {
+		t.Fatalf("refused registration changed the run or recorded a watch: %+v", owner)
 	}
 	fleetActivityTestSetWork(t, h.home, "box", "ask")
 	h.register(t, "t1")
@@ -362,14 +433,15 @@ func TestRemoteTaskWaitRegistrationRefusals(t *testing.T) {
 		if _, err := h.wait(t, remoteWaitGoal, ids...); err == nil {
 			t.Fatalf("%s accepted", name)
 		}
-		if owner, _ := h.intent(t, "run-1"); owner.Status != pebblestore.V3RunIntentRunning || owner.TaskWait != nil {
-			t.Fatalf("%s changed the run: %+v", name, owner)
+		if owner, _ := h.intent(t, "run-1"); owner.Status != pebblestore.V3RunIntentRunning || owner.TaskWait != nil || len(h.watches(t)) != 0 {
+			t.Fatalf("%s changed the run or recorded a watch: %+v", name, owner)
 		}
 	}
 }
 
-// Purpose: a pending linked wait holds no execution capacity and never polls.
-// Requirement: after registration the run is waiting_tasks (not running) and
+// Purpose: a linked watch holds no execution capacity and never polls.
+// Requirement: after registration and the end of the turn the conversation is
+// idle and
 // the box reports no busy session for it; a remote task change that the
 // machine's activity stream does not report is not read, even across many
 // work-rule ticks, and the same change is read once the stream reports
@@ -388,10 +460,10 @@ func TestRemoteTaskWaitHoldsNoCapacityAndDoesNotPoll(t *testing.T) {
 		t.Fatal(err)
 	}
 	if busy.Sessions != 0 || busy.Busy {
-		t.Fatalf("waiting goal holds capacity: %+v", busy)
+		t.Fatalf("watching goal holds capacity: %+v", busy)
 	}
 	if active, ok, err := h.home.s.sessions.Store().GetV3SessionActiveRunIntent(remoteWaitGoal); err != nil || (ok && active.Status == pebblestore.V3RunIntentRunning) {
-		t.Fatalf("waiting goal still has a running run: %+v %v", active, err)
+		t.Fatalf("watching goal still has a running run: %+v %v", active, err)
 	}
 	time.Sleep(200 * time.Millisecond) // let the watcher's stream connect
 	// The task finishes on the machine, but nothing reports it on the stream.
@@ -413,16 +485,15 @@ func TestRemoteTaskWaitHoldsNoCapacityAndDoesNotPoll(t *testing.T) {
 	}
 }
 
-// Purpose: a linked wait survives a daemon restart. Requirement: a
-// waiting_tasks intent committed with no watcher running (the daemon stopped
-// after the commit, before or during the yield) is picked up from the durable
-// status index by ResumeLinkedTaskWaits (called by Daemon.Run once every
+// Purpose: a linked watch survives a daemon restart. Requirement: a watch
+// committed with no follower running (the daemon stopped right after the
+// commit) is picked up from the durable watch records by ResumeLinkedTaskWaits (called by Daemon.Run once every
 // setter has run), exactly one watcher runs even if recovery repeats, and a
 // later remote outcome wakes the goal once. The setters run first in the
 // daemon's order (SetFleet before SetSwarmStore) and must start no watcher:
 // a watcher started from SetFleet reads the node key while SetSwarmStore
 // writes it (a data race; a nil store reports the machine offline). Threat: a
-// goal stranded in waiting_tasks forever after restart, duplicate wakes, or
+// watch never followed after restart, duplicate wakes, or
 // watchers racing startup wiring. Boundary: the startup hook over the same
 // durable store; this proves recovery from durable state, not a full process
 // restart of a provider-backed daemon.
