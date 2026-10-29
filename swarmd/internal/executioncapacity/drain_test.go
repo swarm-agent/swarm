@@ -2,6 +2,7 @@ package executioncapacity
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -10,6 +11,58 @@ import (
 // test proves new leases cannot escape it, existing parked owners can finish,
 // timeout identifies blockers without releasing them, and close wakes waiters.
 // Durable V3 intent replay is owned by the executor and is tested separately.
+// Purpose: BeginDrainIf decides under the admission lock, so a refused check
+// leaves admission open, the check sees every held and queued session, and a
+// drain in progress is returned without asking again. Threat: a run admitted
+// between the busy check and the fence, or a refused request that still
+// fences (a partial drain). The manager is the narrowest layer owning the lock.
+func TestBeginDrainIfChecksUnderAdmissionLock(t *testing.T) {
+	m := NewManager(ManagerConfig{})
+	m.SetLimit("a", 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	running, err := m.Acquire(ctx, AcquireRequest{AccountScopeID: "a", SessionID: "running", RunID: "run"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitCtx, stop := context.WithCancel(ctx)
+	waited := make(chan error, 1)
+	go func() {
+		_, err := m.Acquire(waitCtx, AcquireRequest{AccountScopeID: "a", SessionID: "waiting", RunID: "run2"})
+		waited <- err
+	}()
+	for deadline := time.Now().Add(5 * time.Second); len(m.QueuedSessions()) != 1; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("waiter never queued")
+		}
+	}
+	busy := errors.New("busy")
+	var gotHeld, gotQueued []string
+	if _, err := m.BeginDrainIf(time.Hour, func(held, queued []string) error {
+		gotHeld, gotQueued = held, queued
+		return busy
+	}); !errors.Is(err, busy) {
+		t.Fatalf("refused check returned %v", err)
+	}
+	if len(gotHeld) != 1 || gotHeld[0] != "running" || len(gotQueued) != 1 || gotQueued[0] != "waiting" {
+		t.Fatalf("check saw held %v queued %v", gotHeld, gotQueued)
+	}
+	if m.DrainStatus().Draining {
+		t.Fatal("a refused check fenced admission")
+	}
+	stop()
+	<-waited
+	if err := running.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := m.BeginDrainIf(time.Hour, func(held, queued []string) error { return nil }); err != nil || !status.Draining {
+		t.Fatalf("allowed drain: %+v %v", status, err)
+	}
+	if status, err := m.BeginDrainIf(time.Hour, func(held, queued []string) error { return busy }); err != nil || !status.Draining {
+		t.Fatalf("a drain in progress was not returned as is: %+v %v", status, err)
+	}
+}
+
 func TestDrainAdmissionFence(t *testing.T) {
 	m := NewManager(ManagerConfig{})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)

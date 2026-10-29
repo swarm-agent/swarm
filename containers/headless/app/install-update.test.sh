@@ -17,7 +17,7 @@ set -eu
 
 STATE=$work/state OPT=$work/opt SRC=$work/src CONF=$work/state/install.env
 STARTUP_CONFIG=$work/swarm.conf
-UPDATE_STATE=$OPT/update-state.json UPDATE_BAD=$STATE/update-bad UPDATE_BUSY_SINCE=$STATE/update-busy-since
+UPDATE_STATE=$OPT/update-state.json UPDATE_BAD=$STATE/update-bad
 mkdir -p "$STATE" "$OPT/releases" "$work/statuses"
 log=$work/log
 : >"$log"
@@ -187,108 +187,96 @@ grep -q '^drain /v3/box/drain -X POST' "$log" || fail "a manual update on a busy
 )
 ln -sfn "$OPT/releases/$c1" "$OPT/current"
 
-# 3c. Purpose: a machine that is never idle still updates. Requirement: once
-# updates have waited UPDATE_BUSY_WAIT_SECONDS (30 min) on a busy machine,
-# the timer drains (new runs held, not refused), the running runs finish and
-# Swarm switches, so the update lands within bound plus cap
-# (UPDATE_BUSY_DRAIN_SECONDS, 20 min). Past the cap with runs that cannot
-# resume after a restart, it keeps holding, says why, never switches, and at
-# the drain's own limit reopens admission and starts the wait over.
-# Threat: the forge case: every 5-minute run says "busy" for hours because a
-# job always runs, or a starved update restarts into running agent runs.
-# finish_update is the layer owning the busy wait -> drain -> switch order; the
-# daemon (local_api) is a stand-in whose drain becomes ready when the runs it
-# waits on finish, while /v3/box/busy stays busy (new work keeps arriving).
-# The clock is a file, so it carries across timer runs (separate subshells).
-# Each 5 s drain poll advances it a minute, keeping the test fast; the
-# assertions hold at that granularity.
-never_idle_daemon() {
+# 3c. Purpose: an automatic update never starts a drain while GET /v3/box/busy
+# says busy, however long the machine stays busy, and a drain that ends
+# without a switch ends the run cleanly (state waiting, exit 0). Threat (seen
+# on a forge): after 30 min of busy checks the timer drained anyway (the
+# removed UPDATE_BUSY_WAIT_SECONDS path) and held the review steps running
+# work needed; the operator's cancel then failed the run (exit 1) and the next
+# run drained again at once. finish_update owns the busy check -> drain order;
+# the daemon (local_api) is a stand-in that records every request.
+# A machine busy across two hours of timer runs: every run waits and exits 0;
+# none drains or switches. The forge had a busy wait recorded over 30 min
+# earlier (state/update-busy-since, written by the removed path): it must not
+# count for anything.
+(
+  : >"$log"
+  busy=true
+  UPDATE_BUSY_SINCE=$STATE/update-busy-since
+  echo $(($(date +%s) - 7200)) >"$UPDATE_BUSY_SINCE"
+  for _ in $(seq 1 24); do
+    finish_update --automatic >/dev/null 2>&1 || fail 'a busy automatic update failed'
+    [[ $(state state) == waiting && $(state reason) == 'busy (1 running); tries again at the next update' ]] || fail "a busy automatic update did not wait: $(cat "$UPDATE_STATE")"
+  done
+  [[ $(grep -cx busy "$log") == 24 ]] || fail "not every timer run asked busy: $(cat "$log")"
+  ! grep -q '^drain ' "$log" || fail "an automatic update drained a machine that stayed busy: $(grep '^drain ' "$log")"
+  ! grep -q '^activate' "$log" && [[ $(running_commit) == "$c1" ]] || fail 'a busy automatic update switched'
+  rm -f "$STATE/update-busy-since"
+)
+# Runs waiting for admission (queued) are busy too, and counted in the reason.
+(
+  : >"$log"
   local_api() {
-    local clock at ready=false blockers='[{"run":"r1"},{"run":"r2"}]' timed_out=false
-    clock=$(cat "$work/clock")
+    case $1 in
+      /v3/box/busy) echo busy >>"$log"; printf '{"busy":true,"sessions":0,"queued":2,"worker_runs":0,"environment_builds":0}' ;;
+      /v3/box/drain*) echo "drain $*" >>"$log"; return 22 ;;
+    esac
+  }
+  finish_update --automatic >/dev/null 2>&1 || fail 'an automatic update with queued runs failed'
+  [[ $(state reason) == 'busy (2 running); tries again at the next update' ]] && ! grep -q '^drain ' "$log" || fail "queued runs were taken as idle: $(cat "$UPDATE_STATE") $(cat "$log")"
+)
+# Idle at the check, but work starts before the drain request: the drain is
+# asked for if_idle, the daemon refuses it (409), and the update waits with
+# exit 0, no cleanup request for a drain it does not own and no switch. A
+# person's update does not ask for if_idle and fails on the same answer.
+(
+  : >"$log"
+  busy=false drain_http=409 drain_error=22
+  rc=0; finish_update --automatic >/dev/null 2>&1 || rc=$?
+  [[ $rc == 0 && $(state state) == waiting && $(state reason) == 'busy (work started); tries again at the next update' ]] || fail "a refused if_idle drain did not wait ($rc): $(cat "$UPDATE_STATE")"
+  grep -q '^drain /v3/box/drain -X POST .*"if_idle":true' "$log" || fail "the automatic drain did not ask for if_idle: $(cat "$log")"
+  [[ $(grep -c '^drain ' "$log") == 1 ]] || fail "a refused drain was retried or cleaned up: $(cat "$log")"
+  ! grep -q '^activate' "$log" || fail 'a refused drain switched'
+  : >"$log"
+  rc=0; finish_update >/dev/null 2>&1 || rc=$?
+  [[ $rc != 0 && $(state state) == blocked ]] || fail "a person's refused drain did not fail: $(cat "$UPDATE_STATE")"
+  grep -q '^drain /v3/box/drain -X POST' "$log" && ! grep -q if_idle "$log" || fail "a person's update asked for if_idle: $(cat "$log")"
+)
+# The operator cancels the drain (DELETE /v3/box/drain): the automatic update
+# ends cleanly (state waiting, exit 0, so systemd records no failure), and the
+# next run on the still busy machine waits instead of draining again.
+(
+  : >"$log"
+  busy=false
+  local_api() {
     case $1 in
       /v3/box/busy)
         echo busy >>"$log"
-        printf '{"busy":true,"sessions":2,"worker_runs":0,"environment_builds":0,"restart_resumable":false}'
+        printf '{"busy":%s,"sessions":%s,"worker_runs":0,"environment_builds":0}' "$busy" "$([[ $busy == true ]] && echo 6 || echo 0)"
         ;;
       /v3/box/drain*)
         echo "drain $*" >>"$log"
-        [[ " $* " == *' -X POST '* && ! -f $work/drain-at ]] && echo "$clock" >"$work/drain-at"
-        at=$(cat "$work/drain-at" 2>/dev/null || echo "$clock")
-        if [[ -n ${runs_finish_after:-} ]] && (( clock >= at + runs_finish_after )); then ready=true blockers='[]'; fi
-        if [[ -n ${drain_limit:-} ]] && (( clock >= at + drain_limit )); then timed_out=true; fi
-        printf '{"generation":"test-boot","draining":true,"ready":%s,"timed_out":%s,"since":"2026-10-29T04:00:00.123456Z","environment_builds":0,"blockers":%s}' "$ready" "$timed_out" "$blockers"
-        [[ " $* " != *' -w '* ]] || printf '\n200'
+        if [[ " $* " == *' -X POST '* ]]; then
+          printf '{"generation":"test-boot","draining":true,"ready":false,"timed_out":false,"since":"2026-10-29T14:11:56Z","blockers":[{"run":"r1"}]}\n200'
+        else
+          printf '{"generation":"test-boot","draining":false,"ready":false,"timed_out":false,"end_reason":"cancelled","blockers":[]}'
+        fi
         ;;
       /v3/box/summary) printf '{"machine":{"commit":"%s"},"sandbox":{"active":true}}' "$(running_commit)" ;;
     esac
   }
-  now_seconds() { cat "$work/clock"; }
-  sleep() { echo "sleep $1" >>"$log"; echo $(($(cat "$work/clock") + 60)) >"$work/clock"; SECONDS=$((SECONDS + 60)); }
+  rc=0; finish_update --automatic >/dev/null 2>&1 || rc=$?
+  [[ $rc == 0 && $(state state) == waiting ]] || fail "a cancelled automatic drain did not end cleanly ($rc): $(cat "$UPDATE_STATE")"
+  [[ $(state reason) == *'drain for update ended (cancelled)'*'tries again at the next update' ]] || fail "the cancelled drain was not reported: $(state reason)"
+  ! grep -q '^activate' "$log" && [[ $(running_commit) == "$c1" ]] || fail 'a cancelled drain switched'
   : >"$log"
-  rm -f "$UPDATE_BUSY_SINCE" "$work/drain-at"
-  echo 100000 >"$work/clock"
-}
-# Timer runs every 5 minutes until the state is $1 or $2 seconds passed.
-timer_until() {
-  local start
-  start=$(cat "$work/clock")
-  while :; do
-    finish_update --automatic >>"$work/timer-out" 2>&1 || fail "an automatic update failed: $(cat "$work/timer-out")"
-    [[ $(state state) == "$1" ]] && return 0
-    (( $(cat "$work/clock") - start < $2 )) || return 0
-    echo $(($(cat "$work/clock") + 300)) >"$work/clock"
-  done
-}
-(
-  never_idle_daemon
-  runs_finish_after=600
-  : >"$work/timer-out"
-  timer_until installed 86400
-  [[ $(state state) == installed && $(running_commit) == "$c3" ]] || fail "a never-idle machine did not update: $(cat "$UPDATE_STATE")"
-  took=$(($(cat "$work/clock") - 100000))
-  (( took <= 1800 + 1200 )) || fail "the update took ${took}s on a never-idle machine, more than bound plus cap"
-  # It waited for an idle machine first and drained only past the bound.
-  [[ $(grep -c 'busy (2 running); tries again at the next update' "$work/timer-out") == 6 ]] || fail "did not wait the 30 min bound first: $(grep -c 'tries again' "$work/timer-out") waits"
-  [[ $(cat "$work/drain-at") == 101800 ]] || fail "drained at $(cat "$work/drain-at"), not once the bound passed"
-  # One drain request, naming when the wait began (one update.starved signal).
-  [[ $(grep -c '^drain /v3/box/drain -X POST' "$log") == 1 ]] || fail "drain requested more than once: $(grep -c '^drain /v3/box/drain -X POST' "$log")"
-  grep -q '"waiting_since":100000}' "$log" || fail "the drain did not carry waiting_since: $(grep POST "$log")"
-  grep -q 'swarm: draining for update, 2 running, held since 2026-10-29T04:00:00Z$' "$work/timer-out" || fail "update.reason did not say it was draining: $(grep draining "$work/timer-out")"
-  grep -qx "activate $c3" "$log" || fail 'the starved update bypassed activation'
-  [[ ! -e $UPDATE_BUSY_SINCE ]] || fail 'the busy wait was kept after the update'
-)
-ln -sfn "$OPT/releases/$c1" "$OPT/current"
-# The wait is counted across checks of a newer candidate: it is not reset.
-(
-  never_idle_daemon
-  first=$(update_busy_since)
-  echo 100900 >"$work/clock"
-  [[ $(update_busy_since) == "$first" ]] || fail 'the busy wait restarted'
-  rm -f "$UPDATE_BUSY_SINCE"
-)
-# At the cap with runs that cannot resume after a restart, it keeps holding
-# and says why; it never switches. At the drain's own limit admission
-# reopens and the wait starts over (no immediate second drain).
-(
-  never_idle_daemon
-  drain_limit=1500 UPDATE_DRAIN_SECONDS=1500
-  : >"$work/timer-out"
-  timer_until waiting_never 1800
-  [[ $(state state) == waiting && $(running_commit) == "$c1" ]] || fail "a capped drain switched or did not settle: $(cat "$UPDATE_STATE")"
-  ! grep -q '^activate' "$log" || fail 'switched with runs that cannot resume after a restart'
-  grep -q 'swarm: draining for update, 2 running, held since 2026-10-29T04:00:00Z$' "$work/timer-out" || fail 'did not hold before the cap'
-  grep -q 'past the 20 min cap, but running runs cannot resume after a restart' "$work/timer-out" || fail "did not say why it keeps holding: $(tail -3 "$work/timer-out")"
-  [[ $(state reason) == *'reached its 25 min limit'* ]] || fail "the drain limit was not reported: $(state reason)"
-  ended=$(cat "$work/clock")
-  (( $(cat "$UPDATE_BUSY_SINCE") == ended )) || fail 'the busy wait did not start over at the drain limit'
-  # The next timer run waits for an idle machine again instead of draining.
-  rm -f "$work/drain-at"
+  busy=true
+  finish_update --automatic >/dev/null 2>&1 || fail 'the run after a cancelled drain failed'
+  [[ $(state state) == waiting ]] && ! grep -q '^drain ' "$log" || fail "drained again right after a cancelled drain: $(cat "$log")"
   : >"$log"
-  echo $((ended + 300)) >"$work/clock"
-  finish_update --automatic >/dev/null 2>&1 || fail 'the run after a capped drain failed'
-  [[ $(state reason) == *'tries again at the next update'* ]] && ! grep -q '^drain ' "$log" || fail "drained again right after the limit: $(cat "$log")"
-  rm -f "$UPDATE_BUSY_SINCE"
+  busy=false
+  rc=0; finish_update >/dev/null 2>&1 || rc=$?
+  [[ $rc != 0 && $(state state) == blocked ]] || fail "a person's cancelled drain did not fail: $(cat "$UPDATE_STATE")"
 )
 ln -sfn "$OPT/releases/$c1" "$OPT/current"
 

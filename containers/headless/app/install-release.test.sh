@@ -110,6 +110,9 @@ unit=$UNITS/$DAEMON_UNIT
 grep -q "ExecStart=/bin/bash $STATE/install.sh update" "$UNITS/swarm-headless-update.service" || fail "updates do not run the release's installer"
 # The timer, and only the timer, marks its update automatic (idle-only).
 grep -qx "ExecStart=/bin/bash $STATE/install.sh update --automatic" "$UNITS/swarm-headless-update.service" || fail "the update timer does not mark its update automatic"
+# The interval counts from the end of the last run: with OnUnitActiveSec a
+# run longer than 5 min (a drain) was followed at once by another.
+grep -qx 'OnUnitInactiveSec=5min' "$UNITS/swarm-headless-update.timer" && ! grep -q '^OnUnitActiveSec' "$UNITS/swarm-headless-update.timer" || fail "the update timer does not count from the end of the last run"
 
 # 5b. On a first install current does not exist yet when the units are
 # written: the setup page must still name the real release path (Node starts

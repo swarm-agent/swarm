@@ -35,10 +35,24 @@ type DrainStatus struct {
 // Pending V3 intents remain in their durable store; this manager is not a queue
 // persistence authority. A new daemon manager reopens admission after restart.
 func (m *Manager) BeginDrain(timeout time.Duration) (DrainStatus, error) {
+	return m.BeginDrainIf(timeout, nil)
+}
+
+// BeginDrainIf is BeginDrain that starts a new drain only when allow, given
+// the held and queued sessions (HeldSessions, QueuedSessions), returns nil.
+// allow runs under the admission lock, so no run is admitted between its
+// check and the fence; it must not call the manager. A drain already in
+// progress is returned as is, without calling allow.
+func (m *Manager) BeginDrainIf(timeout time.Duration, allow func(held, queued []string) error) (DrainStatus, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
 		return DrainStatus{}, ErrClosed
+	}
+	if !m.drain.Draining && allow != nil {
+		if err := allow(m.heldSessionsLocked(), m.queuedSessionsLocked()); err != nil {
+			return DrainStatus{}, err
+		}
 	}
 	if !m.drain.Draining {
 		if timeout <= 0 {
@@ -77,6 +91,31 @@ func (m *Manager) DrainStatus() DrainStatus {
 func (m *Manager) HeldSessions() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.heldSessionsLocked()
+}
+
+// QueuedSessions lists the sessions with a new run waiting for admission (for
+// capacity, or held by a drain): runs a drain holds. A parked lease waiting to
+// reacquire is already in HeldSessions. Session IDs may repeat.
+func (m *Manager) QueuedSessions() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.queuedSessionsLocked()
+}
+
+func (m *Manager) queuedSessionsLocked() []string {
+	out := []string{}
+	for _, acc := range m.accounts {
+		for _, w := range acc.waiters {
+			if w.reacquire == nil && (w.ctx == nil || w.ctx.Err() == nil) {
+				out = append(out, w.req.SessionID)
+			}
+		}
+	}
+	return out
+}
+
+func (m *Manager) heldSessionsLocked() []string {
 	out := []string{}
 	for _, acc := range m.accounts {
 		for _, l := range acc.sessions {

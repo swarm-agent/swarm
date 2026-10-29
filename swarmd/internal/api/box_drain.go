@@ -79,10 +79,15 @@ func (s *Server) handleBoxDrain(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		var body struct {
 			MaxSeconds int `json:"max_seconds"`
-			// WaitingSince (unix seconds) is set by an automatic update that
-			// drains because its candidate waited past the bound on a busy
-			// machine: when it first found the machine busy.
+			// WaitingSince (unix seconds, optional): when the caller first
+			// found the machine busy; one update.starved signal per value.
+			// The installer's automatic update no longer drains a busy
+			// machine, so it does not send it.
 			WaitingSince int64 `json:"waiting_since"`
+			// IfIdle (an automatic update) starts the drain only when GET
+			// /v3/box/busy would say not busy, checked under the admission
+			// lock; otherwise 409 with the busy counts and no drain.
+			IfIdle bool `json:"if_idle"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -96,9 +101,27 @@ func (s *Server) handleBoxDrain(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, errors.New("waiting_since must be a past unix time in seconds"))
 			return
 		}
+		var allow func(held, queued []string) error
+		if body.IfIdle {
+			allow = func(held, queued []string) error {
+				busy, err := s.boxBusyFrom(held, queued)
+				if err != nil {
+					return err
+				}
+				if busy.Busy {
+					return boxNotIdleError{busy: busy}
+				}
+				return nil
+			}
+		}
 		s.envBuildMu.Lock()
-		status, err := manager.BeginDrain(time.Duration(body.MaxSeconds) * time.Second)
+		status, err := manager.BeginDrainIf(time.Duration(body.MaxSeconds)*time.Second, allow)
 		s.envBuildMu.Unlock()
+		var notIdle boxNotIdleError
+		if errors.As(err, &notIdle) {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": notIdle.Error(), "busy": notIdle.busy})
+			return
+		}
 		if err != nil {
 			writeError(w, http.StatusServiceUnavailable, err)
 			return
@@ -126,6 +149,11 @@ func (s *Server) handleBoxDrain(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 	}
 }
+
+// boxNotIdleError refuses an if_idle drain: something runs or waits to run.
+type boxNotIdleError struct{ busy boxBusy }
+
+func (boxNotIdleError) Error() string { return "busy: an if_idle drain was not started" }
 
 func controlMCPRequestUpdate(c *controlMCPCall, args map[string]any) (any, error) {
 	return c.dispatch(http.MethodPost, "/v3/box/drain", nil, args)

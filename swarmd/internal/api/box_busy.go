@@ -16,6 +16,11 @@ import (
 // includes project task runs and their follow-up runs), unfinished worker runs
 // and sandbox environment builds. Counts only.
 //
+// Queued counts sessions with a new run waiting for admission (for capacity
+// or behind a drain) that do not also hold a lease: work a drain would hold.
+// It makes Busy true; such a run is a pending intent that runs after a
+// restart, so it does not affect RestartResumable.
+//
 // RestartResumable says whether every item counted resumes after a restart.
 // Durable worker runs, follow-ups and reviews without a live agent turn do
 // (ReconcileWorker picks them up at startup). Agent runs in progress do not:
@@ -27,18 +32,28 @@ type boxBusy struct {
 	Reviews           int  `json:"reviews"`
 	Busy              bool `json:"busy"`
 	Sessions          int  `json:"sessions"`
+	Queued            int  `json:"queued"`
 	WorkerRuns        int  `json:"worker_runs"`
 	EnvironmentBuilds int  `json:"environment_builds"`
 	RestartResumable  bool `json:"restart_resumable"`
 }
 
 func (s *Server) boxBusy() (boxBusy, error) {
+	var held, queued []string
+	if manager := s.ExecutionCapacity(); manager != nil {
+		held, queued = manager.HeldSessions(), manager.QueuedSessions()
+	}
+	return s.boxBusyFrom(held, queued)
+}
+
+// boxBusyFrom is boxBusy given the capacity manager's held and queued
+// sessions; it does not call the manager, so it can run under its lock
+// (executioncapacity.Manager.BeginDrainIf).
+func (s *Server) boxBusyFrom(held, queued []string) (boxBusy, error) {
 	var out boxBusy
 	running := map[string]struct{}{}
-	if manager := s.ExecutionCapacity(); manager != nil {
-		for _, id := range manager.HeldSessions() {
-			running[id] = struct{}{}
-		}
+	for _, id := range held {
+		running[id] = struct{}{}
 	}
 	if s.sessions != nil {
 		active, err := s.sessions.ListActiveLifecycles(100_000)
@@ -57,6 +72,13 @@ func (s *Server) boxBusy() (boxBusy, error) {
 		}
 	}
 	out.Sessions = len(running)
+	waiting := map[string]struct{}{}
+	for _, id := range queued {
+		if _, ok := running[id]; !ok {
+			waiting[id] = struct{}{}
+		}
+	}
+	out.Queued = len(waiting)
 	if s.sandboxEnvironments != nil {
 		building, err := s.sandboxEnvironments.CountBuilding()
 		if err != nil {
@@ -64,7 +86,7 @@ func (s *Server) boxBusy() (boxBusy, error) {
 		}
 		out.EnvironmentBuilds = building
 	}
-	out.Busy = out.Sessions+out.WorkerRuns+out.EnvironmentBuilds+out.Followups+out.Reviews > 0
+	out.Busy = out.Sessions+out.Queued+out.WorkerRuns+out.EnvironmentBuilds+out.Followups+out.Reviews > 0
 	out.RestartResumable = out.Sessions == 0 && out.EnvironmentBuilds == 0
 	return out, nil
 }
