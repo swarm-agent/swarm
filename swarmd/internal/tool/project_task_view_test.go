@@ -236,6 +236,81 @@ func TestManageProjectsGetTaskCompactByDefault(t *testing.T) {
 	}
 }
 
+// Purpose: a task whose run stopped on its provider's usage limit (status
+// limit_waiting) is not finished in the Orchestrator's native view: get_task
+// says waiting with next_action wait_tasks and a next step naming the reset,
+// never integrate_task, even when its branch already has commits (the agent
+// still has uncommitted edits and continues at the reset); a mutation's
+// answer row and a list row carry state waiting.
+// Threat: the status fell through to "finished", so get_task told the
+// Orchestrator to integrate a partial branch mid-round (or "done; use the
+// result"), and mutation rows left out the state.
+// Owners: projectTaskStatusClass, projectTaskNext, compactProjectTaskRow,
+// projectTaskSummary, projectTaskWorktreeResult via Runtime get_task over a
+// real temp Pebble store and a real Git worktree with three commits.
+func TestManageProjectsLimitWaitingTaskIsNotFinished(t *testing.T) {
+	_, store := openTaskViewStore(t)
+	const account, project, taskID = "acct-limit", "proj-limit", "task-limit"
+	if err := store.PutProject(account, &pebblestore.ProjectRecord{ID: project, AccountID: account, Name: "Limit"}); err != nil {
+		t.Fatal(err)
+	}
+	folder, base, _ := taskWorktree(t)
+	task := heavyFinishedTask(account, project, taskID)
+	task.WorkspacePath, task.BaseCommit = folder, base
+	if err := store.PutProjectTask(account, task); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRuntime(1)
+	defer r.Close()
+	r.SetManageProjectStore(store)
+	scope := WorkspaceScope{Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-limit", AccountScopeID: account}}
+	get := func() ProjectTaskView {
+		t.Helper()
+		raw, _, err := runManageProjects(t, r, scope, map[string]any{"action": "get_task", "project_id": project, "task_id": taskID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var view struct {
+			Task ProjectTaskView `json:"task"`
+		}
+		if err := json.Unmarshal([]byte(raw), &view); err != nil {
+			t.Fatal(err)
+		}
+		return view.Task
+	}
+	// Control: finished with three commits, the view says integrate.
+	if v := get(); v.NextAction != "integrate_task" {
+		t.Fatalf("control: next=%q", v.NextAction)
+	}
+	waiting, err := store.UpdateProjectTask(account, project, taskID, func(task *pebblestore.ProjectTaskRecord) error {
+		task.Status, task.LimitWaits, task.LimitRetryAt = pebblestore.ProjectTaskStatusLimitWaiting, 1, 1_000
+		task.LimitReason = "waiting for the provider's limit to reset (until 2026-10-29T13:51:00Z): provider claudecode: You've hit your session limit"
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := get()
+	if v.NextAction != "wait_tasks" || !strings.Contains(v.Progress.Next, "provider's limit resets") || !strings.Contains(v.Progress.Next, "stop_task") {
+		t.Fatalf("waiting task next: next=%q progress.next=%q", v.NextAction, v.Progress.Next)
+	}
+	if v.State != pebblestore.ProjectTaskStateWaiting || v.NeedsAttention {
+		t.Fatalf("waiting task state: %q needs_attention=%v", v.State, v.NeedsAttention)
+	}
+	if v.Result != nil && v.Result.Commits != 0 {
+		t.Fatalf("a waiting task's branch was read as a finished result: %+v", v.Result)
+	}
+	if row := compactProjectTaskRow(*waiting); row.State != pebblestore.ProjectTaskStateWaiting {
+		t.Fatalf("mutation row state: %q", row.State)
+	}
+	if next := projectTaskRowNext(*waiting); next != "wait_tasks" {
+		t.Fatalf("mutation row next: %q", next)
+	}
+	if row := projectTaskSummary(*waiting); row.State != pebblestore.ProjectTaskStateWaiting {
+		t.Fatalf("list row state: %q", row.State)
+	}
+}
+
 // Purpose: get_task reports a task's own committed output and all of it. A
 // folder task (no worktree branch, working in the person's folder) delivered
 // in_folder answers with base..the head frozen in its integration receipt at

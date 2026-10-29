@@ -258,7 +258,9 @@ func projectTaskStatusClass(status string) string {
 		return "stopped"
 	case "pending_approval":
 		return "approval"
-	case "queued", "pending":
+	case "queued", "pending", pebblestore.ProjectTaskStatusLimitWaiting:
+		// Queued for capacity, or its run stopped on the provider's usage
+		// limit and it continues by itself at the reset: not finished.
 		return "waiting"
 	case "planning", "in_progress", "running", "starting", "generating", "swarming", "publishing":
 		return "working"
@@ -279,6 +281,9 @@ func projectTaskNext(t *pebblestore.ProjectTaskRecord, progress *projectTaskProg
 	case "approval":
 		return "approve_task", "starts when approved"
 	case "waiting":
+		if t.Status == pebblestore.ProjectTaskStatusLimitWaiting {
+			return "wait_tasks", "continues by itself after the provider's limit resets (stop_task cancels)"
+		}
 		return "wait_tasks", "starts when capacity frees"
 	case "working":
 		return "wait_tasks", "agent finishes, then its result is ready to review"
