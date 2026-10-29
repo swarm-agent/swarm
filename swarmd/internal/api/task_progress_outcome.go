@@ -51,7 +51,7 @@ func taskProgressOutcome(class, state string, latest []jobautomation.Delivery, w
 	if len(latest) > 0 {
 		d := latest[0]
 		for _, candidate := range latest {
-			if deliveryProgressState(candidate.State) == workflowRunning {
+			if deliveryProgressState(candidate.State) == workflowRunning || !deliveryStepsRecorded(candidate) {
 				d = candidate
 				break
 			}
@@ -59,6 +59,11 @@ func taskProgressOutcome(class, state string, latest []jobautomation.Delivery, w
 		step := currentStep(d)
 		switch d.State {
 		case jobautomation.StateSucceeded, jobautomation.StateSkipped:
+			if !deliveryStepsRecorded(d) {
+				// Its last step's result (a push, a deliver) is not recorded
+				// yet: still running, not handed over and not ready.
+				return clipOutcome("running " + firstNonEmptyString(stepLabel(d, step), "workflow"))
+			}
 			if out := deliveryHandover(d); out != "" {
 				return clipOutcome(out)
 			}

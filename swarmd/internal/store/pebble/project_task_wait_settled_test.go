@@ -521,3 +521,35 @@ func TestProjectTaskWaitSettledFollowsReservedFollowup(t *testing.T) {
 		}
 	})
 }
+
+// Purpose: a settled watch does not fire while the task's derived state
+// (ProjectTaskState, what get_task shows) still says the work runs, and its
+// outcome row names that state. Requirement: needs_review with workflow done
+// but task_state running (the final step's result not recorded) is not ready;
+// once task_state is landed the watch fires and the row carries task_state
+// landed with its reason next to integration_state. Threat (observed live): a
+// wake reporting not_integrated for work get_task called landed moments
+// later. Authority: projectTaskWaitReadiness and projectTaskWaitProgressRow
+// through ReconcileProjectTaskWaits over a temporary real store.
+func TestProjectTaskWaitSettledReadsTheDerivedTaskState(t *testing.T) {
+	f, progress := newSettledWaitFixture(t, filepath.Join(t.TempDir(), "store"), "task")
+	f.register("", "task")
+	f.setTask("task", func(t *ProjectTaskRecord) { t.Status = "needs_review" })
+	running := workflowProgress("done", 2, "run", 0, "not_integrated")
+	running["task_state"], running["task_state_reason"] = ProjectTaskStateRunning, "workflow running"
+	progress.set("task", running)
+	f.mustSleep("workflow done but the push result not recorded")
+	landed := workflowProgress("done", 2, "run", 0, "not_integrated")
+	landed["task_state"], landed["task_state_reason"] = ProjectTaskStateLanded, "pushed 7ec9a8e"
+	progress.set("task", landed)
+	out := f.reconcile()
+	if out == nil {
+		t.Fatal("landed task did not fire the watch")
+	}
+	if row := outcomeRow(t, out, 0); row["task_state"] != ProjectTaskStateLanded || row["task_state_reason"] != "pushed 7ec9a8e" || row["integration_state"] != "not_integrated" {
+		t.Fatalf("outcome row: %v", row)
+	}
+	if !strings.Contains(out["guidance"].(string), "task_state says where the work is") {
+		t.Fatalf("guidance: %v", out["guidance"])
+	}
+}

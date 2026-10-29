@@ -177,6 +177,23 @@ func deliveryProgressState(state string) string {
 	return workflowRunning
 }
 
+// deliveryStepsRecorded reports whether a succeeded delivery's steps have all
+// recorded a result. A step still pending, waiting or running means its
+// result (a push, a deliver) is not recorded yet, whatever the delivery's own
+// state says. Deliveries in any other state are not judged here.
+func deliveryStepsRecorded(d jobautomation.Delivery) bool {
+	if d.State != jobautomation.StateSucceeded {
+		return true
+	}
+	for _, step := range d.Steps {
+		switch step.State {
+		case jobautomation.StatePending, jobautomation.StateWaiting, jobautomation.StateRunning:
+			return false
+		}
+	}
+	return true
+}
+
 // currentStep is the delivery's step to show (0-based): the one running or
 // waiting, else the one that failed or blocked it, else the last that ran.
 func currentStep(d jobautomation.Delivery) int {
@@ -302,6 +319,12 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 		for i, d := range latest {
 			step := currentStep(d)
 			state := deliveryProgressState(d.State)
+			if state == workflowDone && !deliveryStepsRecorded(d) {
+				// The runner marked the delivery succeeded but a step (the
+				// push or deliver at its end) has not recorded its result
+				// yet: the work is not handed over until it has.
+				state = workflowRunning
+			}
 			view := taskProgressDelivery{ID: d.ID, Workflow: d.AutomationName, State: state, Steps: len(d.Steps), Round: d.Round, SentBack: d.SentBack}
 			if len(d.Steps) > 0 {
 				view.Step, view.StepType = step+1, d.Steps[step].Type
