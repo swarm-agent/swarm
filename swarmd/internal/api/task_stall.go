@@ -325,6 +325,14 @@ func (s *Server) taskStallVerdict(ctx context.Context, account string, task pebb
 			return stalled(pebblestore.ProjectTaskStallHeld, s.taskStallHeldReason("", idle))
 		}
 		return v, true
+	case pebblestore.ProjectTaskStatusLimitWaiting:
+		// The task's own run stopped on its provider's limit and its session
+		// continues at LimitRetryAt (project_task_limit_wait.go): armed until
+		// that reset plus the stall window, like a workflow step's wait.
+		if task.LimitRetryAt > 0 && nowMs >= task.LimitRetryAt+stallAfter.Milliseconds() {
+			return stalled(pebblestore.ProjectTaskStallProviderLimit, "waiting on a provider limit until "+taskStallClock(task.LimitRetryAt)+" (passed); the task has not continued")
+		}
+		return v, true
 	}
 	for _, d := range latest {
 		if jobautomation.Terminal(d.State) {

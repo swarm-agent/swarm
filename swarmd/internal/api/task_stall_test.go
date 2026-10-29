@@ -363,6 +363,49 @@ func TestTaskStallArmedWaitsAreNotStalled(t *testing.T) {
 	}
 }
 
+// Purpose: a project task waiting for its provider's limit (status
+// limit_waiting, project_task_limit_wait.go) is an armed wait: its run has
+// ended and nothing runs until its reset, often hours away, yet the check
+// raises nothing and wakes nobody before LimitRetryAt plus STALL_AFTER. Once
+// that has passed without the task continuing it stalls as provider_limit
+// (positive control).
+// Threat: every limit wait reported as "no run and no next step" after 20
+// minutes, alerting and waking the Orchestrator on healthy waits.
+// Boundary: Server.CheckStalledTasks over a real task record in the wait and
+// its session's ended run, on a real Pebble store.
+func TestTaskStallProjectTaskLimitWaitIsArmed(t *testing.T) {
+	f := newStallFixture(t, filepath.Join(t.TempDir(), "task-limit.pebble"))
+	work := f.session(t, "limit-wait-session")
+	origin := f.session(t, "limit-wait-orchestrator")
+	task := taskSessionFixture(t, f.server, work, pebblestore.ProjectTaskRecord{ID: "task_limit_wait", ProjectID: "proj-limit-wait", Agent: "swarm", Status: "in_progress", OriginSessionID: origin.ID})
+	f.settleRun(t, work.ID, pebblestore.InitialTaskRunID(task.ID), sessionruntime.RunIntentFailed)
+	start := time.Now()
+	reset := start.Add(3 * time.Hour)
+	waiting, err := f.server.sessions.Store().UpdateProjectTask(f.account, task.ProjectID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
+		t.Status, t.LimitWaits, t.LimitAt, t.LimitRetryAt = pebblestore.ProjectTaskStatusLimitWaiting, 1, start.UnixMilli(), reset.UnixMilli()
+		t.LimitRunID, t.LimitReason = pebblestore.InitialTaskRunID(task.ID), "waiting for the provider's limit to reset"
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waiting.Status != pebblestore.ProjectTaskStatusLimitWaiting {
+		t.Fatalf("task not waiting: %+v", waiting)
+	}
+	f.check(start.Add(2 * time.Hour))
+	f.check(reset.Add(10 * time.Minute))
+	if got := f.signals(t, "task.stalled", task.ID); len(got) != 0 {
+		t.Fatalf("a task in its provider-limit wait raised %+v", got)
+	}
+	if n := len(f.userMessages(t, origin.ID, "stalled")); n != 0 {
+		t.Fatalf("the delegator was woken %d times for a healthy wait", n)
+	}
+	f.check(reset.Add(25 * time.Minute))
+	if got := f.signals(t, "task.stalled", task.ID); len(got) != 1 || got[0].Attrs["stall"] != pebblestore.ProjectTaskStallProviderLimit || !strings.Contains(got[0].Summary, "has not continued") {
+		t.Fatalf("passed task limit wait = %+v", got)
+	}
+}
+
 // Purpose: the review-exhausted shape recovers by itself before anyone is
 // alerted. When the review loop used its automatic rounds and the reviewer
 // still blocks, the check sends the last findings into the task's own

@@ -119,7 +119,7 @@ and `idle`, using the same bucket as the list counts):
 | state | meaning | produced by | count bucket |
 |---|---|---|---|
 | `running` | an agent or workflow still works on it | run status planning/in_progress/running/…; or outcome `running <step>`, `sent_back (round n)`, `workflow pending` | `in_progress` |
-| `waiting` | queued for capacity, or waiting for the provider's usage limit to reset | run status `queued`/`pending`, or `limit_waiting` (reason: "waiting for the provider's limit to reset (until …): provider …; continues by itself"; linked-machine `list_tasks` rows add it as `state_reason`) | `waiting` |
+| `waiting` | queued for capacity, or waiting for the provider's usage limit to reset | run status `queued`/`pending`, or `limit_waiting` (reason: "waiting for the provider's limit to reset (until …): provider …; continues by itself"; linked-machine `list_tasks` rows add it as `state_reason`, in the machine's own words when it gives them, unless a live or stall reason is already there) | `waiting` |
 | `needs_you` | the person must act | run status `pending_approval`, `needs_input`, `failed`, `blocked` (and other failures); outcome `blocked …` (including sent back until its rounds ran out) or `failed …` | `needs_attention` |
 | `landed` | the work was handed over | outcome `pushed <sha>`, `delivered <target>`, `integrated` (reason names the SHA or target) | `done` |
 | `done` | finished with nothing to hand over | outcome `finished`; run status `completed`, `rejected`, `superseded`; an archived task or a workflow step's own task | `done` |
@@ -251,8 +251,9 @@ finished tasks that changed in the last 24 hours.
 
 A task is **not** stalled while it has an armed wait: a run asleep on
 `wait_tasks` (the task watch wakes it), a background command still running,
-a running or waiting workflow step, or a provider-limit wait until its reset
-plus `stall_after_minutes`. It **is** stalled when:
+a running or waiting workflow step, or a provider-limit wait (a workflow
+step's, or the task's own `limit_waiting`) until its reset plus
+`stall_after_minutes`. It **is** stalled when:
 
 - it is unfinished with no active run, no queued run, no workflow step and no
   armed wait, and nothing changed for `stall_after_minutes` (limits; default
