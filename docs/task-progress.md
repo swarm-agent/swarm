@@ -329,7 +329,8 @@ message never ends a watch. A watch ends when it fires, when the Orchestrator
 cancels it (`cancel_watch`, or `wait_tasks` with `cancel: true`), when the
 person stops it (`POST /v3/sessions/{id}/task-watches/stop`), or when the
 conversation is archived or deleted. Calling `wait_tasks` again on a watched
-task changes nothing. Watches survive restarts; runs left pending by the
+task changes nothing; once that watch has ended, the call starts a new watch.
+A watch on tasks that already settled fires at once. Watches survive restarts; runs left pending by the
 retired wait are converted to watches at startup. The run state's
 `task_watches` (sync snapshot) and `GET /v3/sessions/{id}/task-watches` list a
 conversation's active watches.

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -92,13 +93,30 @@ func KeyV3SessionTaskWatch(sessionID, watchID string) string {
 }
 
 // ProjectTaskWatchID is a watch's identity: deterministic for one run, one
-// machine/project and one task set, so a retried registration is the same
-// watch.
-func ProjectTaskWatchID(sessionID, runID, machine, projectID, until string, taskIDs []string) string {
+// machine/project, one task set and one generation, so a retried
+// registration is the same watch. The generation counts the earlier watches
+// on that task set in that run which already ended (fired or cancelled); a
+// new one gets a new identity, so its wakes never replay an ended watch's.
+// Generation 0 is the original identity.
+func ProjectTaskWatchID(sessionID, runID, machine, projectID, until string, taskIDs []string, generation int) string {
 	ids := append([]string(nil), taskIDs...)
 	sort.Strings(ids)
-	sum := sha256.Sum256([]byte(strings.Join([]string{sessionID, runID, machine, projectID, until, strings.Join(ids, "\x00")}, "\x01")))
+	parts := []string{sessionID, runID, machine, projectID, until, strings.Join(ids, "\x00")}
+	if generation > 0 {
+		parts = append(parts, strconv.Itoa(generation))
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x01")))
 	return "watch-" + hex.EncodeToString(sum[:12])
+}
+
+// RegisteredProjectTaskWatchID reads the watch a committed registration
+// recorded from its start line (a replayed registration's message), or "".
+func RegisteredProjectTaskWatchID(result V3SessionMutationResult) string {
+	if result.Message == nil {
+		return ""
+	}
+	id, _ := result.Message.Metadata["task_watch_id"].(string)
+	return id
 }
 
 func (w V3SessionTaskWatch) summary() V3TaskWatchSummary {
@@ -286,7 +304,7 @@ func (s *SessionStore) prepareProjectTaskWatchRegistration(input *V3SessionMutat
 		now = time.Now().UnixMilli()
 	}
 	watch := V3SessionTaskWatch{
-		WatchID: ProjectTaskWatchID(input.SessionID, owner.RunID, wait.Machine, wait.ProjectID, wait.Until, ids), SessionID: input.SessionID,
+		WatchID: ProjectTaskWatchID(input.SessionID, owner.RunID, wait.Machine, wait.ProjectID, wait.Until, ids, input.TaskWait.Generation), SessionID: input.SessionID,
 		UserID: input.UserID, AccountScopeID: input.AccountScopeID, OriginRunID: owner.RunID, EpochID: owner.EpochID, UpdateRoot: taskUpdateRoot(owner),
 		Wait: *wait, Titles: names, CreatedAt: now, Milestones: input.TaskWait.Milestones == nil || *input.TaskWait.Milestones,
 	}
@@ -594,7 +612,7 @@ func (s *SessionStore) prepareProjectTaskWaitMigration(input *V3SessionMutationI
 		now = time.Now().UnixMilli()
 	}
 	watch := V3SessionTaskWatch{
-		WatchID: ProjectTaskWatchID(input.SessionID, owner.RunID, wait.Machine, wait.ProjectID, wait.Until, ids), SessionID: input.SessionID,
+		WatchID: ProjectTaskWatchID(input.SessionID, owner.RunID, wait.Machine, wait.ProjectID, wait.Until, ids, 0), SessionID: input.SessionID,
 		UserID: owner.UserID, AccountScopeID: owner.AccountScopeID, OriginRunID: owner.RunID, EpochID: owner.EpochID, UpdateRoot: taskUpdateRoot(owner),
 		Wait: wait, Titles: titles, CreatedAt: now, Milestones: true,
 	}
@@ -649,7 +667,10 @@ func (s *SessionStore) deleteSessionTaskWatchesInBatch(batch *pebble.Batch, sess
 }
 
 // ReconcileProjectTaskWaits fires the local watches whose tasks settled. It
-// runs on committed task publication, once on startup and after a run ends.
+// runs on committed task publication, after a task report and once on
+// startup (a new watch is checked at once by ReconcileSessionTaskWatches).
+// A run's end does not reconcile: an outcome delivered to an active run is a
+// wake note, re-delivered as a new turn if that run ends without reading it.
 // The durable watch records are the recovery authority, not callbacks. Each
 // page is bounded; a watch not ready, or deferred by an active run, stays.
 func (s *SessionStore) ReconcileProjectTaskWaits(account, project string, publish func(V3SessionMutationResult)) error {
@@ -675,8 +696,9 @@ func (s *SessionStore) ReconcileProjectTaskWaits(account, project string, publis
 	}
 }
 
-// ReconcileSessionTaskWatches fires one conversation's ready local watches
-// (after its run ended, a deferred watch is delivered now).
+// ReconcileSessionTaskWatches fires one conversation's ready local watches:
+// right after a watch is registered (its tasks may already have settled, and
+// nothing else would fire it) and at a held milestone's due time.
 func (s *SessionStore) ReconcileSessionTaskWatches(sessionID string, publish func(V3SessionMutationResult)) error {
 	watches, err := s.ListV3SessionTaskWatches(sessionID)
 	if err != nil {

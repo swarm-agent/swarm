@@ -309,6 +309,10 @@ type V3ProjectTaskWaitMutation struct {
 	CancelledTaskIDs []string
 	// Milestones (registration): also wake on milestones; nil means on.
 	Milestones *bool
+	// Generation (registration): how many earlier watches on this task set
+	// in this run already ended; part of the watch's identity
+	// (ProjectTaskWatchID), so watching the tasks again is a new watch.
+	Generation int
 	// Delivery (wake): the watch's delivery count the caller read; a
 	// different count means another delivery committed first.
 	Delivery int

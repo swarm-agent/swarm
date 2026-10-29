@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -47,8 +48,9 @@ func normalizeProjectTaskWatchArgs(args map[string]any) map[string]any {
 	return out
 }
 
-// TaskWatchFollower is implemented by the daemon's API server: it follows a
-// linked-machine watch from that machine once the watch is recorded.
+// TaskWatchFollower is implemented by the daemon's API server. Once a watch
+// is recorded it follows a linked-machine watch from that machine, and checks
+// a local watch at once (its tasks may have settled already).
 type TaskWatchFollower interface {
 	FollowTaskWatch(sessionID, watchID string)
 }
@@ -60,13 +62,22 @@ type TaskWatchReconciler interface {
 }
 
 // projectTaskWatchRequestKey is the registration's idempotency key: one per
-// run and task selection, so a retried call is the same watch.
-func projectTaskWatchRequestKey(runID, machine, projectID, until string, ids []string) string {
+// run, task selection and generation, so a retried call is the same watch
+// and a call after that watch ended is a new one.
+func projectTaskWatchRequestKey(runID, machine, projectID, until string, ids []string, generation int) string {
 	sorted := append([]string(nil), ids...)
 	sort.Strings(sorted)
 	sum := sha256.Sum256([]byte(strings.Join([]string{machine, projectID, until, strings.Join(sorted, "\x00")}, "\x01")))
-	return "task-watch:" + runID + ":" + hex.EncodeToString(sum[:12])
+	key := "task-watch:" + runID + ":" + hex.EncodeToString(sum[:12])
+	if generation > 0 {
+		key += ":" + strconv.Itoa(generation)
+	}
+	return key
 }
+
+// maxProjectTaskWatchGenerations bounds how often one run watches the same
+// task set again after each earlier watch ended.
+const maxProjectTaskWatchGenerations = 64
 
 // projectTaskWatchIDs reads 1-16 task_ids.
 func projectTaskWatchIDs(args map[string]any) ([]string, error) {
@@ -84,33 +95,55 @@ func projectTaskWatchIDs(args map[string]any) ([]string, error) {
 // registerProjectTaskWatch commits the watch and answers with status
 // watching. Tasks already watched by this conversation are not watched twice.
 func (r *Runtime) registerProjectTaskWatch(scope WorkspaceScope, op *pebblestore.V3ProjectTaskWaitMutation, ids, titles []string) (map[string]any, error) {
-	// The key names the run and the task set (order-free), so a repeated call
-	// replays the same registration whatever order it lists the tasks in.
-	key := projectTaskWatchRequestKey(op.RunID, op.Machine, op.ProjectID, op.Until, ids)
 	result := map[string]any{"tool": "manage_projects", "action": "wait_tasks", "project_id": op.ProjectID, "status": "watching", "task_ids": ids, "until": op.Until}
 	if op.Machine != "" {
 		result["machine"], result["untrusted_content"] = op.Machine, true
 	}
-	_, err := r.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
-		SessionID: scope.SessionID, UserID: scope.Principal.UserID, AccountScopeID: scope.Principal.AccountScopeID,
-		Kind: pebblestore.V3SessionMutationAppendMessage, EventType: "session.task_watch.started",
-		ClientRequestID: key, PayloadHash: key, TaskWait: op,
-	})
-	switch {
-	case errors.Is(err, pebblestore.ErrProjectTaskAlreadyWatched):
-		result["already_watching"] = true
-		result["notice"] = "Already watching " + strings.Join(titles, ", ") + ". Reply to the person now and end your turn; a new turn starts with the outcomes when they settle."
-		return result, nil
-	case err != nil:
-		return nil, err
+	var watchID string
+	var watched []string
+	// The key names the run and the task set (order-free), so a repeated call
+	// replays the same registration whatever order it lists the tasks in. A
+	// replay counts only while the watch it recorded is still active: once it
+	// fired (an outcome delivered into this run) or was cancelled, the call
+	// watches the tasks again under the next generation.
+	for generation := 0; watchID == ""; generation++ {
+		if generation >= maxProjectTaskWatchGenerations {
+			return nil, errors.New("these tasks were watched too many times in this run; nothing new is watched")
+		}
+		op.Generation = generation
+		key := projectTaskWatchRequestKey(op.RunID, op.Machine, op.ProjectID, op.Until, ids, generation)
+		committed, err := r.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
+			SessionID: scope.SessionID, UserID: scope.Principal.UserID, AccountScopeID: scope.Principal.AccountScopeID,
+			Kind: pebblestore.V3SessionMutationAppendMessage, EventType: "session.task_watch.started",
+			ClientRequestID: key, PayloadHash: key, TaskWait: op,
+		})
+		switch {
+		case errors.Is(err, pebblestore.ErrProjectTaskAlreadyWatched):
+			result["already_watching"] = true
+			result["notice"] = "Already watching " + strings.Join(titles, ", ") + ". Reply to the person now and end your turn; a new turn starts with the outcomes when they settle."
+			return result, nil
+		case err != nil:
+			return nil, err
+		case op.RegisteredWatchID != "":
+			watchID, watched = op.RegisteredWatchID, op.RegisteredTitles
+			continue
+		}
+		// A replay: the registration was committed before.
+		replayed := pebblestore.RegisteredProjectTaskWatchID(committed)
+		if replayed == "" {
+			return nil, errors.New("replayed task watch registration names no watch")
+		}
+		watch, active, err := r.sessions.GetV3SessionTaskWatch(scope.SessionID, replayed)
+		if err != nil {
+			return nil, err
+		}
+		if active {
+			// Still watching: nothing new is watched.
+			watchID, watched = replayed, watch.Titles
+			result["already_watching"] = true
+		}
 	}
-	watchID, watched := op.RegisteredWatchID, op.RegisteredTitles
-	if watchID == "" {
-		// A repeated call in this run replays the committed registration:
-		// nothing new is watched.
-		watchID, watched = pebblestore.ProjectTaskWatchID(scope.SessionID, op.RunID, op.Machine, op.ProjectID, op.Until, ids), titles
-		result["already_watching"] = true
-	} else if len(op.RegisteredTaskIDs) < len(ids) {
+	if op.RegisteredWatchID != "" && len(op.RegisteredTaskIDs) < len(ids) {
 		covered := map[string]bool{}
 		for _, id := range op.RegisteredTaskIDs {
 			covered[id] = true
@@ -125,7 +158,7 @@ func (r *Runtime) registerProjectTaskWatch(scope WorkspaceScope, op *pebblestore
 	}
 	result["watch_id"] = watchID
 	result["notice"] = pebblestore.ProjectTaskWatchNotice(watched, op.Machine)
-	if follower, ok := r.getProjectTaskLifecycleService().(TaskWatchFollower); ok && op.Machine != "" {
+	if follower, ok := r.getProjectTaskLifecycleService().(TaskWatchFollower); ok {
 		follower.FollowTaskWatch(scope.SessionID, watchID)
 	}
 	return result, nil

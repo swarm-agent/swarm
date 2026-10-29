@@ -106,6 +106,14 @@ func (s *Service) Store() *pebblestore.SessionStore {
 	return s.store
 }
 
+// GetV3SessionTaskWatch reads one active task watch of a conversation.
+func (s *Service) GetV3SessionTaskWatch(sessionID, watchID string) (pebblestore.V3SessionTaskWatch, bool, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.V3SessionTaskWatch{}, false, errors.New("session service is not configured")
+	}
+	return s.store.GetV3SessionTaskWatch(sessionID, watchID)
+}
+
 func (s *Service) GetV3MessageByID(sessionID, messageID string) (pebblestore.MessageSnapshot, bool, error) {
 	if s == nil || s.store == nil {
 		return pebblestore.MessageSnapshot{}, false, errors.New("session service is not configured")

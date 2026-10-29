@@ -93,9 +93,29 @@ func (s *Server) migrateProjectTaskWaits() {
 	}
 }
 
-// FollowTaskWatch starts following a watch the tool just registered: a
-// linked-machine watch is followed from that machine's activity. A local
-// watch needs nothing here; task publication and run ends fire it.
+// FollowTaskWatch starts following a watch the tool just registered (or
+// replayed while still active). A linked-machine watch is followed from that
+// machine's activity. A local watch is checked at once: its tasks may have
+// settled before it was registered, and only a later task change would fire
+// it otherwise. If it fires during the registering run, the outcome is a wake
+// note on that run (a new turn if the run ends without reading it).
 func (s *Server) FollowTaskWatch(sessionID, watchID string) {
-	s.watchRemoteTaskWatch(sessionID, watchID)
+	if s == nil || s.sessions == nil {
+		return
+	}
+	watch, ok, err := s.sessions.Store().GetV3SessionTaskWatch(sessionID, watchID)
+	if err != nil {
+		log.Printf("project task watch check failed: %v", err)
+		return
+	}
+	if !ok {
+		return
+	}
+	if watch.Wait.Machine != "" {
+		s.watchRemoteTaskWatch(sessionID, watchID)
+		return
+	}
+	if err := s.sessions.Store().ReconcileSessionTaskWatches(sessionID, s.publishProjectTaskWake); err != nil {
+		log.Printf("project task watch check failed: %v", err)
+	}
 }

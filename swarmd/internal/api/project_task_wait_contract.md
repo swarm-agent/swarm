@@ -33,9 +33,14 @@ changing the run.
 - Tasks the conversation already watches (same machine and project) are not
   watched again: a call naming only watched tasks records nothing and answers
   `already_watching`; a call adding new tasks watches only those. A repeated
-  call in the same run replays its registration. No task is ever delivered
-  twice.
-- Committed project/task publication (including workflow delivery and job-end
+  call in the same run replays its registration while that watch is active.
+  Once it ended (fired, for example as a note into the same run, or was
+  cancelled), the call registers a new watch under the next generation (part
+  of the idempotency key and of `ProjectTaskWatchID`), so its wakes never
+  replay the ended watch's. No outcome is ever delivered twice by one watch.
+- Registration (`Server.FollowTaskWatch` checks a new local watch at once, so
+  tasks that settled before `wait_tasks` deliver without a later change),
+  committed project/task publication (including workflow delivery and job-end
   evaluation changes, which publish `project.updated`), a recorded task report
   (`report_task` → `Server.ReconcileTaskWatches`), startup, and a held
   milestone's due time (`Server.scheduleTaskWatchCheck`) reconcile watches. A
