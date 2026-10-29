@@ -197,7 +197,7 @@ func sandboxEnvironmentChangeFromArgs(args map[string]any) (SandboxEnvironmentCh
 			change.Env[name] = text
 		}
 	}
-	if _, ok := args["max_leases"]; ok {
+	if raw, ok := args["max_leases"]; ok && raw != nil { // null is "not given", like the other fields
 		n, err := environmentArgInt(args, "max_leases")
 		if err != nil {
 			return change, err

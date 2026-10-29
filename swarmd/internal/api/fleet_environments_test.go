@@ -138,7 +138,8 @@ func environmentDefinition(t *testing.T, view any) pebblestore.SandboxEnvironmen
 
 // Purpose: a home manages a linked machine's folder environment through the
 // link with the same service as local callers: it defines, merges (setup
-// appended, untouched fields kept), reads, lists and rebuilds it, and a
+// appended, untouched fields kept, a null max_leases treated as not given),
+// reads, lists and rebuilds it, and a
 // failed build names its error and log tail. Threat: a home that can only
 // change an environment by SSH (the observed dead end), or a merge that drops
 // the existing setup. Boundary: Server.ManageFolderEnvironment (home),
@@ -184,6 +185,18 @@ func TestHomeManagesLinkedFolderEnvironment(t *testing.T) {
 	out, err = f.call(t, "box", tool.FolderEnvironmentUpdate, map[string]any{"workspace_path": f.folder, "max_leases": float64(4)})
 	if err != nil || out["build_started"] != false || f.builder.count() != builds || f.stored(t).MaxLeases != 4 || len(f.stored(t).Definition.Setup) != 2 {
 		t.Fatalf("max_leases only: %v %v builds=%d", out, err, f.builder.count())
+	}
+
+	// A null max_leases is "not given" (like every other field): it keeps the
+	// stored limit, locally and over the link, and alone it changes nothing.
+	for _, machine := range []string{"box", ""} {
+		out, err = f.call(t, machine, tool.FolderEnvironmentUpdate, map[string]any{"workspace_path": f.folder, "env": map[string]any{"NULL_CHECK": "v-" + machine}, "max_leases": nil, "wait_seconds": float64(10)})
+		if err != nil || f.stored(t).MaxLeases != 4 || f.stored(t).Definition.Env["NULL_CHECK"] != "v-"+machine {
+			t.Fatalf("null max_leases (machine %q): %v %v stored=%+v", machine, out, err, f.stored(t))
+		}
+		if _, err := f.call(t, machine, tool.FolderEnvironmentUpdate, map[string]any{"workspace_path": f.folder, "max_leases": nil}); err == nil || !strings.Contains(err.Error(), "nothing to change") || f.stored(t).MaxLeases != 4 {
+			t.Fatalf("only null max_leases (machine %q): %v stored=%d", machine, err, f.stored(t).MaxLeases)
+		}
 	}
 
 	got, err := f.call(t, "box", tool.FolderEnvironmentGet, map[string]any{"workspace_path": f.folder})
