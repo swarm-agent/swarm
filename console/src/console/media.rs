@@ -369,7 +369,7 @@ impl Console {
                         .child(div().text_color(t.accent).child("▶"))
                         .child(div().flex_1().min_w_0().truncate().text_color(t.text).child(m.title.clone()))
                         .child(div().flex_none().text_size(px(10.5)).text_color(t.faint).child(m.meta.clone()))
-                })
+                }))
                 .into_any_element(),
             MediaCardState::Ready => div()
                 .flex()
