@@ -155,6 +155,22 @@ func checkOutcomeListing(t *testing.T, where string, rows map[string]map[string]
 			t.Fatalf("%s %s outcome = %v, want %q (row %v)", where, id, rows[id]["outcome"], outcome, rows[id])
 		}
 	}
+	// The task's state (pebblestore.ProjectTaskState) leads each row, the
+	// same word on this machine and on a linked one; the record's status is
+	// only the run's.
+	wantState := map[string]string{
+		"pushed":    pebblestore.ProjectTaskStateLanded,
+		"sent-back": pebblestore.ProjectTaskStateRunning,
+		"blocked":   pebblestore.ProjectTaskStateNeedsYou,
+		"plain":     pebblestore.ProjectTaskStateNotIntegrated,
+		"finder":    pebblestore.ProjectTaskStateDone,
+		"abandoned": pebblestore.ProjectTaskStateStopped,
+	}
+	for id, state := range wantState {
+		if rows[id]["state"] != state || rows[id]["run_status"] == nil || rows[id]["status"] != nil {
+			t.Fatalf("%s %s state = %v, want %q (row %v)", where, id, rows[id]["state"], state, rows[id])
+		}
+	}
 	if rows["pushed"]["reviews"] != float64(3) {
 		t.Fatalf("%s pushed reviews = %v", where, rows["pushed"]["reviews"])
 	}
@@ -302,7 +318,7 @@ func TestOrchestratorListTasksSaysWhatHappenedOnLinkedMachine(t *testing.T) {
 	for id, row := range rows {
 		for key := range row {
 			switch key {
-			case "id", "title", "status", "agent", "session_id", "updated_at", "outcome", "stale", "reviews", "needs_attention":
+			case "state", "id", "title", "run_status", "agent", "session_id", "updated_at", "outcome", "stale", "reviews", "needs_attention":
 			default:
 				t.Fatalf("linked row %s carries %q: %v", id, key, row)
 			}

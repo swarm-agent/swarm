@@ -817,10 +817,10 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_list_tasks", Title: "List project tasks",
-			Description: "Work in a project: orchestrator tasks and worker runs, with status, agent branch, target branch and what needs doing. By default it lists current tasks (running, waiting, or finished in the last 24 hours), newest updated first, 25 per page; total says how many match. Use scope all with cursor (from next_cursor) to page through history. Tasks in pending_approval wait for approve_task; finished work waits in status needs_review until integrate_task merges it. Read a task's work with get_changes and read_file on its session_id.",
+			Description: "Work in a project: orchestrator tasks and worker runs, with each task's state, agent branch, target branch and what needs doing. Report progress.task_state (running, waiting, needs_you, landed, done, not_integrated, stopped) and progress.task_state_reason; status is only the agent run's status (needs_review means the run ended, not that work waits for review). By default it lists current tasks (running, waiting, or finished in the last 24 hours), newest updated first, 25 per page; total says how many match. Use scope all with cursor (from next_cursor) to page through history. Tasks in pending_approval wait for approve_task; finished work in state not_integrated waits until integrate_task merges it. Read a task's work with get_changes and read_file on its session_id.",
 			InputSchema: controlMCPObject([]string{"project_id"}, map[string]any{
 				"project_id":     controlMCPStringProp("From list_projects.", 1, 200),
-				"status":         controlMCPStringProp("Only these statuses, one or comma-separated, e.g. needs_review or in_progress,queued.", 0, 200),
+				"status":         controlMCPStringProp("Only these run statuses, one or comma-separated, e.g. needs_review or in_progress,queued.", 0, 200),
 				"query":          controlMCPStringProp("Only tasks whose title or description contains this text.", 0, 200),
 				"agent":          controlMCPStringProp("Only tasks for this agent, e.g. coder.", 0, 50),
 				"scope":          map[string]any{"type": "string", "enum": []string{pebblestore.ProjectTaskScopeCurrent, pebblestore.ProjectTaskScopeAll}, "description": "current (default): running, waiting, or finished in the last 24 hours. all: every task that is not archived."},

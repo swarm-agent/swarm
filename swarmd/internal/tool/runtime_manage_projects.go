@@ -244,6 +244,9 @@ func (a *legacyDeployerLifecycleAdapter) CreateProjectTask(ctx context.Context, 
 	}
 	if len(task.Deliverables) == 0 {
 		if task.Agent == "coder" || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" {
+			// "pending" is a creation placeholder that nothing updates;
+			// surfaces show it from the task state
+			// (pebblestore.ProjectTaskDeliverableStatus), which is authoritative.
 			task.Deliverables = []pebblestore.ProjectTaskDeliverable{
 				{ID: "deliv_code", Title: task.Title, Kind: "code_pr", Status: "pending"},
 			}
@@ -387,7 +390,7 @@ func manageProjectsDefinition() Definition {
 				"feature_size":         map[string]any{"type": "string", "enum": []string{"small", "big"}},
 				"name":                 map[string]any{"type": "string", "description": "Project name"},
 				"description":          map[string]any{"type": "string"},
-				"status":               map[string]any{"type": "string", "description": "list_tasks filter, comma-separated"},
+				"status":               map[string]any{"type": "string", "description": "list_tasks filter on run_status, comma-separated"},
 				"scope":                map[string]any{"type": "string", "enum": []string{"current", "all"}, "description": "list_tasks: current (default) or all"},
 				"query":                map[string]any{"type": "string"},
 				"include_archived":     map[string]any{"type": "boolean"},

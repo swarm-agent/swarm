@@ -67,11 +67,16 @@ type taskProgress struct {
 	// (pebblestore.ProjectTaskNeedsAttention, the rule list counts use):
 	// blocked, failed, waiting for approval or a question, or work no
 	// workflow hands over and nobody integrated.
-	NeedsAttention bool                     `json:"needs_attention"`
-	Workflow       *taskProgressWorkflow    `json:"workflow,omitempty"`
-	Integration    *taskProgressIntegration `json:"integration,omitempty"`
-	History        []taskProgressEvent      `json:"history"`
-	UpdatedAt      int64                    `json:"updated_at"`
+	NeedsAttention bool `json:"needs_attention"`
+	// TaskState is the task's state (pebblestore.ProjectTaskState, the word
+	// list_tasks, get_task and the Orchestrator's prompt show) with its
+	// one-line reason; the record's status is only its run's status.
+	TaskState       string                   `json:"task_state,omitempty"`
+	TaskStateReason string                   `json:"task_state_reason,omitempty"`
+	Workflow        *taskProgressWorkflow    `json:"workflow,omitempty"`
+	Integration     *taskProgressIntegration `json:"integration,omitempty"`
+	History         []taskProgressEvent      `json:"history"`
+	UpdatedAt       int64                    `json:"updated_at"`
 }
 
 type taskProgressWorkflow struct {
@@ -714,6 +719,7 @@ func (s *Server) taskProgressFor(account string, task pebblestore.ProjectTaskRec
 func markTaskProgressAttention(p *taskProgress, task pebblestore.ProjectTaskRecord) {
 	if p != nil {
 		p.NeedsAttention = pebblestore.ProjectTaskNeedsAttention(task, p.Outcome, p.Stale, p.Idle)
+		p.TaskState, p.TaskStateReason = pebblestore.ProjectTaskState(task, p.Outcome, p.Stale, p.Idle)
 	}
 }
 

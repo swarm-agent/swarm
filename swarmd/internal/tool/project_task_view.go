@@ -131,10 +131,18 @@ type projectTaskWorktree struct {
 
 // ProjectTaskView is the default get_task answer.
 type ProjectTaskView struct {
-	ID          string                `json:"id"`
-	Title       string                `json:"title"`
-	Agent       string                `json:"agent,omitempty"`
-	Status      string                `json:"status"`
+	// State is where the task's work is (pebblestore.ProjectTaskState):
+	// running, waiting, needs_you, landed, done, not_integrated or stopped,
+	// with StateReason its one-line why. It is what a reader reports.
+	State       string `json:"state"`
+	StateReason string `json:"state_reason,omitempty"`
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Agent       string `json:"agent,omitempty"`
+	// RunStatus is the stored record's status: the status of the task's
+	// agent run (needs_review only means the run ended), not the task's
+	// state.
+	RunStatus   string                `json:"run_status"`
 	Revision    int                   `json:"revision,omitempty"`
 	UpdatedAt   int64                 `json:"updated_at,omitempty"`
 	SessionID   string                `json:"session_id,omitempty"`
@@ -193,12 +201,15 @@ type projectTaskPlanGuard struct {
 }
 
 // ProjectTaskRow is the answer to a task mutation: the task's identity and
-// status and what to do next.
+// run status and what to do next. State is set when the run status alone
+// decides it (pebblestore.ProjectTaskState without an outcome): a task whose
+// run ended needs its outcome, which get_task reads.
 type ProjectTaskRow struct {
+	State       string                `json:"state,omitempty"`
 	ID          string                `json:"id"`
 	Title       string                `json:"title"`
 	Agent       string                `json:"agent,omitempty"`
-	Status      string                `json:"status"`
+	RunStatus   string                `json:"run_status"`
 	Revision    int                   `json:"revision,omitempty"`
 	SessionID   string                `json:"session_id,omitempty"`
 	LastError   string                `json:"last_error,omitempty"`
@@ -301,7 +312,7 @@ func projectTaskNext(t *pebblestore.ProjectTaskRecord, progress *projectTaskProg
 func compactProjectTask(read projectTaskRead, remote bool) ProjectTaskView {
 	t := &read.ProjectTaskRecord
 	t.EnsureTaskAttempts()
-	view := ProjectTaskView{ID: t.ID, Title: clipRunes(t.Title, projectTaskTitleRunes), Agent: t.Agent, Status: t.Status, Revision: t.Revision, UpdatedAt: t.UpdatedAt, SessionID: t.SessionID, PlanBinding: projectTaskPlanGuardFor(t), More: projectTaskMoreGet}
+	view := ProjectTaskView{ID: t.ID, Title: clipRunes(t.Title, projectTaskTitleRunes), Agent: t.Agent, RunStatus: t.Status, Revision: t.Revision, UpdatedAt: t.UpdatedAt, SessionID: t.SessionID, PlanBinding: projectTaskPlanGuardFor(t), More: projectTaskMoreGet}
 	if text := firstNonEmptyText(t.LastError, actionNeededForFailure(t)); text != "" {
 		view.LastError = clipBytes(text, projectTaskErrorBytes)
 	}
@@ -434,6 +445,19 @@ func compactProjectTask(read projectTaskRead, remote bool) ProjectTaskView {
 		outcome, stale, idle = p.Outcome, p.Stale, p.Idle
 	}
 	view.NeedsAttention = pebblestore.ProjectTaskNeedsAttention(*t, outcome, stale, idle)
+	view.State, view.StateReason = pebblestore.ProjectTaskState(*t, outcome, stale, idle)
+	view.StateReason = clipBytes(view.StateReason, projectTaskTextBytes)
+	// The stage stops at the work's end: a landed or done task (or one
+	// whose workflow finished or whose work was delivered) is past its
+	// implementation steps.
+	switch {
+	case view.State == pebblestore.ProjectTaskStateLanded:
+		view.Progress.Stage = "Landed"
+	case view.State == pebblestore.ProjectTaskStateDone:
+		view.Progress.Stage = "Done"
+	case integration == "delivered" || integration == "integrated" || (view.Progress.Workflow != nil && view.Progress.Workflow.State == "done"):
+		view.Progress.Stage = "Landed"
+	}
 	fitProjectTaskView(&view)
 	return view
 }
@@ -473,7 +497,10 @@ func actionNeededForFailure(t *pebblestore.ProjectTaskRecord) string {
 
 // compactProjectTaskRow is the answer row of a task mutation.
 func compactProjectTaskRow(t pebblestore.ProjectTaskRecord) ProjectTaskRow {
-	row := ProjectTaskRow{ID: t.ID, Title: clipRunes(t.Title, projectTaskTitleRunes), Agent: t.Agent, Status: t.Status, Revision: t.Revision, SessionID: t.SessionID, PlanBinding: projectTaskPlanGuardFor(&t)}
+	row := ProjectTaskRow{ID: t.ID, Title: clipRunes(t.Title, projectTaskTitleRunes), Agent: t.Agent, RunStatus: t.Status, Revision: t.Revision, SessionID: t.SessionID, PlanBinding: projectTaskPlanGuardFor(&t)}
+	if t.Archived || projectTaskStatusClass(t.Status) != "finished" {
+		row.State, _ = pebblestore.ProjectTaskState(t, "", false, false)
+	}
 	if t.LastError != "" {
 		row.LastError = clipBytes(t.LastError, projectTaskErrorBytes)
 	}
@@ -601,7 +628,11 @@ func clipList(list []string, limit int) []string {
 
 // projectTaskFilesDetail is get_task detail=files: what changed and what
 // was delivered.
-func projectTaskFilesDetail(t pebblestore.ProjectTaskRecord, worktree *projectTaskWorktree) map[string]any {
+//
+// A code deliverable's status is shown from the task state
+// (pebblestore.ProjectTaskDeliverableStatus): its stored status is the
+// placeholder set when the task was created.
+func projectTaskFilesDetail(t pebblestore.ProjectTaskRecord, worktree *projectTaskWorktree, state string) map[string]any {
 	out := map[string]any{}
 	if worktree != nil && t.DeliveryAssessment == nil {
 		out["head"], out["commits"], out["files"] = worktree.Head, worktree.Commits, clipList(worktree.Files, projectTaskFilesMax)
@@ -632,7 +663,7 @@ func projectTaskFilesDetail(t pebblestore.ProjectTaskRecord, worktree *projectTa
 		if i >= 50 {
 			break
 		}
-		deliverables = append(deliverables, map[string]any{"id": d.ID, "title": d.Title, "kind": d.Kind, "status": d.Status})
+		deliverables = append(deliverables, map[string]any{"id": d.ID, "title": d.Title, "kind": d.Kind, "status": pebblestore.ProjectTaskDeliverableStatus(d, state)})
 	}
 	if len(deliverables) > 0 {
 		out["deliverables"] = deliverables
@@ -720,7 +751,8 @@ func CompactProjectTaskAnswer(action, detail string, raw json.RawMessage) (json.
 	if action == "get_task" {
 		answer.Task.Worktree = linkedTaskRange(answer.Task.ProjectTaskRecord, answer.Commits, answer.Files)
 		answer.Task.Messages = answer.Messages
-		out["task"] = compactProjectTask(*answer.Task, true)
+		view := compactProjectTask(*answer.Task, true)
+		out["task"] = view
 		task := answer.Task.ProjectTaskRecord
 		switch detail {
 		case ProjectTaskDetailPlan:
@@ -732,7 +764,7 @@ func CompactProjectTaskAnswer(action, detail string, raw json.RawMessage) (json.
 			}
 			out["attempts"] = projectTaskAttemptRows(attempts)
 		case ProjectTaskDetailFiles:
-			files := projectTaskFilesDetail(task, answer.Task.Worktree)
+			files := projectTaskFilesDetail(task, answer.Task.Worktree, view.State)
 			if len(answer.Commits) > 0 && string(answer.Commits) != "null" {
 				files["commit_list"] = answer.Commits
 			}

@@ -71,7 +71,7 @@ func TestFleetTaskAnswersCompactForOrchestrator(t *testing.T) {
 		t.Fatal(err)
 	}
 	taskID := proposed.Data.Task.ID
-	if taskID == "" || proposed.Machine != "box" || !proposed.Untrusted || proposed.LinkedTaskID != taskID || proposed.Data.Task.Title != "Read-only audit" || proposed.Data.Task.Agent != "finder" || proposed.Data.Task.Status == "" || proposed.Data.NextAction == "" {
+	if taskID == "" || proposed.Machine != "box" || !proposed.Untrusted || proposed.LinkedTaskID != taskID || proposed.Data.Task.Title != "Read-only audit" || proposed.Data.Task.Agent != "finder" || proposed.Data.Task.RunStatus == "" || proposed.Data.NextAction == "" {
 		t.Fatalf("linked propose_task answer: %s", sent)
 	}
 	for _, leaked := range []string{"pipeline_stages", "model_preview", "submission_hash", "account_id", "context_pool_summary", "home_session_id"} {
@@ -116,7 +116,7 @@ func TestFleetTaskAnswersCompactForOrchestrator(t *testing.T) {
 		t.Fatal(err)
 	}
 	v := checked.Data.Task
-	if !checked.Untrusted || v.ID != taskID || v.Status != "completed" || v.SessionID == "" || v.Progress.Now == "" || v.Result == nil || !strings.HasPrefix(v.Result.Summary, "Audit: the store") || v.NextAction == "" || v.More == "" {
+	if !checked.Untrusted || v.ID != taskID || v.RunStatus != "completed" || v.SessionID == "" || v.Progress.Now == "" || v.Result == nil || !strings.HasPrefix(v.Result.Summary, "Audit: the store") || v.NextAction == "" || v.More == "" {
 		t.Fatalf("linked get_task view: %s", read)
 	}
 	if strings.Contains(read, "plan line the Orchestrator") || strings.Contains(read, "full_plan_markdown") {
@@ -131,7 +131,7 @@ func TestFleetTaskAnswersCompactForOrchestrator(t *testing.T) {
 		t.Fatal(err)
 	}
 	sentRead, err := call(map[string]any{"action": "get_task", "machine": "box", "project_id": "remote-project", "task_id": proposedID})
-	if err != nil || len(sentRead) > 2048 || !strings.Contains(sentRead, `"status":"needs_review"`) {
+	if err != nil || len(sentRead) > 2048 || !strings.Contains(sentRead, `"run_status":"needs_review"`) || !strings.Contains(sentRead, `"state":"`) {
 		t.Fatalf("sent task read: %v %s", err, sentRead)
 	}
 	if record, _, _ := h.home.s.fleet.GetLinkedTask(h.home.account, "box", "remote-project", proposedID); record.Status != "needs_review" || record.ObservedAt == 0 {

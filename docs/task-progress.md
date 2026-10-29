@@ -98,6 +98,49 @@ them as `messages`.
 no active run, and which has not changed, for 24 hours. `idle` is `true` on a
 finished task whose progress has not changed for 7 days.
 
+### The task's state: `task_state`
+
+A task record's `status` is the status of its agent **run**, not of the task:
+`needs_review` only means the agent's run ended. It says nothing about whether
+the work was pushed, sent back or is still on its branch. Every surface that
+shows a task shows one derived word instead, from one rule
+(`pebblestore.ProjectTaskState`, over the task's `status`, `outcome`, `stale`
+and `idle`, using the same bucket as the list counts):
+
+- `progress.task_state` and `progress.task_state_reason` on the task routes
+  (and so on MCP `swarm_list_tasks`);
+- `state` first on every Orchestrator `list_tasks` row and `state` plus
+  `state_reason` in `get_task`, here and on linked machines, where the raw
+  field is named `run_status`;
+- the Orchestrator's per-turn "Recent Project Tasks & Deliverables" prompt
+  block. That block is a snapshot from the start of the turn. Read live with
+  `list_tasks` before reporting status.
+
+| state | meaning | produced by | count bucket |
+|---|---|---|---|
+| `running` | an agent or workflow still works on it | run status planning/in_progress/running/…; or outcome `running <step>`, `sent_back (round n)`, `workflow pending` | `in_progress` |
+| `waiting` | queued for capacity | run status `queued`/`pending` | `waiting` |
+| `needs_you` | the person must act | run status `pending_approval`, `needs_input`, `failed`, `blocked` (and other failures); outcome `blocked …` (including sent back until its rounds ran out) or `failed …` | `needs_attention` |
+| `landed` | the work was handed over | outcome `pushed <sha>`, `delivered <target>`, `integrated` (reason names the SHA or target) | `done` |
+| `done` | finished with nothing to hand over | outcome `finished`; run status `completed`, `rejected`, `superseded`; an archived task or a workflow step's own task | `done` |
+| `not_integrated` | finished with commits never handed over | outcome `ready to integrate` (reason names the branch); a blocked/failed workflow or unknown outcome once idle | `needs_attention` within 7 days, `idle` after |
+| `stopped` | stopped by the person, or no active run for a day | run status `stopped`, outcome `stopped`, or `stale` | `stopped` |
+
+`landed` requires a handover: a workflow step that pushed (`pushed <sha>`) or
+delivered (`delivered <target>`), or the commits being in the target branch
+(`integrated`). A failed run status wins over an earlier push (`needs_you`). A
+`landed` or `done` task is never counted `needs_attention`.
+
+When a task is `landed` or `done` (or its workflow is `done`, or its work was
+delivered or integrated), `get_task`'s `progress.stage` is `Landed` or `Done`,
+not an implementation step.
+
+A coder task's code deliverable (`deliv_code`) is created with status
+`pending`. Nothing updates that placeholder, so the task state is the authority.
+Surfaces show the deliverable from the state: `landed` is `delivered`,
+`not_integrated` is `on branch`, `running` is `in progress`. Other
+deliverables, such as images, keep their stored status.
+
 ### `workflow.state`, one of
 
 - `none`: the task ended and Swarm found no enabled workflow that applies to

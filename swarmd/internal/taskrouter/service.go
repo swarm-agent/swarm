@@ -427,6 +427,9 @@ IMPORTANT TASK PROPERTIES:
 			{ID: "deliv_plan", Title: "Structured Execution Plan", Kind: "report", Status: "pending"},
 		}
 	case "coder":
+		// A code deliverable's "pending" is a creation placeholder that
+		// nothing updates; surfaces show it from the task state
+		// (pebblestore.ProjectTaskDeliverableStatus), which is authoritative.
 		deliverables = []pebblestore.ProjectTaskDeliverable{
 			{ID: "deliv_code", Title: "Code PR & Verified Tests", Kind: "pr", Status: "pending", Description: "Pull request with tested code modifications"},
 		}

@@ -1,6 +1,9 @@
 package pebblestore
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // A deliberate stop of a task's run (stop_task, or the person's own stop in
 // the task's session) is not a failure: the task's status is stopped, the
@@ -112,4 +115,185 @@ func ProjectTaskBucket(task ProjectTaskRecord, outcome string, stale, idle bool)
 // the needs_attention count all read it, here and on linked machines.
 func ProjectTaskNeedsAttention(task ProjectTaskRecord, outcome string, stale, idle bool) bool {
 	return ProjectTaskBucket(task, outcome, stale, idle) == ProjectTaskCountNeedsAttention
+}
+
+// Task states: where a task's work is, in one word. A task record's Status
+// is its run status (needs_review only means the agent's run ended); the
+// state reads it together with the progress outcome. Every surface that
+// shows a task (list_tasks, get_task, linked machines, the Orchestrator's
+// prompt, progress.task_state on the task routes) shows this state. See
+// docs/task-progress.md.
+const (
+	// ProjectTaskStateRunning: an agent or a workflow (running, sent back,
+	// not evaluated yet) still works on it. Count bucket in_progress.
+	ProjectTaskStateRunning = "running"
+	// ProjectTaskStateWaiting: queued for capacity. Count bucket waiting.
+	ProjectTaskStateWaiting = "waiting"
+	// ProjectTaskStateNeedsYou: the person must act: approval, a question,
+	// a blocked or failed run or workflow (including sent back until its
+	// rounds ran out). Count bucket needs_attention.
+	ProjectTaskStateNeedsYou = "needs_you"
+	// ProjectTaskStateLanded: the work was handed over: pushed, delivered or
+	// integrated. Count bucket done.
+	ProjectTaskStateLanded = "landed"
+	// ProjectTaskStateDone: finished with nothing to hand over (finished,
+	// completed, rejected, superseded), archived, or a workflow step's own
+	// task. Count bucket done.
+	ProjectTaskStateDone = "done"
+	// ProjectTaskStateNotIntegrated: finished with work on its branch that
+	// was never handed over. Count bucket needs_attention within 7 days of
+	// its last change, idle after.
+	ProjectTaskStateNotIntegrated = "not_integrated"
+	// ProjectTaskStateStopped: stopped by the person, or stale (no active
+	// run for a day). Count bucket stopped.
+	ProjectTaskStateStopped = "stopped"
+)
+
+// ProjectTaskState is the task's state and a one-line reason, from the same
+// inputs and the same bucket as ProjectTaskBucket (the list counts), so a
+// state never disagrees with its count: landed and done count done, running
+// in_progress, waiting waiting, needs_you needs_attention, stopped stopped,
+// not_integrated needs_attention (or idle once 7 days old).
+func ProjectTaskState(task ProjectTaskRecord, outcome string, stale, idle bool) (string, string) {
+	outcome = strings.TrimSpace(outcome)
+	word, _, _ := strings.Cut(outcome, " ")
+	bucket := ProjectTaskBucket(task, outcome, stale, idle)
+	switch bucket {
+	case ProjectTaskCountStopped:
+		if stale && task.Status != ProjectTaskStatusStopped {
+			return ProjectTaskStateStopped, "no active run for over a day (run status " + task.Status + ")"
+		}
+		return ProjectTaskStateStopped, "stopped by the person; a message resumes it"
+	case ProjectTaskCountWaiting:
+		return ProjectTaskStateWaiting, "queued; starts when capacity frees"
+	case ProjectTaskCountInProgress:
+		switch word {
+		case "sent_back":
+			return ProjectTaskStateRunning, outcome + "; the agent addresses the findings"
+		case "running":
+			return ProjectTaskStateRunning, "workflow " + outcome
+		case "workflow":
+			return ProjectTaskStateRunning, outcome
+		}
+		return ProjectTaskStateRunning, "agent run " + task.Status
+	case ProjectTaskCountDone:
+		switch word {
+		case "pushed", "delivered", "integrated":
+			return ProjectTaskStateLanded, outcome
+		}
+		switch {
+		case task.Archived:
+			return ProjectTaskStateDone, "archived"
+		case ProjectTaskWorkflowSpawned(task):
+			return ProjectTaskStateDone, "workflow step; its work belongs to the task it serves"
+		case word == "finished":
+			return ProjectTaskStateDone, "finished; nothing to integrate"
+		}
+		return ProjectTaskStateDone, task.Status
+	}
+	// needs_attention or idle.
+	switch task.Status {
+	case "pending_approval":
+		return ProjectTaskStateNeedsYou, "waiting for approval"
+	case "needs_input":
+		return ProjectTaskStateNeedsYou, "waiting for an answer"
+	case "failed", "blocked", "error", "cancelled", "interrupted", "expired":
+		reason := "run " + task.Status
+		if text := strings.TrimSpace(task.LastError); text != "" {
+			reason += ": " + clipProjectTaskStateReason(text)
+		}
+		return ProjectTaskStateNeedsYou, reason
+	}
+	switch word {
+	case "blocked", "failed":
+		reason := "workflow " + outcome
+		if idle {
+			// Not attention any more; its work was never handed over.
+			return ProjectTaskStateNotIntegrated, reason + "; idle over 7 days"
+		}
+		return ProjectTaskStateNeedsYou, reason
+	case "ready":
+		reason := "work not handed over"
+		if branch := strings.TrimSpace(task.WorktreeBranch); branch != "" {
+			reason = "commits on branch " + branch + " not handed over"
+		}
+		if idle {
+			reason += "; idle over 7 days"
+		}
+		return ProjectTaskStateNotIntegrated, reason
+	}
+	if idle {
+		return ProjectTaskStateNotIntegrated, "run ended, nothing handed over; idle over 7 days"
+	}
+	return ProjectTaskStateNeedsYou, "run ended; outcome unknown"
+}
+
+func clipProjectTaskStateReason(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if r := []rune(text); len(r) > 160 {
+		text = string(r[:160]) + "…"
+	}
+	return text
+}
+
+// ProjectTaskProgressFlags reads the outcome, stale and idle flags from a
+// task progress value (the progress hook's answer, ProjectTaskProgress).
+// Empty when there is none.
+func ProjectTaskProgressFlags(progress any) (outcome string, stale, idle bool) {
+	if progress == nil {
+		return "", false, false
+	}
+	raw, err := json.Marshal(progress)
+	if err != nil {
+		return "", false, false
+	}
+	var flags struct {
+		Outcome string `json:"outcome"`
+		Stale   bool   `json:"stale"`
+		Idle    bool   `json:"idle"`
+	}
+	if json.Unmarshal(raw, &flags) != nil {
+		return "", false, false
+	}
+	return flags.Outcome, flags.Stale, flags.Idle
+}
+
+// ProjectTaskCodeDeliverable reports whether d is the code deliverable a
+// coder task is created with (deliv_code). Its Status is the placeholder set
+// when the task is created ("pending") and is not kept in step with the work:
+// the task state is authoritative.
+func ProjectTaskCodeDeliverable(d ProjectTaskDeliverable) bool {
+	switch d.Kind {
+	case "pr", "code_pr", "code_diff":
+		return true
+	}
+	return d.ID == "deliv_code"
+}
+
+// ProjectTaskDeliverableStatus is the status to show for d of a task in
+// state: a code deliverable still carrying its creation placeholder reads
+// from the task state (landed: delivered; not_integrated: on branch;
+// running: in progress); any other deliverable keeps its stored status.
+func ProjectTaskDeliverableStatus(d ProjectTaskDeliverable, state string) string {
+	status := strings.TrimSpace(d.Status)
+	if !ProjectTaskCodeDeliverable(d) || (status != "" && status != "pending") {
+		return status
+	}
+	switch state {
+	case ProjectTaskStateLanded:
+		return "delivered"
+	case ProjectTaskStateNotIntegrated:
+		return "on branch"
+	case ProjectTaskStateRunning:
+		return "in progress"
+	case ProjectTaskStateWaiting:
+		return "not started"
+	case ProjectTaskStateNeedsYou:
+		return "needs you"
+	case ProjectTaskStateDone:
+		return "done"
+	case ProjectTaskStateStopped:
+		return "stopped"
+	}
+	return "unknown"
 }

@@ -617,21 +617,45 @@ func (s *Service) projectContextPromptBlock(scope tool.WorkspaceScope) string {
 
 	// Append the newest tasks & deliverables so orchestrator understands references like "picture 2", "variant 1", etc.
 	if tasks, err := db.ListRecentProjectTasks(accountScopeID, matchedProject.ID, 10); err == nil && len(tasks) > 0 {
-		sb.WriteString("\n\n## Recent Project Tasks & Deliverables\n")
-		for _, t := range tasks {
-			sb.WriteString(fmt.Sprintf("- Task `%s` (%s) [%s]: %s\n", t.ID, t.Agent, t.Status, t.Title))
-			for dIdx, d := range t.Deliverables {
-				itemNum := dIdx + 1
-				desc := d.Title
-				if desc == "" {
-					desc = d.Description
-				}
-				sb.WriteString(fmt.Sprintf("  * Deliverable #%d (Picture/Asset %d): %s (status: %s, kind: %s, id: %s)\n", itemNum, itemNum, desc, d.Status, d.Kind, d.ID))
-			}
-		}
+		sb.WriteString(recentProjectTasksPromptBlock(tasks, func(t pebblestore.ProjectTaskRecord) (string, bool, bool) {
+			return pebblestore.ProjectTaskProgressFlags(db.ProjectTaskProgress(accountScopeID, t))
+		}))
 	}
 
 	return strings.TrimSpace(sb.String())
+}
+
+// recentProjectTasksPromptBlock lists the newest tasks with their state
+// (pebblestore.ProjectTaskState over each one's progress outcome, the word
+// list_tasks and get_task show), never the raw run status, and their
+// deliverables so the orchestrator understands references like "picture 2".
+// A code deliverable's stored status is a creation placeholder, so it is
+// shown from the task state (pebblestore.ProjectTaskDeliverableStatus).
+func recentProjectTasksPromptBlock(tasks []pebblestore.ProjectTaskRecord, progressOf func(pebblestore.ProjectTaskRecord) (string, bool, bool)) string {
+	var sb strings.Builder
+	sb.WriteString("\n\n## Recent Project Tasks & Deliverables\n")
+	sb.WriteString("Snapshot when this turn started; read live with manage_projects list_tasks before reporting status.\n")
+	for _, t := range tasks {
+		outcome, stale, idle := "", false, false
+		if progressOf != nil {
+			outcome, stale, idle = progressOf(t)
+		}
+		state, reason := pebblestore.ProjectTaskState(t, outcome, stale, idle)
+		label := state
+		if reason = strings.TrimSpace(reason); reason != "" {
+			label += ": " + reason
+		}
+		sb.WriteString(fmt.Sprintf("- Task `%s` (%s) [%s]: %s\n", t.ID, t.Agent, label, t.Title))
+		for dIdx, d := range t.Deliverables {
+			itemNum := dIdx + 1
+			desc := d.Title
+			if desc == "" {
+				desc = d.Description
+			}
+			sb.WriteString(fmt.Sprintf("  * Deliverable #%d (Picture/Asset %d): %s (status: %s, kind: %s, id: %s)\n", itemNum, itemNum, desc, pebblestore.ProjectTaskDeliverableStatus(d, state), d.Kind, d.ID))
+		}
+	}
+	return sb.String()
 }
 
 func filterToolDefinitionsExcept(definitions []provideriface.ToolDefinition, allowed map[string]struct{}) []provideriface.ToolDefinition {

@@ -436,6 +436,9 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) (TaskRouteResult, 
 		}
 	case "coder":
 		stages = []string{"Code Implementation", "Verification & Pull Request"}
+		// The code deliverable's "pending" is a creation placeholder that
+		// nothing updates; surfaces show it from the task state
+		// (ProjectTaskDeliverableStatus), which is authoritative.
 		deliverables = []ProjectTaskDeliverable{
 			{ID: "deliv_code", Title: "Code PR & Verified Tests", Kind: "pr", Status: "pending", Description: "Pull request with tested code modifications"},
 		}

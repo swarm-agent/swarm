@@ -238,9 +238,23 @@ func compactFleetTaskList(raw json.RawMessage) (json.RawMessage, error) {
 				if text, ok := v.(string); ok && len([]rune(text)) > 256 {
 					v = string([]rune(text)[:256])
 				}
+				if key == "status" {
+					// The run's status, as list_tasks on this machine names it.
+					key = "run_status"
+				}
 				item[key] = v
 			}
 		}
+		// The task's state from the same rule as this machine's list rows
+		// (pebblestore.ProjectTaskState), over the record and progress the
+		// linked machine reported.
+		stateTask := pebblestore.ProjectTaskRecord{}
+		stateTask.ID, _ = record["id"].(string)
+		stateTask.Status, _ = record["status"].(string)
+		stateTask.AutomationID, _ = record["automation_id"].(string)
+		stateTask.WorktreeBranch, _ = record["worktree_branch"].(string)
+		stateTask.Archived, _ = record["archived"].(bool)
+		stateOutcome, stateStale, stateIdle := "", false, false
 		if archived, _ := record["archived"].(bool); archived {
 			item["archived"] = true
 		}
@@ -261,6 +275,12 @@ func compactFleetTaskList(raw json.RawMessage) (json.RawMessage, error) {
 			if attention, _ := progress["needs_attention"].(bool); attention {
 				item["needs_attention"] = true
 			}
+			stateOutcome, _ = progress["outcome"].(string)
+			stateStale, _ = progress["stale"].(bool)
+			stateIdle, _ = progress["idle"].(bool)
+		}
+		if stateTask.ID != "" {
+			item["state"], _ = pebblestore.ProjectTaskState(stateTask, stateOutcome, stateStale, stateIdle)
 		}
 		tasks = append(tasks, item)
 	}

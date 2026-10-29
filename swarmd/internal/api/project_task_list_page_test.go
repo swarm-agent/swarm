@@ -300,12 +300,12 @@ func TestFleetListTasksForwardsFiltersOnLargeProject(t *testing.T) {
 	row := current["tasks"].([]any)[0].(map[string]any)
 	for key := range row {
 		switch key {
-		case "id", "title", "status", "agent", "session_id", "updated_at", "outcome", "stale", "reviews":
+		case "state", "id", "title", "run_status", "agent", "session_id", "updated_at", "outcome", "stale", "reviews":
 		default:
 			t.Fatalf("linked row carries %q: %v", key, row)
 		}
 	}
-	if row["updated_at"] == nil || row["status"] != "completed" {
+	if row["updated_at"] == nil || row["run_status"] != "completed" || row["state"] != pebblestore.ProjectTaskStateDone {
 		t.Fatalf("linked row %v", row)
 	}
 	status := list(map[string]any{"status": []any{"needs_review"}})

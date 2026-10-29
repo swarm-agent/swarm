@@ -166,7 +166,7 @@ func TestManageProjectsGetTaskCompactByDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	v := view.Task
-	if v.ID != taskID || v.Title != "Keep comments in the parser" || v.Agent != "coder" || v.Status != "needs_review" || v.SessionID != "task-session-1" || v.UpdatedAt == 0 {
+	if v.ID != taskID || v.Title != "Keep comments in the parser" || v.Agent != "coder" || v.RunStatus != "needs_review" || v.SessionID != "task-session-1" || v.UpdatedAt == 0 || v.State != pebblestore.ProjectTaskStateNeedsYou || !v.NeedsAttention {
 		t.Fatalf("identity: %+v", v)
 	}
 	if v.Progress.Stage != "Verification & Pull Request (2 of 2)" || !strings.HasPrefix(v.Progress.Now, "not integrated") || v.Progress.Next == "" {
@@ -440,7 +440,7 @@ func TestManageProjectsTaskMutationsAnswerCompactRow(t *testing.T) {
 			t.Fatalf("%s is %d bytes, budget %d: %s", action, len(raw), proposeTaskBudget, raw)
 		}
 		task, _ := out["task"].(map[string]any)
-		if task["id"] != "task-proposed" || task["title"] != "Keep comments in the parser" || task["agent"] != "coder" || task["status"] != "in_progress" || task["session_id"] != "task-session-1" || out["task_status"] != "in_progress" {
+		if task["id"] != "task-proposed" || task["title"] != "Keep comments in the parser" || task["agent"] != "coder" || task["run_status"] != "in_progress" || task["state"] != pebblestore.ProjectTaskStateRunning || task["session_id"] != "task-session-1" || out["task_status"] != "in_progress" {
 			t.Fatalf("%s row: %s", action, raw)
 		}
 		if out["next_action"] != "wait_tasks" || out["model"] != "provider-x/model-y (thinking medium)" {
@@ -523,7 +523,7 @@ func TestCompactProjectTaskAnswerLinked(t *testing.T) {
 	if err := json.Unmarshal(compact, &view); err != nil {
 		t.Fatal(err)
 	}
-	if v := view.Task; v.ID != "remote-task" || v.Status != "needs_review" || v.Progress.Workflow == nil || v.Progress.Workflow.Reason != "review verdict block" || v.Result == nil || v.Result.Files != 40 || v.Result.Commits != 3 || v.Integration != "not_integrated" || v.SessionID != "task-session-1" || v.NextAction != "wait_tasks" {
+	if v := view.Task; v.ID != "remote-task" || v.RunStatus != "needs_review" || v.State != pebblestore.ProjectTaskStateNeedsYou || v.Progress.Workflow == nil || v.Progress.Workflow.Reason != "review verdict block" || v.Result == nil || v.Result.Files != 40 || v.Result.Commits != 3 || v.Integration != "not_integrated" || v.SessionID != "task-session-1" || v.NextAction != "wait_tasks" {
 		t.Fatalf("linked view: %s", compact)
 	}
 	if full, err := CompactProjectTaskAnswer("get_task", ProjectTaskDetailFull, getAnswer); err != nil || string(full) != string(getAnswer) {

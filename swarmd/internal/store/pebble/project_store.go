@@ -350,10 +350,14 @@ func (s *SessionStore) UpdateProject(accountScopeID, id string, mutate func(*Pro
 // ProjectTaskDeliverable represents an artifact, video, code diff, or report produced by a task.
 type ProjectTaskDeliverable struct {
 	MediaCostEstimate
-	ID                  string           `json:"id"`
-	Title               string           `json:"title"`
-	Kind                string           `json:"kind"`   // "video" | "code_diff" | "artifact" | "report"
-	Status              string           `json:"status"` // "ready" | "accepted" | "in_progress"
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Kind  string `json:"kind"` // "video" | "code_diff" | "artifact" | "report"
+	// Status: "ready" | "accepted" | "in_progress". A code deliverable's
+	// (ProjectTaskCodeDeliverable) "pending" is its creation placeholder and
+	// is not kept in step with the work: ProjectTaskDeliverableStatus shows
+	// it from the task state, which is authoritative.
+	Status              string           `json:"status"`
 	Duration            string           `json:"duration,omitempty"`
 	Thumbnail           string           `json:"thumbnail,omitempty"`
 	PreviewSource       string           `json:"preview_source,omitempty"` // display-only pinned source, never authority

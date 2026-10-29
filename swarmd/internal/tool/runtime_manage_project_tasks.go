@@ -224,7 +224,8 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 				}
 				read.Messages = messages
 			}
-			result["task"] = compactProjectTask(read, false)
+			view := compactProjectTask(read, false)
+			result["task"] = view
 			switch detail {
 			case ProjectTaskDetailPlan:
 				plan := projectTaskPlanDetail(*task)
@@ -247,7 +248,7 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 				}
 				result["attempts"], result["next_cursor"] = projectTaskAttemptRows(rows), next
 			case ProjectTaskDetailFiles:
-				result["files"] = projectTaskFilesDetail(*task, read.Worktree)
+				result["files"] = projectTaskFilesDetail(*task, read.Worktree, view.State)
 			}
 			break
 		}
@@ -443,6 +444,7 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 				}
 				// The same decision as get_task and the needs_attention count.
 				row.NeedsAttention = pebblestore.ProjectTaskNeedsAttention(task, outcome, stale, idle)
+				row.State, _ = pebblestore.ProjectTaskState(task, outcome, stale, idle)
 				row.Reviews = page.Reviews[task.ID]
 				rows = append(rows, row)
 			}
@@ -671,10 +673,17 @@ var projectTaskListNow = time.Now
 // projectTaskListRow is deliberately independent of the persisted record: adding
 // media or plan fields to storage must never expand list/mutation tool output.
 type projectTaskListRow struct {
+	// State is where the task's work is (pebblestore.ProjectTaskState, the
+	// same word get_task shows): what a reader reports. Outside list_tasks
+	// (which reads each task's outcome) it is set only when the run status
+	// alone decides it; a task whose run ended needs get_task.
+	State    string `json:"state,omitempty"`
 	ID       string `json:"id"`
 	Revision int    `json:"revision"`
 	Title    string `json:"title"`
-	Status   string `json:"status"`
+	// RunStatus is the status of the task's agent run (needs_review only
+	// means the run ended), not the task's state.
+	RunStatus string `json:"run_status"`
 	// Outcome is what happened to the task's work (task progress outcome);
 	// Stale flags an in_progress or blocked task with no active run for 24 h;
 	// Reviews counts its workflow reviewer tasks the list left out;
@@ -701,7 +710,11 @@ func projectTaskSummary(t pebblestore.ProjectTaskRecord) projectTaskListRow {
 	if len(title) > 256 {
 		title = title[:256]
 	}
-	return projectTaskListRow{ID: t.ID, Revision: t.Revision, Title: string(title), Status: t.Status, Archived: t.Archived, Agent: t.Agent, SessionID: t.SessionID, TaskProgramID: t.TaskProgramID, WorktreeBranch: t.WorktreeBranch, SourceWorkspaceID: t.SourceWorkspace.WorkspaceID, Group: t.Group, Order: t.Order, Priority: t.Priority, UpdatedAt: t.UpdatedAt}
+	row := projectTaskListRow{ID: t.ID, Revision: t.Revision, Title: string(title), RunStatus: t.Status, Archived: t.Archived, Agent: t.Agent, SessionID: t.SessionID, TaskProgramID: t.TaskProgramID, WorktreeBranch: t.WorktreeBranch, SourceWorkspaceID: t.SourceWorkspace.WorkspaceID, Group: t.Group, Order: t.Order, Priority: t.Priority, UpdatedAt: t.UpdatedAt}
+	if t.Archived || projectTaskStatusClass(t.Status) != "finished" {
+		row.State, _ = pebblestore.ProjectTaskState(t, "", false, false)
+	}
+	return row
 }
 
 func projectTaskInteger(args map[string]any, key string, min, max int) (int, error) {

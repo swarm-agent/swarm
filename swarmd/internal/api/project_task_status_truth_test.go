@@ -131,7 +131,7 @@ func TestStopTaskLeavesTheTaskStoppedNotFailed(t *testing.T) {
 		t.Fatal(err)
 	}
 	view, _ := decodeToolAnswer(t, out)["task"].(map[string]any)
-	if view["status"] != "stopped" || view["next_action"] != "message_task" || view["last_error"] != nil {
+	if view["run_status"] != "stopped" || view["state"] != pebblestore.ProjectTaskStateStopped || view["next_action"] != "message_task" || view["last_error"] != nil {
 		t.Fatalf("get_task of a stopped task: %s", out)
 	}
 
@@ -142,7 +142,7 @@ func TestStopTaskLeavesTheTaskStoppedNotFailed(t *testing.T) {
 	listed := decodeToolAnswer(t, out)
 	counts, _ := listed["outcome_counts"].(map[string]any)
 	rows, _ := listed["tasks"].([]any)
-	if len(rows) != 1 || rows[0].(map[string]any)["status"] != "stopped" || counts["stopped"] != float64(1) || counts["needs_attention"] != float64(0) {
+	if len(rows) != 1 || rows[0].(map[string]any)["run_status"] != "stopped" || rows[0].(map[string]any)["state"] != pebblestore.ProjectTaskStateStopped || counts["stopped"] != float64(1) || counts["needs_attention"] != float64(0) {
 		t.Fatalf("list_tasks of a stopped task: %s", out)
 	}
 
@@ -157,6 +157,11 @@ func TestStopTaskLeavesTheTaskStoppedNotFailed(t *testing.T) {
 	}
 	if page.StatusCounts["failed"] != 0 || page.OutcomeCounts["stopped"] != 1 || page.OutcomeCounts["needs_attention"] != 0 || len(page.Tasks) != 1 || page.Tasks[0]["status"] != "stopped" {
 		t.Fatalf("task list route of a stopped task: %s", body)
+	}
+	// The route carries the same derived state (pebblestore.ProjectTaskState)
+	// for clients and MCP, next to its raw run status.
+	if progress, _ := page.Tasks[0]["progress"].(map[string]any); progress["task_state"] != pebblestore.ProjectTaskStateStopped || progress["task_state_reason"] == "" {
+		t.Fatalf("task list route state of a stopped task: %s", body)
 	}
 
 	ended, err := signals.ListAfter(0, 100, pebblestore.SignalFilter{Account: p.AccountScopeID, KindPrefixes: []string{"task.run."}})
@@ -500,7 +505,7 @@ func TestLinkedGetTaskShowsMessageDeliveryAndStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitTaskStatus(t, remote.sessions.Store(), h.remote.account, "remote-project", "t1", "in_progress")
-	if task := get(); task["status"] != "stopped" || task["next_action"] != "message_task" || task["last_error"] != nil {
+	if task := get(); task["run_status"] != "stopped" || task["state"] != pebblestore.ProjectTaskStateStopped || task["next_action"] != "message_task" || task["last_error"] != nil {
 		t.Fatalf("linked get_task of a stopped task: %v", task)
 	}
 }

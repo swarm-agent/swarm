@@ -192,3 +192,103 @@ func TestProjectTaskMessagesAreTheNewestThreeCut(t *testing.T) {
 		t.Fatalf("long message = %q, want %q", messages[2].Text, want)
 	}
 }
+
+// Purpose: ProjectTaskState is the one word every surface shows for a task
+// (list_tasks, get_task, linked machines, the Orchestrator's prompt), read
+// from the same inputs as the list counts: a run that ended (needs_review)
+// with a pushed outcome is landed with its SHA, a running or sent-back
+// workflow is running, a branch never handed over is not_integrated (needs
+// attention within 7 days, idle after), finished with nothing to integrate is
+// done, a stop is stopped and a failed run needs the person. Threat: the run
+// status needs_review shown as the task's status, so pushed work reads as
+// waiting for review, or a state that disagrees with its count bucket (a
+// landed task counted needs_attention). Owners: ProjectTaskState over
+// ProjectTaskBucket / ProjectTaskNeedsAttention (pure; the tool and run tests
+// prove the surfaces use it).
+func TestProjectTaskStateIsTheBucketsWord(t *testing.T) {
+	agreeing := map[string][]string{
+		ProjectTaskStateRunning:       {ProjectTaskCountInProgress},
+		ProjectTaskStateWaiting:       {ProjectTaskCountWaiting},
+		ProjectTaskStateNeedsYou:      {ProjectTaskCountNeedsAttention},
+		ProjectTaskStateLanded:        {ProjectTaskCountDone},
+		ProjectTaskStateDone:          {ProjectTaskCountDone},
+		ProjectTaskStateNotIntegrated: {ProjectTaskCountNeedsAttention, ProjectTaskCountIdle},
+		ProjectTaskStateStopped:       {ProjectTaskCountStopped},
+	}
+	branchTask := ProjectTaskRecord{ID: "t", Status: "needs_review", WorktreeBranch: "agent/fix-parser"}
+	for _, c := range []struct {
+		name          string
+		task          ProjectTaskRecord
+		outcome       string
+		stale, idle   bool
+		want          string
+		reasonHas     string
+		wantAttention bool
+	}{
+		{"pushed after the run ended", ProjectTaskRecord{ID: "t", Status: "needs_review"}, "pushed 5711ae410abc", false, false, ProjectTaskStateLanded, "pushed 5711ae410abc", false},
+		{"pushed and old", ProjectTaskRecord{ID: "t", Status: "needs_review"}, "pushed 5711ae410abc", false, true, ProjectTaskStateLanded, "5711ae410abc", false},
+		{"delivered", ProjectTaskRecord{ID: "t", Status: "needs_review"}, "delivered merge 0123456789ab", false, false, ProjectTaskStateLanded, "delivered merge", false},
+		{"integrated", ProjectTaskRecord{ID: "t", Status: "completed"}, "integrated", false, false, ProjectTaskStateLanded, "integrated", false},
+		{"workflow running", ProjectTaskRecord{ID: "t", Status: "needs_review"}, "running review", false, false, ProjectTaskStateRunning, "running review", false},
+		{"agent running", ProjectTaskRecord{ID: "t", Status: "in_progress"}, "", false, false, ProjectTaskStateRunning, "in_progress", false},
+		{"sent back", ProjectTaskRecord{ID: "t", Status: "needs_review"}, "sent_back (round 2)", false, false, ProjectTaskStateRunning, "sent_back (round 2)", false},
+		{"queued", ProjectTaskRecord{ID: "t", Status: "queued"}, "", false, false, ProjectTaskStateWaiting, "queued", false},
+		{"ready to integrate, recent", branchTask, "ready to integrate", false, false, ProjectTaskStateNotIntegrated, "agent/fix-parser", true},
+		{"ready to integrate, over 7 days", branchTask, "ready to integrate", false, true, ProjectTaskStateNotIntegrated, "agent/fix-parser", false},
+		{"finished, nothing to integrate", ProjectTaskRecord{ID: "t", Agent: "finder", Status: "needs_review"}, "finished", false, false, ProjectTaskStateDone, "nothing to integrate", false},
+		{"completed", ProjectTaskRecord{ID: "t", Status: "completed"}, "", false, false, ProjectTaskStateDone, "completed", false},
+		{"stopped", ProjectTaskRecord{ID: "t", Status: ProjectTaskStatusStopped}, "stopped", false, false, ProjectTaskStateStopped, "stopped by the person", false},
+		{"stale", ProjectTaskRecord{ID: "t", Status: "in_progress"}, "", true, false, ProjectTaskStateStopped, "no active run", false},
+		{"failed", ProjectTaskRecord{ID: "t", Status: "failed", LastError: "provider error"}, "", false, false, ProjectTaskStateNeedsYou, "provider error", true},
+		{"failed after a push", ProjectTaskRecord{ID: "t", Status: "failed"}, "pushed 5711ae410abc", false, false, ProjectTaskStateNeedsYou, "run failed", true},
+		{"sent back until exhausted", ProjectTaskRecord{ID: "t", Status: "needs_review"}, "blocked rounds_exhausted: step send-back", false, false, ProjectTaskStateNeedsYou, "rounds_exhausted", true},
+		{"approval", ProjectTaskRecord{ID: "t", Status: "pending_approval"}, "", false, false, ProjectTaskStateNeedsYou, "approval", true},
+		{"question", ProjectTaskRecord{ID: "t", Status: "needs_input"}, "", false, false, ProjectTaskStateNeedsYou, "answer", true},
+		{"archived failure", ProjectTaskRecord{ID: "t", Status: "failed", Archived: true}, "", false, false, ProjectTaskStateDone, "archived", false},
+		{"workflow step task", ProjectTaskRecord{ID: "t", Status: "needs_review", AutomationID: "workflow:k"}, "ready to integrate", false, false, ProjectTaskStateDone, "workflow step", false},
+	} {
+		state, reason := ProjectTaskState(c.task, c.outcome, c.stale, c.idle)
+		if state != c.want || !strings.Contains(reason, c.reasonHas) {
+			t.Fatalf("%s: state = %q (%q), want %q with %q", c.name, state, reason, c.want, c.reasonHas)
+		}
+		bucket := ProjectTaskBucket(c.task, c.outcome, c.stale, c.idle)
+		ok := false
+		for _, b := range agreeing[state] {
+			ok = ok || b == bucket
+		}
+		if !ok {
+			t.Fatalf("%s: state %q disagrees with count bucket %q", c.name, state, bucket)
+		}
+		if attention := ProjectTaskNeedsAttention(c.task, c.outcome, c.stale, c.idle); attention != c.wantAttention {
+			t.Fatalf("%s: needs attention = %v, want %v", c.name, attention, c.wantAttention)
+		}
+	}
+}
+
+// Purpose: a code deliverable's stored status is the placeholder set when the
+// task was created ("pending") and never kept in step; what a surface shows
+// for it is derived from the task state, so finished work never reads
+// pending, while other deliverables (media assets) keep their stored status.
+// Threat: the Orchestrator told every turn that pushed work is pending.
+// Owner: ProjectTaskDeliverableStatus (pure).
+func TestProjectTaskCodeDeliverableStatusFollowsTheState(t *testing.T) {
+	code := ProjectTaskDeliverable{ID: "deliv_code", Kind: "pr", Status: "pending"}
+	for state, want := range map[string]string{ProjectTaskStateLanded: "delivered", ProjectTaskStateNotIntegrated: "on branch", ProjectTaskStateRunning: "in progress"} {
+		if got := ProjectTaskDeliverableStatus(code, state); got != want {
+			t.Fatalf("code deliverable in %s = %q, want %q", state, got, want)
+		}
+	}
+	if got := ProjectTaskDeliverableStatus(ProjectTaskDeliverable{ID: "img_1", Kind: "image", Status: "pending"}, ProjectTaskStateLanded); got != "pending" {
+		t.Fatalf("asset deliverable status = %q, want its stored status", got)
+	}
+	if got := ProjectTaskDeliverableStatus(ProjectTaskDeliverable{ID: "deliv_code", Kind: "pr", Status: "accepted"}, ProjectTaskStateRunning); got != "accepted" {
+		t.Fatalf("explicit code deliverable status = %q, want accepted", got)
+	}
+	outcome, stale, idle := ProjectTaskProgressFlags(map[string]any{"outcome": "pushed abc123", "stale": true, "idle": true})
+	if outcome != "pushed abc123" || !stale || !idle {
+		t.Fatalf("progress flags = %q %v %v", outcome, stale, idle)
+	}
+	if outcome, stale, idle := ProjectTaskProgressFlags(nil); outcome != "" || stale || idle {
+		t.Fatalf("nil progress flags = %q %v %v", outcome, stale, idle)
+	}
+}
