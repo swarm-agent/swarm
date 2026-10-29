@@ -1528,6 +1528,12 @@ func (e *sessionV3Executor) recordRunStatusInEpoch(job sessionV3ExecutorJob, mut
 		intent.ResumeContext = current.ResumeContext
 	}
 	intent.BlockedReason = sanitizedReason
+	if status == sessionruntime.RunIntentCancelled && job.StopCause == sessionruntime.PlanStoppedByUser {
+		// Only the session stop routes set the user stop cause; account usage
+		// limit, shutdown and session-wide cancels (CancelRunsForAccount,
+		// CancelRunsForSession) pass the executing job, which has none.
+		intent.StoppedBy = pebblestore.V3RunStopperUser
+	}
 	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, status, sanitizedReason, eventType, "")
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, err

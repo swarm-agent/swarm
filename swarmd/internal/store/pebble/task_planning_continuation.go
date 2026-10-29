@@ -9,6 +9,18 @@ import (
 // Other cancellations (quota, shutdown, deletion) do not authorize continuation.
 const V3RunStoppedByUser = "run stopped by user"
 
+// V3RunStopperUser is V3SessionRunIntent.StoppedBy for a run cancelled by an
+// explicit person stop (the session run stop routes, which carry
+// sessionruntime.PlanStoppedByUser). Its value matches that stop cause.
+const V3RunStopperUser = "user"
+
+// V3RunIntentStoppedByPerson reports whether a run intent was cancelled by an
+// explicit person stop. It reads the durable StoppedBy classification, never
+// the free-text reason, which a stop request may set to anything.
+func V3RunIntentStoppedByPerson(intent V3SessionRunIntent) bool {
+	return intent.Status == V3RunIntentCancelled && intent.StoppedBy == V3RunStopperUser
+}
+
 func IsPausedTaskPlanningRun(status, reason string) bool {
 	return status == V3RunIntentCancelled && reason == V3RunStoppedByUser
 }

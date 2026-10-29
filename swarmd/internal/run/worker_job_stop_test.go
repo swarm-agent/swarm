@@ -5,24 +5,30 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	sessions "swarm/packages/swarmd/internal/session"
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // Purpose:
-//   - Requirement: stopping a worker job's active run in its session
-//     (swarm_stop_run, which cancels the run's V3 intent without the job's
-//     cancel mark) leaves a Coder/Designer/Finder job open: its receipt settles
-//     as a stopped failure (pebblestore.WorkerRunStopped) on the same session,
-//     so a follow-up is admitted, reserved and executed there. Cancelling the
-//     job stays possible: swarm_stop_job (CancelRun) on a running job settles
-//     it cancelled, and on a stopped job sets the permanent cancel mark that
-//     every follow-up gate refuses.
+//   - Requirement: a person stopping a worker job's active run in its session
+//     (swarm_stop_run, which cancels the run's V3 intent with the durable
+//     person-stop mark StoppedBy and without the job's cancel mark) leaves a
+//     Coder/Designer/Finder job open: its receipt settles as a stopped failure
+//     (pebblestore.WorkerRunStopped) on the same session, so a follow-up is
+//     admitted, reserved and executed there. Every other cancel without that
+//     mark (the account daily usage limit, shutdown), including one whose
+//     reason text reads like a stop, still settles the job cancelled.
+//     Cancelling the job stays possible: swarm_stop_job (CancelRun) on a
+//     running job settles it cancelled, and on a stopped job sets the
+//     permanent cancel mark that every follow-up gate refuses.
 //   - Threat/regression: swarm_stop_run on worker-execution-<run> cancelled the
 //     job, and the next swarm_message_job failed with "the job was cancelled;
 //     give the worker a new job instead", so a caller could not pause and
-//     correct a job.
+//     correct a job. Conversely, treating any unmarked cancel as a stop left
+//     usage-limit cancels "stopped", so outbox delivery and job automations
+//     keyed on worker.run.cancelled did not fire.
 //   - Boundary/authority: WorkerExecutionService.observeRun (the receipt
 //     settlement from the run intent), CancelRun / cancelStoppedJob,
 //     workerFollowupBusy, workerRunExecutable (the run gate) and
@@ -35,12 +41,24 @@ import (
 
 const stoppedByCaller = "the caller stopped the run"
 
+// cancelIntent records the run's cancelled intent as the executor does
+// (recordRunStatusInEpoch): stoppedBy is pebblestore.V3RunStopperUser for the
+// session stop route and empty for any other cancel.
+func cancelIntent(f *limitRunFixture, runID, reason, stoppedBy string) {
+	f.t.Helper()
+	key := "intent-" + runID + "-cancelled"
+	if _, err := f.svc.ApplySessionMutation(sessions.SessionMutationInput{SessionID: f.run.SessionID, UserID: "user-a", AccountScopeID: "account-a", Kind: sessions.SessionMutationRecordRunIntent, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, EventType: "session.run.cancelled",
+		RunIntent: &store.V3SessionRunIntent{SessionID: f.run.SessionID, UserID: "user-a", AccountScopeID: "account-a", RunID: runID, Status: sessions.RunIntentCancelled, BlockedReason: reason, StoppedBy: stoppedBy, RunSessionID: f.run.SessionID, ParentSessionID: f.run.SessionID}, NowUnixMs: time.Now().UnixMilli()}); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
 func TestStoppedWorkerJobStaysOpenForAFollowupOnTheSameSession(t *testing.T) {
 	f := newLimitRunFixture(t, store.WorkerRoleCoder)
 	f.intent("execution", sessions.RunIntentRunning, "")
-	// swarm_stop_run: the executor records the run cancelled with its reason;
-	// the job's cancel mark is not set.
-	f.intent("execution", sessions.RunIntentCancelled, stoppedByCaller)
+	// swarm_stop_run: the executor records the run cancelled with its reason
+	// and the person-stop mark; the job's cancel mark is not set.
+	cancelIntent(f, "execution", stoppedByCaller, store.V3RunStopperUser)
 
 	stopped := f.observe()
 	if stopped.Status != "failed" || stopped.CancelRequested || !store.WorkerRunStopped(stopped) || !strings.Contains(stopped.Error, stoppedByCaller) {
@@ -93,7 +111,7 @@ func TestStopJobStillCancelsARunningAndAStoppedJob(t *testing.T) {
 	// swarm_stop_job on a stopped job: it is closed for good.
 	stopped := newLimitRunFixture(t, store.WorkerRoleCoder)
 	stopped.intent("execution", sessions.RunIntentRunning, "")
-	stopped.intent("execution", sessions.RunIntentCancelled, stoppedByCaller)
+	cancelIntent(stopped, "execution", stoppedByCaller, store.V3RunStopperUser)
 	if got := stopped.observe(); !store.WorkerRunStopped(got) {
 		t.Fatalf("fixture job is not stopped: %+v", got)
 	}
@@ -113,23 +131,49 @@ func TestStopJobStillCancelsARunningAndAStoppedJob(t *testing.T) {
 	}
 }
 
+func TestNonPersonCancelStillCancelsTheJob(t *testing.T) {
+	for _, tc := range []struct{ name, reason string }{
+		// sessionV3Executor.checkAndEnforceUsageLimits -> CancelRunsForAccount.
+		{"daily_usage_limit", "daily usage limit exceeded ($5.0100 spent today, limit is $5.00)"},
+		// A free-text reason that reads like a stop is not a stop.
+		{"stop_like_reason", "run stopped by user"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newLimitRunFixture(t, store.WorkerRoleCoder)
+			f.intent("execution", sessions.RunIntentRunning, "")
+			cancelIntent(f, "execution", tc.reason, "")
+
+			got := f.observe()
+			if got.Status != "cancelled" || store.WorkerRunStopped(got) || strings.HasPrefix(got.Error, store.WorkerRunStoppedPrefix) {
+				t.Fatalf("a non-person cancel left the job open: %+v", got)
+			}
+			if _, err := f.svc.Store().WorkerStore().ReserveWorkerFollowup("account-a", f.worker.ID, f.run.ID, "followup-1", 0); !errors.Is(err, store.ErrWorkerConflict) {
+				t.Fatalf("a cancelled job reserved a follow-up: %v", err)
+			}
+		})
+	}
+}
+
 func TestStopRunStillCancelsPlanAndReviewerJobs(t *testing.T) {
 	// A reviewer records its verdict and releases its checkout when it
 	// settles; a plan-run job's paused plan is never resumed by a settled
 	// receipt. Their stopped run still settles them cancelled.
-	r := store.WorkerRunRecord{Role: store.WorkerRoleReviewer}
-	if workerRunStopKeepsJobOpen(r) {
+	personStop := store.V3SessionRunIntent{Status: sessions.RunIntentCancelled, StoppedBy: store.V3RunStopperUser}
+	if workerRunStopKeepsJobOpen(store.WorkerRunRecord{Role: store.WorkerRoleReviewer}, personStop) {
 		t.Fatal("a reviewer job stays open after a stop")
 	}
-	if workerRunStopKeepsJobOpen(store.WorkerRunRecord{Role: store.WorkerRoleSwarm}) {
+	if workerRunStopKeepsJobOpen(store.WorkerRunRecord{Role: store.WorkerRoleSwarm}, personStop) {
 		t.Fatal("a plan-run job stays open after a stop")
 	}
-	if workerRunStopKeepsJobOpen(store.WorkerRunRecord{Role: store.WorkerRoleCoder, CancelRequested: true}) {
+	if workerRunStopKeepsJobOpen(store.WorkerRunRecord{Role: store.WorkerRoleCoder, CancelRequested: true}, personStop) {
 		t.Fatal("a cancelled job stays open")
 	}
 	for _, role := range []string{store.WorkerRoleCoder, store.WorkerRoleDesigner, store.WorkerRoleFinder} {
-		if !workerRunStopKeepsJobOpen(store.WorkerRunRecord{Role: role}) {
+		if !workerRunStopKeepsJobOpen(store.WorkerRunRecord{Role: role}, personStop) {
 			t.Fatalf("a %s job is cancelled by a stop", role)
+		}
+		if workerRunStopKeepsJobOpen(store.WorkerRunRecord{Role: role}, store.V3SessionRunIntent{Status: sessions.RunIntentCancelled}) {
+			t.Fatalf("a %s job stays open after a cancel that no person made", role)
 		}
 	}
 }

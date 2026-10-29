@@ -1371,12 +1371,13 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 		if ok && lifecycle.Active {
 			return fmt.Errorf("%w: run cancellation not acknowledged", store.ErrWorkerConflict)
 		}
-		if workerRunStopKeepsJobOpen(current) {
-			// The run was stopped in its session (swarm_stop_run), not the
-			// job cancelled (swarm_stop_job sets CancelRequested first). The
-			// job stays open: it settles as a stopped failure, which frees
-			// its capacity and keeps its session, branch and worktree, and a
-			// follow-up message continues it (PrepareFollowup).
+		if workerRunStopKeepsJobOpen(current, intent) {
+			// A person stopped the run in its session (swarm_stop_run), and
+			// the job was not cancelled (swarm_stop_job sets CancelRequested
+			// first). The job stays open: it settles as a stopped failure,
+			// which frees its capacity and keeps its session, branch and
+			// worktree, and a follow-up message continues it
+			// (PrepareFollowup).
 			current.Status = "failed"
 			current.Error = workerRunStoppedError(intent.BlockedReason)
 			break
@@ -1963,14 +1964,17 @@ func workerRunSettledForFollowup(status string) bool {
 	return status == "succeeded" || status == "failed"
 }
 
-// workerRunStopKeepsJobOpen reports whether stopping r's own run in its
-// session leaves the job open instead of cancelling it: a direct-role job
-// (Coder, Designer, Finder) that was not cancelled. A plan-run (Swarm role)
-// job pauses its plan, which a settled receipt never resumes, and a reviewer
-// records its verdict and releases its checkout when it settles; both keep
-// settling as cancelled.
-func workerRunStopKeepsJobOpen(r store.WorkerRunRecord) bool {
-	return !r.CancelRequested && !store.WorkerRoleRunsPlan(r.Role) && r.Role != store.WorkerRoleReviewer
+// workerRunStopKeepsJobOpen reports whether the cancelled intent of r's own
+// run leaves the job open instead of cancelling it: a person stopped it
+// (the intent's durable StoppedBy, set only by the session stop routes) and
+// the job is a direct-role job (Coder, Designer, Finder) that was not
+// cancelled. Every other cancel (the daily usage limit, shutdown, deletion)
+// still cancels the job, whatever its reason text says. A plan-run (Swarm
+// role) job pauses its plan, which a settled receipt never resumes, and a
+// reviewer records its verdict and releases its checkout when it settles;
+// both keep settling as cancelled.
+func workerRunStopKeepsJobOpen(r store.WorkerRunRecord, intent store.V3SessionRunIntent) bool {
+	return store.V3RunIntentStoppedByPerson(intent) && !r.CancelRequested && !store.WorkerRoleRunsPlan(r.Role) && r.Role != store.WorkerRoleReviewer
 }
 
 // workerRunStoppedError is the receipt error of a job whose own run was

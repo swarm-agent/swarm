@@ -450,6 +450,11 @@ type V3SessionRunIntent struct {
 	RunSessionID           string             `json:"run_session_id,omitempty"`
 	ParentSessionID        string             `json:"parent_session_id,omitempty"`
 	ResumeContext          bool               `json:"resume_context,omitempty"`
+	// StoppedBy records who cancelled the run: V3RunStopperUser for an
+	// explicit person stop through a session stop route. Empty for every
+	// other cancel (daily usage limit, shutdown, deletion and other executor
+	// cancels), whatever its free-text BlockedReason says.
+	StoppedBy string `json:"stopped_by,omitempty"`
 }
 
 type V3SessionRunState struct {

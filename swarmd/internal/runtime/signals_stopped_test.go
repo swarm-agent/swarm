@@ -14,15 +14,19 @@ import (
 // job automations that consume worker.run.succeeded/failed/cancelled must not
 // run a review or delivery for a paused job. A stopped job whose follow-up
 // then completes raises worker.run.succeeded with that follow-up's identity,
-// as any follow-up does. Threat: pausing a job to correct it fired its
-// failure automations. Owner: workerRunSignal over a real temporary signal
+// as any follow-up does. A job cancelled by anything but a person stop (the
+// daily usage limit) settles cancelled and raises worker.run.cancelled, which
+// outbox delivery and job automations consume. Threat: pausing a job to
+// correct it fired its failure automations, or a usage-limit cancel read as a
+// pause and fired none. Owner: workerRunSignal over a real temporary signal
 // store, the narrowest layer that observes the emitted kind.
 func TestWorkerRunSignalStoppedJobIsNotAFailure(t *testing.T) {
 	for _, tc := range []struct {
-		name, followup, want, severity string
+		name, status, runError, followup, want, severity string
 	}{
-		{"stopped", "", "worker.run.stopped", pebblestore.SignalSeverityInfo},
-		{"continued_and_completed", "completed", "worker.run.succeeded", pebblestore.SignalSeverityInfo},
+		{"stopped", "failed", pebblestore.WorkerRunStoppedPrefix + "the caller stopped the run", "", "worker.run.stopped", pebblestore.SignalSeverityInfo},
+		{"continued_and_completed", "failed", pebblestore.WorkerRunStoppedPrefix + "the caller stopped the run", "completed", "worker.run.succeeded", pebblestore.SignalSeverityInfo},
+		{"usage_limit_cancelled", "cancelled", "", "", "worker.run.cancelled", pebblestore.SignalSeverityInfo},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db, err := pebblestore.Open(filepath.Join(t.TempDir(), "signals.pebble"))
@@ -33,7 +37,7 @@ func TestWorkerRunSignalStoppedJobIsNotAFailure(t *testing.T) {
 			feed := pebblestore.NewSignalStore(db)
 			sessions := pebblestore.NewSessionStore(db)
 			run := pebblestore.WorkerRunRecord{ID: "run-test", AccountScopeID: "account-test", SessionID: "session-test", Role: pebblestore.WorkerRoleCoder,
-				Status: "failed", Error: pebblestore.WorkerRunStoppedPrefix + "the caller stopped the run", RequestSource: "direct", FollowupStatus: tc.followup}
+				Status: tc.status, Error: tc.runError, RequestSource: "direct", FollowupStatus: tc.followup}
 			if tc.followup != "" {
 				run.FollowupRunID = "followup-test"
 				if err := sessions.CreateSession(pebblestore.SessionSnapshot{ID: run.SessionID, AccountScopeID: run.AccountScopeID}); err != nil {
