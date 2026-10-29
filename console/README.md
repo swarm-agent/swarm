@@ -217,7 +217,9 @@ a separate profile and the extension loaded, for trying it out.
   waiting run's `run_id` from the run state. Idle shows no hint text. The
   bottom row never overflows the pane: as it narrows, `/ commands` goes
   first, then the hint, then the badge shortens to `⏳ 2` (its full text on
-  hover), then the model name truncates; send/stop always shows. Typing `/` lists the
+  hover), then the permissions chip goes, then send/stop shows only `■` / `⏎`
+  (names on hover), and the model name truncates. Send/stop sits outside the
+  part of the row that clips, so the rest never pushes it out. Typing `/` lists the
   commands: `/new`, `/new bottom`, `/stop`, `/compact`, `/context`,
   `/theme`, `/usage`, `/settings`, `/media`, `/agents`, `/fleet`, `/live`;
   a unique prefix is enough (`/com`, `/con`; `/c` alone is ambiguous), tab

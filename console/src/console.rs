@@ -1125,9 +1125,15 @@ impl Console {
         // Act::Stop sends the waiting run's id from the run state.
         let waiting = s.live.is_some() && s.state == RunState::Waiting;
         let err = t.err;
-        let stop_button = |label: &'static str| {
+        let tip = (t.surface, t.text, t.border);
+        let with_tip = move |d: Stateful<Div>, text: &'static str| {
+            let (bg, fg, border) = tip;
+            d.tooltip(move |_, cx| cx.new(|_| TextTooltip { text: text.into(), bg, fg, border }).into())
+        };
+        let stop_button = |label: &'static str, name: &'static str, compact: bool| {
             div()
                 .id(SharedString::from(format!("composer-stop-{pid}")))
+                .flex_none()
                 .h(px(18.))
                 .flex()
                 .items_center()
@@ -1140,16 +1146,21 @@ impl Console {
                 .cursor_pointer()
                 .hover(move |s| s.bg(alpha(err, 0.15)))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.act(si, Act::Stop, cx)))
-                .child(label)
+                .when(compact, |d| with_tip(d, name))
+                .child(if compact { "■" } else { label })
         };
-        let send = || div().h(px(18.)).flex().items_center().px_2().border_1().border_color(gpui::transparent_black()).child("⏎ send");
-        // Send and stop are the same box, so swapping them moves nothing.
-        let send_or_stop = if running {
-            stop_button("■ stop").into_any_element()
-        } else if waiting {
-            div().flex().items_center().gap_1().child(stop_button("■ stop wait")).child(send()).into_any_element()
-        } else {
-            send().into_any_element()
+        let send = |compact: bool| {
+            div()
+                .id(SharedString::from(format!("composer-send-{pid}")))
+                .flex_none()
+                .h(px(18.))
+                .flex()
+                .items_center()
+                .px_2()
+                .border_1()
+                .border_color(gpui::transparent_black())
+                .when(compact, |d| with_tip(d, "send"))
+                .child(if compact { "⏎" } else { "⏎ send" })
         };
         // Waiting on tasks at a glance, beside send/stop. Working has none:
         // the stop button says it.
@@ -1162,20 +1173,41 @@ impl Console {
         let fit = {
             const FONT: f32 = 10.5;
             const GAP: f32 = 12.;
+            // Text plus a button's padding and border.
+            const PAD: f32 = 18.;
             let w = |text: &str| data::text_width(text, FONT);
             let model = if !s.model.is_empty() { s.model.to_string() } else if s.live.is_none() { "default model".to_string() } else { String::new() };
-            let send_or_stop_w = if running { w("■ stop") + 18. } else if waiting { w("■ stop wait") + w("⏎ send") + 40. } else { w("⏎ send") + 18. };
+            let actions = |stop: &str, send: &str| {
+                if running {
+                    w(stop) + PAD
+                } else if waiting {
+                    w(stop) + PAD + 4. + w(send) + PAD
+                } else {
+                    w(send) + PAD
+                }
+            };
             let row = data::ComposerRow {
-                fixed: 11. + 4. + w("permissions") + 8. + if model.is_empty() { 0. } else { w("◆") + 4. + w(&model) + 8. } + send_or_stop_w + 3. * GAP,
+                model: if model.is_empty() { 0. } else { w("◆") + 4. + w(&model) + 8. },
+                permissions: 11. + 4. + w("permissions") + 8.,
                 hint: if hint.is_empty() { 0. } else { w(hint) },
                 commands: w("/ commands"),
-                badge: badge_full.as_deref().map_or(0., |b| data::text_width(b, 11.) + 18.),
-                badge_short: badge_short.as_deref().map_or(0., |b| data::text_width(b, 11.) + 18.),
+                badge: badge_full.as_deref().map_or(0., |b| data::text_width(b, 11.) + PAD),
+                badge_short: badge_short.as_deref().map_or(0., |b| data::text_width(b, 11.) + PAD),
+                actions: actions(if waiting { "■ stop wait" } else { "■ stop" }, "⏎ send"),
+                actions_compact: actions("■", "⏎"),
                 gap: GAP,
             };
-            // Unknown until the row's first layout: show everything; the row
-            // clips rather than overflows, and the next frame fits it.
-            self.composer_widths.borrow().get(&pid).map_or(data::ComposerFit { commands: true, hint: true, badge_short: false }, |width| data::composer_fit(*width, row))
+            // Unknown until the row's first layout: show everything; send/stop
+            // stays outside the clipped part, and the next frame fits the rest.
+            self.composer_widths.borrow().get(&pid).map_or(data::ComposerFit::ALL, |width| data::composer_fit(*width, row))
+        };
+        // Send and stop are the same box, so swapping them moves nothing.
+        let send_or_stop = if running {
+            stop_button("■ stop", "stop", fit.compact).into_any_element()
+        } else if waiting {
+            div().flex().items_center().gap_1().child(stop_button("■ stop wait", "stop wait", fit.compact)).child(send(fit.compact)).into_any_element()
+        } else {
+            send(fit.compact).into_any_element()
         };
         let badge = badge_full.map(|full| {
             let color = t.accent;
@@ -1194,19 +1226,21 @@ impl Console {
                 .text_size(px(11.))
                 .text_color(color)
                 .when(fit.badge_short, |d| {
-                    let (bg, fg, border) = (t.surface, t.text, t.border);
+                    let (bg, fg, border) = tip;
                     d.tooltip(move |_, cx| cx.new(|_| TextTooltip { text: full.clone().into(), bg, fg, border }).into())
                 })
                 .child(label)
         });
         let widths = self.composer_widths.clone();
-        // Records the row's width after layout; a change redraws so the fit follows.
+        // Records the row's width after layout; a change redraws so the fit
+        // follows. GPUI ignores `refresh` while it draws (this runs in
+        // prepaint), so the redraw is asked for once the frame is done.
         let measure = gpui::canvas(
             move |bounds, window, _| {
                 let width = f32::from(bounds.size.width);
                 let old = widths.borrow_mut().insert(pid, width);
                 if old.is_none_or(|old| (old - width).abs() >= 0.5) {
-                    window.refresh();
+                    window.on_next_frame(|window, _| window.refresh());
                 }
             },
             |_, _, _, _| {},
@@ -1251,7 +1285,9 @@ impl Console {
                     )
                     .child(
                         // Never wider than the pane: what does not fit is
-                        // dropped (`fit`), and the model label truncates last.
+                        // dropped (`fit`) and the model label truncates last.
+                        // Send/stop sits outside the part that shrinks and
+                        // clips, so it is never pushed out or cut off.
                         div()
                             .relative()
                             .flex()
@@ -1262,12 +1298,21 @@ impl Console {
                             .text_size(px(10.5))
                             .text_color(t.faint)
                             .child(measure)
-                            .child(self.permissions_chip(pid, cx))
-                            .child(self.model_button(si, pid, cx))
-                            // Holds send/stop to the right when the hint is dropped.
-                            .child(div().flex_1().min_w_0().truncate().when(fit.hint, |d| d.child(hint)))
-                            .when(fit.commands, |d| d.child(div().flex_none().whitespace_nowrap().child("/ commands")))
-                            .children(badge)
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .flex()
+                                    .items_center()
+                                    .gap_3()
+                                    .when(fit.permissions, |d| d.child(self.permissions_chip(pid, cx)))
+                                    .child(self.model_button(si, pid, cx))
+                                    // Holds the rest to the right when the hint is dropped.
+                                    .child(div().flex_1().min_w_0().truncate().when(fit.hint, |d| d.child(hint)))
+                                    .when(fit.commands, |d| d.child(div().flex_none().whitespace_nowrap().child("/ commands")))
+                                    .children(badge),
+                            )
                             .child(div().flex_none().child(send_or_stop)),
                     ),
             );

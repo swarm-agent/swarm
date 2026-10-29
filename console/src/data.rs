@@ -392,46 +392,65 @@ pub fn composer_badge_short(state: RunState, wait: Option<&TaskWait>) -> Option<
     }
 }
 
-/// The widths (px) of what sits in the composer's bottom row. `fixed` is what
-/// always shows (permissions, model, send/stop and the gaps between them);
-/// an empty hint or no badge is 0.
+/// The widths (px) of what sits in the composer's bottom row; an empty hint
+/// or no badge is 0. `model` is the model button at full width (it can
+/// truncate, so it never pushes send/stop out).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ComposerRow {
-    pub fixed: f32,
+    pub model: f32,
+    pub permissions: f32,
     pub hint: f32,
     pub commands: f32,
     pub badge: f32,
     pub badge_short: f32,
+    /// Send/stop with their labels ("■ stop wait", "⏎ send").
+    pub actions: f32,
+    /// Send/stop as bare symbols ("■", "⏎").
+    pub actions_compact: f32,
     /// Between two items.
     pub gap: f32,
 }
 
-/// What of the composer's bottom row shows at a width.
+/// What of the composer's bottom row shows at a width. Send/stop always
+/// shows; `compact` only shortens its labels.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ComposerFit {
     pub commands: bool,
     pub hint: bool,
     /// The badge as "⏳ 2" instead of its full text.
     pub badge_short: bool,
+    pub permissions: bool,
+    /// Send/stop as "■" / "⏎" (their names on hover).
+    pub compact: bool,
+}
+
+impl ComposerFit {
+    /// Everything, at full length.
+    pub const ALL: ComposerFit = ComposerFit { commands: true, hint: true, badge_short: false, permissions: true, compact: false };
 }
 
 /// Fits the composer's bottom row in `width`: as it narrows, "/ commands"
-/// goes first, then the hint, then the badge shortens. Send/stop is part of
-/// `fixed` and never gives way; below even that, the model label truncates.
+/// goes first, then the hint, then the badge shortens, then the permissions
+/// chip goes, then send/stop shows only its symbols. Send/stop is never
+/// dropped; below the last step only the model label truncates, and the
+/// row's layout keeps send/stop outside the part that clips.
 pub fn composer_fit(width: f32, row: ComposerRow) -> ComposerFit {
     let item = |w: f32| if w > 0. { w + row.gap } else { 0. };
     let need = |fit: ComposerFit| {
-        row.fixed
+        item(row.model)
+            + if fit.permissions { item(row.permissions) } else { 0. }
             + if fit.commands { item(row.commands) } else { 0. }
             + if fit.hint { item(row.hint) } else { 0. }
             + item(if fit.badge_short { row.badge_short } else { row.badge })
+            + if fit.compact { row.actions_compact } else { row.actions }
     };
-    let steps = [
-        ComposerFit { commands: true, hint: true, badge_short: false },
-        ComposerFit { commands: false, hint: true, badge_short: false },
-        ComposerFit { commands: false, hint: false, badge_short: false },
-    ];
-    steps.into_iter().find(|fit| need(*fit) <= width).unwrap_or(ComposerFit { commands: false, hint: false, badge_short: true })
+    let all = ComposerFit::ALL;
+    let no_commands = ComposerFit { commands: false, ..all };
+    let no_hint = ComposerFit { hint: false, ..no_commands };
+    let short = ComposerFit { badge_short: true, ..no_hint };
+    let no_permissions = ComposerFit { permissions: false, ..short };
+    let compact = ComposerFit { compact: true, ..no_permissions };
+    [all, no_commands, no_hint, short, no_permissions].into_iter().find(|fit| need(*fit) <= width).unwrap_or(compact)
 }
 
 /// About how wide a line of the console's monospaced text is, in px: emoji
@@ -1496,41 +1515,64 @@ mod tests {
 
     // Purpose: the composer's bottom row never overflows a narrow pane.
     // Requirement: as the width shrinks, "/ commands" goes first, then the
-    // hint, then the badge shortens; send/stop (in `fixed`) is never dropped,
-    // and every step is the widest that fits. Threat: send/stop pushed out of
-    // a narrow pane, or items dropped out of order. `composer_fit` is the pure
-    // rule the row renders from, the narrowest layer that decides it.
+    // hint, then the badge shortens, then the permissions chip goes, then
+    // send/stop shortens to its symbols; send/stop is never dropped, and every
+    // step is the widest that fits. Below every step (down to 0px) the fit is
+    // the compact one, whose width is model + badge + compact send/stop; the
+    // model label is the only shrinkable item, so send/stop still fits.
+    // Threat: send/stop clipped off a narrow pane (panes shrink to 12% of a
+    // split), or items dropped out of order. `composer_fit` is the pure rule
+    // the row renders from, the narrowest layer that decides it.
     #[test]
     fn composer_fit_drops_commands_then_hint_then_shortens_badge() {
-        let row = ComposerRow { fixed: 200., hint: 150., commands: 60., badge: 120., badge_short: 30., gap: 10. };
-        let all = ComposerFit { commands: true, hint: true, badge_short: false };
-        let no_commands = ComposerFit { commands: false, hint: true, badge_short: false };
-        let no_hint = ComposerFit { commands: false, hint: false, badge_short: false };
-        let short = ComposerFit { commands: false, hint: false, badge_short: true };
-        // Everything: 200 + 160 + 70 + 130 = 560.
-        assert_eq!(composer_fit(560., row), all);
+        let row = ComposerRow { model: 80., permissions: 90., hint: 150., commands: 60., badge: 120., badge_short: 30., actions: 140., actions_compact: 40., gap: 10. };
+        let all = ComposerFit::ALL;
+        let no_commands = ComposerFit { commands: false, ..all };
+        let no_hint = ComposerFit { hint: false, ..no_commands };
+        let short = ComposerFit { badge_short: true, ..no_hint };
+        let no_permissions = ComposerFit { permissions: false, ..short };
+        let compact = ComposerFit { compact: true, ..no_permissions };
+        // Everything: 90 + 100 + 70 + 160 + 130 + 140 = 690.
+        assert_eq!(composer_fit(690., row), all);
         assert_eq!(composer_fit(2000., row), all);
-        assert_eq!(composer_fit(559., row), no_commands);
-        // Without "/ commands": 490.
-        assert_eq!(composer_fit(490., row), no_commands);
-        assert_eq!(composer_fit(489., row), no_hint);
-        // Without the hint: 330.
-        assert_eq!(composer_fit(330., row), no_hint);
-        assert_eq!(composer_fit(329., row), short);
-        // Narrower than even send/stop and the rest: still short, never more dropped.
-        assert_eq!(composer_fit(0., row), short);
-        // Narrowing never brings an item back.
+        assert_eq!(composer_fit(689., row), no_commands);
+        // Without "/ commands": 620.
+        assert_eq!(composer_fit(620., row), no_commands);
+        assert_eq!(composer_fit(619., row), no_hint);
+        // Without the hint: 460.
+        assert_eq!(composer_fit(460., row), no_hint);
+        assert_eq!(composer_fit(459., row), short);
+        // Short badge: 370.
+        assert_eq!(composer_fit(370., row), short);
+        assert_eq!(composer_fit(369., row), no_permissions);
+        // Without permissions: 270.
+        assert_eq!(composer_fit(270., row), no_permissions);
+        assert_eq!(composer_fit(269., row), compact);
+        // Narrower than anything: compact send/stop, which is never dropped.
+        assert_eq!(composer_fit(0., row), compact);
+        // Narrowing never brings an item back or lengthens one.
         let mut last = all;
-        for w in (0..=600).rev() {
+        for w in (0..=800).rev() {
             let fit = composer_fit(w as f32, row);
-            assert!(!(fit.commands && !last.commands) && !(fit.hint && !last.hint) && !(!fit.badge_short && last.badge_short), "{w}: {fit:?} after {last:?}");
+            let back = (fit.commands && !last.commands)
+                || (fit.hint && !last.hint)
+                || (!fit.badge_short && last.badge_short)
+                || (fit.permissions && !last.permissions)
+                || (!fit.compact && last.compact);
+            assert!(!back, "{w}: {fit:?} after {last:?}");
             last = fit;
         }
-        // No badge (idle or working): the hint stays as long as it fits.
+        // No badge (idle or working): the hint stays as long as it fits, and
+        // the permissions chip and labels as long as they fit after it.
         let idle = ComposerRow { badge: 0., badge_short: 0., ..row };
-        assert_eq!(composer_fit(430., idle), all);
-        assert_eq!(composer_fit(360., idle), no_commands);
-        assert_eq!(composer_fit(359., idle).hint, false);
+        assert_eq!(composer_fit(560., idle), all);
+        assert_eq!(composer_fit(490., idle), no_commands);
+        assert!(!composer_fit(489., idle).hint);
+        assert!(composer_fit(330., idle).permissions);
+        assert!(composer_fit(331., idle).permissions);
+        assert!(!composer_fit(329., idle).permissions);
+        assert!(!composer_fit(230., idle).compact);
+        assert!(composer_fit(229., idle).compact);
         // Rough widths: wide symbols take two cells.
         assert!((text_width("ab", 10.) - 12.).abs() < 0.01);
         assert!((text_width("⏳ 2", 10.) - 24.).abs() < 0.01);
