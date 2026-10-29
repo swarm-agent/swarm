@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -546,7 +547,7 @@ func (c *controlMCPCall) jobRefs(kind, a, b string) (controlMCPJobRefs, error) {
 var controlMCPJobSettled = map[string]bool{
 	"needs_review": true, "completed": true, "failed": true, "blocked": true, "rejected": true,
 	"needs_input": true, "waiting_on_approval": true, "cancelled": true, "superseded": true,
-	"pending_approval": true,
+	"pending_approval": true, "stopped": true,
 }
 
 // jobState reads a job once: its status, the question or approval it waits
@@ -651,6 +652,17 @@ func (c *controlMCPCall) jobState(kind, a, b string) (map[string]any, controlMCP
 		if status != "needs_input" && status != "waiting_on_approval" {
 			status = "in_progress"
 		}
+	case "":
+		// A job whose own run was stopped (swarm_stop_run) stays open until a
+		// message continues it.
+		if status == "failed" && controlMCPRunStopped(refs.run) {
+			status = "stopped"
+		}
+	}
+	// swarm_stop_job on a stopped job marks it cancelled; its settled receipt
+	// keeps its status (WorkerExecutionService.cancelStoppedJob).
+	if controlMCPRunCancelled(refs.run) && status != "in_progress" {
+		status = "cancelled"
 	}
 	if cleanup, _ := refs.run["sandbox_cleanup_error"].(string); cleanup != "" && status != "in_progress" && status != "failed" && status != "needs_input" && status != "waiting_on_approval" {
 		// Only the job's disposable container is left over; its commits are
@@ -662,6 +674,22 @@ func (c *controlMCPCall) jobState(kind, a, b string) (map[string]any, controlMCP
 	}
 	state["status"] = status
 	return state, refs, nil
+}
+
+// controlMCPRunStopped reports a worker job whose own run was stopped and that
+// a message continues (pebblestore.WorkerRunStopped).
+func controlMCPRunStopped(run map[string]any) bool {
+	status, _ := run["status"].(string)
+	errText, _ := run["error"].(string)
+	return status == "failed" && !controlMCPRunCancelled(run) && strings.HasPrefix(errText, pebblestore.WorkerRunStoppedPrefix)
+}
+
+// controlMCPRunCancelled reports a settled worker job that was cancelled
+// after its run ended (swarm_stop_job on a stopped job).
+func controlMCPRunCancelled(run map[string]any) bool {
+	cancelled, _ := run["cancel_requested"].(bool)
+	status, _ := run["status"].(string)
+	return cancelled && status == "failed"
 }
 
 // controlMCPJobNext says what to do with a job in this status. committed is
@@ -680,6 +708,8 @@ func controlMCPJobNext(status string, committed bool) string {
 		return "the worker asked something: reply with swarm_answer_job"
 	case "waiting_on_approval":
 		return "see waiting_on for the exact tool and recovery action; deny stale approvals and retry within the job's authorized scope"
+	case "stopped":
+		return "the job's run was stopped and the job is kept open on its branch: swarm_message_job continues it there; swarm_stop_job cancels it"
 	case "failed", "blocked", "cancelled", "superseded", "rejected":
 		return "the job did not finish: see error and the report, then give a corrected job with swarm_give_job"
 	case "pending_approval":
@@ -990,9 +1020,12 @@ func controlMCPGetJob(c *controlMCPCall, args map[string]any) (any, error) {
 }
 
 // controlMCPMessageJob sends the worker a follow-up in the job's own session:
-// more to do, a correction, or a redo. It runs after the job's current run,
-// on the same branch, so swarm_get_job and swarm_deliver_job keep working on
-// the one job.
+// more to do, a correction, or a redo, on the same branch, so swarm_get_job
+// and swarm_deliver_job keep working on the one job. While the job's run is
+// active (its first run or a follow-up) the message is queued for that run:
+// the running worker receives it with its next tool result, or, if the run
+// ends first, it starts the job's next run. The answer says which
+// (sent.delivery). A stopped job's message continues it.
 func controlMCPMessageJob(c *controlMCPCall, args map[string]any) (any, error) {
 	if err := c.requireTokenScope("sessions:write"); err != nil {
 		return nil, err
@@ -1029,6 +1062,11 @@ func controlMCPMessageJob(c *controlMCPCall, args map[string]any) (any, error) {
 	if err != nil {
 		return nil, controlMCPFollowupRefused(err)
 	}
+	if queued, _ := run["queued"].(bool); queued {
+		run["delivery"] = controlMCPQueuedDelivery(run)
+	} else {
+		run["delivery"] = "started: the message starts the job's next run on the same branch"
+	}
 	out := map[string]any{"job_id": controlMCPJobID(kind, a, b), "client_request_id": requestID, "sent": run, "next": "the worker continues in this job: swarm_get_job with wait_seconds waits for it, then swarm_deliver_job merges the branch"}
 	if wait := controlMCPInt(args, "wait_seconds", 0); wait > 0 {
 		view, err := c.jobView(kind, a, b, wait, false, 0)
@@ -1048,9 +1086,25 @@ func controlMCPMessageJob(c *controlMCPCall, args map[string]any) (any, error) {
 // step answers it busy and waits (jobAutomationReopener.Reopen).
 const controlMCPFollowupBusy = "a follow-up is already running in this job"
 
+// controlMCPQueuedDelivery says how a message queued for a job's active run
+// reaches the worker.
+func controlMCPQueuedDelivery(run map[string]any) string {
+	forRun, _ := run["queued_for_run_id"].(string)
+	if forRun == "" {
+		forRun = "its active run"
+	} else {
+		forRun = "its active run " + forRun
+	}
+	return "queued: the job is running (" + forRun + "); the worker receives this message with its next tool result, or, if that run ends first, the message starts the job's next run on the same branch"
+}
+
+// controlMCPActiveRunRefusal matches the run-intent store's one-active-run
+// refusal, `session "<id>" already has active v3 run "<run>"`.
+var controlMCPActiveRunRefusal = regexp.MustCompile(`already has active v3 run "([^"]+)"`)
+
 // controlMCPFollowupRefused says plainly that a follow-up was not sent when
 // Swarm refuses to start it: the job's state does not allow it (409), or
-// another run in the job's session won the race to start.
+// another run in the job's session won the race to start. It names that run.
 func controlMCPFollowupRefused(err error) error {
 	var refused controlMCPToolError
 	if !errors.As(err, &refused) {
@@ -1058,7 +1112,11 @@ func controlMCPFollowupRefused(err error) error {
 	}
 	switch {
 	case strings.Contains(refused.message, "already has active v3 run"):
-		return controlMCPToolFailure("the follow-up was not sent: " + controlMCPFollowupBusy + "; wait for it with swarm_get_job (wait_seconds), then send the next message")
+		named := ""
+		if match := controlMCPActiveRunRefusal.FindStringSubmatch(refused.message); len(match) == 2 && controlMCPSafeID.MatchString(match[1]) {
+			named = " (follow-up run " + match[1] + ")"
+		}
+		return controlMCPToolFailure("the follow-up was not sent: %s%s; wait for it with swarm_get_job (wait_seconds), then send the next message", controlMCPFollowupBusy, named)
 	case refused.status == http.StatusConflict:
 		return controlMCPToolFailure("the follow-up was not sent: %s", refused.message)
 	}
@@ -1245,7 +1303,13 @@ func controlMCPStopJob(c *controlMCPCall, args map[string]any) (any, error) {
 		}
 		return nil, controlMCPNotFound(err, "job", controlMCPJobID(kind, a, b), "swarm_list_workers with include_jobs")
 	}
-	status, _ := controlMCPMap(response["run"])["status"].(string)
+	run := controlMCPMap(response["run"])
+	status, _ := run["status"].(string)
+	if controlMCPRunCancelled(run) {
+		// A stopped job's receipt keeps its settled status; the cancel mark
+		// closes it.
+		status = "cancelled"
+	}
 	return map[string]any{"job_id": controlMCPJobID(kind, a, b), "status": status}, nil
 }
 
@@ -1683,7 +1747,7 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_message_job", Title: "Send a worker a follow-up in its job",
-			Description: "Tell the worker more in the same job: something to add, a correction, or a redo. It works on the same branch after its current run, so the job stays one thing to wait on (swarm_get_job), read and merge (swarm_deliver_job). Use swarm_answer_job for a question the worker asked, and swarm_give_job for unrelated work.",
+			Description: "Tell the worker more in the same job: something to add, a correction, or a redo. It works on the same branch, so the job stays one thing to wait on (swarm_get_job), read and merge (swarm_deliver_job). While the job is running, the message is queued for its current run: the worker gets it with its next tool result, or it starts the next run when the current one ends (sent.delivery says which). A stopped job continues. Refused only while an earlier follow-up is still queued to start (the refusal names it). Use swarm_answer_job for a question the worker asked, and swarm_give_job for unrelated work.",
 			InputSchema: controlMCPObject([]string{"job_id", "message"}, map[string]any{
 				"job_id":            jobID,
 				"message":           controlMCPStringProp("What the worker should do next and how to know it is done.", 1, permission.MaxReplyCharacters),
@@ -1711,7 +1775,7 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_stop_job", Title: "Stop a job",
-			Description: "Cancel a running job. Its branch and what it committed so far stay for reading.",
+			Description: "Cancel a running or stopped job for good: it takes no more messages. Its branch and what it committed so far stay for reading. To pause a job and correct it instead, use swarm_stop_run on its session, then swarm_message_job.",
 			InputSchema: controlMCPObject([]string{"job_id"}, map[string]any{"job_id": jobID, "reason": controlMCPStringProp("", 0, 500)}),
 			Annotations: controlMCPDestructive, call: controlMCPStopJob,
 		},

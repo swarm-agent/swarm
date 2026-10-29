@@ -64,7 +64,10 @@ func emitStartupSignals(emitter *signals.Emitter, status sandbox.Status, headles
 
 // workerRunSignal raises worker.run.succeeded, worker.run.failed or
 // worker.run.cancelled when a worker run finishes. It names the worker and
-// run. Explicit blocker reasons are included in the failure summary.
+// run. Explicit blocker reasons are included in the failure summary. A job
+// whose own run was stopped but stays open (pebblestore.WorkerRunStopped)
+// raises worker.run.stopped instead: it has not finished, so nothing that
+// reacts to a finished job (job automations) runs for it.
 func workerRunSignal(emitter *signals.Emitter, sessions *pebblestore.SessionStore) func(pebblestore.WorkerRecord, pebblestore.WorkerRunRecord) {
 	return func(worker pebblestore.WorkerRecord, run pebblestore.WorkerRunRecord) {
 		if run.Cleanup != nil && run.Cleanup.FailureReported {
@@ -94,8 +97,11 @@ func workerRunSignal(emitter *signals.Emitter, sessions *pebblestore.SessionStor
 		case "interrupted", "failed":
 			run.Status, run.Error = "failed", run.FollowupError
 		}
+		kind := "worker.run." + run.Status
 		severity := pebblestore.SignalSeverityInfo
-		if run.Status == "failed" {
+		if run.FollowupStatus == "" && pebblestore.WorkerRunStopped(run) {
+			kind = "worker.run.stopped"
+		} else if run.Status == "failed" {
 			severity = pebblestore.SignalSeverityWarning
 		}
 		name := worker.Name
@@ -116,11 +122,13 @@ func workerRunSignal(emitter *signals.Emitter, sessions *pebblestore.SessionStor
 			emitter.Emit(pebblestore.Signal{Kind: "job.sandbox_interrupted", Severity: pebblestore.SignalSeverityWarning, Account: run.AccountScopeID, Summary: "Job sandbox interrupted (OOM or container restart); uncommitted work preserved; retry with a follow-up", Refs: refs, DedupKey: "job.sandbox:" + run.ID})
 		}
 		summary := "Worker " + name + " run " + run.Status
-		if run.Status == "failed" && strings.HasPrefix(run.Error, "blocked: ") {
+		if kind == "worker.run.stopped" {
+			summary = "Worker " + name + " run stopped; the job stays open: a message continues it"
+		} else if run.Status == "failed" && strings.HasPrefix(run.Error, "blocked: ") {
 			summary += ": " + run.Error
 		}
 		emitter.Emit(pebblestore.Signal{
-			Kind:     "worker.run." + run.Status,
+			Kind:     kind,
 			Severity: severity,
 			Account:  run.AccountScopeID,
 			Summary:  summary,

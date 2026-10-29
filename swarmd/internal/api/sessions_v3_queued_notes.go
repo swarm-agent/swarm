@@ -66,6 +66,10 @@ func (s *Server) acceptSessionsV3QueuedNote(principal identity.Principal, sessio
 		if existing.PayloadHash != payloadHash {
 			return sessionruntime.SessionMutationResult{}, false, nil
 		}
+	} else if strings.HasPrefix(session.ID, "worker-execution-") {
+		if runID, err = s.workerJobQueuedNoteRunID(principal, session.ID, runID); err != nil || runID == "" {
+			return sessionruntime.SessionMutationResult{}, false, err
+		}
 	} else if runID == "" {
 		return sessionruntime.SessionMutationResult{}, false, nil
 	}
@@ -91,11 +95,37 @@ func (s *Server) acceptSessionsV3QueuedNote(principal identity.Principal, sessio
 	return result, true, err
 }
 
+// workerJobQueuedNoteRunID decides the run a message to a worker job's
+// session is queued for (swarm_message_job while the job runs). The job must
+// not be cancelled (WorkerExecutionService.AdmitQueuedMessage). The run is
+// the one the executor is running (executorRunID), or the job's own run when
+// it is recorded but not started yet: the note is then in its context when
+// it starts. "" means nothing runs that takes the message: it takes the
+// follow-up path (prepareWorkerJobFollowup), which refuses while another
+// follow-up is queued to start and names it.
+func (s *Server) workerJobQueuedNoteRunID(principal identity.Principal, sessionID, executorRunID string) (string, error) {
+	execution, err := s.workerExecutionService()
+	if err != nil {
+		return "", err
+	}
+	ownRun, err := execution.AdmitQueuedMessage(principal.AccountScopeID, principal.UserID, sessionID)
+	if err != nil || executorRunID != "" || !ownRun {
+		return executorRunID, err
+	}
+	intent, found, err := s.sessions.GetSessionActiveRunIntent(sessionID)
+	if err != nil || !found || (intent.Status != sessionruntime.RunIntentPendingExecutor && intent.Status != sessionruntime.RunIntentRunning) {
+		return "", err
+	}
+	return intent.RunID, nil
+}
+
 // sessionsV3MessageQueueable reports whether a message may be queued as a
 // note: plain text from the person, with no attachments, explicit run or
-// dispatch routing. Anything else keeps the ordinary turn path.
+// dispatch routing. Anything else keeps the ordinary turn path. A worker
+// job's session queues too (swarm_message_job while the job runs); its job
+// is checked by workerJobQueuedNoteRunID.
 func sessionsV3MessageQueueable(session pebblestore.SessionSnapshot, req sessionsV3MessageRequest, message pebblestore.MessageSnapshot) bool {
-	if !req.queueWhileRunning || strings.HasPrefix(session.ID, "worker-execution-") || sessionTakeoverActive(session) {
+	if !req.queueWhileRunning || sessionTakeoverActive(session) {
 		return false
 	}
 	if message.Role != "user" || strings.TrimSpace(message.Content) == "" {

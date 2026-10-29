@@ -437,7 +437,9 @@ With `fixes`:
   or another follow-up is in flight), the step **waits**, within its
   `timeout_seconds`, for it to settle, then sends its follow-up. A follow-up
   that starts just before the step's own send (the send is refused with "a
-  follow-up is already running in this job") is waited for the same way. While it
+  follow-up is already running in this job") is waited for the same way; if
+  that run has already started, the follow-up is queued for it instead and the
+  step tracks that run. While it
   waits the step's state is `waiting` and its `reason` says what it waits for
   (`waiting: the job ... is still running (in_progress)`), and
   `automation.step.waiting` is signalled once. It asks again on each new

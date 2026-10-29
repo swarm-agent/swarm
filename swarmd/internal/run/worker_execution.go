@@ -1371,6 +1371,16 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 		if ok && lifecycle.Active {
 			return fmt.Errorf("%w: run cancellation not acknowledged", store.ErrWorkerConflict)
 		}
+		if workerRunStopKeepsJobOpen(current) {
+			// The run was stopped in its session (swarm_stop_run), not the
+			// job cancelled (swarm_stop_job sets CancelRequested first). The
+			// job stays open: it settles as a stopped failure, which frees
+			// its capacity and keeps its session, branch and worktree, and a
+			// follow-up message continues it (PrepareFollowup).
+			current.Status = "failed"
+			current.Error = workerRunStoppedError(intent.BlockedReason)
+			break
+		}
 		current.Status = "cancelled"
 	default:
 		return fmt.Errorf("%w: run remains active", store.ErrWorkerConflict)
@@ -1953,6 +1963,40 @@ func workerRunSettledForFollowup(status string) bool {
 	return status == "succeeded" || status == "failed"
 }
 
+// workerRunStopKeepsJobOpen reports whether stopping r's own run in its
+// session leaves the job open instead of cancelling it: a direct-role job
+// (Coder, Designer, Finder) that was not cancelled. A plan-run (Swarm role)
+// job pauses its plan, which a settled receipt never resumes, and a reviewer
+// records its verdict and releases its checkout when it settles; both keep
+// settling as cancelled.
+func workerRunStopKeepsJobOpen(r store.WorkerRunRecord) bool {
+	return !r.CancelRequested && !store.WorkerRoleRunsPlan(r.Role) && r.Role != store.WorkerRoleReviewer
+}
+
+// workerRunStoppedError is the receipt error of a job whose own run was
+// stopped in its session: it names the stop and how to go on.
+func workerRunStoppedError(reason string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "the run was stopped"
+	}
+	return store.WorkerRunStoppedPrefix + reason + "; the job stays open on its branch: a message continues it"
+}
+
+// workerFollowupBusy refuses a follow-up while another run of the job's
+// session is active, naming that run. Callers match the fixed phrase "a
+// follow-up is already running in this job" (a reopen step answers it busy).
+func workerFollowupBusy(r store.WorkerRunRecord, active store.V3SessionRunIntent) error {
+	state := "running"
+	if active.Status == sessions.RunIntentPendingExecutor {
+		state = "queued to start"
+		if r.FollowupRunID == active.RunID && strings.TrimSpace(r.QueueReason) != "" {
+			state = "queued: " + r.QueueReason
+		}
+	}
+	return fmt.Errorf("%w: a follow-up is already running in this job (follow-up run %s, %s); send the next message once it settles", store.ErrWorkerConflict, active.RunID, state)
+}
+
 // workerRunExecutable says whether a worker job's session may run now. The
 // job's own run executes while its receipt is admitted or running. Once the
 // receipt settled, the session runs only a follow-up: a later active run of
@@ -2041,7 +2085,7 @@ func (s *WorkerExecutionService) PrepareFollowup(account, user, sessionID string
 	if active, ok, err := h.runs.sessions.GetSessionActiveRunIntent(sessionID); err != nil {
 		return err
 	} else if ok && (active.Status == sessions.RunIntentPendingExecutor || active.Status == sessions.RunIntentRunning) {
-		return fmt.Errorf("%w: a follow-up is already running in this job; send the next one once it settles", store.ErrWorkerConflict)
+		return workerFollowupBusy(r, active)
 	}
 	if projectID, taskID := mapString(snapshot.Metadata, "project_id"), mapString(snapshot.Metadata, "task_id"); projectID != "" && taskID != "" {
 		task, found, err := h.runs.sessions.Store().GetProjectTask(account, projectID, taskID)
@@ -2060,6 +2104,46 @@ func (s *WorkerExecutionService) PrepareFollowup(account, user, sessionID string
 		return err
 	}
 	return nil
+}
+
+// AdmitQueuedMessage checks a message that is queued into a worker job's
+// active run (the job's own run or a follow-up): the session is the job's and
+// the caller's, and the job was not cancelled. ownRun reports that the job's
+// own run has not settled yet (its receipt is admitted or running), so the
+// session's active run is that run even before the executor starts it. The
+// queued message reaches the running model with its next tool result, or
+// starts the job's next run when the current one ends; that run passes the
+// worker run gate (validateWorkerExecution) like any other. It changes
+// nothing.
+func (s *WorkerExecutionService) AdmitQueuedMessage(account, user, sessionID string) (ownRun bool, err error) {
+	s.dispatchMu.Lock()
+	defer s.dispatchMu.Unlock()
+	if err := s.authorizeWorkerOwner(account, user); err != nil {
+		return false, err
+	}
+	snapshot, found, err := s.host.runs.sessions.GetSession(sessionID)
+	if err != nil {
+		return false, err
+	}
+	runID, workerID := mapString(snapshot.Metadata, "worker_execution_run_id"), mapString(snapshot.Metadata, "worker_id")
+	if !found || runID == "" || workerID == "" || snapshot.AccountScopeID != account || snapshot.UserID != user {
+		return false, fmt.Errorf("%w: the session is not a worker job's session", store.ErrWorkerConflict)
+	}
+	ws, err := s.workerStore()
+	if err != nil {
+		return false, err
+	}
+	r, found, err := ws.GetWorkerRun(account, workerID, runID)
+	if err != nil {
+		return false, err
+	}
+	if !found || r.SessionID != sessionID || r.UserID != user {
+		return false, fmt.Errorf("%w: the job's receipt does not match its session", store.ErrWorkerConflict)
+	}
+	if r.CancelRequested || r.Status == "cancelled" {
+		return false, fmt.Errorf("%w: the job was cancelled; give the worker a new job instead", store.ErrWorkerConflict)
+	}
+	return workerWaiting(r.Status) || r.Status == "running", nil
 }
 
 // refreshFollowupModel points the job's session at the worker's current
@@ -2142,6 +2226,9 @@ func (s *WorkerExecutionService) CancelRun(ctx context.Context, account, id, run
 		}
 		return ws.CancelPendingWorkerJob(account, r.UserID, id, runID, r.Placement.Generation)
 	}
+	if store.WorkerRunStopped(r) {
+		return s.cancelStoppedJob(ws, r)
+	}
 	if store.AutomationV2Terminal(r.Status) {
 		return r, store.ErrWorkerConflict
 	}
@@ -2153,6 +2240,29 @@ func (s *WorkerExecutionService) CancelRun(ctx context.Context, account, id, run
 	}
 	r, _, err = ws.GetWorkerRun(account, id, runID)
 	return r, err
+}
+
+// cancelStoppedJob cancels a job whose own run was stopped (swarm_stop_job
+// after swarm_stop_run). Its settled receipt keeps its status; the permanent
+// cancel mark closes it, so no follow-up is admitted, reserved or executed
+// again (PrepareFollowup, ReserveWorkerFollowup, validateWorkerExecution), and
+// a follow-up still in flight is cancelled with it. Its task records the
+// cancel. The caller holds dispatchMu.
+func (s *WorkerExecutionService) cancelStoppedJob(ws *store.WorkerStore, r store.WorkerRunRecord) (store.WorkerRunRecord, error) {
+	if err := s.cancelRun(r, "worker run cancelled"); err != nil {
+		return r, err
+	}
+	current, found, err := ws.GetWorkerRun(r.AccountScopeID, r.WorkerID, r.ID)
+	if err != nil {
+		return r, err
+	}
+	if !found || !current.CancelRequested {
+		return current, store.ErrWorkerConflict
+	}
+	if err := s.reconcileRunTask(current, "cancelled", current.Error); err != nil {
+		return current, err
+	}
+	return current, nil
 }
 
 func (s *WorkerExecutionService) authorizeWorkerOwner(account, user string) error {
@@ -2577,7 +2687,10 @@ func (s *WorkerExecutionService) reconcileWorkerTaskTerminal(accountScopeID, pro
 			t.LastError = ""
 		case "failed":
 			t.Status = "failed"
-			if runError != "" {
+			if strings.HasPrefix(runError, store.WorkerRunStoppedPrefix) && !r.CancelRequested {
+				t.LastError = runError
+				t.ActionNeeded = "Action Needed: Run was stopped; the job is open on its branch. Send a message to continue it, or cancel the job."
+			} else if runError != "" {
 				t.LastError = runError
 				t.ActionNeeded = "Action Needed: Worker run failed (" + runError + "). Retry or reassign task."
 			} else {

@@ -662,7 +662,7 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_stop_run", Title: "Stop a session's run",
-			Description: "Stop the session's active run. Waits briefly for it to end and returns its final status, the plan's state and a short summary. A stopped plan is paused, not cancelled: it keeps its progress, never resumes on its own, and continues its checkpoint when you send_message.",
+			Description: "Stop the session's active run. Waits briefly for it to end and returns its final status, the plan's state and a short summary. A stopped plan is paused, not cancelled: it keeps its progress, never resumes on its own, and continues its checkpoint when you send_message. On a worker job's session (a Coder, Designer or Finder job), the job is stopped, not cancelled: it keeps its branch and worktree, and swarm_message_job continues it; swarm_stop_job cancels it.",
 			InputSchema: controlMCPObject([]string{"session_id"}, map[string]any{"session_id": sessionID, "reason": controlMCPStringProp("", 0, 500)}),
 			Annotations: controlMCPDestructive, call: controlMCPStopRun,
 		},
@@ -1678,6 +1678,14 @@ func (c *controlMCPCall) sendMessageWithMedia(sessionID, content, requestID stri
 	// is stale by the time the caller reads it; active_run carries the current one.
 	run := controlMCPPick(controlMCPMap(response["run_intent"]), "run_id")
 	run["accepted"] = true
+	// A message to a session whose run is active is queued for that run
+	// (sessionsV3QueuedMessageResponseFields): it starts no run of its own.
+	if queued, _ := response["queued"].(bool); queued {
+		run["queued"] = true
+		if forRun, _ := response["queued_for_run_id"].(string); forRun != "" {
+			run["queued_for_run_id"] = forRun
+		}
+	}
 	return run, nil
 }
 

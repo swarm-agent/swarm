@@ -726,7 +726,13 @@ func (a jobAutomationReopener) Reopen(ctx context.Context, req jobautomation.Reo
 		}
 		return "", err
 	}
-	followup, _ := controlMCPMap(controlMCPMap(out)["sent"])["run_id"].(string)
+	sent := controlMCPMap(controlMCPMap(out)["sent"])
+	followup, _ := sent["run_id"].(string)
+	if queued, _ := sent["queued"].(bool); queued && followup == "" {
+		// A run started in the job's session after the busy check above: the
+		// message was queued for it, so that run carries the findings.
+		followup, _ = sent["queued_for_run_id"].(string)
+	}
 	if followup == "" {
 		return "", errors.New("the follow-up was accepted without a run id")
 	}
