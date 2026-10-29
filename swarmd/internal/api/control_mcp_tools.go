@@ -3021,7 +3021,10 @@ func controlMCPCostNote(summary map[string]any, billing map[string]bool) string 
 // controlMCPLimits reports daily limits with "none" for an unset (0) limit,
 // so no caller reads 0 as a zero-dollar cap.
 func controlMCPLimits(limits map[string]any) map[string]any {
-	out := controlMCPPick(limits, "enabled", "daily_cost_limit_usd", "daily_tokens_limit", "today_cost_usd", "today_tokens", "limit_exceeded")
+	out := controlMCPPick(limits, "enabled", "daily_cost_limit_usd", "daily_tokens_limit", "today_cost_usd", "today_tokens", "today_unpriced_receipts", "today_unpriced_estimate_usd", "limit_exceeded")
+	if receipts, _ := limits["today_unpriced_receipts"].(float64); receipts > 0 {
+		out["unpriced_note"] = "unpriced receipts count at today_unpriced_estimate_usd against the daily cost limit; work stops when today_cost_usd plus that estimate reaches it"
+	}
 	for _, key := range []string{"daily_cost_limit_usd", "daily_tokens_limit"} {
 		if value, _ := limits[key].(float64); value <= 0 {
 			out[key] = "none"

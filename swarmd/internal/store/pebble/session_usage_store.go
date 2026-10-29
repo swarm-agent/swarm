@@ -48,12 +48,14 @@ type SessionTurnUsageSnapshot struct {
 	ServiceTierStatus      string            `json:"service_tier_status,omitempty"`
 	PriceStatus            string            `json:"price_status,omitempty"`
 	EstimatedCostUSD       float64           `json:"estimated_cost_usd,omitempty"`
-	APIUsageRaw            map[string]any    `json:"api_usage_raw,omitempty"`
-	APIUsageRawPath        string            `json:"api_usage_raw_path,omitempty"`
-	APIUsageHistory        []map[string]any  `json:"api_usage_history,omitempty"`
-	APIUsagePaths          []string          `json:"api_usage_paths,omitempty"`
-	CreatedAt              int64             `json:"created_at"`
-	UpdatedAt              int64             `json:"updated_at"`
+	// Conservative cost counted against daily caps while unpriced; set by the store.
+	UnpricedEstimateUSD *float64         `json:"unpriced_estimate_usd,omitempty"`
+	APIUsageRaw         map[string]any   `json:"api_usage_raw,omitempty"`
+	APIUsageRawPath     string           `json:"api_usage_raw_path,omitempty"`
+	APIUsageHistory     []map[string]any `json:"api_usage_history,omitempty"`
+	APIUsagePaths       []string         `json:"api_usage_paths,omitempty"`
+	CreatedAt           int64            `json:"created_at"`
+	UpdatedAt           int64            `json:"updated_at"`
 }
 
 type SessionUsageSummary struct {
@@ -105,7 +107,9 @@ type SessionMediaUsageRecord struct {
 	PricingSummary    string            `json:"pricing_summary,omitempty"`  // human-scannable pricing provenance
 	SnapshotID        string            `json:"snapshot_id,omitempty"`      // catalog snapshot ID
 	SnapshotVersion   string            `json:"snapshot_version,omitempty"` // catalog snapshot version
-	CreatedAt         int64             `json:"created_at"`
+	// Conservative cost counted against daily caps while unpriced; set by the store.
+	UnpricedEstimateUSD *float64 `json:"unpriced_estimate_usd,omitempty"`
+	CreatedAt           int64    `json:"created_at"`
 }
 
 func ApplyProviderUsageSnapshotToSummary(summary SessionUsageSummary, usage SessionTurnUsageSnapshot) SessionUsageSummary {
@@ -324,6 +328,7 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 		record.CreatedAt = time.Now().UnixMilli()
 	}
 	record.ScopeProjectionVersion = 3
+	s.stampTurnUnpricedEstimate(&record)
 	record.ScopeTotals, err = s.prepareUsageScopeTotals(record, previous)
 	if err != nil {
 		return err
@@ -388,8 +393,14 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 		}
 		acc.TotalCostUSD += deltaCost
 		acc.UnknownReceipts += unknownBudgetReceipt(record.PriceStatus)
+		if unknownBudgetReceipt(record.PriceStatus) != 0 {
+			acc.addUnpricedEstimate(record.UnpricedEstimateUSD, 1)
+		}
 		if hadPrevious {
 			acc.UnknownReceipts -= unknownBudgetReceipt(previous.PriceStatus)
+			if unknownBudgetReceipt(previous.PriceStatus) != 0 {
+				acc.addUnpricedEstimate(previous.UnpricedEstimateUSD, -1)
+			}
 		}
 		if acc.UnknownReceipts < 0 {
 			acc.UnknownReceipts = 0

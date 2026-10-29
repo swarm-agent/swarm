@@ -47,6 +47,8 @@ func TestMediaPricingTranscriptionSupplement(t *testing.T) {
 // Purpose: real embedded music, speech, image and video billing rows must be
 // consumable by the receipt estimator. This catalog/estimator boundary catches
 // unit mismatches without live generation; it does not prove worker admission.
+// gemini-3.8-flash timing transcription lists only introductory speech rows, so
+// it must be priced at the model's token rates rather than recorded as unknown.
 func TestMediaPricingEmbeddedKinds(t *testing.T) {
 	var snapshot struct {
 		Models []struct {
@@ -67,6 +69,7 @@ func TestMediaPricingEmbeddedKinds(t *testing.T) {
 		{"lyria-3-clip-preview", pebblestore.MediaCostEstimateOptions{Kind: "audio"}, .04},
 		{"lyria-3-pro-preview", pebblestore.MediaCostEstimateOptions{Kind: "audio"}, .08},
 		{"gemini-3.8-flash-tts", pebblestore.MediaCostEstimateOptions{Kind: "audio", Speech: true, PromptTokens: 100, AudioOutputTokens: 100}, .00095},
+		{"gemini-3.8-flash", pebblestore.MediaCostEstimateOptions{Kind: "audio", Transcription: true, PromptTokens: 100, AudioInputTokens: 1000, TextOutputTokens: 1000}, .004575},
 		{"gemini-3.1-flash-lite-image", pebblestore.MediaCostEstimateOptions{Kind: "image", OutputTokens: 1120}, .0336},
 		{"veo-3.1-lite-generate-preview", pebblestore.MediaCostEstimateOptions{Kind: "video", DurationSeconds: 8, Resolution: "720p", IncludesAudio: true}, .4},
 	} {

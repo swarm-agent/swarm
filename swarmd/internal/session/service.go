@@ -1706,6 +1706,15 @@ func (s *Service) GetTodayUsageTotal(accountScopeID string) (float64, int64, err
 	return s.store.GetTodayUsageTotal(accountScopeID)
 }
 
+// GetTodayUnpricedUsage reports today's unpriced receipts and the conservative
+// estimate the daily cost cap counts for them.
+func (s *Service) GetTodayUnpricedUsage(accountScopeID string) (int64, float64, error) {
+	if s == nil || s.store == nil {
+		return 0, 0, errors.New("session store is not configured")
+	}
+	return s.store.GetTodayUnpricedUsage(accountScopeID)
+}
+
 func (s *Service) CheckDailyLimit(accountScopeID string) (exceeded bool, currentCost float64, limitCost float64, err error) {
 	if s == nil || s.store == nil {
 		return false, 0, 0, nil

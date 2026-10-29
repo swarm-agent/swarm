@@ -31,11 +31,14 @@ type UsageScopeTotal struct {
 	ProviderEstimateCostUSD    float64 `json:"provider_estimate_cost_usd"`
 	NominalSubscriptionCostUSD float64 `json:"nominal_subscription_cost_usd"`
 	UnknownReceipts            int64   `json:"unknown_receipts"`
-	FreeReceipts               int64   `json:"free_receipts"`
-	SubscriptionReceipts       int64   `json:"subscription_receipts"`
-	ReceiptCount               int64   `json:"receipt_count"`
-	HistoryComplete            bool    `json:"history_complete"`
-	Revision                   uint64  `json:"revision"`
+	// Estimates recorded on unpriced receipts; see unpriced_estimate.go.
+	UnpricedEstimateRecordedUSD      float64 `json:"unpriced_estimate_recorded_usd,omitempty"`
+	UnpricedEstimateRecordedReceipts int64   `json:"unpriced_estimate_recorded_receipts,omitempty"`
+	FreeReceipts                     int64   `json:"free_receipts"`
+	SubscriptionReceipts             int64   `json:"subscription_receipts"`
+	ReceiptCount                     int64   `json:"receipt_count"`
+	HistoryComplete                  bool    `json:"history_complete"`
+	Revision                         uint64  `json:"revision"`
 }
 
 func usageScopeKey(account string, scope UsageScopeTotal) string {
@@ -261,6 +264,7 @@ func applyScopeReceipt(total *UsageScopeTotal, receipt SessionTurnUsageSnapshot,
 	}
 	if unknown > 0 {
 		total.UnknownReceipts += sign
+		total.addUnpricedEstimate(receipt.UnpricedEstimateUSD, sign)
 	}
 	cost := float64(sign) * receipt.EstimatedCostUSD
 	switch strings.ToLower(receipt.PriceStatus) {
@@ -348,6 +352,7 @@ func (s *SessionStore) prepareMediaScopeTotals(media SessionMediaUsageRecord) ([
 			total.SubscriptionReceipts++
 		default:
 			total.UnknownReceipts++
+			total.addUnpricedEstimate(media.UnpricedEstimateUSD, 1)
 		}
 		if total.Coverage != "repaired_receipts_incomplete" {
 			total.Coverage = "observed_receipts_only"

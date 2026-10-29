@@ -16,6 +16,8 @@ func controlMCPUsageScopeView(total pebblestore.UsageScopeTotal) map[string]any 
 		"media_cost_usd": total.MediaCostUSD, "media_count": total.MediaReceipts,
 		"coverage": total.Coverage, "history_complete": total.HistoryComplete,
 		"unknown_receipts": total.UnknownReceipts,
+		// Counted against the worker's daily cost limit on top of cost_usd.
+		"unpriced_estimate_usd": total.UnpricedEstimateUSD(),
 	}
 }
 

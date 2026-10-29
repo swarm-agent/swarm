@@ -94,6 +94,7 @@ func (s *SessionStore) setMediaUsageDays(batch *pebble.Batch, media SessionMedia
 			total.SubscriptionReceipts++
 		default:
 			total.UnknownReceipts++
+			total.addUnpricedEstimate(media.UnpricedEstimateUSD, 1)
 		}
 		if total.Coverage != "repaired_receipts_incomplete" {
 			total.Coverage = scope.Coverage

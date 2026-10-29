@@ -16,6 +16,7 @@ type WorkerBudgetStatus struct {
 	EffectiveTokensLimit    *int64                `json:"effective_tokens_limit"`
 	Date                    string                `json:"date"`
 	Usage                   UsageScopeTotal       `json:"usage"`
+	UnpricedEstimateUSD     float64               `json:"unpriced_estimate_usd"`
 	RemainingCostUSD        *float64              `json:"remaining_cost_usd"`
 	RemainingTokens         *int64                `json:"remaining_tokens"`
 	Blocked                 bool                  `json:"blocked"`
@@ -23,6 +24,7 @@ type WorkerBudgetStatus struct {
 	Inflight                bool                  `json:"inflight"`
 	AccountPolicy           UsageLimitRecord      `json:"account_policy"`
 	AccountUsage            DailyUsageAccumulator `json:"account_usage"`
+	AccountUnpricedEstimate float64               `json:"account_unpriced_estimate_usd"`
 	AccountRemainingCostUSD *float64              `json:"account_remaining_cost_usd"`
 	AccountRemainingTokens  *int64                `json:"account_remaining_tokens"`
 	AccountInflight         bool                  `json:"account_inflight"`
@@ -70,6 +72,7 @@ func (s *SessionStore) GetWorkerBudgetStatus(account, worker string) (WorkerBudg
 	if err != nil {
 		return status, err
 	}
+	status.UnpricedEstimateUSD = status.Usage.UnpricedEstimateUSD()
 	status.RemainingCostUSD, status.RemainingTokens = remainingBudget(policy.DailyCostLimitUSD, policy.DailyTokensLimit, status.Usage.CatalogCostUSD+status.Usage.ProviderCostUSD+status.Usage.ProviderEstimateCostUSD, status.Usage.TotalTokens)
 	status.AccountPolicy, _, err = s.GetUsageLimit(account)
 	if err != nil {
@@ -93,6 +96,7 @@ func (s *SessionStore) GetWorkerBudgetStatus(account, worker string) (WorkerBudg
 	if status.AccountUsage.AccountScopeID == "" {
 		status.AccountUsage.AccountScopeID, status.AccountUsage.Date = account, status.Date
 	}
+	status.AccountUnpricedEstimate = status.AccountUsage.UnpricedEstimateUSD()
 	if status.AccountPolicy.Enabled {
 		status.AccountRemainingCostUSD, status.AccountRemainingTokens = remainingBudget(status.AccountPolicy.DailyCostLimitUSD, status.AccountPolicy.DailyTokensLimit, status.AccountUsage.TotalCostUSD, status.AccountUsage.TotalTokens)
 	}
@@ -132,6 +136,6 @@ func (s *SessionStore) GetWorkerBudgetStatus(account, worker string) (WorkerBudg
 		}
 	}
 	status.EffectiveCostLimitUSD, status.EffectiveTokensLimit = remainingBudget(cost, tokens, 0, 0)
-	status.Limitations = "Stop-before-next-call, not an invoice-hard cap; admitted work may overshoot. Operation reservations expire after one hour and are released at the next admission check. Totals reflect observed receipts only; unknown pricing is not free."
+	status.Limitations = "Stop-before-next-call, not an invoice-hard cap; admitted work may overshoot. Operation reservations expire after one hour and are released at the next admission check. Totals reflect observed receipts only; unknown pricing is not free: each unpriced receipt counts at a conservative estimate (unpriced_estimate_usd) against the cost limit."
 	return status, nil
 }

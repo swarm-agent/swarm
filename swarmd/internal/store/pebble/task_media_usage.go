@@ -56,6 +56,10 @@ func (s *SessionStore) putTaskMediaUsage(rec SessionMediaUsageRecord) error {
 	acc.MediaCostUSD += rec.CostUSD
 	acc.MediaCalls++
 	acc.UnknownReceipts += unknownBudgetReceipt(rec.PriceStatus)
+	stampMediaUnpricedEstimate(&rec)
+	if unknownBudgetReceipt(rec.PriceStatus) != 0 {
+		acc.addUnpricedEstimate(rec.UnpricedEstimateUSD, 1)
+	}
 	image, video, audio := 0, 0, 0
 	switch rec.Kind {
 	case "image":

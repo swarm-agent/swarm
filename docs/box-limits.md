@@ -67,4 +67,14 @@ used.
 
 MCP `swarm_deploy_worker` accepts `budget: {"daily_usd": 10, "daily_tokens": 100000}` (tokens optional); omission preserves the policy and `budget: null` clears its limits. Zero means unset, not a zero-spend cap. `automations:write` is sufficient. `swarm_list_workers` includes the worker's policy, today's indexed UTC spend, and blocked status/reason. Account limits still apply; changing a policy does not erase usage, reservations, or existing budget holds. Limits stop subsequent model calls, not an already-running call's final invoice. Native `manage_workers` accepts the same budget on create/propose/update; the budget is part of the worker proposal and takes effect only when the person accepts it. Existing-worker budget updates also require acceptance. Acceptance commits the policy and worker together through the canonical budget service's shared persistence boundary.
 
-Claude Code and Codex model usage counts as $0 subscription cost toward worker USD budgets; media generation and priced API usage still count at their price, tokens still count for every provider, and unknown pricing on other providers still fails closed.
+Claude Code and Codex model usage counts as $0 subscription cost toward worker USD budgets; media generation and priced API usage still count at their price, tokens still count for every provider, and a new call whose provider pricing is unknown is still refused under a USD limit.
+
+### Unpriced receipts under daily USD limits
+
+A receipt Swarm could not price is not free, and it does not stop all work either. The account daily limit (`/v3/usage/limits`) and each worker's daily USD limit count every unpriced receipt at a conservative estimate, recorded with the receipt, and stop new work only when today's known cost plus those estimates reaches the limit. The estimate is:
+
+- a model turn: its billed tokens at the highest input and output token rates known for the model's family (catalog models of the same provider whose id starts with the same name, such as `gemini`), else for its provider, else for any provider;
+- a media receipt: a fixed ceiling per kind, $0.50 for an image, $1.00 for audio and $10.00 for a video (or any other kind);
+- a receipt recorded before estimates existed: $1.00.
+
+The estimate does not create a day hold: raising the limit, or a receipt being priced later, admits work again. `GET /v3/usage/limits` (and the `limits` of `GET /v3/usage`, shown by `swarm_get_usage`) reports `today_unpriced_receipts` and `today_unpriced_estimate_usd`; worker usage and worker budget status report `unpriced_estimate_usd`. `today_cost_usd` and `limit_exceeded` stay known cost only.

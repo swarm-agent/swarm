@@ -142,7 +142,8 @@ func (s *SessionStore) prepareWorkerBudget(account, worker string, expected uint
 }
 
 // checkWorkerBudgetLocked reads the canonical indexed UTC day, not context
-// occupancy. Unknown receipts are not zero-dollar receipts under a cost cap.
+// occupancy. Unknown receipts are not zero-dollar receipts under a cost cap:
+// they count at their conservative estimate (unpriced_estimate.go).
 func (s *SessionStore) checkWorkerBudgetLocked(account, worker, date string) (WorkerBudgetPolicy, UsageScopeTotal, error) {
 	policy, err := s.GetWorkerBudget(account, worker)
 	if err != nil {
@@ -172,12 +173,13 @@ func (s *SessionStore) checkWorkerBudgetTotalLocked(account, worker, date string
 		return policy, total, s.holdWorkerBudgetLocked(account, worker, h)
 	}
 	if policy.DailyCostLimitUSD > 0 {
-		if total.UnknownReceipts > 0 || total.Coverage == "repaired_receipts_incomplete" {
-			return policy, total, fmt.Errorf("%w: unresolved worker pricing or coverage", ErrWorkerBudget)
+		if total.Coverage == "repaired_receipts_incomplete" {
+			return policy, total, fmt.Errorf("%w: unresolved worker receipt coverage", ErrWorkerBudget)
 		}
-		cost := total.CatalogCostUSD + total.ProviderCostUSD + total.ProviderEstimateCostUSD
+		estimate := total.UnpricedEstimateUSD()
+		cost := total.CatalogCostUSD + total.ProviderCostUSD + total.ProviderEstimateCostUSD + estimate
 		if cost >= policy.DailyCostLimitUSD {
-			return policy, total, fmt.Errorf("%w: daily worker USD limit exceeded", ErrWorkerBudget)
+			return policy, total, fmt.Errorf("%w: daily worker USD limit exceeded%s", ErrWorkerBudget, unpricedLimitDetail(total.UnknownReceipts, estimate))
 		}
 	}
 	if policy.DailyTokensLimit > 0 && total.TotalTokens >= policy.DailyTokensLimit {
@@ -196,10 +198,14 @@ func (s *SessionStore) checkWorkerBudgetTotalLocked(account, worker, date string
 		if h := accountExhaustion(accountPolicy, usage, date); h != nil {
 			return policy, total, s.holdWorkerBudgetLocked(account, worker, h)
 		}
-		if accountPolicy.DailyCostLimitUSD > 0 && (usage.UnknownReceipts > 0 || usage.PricingCoverageIncomplete) {
-			return policy, total, fmt.Errorf("%w: unresolved account pricing", ErrWorkerBudget)
+		if accountPolicy.DailyCostLimitUSD > 0 && usage.PricingCoverageIncomplete {
+			return policy, total, fmt.Errorf("%w: unresolved account pricing coverage", ErrWorkerBudget)
 		}
-		if (accountPolicy.DailyCostLimitUSD > 0 && usage.TotalCostUSD >= accountPolicy.DailyCostLimitUSD) || (accountPolicy.DailyTokensLimit > 0 && usage.TotalTokens >= accountPolicy.DailyTokensLimit) {
+		estimate := usage.UnpricedEstimateUSD()
+		if accountPolicy.DailyCostLimitUSD > 0 && usage.TotalCostUSD+estimate >= accountPolicy.DailyCostLimitUSD {
+			return policy, total, fmt.Errorf("%w: daily account usage limit exceeded%s", ErrWorkerBudget, unpricedLimitDetail(usage.UnknownReceipts, estimate))
+		}
+		if accountPolicy.DailyTokensLimit > 0 && usage.TotalTokens >= accountPolicy.DailyTokensLimit {
 			return policy, total, fmt.Errorf("%w: daily account usage limit exceeded", ErrWorkerBudget)
 		}
 	}
@@ -337,14 +343,15 @@ func (s *SessionStore) checkWorkerSessionBudget(account, sessionID, priceStatus 
 		if (accountPolicy.DailyCostLimitUSD > 0 && usage.TotalCostUSD >= accountPolicy.DailyCostLimitUSD) || (accountPolicy.DailyTokensLimit > 0 && usage.TotalTokens >= accountPolicy.DailyTokensLimit) {
 			return fmt.Errorf("%w: daily account usage limit exceeded", ErrWorkerBudget)
 		}
-		if accountPolicy.DailyCostLimitUSD > 0 && (usage.UnknownReceipts > 0 || usage.PricingCoverageIncomplete) {
-			return fmt.Errorf("%w: unresolved account pricing", ErrWorkerBudget)
+		if accountPolicy.DailyCostLimitUSD > 0 && usage.PricingCoverageIncomplete {
+			return fmt.Errorf("%w: unresolved account pricing coverage", ErrWorkerBudget)
 		}
 		if accountPolicy.DailyCostLimitUSD > 0 && priceStatus != "known" && priceStatus != "free" && priceStatus != "subscription" {
 			return fmt.Errorf("%w: account-capped provider pricing is unknown", ErrWorkerBudget)
 		}
-		if accountPolicy.DailyCostLimitUSD > 0 && usage.TotalCostUSD+accountReserved+cost > accountPolicy.DailyCostLimitUSD {
-			return fmt.Errorf("%w: daily account usage limit exceeded", ErrWorkerBudget)
+		estimate := usage.UnpricedEstimateUSD()
+		if accountPolicy.DailyCostLimitUSD > 0 && (usage.TotalCostUSD+estimate >= accountPolicy.DailyCostLimitUSD || usage.TotalCostUSD+estimate+accountReserved+cost > accountPolicy.DailyCostLimitUSD) {
+			return fmt.Errorf("%w: daily account usage limit exceeded%s", ErrWorkerBudget, unpricedLimitDetail(usage.UnknownReceipts, estimate))
 		}
 		keys = append(keys, accountBudgetReservationKey(account))
 	}
@@ -368,8 +375,8 @@ func (s *SessionStore) checkWorkerSessionBudget(account, sessionID, priceStatus 
 				return fmt.Errorf("%w: provider pricing is unknown", ErrWorkerBudget)
 			}
 		}
-		if policy.DailyCostLimitUSD > 0 && total.CatalogCostUSD+total.ProviderCostUSD+total.ProviderEstimateCostUSD+reserved+cost > policy.DailyCostLimitUSD {
-			return fmt.Errorf("%w: daily worker usage limit exceeded", ErrWorkerBudget)
+		if policy.DailyCostLimitUSD > 0 && total.CatalogCostUSD+total.ProviderCostUSD+total.ProviderEstimateCostUSD+total.UnpricedEstimateUSD()+reserved+cost > policy.DailyCostLimitUSD {
+			return fmt.Errorf("%w: daily worker usage limit exceeded%s", ErrWorkerBudget, unpricedLimitDetail(total.UnknownReceipts, total.UnpricedEstimateUSD()))
 		}
 		keys = append(keys, workerBudgetKey(account, scope.ID)+"/reservation")
 	}

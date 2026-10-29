@@ -1218,6 +1218,7 @@ func (s *SessionStore) applyFreshV3SessionMutationWithReader(input V3SessionMuta
 			_, turnUsage.PriceStatus = s.calculateReceiptCost(turnUsage)
 		}
 		turnUsage.ScopeProjectionVersion = 3
+		s.stampTurnUnpricedEstimate(&turnUsage)
 		turnUsage.ScopeTotals, err = s.prepareUsageScopeTotals(turnUsage, previousTurnUsage)
 		if err != nil {
 			return V3SessionMutationResult{}, err
@@ -1243,6 +1244,7 @@ func (s *SessionStore) applyFreshV3SessionMutationWithReader(input V3SessionMuta
 		if found {
 			return V3SessionMutationResult{}, errors.New("media usage receipt already exists")
 		}
+		stampMediaUnpricedEstimate(&media)
 		media.ScopeTotals, err = s.prepareMediaScopeTotals(media)
 		if err != nil {
 			return V3SessionMutationResult{}, err
@@ -1663,8 +1665,14 @@ func (s *SessionStore) applyFreshV3SessionMutationWithReader(input V3SessionMuta
 			}
 			acc.TotalCostUSD += costDelta
 			acc.UnknownReceipts += unknownBudgetReceipt(turnUsage.PriceStatus)
+			if unknownBudgetReceipt(turnUsage.PriceStatus) != 0 {
+				acc.addUnpricedEstimate(turnUsage.UnpricedEstimateUSD, 1)
+			}
 			if hadPreviousTurnUsage {
 				acc.UnknownReceipts -= unknownBudgetReceipt(previousTurnUsage.PriceStatus)
+				if unknownBudgetReceipt(previousTurnUsage.PriceStatus) != 0 {
+					acc.addUnpricedEstimate(previousTurnUsage.UnpricedEstimateUSD, -1)
+				}
 			}
 			if acc.UnknownReceipts < 0 {
 				acc.UnknownReceipts = 0
@@ -1764,6 +1772,9 @@ func (s *SessionStore) applyFreshV3SessionMutationWithReader(input V3SessionMuta
 		}
 		acc.TotalCostUSD += media.CostUSD
 		acc.UnknownReceipts += unknownBudgetReceipt(media.PriceStatus)
+		if unknownBudgetReceipt(media.PriceStatus) != 0 {
+			acc.addUnpricedEstimate(media.UnpricedEstimateUSD, 1)
+		}
 		acc.MediaCostUSD += media.CostUSD
 		acc.MediaCalls++
 		switch strings.ToLower(media.Kind) {

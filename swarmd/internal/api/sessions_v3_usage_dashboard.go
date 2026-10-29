@@ -599,6 +599,7 @@ func (s *Server) handleSessionsV3UsageAt(w http.ResponseWriter, r *http.Request,
 	limitRec, _, _ := s.sessions.GetUsageLimit(principal.AccountScopeID)
 	todayCost, todayTokens, _ := s.sessions.GetTodayUsageTotal(principal.AccountScopeID)
 	limitExceeded := limitRec.Enabled && limitRec.DailyCostLimitUSD > 0 && todayCost >= limitRec.DailyCostLimitUSD
+	unpriced, unpricedEstimate, _ := s.sessions.GetTodayUnpricedUsage(principal.AccountScopeID)
 
 	writeJSON(w, http.StatusOK, SessionUsageDashboardResponse{
 		OK:             true,
@@ -609,14 +610,16 @@ func (s *Server) handleSessionsV3UsageAt(w http.ResponseWriter, r *http.Request,
 		Media:          mediaSummary,
 		RecentSessions: sessionList,
 		Limits: SessionUsageLimitsStatus{
-			AccountScopeID:    principal.AccountScopeID,
-			DailyCostLimitUSD: limitRec.DailyCostLimitUSD,
-			DailyTokensLimit:  limitRec.DailyTokensLimit,
-			Enabled:           limitRec.Enabled,
-			TodayCostUSD:      todayCost,
-			TodayTokens:       todayTokens,
-			LimitExceeded:     limitExceeded,
-			UpdatedAt:         limitRec.UpdatedAt,
+			AccountScopeID:           principal.AccountScopeID,
+			DailyCostLimitUSD:        limitRec.DailyCostLimitUSD,
+			DailyTokensLimit:         limitRec.DailyTokensLimit,
+			Enabled:                  limitRec.Enabled,
+			TodayCostUSD:             todayCost,
+			TodayTokens:              todayTokens,
+			TodayUnpricedReceipts:    unpriced,
+			TodayUnpricedEstimateUSD: unpricedEstimate,
+			LimitExceeded:            limitExceeded,
+			UpdatedAt:                limitRec.UpdatedAt,
 		},
 		Meta: SessionUsageDashboardMeta{
 			GeneratedAt:          now.UnixMilli(),

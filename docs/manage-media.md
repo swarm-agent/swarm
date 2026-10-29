@@ -38,7 +38,10 @@ populate these counters; historical receipts are not backfilled by this change.
 Existing account spending limits and media batch confirmation still apply.
 Generation resolves and pins the selected model, then uses the existing media
 cost estimator for worker budget admission. Unknown pricing is not treated as
-free under a cost cap. This worker gate applies only to tasks explicitly created
+free under a cost cap: an unpriced receipt counts at a conservative estimate
+(see docs/box-limits.md). A speech job's timing transcription is a model call
+with audio input; when the catalog has no matching speech rows it is priced at
+the model's token rates, audio input at the highest standard-tier audio rate. This worker gate applies only to tasks explicitly created
 by `manage_media`, not ordinary project-conversation or approval tasks.
 In a session whose tasks setting is `ask`, `generate` creates a task that waits
 for approval and returns its pending status. Otherwise, generation runs in the
