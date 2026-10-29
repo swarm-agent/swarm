@@ -150,6 +150,12 @@ pub fn download(client: &Client, url: &str, stem: &str) -> bool {
 /// The media of the media tasks, newest first: settled tasks are read once
 /// and the files they lack go into `wanted` for `download`; running ones show
 /// as being made.
+/// A deliverable with a file: ready, or accepted (accepting a media task
+/// marks its ready files accepted and the task completed).
+fn has_file(d: &Value) -> bool {
+    matches!(s(d, "status"), "ready" | "accepted")
+}
+
 pub fn collect(reads: &mut HashMap<String, Read>, tasks: &[(String, String, MediaTask)], wanted: &mut Vec<(String, String)>) -> Vec<Media> {
     let mut out = Vec::new();
     for (session_id, _project_id, task) in tasks {
@@ -181,7 +187,7 @@ pub fn collect(reads: &mut HashMap<String, Read>, tasks: &[(String, String, Medi
             let mut missing = false;
             for (n, d) in deliverables.iter().enumerate() {
                 let url = s(d, "media_url");
-                if s(d, "status") != "ready" || !url.starts_with("/v3/") {
+                if !has_file(d) || !url.starts_with("/v3/") {
                     // A failed file has nothing to show; the task says why.
                     continue;
                 }
@@ -252,7 +258,7 @@ pub fn collect(reads: &mut HashMap<String, Read>, tasks: &[(String, String, Medi
             }
             // Ended without any file: one failed record under the task's id,
             // so the conversation that asked for it can say so and why.
-            if !deliverables.iter().any(|d| s(d, "status") == "ready") {
+            if !deliverables.iter().any(has_file) {
                 let reason = deliverables.iter().map(|d| s(d, "error")).find(|e| !e.is_empty()).unwrap_or("");
                 files.push(Media {
                     id: task.task_id.clone().into(),
@@ -411,6 +417,32 @@ mod tests {
         assert!(m.failed && !m.pending && m.file.is_none());
         assert_eq!((m.id.as_ref(), m.kind, m.meta.as_ref()), ("task_test-failed", MediaKind::Video, "quota exceeded"));
         assert!(wanted.is_empty());
+    }
+
+    // Purpose: accepting a media task marks its files "accepted" and the task
+    // "completed"; its files stay in the media list and it gets no failed
+    // record, so its conversation card stays ready. Threat: an accepted image
+    // or video turning into "failed" / "could not be made" after acceptance.
+    // Authority: collect over the task list (has_file).
+    #[test]
+    fn an_accepted_task_keeps_its_files() {
+        let url = "/v3/projects/p/tasks/t/deliverables/d1?field=media&sha256=7c1e2d3f4a5b6c7d8e9f";
+        let task = MediaTask {
+            task_id: "task_test-accepted".into(),
+            agent: "image".into(),
+            status: "completed".into(),
+            title: "bee".into(),
+            created_at: 0,
+            deliverables: vec![serde_json::json!({"status": "accepted", "media_url": url, "kind": "image"})],
+        };
+        let (mut reads, mut wanted) = (HashMap::new(), Vec::new());
+        let media = collect(&mut reads, &[("s".into(), "p".into(), task)], &mut wanted);
+        assert_eq!(media.len(), 1);
+        assert!(!media[0].failed && !media[0].pending);
+        assert_eq!(media[0].id.as_ref(), "task_test-accepted#1");
+        assert_eq!(wanted, vec![(url.to_string(), "task_test-accepted-1-7c1e2d3f4a5b".to_string())]);
+        let card = crate::data::media_card(&media, "task_test-accepted");
+        assert_eq!((card.state, card.preview(0)), (crate::data::MediaCardState::Ready, Some(0)));
     }
 }
 
