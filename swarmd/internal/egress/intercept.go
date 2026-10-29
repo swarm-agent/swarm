@@ -5,10 +5,13 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -59,16 +62,37 @@ func (g *Gateway) intercept(client net.Conn, sandbox Sandbox, host string, grant
 func (g *Gateway) serveOne(client *tls.Conn, upstream *http.Transport, req *http.Request, sandbox Sandbox, host string, grants []Grant) bool {
 	// Build the pairs present in this request's headers or body so only the
 	// secrets the agent actually used are swapped, and only those scrubbed.
+	//
+	// A body is read into memory up to bodyRewriteLimit so a stand-in in it can
+	// be swapped with an exact Content-Length. A longer body (a media upload)
+	// is streamed to the upstream unchanged and never cut: a stand-in in it
+	// cannot be swapped, so the request is refused rather than sent wrong.
 	bodyBuf := &bytes.Buffer{}
+	streamed := false
 	if req.Body != nil {
-		_, _ = io.Copy(bodyBuf, io.LimitReader(req.Body, 32<<20))
-		_ = req.Body.Close()
+		n, err := io.Copy(bodyBuf, io.LimitReader(req.Body, bodyRewriteLimit+1))
+		if err != nil {
+			_ = req.Body.Close()
+			writeHTTPError(client, http.StatusBadRequest)
+			return false
+		}
+		streamed = n > bodyRewriteLimit
+		if !streamed {
+			_ = req.Body.Close()
+		} else {
+			defer req.Body.Close()
+		}
+	}
+	if streamed && containsAnyPlaceholder(bodyBuf.Bytes(), grants) {
+		g.logEach(sandbox, nil, host, req, "refused:body_too_large")
+		writeBodyTooLarge(client)
+		return false
 	}
 	headerBlob := headerBytes(req)
 	var swap, scrub [][2][]byte
 	used := map[string]struct{}{}
 	for _, grant := range grants {
-		if bytes.Contains(headerBlob, grant.Placeholder) || bytes.Contains(bodyBuf.Bytes(), grant.Placeholder) {
+		if bytes.Contains(headerBlob, grant.Placeholder) || (!streamed && bytes.Contains(bodyBuf.Bytes(), grant.Placeholder)) {
 			swap = append(swap, [2][]byte{grant.Placeholder, grant.Value})
 			scrub = append(scrub, [2][]byte{grant.Value, grant.Placeholder})
 			used[grant.Name] = struct{}{}
@@ -76,22 +100,45 @@ func (g *Gateway) serveOne(client *tls.Conn, upstream *http.Transport, req *http
 	}
 
 	swapHeaders(req, swap)
-	outBody := replaceAll(bodyBuf.Bytes(), swap)
 
-	outReq, err := http.NewRequest(req.Method, "https://"+host+req.URL.RequestURI(), bytes.NewReader(outBody))
+	var outBody io.Reader
+	var outLength int64
+	var guard *standInGuard
+	if streamed {
+		// The buffered prefix is known clean; the guard checks the rest
+		// (including a stand-in split across the boundary) as it streams.
+		guard = newStandInGuard(bodyBuf.Bytes(), req.Body, grants)
+		outBody = guard
+		outLength = req.ContentLength // -1 (unknown) is sent chunked
+	} else {
+		b := replaceAll(bodyBuf.Bytes(), swap)
+		outBody = bytes.NewReader(b)
+		outLength = int64(len(b))
+	}
+
+	outReq, err := http.NewRequest(req.Method, "https://"+host+req.URL.RequestURI(), outBody)
 	if err != nil {
 		writeHTTPError(client, http.StatusBadRequest)
 		return false
 	}
 	copyHeaders(outReq.Header, req.Header)
 	outReq.Header.Del("Proxy-Authorization")
-	outReq.ContentLength = int64(len(outBody))
+	outReq.ContentLength = outLength
 	outReq.Host = host
 
 	resp, err := upstream.RoundTrip(outReq)
 	outcome := "injected"
 	if len(used) == 0 {
 		outcome = "passed_no_secret"
+	}
+	if guard != nil && guard.found() {
+		// The upstream saw an aborted request, never a complete one.
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		g.logEach(sandbox, used, host, req, "refused:body_too_large")
+		writeBodyTooLarge(client)
+		return false
 	}
 	if err != nil {
 		g.logEach(sandbox, used, host, req, "upstream_error")
@@ -118,7 +165,9 @@ func (g *Gateway) serveOne(client *tls.Conn, upstream *http.Transport, req *http
 		resp.ContentLength = -1
 		resp.TransferEncoding = []string{"chunked"}
 	}
-	keepAlive := !req.Close && resp.ProtoAtLeast(1, 1)
+	// A streamed body may not have been read to its end (the upstream can
+	// answer early), so the connection cannot be reused for another request.
+	keepAlive := !req.Close && resp.ProtoAtLeast(1, 1) && !streamed
 	if err := resp.Write(client); err != nil {
 		return false
 	}
@@ -171,6 +220,110 @@ func copyHeaders(dst, src http.Header) {
 // (RFC 9110: 1xx, 204 and 304 never do).
 func responseHasBody(status int) bool {
 	return status >= 200 && status != http.StatusNoContent && status != http.StatusNotModified
+}
+
+// bodyRewriteLimit is the most of a request body the gateway holds in memory
+// to swap a stand-in in it. Longer bodies are streamed, not cut.
+const bodyRewriteLimit = 32 << 20
+
+// errBodyTooLarge is what the caller reads when its body needs a stand-in
+// swapped but is too long to hold in memory.
+var errBodyTooLarge = fmt.Sprintf("request body over %d MiB cannot pass the secret gateway with a secret stand-in in it; send the stand-in in a header or a smaller body\n", bodyRewriteLimit>>20)
+
+func writeBodyTooLarge(client *tls.Conn) {
+	resp := &http.Response{
+		StatusCode:    http.StatusRequestEntityTooLarge,
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        http.Header{"Content-Type": {"text/plain; charset=utf-8"}, "Connection": {"close"}},
+		ContentLength: int64(len(errBodyTooLarge)),
+		Body:          io.NopCloser(strings.NewReader(errBodyTooLarge)),
+		Close:         true,
+	}
+	_ = resp.Write(client)
+}
+
+func containsAnyPlaceholder(data []byte, grants []Grant) bool {
+	for _, grant := range grants {
+		if len(grant.Placeholder) > 0 && bytes.Contains(data, grant.Placeholder) {
+			return true
+		}
+	}
+	return false
+}
+
+// standInGuard streams prefix then src, refusing to release any byte of a
+// stand-in: it holds back enough bytes that one split across reads is still
+// seen, and on finding one returns errStandInStreamed so the upstream request
+// is aborted instead of completed.
+type standInGuard struct {
+	src     io.Reader
+	grants  []Grant
+	hold    int
+	buf     []byte
+	srcDone bool
+	mu      sync.Mutex
+	hit     bool
+}
+
+var errStandInStreamed = errors.New("secret stand-in in a request body too large to rewrite")
+
+func newStandInGuard(prefix []byte, src io.Reader, grants []Grant) *standInGuard {
+	hold := 0
+	for _, grant := range grants {
+		if len(grant.Placeholder)-1 > hold {
+			hold = len(grant.Placeholder) - 1
+		}
+	}
+	return &standInGuard{src: src, grants: grants, hold: hold, buf: prefix}
+}
+
+func (s *standInGuard) found() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hit
+}
+
+func (s *standInGuard) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	for {
+		if s.found() {
+			return 0, errStandInStreamed
+		}
+		// Release what cannot be the start of a stand-in still arriving.
+		ready := len(s.buf) - s.hold
+		if s.srcDone {
+			ready = len(s.buf)
+		}
+		if ready > 0 {
+			n := copy(p, s.buf[:ready])
+			s.buf = s.buf[n:]
+			return n, nil
+		}
+		if s.srcDone {
+			return 0, io.EOF
+		}
+		chunk := make([]byte, 256<<10)
+		n, err := s.src.Read(chunk)
+		if n > 0 {
+			// Scan the held tail with the new bytes so a split one is seen.
+			window := append(append(make([]byte, 0, len(s.buf)+n), s.buf...), chunk[:n]...)
+			if containsAnyPlaceholder(window, s.grants) {
+				s.mu.Lock()
+				s.hit = true
+				s.mu.Unlock()
+				return 0, errStandInStreamed
+			}
+			s.buf = window
+		}
+		if err == io.EOF {
+			s.srcDone = true
+		} else if err != nil {
+			return 0, err
+		}
+	}
 }
 
 func writeHTTPError(client *tls.Conn, status int) {
