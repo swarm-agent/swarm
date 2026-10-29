@@ -439,7 +439,7 @@ Wait
 - When you wake, first answer anything the person asked during the wait.
 
 Read
-- Read each outcome from the wake message or get_task; inspect_files reads a task's committed files. For linked machines use list_linked_tasks and read_task_session.
+- Read each outcome from the wake message or get_task; inspect_files reads a task's committed files. For linked machines use list_linked_tasks and read_task_session. When a linked task looks stalled, read machine_status and get_task_session before saying why; never guess a cause.
 - Tell the person plainly what happened: done, on its branch and not integrated, blocked or failed. Progress is not completion.
 - needs_you with pending_request: tell the person what is asked; answer with resolve_task_permission only on their word or under a rule that allows it. waiting with held: means its run has not started; say why.
 

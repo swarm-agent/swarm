@@ -1554,6 +1554,9 @@ var manageProjectsReadOnlyActions = map[string]bool{
 	"list_media": true, "get_media": true, "list_tasks": true, "get_task": true,
 	// The home's linked-task records and the read-only remote session view.
 	"list_linked_tasks": true, "read_task_session": true,
+	// A linked machine's status, a sent task's session and the machine's
+	// activity feed, read through the link.
+	"machine_status": true, "get_task_session": true, "activity": true,
 	// Folder environment reads (tool.FolderEnvironmentList/Get).
 	"list_environments": true, "get_environment": true,
 	// Which agent runs are active now, here and on linked machines.

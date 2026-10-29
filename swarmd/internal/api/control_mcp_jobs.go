@@ -1593,6 +1593,13 @@ func controlMCPActivity(c *controlMCPCall, args map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	return controlMCPSignalPage(page), nil
+}
+
+// controlMCPSignalPage is a /v3/signals page as swarm_activity shows it (and
+// a home's linked activity read): each signal's metadata with its job id,
+// the next cursor and whether more wait.
+func controlMCPSignalPage(page map[string]any) map[string]any {
 	events := []map[string]any{}
 	for _, raw := range controlMCPList(page["signals"]) {
 		signal := controlMCPMap(raw)
@@ -1622,7 +1629,7 @@ func controlMCPActivity(c *controlMCPCall, args map[string]any) (any, error) {
 			out["more"] = true
 		}
 	}
-	return out, nil
+	return out
 }
 
 func controlMCPListSecrets(c *controlMCPCall, _ map[string]any) (any, error) {

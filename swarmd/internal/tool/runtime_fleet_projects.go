@@ -96,6 +96,32 @@ type FleetMachineStatusLine struct {
 	Summary       string `json:"summary"`
 }
 
+// Linked reads: what an MCP client holding the machine's key sees, read
+// through the link (machine_status: swarm_status; get_task_session:
+// swarm_get_session for a task this home sent; activity: swarm_activity).
+const (
+	FleetMachineStatusAction   = "machine_status"
+	FleetTaskSessionAction     = "get_task_session"
+	FleetMachineActivityAction = "activity"
+)
+
+// FleetLinkedReader is the service behind the linked reads.
+type FleetLinkedReader interface {
+	ReadFleetMachineStatusView(ctx context.Context, p identity.Principal, machine string) (map[string]any, error)
+	ReadFleetTaskSessionView(ctx context.Context, p identity.Principal, machine, projectID, taskID string, messages int) (map[string]any, error)
+	ReadFleetActivity(ctx context.Context, p identity.Principal, machine, sinceCursor, after string, limit int) (map[string]any, error)
+}
+
+// FleetLinkedReadAllowed is the permission gate's view of the linked reads:
+// they run whenever the machine's linked work rule is not off.
+func FleetLinkedReadAllowed(name, action string) bool {
+	return name == "manage_projects" && fleetLinkedReadAction(action)
+}
+
+func fleetLinkedReadAction(action string) bool {
+	return action == FleetMachineStatusAction || action == FleetTaskSessionAction || action == FleetMachineActivityAction
+}
+
 // FleetMachineStatusReader reads a linked machine's status through the link
 // (its box summary, the data MCP swarm_status shows).
 type FleetMachineStatusReader interface {
@@ -120,7 +146,7 @@ func FleetProjectActionAllowed(action string) bool {
 // machine and lists what is: the project actions, wait_tasks and
 // read_task_session.
 func FleetActionUnavailableError(action string) error {
-	allowed := append(append([]string(nil), fleetProjectActions...), "wait_tasks", FleetReadTaskSessionAction, ResolveTaskPermissionAction)
+	allowed := append(append([]string(nil), fleetProjectActions...), "wait_tasks", FleetReadTaskSessionAction, ResolveTaskPermissionAction, FleetMachineStatusAction, FleetTaskSessionAction, FleetMachineActivityAction)
 	return fmt.Errorf("%s is not available on a linked machine; with machine, use one of: %s", action, strings.Join(allowed, ", "))
 }
 
@@ -171,7 +197,7 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 		action = "list"
 	}
 	machine := strings.TrimSpace(asString(args["machine"]))
-	if machine != "" && !FleetProjectActionAllowed(action) && action != "wait_tasks" && action != FleetReadTaskSessionAction && action != ResolveTaskPermissionAction {
+	if machine != "" && !FleetProjectActionAllowed(action) && action != "wait_tasks" && action != FleetReadTaskSessionAction && action != ResolveTaskPermissionAction && !fleetLinkedReadAction(action) {
 		return "", FleetActionUnavailableError(action)
 	}
 	machines, err := service.ListFleetMachines(ctx, scope.Principal)
@@ -215,6 +241,27 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 	}
 	if action == ResolveTaskPermissionAction {
 		return r.executeResolveTaskPermission(ctx, scope, machine, args)
+	}
+	if fleetLinkedReadAction(action) {
+		reader, ok := service.(FleetLinkedReader)
+		if !ok {
+			return "", errors.New("linked reads unavailable")
+		}
+		var view map[string]any
+		switch action {
+		case FleetMachineStatusAction:
+			view, err = reader.ReadFleetMachineStatusView(ctx, scope.Principal, machine)
+		case FleetTaskSessionAction:
+			view, err = reader.ReadFleetTaskSessionView(ctx, scope.Principal, machine, strings.TrimSpace(asString(args["project_id"])), strings.TrimSpace(asString(args["task_id"])), asInt(args["limit"], 0))
+		default:
+			view, err = reader.ReadFleetActivity(ctx, scope.Principal, machine, asString(args["since_cursor"]), asString(args["after"]), asInt(args["limit"], 0))
+		}
+		if err != nil {
+			return "", err
+		}
+		view["tool"], view["action"], view["untrusted_content"] = "manage_projects", action, true
+		out, err := json.Marshal(view)
+		return string(out), err
 	}
 	if action == FleetReadTaskSessionAction {
 		linkedTasks, ok := service.(FleetLinkedTasks)

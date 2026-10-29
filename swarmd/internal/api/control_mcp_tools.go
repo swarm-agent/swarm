@@ -1257,13 +1257,39 @@ func (c *controlMCPCall) sessionState(sessionID string, limit, detail int) (map[
 	if err != nil {
 		return nil, err
 	}
+	out := controlMCPSessionStateView(response, textLimit, toolLimit)
+	session := controlMCPMap(response["session"])
+	if children := c.sessionChildren(sessionID, controlMCPMap(session["metadata"])); len(children) > 0 {
+		out["children"] = children
+	}
+	// The session detail route does not populate the active plan; ask the
+	// plan route directly (small response when there is none).
+	if active, err := c.dispatch(http.MethodGet, controlMCPSessionPath(sessionID, "plans", "active"), nil, nil); err == nil {
+		if progress := controlMCPActivePlan(active); progress != nil {
+			out["plan"] = progress
+		}
+	}
+	return out, nil
+}
+
+// controlMCPActivePlan is the plan progress of a /plans/active answer; nil
+// when there is none.
+func controlMCPActivePlan(active map[string]any) map[string]any {
+	if hasActive, _ := active["has_active"].(bool); hasActive {
+		return controlMCPPlanProgress(controlMCPMap(active["active_plan"]))
+	}
+	return nil
+}
+
+// controlMCPSessionStateView is the part of the get_session view read from
+// the session detail route (GET /v3/sessions/{id}): summary, model, active
+// run, pending requests and the latest messages, trimmed. MCP get_session
+// and a home's linked get_task_session both build it from that route.
+func controlMCPSessionStateView(response map[string]any, textLimit, toolLimit int) map[string]any {
 	session := controlMCPMap(response["session"])
 	out := map[string]any{"session": controlMCPSessionSummary(session)}
 	if preference := controlMCPPick(controlMCPMap(session["preference"]), "provider", "model", "thinking"); len(preference) > 0 {
 		out["model"] = preference
-	}
-	if children := c.sessionChildren(sessionID, controlMCPMap(session["metadata"])); len(children) > 0 {
-		out["children"] = children
 	}
 	if intent := controlMCPRunIntentSummary(controlMCPMap(response["active_run_intent"])); intent != nil {
 		out["active_run"] = intent
@@ -1276,15 +1302,6 @@ func (c *controlMCPCall) sessionState(sessionID string, limit, detail int) (map[
 	}
 	if len(pending) > 0 {
 		out["pending_permissions"] = pending
-	}
-	// The session detail route does not populate the active plan; ask the
-	// plan route directly (small response when there is none).
-	if active, err := c.dispatch(http.MethodGet, controlMCPSessionPath(sessionID, "plans", "active"), nil, nil); err == nil {
-		if hasActive, _ := active["has_active"].(bool); hasActive {
-			if progress := controlMCPPlanProgress(controlMCPMap(active["active_plan"])); progress != nil {
-				out["plan"] = progress
-			}
-		}
 	}
 	messages := []map[string]any{}
 	for _, raw := range controlMCPList(response["messages"]) {
@@ -1313,7 +1330,7 @@ func (c *controlMCPCall) sessionState(sessionID string, limit, detail int) (map[
 		messages = append(messages, summary)
 	}
 	out["messages"] = messages
-	return out, nil
+	return out
 }
 
 // sessionChildren lists work a session delegated: project tasks for an

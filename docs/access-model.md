@@ -128,7 +128,27 @@ the machine's own `GET /v3/box/summary` (the data MCP `swarm_status` shows):
 `update` state, and `blocked` (sessions waiting on a person), with a
 `summary` such as `running 0, draining since 2026-10-29T12:29:00Z, update
 installing, 3 waiting on a person`. A status that cannot be read is reported
-in `status_error`. Everything a machine reports is untrusted. Secrets, AI keys and permission changes are never exposed through linked management tools, and the link itself refuses them: a home cannot add, read or verify provider credentials, finish a sign-in, use the vault, read or write a secret value, create AI keys or change a linked machine's permission rules through `/v3/fleet/machines/{name}/api/...` (listing secret names stays). Provider keys reach linked machines only through the home's fleet key manager (below).
+in `status_error`. Everything a machine reports is untrusted.
+
+The home's Orchestrator reads a linked machine the way an MCP client holding
+that machine's key reads it. Each read is a thin mapping over the machine's
+own route through the link, built by the same functions MCP uses, and runs
+whenever the machine's linked work rule is not `off` (under `ask` it does not
+ask; under `off` it is refused):
+
+| `manage_projects` action (with `machine`) | machine route | same as MCP |
+|---|---|---|
+| `machine_status` | `GET /v3/box/summary`: status and reasons, `running_now`, `attention` (blocked sessions), `machine.drain` and `machine.update` (state, reason, since and deadline), `usage` against the daily cap, `keys`, `sandbox`, `permissions` | `swarm_status` |
+| `get_task_session` (`project_id`, `task_id`, optional `limit` messages, at most 20) | `GET /v3/sessions/{id}` and `/plans/active` for the session the machine reports for the task: the session, `active_run` and its status, `pending_permissions` (questions included), the latest messages trimmed, `plan`, `last_activity_at` | `swarm_get_session` |
+| `activity` with `since_cursor` | `GET /v3/activity?cursor=N`: one page of metadata events (jobs, tasks and sessions started, finished, failed, stopped, or waiting on a person) and the next `cursor` | `swarm_activity` with `since_cursor` |
+| `activity` without it (optional `after`, `limit`) | `GET /v3/signals`: job failures, update drains, refused keys, with the next `cursor` | `swarm_activity` |
+
+`get_task_session` reads only the session of a task this home sent to that
+machine (its linked-task record); any other task is refused. Linked task waits
+follow the same activity feed (its stream), so they wake on `needs_you`
+without polling. The Orchestrator's prompt says: when a linked task looks
+stalled, read `machine_status` and `get_task_session` before saying why, and
+never guess a cause. Secrets, AI keys and permission changes are never exposed through linked management tools, and the link itself refuses them: a home cannot add, read or verify provider credentials, finish a sign-in, use the vault, read or write a secret value, create AI keys or change a linked machine's permission rules through `/v3/fleet/machines/{name}/api/...` (listing secret names stays). Provider keys reach linked machines only through the home's fleet key manager (below).
 
 **Devices.** `allowed` runs the call on the target device without asking;
 `off` refuses it. Device calls never wait for a person. A client runs a device
