@@ -83,8 +83,13 @@ func TestProjectTaskWaitTranscriptLines(t *testing.T) {
 					t.Fatal("outcome message classified as a notice")
 				}
 			}
-			if m.Role == "user" {
-				t.Fatalf("a watch line was stored as a user turn: %+v", m)
+			// The outcome is a user-role wake (source task_watch), like a
+			// background command's report; the watch lines never are.
+			if IsProjectTaskWaitNoticeMessage(m) && m.Role != "system" {
+				t.Fatalf("a watch line was stored as a turn: %+v", m)
+			}
+			if m.Role == "user" && m.Metadata["source"] != SessionWakeSourceTaskWatch {
+				t.Fatalf("an unexpected user turn: %+v", m)
 			}
 		}
 		if outcome != 1 {

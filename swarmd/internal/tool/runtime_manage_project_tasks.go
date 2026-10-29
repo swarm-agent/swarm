@@ -66,7 +66,7 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 		if err != nil {
 			return "", err
 		}
-		watch, err := r.registerProjectTaskWatch(scope, &pebblestore.V3ProjectTaskWaitMutation{RunID: run.RunID, ProjectID: projectID, TaskIDs: ids, Until: until}, ids, titles)
+		watch, err := r.registerProjectTaskWatch(scope, &pebblestore.V3ProjectTaskWaitMutation{RunID: run.RunID, ProjectID: projectID, TaskIDs: ids, Until: until, Milestones: projectTaskWatchMilestones(args)}, ids, titles)
 		if err != nil {
 			return "", err
 		}

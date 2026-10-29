@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
-	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -159,10 +158,8 @@ type backgroundCommand struct {
 	state      string
 	outcome    bashOutcome
 	finishedAt time.Time
-	// pendingNoteID/pendingNoteRunID record a report pinned to a running
-	// conversation and not yet confirmed delivered to that run.
-	pendingNoteID    string
-	pendingNoteRunID string
+	// stoppedByShutdown: the daemon stopped it while shutting down.
+	stoppedByShutdown bool
 }
 
 func (c *backgroundCommand) finished() bool {
@@ -181,16 +178,19 @@ type backgroundCommands struct {
 	byID      map[string]*backgroundCommand
 	bySession map[string][]*backgroundCommand
 	report    func(*backgroundCommand, string)
-	// afterRunStateRead, when set (tests only), runs between delivery reading
-	// the conversation's active run and pinning the report to it.
-	afterRunStateRead func(sessionID, runID string)
-	// beforeWake, when set (tests only), runs between delivery reading the
-	// conversation as idle and writing the wake.
-	beforeWake func(sessionID string)
+	// record keeps a durable record of each adopted command while it runs
+	// (Runtime.recordBackgroundCommand); forget drops it.
+	record func(*backgroundCommand)
+	forget func(*backgroundCommand)
+	// closing is closed when the daemon stops its commands (stopAll): a
+	// command the shutdown killed is reported at the next start, as stopped
+	// by the restart, never as a bare exit code.
+	closing     chan struct{}
+	closingOnce sync.Once
 }
 
 func newBackgroundCommands() *backgroundCommands {
-	return &backgroundCommands{byID: map[string]*backgroundCommand{}, bySession: map[string][]*backgroundCommand{}}
+	return &backgroundCommands{byID: map[string]*backgroundCommand{}, bySession: map[string][]*backgroundCommand{}, closing: make(chan struct{})}
 }
 
 func newBackgroundCommandID() string {
@@ -246,6 +246,9 @@ func (b *backgroundCommands) adopt(c *backgroundCommand) error {
 	b.byID[c.id] = c
 	b.bySession[c.sessionID] = append(b.bySession[c.sessionID], c)
 	b.pruneFinishedLocked(c.sessionID)
+	if b.record != nil {
+		b.record(c)
+	}
 	return nil
 }
 
@@ -268,14 +271,9 @@ func (b *backgroundCommands) pruneFinishedLocked(sessionID string) {
 	kept := list[:0]
 	for _, c := range list {
 		if drop > 0 && c.finished() {
-			c.mu.Lock()
-			pending := c.pendingNoteID != ""
-			c.mu.Unlock()
-			if !pending {
-				delete(b.byID, c.id)
-				drop--
-				continue
-			}
+			delete(b.byID, c.id)
+			drop--
+			continue
 		}
 		kept = append(kept, c)
 	}
@@ -309,25 +307,44 @@ func (b *backgroundCommands) stopSession(sessionID string) int {
 	for _, c := range list {
 		c.mu.Lock()
 		c.stopped = true
-		c.pendingNoteID, c.pendingNoteRunID = "", ""
 		c.mu.Unlock()
 		if !c.finished() {
 			stopped++
 		}
 		c.cancel()
+		// Its conversation stopped it (stop, archive, delete): nothing to
+		// report, now or after a restart.
+		if b.forget != nil {
+			b.forget(c)
+		}
 	}
 	return stopped
 }
 
+// stopAll stops every command because the daemon is shutting down. Their
+// durable records stay, marked stopped now, so the next start tells each
+// conversation its command was stopped by the restart.
 func (b *backgroundCommands) stopAll() {
+	b.closingOnce.Do(func() { close(b.closing) })
 	b.mu.Lock()
-	sessions := make([]string, 0, len(b.bySession))
-	for id := range b.bySession {
-		sessions = append(sessions, id)
+	var running []*backgroundCommand
+	for _, list := range b.bySession {
+		for _, c := range list {
+			if !c.finished() {
+				running = append(running, c)
+			}
+		}
 	}
+	b.byID, b.bySession = map[string]*backgroundCommand{}, map[string][]*backgroundCommand{}
 	b.mu.Unlock()
-	for _, id := range sessions {
-		b.stopSession(id)
+	for _, c := range running {
+		c.mu.Lock()
+		c.stopped, c.stoppedByShutdown = true, true
+		c.mu.Unlock()
+		if b.record != nil {
+			b.record(c)
+		}
+		c.cancel()
 	}
 }
 
@@ -340,20 +357,6 @@ func (b *backgroundCommands) running(sessionID string) bool {
 		}
 	}
 	return false
-}
-
-func (b *backgroundCommands) pendingNotes(sessionID, runID string) []*backgroundCommand {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	var out []*backgroundCommand
-	for _, c := range b.bySession[strings.TrimSpace(sessionID)] {
-		c.mu.Lock()
-		if c.pendingNoteID != "" && c.pendingNoteRunID == runID {
-			out = append(out, c)
-		}
-		c.mu.Unlock()
-	}
-	return out
 }
 
 // start runs exec on a context that is not the tool call's, so the command
@@ -397,14 +400,35 @@ func (b *backgroundCommands) launch(c *backgroundCommand, exec bashExec) {
 			c.state = backgroundStateExited
 		}
 		report := c.adopted && !c.stopped && !c.killed
+		killedOutside := outcome.fail == nil && !outcome.timedOut && outcome.exitCode < 0
 		c.mu.Unlock()
 		close(c.done)
 		c.cancel()
+		if report && killedOutside {
+			// Killed by a signal this daemon did not send: when the daemon is
+			// being restarted its service manager signals every process at
+			// once. Give the shutdown a moment to show itself; if it does,
+			// the next start reports the command as stopped by the restart.
+			select {
+			case <-b.closing:
+				report = false
+			case <-time.After(backgroundShutdownSettle):
+				select {
+				case <-b.closing:
+					report = false
+				default:
+				}
+			}
+		}
 		if report && b.report != nil {
 			b.report(c, "")
 		}
 	}()
 }
+
+// backgroundShutdownSettle is how long the report of a command killed from
+// outside waits to see whether the daemon is shutting down.
+const backgroundShutdownSettle = 2 * time.Second
 
 // backgroundEligible reports whether this call may run in the background:
 // it needs a conversation to report to and is not a disposable review.
@@ -585,6 +609,7 @@ func (r *Runtime) backgroundCommandAction(scope WorkspaceScope, id string, args 
 		}
 		c.mu.Unlock()
 		c.cancel()
+		r.forgetBackgroundCommand(c)
 		select {
 		case <-c.done:
 		case <-time.After(backgroundKillWait):
@@ -692,17 +717,19 @@ func backgroundReportText(c *backgroundCommand) string {
 	return b.String()
 }
 
-// reportBackgroundCommand pins a finished command's report to its
-// conversation: a running conversation sees it on its next step, an idle one
-// is woken by it. endedRunID names a run that has just ended and therefore
-// cannot take the report any more.
+// reportBackgroundCommand delivers a finished command's report to its
+// conversation through the session wake (deliverSessionWake): a running
+// conversation sees it on its next step, an idle one is woken by it.
 func (r *Runtime) reportBackgroundCommand(c *backgroundCommand, endedRunID string) {
 	if err := r.deliverBackgroundReport(c, endedRunID); err != nil {
 		log.Printf("swarmd background command %s report: %v", c.id, err)
 	}
 }
 
-func (r *Runtime) deliverBackgroundReport(c *backgroundCommand, endedRunID string) error {
+// deliverBackgroundReport hands the report to the session wake. A run that
+// has just ended needs no handling here: the store reads the conversation's
+// run state under its lock, so a run that ended takes no note.
+func (r *Runtime) deliverBackgroundReport(c *backgroundCommand, _ string) error {
 	if r == nil || r.sessions == nil {
 		return errors.New("session service is not configured")
 	}
@@ -715,63 +742,37 @@ func (r *Runtime) deliverBackgroundReport(c *backgroundCommand, endedRunID strin
 	if tomb, found, err := r.sessions.GetSessionTombstone(c.sessionID); err != nil {
 		return err
 	} else if found && (tomb.Archived || tomb.Deleted) {
+		r.forgetBackgroundCommand(c)
 		return nil
 	}
-	// A run can start between reading the conversation as idle and writing
-	// the wake (another command's wake, a person's message, a task run); the
-	// store then refuses the wake's second active run and nothing was
-	// written. Read the state again and pin the report to that run instead.
-	for attempt := 1; ; attempt++ {
-		state, ok, err := r.getSessionRunState(c.sessionID)
-		if err != nil {
-			return err
-		}
-		if ok && (state.Active || state.Status == pebblestore.V3RunIntentWaitingTasks) && state.RunID != endedRunID {
-			if hook := r.background.afterRunStateRead; hook != nil {
-				hook(c.sessionID, state.RunID)
-			}
-			return r.pinBackgroundNote(c, state.RunID)
-		}
-		err = r.deliverBackgroundReportToIdle(c)
-		var refused *backgroundWakeRefusedError
-		if err == nil || !errors.As(err, &refused) || attempt >= backgroundDeliveryAttempts {
-			return err
-		}
-	}
-}
-
-// backgroundDeliveryAttempts bounds how often delivery re-reads the run state
-// after its wake was refused because a run started meanwhile.
-const backgroundDeliveryAttempts = 3
-
-// backgroundWakeRefusedError reports that the wake's message and run intent
-// were not written (the mutation was refused as a whole), so delivery may try
-// again without duplicating the report.
-type backgroundWakeRefusedError struct{ err error }
-
-func (e *backgroundWakeRefusedError) Error() string { return e.err.Error() }
-func (e *backgroundWakeRefusedError) Unwrap() error { return e.err }
-
-func (r *Runtime) deliverBackgroundReportToIdle(c *backgroundCommand) error {
 	session, found, err := r.sessions.GetSession(c.sessionID)
 	if err != nil {
 		return err
 	}
 	if !found {
+		r.forgetBackgroundCommand(c)
 		return nil
 	}
 	if session.AccountScopeID != c.principal.AccountScopeID || session.UserID != c.principal.UserID {
 		return errors.New("background command owner does not match its conversation")
 	}
+	msg := r.backgroundMessage(c, "", false)
 	if guardErr := r.rejectTaskSessionContinuation(WorkspaceScope{Principal: c.principal, SessionID: c.sessionID}, session); guardErr != nil {
 		// A task's conversation is started only through its task lifecycle:
 		// keep the report durable in the conversation without waking it.
-		return r.pinBackgroundNote(c, "")
+		msg.ID = backgroundMessageID(c, "note", "")
+		msg.Metadata["feedback_note"] = true
+		if err := r.applyBackgroundMessage(c, "background-command:"+msg.ID, &msg, nil); err != nil {
+			return err
+		}
+		r.forgetBackgroundCommand(c)
+		return nil
 	}
-	if hook := r.background.beforeWake; hook != nil {
-		hook(c.sessionID)
+	if _, err := r.deliverSessionWake(c.principal, c.sessionID, "background-command:"+c.id, &msg, &pebblestore.V3SessionWakeMutation{ID: c.id, Source: pebblestore.SessionWakeSourceBackgroundCommand}); err != nil {
+		return err
 	}
-	return r.wakeWithBackgroundReport(c)
+	r.forgetBackgroundCommand(c)
+	return nil
 }
 
 func backgroundMessageID(c *backgroundCommand, kind, runID string) string {
@@ -797,90 +798,6 @@ func (r *Runtime) backgroundMessage(c *backgroundCommand, id string, note bool) 
 		msg.Metadata["feedback_note"] = true
 	}
 	return msg
-}
-
-// pinBackgroundNote appends the report as a non-triggering note, which the
-// running provider loop reads at its next step (the same queue as feedback).
-func (r *Runtime) pinBackgroundNote(c *backgroundCommand, runID string) error {
-	id := backgroundMessageID(c, "note", runID)
-	msg := r.backgroundMessage(c, id, true)
-	key := "background-command:" + id
-	if err := r.applyBackgroundMessage(c, key, &msg, nil); err != nil {
-		return err
-	}
-	if runID == "" {
-		return nil
-	}
-	c.mu.Lock()
-	if !c.stopped {
-		c.pendingNoteID, c.pendingNoteRunID = id, runID
-	}
-	c.mu.Unlock()
-	// The run may have ended between reading its state and recording the
-	// pending note; its SessionRunEnded then found nothing to re-deliver.
-	// Re-read the state now that the note is recorded: if that run is no
-	// longer the active one, re-deliver here. Whichever of this check and
-	// SessionRunEnded claims the pending note first re-delivers it, once.
-	state, ok, err := r.getSessionRunState(c.sessionID)
-	if err != nil {
-		return err
-	}
-	if ok && (state.Active || state.Status == pebblestore.V3RunIntentWaitingTasks) && state.RunID == runID {
-		return nil
-	}
-	r.redeliverPendingNote(c, id, runID)
-	return nil
-}
-
-// redeliverPendingNote claims a note pinned to runID, which has ended, and
-// unless that run's provider recorded its delivery, delivers the report again
-// through the registry's report route (the same one a command's completion
-// uses). A note already claimed by another caller is left alone.
-func (r *Runtime) redeliverPendingNote(c *backgroundCommand, noteID, runID string) {
-	_, delivered, err := r.sessions.GetV3MessageByID(c.sessionID, "feedback-delivery:"+noteID+":"+runID)
-	if err != nil {
-		log.Printf("swarmd background command %s delivery check: %v", c.id, err)
-		return
-	}
-	c.mu.Lock()
-	claimed := c.pendingNoteID == noteID && c.pendingNoteRunID == runID
-	if claimed {
-		c.pendingNoteID, c.pendingNoteRunID = "", ""
-	}
-	c.mu.Unlock()
-	if claimed && !delivered && r.background.report != nil {
-		r.background.report(c, runID)
-	}
-}
-
-// wakeWithBackgroundReport appends the report with a new run intent and
-// enqueues that run, the same path a triggering session message uses.
-func (r *Runtime) wakeWithBackgroundReport(c *backgroundCommand) error {
-	if r.sessionController == nil {
-		return errors.New("session execution controller is not configured")
-	}
-	id := backgroundMessageID(c, "wake", "")
-	msg := r.backgroundMessage(c, id, false)
-	now := msg.CreatedAt
-	runID := "desktop-v3-run:" + sessionruntime.NewSessionID()
-	intent := &pebblestore.V3SessionRunIntent{
-		SessionID:       c.sessionID,
-		RunID:           runID,
-		EpochID:         "epoch-00000000000000000001",
-		UserID:          c.principal.UserID,
-		AccountScopeID:  c.principal.AccountScopeID,
-		SourceMessageID: id,
-		Status:          pebblestore.V3RunIntentPendingExecutor,
-		CreatedAt:       now,
-		UpdatedAt:       now,
-	}
-	if err := r.applyBackgroundMessage(c, "background-command:"+id, &msg, intent); err != nil {
-		return &backgroundWakeRefusedError{err: err}
-	}
-	if !r.sessionController.EnqueueSessionRun(c.principal, c.sessionID, runID, "") {
-		return fmt.Errorf("failed to enqueue run %s for session %s", runID, c.sessionID)
-	}
-	return nil
 }
 
 func (r *Runtime) applyBackgroundMessage(c *backgroundCommand, key string, msg *pebblestore.MessageSnapshot, intent *pebblestore.V3SessionRunIntent) error {
@@ -933,19 +850,11 @@ func (r *Runtime) SessionBackgroundCommandsRunning(sessionID string) bool {
 	return r.background.running(sessionID)
 }
 
-// SessionRunEnded is called when a conversation's run ends. A report pinned
-// to that run as a note and not delivered to its provider is delivered again:
-// to a newer run, or by waking the now idle conversation.
+// SessionRunEnded is called when a conversation's run ends: background work
+// delivered to that run as a note and not read by it is delivered again
+// (redeliverSessionWakeNotes, session_wake.go).
 func (r *Runtime) SessionRunEnded(sessionID, runID string) {
-	if r == nil || r.background == nil || r.sessions == nil {
-		return
-	}
-	for _, c := range r.background.pendingNotes(sessionID, runID) {
-		c.mu.Lock()
-		noteID := c.pendingNoteID
-		c.mu.Unlock()
-		r.redeliverPendingNote(c, noteID, runID)
-	}
+	r.redeliverSessionWakeNotes(sessionID, runID)
 }
 
 // backgroundRequested reports whether bash arguments ask for background

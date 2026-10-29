@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -92,25 +91,6 @@ func (s *Server) watchRemoteTaskWatch(sessionID, watchID string) {
 	}()
 }
 
-// kickRemoteTaskWatches asks the conversation's linked-machine followers to
-// check again: its run ended, so outcomes deferred by that run go out now.
-func (s *Server) kickRemoteTaskWatches(sessionID string) {
-	if s == nil {
-		return
-	}
-	prefix := sessionID + "\x00"
-	s.remoteTaskWaitMu.Lock()
-	defer s.remoteTaskWaitMu.Unlock()
-	for key, kick := range s.remoteTaskWaitRuns {
-		if strings.HasPrefix(key, prefix) {
-			select {
-			case kick <- struct{}{}:
-			default:
-			}
-		}
-	}
-}
-
 // ResumeLinkedTaskWaits starts followers for linked-machine watches persisted
 // before a restart. The durable watch records are the authority. Call it only
 // after the server is fully configured (the daemon does so in Run, before
@@ -184,20 +164,39 @@ func (s *Server) followRemoteTaskWait(parent context.Context, owner pebblestore.
 	var last []pebblestore.V3ProjectTaskRemoteObservation
 
 	// wake reports whether this watcher is done.
+	// wake offers what the machine reported to the watch, through the
+	// session wake every background outcome takes (a note for an active run,
+	// or a new turn). It reports whether the watch ended.
 	wake := func(observed []pebblestore.V3ProjectTaskRemoteObservation, resolution *pebblestore.V3ProjectTaskRemoteResolution) bool {
-		key := "task-watch-wake:" + owner.WatchID
-		result, err := s.sessions.Store().ApplyV3SessionMutation(pebblestore.V3SessionMutationInput{SessionID: owner.SessionID, UserID: owner.UserID, AccountScopeID: owner.AccountScopeID, Kind: pebblestore.V3SessionMutationAppendMessage, EventType: "session.run.tasks_ready", ClientRequestID: key, PayloadHash: key, TaskWait: &pebblestore.V3ProjectTaskWaitMutation{WatchID: owner.WatchID, Wake: true, Machine: wait.Machine, RemoteObservations: observed, RemoteResolution: resolution}})
+		fresh, ok, err := s.sessions.Store().GetV3SessionTaskWatch(owner.SessionID, owner.WatchID)
+		if err != nil {
+			log.Printf("linked task watch read failed: %v", err)
+			return false
+		}
+		if !ok {
+			return true
+		}
+		result, err := s.sessions.Store().ApplyV3SessionMutation(pebblestore.ProjectTaskWatchWakeInput(fresh, observed, resolution))
+		var due *pebblestore.ProjectTaskWatchMilestoneDue
 		switch {
-		case errors.Is(err, pebblestore.ErrProjectTaskWaitNotReady), errors.Is(err, pebblestore.ErrProjectTaskWatchDeferred):
+		case errors.As(err, &due):
+			s.scheduleTaskWatchCheck(owner.SessionID, owner.WatchID, due.At)
+			return false
+		case errors.Is(err, pebblestore.ErrProjectTaskWaitNotReady):
 			return false
 		case errors.Is(err, pebblestore.ErrProjectTaskWaitStale):
-			return true
+			// Ended, or another delivery of it committed first: follow on
+			// while it exists.
+			_, ok, readErr := s.sessions.Store().GetV3SessionTaskWatch(owner.SessionID, owner.WatchID)
+			return readErr == nil && !ok
 		case err != nil:
-			log.Printf("linked task wait wake failed: %v", err)
+			log.Printf("linked task watch wake failed: %v", err)
 			return false
 		}
 		s.publishProjectTaskWake(result)
-		return true
+		// A milestone keeps the watch; its outcome ends it.
+		_, ok, readErr := s.sessions.Store().GetV3SessionTaskWatch(owner.SessionID, owner.WatchID)
+		return readErr == nil && !ok
 	}
 	current := func() bool {
 		_, ok, err := s.sessions.Store().GetV3SessionTaskWatch(owner.SessionID, owner.WatchID)

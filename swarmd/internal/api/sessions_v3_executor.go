@@ -274,6 +274,9 @@ func newSessionV3Executor(server *Server) *sessionV3Executor {
 	// Runs still asleep on a retired pending wait become watches (and idle)
 	// before anything is recovered or reconciled.
 	server.migrateProjectTaskWaits()
+	if server.sessions != nil {
+		server.sessions.Store().Underlying().SetTaskWatchMilestoneDue(server.scheduleTaskWatchCheck)
+	}
 	exec.recoverDurableRuns(ctx)
 	server.reconcileProjectTaskWaits("", "")
 	exec.refillPendingBacklog()
@@ -472,11 +475,6 @@ func (e *sessionV3Executor) finish(job sessionV3ExecutorJob) {
 	e.mu.Unlock()
 	if e.server != nil && e.server.backgroundCommands != nil {
 		e.server.backgroundCommands.SessionRunEnded(job.SessionID, job.RunID)
-	}
-	// Task watches whose outcomes came in while this run was active are
-	// delivered now, as a new turn (or after a follow-up turn started above).
-	if e.server != nil {
-		e.server.deliverSessionTaskWatches(job.SessionID)
 	}
 	e.refillPendingBacklog()
 }

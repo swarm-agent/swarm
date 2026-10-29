@@ -178,6 +178,8 @@ type Runtime struct {
 	exaConfigResolver    func(context.Context) (ExaRuntimeConfig, error)
 	sessions             manageSessionService
 	publishSessionOutbox func(pebblestore.V3RealtimeOutboxRecord) error
+	// backgroundWork is the durable state of background work (session_wake.go).
+	backgroundWork       backgroundWorkStore
 	workspace            manageWorktreeWorkspaceService
 	worktrees            manageWorktreeConfigService
 	agents               manageAgentService

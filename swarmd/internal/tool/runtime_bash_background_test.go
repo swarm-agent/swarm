@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -89,6 +88,7 @@ func newBGFixture(t *testing.T, sessionIDs ...string) *bgFixture {
 	f.runtime = NewRuntime(2)
 	f.runtime.SetManageSessionService(f.sessions)
 	f.runtime.SetManageSessionController(f.controller)
+	f.runtime.SetBackgroundWorkStore(store)
 	// Production delivery, plus a signal so tests wait on the event instead
 	// of sleeping.
 	f.runtime.background.report = func(c *backgroundCommand, ended string) {
@@ -329,7 +329,8 @@ func TestBackgroundBashExplicitReturnsIDAtOnceAndReportsToRunningConversation(t 
 	// run ends without consuming the note the now idle conversation is woken.
 	// Threat: the report is lost when the run ends in its last step, or a
 	// second concurrent run is started for a running conversation.
-	// Owners: Runtime.executeBashTool, pinBackgroundNote, SessionRunEnded.
+	// Owners: Runtime.executeBashTool, deliverSessionWake (the session wake
+	// every background outcome takes), SessionRunEnded.
 	// Layer: tool boundary plus real store; the executor hook only forwards.
 	f := newBGFixture(t, "s-run")
 	f.startRun(t, "s-run", "run-1")
@@ -355,9 +356,12 @@ func TestBackgroundBashExplicitReturnsIDAtOnceAndReportsToRunningConversation(t 
 		t.Fatalf("note lacks result: %q", reports[0].Content)
 	}
 	// The run ends without a delivery receipt for the note: wake once.
+	notes, err := f.store.ListV3SessionWakeNotes("s-run")
+	if err != nil || len(notes) != 1 || notes[0].RunID != "run-1" || notes[0].NoteID != reports[0].ID {
+		t.Fatalf("no durable wake note for the running run: %+v %v", notes, err)
+	}
 	f.endRun(t, "s-run", "run-1")
 	f.runtime.SessionRunEnded("s-run", "run-1")
-	f.waitReported(t, id)
 	var wokenRun string
 	select {
 	case got := <-f.controller.enqueued:
@@ -382,25 +386,22 @@ func TestBackgroundBashExplicitReturnsIDAtOnceAndReportsToRunningConversation(t 
 	}
 	secondID := second["background_id"].(string)
 	f.waitReported(t, secondID)
-	c := f.command(t, "s-run", secondID)
-	c.mu.Lock()
-	noteID := c.pendingNoteID
-	c.mu.Unlock()
-	if noteID == "" {
-		t.Fatal("note for the running conversation was not tracked")
+	notes, err = f.store.ListV3SessionWakeNotes("s-run")
+	if err != nil || len(notes) != 1 || notes[0].WakeID != secondID {
+		t.Fatalf("note for the running conversation was not recorded: %+v %v", notes, err)
 	}
-	c.mu.Lock()
-	noteRun := c.pendingNoteRunID
-	c.mu.Unlock()
-	if noteRun != wokenRun {
-		t.Fatalf("note pinned to run %q, want the running woken run %q", noteRun, wokenRun)
+	if notes[0].RunID != wokenRun {
+		t.Fatalf("note pinned to run %q, want the running woken run %q", notes[0].RunID, wokenRun)
 	}
-	if err := RecordFeedbackDeliveryForTest(f, "s-run", wokenRun, noteID); err != nil {
+	if err := RecordFeedbackDeliveryForTest(f, "s-run", wokenRun, notes[0].NoteID); err != nil {
 		t.Fatal(err)
 	}
 	f.endRun(t, "s-run", wokenRun)
 	f.runtime.SessionRunEnded("s-run", wokenRun)
 	expectNoWake(t, f)
+	if left, _ := f.store.ListV3SessionWakeNotes("s-run"); len(left) != 0 {
+		t.Fatalf("read note not settled: %+v", left)
+	}
 }
 
 // RecordFeedbackDeliveryForTest writes the provider delivery receipt the run
@@ -827,149 +828,144 @@ func TestBackgroundBashDeletingConversationStopsAutomationChildCommands(t *testi
 	waitDone(t, bystander)
 }
 
-func TestBackgroundBashReportWakesWhenRunEndsBetweenStateReadAndPin(t *testing.T) {
-	// Purpose: a command that ends just as its conversation's run ends still
-	// wakes the conversation with its report.
-	// Threat: delivery read the run as active and pinned the report as a
-	// non-triggering note; the run finished in between, and its finish step
-	// (SessionRunEnded) found no pending note yet. The report sat in the
-	// transcript and the idle conversation was never woken.
-	// Owners: Runtime.deliverBackgroundReport, pinBackgroundNote,
-	// redeliverPendingNote, SessionRunEnded.
-	// Layer: the window sits between two statements of the delivery path, so
-	// the test ends the run (durable completion, then the executor's
-	// SessionRunEnded call) at exactly that point through the delivery seam,
-	// over a real store and a real process.
+func TestBackgroundBashReportDecidedUnderTheConversationLock(t *testing.T) {
+	// Purpose: a report is never lost or doubled between reading the
+	// conversation's run and writing the report. Requirement: the store
+	// decides note or new turn under the conversation's mutation lock (one
+	// mutation, no read-then-write window): a report for a conversation whose
+	// run ended just before it is a new turn; one whose run started just
+	// before it is a note pinned to that run, never a second concurrent run;
+	// when that run ends unread, SessionRunEnded delivers it again as one new
+	// turn and settles the durable wake note. Threat: the earlier windows
+	// (run ending between the state read and the pin; a run starting between
+	// the idle read and the wake) dropping the report or refusing it.
+	// Owners: deliverSessionWake, pebblestore prepareSessionWake,
+	// redeliverSessionWakeNotes.
 	f := newBGFixture(t, "s-edge")
 	f.startRun(t, "s-edge", "run-1")
-	var once sync.Once
-	f.runtime.background.afterRunStateRead = func(sessionID, runID string) {
-		once.Do(func() {
-			if sessionID != "s-edge" || runID != "run-1" {
-				t.Errorf("delivery read run %s/%s, want s-edge/run-1", sessionID, runID)
-			}
-			f.endRun(t, "s-edge", "run-1")
-			f.runtime.SessionRunEnded("s-edge", "run-1")
-		})
-	}
-	payload, err := f.bash(t, "s-edge", map[string]any{"command": "echo edge-out; exit 5", "background": true})
+	f.endRun(t, "s-edge", "run-1")
+	payload, err := f.bash(t, "s-edge", map[string]any{"command": "echo ended-before", "background": true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, _ := payload["background_id"].(string)
-	if id == "" {
-		t.Fatalf("no background id: %#v", payload)
-	}
-	f.waitReported(t, id)
+	f.waitReported(t, payload["background_id"].(string))
 	select {
 	case got := <-f.controller.enqueued:
 		if !strings.HasPrefix(got, "s-edge|") {
 			t.Fatalf("woke the wrong conversation: %s", got)
 		}
 	case <-time.After(bgTestWait):
-		t.Fatal("report pinned to a run that ended did not wake the idle conversation")
+		t.Fatal("report for a conversation whose run ended did not wake it")
 	}
-	expectNoWake(t, f)
-	var wake *pebblestore.MessageSnapshot
-	for _, m := range f.backgroundMessages(t, "s-edge") {
-		if m.Metadata["feedback_note"] != true {
-			m := m
-			if wake != nil {
-				t.Fatal("more than one wake report")
-			}
-			wake = &m
-		}
-	}
-	if wake == nil || !strings.Contains(wake.Content, "exited with code 5") || !strings.Contains(wake.Content, "edge-out") {
-		t.Fatalf("wake report missing or lacks result: %+v", wake)
-	}
-	state, ok, err := f.sessions.GetSessionRunState("s-edge")
-	if err != nil || !ok || !state.Active || state.SourceMessageID != wake.ID {
-		t.Fatalf("wake did not record a run intent for the report: %+v ok=%v err=%v", state, ok, err)
-	}
-	c := f.command(t, "s-edge", id)
-	c.mu.Lock()
-	pending := c.pendingNoteID
-	c.mu.Unlock()
-	if pending != "" {
-		t.Fatalf("note still pending on the ended run: %s", pending)
-	}
-}
-
-func TestBackgroundBashReportPinsToRunStartedBeforeWake(t *testing.T) {
-	// Purpose: a command whose conversation starts a run just as the report
-	// is delivered still gets its exit code and output to the conversation,
-	// exactly once, as a note pinned to the run that started.
-	// Threat: delivery read the conversation as idle and wrote a wake with a
-	// new run intent; a run started in between (another command's wake, a
-	// person's message, a task run), the store refused a second active run,
-	// the error was only logged, and the report was lost.
-	// Owners: Runtime.deliverBackgroundReport, wakeWithBackgroundReport,
-	// pinBackgroundNote, SessionRunEnded.
-	// Layer: the window sits between two statements of the delivery path, so
-	// the test starts the run at exactly that point through the delivery
-	// seam, over a real store (which refuses the second active run) and a
-	// real process.
-	f := newBGFixture(t, "s-mirror")
-	var once sync.Once
-	f.runtime.background.beforeWake = func(sessionID string) {
-		once.Do(func() {
-			if sessionID != "s-mirror" {
-				t.Errorf("wake for %s, want s-mirror", sessionID)
-			}
-			f.startRun(t, "s-mirror", "run-2")
-		})
-	}
-	payload, err := f.bash(t, "s-mirror", map[string]any{"command": "echo mirror-out; exit 4", "background": true})
+	state, _, _ := f.sessions.GetSessionRunState("s-edge")
+	// That turn is now active: the next report is pinned to it.
+	f.recordRun(t, "s-edge", state.RunID, pebblestore.V3RunIntentRunning)
+	payload, err = f.bash(t, "s-edge", map[string]any{"command": "echo started-before", "background": true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, _ := payload["background_id"].(string)
-	if id == "" {
-		t.Fatalf("no background id: %#v", payload)
-	}
-	f.waitReported(t, id)
-	c := f.command(t, "s-mirror", id)
-	var reports []pebblestore.MessageSnapshot
-	deadline := time.Now().Add(bgTestWait)
-	for time.Now().Before(deadline) {
-		c.mu.Lock()
-		pending := c.pendingNoteRunID
-		c.mu.Unlock()
-		if reports = f.backgroundMessages(t, "s-mirror"); len(reports) > 0 && pending != "" {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if len(reports) != 1 {
-		t.Fatalf("reports in conversation = %d, want exactly 1 (report lost when a run started before the wake)", len(reports))
-	}
-	note := reports[0]
-	if note.Metadata["feedback_note"] != true {
-		t.Fatalf("report is not a note to the running run: %+v", note.Metadata)
-	}
-	if !strings.Contains(note.Content, "exited with code 4") || !strings.Contains(note.Content, "mirror-out") {
-		t.Fatalf("report lacks result: %q", note.Content)
-	}
-	c.mu.Lock()
-	pendingID, pendingRun := c.pendingNoteID, c.pendingNoteRunID
-	c.mu.Unlock()
-	if pendingID != note.ID || pendingRun != "run-2" {
-		t.Fatalf("pending note = %q on %q, want %q on run-2", pendingID, pendingRun, note.ID)
-	}
+	f.waitReported(t, payload["background_id"].(string))
 	expectNoWake(t, f)
-	if state, ok, err := f.sessions.GetSessionRunState("s-mirror"); err != nil || !ok || state.RunID != "run-2" || !state.Active {
-		t.Fatalf("run-2 no longer the active run: %+v ok=%v err=%v", state, ok, err)
+	notes, err := f.store.ListV3SessionWakeNotes("s-edge")
+	if err != nil || len(notes) != 1 || notes[0].RunID != state.RunID {
+		t.Fatalf("report not pinned to the run that started first: %+v %v", notes, err)
 	}
-	// run-2 ends without reading the note: the run-end path still covers it.
-	f.endRun(t, "s-mirror", "run-2")
-	f.runtime.SessionRunEnded("s-mirror", "run-2")
+	f.endRun(t, "s-edge", state.RunID)
+	f.runtime.SessionRunEnded("s-edge", state.RunID)
 	select {
 	case got := <-f.controller.enqueued:
-		if !strings.HasPrefix(got, "s-mirror|") {
+		if !strings.HasPrefix(got, "s-edge|") {
 			t.Fatalf("woke the wrong conversation: %s", got)
 		}
 	case <-time.After(bgTestWait):
-		t.Fatal("note pinned to run-2 was not re-delivered when run-2 ended unread")
+		t.Fatal("unread note was not delivered again")
+	}
+	expectNoWake(t, f)
+	if left, _ := f.store.ListV3SessionWakeNotes("s-edge"); len(left) != 0 {
+		t.Fatalf("redelivered note kept: %+v", left)
+	}
+	reports := f.backgroundMessages(t, "s-edge")
+	if len(reports) != 3 {
+		t.Fatalf("want two reports and one redelivery, got %d", len(reports))
+	}
+}
+
+func TestBackgroundBashDaemonRestartReportsStoppedNotExitCode(t *testing.T) {
+	// Purpose: a daemon restart never turns a running background command into
+	// a bare "exited with code -1, Output: none". Requirement: a running
+	// command has a durable record; the daemon's shutdown (Runtime.Close)
+	// stops it, delivers no report and marks the record stopped; the next
+	// start (a new Runtime over the same store, RecoverBackgroundWork) tells
+	// the conversation "Background command <id> was stopped by a daemon
+	// restart at <time>; it did not finish", starts a turn for it, and forgets
+	// the record, once. The command is not run again (it may have side
+	// effects). A command the conversation stopped itself leaves no record.
+	// Threat: the observed silent -1 after an auto-update restart.
+	// Owners: backgroundCommands.stopAll, Runtime.recordBackgroundCommand,
+	// RecoverBackgroundWork, BackgroundCommandRestartText.
+	f := newBGFixture(t, "s-restart", "s-stopped")
+	payload, err := f.bash(t, "s-restart", map[string]any{"command": "sleep 30", "background": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := payload["background_id"].(string)
+	records, err := f.store.ListV3BackgroundCommands()
+	if err != nil || len(records) != 1 || records[0].ID != id || records[0].SessionID != "s-restart" || records[0].StoppedAt != 0 {
+		t.Fatalf("running command not recorded: %+v %v", records, err)
+	}
+	stopped, err := f.bash(t, "s-stopped", map[string]any{"command": "sleep 30", "background": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.runtime.StopSessionBackgroundCommands("s-stopped", "test stop")
+	if records, _ := f.store.ListV3BackgroundCommands(); len(records) != 1 {
+		t.Fatalf("a command its conversation stopped kept a record: %+v (%s)", records, stopped["background_id"])
+	}
+	c := f.command(t, "s-restart", id)
+	_ = f.runtime.Close() // the daemon shuts down
+	waitDone(t, c)
+	expectNoWake(t, f)
+	if reports := f.backgroundMessages(t, "s-restart"); len(reports) != 0 {
+		t.Fatalf("shutdown delivered a report: %+v", reports)
+	}
+	records, err = f.store.ListV3BackgroundCommands()
+	if err != nil || len(records) != 1 || records[0].StoppedAt <= 0 {
+		t.Fatalf("shutdown did not mark the record stopped: %+v %v", records, err)
+	}
+	// The next start, over the same store.
+	next := NewRuntime(2)
+	t.Cleanup(func() { _ = next.Close() })
+	next.SetManageSessionService(f.sessions)
+	next.SetManageSessionController(f.controller)
+	next.SetBackgroundWorkStore(f.store)
+	next.RecoverBackgroundWork()
+	select {
+	case got := <-f.controller.enqueued:
+		if !strings.HasPrefix(got, "s-restart|") {
+			t.Fatalf("woke the wrong conversation: %s", got)
+		}
+	case <-time.After(bgTestWait):
+		t.Fatal("restart did not tell the conversation")
+	}
+	reports := f.backgroundMessages(t, "s-restart")
+	if len(reports) != 1 {
+		t.Fatalf("restart reports: %+v", reports)
+	}
+	text := reports[0].Content
+	if !strings.Contains(text, "Background command "+id+" was stopped by a daemon restart at ") || !strings.Contains(text, "it did not finish") || strings.Contains(text, "code -1") || strings.Contains(text, "exited") || strings.Contains(text, "Output: none") || reports[0].Metadata["stopped_by_restart"] != true {
+		t.Fatalf("restart report: %q", text)
+	}
+	if records, _ := f.store.ListV3BackgroundCommands(); len(records) != 0 {
+		t.Fatalf("record kept after the restart report: %+v", records)
+	}
+	next.RecoverBackgroundWork()
+	expectNoWake(t, f)
+	if reports := f.backgroundMessages(t, "s-restart"); len(reports) != 1 {
+		t.Fatalf("restart reported twice: %d", len(reports))
+	}
+	// A daemon killed before it could record the stop: still reported.
+	when := BackgroundCommandRestartText(pebblestore.V3BackgroundCommandRecord{ID: "bg_x", Command: "make"}, time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC))
+	if !strings.Contains(when, "stopped by a daemon restart before 2026-10-01T12:00:00Z; it did not finish") {
+		t.Fatalf("unrecorded stop: %q", when)
 	}
 }

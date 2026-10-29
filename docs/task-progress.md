@@ -344,7 +344,26 @@ question's answer; `machine` for linked work) only on their word or under a
 rule that allows it. Each answer covers that one request; no lasting rule is
 saved. See docs/access-model.md for its rule and confinement.
 
-When a task it delegated ends `not_integrated` with workflow state `none`, it tells the
+Watch outcomes take the same path as background command reports (the
+session wake, see agent-tools.md): with a run active, the outcome is a note
+that run reads at its next step, re-delivered as a new turn if the run ends
+without reading it; with the conversation idle, it starts a new turn.
+
+A watch also wakes on milestones (`milestones`, default on; `wait_tasks
+milestones=false` turns them off): review started, sent back (round N),
+landed (pushed with its commit, delivered or merged), blocked or failed. A
+milestone wake keeps the watch. At most one milestone wake per watch per
+minute: stages reached within the minute are coalesced into the next wake,
+which names the stage reached then. Settling is never delayed by that limit.
+
+A watch settles only when the workflow's last step (the push or deliver) has
+recorded its result: a delivery marked succeeded with a step still running
+counts as running. Its outcome rows carry `task_state` and
+`task_state_reason`, the same derived state `get_task` shows (`landed`,
+`not_integrated`, ...); `integration_state` is the git merge state only.
+
+When a task
+it delegated ends `not_integrated` with workflow state `none`, it tells the
 person in the conversation that the work is on its branch and not integrated,
 and does nothing more with it until the person says what they want.
 

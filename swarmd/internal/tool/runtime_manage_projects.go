@@ -385,6 +385,7 @@ func manageProjectsDefinition() Definition {
 				"task_ids":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1, "maxItems": 16, "description": "wait_tasks: tasks to watch; cancel_watch: tasks to stop watching (omit for all)"},
 				"until":                map[string]any{"type": "string", "enum": []string{"settled", "finished"}, "description": "wait_tasks: settled (default) also waits for its workflow; finished does not"},
 				"cancel":               map[string]any{"type": "boolean", "description": "wait_tasks: stop watching task_ids (same as cancel_watch)"},
+				"milestones":           map[string]any{"type": "boolean", "description": "wait_tasks: also wake on stages (review, sent back, pushed, blocked); default true"},
 				"title":                map[string]any{"type": "string"},
 				"prompt":               map[string]any{"type": "string", "description": "Self-contained brief: objective, paths, acceptance criteria, needed facts"},
 				"agent":                map[string]any{"type": "string", "description": "coder, finder, designer or swarm"},

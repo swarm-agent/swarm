@@ -478,7 +478,7 @@ func (r *Runtime) executeFleetWaitTasks(ctx context.Context, scope WorkspaceScop
 		}
 		titles = append(titles, title)
 	}
-	result, err := r.registerProjectTaskWatch(scope, &pebblestore.V3ProjectTaskWaitMutation{RunID: run.RunID, ProjectID: projectID, TaskIDs: ids, Machine: machine, RemoteTargets: targets, RemoteTitles: titles, Until: until}, ids, titles)
+	result, err := r.registerProjectTaskWatch(scope, &pebblestore.V3ProjectTaskWaitMutation{RunID: run.RunID, ProjectID: projectID, TaskIDs: ids, Machine: machine, RemoteTargets: targets, RemoteTitles: titles, Until: until, Milestones: projectTaskWatchMilestones(args)}, ids, titles)
 	if err != nil {
 		return "", err
 	}

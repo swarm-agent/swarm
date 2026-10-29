@@ -644,6 +644,8 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 	toolRuntime.SetManageTodoService(todoSvc)
 	toolRuntime.SetManageActionService(actionSvc)
 	toolRuntime.SetManageProjectStore(sessionSvc.Store())
+	// Background work (wake notes, running background commands) is durable.
+	toolRuntime.SetBackgroundWorkStore(sessionSvc.Store())
 	automationApproval, err := automation.NewPolicyApproval(store, sessionSvc.Store(), automationAccess{workspaces: workspaceSvc, sessions: sessionSvc, members: pebblestore.NewIdentityStore(store)}, automation.RuntimeApprovalIdentity(), time.Now)
 	if err != nil {
 		_ = secretStore.Close()
@@ -1373,6 +1375,11 @@ func (d *Daemon) Run() error {
 		// Project tasks waiting for a provider's limit re-arm at their own
 		// reset time, never at startup.
 		d.apiServer.ResumeProjectTaskLimitWaits()
+	}
+	if d.toolRuntime != nil {
+		// Background commands a restart stopped are reported as such, and
+		// wake notes whose run is gone are delivered again.
+		d.toolRuntime.RecoverBackgroundWork()
 	}
 	log.Printf("swarmd listener topology api_listen=%q", d.httpServer.Addr)
 

@@ -126,7 +126,9 @@ func (h *remoteWaitHarness) waitWith(t *testing.T, runtime *tool.Runtime, sessio
 	t.Helper()
 	ctx, cancel := context.WithTimeout(tool.WithVideoRunContext(context.Background(), tool.VideoRunContext{SessionID: session, RunID: "run-1"}), 20*time.Second)
 	defer cancel()
-	args, _ := json.Marshal(map[string]any{"action": "wait_tasks", "machine": "box", "project_id": "remote-project", "task_ids": ids})
+	// Milestones off: these tests are about the outcome; milestones have
+	// their own test.
+	args, _ := json.Marshal(map[string]any{"action": "wait_tasks", "machine": "box", "project_id": "remote-project", "task_ids": ids, "milestones": false})
 	return runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, tool.WorkspaceScope{SessionID: session, Principal: h.p}, tool.Call{Name: "manage_projects", Arguments: string(args)})
 }
 
@@ -176,8 +178,8 @@ func (h *remoteWaitHarness) awaitWake(t *testing.T) map[string]any {
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
-		if next, ok := h.intent(t, pebblestore.ProjectTaskWatchResumeID(h.watchID)); ok {
-			if next.Status != pebblestore.V3RunIntentPendingExecutor || !next.ResumeContext {
+		if next, ok := h.intent(t, pebblestore.SessionWakeRunID(remoteWaitGoal, h.watchID+":outcome")); ok {
+			if next.Status != pebblestore.V3RunIntentPendingExecutor {
 				t.Fatalf("continuation: %+v", next)
 			}
 			if n := len(h.watches(t)); n != 0 {
@@ -188,7 +190,7 @@ func (h *remoteWaitHarness) awaitWake(t *testing.T) map[string]any {
 				t.Fatal(err)
 			}
 			for _, m := range messages {
-				if m.Role == "system" && strings.HasPrefix(m.Content, "Delegated project task outcomes:\n") {
+				if m.Role == "user" && strings.HasPrefix(m.Content, "Delegated project task outcomes:\n") {
 					var out map[string]any
 					if err := json.Unmarshal([]byte(strings.TrimPrefix(m.Content, "Delegated project task outcomes:\n")), &out); err != nil {
 						t.Fatal(err)
@@ -251,7 +253,7 @@ func asTestString(v any) string {
 func (h *remoteWaitHarness) noWake(t *testing.T, window time.Duration, why string) {
 	t.Helper()
 	time.Sleep(window)
-	if _, ok := h.intent(t, pebblestore.ProjectTaskWatchResumeID(h.watchID)); ok {
+	if _, ok := h.intent(t, pebblestore.SessionWakeRunID(remoteWaitGoal, h.watchID+":outcome")); ok {
 		t.Fatalf("woke: %s", why)
 	}
 	if n := len(h.watches(t)); n != 1 {
@@ -333,16 +335,17 @@ func TestRemoteTaskWaitMachineUnreachable(t *testing.T) {
 }
 
 // Purpose: a linked-machine watch is never ended by the person's message,
-// and its outcomes that settle while the person's turn runs are delivered
-// right after that turn. Requirement: a user message (with its run) leaves
-// the watch; the remote task reaching needs_review while that run is active
-// produces no continuation; ending the run and the executor's post-run hook
-// (deliverSessionTaskWatches, which kicks the follower) delivers the outcome
-// exactly once. Threat: the retired model where a message cancelled the wait
-// and the outcome was lost, or an outcome injected mid-turn. Boundary: tool
-// executeFleetWaitTasks, Server.followRemoteTaskWait with its kick and the
-// store's active-run deferral over two in-process daemons.
-func TestRemoteTaskWatchSurvivesUserMessageAndDeliversAfterTheRun(t *testing.T) {
+// and outcomes that settle while the person's turn runs are queued for that
+// turn, the way the person's own mid-run messages are. Requirement: a user
+// message (with its run) leaves the watch; the remote task reaching
+// needs_review while that run is active delivers the outcome once, as a note
+// pinned to that run (feedback_note, wake_note_run_id) with a durable wake
+// note, and starts no second run. Threat: the retired model where a message
+// cancelled the wait and the outcome was lost, or a concurrent second run.
+// Boundary: tool executeFleetWaitTasks, Server.followRemoteTaskWait and the
+// store's session wake over two in-process daemons. Redelivery of an unread
+// note when the run ends is proven at the tool runtime (SessionRunEnded).
+func TestRemoteTaskWatchSurvivesUserMessageAndQueuesForTheRun(t *testing.T) {
 	h := newRemoteWaitHarness(t, "t1")
 	h.register(t, "t1")
 	time.Sleep(200 * time.Millisecond) // let the follower's stream connect
@@ -360,21 +363,31 @@ func TestRemoteTaskWatchSurvivesUserMessageAndDeliversAfterTheRun(t *testing.T) 
 		t.Fatalf("the person's message ended the watch: %d", n)
 	}
 	h.finish(t, "t1", "needs_review", "Done.", "")
-	h.noWake(t, 500*time.Millisecond, "outcome delivered into the person's running turn")
-	h.endRun(t, "run-2")
-	h.home.s.deliverSessionTaskWatches(remoteWaitGoal) // the executor's finish hook
-	if row := remoteWaitRow(t, h.awaitWake(t), 0); row["status"] != "needs_review" || row["summary"] != "Done." {
-		t.Fatalf("outcome after the run: %v", row)
-	}
-	messages, _ := store.ListMessages(remoteWaitGoal, 0, 100)
-	outcomes := 0
-	for _, m := range messages {
-		if strings.HasPrefix(m.Content, "Delegated project task outcomes:") {
-			outcomes++
+	deadline := time.Now().Add(20 * time.Second)
+	var note *pebblestore.MessageSnapshot
+	for note == nil && time.Now().Before(deadline) {
+		messages, _ := store.ListMessages(remoteWaitGoal, 0, 100)
+		for i := range messages {
+			if strings.HasPrefix(messages[i].Content, "Delegated project task outcomes:") {
+				note = &messages[i]
+			}
+		}
+		if note == nil {
+			time.Sleep(20 * time.Millisecond)
 		}
 	}
-	if outcomes != 1 {
-		t.Fatalf("outcome messages: %d", outcomes)
+	if note == nil || note.Metadata["feedback_note"] != true || note.Metadata["wake_note_run_id"] != "run-2" {
+		t.Fatalf("outcome not queued for the person's run: %+v", note)
+	}
+	if state, _, _ := store.GetV3SessionRunState(remoteWaitGoal); state.RunID != "run-2" {
+		t.Fatalf("a second run started: %+v", state)
+	}
+	notes, err := store.ListV3SessionWakeNotes(remoteWaitGoal)
+	if err != nil || len(notes) != 1 || notes[0].RunID != "run-2" || notes[0].NoteID != note.ID {
+		t.Fatalf("durable wake note: %+v %v", notes, err)
+	}
+	if n := len(h.watches(t)); n != 0 {
+		t.Fatalf("delivered watch kept: %d", n)
 	}
 }
 

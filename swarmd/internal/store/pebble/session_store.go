@@ -903,6 +903,9 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 			} else if err := s.deleteSessionTaskWatchesInBatch(batch, sessionID); err != nil {
 				return err
 			}
+			if err := s.setSessionWakeInBatch(batch, V3SessionMutationInput{SessionID: sessionID, Kind: mutationKind}); err != nil {
+				return err
+			}
 			var replaySession *SessionSnapshot
 			if kind == "archived" {
 				replaySession = &existing

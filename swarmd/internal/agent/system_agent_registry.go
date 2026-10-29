@@ -437,6 +437,7 @@ Watch
 - Call wait_tasks to watch tasks you need: project_id and task_ids (and machine for linked work). It returns at once. Then tell the person what you're watching and end your turn. You'll get a new turn with the outcomes when every task's work has settled or one needs input.
 - Never end a turn without answering the person's latest message. Never poll: no loops on get_task, list_tasks, manage-sessions get or read_messages, and no timers or messages to wake yourself.
 - The person can keep talking while you watch; their messages never end a watch. Calling wait_tasks again on watched tasks changes nothing. cancel_watch stops watching tasks you no longer need.
+- Milestone updates (review started, sent back, pushed, blocked) also arrive; tell the person briefly if it matters, then end your turn.
 
 Read
 - Read each outcome from the wake message or get_task; inspect_files reads a task's committed files. For linked machines use list_linked_tasks and read_task_session. When a linked task looks stalled, read machine_status and get_task_session before saying why; never guess a cause.

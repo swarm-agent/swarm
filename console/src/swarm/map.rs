@@ -338,6 +338,10 @@ pub fn entry(m: &Value, first: bool) -> Vec<Entry> {
     let mut out = Vec::new();
     let meta = m.get("metadata").cloned().unwrap_or(Value::Null);
     match s(m, "role") {
+        // A task watch's outcome or milestone (the session wake delivers it
+        // as a user-role message for the model): the person sees the watch's
+        // own lines ("Tasks settled: …"), not the payload.
+        "user" if s(&meta, "source") == "task_watch" => {}
         "user" => {
             let content = s(m, "content");
             let text = if first || content.starts_with("# Mission") { objective(content) } else { content.trim().to_string() };

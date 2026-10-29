@@ -15,7 +15,11 @@ function text(value: unknown, limit = 4000): string {
   return typeof value === 'string' ? value.slice(0, limit) : ''
 }
 
+// A task watch's outcome or milestone, delivered through the session wake as
+// a user-role message (metadata source task_watch); older history has the
+// retired system-role outcome.
 export function isTaskOutcomeMessage(message: MessageSnapshot): boolean {
+  if (message.role === 'user') return text(message.metadata?.source) === 'task_watch' && Boolean(text(message.metadata?.task_watch_id))
   return message.role === 'system' && Boolean(text(message.metadata?.task_wait_owner_run_id))
 }
 
@@ -59,13 +63,19 @@ export function taskOutcomeActivity(message: MessageSnapshot): DesktopTaskActivi
     id: `task-outcome:${message.id}`, timelineSeq: message.global_seq,
     label: 'Tasks settled', detail: 'Task outcomes are available. A new turn was queued; this does not mean it is running.', rows: [],
   }
-  const prefix = 'Delegated project task outcomes:\n'
+  const milestone = text(record(message.metadata).task_watch_delivery) === 'milestone'
+  if (milestone) {
+    activity.label = 'Task milestone'
+    activity.detail = 'A watched task reached a stage; the watch goes on.'
+  }
+  const prefix = milestone ? 'Delegated project task milestones:\n' : 'Delegated project task outcomes:\n'
   if (!message.content.startsWith(prefix) || message.content.length > 100_000) return activity
   try {
     const data = record(JSON.parse(message.content.slice(prefix.length)))
     activity.rows = (Array.isArray(data.tasks) ? data.tasks : []).slice(0, 16).map((value) => {
       const row = record(value)
-      return { title: text(row.title, 200) || 'Task', status: statusLabels[text(row.status)] || 'Update available', summary: text(row.summary, 2000) }
+      const stage = text(row.milestone, 200)
+      return { title: text(row.title, 200) || 'Task', status: stage || statusLabels[text(row.status)] || 'Update available', summary: text(row.summary, 2000) }
     })
   } catch { /* Internal payload is never a visible fallback. */ }
   return activity

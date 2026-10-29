@@ -162,3 +162,13 @@ func (r *Runtime) cancelProjectTaskWatches(scope WorkspaceScope, runID, machine,
 	out, err := json.Marshal(result)
 	return string(out), err
 }
+
+// projectTaskWatchMilestones reads the milestones option: nil (on) unless the
+// call sets milestones=false.
+func projectTaskWatchMilestones(args map[string]any) *bool {
+	value, ok := args["milestones"].(bool)
+	if !ok {
+		return nil
+	}
+	return &value
+}

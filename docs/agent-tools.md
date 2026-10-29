@@ -67,9 +67,11 @@ call's time limit. This applies to every Swarm agent in a conversation.
   `background_id` at once. The agent keeps working.
 - **Report back.** When a background command ends, its exit code and its
   retained output, bounded by the tool output cap below, are added to the
-  conversation that started it. A conversation that is running sees the update on its next step. An idle
-  conversation is woken by it (a new run starts). If the run ends before the
-  update reaches the model, the update wakes the conversation again. A task's
+  conversation that started it, through the session wake every background
+  outcome takes (task watches too): a conversation that is running gets it
+  as a note its next step reads; an idle conversation is woken by it (a new
+  run starts). The note is durable: if the run ends without reading it, it
+  wakes the conversation again, also after a daemon restart. A task's
   conversation is never restarted outside its task lifecycle: there the update
   is recorded without waking it.
 - **Read or stop by id.** Call `bash` with `background_id` and
@@ -97,8 +99,15 @@ None of them reports back. A background command keeps its lease while it
 runs. Nothing crosses conversations: another conversation, even of the same
 account, cannot read, kill or receive one.
 
-Background commands live in the daemon's memory. A daemon restart stops them
-without a report. They are not available for `committed_source` validation (a
+A running background command has a durable record. A daemon restart stops
+it; at the next start the conversation is told "Background command <id> was
+stopped by a daemon restart at <time>; it did not finish" (a new turn), never
+a bare exit code. It is not run again: a command may have side effects (a
+push, a deploy, a migration) and depended on a process, sandbox or lease that
+is gone, so the agent decides whether to run it again. A command killed by a
+signal the daemon did not send (the service manager stopping everything at
+once) is held for a moment; if the daemon is shutting down it is reported at
+the next start the same way. Background commands are not available for `committed_source` validation (a
 validation passes only when it ends), for disposable reviews, or in managed
 execution; those stay foreground and report `timed_out` at the limit.
 

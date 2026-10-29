@@ -119,6 +119,7 @@ type Server struct {
 	activityStreams         atomic.Int64
 	remoteTaskWaitMu        sync.Mutex                   // linked-machine task waits (project_task_wait_remote.go)
 	remoteTaskWaitRuns      map[string]chan struct{}     // one follower per linked-machine watch, with its kick
+	taskWatchChecks         map[string]bool              // pending milestone re-checks, one per watch
 	remoteTaskWaitGrace     time.Duration                // unreachable grace; zero means the default
 	remoteTaskWaitRules     time.Duration                // work-rule re-read period; zero means the default
 	taskRunEndMu            sync.Mutex                   // task run ends in flight (project_task_wait_progress.go)

@@ -16,37 +16,40 @@ import (
 )
 
 type Store struct {
-	sessionReads                sessionReadCache
-	runnerExpiryOnce            sync.Once
-	runnerExpiryCancel          context.CancelFunc
-	runnerExpiryDone            chan struct{}
-	runnerWakeMu                sync.Mutex
-	runnerWake                  chan struct{}
-	db                          *pebble.DB
-	cache                       *pebble.Cache
-	path                        string
-	closed                      atomic.Bool
-	sessionMutations            *sessionMutationCoordinator
-	deliverablesMu              sync.Mutex
-	modelProfilesMu             sync.Mutex
-	swarmProfilesMu             sync.Mutex
-	agentModelSettingsMu        sync.Mutex
-	tailscaleAllowlistMu        sync.Mutex
-	automationsMu               sync.Mutex
-	automationPublisherMu       sync.RWMutex
-	automationPublisher         func(V3RealtimeOutboxRecord)
-	environmentsMu              sync.Mutex
-	environmentPublisherMu      sync.RWMutex
-	environmentPublisher        func(V3RealtimeOutboxRecord)
-	designMu                    sync.Mutex
-	designWakeMu                sync.Mutex
-	designWake                  chan struct{}
-	projectsMu                  sync.Mutex
-	projectPublisherMu          sync.RWMutex
-	projectPublisher            func(V3RealtimeOutboxRecord)
-	projectTaskStatusObserver   func(ProjectTaskStatusTransition)
-	projectTaskProgress         func(account string, task ProjectTaskRecord) any
-	projectTaskProgressAwaited  bool
+	sessionReads               sessionReadCache
+	runnerExpiryOnce           sync.Once
+	runnerExpiryCancel         context.CancelFunc
+	runnerExpiryDone           chan struct{}
+	runnerWakeMu               sync.Mutex
+	runnerWake                 chan struct{}
+	db                         *pebble.DB
+	cache                      *pebble.Cache
+	path                       string
+	closed                     atomic.Bool
+	sessionMutations           *sessionMutationCoordinator
+	deliverablesMu             sync.Mutex
+	modelProfilesMu            sync.Mutex
+	swarmProfilesMu            sync.Mutex
+	agentModelSettingsMu       sync.Mutex
+	tailscaleAllowlistMu       sync.Mutex
+	automationsMu              sync.Mutex
+	automationPublisherMu      sync.RWMutex
+	automationPublisher        func(V3RealtimeOutboxRecord)
+	environmentsMu             sync.Mutex
+	environmentPublisherMu     sync.RWMutex
+	environmentPublisher       func(V3RealtimeOutboxRecord)
+	designMu                   sync.Mutex
+	designWakeMu               sync.Mutex
+	designWake                 chan struct{}
+	projectsMu                 sync.Mutex
+	projectPublisherMu         sync.RWMutex
+	projectPublisher           func(V3RealtimeOutboxRecord)
+	projectTaskStatusObserver  func(ProjectTaskStatusTransition)
+	projectTaskProgress        func(account string, task ProjectTaskRecord) any
+	projectTaskProgressAwaited bool
+	// taskWatchMilestoneDue is told when a watch's milestone wake is held
+	// by its interval: the daemon checks the watch again at the due time.
+	taskWatchMilestoneDue       func(sessionID, watchID string, at int64)
 	mediaRecoveryPending        bool
 	beforeProjectTaskUpdateHook func(taskID string) error
 	signalsMu                   sync.Mutex

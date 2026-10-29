@@ -84,7 +84,8 @@ func newSettledWaitFixture(t *testing.T, path string, ids ...string) (*taskWaitF
 // idle and a ready watch fires at once.
 func (f *taskWaitFixture) register(until string, ids ...string) {
 	f.t.Helper()
-	f.apply(V3SessionMutationInput{SessionID: "parent", Kind: V3SessionMutationAppendMessage, EventType: "session.task_watch.started", ClientRequestID: "task-watch:run-1", TaskWait: &V3ProjectTaskWaitMutation{RunID: "run-1", ProjectID: "project", TaskIDs: ids, Until: until}})
+	off := false // these tests are about the settle rule, not milestones
+	f.apply(V3SessionMutationInput{SessionID: "parent", Kind: V3SessionMutationAppendMessage, EventType: "session.task_watch.started", ClientRequestID: "task-watch:run-1", TaskWait: &V3ProjectTaskWaitMutation{RunID: "run-1", ProjectID: "project", TaskIDs: ids, Until: until, Milestones: &off}})
 	f.endRun("parent", "run-1")
 }
 
@@ -369,7 +370,8 @@ func TestProjectTaskWaitRemoteSettled(t *testing.T) {
 	}
 	registerRemote := func(f *taskWaitFixture, until string) {
 		in := remoteTaskWaitRegistration(V3ProjectTaskWaitTarget{TaskID: "t1", AttemptID: "a1", SessionID: "rs1"})
-		in.TaskWait.Until = until
+		off := false
+		in.TaskWait.Until, in.TaskWait.Milestones = until, &off
 		f.apply(in)
 		f.endRun("home", "run-1")
 	}

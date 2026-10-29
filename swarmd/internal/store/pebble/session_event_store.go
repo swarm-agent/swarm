@@ -93,9 +93,14 @@ type V3SessionMutationInput struct {
 	taskWaitPrevious *V3SessionRunIntent
 	// Task watch changes this mutation commits (prepared by the task wait
 	// participant) and the conversation's watches after it, for the event.
-	taskWatchSet                 []V3SessionTaskWatch
-	taskWatchDelete              []V3SessionTaskWatch
-	taskWatchesAfter             *[]V3TaskWatchSummary
+	taskWatchSet     []V3SessionTaskWatch
+	taskWatchDelete  []V3SessionTaskWatch
+	taskWatchesAfter *[]V3TaskWatchSummary
+	// SessionWake delivers background work's outcome (session_wake.go): a
+	// note for the active run or a new turn. Trusted runtime code only.
+	SessionWake                  *V3SessionWakeMutation `json:"-"`
+	wakeNoteSet                  *V3SessionWakeNote
+	wakeNoteDelete               *V3SessionWakeNote
 	designChange                 *pebble.Batch     // Private independent design participant; caller holds designMu.
 	DesignAllocation             *DesignAllocation `json:"-"`
 	DesignAcceptance             *DesignAcceptance `json:"design_acceptance,omitempty"`
@@ -931,6 +936,9 @@ func (s *SessionStore) applyFreshV3SessionMutationWithReader(input V3SessionMuta
 	if err := s.prepareProjectTaskWait(&input); err != nil {
 		return V3SessionMutationResult{}, err
 	}
+	if err := s.prepareSessionWake(&input); err != nil {
+		return V3SessionMutationResult{}, err
+	}
 	if err := s.prepareDesignAllocation(&input); err != nil {
 		return V3SessionMutationResult{}, err
 	}
@@ -1379,6 +1387,9 @@ func (s *SessionStore) applyFreshV3SessionMutationWithReader(input V3SessionMuta
 		return V3SessionMutationResult{}, err
 	}
 	if err := s.setProjectTaskWaitTransition(batch, input, seq, now); err != nil {
+		return V3SessionMutationResult{}, err
+	}
+	if err := s.setSessionWakeInBatch(batch, input); err != nil {
 		return V3SessionMutationResult{}, err
 	}
 	if err := s.setAutomationV2InBatch(batch, input); err != nil {

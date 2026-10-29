@@ -54,13 +54,26 @@ changing the run.
 - Rows carry `workflow_state`, `workflow`, `workflow_step`/`workflow_steps`,
   `workflow_step_type`, `workflow_round` and `integration_state` when the task
   has them.
-- A ready watch fires in one canonical mutation (`session.run.tasks_ready`):
-  it deletes the watch, appends the bounded `Delegated project task outcomes`
-  system message and records a deterministic `pending_executor` run
-  (`ProjectTaskWatchResumeID(watch)`, `resume_context`). If a run is active
-  (`pending_executor` or `running`, e.g. the person is talking) the store
-  refuses with `ErrProjectTaskWatchDeferred` and the watch stays; it fires right
-  after that run ends. Nothing is dropped. A "Tasks settled: titles." end line
+- A ready watch fires in one canonical mutation (`session.run.tasks_ready`)
+  through the session wake (`session_wake.go`, the path background command
+  reports take too): it deletes the watch and appends the bounded
+  `Delegated project task outcomes` message (role user, metadata source
+  `task_watch`). Under the conversation's lock the store decides: with a run
+  active (`pending_executor` or `running`, e.g. the person is talking) it is a
+  note pinned to that run (`feedback_note`, `wake_note_run_id`) with a durable
+  wake note, read at the run's next step and re-delivered as a new turn if the
+  run ends without reading it (also after a restart); with none it starts a
+  new pending run (`SessionWakeRunID`). Nothing is dropped.
+- Milestones (default on, `milestones=false` off): when not settled, a task
+  reaching review started, sent back (round N), landed, blocked or failed
+  wakes the conversation with `Delegated project task milestones` and keeps
+  the watch (`last_milestones`, `deliveries`). At most one milestone wake per
+  watch per `ProjectTaskWatchMilestoneInterval` (a minute): a held milestone
+  answers `*ProjectTaskWatchMilestoneDue` and the daemon checks again at its
+  due time, coalescing what changed. Settling is never held.
+- A watch is not ready while a succeeded delivery has a step without its
+  result (the progress keeps the workflow running) or while the derived
+  `task_state` is running; rows carry `task_state`/`task_state_reason`. A "Tasks settled: titles." end line
   follows the commit (idempotent per watch; none for an archived
   conversation). `needs_review` means implementation-ready, never user-accepted
   completion. Outcome text is untrusted task data.

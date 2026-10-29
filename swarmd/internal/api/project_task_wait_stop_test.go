@@ -89,21 +89,20 @@ func TestPersonStopsTaskWatches(t *testing.T) {
 	}
 }
 
-// Purpose: outcomes that settle while a run is active are delivered right
-// after that run, by the executor itself. Requirement: with the goal working
-// (run-2 running, e.g. the person talking), task-1 settling fires nothing (the
-// watch stays); once run-2 has ended, the executor's finish of that job
-// (sessionV3Executor.finish -> Server.deliverSessionTaskWatches) starts the
-// outcome turn exactly once. Threat: an outcome dropped because the person
-// was talking, or a watch stuck until some unrelated task change. Authority:
-// sessionV3Executor.finish over the real store; the daemon fixture is the
-// narrowest layer holding the executor and the store together.
-func TestExecutorDeliversDeferredWatchAfterTheRun(t *testing.T) {
+// Purpose: outcomes that settle while a run is active are queued for that
+// run, the way the person's mid-run messages are, and never start a second
+// run. Requirement: with the goal working (run-2 running, e.g. the person
+// talking), task-1 settling delivers the outcome once as a note pinned to
+// run-2 (feedback_note, wake_note_run_id) with a durable wake note; no new
+// turn is recorded; the watch is gone. Threat: an outcome dropped because
+// the person was talking, a second concurrent run, or a watch stuck until an
+// unrelated change. Authority: Server.reconcileProjectTaskWaits (the path
+// every task publication takes) over the real store's session wake; the
+// unread-note redelivery at the run's end is the tool runtime's
+// (SessionRunEnded) and is tested there.
+func TestTaskWatchOutcomeQueuedForTheActiveRun(t *testing.T) {
 	w := newWaitWorkflowFixture(t)
 	w.localWait(t)
-	if w.f.s.v3SessionExecutor == nil {
-		t.Fatal("fixture has no v3 executor")
-	}
 	db := w.f.s.sessions.Store()
 	record := func(key, status string) {
 		t.Helper()
@@ -117,31 +116,29 @@ func TestExecutorDeliversDeferredWatchAfterTheRun(t *testing.T) {
 	w.finishTask(t)
 	w.f.s.reconcileProjectTaskWaits("", "")
 	if w.woke(t) {
-		t.Fatal("outcomes started a turn while a run was active")
-	}
-	if watches, err := db.ListV3SessionTaskWatches("goal"); err != nil || len(watches) != 1 {
-		t.Fatalf("deferred watch: %+v %v", watches, err)
-	}
-	record("run-2-done", pebblestore.V3RunIntentCompleted)
-	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: w.f.user, AccountScopeID: w.f.account}
-	w.f.s.v3SessionExecutor.finish(sessionV3ExecutorJob{Principal: principal, SessionID: "goal", RunID: "run-2"})
-	if !w.woke(t) {
-		t.Fatal("the run's end did not deliver the deferred outcomes")
-	}
-	if watches, err := db.ListV3SessionTaskWatches("goal"); err != nil || len(watches) != 0 {
-		t.Fatalf("watch after delivery: %+v %v", watches, err)
+		t.Fatal("outcomes started a second run while a run was active")
 	}
 	messages, err := db.ListMessages("goal", 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	outcomes := 0
+	var outcomes []pebblestore.MessageSnapshot
 	for _, m := range messages {
 		if strings.HasPrefix(m.Content, "Delegated project task outcomes:") {
-			outcomes++
+			outcomes = append(outcomes, m)
 		}
 	}
-	if outcomes != 1 {
-		t.Fatalf("outcome messages: %d", outcomes)
+	if len(outcomes) != 1 || outcomes[0].Metadata["feedback_note"] != true || outcomes[0].Metadata["wake_note_run_id"] != "run-2" {
+		t.Fatalf("outcome not queued for the active run: %+v", outcomes)
 	}
+	if notes, err := db.ListV3SessionWakeNotes("goal"); err != nil || len(notes) != 1 || notes[0].RunID != "run-2" {
+		t.Fatalf("wake note: %+v %v", notes, err)
+	}
+	if state, _, _ := db.GetV3SessionRunState("goal"); state.RunID != "run-2" || !state.Active {
+		t.Fatalf("run state: %+v", state)
+	}
+	if watches, err := db.ListV3SessionTaskWatches("goal"); err != nil || len(watches) != 0 {
+		t.Fatalf("watch after delivery: %+v %v", watches, err)
+	}
+	_ = identity.Principal{}
 }

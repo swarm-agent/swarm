@@ -246,7 +246,7 @@ func (h *remoteWaitHarness) waitUntil(t *testing.T, until string, ids ...string)
 	t.Helper()
 	ctx, cancel := context.WithTimeout(tool.WithVideoRunContext(context.Background(), tool.VideoRunContext{SessionID: remoteWaitGoal, RunID: "run-1"}), 20*time.Second)
 	defer cancel()
-	args, _ := json.Marshal(map[string]any{"action": "wait_tasks", "machine": "box", "project_id": "remote-project", "task_ids": ids, "until": until})
+	args, _ := json.Marshal(map[string]any{"action": "wait_tasks", "machine": "box", "project_id": "remote-project", "task_ids": ids, "until": until, "milestones": false})
 	out, err := h.runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, tool.WorkspaceScope{SessionID: remoteWaitGoal, Principal: h.p}, tool.Call{Name: "manage_projects", Arguments: string(args)})
 	if err != nil {
 		t.Fatal(err)
@@ -402,6 +402,7 @@ func TestRemoteTaskWaitUnreachableThenBack(t *testing.T) {
 // project Orchestrator goal running run-1.
 func (w *waitWorkflowFixture) localWait(t *testing.T) {
 	t.Helper()
+	milestonesOff := false // the settle rule is under test, not milestones
 	db := w.f.s.sessions.Store()
 	if err := db.PutProject(w.f.account, &pebblestore.ProjectRecord{ID: "proj-1", Name: "Project"}); err != nil {
 		t.Fatal(err)
@@ -419,7 +420,7 @@ func (w *waitWorkflowFixture) localWait(t *testing.T) {
 		{SessionID: "goal", Kind: pebblestore.V3SessionMutationCreateSession, ClientRequestID: "create-goal", Session: &pebblestore.SessionSnapshot{ID: "goal", Mode: "auto", Metadata: goal}},
 		{SessionID: "goal", Kind: pebblestore.V3SessionMutationRecordRunIntent, ClientRequestID: "pending-goal", RunIntent: &pebblestore.V3SessionRunIntent{RunID: "run-1", Status: pebblestore.V3RunIntentPendingExecutor}},
 		{SessionID: "goal", Kind: pebblestore.V3SessionMutationRecordRunIntent, ClientRequestID: "run-goal", RunIntent: &pebblestore.V3SessionRunIntent{RunID: "run-1", Status: pebblestore.V3RunIntentRunning}},
-		{SessionID: "goal", Kind: pebblestore.V3SessionMutationAppendMessage, EventType: "session.task_watch.started", ClientRequestID: "task-watch:run-1", TaskWait: &pebblestore.V3ProjectTaskWaitMutation{RunID: "run-1", ProjectID: "proj-1", TaskIDs: []string{"task-1"}}},
+		{SessionID: "goal", Kind: pebblestore.V3SessionMutationAppendMessage, EventType: "session.task_watch.started", ClientRequestID: "task-watch:run-1", TaskWait: &pebblestore.V3ProjectTaskWaitMutation{RunID: "run-1", ProjectID: "proj-1", TaskIDs: []string{"task-1"}, Milestones: &milestonesOff}},
 		// The Orchestrator's turn ends: the conversation is idle.
 		{SessionID: "goal", Kind: pebblestore.V3SessionMutationRecordRunIntent, ClientRequestID: "end-goal", RunIntent: &pebblestore.V3SessionRunIntent{RunID: "run-1", Status: pebblestore.V3RunIntentCompleted}},
 	} {
@@ -446,7 +447,7 @@ func (w *waitWorkflowFixture) goalIntent(t *testing.T, run string) pebblestore.V
 
 func (w *waitWorkflowFixture) woke(t *testing.T) bool {
 	t.Helper()
-	_, found, err := w.f.s.sessions.Store().GetV3SessionRunIntent("goal", pebblestore.ProjectTaskWatchResumeID(w.watchID))
+	_, found, err := w.f.s.sessions.Store().GetV3SessionRunIntent("goal", pebblestore.SessionWakeRunID("goal", w.watchID+":outcome"))
 	if err != nil {
 		t.Fatal(err)
 	}
