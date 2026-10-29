@@ -510,6 +510,36 @@ func (s *Step) normalizeAgent() error {
 	return nil
 }
 
+// LegacyCheckoutMigration is how a stored agent step saved before swarm
+// agents moved to their own worktree runs: worker swarm or coder with
+// checkout none or same (never accepted by a save today) runs with checkout
+// new, the only checkout those agents have. Saving stays strict
+// (normalizeAgent still refuses it); only a stored revision loaded to run a
+// step, a fresh delivery or a rerun of one pinned to that revision, is
+// migrated. note is the line recorded on the step's run, "" when the step
+// is unchanged.
+func LegacyCheckoutMigration(step Step) (migrated Step, note string) {
+	if step.Type != StepAgent {
+		return step, ""
+	}
+	worker := strings.ToLower(strings.TrimSpace(step.Worker))
+	if worker != "coder" && worker != "swarm" {
+		return step, ""
+	}
+	checkout := strings.ToLower(strings.TrimSpace(step.Checkout))
+	if checkout != CheckoutNone && checkout != CheckoutSame {
+		return step, ""
+	}
+	step.Checkout = CheckoutNew
+	return step, LegacyCheckoutNote(checkout)
+}
+
+// LegacyCheckoutNote is the line a migrated step records (see
+// LegacyCheckoutMigration).
+func LegacyCheckoutNote(stored string) string {
+	return "checkout " + stored + " migrated to new (swarm agents work in their own worktree since 12ba4a681)"
+}
+
 // NonReviewerCheckoutError refuses checkout same on an agent step whose
 // worker resolved to a role other than reviewer: only a reviewer, which
 // cannot change files, works in another job's worktree.

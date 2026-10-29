@@ -903,12 +903,32 @@ func jobAutomationView(a jobautomation.Automation) map[string]any {
 			}
 		}
 	}
+	if migrations := jobAutomationStepMigrations(a.Steps); len(migrations) > 0 {
+		view["step_migrations"] = migrations
+	}
 	if a.Proposed && a.BaseID != "" {
 		// Propose binds the base by exact name; AcceptProposal checks that
 		// same name and base revision before replacing the active definition.
 		view["replaces"] = map[string]any{"id": a.BaseID, "revision": a.BaseRevision, "name": a.Name}
 	}
 	return view
+}
+
+// jobAutomationStepMigrations lists the stored steps that run differently
+// from how they are stored (jobautomation.LegacyCheckoutMigration): each
+// step's stored and effective checkout and a note, so the owner knows to
+// resave the workflow.
+func jobAutomationStepMigrations(steps []jobautomation.Step) []map[string]any {
+	var out []map[string]any
+	for _, step := range steps {
+		migrated, note := jobautomation.LegacyCheckoutMigration(step)
+		if note == "" {
+			continue
+		}
+		out = append(out, map[string]any{"step": step.ID, "checkout": step.Checkout, "effective_checkout": migrated.Checkout,
+			"note": note + "; resave the workflow with checkout " + migrated.Checkout})
+	}
+	return out
 }
 
 // jobDeliveryView is a delivery without its full result (the result is
@@ -925,7 +945,7 @@ func jobDeliveryView(d jobautomation.Delivery) map[string]any {
 		if step.ExitCode != nil {
 			view["exit_code"] = *step.ExitCode
 		}
-		for key, value := range map[string]string{"output": step.Output, "reason": step.Reason, "next": step.Next, "log_tail": step.LogTail} {
+		for key, value := range map[string]string{"output": step.Output, "reason": step.Reason, "next": step.Next, "log_tail": step.LogTail, "note": step.Note} {
 			if value != "" {
 				view[key] = value
 			}

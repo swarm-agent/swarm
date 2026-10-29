@@ -887,6 +887,9 @@ func (r *Runner) runStep(ctx context.Context, d *Delivery, i int, step Step) boo
 	record.State, record.StartedAt, record.FinishedAt, record.NextAttemptAt = StateRunning, r.now().UnixMilli(), 0, 0
 	record.Attempts++
 	record.ExitCode, record.Output, record.Reason, record.Next = nil, "", "", ""
+	// A stored revision saved before swarm agents moved to their own
+	// worktree runs migrated (fresh delivery or rerun of a pinned one).
+	step, record.Note = LegacyCheckoutMigration(step)
 	if err := r.store.SaveDelivery(*d); err != nil {
 		log.Printf("swarmd job automations: save delivery %s: %v", d.ID, err)
 	}

@@ -206,6 +206,9 @@ type StepRecord struct {
 	Next       string         `json:"next,omitempty"`
 	Outcome    map[string]any `json:"outcome,omitempty"`
 	LogTail    string         `json:"log_tail,omitempty"`
+	// Note says how the step ran differently from its stored definition
+	// (LegacyCheckoutMigration), so the owner knows to resave it.
+	Note string `json:"note,omitempty"`
 	// Failures keeps each failed attempt's reason, newest last (at most
 	// maxStepFailures). A rerun keeps them, so an attempt that failed
 	// before the rerun still says why.

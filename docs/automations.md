@@ -319,6 +319,15 @@ step: it sends a follow-up into the job's own session. The daemon refuses
 any other combination when the workflow is saved (for a worker named by id,
 `same` only when it is a reviewer).
 
+A workflow saved before `swarm` moved to its own worktree may still hold a
+`swarm` or `coder` step with `checkout` `none` or `same`. Saving such a step
+is refused, but the stored revision still runs: the step runs with `checkout`
+`new`, and its run in the delivery records a `note` ("checkout none migrated
+to new ..."). This includes a re-run of a delivery pinned to that revision.
+`swarm_list_workflows` and `GET /v3/workflows/{id}` list such steps under
+`step_migrations` (stored and effective checkout, and a note); resave the
+workflow with `checkout: "new"` to clear it.
+
 #### Reviewer fixes (`fixes: "security"`)
 
 ```json
