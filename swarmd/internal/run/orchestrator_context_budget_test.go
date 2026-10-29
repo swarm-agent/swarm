@@ -28,8 +28,10 @@ const (
 	// 35 KB left about 140; resolve_task_permission (permission_id,
 	// decision, reason) and the linked reads machine_status,
 	// get_task_session and activity (since_cursor), which let the home see a
-	// stalled linked task and answer it in the chat, add about 400.
-	orchestratorToolBudgetBytes   = 35*1024 + 512
+	// stalled linked task and answer it in the chat, add about 400. Task
+	// watches (the cancel_watch action, the milestones parameter and the
+	// reply-then-end-your-turn instruction, all trimmed) add about 160.
+	orchestratorToolBudgetBytes   = 35*1024 + 640
 	orchestratorPromptBudgetBytes = 4608
 )
 
