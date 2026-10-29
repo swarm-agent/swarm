@@ -241,6 +241,24 @@ func htmlCaptureConcurrency() int {
 	return 1
 }
 
+// applyStartupPermissionPolicy makes the startup permission settings effective
+// on the permission service as soon as it exists. It must run before
+// api.NewCoreServer: the V3 session executor resumes interrupted and queued
+// runs while the server is built, and their tool calls are authorized at once.
+// Applied later, those calls see bypass off and wait on approvals nobody
+// answers. A locked policy still forces bypass off (LockPolicy, then
+// SetBypassPermissions, which refuses bypass under the lock).
+func applyStartupPermissionPolicy(permissionSvc *permission.Service, cfg config.Config) {
+	if permissionSvc == nil {
+		return
+	}
+	if cfg.LockPermissionPolicy {
+		permissionSvc.LockPolicy()
+		log.Printf("swarmd permission policy locked by --lock-permission-policy; bypass is off and policy changes are refused until restart")
+	}
+	permissionSvc.SetBypassPermissions(cfg.BypassPermissions)
+}
+
 func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Server, *pebblestore.Store)) (*Daemon, error) {
 	// One cap bounds the text every tool result gives an agent; an invalid
 	// setting stops startup instead of silently using another value.
@@ -406,10 +424,7 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 	// Devices are client sessions, kept on the secrets database with the rest
 	// of the identity session store (see identitySessionSvc below).
 	permissionSvc.SetClientSessionLister(pebblestore.NewIdentitySessionStore(secretStore))
-	if cfg.LockPermissionPolicy {
-		permissionSvc.LockPolicy()
-		log.Printf("swarmd permission policy locked by --lock-permission-policy; bypass is off and policy changes are refused until restart")
-	}
+	applyStartupPermissionPolicy(permissionSvc, cfg)
 	notificationSvc := notification.NewService(pebblestore.NewNotificationStore(store), events, hub.Publish)
 	webPushRepository, err := webpush.NewPebbleRepository(secretStore)
 	if err != nil {
@@ -1001,6 +1016,8 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 	apiServer.SetAgentModelSettingsService(agentModelSettingsSvc, agentModelSettingsStore)
 	apiServer.SetIdentityService(identitySvc)
 	apiServer.SetIdentitySessionService(identitySessionSvc)
+	// The permission service already holds this state (applyStartupPermissionPolicy,
+	// before NewCoreServer resumes runs); this also records it on the server.
 	apiServer.SetBypassPermissions(cfg.BypassPermissions)
 	apiServer.SetDataDir(cfg.DataDir)
 	apiServer.SetStartupConfigPath(cfg.ConfigPath)
