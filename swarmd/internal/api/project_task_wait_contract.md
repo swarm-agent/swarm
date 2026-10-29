@@ -36,12 +36,17 @@ changing the run.
   call in the same run replays its registration. No task is ever delivered
   twice.
 - Committed project/task publication (including workflow delivery and job-end
-  evaluation changes, which publish `project.updated`), startup, and the end of
-  every run of the conversation (`sessionV3Executor.finish` →
-  `Server.deliverSessionTaskWatches`) reconcile watches. All selected tasks must
-  be ready, or one must have an actionable blocked, failed, cancelled,
-  needs-input, pending-approval, removed/archived or superseded outcome. Other
-  rows retain their nonterminal status.
+  evaluation changes, which publish `project.updated`), a recorded task report
+  (`report_task` → `Server.ReconcileTaskWatches`), startup, and a held
+  milestone's due time (`Server.scheduleTaskWatchCheck`) reconcile watches. A
+  run's end does not: an outcome delivered while a run was active is already a
+  note for that run, and the tool runtime's `SessionRunEnded` re-delivers it as
+  a new turn if the run ended without reading it. A watch is ready when all
+  selected tasks are ready, or one has an actionable blocked, failed,
+  cancelled, needs-input, pending-approval, removed/archived or superseded
+  outcome, or a watched task has a pending `attention` or `wake_request`
+  report in the watch's generation (`task_updates_pending: true`). Other rows
+  retain their nonterminal status.
 - Ready under `until=settled`: `needs_review` or `completed` with no workflow
   attached, or with its workflow ended (`workflow.state` done or none; failed
   or blocked, including out of rounds, are also actionable). A workflow that is
@@ -131,10 +136,12 @@ remote tasks.
   end with no session activity is read only on the next activity, gap or
   reconnect. Every
   row names `machine`, `task_id`, `attempt_id` and `session_id`; the message is
-  marked `untrusted_content` and says the outcomes came from that machine. Wake,
-  deferral while a run is active, the outcome turn and the ways a watch ends are
-  the same as a local watch; the executor's end of a run kicks the follower to
-  check again.
+  marked `untrusted_content` and says the outcomes came from that machine. Wake
+  through the session wake (a note for an active run, re-delivered as a new
+  turn if unread; a new turn when idle) and the ways a watch ends are the same
+  as a local watch. The follower checks the machine again on its activity
+  stream, its rule timer, and when `scheduleTaskWatchCheck` kicks it at a held
+  milestone's due time.
 - If the machine has had no successful contact for a grace period while the
   home is trying (`remoteTaskWaitGraceDefault`), every unresolved row becomes
   `machine_unreachable` with the last contact time. If its work rule is turned
@@ -168,8 +175,16 @@ exact event ID/sequence. Actual typed content determines retry conflicts.
 Reports record intent only: progress is informational, attention marks actionable
 input, and wake_request explicitly requests attention. `recorded`/`pending` is not
 a delivery or wake receipt and does not approve scope, change task status or spawn
-a run by itself; they are read by the parent's running provider loop. A watch
-fires on task status, not on reports; progress never wakes an inactive parent.
+a run by itself; they are read by the parent's running provider loop. An
+`attention` or `wake_request` report from a watched task fires the watch (its
+outcome has `task_updates_pending: true`); progress never wakes an inactive
+parent. A watch records its report generation (`task_update_root_run_id`, the
+registering run's task-update root) and binds its task sessions to it at
+registration; the turns it starts carry it as `TaskUpdateRootRunID`, so they
+read those reports, and a watch's own delivery never advances the task-update
+fence. A person's message advances the fence (reports made before it are
+superseded, as before) and moves the conversation's local watches and their
+task bindings to that message's run, so later reports still reach the watch.
 The V3 message boundary rejects task-originated messages to Orchestrator sessions,
 including non-triggering notes; ordinary user chat and parent-to-task feedback
 remain available. Timer tools and session messaging are not alternate wake paths.

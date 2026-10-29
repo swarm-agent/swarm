@@ -321,7 +321,10 @@ and ends its turn normally. The conversation is never pending: it shows as
 idle, or working while a run is active. When the watched tasks settle (or one
 needs input) Swarm starts a new turn with each task's `progress` in the
 `Delegated project task outcomes` message; if a run is active then (the person
-is talking), the outcomes are delivered right after that run ends. A person's
+is talking), the outcomes reach that run (see below). An `attention` or
+`wake_request` `report_task` from a watched task fires the watch too
+(`task_updates_pending: true`), and the turn it starts reads those reports;
+`progress` reports never wake an idle conversation. A person's
 message never ends a watch. A watch ends when it fires, when the Orchestrator
 cancels it (`cancel_watch`, or `wait_tasks` with `cancel: true`), when the
 person stops it (`POST /v3/sessions/{id}/task-watches/stop`), or when the
