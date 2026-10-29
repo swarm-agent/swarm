@@ -23,6 +23,17 @@ changing the run.
   `run_intent.task_wait.notice`, so a client can show the person why the
   conversation waits even when the Orchestrator said nothing. It is
   information only, never an approval. Linked-machine titles are untrusted.
+- The same registration mutation commits a visible wait line: a system message
+  with metadata `source: task_wait_notice` (`task_wait_notice: waiting`,
+  `task_count`, `task_titles`, `machine` for a linked wait) whose text is the
+  notice. When the wait ends (its wake, a superseding user message, or a
+  terminal write of the waiting run such as stop), the committed mutation is
+  followed by one idempotent end line (`task_wait_notice: ended`, `ended_by`,
+  `ProjectTaskWaitEndNotice`); none is added to an archived conversation.
+  Provider context builders skip both (`IsProjectTaskWaitNoticeMessage`): they
+  are for the person, never a model turn. The end line is a second mutation
+  after the commit, so a crash between the two can lose it; its failure is
+  logged and never fails the ending mutation.
 - The provider tool loop yields immediately. Executor cleanup releases the
   execution lease. Waiting is inactive, nonterminal, and not an elapsed-time
   reason to schedule provider work.

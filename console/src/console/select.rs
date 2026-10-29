@@ -45,7 +45,7 @@ impl Selection {
 /// The text of each block of an entry, in the order it is drawn.
 pub(super) fn blocks(entry: &Entry) -> Vec<String> {
     match entry {
-        Entry::User(text) | Entry::Queued { text, .. } => vec![text.to_string()],
+        Entry::User(text) | Entry::Queued { text, .. } | Entry::Notice(text) => vec![text.to_string()],
         Entry::Assistant(text) => markdown::parse(text).into_iter().map(|b| b.text).collect(),
         // Name, then summary and time (row one), then the detail (row two).
         Entry::Tool { .. } => entry.tool_stack(crate::data::now_ms()).map(|s| vec![s.name, s.tail, s.detail]).unwrap_or_default(),

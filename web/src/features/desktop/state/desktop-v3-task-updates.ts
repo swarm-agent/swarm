@@ -19,6 +19,33 @@ export function isTaskOutcomeMessage(message: MessageSnapshot): boolean {
   return message.role === 'system' && Boolean(text(message.metadata?.task_wait_owner_run_id))
 }
 
+// A task wait's visible start/end line (daemon metadata source task_wait_notice).
+// Information for the person: the daemon never sends it to the model.
+export interface DesktopTaskWaitNotice {
+  id: string
+  timelineSeq: number
+  text: string
+  ended: boolean
+  titles: string[]
+}
+
+export function isTaskWaitNoticeMessage(message: MessageSnapshot): boolean {
+  return message.role === 'system' && text(message.metadata?.source) === 'task_wait_notice'
+}
+
+export function taskWaitNotice(message: MessageSnapshot): DesktopTaskWaitNotice {
+  const metadata = record(message.metadata)
+  const titles = (Array.isArray(metadata.task_titles) ? metadata.task_titles : []).slice(0, 16).map((title) => text(title, 200)).filter(Boolean)
+  return {
+    id: `task-wait-notice:${message.id}`,
+    timelineSeq: message.global_seq,
+    // One line: linked-machine titles are untrusted text.
+    text: text(message.content, 4000).replace(/\s+/g, ' ').trim(),
+    ended: text(metadata.task_wait_notice) === 'ended',
+    titles,
+  }
+}
+
 const statusLabels: Record<string, string> = {
   needs_review: 'Ready for review', completed: 'Completed', in_progress: 'In progress',
   planning: 'Planning', blocked: 'Blocked', failed: 'Failed', cancelled: 'Cancelled',

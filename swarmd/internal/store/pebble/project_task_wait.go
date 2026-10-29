@@ -35,12 +35,7 @@ type V3ProjectTaskWait struct {
 // tasks it waits on, when it wakes and that a new message ends it. Titles may
 // be untrusted (linked machines); they are clipped to one line each.
 func ProjectTaskWaitNotice(titles []string, machine, until string) string {
-	names := make([]string, 0, len(titles))
-	for _, title := range titles {
-		if title = strings.Join(strings.Fields(title), " "); title != "" {
-			names = append(names, clipProjectTaskWaitTitle(title))
-		}
-	}
+	names := projectTaskWaitNoticeNames(titles)
 	where := ""
 	if machine = strings.TrimSpace(machine); machine != "" {
 		where = " on " + machine
@@ -50,6 +45,123 @@ func ProjectTaskWaitNotice(titles []string, machine, until string) string {
 		wake = "finish"
 	}
 	return fmt.Sprintf("This conversation is now waiting on %d task(s)%s: %s. It wakes when they %s; a new message ends the wait.", len(titles), where, strings.Join(names, ", "), wake)
+}
+
+// projectTaskWaitNoticeNames cleans task titles for the notice: one line each,
+// clipped, empty ones dropped.
+func projectTaskWaitNoticeNames(titles []string) []string {
+	names := make([]string, 0, len(titles))
+	for _, title := range titles {
+		if title = strings.Join(strings.Fields(title), " "); title != "" {
+			names = append(names, clipProjectTaskWaitTitle(title))
+		}
+	}
+	return names
+}
+
+// Task wait transcript lines. A wait's start and end are recorded as system
+// messages with metadata source ProjectTaskWaitNoticeSource, so every client
+// shows them from session history (they survive reload). They are information
+// for the person only: provider context builders skip them
+// (IsProjectTaskWaitNoticeMessage), so the model never sees them as a turn.
+const (
+	ProjectTaskWaitNoticeSource = "task_wait_notice"
+	// task_wait_notice metadata values.
+	ProjectTaskWaitNoticeWaiting = "waiting"
+	ProjectTaskWaitNoticeEnded   = "ended"
+	// ended_by metadata values.
+	ProjectTaskWaitEndedByTasks   = "tasks"
+	ProjectTaskWaitEndedByMessage = "message"
+	ProjectTaskWaitEndedByStop    = "stop"
+)
+
+// IsProjectTaskWaitNoticeMessage reports a display-only task wait line.
+func IsProjectTaskWaitNoticeMessage(message MessageSnapshot) bool {
+	if !strings.EqualFold(strings.TrimSpace(message.Role), "system") {
+		return false
+	}
+	source, _ := message.Metadata["source"].(string)
+	return source == ProjectTaskWaitNoticeSource
+}
+
+// ProjectTaskWaitEndNotice is the line recorded when a wait ends: its tasks
+// settled (the wake), the person's message, or a stop (status is the run's
+// terminal status).
+func ProjectTaskWaitEndNotice(endedBy, status string) string {
+	switch endedBy {
+	case ProjectTaskWaitEndedByTasks:
+		return "Wait ended: tasks settled."
+	case ProjectTaskWaitEndedByMessage:
+		return "Wait ended by your message."
+	}
+	if status == "" || status == V3RunIntentCancelled {
+		return "Wait ended: stopped."
+	}
+	return "Wait ended: run " + status + "."
+}
+
+// projectTaskWaitNoticeMessage is the visible start line, committed with the
+// wait's registration. Its text is the wait's notice.
+func projectTaskWaitNoticeMessage(runID string, wait *V3ProjectTaskWait, titles []string) *MessageSnapshot {
+	metadata := map[string]any{
+		"source":           ProjectTaskWaitNoticeSource,
+		"task_wait_notice": ProjectTaskWaitNoticeWaiting,
+		"task_wait_run_id": runID,
+		"project_id":       wait.ProjectID,
+		"task_count":       len(wait.Tasks),
+		"task_titles":      projectTaskWaitNoticeNames(titles),
+	}
+	if wait.Machine != "" {
+		// Linked-machine titles come from that machine.
+		metadata["machine"], metadata["untrusted_content"] = wait.Machine, true
+	}
+	return &MessageSnapshot{ID: runID + "-wait-notice", Role: "system", Content: wait.Notice, Metadata: metadata}
+}
+
+// projectTaskWaitEnd is a wait ended by a committed mutation; the end line is
+// recorded right after that commit (one message per session event).
+type projectTaskWaitEnd struct {
+	owner   V3SessionRunIntent
+	endedBy string
+	status  string
+}
+
+// recordProjectTaskWaitEnd notes an ended wait for the post-commit end line.
+func (input V3SessionMutationInput) recordProjectTaskWaitEnd(owner V3SessionRunIntent, endedBy, status string) {
+	if input.taskWaitEnded == nil || owner.Status != V3RunIntentWaitingTasks || owner.TaskWait == nil {
+		return
+	}
+	*input.taskWaitEnded = &projectTaskWaitEnd{owner: owner, endedBy: endedBy, status: status}
+}
+
+// recordProjectTaskWaitEndNotice appends the visible end line through the
+// canonical mutation boundary. It is idempotent per wait (the owner run), and
+// skipped for an archived conversation (a message would restore it).
+func (s *SessionStore) recordProjectTaskWaitEndNotice(end projectTaskWaitEnd) error {
+	owner := end.owner
+	if tomb, ok, err := s.GetV3SessionTombstone(owner.SessionID); err != nil {
+		return err
+	} else if ok && (tomb.Archived || tomb.Deleted) {
+		return nil
+	}
+	metadata := map[string]any{
+		"source":           ProjectTaskWaitNoticeSource,
+		"task_wait_notice": ProjectTaskWaitNoticeEnded,
+		"task_wait_run_id": owner.RunID,
+		"project_id":       owner.TaskWait.ProjectID,
+		"task_count":       len(owner.TaskWait.Tasks),
+		"ended_by":         end.endedBy,
+	}
+	if owner.TaskWait.Machine != "" {
+		metadata["machine"] = owner.TaskWait.Machine
+	}
+	key := "task-wait-end:" + owner.RunID
+	_, err := s.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID: owner.SessionID, UserID: owner.UserID, AccountScopeID: owner.AccountScopeID,
+		Kind: V3SessionMutationAppendMessage, ClientRequestID: key, PayloadHash: key, taskWaitNotice: true,
+		Message: &MessageSnapshot{ID: owner.RunID + "-wait-ended", Role: "system", Content: ProjectTaskWaitEndNotice(end.endedBy, end.status), Metadata: metadata},
+	})
+	return err
 }
 
 // What a wait waits for. Settled ("" in records written before until existed)
@@ -377,6 +489,7 @@ func (s *SessionStore) prepareProjectTaskWait(input *V3SessionMutationInput) err
 		wait.Notice = ProjectTaskWaitNotice(titles, "", until)
 		owner.Status, owner.TaskWait = V3RunIntentWaitingTasks, wait
 		input.RunIntent = &owner
+		input.Message = projectTaskWaitNoticeMessage(owner.RunID, wait, titles)
 		input.EventType = "session.run.waiting_tasks"
 		return nil
 	}
@@ -596,6 +709,7 @@ func (s *SessionStore) prepareRemoteProjectTaskWait(input *V3SessionMutationInpu
 	wait.Notice = ProjectTaskWaitNotice(titles, op.Machine, until)
 	owner.Status, owner.TaskWait = V3RunIntentWaitingTasks, wait
 	input.RunIntent = &owner
+	input.Message = projectTaskWaitNoticeMessage(owner.RunID, wait, titles)
 	input.EventType = "session.run.waiting_tasks"
 	return nil
 }
@@ -729,6 +843,9 @@ func (s *SessionStore) setProjectTaskWaitTransition(batch *pebble.Batch, input V
 	next.Status, next.BlockedReason = V3RunIntentCancelled, "task wait superseded by parent lifecycle change"
 	if input.TaskWait != nil && input.TaskWait.Wake {
 		next.Status, next.BlockedReason = V3RunIntentCompleted, "delegated task continuation queued; provider consumption unconfirmed"
+		input.recordProjectTaskWaitEnd(*previous, ProjectTaskWaitEndedByTasks, "")
+	} else if input.Message != nil && strings.EqualFold(input.Message.Role, "user") {
+		input.recordProjectTaskWaitEnd(*previous, ProjectTaskWaitEndedByMessage, "")
 	}
 	next.UpdatedAt, next.EventSeq = now, seq
 	raw, err := json.Marshal(next)

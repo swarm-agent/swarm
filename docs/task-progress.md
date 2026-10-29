@@ -200,6 +200,18 @@ it delegated ends `not_integrated` with workflow state `none`, it tells the
 person in the conversation that the work is on its branch and not integrated,
 and does nothing more with it until the person says what they want.
 
+While the Orchestrator waits on `wait_tasks`, the conversation itself says so,
+whatever the Orchestrator writes. The wait's registration records a system
+message (metadata `source: task_wait_notice`, `task_wait_notice: waiting`, with
+`task_count`, `task_titles` and, for a linked machine, `machine`) whose text is
+the wait's notice: "This conversation is now waiting on 2 task(s) on forge:
+Fix login, Add docs. It wakes when they settle; a new message ends the wait."
+When the wait ends Swarm records the matching line (`task_wait_notice: ended`,
+`ended_by` `tasks`, `message` or `stop`): "Wait ended: tasks settled.", "Wait
+ended by your message." or "Wait ended: stopped.". Both are session history, so
+a reload shows them. They are for the person: Swarm never sends them to the
+model. Clients show them as a compact status line.
+
 ## Clients
 
 A session shows the tasks it started (and a task session its own task) in a

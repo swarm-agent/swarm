@@ -7,6 +7,9 @@ import "github.com/cockroachdb/pebble"
 type sessionMutationCompletion struct {
 	needsSync bool
 	publish   []func() error
+	// taskWaitEnded is a task wait the committed mutation ended; its visible
+	// end line is recorded after the commit.
+	taskWaitEnded *projectTaskWaitEnd
 }
 
 func (c *sessionMutationCompletion) afterDurable(publish func() error) error {

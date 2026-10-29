@@ -196,9 +196,18 @@ a separate profile and the extension loaded, for trying it out.
   on (and the linked machine they run on) from the run state's `task_wait`,
   and the composer says a message from you ends the wait. It comes from the
   sync snapshot, so it survives a reconnect or restart; when the tasks settle
-  or you write, the run shows as running again.
-- **Composer:** while Swarm says the run is active, send becomes stop
-  (`POST /v3/sessions/{id}/run/stop`; the notice is Swarm's own answer). Typing `/` lists the
+  or you write, the run shows as running again. The transcript shows the
+  wait line Swarm records when the wait starts ("This conversation is now
+  waiting on 2 task(s) on forge: …") and when it ends ("Wait ended: tasks
+  settled.", "Wait ended by your message.", "Wait ended: stopped.") as a
+  compact `⏳` status line, from history as well as live.
+- **Composer:** beside send/stop a badge says how the run stands: `● Working`
+  while it runs, `⏳ Waiting · 2 tasks on forge` (task count, and the linked
+  machine) while it waits, none when idle. While Swarm says the run is
+  active, send becomes stop (`POST /v3/sessions/{id}/run/stop`; the notice
+  is Swarm's own answer). While it waits, send stays (a message ends the
+  wait) and `■ stop wait` cancels the wait. Idle shows no hint text; on a
+  narrow pane `/ commands` gives way before the badge. Typing `/` lists the
   commands: `/new`, `/new bottom`, `/stop`, `/theme`, `/usage`,
   `/settings`, `/media`, `/agents`, `/fleet`; tab completes, enter runs.
 - **Usage:** each sign-in plan's limit windows (`GET /v1/codex/account/usage`),

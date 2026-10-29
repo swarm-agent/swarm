@@ -1,4 +1,4 @@
-import type { DesktopTaskActivity } from '../../state/desktop-v3-task-updates'
+import type { DesktopTaskActivity, DesktopTaskWaitNotice } from '../../state/desktop-v3-task-updates'
 
 export function DesktopV3TaskActivity({ activity }: { activity: DesktopTaskActivity }) {
   return <section aria-label={activity.label} data-testid="desktop-task-activity" className="min-w-0 rounded-xl border border-[var(--app-border)] px-4 py-3 text-sm text-[var(--app-text)]">
@@ -9,4 +9,12 @@ export function DesktopV3TaskActivity({ activity }: { activity: DesktopTaskActiv
       {row.summary ? <p className="whitespace-pre-wrap [overflow-wrap:anywhere]">{row.summary}</p> : null}
     </div>)}
   </section>
+}
+
+// A compact status line for a task wait starting or ending. Plain text only.
+export function DesktopV3TaskWaitNotice({ notice }: { notice: DesktopTaskWaitNotice }) {
+  return <p role="status" data-testid="desktop-task-wait-notice" data-ended={notice.ended ? 'true' : 'false'} title={notice.titles.length ? notice.titles.join('\n') : undefined} className="flex min-w-0 items-baseline gap-2 px-1 text-xs text-[var(--app-text-muted)]">
+    <span aria-hidden="true" className={notice.ended ? '' : 'text-[var(--app-warning)]'}>{notice.ended ? '✓' : '⏳'}</span>
+    <span className="min-w-0 [overflow-wrap:anywhere]">{notice.text}</span>
+  </p>
 }

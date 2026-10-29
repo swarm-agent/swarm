@@ -7560,6 +7560,9 @@ func buildTaskParentTranscriptContext(messages []pebblestore.MessageSnapshot) st
 }
 
 func formatTaskDelegationTranscriptMessage(message pebblestore.MessageSnapshot) string {
+	if pebblestore.IsProjectTaskWaitNoticeMessage(message) {
+		return ""
+	}
 	role := strings.ToLower(strings.TrimSpace(message.Role))
 	content := strings.TrimSpace(message.Content)
 	switch role {

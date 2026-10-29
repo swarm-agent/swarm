@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -139,6 +140,11 @@ type V3SessionMutationInput struct {
 	MediaUsage                   *SessionMediaUsageRecord      `json:"media_usage,omitempty"`
 	ExpectedLastEventSeq         *uint64                       `json:"expected_last_event_seq,omitempty"`
 	NowUnixMs                    int64                         `json:"now_unix_ms,omitempty"`
+
+	// Set by the mutation pipeline; receives a task wait this mutation ends.
+	taskWaitEnded **projectTaskWaitEnd
+	// A task wait end line: its outbox is published like a task report's.
+	taskWaitNotice bool
 }
 
 type V3SessionMutationResult struct {
@@ -712,6 +718,13 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 			return V3SessionMutationResult{}, err
 		}
 	}
+	if end := completion.taskWaitEnded; end != nil {
+		// The committed mutation stands; the end line is information for the
+		// person, so its own failure is reported, not turned into this one's.
+		if err := s.recordProjectTaskWaitEndNotice(*end); err != nil {
+			log.Printf("task wait end line was not recorded: %v", err)
+		}
+	}
 	return result, nil
 }
 
@@ -738,6 +751,7 @@ func (s *SessionStore) applyV3SessionMutationLocked(input V3SessionMutationInput
 	if err := validateV3SessionMutationInput(input); err != nil {
 		return V3SessionMutationResult{}, err
 	}
+	input.taskWaitEnded = &completion.taskWaitEnded
 
 	if input.Kind == V3SessionMutationAcceptPlan {
 		return s.applyV3PlanAcceptanceMutation(input)
@@ -880,7 +894,7 @@ func (s *SessionStore) applyV3SessionMutationLocked(input V3SessionMutationInput
 	defer s.store.sessionMutations.libraryRepairMu.RUnlock()
 	input.designProjectOutbox = &designProjectOutbox
 	result, err := s.applyFreshV3SessionMutationWithReader(input, idempotencyKey)
-	if err == nil && input.TaskReport != nil && result.RealtimeOutbox != nil && !result.Replayed {
+	if err == nil && (input.TaskReport != nil || input.taskWaitNotice) && result.RealtimeOutbox != nil && !result.Replayed {
 		designProjectOutbox = append(designProjectOutbox, result.RealtimeOutbox)
 	}
 	budgetReceiptCommitted = err == nil && (input.TurnUsage != nil || input.MediaUsage != nil)
@@ -1078,6 +1092,10 @@ func (s *SessionStore) applyFreshV3SessionMutationWithReader(input V3SessionMuta
 		previousRunIntent, previousRunIntentOK, err = s.GetV3SessionRunIntent(runIntent.SessionID, runIntent.RunID)
 		if err != nil {
 			return V3SessionMutationResult{}, err
+		}
+		if previousRunIntentOK && isV3RunIntentTerminal(runIntent.Status) {
+			// A stop (or other terminal write) of the waiting run itself.
+			input.recordProjectTaskWaitEnd(previousRunIntent, ProjectTaskWaitEndedByStop, runIntent.Status)
 		}
 		previousRunState, previousRunStateOK, err = s.GetV3SessionRunState(runIntent.SessionID)
 		if err != nil {

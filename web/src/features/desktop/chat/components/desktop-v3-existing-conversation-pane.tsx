@@ -33,8 +33,8 @@ import {
   XCircle,
 } from "lucide-react";
 import { cn } from "../../../../lib/cn";
-import { isTaskOutcomeMessage, taskOutcomeActivity, type DesktopTaskActivity } from '../../state/desktop-v3-task-updates';
-import { DesktopV3TaskActivity } from './desktop-v3-task-activity';
+import { isTaskOutcomeMessage, isTaskWaitNoticeMessage, taskOutcomeActivity, taskWaitNotice, type DesktopTaskActivity, type DesktopTaskWaitNotice } from '../../state/desktop-v3-task-updates';
+import { DesktopV3TaskActivity, DesktopV3TaskWaitNotice } from './desktop-v3-task-activity';
 import { AutomationV2Detail, AutomationV2ScheduleHandoff } from '../../tools/automations/automation-v2-workspace';
 import { AutomationSessionPanel } from '../../tools/automations/automation-session';
 import { WorkerSessionBanner } from '../../tools/automations/worker-session-banner';
@@ -673,6 +673,7 @@ type DesktopV3PlanHandoffRenderFields = {
 
 export type DesktopV3RenderItem =
   | { type: "task-activity"; id: string; timelineSeq: number; activity: DesktopTaskActivity }
+  | { type: "task-wait-notice"; id: string; timelineSeq: number; notice: DesktopTaskWaitNotice }
   | {
       type: "plan-break";
       message: MessageSnapshot;
@@ -1565,6 +1566,8 @@ export function buildDesktopV3ConversationRenderItems(
     ...visibleCommittedMessages.map((message) =>
       isTaskOutcomeMessage(message)
         ? { type: "task-activity" as const, id: `task-outcome:${message.id}`, timelineSeq: message.global_seq, activity: taskOutcomeActivity(message) }
+        : isTaskWaitNoticeMessage(message)
+        ? { type: "task-wait-notice" as const, id: `task-wait-notice:${message.id}`, timelineSeq: message.global_seq, notice: taskWaitNotice(message) }
         : isDesktopV3PlanExecutionBreakMessage(message)
         ? buildDesktopV3PlanExecutionBreakItem(message)
         : isDesktopV3PlanCheckpointHandoffMessage(message)
@@ -3938,6 +3941,8 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
   switch (item.type) {
     case "task-activity":
       return <DesktopV3TaskActivity activity={item.activity} />;
+    case "task-wait-notice":
+      return <DesktopV3TaskWaitNotice notice={item.notice} />;
     case "plan-break":
       return <DesktopV3PlanExecutionBreak item={item} />;
     case "plan-checkpoint-handoff":

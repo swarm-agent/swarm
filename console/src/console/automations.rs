@@ -560,6 +560,7 @@ impl Console {
         match e {
             Entry::User(text) | Entry::Queued { text, .. } => div().px_3().py_2().rounded(px(t.radius)).bg(t.raised).text_color(t.text).line_height(px(19.)).child(text.clone()),
             Entry::Assistant(text) => div().flex().gap_2().px_3().child(div().text_color(t.faint).child("◆")).child(div().flex_1().min_w_0().text_color(t.text).line_height(px(19.)).child(text.clone())),
+            Entry::Notice(text) => div().flex().gap_2().px_3().text_size(px(11.5)).child(div().text_color(t.accent).child("⏳")).child(div().flex_1().min_w_0().text_color(t.muted).child(text.clone())),
             Entry::Tool { name, state, .. } => {
                 let failed = *state == crate::data::ToolState::Failed || name.as_ref() == "error";
                 let line = e.tool_line(crate::data::now_ms()).map(|l| l.text).unwrap_or_default();

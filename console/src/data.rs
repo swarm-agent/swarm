@@ -347,6 +347,43 @@ impl TaskWait {
         }
         line
     }
+
+    /// The composer's badge: "⏳ Waiting · 2 tasks on forge".
+    pub fn badge(&self) -> String {
+        let n = self.tasks.len();
+        let mut badge = match n {
+            0 => "⏳ Waiting".to_string(),
+            1 => "⏳ Waiting · 1 task".to_string(),
+            n => format!("⏳ Waiting · {n} tasks"),
+        };
+        if !self.machine.is_empty() {
+            badge.push_str(&format!(" on {}", self.machine));
+        }
+        badge
+    }
+}
+
+/// The composer's state badge beside send/stop, so Working, Waiting and Idle
+/// read at a glance: "● Working", "⏳ Waiting · 2 tasks on forge", none idle.
+pub fn composer_badge(state: RunState, wait: Option<&TaskWait>) -> Option<String> {
+    match state {
+        RunState::Running => Some("● Working".to_string()),
+        RunState::Waiting => Some(wait.map(TaskWait::badge).unwrap_or_else(|| "⏳ Waiting".to_string())),
+        _ => None,
+    }
+}
+
+/// The composer's hint text. Idle shows none; the badge carries the run's
+/// state, so the waiting hint only says what a message does.
+pub fn composer_hint(demo: bool, live: bool, question: bool, state: RunState) -> &'static str {
+    match (live, demo) {
+        (_, true) => "demo data",
+        (false, false) => "starts a session in this project",
+        (true, false) if question => "your message answers the question above",
+        (true, false) if state == RunState::Running => "your message is queued for its next step",
+        (true, false) if state == RunState::Waiting => "a message from you ends the wait",
+        (true, false) => "",
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -564,6 +601,9 @@ pub enum Entry {
         text: Text,
     },
     Assistant(Text),
+    /// A status line Swarm records for the person, not a turn: a task wait
+    /// starting ("This conversation is now waiting on…") or ending.
+    Notice(Text),
     Tool {
         name: Text,
         detail: Text,
@@ -1347,6 +1387,31 @@ mod tests {
         assert_eq!(clock(149_459), "2m 29s");
         assert_eq!(clock(42_000), "42s");
         assert_eq!(clock(4_000_000), "1h 06m");
+    }
+
+    // Purpose: the composer says Working / Waiting / Idle at a glance.
+    // Requirement: a running run badges "● Working"; a waiting run badges its
+    // task count (and machine when linked); idle and failed have no badge; the
+    // idle hint is empty (no filler text) while the others still say what a
+    // message does. Threat: the waiting state hiding in faint hint text, or
+    // filler hints returning. Pure functions are the narrowest layer for the
+    // text; the GPUI row only places it.
+    #[test]
+    fn composer_badge_and_hint_name_the_run_state() {
+        let wait = TaskWait { project_id: "p".into(), machine: "forge".into(), tasks: vec![("t1".into(), "Fix login".into()), ("t2".into(), "".into())] };
+        assert_eq!(composer_badge(RunState::Waiting, Some(&wait)).as_deref(), Some("⏳ Waiting · 2 tasks on forge"));
+        let here = TaskWait { tasks: vec![("t1".into(), "".into())], ..Default::default() };
+        assert_eq!(composer_badge(RunState::Waiting, Some(&here)).as_deref(), Some("⏳ Waiting · 1 task"));
+        assert_eq!(composer_badge(RunState::Waiting, None).as_deref(), Some("⏳ Waiting"));
+        assert_eq!(composer_badge(RunState::Running, None).as_deref(), Some("● Working"));
+        assert_eq!(composer_badge(RunState::Idle, None), None);
+        assert_eq!(composer_badge(RunState::Failed, None), None);
+        assert_eq!(composer_hint(false, true, false, RunState::Idle), "");
+        assert_eq!(composer_hint(false, true, false, RunState::Waiting), "a message from you ends the wait");
+        assert_eq!(composer_hint(false, true, false, RunState::Running), "your message is queued for its next step");
+        assert_eq!(composer_hint(false, true, true, RunState::Idle), "your message answers the question above");
+        assert_eq!(composer_hint(false, false, false, RunState::Idle), "starts a session in this project");
+        assert_eq!(composer_hint(true, true, false, RunState::Idle), "demo data");
     }
 }
 

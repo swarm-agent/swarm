@@ -1087,9 +1087,11 @@ impl Console {
         let drop_tint = alpha(t.accent, 0.12);
         // While Swarm says the run is active, the send hint becomes its stop button.
         let running = s.live.is_some() && s.state == RunState::Running;
+        // Asleep on tasks: a message ends the wait (so send), and stop cancels
+        // it (Swarm stops an inactive wait).
+        let waiting = s.live.is_some() && s.state == RunState::Waiting;
         let err = t.err;
-        // Send and stop are the same box, so swapping them moves nothing.
-        let send_or_stop = if running {
+        let stop_button = |label: &'static str| {
             div()
                 .id(SharedString::from(format!("composer-stop-{pid}")))
                 .h(px(18.))
@@ -1104,19 +1106,36 @@ impl Console {
                 .cursor_pointer()
                 .hover(move |s| s.bg(alpha(err, 0.15)))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.act(si, Act::Stop, cx)))
-                .child("■ stop")
-                .into_any_element()
+                .child(label)
+        };
+        let send = || div().h(px(18.)).flex().items_center().px_2().border_1().border_color(gpui::transparent_black()).child("⏎ send");
+        // Send and stop are the same box, so swapping them moves nothing.
+        let send_or_stop = if running {
+            stop_button("■ stop").into_any_element()
+        } else if waiting {
+            div().flex().items_center().gap_1().child(stop_button("■ stop wait")).child(send()).into_any_element()
         } else {
-            div().h(px(18.)).flex().items_center().px_2().border_1().border_color(gpui::transparent_black()).child("⏎ send").into_any_element()
+            send().into_any_element()
         };
-        let hint = match (&s.live, self.link == Link::Demo) {
-            (_, true) => "demo data",
-            (None, false) => "starts a session in this project",
-            (Some(_), false) if s.pending.as_ref().is_some_and(|p| p.question) => "your message answers the question above",
-            (Some(_), false) if s.state == RunState::Running => "Swarm is working · your message is queued for its next step",
-            (Some(_), false) if s.state == RunState::Waiting => "Waiting for tasks · a message from you ends the wait",
-            (Some(_), false) => "follow up in this session",
-        };
+        // Working / Waiting at a glance, beside send/stop (none when idle).
+        let badge = s.live.as_ref().and(data::composer_badge(s.state, s.waiting_on.as_ref())).map(|label| {
+            let color = if s.state == RunState::Waiting { t.accent } else { t.info };
+            div()
+                .id(SharedString::from(format!("composer-badge-{pid}")))
+                .flex_none()
+                .h(px(18.))
+                .flex()
+                .items_center()
+                .px_2()
+                .rounded(px(t.radius))
+                .bg(alpha(color, 0.14))
+                .border_1()
+                .border_color(alpha(color, 0.5))
+                .text_size(px(11.))
+                .text_color(color)
+                .child(label)
+        });
+        let hint = data::composer_hint(self.link == Link::Demo, s.live.is_some(), s.pending.as_ref().is_some_and(|p| p.question), s.state);
         let composer = div()
             .flex_none()
             .p_2()
@@ -1163,7 +1182,9 @@ impl Console {
                             .child(self.permissions_chip(pid, cx))
                             .child(self.model_button(si, pid, cx))
                             .child(div().flex_1().min_w_0().truncate().child(hint))
-                            .child(div().flex_none().child("/ commands"))
+                            // On a narrow pane this gives way first, never the badge.
+                            .child(div().flex_shrink().min_w_0().overflow_hidden().whitespace_nowrap().child("/ commands"))
+                            .children(badge)
                             .child(div().flex_none().child(send_or_stop)),
                     ),
             );
@@ -1277,6 +1298,17 @@ impl Console {
                 .child(div().text_color(t.faint).line_height(px(19.)).child("◆"))
                 .child(self.markdown(text, pid, ei, cx).flex_1().text_color(t.text))
                 .child(self.copy_button(format!("copy-{pid}-{ei}"), text.clone(), cx))
+                .into_any_element(),
+            // A status line Swarm recorded for the person (a task wait
+            // starting or ending): compact, muted, not a turn.
+            Entry::Notice(text) => div()
+                .group(SharedString::from(format!("entry-{pid}-{ei}")))
+                .flex()
+                .gap_2()
+                .px_3()
+                .text_size(px(11.5))
+                .child(div().flex_none().text_color(t.accent).child("⏳"))
+                .child(div().flex_1().min_w_0().line_height(px(17.)).child(self.selectable(pid, ei, 0, text.clone(), vec![self.plain_run(text.len(), t.muted)], vec![], cx)))
                 .into_any_element(),
             Entry::Tool { name, state, call_id, .. } => {
                 let failed = *state == ToolState::Failed || name.as_ref() == "error";

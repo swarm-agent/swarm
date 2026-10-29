@@ -344,6 +344,14 @@ pub fn entry(m: &Value, first: bool) -> Vec<Entry> {
                 out.push(Entry::Assistant(text.to_string().into()));
             }
         }
+        // A task wait's start or end line: Swarm records it for the person
+        // (never a model turn). One line; linked-machine titles are untrusted.
+        "system" if s(&meta, "source") == "task_wait_notice" => {
+            let text = s(m, "content").split_whitespace().collect::<Vec<_>>().join(" ");
+            if !text.is_empty() {
+                out.push(Entry::Notice(text.into()));
+            }
+        }
         "tool" => {
             let name = s(&meta, "tool_name");
             if !name.is_empty() {
@@ -760,6 +768,25 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    // Purpose: the wait line Swarm records in history (system message, source
+    // task_wait_notice) shows in the transcript as one status line, start and
+    // end alike, while other system messages (the outcome result the model
+    // reads) add no line. Threat: the person never seeing the wait in the
+    // conversation, or untrusted titles adding lines. Boundary: map::entries
+    // over Swarm's message records, as a reload reads them.
+    #[test]
+    fn task_wait_lines_from_history_become_notices() {
+        let got = entries(&[
+            json!({"id": "m1", "role": "user", "content": "start"}),
+            json!({"id": "n1", "role": "system", "content": "This conversation is now waiting on 2 task(s) on forge: Fix login,\nAdd docs. It wakes when they settle; a new message ends the wait.", "metadata": {"source": "task_wait_notice", "task_wait_notice": "waiting", "task_count": 2, "machine": "forge"}}),
+            json!({"id": "r1", "role": "system", "content": "Delegated project task outcomes:\n{}", "metadata": {"task_wait_owner_run_id": "run-1"}}),
+            json!({"id": "n2", "role": "system", "content": "Wait ended: tasks settled.", "metadata": {"source": "task_wait_notice", "task_wait_notice": "ended"}}),
+        ]);
+        assert_eq!(got.len(), 3);
+        assert!(matches!(&got[1], Entry::Notice(t) if t.as_ref() == "This conversation is now waiting on 2 task(s) on forge: Fix login, Add docs. It wakes when they settle; a new message ends the wait."));
+        assert!(matches!(&got[2], Entry::Notice(t) if t.as_ref() == "Wait ended: tasks settled."));
+    }
+
     // Purpose: a message Swarm queued during a run shows as queued until
     // Swarm's delivery receipt names it, then as an ordinary message; the
     // receipt adds no line of its own and touches no other message.
@@ -858,6 +885,8 @@ mod tests {
         let wait = got.waiting_on.unwrap();
         assert_eq!((wait.project_id.as_ref(), wait.machine.as_ref(), wait.tasks.len()), ("proj_1", "forge", 2));
         assert_eq!(wait.line(), "waiting for tasks: t1, t2 · on forge");
+        // The composer's badge comes from the snapshot alone (reconnect safe).
+        assert_eq!(crate::data::composer_badge(got.state, Some(&wait)).as_deref(), Some("⏳ Waiting · 2 tasks on forge"));
         // A run intent from a live event has no `active`: its status decides.
         let intent = json!({"status": "waiting_tasks"});
         assert!(!run_clock(&intent, 0).active);

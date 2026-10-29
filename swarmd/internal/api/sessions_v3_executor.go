@@ -5847,7 +5847,7 @@ func sessionsV3ProviderInputWithOptions(messages []pebblestore.MessageSnapshot, 
 		if content == "" {
 			continue
 		}
-		if isManualCompactionAcknowledgement(message) {
+		if isManualCompactionAcknowledgement(message) || pebblestore.IsProjectTaskWaitNoticeMessage(message) {
 			continue
 		}
 		switch strings.ToLower(strings.TrimSpace(message.Role)) {

@@ -1138,8 +1138,10 @@ impl Model<'_> {
         }
         let watched = self.details.get(sid).is_some_and(|d| d.hydrated);
         match kind {
-            "session.message.appended" => {
-                let Some(message) = payload.get("message") else { return Ok(true) };
+            // A wait's registration and its wake commit their message (the
+            // wait line, the outcome) in the same event as the run intent.
+            "session.message.appended" | "session.run.waiting_tasks" | "session.run.tasks_ready" => {
+                let Some(message) = payload.get("message").filter(|m| m.is_object()) else { return Ok(true) };
                 if watched {
                     let d = self.details.get_mut(sid).unwrap();
                     let first = d.entries.is_empty();
@@ -1530,8 +1532,8 @@ mod tests {
     // model is the narrowest layer that joins run state, tasks and titles.
     // None of these events reach Swarm, so the client is never contacted.
     mod waiting {
-        use super::super::{Client, Model, map};
-        use crate::data::{RunState, Text};
+        use super::super::{Client, Detail, Model, map};
+        use crate::data::{Entry, RunState, Text};
         use serde_json::{Value, json};
         use std::collections::{HashMap, HashSet};
         use std::sync::mpsc;
@@ -1593,12 +1595,18 @@ mod tests {
             let mut m = model(&client, json!({"run_id": "run-1", "active": true, "status": "running", "started_at": 1000}));
             assert_eq!(m.session_of("s1").unwrap().state, RunState::Running);
 
-            // The run pends on wait_tasks: the event carries its run intent (no `active`).
+            m.details.insert("s1".into(), Detail { hydrated: true, ..Default::default() });
+            // The run pends on wait_tasks: the event carries its run intent (no
+            // `active`) and the wait line Swarm records for the person.
             let intent = json!({"run_id": "run-1", "status": "waiting_tasks", "task_wait": {"project_id": "proj_1", "tasks": [{"task_id": "t1"}]}});
-            assert!(m.event("s1", "session.run.waiting_tasks", json!({"run_intent": intent})).unwrap());
+            let line = json!({"id": "run-1-wait-notice", "role": "system", "content": "This conversation is now waiting on 1 task(s): Fix the build. It wakes when they settle; a new message ends the wait.", "metadata": {"source": "task_wait_notice", "task_wait_notice": "waiting"}});
+            assert!(m.event("s1", "session.run.waiting_tasks", json!({"run_intent": intent, "message": line})).unwrap());
             let s = m.session_of("s1").unwrap();
             assert_eq!(s.state, RunState::Waiting);
-            assert_eq!(s.waiting_on.unwrap().tasks[0].1.as_ref(), "Fix the build");
+            assert!(matches!(s.entries.last(), Some(Entry::Notice(t)) if t.starts_with("This conversation is now waiting on 1 task(s): Fix the build.")));
+            let wait = s.waiting_on.unwrap();
+            assert_eq!(wait.tasks[0].1.as_ref(), "Fix the build");
+            assert_eq!(crate::data::composer_badge(s.state, Some(&wait)).as_deref(), Some("⏳ Waiting · 1 task"));
 
             // The tasks settle and the run resumes: Running again, nothing awaited.
             let resumed = json!({"run_id": "run-1:resume", "status": "running", "created_at": 2000});

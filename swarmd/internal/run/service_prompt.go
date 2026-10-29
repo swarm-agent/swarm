@@ -945,7 +945,7 @@ func buildInput(messages []pebblestore.MessageSnapshot) []map[string]any {
 		if content == "" {
 			continue
 		}
-		if isManualCompactionAcknowledgement(message) {
+		if isManualCompactionAcknowledgement(message) || pebblestore.IsProjectTaskWaitNoticeMessage(message) {
 			continue
 		}
 
