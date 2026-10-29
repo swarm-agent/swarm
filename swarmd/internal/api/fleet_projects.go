@@ -201,8 +201,9 @@ func fleetTaskListQuery(args map[string]any) (url.Values, error) {
 }
 
 // compactFleetTaskList keeps the page facts and the list-row fields of each
-// task (projectTaskListRow's identity fields), with the outcome and stale
-// flag the machine computed and its count of reviewer tasks; full records
+// task (projectTaskListRow's identity fields), with the outcome, stale and
+// needs_attention flags the machine computed and its count of reviewer
+// tasks; full records
 // stay in get_task. The counts are the machine's outcome_counts, the same
 // buckets as list_tasks on this machine; raw status counts are left out
 // (needs_review only says a run ended, not that anyone must review it).
@@ -255,6 +256,10 @@ func compactFleetTaskList(raw json.RawMessage) (json.RawMessage, error) {
 			}
 			if stale, _ := progress["stale"].(bool); stale {
 				item["stale"] = true
+			}
+			// The machine's own decision (pebblestore.ProjectTaskNeedsAttention).
+			if attention, _ := progress["needs_attention"].(bool); attention {
+				item["needs_attention"] = true
 			}
 		}
 		tasks = append(tasks, item)

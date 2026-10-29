@@ -62,11 +62,16 @@ type taskProgress struct {
 	// Idle marks a finished task that has not changed for
 	// taskIdleAfterMillis (taskProgressIdle): list counts put one with
 	// work still to hand over under idle, not needs_attention.
-	Idle        bool                     `json:"idle,omitempty"`
-	Workflow    *taskProgressWorkflow    `json:"workflow,omitempty"`
-	Integration *taskProgressIntegration `json:"integration,omitempty"`
-	History     []taskProgressEvent      `json:"history"`
-	UpdatedAt   int64                    `json:"updated_at"`
+	Idle bool `json:"idle,omitempty"`
+	// NeedsAttention says the person must act on the task
+	// (pebblestore.ProjectTaskNeedsAttention, the rule list counts use):
+	// blocked, failed, waiting for approval or a question, or work no
+	// workflow hands over and nobody integrated.
+	NeedsAttention bool                     `json:"needs_attention"`
+	Workflow       *taskProgressWorkflow    `json:"workflow,omitempty"`
+	Integration    *taskProgressIntegration `json:"integration,omitempty"`
+	History        []taskProgressEvent      `json:"history"`
+	UpdatedAt      int64                    `json:"updated_at"`
 }
 
 type taskProgressWorkflow struct {
@@ -700,7 +705,16 @@ func (s *Server) taskProgressFor(account string, task pebblestore.ProjectTaskRec
 	deliveries, eval := s.taskProgressRecords(account, task)
 	p := computeTaskProgress(task, deliveries, eval, now)
 	s.markTaskProgressStale(&p, task, now)
+	markTaskProgressAttention(&p, task)
 	return &p
+}
+
+// markTaskProgressAttention sets p.NeedsAttention from its final outcome,
+// stale and idle flags, with the rule list counts use.
+func markTaskProgressAttention(p *taskProgress, task pebblestore.ProjectTaskRecord) {
+	if p != nil {
+		p.NeedsAttention = pebblestore.ProjectTaskNeedsAttention(task, p.Outcome, p.Stale, p.Idle)
+	}
 }
 
 // taskProgressRecords reads a task's job deliveries and evaluation.

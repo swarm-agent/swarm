@@ -146,9 +146,13 @@ type ProjectTaskView struct {
 	// Messages are the last messages sent to the task (message_task, or a
 	// follow-up), each with its delivery: queued, delivered (with the run
 	// that received it) or reopened.
-	Messages   []pebblestore.ProjectTaskMessage `json:"messages,omitempty"`
-	NextAction string                           `json:"next_action"`
-	More       string                           `json:"more"`
+	Messages []pebblestore.ProjectTaskMessage `json:"messages,omitempty"`
+	// NeedsAttention says the person must act on the task, with the same
+	// decision as its list row and the needs_attention count
+	// (pebblestore.ProjectTaskNeedsAttention).
+	NeedsAttention bool   `json:"needs_attention"`
+	NextAction     string `json:"next_action"`
+	More           string `json:"more"`
 }
 
 type projectTaskProgress struct {
@@ -425,6 +429,11 @@ func compactProjectTask(read projectTaskRead, remote bool) ProjectTaskView {
 		}
 	}
 	view.NextAction, view.Progress.Next = projectTaskNext(t, p, integration, result.Commits, remote)
+	outcome, stale, idle := "", false, false
+	if p != nil {
+		outcome, stale, idle = p.Outcome, p.Stale, p.Idle
+	}
+	view.NeedsAttention = pebblestore.ProjectTaskNeedsAttention(*t, outcome, stale, idle)
 	fitProjectTaskView(&view)
 	return view
 }

@@ -1462,7 +1462,7 @@ func controlMCPStatus(c *controlMCPCall, _ map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := controlMCPPick(summary, "status", "reasons", "machine", "sandbox", "secrets_gateway", "permissions", "attention", "workers", "runners", "usage", "keys")
+	out := controlMCPPick(summary, "status", "reasons", "machine", "sandbox", "secrets_gateway", "permissions", "attention", "workers", "runners", "usage", "keys", "running_now")
 	if installer := os.Getenv("SWARM_INSTALLER"); installer != "" {
 		machine := controlMCPMap(out["machine"])
 		if machine == nil {
@@ -1595,7 +1595,7 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_status", Title: "Is this box all right?",
-			Description: "One call: status ok, attention (something waits or a job failed today) or degraded (a sandbox that should be on could not start, or spending is over the limit) with reasons; the sandbox, the secret gateway, jobs waiting on someone, today's spend against the limit, and activity_cursor for swarm_activity. Keys: active keys by kind, keys that stop working within a week and keys used from a new place today (each also raises attention; swarm_list_keys and swarm_revoke_key act on them). Exact counts: automations (schedules, how many are active and will run, the next run of each), runs today (total, succeeded, failed, unfinished, by source; the failed runs with job_id; everything running now) and the machine's workspaces and build. Today is the UTC day unless you pass the person's timezone.",
+			Description: "One call: status ok, attention (something waits or a job failed today) or degraded (a sandbox that should be on could not start, or spending is over the limit) with reasons; running_now (how many agent runs run on this machine now, the runs an update's drain waits on: the answer to how many agents are running); the sandbox, the secret gateway, jobs waiting on someone, today's spend against the limit, and activity_cursor for swarm_activity. Keys: active keys by kind, keys that stop working within a week and keys used from a new place today (each also raises attention; swarm_list_keys and swarm_revoke_key act on them). Exact counts: automations (schedules, how many are active and will run, the next run of each), runs today (total, succeeded, failed, unfinished, by source; the failed runs with job_id; everything running now) and the machine's workspaces and build. Today is the UTC day unless you pass the person's timezone.",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"timezone": controlMCPStringProp("IANA timezone for \"today\" (for example Europe/Helsinki). Default UTC.", 0, 64),
 			}), Annotations: controlMCPReadOnly, call: controlMCPStatus,

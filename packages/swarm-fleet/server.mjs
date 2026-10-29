@@ -275,7 +275,7 @@ const FLEET_TOOLS = [
   },
   {
     name: 'swarm_fleet_status', title: 'Fleet status',
-    description: 'One view of every Swarm machine: reachable, access, exact counts per machine (schedules and how many are active, runs today: succeeded, failed, unfinished, running now, with the failed runs\' job ids), workspaces, sessions (running and recent), and today\'s usage and limits. Today is the UTC day unless you pass timezone.',
+    description: 'One view of every Swarm machine: reachable, access, running_now per machine (how many agent runs run there now, the runs an update\'s drain waits on: the answer to how many agents are running), exact counts per machine (schedules and how many are active, worker runs today: succeeded, failed, unfinished, running now, with the failed runs\' job ids), workspaces, sessions (running and recent), and today\'s usage and limits (usage_today.sessions_today counts the sessions that used a model today, finished ones included, not what runs now). Today is the UTC day unless you pass timezone.',
     inputSchema: { type: 'object', additionalProperties: false, properties: { timezone: { type: 'string', maxLength: 64, description: 'IANA timezone for "today" (for example Europe/Helsinki). Default UTC.' } } },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
@@ -406,6 +406,7 @@ export function createFleet(configured, { proxy = '', notify = () => {}, send = 
     return {
       ...base,
       ...(status ? { status: status.status ?? null, reasons: status.reasons ?? [], attention: status.attention ?? null } : {}),
+      ...(typeof status?.running_now === 'number' ? { running_now: status.running_now } : {}),
       ...(status?.runs ? { runs_today: runsToday(status.runs, status.workers) } : {}),
       ...(status?.automations ? { automations: { schedules: status.automations.schedules, active: status.automations.active, next_run_at: status.automations.next_run_at || null } } : {}),
       ...(status?.workspaces?.total !== undefined ? { workspaces: status.workspaces.total } : {}),

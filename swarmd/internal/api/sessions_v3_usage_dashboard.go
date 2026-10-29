@@ -36,11 +36,18 @@ type SessionUsageDashboardSummary struct {
 	CodexNominalCostUSD float64 `json:"codex_nominal_cost_usd"`
 	TotalTurns          int     `json:"total_turns"`
 	TotalSessions       int     `json:"total_sessions"`
-	ActiveSessions      int     `json:"active_sessions"`
-	ArchivedSessions    int     `json:"archived_sessions"`
-	TotalMediaCalls     int     `json:"total_media_calls"`
-	MediaCostUSD        float64 `json:"media_cost_usd"`
-	HasUnknownPricing   bool    `json:"has_unknown_pricing,omitempty"`
+	// ActiveSessions and ArchivedSessions split TotalSessions (the sessions
+	// with usage in the period) by archive state; none of them says what runs
+	// now.
+	ActiveSessions   int `json:"active_sessions"`
+	ArchivedSessions int `json:"archived_sessions"`
+	// RunningNow is how many runs run on this machine now: the runs holding
+	// an execution lease, the same runs an update's drain waits on
+	// (Server.runningNow).
+	RunningNow        int     `json:"running_now"`
+	TotalMediaCalls   int     `json:"total_media_calls"`
+	MediaCostUSD      float64 `json:"media_cost_usd"`
+	HasUnknownPricing bool    `json:"has_unknown_pricing,omitempty"`
 }
 
 type SessionUsageDailyItem struct {
@@ -529,6 +536,7 @@ func (s *Server) handleSessionsV3UsageAt(w http.ResponseWriter, r *http.Request,
 	// Counts and rows share the same filtered accounting population, not the
 	// account-wide session library or lifetime usage summaries.
 	summary.TotalSessions = len(uniqueSessions)
+	summary.RunningNow = s.runningNow()
 	for sid := range uniqueSessions {
 		if resolveSessionMeta(sid).archived {
 			summary.ArchivedSessions++

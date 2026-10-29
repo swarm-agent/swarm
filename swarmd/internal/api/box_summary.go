@@ -261,6 +261,7 @@ func (s *Server) handleBoxSummary(w http.ResponseWriter, r *http.Request) {
 		"reasons":         reasons,
 		"machine":         machine,
 		"busy":            busy,
+		"running_now":     s.runningNow(),
 		"sandbox":         s.boxSandbox(principal, sb),
 		"secrets_gateway": s.secretsGatewayEnabled,
 		"permissions":     map[string]any{"bypass": s.permissionBypassForAccount(account), "bypass_blocked_reason": s.permissionBypassBlockedReason()},
@@ -507,6 +508,16 @@ func boxFolderEnvironment(root string, max int, view map[string]any) map[string]
 // like the summary's other times, and only a count of the runs it waits for.
 func boxDrainSummary(drain executioncapacity.DrainStatus) map[string]any {
 	return map[string]any{"draining": drain.Draining, "since": drain.Since, "deadline": drain.Deadline, "since_ms": unixMillisOrZero(drain.Since), "deadline_ms": unixMillisOrZero(drain.Deadline), "timed_out": drain.TimedOut, "blocking_runs": len(drain.Blockers)}
+}
+
+// runningNow is how many runs run on this machine now: the runs holding an
+// execution lease (executioncapacity.Manager.HeldSessions), the same live set
+// a drain counts as its blocking runs. 0 without a capacity manager.
+func (s *Server) runningNow() int {
+	if manager := s.ExecutionCapacity(); manager != nil {
+		return len(manager.HeldSessions())
+	}
+	return 0
 }
 
 // unixMillisOrZero is a summary time in Unix ms, like its other times; 0 when unset.

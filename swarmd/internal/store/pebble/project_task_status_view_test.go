@@ -51,7 +51,11 @@ func TestProjectTaskStoppedAndCountRules(t *testing.T) {
 		{"needs_review", "workflow pending", false, false, ProjectTaskCountInProgress},
 		{"in_progress", "", false, false, ProjectTaskCountInProgress},
 		{"queued", "", false, false, ProjectTaskCountWaiting},
-		{"pending_approval", "", false, false, ProjectTaskCountWaiting},
+		// Waiting for the person's approval or answer: only they can act.
+		{"pending_approval", "", false, false, ProjectTaskCountNeedsAttention},
+		{"needs_input", "", false, false, ProjectTaskCountNeedsAttention},
+		{"needs_review", "stopped", false, false, ProjectTaskCountStopped},
+		{"needs_review", "delivered files ready", false, false, ProjectTaskCountDone},
 		{"needs_review", "blocked rounds_exhausted: step send-back", false, false, ProjectTaskCountNeedsAttention},
 		{"needs_review", "failed push", false, false, ProjectTaskCountNeedsAttention},
 		{"needs_review", "ready to integrate", false, false, ProjectTaskCountNeedsAttention},
@@ -90,6 +94,61 @@ func TestProjectTaskStoppedAndCountRules(t *testing.T) {
 	if len(counts) != 6 {
 		t.Fatalf("zero counts = %v", counts)
 	}
+}
+
+// Purpose: ProjectTaskNeedsAttention is the one decision whether the person
+// must act on a task, and ProjectTaskBucket the count it agrees with: a task
+// needs attention only when it is blocked, failed (not stopped), waiting for
+// approval or an answer, or has work no workflow hands over; an archived
+// task (the person put it away) and a workflow step's own task (a reviewer
+// or fix run, whose work is handed over on the task it serves) never do,
+// whatever their status or outcome, and count as done; their running,
+// waiting or stopped states keep their buckets. Threat: a board of finished
+// work (workflow runs carrying the job's commits, archived failures) called
+// "needing attention", or a row flag that disagrees with the count. Owners:
+// ProjectTaskBucket and ProjectTaskNeedsAttention (pure; the api tests prove
+// list_tasks, get_task and the route use them, here and linked).
+func TestProjectTaskNeedsAttentionIsTheCountsRule(t *testing.T) {
+	workflowTask := ProjectTaskRecord{ID: "task_wf_1", AutomationID: "workflow:k"}
+	for _, c := range []struct {
+		name    string
+		task    ProjectTaskRecord
+		outcome string
+		stale   bool
+		idle    bool
+		want    string
+	}{
+		{"commits nobody hands over", ProjectTaskRecord{ID: "t", Status: "needs_review"}, "ready to integrate", false, false, ProjectTaskCountNeedsAttention},
+		{"failed", ProjectTaskRecord{ID: "t", Status: "failed"}, "", false, false, ProjectTaskCountNeedsAttention},
+		{"approval", ProjectTaskRecord{ID: "t", Status: "pending_approval"}, "", false, false, ProjectTaskCountNeedsAttention},
+		{"pushed", ProjectTaskRecord{ID: "t", Status: "needs_review"}, "pushed 0123456789ab", false, false, ProjectTaskCountDone},
+		{"finder", ProjectTaskRecord{ID: "t", Agent: "finder", Status: "needs_review"}, "finished", false, false, ProjectTaskCountDone},
+		{"stopped", ProjectTaskRecord{ID: "t", Status: ProjectTaskStatusStopped}, "stopped", false, false, ProjectTaskCountStopped},
+		// A workflow's own task: its work belongs to the task it serves.
+		{"workflow task with commits", withStatus(workflowTask, "needs_review"), "ready to integrate", false, false, ProjectTaskCountDone},
+		{"workflow task failed", withStatus(workflowTask, "failed"), "", false, false, ProjectTaskCountDone},
+		{"workflow task by id only", ProjectTaskRecord{ID: "task_wf_2", Status: "needs_review"}, "ready to integrate", false, false, ProjectTaskCountDone},
+		{"workflow task old", withStatus(workflowTask, "needs_review"), "ready to integrate", false, true, ProjectTaskCountDone},
+		{"workflow task running", withStatus(workflowTask, "in_progress"), "", false, false, ProjectTaskCountInProgress},
+		{"workflow task stale", withStatus(workflowTask, "in_progress"), "", true, false, ProjectTaskCountStopped},
+		// Archived: the person put it away.
+		{"archived failure", ProjectTaskRecord{ID: "t", Status: "failed", Archived: true}, "", false, false, ProjectTaskCountDone},
+		{"archived commits", ProjectTaskRecord{ID: "t", Status: "needs_review", Archived: true}, "ready to integrate", false, false, ProjectTaskCountDone},
+		{"archived queued", ProjectTaskRecord{ID: "t", Status: "queued", Archived: true}, "", false, false, ProjectTaskCountWaiting},
+	} {
+		got := ProjectTaskBucket(c.task, c.outcome, c.stale, c.idle)
+		if got != c.want {
+			t.Fatalf("%s: bucket = %q, want %q", c.name, got, c.want)
+		}
+		if attention := ProjectTaskNeedsAttention(c.task, c.outcome, c.stale, c.idle); attention != (c.want == ProjectTaskCountNeedsAttention) {
+			t.Fatalf("%s: needs attention = %v disagrees with bucket %q", c.name, attention, got)
+		}
+	}
+}
+
+func withStatus(task ProjectTaskRecord, status string) ProjectTaskRecord {
+	task.Status = status
+	return task
 }
 
 // Purpose: a task's messages are bounded: follow-ups that reopened it are

@@ -17,7 +17,8 @@ Claude Code ──stdio──► swarm-fleet ──tailnet──► social  http
   calls and managing workers, limits or models are never granted this way.
   AI keys still work for a machine listed in `SWARM_FLEET` with a `token`.
 - `swarm_fleet_status` is one view of every machine: reachable, access,
-  running sessions and today's usage and limits.
+  `running_now` (agent runs running there now), running sessions and today's
+  usage and limits (`sessions_today`: sessions that used a model today).
 - Off your tailnet (Claude Code on the web, CI), `fleet.sh` joins it as a
   throwaway node with `TS_AUTHKEY` (userspace networking, no privileges,
   state in memory, pinned and checksummed Tailscale) and keeps the key away

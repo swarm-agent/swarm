@@ -30,11 +30,14 @@ const (
 	// ProjectTaskCountInProgress: an agent or a workflow (running, sent
 	// back, not evaluated yet) still works on it.
 	ProjectTaskCountInProgress = "in_progress"
-	// ProjectTaskCountWaiting: queued, or waiting for approval to start.
+	// ProjectTaskCountWaiting: queued for capacity; nobody has to act.
 	ProjectTaskCountWaiting = "waiting"
-	// ProjectTaskCountNeedsAttention: blocked, failed, or finished within the
-	// last 7 days with work to hand over (ready to integrate, a workflow
-	// that blocked or failed) and no workflow handing it over.
+	// ProjectTaskCountNeedsAttention: the person must act. The task is
+	// blocked, failed (not stopped), waiting for approval or a question, or
+	// finished within the last 7 days with work to hand over (ready to
+	// integrate, a workflow that blocked or failed) and no workflow handing
+	// it over. Never a pushed, delivered, integrated, finished (nothing to
+	// integrate) or stopped task, an archived one, or a workflow's own task.
 	ProjectTaskCountNeedsAttention = "needs_attention"
 	// ProjectTaskCountIdle: finished over 7 days ago (progress idle) with
 	// work never handed over: nobody is waiting on it, so it is not called
@@ -59,13 +62,16 @@ func ProjectTaskCountBucket(status, outcome string, stale, idle bool) string {
 		return ProjectTaskCountStopped
 	}
 	switch status {
-	case "pending_approval", "queued", "pending":
+	case "pending_approval", "needs_input":
+		// Waiting for the person's approval or answer.
+		return ProjectTaskCountNeedsAttention
+	case "queued", "pending":
 		return ProjectTaskCountWaiting
 	case "planning", "in_progress", "running", "starting", "generating", "swarming", "publishing":
 		return ProjectTaskCountInProgress
 	case "completed", "rejected", "superseded":
 		return ProjectTaskCountDone
-	case "failed", "blocked", "error", "cancelled", "interrupted", "expired", "needs_input":
+	case "failed", "blocked", "error", "cancelled", "interrupted", "expired":
 		return ProjectTaskCountNeedsAttention
 	}
 	// The run ended (needs_review and the like): the outcome says where the
@@ -78,9 +84,32 @@ func ProjectTaskCountBucket(status, outcome string, stale, idle bool) string {
 	case "running", "sent_back", "workflow":
 		// "workflow pending": its workflows were not evaluated yet.
 		return ProjectTaskCountInProgress
+	case "stopped":
+		return ProjectTaskCountStopped
 	}
 	if idle {
 		return ProjectTaskCountIdle
 	}
 	return ProjectTaskCountNeedsAttention
+}
+
+// ProjectTaskBucket is the count bucket of task from its progress outcome,
+// stale and idle flags: ProjectTaskCountBucket, except that an archived task
+// (the person put it away) and a task a workflow step started (a reviewer
+// run, whose work and outcome belong to the task it serves) never wait on
+// the person: what would be needs_attention or idle counts as done. List
+// counts use it on this machine and on linked machines.
+func ProjectTaskBucket(task ProjectTaskRecord, outcome string, stale, idle bool) string {
+	bucket := ProjectTaskCountBucket(task.Status, outcome, stale, idle)
+	if (bucket == ProjectTaskCountNeedsAttention || bucket == ProjectTaskCountIdle) && (task.Archived || ProjectTaskWorkflowSpawned(task)) {
+		return ProjectTaskCountDone
+	}
+	return bucket
+}
+
+// ProjectTaskNeedsAttention is the one decision whether the person must act
+// on task: its list row's needs_attention, get_task's needs_attention and
+// the needs_attention count all read it, here and on linked machines.
+func ProjectTaskNeedsAttention(task ProjectTaskRecord, outcome string, stale, idle bool) bool {
+	return ProjectTaskBucket(task, outcome, stale, idle) == ProjectTaskCountNeedsAttention
 }

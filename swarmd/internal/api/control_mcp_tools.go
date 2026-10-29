@@ -932,7 +932,7 @@ func controlMCPTools() []controlMCPTool {
 		{Name: "swarm_set_limits", Title: "Set box limits", Description: "Replace box limits using expected_revision; requires usage:write. Hard ceilings cannot be raised.", InputSchema: controlMCPObject([]string{"expected_revision", "limits"}, map[string]any{"expected_revision": map[string]any{"type": "integer", "minimum": 0}, "limits": controlMCPLimitsSchema()}), Annotations: controlMCPDestructive, call: controlMCPSetLimits},
 		{
 			Name: "swarm_get_usage", Title: "Read usage and limits",
-			Description: "Model spend and tokens for a period, top models, and the account's daily limits. Each model's billing says why its cost is what it is: subscription (a sign-in provider such as ChatGPT: Swarm reports no per-token cost; nominal_cost_usd is the same use at API prices when known), metered (priced per token) or unpriced (no price known, so cost shows 0). A limit of none means no limit. detail adds workers with id, name, today (UTC) and all_time tokens, cost_usd (including media), media_cost_usd, media_count (receipts) and coverage, sorted by today.cost_usd for period=today (the default), otherwise all_time.cost_usd descending; worker rolling-period totals are unavailable.",
+			Description: "Model spend and tokens for a period, top models, and the account's daily limits. summary.running_now is how many agent runs run on this machine now (the runs an update's drain waits on): use it for how many agents are running. summary.sessions_today (sessions_7d, sessions_30d for those periods) counts the sessions that used a model in the period, finished ones included; it is not what runs now. Each model's billing says why its cost is what it is: subscription (a sign-in provider such as ChatGPT: Swarm reports no per-token cost; nominal_cost_usd is the same use at API prices when known), metered (priced per token) or unpriced (no price known, so cost shows 0). A limit of none means no limit. detail adds workers with id, name, today (UTC) and all_time tokens, cost_usd (including media), media_cost_usd, media_count (receipts) and coverage, sorted by today.cost_usd for period=today (the default), otherwise all_time.cost_usd descending; worker rolling-period totals are unavailable.",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"period": map[string]any{"type": "string", "enum": []string{"today", "7d", "30d"}, "description": "Default today."},
 				"detail": map[string]any{"type": "boolean", "description": "Also return every provider and model, each day, media, the most active sessions, and workers (today and all_time, not the requested rolling period)."},
@@ -2892,6 +2892,12 @@ func controlMCPAssignWorkerTask(c *controlMCPCall, args map[string]any) (any, er
 
 // ---- usage ---------------------------------------------------------------
 
+// controlMCPUsageSessionsKey names the usage summary's session count for its
+// period: sessions_today, sessions_7d or sessions_30d.
+func controlMCPUsageSessionsKey(period string) string {
+	return "sessions_" + period
+}
+
 func controlMCPGetUsage(c *controlMCPCall, args map[string]any) (any, error) {
 	if err := c.requireTokenScope("sessions:read"); err != nil {
 		return nil, err
@@ -2910,7 +2916,10 @@ func controlMCPGetUsage(c *controlMCPCall, args map[string]any) (any, error) {
 		return nil, err
 	}
 	rawSummary := controlMCPMap(response["summary"])
-	summary := controlMCPPick(rawSummary, "total_cost_usd", "total_tokens", "input_tokens", "output_tokens", "cached_tokens", "total_turns", "active_sessions")
+	summary := controlMCPPick(rawSummary, "total_cost_usd", "total_tokens", "input_tokens", "output_tokens", "cached_tokens", "total_turns", "running_now")
+	// The sessions that used a model in the period (archived ones too), named
+	// for the period so it is never read as what runs now: running_now is.
+	summary[controlMCPUsageSessionsKey(period)] = rawSummary["total_sessions"]
 	out := map[string]any{"period": period, "summary": summary}
 	if media := controlMCPMap(response["media"]); media != nil {
 		out["media"] = controlMCPPick(media, "total_count", "total_cost_usd", "image_count", "image_cost_usd", "video_count", "video_cost_usd", "audio_count", "audio_cost_usd", "has_unknown_pricing")

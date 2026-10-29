@@ -302,7 +302,7 @@ func TestOrchestratorListTasksSaysWhatHappenedOnLinkedMachine(t *testing.T) {
 	for id, row := range rows {
 		for key := range row {
 			switch key {
-			case "id", "title", "status", "agent", "session_id", "updated_at", "outcome", "stale", "reviews":
+			case "id", "title", "status", "agent", "session_id", "updated_at", "outcome", "stale", "reviews", "needs_attention":
 			default:
 				t.Fatalf("linked row %s carries %q: %v", id, key, row)
 			}

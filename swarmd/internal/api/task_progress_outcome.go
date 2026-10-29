@@ -29,6 +29,9 @@ const (
 	outcomeIntegrated      = "integrated"
 	outcomeWorkflowPending = "workflow pending"
 	outcomeStopped         = "stopped"
+	// outcomeFilesReady: a media or design task's deliverables are ready
+	// (progress state delivered) with no workflow delivery.
+	outcomeFilesReady = "delivered files ready"
 )
 
 // taskProgressNow is the clock task progress (and its stale flag) is read at.
@@ -84,6 +87,10 @@ func taskProgressOutcome(class, state string, latest []jobautomation.Delivery, w
 		return outcomeIntegrated
 	case deliveredWhere != "":
 		return clipOutcome("delivered " + strings.TrimPrefix(deliveredWhere, "delivered to "))
+	case class == "finished" && state == progressDelivered:
+		// A media or design task's files are ready: delivered, as
+		// get_task says, not work waiting to be integrated.
+		return outcomeFilesReady
 	case class == "finished" && state == progressDone:
 		return outcomeFinished
 	case class == "finished":
@@ -132,13 +139,13 @@ func deliveryHandover(d jobautomation.Delivery) string {
 }
 
 // projectTaskOutcomeCounts counts tasks by what happened to their work
-// (pebblestore.ProjectTaskCountBucket over each one's progress outcome), the
+// (pebblestore.ProjectTaskBucket over each one's progress outcome), the
 // counts a task list answers with next to its raw status counts.
 func (s *Server) projectTaskOutcomeCounts(account string, tasks []pebblestore.ProjectTaskRecord, now int64) map[string]int {
 	counts := pebblestore.NewProjectTaskOutcomeCounts()
 	for _, task := range tasks {
 		p := s.taskProgressFor(account, task, now)
-		counts[pebblestore.ProjectTaskCountBucket(task.Status, p.Outcome, p.Stale, p.Idle)]++
+		counts[pebblestore.ProjectTaskBucket(task, p.Outcome, p.Stale, p.Idle)]++
 	}
 	return counts
 }

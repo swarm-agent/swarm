@@ -436,9 +436,13 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 			rows := make([]projectTaskListRow, 0, len(page.Tasks))
 			for _, task := range page.Tasks {
 				row := projectTaskSummary(task)
+				outcome, stale, idle := "", false, false
 				if progress := r.projectTaskProgress(account, task); progress != nil {
+					outcome, stale, idle = progress.Outcome, progress.Stale, progress.Idle
 					row.Outcome, row.Stale = clipBytes(progress.Outcome, projectTaskTextBytes), progress.Stale
 				}
+				// The same decision as get_task and the needs_attention count.
+				row.NeedsAttention = pebblestore.ProjectTaskNeedsAttention(task, outcome, stale, idle)
 				row.Reviews = page.Reviews[task.ID]
 				rows = append(rows, row)
 			}
@@ -450,7 +454,7 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 				if progress := r.projectTaskProgress(account, task); progress != nil {
 					outcome, stale, idle = progress.Outcome, progress.Stale, progress.Idle
 				}
-				counts[pebblestore.ProjectTaskCountBucket(task.Status, outcome, stale, idle)]++
+				counts[pebblestore.ProjectTaskBucket(task, outcome, stale, idle)]++
 			}
 			result["outcome_counts"] = counts
 			result["tasks"], result["count"], result["total"] = rows, len(rows), page.Total
@@ -673,9 +677,12 @@ type projectTaskListRow struct {
 	Status   string `json:"status"`
 	// Outcome is what happened to the task's work (task progress outcome);
 	// Stale flags an in_progress or blocked task with no active run for 24 h;
-	// Reviews counts its workflow reviewer tasks the list left out.
+	// Reviews counts its workflow reviewer tasks the list left out;
+	// NeedsAttention says the person must act on it
+	// (pebblestore.ProjectTaskNeedsAttention, as get_task and the counts).
 	Outcome           string `json:"outcome,omitempty"`
 	Stale             bool   `json:"stale,omitempty"`
+	NeedsAttention    bool   `json:"needs_attention,omitempty"`
 	Reviews           int    `json:"reviews,omitempty"`
 	Archived          bool   `json:"archived,omitempty"`
 	Agent             string `json:"agent,omitempty"`

@@ -71,12 +71,22 @@ A task list page (`GET /v3/projects/{id}/tasks` with list parameters, and
 `manage_projects list_tasks` here and on linked machines) counts its tasks by
 outcome in `outcome_counts`, every bucket present: `done` (pushed, delivered,
 integrated, finished, completed), `in_progress` (working, running, sent back,
-workflow pending), `waiting` (queued, waiting for approval),
-`needs_attention` (a blocked or failed status; or finished within the last 7
-days with work still to hand over: ready to integrate, or a workflow that
-blocked or failed), `idle` (the same work to hand over, but finished more than
-7 days ago: nobody is waiting on it) and `stopped` (stopped or stale). The route keeps its raw `status_counts`; agent
-lists do not carry them.
+workflow pending), `waiting` (queued for capacity),
+`needs_attention` (the person must act: a blocked or failed status, waiting
+for approval or an answer; or finished within the last 7 days with work still
+to hand over: ready to integrate, or a workflow that blocked or failed),
+`idle` (the same work to hand over, but finished more than 7 days ago: nobody
+is waiting on it) and `stopped` (stopped or stale). A pushed, delivered,
+integrated, finished (nothing to integrate) or stopped task never needs
+attention, nor does an archived task or a task a workflow step started (a
+reviewer run: its work and outcome are counted on the task it serves). The
+route keeps its raw `status_counts`; agent lists do not carry them.
+
+The same rule (`pebblestore.ProjectTaskNeedsAttention`) answers per task:
+`progress.needs_attention` on the task routes, `needs_attention: true` on a
+`list_tasks` row (here and on linked machines) and `needs_attention` in
+`get_task`. A media or design task whose files are ready has outcome
+`delivered files ready`.
 
 `get_task` also shows the last 3 messages sent to the task (`message_task`
 notes and follow-ups), the first 80 characters of each, with `state`
