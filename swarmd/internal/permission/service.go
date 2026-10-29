@@ -604,7 +604,7 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 			if action == "" {
 				action = "list"
 			}
-			if !tool.FleetWorkActionAllowed(name, action) && !tool.FleetWaitPermissionAllowed(name, action) && !tool.FleetTaskSessionReadAllowed(name, action) && !tool.FleetEnvironmentPermissionAllowed(name, action) {
+			if !tool.FleetWorkActionAllowed(name, action) && !tool.FleetWaitPermissionAllowed(name, action) && !tool.FleetTaskSessionReadAllowed(name, action) && !tool.FleetEnvironmentPermissionAllowed(name, action) && !tool.FleetAgentsReadAllowed(name, action) {
 				return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: action + " is not available on a linked machine", Source: "session_access"}, nil
 			}
 			access, err := s.store.GetAccountPermissions(input.AccountScopeID)

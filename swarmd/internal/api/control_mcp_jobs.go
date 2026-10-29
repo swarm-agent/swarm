@@ -1677,6 +1677,13 @@ func controlMCPJobTools() []controlMCPTool {
 			}), Annotations: controlMCPReadOnly, call: controlMCPListRuns,
 		},
 		{
+			Name: "swarm_agents_at_work", Title: "Agents at work now",
+			Description: "Which agent runs are active right now on this machine and its linked machines, and what each is doing (the same answer as GET /v3/fleet/agents). Per run: machine, agent, task (id and title), session, started_at, now (the last tool call: kind read/edit/command/commit/other and a one-line target), a timeline of recent calls, counts (reads, edits, commands, commits, last minute), edited files, and the task's workflow stage (code, review, fix with round, push, landed). Per machine: its agents and today's (UTC) landed and failed tasks, or why it could not be read (offline, not_shown). Also the latest finished tasks with their state, and totals. machine reads one machine only.",
+			InputSchema: controlMCPObject(nil, map[string]any{
+				"machine": controlMCPStringProp("Only this machine: this Swarm's own name (home in the answer) or a linked machine's.", 0, 64),
+			}), Annotations: controlMCPReadOnly, call: controlMCPAgentsAtWork,
+		},
+		{
 			Name: "swarm_activity", Title: "What happened since last time",
 			Description: "The machine's activity after a cursor, oldest first: jobs finished, failed or cancelled (with job_id), agents blocked or unblocked, sandbox changes, refused keys and outside reports. Pass the cursor you got last time (or activity_cursor from swarm_status) to see only what is new; more means call again.",
 			InputSchema: controlMCPObject(nil, map[string]any{
@@ -1932,6 +1939,16 @@ func controlMCPWorkerModel(worker map[string]any, roleModels map[string]map[stri
 	out := controlMCPRoleModel(model)
 	out["source"] = "role default"
 	return out
+}
+
+// controlMCPAgentsAtWork reads the agents at work through GET
+// /v3/fleet/agents (FleetAgents), optionally for one machine.
+func controlMCPAgentsAtWork(c *controlMCPCall, args map[string]any) (any, error) {
+	query := url.Values{}
+	if machine := strings.TrimSpace(controlMCPString(args, "machine")); machine != "" {
+		query.Set("machine", machine)
+	}
+	return c.dispatch(http.MethodGet, fleetAgentsPath, query, nil)
 }
 
 // controlMCPListRuns lists runs across all workers through GET /v3/runs.

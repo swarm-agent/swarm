@@ -26,7 +26,13 @@ import (
 //	GET /v3/fleet/agents                 this Swarm and its linked machines
 //	GET /v3/fleet/agents?scope=machine   this Swarm only (what a home reads
 //	                                     from a linked machine, through the link)
+//	&machine=NAME                        one machine only (this Swarm's name or
+//	                                     a linked machine's)
 //	&since=<unix ms>                     where "today" starts (default: the UTC day)
+//
+// The same service (FleetAgents) answers Swarm Control's swarm_agents_at_work
+// (control_mcp_jobs.go, through this route) and the Orchestrator's
+// manage_projects action=agents_at_work (FleetAgentsAtWork).
 //
 // A run is active while it holds an execution lease
 // (executioncapacity.Manager.HeldRuns), the same live set swarm_status counts
@@ -192,12 +198,46 @@ func (s *Server) handleFleetAgents(w http.ResponseWriter, r *http.Request) {
 		}
 		since = v
 	}
-	view, err := s.FleetAgents(r.Context(), principal, now, since, localOnly)
-	if err != nil {
+	view, err := s.FleetAgents(r.Context(), principal, now, since, localOnly, strings.TrimSpace(query.Get("machine")))
+	var unknown fleetAgentsUnknownMachine
+	switch {
+	case errors.As(err, &unknown):
+		writeError(w, http.StatusNotFound, err)
+		return
+	case err != nil:
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, view)
+}
+
+// fleetAgentsUnknownMachine is a machine filter that names no machine: not
+// this Swarm and not linked for the account.
+type fleetAgentsUnknownMachine struct {
+	machine string
+	known   []string
+}
+
+func (e fleetAgentsUnknownMachine) Error() string {
+	if len(e.known) == 0 {
+		return "no machine is named " + strconv.Quote(e.machine)
+	}
+	return "no machine is named " + strconv.Quote(e.machine) + "; machines: " + strings.Join(e.known, ", ")
+}
+
+// FleetAgentsAtWork is the Orchestrator's read (manage_projects
+// action=agents_at_work): the same answer as GET /v3/fleet/agents for this
+// Swarm and its linked machines, or one machine; today is the UTC day.
+func (s *Server) FleetAgentsAtWork(ctx context.Context, p identity.Principal, machine string) (json.RawMessage, error) {
+	if s.sessions == nil {
+		return nil, errors.New("sessions unavailable")
+	}
+	now := time.Now().UnixMilli()
+	view, err := s.FleetAgents(ctx, p, now, fleetAgentsUTCDay(now), false, strings.TrimSpace(machine))
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(view)
 }
 
 func fleetAgentsUTCDay(now int64) int64 {
@@ -206,18 +246,11 @@ func fleetAgentsUTCDay(now int64) int64 {
 }
 
 // FleetAgents is the agents at work on this Swarm and, unless localOnly, on
-// each machine linked for the principal's account, read in parallel.
-func (s *Server) FleetAgents(ctx context.Context, p identity.Principal, now, since int64, localOnly bool) (fleetAgentsView, error) {
+// each machine linked for the principal's account, read in parallel. only,
+// when set, reads that one machine (this Swarm's name or a linked one's).
+func (s *Server) FleetAgents(ctx context.Context, p identity.Principal, now, since int64, localOnly bool, only string) (fleetAgentsView, error) {
 	home := s.fleetName()
 	view := fleetAgentsView{Home: home, At: now, Since: since, Agents: []fleetAgentRun{}, Machines: []fleetAgentMachine{}, Recent: []fleetAgentFinished{}}
-	agents, err := s.localAgentsNow(p, home, now)
-	if err != nil {
-		return view, err
-	}
-	recent, landed, failed := s.localAgentsFinished(p, home, now, since)
-	view.Agents = append(view.Agents, agents...)
-	view.Recent = append(view.Recent, recent...)
-	view.Machines = append(view.Machines, fleetAgentMachine{Name: home, State: "online", Agents: len(agents), LandedToday: landed, FailedToday: failed})
 
 	var roster []fleetActivityMachine
 	if !localOnly && home != "" {
@@ -225,6 +258,35 @@ func (s *Server) FleetAgents(ctx context.Context, p identity.Principal, now, sin
 			roster = linked
 		} else {
 			return view, err
+		}
+	}
+	if only != "" && only != home {
+		known := []string{}
+		if home != "" {
+			known = append(known, home)
+		}
+		var picked []fleetActivityMachine
+		for _, m := range roster {
+			known = append(known, m.name)
+			if m.name == only {
+				picked = append(picked, m)
+			}
+		}
+		if len(picked) == 0 {
+			return view, fleetAgentsUnknownMachine{machine: only, known: known}
+		}
+		roster = picked
+	} else {
+		agents, err := s.localAgentsNow(p, home, now)
+		if err != nil {
+			return view, err
+		}
+		recent, landed, failed := s.localAgentsFinished(p, home, now, since)
+		view.Agents = append(view.Agents, agents...)
+		view.Recent = append(view.Recent, recent...)
+		view.Machines = append(view.Machines, fleetAgentMachine{Name: home, State: "online", Agents: len(agents), LandedToday: landed, FailedToday: failed})
+		if only != "" {
+			roster = nil
 		}
 	}
 	type answer struct {

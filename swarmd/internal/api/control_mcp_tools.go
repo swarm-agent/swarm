@@ -173,6 +173,9 @@ var controlMCPRoutes = []string{
 	"GET v3/box/drain",
 	// Runs across every worker (swarm_list_runs; signals:read).
 	"GET v3/runs",
+	// The agents at work here and on linked machines (swarm_agents_at_work;
+	// sessions:read, the same service as the console's read).
+	"GET v3/fleet/agents",
 	"GET v3/signals",
 	"GET v3/activity",
 	"GET v3/secrets/status",

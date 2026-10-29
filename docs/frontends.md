@@ -229,10 +229,13 @@ retries by itself) or `not_shown`. It is metadata only and needs
 #### The fleet's agents at work
 
 To show how many agents run now and what each is doing, read the home's
-`GET /v3/fleet/agents` (`sessions:read`; gateway tokens are refused; it is
-not open to AI keys). One answer covers the home and each machine linked for
-the account, read through the link in parallel (5 seconds each) only while
-`linked.{name}.work` is `ask` or `auto`:
+`GET /v3/fleet/agents` (`sessions:read`; gateway tokens are refused). One
+answer covers the home and each machine linked for the account, read through
+the link in parallel (5 seconds each) only while `linked.{name}.work` is
+`ask` or `auto`. The same service answers AIs, with no second
+implementation: Swarm Control's `swarm_agents_at_work` (through this route)
+and the Orchestrator's `manage_projects action=agents_at_work` (today is the
+UTC day for both); each takes an optional `machine`:
 
 - `agents`: one entry per run holding an execution lease now (the same set
   `swarm_status` counts as `running_now`): `machine`, `agent`, `session_id`,
@@ -255,8 +258,10 @@ the account, read through the link in parallel (5 seconds each) only while
   `failed_today`.
 
 "Today" starts at `since` (Unix ms; the client's local midnight), else at the
-UTC day. `scope=machine` answers for that machine alone: what a home reads
-from a linked machine. Read it once connected and again when a run starts,
+UTC day. `machine=NAME` reads one machine (the home's own name or a linked
+machine's; another name is 404 and lists the names). `scope=machine` answers
+for that machine alone, never reading its links: what a home reads from a
+linked machine. Read it once connected and again when a run starts,
 ends or moves (realtime `task.lifecycle.updated`, `session.run.*` events, the
 fleet activity's `session.run.*`, `job.*` and machine frames) and after a
 reconnect or a gap; one read at a time, never on a timer. Tool records from

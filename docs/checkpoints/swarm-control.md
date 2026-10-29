@@ -34,6 +34,7 @@ is `controlMCPCoreTools` in `control_mcp.go`; the job tools are in
 | --- | --- | --- |
 | `swarm_status` | `swarm:read` | `GET /v3/box/summary` (requires `signals:read`); adds `activity_cursor` |
 | `swarm_activity` (`after` cursor, `limit`, `min_severity`) | `swarm:read` | `GET /v3/signals` (requires `signals:read`); worker signals carry a `job_id` |
+| `swarm_agents_at_work` (`machine` optional) | `swarm:read` | `GET /v3/fleet/agents` (requires `sessions:read`): the agent runs active now on this machine and its linked machines, what each does, each machine's count or why it could not be read, and the latest finished tasks; the same answer the console and `manage_projects action=agents_at_work` read ([frontends.md](../frontends.md#the-fleets-agents-at-work)) |
 | `swarm_list_workers` (`include_jobs`) | `swarm:read` | `GET /v3/workers` (`POST /v3/workers:ensure-presets` when a preset is missing), `GET …/runs` |
 | `swarm_deploy_worker` (preset, or name, role and instructions) | `swarm:write` | `POST /v3/workers:ensure-presets`, or `POST /v3/workers` then `…/activate` with no folder binding |
 | `swarm_give_job` (worker, brief, project, workspace, files, `wait_seconds`) | `swarm:write` | `GET /v3/projects` (the project and one of its folders; refused when there is no project), `POST /v3/workers/{id}/direct` with `workspace_path` and `input.project_id` (Swarm picks that project when the folder is in several); returns `job_id` `worker/<worker>/<run>` |

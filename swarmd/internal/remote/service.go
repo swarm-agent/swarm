@@ -119,6 +119,7 @@ var toolScopes = map[string]string{
 	"swarm_status":          ScopeRead,
 	"swarm_activity":        ScopeRead,
 	"swarm_list_runs":       ScopeRead,
+	"swarm_agents_at_work":  ScopeRead,
 	"swarm_get_job":         ScopeRead,
 	"swarm_list_secrets":    ScopeRead,
 	"swarm_deploy_worker":   ScopeWrite,

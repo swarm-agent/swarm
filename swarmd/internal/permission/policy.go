@@ -1556,6 +1556,8 @@ var manageProjectsReadOnlyActions = map[string]bool{
 	"list_linked_tasks": true, "read_task_session": true,
 	// Folder environment reads (tool.FolderEnvironmentList/Get).
 	"list_environments": true, "get_environment": true,
+	// Which agent runs are active now, here and on linked machines.
+	"agents_at_work": true,
 }
 
 // IsManageProjectsReadOnlyAction reports whether the manage_projects call only

@@ -64,7 +64,7 @@ var controlMCPCoreTools = map[string]bool{
 	"swarm_get_changes": true, "swarm_read_file": true, "swarm_accept_review": true,
 	"swarm_list_workspaces": true, "swarm_add_workspace": true,
 	"swarm_get_limits": true, "swarm_set_limits": true,
-	"swarm_status": true, "swarm_activity": true, "swarm_list_runs": true,
+	"swarm_status": true, "swarm_activity": true, "swarm_list_runs": true, "swarm_agents_at_work": true,
 	"swarm_list_providers": true, "swarm_connect_chatgpt": true, "swarm_request_provider_key": true, "swarm_connect_claude_code": true,
 	"swarm_list_models": true, "swarm_set_agent_model": true, "swarm_get_usage": true,
 	"swarm_list_projects": true, "swarm_create_project": true, "swarm_get_project": true, "swarm_set_project_workspaces": true, "swarm_retry_project_context": true,
