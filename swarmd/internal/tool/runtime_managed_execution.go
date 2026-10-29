@@ -90,7 +90,7 @@ func (r *Runtime) executeManagedBash(ctx context.Context, scope WorkspaceScope, 
 	if timeout > maxBashTimeout {
 		timeout = maxBashTimeout
 	}
-	capture := newCappedBuffer(maxBashOutputViewerBytes)
+	capture := newBashCapture()
 	stream := newBashStreamWriter(capture, maxBashOutputViewerBytes, onDelta)
 	result, runErr := service.ExecTaskLease(ctx, scope.Principal.AccountScopeID, binding.WorkspaceID, binding.LeaseID, environments.OperationAttribution{Actor: scope.Principal.UserID, SessionID: scope.SessionID}, provider.ExecRequest{
 		Command: managedBashCommand(lease, command), Timeout: timeout, MaxOutput: maxBashOutputViewerBytes,
@@ -109,7 +109,7 @@ func (r *Runtime) executeManagedBash(ctx context.Context, scope WorkspaceScope, 
 	if runErr != nil && !timedOut {
 		return "", fmt.Errorf("managed Bash execution failed: %w", runErr)
 	}
-	output, err := bashResponse(command, capture, stream, result.ExitCode, timedOut, nil)
+	output, err := bashResponse(scope, command, capture, stream, result.ExitCode, timedOut, nil)
 	if err != nil {
 		return "", err
 	}

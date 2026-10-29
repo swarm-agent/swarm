@@ -29,6 +29,8 @@ type Config struct {
 	PeerTransportPort       int
 	BypassPermissions       bool
 	RetainToolOutputHistory bool
+	// ToolOutputCapBytes is tool_output_cap_bytes (0: tool default).
+	ToolOutputCapBytes      int
 	LongSessionDiagnostics  bool
 	DataDir                 string
 	DBPath                  string
@@ -101,6 +103,7 @@ func parse(args []string, desktop bool) (Config, error) {
 		PeerTransportPort:       startupCfg.PeerTransportPort,
 		BypassPermissions:       startupCfg.BypassPermissions,
 		RetainToolOutputHistory: startupCfg.RetainToolOutputHistory,
+		ToolOutputCapBytes:      startupCfg.ToolOutputCapBytes,
 		LongSessionDiagnostics:  startupCfg.LongSessionDiagnostics,
 	}
 	fs.StringVar(&cfg.ListenAddr, "listen", defaultListenAddr, "HTTP listen address")

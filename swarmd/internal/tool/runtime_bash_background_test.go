@@ -549,11 +549,13 @@ func TestBackgroundBashCapsRejectWithoutStateChange(t *testing.T) {
 
 func TestBackgroundBashOutputKeepsTailAndMarksTruncated(t *testing.T) {
 	// Purpose: retained background output is capped: the end is kept, earlier
-	// output dropped and marked truncated, both in the status read by id and
-	// in the bounded report pinned to the conversation.
-	// Threat: unbounded daemon memory, or losing the end (where results are).
-	// Owners: tailBuffer, maxBackgroundOutputBytes, backgroundReportTailBytes,
-	// backgroundStatusResponse, backgroundReportText.
+	// output dropped and marked truncated; what the model reads (the status
+	// read by id and the report pinned to the conversation on wake) is bounded
+	// by the one tool output cap, with the retained output saved for read.
+	// Threat: unbounded daemon memory, a wake feeding hundreds of KB to the
+	// model, or losing the end (where results are).
+	// Owners: tailBuffer, maxBackgroundOutputBytes, ToolOutputCapBytes,
+	// capToolOutputText, backgroundStatusResponse, backgroundReportText.
 	// Layer: tool boundary with a real host command producing real output.
 	f := newBGFixture(t, "s-tail")
 	payload, err := f.bash(t, "s-tail", map[string]any{"command": fmt.Sprintf("head -c %d /dev/zero | tr '\\0' a; echo; echo END-MARKER", maxBackgroundOutputBytes+50000), "background": true})
@@ -568,18 +570,22 @@ func TestBackgroundBashOutputKeepsTailAndMarksTruncated(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := fmt.Sprint(status["output"])
-	if status["truncated"] != true || !strings.HasSuffix(strings.TrimSpace(output), "END-MARKER") || len(output) > maxBackgroundOutputBytes {
+	if status["truncated"] != true || !strings.HasSuffix(strings.TrimSpace(output), "END-MARKER") || len(output) > ToolOutputCapBytes() {
 		t.Fatalf("tail not kept or not marked: truncated=%v len=%d suffix=%q", status["truncated"], len(output), output[max(0, len(output)-20):])
 	}
 	if total, _ := status["output_bytes"].(float64); int(total) <= maxBackgroundOutputBytes {
 		t.Fatalf("total output bytes not reported: %#v", status["output_bytes"])
 	}
-	reports := f.backgroundMessages(t, "s-tail")
-	if len(reports) != 1 || !strings.Contains(reports[0].Content, "END-MARKER") || len(reports[0].Content) > backgroundReportTailBytes+2048 {
-		t.Fatalf("report is not a bounded tail: count=%d", len(reports))
+	saved, _ := status["full_output_path"].(string)
+	if data, err := os.ReadFile(saved); err != nil || len(data) < maxBackgroundOutputBytes-1024 || !strings.Contains(string(data), "END-MARKER") {
+		t.Fatalf("retained output not saved in full at %q: %v (%d bytes)", saved, err, len(data))
 	}
-	if !strings.Contains(reports[0].Content, fmt.Sprintf("last %d of", backgroundReportTailBytes)) {
-		t.Fatalf("report does not say the output was cut: %q", reports[0].Content[:200])
+	reports := f.backgroundMessages(t, "s-tail")
+	if len(reports) != 1 || !strings.Contains(reports[0].Content, "END-MARKER") || len(reports[0].Content) > ToolOutputCapBytes()+2048 {
+		t.Fatalf("report is not bounded by the tool output cap: count=%d", len(reports))
+	}
+	if !strings.Contains(reports[0].Content, "bytes omitted; full output saved to ") || !strings.Contains(reports[0].Content, fmt.Sprintf("last %d of", maxBackgroundOutputBytes)) {
+		t.Fatalf("report does not say the output was cut and where it is: %q", reports[0].Content[:200])
 	}
 }
 

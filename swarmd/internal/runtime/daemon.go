@@ -242,6 +242,11 @@ func htmlCaptureConcurrency() int {
 }
 
 func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Server, *pebblestore.Store)) (*Daemon, error) {
+	// One cap bounds the text every tool result gives an agent; an invalid
+	// setting stops startup instead of silently using another value.
+	if err := tool.SetToolOutputCapBytes(cfg.ToolOutputCapBytes); err != nil {
+		return nil, fmt.Errorf("tool_output_cap_bytes: %w", err)
+	}
 	if err := ensurePrivateDirectory(cfg.DataDir); err != nil {
 		return nil, fmt.Errorf("secure data directory: %w", err)
 	}

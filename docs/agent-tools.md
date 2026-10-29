@@ -65,9 +65,9 @@ call's time limit. This applies to every Swarm agent in a conversation.
   pass nor a failure yet.
 - **Explicitly.** `background: true` starts the command and returns its
   `background_id` at once. The agent keeps working.
-- **Report back.** When a background command ends, its exit code and the end
-  of its output (the last 4 KiB) are added to the conversation that started
-  it. A conversation that is running sees the update on its next step. An idle
+- **Report back.** When a background command ends, its exit code and its
+  retained output, bounded by the tool output cap below, are added to the
+  conversation that started it. A conversation that is running sees the update on its next step. An idle
   conversation is woken by it (a new run starts). If the run ends before the
   update reaches the model, the update wakes the conversation again. A task's
   conversation is never restarted outside its task lifecycle: there the update
@@ -101,3 +101,26 @@ Background commands live in the daemon's memory. A daemon restart stops them
 without a report. They are not available for `committed_source` validation (a
 validation passes only when it ends), for disposable reviews, or in managed
 execution; those stay foreground and report `timed_out` at the limit.
+
+# Native agent tools: tool output cap
+
+One setting bounds the text a single tool result gives the model, so a long
+log is not re-sent to the model on every later turn. It is
+`tool_output_cap_bytes` in the daemon's startup config (`0`, the default,
+means 32768 bytes; otherwise 4096 to 1048576). An invalid value stops the
+daemon at startup.
+
+| Tool | Over the cap |
+| --- | --- |
+| `bash` (foreground, moved to the background, `command: "status"`, and the report when a background command ends) | Keeps the head and the tail of the output around `[N bytes omitted; full output saved to <path>; read it with read/search]`. The result adds `output_capped`, `output_original_bytes`, `output_omitted_bytes` and `full_output_path` (or `full_output_error` when it could not be saved). |
+| `read` without `max_lines` | Stops at the last whole line within the cap, with `truncated`, `output_capped` and `next_line_start` to continue. An explicit `max_lines` (up to 2000) is the caller's own bound. |
+| `search` | Keeps the leading results that fit, with `output_omitted_results` and the full answer saved at `full_output_path`. |
+| `webfetch`, `websearch` contents | Each page's text is limited to `text.max_characters` (Exa's `maxCharacters` spelling is accepted too; giving both with different values is refused). Without one, each page gets an equal share of the cap (at least 1000 characters). The limit is sent to Exa and applied again to the returned text (`text_truncated: true`). |
+
+Full outputs are saved in the workspace under `.swarm/tool-output/` (files
+mode 0600, the newest 50 kept). The directory holds a `.gitignore` of `*`,
+so saved output never shows up as a change or gets committed. A `.swarm` or
+`tool-output` that is a symlink is refused and the output is not saved.
+Command output past the 4 MiB in-memory capture keeps its end, so the saved
+file and the tail show how the command finished; for a background command
+the saved file holds its retained output (the last 256 KiB).

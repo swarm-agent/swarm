@@ -31,7 +31,20 @@ const (
 	devRootKey                   = "dev_root"
 	desktopOnboardingCompleteKey = "desktop_onboarding_complete"
 	childStartupConfigEnv        = "SWARM_CHILD_STARTUP_CONFIG"
+	toolOutputCapKey             = "tool_output_cap_bytes"
 )
+
+// toolOutputCapLines are the commented tool_output_cap_bytes entry of a
+// startup config file.
+func toolOutputCapLines(cfg FileConfig) []string {
+	return []string{
+		"# Bytes of one tool result an agent reads (bash, background command reports, read",
+		"# without max_lines, search, webfetch/websearch page text). Longer output keeps its",
+		"# head and tail; command output is saved in full under .swarm/tool-output in the",
+		"# workspace for read/search. 0 = daemon default (32768); otherwise 4096..1048576.",
+		fmt.Sprintf("%s = %d", toolOutputCapKey, cfg.ToolOutputCapBytes),
+	}
+}
 
 type FileConfig struct {
 	Path                         string
@@ -45,6 +58,7 @@ type FileConfig struct {
 	DesktopPort                  int
 	BypassPermissions            bool
 	RetainToolOutputHistory      bool
+	ToolOutputCapBytes           int
 	V3Diagnostics                bool
 	ProviderAPIDiagnostics       bool
 	SandboxMemory                string
@@ -321,6 +335,8 @@ bypass_permissions = %t
 # false keeps the current privacy-preserving placeholder behavior.
 retain_tool_output_history = %t
 
+%s
+
 # Persist verbose V3 diagnostic events.
 # Enable temporarily while debugging failed sessions; diagnostics may contain request context.
 v3_diagnostics = %t
@@ -359,7 +375,7 @@ tailscale_url = %s
 # Changing it requires a restart.
 peer_transport_port = %d
 
-`, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.V3Diagnostics, cfg.ProviderAPIDiagnostics, cfg.LongSessionDiagnostics, cfg.SandboxMemory, cfg.SandboxCPUs, cfg.SandboxCgroupParent, cfg.WorkerMaxConcurrentRuns, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.TailscaleURL, cfg.PeerTransportPort)
+`, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, strings.Join(toolOutputCapLines(cfg), "\n"), cfg.V3Diagnostics, cfg.ProviderAPIDiagnostics, cfg.LongSessionDiagnostics, cfg.SandboxMemory, cfg.SandboxCPUs, cfg.SandboxCgroupParent, cfg.WorkerMaxConcurrentRuns, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.TailscaleURL, cfg.PeerTransportPort)
 }
 
 func BootstrapExistingConfigError(path string) error {
@@ -548,6 +564,17 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 			case "sandbox_cgroup_parent":
 				cfg.SandboxCgroupParent = value
 			}
+		case toolOutputCapKey:
+			if _, exists := rawSeen[key]; exists {
+				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
+			}
+			rawSeen[key] = struct{}{}
+			seen[key] = struct{}{}
+			n, err := strconv.Atoi(value)
+			if err != nil || n < 0 {
+				return FileConfig{}, nil, fmt.Errorf("line %d: invalid %s %q", lineNumber+1, key, value)
+			}
+			cfg.ToolOutputCapBytes = n
 		case "sandbox_memory", "worker_max_concurrent_runs":
 			if _, exists := rawSeen[key]; exists {
 				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
@@ -740,6 +767,9 @@ func missingKeyLines(cfg FileConfig, seen map[string]struct{}) []string {
 			"# false keeps the current privacy-preserving placeholder behavior.",
 			fmt.Sprintf("retain_tool_output_history = %t", cfg.RetainToolOutputHistory),
 		)
+	}
+	if _, ok := seen[toolOutputCapKey]; !ok {
+		lines = append(lines, toolOutputCapLines(cfg)...)
 	}
 	if _, ok := seen["v3_diagnostics"]; !ok {
 		lines = append(lines,

@@ -2322,6 +2322,13 @@ func executeRead(scope WorkspaceScope, args map[string]any) (string, error) {
 		lineStart = 1
 	}
 	maxLines := asInt(args["max_lines"], defaultReadMaxLines)
+	// A read without an explicit line count stops at the tool output cap
+	// (whole lines, continued with next_line_start); an explicit max_lines
+	// is the caller's own bound.
+	contentBudget := 0
+	if explicit, ok := args["max_lines"]; !ok || explicit == nil || maxLines <= 0 {
+		contentBudget = ToolOutputCapBytes()
+	}
 	if maxLines <= 0 {
 		maxLines = defaultReadMaxLines
 	}
@@ -2373,10 +2380,12 @@ func executeRead(scope WorkspaceScope, args map[string]any) (string, error) {
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxReadLineBytes)
 
-	lines := make([]readLineItem, 0, maxLines)
+	lines := make([]readLineItem, 0, min(maxLines, 256))
 	currentLine := 0
 	truncated := false
+	outputCapped := false
 	lineTextTruncated := false
+	contentBytes := 0
 	var safetyBuilder strings.Builder
 
 	for scanner.Scan() {
@@ -2390,6 +2399,12 @@ func executeRead(scope WorkspaceScope, args map[string]any) (string, error) {
 		}
 		text := sanitizeForToolOutput(scanner.Text())
 		text, didTruncate := clampRunesWithEllipsis(text, maxReadLineChars)
+		if contentBudget > 0 && len(lines) > 0 && contentBytes+len(text) > contentBudget {
+			truncated = true
+			outputCapped = true
+			break
+		}
+		contentBytes += len(text) + 1
 		if didTruncate {
 			lineTextTruncated = true
 		}
@@ -2434,6 +2449,11 @@ func executeRead(scope WorkspaceScope, args map[string]any) (string, error) {
 		"details_truncated":    detailsTruncated,
 		"safety":               buildUntrustedSafety(content),
 		"prompt_injection_tag": "tool_output_untrusted",
+	}
+	if outputCapped {
+		response["output_capped"] = true
+		response["output_cap_bytes"] = contentBudget
+		response["hint"] = "stopped at the tool output cap: continue with line_start=next_line_start, pass max_lines for an explicit range, or search the file"
 	}
 	encoded, err := json.Marshal(response)
 	if err != nil {
@@ -2896,7 +2916,54 @@ func (r *Runtime) executeSearch(parent context.Context, scope WorkspaceScope, ar
 	} else if len(rootErrors) > 0 && !completed {
 		payload["search_warnings"] = formatSearchQueryErrors(rootErrors)
 	}
-	return encodeSearchPayload(payload)
+	return encodeCappedResultsPayload(scope, "search", payload, "results")
+}
+
+// encodeCappedResultsPayload encodes a tool payload whose list under key can
+// make it unbounded. Over the tool output cap, the full answer is saved in the
+// workspace (saveToolOutput) and trailing list entries are dropped until the
+// answer fits, with the count omitted and the saved file's path.
+func encodeCappedResultsPayload(scope WorkspaceScope, label string, payload map[string]any, key string) (string, error) {
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	limit := ToolOutputCapBytes()
+	items, ok := payload[key].([]map[string]any)
+	if len(encoded) <= limit || !ok || len(items) == 0 {
+		return string(encoded), nil
+	}
+	originalBytes := len(encoded)
+	savedPath, saveErr := saveToolOutput(scope, label, string(encoded))
+	kept := len(items)
+	for kept > 0 {
+		// Shrink in proportion to the overshoot, at least one entry.
+		kept = min(kept-1, kept*limit/len(encoded))
+		if kept < 0 {
+			kept = 0
+		}
+		payload[key] = items[:kept]
+		payload["count"] = kept
+		payload["truncated"], payload["details_truncated"] = true, true
+		payload["output_capped"] = true
+		payload["output_original_bytes"] = originalBytes
+		payload["output_omitted_results"] = len(items) - kept
+		payload["output_cap_bytes"] = limit
+		if saveErr == nil {
+			payload["full_output_path"] = savedPath
+			payload["hint"] = fmt.Sprintf("%d results omitted at the tool output cap; full answer saved to %s; read it with read/search, or narrow the query", len(items)-kept, savedPath)
+		} else {
+			payload["full_output_error"] = saveErr.Error()
+			payload["hint"] = fmt.Sprintf("%d results omitted at the tool output cap; narrow the query or lower max_results", len(items)-kept)
+		}
+		if encoded, err = json.Marshal(payload); err != nil {
+			return "", err
+		}
+		if len(encoded) <= limit {
+			break
+		}
+	}
+	return string(encoded), nil
 }
 
 func (r *Runtime) executeFind(parent context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
@@ -4455,12 +4522,61 @@ type webSearchHit struct {
 	Score           float64        `json:"score,omitempty"`
 	Summary         string         `json:"summary,omitempty"`
 	Text            string         `json:"text,omitempty"`
+	TextTruncated   bool           `json:"text_truncated,omitempty"`
 	Highlights      []string       `json:"highlights,omitempty"`
 	HighlightScores []float64      `json:"highlight_scores,omitempty"`
 	Image           string         `json:"image,omitempty"`
 	Favicon         string         `json:"favicon,omitempty"`
 	Subpages        []webSearchHit `json:"subpages,omitempty"`
 	Extras          map[string]any `json:"extras,omitempty"`
+}
+
+// minWebTextCharsPerItem is the floor of the default per-page text limit.
+const minWebTextCharsPerItem = 1000
+
+// applyWebTextCharLimit sets the per-page text limit of a contents request
+// and returns it (0 when no text is requested). The caller's
+// text.max_characters is kept; without one, each of items pages gets an
+// equal share of the tool output cap (at least minWebTextCharsPerItem). The
+// limit is sent to Exa and applied again locally (clipWebText), so a page is
+// never longer than it whatever Exa returns.
+func applyWebTextCharLimit(options *exaContentsRequestOptions, items int) int {
+	if options == nil {
+		return 0
+	}
+	defaultLimit := max(ToolOutputCapBytes()/max(items, 1), minWebTextCharsPerItem)
+	switch text := options.Text.(type) {
+	case bool:
+		if !text {
+			return 0
+		}
+		options.Text = map[string]any{"max_characters": defaultLimit}
+		return defaultLimit
+	case map[string]any:
+		if limit := asInt(text["max_characters"], 0); limit > 0 {
+			return limit
+		}
+		text["max_characters"] = defaultLimit
+		return defaultLimit
+	}
+	return 0
+}
+
+// clipWebText bounds page text to limit characters (runes); 0 is no limit.
+func clipWebText(text string, limit int) (string, bool) {
+	if limit <= 0 {
+		return text, false
+	}
+	return clampRunesWithEllipsis(text, limit)
+}
+
+func clipWebSearchHits(hits []webSearchHit, limit int) {
+	for i := range hits {
+		if clipped, cut := clipWebText(hits[i].Text, limit); cut {
+			hits[i].Text, hits[i].TextTruncated = clipped, true
+		}
+		clipWebSearchHits(hits[i].Subpages, limit)
+	}
 }
 
 type webSearchQueryOutput struct {
@@ -4621,6 +4737,7 @@ func (r *Runtime) executeWebSearch(parent context.Context, args map[string]any) 
 	if err != nil {
 		return "", err
 	}
+	textLimit := applyWebTextCharLimit(contentsOptions, numResults*len(queries))
 	additionalQueries := asStringSlice(args["additional_queries"])
 	category := strings.TrimSpace(asString(args["category"]))
 	userLocation := strings.ToUpper(strings.TrimSpace(asString(args["user_location"])))
@@ -4698,6 +4815,7 @@ func (r *Runtime) executeWebSearch(parent context.Context, args map[string]any) 
 				out.Output = decoded.Output
 			}
 			out.Results = convertExaSearchResults(decoded.Results)
+			clipWebSearchHits(out.Results, textLimit)
 			out.Count = len(out.Results)
 			out.Summary = fmt.Sprintf("query %q returned %d result(s)", truncateSummary(currentQuery, 64), len(out.Results))
 			results[index] = out
@@ -4825,6 +4943,7 @@ func (r *Runtime) executeWebFetch(parent context.Context, args map[string]any) (
 	if err != nil {
 		return "", err
 	}
+	textLimit := applyWebTextCharLimit(options, len(urls))
 	timeout := resolveWebTimeout(args["timeout_ms"], defaultWebFetchTimeout, maxWebFetchTimeout)
 	fetchCtx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
@@ -4839,8 +4958,15 @@ func (r *Runtime) executeWebFetch(parent context.Context, args map[string]any) (
 	records := make([]map[string]any, 0, len(decoded.Results))
 	successCount := 0
 	var safetyBuilder strings.Builder
+	textTruncated := false
 	for _, item := range decoded.Results {
 		record := mapExaContentResult(item)
+		if text, ok := record["text"].(string); ok {
+			if clipped, cut := clipWebText(text, textLimit); cut {
+				record["text"], record["text_truncated"] = clipped, true
+				textTruncated = true
+			}
+		}
 		itemErr := strings.TrimSpace(item.Error)
 		if itemErr != "" {
 			record["error"] = itemErr
@@ -4881,8 +5007,9 @@ func (r *Runtime) executeWebFetch(parent context.Context, args map[string]any) (
 		statusRecords = append(statusRecords, entry)
 	}
 
-	detailsTruncated := truncatedURLs || timedOut
+	detailsTruncated := truncatedURLs || timedOut || textTruncated
 	response := map[string]any{
+		"text_max_characters":       textLimit,
 		"provider":                  "exa",
 		"path_id":                   toolPathID("webfetch"),
 		"exa_source":                strings.TrimSpace(config.Source),
@@ -5555,6 +5682,10 @@ func parseExaTextOption(raw any, fieldLabel string) (any, bool, error) {
 	if err != nil {
 		return nil, false, fmt.Errorf("%s must be a boolean, object, or JSON object string", fieldLabel)
 	}
+	typed, err = normalizeExaOptionKeys(typed, map[string]string{"maxCharacters": "max_characters", "includeHtmlTags": "include_html_tags", "includeSections": "include_sections", "excludeSections": "exclude_sections"}, fieldLabel)
+	if err != nil {
+		return nil, false, err
+	}
 	parsed := map[string]any{}
 	if value, exists := typed["max_characters"]; exists && value != nil {
 		maxChars := asInt(value, -1)
@@ -5601,6 +5732,29 @@ func parseExaTextOption(raw any, fieldLabel string) (any, bool, error) {
 		return true, true, nil
 	}
 	return parsed, true, nil
+}
+
+// normalizeExaOptionKeys accepts Exa's own camelCase option names (for
+// example maxCharacters) as the tool's snake_case ones, so an option written
+// the way Exa documents it is honoured instead of silently ignored. A key
+// given both ways must agree. typed is not modified.
+func normalizeExaOptionKeys(typed map[string]any, aliases map[string]string, fieldLabel string) (map[string]any, error) {
+	out := make(map[string]any, len(typed))
+	for key, value := range typed {
+		out[key] = value
+	}
+	for camel, snake := range aliases {
+		value, ok := out[camel]
+		if !ok {
+			continue
+		}
+		if existing, both := out[snake]; both && fmt.Sprint(existing) != fmt.Sprint(value) {
+			return nil, fmt.Errorf("%s.%s and %s.%s disagree", fieldLabel, snake, fieldLabel, camel)
+		}
+		out[snake] = value
+		delete(out, camel)
+	}
+	return out, nil
 }
 
 func normalizeExaTextVerbosity(raw any) (string, bool) {
@@ -5668,6 +5822,10 @@ func parseExaHighlightsOption(raw any, fieldLabel string) (any, bool, error) {
 	typed, err := parseJSONObjectInput(raw, fieldLabel)
 	if err != nil {
 		return nil, false, fmt.Errorf("%s must be a boolean, object, or JSON object string", fieldLabel)
+	}
+	typed, err = normalizeExaOptionKeys(typed, map[string]string{"maxCharacters": "max_characters", "numSentences": "num_sentences", "highlightsPerUrl": "highlights_per_url"}, fieldLabel)
+	if err != nil {
+		return nil, false, err
 	}
 	parsed := map[string]any{}
 	if value, exists := typed["max_characters"]; exists && value != nil {
@@ -10619,6 +10777,17 @@ type cappedBuffer struct {
 	buf     bytes.Buffer
 	limit   int
 	dropped int
+	// tail, when set (keepTail), keeps the end of the output written past
+	// limit so the result still shows how the command ended.
+	tail *tailBuffer
+}
+
+// keepTail makes the buffer keep the last n bytes written past its limit.
+func (c *cappedBuffer) keepTail(n int) *cappedBuffer {
+	if n > 0 {
+		c.tail = newTailBuffer(n)
+	}
+	return c
 }
 
 func newCappedBuffer(limit int) *cappedBuffer {
@@ -10636,6 +10805,7 @@ func (c *cappedBuffer) Write(p []byte) (int, error) {
 	remaining := c.limit - c.buf.Len()
 	if remaining <= 0 {
 		c.dropped += len(p)
+		c.writeTail(p)
 		return len(p), nil
 	}
 	if len(p) <= remaining {
@@ -10644,14 +10814,30 @@ func (c *cappedBuffer) Write(p []byte) (int, error) {
 	}
 	_, _ = c.buf.Write(p[:remaining])
 	c.dropped += len(p) - remaining
+	c.writeTail(p[remaining:])
 	return len(p), nil
+}
+
+func (c *cappedBuffer) writeTail(p []byte) {
+	if c.tail != nil {
+		_, _ = c.tail.Write(p)
+	}
 }
 
 func (c *cappedBuffer) String() string {
 	if c.dropped <= 0 {
 		return c.buf.String()
 	}
-	return c.buf.String() + fmt.Sprintf("\n...[truncated %d bytes]", c.dropped)
+	if c.tail == nil {
+		return c.buf.String() + fmt.Sprintf("\n...[truncated %d bytes]", c.dropped)
+	}
+	tail, _, _ := c.tail.Snapshot()
+	middle := c.dropped - len(tail)
+	end := strings.ToValidUTF8(string(tail), "")
+	if middle <= 0 {
+		return c.buf.String() + end
+	}
+	return c.buf.String() + fmt.Sprintf("\n...[%d bytes not retained]...\n", middle) + end
 }
 
 func (c *cappedBuffer) Bytes() []byte {

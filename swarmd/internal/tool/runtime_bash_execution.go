@@ -34,7 +34,7 @@ func executeBashCommand(parent context.Context, scope WorkspaceScope, args map[s
 	}
 	outcome := prepared.run(parent, timeout, func(chunk []byte) { _, _ = streamWriter.Write(chunk) })
 	streamWriter.Flush()
-	return foregroundOutcomeResponse(parent, strings.TrimSpace(command), capture, streamWriter, outcome, prepared.mode)
+	return foregroundOutcomeResponse(scope, strings.TrimSpace(command), capture, streamWriter, outcome, prepared.mode)
 }
 
 // bashTimeout is the call's limit from timeout_ms, bounded by maxBashTimeout.
@@ -72,7 +72,7 @@ func prepareBashExec(parent context.Context, scope WorkspaceScope, args map[stri
 	if scope.ReviewCheckout != "" && (sandbox.Default() == nil || !sandbox.Default().Active()) {
 		return bashExec{}, 0, nil, nil, sandbox.ErrSandboxRequired
 	}
-	capture := newCappedBuffer(maxBashOutputViewerBytes)
+	capture := newBashCapture()
 	streamWriter := newBashStreamWriter(capture, maxBashOutputViewerBytes, onDelta)
 	if leaseID, err := bashLease(parent, scope, args, timeout, onDelta); err != nil {
 		return bashExec{}, 0, nil, nil, err
@@ -310,14 +310,26 @@ func leasedBashExec(manager *sandbox.Manager, leaseID string, scope WorkspaceSco
 	}}
 }
 
-func bashResponse(command string, capture *cappedBuffer, streamWriter *bashStreamWriter, exitCode int, timedOut bool, err error, executionMode ...string) (string, error) {
-	wasTruncated := capture.Truncated()
+// newBashCapture is a command's in-memory capture: the first
+// maxBashOutputViewerBytes and, past that, the end of the output, so the
+// capped result still shows how the command ended.
+func newBashCapture() *cappedBuffer {
+	return newCappedBuffer(maxBashOutputViewerBytes).keepTail(ToolOutputCapBytes())
+}
+
+// bashResponse is a finished command's result. Output over the tool output
+// cap keeps its head and tail; the full captured output is saved in the
+// scope's workspace for read/search (capToolOutputText).
+func bashResponse(scope WorkspaceScope, command string, capture *cappedBuffer, streamWriter *bashStreamWriter, exitCode int, timedOut bool, err error, executionMode ...string) (string, error) {
 	rawOutput := capture.Bytes()
 	binarySuppressed := streamWriter.BinarySuppressed() || isLikelyBinary(rawOutput)
 	combined := ""
+	var capped cappedToolText
 	if !binarySuppressed {
-		combined = sanitizeForToolOutput(capture.String())
+		capped = capToolOutputText(scope, "bash", sanitizeForToolOutput(capture.String()), true)
+		combined = capped.Text
 	}
+	wasTruncated := capture.Truncated() || capped.Capped
 	detailsTruncated := wasTruncated || timedOut || binarySuppressed
 
 	response := map[string]any{
@@ -333,6 +345,7 @@ func bashResponse(command string, capture *cappedBuffer, streamWriter *bashStrea
 		"safety":               buildUntrustedSafety(combined),
 		"prompt_injection_tag": "tool_output_untrusted",
 	}
+	capped.annotate(response)
 	if len(executionMode) > 0 {
 		response["execution_mode"] = executionMode[0]
 	}
