@@ -254,7 +254,7 @@ func TestProjectTaskWaitLocalWatchesWithoutPending(t *testing.T) {
 	f.endRun("parent", "run-1")
 	notes, _ := f.db.ListV3SessionWakeNotes("parent")
 	again := f.redeliver(notes[0])
-	if again.RunIntent == nil || again.RunIntent.Status != V3RunIntentPendingExecutor || again.Message == nil || again.Message.Metadata["feedback_note"] == true || again.Message.Content != published[0].Message.Content {
+	if again.RunIntent == nil || again.RunIntent.Status != V3RunIntentPendingExecutor || again.RunIntent.TaskUpdateRootRunID != "run-1" || again.Message == nil || again.Message.Metadata["feedback_note"] == true || again.Message.Content != published[0].Message.Content {
 		t.Fatalf("redelivery: %+v", again)
 	}
 	if left, _ := f.db.ListV3SessionWakeNotes("parent"); len(left) != 0 {

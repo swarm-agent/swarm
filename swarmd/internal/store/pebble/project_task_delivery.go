@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/cockroachdb/pebble"
 )
@@ -360,11 +359,16 @@ func (s *SessionStore) setProjectTaskDeliveryInBatch(batch *pebble.Batch, input 
 			if err != nil {
 				return err
 			}
-			if input.Message != nil && strings.EqualFold(strings.TrimSpace(input.Message.Role), "user") && input.Message.Metadata["feedback_note"] != true {
+			if advancesTaskUpdateFence(input) {
 				fence = fmt.Sprint(seq)
 			}
 			raw, _ := json.Marshal(fence)
 			if err := batch.Set([]byte(taskUpdateOwnerFenceKey(owner)), raw, nil); err != nil {
+				return err
+			}
+		}
+		if !existingRun && advancesTaskUpdateFence(input) {
+			if err := s.moveTaskWatchesToGenerationInBatch(batch, input.SessionID, owner, fmt.Sprint(seq)); err != nil {
 				return err
 			}
 		}
@@ -401,7 +405,10 @@ func (s *SessionStore) setProjectTaskDeliveryInBatch(batch *pebble.Batch, input 
 			}
 		}
 	}
-	if input.Message != nil && strings.EqualFold(strings.TrimSpace(input.Message.Role), "user") && input.Message.Metadata["feedback_note"] != true {
+	if err := s.bindTaskWatchReportsInBatch(batch, input.taskWatchBind); err != nil {
+		return err
+	}
+	if advancesTaskUpdateFence(input) {
 		if err := batch.Set([]byte(taskUpdateFenceKey(input.SessionID)), []byte(fmt.Sprint(seq)), nil); err != nil {
 			return err
 		}

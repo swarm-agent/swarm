@@ -3,6 +3,15 @@ package api
 import (
 	"log"
 	"time"
+
+	"swarm/packages/swarmd/internal/tool"
+)
+
+// The tool runtime finds these by type assertion on its lifecycle service (this
+// server); a renamed method would silently stop report wakes and follows.
+var (
+	_ tool.TaskWatchReconciler = (*Server)(nil)
+	_ tool.TaskWatchFollower   = (*Server)(nil)
 )
 
 // Task watches (manage_projects wait_tasks) are durable records on the
@@ -19,6 +28,13 @@ func (s *Server) reconcileProjectTaskWaits(account, project string) {
 	if err != nil {
 		log.Printf("project task watch reconciliation failed: %v", err)
 	}
+}
+
+// ReconcileTaskWatches checks the project's watches after a task report was
+// recorded (tool.TaskWatchReconciler): an attention or wake_request report
+// from a watched task wakes its conversation.
+func (s *Server) ReconcileTaskWatches(account, project string) {
+	s.reconcileProjectTaskWaits(account, project)
 }
 
 // scheduleTaskWatchCheck checks a watch again when its milestone wake is due

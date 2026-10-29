@@ -584,7 +584,13 @@ func (s *SessionStore) projectTaskWatchLocalOutcome(input *V3SessionMutationInpu
 		}
 		rows = append(rows, row)
 	}
-	return map[string]any{"project_id": owner.TaskWait.ProjectID, "tasks": rows, "all_ready": allReady, "guidance": projectTaskWaitRuleGuidance(owner.TaskWait) + " Inspect the exact task_id/attempt_id/session_id using manage_projects action=inspect_files (pass session_id as source_session_id); retain the returned target.reference and head_commit for further reads. Do not use manage-worktree inspect_source (regular-task recovery) or Bash against an inferred checkout. Nonterminal rows remain in progress. A new wait_tasks call watches them again."}, rows, allReady || actionable, nil
+	// An attention or wake_request report from a watched task wakes the
+	// watch too (task_updates_pending); the turn reads the reports.
+	reportReady, err := s.projectTaskUpdateWakeEligible(owner)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	return map[string]any{"project_id": owner.TaskWait.ProjectID, "tasks": rows, "all_ready": allReady, "task_updates_pending": reportReady, "guidance": projectTaskWaitRuleGuidance(owner.TaskWait) + " Inspect the exact task_id/attempt_id/session_id using manage_projects action=inspect_files (pass session_id as source_session_id); retain the returned target.reference and head_commit for further reads. Do not use manage-worktree inspect_source (regular-task recovery) or Bash against an inferred checkout. Nonterminal rows remain in progress. A new wait_tasks call watches them again."}, rows, allReady || actionable || reportReady, nil
 }
 
 // projectTaskWaitReadiness: states that need the Orchestrator (including a

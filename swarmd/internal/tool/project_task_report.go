@@ -75,6 +75,12 @@ func (r *Runtime) executeProjectTaskReport(ctx context.Context, scope WorkspaceS
 	if err != nil {
 		return "", err
 	}
+	// An attention or wake_request report wakes a conversation watching the
+	// task (task watches read reports; a report changes no task record, so
+	// no project publication would reconcile the watches).
+	if reconciler, ok := r.getProjectTaskLifecycleService().(TaskWatchReconciler); ok {
+		reconciler.ReconcileTaskWatches(scope.Principal.AccountScopeID, projectID)
+	}
 	raw, err := json.Marshal(map[string]any{"tool": "manage_projects", "action": "report_task", "status": "recorded", "project_id": projectID, "task_id": taskID, "session_id": scope.SessionID, "event_ids": result.EventIDs, "event_seq": result.PrimarySeq, "replayed": result.Replayed, "delivery": "pending", "guidance": "Recorded task data only; this receipt does not prove delivery, wake-up or scope acceptance."})
 	return string(raw), err
 }

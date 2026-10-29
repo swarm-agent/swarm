@@ -98,9 +98,12 @@ type V3SessionMutationInput struct {
 	taskWatchesAfter *[]V3TaskWatchSummary
 	// SessionWake delivers background work's outcome (session_wake.go): a
 	// note for the active run or a new turn. Trusted runtime code only.
-	SessionWake                  *V3SessionWakeMutation `json:"-"`
-	wakeNoteSet                  *V3SessionWakeNote
-	wakeNoteDelete               *V3SessionWakeNote
+	SessionWake    *V3SessionWakeMutation `json:"-"`
+	wakeNoteSet    *V3SessionWakeNote
+	wakeNoteDelete *V3SessionWakeNote
+	// taskWatchBind: a registered watch whose task sessions' reports are
+	// bound to its generation in this batch.
+	taskWatchBind                *V3SessionTaskWatch
 	designChange                 *pebble.Batch     // Private independent design participant; caller holds designMu.
 	DesignAllocation             *DesignAllocation `json:"-"`
 	DesignAcceptance             *DesignAcceptance `json:"design_acceptance,omitempty"`

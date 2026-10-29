@@ -39,6 +39,9 @@ type V3SessionWakeMutation struct {
 	// RedeliverNoteID re-delivers a wake note whose run ended unread, as a new
 	// turn; the note record is removed in the same batch.
 	RedeliverNoteID string
+	// TaskUpdateRootRunID is the task-report generation a new turn reads
+	// (a task watch's); kept on the note for its re-delivery.
+	TaskUpdateRootRunID string
 	// DeliveredRunID is set by a committed wake: the run that takes the
 	// outcome (the note's run, or the new turn's).
 	DeliveredRunID string
@@ -62,7 +65,10 @@ type V3SessionWakeNote struct {
 	AccountScopeID string         `json:"account_scope_id,omitempty"`
 	Content        string         `json:"content"`
 	Metadata       map[string]any `json:"metadata,omitempty"`
-	CreatedAt      int64          `json:"created_at"`
+	// TaskUpdateRootRunID: the task-report generation a re-delivered turn
+	// reads (a task watch's).
+	TaskUpdateRootRunID string `json:"task_update_root_run_id,omitempty"`
+	CreatedAt           int64  `json:"created_at"`
 }
 
 const v3WakeNotePrefix = "v3/wake_note/"
@@ -188,6 +194,7 @@ func (s *SessionStore) prepareSessionWake(input *V3SessionMutationInput) error {
 		delete(metadata, "feedback_note")
 		delete(metadata, "wake_note_run_id")
 		metadata["redelivered_note_id"] = note.NoteID
+		op.TaskUpdateRootRunID = note.TaskUpdateRootRunID
 		input.Message = &MessageSnapshot{Role: "user", Content: note.Content, Metadata: metadata}
 		input.wakeNoteDelete = &note
 	}
@@ -216,7 +223,7 @@ func (s *SessionStore) prepareSessionWake(input *V3SessionMutationInput) error {
 		metadata["feedback_note"], metadata["wake_note_run_id"] = true, runID
 		message.Metadata = metadata
 		input.RunIntent = nil
-		input.wakeNoteSet = &V3SessionWakeNote{SessionID: input.SessionID, NoteID: message.ID, RunID: runID, WakeID: op.ID, Source: op.Source, UserID: input.UserID, AccountScopeID: input.AccountScopeID, Content: message.Content, Metadata: metadata, CreatedAt: now}
+		input.wakeNoteSet = &V3SessionWakeNote{SessionID: input.SessionID, NoteID: message.ID, RunID: runID, WakeID: op.ID, Source: op.Source, UserID: input.UserID, AccountScopeID: input.AccountScopeID, Content: message.Content, Metadata: metadata, CreatedAt: now, TaskUpdateRootRunID: op.TaskUpdateRootRunID}
 		op.DeliveredRunID, op.NewTurn = runID, false
 	} else {
 		message.ID = SessionWakeMessageID(input.SessionID, op.ID, "")
@@ -228,7 +235,7 @@ func (s *SessionStore) prepareSessionWake(input *V3SessionMutationInput) error {
 			epochID = epoch.EpochID
 		}
 		runID := SessionWakeRunID(input.SessionID, op.ID)
-		input.RunIntent = &V3SessionRunIntent{SessionID: input.SessionID, UserID: input.UserID, AccountScopeID: input.AccountScopeID, RunID: runID, SourceMessageID: message.ID, Status: V3RunIntentPendingExecutor, EpochID: epochID, CreatedAt: now, UpdatedAt: now}
+		input.RunIntent = &V3SessionRunIntent{SessionID: input.SessionID, UserID: input.UserID, AccountScopeID: input.AccountScopeID, RunID: runID, SourceMessageID: message.ID, Status: V3RunIntentPendingExecutor, EpochID: epochID, TaskUpdateRootRunID: op.TaskUpdateRootRunID, CreatedAt: now, UpdatedAt: now}
 		op.DeliveredRunID, op.NewTurn = runID, true
 	}
 	message.CreatedAt = now
@@ -325,4 +332,15 @@ func (s *SessionStore) ListV3BackgroundCommands() ([]V3BackgroundCommandRecord, 
 		return true, nil
 	})
 	return out, err
+}
+
+// advancesTaskUpdateFence reports whether a mutation is a person's message: a
+// user-role message that is not a queued note and not a task watch's delivery
+// (an outcome, milestone or its re-delivery). Only those start a new task
+// report generation; a watch's own wake must keep the reports it woke for.
+func advancesTaskUpdateFence(input V3SessionMutationInput) bool {
+	if input.Message == nil || !strings.EqualFold(strings.TrimSpace(input.Message.Role), "user") || input.Message.Metadata["feedback_note"] == true {
+		return false
+	}
+	return input.SessionWake == nil || input.SessionWake.Source != SessionWakeSourceTaskWatch
 }

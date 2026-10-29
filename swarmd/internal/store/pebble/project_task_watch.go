@@ -33,6 +33,11 @@ type V3SessionTaskWatch struct {
 	// wait, the run that was asleep on it).
 	OriginRunID string `json:"origin_run_id,omitempty"`
 	EpochID     string `json:"epoch_id,omitempty"`
+	// UpdateRoot is the report generation the watch reads task reports
+	// (report_task) from: the task-update root of the run that registered it,
+	// moved to the run of the person's latest message (the task-update fence).
+	// The watch's turns carry it as their TaskUpdateRootRunID.
+	UpdateRoot string `json:"task_update_root_run_id,omitempty"`
 	// Wait is what is watched: project, linked machine, until rule and the
 	// pinned task attempts (followed under until=settled).
 	Wait V3ProjectTaskWait `json:"wait"`
@@ -117,7 +122,7 @@ func V3TaskWatchSummaries(watches []V3SessionTaskWatch) []V3TaskWatchSummary {
 // owner is the run-intent view of a watch the outcome builders read.
 func (w V3SessionTaskWatch) owner() V3SessionRunIntent {
 	wait := w.Wait
-	return V3SessionRunIntent{SessionID: w.SessionID, UserID: w.UserID, AccountScopeID: w.AccountScopeID, RunID: w.OriginRunID, EpochID: w.EpochID, TaskWait: &wait}
+	return V3SessionRunIntent{SessionID: w.SessionID, UserID: w.UserID, AccountScopeID: w.AccountScopeID, RunID: w.OriginRunID, EpochID: w.EpochID, TaskUpdateRootRunID: w.UpdateRoot, TaskWait: &wait}
 }
 
 func listV3SessionTaskWatchesFromReader(reader pebble.Reader, sessionID string) ([]V3SessionTaskWatch, error) {
@@ -282,9 +287,12 @@ func (s *SessionStore) prepareProjectTaskWatchRegistration(input *V3SessionMutat
 	}
 	watch := V3SessionTaskWatch{
 		WatchID: ProjectTaskWatchID(input.SessionID, owner.RunID, wait.Machine, wait.ProjectID, wait.Until, ids), SessionID: input.SessionID,
-		UserID: input.UserID, AccountScopeID: input.AccountScopeID, OriginRunID: owner.RunID, EpochID: owner.EpochID,
+		UserID: input.UserID, AccountScopeID: input.AccountScopeID, OriginRunID: owner.RunID, EpochID: owner.EpochID, UpdateRoot: taskUpdateRoot(owner),
 		Wait: *wait, Titles: names, CreatedAt: now, Milestones: input.TaskWait.Milestones == nil || *input.TaskWait.Milestones,
 	}
+	// The watched tasks report to this generation (an explicit watch may
+	// select a retained task for the current goal, as a wait did).
+	input.taskWatchBind = &watch
 	input.Kind, input.EventType, input.RunIntent = V3SessionMutationAppendMessage, "session.task_watch.started", nil
 	input.Message = &MessageSnapshot{ID: watch.WatchID + "-watch-notice", Role: "system", Content: wait.Notice, Metadata: projectTaskWatchNoticeMetadata(watch, ProjectTaskWaitNoticeWatching)}
 	input.taskWatchSet = []V3SessionTaskWatch{watch}
@@ -391,6 +399,8 @@ func (s *SessionStore) prepareProjectTaskWatchWake(input *V3SessionMutationInput
 	if err != nil {
 		return err
 	}
+	// A turn this watch starts reads the reports of its generation.
+	input.SessionWake.TaskUpdateRootRunID = watch.UpdateRoot
 	now := input.NowUnixMs
 	if now <= 0 {
 		now = time.Now().UnixMilli()
@@ -585,7 +595,7 @@ func (s *SessionStore) prepareProjectTaskWaitMigration(input *V3SessionMutationI
 	}
 	watch := V3SessionTaskWatch{
 		WatchID: ProjectTaskWatchID(input.SessionID, owner.RunID, wait.Machine, wait.ProjectID, wait.Until, ids), SessionID: input.SessionID,
-		UserID: owner.UserID, AccountScopeID: owner.AccountScopeID, OriginRunID: owner.RunID, EpochID: owner.EpochID,
+		UserID: owner.UserID, AccountScopeID: owner.AccountScopeID, OriginRunID: owner.RunID, EpochID: owner.EpochID, UpdateRoot: taskUpdateRoot(owner),
 		Wait: wait, Titles: titles, CreatedAt: now, Milestones: true,
 	}
 	next := owner
@@ -764,4 +774,53 @@ func (s *Store) milestoneDue(sessionID, watchID string, at int64) {
 	if fn != nil {
 		fn(sessionID, watchID, at)
 	}
+}
+
+// bindTaskWatchReportsInBatch binds the watched task sessions' reports to the
+// watch's generation (registration), like a wait's registration did.
+func (s *SessionStore) bindTaskWatchReportsInBatch(batch *pebble.Batch, watch *V3SessionTaskWatch) error {
+	if watch == nil || watch.Wait.Machine != "" {
+		return nil // a linked machine's reports do not reach this store
+	}
+	for _, target := range watch.Wait.Tasks {
+		if err := s.setTaskUpdateBinding(batch, target.SessionID, watch.owner()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// moveTaskWatchesToGenerationInBatch runs when a person's message starts a
+// new report generation (it advances the task-update fence, which supersedes
+// reports made before it). Watches survive that message, so they follow it:
+// each local watch now reads reports of the new run's generation, and its
+// task sessions report to it from now on.
+func (s *SessionStore) moveTaskWatchesToGenerationInBatch(batch *pebble.Batch, sessionID string, run V3SessionRunIntent, fence string) error {
+	watches, err := s.ListV3SessionTaskWatches(sessionID)
+	if err != nil {
+		return err
+	}
+	for _, watch := range watches {
+		if watch.Wait.Machine != "" {
+			continue
+		}
+		watch.UpdateRoot, watch.EpochID = taskUpdateRoot(run), run.EpochID
+		raw, err := json.Marshal(watch)
+		if err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(KeyV3SessionTaskWatch(watch.SessionID, watch.WatchID)), raw, nil); err != nil {
+			return err
+		}
+		binding, err := json.Marshal(projectTaskUpdateBinding{watch.UpdateRoot, watch.EpochID, fence})
+		if err != nil {
+			return err
+		}
+		for _, target := range watch.Wait.Tasks {
+			if err := batch.Set([]byte(taskUpdateBindingKey(target.SessionID, sessionID)), binding, nil); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

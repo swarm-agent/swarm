@@ -53,6 +53,12 @@ type TaskWatchFollower interface {
 	FollowTaskWatch(sessionID, watchID string)
 }
 
+// TaskWatchReconciler is implemented by the daemon's API server: it checks the
+// project's task watches after a task report was recorded.
+type TaskWatchReconciler interface {
+	ReconcileTaskWatches(account, project string)
+}
+
 // projectTaskWatchRequestKey is the registration's idempotency key: one per
 // run and task selection, so a retried call is the same watch.
 func projectTaskWatchRequestKey(runID, machine, projectID, until string, ids []string) string {
