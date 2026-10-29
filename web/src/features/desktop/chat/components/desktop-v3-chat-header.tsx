@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { SessionAttachments } from './session-attachments'
 import { Archive, Clipboard, Download, Film, LoaderCircle, MessageSquare, MessageSquareText, MoreVertical, Pin } from 'lucide-react'
-import { DesktopV3RunStatusPill, formatDesktopV3RunTimerLabel, type DesktopV3RunStatusModel } from './desktop-v3-run-status'
+import { DesktopV3RunStatusPill, DesktopV3TaskWatchBadge, formatDesktopV3RunTimerLabel, type DesktopV3RunStatusModel } from './desktop-v3-run-status'
+import type { V3TaskWatchSummary } from '../../state/desktop-v3-cache-types'
 
 export interface DesktopV3ChatHeaderSessionActions {
   pinned: boolean
@@ -25,6 +26,7 @@ export interface DesktopV3ChatHeaderProps {
   modelFavoritesAnchorId?: string
   runStatus?: DesktopV3RunStatusModel | null
   runStatusNow?: number
+  taskWatches?: V3TaskWatchSummary[] | null
   sessionActions?: DesktopV3ChatHeaderSessionActions | null
   studioMode?: 'session' | 'studio' | null
   onToggleStudioMode?: () => void
@@ -57,6 +59,7 @@ export function DesktopV3ChatHeader({
   modelFavoritesAnchorId,
   runStatus = null,
   runStatusNow: controlledRunStatusNow,
+  taskWatches = null,
   sessionActions = null,
   studioMode = null,
   onToggleStudioMode,
@@ -211,8 +214,9 @@ export function DesktopV3ChatHeader({
             ) : null}
           </div>
         </div>
-        <div className="hidden sm:block">
+        <div className="hidden items-center gap-2 sm:flex">
           <DesktopV3RunStatusPill model={runStatus} now={runStatusNow} />
+          <DesktopV3TaskWatchBadge watches={taskWatches} />
         </div>
 
         {studioMode && onToggleStudioMode ? (

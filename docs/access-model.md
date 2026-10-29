@@ -94,11 +94,11 @@ on the machine. Every other linked action runs without asking: reads
 (including `list_environments` and `get_environment`), task archive, workflow
 propose/enable/disable/delete and worker pause/resume/archive/delete. `auto` runs everything. A task sent to a linked
 machine under `ask` (once approved) or `auto` starts there at once; it does not
-wait on the machine as a card. Waiting on a linked machine's tasks
+wait on the machine as a card. Watching a linked machine's tasks
 (`manage_projects action=wait_tasks` with `machine`) runs under `ask` or `auto`
 and is refused under `off`; a rule turned off (or the machine unlinked) while
-the goal waits resolves the wait as `linked_work_off` without reading the
-machine again.
+the conversation watches fires the watch as `linked_work_off` without reading
+the machine again.
 
 **Answering a task's request.** A task whose run waits on a pending permission
 or question reads `needs_you` with a `pending_request` (docs/task-progress.md).
@@ -144,7 +144,7 @@ ask; under `off` it is refused):
 | `activity` without it (optional `after`, `limit`) | `GET /v3/signals`: job failures, update drains, refused keys, with the next `cursor` | `swarm_activity` |
 
 `get_task_session` reads only the session of a task this home sent to that
-machine (its linked-task record); any other task is refused. Linked task waits
+machine (its linked-task record); any other task is refused. Linked task watches
 follow the same activity feed (its stream), so they wake on `needs_you`
 without polling. The Orchestrator's prompt says: when a linked task looks
 stalled, read `machine_status` and `get_task_session` before saying why, and

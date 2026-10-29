@@ -1837,6 +1837,9 @@ export function DesktopV3ExistingConversationPane({
   const sessionMediaCapability = useDesktopV3CacheSelector(
     (state) => state.sessionViewsById[normalizedSessionId]?.media_capability ?? null,
   );
+  const taskWatches = useDesktopV3CacheSelector(
+    (state) => state.sessionViewsById[normalizedSessionId]?.task_watches ?? null,
+  );
   const rawCachedPreference = useDesktopV3CacheSelector(
     (state) => state.preferencesBySession[normalizedSessionId],
   );
@@ -3366,6 +3369,7 @@ export function DesktopV3ExistingConversationPane({
         onOpenModelFavorites={orchestratorHeader ? () => setHeaderModelRequest(value => ({ sessionId: normalizedSessionId, signal: value.signal + 1 })) : undefined}
         modelFavoritesAnchorId={`orchestrator-model:${normalizedSessionId}`}
         runStatus={startPresentation?.runStatus ?? runStatusModel}
+        taskWatches={taskWatches}
         onOpenChats={onOpenChats}
         onNewSession={onNewSession}
         sessionActions={headerSessionActions}

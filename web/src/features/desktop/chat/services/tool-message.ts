@@ -98,7 +98,7 @@ export function describeToolActivity(toolName: string, argumentsJson?: Record<st
       propose_task: ["Task proposal", "Preparing task proposal"], create_task: ["Task creation", "Creating task"],
       deploy_task: ["Task deployment", "Deploying task"], approve_task: ["Task approval", "Approving task"],
       accept_task: ["Task acceptance", "Accepting task"], refine_task: ["Task refinement", "Refining task"],
-      wait_tasks: ["Task wait", "Waiting for tasks"], list_tasks: ["Task list", "Loading tasks"],
+      wait_tasks: ["Task watch", "Watching tasks"], watch_tasks: ["Task watch", "Watching tasks"], cancel_watch: ["Task watch", "Stopping the watch"], list_tasks: ["Task list", "Loading tasks"],
       get_task: ["Task details", "Reading task"], report_task: ["Task update", "Reporting task progress"],
       update_task: ["Task update", "Updating task"], edit_requirements: ["Task requirements", "Updating task requirements"],
       reopen_task: ["Task reopen", "Reopening task"], archive_task: ["Task archive", "Archiving task"],

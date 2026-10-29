@@ -87,10 +87,9 @@ export function buildDesktopV3RunStatusModel(input: {
   latestRunIntent?: V3SessionRunIntent | null
   liveRuns?: LiveRunOverlay[]
 }): DesktopV3RunStatusModel | null {
+  // A conversation is never pending on tasks: task watches show beside the
+  // status (DesktopV3TaskWatchBadge), and the run is idle or working.
   const currentStatus = runIntentStatus(input.currentRunIntent)
-  if (currentStatus === 'waiting_tasks' || (!currentStatus && runIntentStatus(input.latestRunIntent) === 'waiting_tasks')) {
-    return { kind: 'waiting', label: 'Waiting for tasks', active: false }
-  }
   if (currentStatus === 'dispatch_blocked') {
     return {
       kind: 'paused',
@@ -234,5 +233,22 @@ export function DesktopV3RunStatusPill({ model, now, className }: { model: Deskt
         </span>
       ) : null}
     </div>
+  )
+}
+
+// The conversation's active task watches, shown beside Idle/Working. Sending
+// stays enabled: a message never ends a watch. Titles are plain text.
+export function DesktopV3TaskWatchBadge({ watches }: { watches?: readonly { task_ids: readonly string[]; titles?: readonly string[]; machine?: string }[] | null }) {
+  const list = watches ?? []
+  const tasks = list.reduce((count, watch) => count + watch.task_ids.length, 0)
+  if (tasks === 0) return null
+  const machines = [...new Set(list.map((watch) => watch.machine).filter((machine): machine is string => Boolean(machine)))]
+  const titles = list.flatMap((watch) => watch.titles ?? []).slice(0, 16)
+  const label = `Watching · ${tasks} ${tasks === 1 ? 'task' : 'tasks'}${machines.length ? ` on ${machines.join(', ')}` : ''}`
+  return (
+    <span role="status" data-testid="desktop-v3-task-watch-badge" title={titles.join('\n') || undefined} className="inline-flex min-w-0 items-center gap-1 rounded-full border border-[var(--app-border)] px-2 py-0.5 text-xs text-[var(--app-text-muted)]">
+      <span aria-hidden="true">👁</span>
+      <span className="truncate">{label}</span>
+    </span>
   )
 }

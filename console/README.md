@@ -208,33 +208,33 @@ a separate profile and the extension loaded, for trying it out.
   "landed · pushed 5711ae410abc"), not its run status; a Swarm that gives no
   state shows its progress summary or run status as before.
 - **Run states:** a session's glyph says how its run stands: `●` running,
-  `◆` needs you, `◷` waiting, `○` idle, `✕` failed. Waiting is an
-  Orchestrator asleep on `wait_tasks` (Swarm's run state `waiting_tasks`,
-  `active: false`): no timer ticks, the pane header names the tasks it waits
-  on (and the linked machine they run on) from the run state's `task_wait`,
-  and the composer says a message from you ends the wait. It comes from the
-  sync snapshot, so it survives a reconnect or restart; when the tasks settle
-  or you write, the run shows as running again. The transcript shows the
-  wait line Swarm records when the wait starts ("This conversation is now
-  waiting on 2 task(s) on forge: …") and when it ends ("Wait ended: tasks
-  settled.", "Wait ended by your message.", "Wait ended: stopped.") as a
-  compact `⏳` status line, from history as well as live.
-- **Composer:** beside send/stop a badge says when the run waits on tasks:
-  `⏳ Waiting · 2 tasks on forge` (task count, and the linked machine). No
-  badge while it runs (the stop button says so) or when idle. The text box
-  grows by whole rows as it wraps, up to twelve rows. While Swarm says the run is
-  active, send becomes stop (`POST /v3/sessions/{id}/run/stop`; the notice
-  is Swarm's own answer). While it waits, send stays (a message ends the
-  wait) and `■ stop wait` cancels it: Swarm's session detail lists no
-  active run while it waits, so the console posts `run/stop` with the
-  waiting run's `run_id` from the run state. Idle shows no hint text. The
+  `◆` needs you, `○` idle, `✕` failed (`◷` waiting only for a run left by
+  the retired pending `wait_tasks`, which Swarm converts at startup). An
+  Orchestrator never pends on tasks: `wait_tasks` records a task watch and
+  the conversation stays idle or working. Its watches come from the run
+  state's `task_watches` (sync snapshot, so they survive a reconnect or
+  restart) and from the `task_watches` list each watch event carries. The
+  transcript shows the line Swarm records when a watch starts ("Watching 2
+  tasks on forge: …") and when it fires or is stopped ("Tasks settled: …",
+  "Stopped watching: …") as a compact status line, from history as well as
+  live.
+- **Composer:** beside send/stop a badge says when the conversation watches
+  tasks: `👁 Watching · 2 tasks on forge` (task count, and the linked
+  machine), whether the run works or is idle. No badge with no watch: while
+  it runs the stop button says so. The text box grows by whole rows as it
+  wraps, up to twelve rows. While Swarm says the run is active, send becomes
+  stop (`POST /v3/sessions/{id}/run/stop`; the notice is Swarm's own
+  answer). A watch never disables send: a message from you never ends it.
+  For a run left by the retired pending wait, send stays and `■ stop wait`
+  cancels it with that run's `run_id` from the run state (Swarm's session
+  detail lists no active run for it). Idle shows no hint text. The
   bottom row also counts the agents at work across the fleet:
   `● 3 agents · forge 2 · pc 1` (dim `0 agents` when none; a fleet of one
   machine shows no split; machines that could not be read are named on
   hover). A click opens the Live page's panel. The bottom row never
   overflows the pane: as it narrows, `/ commands` goes first, then the
   agents count shortens to `● 3`, then the hint goes, then the badge
-  shortens to `⏳ 2` (its full text on hover), then the permissions chip goes, then send/stop shows only `■` / `⏎`
+  shortens to `👁 2` (its full text on hover), then the permissions chip goes, then send/stop shows only `■` / `⏎`
   (names on hover), and the model name truncates. Send/stop sits outside the
   part of the row that clips, so the rest never pushes it out. Typing `/` lists the
   commands: `/new`, `/new bottom`, `/stop`, `/compact`, `/context`,

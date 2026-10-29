@@ -109,8 +109,8 @@ ends again and does.
 
 A task's run ending is its job end only when the run leaves the task with a
 result: `needs_review`, `completed`, `failed`, `blocked` or `cancelled`. A run
-that leaves the task `in_progress` or `queued` (a Swarm task that pends its
-goal on the tasks it delegated, `manage_projects` `wait_tasks`) ends nothing,
+that leaves the task `in_progress` or `queued` (a Swarm task that watches the
+tasks it delegated with `manage_projects` `wait_tasks` and ends its turn) ends nothing,
 whatever the run's own status. The later run that finishes the task is the job
 end, named by its run id as a follow-up.
 

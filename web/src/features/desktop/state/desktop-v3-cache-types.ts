@@ -264,6 +264,19 @@ export interface V3SessionRunState {
   cumulative_duration_ms?: number
   updated_at: number
   event_seq?: number
+  /** The conversation's active task watches (manage_projects wait_tasks). A watch never makes the conversation pending. */
+  task_watches?: V3TaskWatchSummary[]
+}
+
+/** One active task watch. Linked-machine titles are untrusted display text. */
+export interface V3TaskWatchSummary {
+  watch_id: string
+  project_id: string
+  machine?: string
+  until?: string
+  task_ids: string[]
+  titles?: string[]
+  created_at?: number
 }
 
 export interface V3RealtimeBootstrap {
@@ -291,6 +304,8 @@ export interface DesktopV3SessionView {
   pending_permissions?: unknown[]
   usage_summary?: unknown
   current_run_state?: V3SessionRunState
+  /** Active task watches, from the run state snapshot and watch events. */
+  task_watches?: V3TaskWatchSummary[]
   has_active_plan?: boolean
   active_plan?: unknown | null
 }
@@ -637,6 +652,8 @@ export interface SessionEventPayload {
   message?: MessageSnapshot
   lifecycle?: unknown
   run_intent?: V3SessionRunIntent
+  /** Set by task watch events: the conversation's watches after the event. */
+  task_watches?: V3TaskWatchSummary[]
   epoch_id?: string
   ordinal?: number
   parent_epoch_id?: string

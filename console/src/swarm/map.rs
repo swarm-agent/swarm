@@ -163,12 +163,28 @@ pub fn run_clock(run: &Value, last_message_at: u64) -> RunClock {
     RunClock { active, started_at: ms("started_at"), cumulative_ms: ms("cumulative_duration_ms"), last_ms: ms("duration_ms"), last_message_at }
 }
 
-/// What a run asleep on tasks waits for: its `task_wait` while its status is
-/// `waiting_tasks` (sync's run state or a run intent carry both). None for
-/// any other run. Titles are left for the caller, who knows the tasks.
+/// What a conversation watches: the `task_watches` Swarm's run state lists
+/// (titles from Swarm, untrusted for linked machines), or the `task_wait` of a
+/// run left asleep by the retired pending wait (status `waiting_tasks`). None
+/// when it watches nothing. Titles of a retired wait are left for the caller.
 pub fn task_wait(run: &Value) -> Option<TaskWait> {
+    let watches = list(run, "task_watches");
     if s(run, "status") != "waiting_tasks" {
-        return None;
+        if watches.is_empty() {
+            return None;
+        }
+        let first = &watches[0];
+        let mut machines: Vec<&str> = watches.iter().map(|w| s(w, "machine")).filter(|m| !m.is_empty()).collect();
+        machines.dedup();
+        let mut tasks = vec![];
+        for watch in watches.iter() {
+            let titles = list(watch, "titles");
+            for (i, id) in list(watch, "task_ids").iter().filter_map(Value::as_str).enumerate() {
+                let title = titles.get(i).and_then(Value::as_str).unwrap_or("");
+                tasks.push((id.to_string().into(), title.to_string().into()));
+            }
+        }
+        return Some(TaskWait { run_id: "".into(), project_id: s(first, "project_id").to_string().into(), machine: machines.join(", ").into(), tasks });
     }
     let wait = run.get("task_wait").cloned().unwrap_or(Value::Null);
     Some(TaskWait {
@@ -198,7 +214,8 @@ pub fn session(shell: &Value, run: &Value, pending: bool, projects: &[Project]) 
             RunState::Running
         } else if pending {
             RunState::NeedsYou
-        } else if waiting_on.is_some() {
+        } else if waiting_on.as_ref().is_some_and(|w| !w.run_id.is_empty()) {
+            // Only a retired pending wait; a task watch keeps the session idle.
             RunState::Waiting
         } else if failed {
             RunState::Failed
@@ -1021,9 +1038,9 @@ mod tests {
         assert_eq!((wait.project_id.as_ref(), wait.machine.as_ref(), wait.tasks.len()), ("proj_1", "forge", 2));
         // Stop needs the waiting run's id (the session detail has none).
         assert_eq!(wait.run_id.as_ref(), "run-1");
-        assert_eq!(wait.line(), "waiting for tasks: t1, t2 · on forge");
+        assert_eq!(wait.line(), "watching tasks: t1, t2 · on forge");
         // The composer's badge comes from the snapshot alone (reconnect safe).
-        assert_eq!(crate::data::composer_badge(got.state, Some(&wait)).as_deref(), Some("⏳ Waiting · 2 tasks on forge"));
+        assert_eq!(crate::data::composer_badge(got.state, Some(&wait)).as_deref(), Some("👁 Watching · 2 tasks on forge"));
         // A run intent from a live event has no `active`: its status decides.
         let intent = json!({"status": "waiting_tasks"});
         assert!(!run_clock(&intent, 0).active);

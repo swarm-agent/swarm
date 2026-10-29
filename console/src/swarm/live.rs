@@ -1154,8 +1154,18 @@ impl Model<'_> {
         if sid.is_empty() {
             return Ok(false);
         }
+        // Task watches ride on the session, not its run: a watch event names
+        // them all (`task_watches`), and a new run intent keeps them.
+        let watches = payload.get("task_watches").filter(|w| w.is_array()).cloned().or_else(|| self.runs.get(sid).and_then(|r| r.get("task_watches")).cloned());
         if let Some(run) = payload.get("run_intent").filter(|r| !r.is_null()) {
             self.runs.insert(sid.to_string(), run.clone());
+        }
+        if let Some(watches) = watches {
+            if let Some(Value::Object(run)) = self.runs.get_mut(sid) {
+                run.insert("task_watches".to_string(), watches);
+            } else {
+                self.runs.insert(sid.to_string(), json!({ "task_watches": watches }));
+            }
         }
         if let Some(shell) = payload.get("session").filter(|x| x.is_object()) {
             if map::orchestrator_project(shell).is_some() {
@@ -1167,9 +1177,9 @@ impl Model<'_> {
         }
         let watched = self.details.get(sid).is_some_and(|d| d.hydrated);
         match kind {
-            // A wait's registration and its wake commit their message (the
-            // wait line, the outcome) in the same event as the run intent.
-            "session.message.appended" | "session.run.waiting_tasks" | "session.run.tasks_ready" => {
+            // A watch's start/stop and its wake commit their message (the
+            // watch line, the outcome) in the same event.
+            "session.message.appended" | "session.run.waiting_tasks" | "session.run.tasks_ready" | "session.task_watch.started" | "session.task_watch.cancelled" => {
                 let Some(message) = payload.get("message").filter(|m| m.is_object()) else { return Ok(true) };
                 if watched {
                     let d = self.details.get_mut(sid).unwrap();
@@ -1659,7 +1669,7 @@ mod tests {
             assert!(!s.run.unwrap().active, "a waiting run's clock does not tick");
             let wait = s.waiting_on.expect("what it waits on");
             assert_eq!(wait.tasks, vec![(Text::from("t1"), Text::from("Fix the build"))]);
-            assert_eq!(wait.line(), "waiting for tasks: Fix the build");
+            assert_eq!(wait.line(), "watching tasks: Fix the build");
         }
 
         #[test]
@@ -1669,7 +1679,32 @@ mod tests {
             let s = m.session_of("s1").unwrap();
             assert_eq!(s.state, RunState::Waiting);
             // Its tasks live on that machine: this machine's same-id task does not name them.
-            assert_eq!(s.waiting_on.unwrap().line(), "waiting for tasks: t1 · on forge");
+            assert_eq!(s.waiting_on.unwrap().line(), "watching tasks: t1 · on forge");
+        }
+
+        // Purpose: a task watch shows beside Working/Idle and never makes the
+        // conversation Waiting. Requirement: a session.task_watch.started
+        // event's task_watches give the session what it watches while its run
+        // keeps running; a later run intent keeps them; an event with an empty
+        // list ends them. Authority: Model::event and map::task_wait.
+        #[test]
+        fn task_watch_events_show_watching_beside_the_run() {
+            let client = Client::new("http://127.0.0.1:9", "unused");
+            let mut m = model(&client, json!({"run_id": "run-1", "active": true, "status": "running", "started_at": 1000}));
+            let watches = json!([{"watch_id": "w1", "project_id": "proj_1", "machine": "forge", "task_ids": ["t1", "t2"], "titles": ["Fix the build", "Docs"]}]);
+            assert!(m.event("s1", "session.task_watch.started", json!({"task_watches": watches})).unwrap());
+            let s = m.session_of("s1").unwrap();
+            assert_eq!(s.state, RunState::Running);
+            let wait = s.waiting_on.clone().expect("what it watches");
+            assert_eq!(crate::data::composer_badge(s.state, Some(&wait)).as_deref(), Some("● Working · 👁 Watching · 2 tasks on forge"));
+            // The turn ends: still watching, now idle.
+            assert!(m.event("s1", "session.run.completed", json!({"run_intent": {"run_id": "run-1", "status": "completed"}})).unwrap());
+            let s = m.session_of("s1").unwrap();
+            assert_eq!(s.state, RunState::Idle);
+            let wait = s.waiting_on.clone().expect("watches kept across the run");
+            assert_eq!(crate::data::composer_badge(s.state, Some(&wait)).as_deref(), Some("👁 Watching · 2 tasks on forge"));
+            assert!(m.event("s1", "session.task_watch.cancelled", json!({"task_watches": []})).unwrap());
+            assert!(m.session_of("s1").unwrap().waiting_on.is_none());
         }
 
         #[test]
@@ -1690,7 +1725,7 @@ mod tests {
             let wait = s.waiting_on.unwrap();
             assert_eq!(wait.run_id.as_ref(), "run-1");
             assert_eq!(wait.tasks[0].1.as_ref(), "Fix the build");
-            assert_eq!(crate::data::composer_badge(s.state, Some(&wait)).as_deref(), Some("⏳ Waiting · 1 task"));
+            assert_eq!(crate::data::composer_badge(s.state, Some(&wait)).as_deref(), Some("👁 Watching · 1 task"));
 
             // The tasks settle and the run resumes: Running again, nothing awaited.
             let resumed = json!({"run_id": "run-1:resume", "status": "running", "created_at": 2000});

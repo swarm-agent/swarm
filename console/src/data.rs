@@ -312,18 +312,21 @@ pub fn spend_today(machines: &[Machine]) -> (f64, bool) {
 pub enum RunState {
     Running,
     NeedsYou,
-    /// Asleep on `wait_tasks` (run intent status `waiting_tasks`): not
-    /// working, woken when the tasks settle or by a message from you.
+    /// A run left asleep by the retired pending `wait_tasks` (run intent
+    /// status `waiting_tasks`). Swarm converts these to task watches at
+    /// startup; a watch itself never puts a conversation in this state.
     Waiting,
     Idle,
     Failed,
 }
 
-/// What a conversation waiting on tasks waits for: its run's task wait.
+/// What a conversation watches: its active task watches (`task_watches` in
+/// Swarm's run state; watching never makes it pending), or the task wait of
+/// a run left asleep by the retired pending `wait_tasks`.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct TaskWait {
-    /// The waiting run: stop sends it, since Swarm's session detail lists
-    /// only an active run.
+    /// The waiting run of a retired pending wait (stop sends it); empty for
+    /// task watches, which no run holds.
     pub run_id: Text,
     pub project_id: Text,
     /// The linked machine the tasks run on ("" for this machine).
@@ -333,7 +336,7 @@ pub struct TaskWait {
 }
 
 impl TaskWait {
-    /// One line: "waiting for tasks: Fix the build, Add docs · on forge".
+    /// One line: "watching tasks: Fix the build, Add docs · on forge".
     pub fn line(&self) -> String {
         const SHOWN: usize = 3;
         fn shown(task: &(Text, Text)) -> &str {
@@ -341,7 +344,7 @@ impl TaskWait {
             if title.is_empty() { id.as_ref() } else { title.as_ref() }
         }
         let names: Vec<&str> = self.tasks.iter().take(SHOWN).map(shown).collect();
-        let mut line = if names.is_empty() { "waiting for tasks".to_string() } else { format!("waiting for tasks: {}", names.join(", ")) };
+        let mut line = if names.is_empty() { "watching tasks".to_string() } else { format!("watching tasks: {}", names.join(", ")) };
         if self.tasks.len() > SHOWN {
             line.push_str(&format!(" +{} more", self.tasks.len() - SHOWN));
         }
@@ -351,13 +354,13 @@ impl TaskWait {
         line
     }
 
-    /// The composer's badge: "⏳ Waiting · 2 tasks on forge".
+    /// The composer's badge: "👁 Watching · 2 tasks on forge".
     pub fn badge(&self) -> String {
         let n = self.tasks.len();
         let mut badge = match n {
-            0 => "⏳ Waiting".to_string(),
-            1 => "⏳ Waiting · 1 task".to_string(),
-            n => format!("⏳ Waiting · {n} tasks"),
+            0 => "👁 Watching".to_string(),
+            1 => "👁 Watching · 1 task".to_string(),
+            n => format!("👁 Watching · {n} tasks"),
         };
         if !self.machine.is_empty() {
             badge.push_str(&format!(" on {}", self.machine));
@@ -365,30 +368,35 @@ impl TaskWait {
         badge
     }
 
-    /// The badge on a narrow pane: "⏳ 2" (the full text is its tooltip).
+    /// The badge on a narrow pane: "👁 2" (the full text is its tooltip).
     pub fn short_badge(&self) -> String {
         match self.tasks.len() {
-            0 => "⏳".to_string(),
-            n => format!("⏳ {n}"),
+            0 => "👁".to_string(),
+            n => format!("👁 {n}"),
         }
     }
 }
 
-/// The composer's badge beside send/stop while the run waits on tasks:
-/// "⏳ Waiting · 2 tasks on forge". None otherwise: while it works the stop
-/// button already says so, and idle needs no badge.
+/// The composer's badge beside send/stop while the conversation watches
+/// tasks, whether it works or is idle: "👁 Watching · 2 tasks on forge".
+/// None with no watch: while it works the stop button already says so, and
+/// idle needs no badge. Sending stays enabled: a message never ends a watch.
 pub fn composer_badge(state: RunState, wait: Option<&TaskWait>) -> Option<String> {
-    match state {
-        RunState::Waiting => Some(wait.map(TaskWait::badge).unwrap_or_else(|| "⏳ Waiting".to_string())),
-        _ => None,
-    }
+    watch_shown(state, wait).map(|w| w.map(TaskWait::badge).unwrap_or_else(|| "👁 Watching".to_string()))
 }
 
-/// The badge's short form for a narrow pane ("⏳ 2"), when there is a badge.
+/// The badge's short form for a narrow pane ("👁 2"), when there is a badge.
 pub fn composer_badge_short(state: RunState, wait: Option<&TaskWait>) -> Option<String> {
-    match state {
-        RunState::Waiting => Some(wait.map(TaskWait::short_badge).unwrap_or_else(|| "⏳".to_string())),
-        _ => None,
+    watch_shown(state, wait).map(|w| w.map(TaskWait::short_badge).unwrap_or_else(|| "👁".to_string()))
+}
+
+/// Whether the composer shows a watch badge, and the watch it names: a watch
+/// with tasks in any state, or a run left by the retired pending wait.
+fn watch_shown(state: RunState, wait: Option<&TaskWait>) -> Option<Option<&TaskWait>> {
+    match wait.filter(|w| !w.tasks.is_empty() || state == RunState::Waiting) {
+        Some(w) => Some(Some(w)),
+        None if state == RunState::Waiting => Some(None),
+        None => None,
     }
 }
 
@@ -424,7 +432,7 @@ pub struct ComposerFit {
     /// dropped.
     pub agents_short: bool,
     pub hint: bool,
-    /// The badge as "⏳ 2" instead of its full text.
+    /// The badge as "👁 2" instead of its full text.
     pub badge_short: bool,
     pub permissions: bool,
     /// Send/stop as "■" / "⏎" (their names on hover).
@@ -477,14 +485,14 @@ pub fn text_width(text: &str, font_px: f32) -> f32 {
 }
 
 /// The composer's hint text. Idle shows none; the badge carries the run's
-/// state, so the waiting hint only says what a message does.
+/// state and its task watches. A message never ends a watch.
 pub fn composer_hint(demo: bool, live: bool, question: bool, state: RunState) -> &'static str {
     match (live, demo) {
         (_, true) => "demo data",
         (false, false) => "starts a session in this project",
         (true, false) if question => "your message answers the question above",
         (true, false) if state == RunState::Running => "your message is queued for its next step",
-        (true, false) if state == RunState::Waiting => "a message from you ends the wait",
+        (true, false) if state == RunState::Waiting => "send anytime; Swarm watches the tasks",
         (true, false) => "",
     }
 }
@@ -1560,10 +1568,11 @@ mod tests {
         assert_eq!(clock(4_000_000), "1h 06m");
     }
 
-    // Purpose: the composer says Waiting at a glance and nothing redundant.
-    // Requirement: a waiting run badges its task count (and machine when
-    // linked); a running run has no badge (its stop button already says it is
-    // working); idle and failed have no badge; the short badge is "⏳ N"; the
+    // Purpose: the composer says Watching at a glance and nothing redundant.
+    // Requirement: a conversation watching tasks badges their count (and
+    // machine when linked), working or idle; with no watch a running run has
+    // no badge (its stop button already says it is working) and idle and
+    // failed have none; the short badge is "👁 N"; the
     // idle hint is empty (no filler text) while the others still say what a
     // message does. Threat: the waiting state hiding in faint hint text, the
     // redundant "● Working" badge returning, or filler hints returning. Pure
@@ -1571,20 +1580,23 @@ mod tests {
     #[test]
     fn composer_badge_and_hint_name_the_run_state() {
         let wait = TaskWait { project_id: "p".into(), machine: "forge".into(), tasks: vec![("t1".into(), "Fix login".into()), ("t2".into(), "".into())], ..Default::default() };
-        assert_eq!(composer_badge(RunState::Waiting, Some(&wait)).as_deref(), Some("⏳ Waiting · 2 tasks on forge"));
+        assert_eq!(composer_badge(RunState::Waiting, Some(&wait)).as_deref(), Some("👁 Watching · 2 tasks on forge"));
+        assert_eq!(composer_badge(RunState::Idle, Some(&wait)).as_deref(), Some("👁 Watching · 2 tasks on forge"));
+        assert_eq!(composer_badge(RunState::Running, Some(&wait)).as_deref(), Some("● Working · 👁 Watching · 2 tasks on forge"));
         let here = TaskWait { tasks: vec![("t1".into(), "".into())], ..Default::default() };
-        assert_eq!(composer_badge(RunState::Waiting, Some(&here)).as_deref(), Some("⏳ Waiting · 1 task"));
-        assert_eq!(composer_badge(RunState::Waiting, None).as_deref(), Some("⏳ Waiting"));
+        assert_eq!(composer_badge(RunState::Waiting, Some(&here)).as_deref(), Some("👁 Watching · 1 task"));
+        assert_eq!(composer_badge(RunState::Waiting, None).as_deref(), Some("👁 Watching"));
+        assert_eq!(composer_badge(RunState::Running, Some(&wait)).as_deref(), Some("👁 Watching · 2 tasks on forge"));
         assert_eq!(composer_badge(RunState::Running, None), None);
-        assert_eq!(composer_badge(RunState::Running, Some(&wait)), None);
         assert_eq!(composer_badge(RunState::Idle, None), None);
         assert_eq!(composer_badge(RunState::Failed, None), None);
-        assert_eq!(composer_badge_short(RunState::Waiting, Some(&wait)).as_deref(), Some("⏳ 2"));
-        assert_eq!(composer_badge_short(RunState::Waiting, None).as_deref(), Some("⏳"));
-        assert_eq!(composer_badge_short(RunState::Running, Some(&wait)), None);
+        assert_eq!(composer_badge_short(RunState::Waiting, Some(&wait)).as_deref(), Some("👁 2"));
+        assert_eq!(composer_badge_short(RunState::Idle, Some(&wait)).as_deref(), Some("👁 2"));
+        assert_eq!(composer_badge_short(RunState::Waiting, None).as_deref(), Some("👁"));
+        assert_eq!(composer_badge_short(RunState::Running, None), None);
         assert_eq!(composer_badge_short(RunState::Idle, None), None);
         assert_eq!(composer_hint(false, true, false, RunState::Idle), "");
-        assert_eq!(composer_hint(false, true, false, RunState::Waiting), "a message from you ends the wait");
+        assert_eq!(composer_hint(false, true, false, RunState::Waiting), "send anytime; Swarm watches the tasks");
         assert_eq!(composer_hint(false, true, false, RunState::Running), "your message is queued for its next step");
         assert_eq!(composer_hint(false, true, true, RunState::Idle), "your message answers the question above");
         assert_eq!(composer_hint(false, false, false, RunState::Idle), "starts a session in this project");
@@ -1656,7 +1668,7 @@ mod tests {
         assert!(composer_fit(229., idle).compact);
         // Rough widths: wide symbols take two cells.
         assert!((text_width("ab", 10.) - 12.).abs() < 0.01);
-        assert!((text_width("⏳ 2", 10.) - 24.).abs() < 0.01);
+        assert!((text_width("👁 2", 10.) - 24.).abs() < 0.01);
     }
 
     // Purpose: the agents count plugs into the same width rule: after

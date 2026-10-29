@@ -11,10 +11,10 @@ export function DesktopV3TaskActivity({ activity }: { activity: DesktopTaskActiv
   </section>
 }
 
-// A compact status line for a task wait starting or ending. Plain text only.
+// A compact status line for a task watch starting or ending. Plain text only.
 export function DesktopV3TaskWaitNotice({ notice }: { notice: DesktopTaskWaitNotice }) {
   return <p role="status" data-testid="desktop-task-wait-notice" data-ended={notice.ended ? 'true' : 'false'} title={notice.titles.length ? notice.titles.join('\n') : undefined} className="flex min-w-0 items-baseline gap-2 px-1 text-xs text-[var(--app-text-muted)]">
-    <span aria-hidden="true" className={notice.ended ? '' : 'text-[var(--app-warning)]'}>{notice.ended ? '✓' : '⏳'}</span>
+    <span aria-hidden="true" className={notice.ended ? '' : 'text-[var(--app-warning)]'}>{notice.ended ? '✓' : '👁'}</span>
     <span className="min-w-0 [overflow-wrap:anywhere]">{notice.text}</span>
   </p>
 }

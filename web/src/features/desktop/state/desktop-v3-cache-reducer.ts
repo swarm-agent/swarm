@@ -37,6 +37,7 @@ import type {
   WorksetCache,
   SessionSnapshot,
   MessageMutationConflictResponse,
+  V3TaskWatchSummary,
 } from './desktop-v3-cache-types'
 import type { DesktopNotificationAction, DesktopNotificationCenterRecord, DesktopNotificationSummary, DesktopPermissionRecord } from '../types/realtime'
 import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
@@ -1286,6 +1287,9 @@ export function applyCacheEvent(
   if (payload.run_intent) {
     upsertRunIntent(state, sessionId, payload.run_intent)
   }
+  if (Array.isArray(payload.task_watches)) {
+    setSessionTaskWatches(state, sessionId, payload.task_watches)
+  }
 
   applyExecutionEpochFromEvent(state, event)
 
@@ -2500,7 +2504,18 @@ function applyCurrentRunStateFromSyncSnapshot(
   const states = snapshot.current_run_state_by_session ?? {}
   for (const sessionId of authoritativeSessionIds) {
     applyCurrentRunStateFrame(state, sessionId, states[sessionId])
+    // The snapshot's run state is authoritative for watches: none listed, none active.
+    setSessionTaskWatches(state, sessionId, states[sessionId]?.task_watches ?? [])
   }
+}
+
+// Task watches live on the session view, apart from the run: a watching
+// conversation is idle or working, never pending.
+function setSessionTaskWatches(state: DesktopV3CacheState, sessionId: string, watches: V3TaskWatchSummary[]): void {
+  const view = state.sessionViewsById[sessionId]
+  if (!view && watches.length === 0) return
+  if ((view?.task_watches?.length ?? 0) === 0 && watches.length === 0) return
+  state.sessionViewsById[sessionId] = { ...view, task_watches: watches.slice(0, 64) }
 }
 
 function applyCurrentRunStateFrame(
@@ -2525,6 +2540,7 @@ function applyCurrentRunStateFrame(
       event_seq: runState.event_seq ?? 0,
     }
     upsertRunIntent(state, sessionId, runIntent)
+    if (runState.task_watches !== undefined) setSessionTaskWatches(state, sessionId, runState.task_watches)
   } else {
     delete state.currentRunIntentBySession[sessionId]
     const record = state.sessionsById[sessionId]

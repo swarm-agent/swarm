@@ -315,7 +315,23 @@ project, so clients read the task again; nothing is polled.
 
 ## The Orchestrator
 
-A wait also wakes when a selected task's run starts waiting on a person (live
+`wait_tasks` watches tasks in the background: it records a durable watch on
+the conversation and returns at once, so the Orchestrator answers the person
+and ends its turn normally. The conversation is never pending: it shows as
+idle, or working while a run is active. When the watched tasks settle (or one
+needs input) Swarm starts a new turn with each task's `progress` in the
+`Delegated project task outcomes` message; if a run is active then (the person
+is talking), the outcomes are delivered right after that run ends. A person's
+message never ends a watch. A watch ends when it fires, when the Orchestrator
+cancels it (`cancel_watch`, or `wait_tasks` with `cancel: true`), when the
+person stops it (`POST /v3/sessions/{id}/task-watches/stop`), or when the
+conversation is archived or deleted. Calling `wait_tasks` again on a watched
+task changes nothing. Watches survive restarts; runs left pending by the
+retired wait are converted to watches at startup. The run state's
+`task_watches` (sync snapshot) and `GET /v3/sessions/{id}/task-watches` list a
+conversation's active watches.
+
+A watch also fires when a selected task's run starts waiting on a person (live
 `needs_you` with a request): its outcome row carries `task_state`,
 `task_state_reason` and `pending_request`. On a linked machine the session's
 `permission.summary.updated` event reaches the home through the machine's
@@ -328,22 +344,22 @@ question's answer; `machine` for linked work) only on their word or under a
 rule that allows it. Each answer covers that one request; no lasting rule is
 saved. See docs/access-model.md for its rule and confinement.
 
-`wait_tasks` resumes the Orchestrator with each task's `progress`. When a task
-it delegated ends `not_integrated` with workflow state `none`, it tells the
+When a task it delegated ends `not_integrated` with workflow state `none`, it tells the
 person in the conversation that the work is on its branch and not integrated,
 and does nothing more with it until the person says what they want.
 
-While the Orchestrator waits on `wait_tasks`, the conversation itself says so,
-whatever the Orchestrator writes. The wait's registration records a system
-message (metadata `source: task_wait_notice`, `task_wait_notice: waiting`, with
-`task_count`, `task_titles` and, for a linked machine, `machine`) whose text is
-the wait's notice: "This conversation is now waiting on 2 task(s) on forge:
-Fix login, Add docs. It wakes when they settle; a new message ends the wait."
-When the wait ends Swarm records the matching line (`task_wait_notice: ended`,
-`ended_by` `tasks`, `message` or `stop`): "Wait ended: tasks settled.", "Wait
-ended by your message." or "Wait ended: stopped.". Both are session history, so
-a reload shows them. They are for the person: Swarm never sends them to the
-model. Clients show them as a compact status line.
+While the Orchestrator watches tasks, the conversation itself says so,
+whatever the Orchestrator writes. Starting a watch records a system message
+(metadata `source: task_wait_notice`, `task_wait_notice: watching`, with
+`task_watch_id`, `task_count`, `task_titles` and, for a linked machine,
+`machine`): "Watching 2 tasks on forge: Fix login, Add docs." Calling
+`wait_tasks` again on the same tasks records nothing. When the watch fires
+Swarm records "Tasks settled: Fix login, Add docs." (`task_wait_notice:
+ended`, `ended_by: tasks`); a cancel or stop records "Stopped watching: …"
+(`ended_by` `agent` or `stop`). They are session history, so a reload shows
+them. They are for the person: Swarm never sends them to the model. Clients
+show them as a compact status line and a `👁 Watching · N tasks` badge beside
+Idle/Working.
 
 ## Clients
 

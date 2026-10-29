@@ -19,7 +19,7 @@ export function isTaskOutcomeMessage(message: MessageSnapshot): boolean {
   return message.role === 'system' && Boolean(text(message.metadata?.task_wait_owner_run_id))
 }
 
-// A task wait's visible start/end line (daemon metadata source task_wait_notice).
+// A task watch's visible start/end line (daemon metadata source task_wait_notice).
 // Information for the person: the daemon never sends it to the model.
 export interface DesktopTaskWaitNotice {
   id: string
@@ -57,7 +57,7 @@ const statusLabels: Record<string, string> = {
 export function taskOutcomeActivity(message: MessageSnapshot): DesktopTaskActivity {
   const activity: DesktopTaskActivity = {
     id: `task-outcome:${message.id}`, timelineSeq: message.global_seq,
-    label: 'Task wait ended', detail: 'Task outcomes are available. A continuation was queued; this does not mean it is running.', rows: [],
+    label: 'Tasks settled', detail: 'Task outcomes are available. A new turn was queued; this does not mean it is running.', rows: [],
   }
   const prefix = 'Delegated project task outcomes:\n'
   if (!message.content.startsWith(prefix) || message.content.length > 100_000) return activity

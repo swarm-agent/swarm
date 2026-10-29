@@ -1125,9 +1125,9 @@ impl Console {
         let drop_tint = alpha(t.accent, 0.12);
         // While Swarm says the run is active, the send hint becomes its stop button.
         let running = s.live.is_some() && s.state == RunState::Running;
-        // Asleep on tasks: a message ends the wait (so send), and stop cancels
-        // it. Swarm's session detail lists no active run while it waits, so
-        // Act::Stop sends the waiting run's id from the run state.
+        // A run left by the retired pending wait (Swarm converts these at
+        // startup): send stays, and stop cancels it by its own id from the
+        // run state, since Swarm's session detail lists no active run for it.
         let waiting = s.live.is_some() && s.state == RunState::Waiting;
         let err = t.err;
         let tip = (t.surface, t.text, t.border);
@@ -1167,8 +1167,8 @@ impl Console {
                 .when(compact, |d| with_tip(d, "send"))
                 .child(if compact { "⏎" } else { "⏎ send" })
         };
-        // Waiting on tasks at a glance, beside send/stop. Working has none:
-        // the stop button says it.
+        // Watching tasks at a glance, beside send/stop, working or idle. With
+        // no watch there is none: the stop button says it is working.
         let badge_full = s.live.as_ref().and(data::composer_badge(s.state, s.waiting_on.as_ref()));
         let badge_short = s.live.as_ref().and(data::composer_badge_short(s.state, s.waiting_on.as_ref()));
         let hint = data::composer_hint(self.link == Link::Demo, s.live.is_some(), s.pending.as_ref().is_some_and(|p| p.question), s.state);
@@ -1219,6 +1219,7 @@ impl Console {
         } else {
             send(fit.compact).into_any_element()
         };
+        // Send stays enabled beside the badge: a message never ends a watch.
         let badge = badge_full.map(|full| {
             let color = t.accent;
             let label = if fit.badge_short { badge_short.clone().unwrap_or_default() } else { full.clone() };
