@@ -113,8 +113,8 @@ func TestHeadlessV3RequestsPreserveRoleAuthorityAcrossContinuation(t *testing.T)
 					if !strings.Contains(req.Instructions, "checkpoint transitions belong to the authorized owner") {
 						t.Fatal("specialist ownership guidance missing")
 					}
-					if role == "system-coder" && (names["bash"] || names["ask_user"] || !names["task_progress"]) {
-						t.Fatalf("regular coder contract changed: %v", names)
+					if role == "system-coder" && (!names["bash"] || names["ask_user"] || !names["task_progress"]) {
+						t.Fatalf("regular coder contract changed (want scoped bash and task_progress, no ask_user): %v", names)
 					}
 					if role == "system-finder" && (names["find"] || names["write"] || names["edit"]) {
 						t.Fatalf("Finder gained unsupported tools: %v", names)
