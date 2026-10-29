@@ -1377,9 +1377,13 @@ fn tool_started(entries: &mut Vec<Entry>, payload: &Value) {
 }
 
 /// session.tool.completed, failed or cancelled: the call's running line
-/// ends with its summary and duration (a new line when it had none).
+/// ends with its summary and duration (a new line when it had none). An end
+/// repeated for a call whose line already ended changes nothing.
 fn tool_ended(entries: &mut Vec<Entry>, kind: &str, payload: &Value) {
     let (id, name) = (call_id(payload), s(payload, "tool_name"));
+    if !id.is_empty() && running_call(entries, id, name).is_none() && entries.iter().any(|e| matches!(e, Entry::Tool { call_id, .. } if call_id.as_ref() == id)) {
+        return;
+    }
     let (new_state, new_summary, duration) = map::tool_event_end(kind, payload);
     let ended_at = payload.get("recorded_at").and_then(Value::as_u64);
     // Media it asked for: a card under its line, once (history has it too).
@@ -1561,8 +1565,9 @@ mod tests {
 
         // Purpose: a manage_media generate call that finishes live gets its
         // media card right under its line, once, matching what history
-        // replay draws. Threat: no card until a reload, or a second card when
-        // the event repeats. Authority: tool_ended with map::media_card.
+        // replay draws. Threat: no card until a reload, or a second card or
+        // a second finished line when the end event repeats. Authority:
+        // tool_ended with map::media_card.
         #[test]
         fn a_finished_media_call_gets_its_card_once() {
             let mut e = Vec::new();
