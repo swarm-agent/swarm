@@ -322,6 +322,9 @@ pub enum RunState {
 /// What a conversation waiting on tasks waits for: its run's task wait.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct TaskWait {
+    /// The waiting run: stop sends it, since Swarm's session detail lists
+    /// only an active run.
+    pub run_id: Text,
     pub project_id: Text,
     /// The linked machine the tasks run on ("" for this machine).
     pub machine: Text,
@@ -1398,7 +1401,7 @@ mod tests {
     // text; the GPUI row only places it.
     #[test]
     fn composer_badge_and_hint_name_the_run_state() {
-        let wait = TaskWait { project_id: "p".into(), machine: "forge".into(), tasks: vec![("t1".into(), "Fix login".into()), ("t2".into(), "".into())] };
+        let wait = TaskWait { project_id: "p".into(), machine: "forge".into(), tasks: vec![("t1".into(), "Fix login".into()), ("t2".into(), "".into())], ..Default::default() };
         assert_eq!(composer_badge(RunState::Waiting, Some(&wait)).as_deref(), Some("⏳ Waiting · 2 tasks on forge"));
         let here = TaskWait { tasks: vec![("t1".into(), "".into())], ..Default::default() };
         assert_eq!(composer_badge(RunState::Waiting, Some(&here)).as_deref(), Some("⏳ Waiting · 1 task"));

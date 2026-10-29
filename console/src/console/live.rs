@@ -751,8 +751,10 @@ impl Console {
         let (Some(live), Some(l)) = (&self.live, self.sessions[si].live.clone()) else { return };
         let session_id = l.session_id.to_string();
         let pending = self.sessions[si].pending.clone();
+        // A run asleep on tasks is stopped by its own id (see Command::Stop).
+        let waiting_run_id = self.sessions[si].waiting_on.as_ref().filter(|_| self.sessions[si].state == RunState::Waiting).map(|w| w.run_id.to_string()).unwrap_or_default();
         let command = match (act, pending) {
-            (Act::Stop, _) => Command::Stop { session_id },
+            (Act::Stop, _) => Command::Stop { session_id, waiting_run_id },
             (Act::Approve, Some(p)) => Command::Resolve { session_id, permission_id: p.id.to_string(), allow: true, answer: None },
             (Act::Reject, Some(p)) => Command::Resolve { session_id, permission_id: p.id.to_string(), allow: false, answer: None },
             _ => return,
@@ -775,7 +777,7 @@ impl Console {
             let session_id = task.session.to_string();
             self.acting = Some(si);
             self.failure = None;
-            live.run(Command::Stop { session_id });
+            live.run(Command::Stop { session_id, waiting_run_id: String::new() });
             self.notice = Some(("Stopping the task…".into(), false));
             cx.notify();
             return;

@@ -1088,7 +1088,8 @@ impl Console {
         // While Swarm says the run is active, the send hint becomes its stop button.
         let running = s.live.is_some() && s.state == RunState::Running;
         // Asleep on tasks: a message ends the wait (so send), and stop cancels
-        // it (Swarm stops an inactive wait).
+        // it. Swarm's session detail lists no active run while it waits, so
+        // Act::Stop sends the waiting run's id from the run state.
         let waiting = s.live.is_some() && s.state == RunState::Waiting;
         let err = t.err;
         let stop_button = |label: &'static str| {

@@ -137,7 +137,9 @@ pub enum Command {
     OrderProjects { project_ids: Vec<String> },
     DeleteProject { project_id: String },
     RefreshProjectContext { project_id: String, expected_attempt: u64 },
-    Stop { session_id: String },
+    /// `waiting_run_id`: the run asleep on tasks ("" for none). Swarm's
+    /// session detail lists only an active run, so a wait is stopped by this id.
+    Stop { session_id: String, waiting_run_id: String },
 }
 
 pub struct Live {
@@ -413,7 +415,7 @@ fn perform(client: &Client, command: Command) -> (Option<u64>, &'static str, Res
             if approve { "approve" } else { "reject" },
             client.post(&format!("/v3/projects/{project_id}/tasks/{task_id}/{}", if approve { "approve" } else { "reject" }), json!({})).map_err(err),
         ),
-        Command::Stop { session_id } => (None, "stop", stop(client, &session_id)),
+        Command::Stop { session_id, waiting_run_id } => (None, "stop", stop(client, &session_id, &waiting_run_id)),
         Command::Archive { session_ids } => (None, "archive", client.post("/v3/sessions:archive", json!({"session_ids": session_ids})).map_err(err)),
         Command::Rename { session_id, title } => (None, "rename", client.post(&format!("/v3/sessions/{session_id}/title"), json!({"title": title, "client_request_id": request_id("title")})).map_err(err)),
         Command::Pin { session_id, pinned } => (None, if pinned { "pin" } else { "unpin" }, client.post(&format!("/v3/sessions/{session_id}/metadata"), json!({"metadata": {"pinned": pinned}, "client_request_id": request_id("pin")})).map_err(err)),
@@ -547,17 +549,23 @@ fn browser_off(client: &Client) {
     let _ = client.patch("/v3/permissions", body);
 }
 
-fn stop(client: &Client, session_id: &str) -> Result<Value, String> {
+fn stop(client: &Client, session_id: &str, waiting_run_id: &str) -> Result<Value, String> {
     let detail = client.get(&format!("/v3/sessions/{session_id}?message_limit=0")).map_err(err)?;
-    let run = detail.get("active_run_intent").cloned().unwrap_or(Value::Null);
-    let run_id = s(&run, "run_id");
-    if run_id.is_empty() {
+    let Some(body) = stop_body(&detail, waiting_run_id) else {
         return Ok(json!({"run_status": "not_running", "summary": "Nothing is running."}));
-    }
-    let meta = detail.get("session").and_then(|x| x.get("metadata")).cloned().unwrap_or(Value::Null);
-    let body = json!({"type": "run.stop", "run_id": run_id, "target_swarm_id": s(&meta, "swarm_v3_runtime_swarm_id"), "reason": "stopped from Swarm Console"});
+    };
     let answer = client.post(&format!("/v3/sessions/{session_id}/run/stop"), body).map_err(err)?;
     Ok(json!({"run_status": s(&answer, "status"), "summary": ""}))
+}
+
+/// The `run/stop` body for a session: its active run (from the detail), else
+/// the run asleep on tasks the console knows from the run state (Swarm's
+/// stop cancels a `waiting_tasks` run by its id). None when neither exists.
+fn stop_body(detail: &Value, waiting_run_id: &str) -> Option<Value> {
+    let run = detail.get("active_run_intent").cloned().unwrap_or(Value::Null);
+    let run_id = Some(s(&run, "run_id")).filter(|id| !id.is_empty()).or(Some(waiting_run_id.trim()).filter(|id| !id.is_empty()))?;
+    let meta = detail.get("session").and_then(|x| x.get("metadata")).cloned().unwrap_or(Value::Null);
+    Some(json!({"type": "run.stop", "run_id": run_id, "target_swarm_id": s(&meta, "swarm_v3_runtime_swarm_id"), "reason": "stopped from Swarm Console"}))
 }
 
 /// The model of one machine while the stream is up.
@@ -1462,6 +1470,27 @@ fn facts_loop(client: Client, kind: &'static str, tx: Sender<Update>, kick: Rece
 mod tests {
     use super::text_file;
 
+    // Purpose: `■ stop wait` really stops a run asleep on tasks. Requirement:
+    // Swarm's session detail lists only an active run (`active_run_intent` is
+    // empty for `waiting_tasks`), so the stop body falls back to the waiting
+    // run's id the console holds from the run state; an active run still wins;
+    // with neither, nothing is posted. Threat: the button reporting "Nothing
+    // is running." and never reaching `run/stop`. Authority: stop_body, the
+    // pure part of stop(); the HTTP call only sends what it returns.
+    #[test]
+    fn stop_sends_the_waiting_run_when_none_is_active() {
+        use super::stop_body;
+        use serde_json::json;
+        let waiting = json!({"active_run_intent": null, "session": {"metadata": {"swarm_v3_runtime_swarm_id": "swarm-1"}}});
+        let body = stop_body(&waiting, "run-1").expect("a waiting run is stopped");
+        assert_eq!((body["type"].as_str(), body["run_id"].as_str(), body["target_swarm_id"].as_str()), (Some("run.stop"), Some("run-1"), Some("swarm-1")));
+        let active = json!({"active_run_intent": {"run_id": "run-2"}, "session": {"metadata": {}}});
+        assert_eq!(stop_body(&active, "run-1").unwrap()["run_id"].as_str(), Some("run-2"));
+        assert_eq!(stop_body(&active, "").unwrap()["run_id"].as_str(), Some("run-2"));
+        assert!(stop_body(&waiting, "").is_none());
+        assert!(stop_body(&waiting, "  ").is_none());
+    }
+
     #[test]
     fn text_files_go_in_the_message() {
         assert_eq!(text_file("notes.MD").as_deref(), Some("md"));
@@ -1605,6 +1634,7 @@ mod tests {
             assert_eq!(s.state, RunState::Waiting);
             assert!(matches!(s.entries.last(), Some(Entry::Notice(t)) if t.starts_with("This conversation is now waiting on 1 task(s): Fix the build.")));
             let wait = s.waiting_on.unwrap();
+            assert_eq!(wait.run_id.as_ref(), "run-1");
             assert_eq!(wait.tasks[0].1.as_ref(), "Fix the build");
             assert_eq!(crate::data::composer_badge(s.state, Some(&wait)).as_deref(), Some("⏳ Waiting · 1 task"));
 

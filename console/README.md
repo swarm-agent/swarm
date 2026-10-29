@@ -206,7 +206,9 @@ a separate profile and the extension loaded, for trying it out.
   machine) while it waits, none when idle. While Swarm says the run is
   active, send becomes stop (`POST /v3/sessions/{id}/run/stop`; the notice
   is Swarm's own answer). While it waits, send stays (a message ends the
-  wait) and `■ stop wait` cancels the wait. Idle shows no hint text; on a
+  wait) and `■ stop wait` cancels it: Swarm's session detail lists no
+  active run while it waits, so the console posts `run/stop` with the
+  waiting run's `run_id` from the run state. Idle shows no hint text; on a
   narrow pane `/ commands` gives way before the badge. Typing `/` lists the
   commands: `/new`, `/new bottom`, `/stop`, `/theme`, `/usage`,
   `/settings`, `/media`, `/agents`, `/fleet`; tab completes, enter runs.

@@ -172,6 +172,7 @@ pub fn task_wait(run: &Value) -> Option<TaskWait> {
     }
     let wait = run.get("task_wait").cloned().unwrap_or(Value::Null);
     Some(TaskWait {
+        run_id: s(run, "run_id").to_string().into(),
         project_id: s(&wait, "project_id").to_string().into(),
         machine: s(&wait, "machine").to_string().into(),
         tasks: list(&wait, "tasks").iter().map(|t| s(t, "task_id")).filter(|id| !id.is_empty()).map(|id| (id.to_string().into(), "".into())).collect(),
@@ -878,12 +879,14 @@ mod tests {
     fn a_run_waiting_on_tasks_is_waiting_not_running() {
         let projects = projects(&json!({"projects": [{"id": "proj_1", "name": "App", "workspaces": [{"path": "/p/app"}]}]}));
         let shell = json!({"id": "s1", "title": "Ship it", "metadata": {"role": "project_orchestrator", "project_id": "proj_1"}});
-        let waiting = json!({"active": false, "status": "waiting_tasks", "task_wait": {"project_id": "proj_1", "machine": "forge", "tasks": [{"task_id": "t1"}, {"task_id": "t2"}]}});
+        let waiting = json!({"active": false, "run_id": "run-1", "status": "waiting_tasks", "task_wait": {"project_id": "proj_1", "machine": "forge", "tasks": [{"task_id": "t1"}, {"task_id": "t2"}]}});
         assert!(!run_clock(&waiting, 0).active);
         let got = session(&shell, &waiting, false, &projects).unwrap();
         assert_eq!(got.state, RunState::Waiting);
         let wait = got.waiting_on.unwrap();
         assert_eq!((wait.project_id.as_ref(), wait.machine.as_ref(), wait.tasks.len()), ("proj_1", "forge", 2));
+        // Stop needs the waiting run's id (the session detail has none).
+        assert_eq!(wait.run_id.as_ref(), "run-1");
         assert_eq!(wait.line(), "waiting for tasks: t1, t2 · on forge");
         // The composer's badge comes from the snapshot alone (reconnect safe).
         assert_eq!(crate::data::composer_badge(got.state, Some(&wait)).as_deref(), Some("⏳ Waiting · 2 tasks on forge"));
