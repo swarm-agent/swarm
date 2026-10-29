@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
@@ -51,12 +52,37 @@ func newWatchToolFixture(t *testing.T, status string) *watchToolFixture {
 	return &watchToolFixture{waitWorkflowFixture: w, runtime: runtime}
 }
 
+// addTask adds another task of proj-1 with its own task session, as the
+// fixture's task-1.
+func (w *watchToolFixture) addTask(t *testing.T, id, status string) {
+	t.Helper()
+	sessionID := "task-session-" + id
+	snapshot := pebblestore.SessionSnapshot{ID: sessionID, UserID: w.f.user, AccountScopeID: w.f.account, Metadata: map[string]any{"project_id": "proj-1", "task_id": id}}
+	if _, err := w.f.s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{Kind: sessionruntime.SessionMutationCreateSession, SessionID: sessionID, UserID: w.f.user, AccountScopeID: w.f.account, Session: &snapshot, ClientRequestID: sessionID, IdempotencyKey: sessionID, PayloadHash: sessionID, NowUnixMs: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	task := w.task(time.Now().UnixMilli())
+	task.ID, task.Title, task.SessionID = id, "Task "+id, sessionID
+	task.Attempts[0].SessionID, task.Attempts[0].RunID = sessionID, pebblestore.InitialTaskRunID(id)
+	task.Status, task.Attempts[0].Status = status, status
+	task.SourceWorkspace = pebblestore.ProjectTaskSource{}
+	if err := w.f.s.sessions.Store().PutProjectTask(w.f.account, &task); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // call runs manage_projects action on task-1 inside the goal's run-1.
 func (w *watchToolFixture) call(t *testing.T, action string) map[string]any {
 	t.Helper()
+	return w.callTasks(t, action, "task-1")
+}
+
+// callTasks runs manage_projects action on the named tasks inside run-1.
+func (w *watchToolFixture) callTasks(t *testing.T, action string, ids ...string) map[string]any {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(tool.WithVideoRunContext(context.Background(), tool.VideoRunContext{SessionID: "goal", RunID: "run-1"}), 20*time.Second)
 	defer cancel()
-	args, _ := json.Marshal(map[string]any{"action": action, "project_id": "proj-1", "task_ids": []string{"task-1"}, "milestones": false})
+	args, _ := json.Marshal(map[string]any{"action": action, "project_id": "proj-1", "task_ids": ids, "milestones": false})
 	out, err := w.runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, tool.WorkspaceScope{SessionID: "goal", Principal: w.principal()}, tool.Call{Name: "manage_projects", Arguments: string(args)})
 	if err != nil {
 		t.Fatalf("%s: %v", action, err)
@@ -93,7 +119,12 @@ func (w *watchToolFixture) delivered(t *testing.T, watchID string) bool {
 
 func (w *watchToolFixture) setStatus(t *testing.T, status string) {
 	t.Helper()
-	if _, err := w.f.s.sessions.Store().UpdateProjectTask(w.f.account, "proj-1", "task-1", func(task *pebblestore.ProjectTaskRecord) error {
+	w.setTaskStatus(t, "task-1", status)
+}
+
+func (w *watchToolFixture) setTaskStatus(t *testing.T, id, status string) {
+	t.Helper()
+	if _, err := w.f.s.sessions.Store().UpdateProjectTask(w.f.account, "proj-1", id, func(task *pebblestore.ProjectTaskRecord) error {
 		task.Status, task.Attempts[0].Status = status, status
 		return nil
 	}); err != nil {
@@ -200,5 +231,72 @@ func TestTaskWatchRewatchInTheSameRunIsANewWatch(t *testing.T) {
 	w.setStatus(t, "needs_review")
 	if !w.delivered(t, fourth) || w.active(t, fourth) || w.delivered(t, third) {
 		t.Fatalf("after cancel: fourth delivered=%v active=%v, cancelled third delivered=%v", w.delivered(t, fourth), w.active(t, fourth), w.delivered(t, third))
+	}
+}
+
+// watchRecord reads an active watch of the goal conversation.
+func (w *watchToolFixture) watchRecord(t *testing.T, watchID string) pebblestore.V3SessionTaskWatch {
+	t.Helper()
+	watch, ok, err := w.f.s.sessions.Store().GetV3SessionTaskWatch("goal", watchID)
+	if err != nil || !ok {
+		t.Fatalf("watch %q: ok=%v err=%v", watchID, ok, err)
+	}
+	return watch
+}
+
+// Purpose: a watch whose registered subset equals an ended watch's task set
+// in the same run is a new watch that delivers its own outcome.
+// Requirement: in run-1, W_A watches task-1 (still active); W_B watches
+// task-2, which already settled, so W_B fires at registration and ends;
+// task-2 is reopened; wait_tasks {task-1, task-2} registers only task-2
+// (task-1 is already watched) under a watch id different from W_B's, with
+// its own start line; settling task-2 delivers that new watch's outcome as
+// its own note, and W_A stays active.
+// Threat: reviewer finding: the store derived the watch id from the
+// registered subset while the tool's generation follows the requested
+// selection, so this call took W_B's id (and its start message id); its wake
+// key matched W_B's committed wake, the idempotent replay republished W_B's
+// old outcome and the new watch never delivered ("Watching" forever).
+// Authority: tool registerProjectTaskWatch, SessionStore
+// prepareProjectTaskWatchRegistration (ProjectTaskWatchID over the requested
+// selection, ErrProjectTaskWatchIdentityUsed) and the watch wake, through the
+// real tool runtime, server and store: the narrowest layer where the tool's
+// key and the store's identity meet.
+func TestTaskWatchSubsetOfEndedWatchIsANewWatch(t *testing.T) {
+	w := newWatchToolFixture(t, "in_progress")
+	w.addTask(t, "task-2", "needs_review")
+
+	watchA, _ := w.callTasks(t, "wait_tasks", "task-1")["watch_id"].(string)
+	if watchA == "" || !w.active(t, watchA) {
+		t.Fatalf("W_A not watching: %q", watchA)
+	}
+	watchB, _ := w.callTasks(t, "wait_tasks", "task-2")["watch_id"].(string)
+	if watchB == "" || !w.delivered(t, watchB) || w.active(t, watchB) {
+		t.Fatalf("W_B on a settled task did not fire at registration: %q", watchB)
+	}
+
+	w.setTaskStatus(t, "task-2", "in_progress")
+	result := w.callTasks(t, "wait_tasks", "task-1", "task-2")
+	watchC, _ := result["watch_id"].(string)
+	if result["status"] != "watching" || watchC == "" || watchC == watchB || watchC == watchA {
+		t.Fatalf("subset re-watch reused an ended identity: %v (W_A %q, W_B %q)", result, watchA, watchB)
+	}
+	record := w.watchRecord(t, watchC)
+	if len(record.Wait.Tasks) != 1 || record.Wait.Tasks[0].TaskID != "task-2" {
+		t.Fatalf("W_C should register only task-2: %+v", record.Wait.Tasks)
+	}
+	if _, ok, err := w.f.s.sessions.Store().GetV3MessageByID("goal", watchC+"-watch-notice"); err != nil || !ok {
+		t.Fatalf("W_C has no start line of its own: ok=%v err=%v", ok, err)
+	}
+	if w.delivered(t, watchC) {
+		t.Fatal("W_C delivered before task-2 settled")
+	}
+
+	w.setTaskStatus(t, "task-2", "needs_review")
+	if !w.delivered(t, watchC) || w.active(t, watchC) {
+		t.Fatalf("W_C did not deliver a new outcome: delivered=%v active=%v", w.delivered(t, watchC), w.active(t, watchC))
+	}
+	if !w.active(t, watchA) {
+		t.Fatal("W_A ended though task-1 is still in progress")
 	}
 }

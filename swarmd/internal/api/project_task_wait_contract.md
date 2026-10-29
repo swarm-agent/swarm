@@ -37,7 +37,12 @@ changing the run.
   Once it ended (fired, for example as a note into the same run, or was
   cancelled), the call registers a new watch under the next generation (part
   of the idempotency key and of `ProjectTaskWatchID`), so its wakes never
-  replay the ended watch's. No outcome is ever delivered twice by one watch.
+  replay the ended watch's. The watch id comes from the requested selection
+  (as the key does), not the subset left after skipping already watched
+  tasks, so a selection whose remainder equals an ended watch's tasks is
+  still a new watch; the store refuses an id whose start line already exists
+  (`ErrProjectTaskWatchIdentityUsed`) rather than reuse it. No outcome is
+  ever delivered twice by one watch.
 - Registration (`Server.FollowTaskWatch` checks a new local watch at once, so
   tasks that settled before `wait_tasks` deliver without a later change),
   committed project/task publication (including workflow delivery and job-end

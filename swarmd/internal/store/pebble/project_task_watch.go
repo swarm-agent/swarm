@@ -93,7 +93,8 @@ func KeyV3SessionTaskWatch(sessionID, watchID string) string {
 }
 
 // ProjectTaskWatchID is a watch's identity: deterministic for one run, one
-// machine/project, one task set and one generation, so a retried
+// machine/project, one requested task selection (as wait_tasks named it,
+// before already watched tasks are skipped) and one generation, so a retried
 // registration is the same watch. The generation counts the earlier watches
 // on that task set in that run which already ended (fired or cancelled); a
 // new one gets a new identity, so its wakes never replay an ended watch's.
@@ -108,6 +109,11 @@ func ProjectTaskWatchID(sessionID, runID, machine, projectID, until string, task
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x01")))
 	return "watch-" + hex.EncodeToString(sum[:12])
 }
+
+// ErrProjectTaskWatchIdentityUsed: a registration would take the identity of
+// a watch this conversation already recorded (a broken generation); nothing
+// is registered.
+var ErrProjectTaskWatchIdentityUsed = errors.New("task watch identity was already used; nothing new is watched")
 
 // RegisteredProjectTaskWatchID reads the watch a committed registration
 // recorded from its start line (a replayed registration's message), or "".
@@ -274,6 +280,23 @@ func (s *SessionStore) prepareProjectTaskWatchRegistration(input *V3SessionMutat
 	if err != nil {
 		return err
 	}
+	// The watch's identity is the requested selection (with the generation),
+	// exactly what the registration key names, not the subset left after
+	// skipping already watched tasks: two selections in one run that leave
+	// the same subset are different watches, so a new one never takes an
+	// ended watch's identity (its start line and committed wakes).
+	requested := make([]string, 0, len(wait.Tasks))
+	for _, target := range wait.Tasks {
+		requested = append(requested, target.TaskID)
+	}
+	watchID := ProjectTaskWatchID(input.SessionID, owner.RunID, wait.Machine, wait.ProjectID, wait.Until, requested, input.TaskWait.Generation)
+	if _, used, err := s.GetV3MessageByID(input.SessionID, watchID+"-watch-notice"); err != nil {
+		return err
+	} else if used {
+		// A committed watch already had this identity; reusing it would
+		// replay that watch's wakes instead of delivering this one's.
+		return ErrProjectTaskWatchIdentityUsed
+	}
 	watched := map[string]bool{}
 	for _, w := range existing {
 		if w.Wait.Machine != wait.Machine || w.Wait.ProjectID != wait.ProjectID {
@@ -304,7 +327,7 @@ func (s *SessionStore) prepareProjectTaskWatchRegistration(input *V3SessionMutat
 		now = time.Now().UnixMilli()
 	}
 	watch := V3SessionTaskWatch{
-		WatchID: ProjectTaskWatchID(input.SessionID, owner.RunID, wait.Machine, wait.ProjectID, wait.Until, ids, input.TaskWait.Generation), SessionID: input.SessionID,
+		WatchID: watchID, SessionID: input.SessionID,
 		UserID: input.UserID, AccountScopeID: input.AccountScopeID, OriginRunID: owner.RunID, EpochID: owner.EpochID, UpdateRoot: taskUpdateRoot(owner),
 		Wait: *wait, Titles: names, CreatedAt: now, Milestones: input.TaskWait.Milestones == nil || *input.TaskWait.Milestones,
 	}
