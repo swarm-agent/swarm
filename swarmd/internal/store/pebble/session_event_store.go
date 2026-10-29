@@ -84,13 +84,18 @@ type V3CheckpointBoundaryMutation struct {
 }
 
 type V3SessionMutationInput struct {
-	completion                   *sessionMutationCompletion
-	accountLockHeld              bool                         // Set only after acquiring the account keyed lock.
-	TaskReport                   *V3ProjectTaskReportMutation `json:"-"`
-	taskUpdate                   *ProjectTaskUpdate
-	TaskDelivery                 *V3ProjectTaskDeliveryMutation `json:"-"`
-	TaskWait                     *V3ProjectTaskWaitMutation     `json:"-"`
-	taskWaitPrevious             *V3SessionRunIntent
+	completion       *sessionMutationCompletion
+	accountLockHeld  bool                         // Set only after acquiring the account keyed lock.
+	TaskReport       *V3ProjectTaskReportMutation `json:"-"`
+	taskUpdate       *ProjectTaskUpdate
+	TaskDelivery     *V3ProjectTaskDeliveryMutation `json:"-"`
+	TaskWait         *V3ProjectTaskWaitMutation     `json:"-"`
+	taskWaitPrevious *V3SessionRunIntent
+	// Task watch changes this mutation commits (prepared by the task wait
+	// participant) and the conversation's watches after it, for the event.
+	taskWatchSet                 []V3SessionTaskWatch
+	taskWatchDelete              []V3SessionTaskWatch
+	taskWatchesAfter             *[]V3TaskWatchSummary
 	designChange                 *pebble.Batch     // Private independent design participant; caller holds designMu.
 	DesignAllocation             *DesignAllocation `json:"-"`
 	DesignAcceptance             *DesignAcceptance `json:"design_acceptance,omitempty"`
@@ -486,10 +491,13 @@ type V3SessionRunState struct {
 	RunSessionID         string `json:"run_session_id,omitempty"`
 	ParentSessionID      string `json:"parent_session_id,omitempty"`
 	ResumeContext        bool   `json:"resume_context,omitempty"`
-	// TaskWait is what a waiting_tasks run is asleep on (the intent's task
-	// wait), so a snapshot alone tells clients what it waits for. Nil for
-	// every other status.
+	// TaskWait is what a waiting_tasks run is asleep on (the retired pending
+	// wait, until startup converts it to a watch). Nil for every other status.
 	TaskWait *V3ProjectTaskWait `json:"task_wait,omitempty"`
+	// TaskWatches are the conversation's active task watches (read time
+	// only, never stored with the run state). A watch never makes the
+	// conversation pending: it stays idle or working.
+	TaskWatches []V3TaskWatchSummary `json:"task_watches,omitempty"`
 }
 
 type V3SessionReplay struct {
@@ -531,6 +539,7 @@ type v3SessionEventReplayPayload struct {
 	BlockedReason      string                        `json:"blocked_reason,omitempty"`
 	Error              string                        `json:"error,omitempty"`
 	Notice             string                        `json:"notice,omitempty"`
+	TaskWatches        *[]V3TaskWatchSummary         `json:"task_watches,omitempty"`
 	HasActivePlan      bool                          `json:"has_active_plan,omitempty"`
 	ActivePlan         *SessionPlanSnapshot          `json:"active_plan,omitempty"`
 	Artifact           *V3ArtifactProjection         `json:"artifact,omitempty"`
@@ -919,9 +928,6 @@ func (s *SessionStore) applyFreshV3SessionMutationWithReader(input V3SessionMuta
 	if err := s.prepareProjectTaskDelivery(&input); err != nil {
 		return V3SessionMutationResult{}, err
 	}
-	if err := s.prepareProjectTaskWaitSupersession(&input); err != nil {
-		return V3SessionMutationResult{}, err
-	}
 	if err := s.prepareProjectTaskWait(&input); err != nil {
 		return V3SessionMutationResult{}, err
 	}
@@ -1092,10 +1098,6 @@ func (s *SessionStore) applyFreshV3SessionMutationWithReader(input V3SessionMuta
 		previousRunIntent, previousRunIntentOK, err = s.GetV3SessionRunIntent(runIntent.SessionID, runIntent.RunID)
 		if err != nil {
 			return V3SessionMutationResult{}, err
-		}
-		if previousRunIntentOK && isV3RunIntentTerminal(runIntent.Status) {
-			// A stop (or other terminal write) of the waiting run itself.
-			input.recordProjectTaskWaitEnd(previousRunIntent, ProjectTaskWaitEndedByStop, runIntent.Status)
 		}
 		previousRunState, previousRunStateOK, err = s.GetV3SessionRunState(runIntent.SessionID)
 		if err != nil {
@@ -2470,6 +2472,17 @@ func (s *SessionStore) GetV3SessionRunState(sessionID string) (V3SessionRunState
 		return V3SessionRunState{}, false, errors.New("session id is required")
 	}
 	return getV3SessionRunStateFromReader(s.store.db, sessionID)
+}
+
+// GetV3SessionRunStateWithWatches is the run state as clients see it: with
+// the conversation's active task watches.
+func (s *SessionStore) GetV3SessionRunStateWithWatches(sessionID string) (V3SessionRunState, bool, error) {
+	state, ok, err := s.GetV3SessionRunState(sessionID)
+	if err != nil || !ok {
+		return state, ok, err
+	}
+	state, err = withV3TaskWatches(s.store.db, state)
+	return state, true, err
 }
 
 func (s *SessionStore) GetV3SessionActiveRunIntent(sessionID string) (V3SessionRunIntent, bool, error) {
@@ -4141,6 +4154,12 @@ func (input V3SessionMutationInput) v3EventPayload(seq uint64, session SessionSn
 		}
 		if intent.Status == V3RunIntentWaitingTasks && intent.TaskWait != nil {
 			payload.Notice = intent.TaskWait.Notice
+		}
+	}
+	if input.taskWatchesAfter != nil {
+		payload.TaskWatches = input.taskWatchesAfter
+		if input.EventType == "session.task_watch.started" && input.Message != nil {
+			payload.Notice = input.Message.Content
 		}
 	}
 	if turnUsage.RunID != "" {

@@ -271,6 +271,9 @@ func newSessionV3Executor(server *Server) *sessionV3Executor {
 		refillCh:                    make(chan struct{}, 1),
 	}
 	exec.startRefillPump(ctx)
+	// Runs still asleep on a retired pending wait become watches (and idle)
+	// before anything is recovered or reconciled.
+	server.migrateProjectTaskWaits()
 	exec.recoverDurableRuns(ctx)
 	server.reconcileProjectTaskWaits("", "")
 	exec.refillPendingBacklog()
@@ -469,6 +472,11 @@ func (e *sessionV3Executor) finish(job sessionV3ExecutorJob) {
 	e.mu.Unlock()
 	if e.server != nil && e.server.backgroundCommands != nil {
 		e.server.backgroundCommands.SessionRunEnded(job.SessionID, job.RunID)
+	}
+	// Task watches whose outcomes came in while this run was active are
+	// delivered now, as a new turn (or after a follow-up turn started above).
+	if e.server != nil {
+		e.server.deliverSessionTaskWatches(job.SessionID)
 	}
 	e.refillPendingBacklog()
 }
@@ -1256,15 +1264,6 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 		}
 	}
 	response, err := e.assistantResponse(runCtx, job)
-	if errors.Is(err, errSessionV3TaskWaitYield) || e.taskWaitYielded(job) {
-		// Return through the ordinary lease/worker cleanup. A ready-before-wait
-		// outcome is reconciled here without another provider step.
-		e.publishTaskWaitState(job)
-		e.server.reconcileProjectTaskWaits(job.Principal.AccountScopeID, "")
-		// A wait on a linked machine's tasks is resolved from that machine.
-		e.server.watchRemoteTaskWait(job.SessionID, job.RunID)
-		return
-	}
 	if errors.Is(err, errSessionV3StaleProviderAttempt) {
 		response, job, err = e.staleCompactedAssistantResponse(runCtx, job, err)
 	}
@@ -3748,10 +3747,6 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 	runtimeContextAt := time.Now()
 	taskUpdateCursor := ""
 	for step := 1; ; step++ {
-		if e.taskWaitYielded(job) {
-			return sessionV3ProviderLoopResult{}, errSessionV3TaskWaitYield
-		}
-
 		stepInstructions := baseReq.Instructions
 		stepTools := baseReq.Tools
 		planWarning := ""
@@ -3988,9 +3983,6 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			return sessionV3ProviderLoopResult{}, errors.New(classification.Reason)
 		}
 		if len(response.FunctionCalls) == 0 {
-			if e.taskWaitYielded(job) {
-				return sessionV3ProviderLoopResult{}, errSessionV3TaskWaitYield
-			}
 			if response.RestartTurn {
 				refreshed, err := e.resolveSessionV3Runtime(job)
 				if err != nil {
@@ -4100,9 +4092,6 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		})
 		if batchErr != nil {
 			return sessionV3ProviderLoopResult{}, batchErr
-		}
-		if e.taskWaitYielded(job) {
-			return sessionV3ProviderLoopResult{}, errSessionV3TaskWaitYield
 		}
 		response.FunctionCalls = response.FunctionCalls[:len(toolResults)]
 		input = append(input, sessionsV3ProviderToolResultInputItems(response.FunctionCalls, toolResults)...)

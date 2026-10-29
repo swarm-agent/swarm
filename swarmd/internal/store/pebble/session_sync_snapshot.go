@@ -359,6 +359,9 @@ func (s *SessionStore) buildV3SyncSessionBundle(reader pebble.Reader, options V3
 			return V3SyncSnapshotResult{}, err
 		}
 		if ok {
+			if state, err = withV3TaskWatches(reader, state); err != nil {
+				return V3SyncSnapshotResult{}, err
+			}
 			bundle.CurrentRunStateBySession[session.ID] = state
 			if state.Active && strings.TrimSpace(state.RunID) != "" {
 				bundle.ActiveSessionIDs = append(bundle.ActiveSessionIDs, session.ID)

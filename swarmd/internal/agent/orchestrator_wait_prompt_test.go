@@ -5,33 +5,38 @@ import (
 	"testing"
 )
 
-// Purpose: the Orchestrator must tell the person before it pends the
-// conversation on wait_tasks, and answer them first when it wakes.
-// Requirement: the Wait section of SwarmOrchestratorAgentPrompt says to write
-// that message in the same turn (tasks, what each does, what done means, what
-// happens next, that a message ends the wait) and to answer questions asked
-// during the wait first. Threat: the live failure: the turn ends on the tool
-// call and the person is left asking why nothing happens. The prompt string is
-// the narrowest authority for this instruction.
-func TestOrchestratorWaitSectionTellsThePersonFirst(t *testing.T) {
+// Purpose: the Orchestrator watches tasks in the background and always
+// answers the person; it never pends the conversation.
+// Requirement: the Watch section of SwarmOrchestratorAgentPrompt says
+// wait_tasks watches and returns at once, that the AI then tells the person
+// what it watches and ends its turn, that a new turn brings the outcomes, and
+// that a turn never ends without answering the person's latest message. It
+// must not say the call pends the conversation or that a message ends it.
+// Threat: the live failure of the pending model: a silent turn ended on the
+// tool call, and the person's every message cancelling the wait. The prompt
+// string is the narrowest authority for this instruction.
+func TestOrchestratorWatchSectionAnswersThePerson(t *testing.T) {
 	prompt := SwarmOrchestratorAgentPrompt()
-	start := strings.Index(prompt, "\nWait\n")
+	start := strings.Index(prompt, "\nWatch\n")
 	end := strings.Index(prompt, "\nRead\n")
 	if start < 0 || end < start {
-		t.Fatalf("prompt has no Wait section before Read: %q", prompt)
+		t.Fatalf("prompt has no Watch section before Read: %q", prompt)
 	}
-	wait := prompt[start:end]
+	watch := prompt[start:end]
 	for _, want := range []string{
-		"Before calling wait_tasks, tell the person in the same turn",
-		"which tasks you wait on and what each is doing",
-		"what done means (for example pushed to dev)",
-		"what happens next",
-		"they can message anytime to end the wait",
-		"Never end a turn on wait_tasks without that message.",
-		"When you wake, first answer anything the person asked during the wait.",
+		"Call wait_tasks to watch tasks you need",
+		"It returns at once. Then tell the person what you're watching and end your turn.",
+		"You'll get a new turn with the outcomes",
+		"Never end a turn without answering the person's latest message.",
+		"their messages never end a watch",
 	} {
-		if !strings.Contains(wait, want) {
-			t.Fatalf("Wait section lacks %q:\n%s", want, wait)
+		if !strings.Contains(watch, want) {
+			t.Fatalf("Watch section lacks %q:\n%s", want, watch)
+		}
+	}
+	for _, retired := range []string{"pends this conversation", "ends the wait", "\nWait\n"} {
+		if strings.Contains(prompt, retired) {
+			t.Fatalf("prompt still says %q:\n%s", retired, prompt)
 		}
 	}
 }

@@ -1546,7 +1546,7 @@ func policyModeWithBypass(mode string, bypass bool) string {
 // approval. inspect_files resolves an authorized catalog source or one exact,
 // quiescent task result and runs at most one read/list/search/find tool
 // confined to that tree (no scope expansion), so it is a read as well.
-// wait_tasks, which pends the run, and every mutation keep the default
+// wait_tasks, which records a task watch, and every mutation keep the default
 // approval; propose_task/create_task are covered by
 // isManageProjectsPendingTaskProposal.
 var manageProjectsReadOnlyActions = map[string]bool{

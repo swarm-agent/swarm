@@ -350,6 +350,10 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3PrimaryEvents(w, r, principal, sessionID)
 	case "run/stop":
 		s.handleSessionV3PrimaryRunStop(w, r, principal, sessionID)
+	case "task-watches":
+		s.handleSessionV3TaskWatches(w, r, principal, sessionID)
+	case "task-watches/stop":
+		s.handleSessionV3TaskWatchesStop(w, r, principal, sessionID)
 	case "wait":
 		s.handleSessionV3Wait(w, r, principal, sessionID)
 	case "end":

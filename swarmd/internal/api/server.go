@@ -118,7 +118,7 @@ type Server struct {
 	sessionChanges          *sessionChangeNotifier // wakes session long-polls after a V3 change commits
 	activityStreams         atomic.Int64
 	remoteTaskWaitMu        sync.Mutex                   // linked-machine task waits (project_task_wait_remote.go)
-	remoteTaskWaitRuns      map[string]bool              // one watcher per waiting run
+	remoteTaskWaitRuns      map[string]chan struct{}     // one follower per linked-machine watch, with its kick
 	remoteTaskWaitGrace     time.Duration                // unreachable grace; zero means the default
 	remoteTaskWaitRules     time.Duration                // work-rule re-read period; zero means the default
 	taskRunEndMu            sync.Mutex                   // task run ends in flight (project_task_wait_progress.go)

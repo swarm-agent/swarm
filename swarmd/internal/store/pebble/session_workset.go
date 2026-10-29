@@ -263,6 +263,9 @@ func (s *SessionStore) buildV3SessionWorksetFromReader(reader pebble.Reader, opt
 				return V3SessionWorksetResult{}, err
 			}
 			if ok {
+				if state, err = withV3TaskWatches(reader, state); err != nil {
+					return V3SessionWorksetResult{}, err
+				}
 				result.CurrentRunStateBySession[session.ID] = state
 				if state.Active && strings.TrimSpace(state.RunID) != "" {
 					result.ActiveSessionIDs = append(result.ActiveSessionIDs, session.ID)

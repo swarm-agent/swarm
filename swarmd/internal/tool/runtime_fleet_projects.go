@@ -237,6 +237,14 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 		return "", FleetMachineUnavailableError(machine, machines, linked)
 	}
 	if action == "wait_tasks" {
+		if asBool(args["cancel"]) {
+			// Ending a watch reads nothing from the machine.
+			run, ok := VideoRunContextFromContext(ctx)
+			if !ok || run.SessionID != scope.SessionID {
+				return "", errors.New("wait_tasks requires trusted current provider run context")
+			}
+			return r.cancelProjectTaskWatches(scope, run.RunID, machine, strings.TrimSpace(asString(args["project_id"])), args)
+		}
 		return r.executeFleetWaitTasks(ctx, scope, service, machine, args)
 	}
 	if action == ResolveTaskPermissionAction {
@@ -399,17 +407,19 @@ func (r *Runtime) executeListLinkedTasks(ctx context.Context, scope WorkspaceSco
 	return string(out), err
 }
 
-// FleetWaitPermissionAllowed is the permission gate's view of remote waiting:
-// wait_tasks with machine reads the machine's tasks through the link and pends
-// this home's goal. It is never a generic CallFleetProject operation.
+// FleetWaitPermissionAllowed is the permission gate's view of remote
+// watching: wait_tasks (or its aliases watch_tasks and cancel_watch) with
+// machine reads the machine's tasks through the link and records a watch on
+// this home's conversation. It is never a generic CallFleetProject operation.
 func FleetWaitPermissionAllowed(name, action string) bool {
-	return name == "manage_projects" && action == "wait_tasks"
+	_, ok := ProjectTaskWatchAction(action)
+	return name == "manage_projects" && ok
 }
 
 // executeFleetWaitTasks pins each selected task's current attempt by reading it
-// through the link (get_task), then durably pends this run exactly as a local
-// wait does. Outcomes later arrive from the machine's activity stream and the
-// same link reads; the agent never polls.
+// through the link (get_task), then records a watch exactly as a local
+// wait_tasks does and returns at once. Outcomes later arrive from the
+// machine's activity stream and the same link reads; the agent never polls.
 func (r *Runtime) executeFleetWaitTasks(ctx context.Context, scope WorkspaceScope, service FleetProjects, machine string, args map[string]any) (string, error) {
 	run, ok := VideoRunContextFromContext(ctx)
 	if !ok || run.SessionID != scope.SessionID {
@@ -468,21 +478,16 @@ func (r *Runtime) executeFleetWaitTasks(ctx context.Context, scope WorkspaceScop
 		}
 		titles = append(titles, title)
 	}
-	key := "task-wait:" + run.RunID
 	payload, _ := json.Marshal(targets)
 	hash := machine + "\x00" + projectID + string(payload)
 	if until != pebblestore.ProjectTaskWaitUntilSettled {
 		hash += "\x00" + until
 	}
-	mutation, err := r.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
-		SessionID: scope.SessionID, UserID: scope.Principal.UserID, AccountScopeID: scope.Principal.AccountScopeID,
-		Kind: pebblestore.V3SessionMutationRecordRunIntent, EventType: "session.run.waiting_tasks",
-		ClientRequestID: key, PayloadHash: hash,
-		TaskWait: &pebblestore.V3ProjectTaskWaitMutation{RunID: run.RunID, ProjectID: projectID, TaskIDs: ids, Machine: machine, RemoteTargets: targets, RemoteTitles: titles, Until: until},
-	})
+	result, err := r.registerProjectTaskWatch(scope, &pebblestore.V3ProjectTaskWaitMutation{RunID: run.RunID, ProjectID: projectID, TaskIDs: ids, Machine: machine, RemoteTargets: targets, RemoteTitles: titles, Until: until}, hash, ids, titles)
 	if err != nil {
 		return "", err
 	}
-	out, err := json.Marshal(map[string]any{"tool": "manage_projects", "action": "wait_tasks", "machine": machine, "project_id": projectID, "status": "waiting_tasks", "run_id": run.RunID, "next_action": "yield_until_task_outcome", "event_seq": mutation.PrimarySeq, "task_ids": ids, "tasks": targets, "until": until, "notice": pebblestore.ProjectTaskWaitNotice(titles, machine, until), "untrusted_content": true})
+	result["tasks"] = targets
+	out, err := json.Marshal(result)
 	return string(out), err
 }

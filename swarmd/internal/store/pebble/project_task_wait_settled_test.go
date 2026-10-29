@@ -80,9 +80,12 @@ func newSettledWaitFixture(t *testing.T, path string, ids ...string) (*taskWaitF
 	return f, progress
 }
 
+// register watches ids from run-1 and ends run-1, so the conversation is
+// idle and a ready watch fires at once.
 func (f *taskWaitFixture) register(until string, ids ...string) {
 	f.t.Helper()
-	f.apply(V3SessionMutationInput{SessionID: "parent", Kind: V3SessionMutationRecordRunIntent, EventType: "session.run.waiting_tasks", ClientRequestID: "task-wait:run-1", TaskWait: &V3ProjectTaskWaitMutation{RunID: "run-1", ProjectID: "project", TaskIDs: ids, Until: until}})
+	f.apply(V3SessionMutationInput{SessionID: "parent", Kind: V3SessionMutationAppendMessage, EventType: "session.task_watch.started", ClientRequestID: "task-watch:run-1", TaskWait: &V3ProjectTaskWaitMutation{RunID: "run-1", ProjectID: "project", TaskIDs: ids, Until: until}})
+	f.endRun("parent", "run-1")
 }
 
 func (f *taskWaitFixture) setTask(id string, mutate func(*ProjectTaskRecord)) {
@@ -102,8 +105,8 @@ func (f *taskWaitFixture) reconcile() map[string]any {
 	}
 	switch len(published) {
 	case 0:
-		if got := f.intent("parent", "run-1"); got.Status != V3RunIntentWaitingTasks {
-			f.t.Fatalf("wait left waiting_tasks without a wake: %+v", got)
+		if len(f.watches("parent")) == 0 {
+			f.t.Fatal("watch ended without firing")
 		}
 		return nil
 	case 1:
@@ -145,8 +148,9 @@ func outcomeRow(t *testing.T, out map[string]any, i int) map[string]any {
 func TestProjectTaskWaitSettledFollowsWorkflowToPushed(t *testing.T) {
 	f, progress := newSettledWaitFixture(t, filepath.Join(t.TempDir(), "store"), "task")
 	f.register("", "task")
-	if got := f.intent("parent", "run-1"); got.TaskWait == nil || got.TaskWait.Until != ProjectTaskWaitUntilSettled {
-		t.Fatalf("default until not recorded as settled: %+v", got.TaskWait)
+	watch := f.onlyWatch("parent")
+	if watch.Wait.Until != ProjectTaskWaitUntilSettled {
+		t.Fatalf("default until not recorded as settled: %+v", watch.Wait)
 	}
 	f.mustSleep("coder running")
 	f.setTask("task", func(t *ProjectTaskRecord) { t.Status = "needs_review" })
@@ -186,9 +190,7 @@ func TestProjectTaskWaitSettledFollowsWorkflowToPushed(t *testing.T) {
 	if out["all_ready"] != true || !strings.Contains(out["guidance"].(string), "until=settled") {
 		t.Fatalf("outcome: %v", out)
 	}
-	if next := f.intent("parent", ProjectTaskWaitResumeID("run-1")); next.Status != V3RunIntentPendingExecutor || f.intent("parent", "run-1").Status != V3RunIntentCompleted {
-		t.Fatalf("continuation: %+v", next)
-	}
+	f.assertContinuation("parent", watch.WatchID)
 }
 
 // Purpose: settled readiness covers the other workflow ends and the no
@@ -293,11 +295,11 @@ func TestProjectTaskWaitUntilFinishedKeepsStatusRule(t *testing.T) {
 	})
 	t.Run("unknown_until", func(t *testing.T) {
 		f, _ := newSettledWaitFixture(t, filepath.Join(t.TempDir(), "store"), "task")
-		if _, err := f.try(V3SessionMutationInput{SessionID: "parent", Kind: V3SessionMutationRecordRunIntent, EventType: "session.run.waiting_tasks", ClientRequestID: "task-wait:run-1", TaskWait: &V3ProjectTaskWaitMutation{RunID: "run-1", ProjectID: "project", TaskIDs: []string{"task"}, Until: "merged"}}); err == nil {
+		if _, err := f.try(V3SessionMutationInput{SessionID: "parent", Kind: V3SessionMutationAppendMessage, EventType: "session.task_watch.started", ClientRequestID: "task-watch:run-1", TaskWait: &V3ProjectTaskWaitMutation{RunID: "run-1", ProjectID: "project", TaskIDs: []string{"task"}, Until: "merged"}}); err == nil {
 			t.Fatal("unknown until accepted")
 		}
-		if got := f.intent("parent", "run-1"); got.Status != V3RunIntentRunning || got.TaskWait != nil {
-			t.Fatalf("refusal changed the run: %+v", got)
+		if got := f.intent("parent", "run-1"); got.Status != V3RunIntentRunning || got.TaskWait != nil || len(f.watches("parent")) != 0 {
+			t.Fatalf("refusal changed the run or recorded a watch: %+v", got)
 		}
 	})
 }
@@ -331,8 +333,8 @@ func TestProjectTaskWaitRuleSurvivesRestart(t *testing.T) {
 			}
 			f.db = NewSessionStore(reopened)
 			reopened.AwaitProjectTaskProgress() // as the daemon does on open
-			if got := f.intent("parent", "run-1"); got.Status != V3RunIntentWaitingTasks || got.TaskWait == nil || got.TaskWait.Until != until {
-				t.Fatalf("persisted wait after restart: %+v", got.TaskWait)
+			if got := f.onlyWatch("parent"); got.Wait.Until != until {
+				t.Fatalf("persisted watch after restart: %+v", got.Wait)
 			}
 			if until == ProjectTaskWaitUntilFinished {
 				if out := f.reconcile(); out == nil {
@@ -359,7 +361,8 @@ func TestProjectTaskWaitRuleSurvivesRestart(t *testing.T) {
 // unreachable machine still resolves a row whose workflow was running; under
 // until=finished the running workflow does not hold the wake. Threat: a remote
 // wait waking when only the coder finished, or never resolving on a lost link.
-// Authority: wakeRemoteProjectTaskWait over a temporary real store.
+// Authority: prepareProjectTaskWatchWake (projectTaskWatchRemoteOutcome) over a
+// temporary real store.
 func TestProjectTaskWaitRemoteSettled(t *testing.T) {
 	running := func(attempt, session string, p *V3ProjectTaskWaitProgress) []V3ProjectTaskRemoteObservation {
 		return []V3ProjectTaskRemoteObservation{{TaskID: "t1", Title: "One", Status: "needs_review", AttemptID: attempt, SessionID: session, AttemptSummary: "done", Progress: p}}
@@ -368,6 +371,7 @@ func TestProjectTaskWaitRemoteSettled(t *testing.T) {
 		in := remoteTaskWaitRegistration(V3ProjectTaskWaitTarget{TaskID: "t1", AttemptID: "a1", SessionID: "rs1"})
 		in.TaskWait.Until = until
 		f.apply(in)
+		f.endRun("home", "run-1")
 	}
 	t.Run("settled", func(t *testing.T) {
 		f := newTaskWaitFixture(t, "home", map[string]any{})
@@ -377,17 +381,17 @@ func TestProjectTaskWaitRemoteSettled(t *testing.T) {
 			"review":    {WorkflowState: "running", Workflow: "review loop", WorkflowStep: 1, WorkflowSteps: 4, WorkflowStepType: "agent"},
 			"send-back": {WorkflowState: "running", WorkflowStep: 2, WorkflowStepType: "reopen"},
 		} {
-			if _, err := f.try(remoteTaskWake(running("a1", "rs1", p), nil)); !errors.Is(err, ErrProjectTaskWaitNotReady) {
+			if _, err := f.try(f.remoteWake(running("a1", "rs1", p), nil)); !errors.Is(err, ErrProjectTaskWaitNotReady) {
 				t.Fatalf("%s woke: %v", name, err)
 			}
 		}
 		// The send-back reopened the task on the machine: a new attempt.
 		reopened := running("a2", "rs2", &V3ProjectTaskWaitProgress{WorkflowState: "running", WorkflowStep: 3, WorkflowStepType: "run", WorkflowRound: 1})
-		if _, err := f.try(remoteTaskWake(reopened, nil)); !errors.Is(err, ErrProjectTaskWaitNotReady) {
+		if _, err := f.try(f.remoteWake(reopened, nil)); !errors.Is(err, ErrProjectTaskWaitNotReady) {
 			t.Fatalf("reopened attempt ended the wait: %v", err)
 		}
 		pushed := running("a2", "rs2", &V3ProjectTaskWaitProgress{WorkflowState: "done", Workflow: "review loop", WorkflowStep: 3, WorkflowSteps: 4, WorkflowStepType: "run", WorkflowRound: 1, IntegrationState: "integrated"})
-		out := taskWaitOutcome(t, f.apply(remoteTaskWake(pushed, nil)).Message)
+		out := taskWaitOutcome(t, f.apply(f.remoteWake(pushed, nil)).Message)
 		row := outcomeRow(t, out, 0)
 		if row["status"] != "needs_review" || row["attempt_id"] != "a2" || row["session_id"] != "rs2" || row["pinned_attempt_id"] != "a1" || row["workflow_state"] != "done" || row["workflow_round"] != float64(1) || row["integration_state"] != "integrated" || row["machine"] != "box" {
 			t.Fatalf("pushed row: %v", row)
@@ -399,7 +403,7 @@ func TestProjectTaskWaitRemoteSettled(t *testing.T) {
 	t.Run("out_of_rounds", func(t *testing.T) {
 		f := newTaskWaitFixture(t, "home", map[string]any{})
 		registerRemote(f, "")
-		out := taskWaitOutcome(t, f.apply(remoteTaskWake(running("a1", "rs1", &V3ProjectTaskWaitProgress{WorkflowState: "blocked", WorkflowStepType: "reopen", WorkflowRound: 2}), nil)).Message)
+		out := taskWaitOutcome(t, f.apply(f.remoteWake(running("a1", "rs1", &V3ProjectTaskWaitProgress{WorkflowState: "blocked", WorkflowStepType: "reopen", WorkflowRound: 2}), nil)).Message)
 		if outcomeRow(t, out, 0)["workflow_state"] != "blocked" {
 			t.Fatalf("blocked: %v", out)
 		}
@@ -407,7 +411,7 @@ func TestProjectTaskWaitRemoteSettled(t *testing.T) {
 	t.Run("unreachable_while_running", func(t *testing.T) {
 		f := newTaskWaitFixture(t, "home", map[string]any{})
 		registerRemote(f, "")
-		out := taskWaitOutcome(t, f.apply(remoteTaskWake(running("a1", "rs1", &V3ProjectTaskWaitProgress{WorkflowState: "running"}), &V3ProjectTaskRemoteResolution{Reason: V3ProjectTaskRemoteUnreachable})).Message)
+		out := taskWaitOutcome(t, f.apply(f.remoteWake(running("a1", "rs1", &V3ProjectTaskWaitProgress{WorkflowState: "running"}), &V3ProjectTaskRemoteResolution{Reason: V3ProjectTaskRemoteUnreachable})).Message)
 		if outcomeRow(t, out, 0)["status"] != V3ProjectTaskRemoteUnreachable || out["resolution"] != V3ProjectTaskRemoteUnreachable {
 			t.Fatalf("unreachable: %v", out)
 		}
@@ -415,7 +419,7 @@ func TestProjectTaskWaitRemoteSettled(t *testing.T) {
 	t.Run("finished", func(t *testing.T) {
 		f := newTaskWaitFixture(t, "home", map[string]any{})
 		registerRemote(f, "finished")
-		out := taskWaitOutcome(t, f.apply(remoteTaskWake(running("a1", "rs1", &V3ProjectTaskWaitProgress{WorkflowState: "running"}), nil)).Message)
+		out := taskWaitOutcome(t, f.apply(f.remoteWake(running("a1", "rs1", &V3ProjectTaskWaitProgress{WorkflowState: "running"}), nil)).Message)
 		if outcomeRow(t, out, 0)["status"] != "needs_review" || !strings.Contains(out["guidance"].(string), "until=finished") {
 			t.Fatalf("finished: %v", out)
 		}

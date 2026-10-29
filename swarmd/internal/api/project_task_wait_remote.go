@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,35 +41,36 @@ func (s *Server) remoteTaskWaitRulesOrDefault() time.Duration {
 	return activityHeartbeat
 }
 
-// watchRemoteTaskWait starts the single watcher for one persisted
-// linked-machine wait (deduplicated by run). It is called when the executor
-// yields such a run and, after a restart, for every persisted one.
-func (s *Server) watchRemoteTaskWait(sessionID, runID string) {
+// watchRemoteTaskWatch starts the single follower for one persisted
+// linked-machine watch (deduplicated by watch). It is called when the tool
+// records such a watch and, after a restart, for every persisted one.
+func (s *Server) watchRemoteTaskWatch(sessionID, watchID string) {
 	if s == nil || s.sessions == nil || s.fleet == nil || s.fleetTokens == nil {
 		return
 	}
-	owner, ok, err := s.sessions.Store().GetV3SessionRunIntent(sessionID, runID)
-	if err != nil || !ok || owner.Status != pebblestore.V3RunIntentWaitingTasks || owner.TaskWait == nil || owner.TaskWait.Machine == "" {
+	watch, ok, err := s.sessions.Store().GetV3SessionTaskWatch(sessionID, watchID)
+	if err != nil || !ok || watch.Wait.Machine == "" {
 		return
 	}
-	key := sessionID + "\x00" + runID
+	key := sessionID + "\x00" + watchID
+	kick := make(chan struct{}, 1)
 	s.remoteTaskWaitMu.Lock()
 	if s.remoteTaskWaitRuns == nil {
-		s.remoteTaskWaitRuns = map[string]bool{}
+		s.remoteTaskWaitRuns = map[string]chan struct{}{}
 	}
-	if s.remoteTaskWaitRuns[key] {
+	if s.remoteTaskWaitRuns[key] != nil {
 		s.remoteTaskWaitMu.Unlock()
 		return
 	}
-	s.remoteTaskWaitRuns[key] = true
+	s.remoteTaskWaitRuns[key] = kick
 	s.remoteTaskWaitMu.Unlock()
 	ctx := s.runCtx
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	// Shutdown (CancelInFlightRuns, then WaitForInFlightRuns before the store
-	// closes) cancels runCtx and waits for this watcher like other run work.
-	// The durable intent stays waiting_tasks; the next start resumes it.
+	// closes) cancels runCtx and waits for this follower like other run work.
+	// The durable watch stays; the next start resumes it.
 	s.activeRunMu.Lock()
 	if s.shuttingDown.Load() {
 		s.activeRunMu.Unlock()
@@ -86,30 +88,49 @@ func (s *Server) watchRemoteTaskWait(sessionID, runID string) {
 			delete(s.remoteTaskWaitRuns, key)
 			s.remoteTaskWaitMu.Unlock()
 		}()
-		s.followRemoteTaskWait(ctx, owner)
+		s.followRemoteTaskWait(ctx, watch, kick)
 	}()
 }
 
-// ResumeLinkedTaskWaits starts watchers for linked-machine waits persisted
-// before a restart. The durable status index is the authority. Call it only
+// kickRemoteTaskWatches asks the conversation's linked-machine followers to
+// check again: its run ended, so outcomes deferred by that run go out now.
+func (s *Server) kickRemoteTaskWatches(sessionID string) {
+	if s == nil {
+		return
+	}
+	prefix := sessionID + "\x00"
+	s.remoteTaskWaitMu.Lock()
+	defer s.remoteTaskWaitMu.Unlock()
+	for key, kick := range s.remoteTaskWaitRuns {
+		if strings.HasPrefix(key, prefix) {
+			select {
+			case kick <- struct{}{}:
+			default:
+			}
+		}
+	}
+}
+
+// ResumeLinkedTaskWaits starts followers for linked-machine watches persisted
+// before a restart. The durable watch records are the authority. Call it only
 // after the server is fully configured (the daemon does so in Run, before
-// serving): watchers read the fleet store, the node key and the session
+// serving): followers read the fleet store, the node key and the session
 // services without synchronisation against their setters. Repeated calls
-// start no second watcher for a run.
+// start no second follower for a watch.
 func (s *Server) ResumeLinkedTaskWaits() {
 	if s == nil || s.sessions == nil {
 		return
 	}
 	after := ""
 	for {
-		waits, next, err := s.sessions.Store().ListV3SessionRunIntentsByStatusPaged(pebblestore.V3RunIntentWaitingTasks, after, 64)
+		watches, next, err := s.sessions.Store().ListV3TaskWatchesPaged(after, 64)
 		if err != nil {
-			log.Printf("linked task wait recovery failed: %v", err)
+			log.Printf("linked task watch recovery failed: %v", err)
 			return
 		}
-		for _, owner := range waits {
-			if owner.TaskWait != nil && owner.TaskWait.Machine != "" {
-				s.watchRemoteTaskWait(owner.SessionID, owner.RunID)
+		for _, watch := range watches {
+			if watch.Wait.Machine != "" {
+				s.watchRemoteTaskWatch(watch.SessionID, watch.WatchID)
 			}
 		}
 		if next == "" {
@@ -133,10 +154,12 @@ func (s *Server) publishProjectTaskWake(result pebblestore.V3SessionMutationResu
 	}
 }
 
-// followRemoteTaskWait runs until the wait is woken, superseded (new person
-// message, stop, archive) or the server stops.
-func (s *Server) followRemoteTaskWait(parent context.Context, owner pebblestore.V3SessionRunIntent) {
-	wait := *owner.TaskWait
+// followRemoteTaskWait runs until the watch fires or ends (the AI cancels it,
+// the person stops it, the conversation is archived) or the server stops. A
+// person's message ends nothing. Outcomes ready while a run is active are
+// deferred; kick (the run ended) has them checked again.
+func (s *Server) followRemoteTaskWait(parent context.Context, owner pebblestore.V3SessionTaskWatch, kick <-chan struct{}) {
+	wait := owner.Wait
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: owner.UserID, AccountScopeID: owner.AccountScopeID}
 	ctx, cancel := context.WithCancel(parent)
 	var wg sync.WaitGroup
@@ -162,10 +185,10 @@ func (s *Server) followRemoteTaskWait(parent context.Context, owner pebblestore.
 
 	// wake reports whether this watcher is done.
 	wake := func(observed []pebblestore.V3ProjectTaskRemoteObservation, resolution *pebblestore.V3ProjectTaskRemoteResolution) bool {
-		key := "task-wake:" + owner.RunID
-		result, err := s.sessions.Store().ApplyV3SessionMutation(pebblestore.V3SessionMutationInput{SessionID: owner.SessionID, UserID: owner.UserID, AccountScopeID: owner.AccountScopeID, Kind: pebblestore.V3SessionMutationAppendMessage, EventType: "session.run.tasks_ready", ClientRequestID: key, PayloadHash: key, TaskWait: &pebblestore.V3ProjectTaskWaitMutation{RunID: owner.RunID, Wake: true, Machine: wait.Machine, RemoteObservations: observed, RemoteResolution: resolution}})
+		key := "task-watch-wake:" + owner.WatchID
+		result, err := s.sessions.Store().ApplyV3SessionMutation(pebblestore.V3SessionMutationInput{SessionID: owner.SessionID, UserID: owner.UserID, AccountScopeID: owner.AccountScopeID, Kind: pebblestore.V3SessionMutationAppendMessage, EventType: "session.run.tasks_ready", ClientRequestID: key, PayloadHash: key, TaskWait: &pebblestore.V3ProjectTaskWaitMutation{WatchID: owner.WatchID, Wake: true, Machine: wait.Machine, RemoteObservations: observed, RemoteResolution: resolution}})
 		switch {
-		case errors.Is(err, pebblestore.ErrProjectTaskWaitNotReady):
+		case errors.Is(err, pebblestore.ErrProjectTaskWaitNotReady), errors.Is(err, pebblestore.ErrProjectTaskWatchDeferred):
 			return false
 		case errors.Is(err, pebblestore.ErrProjectTaskWaitStale):
 			return true
@@ -177,8 +200,8 @@ func (s *Server) followRemoteTaskWait(parent context.Context, owner pebblestore.
 		return true
 	}
 	current := func() bool {
-		intent, ok, err := s.sessions.Store().GetV3SessionRunIntent(owner.SessionID, owner.RunID)
-		return err != nil || (ok && intent.Status == pebblestore.V3RunIntentWaitingTasks && intent.TaskWait != nil && intent.TaskWait.Machine == wait.Machine)
+		_, ok, err := s.sessions.Store().GetV3SessionTaskWatch(owner.SessionID, owner.WatchID)
+		return err != nil || ok
 	}
 	// workOff: the person turned the machine's linked work rule off or
 	// unlinked it. Read from this home's own records; the machine is not called.
@@ -318,6 +341,10 @@ func (s *Server) followRemoteTaskWait(parent context.Context, owner pebblestore.
 				if check() {
 					return
 				}
+			}
+		case <-kick:
+			if check() {
+				return
 			}
 		case <-rules.C:
 			if !current() {

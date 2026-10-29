@@ -1,48 +1,56 @@
 package api
 
 import (
-	"errors"
 	"log"
-
-	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-var errSessionV3TaskWaitYield = errors.New("provider run durably yielded for project tasks")
+// Task watches (manage_projects wait_tasks) are durable records on the
+// conversation; the store fires them. This server's part is to call the store
+// when something can make a watch ready, and to start the outcome turn.
 
-func (e *sessionV3Executor) taskWaitYielded(job sessionV3ExecutorJob) bool {
-	if e == nil || e.server == nil || e.server.sessions == nil {
-		return false
-	}
-	intent, ok, err := e.server.sessions.GetSessionRunIntent(job.SessionID, job.RunID)
-	return err == nil && ok && intent.TaskWait != nil && (intent.Status == pebblestore.V3RunIntentWaitingTasks || intent.Status == pebblestore.V3RunIntentCompleted)
-}
-
+// reconcileProjectTaskWaits fires ready local watches: on committed task
+// publication, at startup and once the task progress hook exists.
 func (s *Server) reconcileProjectTaskWaits(account, project string) {
 	if s == nil || s.sessions == nil {
 		return
 	}
 	err := s.sessions.Store().ReconcileProjectTaskWaits(account, project, s.publishProjectTaskWake)
 	if err != nil {
-		log.Printf("project task wait reconciliation failed: %v", err)
+		log.Printf("project task watch reconciliation failed: %v", err)
 	}
 }
 
-// Runtime tools commit through the session service. Publish that exact retained
-// outbox record on yield as well, so connected clients need not reconnect to see
-// inactive waiting state. Durable replay remains authoritative.
-func (e *sessionV3Executor) publishTaskWaitState(job sessionV3ExecutorJob) {
-	intent, found, err := e.server.sessions.GetSessionRunIntent(job.SessionID, job.RunID)
-	if err != nil || !found || intent.Status != pebblestore.V3RunIntentWaitingTasks || intent.EventSeq == 0 {
+// deliverSessionTaskWatches runs after a conversation's run ended. A watch
+// whose outcomes became ready while that run was active was deferred; it is
+// delivered now. Linked-machine followers of the conversation check again.
+func (s *Server) deliverSessionTaskWatches(sessionID string) {
+	if s == nil || s.sessions == nil || sessionID == "" {
 		return
 	}
-	records, err := e.server.sessions.Store().ListV3RealtimeOutboxForSessionAfterSeq(job.SessionID, intent.EventSeq-1, 1)
+	if err := s.sessions.Store().ReconcileSessionTaskWatches(sessionID, s.publishProjectTaskWake); err != nil {
+		log.Printf("project task watch delivery failed: %v", err)
+	}
+	s.kickRemoteTaskWatches(sessionID)
+}
+
+// migrateProjectTaskWaits converts runs still asleep on the retired pending
+// wait into watches, leaving those conversations idle. Startup only.
+func (s *Server) migrateProjectTaskWaits() {
+	if s == nil || s.sessions == nil {
+		return
+	}
+	converted, err := s.sessions.Store().MigrateProjectTaskWaitsToWatches()
 	if err != nil {
-		log.Printf("task wait publication read failed: %v", err)
-		return
+		log.Printf("project task wait migration failed: %v", err)
 	}
-	if len(records) == 1 && records[0].Event.Seq == intent.EventSeq {
-		if err := e.server.publishCommittedV3RealtimeOutbox(records[0]); err != nil {
-			log.Printf("task wait publication failed: %v", err)
-		}
+	if converted > 0 {
+		log.Printf("project task waits converted to watches: %d", converted)
 	}
+}
+
+// FollowTaskWatch starts following a watch the tool just registered: a
+// linked-machine watch is followed from that machine's activity. A local
+// watch needs nothing here; task publication and run ends fire it.
+func (s *Server) FollowTaskWatch(sessionID, watchID string) {
+	s.watchRemoteTaskWatch(sessionID, watchID)
 }
