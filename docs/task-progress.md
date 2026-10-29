@@ -175,8 +175,9 @@ commit. Uncommitted edits stay where they are. The continuation's run id is
 wait is durable: after a restart it continues at its reset time, not at
 startup. After 12 waits on one task (the same bound as workflow steps and
 worker runs), the task fails with "the provider's limit was still in effect
-after 12 waits for its reset: …". `stop_task`, or archiving the task,
-cancels the wait: the task is `stopped` and `message_task` resumes it. A
+after 12 waits for its reset: …". `stop_task`, or archiving the task
+(the archive route or `manage_projects` `archive_task`; the archive commit
+itself ends the wait), cancels the wait: the task is `stopped` and `message_task` resumes it. A
 message the person sends in the task's own session continues it at once.
 Reviewer tasks and worker jobs keep their own limit handling (see
 [automations](automations.md)).

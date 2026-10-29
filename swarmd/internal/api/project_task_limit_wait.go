@@ -293,13 +293,7 @@ func (s *Server) cancelProjectTaskLimitWaitLocked(account, projectID, taskID str
 	}
 	cancelled := false
 	_, err = db.UpdateProjectTask(account, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
-		if t.Status != pebblestore.ProjectTaskStatusLimitWaiting {
-			return nil
-		}
-		t.Status = pebblestore.ProjectTaskStatusStopped
-		t.LimitRetryAt, t.LimitReason = 0, ""
-		t.ActionNeeded = projectTaskStoppedAction
-		cancelled = true
+		cancelled = pebblestore.CancelProjectTaskLimitWait(t)
 		return nil
 	})
 	if err != nil {

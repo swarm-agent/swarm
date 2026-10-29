@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"swarm/packages/swarmd/internal/providerlimit"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 )
 
 // claudeSessionLimit is the failure text the Claude Code CLI ended the
@@ -398,6 +400,63 @@ func TestProjectTaskProviderLimitWaitStopAndArchiveCancel(t *testing.T) {
 				t.Fatal("a cancelled wait continued")
 			}
 		})
+	}
+}
+
+// Requirement: archiving a waiting task through the Orchestrator's native
+// manage_projects archive_task cancels the wait exactly as the HTTP archive
+// route does: the archive commit stops the task and drops the wait index
+// entry, so unarchiving it before the reset leaves it stopped and the wake
+// at the reset continues nothing.
+// Threat: the native archive left the task limit_waiting; unarchived before
+// the reset it continued by itself although the person archived it (one
+// action behaving differently by path).
+// Owners: tool.Runtime manage_projects archive_task/unarchive_task ->
+// SessionStore.ArchiveProjectTaskIfRevision -> CancelProjectTaskLimitWait,
+// and Server.continueProjectTaskAfterLimit, on a real store and session: the
+// native tool entry is the narrowest layer that proves the reported path.
+func TestProjectTaskProviderLimitWaitNativeArchiveCancels(t *testing.T) {
+	f := newLimitWaitFixture(t, filepath.Join(t.TempDir(), "native-archive"), 0)
+	defer f.close()
+	f.bindTask("native-archive-task")
+	p := testPrincipal()
+	f.failRunDirect("native-archive-run", claudeSessionLimit)
+	if got := f.current(); got.Status != pebblestore.ProjectTaskStatusLimitWaiting || !f.armed() {
+		t.Fatalf("not waiting: %+v", got)
+	}
+	runtime := tool.NewRuntime(1)
+	defer runtime.Close()
+	runtime.SetManageProjectStore(f.sessions.Store())
+	runtime.SetProjectTaskLifecycleService(f.server)
+	runtime.SetManageSessionService(f.server.sessions)
+	// The Orchestrator acts from its own session, not the task's.
+	orchestrator := f.createSession("orchestrator")
+	native := func(action string) {
+		t.Helper()
+		args, _ := json.Marshal(map[string]any{"action": action, "project_id": f.task.ProjectID, "task_id": f.task.ID, "expected_revision": f.current().Revision})
+		if out, err := runtime.ExecuteForWorkspaceScopeWithRuntime(context.Background(), tool.WorkspaceScope{SessionID: orchestrator, Principal: p}, tool.Call{Name: "manage_projects", Arguments: string(args)}); err != nil {
+			t.Fatalf("%s: %v %s", action, err, out)
+		}
+	}
+	native("archive_task")
+	archived := f.current()
+	if !archived.Archived || archived.Status != pebblestore.ProjectTaskStatusStopped || archived.LimitRetryAt != 0 || archived.LimitReason != "" {
+		t.Fatalf("native archive left the wait: %+v", archived)
+	}
+	if refs, err := f.sessions.Store().ListProjectTaskLimitWaits(); err != nil || len(refs) != 0 {
+		t.Fatalf("native archive left the wait indexed: %+v %v", refs, err)
+	}
+	native("unarchive_task")
+	if got := f.current(); got.Archived || got.Status != pebblestore.ProjectTaskStatusStopped {
+		t.Fatalf("unarchive: %+v", got)
+	}
+	// The wake (armed before the archive) fires at the reset: nothing continues.
+	f.clock.Set(time.Date(2026, 10, 29, 13, 51, 0, 0, time.UTC))
+	if err := f.server.continueProjectTaskAfterLimit(p.AccountScopeID, f.task.ProjectID, f.task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := f.intent(pebblestore.ProjectTaskLimitRerunID("native-archive-run", 1)); found || f.callCount() != 0 || f.current().Status != pebblestore.ProjectTaskStatusStopped {
+		t.Fatalf("an archived-then-unarchived task continued: %+v", f.current())
 	}
 }
 

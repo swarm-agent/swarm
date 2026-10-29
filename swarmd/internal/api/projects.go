@@ -3759,15 +3759,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, err)
 			return
 		}
-		if segments[3] == "archive" && archived != nil && archived.Status == pebblestore.ProjectTaskStatusLimitWaiting {
-			// Archiving a task cancels its provider-limit wait.
-			if _, err := s.cancelProjectTaskLimitWait(p.AccountScopeID, projectID, archived.ID); err != nil {
-				writeError(w, http.StatusInternalServerError, err)
-				return
-			}
-			if current, found, err := db.GetProjectTask(p.AccountScopeID, projectID, archived.ID); err == nil && found {
-				archived = current
-			}
+		if segments[3] == "archive" && archived != nil {
+			// The archive commit cancelled any provider-limit wait
+			// (ArchiveProjectTaskIfRevision); only its wake is left.
+			s.disarmProjectTaskLimitWait(p.AccountScopeID, projectID, archived.ID)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"task": sanitizeProjectTaskForClient(archived)})
 		return

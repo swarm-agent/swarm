@@ -1382,6 +1382,9 @@ func (s *SessionStore) ArchiveProjectTaskIfRevision(accountScopeID, projectID, t
 	var mut *projectRealtimeMutation
 	if err == nil {
 		record.Archived = true
+		// Archiving a task waiting for its provider's limit cancels the wait
+		// in the same commit, whichever path archives it.
+		CancelProjectTaskLimitWait(record)
 		record.Revision++
 		mut, err = s.persistProjectTaskLocked(accountScopeID, record, false)
 	}

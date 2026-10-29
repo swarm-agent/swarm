@@ -105,6 +105,27 @@ func TestProjectTaskLimitWaitIndex(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// Archiving a waiting task (every archive path) cancels the wait in the
+	// archive's own commit.
+	archived, err := db.ArchiveProjectTaskIfRevision("acct", "p", "waiting", func() int {
+		cur, _, _ := db.GetProjectTask("acct", "p", "waiting")
+		return cur.Revision
+	}())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !archived.Archived || archived.Status != ProjectTaskStatusStopped || archived.LimitRetryAt != 0 || archived.ActionNeeded != ProjectTaskStoppedAction {
+		t.Fatalf("archive left the wait: %+v", archived)
+	}
+	if refs, err := db.ListProjectTaskLimitWaits(); err != nil || len(refs) != 0 {
+		t.Fatalf("archived wait still indexed: %+v %v", refs, err)
+	}
+	if _, err := db.UpdateProjectTask("acct", "p", "waiting", func(t *ProjectTaskRecord) error {
+		t.Archived, t.Status, t.LimitRetryAt = false, ProjectTaskStatusLimitWaiting, 3000
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.DeleteProjectTask("acct", "p", "waiting"); err != nil {
 		t.Fatal(err)
 	}

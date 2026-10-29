@@ -34,7 +34,7 @@ const (
 	projectTaskMessageMaxBytes = 32000
 	projectTaskStopReason      = pebblestore.ProjectTaskStopReason
 	// projectTaskStoppedAction is a stopped task's next step.
-	projectTaskStoppedAction = "Stopped by the person; message_task resumes it."
+	projectTaskStoppedAction = pebblestore.ProjectTaskStoppedAction
 )
 
 // MessageProjectTask delivers message to a task: queued in its running run,

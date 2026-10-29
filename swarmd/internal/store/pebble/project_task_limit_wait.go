@@ -24,6 +24,24 @@ const (
 	ProjectTaskStatusLimitWaiting = "limit_waiting"
 )
 
+// ProjectTaskStoppedAction is a stopped task's next step.
+const ProjectTaskStoppedAction = "Stopped by the person; message_task resumes it."
+
+// CancelProjectTaskLimitWait ends t's provider-limit wait as the person's
+// stop: the task is stopped and nothing continues it (message_task resumes
+// it). It is the one rule both stop_task and every archive path (the HTTP
+// route and the native archive_task) apply, inside the task's own commit, so
+// the wait index entry goes in the same batch. It reports whether t waited.
+func CancelProjectTaskLimitWait(t *ProjectTaskRecord) bool {
+	if t == nil || t.Status != ProjectTaskStatusLimitWaiting {
+		return false
+	}
+	t.Status = ProjectTaskStatusStopped
+	t.LimitRetryAt, t.LimitReason = 0, ""
+	t.ActionNeeded = ProjectTaskStoppedAction
+	return true
+}
+
 // taskLimitWaitPrefix indexes tasks with a pending limit continuation
 // (LimitRetryAt set), written in the same batch as the task record.
 const taskLimitWaitPrefix = "project_task_limit_wait/"
