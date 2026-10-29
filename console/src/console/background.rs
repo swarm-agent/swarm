@@ -205,7 +205,7 @@ impl Console {
     pub(super) fn render_background(&self, si: usize, pane: PaneId, open: bool, tab: BarTab, cx: &mut Context<Self>) -> Option<Div> {
         let t = &self.theme;
         let session = &self.sessions[si];
-        let media: Vec<usize> = (0..self.media.len()).filter(|i| self.media[*i].session == Some(si)).collect();
+        let media: Vec<usize> = (0..self.media.len()).filter(|i| self.media[*i].session == Some(si) && !self.media[*i].failed).collect();
         if session.tasks.is_empty() && media.is_empty() {
             return None;
         }

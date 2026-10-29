@@ -574,6 +574,18 @@ impl Console {
                     .child(div().flex_none().text_color(if failed { t.err } else { t.info }).child(head.to_string()))
                     .child(div().flex_1().min_w_0().truncate().text_color(if failed { t.err } else { t.faint }).child(rest.trim_start().to_string()))
             }
+            Entry::Media { task_id, kind, title } => {
+                let state = crate::data::media_card(&self.media, task_id).state;
+                div()
+                    .flex()
+                    .gap_2()
+                    .px_3()
+                    .text_size(px(11.5))
+                    .child(div().text_color(t.faint).child("└"))
+                    .child(div().flex_none().text_color(t.info).child(kind.label()))
+                    .child(div().flex_1().min_w_0().truncate().text_color(t.muted).child(title.clone()))
+                    .child(div().flex_none().text_color(if state == crate::data::MediaCardState::Failed { t.err } else { t.faint }).child(state.label()))
+            }
         }
     }
 

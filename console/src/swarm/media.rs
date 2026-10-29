@@ -170,6 +170,7 @@ pub fn collect(reads: &mut HashMap<String, Read>, tasks: &[(String, String, Medi
                 age: age(task.created_at).into(),
                 hue: 0.6,
                 pending: true,
+                failed: false,
             });
             continue;
         }
@@ -246,6 +247,30 @@ pub fn collect(reads: &mut HashMap<String, Read>, tasks: &[(String, String, Medi
                     age: age(task.created_at).into(),
                     hue: 0.6,
                     pending: false,
+                    failed: false,
+                });
+            }
+            // Ended without any file: one failed record under the task's id,
+            // so the conversation that asked for it can say so and why.
+            if !deliverables.iter().any(|d| s(d, "status") == "ready") {
+                let reason = deliverables.iter().map(|d| s(d, "error")).find(|e| !e.is_empty()).unwrap_or("");
+                files.push(Media {
+                    id: task.task_id.clone().into(),
+                    session_id: session_id.clone().into(),
+                    session: None,
+                    file: None,
+                    thumb: None,
+                    dims: None,
+                    title: task.title.clone().into(),
+                    kind: kind_of("", &task.agent),
+                    project: 0,
+                    machine: 0,
+                    model: "".into(),
+                    meta: if reason.is_empty() { format!("{} without a file", task.status.replace('_', " ")) } else { reason.to_string() }.into(),
+                    age: age(task.created_at).into(),
+                    hue: 0.6,
+                    pending: false,
+                    failed: true,
                 });
             }
             reads.insert(task.task_id.clone(), Read { status: task.status.clone(), files, missing });
@@ -361,6 +386,31 @@ mod tests {
         assert_eq!(media[0].meta.as_ref(), "nano · $0.04");
         assert!(media[1].pending);
         assert_eq!(wanted, vec![(url.to_string(), "task_test-not-cached-1-0a5b47adfba7".to_string())]);
+        assert!(media.iter().all(|m| !m.failed));
+    }
+
+    // Purpose: a media task that ends without any file is still in the media
+    // list once, as failed under its task id with the reason, so the
+    // conversation that asked for it can show that instead of "generating"
+    // forever. Threat: a failed job looking like it is still being made.
+    // Authority: collect over the task list; it is the media list's only source.
+    #[test]
+    fn a_task_without_a_file_is_failed() {
+        let task = MediaTask {
+            task_id: "task_test-failed".into(),
+            agent: "video".into(),
+            status: "failed".into(),
+            title: "teaser".into(),
+            created_at: 0,
+            deliverables: vec![serde_json::json!({"status": "failed", "media_url": "", "kind": "video", "error": "quota exceeded"})],
+        };
+        let (mut reads, mut wanted) = (HashMap::new(), Vec::new());
+        let media = collect(&mut reads, &[("s".into(), "p".into(), task)], &mut wanted);
+        assert_eq!(media.len(), 1);
+        let m = &media[0];
+        assert!(m.failed && !m.pending && m.file.is_none());
+        assert_eq!((m.id.as_ref(), m.kind, m.meta.as_ref()), ("task_test-failed", MediaKind::Video, "quota exceeded"));
+        assert!(wanted.is_empty());
     }
 }
 

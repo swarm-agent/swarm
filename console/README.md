@@ -12,7 +12,9 @@ Orchestrator's question); approve, reject and merge on a card, stop or allow
 a tool call in the header. Drag a session, or a pane by its header, onto a
 pane's edge to split there or its middle to show it there; drag dividers to
 resize. The Orchestrator can use your own Chrome on a lease you grant (see
-below). Media shows what the media tasks made (from their deliverables), and linked machines show through the home Swarm (`/v3/fleet…`). `SWARM_CONSOLE_DEMO=1` shows the design set instead.
+below). Media shows what the media tasks made (from their deliverables), and a
+conversation shows what it asked for as a card under the call (see Media
+cards below); linked machines show through the home Swarm (`/v3/fleet…`). `SWARM_CONSOLE_DEMO=1` shows the design set instead.
 
 ## Run
 
@@ -170,6 +172,17 @@ a separate profile and the extension loaded, for trying it out.
 - **Media, Usage, Settings:** generated media by kind; spend against limits by
   day, machine, role and session; home machine, connections, appearance and
   approvals.
+- **Media cards:** a finished `manage_media` `generate` or `retry` call (its
+  `job_id` is `media/PROJECT/TASK`), or a `manage_projects` `create_task` or
+  `propose_task` for the image, video or sound agent, gets a card under its
+  line in the conversation: the kind, title and *generating*, *ready* or
+  *failed*, then the image, the video's poster or the sound's player row.
+  The card keeps only the task id; its state and files are the Media list's
+  (each file's id is that task id), so it changes by itself and is the same
+  after a reload. A task that ended without a file is kept in that list as
+  failed with its reason for the card only; the Media page leaves it out.
+  Clicking opens the Media page's preview: the image large, a video or sound
+  opened in your player. A linked machine's call gets no card.
 - **Title bar:** Swarm's mark, then the open project as a menu (every
   project to switch to, "add folders to…", "new project…", and the Projects
   page), then the page and what is in focus (the open conversation).

@@ -1382,6 +1382,11 @@ fn tool_ended(entries: &mut Vec<Entry>, kind: &str, payload: &Value) {
     let (id, name) = (call_id(payload), s(payload, "tool_name"));
     let (new_state, new_summary, duration) = map::tool_event_end(kind, payload);
     let ended_at = payload.get("recorded_at").and_then(Value::as_u64);
+    // Media it asked for: a card under its line, once (history has it too).
+    let card = (new_state == ToolState::Done)
+        .then(|| map::media_card(name, payload.get("arguments").unwrap_or(&Value::Null), s(payload, "output")))
+        .flatten()
+        .filter(|card| !entries.iter().any(|e| matches!((e, card), (Entry::Media { task_id: a, .. }, Entry::Media { task_id: b, .. }) if a == b)));
     if let Some(i) = running_call(entries, id, name) {
         if let Entry::Tool { detail, state, summary, duration_ms, started_at, .. } = &mut entries[i] {
             // The finished call's own arguments say what it did better than a
@@ -1396,6 +1401,9 @@ fn tool_ended(entries: &mut Vec<Entry>, kind: &str, payload: &Value) {
             *summary = new_summary;
             *duration_ms = duration.or_else(|| Some(ended_at?.checked_sub((*started_at)?)?));
         }
+        if let Some(card) = card {
+            entries.insert(i + 1, card);
+        }
         return;
     }
     entries.push(Entry::Tool {
@@ -1407,6 +1415,7 @@ fn tool_ended(entries: &mut Vec<Entry>, kind: &str, payload: &Value) {
         duration_ms: duration,
         started_at: None,
     });
+    entries.extend(card);
 }
 
 /// The run ended: a call Swarm never finished is no longer running.
@@ -1548,6 +1557,25 @@ mod tests {
             assert_eq!(e[0].tool_line(9500).unwrap().text, "search · 4s");
             tool_ended(&mut e, "session.tool.completed", &json!({"tool_name": "search", "call_id": "c3", "output": "{\"count\":2}", "recorded_at": 7500}));
             assert_eq!(only(&e).4, Some(2500));
+        }
+
+        // Purpose: a manage_media generate call that finishes live gets its
+        // media card right under its line, once, matching what history
+        // replay draws. Threat: no card until a reload, or a second card when
+        // the event repeats. Authority: tool_ended with map::media_card.
+        #[test]
+        fn a_finished_media_call_gets_its_card_once() {
+            let mut e = Vec::new();
+            let args = json!({"action": "generate", "kind": "sound", "brief": "a chime"}).to_string();
+            tool_started(&mut e, &json!({"tool_name": "manage_media", "call_id": "m1", "arguments": args, "recorded_at": 1}));
+            tool_started(&mut e, &json!({"tool_name": "read", "call_id": "r1", "arguments": "{\"path\":\"a.md\"}", "recorded_at": 2}));
+            let end = json!({"tool_name": "manage_media", "call_id": "m1", "arguments": args, "output": "{\"job_id\":\"media/p1/task_s1\",\"status\":\"running\"}"});
+            tool_ended(&mut e, "session.tool.completed", &end);
+            tool_ended(&mut e, "session.tool.completed", &end);
+            assert_eq!(e.len(), 3);
+            assert!(matches!(&e[0], Entry::Tool { name, state: ToolState::Done, .. } if name.as_ref() == "manage_media"));
+            assert!(matches!(&e[1], Entry::Media { task_id, kind: crate::data::MediaKind::Sound, .. } if task_id.as_ref() == "task_s1"));
+            assert!(matches!(&e[2], Entry::Tool { name, .. } if name.as_ref() == "read"));
         }
 
         #[test]

@@ -366,7 +366,10 @@ pub fn entry(m: &Value, first: bool) -> Vec<Entry> {
                     Value::String(text) => serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text)),
                     other => other,
                 };
-                out.push(finished_tool(name, &args, &recorded, &meta, s(m, "content")));
+                let tool = finished_tool(name, &args, &recorded, &meta, s(m, "content"));
+                let card = if matches!(tool, Entry::Tool { state: ToolState::Done, .. }) { media_card(name, &args, tool_output(&recorded, s(m, "content"))) } else { None };
+                out.push(tool);
+                out.extend(card);
             }
         }
         _ => {}
@@ -377,14 +380,69 @@ pub fn entry(m: &Value, first: bool) -> Vec<Entry> {
 /// A finished tool call from its stored message: its arguments, and the
 /// result record Swarm stored as the content (or the content itself when it
 /// is not one), with its brief summary and duration.
-fn finished_tool(name: &str, args: &Value, recorded: &Value, meta: &Value, content: &str) -> Entry {
-    let is_record = recorded.is_object() && (recorded.get("call_id").is_some() || recorded.get("tool_name").is_some() || recorded.get("tool").is_some());
-    let (output, error) = if is_record {
-        let output = if s(recorded, "output").is_empty() { s(recorded, "completed_output") } else { s(recorded, "output") };
-        (output, if s(recorded, "error").is_empty() { s(meta, "error") } else { s(recorded, "error") })
-    } else {
-        (content, s(meta, "error"))
+fn is_record(recorded: &Value) -> bool {
+    recorded.is_object() && (recorded.get("call_id").is_some() || recorded.get("tool_name").is_some() || recorded.get("tool").is_some())
+}
+
+/// A stored call's output: from its result record, else the content itself.
+fn tool_output<'a>(recorded: &'a Value, content: &'a str) -> &'a str {
+    if !is_record(recorded) {
+        return content;
+    }
+    if s(recorded, "output").is_empty() { s(recorded, "completed_output") } else { s(recorded, "output") }
+}
+
+/// The media card a finished call adds under its line: manage_media generate
+/// or retry (its `job_id` is media/PROJECT/TASK), or manage_projects
+/// create_task or propose_task for the image, video or sound agent (its
+/// `task_id`). None for anything else, and for a linked machine's call (its
+/// media is not in this machine's list).
+pub fn media_card(name: &str, args: &Value, output: &str) -> Option<Entry> {
+    let out = serde_json::from_str::<Value>(output.trim()).ok()?;
+    // Arguments may come as JSON text.
+    let parsed;
+    let args = match args {
+        Value::String(text) => {
+            parsed = serde_json::from_str::<Value>(text).unwrap_or(Value::Null);
+            &parsed
+        }
+        other => other,
     };
+    if !s(args, "machine").is_empty() || !s(&out, "machine").is_empty() {
+        return None;
+    }
+    let first = |vals: [&str; 4]| vals.into_iter().find(|v| !v.trim().is_empty()).unwrap_or("").trim().to_string();
+    let (task_id, kind, title) = match (name, s(args, "action")) {
+        ("manage_media", "generate" | "retry") => {
+            let mut parts = s(&out, "job_id").split('/');
+            let (Some("media"), Some(_), Some(task), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else { return None };
+            (task.to_string(), s(args, "kind").to_string(), first([s(args, "brief"), "", "", ""]))
+        }
+        ("manage_projects", "create_task" | "propose_task") => {
+            let task = out.get("task").unwrap_or(&Value::Null);
+            let proposal = out.get("proposal").unwrap_or(&Value::Null);
+            let agent = first([s(args, "agent"), s(&out, "agent"), s(task, "agent"), s(proposal, "agent")]);
+            if !super::media::is_media_agent(&agent) {
+                return None;
+            }
+            (first([s(&out, "task_id"), s(task, "id"), s(proposal, "task_id"), ""]), agent, first([s(args, "title"), s(task, "title"), s(args, "prompt"), s(args, "description")]))
+        }
+        _ => return None,
+    };
+    if task_id.is_empty() {
+        return None;
+    }
+    let kind = match kind.as_str() {
+        "video" => crate::data::MediaKind::Video,
+        "sound" => crate::data::MediaKind::Sound,
+        _ => crate::data::MediaKind::Image,
+    };
+    Some(Entry::Media { task_id: task_id.into(), kind, title: title.into() })
+}
+
+fn finished_tool(name: &str, args: &Value, recorded: &Value, meta: &Value, content: &str) -> Entry {
+    let output = tool_output(recorded, content);
+    let error = if is_record(recorded) && !s(recorded, "error").is_empty() { s(recorded, "error") } else { s(meta, "error") };
     let ms = |v: &Value| v.get("duration_ms").and_then(Value::as_u64).filter(|n| *n > 0);
     let call_id = [s(recorded, "call_id"), s(meta, "call_id"), s(meta, "tool_call_id")].into_iter().find(|x| !x.is_empty()).unwrap_or("");
     let summary = super::tool_summary::summarize(name, args, output, error, None);
@@ -825,6 +883,82 @@ mod tests {
         assert!(matches!(&entries[3], Entry::Assistant(t) if t.as_ref() == "Added it."));
         let view = json!({"agentic_settings": {"effective_preference": {"model": "gpt-6.1-sol", "provider": "codex", "thinking": "high"}}});
         assert_eq!(model_line(&view), "gpt-6.1-sol · high");
+    }
+
+    fn media_item(id: &str, pending: bool, failed: bool) -> crate::data::Media {
+        crate::data::Media {
+            id: id.to_string().into(),
+            session_id: "s1".into(),
+            session: None,
+            file: None,
+            thumb: None,
+            dims: None,
+            title: "a bee".into(),
+            kind: crate::data::MediaKind::Image,
+            project: 0,
+            machine: 0,
+            model: "".into(),
+            meta: if failed { "provider refused the prompt".into() } else { "".into() },
+            age: "now".into(),
+            hue: 0.6,
+            pending,
+            failed,
+        }
+    }
+
+    // Purpose: media the Orchestrator generates in a conversation shows there
+    // as a card under the manage_media call, generating → ready or failed,
+    // read from the stored history (so it is the same after a reload) and the
+    // media list (one source of truth: each file's id is its task id), and a
+    // click opens the media list's preview of that file. Threat: the person
+    // only seeing a tool line, a card linked to another job, a failed job
+    // showing as generating forever, or the click opening the wrong media.
+    // Authority: map::entries/media_card build the entry; data::media_card
+    // resolves its state and preview index. Pure functions over the records
+    // are the narrowest layer that proves both; no client or UI is needed.
+    #[test]
+    fn a_media_call_becomes_a_card_linked_to_its_job() {
+        let args = json!({"action": "generate", "kind": "image", "brief": "a bee on a flower"}).to_string();
+        let output = json!({"job_id": "media/proj_1/task_m1", "status": "queued"}).to_string();
+        let record = json!({"tool_name": "manage_media", "call_id": "c1", "arguments": args, "output": output}).to_string();
+        let messages = vec![
+            json!({"role": "user", "content": "draw a bee"}),
+            json!({"role": "tool", "content": record, "metadata": {"tool_name": "manage_media", "call_id": "c1"}}),
+            json!({"role": "assistant", "content": "It is being made."}),
+        ];
+        let got = entries(&messages);
+        assert!(matches!(&got[1], Entry::Tool { name, .. } if name.as_ref() == "manage_media"));
+        let Entry::Media { task_id, kind, title } = &got[2] else { panic!("a media card under the call") };
+        assert_eq!((task_id.as_ref(), *kind, title.as_ref()), ("task_m1", crate::data::MediaKind::Image, "a bee on a flower"));
+        assert!(matches!(&got[3], Entry::Assistant(_)));
+
+        use crate::data::{MediaCardState, media_card as card_of};
+        // Ready: its file (task_m1#1), not another job's, and the click target
+        // is that file's place in the media list.
+        let media = vec![media_item("task_other#1", false, false), media_item("task_m1#1", false, false)];
+        let card = card_of(&media, task_id);
+        assert_eq!((card.state, card.items.clone()), (MediaCardState::Ready, vec![1]));
+        assert_eq!((card.preview(0), card.preview(1)), (Some(1), None));
+        // Still being made, and before the media list has read the task.
+        assert_eq!(card_of(&[media_item("task_m1", true, false)], task_id).state, MediaCardState::Generating);
+        assert_eq!(card_of(&[media_item("task_m10#1", false, false)], task_id), crate::data::MediaCard { state: MediaCardState::Generating, items: vec![] });
+        // Failed: the failed record, which the preview shows with its reason.
+        let card = card_of(&[media_item("task_m1", false, true)], task_id);
+        assert_eq!((card.state, card.preview(0)), (MediaCardState::Failed, Some(0)));
+
+        // A failed call, another action, a linked machine's job or a
+        // non-media task make no card.
+        let none = |name: &str, args: Value, out: Value| media_card(name, &args, &out.to_string()).is_none();
+        assert!(none("manage_media", json!({"action": "get"}), json!({"job_id": "media/p/t", "status": "completed"})));
+        assert!(none("manage_media", json!({"action": "generate"}), json!({"job_id": "worker/w/r"})));
+        assert!(none("manage_media", json!({"action": "generate"}), json!({"machine": "box", "data": {"job_id": "media/p/t"}})));
+        assert!(none("manage_projects", json!({"action": "create_task", "agent": "coder"}), json!({"task_id": "t"})));
+        let failed = json!({"tool_name": "manage_media", "call_id": "c2", "arguments": args, "output": output, "error": "no credits"}).to_string();
+        let got = entry(&json!({"role": "tool", "content": failed, "metadata": {"tool_name": "manage_media"}}), false);
+        assert!(matches!(got.as_slice(), [Entry::Tool { state: ToolState::Failed, .. }]));
+        // A task for the video agent is a card too.
+        let task = media_card("manage_projects", &json!({"action": "create_task", "agent": "video", "title": "Teaser"}), &json!({"task": {"id": "task_v1"}}).to_string());
+        assert!(matches!(task, Some(Entry::Media { task_id, kind: crate::data::MediaKind::Video, .. }) if task_id.as_ref() == "task_v1"));
     }
 
     #[test]

@@ -3347,8 +3347,22 @@ function VideoToolCard({ toolMessage, isGroupItem }: { toolMessage: StructuredTo
 import { AutomationInstructionProposal } from '../../tools/automations/automation-instruction-proposal';
 import { AutomationProposalCard } from '../../tools/automations/automation-proposal-card';
 import { parseAutomationProposal } from '../../tools/automations/automation-proposal';
+import { ManageMediaJobCard } from './manage-media-job-card';
+import { manageMediaJobRef } from '../services/manage-media-job';
 
-export function ToolMessageView({
+// A call that started a media job shows that job as a card under it.
+export function ToolMessageView(props: Parameters<typeof ToolMessageBody>[0]) {
+  const job = manageMediaJobRef(props.toolMessage);
+  if (!job) return <ToolMessageBody {...props} />;
+  return (
+    <>
+      <ToolMessageBody {...props} />
+      <ManageMediaJobCard job={job} />
+    </>
+  );
+}
+
+function ToolMessageBody({
   toolMessage,
   isGroupItem,
   thinkingTagsEnabled = true,

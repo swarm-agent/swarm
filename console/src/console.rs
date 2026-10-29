@@ -1490,6 +1490,7 @@ impl Console {
                     .child(self.copy_button(format!("copy-{pid}-{ei}"), copy, cx))
                     .into_any_element()
             }
+            Entry::Media { task_id, kind, title } => self.render_media_entry(pid, ei, task_id, *kind, title, cx),
         }
     }
 

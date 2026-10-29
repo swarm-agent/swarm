@@ -27,7 +27,7 @@ impl Console {
                 Some(if pending > 0 {
                     (format!("{pending} new"), t.info, false)
                 } else {
-                    (self.media.len().to_string(), t.faint, false)
+                    (self.media.iter().filter(|m| !m.failed).count().to_string(), t.faint, false)
                 })
             }
             Page::Usage => {

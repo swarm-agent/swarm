@@ -711,6 +711,16 @@ pub enum Entry {
         /// the time a running call has taken so far.
         started_at: Option<u64>,
     },
+    /// Media this conversation asked for (manage_media generate or retry, or
+    /// a task for the image, video or sound agent), drawn as a card under the
+    /// call that started it. Its state and files are not kept here: they come
+    /// from the media list (`media_card`), where each file's id is this task
+    /// id, so the card follows the job and is the same after a reload.
+    Media {
+        task_id: Text,
+        kind: MediaKind,
+        title: Text,
+    },
 }
 
 impl Entry {
@@ -1260,18 +1270,76 @@ pub struct Media {
     /// Placeholder tint until real thumbnails load.
     pub hue: f32,
     pub pending: bool,
+    /// The task ended without a file: kept only so its conversation card can
+    /// say so (`meta` holds the reason); the Media page leaves it out.
+    pub failed: bool,
+}
+
+/// Where a conversation's media card stands.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MediaCardState {
+    Generating,
+    Ready,
+    Failed,
+}
+
+impl MediaCardState {
+    pub fn label(self) -> &'static str {
+        match self {
+            MediaCardState::Generating => "generating",
+            MediaCardState::Ready => "ready",
+            MediaCardState::Failed => "failed",
+        }
+    }
+}
+
+/// A media card as the media list has it now: its state and the places in
+/// that list of what it shows (the files once ready; the job while it is
+/// made or after it failed, when the list has it).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct MediaCard {
+    pub state: MediaCardState,
+    pub items: Vec<usize>,
+}
+
+impl MediaCard {
+    /// What clicking its `n`th tile opens: a place in the media list, the
+    /// one the preview overlay shows.
+    pub fn preview(&self, n: usize) -> Option<usize> {
+        self.items.get(n).copied()
+    }
+}
+
+/// The card of the media task `task_id` (`Entry::Media`): ready with its files
+/// once any is there, failed when the task ended without one, else generating
+/// (also before the media list has read the task at all).
+pub fn media_card(media: &[Media], task_id: &str) -> MediaCard {
+    let mine: Vec<usize> = media
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| !task_id.is_empty() && (m.id.as_ref() == task_id || m.id.strip_prefix(task_id).is_some_and(|rest| rest.starts_with('#'))))
+        .map(|(i, _)| i)
+        .collect();
+    let ready: Vec<usize> = mine.iter().copied().filter(|i| !media[*i].pending && !media[*i].failed).collect();
+    if !ready.is_empty() {
+        return MediaCard { state: MediaCardState::Ready, items: ready };
+    }
+    if let Some(i) = mine.iter().copied().find(|i| media[*i].failed) {
+        return MediaCard { state: MediaCardState::Failed, items: vec![i] };
+    }
+    MediaCard { state: MediaCardState::Generating, items: mine }
 }
 
 pub fn media() -> Vec<Media> {
     vec![
-        Media { id: "".into(), session_id: "".into(), thumb: None, session: None, file: None, dims: None, title: "Hero direction 1 · eclipse".into(), kind: MediaKind::Design, project: 1, machine: 1, model: "gemini-3.5-pro".into(), meta: "hero.html · 1440×900".into(), age: "31m".into(), hue: 0.72, pending: false },
-        Media { id: "".into(), session_id: "".into(), thumb: None, session: None, file: None, dims: None, title: "Hero direction 2 · swarm field".into(), kind: MediaKind::Design, project: 1, machine: 1, model: "gemini-3.5-pro".into(), meta: "hero.html · 1440×900".into(), age: "22m".into(), hue: 0.58, pending: false },
-        Media { id: "".into(), session_id: "".into(), thumb: None, session: None, file: None, dims: None, title: "Hero direction 3".into(), kind: MediaKind::Design, project: 1, machine: 1, model: "gemini-3.5-pro".into(), meta: "rendering".into(), age: "now".into(), hue: 0.66, pending: true },
-        Media { id: "".into(), session_id: "".into(), thumb: None, session: Some(0), file: None, dims: None, title: "Launch teaser".into(), kind: MediaKind::Video, project: 1, machine: 0, model: "veo-4".into(), meta: "12s · 1080p · sound".into(), age: "2h".into(), hue: 0.04, pending: false },
-        Media { id: "".into(), session_id: "".into(), thumb: None, session: Some(0), file: None, dims: None, title: "Logo mark, dark".into(), kind: MediaKind::Image, project: 1, machine: 0, model: "imagen-5".into(), meta: "2048² · png".into(), age: "1d".into(), hue: 0.0, pending: false },
-        Media { id: "".into(), session_id: "".into(), thumb: None, session: None, file: None, dims: None, title: "Notification chime".into(), kind: MediaKind::Sound, project: 2, machine: 2, model: "lyria-3".into(), meta: "1.4s · wav".into(), age: "2d".into(), hue: 0.36, pending: false },
-        Media { id: "".into(), session_id: "".into(), thumb: None, session: None, file: None, dims: None, title: "Fleet diagram".into(), kind: MediaKind::Image, project: 0, machine: 0, model: "imagen-5".into(), meta: "1600×900 · png".into(), age: "3d".into(), hue: 0.52, pending: false },
-        Media { id: "".into(), session_id: "".into(), thumb: None, session: None, file: None, dims: None, title: "Onboarding walkthrough".into(), kind: MediaKind::Video, project: 2, machine: 1, model: "veo-4".into(), meta: "48s · 1080p".into(), age: "4d".into(), hue: 0.12, pending: false },
+        Media { id: "".into(), session_id: "".into(), thumb: None, session: None, file: None, dims: None, title: "Hero direction 1 · eclipse".into(), kind: MediaKind::Design, project: 1, machine: 1, model: "gemini-3.5-pro".into(), meta: "hero.html · 1440×900".into(), age: "31m".into(), hue: 0.72, pending: false, failed: false },
+        Media { id: "".into(), session_id: "".into(), thumb: None, session: None, file: None, dims: None, title: "Hero direction 2 · swarm field".into(), kind: MediaKind::Design, project: 1, machine: 1, model: "gemini-3.5-pro".into(), meta: "hero.html · 1440×900".into(), age: "22m".into(), hue: 0.58, pending: false, failed: false },
+        Media { id: "".into(), session_id: "".into(), thumb: None, session: None, file: None, dims: None, title: "Hero direction 3".into(), kind: MediaKind::Design, project: 1, machine: 1, model: "gemini-3.5-pro".into(), meta: "rendering".into(), age: "now".into(), hue: 0.66, pending: true, failed: false },
+        Media { id: "".into(), session_id: "".into(), thumb: None, session: Some(0), file: None, dims: None, title: "Launch teaser".into(), kind: MediaKind::Video, project: 1, machine: 0, model: "veo-4".into(), meta: "12s · 1080p · sound".into(), age: "2h".into(), hue: 0.04, pending: false, failed: false },
+        Media { id: "".into(), session_id: "".into(), thumb: None, session: Some(0), file: None, dims: None, title: "Logo mark, dark".into(), kind: MediaKind::Image, project: 1, machine: 0, model: "imagen-5".into(), meta: "2048² · png".into(), age: "1d".into(), hue: 0.0, pending: false, failed: false },
+        Media { id: "".into(), session_id: "".into(), thumb: None, session: None, file: None, dims: None, title: "Notification chime".into(), kind: MediaKind::Sound, project: 2, machine: 2, model: "lyria-3".into(), meta: "1.4s · wav".into(), age: "2d".into(), hue: 0.36, pending: false, failed: false },
+        Media { id: "".into(), session_id: "".into(), thumb: None, session: None, file: None, dims: None, title: "Fleet diagram".into(), kind: MediaKind::Image, project: 0, machine: 0, model: "imagen-5".into(), meta: "1600×900 · png".into(), age: "3d".into(), hue: 0.52, pending: false, failed: false },
+        Media { id: "".into(), session_id: "".into(), thumb: None, session: None, file: None, dims: None, title: "Onboarding walkthrough".into(), kind: MediaKind::Video, project: 2, machine: 1, model: "veo-4".into(), meta: "48s · 1080p".into(), age: "4d".into(), hue: 0.12, pending: false, failed: false },
     ]
 }
 

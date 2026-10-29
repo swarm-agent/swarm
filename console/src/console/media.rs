@@ -3,7 +3,7 @@
 use gpui::{ClickEvent, Context, SharedString, div, hsla, prelude::*, px};
 
 use super::{Console, alpha};
-use crate::data::MediaKind;
+use crate::data::{MediaCardState, MediaKind};
 
 impl Console {
     pub(super) fn render_media(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -15,7 +15,7 @@ impl Console {
             .into_iter()
             .map(|kind| {
                 let on = self.media_filter == kind;
-                let count = self.media.iter().filter(|m| kind.is_none_or(|k| m.kind == k)).count();
+                let count = self.media.iter().filter(|m| !m.failed && kind.is_none_or(|k| m.kind == k)).count();
                 div()
                     .id(SharedString::from(format!("media-filter-{}", kind.map_or("all", |k| k.label()))))
                     .px_2()
@@ -38,7 +38,7 @@ impl Console {
             .media
             .iter()
             .enumerate()
-            .filter(|(_, m)| self.media_filter.is_none_or(|k| m.kind == k))
+            .filter(|(_, m)| !m.failed && self.media_filter.is_none_or(|k| m.kind == k))
             .map(|(i, m)| {
                 let glyph = match m.kind {
                     MediaKind::Image => "▨",
@@ -254,8 +254,10 @@ impl Console {
                     MediaKind::Sound => "♪",
                     _ => "▣",
                 }))
-                .child(div().text_size(px(12.)).text_color(t.muted).child(if m.file.is_some() {
+                .child(div().text_size(px(12.)).text_color(if m.failed { t.err } else { t.muted }).child(if m.file.is_some() {
                     "opens in your player"
+                } else if m.failed {
+                    "could not be made"
                 } else if m.pending {
                     "still being made"
                 } else {
@@ -311,6 +313,127 @@ impl Console {
                 )
                 .into_any_element(),
         )
+    }
+
+    /// A conversation's media card (`Entry::Media`): the kind, title and where
+    /// the job stands, then the files once ready (an image's picture, a
+    /// video's poster, a sound's player row). Its state comes from the media
+    /// list, so it moves from generating to ready or failed by itself, and a
+    /// click opens the same preview as the Media page.
+    pub(super) fn render_media_entry(&self, pid: usize, ei: usize, task_id: &str, kind: MediaKind, title: &str, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let t = &self.theme;
+        let card = crate::data::media_card(&self.media, task_id);
+        let first = card.items.first().and_then(|i| self.media.get(*i));
+        let kind = first.map_or(kind, |m| m.kind);
+        let title = if title.is_empty() { first.map(|m| m.title.to_string()).unwrap_or_default() } else { title.to_string() };
+        let (status, color) = match card.state {
+            MediaCardState::Generating => ("generating", t.accent),
+            MediaCardState::Ready => ("ready", t.ok),
+            MediaCardState::Failed => ("failed", t.err),
+        };
+        let glyph = match kind {
+            MediaKind::Image => "▣",
+            MediaKind::Video => "▶",
+            MediaKind::Sound => "♪",
+            MediaKind::Design => "◰",
+        };
+        let hover = t.hover;
+        let open = |n: usize| {
+            let target = card.preview(n);
+            cx.listener(move |this: &mut Self, _: &ClickEvent, _, cx: &mut Context<Self>| {
+                if target.is_some() {
+                    this.preview = target;
+                    cx.notify();
+                }
+            })
+        };
+        let body: gpui::AnyElement = match card.state {
+            MediaCardState::Ready if kind == MediaKind::Sound => div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .children(card.items.iter().enumerate().map(|(n, i)| {
+                    let m = &self.media[*i];
+                    div()
+                        .id(SharedString::from(format!("media-card-{pid}-{ei}-{n}")))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .px_2()
+                        .py(px(4.))
+                        .rounded(px(t.radius))
+                        .bg(t.raised)
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(hover))
+                        .on_click(open(n))
+                        .child(div().text_color(t.accent).child("▶"))
+                        .child(div().flex_1().min_w_0().truncate().text_color(t.text).child(m.title.clone()))
+                        .child(div().flex_none().text_size(px(10.5)).text_color(t.faint).child(m.meta.clone()))
+                })
+                .into_any_element(),
+            MediaCardState::Ready => div()
+                .flex()
+                .flex_wrap()
+                .gap_2()
+                .children(card.items.iter().map(|i| self.media_thumb(*i, 200., 132., format!("card-{pid}-{ei}"), cx)))
+                .into_any_element(),
+            MediaCardState::Generating => div()
+                .id(SharedString::from(format!("media-card-{pid}-{ei}-0")))
+                .w(px(200.))
+                .h(px(84.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .rounded(px(t.radius))
+                .bg(t.raised)
+                .when(!card.items.is_empty(), |d| d.cursor_pointer().on_click(open(0)))
+                .child(div().text_size(px(20.)).text_color(t.faint).child(glyph))
+                .child(self.bar(0.6, t.accent, 120.))
+                .into_any_element(),
+            MediaCardState::Failed => div()
+                .id(SharedString::from(format!("media-card-{pid}-{ei}-0")))
+                .text_size(px(11.5))
+                .line_height(px(17.))
+                .text_color(t.err)
+                .cursor_pointer()
+                .on_click(open(0))
+                .child(first.map(|m| m.meta.to_string()).unwrap_or_else(|| "could not be made".into()))
+                .into_any_element(),
+        };
+        div()
+            .mx_1()
+            .px_3()
+            .py_2()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .rounded(px(t.radius + 1.))
+            .border_1()
+            .border_color(if card.state == MediaCardState::Failed { alpha(t.err, 0.5) } else { t.border })
+            .bg(t.panel)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_size(px(11.5))
+                    .child(div().flex_none().text_color(t.info).child(format!("{glyph} {}", kind.label())))
+                    .child(div().flex_1().min_w_0().truncate().text_color(t.text).child(title))
+                    .child(
+                        div()
+                            .flex_none()
+                            .px(px(6.))
+                            .rounded(px(t.radius))
+                            .bg(alpha(color, 0.14))
+                            .text_size(px(10.5))
+                            .text_color(color)
+                            .child(status),
+                    ),
+            )
+            .child(body)
+            .into_any_element()
     }
 
     /// Opens a downloaded file in the program your desktop picks for it.

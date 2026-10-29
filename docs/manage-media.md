@@ -54,6 +54,13 @@ Actual receipts charge the originating session and its worker/job scopes;
 failures without receipts leave no held state. Concurrent admitted generations
 can exceed a cap before receipts arrive. MCP tasks remain asynchronous.
 
+Clients show a job in the conversation that started it from the job itself:
+the `generate`/`retry` result's `job_id` (`media/PROJECT/TASK`) names the
+project media task, whose `origin_session_id` is the calling session, and the
+task's status and deliverables say whether it is generating, ready or failed.
+Swarm Console and the web chat draw it as a card under the call; nothing about
+the job is copied into the transcript.
+
 `manage_artifact` remains implemented but is disabled for all agents.
 The legacy system-image/system-video task launches still require that tool and
 therefore cannot complete through those agent paths. They are not rerouted or
