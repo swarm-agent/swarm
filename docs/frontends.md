@@ -317,7 +317,13 @@ Absent or unlinked machines have no access. The agent cannot change the choice.
 `manage_projects action=list_machines` lists links and session access without
 link credentials or addresses. With `machine`, project/task reads and task
 creation, approval, acceptance, reopening, refinement, archiving, messaging
-and stopping use the linked machine's existing project API.
+and stopping use the linked machine's existing project API. The tool's
+`expected_revision` (an integer, checked on the home as on the machine) is sent
+under the name each route reads: `revision` for `reopen_task`
+(`.../tasks/{task}/reopen`) and `archive_task` (`.../archive`),
+`expected_revision` for `message_task` and `refine_task`. A wrong revision gets
+the machine's own `409`. `refine_task` with a `plan_document` is refused with
+`machine`: the machine's refine route takes feedback only.
 
 The Orchestrator redirects or stops a task it delegated with `manage_projects`
 `message_task` and `stop_task`, here or with `machine`. Both call the task's

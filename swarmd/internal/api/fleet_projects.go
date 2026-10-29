@@ -68,6 +68,9 @@ func (s *Server) CallFleetProject(ctx context.Context, p identity.Principal, mac
 		}
 		body[key] = value
 	}
+	if err := mapFleetTaskBody(action, args, body); err != nil {
+		return nil, err
+	}
 	if action != "list" {
 		id := str("project_id")
 		if action == "get" {
@@ -133,6 +136,72 @@ func (s *Server) CallFleetProject(ctx context.Context, p identity.Principal, mac
 		return compactFleetTaskList(result)
 	}
 	return result, nil
+}
+
+// mapFleetTaskBody renames the tool's arguments to the fields the machine's
+// task route reads, with the types it reads. The tool names a task revision
+// expected_revision (an integer) for every task action; the machine's
+// reopen and archive routes read it as revision, while message and refine
+// read expected_revision. A revision is checked here as the tool checks it
+// on this machine, so it never reaches the machine as text or under a name
+// the route ignores. refine_task with a plan document has no linked route:
+// the machine's refine route would drop the document, so it is refused.
+func mapFleetTaskBody(action string, args, body map[string]any) error {
+	switch action {
+	case "reopen_task", "archive_task":
+		revision, err := fleetTaskRevision(args)
+		if err != nil {
+			return err
+		}
+		delete(body, "expected_revision")
+		body["revision"] = revision
+	case "message_task", "refine_task":
+		if action == "refine_task" && (args["plan_document"] != nil || args["document"] != nil) {
+			return errors.New("refine_task with a plan document is not available on a linked machine; send feedback (and expected_revision) without plan_document")
+		}
+		if _, ok := args["expected_revision"]; ok {
+			revision, err := fleetTaskRevision(args)
+			if err != nil {
+				return err
+			}
+			body["expected_revision"] = revision
+		}
+	}
+	return nil
+}
+
+// fleetTaskRevision reads expected_revision under the tool's own rule
+// (projectTaskInteger): required, an integer from 1 to 2^30.
+func fleetTaskRevision(args map[string]any) (int, error) {
+	const key, limit = "expected_revision", 1 << 30
+	raw, ok := args[key]
+	if !ok {
+		return 0, fmt.Errorf("%s is required", key)
+	}
+	var n int64
+	switch v := raw.(type) {
+	case int:
+		n = int64(v)
+	case int64:
+		n = v
+	case float64:
+		if v != float64(int64(v)) {
+			return 0, fmt.Errorf("%s must be an integer", key)
+		}
+		n = int64(v)
+	case json.Number:
+		parsed, err := v.Int64()
+		if err != nil {
+			return 0, fmt.Errorf("%s must be an integer", key)
+		}
+		n = parsed
+	default:
+		return 0, fmt.Errorf("%s must be an integer", key)
+	}
+	if n < 1 || n > limit {
+		return 0, fmt.Errorf("%s must be between 1 and %d", key, limit)
+	}
+	return int(n), nil
 }
 
 // fleetTaskListQuery forwards the list filters to the machine's task list
