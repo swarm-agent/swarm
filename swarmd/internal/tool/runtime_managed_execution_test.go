@@ -31,6 +31,7 @@ type managedExecFixture struct {
 	calls   int
 	request provider.ExecRequest
 	failure error
+	stdout  string
 }
 
 func (f *managedExecFixture) GetLease(string, string, string) (environments.DeploymentLease, bool, error) {
@@ -41,6 +42,9 @@ func (f *managedExecFixture) ExecTaskLease(_ context.Context, _, _, _ string, _ 
 	f.request = req
 	if f.failure != nil {
 		return nil, f.failure
+	}
+	if f.stdout != "" {
+		return &provider.ExecResult{Stdout: f.stdout}, nil
 	}
 	return &provider.ExecResult{Stdout: "managed-only", ExitCode: 7}, nil
 }
@@ -165,5 +169,47 @@ func TestManagedExecutionBackgroundFlag(t *testing.T) {
 				t.Fatalf("lease calls = %d, want 1", deployments.calls)
 			}
 		})
+	}
+}
+
+// Requirement: managed Bash output over the tool output cap keeps its head
+// and tail, says plainly that the full output is unavailable, and offers no
+// saved path; nothing is written to the host child worktree.
+// Threat: the marker and full_output_path point the agent at a host file
+// that its managed read (which runs in the lease checkout) and search
+// (refused in managed mode) cannot reach.
+// Owner: executeManagedBash with bashResponseCapped/capToolOutputTextUnsaved.
+// The recording lease double is the narrowest layer that drives the managed
+// branch; it does not qualify Podman execution.
+func TestManagedBashCappedOutputNotSavedOnHost(t *testing.T) {
+	r, scope, _, deployments := newManagedExecutionFixture(t)
+	deployments.stdout = "HEAD-MARKER\n" + strings.Repeat("managed output line\n", 4*ToolOutputCapBytes()/20) + "TAIL-MARKER\n"
+	raw, _ := json.Marshal(map[string]any{"command": "go test ./...", "category": "read", "critical": false, "explanation": []string{"Run tests"}})
+	output, err := r.executeOne(context.Background(), scope, Call{Name: "bash", Arguments: string(raw)}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatal(err)
+	}
+	text, _ := result["output"].(string)
+	if result["execution_mode"] != "managed" || result["output_capped"] != true || len(text) > ToolOutputCapBytes() {
+		t.Fatalf("managed output not capped: mode=%v capped=%v len=%d", result["execution_mode"], result["output_capped"], len(text))
+	}
+	if !strings.HasPrefix(text, "HEAD-MARKER") || !strings.HasSuffix(strings.TrimSpace(text), "TAIL-MARKER") {
+		t.Fatal("head or tail not kept")
+	}
+	if !strings.Contains(text, "bytes omitted; full output unavailable: ") || strings.Contains(text, "saved to") || strings.Contains(text, "read it with read/search") {
+		t.Fatalf("marker does not say the full output is unavailable: %q", text)
+	}
+	if _, ok := result["full_output_path"]; ok {
+		t.Fatalf("managed result offers a saved path: %v", result["full_output_path"])
+	}
+	if result["full_output_error"] != managedFullOutputUnavailable {
+		t.Fatalf("full_output_error = %v", result["full_output_error"])
+	}
+	if _, err := os.Stat(filepath.Join(scope.PrimaryPath, ".swarm")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("managed output written to the host worktree: %v", err)
 	}
 }

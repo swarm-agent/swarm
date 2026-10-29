@@ -384,3 +384,85 @@ func TestWebFetchDefaultPerURLCap(t *testing.T) {
 		}
 	}
 }
+
+func TestSaveToolOutputSurvivesDirectorySwappedForSymlink(t *testing.T) {
+	// Purpose: a .swarm or .swarm/tool-output replaced by a symlink after the
+	// save opened it (the window an agent's background Bash loop can race)
+	// cannot redirect the write or the pruning: nothing is created or
+	// deleted in the symlink's target, the save fails instead of reporting a
+	// path that now leads elsewhere, and the file written into the original
+	// directory is removed. Threat: the host daemon writing agent-controlled
+	// output outside the workspace (possibly into daemon storage) and
+	// pruning deleting .txt files there.
+	// Owners: saveToolOutput, openRealSubdirectories,
+	// confirmRealSubdirectories, writeRootedExclusive, pruneSavedToolOutputs.
+	// Layer: unit with a real temporary filesystem; toolOutputSaveTestHook
+	// makes the race window deterministic.
+	for _, swapped := range []string{filepath.Join(".swarm", "tool-output"), ".swarm"} {
+		t.Run(swapped, func(t *testing.T) {
+			root := t.TempDir()
+			workspace := filepath.Join(root, "workspace")
+			outside := filepath.Join(root, "outside")
+			for _, dir := range []string{workspace, outside, filepath.Join(outside, "tool-output")} {
+				if err := os.Mkdir(dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Seed the target with more than maxSavedToolOutputs .txt files, so
+			// pruning through the symlink would delete some of them.
+			seed := func(dir string) {
+				for i := 0; i < maxSavedToolOutputs+10; i++ {
+					if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("0000-victim-%03d.txt", i)), []byte("keep"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			seed(outside)
+			seed(filepath.Join(outside, "tool-output"))
+			snapshot := func() []string {
+				var names []string
+				_ = filepath.WalkDir(outside, func(path string, _ os.DirEntry, _ error) error {
+					names = append(names, path)
+					return nil
+				})
+				return names
+			}
+			before := snapshot()
+			target := filepath.Join(workspace, swapped)
+			// For ".swarm", outside/tool-output then stands in for
+			// .swarm/tool-output; both are seeded.
+			linkTo := outside
+			toolOutputSaveTestHook = func() {
+				if err := os.Rename(target, target+".moved"); err != nil {
+					t.Error(err)
+				}
+				if err := os.Symlink(linkTo, target); err != nil {
+					t.Error(err)
+				}
+			}
+			t.Cleanup(func() { toolOutputSaveTestHook = nil })
+			capped := capToolOutputText(WorkspaceScope{PrimaryPath: workspace}, "bash", strings.Repeat("secret\n", ToolOutputCapBytes()), true)
+			if !capped.Capped || capped.SavedPath != "" || !strings.Contains(capped.SaveError, "replaced during the save") || !strings.Contains(capped.Text, "full output could not be saved") {
+				t.Fatalf("swap not detected: path=%q err=%q", capped.SavedPath, capped.SaveError)
+			}
+			after := snapshot()
+			if strings.Join(before, "\n") != strings.Join(after, "\n") {
+				t.Fatalf("files outside the workspace changed:\nbefore %d\nafter %d", len(before), len(after))
+			}
+			// The write went to the original (moved) directory and was removed.
+			movedDir := target + ".moved"
+			if swapped == ".swarm" {
+				movedDir = filepath.Join(movedDir, "tool-output")
+			}
+			entries, err := os.ReadDir(movedDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				if strings.HasSuffix(entry.Name(), ".txt") {
+					t.Fatalf("output left behind after a failed save: %s", entry.Name())
+				}
+			}
+		})
+	}
+}

@@ -103,6 +103,33 @@ func (c cappedToolText) annotate(response map[string]any) {
 // marker naming how much was omitted and, when save is true, the file the
 // full text was saved to in the scope's workspace.
 func capToolOutputText(scope WorkspaceScope, label, text string, save bool) cappedToolText {
+	return capToolText(text, func(out *cappedToolText, omitted int) string {
+		if !save {
+			return fmt.Sprintf("[%d bytes omitted]", omitted)
+		}
+		path, err := saveToolOutput(scope, label, text)
+		if err != nil {
+			out.SaveError = err.Error()
+			return fmt.Sprintf("[%d bytes omitted; full output could not be saved: %s]", omitted, clipBytes(err.Error(), 200))
+		}
+		out.SavedPath = path
+		return fmt.Sprintf("[%d bytes omitted; full output saved to %s; read it with read/search]", omitted, path)
+	})
+}
+
+// capToolOutputTextUnsaved applies the cap where the full text cannot be
+// saved anywhere the agent can read it (for example a command that ran in
+// a managed lease, whose read/search do not see the host workspace). The
+// marker says plainly that the full output is unavailable and why; no path
+// is offered.
+func capToolOutputTextUnsaved(text, reason string) cappedToolText {
+	return capToolText(text, func(out *cappedToolText, omitted int) string {
+		out.SaveError = reason
+		return fmt.Sprintf("[%d bytes omitted; full output unavailable: %s]", omitted, reason)
+	})
+}
+
+func capToolText(text string, marker func(out *cappedToolText, omitted int) string) cappedToolText {
 	out := cappedToolText{Text: text, OriginalBytes: len(text)}
 	limit := ToolOutputCapBytes()
 	if len(text) <= limit {
@@ -112,20 +139,7 @@ func capToolOutputText(scope WorkspaceScope, label, text string, save bool) capp
 	head := headAtBoundary(text, budget/2)
 	tail := tailAtBoundary(text, budget-budget/2)
 	omitted := len(text) - len(head) - len(tail)
-	var marker string
-	if save {
-		path, err := saveToolOutput(scope, label, text)
-		if err != nil {
-			out.SaveError = err.Error()
-			marker = fmt.Sprintf("[%d bytes omitted; full output could not be saved: %s]", omitted, clipBytes(err.Error(), 200))
-		} else {
-			out.SavedPath = path
-			marker = fmt.Sprintf("[%d bytes omitted; full output saved to %s; read it with read/search]", omitted, path)
-		}
-	} else {
-		marker = fmt.Sprintf("[%d bytes omitted]", omitted)
-	}
-	out.Text = head + "\n..." + marker + "...\n" + tail
+	out.Text = head + "\n..." + marker(&out, omitted) + "...\n" + tail
 	out.Capped = true
 	out.OmittedBytes = omitted
 	return out
@@ -170,31 +184,52 @@ func tailAtBoundary(text string, n int) string {
 	return tail
 }
 
+// toolOutputSaveTestHook, when set by a test, runs after the tool-output
+// directory is opened and before anything is written in it, so a test can
+// replace path components at the point an agent's Bash could race the save.
+var toolOutputSaveTestHook func()
+
 // saveToolOutput writes text to a new file in the workspace's tool-output
-// directory and returns its absolute path. The directory and its parent must
-// be real directories inside the workspace (never symlinks), the file is
-// created exclusively, and older saved outputs beyond maxSavedToolOutputs are
-// removed.
+// directory and returns its path. The workspace is agent-writable, so every
+// operation goes through os.Root handles: each directory level is opened as
+// a root, must be a real directory (not a symlink) at the moment it is
+// opened, and all later create/list/remove calls are relative to the opened
+// directory, so a component swapped for a symlink afterwards cannot redirect
+// them. After the write the path is checked again; when a level was replaced
+// meanwhile, the file is removed (from the directory actually written to)
+// and the save fails rather than report a path that leads elsewhere.
 func saveToolOutput(scope WorkspaceScope, label, text string) (string, error) {
 	primary := strings.TrimSpace(scope.PrimaryPath)
 	if primary == "" || !filepath.IsAbs(primary) {
 		return "", errors.New("no workspace to save it in")
 	}
-	root, err := filepath.EvalSymlinks(primary)
+	primary = filepath.Clean(primary)
+	dirPath := filepath.Join(append([]string{primary}, toolOutputDirParts...)...)
+	if err := refuseProtectedPath(dirPath); err != nil {
+		return "", err
+	}
+	if err := refuseRootContainingStorage(primary); err != nil {
+		return "", err
+	}
+	workspace, err := os.OpenRoot(primary)
 	if err != nil {
 		return "", fmt.Errorf("workspace: %w", err)
 	}
-	dir := root
-	for _, part := range toolOutputDirParts {
-		dir = filepath.Join(dir, part)
-		if err := ensureRealDirectory(dir); err != nil {
-			return "", err
+	defer workspace.Close()
+	levels, err := openRealSubdirectories(workspace, toolOutputDirParts)
+	defer func() {
+		for _, level := range levels {
+			_ = level.Close()
 		}
-	}
-	if err := refuseProtectedPath(dir); err != nil {
+	}()
+	if err != nil {
 		return "", err
 	}
-	if err := writeExclusive(filepath.Join(dir, ".gitignore"), "*\n"); err != nil && !errors.Is(err, os.ErrExist) {
+	dir := levels[len(levels)-1]
+	if toolOutputSaveTestHook != nil {
+		toolOutputSaveTestHook()
+	}
+	if err := writeRootedExclusive(dir, ".gitignore", "*\n"); err != nil && !errors.Is(err, os.ErrExist) {
 		return "", fmt.Errorf("write tool-output .gitignore: %w", err)
 	}
 	suffix := make([]byte, 4)
@@ -202,52 +237,98 @@ func saveToolOutput(scope WorkspaceScope, label, text string) (string, error) {
 		return "", err
 	}
 	name := fmt.Sprintf("%s-%s-%s.txt", time.Now().UTC().Format("20060102T150405.000000000Z"), toolOutputLabel(label), hex.EncodeToString(suffix))
-	path := filepath.Join(dir, name)
-	if err := writeExclusive(path, text); err != nil {
+	if err := writeRootedExclusive(dir, name, text); err != nil {
+		return "", err
+	}
+	if err := confirmRealSubdirectories(workspace, toolOutputDirParts, levels); err != nil {
+		_ = dir.Remove(name)
 		return "", err
 	}
 	pruneSavedToolOutputs(dir)
-	return path, nil
+	return filepath.Join(dirPath, name), nil
 }
 
-// ensureRealDirectory creates dir (mode 0700) when it is missing and refuses
-// anything at that path that is not a real directory, including a symlink.
-func ensureRealDirectory(dir string) error {
-	info, err := os.Lstat(dir)
-	if errors.Is(err, os.ErrNotExist) {
-		if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
-			return err
+// openRealSubdirectories opens parts below workspace one level at a time,
+// creating missing levels (mode 0700). Each level must be a real directory:
+// the name's Lstat (no symlink followed) must be the same file as the
+// opened handle. The returned handles, outermost first, must be closed by
+// the caller, also on error.
+func openRealSubdirectories(workspace *os.Root, parts []string) ([]*os.Root, error) {
+	var levels []*os.Root
+	parent := workspace
+	for _, part := range parts {
+		if err := parent.Mkdir(part, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+			return levels, err
 		}
-		info, err = os.Lstat(dir)
+		level, err := parent.OpenRoot(part)
+		if err != nil {
+			return levels, err
+		}
+		levels = append(levels, level)
+		if err := sameRealDirectory(parent, part, level); err != nil {
+			return levels, err
+		}
+		parent = level
 	}
-	if err != nil {
-		return err
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return fmt.Errorf("%s is not a directory", dir)
+	return levels, nil
+}
+
+// confirmRealSubdirectories checks that each name still leads to the
+// directory opened for it.
+func confirmRealSubdirectories(workspace *os.Root, parts []string, levels []*os.Root) error {
+	parent := workspace
+	for i, part := range parts {
+		if err := sameRealDirectory(parent, part, levels[i]); err != nil {
+			return fmt.Errorf("tool-output directory was replaced during the save: %w", err)
+		}
+		parent = levels[i]
 	}
 	return nil
 }
 
-// writeExclusive creates path (mode 0600), failing when anything exists there.
-func writeExclusive(path, text string) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+func sameRealDirectory(parent *os.Root, name string, opened *os.Root) error {
+	named, err := parent.Lstat(name)
+	if err != nil {
+		return err
+	}
+	if named.Mode()&os.ModeSymlink != 0 || !named.IsDir() {
+		return fmt.Errorf("%s is not a directory", name)
+	}
+	actual, err := opened.Stat(".")
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(named, actual) {
+		return fmt.Errorf("%s changed while it was opened", name)
+	}
+	return nil
+}
+
+// writeRootedExclusive creates name in dir (mode 0600), failing when
+// anything exists there.
+func writeRootedExclusive(dir *os.Root, name, text string) error {
+	file, err := dir.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
 	if _, err := file.WriteString(text); err != nil {
 		_ = file.Close()
-		_ = os.Remove(path)
+		_ = dir.Remove(name)
 		return err
 	}
 	return file.Close()
 }
 
 // pruneSavedToolOutputs removes the oldest saved outputs beyond
-// maxSavedToolOutputs. Names start with a UTC timestamp, so name order is age
-// order. Only regular .txt files are touched.
-func pruneSavedToolOutputs(dir string) {
-	entries, err := os.ReadDir(dir)
+// maxSavedToolOutputs from the opened directory. Names start with a UTC
+// timestamp, so name order is age order. Only regular .txt files are touched.
+func pruneSavedToolOutputs(dir *os.Root) {
+	handle, err := dir.Open(".")
+	if err != nil {
+		return
+	}
+	entries, err := handle.ReadDir(-1)
+	_ = handle.Close()
 	if err != nil {
 		return
 	}
@@ -262,7 +343,7 @@ func pruneSavedToolOutputs(dir string) {
 	}
 	sort.Strings(saved)
 	for _, name := range saved[:len(saved)-maxSavedToolOutputs] {
-		_ = os.Remove(filepath.Join(dir, name))
+		_ = dir.Remove(name)
 	}
 }
 

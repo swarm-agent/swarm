@@ -321,12 +321,23 @@ func newBashCapture() *cappedBuffer {
 // cap keeps its head and tail; the full captured output is saved in the
 // scope's workspace for read/search (capToolOutputText).
 func bashResponse(scope WorkspaceScope, command string, capture *cappedBuffer, streamWriter *bashStreamWriter, exitCode int, timedOut bool, err error, executionMode ...string) (string, error) {
+	capOutput := func(text string) cappedToolText { return capToolOutputText(scope, "bash", text, true) }
+	return bashResponseCapped(capOutput, command, capture, streamWriter, exitCode, timedOut, err, executionMode...)
+}
+
+// managedFullOutputUnavailable is why a managed command's capped output is
+// not saved: it ran in the lease checkout, and the host workspace the
+// daemon could save into is not where the agent's read runs (search is
+// refused there), so a saved path would lead nowhere.
+const managedFullOutputUnavailable = "the command ran in a managed lease and its full output is not kept; rerun it with narrower output (for example | tail, | grep, or redirect to a file in the checkout and read that)"
+
+func bashResponseCapped(capOutput func(string) cappedToolText, command string, capture *cappedBuffer, streamWriter *bashStreamWriter, exitCode int, timedOut bool, err error, executionMode ...string) (string, error) {
 	rawOutput := capture.Bytes()
 	binarySuppressed := streamWriter.BinarySuppressed() || isLikelyBinary(rawOutput)
 	combined := ""
 	var capped cappedToolText
 	if !binarySuppressed {
-		capped = capToolOutputText(scope, "bash", sanitizeForToolOutput(capture.String()), true)
+		capped = capOutput(sanitizeForToolOutput(capture.String()))
 		combined = capped.Text
 	}
 	wasTruncated := capture.Truncated() || capped.Capped

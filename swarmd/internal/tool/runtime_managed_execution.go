@@ -109,7 +109,10 @@ func (r *Runtime) executeManagedBash(ctx context.Context, scope WorkspaceScope, 
 	if runErr != nil && !timedOut {
 		return "", fmt.Errorf("managed Bash execution failed: %w", runErr)
 	}
-	output, err := bashResponse(scope, command, capture, stream, result.ExitCode, timedOut, nil)
+	// Capped output is not saved on the host: the agent's read runs in the
+	// lease checkout and could not reach a host file.
+	capOutput := func(text string) cappedToolText { return capToolOutputTextUnsaved(text, managedFullOutputUnavailable) }
+	output, err := bashResponseCapped(capOutput, command, capture, stream, result.ExitCode, timedOut, nil)
 	if err != nil {
 		return "", err
 	}

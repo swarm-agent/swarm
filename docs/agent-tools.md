@@ -119,8 +119,15 @@ daemon at startup.
 
 Full outputs are saved in the workspace under `.swarm/tool-output/` (files
 mode 0600, the newest 50 kept). The directory holds a `.gitignore` of `*`,
-so saved output never shows up as a change or gets committed. A `.swarm` or
-`tool-output` that is a symlink is refused and the output is not saved.
+so saved output never shows up as a change or gets committed. Each directory
+level is opened as an `os.Root` and must be a real directory (not a symlink);
+writes, listing and pruning happen through the opened handles, so a level
+swapped for a symlink mid-save cannot redirect them, and the save is refused
+(the written file removed) when the path no longer leads to the directory
+written in. In managed execution, `bash` output over the cap is not saved:
+the marker reads `[N bytes omitted; full output unavailable: ...]`, with
+`full_output_error` and no `full_output_path`, because `read` runs in the
+lease checkout and could not reach a host file.
 Command output past the 4 MiB in-memory capture keeps its end, so the saved
 file and the tail show how the command finished; for a background command
 the saved file holds its retained output (the last 256 KiB).
