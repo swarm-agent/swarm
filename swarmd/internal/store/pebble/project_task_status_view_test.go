@@ -292,3 +292,68 @@ func TestProjectTaskCodeDeliverableStatusFollowsTheState(t *testing.T) {
 		t.Fatalf("nil progress flags = %q %v %v", outcome, stale, idle)
 	}
 }
+
+// Purpose: every non-media deliverable (report, plan, artifact, code) is
+// created with the placeholder "pending" that nothing keeps in step, so its
+// shown status is derived from the task state by one rule, while a media
+// deliverable (image/video/audio, or one with a media URL) and an explicitly
+// set status keep the stored value. ShowDeliverablesForState rewrites only
+// the response copy: the stored record's slices are never written through.
+// Threat: a finished finder task's "Comprehensive Audit Report" read pending,
+// so an AI reported the report as not ready; or showing a derived status
+// corrupted the persisted record. Owner: ProjectTaskDeliverableStatus,
+// ProjectTaskDeliverablesShown and ProjectTaskRecord.ShowDeliverablesForState
+// (pure).
+func TestProjectTaskDeliverableStatusFollowsTheStateForEveryNonMediaKind(t *testing.T) {
+	report := ProjectTaskDeliverable{ID: "deliv_audit", Title: "Comprehensive Audit Report", Kind: "report", Status: "pending"}
+	want := map[string]string{
+		ProjectTaskStateRunning:       "in progress",
+		ProjectTaskStateWaiting:       "not started",
+		ProjectTaskStateDone:          "ready",
+		ProjectTaskStateLanded:        "delivered",
+		ProjectTaskStateNotIntegrated: "on branch",
+		ProjectTaskStateNeedsYou:      "needs you",
+		ProjectTaskStateStopped:       "stopped",
+	}
+	for state, w := range want {
+		for _, d := range []ProjectTaskDeliverable{
+			report,
+			{ID: "deliv_plan", Kind: "report", Status: "pending"},
+			{ID: "deliv_design", Kind: "artifact", Status: "pending"},
+			{ID: "deliv_task", Kind: "pr", Status: ""},
+		} {
+			if got := ProjectTaskDeliverableStatus(d, state); got != w {
+				t.Fatalf("%s (%s) in %s = %q, want %q", d.ID, d.Kind, state, got, w)
+			}
+		}
+	}
+	for _, media := range []ProjectTaskDeliverable{
+		{ID: "deliv_img_slot_1", Kind: "image", Status: "pending"},
+		{ID: "deliv_vid", Kind: "video", Status: "generating"},
+		{ID: "deliv_snd", Kind: "audio", Status: "failed"},
+		{ID: "deliv_timings", Kind: "json", Status: "pending", MediaURL: "data:application/json;base64,e30="},
+	} {
+		if got := ProjectTaskDeliverableStatus(media, ProjectTaskStateDone); got != media.Status {
+			t.Fatalf("media %s status = %q, want stored %q", media.ID, got, media.Status)
+		}
+	}
+	if got := ProjectTaskDeliverableStatus(ProjectTaskDeliverable{ID: "deliv_audit", Kind: "report", Status: "accepted"}, ProjectTaskStateRunning); got != "accepted" {
+		t.Fatalf("explicit report status = %q, want accepted", got)
+	}
+
+	stored := ProjectTaskRecord{
+		Deliverables: []ProjectTaskDeliverable{report, {ID: "img", Kind: "image", Status: "ready"}},
+		Attempts:     []ProjectTaskAttempt{{ID: "a1", Deliverables: []ProjectTaskDeliverable{report}}},
+	}
+	shown := stored
+	shown.ShowDeliverablesForState(ProjectTaskStateDone)
+	if shown.Deliverables[0].Status != "ready" || shown.Deliverables[1].Status != "ready" || shown.Attempts[0].Deliverables[0].Status != "ready" {
+		t.Fatalf("shown deliverables = %+v / %+v", shown.Deliverables, shown.Attempts[0].Deliverables)
+	}
+	if stored.Deliverables[0].Status != "pending" || stored.Attempts[0].Deliverables[0].Status != "pending" {
+		t.Fatalf("stored record written through: %+v / %+v", stored.Deliverables, stored.Attempts[0].Deliverables)
+	}
+	if ProjectTaskDeliverablesShown(nil, ProjectTaskStateDone) != nil {
+		t.Fatal("nil deliverables must stay nil")
+	}
+}

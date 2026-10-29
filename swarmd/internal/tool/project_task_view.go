@@ -417,11 +417,25 @@ func compactProjectTask(read projectTaskRead, remote bool) ProjectTaskView {
 	if p != nil && p.State == "delivered" {
 		integration = "delivered"
 	}
+	outcome, stale, idle := "", false, false
+	if p != nil {
+		outcome, stale, idle = p.Outcome, p.Stale, p.Idle
+	}
+	view.NeedsAttention = pebblestore.ProjectTaskNeedsAttention(*t, outcome, stale, idle)
+	view.State, view.StateReason = pebblestore.ProjectTaskState(*t, outcome, stale, idle)
+	view.StateReason = clipBytes(view.StateReason, projectTaskTextBytes)
+	// Each deliverable reads "title (status)", its status shown from the task
+	// state (pebblestore.ProjectTaskDeliverableStatus), never its creation
+	// placeholder.
 	for i, d := range t.Deliverables {
 		if i >= projectTaskListMax {
 			break
 		}
-		result.Deliverables = append(result.Deliverables, clipBytes(firstNonEmptyText(d.Title, d.ID), 80))
+		entry := clipBytes(firstNonEmptyText(d.Title, d.ID), 80)
+		if status := pebblestore.ProjectTaskDeliverableStatus(d, view.State); status != "" {
+			entry += " (" + clipBytes(status, 32) + ")"
+		}
+		result.Deliverables = append(result.Deliverables, entry)
 	}
 	if result.Summary != "" || result.Branch != "" || result.Head != "" || result.Commits > 0 || result.Files > 0 || len(result.Deliverables) > 0 {
 		view.Result = result
@@ -440,13 +454,6 @@ func compactProjectTask(read projectTaskRead, remote bool) ProjectTaskView {
 		}
 	}
 	view.NextAction, view.Progress.Next = projectTaskNext(t, p, integration, result.Commits, remote)
-	outcome, stale, idle := "", false, false
-	if p != nil {
-		outcome, stale, idle = p.Outcome, p.Stale, p.Idle
-	}
-	view.NeedsAttention = pebblestore.ProjectTaskNeedsAttention(*t, outcome, stale, idle)
-	view.State, view.StateReason = pebblestore.ProjectTaskState(*t, outcome, stale, idle)
-	view.StateReason = clipBytes(view.StateReason, projectTaskTextBytes)
 	// The stage stops at the work's end, and it is read from the state
 	// only: "Landed" only for a landed task. A finished task is past its
 	// implementation steps whatever its workflow or integration says.
@@ -634,7 +641,7 @@ func clipList(list []string, limit int) []string {
 // projectTaskFilesDetail is get_task detail=files: what changed and what
 // was delivered.
 //
-// A code deliverable's status is shown from the task state
+// A non-media deliverable's status is shown from the task state
 // (pebblestore.ProjectTaskDeliverableStatus): its stored status is the
 // placeholder set when the task was created.
 func projectTaskFilesDetail(t pebblestore.ProjectTaskRecord, worktree *projectTaskWorktree, state string) map[string]any {

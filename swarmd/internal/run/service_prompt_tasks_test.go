@@ -55,3 +55,38 @@ func TestRecentProjectTasksPromptBlockShowsTheTaskState(t *testing.T) {
 		t.Fatalf("prompt block without progress:\n%s", bare)
 	}
 }
+
+// Purpose: the Orchestrator's prompt block shows every non-media
+// deliverable, not only code, from the task state: a finished finder task's
+// report placeholder reads ready and a running one's reads in progress, while
+// an image deliverable keeps its real stored status. Threat: each turn told
+// the Orchestrator a finished audit report was pending. Owner:
+// recentProjectTasksPromptBlock through
+// pebblestore.ProjectTaskDeliverableStatus (pure).
+func TestRecentProjectTasksPromptBlockShowsReportDeliverablesFromTheState(t *testing.T) {
+	report := []pebblestore.ProjectTaskDeliverable{{ID: "deliv_audit", Title: "Comprehensive Audit Report", Kind: "report", Status: "pending"}}
+	tasks := []pebblestore.ProjectTaskRecord{
+		{ID: "task-finished", Agent: "finder", Status: "needs_review", Title: "Audit the parser", Deliverables: report},
+		{ID: "task-running", Agent: "finder", Status: "in_progress", Title: "Audit the lexer", Deliverables: report},
+		{ID: "task-image", Agent: "image", Status: "in_progress", Title: "Logo",
+			Deliverables: []pebblestore.ProjectTaskDeliverable{{ID: "img_1", Title: "Logo variant", Kind: "image", Status: "generating"}}},
+	}
+	outcomes := map[string]string{"task-finished": "finished"}
+	block := recentProjectTasksPromptBlock(tasks, func(task pebblestore.ProjectTaskRecord) (string, bool, bool) {
+		return outcomes[task.ID], false, false
+	})
+	for _, want := range []string{
+		"- Task `task-finished` (finder) [done: finished; nothing to integrate]: Audit the parser",
+		"Comprehensive Audit Report (status: ready, kind: report, id: deliv_audit)",
+		"- Task `task-running` (finder) [running:",
+		"Comprehensive Audit Report (status: in progress, kind: report, id: deliv_audit)",
+		"Logo variant (status: generating, kind: image, id: img_1)",
+	} {
+		if !strings.Contains(block, want) {
+			t.Fatalf("prompt block misses %q:\n%s", want, block)
+		}
+	}
+	if strings.Contains(block, "status: pending") {
+		t.Fatalf("prompt block carries the placeholder:\n%s", block)
+	}
+}

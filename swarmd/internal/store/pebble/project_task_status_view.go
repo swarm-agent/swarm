@@ -258,25 +258,30 @@ func ProjectTaskProgressFlags(progress any) (outcome string, stale, idle bool) {
 	return flags.Outcome, flags.Stale, flags.Idle
 }
 
-// ProjectTaskCodeDeliverable reports whether d is the code deliverable a
-// coder task is created with (deliv_code). Its Status is the placeholder set
-// when the task is created ("pending") and is not kept in step with the work:
-// the task state is authoritative.
-func ProjectTaskCodeDeliverable(d ProjectTaskDeliverable) bool {
-	switch d.Kind {
-	case "pr", "code_pr", "code_diff":
+// ProjectTaskMediaDeliverable reports whether d is a media asset (image,
+// video, audio/sound, or any deliverable carrying a media URL). The media
+// pipeline keeps a media deliverable's Status in step with its generation, so
+// that stored status is what surfaces show.
+func ProjectTaskMediaDeliverable(d ProjectTaskDeliverable) bool {
+	switch strings.ToLower(strings.TrimSpace(d.Kind)) {
+	case "image", "video", "audio", "sound":
 		return true
 	}
-	return d.ID == "deliv_code"
+	return strings.TrimSpace(d.MediaURL) != ""
 }
 
 // ProjectTaskDeliverableStatus is the status to show for d of a task in
-// state: a code deliverable still carrying its creation placeholder reads
-// from the task state (landed: delivered; not_integrated: on branch;
-// running: in progress); any other deliverable keeps its stored status.
+// state. Every non-media deliverable (code PR, report, plan, artifact, …) is
+// created with the placeholder "pending" that nothing keeps in step with the
+// work, so while it carries that placeholder it reads from the task state:
+// running: in progress; waiting: not started; landed: delivered; done: ready;
+// not_integrated: on branch; needs_you: needs you; stopped: stopped. A media
+// deliverable, or one whose stored status was set explicitly (ready,
+// accepted, …), keeps its stored status. This is the one rule every surface
+// (get_task, the task routes, the Orchestrator's prompt block) uses.
 func ProjectTaskDeliverableStatus(d ProjectTaskDeliverable, state string) string {
 	status := strings.TrimSpace(d.Status)
-	if !ProjectTaskCodeDeliverable(d) || (status != "" && status != "pending") {
+	if ProjectTaskMediaDeliverable(d) || (status != "" && status != "pending") {
 		return status
 	}
 	switch state {
@@ -291,9 +296,42 @@ func ProjectTaskDeliverableStatus(d ProjectTaskDeliverable, state string) string
 	case ProjectTaskStateNeedsYou:
 		return "needs you"
 	case ProjectTaskStateDone:
-		return "done"
+		return "ready"
 	case ProjectTaskStateStopped:
 		return "stopped"
 	}
 	return "unknown"
+}
+
+// ProjectTaskDeliverablesShown returns a copy of list with each Status as
+// ProjectTaskDeliverableStatus shows it for a task in state. list itself is
+// not changed; nil stays nil.
+func ProjectTaskDeliverablesShown(list []ProjectTaskDeliverable, state string) []ProjectTaskDeliverable {
+	if list == nil {
+		return nil
+	}
+	out := make([]ProjectTaskDeliverable, len(list))
+	for i, d := range list {
+		d.Status = ProjectTaskDeliverableStatus(d, state)
+		out[i] = d
+	}
+	return out
+}
+
+// ShowDeliverablesForState rewrites, in place, the deliverables of t and of
+// its attempts with the statuses ProjectTaskDeliverableStatus shows for a
+// task in state. Callers pass a response copy, never the stored record: each
+// list is replaced by a new slice, so slices shared with the stored record
+// are not written through.
+func (t *ProjectTaskRecord) ShowDeliverablesForState(state string) {
+	if t == nil {
+		return
+	}
+	t.Deliverables = ProjectTaskDeliverablesShown(t.Deliverables, state)
+	if len(t.Attempts) > 0 {
+		t.Attempts = append([]ProjectTaskAttempt(nil), t.Attempts...)
+		for i := range t.Attempts {
+			t.Attempts[i].Deliverables = ProjectTaskDeliverablesShown(t.Attempts[i].Deliverables, state)
+		}
+	}
 }

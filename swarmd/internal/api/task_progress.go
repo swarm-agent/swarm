@@ -749,6 +749,24 @@ type taskWithProgress struct {
 	Progress *taskProgress
 }
 
+// newTaskWithProgress is task (a client copy) with its progress, its
+// deliverables shown from the task state (showTaskDeliverables).
+func newTaskWithProgress(task *pebblestore.ProjectTaskRecord, progress *taskProgress) taskWithProgress {
+	showTaskDeliverables(task, progress)
+	return taskWithProgress{Task: task, Progress: progress}
+}
+
+// showTaskDeliverables shows each deliverable of task, a client copy, with
+// the status pebblestore.ProjectTaskDeliverableStatus gives for the task
+// state in progress: a non-media deliverable's stored "pending" is a
+// creation placeholder. Without a task state the stored statuses stay.
+func showTaskDeliverables(task *pebblestore.ProjectTaskRecord, progress *taskProgress) {
+	if task == nil || progress == nil || progress.TaskState == "" {
+		return
+	}
+	task.ShowDeliverablesForState(progress.TaskState)
+}
+
 func (t taskWithProgress) MarshalJSON() ([]byte, error) {
 	task, err := json.Marshal(t.Task)
 	if err != nil || t.Progress == nil {

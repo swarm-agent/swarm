@@ -2436,6 +2436,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				facts := storedFacts[progressTask.ID]
 				progressTask.IsIntegrated, progressTask.UnintegratedCommits = facts.integrated, facts.commits
 				board[i].Progress = s.taskProgressFor(p.AccountScopeID, progressTask, taskProgressNow().UnixMilli())
+				showTaskDeliverables(&board[i].ProjectTaskRecord, board[i].Progress)
 				board[i].Reviews = reviews[sanitizedTasks[i].ID]
 			}
 			var pageFields map[string]any
@@ -3438,7 +3439,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			hydrateTaskPlanDocument(task, db)
 			// The wait view of progress, so a home waiting on this task through a
 			// link (get_task) reads the same workflow state as a local wait.
-			detail := map[string]any{"task": taskWithProgress{Task: sanitizeProjectTaskForClient(task), Progress: s.taskWaitProgressFor(p.AccountScopeID, *task, time.Now().UnixMilli())}, "model_preview": s.buildTaskModelPreview(p, task)}
+			detail := map[string]any{"task": newTaskWithProgress(sanitizeProjectTaskForClient(task), s.taskWaitProgressFor(p.AccountScopeID, *task, time.Now().UnixMilli())), "model_preview": s.buildTaskModelPreview(p, task)}
 			// What was sent to the task (message_task notes and follow-ups)
 			// and whether it arrived, so a linked get_task can show it.
 			if messages, err := db.ProjectTaskMessages(task); err != nil {

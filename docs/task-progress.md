@@ -138,11 +138,31 @@ workflow finished or the work was delivered is `Needs you`. A stage reads
 `Landed` only when the state is `landed`; a workflow that is `done` without a
 handover is not landed.
 
-A coder task's code deliverable (`deliv_code`) is created with status
-`pending`. Nothing updates that placeholder, so the task state is the authority.
-Surfaces show the deliverable from the state: `landed` is `delivered`,
-`not_integrated` is `on branch`, `running` is `in progress`. Other
-deliverables, such as images, keep their stored status.
+Tasks are created with placeholder deliverables whose status is `pending`:
+the code deliverable (`deliv_code`), reports (`deliv_audit`, `deliv_plan`),
+design artifacts (`deliv_design`) and the default `deliv_task`. Nothing
+updates those placeholders, so for every non-media deliverable the task state
+is the authority. One rule (`pebblestore.ProjectTaskDeliverableStatus`) shows
+a deliverable still carrying `pending` (or no status) from the state:
+
+| state | deliverable status shown |
+|---|---|
+| `running` | `in progress` |
+| `waiting` | `not started` |
+| `done` | `ready` |
+| `landed` | `delivered` |
+| `not_integrated` | `on branch` |
+| `needs_you` | `needs you` |
+| `stopped` | `stopped` |
+
+Media deliverables (kind `image`, `video`, `audio`/`sound`, or any deliverable
+with a media URL) keep their stored status, which the media pipeline keeps in
+step with generation. A deliverable whose status was set explicitly (`ready`,
+`accepted`, …) also keeps it. The rule applies to `get_task` (the compact
+`result.deliverables` entries read `title (status)`, `detail=files`, and
+`detail=full` on the task and its attempts), the task detail and list routes,
+and the Orchestrator's prompt block. Only the answer changes; the stored
+record keeps its placeholder.
 
 ### `workflow.state`, one of
 

@@ -629,8 +629,8 @@ func (s *Service) projectContextPromptBlock(scope tool.WorkspaceScope) string {
 // (pebblestore.ProjectTaskState over each one's progress outcome, the word
 // list_tasks and get_task show), never the raw run status, and their
 // deliverables so the orchestrator understands references like "picture 2".
-// A code deliverable's stored status is a creation placeholder, so it is
-// shown from the task state (pebblestore.ProjectTaskDeliverableStatus).
+// A non-media deliverable's stored status is a creation placeholder, so it
+// is shown from the task state (pebblestore.ProjectTaskDeliverableStatus).
 func recentProjectTasksPromptBlock(tasks []pebblestore.ProjectTaskRecord, progressOf func(pebblestore.ProjectTaskRecord) (string, bool, bool)) string {
 	var sb strings.Builder
 	sb.WriteString("\n\n## Recent Project Tasks & Deliverables\n")

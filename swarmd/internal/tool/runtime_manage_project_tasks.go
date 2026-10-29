@@ -270,6 +270,15 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 			}
 		}
 		copyTask.Attempts = rows
+		// The stored record, with each deliverable's status shown from the
+		// task state (pebblestore.ProjectTaskDeliverableStatus), the same
+		// word the compact view and detail=files show.
+		outcome, stale, idle := "", false, false
+		if progress := r.projectTaskProgress(account, *task); progress != nil {
+			outcome, stale, idle = progress.Outcome, progress.Stale, progress.Idle
+		}
+		state, _ := pebblestore.ProjectTaskState(*task, outcome, stale, idle)
+		copyTask.ShowDeliverablesForState(state)
 		result["task"], result["next_cursor"] = &copyTask, next
 		if task.PlanBinding != nil {
 			plan, err := r.boundProjectTaskPlan(scope, task)
