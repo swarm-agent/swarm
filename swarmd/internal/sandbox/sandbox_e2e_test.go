@@ -162,6 +162,23 @@ printf 'main: main.c\n\tcc -O2 -o main main.c\n' > Makefile && make -s && ./main
 	t.Run("tests", func(t *testing.T) {
 		e.mustSh(t, `mkdir -p pytests && cd pytests && printf 'import unittest\nclass T(unittest.TestCase):\n    def test_ok(self):\n        self.assertEqual(1+1, 2)\nunittest.main()\n' > test_x.py && python3 test_x.py`)
 	})
+	// Purpose: the default image (containers/sandbox) must let an agent build
+	// and test Rust (console/ is a GPUI crate checked with `cargo test`).
+	// Regression: images without cargo/rustc leave Rust changes unbuilt. This
+	// runs through Manager.Exec as the unprivileged sandbox uid with Swarm's
+	// own PATH (runArgsImage), so it proves the proxies are found there, that
+	// the read-only shared toolchain works with a per-sandbox ~/.cargo, that
+	// rustdoc (doctests) is present, and that the X libraries GPUI links have
+	// development files. --offline: a crate without dependencies needs no
+	// registry. Only a real image run can prove this; no hermetic layer can.
+	t.Run("rust", func(t *testing.T) {
+		e.mustSh(t, `cargo --version && rustc --version && rustdoc --version &&
+cargo new -q --lib rustprobe && cd rustprobe && cargo test -q --offline 2>&1 | grep -q 'test result: ok. 1 passed' &&
+test -d "$RUSTUP_HOME/toolchains" && test -d "$HOME/.cargo" && pkg-config --exists xcb xkbcommon xkbcommon-x11`)
+		if out, code := e.sh(t, `touch "$RUSTUP_HOME/agent-write" 2>/dev/null`); code == 0 {
+			t.Fatalf("the shared Rust toolchain is writable by the sandbox user: %s", out)
+		}
+	})
 	t.Run("package installs", func(t *testing.T) {
 		e.mustSh(t, `mkdir -p nodeapp && cd nodeapp && npm init -y >/dev/null && npm install --no-audit --no-fund is-number@7.0.0 >/dev/null &&
 node -e 'process.exit(require("is-number")(5) ? 0 : 1)'`)

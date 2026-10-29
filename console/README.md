@@ -24,6 +24,11 @@ Linux needs X11 or Wayland. If the linker cannot find `libxkbcommon-x11` or
 `libX11-xcb`, `build.rs` links their runtime libraries; installing
 `libxkbcommon-x11-dev` and `libx11-xcb-dev` removes the need.
 
+`cargo test` needs no display. On Debian or Ubuntu it links with
+`build-essential`, `pkg-config`, `libxcb1-dev`, `libxkbcommon-dev` and
+`libxkbcommon-x11-dev`; Swarm's default sandbox image
+(`containers/sandbox/Dockerfile`) has these and Rust.
+
 `SWARM_CONSOLE_CONCEPT=graphite|paper|phosphor` picks the starting concept.
 `scripts/snap.sh OUT.png [concept] [page]` screenshots it on a virtual display
 (needs `xvfb` and `i3`: a private i3 runs inside the virtual display, because

@@ -233,6 +233,12 @@ nothing from Swarm's environment. The sandbox network (`swarm-sandbox`, bridge
 boot by `swarm-sandbox-firewall`) reaches the internet but drops new
 connections to this server, the tailnet, private ranges, loopback and cloud
 metadata. File tools refuse Swarm's storage and credential paths outright.
+The default sandbox image has git, curl, jq, build-essential and pkg-config,
+Python 3 (pip, venv), Node.js (npm), and Rust (rustup's stable toolchain,
+minimal profile: `cargo`, `rustc`, `rustdoc`, read-only and shared; crates go
+to the sandbox's own `~/.cargo`) with the X libraries GPUI links, so
+`cargo test` in `console/` builds headless. A folder with its own environment
+runs on that image instead and gets only what its base image and setup add.
 `install.sh check-isolation` proves the network rules from inside a sandbox
 (the installer runs it at the end); `install.sh check-sandbox` shows each
 running sandbox's runtime, user, capabilities, limits and mounts.
