@@ -447,16 +447,21 @@ func compactProjectTask(read projectTaskRead, remote bool) ProjectTaskView {
 	view.NeedsAttention = pebblestore.ProjectTaskNeedsAttention(*t, outcome, stale, idle)
 	view.State, view.StateReason = pebblestore.ProjectTaskState(*t, outcome, stale, idle)
 	view.StateReason = clipBytes(view.StateReason, projectTaskTextBytes)
-	// The stage stops at the work's end: a landed or done task (or one
-	// whose workflow finished or whose work was delivered) is past its
-	// implementation steps.
-	switch {
-	case view.State == pebblestore.ProjectTaskStateLanded:
+	// The stage stops at the work's end, and it is read from the state
+	// only: "Landed" only for a landed task. A finished task is past its
+	// implementation steps whatever its workflow or integration says.
+	pastImplementation := integration == "delivered" || integration == "integrated" || (view.Progress.Workflow != nil && view.Progress.Workflow.State == "done")
+	switch view.State {
+	case pebblestore.ProjectTaskStateLanded:
 		view.Progress.Stage = "Landed"
-	case view.State == pebblestore.ProjectTaskStateDone:
+	case pebblestore.ProjectTaskStateDone:
 		view.Progress.Stage = "Done"
-	case integration == "delivered" || integration == "integrated" || (view.Progress.Workflow != nil && view.Progress.Workflow.State == "done"):
-		view.Progress.Stage = "Landed"
+	case pebblestore.ProjectTaskStateNotIntegrated:
+		view.Progress.Stage = "Finished, not handed over"
+	case pebblestore.ProjectTaskStateNeedsYou:
+		if pastImplementation {
+			view.Progress.Stage = "Needs you"
+		}
 	}
 	fitProjectTaskView(&view)
 	return view

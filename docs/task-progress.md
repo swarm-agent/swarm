@@ -131,9 +131,12 @@ delivered (`delivered <target>`), or the commits being in the target branch
 (`integrated`). A failed run status wins over an earlier push (`needs_you`). A
 `landed` or `done` task is never counted `needs_attention`.
 
-When a task is `landed` or `done` (or its workflow is `done`, or its work was
-delivered or integrated), `get_task`'s `progress.stage` is `Landed` or `Done`,
-not an implementation step.
+`get_task`'s `progress.stage` follows the state, never an implementation step
+once the work is finished: `landed` is `Landed`, `done` is `Done`,
+`not_integrated` is `Finished, not handed over`, and `needs_you` after the
+workflow finished or the work was delivered is `Needs you`. A stage reads
+`Landed` only when the state is `landed`; a workflow that is `done` without a
+handover is not landed.
 
 A coder task's code deliverable (`deliv_code`) is created with status
 `pending`. Nothing updates that placeholder, so the task state is the authority.

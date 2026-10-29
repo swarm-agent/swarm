@@ -132,3 +132,46 @@ func TestLinkedGetTaskShowsTheTaskState(t *testing.T) {
 		t.Fatalf("linked get_task: %s", compact)
 	}
 }
+
+// Purpose: get_task's stage is read from the task state alone; "Landed" only
+// for a landed task. A workflow that is done with nothing handed over
+// (review-only: outcome "ready to integrate") is not_integrated and its stage
+// is neither "Landed" nor an implementation step; a run that failed after a
+// push is needs_you, not "Landed". Threat: unhanded-over commits reported as
+// landed because the workflow said done or integration said delivered.
+// Owner: compactProjectTask through CompactProjectTaskAnswer (pure; the same
+// compaction serves this machine's and linked get_task).
+func TestGetTaskStageSaysLandedOnlyWhenLanded(t *testing.T) {
+	stages := []string{"Code Implementation", "Verification & Pull Request"}
+	for _, c := range []struct {
+		name, status, outcome, integration, wantState, wantStage string
+	}{
+		{"workflow done, nothing handed over", "needs_review", "ready to integrate", "ready", pebblestore.ProjectTaskStateNotIntegrated, "Finished, not handed over"},
+		{"run failed after a push", "failed", "pushed 5711ae410abc", "delivered", pebblestore.ProjectTaskStateNeedsYou, "Needs you"},
+	} {
+		answer, _ := json.Marshal(map[string]any{"task": map[string]any{
+			"id": "task-stage", "title": "Review only", "agent": "coder", "status": c.status,
+			"worktree_branch": "agent/review-only", "pipeline_stages": stages, "current_stage_index": 0,
+			"progress": map[string]any{
+				"state": c.integration, "summary": "not integrated · workflows done", "outcome": c.outcome,
+				"workflow":    map[string]any{"state": "done", "deliveries": []any{map[string]any{"id": "dl-1", "workflow": "review", "state": "succeeded", "step": 1, "steps": 1, "step_type": "review", "round": 1}}},
+				"integration": map[string]any{"state": c.integration, "branch": "agent/review-only"},
+				"history":     []any{}, "updated_at": 1,
+			},
+		}})
+		compact, err := CompactProjectTaskAnswer("get_task", "", answer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got struct {
+			Task ProjectTaskView `json:"task"`
+		}
+		if err := json.Unmarshal(compact, &got); err != nil {
+			t.Fatal(err)
+		}
+		v := got.Task
+		if v.State != c.wantState || v.Progress.Stage != c.wantStage || v.Progress.Stage == "Landed" || strings.Contains(string(compact), "1 of 2") {
+			t.Fatalf("%s: state %q stage %q, want %q %q: %s", c.name, v.State, v.Progress.Stage, c.wantState, c.wantStage, compact)
+		}
+	}
+}
