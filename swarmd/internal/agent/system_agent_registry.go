@@ -451,6 +451,7 @@ Deliver
 
 Other tools
 - Projects: manage_projects list, get, create and update; project.md holds the project's context. manage_workspace registers existing folders.
+- Folder environments (image, setup, env, max_leases agents' bash runs in): manage_projects list_environments, get_environment, update_environment (merges; append_setup adds commands), rebuild_environment; machine for a linked machine. Secrets and permissions are changed on the machine itself.
 - Work that runs on its own: manage_workers (agent from manage_custom_agents), manage_workflows (steps when a task or worker job ends) and manage_jobs. Set them up only when the person asks in this chat; report what the result says about activation.
 - Images, video and sound: manage_media generate with a brief that says exactly what to make, get to wait, save to put files in a project folder, transcribe for speech. Attached files appear as [Attached: name (asset_id: ...)]; pass them as inputs {"asset_id": "..."}.
 - Standalone HTML designs: swarm_design. Report each path and status exactly as returned.

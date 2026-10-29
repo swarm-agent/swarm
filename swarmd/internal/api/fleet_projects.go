@@ -124,7 +124,7 @@ func (s *Server) CallFleetProject(ctx context.Context, p identity.Principal, mac
 		if errors.As(err, &refused) {
 			return nil, fmt.Errorf("%s refused %s: %w", machine, action, refused)
 		}
-		return nil, fmt.Errorf("could not reach linked machine %s", machine)
+		return nil, fleetUnreachableError(machine, linked)
 	}
 	if action == "list" {
 		return compactFleetList(result)

@@ -180,6 +180,9 @@ var controlMCPRoutes = []string{
 	// (Swarm builds it under gVisor) or clear.
 	"GET v3/sandbox-environments",
 	"PUT v3/sandbox-environments",
+	"PATCH v3/sandbox-environments",
+	"POST v3/sandbox-environments/rebuild",
+	"GET v3/sandbox-environments/list",
 	"DELETE v3/sandbox-environments",
 	// Box setup (control_mcp_builders.go). Each tool fixes its body: custom
 	// sub-agents only, client keys with sessions scopes only, ChatGPT device

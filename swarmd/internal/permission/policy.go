@@ -1554,6 +1554,8 @@ var manageProjectsReadOnlyActions = map[string]bool{
 	"list_media": true, "get_media": true, "list_tasks": true, "get_task": true,
 	// The home's linked-task records and the read-only remote session view.
 	"list_linked_tasks": true, "read_task_session": true,
+	// Folder environment reads (tool.FolderEnvironmentList/Get).
+	"list_environments": true, "get_environment": true,
 }
 
 // IsManageProjectsReadOnlyAction reports whether the manage_projects call only

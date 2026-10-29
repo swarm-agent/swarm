@@ -75,6 +75,19 @@ func controlMCPSetEnvironment(c *controlMCPCall, args map[string]any) (any, erro
 		}
 		return controlMCPEnvironmentView(controlMCPMap(response["environment"]), place, false), nil
 	}
+	if rebuild, _ := args["rebuild"].(bool); rebuild {
+		body := map[string]any{"workspace_path": place.path, "wait_seconds": min(max(controlMCPInt(args, "wait_seconds", 0), 0), controlMCPMaxWaitSeconds)}
+		response, err := c.dispatch(http.MethodPost, SandboxEnvironmentsPath+"/rebuild", nil, body)
+		if err != nil {
+			return nil, err
+		}
+		out := controlMCPEnvironmentView(controlMCPMap(response["environment"]), place, false)
+		out["build_started"] = response["build_started"]
+		return out, nil
+	}
+	if _, appendSetup := args["append_setup"]; appendSetup || args["unset_env"] != nil {
+		return controlMCPMergeEnvironment(c, place, args)
+	}
 	setup := []string{}
 	for _, raw := range controlMCPList(args["setup"]) {
 		if command, ok := raw.(string); ok {
@@ -104,6 +117,28 @@ func controlMCPSetEnvironment(c *controlMCPCall, args map[string]any) (any, erro
 		}
 	}
 	out := controlMCPEnvironmentView(view, place, false)
+	out["build_started"] = response["build_started"]
+	return out, nil
+}
+
+// controlMCPMergeEnvironment changes only what the call names (PATCH):
+// append_setup adds commands, unset_env removes variables, env sets them,
+// setup replaces the commands and base_image the image.
+func controlMCPMergeEnvironment(c *controlMCPCall, place controlMCPJobPlace, args map[string]any) (any, error) {
+	body := map[string]any{"workspace_path": place.path}
+	for _, key := range []string{"base_image", "setup", "append_setup", "env", "unset_env", "max_leases"} {
+		if value, ok := args[key]; ok && value != nil && value != "" {
+			body[key] = value
+		}
+	}
+	if wait := controlMCPInt(args, "wait_seconds", 0); wait > 0 {
+		body["wait_seconds"] = min(wait, controlMCPMaxWaitSeconds)
+	}
+	response, err := c.dispatch(http.MethodPatch, SandboxEnvironmentsPath, nil, body)
+	if err != nil {
+		return nil, err
+	}
+	out := controlMCPEnvironmentView(controlMCPMap(response["environment"]), place, false)
 	out["build_started"] = response["build_started"]
 	return out, nil
 }
@@ -157,6 +192,9 @@ func controlMCPEnvironmentTools() []controlMCPTool {
 				"setup":        map[string]any{"type": "array", "maxItems": 40, "items": map[string]any{"type": "string", "maxLength": 4000}, "description": "Shell commands run in order as root while building; each must succeed."},
 				"env":          map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}, "description": "Environment variables for every command in the folder (not secrets)."},
 				"max_leases":   map[string]any{"type": "integer", "minimum": 0, "maximum": 64, "description": "How many instances of this environment may run at once for the folder's agents. With it set, an agent's first bash command takes a lease by itself and its bash runs there (an agent waits for a free one when all are in use; agents may also take extra leases with lease_environment). Each lease is its own container with the folder mounted and the folder's granted secrets as stand-ins; Swarm releases it when the agent's run ends. 0 turns leasing off. Leaving base_image out changes only this."},
+				"append_setup": map[string]any{"type": "array", "maxItems": 40, "items": map[string]any{"type": "string", "maxLength": 4000}, "description": "Add these commands after the current setup and keep everything else (base_image, env and max_leases are then changed only when given; env sets the named variables)."},
+				"unset_env":    map[string]any{"type": "array", "maxItems": 40, "items": map[string]any{"type": "string"}, "description": "Remove these environment variables and keep everything else."},
+				"rebuild":      map[string]any{"type": "boolean", "description": "Build the current definition again (after a failed or interrupted build)."},
 				"reset":        map[string]any{"type": "boolean", "description": "Remove the folder's environment: it runs on Swarm's default again."},
 				"wait_seconds": waitProp,
 			}),

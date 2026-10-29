@@ -73,6 +73,7 @@ func (s *Server) registerOnboardingRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/secrets/", s.handleSecrets)
 	mux.HandleFunc("/v3/secrets/status", s.handleSecretStatus)
 	mux.HandleFunc(SandboxEnvironmentsPath, s.handleSandboxEnvironments)
+	mux.HandleFunc(SandboxEnvironmentsPath+"/", s.handleSandboxEnvironments)
 	mux.HandleFunc("/v1/account/username", s.handleAccountUsername)
 	mux.HandleFunc("/v1/account/avatar", s.handleAccountAvatar)
 	mux.HandleFunc("/v1/account/team/upgrade", s.handleAccountTeamUpgrade)

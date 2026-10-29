@@ -604,7 +604,7 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 			if action == "" {
 				action = "list"
 			}
-			if !tool.FleetWorkActionAllowed(name, action) && !tool.FleetWaitPermissionAllowed(name, action) && !tool.FleetTaskSessionReadAllowed(name, action) {
+			if !tool.FleetWorkActionAllowed(name, action) && !tool.FleetWaitPermissionAllowed(name, action) && !tool.FleetTaskSessionReadAllowed(name, action) && !tool.FleetEnvironmentPermissionAllowed(name, action) {
 				return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: action + " is not available on a linked machine", Source: "session_access"}, nil
 			}
 			access, err := s.store.GetAccountPermissions(input.AccountScopeID)
@@ -620,6 +620,11 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 				// started on the machine; every other linked action runs.
 				if level == pebblestore.RuleAsk && tool.FleetTaskStart(name, action) {
 					return s.createPendingAuthorization(input, sessionID, requirement, "Send task to linked machine "+machine+" ("+action+")", "account_permissions", "ask before sending tasks to "+machine)
+				}
+				// Changing a folder environment runs its setup commands on
+				// the machine: under ask it waits like sending a task.
+				if level == pebblestore.RuleAsk && tool.FleetEnvironmentChange(name, action) {
+					return s.createPendingAuthorization(input, sessionID, requirement, "Change a folder environment on linked machine "+machine+" ("+action+")", "account_permissions", "ask before changing environments on "+machine)
 				}
 				if err := s.store.RecordPermissionUse(input.AccountScopeID, "linked", machine, time.Now().UnixMilli()); err != nil {
 					return AuthorizationResult{}, err

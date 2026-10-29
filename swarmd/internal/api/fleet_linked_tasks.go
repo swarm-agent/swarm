@@ -224,7 +224,7 @@ func (s *Server) ReadFleetLinkedTaskSession(ctx context.Context, p identity.Prin
 			}
 			return nil, linkedTaskFail(http.StatusBadGateway, "%s refused the session read: %v", machine, refused)
 		}
-		return nil, linkedTaskFail(http.StatusBadGateway, "could not reach linked machine %s", machine)
+		return nil, linkedTaskFail(http.StatusBadGateway, "%s", fleetUnreachableError(machine, linked).Error())
 	}
 	messages, more := boundLinkedTaskMessages(page.Messages, read)
 	view["messages"] = messages

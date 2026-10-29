@@ -63,6 +63,8 @@ work in its sandbox under the tool permission policy.
 
 Remote workflow actions are `list`, `get`, `history`, `deliveries`, `propose`, `enable`, `disable`, and `delete`. Workflow run/cancel and delivery rerun are not exposed remotely. Remote worker actions are `list`, `get`, `inspect`, `runs`, `pause`, `resume`, `archive`, and `delete` (also through `manage_automation`). Worker create/propose, update, run, acceptance, deployment and other actions are not remote; create/update need a separate proposal-preserving HTTP contract.
 
+Folder environments (the base image, setup commands, environment variables and `max_leases` a folder's sandbox and leases run in) are managed with `manage_projects` `list_environments`, `get_environment`, `update_environment` and `rebuild_environment`; the last three take `workspace_path`, the absolute path of a registered folder. Without `machine` they act on this Swarm; with `machine` the home calls the same route on the linked machine (`/v3/sandbox-environments`: `GET`, `GET /list`, `PATCH`, `POST /rebuild`), which runs the same service functions as a local caller and MCP's `swarm_set_environment`. `update_environment` merges: `base_image` sets the image, `append_setup` adds commands after the current ones (`setup` replaces them all, and both together are refused), `env` sets variables and `unset_env` removes them, `max_leases` sets the lease limit; fields left out are kept. A changed definition builds in the background; `wait_seconds` (at most 110) waits for it. A failed build reports its `error` and build `log` tail, and the folder keeps running on its previous ready image. `rebuild_environment` builds the current definition again (refused while a build runs). Only the home's Orchestrator does this for a linked machine; tasks use `lease_environment`. What the home may not do: secret grants and permission rules are never part of an environment. A request naming `secrets`, `secret_grants`, `grants`, `permissions` or a similar field is refused by name on the home and again on the machine (HTTP 403 over the link), and nothing is stored. Environment views carry no secret names or values. A machine that does not answer is reported as `could not reach linked machine NAME: NAME unreachable, the call failed at TIME; last successful contact at TIME`.
+
 Worker lists return id, name, role, stored model (null if unset), enabled (idle or active), lifecycle state, and the latest run's state and timestamps (null if never run). History is read through the link with a bounded scan; incomplete history fails explicitly rather than presenting an older run as latest. Full definitions remain available through `get`.
 
 Swarm is not an ask-for-permission setup. The only approval is asking before
@@ -85,9 +87,11 @@ bypass do not change it, though an explicit deny rule still refuses.
 person's approval, as a normal permission request in the conversation, only
 before a task is sent or started there: `manage_projects` with `machine` and
 `propose_task`, `create_task`, `approve_task`, `accept_task`, `reopen_task` or
-`refine_task`. Every other linked action runs without asking: reads, task
-archive, workflow propose/enable/disable/delete and worker
-pause/resume/archive/delete. `auto` runs everything. A task sent to a linked
+`refine_task`, and before a folder environment there is changed or rebuilt
+(`update_environment`, `rebuild_environment`), which runs its setup commands
+on the machine. Every other linked action runs without asking: reads
+(including `list_environments` and `get_environment`), task archive, workflow
+propose/enable/disable/delete and worker pause/resume/archive/delete. `auto` runs everything. A task sent to a linked
 machine under `ask` (once approved) or `auto` starts there at once; it does not
 wait on the machine as a card. Waiting on a linked machine's tasks
 (`manage_projects action=wait_tasks` with `machine`) runs under `ask` or `auto`

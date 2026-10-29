@@ -312,6 +312,55 @@ func (s *SandboxEnvironmentStore) CountBuilding() (int, error) {
 	return count, err
 }
 
+// ErrSandboxEnvironmentBuilding refuses a rebuild while a build runs.
+var ErrSandboxEnvironmentBuilding = errors.New("this folder's environment is already building; wait for it, then rebuild if needed")
+
+// List returns the account's folder environments, ordered by folder path.
+func (s *SandboxEnvironmentStore) List(account string) ([]SandboxEnvironment, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("sandbox environment store unavailable")
+	}
+	out := []SandboxEnvironment{}
+	err := s.store.IteratePrefix(KeySandboxEnvironmentPrefix, 10_000, func(_ string, value []byte) error {
+		var env SandboxEnvironment
+		if err := json.Unmarshal(value, &env); err != nil {
+			return err
+		}
+		if env.Account == account {
+			out = append(out, env)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].WorkspacePath < out[j].WorkspacePath })
+	return out, nil
+}
+
+// Rebuild marks a folder's current definition for a new build (after a
+// failed or interrupted build, or to check its image again). The build reuses
+// an existing complete image for the same definition. It refuses while a
+// build is running.
+func (s *SandboxEnvironmentStore) Rebuild(account, workspacePath string) (SandboxEnvironment, error) {
+	env, found, err := s.Get(workspacePath)
+	if err != nil {
+		return SandboxEnvironment{}, err
+	}
+	if !found || (env.Account != "" && env.Account != account) {
+		return SandboxEnvironment{}, ErrSandboxEnvironmentNotFound
+	}
+	if env.Status == SandboxEnvironmentBuilding {
+		return SandboxEnvironment{}, ErrSandboxEnvironmentBuilding
+	}
+	env.Status, env.Error, env.Log = SandboxEnvironmentBuilding, "", ""
+	env.UpdatedAt = s.now().UnixMilli()
+	if err := s.store.PutJSON(sandboxEnvironmentKey(env.WorkspacePath), env); err != nil {
+		return SandboxEnvironment{}, err
+	}
+	return env, nil
+}
+
 // MaxLeasesLimit bounds a folder's lease maximum (a typo guard, not a policy).
 const MaxLeasesLimit = 64
 
