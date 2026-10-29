@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"sort"
 	"strings"
 	"testing"
@@ -335,6 +336,50 @@ func TestOrchestratorListTasksSaysWhatHappenedOnLinkedMachine(t *testing.T) {
 		if _, err := list(args); err == nil {
 			t.Fatalf("linked list accepted %v", args)
 		}
+	}
+}
+
+// Purpose: the HTTP task board Swarm Console reads for "Needs you" and its
+// task rows (GET /v3/projects/{id}/tasks, no list parameters) carries each
+// task's derived state and reason in progress.task_state and
+// progress.task_state_reason, next to the unchanged run status.
+// Requirement: a pushed task whose run status stays needs_review reads
+// landed; one with commits never handed over reads not_integrated; a
+// workflow that ran out of rounds reads needs_you.
+// Threat: a client that only has the run status lists landed work as
+// waiting on the person.
+// Owners: the project task list route (Server.handleProjects;
+// projectTaskBoardRow.Progress from
+// Server.taskProgressFor -> markTaskProgressAttention ->
+// pebblestore.ProjectTaskState), over real session, task and job
+// automation stores: the narrowest layer that serves the board's JSON.
+func TestProjectTaskBoardRouteCarriesDerivedState(t *testing.T) {
+	w := newWaitWorkflowFixture(t)
+	seedOutcomeProject(t, w.f.s.sessions.Store(), w.store, w.f.account, w.f.user, "proj-board", w.folder)
+	req := requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodGet, "/v3/projects/proj-board/tasks", nil), w.f.user, w.f.account)
+	rec := httptest.NewRecorder()
+	// The route handler itself, as fleetTestSwarm.call reaches handleFleet
+	// (attach-token transport auth is not what this test is about).
+	w.f.s.handleProjects(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("task board: %d %s", rec.Code, rec.Body.String())
+	}
+	rows, _ := outcomeTestRows(t, rec.Body.Bytes())
+	for id, want := range map[string]string{
+		"pushed":  pebblestore.ProjectTaskStateLanded,
+		"plain":   pebblestore.ProjectTaskStateNotIntegrated,
+		"blocked": pebblestore.ProjectTaskStateNeedsYou,
+		"finder":  pebblestore.ProjectTaskStateDone,
+	} {
+		row := rows[id]
+		progress, _ := row["progress"].(map[string]any)
+		reason, _ := progress["task_state_reason"].(string)
+		if row["status"] != "needs_review" || progress["task_state"] != want || strings.TrimSpace(reason) == "" {
+			t.Fatalf("%s: status=%v task_state=%v reason=%q, want needs_review, %s and a reason (row %v)", id, row["status"], progress["task_state"], reason, want, row)
+		}
+	}
+	if reason := rows["pushed"]["progress"].(map[string]any)["task_state_reason"]; reason != "pushed "+outcomeTestHead[:12] {
+		t.Fatalf("pushed reason = %v", reason)
 	}
 }
 

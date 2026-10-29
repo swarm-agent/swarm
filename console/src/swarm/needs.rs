@@ -1,5 +1,5 @@
 //! What needs the person, across the fleet: permissions an agent waits on,
-//! tasks waiting for approval or review, and runs that failed today. Every
+//! tasks whose state is needs_you, and runs that failed today. Every
 //! item is a Swarm record read from that machine (a linked machine's through
 //! home's link), with the machine's name; nothing is made up here.
 //!
@@ -10,7 +10,11 @@
 //!   asks; read again only when the session's pending count or oldest
 //!   request changed;
 //! - tasks: GET /v3/projects, then each project's GET
-//!   /v3/projects/{id}/tasks, statuses pending_approval and needs_review;
+//!   /v3/projects/{id}/tasks; a task waits on you when its derived state
+//!   (`progress.task_state`, docs/task-progress.md) is needs_you. The raw
+//!   `status` is only the run's status (needs_review: the agent's run ended,
+//!   and it stays so after the work landed), so it decides only for a Swarm
+//!   that gives no state;
 //! - failed runs: the box summary's `runs.failed_runs` (today's, newest
 //!   first; `runs.failed` counts them all), each with its error from GET
 //!   /v3/workers/{worker}/runs/{run}, read once (a failed run does not change).
@@ -78,7 +82,7 @@ pub struct Reading {
     pub machine: String,
     /// Sessions waiting on a person (the summary's count).
     pub waiting_sessions: Option<usize>,
-    /// Tasks waiting for approval or review, in every project read.
+    /// Tasks waiting on the person (state needs_you), in every project read.
     pub waiting_tasks: Option<usize>,
     pub failed_today: Option<usize>,
     /// Newest first, at most PER_KIND of each kind.
@@ -155,7 +159,14 @@ pub struct TaskRef {
     pub project: String,
     pub task_id: String,
     pub title: String,
+    /// The run's status (`status`): only a fallback when `state` is empty.
     pub status: String,
+    /// The task's state as Swarm derives it (`progress.task_state`: running,
+    /// waiting, needs_you, landed, done, not_integrated, stopped); empty from
+    /// a Swarm that does not derive one.
+    pub state: String,
+    /// Swarm's one-line reason for `state`.
+    pub state_reason: String,
     pub session_id: String,
     pub origin: String,
     /// Made by a workflow, automation or worker run, which handles it itself.
@@ -174,6 +185,8 @@ pub fn tasks(project_id: &str, project: &str, board: &Value) -> Vec<TaskRef> {
             task_id: s(t, "id").to_string(),
             title: s(t, "title").trim().to_string(),
             status: s(t, "status").to_string(),
+            state: s(&t["progress"], "task_state").trim().to_string(),
+            state_reason: s(&t["progress"], "task_state_reason").trim().to_string(),
             session_id: s(t, "session_id").to_string(),
             origin: s(t, "origin_session_id").to_string(),
             automated: !s(t, "automation_id").is_empty() || !s(t, "worker_run_id").is_empty(),
@@ -182,10 +195,17 @@ pub fn tasks(project_id: &str, project: &str, board: &Value) -> Vec<TaskRef> {
         .collect()
 }
 
-/// A task waits on you when it asks for approval, or when a review of work
-/// you started is yours to do. Reviews a workflow or automation made are
-/// handled by that workflow.
+/// A task waits on you when Swarm's derived state says so (needs_you:
+/// approval, a question, a blocked or failed run or workflow). A landed,
+/// done, not_integrated or stopped task does not, whatever its run status.
 fn waits_on_you(t: &TaskRef) -> bool {
+    if !t.state.is_empty() {
+        return t.state == "needs_you";
+    }
+    // No state: an older Swarm (here or on a linked machine) that does not
+    // derive one. Fall back to the old run-status rule: an approval request,
+    // or a finished run of work you started; reviews a workflow or
+    // automation made are handled by that workflow.
     match t.status.as_str() {
         "pending_approval" => true,
         "needs_review" => !t.automated && !t.origin.is_empty(),
@@ -210,7 +230,19 @@ pub fn short(text: &str, max: usize) -> String {
     format!("{}…", cut.trim_end())
 }
 
-/// Tasks waiting for approval or review: Swarm's count and the items.
+/// What a waiting task's item says it waits for: approval, else Swarm's
+/// reason for its state, else (no state) a review.
+fn waits_for(t: &TaskRef) -> String {
+    if t.status == "pending_approval" {
+        "approve?".to_string()
+    } else if !t.state.is_empty() {
+        if t.state_reason.is_empty() { "needs you".to_string() } else { short(&t.state_reason, 80) }
+    } else {
+        "review".to_string()
+    }
+}
+
+/// Tasks waiting on the person: the count and the items.
 pub fn task_items(home: bool, machine: &str, all: &[TaskRef]) -> (usize, Vec<Item>) {
     let waiting: Vec<&TaskRef> = all.iter().filter(|t| waits_on_you(t)).collect();
     let items = waiting
@@ -221,7 +253,7 @@ pub fn task_items(home: bool, machine: &str, all: &[TaskRef]) -> (usize, Vec<Ite
             kind: Kind::Task,
             at: t.at,
             what: if t.title.is_empty() { format!("task {}", t.task_id) } else { short(&t.title, 120) },
-            detail: format!("{} · {}", if t.status == "pending_approval" { "approve?" } else { "review" }, if t.project.is_empty() { t.project_id.as_str() } else { t.project.as_str() }),
+            detail: format!("{} · {}", waits_for(t), if t.project.is_empty() { t.project_id.as_str() } else { t.project.as_str() }),
             target: Target::Task { project_id: t.project_id.clone(), task_id: t.task_id.clone(), session_id: t.session_id.clone(), origin: t.origin.clone() },
         })
         .collect();
@@ -529,6 +561,48 @@ mod tests {
         let (count, items) = task_items(false, "social", &tasks("p2", "Socials", &made));
         assert_eq!(count, 1);
         assert_eq!(items[0].what, "Run the media job");
+    }
+
+    /// Purpose: the "needs you" list and count follow the task state Swarm
+    /// derives (`progress.task_state` on GET /v3/projects/{id}/tasks,
+    /// pebblestore.ProjectTaskState), not the run status. Threat: a task
+    /// whose run ended (needs_review) but whose work already landed on dev,
+    /// or that finished with nothing to hand over, staying in the list and
+    /// the counts. Rows without a state (an older Swarm) keep the old rule.
+    #[test]
+    fn tasks_wait_on_you_by_their_derived_state() {
+        let board = json!({"tasks": [
+            {"id": "landed", "title": "Pushed fix", "status": "needs_review", "origin_session_id": "orch-1", "created_at": 100,
+             "progress": {"state": "integrated", "task_state": "landed", "task_state_reason": "pushed 5711ae410abc"}},
+            {"id": "done", "title": "Read-only look", "status": "needs_review", "origin_session_id": "orch-1", "created_at": 200,
+             "progress": {"task_state": "done", "task_state_reason": "finished; nothing to integrate"}},
+            {"id": "blocked", "title": "Blocked review", "status": "needs_review", "origin_session_id": "orch-1", "created_at": 300,
+             "progress": {"task_state": "needs_you", "task_state_reason": "workflow blocked rounds_exhausted: step send-back"}},
+            {"id": "branch", "title": "Unmerged branch", "status": "needs_review", "origin_session_id": "orch-1", "created_at": 400,
+             "progress": {"task_state": "not_integrated", "task_state_reason": "commits on branch agent/x not handed over"}},
+            {"id": "approve", "title": "Approve me", "status": "pending_approval", "origin_session_id": "orch-1", "created_at": 500,
+             "progress": {"task_state": "needs_you", "task_state_reason": "waiting for approval"}},
+            // A Swarm that derives no state: the old run-status rule.
+            {"id": "old", "title": "Old daemon review", "status": "needs_review", "origin_session_id": "orch-1", "created_at": 600, "progress": {"state": "working"}},
+            {"id": "old-auto", "title": "Old workflow review", "status": "needs_review", "automation_id": "workflow:w1", "created_at": 700}
+        ]});
+        let all = tasks("p1", "web", &board);
+        assert_eq!((all[0].status.as_str(), all[0].state.as_str(), all[0].state_reason.as_str()), ("needs_review", "landed", "pushed 5711ae410abc"));
+        assert_eq!(all[5].state, "", "no task_state: no state");
+        assert!(!waits_on_you(&all[0]), "needs_review but landed: not yours");
+        assert!(!waits_on_you(&all[1]), "done: not yours");
+        assert!(waits_on_you(&all[2]), "needs_you");
+        assert!(!waits_on_you(&all[3]), "not_integrated is not counted as needs you");
+        assert!(waits_on_you(&all[4]), "pending_approval maps to needs_you");
+        assert!(waits_on_you(&all[5]), "no state: the old rule (needs_review, started by you)");
+        assert!(!waits_on_you(&all[6]), "no state: the old rule (a workflow's review)");
+
+        let (count, items) = task_items(true, "", &all);
+        assert_eq!(count, 3);
+        assert_eq!(items.iter().map(|i| i.what.as_str()).collect::<Vec<_>>(), vec!["Old daemon review", "Approve me", "Blocked review"]);
+        assert_eq!(items[0].detail, "review · web", "no state: as before");
+        assert_eq!(items[1].detail, "approve? · web");
+        assert_eq!(items[2].detail, "workflow blocked rounds_exhausted: step send-back · web", "the state's reason");
     }
 
     #[test]

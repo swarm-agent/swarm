@@ -375,11 +375,62 @@ pub struct Task {
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Progress {
     pub state: ProgressState,
+    /// The task's state as Swarm derives it (`progress.task_state`,
+    /// docs/task-progress.md): what rows and badges show. The task's status
+    /// is only its run's status.
+    pub task_state: TaskState,
+    /// Swarm's one-line reason for `task_state` (`progress.task_state_reason`).
+    pub task_state_reason: Text,
     /// One short line, as Swarm words it.
     pub summary: Text,
     /// What happened, oldest first: (Unix ms, what).
     pub history: Vec<(u64, Text)>,
     pub updated_at: u64,
+}
+
+/// A task's state, one word Swarm derives from its run status and outcome
+/// (pebblestore.ProjectTaskState): the same word its MCP views and the
+/// Orchestrator see.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum TaskState {
+    Running,
+    Waiting,
+    NeedsYou,
+    Landed,
+    Done,
+    NotIntegrated,
+    Stopped,
+    /// A Swarm that derives no state, or a state this app does not know.
+    #[default]
+    Unknown,
+}
+
+impl TaskState {
+    pub fn of(v: &str) -> TaskState {
+        match v.trim() {
+            "running" => TaskState::Running,
+            "waiting" => TaskState::Waiting,
+            "needs_you" => TaskState::NeedsYou,
+            "landed" => TaskState::Landed,
+            "done" => TaskState::Done,
+            "not_integrated" => TaskState::NotIntegrated,
+            "stopped" => TaskState::Stopped,
+            _ => TaskState::Unknown,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TaskState::Running => "running",
+            TaskState::Waiting => "waiting",
+            TaskState::NeedsYou => "needs you",
+            TaskState::Landed => "landed",
+            TaskState::Done => "done",
+            TaskState::NotIntegrated => "not integrated",
+            TaskState::Stopped => "stopped",
+            TaskState::Unknown => "",
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]

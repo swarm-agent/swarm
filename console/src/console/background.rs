@@ -7,7 +7,7 @@
 use gpui::{AnyElement, ClickEvent, Context, Div, SharedString, div, prelude::*, px};
 
 use super::{Console, PaneId, alpha};
-use crate::data::{ProgressState, RunState, Task, TaskStatus};
+use crate::data::{ProgressState, RunState, Task, TaskState, TaskStatus};
 
 /// Open tasks the tray lists before "+ N more".
 const TRAY_ROWS: usize = 5;
@@ -68,10 +68,17 @@ impl Console {
         )
     }
 
-    /// The color of a task's tracked state; a Swarm that tracks none falls
-    /// back to its status.
+    /// The color of a task's state as Swarm derives it; a Swarm that derives
+    /// none falls back to its tracked progress, then its run status.
     fn progress_color(&self, task: &Task) -> gpui::Hsla {
         let t = &self.theme;
+        match task.progress.task_state {
+            TaskState::NeedsYou | TaskState::NotIntegrated => return t.warn,
+            TaskState::Running => return t.ok,
+            TaskState::Waiting | TaskState::Stopped => return t.faint,
+            TaskState::Landed | TaskState::Done => return t.muted,
+            TaskState::Unknown => {}
+        }
         match task.progress.state {
             ProgressState::Failed => t.err,
             ProgressState::NotIntegrated => t.warn,
@@ -83,9 +90,16 @@ impl Console {
         }
     }
 
-    /// What the row says about the task: Swarm's summary, else its state,
-    /// else its status.
+    /// What the row says about the task: the state Swarm derives and its
+    /// reason ("landed · pushed 5711ae410abc"); from a Swarm that derives
+    /// none, its summary, else its tracked state, else its run status.
     fn progress_line(task: &Task) -> String {
+        let state = task.progress.task_state.label();
+        if !state.is_empty() {
+            let reason: &str = task.progress.task_state_reason.as_ref();
+            let reason = reason.trim();
+            return if reason.is_empty() { state.to_string() } else { format!("{state} · {reason}") };
+        }
         if !task.progress.summary.is_empty() {
             task.progress.summary.to_string()
         } else if !task.progress.state.label().is_empty() {

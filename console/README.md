@@ -142,9 +142,13 @@ a separate profile and the extension loaded, for trying it out.
   **Needs you**: one line per item across home and every linked machine,
   newest first, tagged with the machine: sessions waiting on a permission or
   a question (the summary's `attention.sessions`, each with what it asks from
-  `GET /v3/sessions/{id}/permissions?status=pending`), tasks in
-  `pending_approval` or `needs_review` (`GET /v3/projects`, then each
-  project's `/tasks`), and runs that failed today (the summary's
+  `GET /v3/sessions/{id}/permissions?status=pending`), tasks whose state is
+  `needs_you` (`GET /v3/projects`, then each project's `/tasks`; the state
+  is each row's `progress.task_state`, with its reason, as
+  `docs/task-progress.md` describes; a landed, done, not integrated or
+  stopped task is not listed, whatever its run `status`; only a Swarm that
+  gives no state falls back to `pending_approval`, or `needs_review` of work
+  you started), and runs that failed today (the summary's
   `runs.failed_runs`, with the error from
   `GET /v3/workers/{id}/runs/{run}`). At most 20 per machine and kind are
   listed; when Swarm counts more, or something could not be read, a note
@@ -181,7 +185,10 @@ a separate profile and the extension loaded, for trying it out.
   the conversation. The bar says how many tasks run, need you, are queued or
   done; closed, it still shows each task waiting on a decision with its
   button (approve, reject, merge), and a running task's stop. Open, it lists
-  every task with its activity and the background sessions behind it.
+  every task with its activity and the background sessions behind it. Each
+  row's badge is the task's state and reason (`progress.task_state`, e.g.
+  "landed · pushed 5711ae410abc"), not its run status; a Swarm that gives no
+  state shows its progress summary or run status as before.
 - **Composer:** while Swarm says the run is active, send becomes stop
   (`POST /v3/sessions/{id}/run/stop`; the notice is Swarm's own answer). Typing `/` lists the
   commands: `/new`, `/new bottom`, `/stop`, `/theme`, `/usage`,

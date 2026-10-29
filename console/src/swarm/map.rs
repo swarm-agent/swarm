@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::data::{
     Assignment, Busy, Choice, ClientCall, Day, Entry, Health, LiveRef, Machine, ModelUse, Pending, Plan,
-    Credential, Drain, Found, PlanWindow, Progress, ProgressState, Project, Provider, Question, Role, RunClock, RunState, RunsToday, Session, SessionUse, Task, TaskStatus, Text, Tokens, ToolState, UpdateState, Updates, Usage,
+    Credential, Drain, Found, PlanWindow, Progress, ProgressState, Project, Provider, Question, Role, RunClock, RunState, RunsToday, Session, SessionUse, Task, TaskState, TaskStatus, Text, Tokens, ToolState, UpdateState, Updates, Usage,
 };
 
 pub(crate) fn s<'a>(v: &'a Value, key: &str) -> &'a str {
@@ -470,6 +470,8 @@ fn task_progress(t: &Value) -> Progress {
         .collect();
     Progress {
         state: ProgressState::of(s(p, "state")),
+        task_state: TaskState::of(s(p, "task_state")),
+        task_state_reason: s(p, "task_state_reason").trim().to_string().into(),
         summary: s(p, "summary").trim().to_string().into(),
         history,
         updated_at: p.get("updated_at").and_then(Value::as_u64).unwrap_or(0),
@@ -1111,5 +1113,27 @@ mod project_context_tests {
         assert!(ProgressState::Failed.rank() < ProgressState::NotIntegrated.rank());
         assert!(ProgressState::NotIntegrated.rank() < ProgressState::Working.rank());
         assert!(ProgressState::Integrated.finished() && !ProgressState::NotIntegrated.finished());
+    }
+
+    /// Purpose: a task card carries the state Swarm derives
+    /// (`progress.task_state` and its reason), so rows show it instead of the
+    /// run status. Threat: a pushed task whose run status stays needs_review
+    /// shown as waiting for review. Without it (an older Swarm) the state is
+    /// Unknown and rows fall back as before.
+    #[test]
+    fn task_state_from_swarm_and_without_it() {
+        use crate::data::{TaskState, TaskStatus};
+        let t = super::task(&json!({"id": "t1", "status": "needs_review", "progress": {
+            "state": "integrated", "task_state": "landed", "task_state_reason": " pushed 5711ae410abc "
+        }}));
+        assert_eq!(t.status, TaskStatus::NeedsReview, "the run status is kept");
+        assert_eq!(t.progress.task_state, TaskState::Landed);
+        assert_eq!(t.progress.task_state_reason.as_ref(), "pushed 5711ae410abc");
+        assert_eq!(t.progress.task_state.label(), "landed");
+        let state = |word: &str| super::task(&json!({"id": "t", "status": "needs_review", "progress": {"task_state": word}})).progress.task_state;
+        assert_eq!(state("needs_you"), TaskState::NeedsYou);
+        assert_eq!(state("not_integrated"), TaskState::NotIntegrated);
+        assert_eq!(state("something_new"), TaskState::Unknown);
+        assert_eq!(super::task(&json!({"id": "t", "status": "needs_review"})).progress.task_state, TaskState::Unknown);
     }
 }
