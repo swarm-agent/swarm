@@ -216,6 +216,93 @@ func TestStaleBlockedDeliveryDoesNotCoverItsHead(t *testing.T) {
 	}
 }
 
+// Requirement: a delivery the runner blocked mid-loop still covers its head:
+// another end of the job at that head creates no delivery, starts no
+// reviewer job and records one duplicate_head skip. This holds for rounds
+// exhausted (reason rounds_exhausted: step fix) and for an unreadable review
+// (reason review unreadable: <job>, which waits for a manual re-run), even
+// when the job end carries an earlier run's "blocked: " text on a succeeded
+// status.
+// Threat: CoversHead treating every blocked delivery with an ordinary job end
+// as the stale-error shape, so each end at an exhausted or unreadable head
+// starts another paid review that blocks again with a new warning.
+// Owners: Delivery.CoversHead in Store.CreateDelivery, Runner.runReopen
+// (which sets these blocked reasons) and Runner.consume over the real store,
+// runner and signal feed; only the reviewer job and the job's session are
+// stubbed. Layer: the deliveries must be blocked by the real runner, not
+// seeded, to prove the shape CoversHead sees.
+func TestRunnerBlockedDeliveryStillCoversItsHead(t *testing.T) {
+	const stale = "blocked: Narration can't be generated"
+	for _, tc := range []struct {
+		name     string
+		outcomes []AgentOutcome
+		reopens  int
+		reason   func(Delivery) string
+	}{
+		{"rounds_exhausted",
+			[]AgentOutcome{{Verdict: VerdictBlock, Findings: "1. high a.go:1 x"}, {Verdict: VerdictBlock, Findings: "1. high a.go:1 x"}},
+			1, func(Delivery) string { return RoundsExhaustedReason("fix") }},
+		{"review_unreadable",
+			[]AgentOutcome{{Verdict: VerdictBlock, ReviewUnreadable: true}},
+			0, func(d Delivery) string {
+				reviewer, _ := d.Steps[0].Outcome["job_id"].(string)
+				return ReasonReviewUnreadable + ": " + reviewer
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			reopener := &sessionReopener{}
+			h.withReopener(reopener)
+			folder := t.TempDir()
+			writeScript(t, folder, "push.sh", "echo pushed\n")
+			h.agents.outcomes = tc.outcomes
+			h.process()
+			h.automation(reviewLoop(folder, 1))
+			result := workerResult(folder, "run-1")
+			result.Error = stale
+			h.results.results["run-1"] = result
+			h.jobEnd("run-1", "", "succeeded", "direct")
+			h.process()
+			if tc.reopens == 1 {
+				result.Git.Head = strings.Repeat("c", 40)
+				h.jobEnd("run-1", "followup-1", "succeeded", "direct") // round 1: rounds run out
+				h.process()
+			}
+			head := result.Git.Head
+			list := h.deliveries(result.JobID)
+			blocked := list[len(list)-1]
+			for _, d := range list {
+				if d.CreatedAt > blocked.CreatedAt {
+					blocked = d
+				}
+			}
+			if blocked.State != StateBlocked || blocked.BlockedReason != tc.reason(blocked) || blocked.TriggerHead() != head || len(reopener.sent) != tc.reopens {
+				t.Fatalf("runner did not block at %s: state %s reason %q, reopens %d", head, blocked.State, blocked.BlockedReason, len(reopener.sent))
+			}
+			deliveries, reviews := len(list), len(h.agents.started)
+
+			// A person's follow-up ends at the same head without a commit.
+			h.jobEnd("run-1", "person-2", "succeeded", "direct")
+			h.process()
+
+			after := h.deliveries(result.JobID)
+			if len(after) != deliveries || len(h.agents.started) != reviews || len(reopener.sent) != tc.reopens {
+				t.Fatalf("blocked head re-delivered: deliveries %d->%d, reviews %d->%d, reopens %d", deliveries, len(after), reviews, len(h.agents.started), len(reopener.sent))
+			}
+			skipped := h.signalsOf("automation.delivery.skipped")
+			if len(skipped) != 1 || skipped[0].Refs["delivery_id"] != blocked.ID || skipped[0].Attrs["reason"] != ReasonDuplicateHead ||
+				skipped[0].Attrs["head"] != head || skipped[0].Attrs["followup"] != "person-2" {
+				t.Fatalf("skipped signals = %+v", skipped)
+			}
+			for _, d := range after {
+				if d.ID == blocked.ID && (d.State != StateBlocked || d.BlockedReason != blocked.BlockedReason) {
+					t.Fatalf("blocked delivery changed: %+v", d)
+				}
+			}
+		})
+	}
+}
+
 // Requirement: EndedBlocked is true only for a failed run whose error is a
 // declared blocker. Threat: error text alone (left by an earlier run) marking
 // a successful or cancelled end blocked. Owner: Result.EndedBlocked; a pure

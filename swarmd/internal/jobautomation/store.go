@@ -555,13 +555,24 @@ func (d Delivery) TriggerHead() string {
 }
 
 // CoversHead reports whether the delivery is a real outcome for its trigger
-// head, so another end of the job at that head creates no delivery. A
-// delivery recorded blocked although its own job end did not end blocked
-// (stored before EndedBlocked required a failed status: an earlier run's
-// "blocked: " text on a successful end) never ran its steps and covers
-// nothing.
+// head, so another end of the job at that head creates no delivery. Only the
+// shape the stale-error bug stored covers nothing: blocked at creation (the
+// blocked reason and every step's skip reason are the job end's own
+// "blocked: " error) although that job end did not end blocked (stored before
+// EndedBlocked required a failed status), so no step ever ran. A delivery the
+// runner blocked mid-loop (rounds exhausted, unreadable review) keeps an
+// ordinary job end and still covers its head.
 func (d Delivery) CoversHead() bool {
-	return d.State != StateBlocked || d.Result.EndedBlocked()
+	if d.State != StateBlocked || d.Result.EndedBlocked() ||
+		!strings.HasPrefix(d.Result.Error, "blocked: ") || d.BlockedReason != d.Result.Error {
+		return true
+	}
+	for _, step := range d.Steps {
+		if step.State != StateSkipped || step.Reason != d.Result.Error {
+			return true
+		}
+	}
+	return false
 }
 
 // CreateDelivery records a delivery unless one with its id exists already.
