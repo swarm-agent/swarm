@@ -108,20 +108,25 @@ metadata or remove authentication as a workaround.
 1. List workspaces/models (and agents/providers when needed); use IDs and account
    role defaults from the live response. A tunnel is not Swarm's multi-machine
    relay: do not invent `machine` arguments if the tools don't accept them.
-2. `swarm_start_session` takes a workspace and prompt or plan, not both. Finder
-   can do a read-only smoke test. Project orchestration instead needs a project
-   (folders the person named, registered with `swarm_add_workspace`, grouped by
-   `swarm_create_project`, `project.md` ready per `swarm_get_project`) and the
-   orchestrator agent. Preserve the returned `session.id`.
-3. Inspect `started`, current session state, `messages`, `pending_permissions`
-   and `waited`. The observed reply did not have a top-level `run` result; do not
-   require one. Prefer waits of 20–30 seconds, under client timeout and live limit.
-4. `waited.reason=run_ended` still requires checking outcome finished/failed/stopped.
-   `waiting_on_decision` requires the intended owner's decision. A timed-out wait
-   means continue `swarm_get_session` on the same ID, not start another agent.
-5. Resume follow-ups with `swarm_send_message`, using the same client_request_id
-   when retrying that message. Start has no client idempotency parameter in the
-   tested schema: after an ambiguous start, inspect recent sessions before retrying.
+2. `manage_sessions` action `create` takes a registered `workspace_path` and
+   an optional `prompt`, which starts its first run (`swarm_start_session` still
+   takes a plan instead of a prompt). Finder can do a read-only smoke test.
+   Project orchestration instead needs a project (folders the person named,
+   registered with `swarm_add_workspace`, grouped by `swarm_create_project`,
+   `project.md` ready per `swarm_get_project`) and the orchestrator agent.
+   Preserve the returned `data.session_id`.
+3. Every `manage_sessions` answer is the catalog envelope: the call's outcome is
+   `state`, the session's own status is in `data`. Follow with `get` (state,
+   run, pending requests) and `read_messages`; a cut message or page carries
+   `next`, the exact call that reads on. `create` and `send_message` take
+   `wait_seconds` (at most 120); prefer 20–30 seconds, under the client timeout.
+4. A run still going after the wait means continue `get` on the same ID, not
+   start another agent. A pending request needs the intended owner's decision
+   (`resolve_permission`).
+5. Resume follow-ups with `manage_sessions` `send_message`; for a note that
+   does not start a run (`trigger` false), reuse the same client_request_id
+   when retrying it. `create` has no client idempotency parameter: after an
+   ambiguous create, list recent sessions before retrying.
 6. Inspect actual tool evidence and `manage_projects` `get_task_changes`/`read_task_file`
    (`swarm_get_changes`/`swarm_read_file` for a plain session); don't
    infer success from the agent's summary or tunnel health. Follow the

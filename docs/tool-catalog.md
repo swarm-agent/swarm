@@ -57,7 +57,8 @@ Each action of a catalog tool declares:
   `home` runs here only. `linked` reads a linked machine only, so `machine` is
   required.
 - **local_only**: machine setup that a relay key may not do. No
-  `manage_projects` or `manage_workflows` action is local_only.
+  `manage_projects`, `manage_workflows` or `manage_sessions` action is
+  local_only.
 - **profiles**: the listings that show the action. `essentials` is Swarm
   Control's default listing, `full` is its `tools=all` listing and
   `orchestrator` is the Orchestrator's definition (for `manage_jobs`, also
@@ -77,6 +78,8 @@ The Orchestrator's `manage_projects`, `manage_workflows`, `manage_jobs` and
 the description they had and add the new actions' inputs (`manage_jobs`' and
 `manage_workers`' schemas now accept other properties, as every catalog tool's
 does).
+`manage_sessions`' replaces the hand-written trim with its orchestrator
+profile (`TestManageSessionsOrchestratorDefinitionIsTheCatalogs`).
 
 ## manage_workflows
 
@@ -359,6 +362,44 @@ every linked action; under `ask` a conversation's change there (a media job
 or a design) is refused with the reason, since these tools have no approval
 prompt for it yet, while reads run and a Swarm Control caller's person
 approves in their own chat (`TestStage6LinkedChangesUnderAskAndOff`).
+
+## manage_sessions
+
+One handler (`tool.Runtime.executeManageSessions`) serves the Orchestrator,
+the Swarm agent and Swarm Control, and answers in the envelope: a session's
+own status (`queued`, `cancelled`, `not_running`) is in `data`, the call's
+outcome is `state`. `resolve_permission` and `set_model` run the functions
+behind `swarm_resolve_permission` and `swarm_set_session_model`, and through
+them the session's permission and model-profile routes
+(`api.Server.ManageSessionControl`), holding only the session scopes the
+caller's key holds. A conversation never answers its own pending requests.
+`create` binds to a registered workspace (a Swarm Control caller has no
+conversation roots, so it must name one). A cut `read_messages` page or
+message names `next`; `list`'s opaque cursor carries over as `next`.
+
+| Action | Level | API scopes | Reach |
+| --- | --- | --- | --- |
+| `inspect`, `list`, `list_by_state`, `search`, `get`, `read_messages` | read | `sessions:read` or `sessions:write` | any |
+| `create`, `send_message`, `stop`, `pause`, `set_model` | write | `sessions:write` | any |
+| `archive`, `unarchive`, `compact` | write | `sessions:write` | any |
+| `resolve_permission` | approve | `sessions:write` | any |
+
+Each level is `remote.ToolScope` of the `swarm_*` tool with the same effect
+(`TestManageSessionsLevelsAreTheSwarmToolsLevels`); `archive`, `unarchive`
+and `compact` have no `swarm_*` tool and change sessions, so they need
+write. `set_model` is called only when the person asks. Every action above
+is in the Orchestrator's definition (generated from the catalog's
+orchestrator profile) and in Swarm Control's default listing. The Swarm
+agent's own session tooling (`review_worktrees`, `git_status`, `commit` and
+the approved launch of proposals) is declared with no profile: that agent
+keeps its full definition and Swarm Control does not serve it.
+
+With `machine`, an action runs on the linked machine through that
+machine's own `manage_sessions` handler, at `POST /v3/tool-catalog/{tool}`
+(`api.CatalogLinkedPath`), which only a home over the link may call. The
+linked work rule applies: off refuses every call, ask refuses the calls
+that start a run there (`create` with a prompt, a triggering
+`send_message`), auto runs everything.
 
 ## The envelope
 

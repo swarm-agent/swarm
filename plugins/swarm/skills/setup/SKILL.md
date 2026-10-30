@@ -117,8 +117,9 @@ Use the person's real task, or agree on a small one in their project. Follow
 and a brief with acceptance criteria. Omit `role` to delegate to Swarm, which
 uses its task tool for regular specialists. No worker preset is required or
 created by this flow. Follow `swarm_wait_task`, read `swarm_task_result` and
-`swarm_get_session`, and handle returned questions/approvals through their
-authorized controls. Check actual files, diffs and validation receipts; use
+the session with `manage_sessions` (`get`, `read_messages`), and handle
+returned questions/approvals through their authorized controls
+(`manage_sessions` `resolve_permission`). Check actual files, diffs and validation receipts; use
 `swarm_integrate_task` only when the person wants the reviewed work integrated.
 A timeout means keep waiting, never start a duplicate task.
 
