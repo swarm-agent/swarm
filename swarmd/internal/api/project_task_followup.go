@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -235,6 +236,9 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 		}
 	}
 	if !req.Repair && !retry && task.WorkspacePath != "" && task.WorkspacePath != task.SourceWorkspace.Path {
+		if err := s.restoreRemovedTaskWorktree(task); err != nil {
+			return nil, &projectTaskFollowupError{409, err}
+		}
 		origin, inspectErr := s.worktrees.InspectTaskWorkspace(task.WorkspacePath)
 		checkpoint := ""
 		if inspectErr == nil {
@@ -438,6 +442,27 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 		return nil, &projectTaskFollowupError{503, launchErr}
 	}
 	return updated, nil
+}
+
+// restoreRemovedTaskWorktree recreates a task's checkout that Swarm removed
+// after its work landed, at its recorded path from its kept branch, so the
+// reopen continues in it as in a retained checkout. The branch must still be
+// at the recorded head.
+func (s *Server) restoreRemovedTaskWorktree(task *pebblestore.ProjectTaskRecord) error {
+	rm := task.WorktreeRemoval
+	if rm == nil || rm.State != pebblestore.WorktreeRemovalRemoved || rm.Path != filepath.Clean(strings.TrimSpace(task.WorkspacePath)) {
+		return nil
+	}
+	restorer, ok := s.worktrees.(interface {
+		RestoreRemovedWorktree(source, path, branch, head string) (bool, error)
+	})
+	if !ok {
+		return nil
+	}
+	if _, err := restorer.RestoreRemovedWorktree(task.SourceWorkspace.Path, task.WorkspacePath, task.WorktreeBranch, rm.Head); err != nil {
+		return fmt.Errorf("the task's checkout was removed after its work landed and cannot be recreated from its branch: %w", err)
+	}
+	return nil
 }
 
 // retainedTaskCheckpointer is the worktree service's preservation of a stopped
