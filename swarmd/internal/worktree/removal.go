@@ -21,6 +21,13 @@ type removalReceipt struct {
 	Path   string
 }
 
+// The checkout already left its live path and its registration is gone when
+// these are returned; trash recovery finishes deleting the files.
+var (
+	errTrashDeletionQueued     = errors.New("trash deletion queued")
+	errTrashDeletionBackground = errors.New("trash deletion continuing in background")
+)
+
 var removalMu sync.Mutex
 var removalInFlight = map[string]<-chan error{}
 var removalSlots = make(chan struct{}, 2)
@@ -172,7 +179,7 @@ func finishRemovalWithWait(entry string, receipt removalReceipt, wait time.Durat
 		case removalSlots <- struct{}{}:
 		default:
 			removalPending[entry] = receipt
-			return errors.New("trash deletion queued")
+			return errTrashDeletionQueued
 		}
 		anchor, err := os.OpenRoot(entry)
 		if err != nil {
@@ -236,7 +243,7 @@ func finishRemovalWithWait(entry string, receipt removalReceipt, wait time.Durat
 		}
 		return nil
 	case <-time.After(wait):
-		return errors.New("trash deletion continuing in background")
+		return errTrashDeletionBackground
 	}
 }
 

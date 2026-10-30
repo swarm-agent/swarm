@@ -2030,7 +2030,12 @@ func (e *gitWorktreeAddError) Error() string {
 func (e *gitWorktreeAddError) Unwrap() error { return e.Cause }
 
 func runGitWorktreeAdd(repoRoot, worktreePath, branchName, effectiveBranch string, noCheckout bool) (string, error) {
-	args := worktreeAddArgs(worktreePath, branchName, effectiveBranch, noCheckout)
+	return runGitWorktreeAddArgs(repoRoot, worktreeAddArgs(worktreePath, branchName, effectiveBranch, noCheckout))
+}
+
+// runGitWorktreeAddArgs runs one `git worktree add` under the allocation
+// deadline: a large checkout takes longer than an ordinary Git command.
+func runGitWorktreeAddArgs(repoRoot string, args []string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), worktreeAllocationTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repoRoot}, args...)...)

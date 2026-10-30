@@ -146,7 +146,22 @@ func (s *Service) AllocateProjectTaskFollowup(p identity.Principal, source, owne
 		return Allocation{}, err
 	}
 	if exists {
-		return Allocation{}, errors.New("follow-up branch already exists without owned allocation")
+		// A finished task's merged, clean checkout is removed while its
+		// branch is kept (RemoveLandedWorktree). Its follow-up recreates the
+		// checkout from that branch, only while it is still at the exact
+		// commit the follow-up continues from.
+		tip, err := runGit(repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch+"^{commit}")
+		if err != nil || strings.TrimSpace(tip) != head {
+			return Allocation{}, errors.New("follow-up branch already exists without owned allocation")
+		}
+		if _, err := runGitWorktreeAddArgs(repo, []string{"worktree", "add", path, branch}); err != nil {
+			cleanupErr := cleanupFailedWorktreeAllocation(repo, path)
+			return Allocation{}, fmt.Errorf("recreate follow-up worktree from its branch: %w", allocationFailureWithCleanup(err, cleanupErr))
+		}
+		if err := os.Chmod(path, appstorage.PrivateDirPerm); err != nil {
+			return Allocation{}, fmt.Errorf("secure follow-up worktree: %w", err)
+		}
+		return Allocation{WorkspacePath: path, RepoRoot: repo, BaseBranch: target, BaseCommit: head, BranchName: branch, WorkspaceID: id}, nil
 	}
 	if _, err := runGitWorktreeAdd(repo, path, branch, head, false); err != nil {
 		cleanupErr := cleanupFailedWorktreeAllocation(repo, path)
