@@ -35,6 +35,25 @@ func (s *Server) CallFleetWork(ctx context.Context, p identity.Principal, machin
 	if name == tool.ManageJobsToolName {
 		return s.callFleetJobs(ctx, p, machine, action, args)
 	}
+	if name == tool.ManageWorkersToolName || name == "manage_automation" {
+		// Every worker action runs on the machine's own ManageWorkers.
+		result, err := s.callFleetCatalog(ctx, p, machine, WorkerActionsPath, action, args)
+		if err != nil || action != "list" {
+			return result, err
+		}
+		// A linked list stays the bounded summary (compactFleetWorkers):
+		// instructions and definitions are read with inspect.
+		client, linked, _, err := s.fleetMachineClient(p.AccountScopeID, machine)
+		if err != nil {
+			return nil, errors.New("linked machine connection unavailable")
+		}
+		return compactFleetWorkers(result, func(id, cursor string) (json.RawMessage, error) {
+			var page json.RawMessage
+			err := client.JSON(ctx, http.MethodGet, WorkersPath+"/"+url.PathEscape(id)+"/runs?limit=100&cursor="+url.QueryEscape(cursor), nil, &page)
+			s.noteFleetContact(linked, err)
+			return page, err
+		})
+	}
 	path, method := "/v3/workers", http.MethodGet
 	if name == "manage_workflows" {
 		path = JobAutomationsPath

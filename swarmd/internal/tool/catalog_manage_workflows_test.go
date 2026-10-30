@@ -16,8 +16,9 @@ import (
 // manageWorkflowsDefinitionSHA256 is the hash of the Orchestrator's
 // manage_workflows definition (json.Marshal, sorted keys). The definition is
 // a prompt contract: it changes only on purpose, with this hash. (Stage 3:
-// its FleetWorkDescription names manage_jobs' machine reach.)
-const manageWorkflowsDefinitionSHA256 = "eb2a1f26251718f04b3cf511be0e27a6b965fc4971e3e3f5442beb860002f246"
+// its FleetWorkDescription names manage_jobs' and manage_workers' machine
+// reach.)
+const manageWorkflowsDefinitionSHA256 = "6b1e16a34a2dfb9938e383a12cef71a1ddea87439f70408e01e90894f8bfe333"
 
 // Purpose: manage_workflows exists once, in the catalog. The Orchestrator's
 // definition is generated from the declarations (held by hash) and names

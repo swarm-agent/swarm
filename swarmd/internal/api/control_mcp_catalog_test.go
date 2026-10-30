@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/jobautomation"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -96,6 +97,8 @@ type catalogParityHarness struct {
 	// jobs are each machine's seeded job ids by name (seedJobs): "" is the
 	// home, "box" the linked machine.
 	jobs map[string]map[string]string
+	// workers are each machine's seeded active worker (seedWorkers).
+	workers map[string]string
 }
 
 func newCatalogParityHarness(t *testing.T) *catalogParityHarness {
@@ -152,6 +155,7 @@ func newCatalogParityHarness(t *testing.T) *catalogParityHarness {
 	parity := &catalogParityHarness{remoteWaitHarness: h}
 	parity.seedWorkflows(t)
 	parity.seedJobs(t)
+	parity.seedWorkers(t)
 	return parity
 }
 
@@ -170,8 +174,13 @@ func (h *catalogParityHarness) orchestratorTool(t *testing.T, name string, args 
 		session = "home-project-orch"
 	}
 	// The run service passes the session's agent (manage_jobs grants name
-	// it), as Service.executeManageJobsTool does.
-	ctx, cancel := context.WithTimeout(tool.WithCatalogAgent(tool.WithVideoRunContext(context.Background(), tool.VideoRunContext{SessionID: session, RunID: "run-1"}), catalogParityAgent), 20*time.Second)
+	// it; manage_workers is the Orchestrator's only), as
+	// Service.executeManageJobsTool and executeManageWorkersCatalogTool do.
+	agent := catalogParityAgent
+	if name == "manage_workers" {
+		agent = agentruntime.SwarmOrchestratorAgentID
+	}
+	ctx, cancel := context.WithTimeout(tool.WithCatalogAgent(tool.WithVideoRunContext(context.Background(), tool.VideoRunContext{SessionID: session, RunID: "run-1"}), agent), 20*time.Second)
 	defer cancel()
 	raw, _ := json.Marshal(args)
 	return h.runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, tool.WorkspaceScope{SessionID: session, Principal: h.p}, tool.Call{Name: name, Arguments: string(raw)})
@@ -253,7 +262,7 @@ func parityArgs(args ...any) map[string]any {
 // catalogParityCases holds, per catalog tool, one case for every action (see
 // TestCatalogParityCoversEveryAction).
 func catalogParityCases() map[string]map[string][]catalogParityCase {
-	return map[string]map[string][]catalogParityCase{"manage_projects": manageProjectsParityCases(), "manage_workflows": manageWorkflowsParityCases(), "manage_jobs": manageJobsParityCases()}
+	return map[string]map[string][]catalogParityCase{"manage_projects": manageProjectsParityCases(), "manage_workflows": manageWorkflowsParityCases(), "manage_jobs": manageJobsParityCases(), "manage_workers": manageWorkersParityCases()}
 }
 
 // catalogParityToolNames are the tools with parity cases, sorted.

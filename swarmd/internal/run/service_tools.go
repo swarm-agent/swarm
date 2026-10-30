@@ -2371,6 +2371,13 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 			result.Error = "Worker and automation management is exclusive to Swarm Orchestrator in Swarm mode"
 			return true, result, errors.New("Worker and automation management is exclusive to Swarm Orchestrator in Swarm mode")
 		}
+		if call.Name == "manage_workers" {
+			// The catalog's manage_workers: one handler with Swarm Control.
+			principal, _ := identity.PrincipalFromContext(ctx)
+			output, err := s.executeManageWorkersCatalogTool(ctx, principal, sessionID, call.Arguments, agentProfile)
+			result.Output = output
+			return true, result, err
+		}
 		output, err := s.executeManageWorkersTool(sessionID, call.Arguments, agentProfile)
 		result.Output = output
 		return true, result, err

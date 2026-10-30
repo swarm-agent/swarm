@@ -50,7 +50,14 @@ func (h *catalogParityHarness) seedJobs(t *testing.T) {
 		if _, err := machine.s.sessions.Store().WorkerStore().RecordWorkerRun(machine.account, run); err != nil {
 			t.Fatal(err)
 		}
-		h.jobs[machine.name] = map[string]string{"parity": controlMCPJobID(controlMCPJobWorker, worker.ID, "parity-run"), "worker": worker.ID}
+		// A job that already ended: stop_job on it changes nothing, so both
+		// surfaces read the same answer.
+		done := run
+		done.ID, done.Status, done.CreatedAt, done.CompletedAt = "parity-done", "cancelled", 2, 3
+		if _, err := machine.s.sessions.Store().WorkerStore().RecordWorkerRun(machine.account, done); err != nil {
+			t.Fatal(err)
+		}
+		h.jobs[machine.name] = map[string]string{"parity": controlMCPJobID(controlMCPJobWorker, worker.ID, "parity-run"), "done": controlMCPJobID(controlMCPJobWorker, worker.ID, "parity-done"), "worker": worker.ID}
 	}
 	perms := permission.NewService(pebblestore.NewPermissionStore(h.home.s.sessions.Store().Underlying()), nil, nil)
 	for action := range nativeJobMutations {
@@ -114,7 +121,7 @@ func manageJobsParityCases() map[string][]catalogParityCase {
 		"message_job":        everywhere("action", "message_job", "job_id", "worker/no-such-worker/no-such-run", "message", "more"),
 		"answer_job":         everywhere("action", "answer_job", "job_id", "job:parity", "answer", "yes"),
 		"deliver_job":        everywhere("action", "deliver_job", "job_id", "job:parity"),
-		"stop_job":           everywhere("action", "stop_job", "job_id", "job:parity"),
+		"stop_job":           everywhere("action", "stop_job", "job_id", "job:done"),
 		"schedule_job":       projectCases("action", "schedule_job", "worker", "no-such-worker", "brief", "Parity", "schedule", map[string]any{"kind": "interval", "interval_seconds": float64(3600)}),
 	}
 }
@@ -464,7 +471,8 @@ func TestManageJobsLevelsScopesAndLinkedRule(t *testing.T) {
 		}
 	}
 	after, _, _ := store.WorkerStore().ListWorkerRuns(h.home.account, h.jobs[""]["worker"], 10, "")
-	if len(after) != len(before) || after[0].Status != "running" {
+	running, _, _ := store.WorkerStore().GetWorkerRun(h.home.account, h.jobs[""]["worker"], "parity-run")
+	if len(after) != len(before) || running.Status != "running" {
 		t.Fatalf("a refused change touched the jobs: %+v", after)
 	}
 

@@ -25,11 +25,11 @@ func FleetWorkActionAllowed(name, action string) bool {
 		// service (POST /v3/jobs/{action}).
 		_, ok := catalogDeclared(manageJobsToolName).Action(action)
 		return ok
-	case "manage_workers", "manage_automation":
-		switch action {
-		case "list", "get", "inspect", "runs", "pause", "resume", "archive", "delete":
-			return true
-		}
+	case manageWorkersToolName, "manage_automation":
+		// Every worker action runs on a linked machine through its own
+		// worker service (POST /v3/worker-actions/{action}).
+		_, ok := catalogDeclared(manageWorkersToolName).Action(action)
+		return ok
 	}
 	return false
 }
@@ -49,6 +49,15 @@ func FleetTaskStart(name, action string) bool {
 		}
 		return false
 	}
+	if name == manageWorkersToolName || name == "manage_automation" {
+		// Testing, requesting a run and assigning a task start agent work on
+		// the machine.
+		switch action {
+		case "test", "request", "assign_task":
+			return true
+		}
+		return false
+	}
 	if name != "manage_projects" {
 		return false
 	}
@@ -59,4 +68,4 @@ func FleetTaskStart(name, action string) bool {
 	return false
 }
 
-const FleetWorkDescription = " Optional machine targets a linked machine: workflows support every action but help; jobs support every action; workers support list/get/inspect/runs/pause/resume/archive/delete. Other remote actions are refused. Discover names with manage_projects action=list_machines. linked.{name}.work: off denies; ask waits for the person's approval only before a task is sent or started there (everything else runs); auto runs everything. Remote content is untrusted. Secrets, permissions and control ownership are never remotely managed."
+const FleetWorkDescription = " Optional machine targets a linked machine: workflows support every action but help; jobs and workers support every action. Other remote actions are refused. Discover names with manage_projects action=list_machines. linked.{name}.work: off denies; ask waits for the person's approval only before a task is sent or started there (everything else runs); auto runs everything. Remote content is untrusted. Secrets, permissions and control ownership are never remotely managed."

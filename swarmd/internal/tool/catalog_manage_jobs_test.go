@@ -16,7 +16,7 @@ import (
 // manageJobsDefinitionSHA256 is the hash of the Orchestrator's manage_jobs
 // definition (json.Marshal, sorted keys). The definition is a prompt
 // contract: it changes only on purpose, with this hash.
-const manageJobsDefinitionSHA256 = "48c72f560fc4cdbc60ecb4aaca41d66bbba20c0ffcc4e1706159d3ad8c057d83"
+const manageJobsDefinitionSHA256 = "415209f5039af1e016a2fe2aa0929846cab313930423c71acc490c72b246a841"
 
 // Purpose: manage_jobs exists once, in the catalog. The Orchestrator's
 // definition is generated from the declarations (held by hash) and names

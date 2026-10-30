@@ -680,6 +680,8 @@ func (r *Runtime) ExecuteControlCatalog(ctx context.Context, call ControlCatalog
 		return r.executeManageWorkflows(identity.ContextWithPrincipal(ctx, p), scope, args)
 	case manageJobsToolName:
 		return r.executeManageJobs(identity.ContextWithPrincipal(ctx, p), scope, args)
+	case manageWorkersToolName:
+		return r.executeManageWorkers(identity.ContextWithPrincipal(ctx, p), scope, args)
 	}
 	return "", fmt.Errorf("%s has no handler", catalog.Name)
 }

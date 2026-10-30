@@ -193,7 +193,15 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 			return "", errors.New("Worker and automation management is exclusive to Swarm Orchestrator in Swarm mode")
 		}
 	}
+	return s.createOrProposeWorker(current, defaultWorkspace, args, toolName, isCreate)
+}
 
+// createOrProposeWorker creates a pending worker (or reproposes one) that
+// waits for the person's acceptance. current is the calling conversation, or
+// for a Swarm Control or linked caller only its account and user (no ID, no
+// grants): its workspace is then authorized by the account's workspaces and
+// it never reuses another caller's pending proposal.
+func (s *Service) createOrProposeWorker(current store.SessionSnapshot, defaultWorkspace string, args map[string]any, toolName string, isCreate bool) (string, error) {
 	budget, err := workerToolBudget(args)
 	if err != nil {
 		return "", err
@@ -419,7 +427,7 @@ func (s *Service) executeCreateOrProposePendingWorker(id string, args map[string
 		proposedBindings = map[string]string{"primary": proposedPrimary}
 	}
 
-	if workerID == "" {
+	if workerID == "" && current.ID != "" {
 		pending, err := s.pendingWorkersForSession(current.AccountScopeID, current.ID)
 		if err != nil {
 			return "", err
@@ -694,13 +702,26 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 	if mapString(args, "machine") != "" {
 		return s.executeFleetWork(current, "manage_workers", args)
 	}
+	return s.manageWorkersAction(current, readID, action, args, arguments, profile...)
+}
 
+// manageWorkersAction runs one manage_workers action on this machine. current
+// is the calling conversation (readID its primary conversation), or for a
+// Swarm Control or linked caller only its account and user, with readID
+// empty: actions that read or write the conversation's own pending
+// proposals then need worker_id, and a created or proposed worker waits for
+// the person's acceptance without a source conversation.
+func (s *Service) manageWorkersAction(current store.SessionSnapshot, readID, action string, args map[string]any, arguments string, profile ...store.AgentProfile) (string, error) {
+	var err error
 	switch action {
 	case "help":
 		raw, err := json.Marshal(map[string]any{"action": "help", "status": "ok", "instructions": tool.WorkerV2AuthoringInstructions})
 		return string(raw), err
 
 	case "propose":
+		if readID == "" {
+			return s.createOrProposeWorker(current, "", args, "manage_workers", false)
+		}
 		return s.executeWorkerProposalTool(readID, tool.Call{Name: "manage_workers", Arguments: arguments}, profile...)
 
 	case "review", "context", "progress":
@@ -714,6 +735,8 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 				return "", store.ErrWorkerNotFound
 			}
 			workers = append(workers, w)
+		} else if readID == "" {
+			return "", fmt.Errorf("worker_id is required for %s: this caller has no conversation with pending proposals", action)
 		} else {
 			workers, err = s.pendingWorkersForSession(current.AccountScopeID, readID)
 			if err != nil {
@@ -810,6 +833,9 @@ func (s *Service) executeManageWorkersTool(id, arguments string, profile ...stor
 		return string(raw), err
 
 	case "create":
+		if readID == "" {
+			return s.createOrProposeWorker(current, "", args, "manage_workers", true)
+		}
 		return s.executeCreateOrProposePendingWorker(readID, args, "manage_workers", true, profile...)
 
 	case "update":

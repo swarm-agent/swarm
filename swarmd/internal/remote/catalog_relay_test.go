@@ -127,3 +127,42 @@ func TestManageJobsLevelsAreTheSwarmToolsLevels(t *testing.T) {
 		t.Fatalf("relay listing drops manage_jobs for a read client: %s", listed)
 	}
 }
+
+// Purpose: each manage_workers action needs the level of the swarm_* worker
+// tool with the same effect (ToolScope), so moving workers into the catalog
+// neither widens nor narrows what a key may do: reads stay read; proposing,
+// testing, requesting and assigning a task stay write; creating, changing,
+// pausing, resuming, archiving, deleting and activating stay manage. Threat:
+// a write key creating or deleting workers through the catalog, or a level
+// silently changed in the move. Boundary: tool.Catalog's manage_workers
+// declarations against ToolScope, and the relay listing.
+func TestManageWorkersLevelsAreTheSwarmToolsLevels(t *testing.T) {
+	swarmTool := map[string]string{
+		"help": "swarm_list_workers", "list": "swarm_list_workers", "inspect": "swarm_get_worker",
+		"review": "swarm_get_worker", "context": "swarm_get_worker", "progress": "swarm_get_worker",
+		"create": "swarm_create_worker", "update": "swarm_update_worker", "attach": "swarm_update_worker",
+		"disable_automation": "swarm_manage_worker", "delete": "swarm_manage_worker", "activate": "swarm_manage_worker",
+		"pause": "swarm_manage_worker", "resume": "swarm_manage_worker", "archive": "swarm_manage_worker",
+		"test": "swarm_assign_worker_task", "request": "swarm_assign_worker_task", "assign_task": "swarm_assign_worker_task",
+		"propose": "swarm_deploy_worker",
+	}
+	workers, ok := tool.CatalogToolNamed("manage_workers")
+	if !ok {
+		t.Fatal("manage_workers is not a catalog tool")
+	}
+	if len(workers.Actions) != len(swarmTool) {
+		t.Fatalf("manage_workers declares %d actions; %d have a swarm_* tool", len(workers.Actions), len(swarmTool))
+	}
+	for _, action := range workers.Actions {
+		name, ok := swarmTool[action.Action]
+		if !ok {
+			t.Fatalf("%s has no swarm_* tool to take its level from (level %s)", action.Action, action.Level)
+		}
+		if action.Level.Scope() != ToolScope(name) {
+			t.Fatalf("manage_workers %s needs %s; %s needs %s", action.Action, action.Level.Scope(), name, ToolScope(name))
+		}
+	}
+	if listed := string(filterTools([]byte(`{"result":{"tools":[{"name":"manage_workers"}]}}`), []string{ScopeRead})); !strings.Contains(listed, "manage_workers") {
+		t.Fatalf("relay listing drops manage_workers for a read client: %s", listed)
+	}
+}

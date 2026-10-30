@@ -2239,7 +2239,9 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return "", errors.New("manage_workspace must be handled by run-service control-plane")
 	case "manage-worktree", "manage_worktree":
 		return r.executeManageWorktree(scope, args)
-	case "manage-workers", "manage_workers", "manage-automation", "manage_automation":
+	case "manage-workers", "manage_workers":
+		return r.executeManageWorkers(ctx, scope, args)
+	case "manage-automation", "manage_automation":
 		return "", errors.New("manage_workers V2 requires canonical session run dispatch; legacy execution is retired")
 	case "manage-actions", "manage_actions":
 		return r.executeManageActions(scope, args)
