@@ -123,9 +123,10 @@ metadata or remove authentication as a workaround.
 4. A run still going after the wait means continue `get` on the same ID, not
    start another agent. A pending request needs the intended owner's decision
    (`resolve_permission`).
-5. Resume follow-ups with `manage_sessions` `send_message`; for a note that
-   does not start a run (`trigger` false), reuse the same client_request_id
-   when retrying it. `create` has no client idempotency parameter: after an
+5. Resume a plain session's follow-ups with `manage_sessions` `send_message`;
+   for a note that does not start a run (`trigger` false), reuse the same
+   client_request_id when retrying it. A task's session refuses a triggering
+   `send_message`: tell a task more with `manage_projects` `message_task`. `create` has no client idempotency parameter: after an
    ambiguous create, list recent sessions before retrying.
 6. Inspect actual tool evidence and `manage_projects` `get_task_changes`/`read_task_file`
    (`swarm_get_changes`/`swarm_read_file` for a plain session); don't

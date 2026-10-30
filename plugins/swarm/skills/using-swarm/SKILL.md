@@ -146,9 +146,13 @@ actions:
   or deny_once, `answer` for a question), using the actual pending request.
   Ask the person when their answer or approval is required.
 - Use `swarm_approve_task` only for a task awaiting authorized task approval.
-- Use `manage_sessions` action `send_message` for corrections or continuation
-  in the same session, and `set_model` only when the person asks to change
-  its model.
+- Send a task corrections or more work with `manage_projects` action
+  `message_task` (`project_id`, `task_id`, `message`): it is queued into the
+  task's running run, or reopens the task in its own session and worktree
+  when it has finished. `manage_sessions` action `send_message` is for plain
+  sessions only; it refuses to start a run in a task's session. Use
+  `manage_sessions` `set_model` only when the person asks to change a
+  session's model.
 - Use `manage_sessions` action `stop` for an authorized stop of a session's
   run.
 - For failed or blocked work, read the error and evidence before deciding on a
@@ -165,8 +169,8 @@ authorization, `swarm_integrate_task` takes `project_id` and `task_id` and
 performs real Git integration. Conflicts and empty/uncommitted deliveries must
 remain failures; neither an agent summary nor a status string proves a merge.
 On a conflict (the error names the files), ask the agent with
-`manage_sessions` action `send_message` to rebase its branch onto the target branch and resolve
-the conflict, then integrate again. If it merges the target in instead,
+`manage_projects` action `message_task` to rebase its branch onto the target
+branch and resolve the conflict, then integrate again. If it merges the target in instead,
 `swarm_integrate_task` still integrates its net change, as one new commit
 (`integration.warning` says so; the branch's merge history is not kept).
 Publishing, pushing and deploying require the person's specific authorization.
