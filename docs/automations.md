@@ -590,7 +590,12 @@ whatever its head, use `POST /v3/job-deliveries/{id}/rerun` (SDK
 the steps after them that did not run) run again; a succeeded step is never
 re-run. A `blocked` delivery re-runs from its first step with a new round
 budget: each reopen step gets `max_rounds` reopens past those it already
-sent (a `run` step that already succeeded is still never re-run).
+sent (a `run` step that already succeeded is still never re-run). Either
+way the delivery's `for_each` items are also revived, even when no step
+failed (see `for_each` below); the response lists them under
+`revived_items` (`step`, `index`, `id`, `job_id`, `state`). The reason
+`nothing_to_rerun` means there was no failed or stopped step and no item to
+revive.
 
 ## The result JSON
 
@@ -1063,7 +1068,7 @@ as compact JSON with sorted keys). The rendered worker input must fit within
 
 Set `after_field: "reuses"` to let a 9:16 cut with `{"id":"cut","reuses":"wide"}` wait for the 16:9 video with `{"id":"wide"}` in the same file. `id_field` defaults to `id`. The cut shows `waiting for wide` until that job succeeds and all its job-end workflow deliveries finish successfully, including their deliver/merge steps, so it can use the committed files in the folder branch. A failed/blocked prerequisite or delivery fails the cut without starting it, with `waits for wide, which did not finish: <reason>`. Missing/empty references impose no dependency; unknown references, duplicate IDs, and cycles are refused before queuing. Waiting items consume no parallel slots.
 
-An item follows its job's newest end. When a failed or blocked item job later succeeds (for example after `swarm_message_job`), the item returns to `done`. Every item that failed only because it waited on it, with `waits for <id>, which did not finish: …`, shows `waiting for <id>` again, along its whole `after_field` chain. These items then start as above: once the job's own workflow deliveries succeed, within `max_parallel`, and at most once each, with the same start key. This happens even when the planner's delivery already finished. That delivery then shows `running` again (with `items_reopened` set to the state it had), but none of its finished steps runs again. Once none of its items is queued, waiting or started, it finishes again with the state it had before. Items that failed for their own reason stay failed while their job has not succeeded, and so do the items waiting on them. For items whose job succeeded before this recovery existed, `swarm_deliver_job` with `automation: true` on the planner's job (or `POST /v3/job-deliveries/{id}/rerun` on its delivery) applies the same recovery.
+An item follows its job's newest end. When a failed or blocked item job later succeeds (for example after `swarm_message_job`), the item returns to `done`. Every item that failed only because it waited on it, with `waits for <id>, which did not finish: …`, shows `waiting for <id>` again, along its whole `after_field` chain. These items then start as above: once the job's own workflow deliveries succeed, within `max_parallel`, and at most once each, with the same start key. This happens even when the planner's delivery already finished. That delivery then shows `running` again (with `items_reopened` set to the state it had), but none of its finished steps runs again. Once none of its items is queued, waiting or started, it finishes again with the state it had before. Items that failed for their own reason stay failed while their job has not succeeded, and so do the items waiting on them. For items whose job succeeded before this recovery existed, `swarm_deliver_job` with `automation: true` on the planner's job (or `POST /v3/job-deliveries/{id}/rerun` on its delivery) applies the same recovery, also when the delivery has no failed step: a failed item returns to `done` once its job's newest end succeeded and its job's workflows delivered (the same check its dependents wait for), and the items that failed waiting on it wait again.
 
 `max_parallel` is 1–5, default 1. The step succeeds after durable queuing; later
 steps do not wait. Delivery reads list each item's state, job id and error.

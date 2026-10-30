@@ -138,10 +138,11 @@ func TestRerunResetsOnlyFailedOrStoppedSteps(t *testing.T) {
 	if err := store.SaveDelivery(d); err != nil {
 		t.Fatal(err)
 	}
-	re, ok, err := store.Rerun("acct-a", d.ID)
-	if err != nil || !ok {
-		t.Fatal(ok, err)
+	out, err := store.Rerun("acct-a", d.ID)
+	if err != nil || !out.Rerun {
+		t.Fatal(out.Rerun, err)
 	}
+	re := out.Delivery
 	if re.State != StatePending || re.Steps[0].State != StateSucceeded || re.Steps[1].State != StatePending || re.Steps[2].State != StatePending {
 		t.Fatalf("rerun states = %s %s %s %s", re.State, re.Steps[0].State, re.Steps[1].State, re.Steps[2].State)
 	}
@@ -152,10 +153,10 @@ func TestRerunResetsOnlyFailedOrStoppedSteps(t *testing.T) {
 	if err := store.SaveDelivery(re); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := store.Rerun("acct-a", d.ID); err != nil || ok {
-		t.Fatalf("rerun of a succeeded delivery = %v %v", ok, err)
+	if out, err := store.Rerun("acct-a", d.ID); err != nil || out.Rerun || out.Reason != ReasonNothingToRerun {
+		t.Fatalf("rerun of a succeeded delivery = %+v %v", out, err)
 	}
-	if _, _, err := store.Rerun("acct-b", d.ID); !errors.Is(err, ErrNotFound) {
+	if _, err := store.Rerun("acct-b", d.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("cross-account rerun = %v", err)
 	}
 }

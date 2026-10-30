@@ -201,8 +201,8 @@ func TestRoundsExhaustedBlocksTheDeliveryAndSignalsIt(t *testing.T) {
 
 	// An explicit re-run (swarm_deliver_job automation=true) gets a new
 	// round budget: the review runs again and, still blocked, reopens once.
-	if _, ok, err := h.store.Rerun(testAccount, blocked.ID); err != nil || !ok {
-		t.Fatal(ok, err)
+	if out, err := h.store.Rerun(testAccount, blocked.ID); err != nil || !out.Rerun {
+		t.Fatal(out.Rerun, err)
 	}
 	h.process()
 	again, _ := h.store.GetDelivery(testAccount, blocked.ID)

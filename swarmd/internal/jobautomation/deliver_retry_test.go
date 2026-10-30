@@ -218,10 +218,11 @@ func TestDeliverInspectionOutlastsSlowSpell(t *testing.T) {
 	if err := h.runner.store.SaveDelivery(long); err != nil {
 		t.Fatal(err)
 	}
-	rerun, ok, err := h.runner.store.Rerun(testAccount, long.ID)
-	if err != nil || !ok {
-		t.Fatalf("rerun %v %v", ok, err)
+	out, err := h.runner.store.Rerun(testAccount, long.ID)
+	if err != nil || !out.Rerun {
+		t.Fatalf("rerun %v %v", out.Rerun, err)
 	}
+	rerun := out.Delivery
 	if rerun.Steps[0].State != StatePending || rerun.Steps[0].Attempts != 0 || len(rerun.Steps[0].Failures) != maxInspectionAttempts {
 		t.Fatalf("rerun lost failures: %+v", rerun.Steps[0])
 	}

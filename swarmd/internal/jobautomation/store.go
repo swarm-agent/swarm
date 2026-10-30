@@ -84,7 +84,8 @@ const (
 	ReasonSuperseded = "superseded"
 	// ReasonStaleHead: the newest delivery's head is no longer the job's.
 	ReasonStaleHead = "stale_head"
-	// ReasonNothingToRerun: no failed or stopped step.
+	// ReasonNothingToRerun: no failed or stopped step, and no for_each item
+	// to revive.
 	ReasonNothingToRerun = "nothing_to_rerun"
 )
 
@@ -1054,30 +1055,37 @@ func (s *Store) Unfinished() ([]Delivery, error) {
 
 // Rerun makes a finished delivery run again from its failed or stopped
 // steps: those steps and the ones after them that never ran become pending;
-// a step that succeeded is never run again, but its failed dependency items
-// are requeued when their prerequisites are now ready. It returns the delivery and
-// whether there was anything to re-run. This is the explicit re-run of one
-// named delivery (POST /v3/job-deliveries/<id>/rerun), whatever its head.
-func (s *Store) Rerun(account, id string) (Delivery, bool, error) {
+// a step that succeeded is never run again. Whether or not a step re-runs,
+// the for_each items of its steps follow their jobs (reviveItemsLocked): a
+// failed item whose job's newest end succeeded and was delivered returns to
+// done, and the items that failed waiting on it wait again; Revived lists
+// them. Rerun is false, with ReasonNothingToRerun, only when there was
+// neither a step to re-run nor an item to revive. This is the explicit
+// re-run of one named delivery (POST /v3/job-deliveries/<id>/rerun),
+// whatever its head.
+func (s *Store) Rerun(account, id string) (RerunOutcome, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var d Delivery
 	found, err := s.db.GetJSON(deliveryKey(account, id), &d)
 	if err != nil {
-		return Delivery{}, false, err
+		return RerunOutcome{}, err
 	}
 	if !found || d.Account != account {
-		return Delivery{}, false, ErrNotFound
+		return RerunOutcome{}, ErrNotFound
 	}
 	return s.rerunLocked(d)
 }
 
-// RerunOutcome is what RerunNewest did with one delivery of the job: re-ran
-// it, or left it unchanged for Reason.
+// RerunOutcome is what a rerun did with one delivery of the job: re-ran it
+// (its steps, or only its revived items), or left it unchanged for Reason.
 type RerunOutcome struct {
 	Delivery Delivery
 	Rerun    bool
 	Reason   string
+	// Revived is the for_each items the rerun revived (none when only
+	// steps re-ran).
+	Revived []RevivedItem
 }
 
 // RerunNewest is swarm_deliver_job automation=true: for each automation with
@@ -1108,27 +1116,24 @@ func (s *Store) RerunNewest(account, jobID, jobHead string) ([]RerunOutcome, err
 			out = append(out, RerunOutcome{Delivery: d, Reason: ReasonStaleHead})
 			continue
 		}
-		updated, rerun, err := s.rerunLocked(d)
+		outcome, err := s.rerunLocked(d)
 		if err != nil {
 			return nil, err
-		}
-		outcome := RerunOutcome{Delivery: updated, Rerun: rerun}
-		if !rerun {
-			outcome.Reason = ReasonNothingToRerun
 		}
 		out = append(out, outcome)
 	}
 	return out, nil
 }
 
-func (s *Store) rerunLocked(d Delivery) (Delivery, bool, error) {
+func (s *Store) rerunLocked(d Delivery) (RerunOutcome, error) {
 	if !Terminal(d.State) {
-		return d, false, nil
+		return RerunOutcome{Delivery: d, Reason: ReasonNothingToRerun}, nil
 	}
 	// Item queues outlive their successful make step. Recover items whose
-	// job's newest end succeeded, and items that never dispatched and failed
-	// specifically on a recovered or now-ready dependency.
-	itemsReset := s.reviveItemsLocked(&d, "")
+	// job's newest end succeeded and was delivered, and items that never
+	// dispatched and failed specifically on a recovered or now-ready
+	// dependency, whether or not any step re-runs.
+	revived := s.reviveItemsLocked(&d, "")
 	reset := false
 	if d.State == StateBlocked {
 		// A blocked review loop runs again from the top with a new round
@@ -1142,7 +1147,7 @@ func (s *Store) rerunLocked(d Delivery) (Delivery, bool, error) {
 		// The new budget starts from the reopens the job had in total.
 		rounds, err := s.ReopenRounds(d.Account, d.JobID, d.AutomationID)
 		if err != nil {
-			return Delivery{}, false, err
+			return RerunOutcome{}, err
 		}
 		d.Round = max(d.Round, rounds.Total)
 		d.RoundBase, d.BlockedReason = d.Round, ""
@@ -1165,8 +1170,8 @@ func (s *Store) rerunLocked(d Delivery) (Delivery, bool, error) {
 		}
 		resetStep(step)
 	}
-	if !reset && !itemsReset {
-		return d, false, nil
+	if !reset && len(revived) == 0 {
+		return RerunOutcome{Delivery: d, Reason: ReasonNothingToRerun}, nil
 	}
 	if reset {
 		d.State, d.FinishedAt, d.SentBack = StatePending, 0, nil
@@ -1174,7 +1179,16 @@ func (s *Store) rerunLocked(d Delivery) (Delivery, bool, error) {
 		reopenForItems(&d)
 	}
 	d.Reruns++
-	return d, true, s.putDeliveryLocked(d)
+	if err := s.putDeliveryLocked(d); err != nil {
+		return RerunOutcome{}, err
+	}
+	// putDeliveryLocked finishes a reopened delivery again when none of its
+	// revived items is pending (all returned to done): reread what it stored.
+	stored, err := s.GetDelivery(d.Account, d.ID)
+	if err != nil {
+		return RerunOutcome{}, err
+	}
+	return RerunOutcome{Delivery: stored, Rerun: true, Revived: revived}, nil
 }
 
 // ---- stop switch and cursor --------------------------------------------------

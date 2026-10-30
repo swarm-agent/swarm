@@ -551,8 +551,8 @@ func TestStopSwitchPreventsNewSteps(t *testing.T) {
 	if _, err := h.store.SetStopped(false, "user-a"); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := h.store.Rerun(testAccount, d.ID); err != nil || !ok {
-		t.Fatal(ok, err)
+	if out, err := h.store.Rerun(testAccount, d.ID); err != nil || !out.Rerun {
+		t.Fatal(out.Rerun, err)
 	}
 	h.process()
 	d = h.deliveries("worker/coder-1/run-1")[0]

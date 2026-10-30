@@ -1335,27 +1335,31 @@ func (s *Server) handleJobDeliveries(w http.ResponseWriter, r *http.Request) {
 		view["result"] = d.Result
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "delivery": view})
 	case len(parts) == 2 && parts[1] == "rerun" && r.Method == http.MethodPost:
-		d, rerun, err := s.rerunJobDelivery(account, parts[0])
+		outcome, err := s.rerunJobDelivery(account, parts[0])
 		if err != nil {
 			jobAutomationHTTPError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "rerun": rerun, "delivery": jobDeliveryView(d)})
+		out := map[string]any{"ok": true, "rerun": outcome.Rerun, "delivery": jobDeliveryView(outcome.Delivery), "revived_items": outcome.Revived}
+		if outcome.Reason != "" {
+			out["reason"] = outcome.Reason
+		}
+		writeJSON(w, http.StatusOK, out)
 	default:
 		writeError(w, http.StatusNotFound, errors.New("unknown job delivery route"))
 	}
 }
 
-func (s *Server) rerunJobDelivery(account, id string) (jobautomation.Delivery, bool, error) {
+func (s *Server) rerunJobDelivery(account, id string) (jobautomation.RerunOutcome, error) {
 	store, err := s.jobAutomationStore()
 	if err != nil {
-		return jobautomation.Delivery{}, false, err
+		return jobautomation.RerunOutcome{}, err
 	}
-	d, rerun, err := store.Rerun(account, id)
-	if err == nil && rerun {
+	outcome, err := store.Rerun(account, id)
+	if err == nil && outcome.Rerun {
 		s.jobAutomations.Wake()
 	}
-	return d, rerun, err
+	return outcome, err
 }
 
 // ---- MCP tools ---------------------------------------------------------------
@@ -1636,11 +1640,23 @@ func (c *controlMCPCall) rerunJobAutomations(kind, a, b string) (any, error) {
 	}
 	rerun := []map[string]any{}
 	unchanged := []map[string]any{}
-	stale := false
+	revived := []map[string]any{}
+	stale, stepsRerun := false, false
 	for _, outcome := range outcomes {
 		d := outcome.Delivery
+		for _, item := range outcome.Revived {
+			entry := map[string]any{"delivery_id": d.ID, "automation": d.AutomationName, "step": item.Step, "index": item.Index, "state": item.State}
+			if item.ID != "" {
+				entry["id"] = item.ID
+			}
+			if item.JobID != "" {
+				entry["job_id"] = item.JobID
+			}
+			revived = append(revived, entry)
+		}
 		if outcome.Rerun {
 			rerun = append(rerun, jobDeliveryView(d))
+			stepsRerun = stepsRerun || d.State == jobautomation.StatePending // its steps reset
 			continue
 		}
 		entry := map[string]any{"delivery_id": d.ID, "automation": d.AutomationName, "state": d.State, "reason": outcome.Reason}
@@ -1653,17 +1669,19 @@ func (c *controlMCPCall) rerunJobAutomations(kind, a, b string) (any, error) {
 	if len(rerun) > 0 && c.server.jobAutomations != nil {
 		c.server.jobAutomations.Wake()
 	}
-	out := map[string]any{"job_id": jobID, "rerun": rerun, "unchanged": unchanged}
+	out := map[string]any{"job_id": jobID, "rerun": rerun, "unchanged": unchanged, "revived_items": revived}
 	if head != "" {
 		out["job_head"] = head
 	}
 	switch {
-	case len(rerun) > 0:
+	case stepsRerun:
 		out["next"] = "the failed or stopped steps of the newest delivery run again; swarm_get_job shows their progress"
+	case len(rerun) > 0:
+		out["next"] = "no step ran again: the for_each items in revived_items follow their jobs again, and the items waiting on them start once ready; swarm_get_job shows their progress"
 	case stale:
 		out["next"] = "nothing was re-run: the newest delivery is for an older head than the job's current head, and older deliveries are never re-run (POST /v3/job-deliveries/<id>/rerun re-runs one named delivery)"
 	default:
-		out["next"] = "the newest delivery had no failed or stopped step to re-run"
+		out["next"] = "the newest delivery had no failed or stopped step to re-run and no for_each item to revive"
 	}
 	return out, nil
 }

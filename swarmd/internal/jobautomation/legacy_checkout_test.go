@@ -128,10 +128,11 @@ func TestRerunOfDeliveryPinnedToLegacyRevisionRuns(t *testing.T) {
 	}
 
 	agents.refuse = false
-	re, ok, err := h.store.Rerun(testAccount, failed[0].ID)
-	if err != nil || !ok {
-		t.Fatalf("rerun: ok=%v err=%v", ok, err)
+	out, err := h.store.Rerun(testAccount, failed[0].ID)
+	if err != nil || !out.Rerun {
+		t.Fatalf("rerun: ok=%v err=%v", out.Rerun, err)
 	}
+	re := out.Delivery
 	if re.AutomationRevision != legacy.Revision || re.Definition[0].Checkout != CheckoutNone {
 		t.Fatalf("rerun pinned revision %d checkout %q, want %d none", re.AutomationRevision, re.Definition[0].Checkout, legacy.Revision)
 	}
