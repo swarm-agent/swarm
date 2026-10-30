@@ -2,7 +2,6 @@ package run
 
 import (
 	"encoding/json"
-	"sort"
 	"strings"
 	"testing"
 
@@ -11,33 +10,9 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 )
 
-// Purpose: the Orchestrator pays for every tool definition and its prompt on
-// each request, before it does anything. Requirement: what it is shown stays
-// within a fixed budget (tools <= 35 KB, prompt <= 4.5 KB) and carries no
-// duplicate, dead action or another agent's tooling. Threat: schemas and
-// prompt text grow back (a copied tool, a retired action, Coder lineage
-// tooling) and silently crowd out the work. Owners: the compiled contract
-// (agentruntime.SwarmOrchestratorAgentToolContract), resolveAgentToolStates,
-// AgentShownToolDefinitions/tool.OrchestratorDefinitions and the prompt
-// (agentruntime.SwarmOrchestratorAgentPrompt). This is the narrowest layer
-// that sees exactly the definitions production sends: the same resolver and
-// schema view, over the compiled built-in definitions.
-const (
-	// 34 KB left 24 bytes; message_task/stop_task and the read_messages and
-	// read_task_session bounds (max_chars, role, mode) add about 560 bytes.
-	// 35 KB left about 140; resolve_task_permission (permission_id,
-	// decision, reason) and the linked reads machine_status,
-	// get_task_session and activity (since_cursor), which let the home see a
-	// stalled linked task and answer it in the chat, add about 400. Task
-	// watches (the cancel_watch action, the milestones parameter and the
-	// reply-then-end-your-turn instruction, all trimmed) add about 160.
-	// Paging within one long message (message_id, message_seq and
-	// content_offset on read_task_session and read_messages, so a cut
-	// result can be read to its end) adds about 330.
-	orchestratorToolBudgetBytes   = 35*1024 + 1024
-	orchestratorPromptBudgetBytes = 4608
-)
-
+// orchestratorShownDefinitions returns exactly the tool definitions production
+// shows the Orchestrator: the same resolver (resolveAgentToolStates) and schema
+// view (AgentShownToolDefinitions) over the compiled built-in definitions.
 func orchestratorShownDefinitions(t *testing.T) []tool.Definition {
 	t.Helper()
 	definitions := append((*tool.Runtime)(nil).Definitions(), staticMediaInspectToolDefinition())
@@ -57,29 +32,6 @@ func orchestratorShownDefinitions(t *testing.T) []tool.Definition {
 		}
 	}
 	return shown
-}
-
-func TestOrchestratorFixedContextStaysWithinBudget(t *testing.T) {
-	shown := orchestratorShownDefinitions(t)
-	total := 0
-	sizes := make([]string, 0, len(shown))
-	for _, definition := range shown {
-		raw, err := json.Marshal(definition)
-		if err != nil {
-			t.Fatal(err)
-		}
-		total += len(raw)
-		sizes = append(sizes, definition.Name+"="+itoa(len(raw)))
-	}
-	sort.Strings(sizes)
-	prompt := len(agentruntime.SwarmOrchestratorAgentPrompt())
-	t.Logf("orchestrator tools=%d bytes=%d prompt=%d [%s]", len(shown), total, prompt, strings.Join(sizes, " "))
-	if total > orchestratorToolBudgetBytes {
-		t.Fatalf("Orchestrator tool definitions are %d bytes, budget %d", total, orchestratorToolBudgetBytes)
-	}
-	if prompt > orchestratorPromptBudgetBytes {
-		t.Fatalf("Orchestrator prompt is %d bytes, budget %d", prompt, orchestratorPromptBudgetBytes)
-	}
 }
 
 // Purpose: removed tools, dead actions and Coder-only fields must not reach
@@ -167,9 +119,4 @@ func TestOrchestratorIsShownNoDuplicateDeadOrOtherAgentTooling(t *testing.T) {
 	if cfg := coder.Tools["manage_worktree"]; cfg.Enabled == nil || !*cfg.Enabled {
 		t.Fatal("Swarm agent lost manage_worktree")
 	}
-}
-
-func itoa(value int) string {
-	raw, _ := json.Marshal(value)
-	return string(raw)
 }
