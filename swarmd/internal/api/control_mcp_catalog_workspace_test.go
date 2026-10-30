@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/permission"
 	"swarm/packages/swarmd/internal/run"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -51,12 +52,20 @@ func (h *catalogParityHarness) seedWorkspaces(t *testing.T) {
 			}
 			machine.swarm.s.SetTopologyService(topologyruntime.NewService(topologyStore, swarmStore))
 		}
-		svc := run.NewService(machine.swarm.s.sessions, nil, nil, machine.runtime, nil, nil, nil, nil)
+		// The machine's permission service (seedSessions): the run service's
+		// gate asks it, as in the daemon.
+		perms, _ := machine.swarm.s.perm.(*permission.Service)
+		svc := run.NewService(machine.swarm.s.sessions, nil, nil, machine.runtime, perms, nil, nil, nil)
 		svc.SetWorkspaceService(machine.swarm.s.workspace)
 		svc.SetWorkspaceMapService(pebblestore.NewWorkspaceMapService(pebblestore.NewWorkspaceMapStore(machine.swarm.s.sessions.Store().Underlying())))
 		svc.SetSessionWorkspaceCanonicalizer(machine.swarm.s.CanonicalizeSessionWorkspace)
 		if machine.prefix == "" {
 			h.workspaceRun = svc
+			// The Orchestrator's conversation works in a workspace, as in the
+			// daemon: the run service's gate resolves its scope from it.
+			if _, _, err := machine.swarm.s.sessions.SetWorkspacePath("home-orch", machine.folder); err != nil {
+				t.Fatal(err)
+			}
 		}
 		p := identity.Principal{Type: identity.PrincipalTypeUser, UserID: machine.swarm.user, AccountScopeID: machine.swarm.account}
 		root := t.TempDir()

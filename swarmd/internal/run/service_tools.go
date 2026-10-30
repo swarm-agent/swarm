@@ -2315,6 +2315,9 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 		result.Output = output
 		return true, result, err
 	case "manage_sessions":
+		if err := manageSessionsApprovedMachineMatches(call.Arguments, approvedArguments); err != nil {
+			return true, result, err
+		}
 		switch permission.ManageSessionsAction(call.Arguments) {
 		case "deploy":
 			output, err := s.executeManageSessionsDeploy(ctx, sessionID, call, approvedArguments, applySessionMutation)

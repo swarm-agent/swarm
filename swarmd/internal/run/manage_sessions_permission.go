@@ -21,6 +21,18 @@ func (s *Service) buildManageSessionsPermissionPayload(sessionID string, call to
 		return nil, fmt.Errorf("manage-sessions arguments invalid: %w", err)
 	}
 	action := strings.ToLower(strings.TrimSpace(mapString(args, "action")))
+	if machine := strings.TrimSpace(mapString(args, "machine")); machine != "" {
+		switch action {
+		case "deploy", "commit", "review_worktrees", "git_status":
+			// This machine's own session tooling: never a linked call, and
+			// never run here under a machine the person did not mean.
+			return nil, fmt.Errorf("manage_sessions %s runs on this machine only; omit machine", action)
+		case "archive", "unarchive":
+			return s.buildLinkedManageSessionsPermissionPayload(sessionID, machine, action, args)
+		}
+		// Other actions run as written on the linked machine's handler.
+		return args, nil
+	}
 	if action == "deploy" {
 		manifest, err := s.buildManageSessionsDeployManifest(sessionID, call)
 		if err != nil {
@@ -143,6 +155,104 @@ func (s *Service) buildManageSessionsPermissionPayload(sessionID string, call to
 	}, nil
 }
 
+// buildLinkedManageSessionsPermissionPayload is the approval of an archive or
+// unarchive on a linked machine: the sessions are that machine's, read through
+// its own manage_sessions (list for all/category, get for each one), so the
+// person sees what will change there. The approved call keeps machine and
+// binds each session's version, so it runs on the linked machine's handler
+// and refuses there if a session changed after the person approved it.
+func (s *Service) buildLinkedManageSessionsPermissionPayload(sessionID, machine, action string, args map[string]any) (map[string]any, error) {
+	if s == nil || s.sessions == nil || s.tools == nil {
+		return nil, fmt.Errorf("manage-sessions service is not configured")
+	}
+	owner, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("session %q not found", sessionID)
+	}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: owner.AccountScopeID, UserID: owner.UserID, SessionID: owner.ID, AccountScopeSource: identity.AccountScopeSourceSession}
+	ctx := identity.ContextWithPrincipal(context.Background(), principal)
+	read := func(readArgs map[string]any) (map[string]any, error) {
+		return s.tools.LinkedCatalogRead(ctx, principal, machine, "manage_sessions", readArgs)
+	}
+	ids := manageSessionsPermissionIDs(args)
+	if len(ids) == 0 && action == "archive" && (mapBool(args, "all") || strings.TrimSpace(mapString(args, "category")) != "") {
+		categoryFilter := strings.ToLower(strings.TrimSpace(mapString(args, "category")))
+		listArgs := map[string]any{"action": "list", "limit": float64(50)}
+		if categoryFilter != "" && categoryFilter != "all" {
+			listArgs["category"] = categoryFilter
+		}
+		listed, err := read(listArgs)
+		if err != nil {
+			return nil, err
+		}
+		items, _ := listed["items"].([]any)
+		for _, raw := range items {
+			item, _ := raw.(map[string]any)
+			id := strings.TrimSpace(mapString(item, "id"))
+			if id == "" || mapBool(item, "archived") {
+				continue
+			}
+			if categoryFilter != "" && categoryFilter != "all" && !strings.EqualFold(mapString(item, "category"), categoryFilter) {
+				continue
+			}
+			ids = append(ids, id)
+			if len(ids) == 50 {
+				break
+			}
+		}
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("%s requires session_id, session_ids, category, or all=true", action)
+	}
+	if len(ids) > 50 {
+		return nil, fmt.Errorf("%s supports at most 50 sessions per call", action)
+	}
+	facts := make([]any, 0, len(ids))
+	expectedVersions := make(map[string]any, len(ids))
+	for _, id := range ids {
+		target, err := read(map[string]any{"action": "get", "session_id": id})
+		if err != nil {
+			return nil, err
+		}
+		archived := mapBool(target, "archived")
+		if action == "archive" && archived {
+			return nil, fmt.Errorf("session %s on %s is already archived", id, machine)
+		}
+		if action == "unarchive" && !archived {
+			return nil, fmt.Errorf("session %s on %s is not archived", id, machine)
+		}
+		version, ok := target["updated_at"].(float64)
+		if !ok || version <= 0 {
+			return nil, fmt.Errorf("linked machine %s gave no version for session %s", machine, id)
+		}
+		expectedVersions[id] = int64(version)
+		facts = append(facts, map[string]any{
+			"machine":        machine,
+			"session_id":     id,
+			"title":          mapString(target, "title"),
+			"workspace_name": mapString(target, "workspace_name"),
+			"workspace_path": mapString(target, "workspace_path"),
+			"state":          mapString(target, "state"),
+			"updated_at":     int64(version),
+		})
+	}
+	approved := map[string]any{
+		"action":                    action,
+		"machine":                   machine,
+		"session_ids":               append([]string(nil), ids...),
+		"expected_updated_at_by_id": expectedVersions,
+	}
+	return map[string]any{
+		"action":             action,
+		"machine":            machine,
+		"sessions":           facts,
+		"approved_arguments": approved,
+	}, nil
+}
+
 func (s *Service) buildManageSessionsCommitPermissionPayload(sessionID string, args map[string]any) (map[string]any, error) {
 	if s == nil || s.sessions == nil || s.tools == nil {
 		return nil, fmt.Errorf("manage-sessions commit services are not configured")
@@ -175,6 +285,34 @@ func selectedSessionDeployCount(approvedArguments string) int {
 		return 0
 	}
 	return len(payload.SelectedProposalIDs)
+}
+
+// manageSessionsApprovedMachineMatches refuses an approved manage_sessions
+// change whose approved arguments target another machine than the call: an
+// archive or unarchive runs only where the person approved it (the approved
+// arguments carry machine for a linked change), and this machine's own
+// session tooling (deploy, commit) never runs under a machine argument.
+func manageSessionsApprovedMachineMatches(callArguments, approvedArguments string) error {
+	var call map[string]any
+	if json.Unmarshal([]byte(strings.TrimSpace(callArguments)), &call) != nil {
+		return nil
+	}
+	requested := strings.TrimSpace(mapString(call, "machine"))
+	switch strings.ToLower(strings.TrimSpace(mapString(call, "action"))) {
+	case "deploy", "commit":
+		if requested != "" {
+			return fmt.Errorf("manage_sessions %s runs on this machine only; omit machine", mapString(call, "action"))
+		}
+	case "archive", "unarchive":
+		var approved map[string]any
+		if strings.TrimSpace(approvedArguments) != "" && json.Unmarshal([]byte(strings.TrimSpace(approvedArguments)), &approved) != nil {
+			return fmt.Errorf("manage-sessions approved arguments are invalid")
+		}
+		if strings.TrimSpace(mapString(approved, "machine")) != requested {
+			return fmt.Errorf("manage_sessions %s was approved for another machine than it names", mapString(call, "action"))
+		}
+	}
+	return nil
 }
 
 func isCanonicalManageSessionsMutation(action string) bool {

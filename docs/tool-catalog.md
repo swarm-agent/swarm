@@ -406,7 +406,12 @@ machine's own `manage_sessions` handler, at `POST /v3/tool-catalog/{tool}`
 (`api.CatalogLinkedPath`), which only a home over the link may call. The
 linked work rule applies: off refuses every call, ask refuses the calls
 that start a run there (`create` with a prompt, a triggering
-`send_message`), auto runs everything.
+`send_message`), auto runs everything. In a conversation, an `archive` or
+`unarchive` with `machine` asks the person with the linked machine's own
+sessions (read through its `manage_sessions`), binds their versions, and the
+approved call keeps `machine` and runs on that machine; this machine's
+sessions are never touched (`TestManageSessionsLinkedArchiveThroughTheGate`).
+The Swarm agent's own tooling (`deploy`, `commit`) refuses `machine`.
 
 ## manage_workspace
 

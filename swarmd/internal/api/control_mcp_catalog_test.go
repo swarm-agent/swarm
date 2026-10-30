@@ -211,6 +211,13 @@ func (h *catalogParityHarness) orchestratorTool(t *testing.T, name string, args 
 	ctx, cancel := context.WithTimeout(tool.WithCatalogAgent(base, agent), 20*time.Second)
 	defer cancel()
 	raw, _ := json.Marshal(args)
+	// A change through manage_sessions or manage_workspace goes through the
+	// run service's real gate (approval payload, prompt, approved arguments,
+	// execution), as the Orchestrator's call does in the daemon.
+	if catalogGatedChange(name, args) {
+		out, _, err := h.gatedOrchestratorTool(t, ctx, session, name, args)
+		return out, err
+	}
 	if name == "manage_workspace" {
 		return h.orchestratorWorkspace(ctx, session, args)
 	}

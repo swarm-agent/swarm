@@ -177,6 +177,50 @@ func (r *Runtime) manageSessionsControl(ctx context.Context, scope WorkspaceScop
 	return string(encoded), err
 }
 
+// LinkedCatalogRead runs a read action of a catalog tool on a linked machine
+// (that machine's own handler, through the linked catalog route and its
+// linked work rule) and returns the answer's data. The run service uses it
+// to show the person the linked machine's records before a change there is
+// approved. Only read-level actions are served.
+func (r *Runtime) LinkedCatalogRead(ctx context.Context, p identity.Principal, machine, toolName string, args map[string]any) (map[string]any, error) {
+	machine = strings.TrimSpace(machine)
+	if machine == "" {
+		return nil, errors.New("linked catalog read requires machine")
+	}
+	catalog, ok := CatalogToolNamed(toolName)
+	if !ok {
+		return nil, fmt.Errorf("%s is not a catalog tool", toolName)
+	}
+	declared, ok := catalog.Action(stringValue(args["action"]))
+	if !ok || declared.Level != CatalogLevelRead || declared.Reach == CatalogReachHome {
+		return nil, fmt.Errorf("%s %v is not a linked read", toolName, args["action"])
+	}
+	fleet, ok := r.fleetCatalog()
+	if !ok {
+		return nil, errors.New("linked work service unavailable")
+	}
+	remote := make(map[string]any, len(args))
+	for key, value := range args {
+		if key != "machine" {
+			remote[key] = value
+		}
+	}
+	remote["action"] = declared.Action
+	raw, err := fleet.CallFleetCatalog(ctx, p, machine, catalog.Name, remote)
+	if err != nil {
+		return nil, err
+	}
+	data, err := EnvelopeData(string(raw))
+	if err != nil {
+		return nil, fmt.Errorf("linked machine %s: %w", machine, err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(data, &out); err != nil || out == nil {
+		return nil, fmt.Errorf("linked machine %s answered %s %s with no object", machine, catalog.Name, declared.Action)
+	}
+	return out, nil
+}
+
 // linkedCatalogCall runs a catalog action on a linked machine through its
 // own handler and puts that machine's answer in this machine's envelope:
 // the machine's data as it came, untrusted.
