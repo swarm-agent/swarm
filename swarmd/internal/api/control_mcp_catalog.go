@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"strings"
 
+	"swarm/packages/swarmd/internal/remote"
 	"swarm/packages/swarmd/internal/tool"
 )
 
@@ -54,13 +56,62 @@ func (c *controlMCPCall) catalogActionAllowed(action tool.CatalogAction) bool {
 	if !ok {
 		return false
 	}
-	if !tool.CatalogLevelAllowed(action, c.levels()) {
+	levels, bound := c.catalogLevels()
+	if !tool.CatalogLevelsAllow(action, levels, bound) {
 		return false
 	}
-	if action.Level == tool.CatalogLevelRead {
-		return record.HasScope("projects:read") || record.HasScope("sessions:read")
+	return catalogScopesHeld(record.HasScope, action)
+}
+
+// catalogScopesHeld reports whether the key holds one of the API scopes of
+// the route behind the action (CatalogAction.APIScopes). An action that
+// declares none is refused.
+func catalogScopesHeld(has func(string) bool, action tool.CatalogAction) bool {
+	for _, scope := range action.APIScopes {
+		if has(scope) {
+			return true
+		}
 	}
-	return record.HasScope("projects:write") || record.HasScope("sessions:write")
+	return false
+}
+
+// ControlRelayLevelsHeader carries the Swarm Control levels a relay client
+// holds on this machine (its scopes within the device's ceiling), set by
+// the relay (remote.Service) on each call it forwards with the device token.
+const ControlRelayLevelsHeader = remote.ClientLevelsHeader
+
+// catalogLevels are the levels a catalog action is checked against: the
+// key's swarm:* levels, narrowed to the relay client's when the call came
+// through the relay. Forwarded levels only ever narrow: a key without levels
+// takes the forwarded ones, a key with levels keeps those it shares with
+// them. bound reports that the levels bind even when empty.
+func (c *controlMCPCall) catalogLevels() (levels []string, bound bool) {
+	key := c.levels()
+	values := c.request.Header.Values(ControlRelayLevelsHeader)
+	if len(values) == 0 {
+		return key, false
+	}
+	forwarded := map[string]bool{}
+	for _, value := range values {
+		for _, level := range strings.Split(value, ",") {
+			if level = strings.ToLower(strings.TrimSpace(level)); strings.HasPrefix(level, "swarm:") {
+				forwarded[level] = true
+			}
+		}
+	}
+	if len(key) == 0 {
+		for level := range forwarded {
+			levels = append(levels, level)
+		}
+	} else {
+		for _, level := range key {
+			if forwarded[level] {
+				levels = append(levels, level)
+			}
+		}
+	}
+	sort.Strings(levels)
+	return levels, true
 }
 
 // catalogTools are the catalog tools this caller sees: the default listing
@@ -112,15 +163,15 @@ func (c *controlMCPCall) callCatalogTool(catalog tool.CatalogTool, args map[stri
 		}
 		return nil, controlMCPToolFailure("%s has no action %q for Swarm Control; use one of: %s", catalog.Name, name, strings.Join(served, ", "))
 	}
-	if !tool.CatalogLevelAllowed(action, c.levels()) {
-		return nil, controlMCPToolFailure("this key is limited to %s; %s %s needs %s", strings.Join(c.levels(), ", "), catalog.Name, action.Action, action.Level.Scope())
+	levels, bound := c.catalogLevels()
+	if !tool.CatalogLevelsAllow(action, levels, bound) {
+		if bound && action.LocalOnly {
+			return nil, controlMCPToolFailure("%s %s is machine setup a relay client may not do", catalog.Name, action.Action)
+		}
+		return nil, controlMCPToolFailure("this key is limited to %s; %s %s needs %s", strings.Join(levels, ", "), catalog.Name, action.Action, action.Level.Scope())
 	}
 	if !c.catalogActionAllowed(action) {
-		need := "projects:write or sessions:write"
-		if action.Level == tool.CatalogLevelRead {
-			need = "projects:read or sessions:read"
-		}
-		return nil, controlMCPToolFailure("this connection cannot call %s %s; it needs %s", catalog.Name, action.Action, need)
+		return nil, controlMCPToolFailure("this connection cannot call %s %s; it needs %s", catalog.Name, action.Action, strings.Join(action.APIScopes, " or "))
 	}
 	// The declared inputs are checked for type, enum and bounds; other
 	// arguments pass to the handler as they do for the Orchestrator, which
@@ -141,7 +192,12 @@ func (c *controlMCPCall) callCatalogTool(catalog tool.CatalogTool, args map[stri
 	if !ok || !principal.Valid() {
 		return nil, controlMCPToolFailure("%s requires an authenticated user identity", catalog.Name)
 	}
-	answer, err := c.server.toolCatalog.ExecuteControlCatalog(c.request.Context(), tool.ControlCatalogCall{Principal: principal, Levels: c.levels(), Tool: catalog.Name, Arguments: args})
+	// The caller is named by its AI key where a session would be.
+	keyID := ""
+	if record, ok := ScopedTokenFromRequest(c.request); ok && record != nil {
+		keyID = record.ID
+	}
+	answer, err := c.server.toolCatalog.ExecuteControlCatalog(c.request.Context(), tool.ControlCatalogCall{Principal: principal, Levels: levels, LevelsBound: bound, KeyID: keyID, Tool: catalog.Name, Arguments: args})
 	if err != nil {
 		return nil, controlMCPToolFailure("%s", err.Error())
 	}

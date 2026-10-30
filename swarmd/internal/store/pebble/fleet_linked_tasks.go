@@ -16,13 +16,18 @@ import (
 // (session and project) and what it last saw of it, so the sending session
 // and project can list it. Everything observed from the machine is untrusted.
 type FleetLinkedTask struct {
-	AccountScopeID  string `json:"account_scope_id"`
-	Machine         string `json:"machine"`
-	ProjectID       string `json:"project_id"` // on the machine
-	TaskID          string `json:"task_id"`    // on the machine
-	Title           string `json:"title,omitempty"`
-	HomeSessionID   string `json:"home_session_id"`
-	HomeProjectID   string `json:"home_project_id,omitempty"`
+	AccountScopeID string `json:"account_scope_id"`
+	Machine        string `json:"machine"`
+	ProjectID      string `json:"project_id"` // on the machine
+	TaskID         string `json:"task_id"`    // on the machine
+	Title          string `json:"title,omitempty"`
+	HomeSessionID  string `json:"home_session_id"`
+	HomeProjectID  string `json:"home_project_id,omitempty"`
+	// HomeSender is the sender when no session sent it: a Swarm Control
+	// (MCP) caller, named by its AI key ("key:ID", or "user:ID" for a
+	// caller without a key record). Exactly one of HomeSessionID and
+	// HomeSender is set.
+	HomeSender      string `json:"home_sender,omitempty"`
 	CreatedAt       int64  `json:"created_at"`
 	Status          string `json:"status,omitempty"`
 	ActionNeeded    string `json:"action_needed,omitempty"`
@@ -51,6 +56,7 @@ const (
 	fleetLinkedTaskPrefix        = "fleet/linked_task/"
 	fleetLinkedTaskSessionPrefix = "fleet/linked_task_session/"
 	fleetLinkedTaskProjectPrefix = "fleet/linked_task_project/"
+	fleetLinkedTaskSenderPrefix  = "fleet/linked_task_sender/"
 	fleetLinkedTaskListLimit     = 500
 )
 
@@ -76,8 +82,9 @@ func (s *FleetStore) PutLinkedTask(task FleetLinkedTask) (FleetLinkedTask, error
 	task.TaskID = strings.TrimSpace(task.TaskID)
 	task.HomeSessionID = strings.TrimSpace(task.HomeSessionID)
 	task.HomeProjectID = strings.TrimSpace(task.HomeProjectID)
-	if task.AccountScopeID == "" || task.Machine == "" || task.ProjectID == "" || task.TaskID == "" || task.HomeSessionID == "" {
-		return FleetLinkedTask{}, errors.New("a linked task needs an account, a machine, a project, a task and the sending session")
+	task.HomeSender = strings.TrimSpace(task.HomeSender)
+	if task.AccountScopeID == "" || task.Machine == "" || task.ProjectID == "" || task.TaskID == "" || (task.HomeSessionID == "") == (task.HomeSender == "") {
+		return FleetLinkedTask{}, errors.New("a linked task needs an account, a machine, a project, a task and its sender: the sending session or a Swarm Control caller, not both")
 	}
 	fleetLinkedTaskMu.Lock()
 	defer fleetLinkedTaskMu.Unlock()
@@ -89,7 +96,7 @@ func (s *FleetStore) PutLinkedTask(task FleetLinkedTask) (FleetLinkedTask, error
 	}
 	now := time.Now().UnixMilli()
 	if found {
-		task.HomeSessionID, task.HomeProjectID, task.CreatedAt = existing.HomeSessionID, existing.HomeProjectID, existing.CreatedAt
+		task.HomeSessionID, task.HomeProjectID, task.HomeSender, task.CreatedAt = existing.HomeSessionID, existing.HomeProjectID, existing.HomeSender, existing.CreatedAt
 		if task.Title == "" {
 			task.Title = existing.Title
 		}
@@ -111,7 +118,11 @@ func (s *FleetStore) PutLinkedTask(task FleetLinkedTask) (FleetLinkedTask, error
 	id := fleetLinkedTaskID(task.Machine, task.ProjectID, task.TaskID)
 	if !found {
 		account := keyPart(task.AccountScopeID)
-		if err := batch.Set([]byte(fleetLinkedTaskSessionPrefix+account+"/"+keyPart(task.HomeSessionID)+"/"+id), []byte(key), nil); err != nil {
+		index := fleetLinkedTaskSessionPrefix + account + "/" + keyPart(task.HomeSessionID) + "/" + id
+		if task.HomeSender != "" {
+			index = fleetLinkedTaskSenderPrefix + account + "/" + keyPart(task.HomeSender) + "/" + id
+		}
+		if err := batch.Set([]byte(index), []byte(key), nil); err != nil {
 			return FleetLinkedTask{}, err
 		}
 		if task.HomeProjectID != "" {
@@ -168,6 +179,15 @@ func (s *FleetStore) ObserveLinkedTask(account, machine, projectID string, obser
 // ListLinkedTasksForSession lists the records sent by one home session, newest first.
 func (s *FleetStore) ListLinkedTasksForSession(account, sessionID string) ([]FleetLinkedTask, error) {
 	return s.listLinkedTasksByIndex(fleetLinkedTaskSessionPrefix + keyPart(account) + "/" + keyPart(sessionID) + "/")
+}
+
+// ListLinkedTasksForSender lists the records one Swarm Control caller sent
+// (HomeSender), newest first.
+func (s *FleetStore) ListLinkedTasksForSender(account, sender string) ([]FleetLinkedTask, error) {
+	if strings.TrimSpace(sender) == "" {
+		return nil, errors.New("a sender is required")
+	}
+	return s.listLinkedTasksByIndex(fleetLinkedTaskSenderPrefix + keyPart(account) + "/" + keyPart(strings.TrimSpace(sender)) + "/")
 }
 
 // ListLinkedTasksForProject lists the records sent from one home project, newest first.

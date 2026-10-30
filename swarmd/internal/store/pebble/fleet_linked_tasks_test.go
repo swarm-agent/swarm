@@ -76,3 +76,56 @@ func TestFleetLinkedTaskStore(t *testing.T) {
 		t.Fatalf("unrelated account listed records: %+v %v", none, err)
 	}
 }
+
+// Purpose: a task a Swarm Control (MCP) caller sends to a linked machine is
+// recorded with that caller as its sender (HomeSender, its AI key) instead
+// of a session: exactly one sender, listed by its own index and never under
+// a session or another account, and kept across a retried send. Threat: a
+// record with no sender or two, a fake session, or one caller listing
+// another's sends. Boundary: FleetStore PutLinkedTask and
+// ListLinkedTasksForSender over a temp Pebble store.
+func TestFleetLinkedTaskSenderIsSessionOrControlCaller(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "linked"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	fleet := NewFleetStore(store)
+	for _, bad := range []FleetLinkedTask{
+		{AccountScopeID: "a", Machine: "box", ProjectID: "p", TaskID: "t"},
+		{AccountScopeID: "a", Machine: "box", ProjectID: "p", TaskID: "t", HomeSessionID: "s1", HomeSender: "key:k1"},
+	} {
+		if _, err := fleet.PutLinkedTask(bad); err == nil {
+			t.Fatalf("accepted %+v", bad)
+		}
+		if _, found, _ := fleet.GetLinkedTask("a", "box", "p", "t"); found {
+			t.Fatal("a refused record was stored")
+		}
+	}
+	sent, err := fleet.PutLinkedTask(FleetLinkedTask{AccountScopeID: "a", Machine: "box", ProjectID: "p", TaskID: "t1", HomeSender: "key:k1", CreatedAt: 100})
+	if err != nil || sent.HomeSender != "key:k1" || sent.HomeSessionID != "" {
+		t.Fatalf("put: %+v %v", sent, err)
+	}
+	if _, err := fleet.PutLinkedTask(FleetLinkedTask{AccountScopeID: "b", Machine: "box", ProjectID: "p", TaskID: "t9", HomeSender: "key:k1"}); err != nil {
+		t.Fatal(err)
+	}
+	// A retried send by another caller keeps the first sender.
+	again, err := fleet.PutLinkedTask(FleetLinkedTask{AccountScopeID: "a", Machine: "box", ProjectID: "p", TaskID: "t1", HomeSender: "key:k2"})
+	if err != nil || again.HomeSender != "key:k1" {
+		t.Fatalf("retried send changed sender: %+v %v", again, err)
+	}
+	if rows, err := fleet.ListLinkedTasksForSender("a", "key:k1"); err != nil || len(rows) != 1 || rows[0].TaskID != "t1" {
+		t.Fatalf("sender list: %+v %v", rows, err)
+	}
+	for _, other := range []struct{ account, sender string }{{"a", "key:k2"}, {"b", "key:k2"}} {
+		if rows, err := fleet.ListLinkedTasksForSender(other.account, other.sender); err != nil || len(rows) != 0 {
+			t.Fatalf("%s/%s lists %+v %v", other.account, other.sender, rows, err)
+		}
+	}
+	if rows, err := fleet.ListLinkedTasksForSession("a", ""); err != nil || len(rows) != 0 {
+		t.Fatalf("a Swarm Control send is listed under a session: %+v %v", rows, err)
+	}
+	if _, err := fleet.ListLinkedTasksForSender("a", " "); err == nil {
+		t.Fatal("an empty sender listed records")
+	}
+}

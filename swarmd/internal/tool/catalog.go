@@ -66,8 +66,16 @@ type CatalogAction struct {
 	Action string
 	// Inputs are the field names this action takes (besides action).
 	Inputs []string
-	Level  CatalogLevel
-	Reach  CatalogReach
+	// ControlInputs are fields only Swarm Control's call of the action takes
+	// (a caller with no conversation: wait_tasks' wait_seconds). They are
+	// not in the Orchestrator's definition.
+	ControlInputs []string
+	Level         CatalogLevel
+	// APIScopes are the API scopes of the route behind the action: a Swarm
+	// Control key needs one of them, as the route itself requires (the call
+	// runs in-process, so the route's own check never runs).
+	APIScopes []string
+	Reach     CatalogReach
 	// LocalOnly is machine setup a relay key may not do.
 	LocalOnly bool
 	Profiles  []CatalogProfile
@@ -127,7 +135,7 @@ func (t CatalogTool) Action(name string) (CatalogAction, bool) {
 // the action takes.
 func (t CatalogTool) InputSchema(action CatalogAction) map[string]any {
 	properties := map[string]any{"action": map[string]any{"type": "string", "enum": []string{action.Action}, "description": action.Description}}
-	for _, name := range action.Inputs {
+	for _, name := range append(append([]string(nil), action.Inputs...), action.ControlInputs...) {
 		if field, ok := t.Field(name); ok {
 			properties[name] = field.Schema
 		}
@@ -137,7 +145,7 @@ func (t CatalogTool) InputSchema(action CatalogAction) map[string]any {
 
 // schema is the tool's input schema for the listed actions: an action field
 // naming them, then the union of their inputs in field order.
-func (t CatalogTool) schema(actions []CatalogAction, describeActions bool) map[string]any {
+func (t CatalogTool) schema(actions []CatalogAction, control bool) map[string]any {
 	names := make([]string, 0, len(actions))
 	used := map[string]bool{}
 	lines := make([]string, 0, len(actions))
@@ -147,7 +155,13 @@ func (t CatalogTool) schema(actions []CatalogAction, describeActions bool) map[s
 		for _, input := range action.Inputs {
 			used[input] = true
 		}
+		if control {
+			for _, input := range action.ControlInputs {
+				used[input] = true
+			}
+		}
 	}
+	describeActions := control
 	actionField := map[string]any{"type": "string", "enum": names}
 	if describeActions {
 		actionField["description"] = strings.Join(lines, " ")
@@ -204,7 +218,18 @@ func CatalogToolNamed(name string) (CatalogTool, bool) {
 // action. A key without levels keeps its API scopes alone (the same rule as
 // every Swarm Control tool), so it passes here.
 func CatalogLevelAllowed(action CatalogAction, levels []string) bool {
-	if len(levels) == 0 {
+	return CatalogLevelsAllow(action, levels, false)
+}
+
+// CatalogLevelsAllow is CatalogLevelAllowed with bound levels: levels a
+// relay forwarded for its client (or a key narrowed to them) bind even when
+// empty, so no level means no action, and relayed calls never reach
+// local_only actions.
+func CatalogLevelsAllow(action CatalogAction, levels []string, bound bool) bool {
+	if bound && action.LocalOnly {
+		return false
+	}
+	if len(levels) == 0 && !bound {
 		return true
 	}
 	need := action.Level.Scope()

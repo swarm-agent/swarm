@@ -56,10 +56,16 @@ func TestManageProjectsCatalogGeneratesTheOrchestratorDefinition(t *testing.T) {
 			t.Fatalf("%s: no manage_projects action is local_only machine setup", action.Action)
 		}
 		properties := catalog.InputSchema(action)["properties"].(map[string]any)
-		if len(properties) != len(action.Inputs)+1 {
-			t.Fatalf("%s: schema has %d properties for %d inputs", action.Action, len(properties), len(action.Inputs))
+		inputs := append(append([]string(nil), action.Inputs...), action.ControlInputs...)
+		if len(properties) != len(inputs)+1 {
+			t.Fatalf("%s: schema has %d properties for %d inputs", action.Action, len(properties), len(inputs))
 		}
-		for _, input := range action.Inputs {
+		for _, input := range action.ControlInputs {
+			if orchestratorProperties := manageProjectsDefinition().Parameters["properties"].(map[string]any); orchestratorProperties[input] != nil {
+				t.Fatalf("%s: Swarm Control input %q is in the Orchestrator's definition", action.Action, input)
+			}
+		}
+		for _, input := range inputs {
 			if _, ok := catalog.Field(input); !ok {
 				t.Fatalf("%s: input %q is not a declared field", action.Action, input)
 			}

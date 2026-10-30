@@ -69,6 +69,7 @@ func manageProjectsFields() []CatalogField {
 		{"client_request_id", str("Stable retry key; required for reopen_task")},
 		{"workspaces", map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "create/update: [{path, role, label}]"}},
 		{"project_context", str("project.md text")},
+		{"wait_seconds", map[string]any{"type": "integer", "minimum": 0, "maximum": ControlTaskWaitMaxSeconds, "description": "wait_tasks over Swarm Control: how long to wait for a milestone (default 60, at most 110)"}},
 		{"environment", map[string]any{"type": "object", "description": "update_environment merge: base_image, append_setup, setup (replaces), env, unset_env, max_leases; wait_seconds"}},
 	}
 }
@@ -100,8 +101,8 @@ func manageProjectsCatalog() CatalogTool {
 	actions := []CatalogAction{
 		{Action: "propose_task", Inputs: proposeInputs, Level: write, Reach: anyM, Profiles: core,
 			Description: "Send a self-contained brief to an agent (coder, finder, designer or swarm); under Start tasks auto it starts at once."},
-		{Action: "wait_tasks", Inputs: []string{"machine", "project_id", "task_ids", "until", "milestones"}, Level: read, Reach: anyM, Profiles: core, Untrusted: true,
-			Description: "Watch tasks: the Orchestrator ends its turn and a new turn brings their outcomes. A Swarm Control caller has no turn to wake, so it gets the tasks' current state and nothing is watched."},
+		{Action: "wait_tasks", Inputs: []string{"machine", "project_id", "task_ids", "until", "milestones"}, ControlInputs: []string{"wait_seconds"}, Level: read, Reach: anyM, Profiles: core, Untrusted: true,
+			Description: "Wait for tasks. The Orchestrator's watch returns at once and a new turn brings their outcomes. A Swarm Control caller has no turn to wake, so the call waits until a listed task reaches its next milestone (started, needs you, review, sent back, landed, done, failed, stopped) or wait_seconds passes, then returns the tasks as get_task reads them; state says milestone, settled or timed_out."},
 		{Action: "cancel_watch", Inputs: []string{"machine", "project_id", "task_ids"}, Level: read, Reach: anyM, Profiles: orchestrator,
 			Description: "Stop watching tasks (omit task_ids: all)."},
 		{Action: "get_task", Inputs: with(projectTask, "machine", "detail", "cursor", "limit"), Level: read, Reach: anyM, Profiles: core, Untrusted: true,
@@ -185,8 +186,30 @@ func manageProjectsCatalog() CatalogTool {
 		{Action: "report_task", Inputs: with(projectTask, "client_request_id"), Level: write, Reach: home, Profiles: unlisted,
 			Description: "A task's own run records progress, attention or a wake request for the Orchestrator."},
 	}
+	// The API scopes of the route behind each action (a Swarm Control key
+	// needs one): the project and task routes (projects.go) take projects:*
+	// or sessions:* at the action's read or write; the fleet reads
+	// (fleet_agents.go, fleet_activity.go, and the session and status reads
+	// behind machine_status and get_task_session) and the folder environment
+	// routes (sandbox_environments.go) take sessions:* only.
+	projectRead, projectWrite := []string{"projects:read", "sessions:read"}, []string{"projects:write", "sessions:write"}
+	sessionRead, sessionWrite := []string{"sessions:read"}, []string{"sessions:write"}
+	routeScopes := map[string][]string{
+		"list_machines": sessionRead, FleetAgentsAtWorkAction: sessionRead, FleetMachineStatusAction: sessionRead,
+		FleetTaskSessionAction: sessionRead, FleetMachineActivityAction: sessionRead, "read_task_session": sessionRead,
+		FolderEnvironmentList: sessionRead, FolderEnvironmentGet: sessionRead,
+		FolderEnvironmentUpdate: sessionWrite, FolderEnvironmentRebuild: sessionWrite,
+		ResolveTaskPermissionAction: sessionWrite,
+	}
 	for i := range actions {
 		actions[i].Tool = manageProjectsToolName
+		if scopes, ok := routeScopes[actions[i].Action]; ok {
+			actions[i].APIScopes = scopes
+		} else if actions[i].Level == CatalogLevelRead {
+			actions[i].APIScopes = projectRead
+		} else {
+			actions[i].APIScopes = projectWrite
+		}
 	}
 	return CatalogTool{Name: manageProjectsToolName, Description: manageProjectsDescription, Fields: manageProjectsFields(), Actions: actions}
 }

@@ -48,7 +48,7 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 	switch action {
 	case "wait_tasks":
 		if scope.ControlCaller {
-			return r.controlTaskSnapshot(ctx, scope, "", args)
+			return r.controlTaskWait(ctx, scope, "", args)
 		}
 		run, ok := VideoRunContextFromContext(ctx)
 		if !ok || run.SessionID != scope.SessionID || r.sessions == nil {

@@ -10,8 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
+	"swarm/packages/swarmd/internal/workspace"
 )
 
 // controlMCPFrozenSwarmTools is every swarm_* Swarm Control tool. The set is
@@ -125,6 +127,19 @@ func newCatalogParityHarness(t *testing.T) *catalogParityHarness {
 		t.Fatal(err)
 	}
 	h.createGoal(t, "home-project-orch", map[string]any{"swarm_v3_project_id": "home-project", "project_id": "home-project", "agent_name": "system-orchestrator", "resolved_agent_name": "system-orchestrator"})
+	// The linked machine's project has a real folder, so a send to it
+	// starts a task there (as in TestFleetTaskAnswersCompactForOrchestrator).
+	h.remote.s.workspace = workspace.NewService(pebblestore.NewWorkspaceStore(h.remote.s.sessions.Store().Underlying()))
+	folder := t.TempDir()
+	outboxPinGit(t, folder, "init", "-q", "-b", "dev")
+	outboxPinGit(t, folder, "commit", "-q", "--allow-empty", "-m", "start")
+	added, err := h.remote.s.workspace.AddForPrincipal(identity.Principal{Type: identity.PrincipalTypeUser, UserID: h.remote.user, AccountScopeID: h.remote.account}, folder, "project", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.remote.s.sessions.Store().PutProject(h.remote.account, &pebblestore.ProjectRecord{ID: "remote-project", Name: "Remote project", Workspaces: []pebblestore.ProjectWorkspaceRef{{WorkspaceID: added.WorkspaceID, Path: folder, Role: "primary_code"}}}); err != nil {
+		t.Fatal(err)
+	}
 	h.home.s.SetToolCatalogRuntime(h.runtime)
 	return &catalogParityHarness{h}
 }
@@ -146,7 +161,7 @@ func (h *catalogParityHarness) orchestrator(t *testing.T, args map[string]any) (
 // of scopes.
 func (h *catalogParityHarness) controlRequest(scopes []string, agentName string) *http.Request {
 	req := requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodPost, "/mcp", nil), h.home.user, h.home.account)
-	return requestWithScopedToken(req, &pebblestore.ScopedTokenRecord{Scopes: scopes, AgentName: agentName})
+	return requestWithScopedToken(req, &pebblestore.ScopedTokenRecord{ID: "key-parity", Scopes: scopes, AgentName: agentName})
 }
 
 // control runs the call through Swarm Control's tools/call: the envelope, or
@@ -184,8 +199,10 @@ const (
 	// fields and data keys, or the same error with the twin's id.
 	parityShape catalogParityCompare = "shape"
 	// parityWatch: wait_tasks. The Orchestrator's turn ends and a new one
-	// brings outcomes, so its answer is a watch; a Swarm Control caller has
-	// no turn, so it gets the tasks as get_task reads them, not_watched.
+	// brings outcomes, so its answer is a watch (watching); a Swarm Control
+	// caller has no turn, so its call waits for the next milestone or
+	// wait_seconds (here 1: timed_out, or settled) and returns the tasks as
+	// get_task reads them. Everything else in the envelope is the same.
 	parityWatch catalogParityCompare = "watch"
 	// parityNotServed: an action no Swarm Control listing serves; MCP
 	// refuses it and names the actions it serves.
@@ -233,7 +250,7 @@ func catalogParityCases() map[string][]catalogParityCase {
 		"get":               both(parityArgs("action", "get", "id", "home-project"), parityArgs("action", "get", "machine", "box", "id", "remote-project")),
 		"list_tasks":        both(local("list_tasks"), remote("list_tasks")),
 		"get_task":          both(local("get_task", "task_id", "h1"), remote("get_task", "task_id", "t1")),
-		"wait_tasks":        append(same(parityWatch, local("wait_tasks", "task_ids", []any{"w1"})), same(parityWatch, remote("wait_tasks", "task_ids", []any{"t1"}))...),
+		"wait_tasks":        {{orchestrator: local("wait_tasks", "task_ids", []any{"w1"}), control: local("wait_tasks", "task_ids", []any{"w1"}, "wait_seconds", float64(1)), compare: parityWatch}, {orchestrator: remote("wait_tasks", "task_ids", []any{"t1"}), control: remote("wait_tasks", "task_ids", []any{"t1"}, "wait_seconds", float64(1)), compare: parityWatch}},
 		"read_task_session": both(local("read_task_session", "task_id", "h1"), remote("read_task_session", "task_id", "t1", "limit", float64(2))),
 		"message_task":      append(twin(local("message_task", "task_id", "h1", "message", "more"), local("message_task", "task_id", "h2", "message", "more"), map[string]string{"h2": "h1", "hs-h2": "hs-h1", "attempt-h2": "attempt-h1"}), twin(remote("message_task", "task_id", "t1", "message", "more"), remote("message_task", "task_id", "t2", "message", "more"), map[string]string{"t2": "t1", "rs-t2": "rs-t1"})...),
 		"stop_task":         append(twin(local("stop_task", "task_id", "h1"), local("stop_task", "task_id", "h2"), map[string]string{"h2": "h1", "hs-h2": "hs-h1"}), twin(remote("stop_task", "task_id", "t1"), remote("stop_task", "task_id", "t2"), map[string]string{"t2": "t1", "rs-t2": "rs-t1"})...),
@@ -432,10 +449,10 @@ func TestCatalogParityOrchestratorAndControl(t *testing.T) {
 						t.Fatalf("%s: %s differs: %v / %v", name, key, orch[key], control[key])
 					}
 				}
-				if orch["state"] != "watching" || control["state"] != "not_watched" || control["next_action"] != tool.ControlTaskSnapshotNextAction {
+				if orch["state"] != "watching" || (control["state"] != tool.ControlTaskWaitTimedOut && control["state"] != tool.ControlTaskWaitSettled) || control["next_action"] == nil {
 					t.Fatalf("%s: states %v / %v\n%s", name, orch["state"], control["state"], controlOut)
 				}
-				// The snapshot is what get_task answers for each task.
+				// The tasks are what get_task answers for each.
 				ids, _ := c.control["task_ids"].([]any)
 				rows, _ := envelopeDataMap(control)["tasks"].([]any)
 				if len(rows) != len(ids) {

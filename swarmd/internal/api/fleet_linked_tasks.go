@@ -82,8 +82,11 @@ func (s *Server) RecordFleetLinkedTask(_ context.Context, p identity.Principal, 
 	if s == nil || s.fleet == nil {
 		return pebblestore.FleetLinkedTask{}, errors.New("linked task records unavailable")
 	}
-	if !p.Valid() || strings.TrimSpace(origin.SessionID) == "" {
-		return pebblestore.FleetLinkedTask{}, errors.New("a linked task record needs the sending session")
+	// The sender is the sending session, or, for a Swarm Control caller
+	// (which has no session), its AI key: never both, never neither.
+	sessionID, sender := strings.TrimSpace(origin.SessionID), strings.TrimSpace(origin.Sender)
+	if !p.Valid() || (sessionID == "") == (sender == "") {
+		return pebblestore.FleetLinkedTask{}, errors.New("a linked task record needs its sender: the sending session or the Swarm Control caller")
 	}
 	var answer struct {
 		Task *pebblestore.ProjectTaskRecord `json:"task"`
@@ -98,11 +101,26 @@ func (s *Server) RecordFleetLinkedTask(_ context.Context, p identity.Principal, 
 	observed := linkedTaskObservation(task)
 	record := pebblestore.FleetLinkedTask{
 		AccountScopeID: p.AccountScopeID, Machine: machine, ProjectID: projectID, TaskID: task.ID, Title: observed.Title,
-		HomeSessionID: origin.SessionID, HomeProjectID: origin.ProjectID,
+		HomeSessionID: sessionID, HomeProjectID: origin.ProjectID, HomeSender: sender,
 		Status: observed.Status, ActionNeeded: observed.ActionNeeded, LastError: observed.LastError, Progress: observed.Progress,
 		RemoteSessionID: observed.RemoteSessionID, Archived: observed.Archived,
 	}
 	return s.fleet.PutLinkedTask(record)
+}
+
+// ListFleetLinkedTasksBySender lists the account's records one Swarm Control
+// caller sent (its sender, as ExecuteControlCatalog names it).
+func (s *Server) ListFleetLinkedTasksBySender(_ context.Context, p identity.Principal, sender string) ([]pebblestore.FleetLinkedTask, error) {
+	if s == nil || s.fleet == nil {
+		return nil, linkedTaskFail(http.StatusServiceUnavailable, "linked task records unavailable")
+	}
+	if !p.Valid() {
+		return nil, linkedTaskFail(http.StatusUnauthorized, "%s", identity.ErrPrincipalRequired.Error())
+	}
+	if strings.TrimSpace(sender) == "" {
+		return nil, linkedTaskFail(http.StatusBadRequest, "a sender is required")
+	}
+	return s.fleet.ListLinkedTasksForSender(p.AccountScopeID, sender)
 }
 
 // ListFleetLinkedTasks lists the account's records sent by one home session

@@ -286,6 +286,10 @@ type WorkspaceScope struct {
 	// conversation in Swarm (SessionID is empty); its verified user
 	// principal stands where the home Orchestrator's session does.
 	ControlCaller bool
+	// ControlSender names the Swarm Control caller (its AI key, "key:ID";
+	// "user:ID" without a key record) where a session would: the sender
+	// of a task it sends to a linked machine.
+	ControlSender string
 }
 
 type manageSessionService interface {

@@ -24,6 +24,15 @@ type FleetProjects interface {
 type FleetLinkedTaskOrigin struct {
 	SessionID string
 	ProjectID string
+	// Sender is a Swarm Control caller's AI key (WorkspaceScope
+	// ControlSender) when no session sent the task; SessionID is then
+	// empty.
+	Sender string
+}
+
+// FleetLinkedTasksBySender lists the records one Swarm Control caller sent.
+type FleetLinkedTasksBySender interface {
+	ListFleetLinkedTasksBySender(context.Context, identity.Principal, string) ([]pebblestore.FleetLinkedTask, error)
 }
 
 // FleetLinkedTasks is the home's record of tasks sent to linked machines and
@@ -257,7 +266,7 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 	}
 	if action == "wait_tasks" {
 		if scope.ControlCaller {
-			return r.controlTaskSnapshot(ctx, scope, machine, args)
+			return r.controlTaskWait(ctx, scope, machine, args)
 		}
 		if asBool(args["cancel"]) {
 			// Ending a watch reads nothing from the machine.
@@ -354,6 +363,10 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 			result["linked_record_error"] = "linked task records unavailable"
 		} else {
 			origin := FleetLinkedTaskOrigin{SessionID: scope.SessionID, ProjectID: strings.TrimSpace(asString(session.Metadata["project_id"]))}
+			if scope.ControlCaller {
+				// No sending session: the Swarm Control caller is the sender.
+				origin = FleetLinkedTaskOrigin{Sender: scope.ControlSender}
+			}
 			if record, err := linkedTasks.RecordFleetLinkedTask(ctx, scope.Principal, origin, machine, strings.TrimSpace(asString(args["project_id"])), raw); err != nil {
 				result["linked_record_error"] = err.Error()
 			} else if detail == ProjectTaskDetailFull {
@@ -419,11 +432,26 @@ func (r *Runtime) executeListLinkedTasks(ctx context.Context, scope WorkspaceSco
 	if projectID != "" {
 		sessionID = ""
 	}
-	tasks, err := linkedTasks.ListFleetLinkedTasks(ctx, scope.Principal, sessionID, projectID)
+	var tasks []pebblestore.FleetLinkedTask
+	var err error
+	if scope.ControlCaller && projectID == "" && sessionID == "" {
+		// A Swarm Control caller has no session: its own sends.
+		bySender, ok := linkedTasks.(FleetLinkedTasksBySender)
+		if !ok {
+			return "", errors.New("linked task records unavailable")
+		}
+		tasks, err = bySender.ListFleetLinkedTasksBySender(ctx, scope.Principal, scope.ControlSender)
+	} else {
+		tasks, err = linkedTasks.ListFleetLinkedTasks(ctx, scope.Principal, sessionID, projectID)
+	}
 	if err != nil {
 		return "", err
 	}
-	out, err := json.Marshal(map[string]any{"tool": "manage_projects", "action": "list_linked_tasks", "session_id": sessionID, "project_id": projectID, "linked_tasks": tasks, "untrusted_content": true})
+	listed := map[string]any{"tool": "manage_projects", "action": "list_linked_tasks", "session_id": sessionID, "project_id": projectID, "linked_tasks": tasks, "untrusted_content": true}
+	if scope.ControlCaller && projectID == "" && sessionID == "" {
+		listed["sender"] = scope.ControlSender
+	}
+	out, err := json.Marshal(listed)
 	return string(out), err
 }
 

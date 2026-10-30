@@ -28,7 +28,23 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"swarm/packages/swarmd/internal/tool"
 )
+
+// ClientLevelsHeader carries a relay client's effective Swarm Control levels
+// (its scopes within this device's ceiling) on each call the relay forwards
+// with the device token. Catalog tools check each action against them
+// (the token alone carries no levels); they only ever narrow a key.
+const ClientLevelsHeader = "X-Swarm-Relay-Levels"
+
+// catalogTool reports whether name is a tool catalog tool: its actions have
+// their own levels, which Swarm Control checks per action against the
+// forwarded client levels, so the relay does not gate it by name.
+func catalogTool(name string) bool {
+	_, ok := tool.CatalogToolNamed(name)
+	return ok
+}
 
 const (
 	Protocol     = "swarm-remote-1"
@@ -774,7 +790,7 @@ func (s *Service) handle(cfg Config, msg frame) json.RawMessage {
 	default:
 		return rpcError(rpc.ID, -32601, "method not available through the relay")
 	}
-	if rpc.Method == "tools/call" && (!contains(effective, toolScope(rpc.Params.Name)) || localOnlyTools[rpc.Params.Name]) {
+	if rpc.Method == "tools/call" && !catalogTool(rpc.Params.Name) && (!contains(effective, toolScope(rpc.Params.Name)) || localOnlyTools[rpc.Params.Name]) {
 		result, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": rpc.ID, "result": map[string]any{
 			"content": []map[string]any{{"type": "text", "text": "This machine does not allow " + rpc.Params.Name + " for remote clients."}},
 			"isError": true,
@@ -794,6 +810,9 @@ func (s *Service) handle(cfg Config, msg frame) json.RawMessage {
 	req.RemoteAddr = "swarm-remote"
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	// The client's own levels bind every catalog action (Swarm Control
+	// checks {tool, action} against them; the device token has none).
+	req.Header.Set(ClientLevelsHeader, strings.Join(effective, ","))
 	recorder := &responseRecorder{header: http.Header{}, status: http.StatusOK}
 	control.ServeHTTP(recorder, req)
 	if recorder.status != http.StatusOK || recorder.overflow {
@@ -816,7 +835,9 @@ func filterTools(raw []byte, effective []string) json.RawMessage {
 	for _, item := range tools {
 		tool, _ := item.(map[string]any)
 		name, _ := tool["name"].(string)
-		if contains(effective, toolScope(name)) && !localOnlyTools[name] {
+		// A catalog tool was already listed with only the actions the
+		// client's forwarded levels allow (or left out when none).
+		if catalogTool(name) || (contains(effective, toolScope(name)) && !localOnlyTools[name]) {
 			kept = append(kept, tool)
 		}
 	}

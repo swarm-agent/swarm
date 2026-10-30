@@ -260,7 +260,12 @@ type ControlCatalogCall struct {
 	Principal identity.Principal
 	// Levels are the key's swarm:* levels; none keeps its API scopes alone,
 	// which the caller checked.
-	Levels    []string
+	Levels []string
+	// LevelsBound: Levels bind even when empty (a relay client's forwarded
+	// levels); local_only actions are refused.
+	LevelsBound bool
+	// KeyID is the caller's AI key record; it names the caller as a sender.
+	KeyID     string
 	Tool      string
 	Arguments map[string]any
 }
@@ -296,7 +301,7 @@ func (r *Runtime) ExecuteControlCatalog(ctx context.Context, call ControlCatalog
 		}
 		return "", fmt.Errorf("%s has no action %q for Swarm Control; use one of: %s", catalog.Name, name, strings.Join(served, ", "))
 	}
-	if !CatalogLevelAllowed(action, call.Levels) {
+	if !CatalogLevelsAllow(action, call.Levels, call.LevelsBound) {
 		return "", fmt.Errorf("this key is limited to %s; %s %s needs %s", strings.Join(call.Levels, ", "), catalog.Name, action.Action, action.Level.Scope())
 	}
 	p := call.Principal
@@ -304,7 +309,11 @@ func (r *Runtime) ExecuteControlCatalog(ctx context.Context, call ControlCatalog
 		return "", fmt.Errorf("%s requires an authenticated user identity", catalog.Name)
 	}
 	args["action"] = action.Action
-	scope := WorkspaceScope{Principal: p, ControlCaller: true}
+	sender := "user:" + strings.TrimSpace(p.UserID)
+	if key := strings.TrimSpace(call.KeyID); key != "" {
+		sender = "key:" + key
+	}
+	scope := WorkspaceScope{Principal: p, ControlCaller: true, ControlSender: sender}
 	switch catalog.Name {
 	case manageProjectsToolName:
 		return r.executeManageProjects(identity.ContextWithPrincipal(ctx, p), scope, args)
