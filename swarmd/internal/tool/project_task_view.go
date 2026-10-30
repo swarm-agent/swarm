@@ -106,6 +106,15 @@ type projectTaskProgressRead struct {
 			Findings          string `json:"findings"`
 			FindingsTruncated bool   `json:"findings_truncated"`
 			More              string `json:"more"`
+			// Review is the delivery's latest review step with a verdict
+			// (task progress deliveryReview).
+			Review *struct {
+				Step              string `json:"step"`
+				Verdict           string `json:"verdict"`
+				Round             int    `json:"round"`
+				Findings          string `json:"findings"`
+				FindingsTruncated bool   `json:"findings_truncated"`
+			} `json:"review"`
 		} `json:"deliveries"`
 	} `json:"workflow"`
 	Integration *struct {
@@ -175,8 +184,27 @@ type ProjectTaskView struct {
 	// (state needs_you): what is asked, and the permission_id
 	// resolve_task_permission answers. Its text is untrusted.
 	PendingRequest *pebblestore.ProjectTaskPendingRequest `json:"pending_request,omitempty"`
-	NextAction     string                                 `json:"next_action"`
-	More           string                                 `json:"more"`
+	// Review is the latest review of the task's work: its verdict (ok,
+	// warn or block), round and findings summary. nil when no review has
+	// recorded a verdict.
+	Review *projectTaskReview `json:"review,omitempty"`
+	// NextAction is the action to take next; omitted when there is none.
+	NextAction string `json:"next_action,omitempty"`
+	More       string `json:"more"`
+}
+
+// projectTaskReview is a task's latest review verdict as get_task shows it.
+// The findings are the reviewer's text (untrusted), bounded to
+// projectTaskTextBytes; FindingsTruncated and More (the call with the full
+// text) say when they were cut.
+type projectTaskReview struct {
+	Verdict           string `json:"verdict"`
+	Round             int    `json:"round,omitempty"`
+	Step              string `json:"step,omitempty"`
+	DeliveryID        string `json:"delivery_id,omitempty"`
+	Findings          string `json:"findings,omitempty"`
+	FindingsTruncated bool   `json:"findings_truncated,omitempty"`
+	More              string `json:"more,omitempty"`
 }
 
 type projectTaskProgress struct {
@@ -234,14 +262,17 @@ type projectTaskResult struct {
 	Summary string `json:"summary,omitempty"`
 	// ResultTruncated says Summary is shortened; ResultBytes is the full
 	// report's size and ReadFull how to read all of it.
-	ResultTruncated bool     `json:"result_truncated,omitempty"`
-	ResultBytes     int      `json:"result_bytes,omitempty"`
-	ReadFull        string   `json:"read_full,omitempty"`
-	Branch          string   `json:"branch,omitempty"`
-	Head            string   `json:"head,omitempty"`
-	Commits         int      `json:"commits"`
-	Files           int      `json:"files"`
-	Deliverables    []string `json:"deliverables,omitempty"`
+	ResultTruncated bool   `json:"result_truncated,omitempty"`
+	ResultBytes     int    `json:"result_bytes,omitempty"`
+	ReadFull        string `json:"read_full,omitempty"`
+	// Next is set with ResultTruncated: the exact arguments of the
+	// manage_projects call that reads the full report (the envelope's next).
+	Next         map[string]any `json:"next,omitempty"`
+	Branch       string         `json:"branch,omitempty"`
+	Head         string         `json:"head,omitempty"`
+	Commits      int            `json:"commits"`
+	Files        int            `json:"files"`
+	Deliverables []string       `json:"deliverables,omitempty"`
 }
 
 // projectTaskPlanGuard is what approve_task/refine_task need for a task
@@ -321,7 +352,7 @@ func projectTaskStatusClass(status string) string {
 // integration is the machine's own.
 func projectTaskNext(t *pebblestore.ProjectTaskRecord, progress *projectTaskProgressRead, integration string, commits int, remote bool) (string, string) {
 	if t.Archived {
-		return "none", "archived"
+		return "", "archived"
 	}
 	switch projectTaskStatusClass(t.Status) {
 	case "approval":
@@ -364,13 +395,13 @@ func projectTaskNext(t *pebblestore.ProjectTaskRecord, progress *projectTaskProg
 	}
 	switch {
 	case integration == "integrated" || integration == "delivered":
-		return "none", "done"
+		return "", "done"
 	case commits > 0 && remote:
 		return "read_task_session", "review the result; integrating its commits is done on that machine"
 	case commits > 0:
 		return "integrate_task", "integrate its commits into the target branch"
 	}
-	return "none", "done; use the result"
+	return "", "done; use the result"
 }
 
 // compactProjectTask is the default get_task view of a task.
@@ -469,13 +500,18 @@ func compactProjectTask(read projectTaskRead, remote bool) ProjectTaskView {
 	}
 
 	result := &projectTaskResult{Branch: t.WorktreeBranch, Commits: max(t.UnintegratedCommits, 0)}
-	report, reportSession := "", t.SessionID
+	report, reportAttempt := "", -1
 	if a := t.ActiveAttempt(); a != nil && strings.TrimSpace(a.Summary) != "" {
-		report, reportSession = strings.TrimSpace(a.Summary), firstNonEmptyText(a.SessionID, t.SessionID)
+		report = strings.TrimSpace(a.Summary)
+		for i := range t.Attempts {
+			if t.Attempts[i].ID == a.ID {
+				reportAttempt = i
+			}
+		}
 	} else {
 		for i := len(t.Attempts) - 1; i >= 0; i-- {
 			if strings.TrimSpace(t.Attempts[i].Summary) != "" {
-				report, reportSession = strings.TrimSpace(t.Attempts[i].Summary), firstNonEmptyText(t.Attempts[i].SessionID, t.SessionID)
+				report, reportAttempt = strings.TrimSpace(t.Attempts[i].Summary), i
 				break
 			}
 		}
@@ -589,25 +625,71 @@ func compactProjectTask(read projectTaskRead, remote bool) ProjectTaskView {
 			view.Progress.Stage = "Needs you"
 		}
 	}
-	markProjectTaskResultCut(&view, report, reportSession, remote)
+	view.Review = projectTaskLatestReview(p, remote)
+	cut := projectTaskReportCut{report: report, attempt: reportAttempt, projectID: t.ProjectID, taskID: t.ID, remote: remote}
+	markProjectTaskResultCut(&view, cut)
 	fitProjectTaskView(&view)
-	markProjectTaskResultCut(&view, report, reportSession, remote)
+	markProjectTaskResultCut(&view, cut)
 	return view
 }
 
+// projectTaskLatestReview is the task's latest review verdict: the shown
+// delivery's review when it has one, else the newest delivery's that does.
+// nil when no review recorded a verdict.
+func projectTaskLatestReview(p *projectTaskProgressRead, remote bool) *projectTaskReview {
+	if p == nil || p.Workflow == nil {
+		return nil
+	}
+	for _, d := range p.Workflow.Deliveries {
+		r := d.Review
+		if r == nil || strings.TrimSpace(r.Verdict) == "" {
+			continue
+		}
+		review := &projectTaskReview{Verdict: clipBytes(r.Verdict, 16), Round: max(r.Round, 0), Step: clipBytes(r.Step, 80), DeliveryID: clipBytes(d.ID, 160)}
+		if findings := strings.ToValidUTF8(strings.TrimSpace(r.Findings), string(utf8.RuneError)); findings != "" {
+			review.Findings = clipBytes(findings, projectTaskTextBytes)
+			review.FindingsTruncated = r.FindingsTruncated || review.Findings != findings
+			if review.FindingsTruncated && review.DeliveryID != "" {
+				review.More = projectTaskFindingsMore(review.DeliveryID, remote)
+			}
+		}
+		return review
+	}
+	return nil
+}
+
+// projectTaskReportCut is the task's report and where it is kept, for the
+// call that reads it in full.
+type projectTaskReportCut struct {
+	report string
+	// attempt is the report's attempt index in the record (-1: unknown).
+	attempt           int
+	projectID, taskID string
+	remote            bool
+}
+
 // markProjectTaskResultCut says when the view shows less than the task's
-// report, how long the report is and how to read it all: the task session's
-// messages, paged within a message by each cut message's next.
-func markProjectTaskResultCut(view *ProjectTaskView, report, sessionID string, remote bool) {
-	if view.Result == nil || report == "" || view.Result.Summary == report {
+// report, how long the report is and how to read it all, in prose
+// (read_full) and as the exact call (next): here, get_task detail=full at
+// the report's attempt, whose summary is the full report; on a linked
+// machine, read_task_session, paged within a message by each cut message's
+// next.
+func markProjectTaskResultCut(view *ProjectTaskView, cut projectTaskReportCut) {
+	if view.Result == nil || cut.report == "" || view.Result.Summary == cut.report {
 		return
 	}
-	view.Result.ResultTruncated, view.Result.ResultBytes = true, len(report)
-	if remote {
-		view.Result.ReadFull = "read_task_session, then each cut message's next"
-	} else {
-		view.Result.ReadFull = "manage-sessions read_messages session_id=" + clipBytes(sessionID, 160) + ", then each cut message's next"
+	view.Result.ResultTruncated, view.Result.ResultBytes = true, len(cut.report)
+	if cut.remote {
+		view.Result.ReadFull = "call next"
+		view.Result.Next = map[string]any{"action": FleetReadTaskSessionAction, "project_id": cut.projectID, "task_id": cut.taskID}
+		return
 	}
+	view.Result.ReadFull = "call next"
+	next := map[string]any{"action": "get_task", "project_id": cut.projectID, "task_id": cut.taskID, "detail": ProjectTaskDetailFull}
+	if cut.attempt >= 0 {
+		next["cursor"], next["limit"] = cut.attempt, 1
+	}
+	view.Result.Next = next
 }
 
 // fitProjectTaskView shortens the report until the view fits its budget.
@@ -615,6 +697,11 @@ func markProjectTaskResultCut(view *ProjectTaskView, report, sessionID string, r
 // the budget, so they never cut the report.
 func fitProjectTaskView(view *ProjectTaskView) {
 	budget := projectTaskViewBytes
+	if view.Review != nil {
+		if raw, err := json.Marshal(view.Review); err == nil {
+			budget += len(raw)
+		}
+	}
 	if wf := view.Progress.Workflow; wf != nil {
 		extra := projectTaskWorkflow{DeliveryID: wf.DeliveryID, FindingsStep: wf.FindingsStep, Verdict: wf.Verdict, Findings: wf.Findings, FindingsTruncated: wf.FindingsTruncated, More: wf.More}
 		if raw, err := json.Marshal(extra); err == nil {
@@ -667,7 +754,7 @@ func compactProjectTaskRow(t pebblestore.ProjectTaskRecord) ProjectTaskRow {
 // projectTaskRowNext is the next action after a task mutation.
 func projectTaskRowNext(t pebblestore.ProjectTaskRecord) string {
 	if t.Archived {
-		return "none"
+		return ""
 	}
 	switch projectTaskStatusClass(t.Status) {
 	case "approval":
@@ -684,7 +771,10 @@ func projectTaskRowNext(t pebblestore.ProjectTaskRecord) string {
 
 // setProjectTaskRow puts the compact mutation answer for t into out.
 func setProjectTaskRow(out map[string]any, t pebblestore.ProjectTaskRecord) {
-	out["task"], out["next_action"], out["more"] = compactProjectTaskRow(t), projectTaskRowNext(t), projectTaskMoreRow
+	out["task"], out["more"] = compactProjectTaskRow(t), projectTaskMoreRow
+	if next := projectTaskRowNext(t); next != "" {
+		out["next_action"] = next
+	}
 	if model := projectTaskModel(t.Provider, t.Model, t.Thinking); model != "" {
 		out["model"] = model
 	}
@@ -931,7 +1021,10 @@ func CompactProjectTaskAnswer(action, detail string, raw json.RawMessage) (json.
 	}
 	task := answer.Task.ProjectTaskRecord
 	out["task"] = compactProjectTaskRow(task)
-	out["next_action"], out["more"] = projectTaskRowNext(task), projectTaskMoreRow
+	out["more"] = projectTaskMoreRow
+	if next := projectTaskRowNext(task); next != "" {
+		out["next_action"] = next
+	}
 	if mp := answer.ModelPreview; mp != nil {
 		if mp.ResolvedModel != nil {
 			if model := projectTaskModel(mp.ResolvedModel.Provider, mp.ResolvedModel.Model, mp.ResolvedModel.Thinking); model != "" {

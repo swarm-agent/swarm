@@ -118,6 +118,42 @@ type taskProgressDelivery struct {
 	Findings          string `json:"findings,omitempty"`
 	FindingsTruncated bool   `json:"findings_truncated,omitempty"`
 	More              string `json:"more,omitempty"`
+	// Review is the delivery's latest review: the last step that recorded
+	// a verdict (deliveryReview), whatever it was. nil when no step did.
+	Review *taskProgressReview `json:"review,omitempty"`
+}
+
+// taskProgressReview is a delivery's latest review verdict: the step, its
+// verdict (ok, warn or block), the delivery's round and the step's findings,
+// capped to maxProgressReviewRunes (FindingsTruncated says so).
+type taskProgressReview struct {
+	Step              string `json:"step"`
+	Verdict           string `json:"verdict"`
+	Round             int    `json:"round,omitempty"`
+	Findings          string `json:"findings,omitempty"`
+	FindingsTruncated bool   `json:"findings_truncated,omitempty"`
+}
+
+// maxProgressReviewRunes bounds a review's findings summary; a blocking
+// review's findings are in full (to maxProgressFindingsRunes) on the
+// delivery itself.
+const maxProgressReviewRunes = 600
+
+// deliveryReview is d's latest review: the last step whose outcome records
+// a verdict, with the delivery's round. nil when no step recorded one.
+func deliveryReview(d jobautomation.Delivery) *taskProgressReview {
+	for i := len(d.Steps) - 1; i >= 0; i-- {
+		verdict, _ := d.Steps[i].Outcome["verdict"].(string)
+		if verdict = strings.TrimSpace(verdict); verdict == "" {
+			continue
+		}
+		review := &taskProgressReview{Step: d.Steps[i].ID, Verdict: verdict, Round: d.Round}
+		if findings, _ := d.Steps[i].Outcome["findings"].(string); strings.TrimSpace(findings) != "" {
+			review.Findings, review.FindingsTruncated = capRunes(strings.TrimSpace(findings), maxProgressReviewRunes)
+		}
+		return review
+	}
+	return nil
 }
 
 // deliveryReopen is the reopen the delivery stands at, if any: the reopen
@@ -443,6 +479,7 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 				view.ReopenCause, view.ReopenFailure, view.ReopenRound = reopen.Cause, reopen.Failure, reopen.Round
 			}
 			deliveryFindings(d, &view)
+			view.Review = deliveryReview(d)
 			workflow.Deliveries = append(workflow.Deliveries, view)
 			switch state {
 			case workflowRunning:

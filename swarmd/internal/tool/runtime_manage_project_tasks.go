@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -628,7 +629,41 @@ func projectTaskWorktreeResult(t pebblestore.ProjectTaskRecord) *projectTaskWork
 	if !projectTaskOwnBranch(t.WorktreeBranch) || projectTaskStatusClass(t.Status) != "finished" {
 		return nil
 	}
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		// The checkout is gone (a landed task's worktree is removed): its
+		// branch and commits live on in the source repository the worktree
+		// belonged to.
+		return projectTaskRemovedWorktreeResult(t)
+	}
 	head, err := projectTaskGit(root, "rev-parse", "--verify", "refs/heads/"+t.WorktreeBranch+"^{commit}")
+	if err != nil || !projectTaskCommitID.MatchString(head) {
+		return nil
+	}
+	return projectTaskRangeResult(root, t.BaseCommit, head)
+}
+
+// projectTaskRemovedWorktreeResult reads a finished worktree task's own range
+// once its checkout was removed, in the task's recorded source repository:
+// base..refs/heads/<WorktreeBranch> while the branch exists, else
+// base..the head its integration recorded (the branch may be deleted once
+// landed). Only the stored source path, a validated branch and validated
+// commit IDs reach Git. nil when neither can be read.
+func projectTaskRemovedWorktreeResult(t pebblestore.ProjectTaskRecord) *projectTaskWorktree {
+	source := strings.TrimSpace(t.SourceWorkspace.Path)
+	if source == "" || !filepath.IsAbs(source) {
+		return nil
+	}
+	root := filepath.Clean(source)
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		return nil
+	}
+	if head, err := projectTaskGit(root, "rev-parse", "--verify", "refs/heads/"+t.WorktreeBranch+"^{commit}"); err == nil && projectTaskCommitID.MatchString(head) {
+		return projectTaskRangeResult(root, t.BaseCommit, head)
+	}
+	if t.Integration == nil || !projectTaskCommitID.MatchString(t.Integration.SourceHead) {
+		return nil
+	}
+	head, err := projectTaskGit(root, "rev-parse", "--verify", t.Integration.SourceHead+"^{commit}")
 	if err != nil || !projectTaskCommitID.MatchString(head) {
 		return nil
 	}

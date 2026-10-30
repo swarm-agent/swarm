@@ -402,7 +402,7 @@ func TestManageProjectsGetTaskResultIsTheTasksOwn(t *testing.T) {
 	db.SetProjectTaskProgress(func(string, pebblestore.ProjectTaskRecord) any {
 		return map[string]any{"state": "integrated", "summary": "integrated in the folder", "integration": map[string]any{"state": "integrated", "branch": "dev", "commits": 0}}
 	})
-	if raw, v := read("folder-task", nil); v.Result == nil || v.Result.Files != 1 || v.Result.Commits != 1 || v.Result.Head != taskHead || v.NextAction != "none" {
+	if raw, v := read("folder-task", nil); v.Result == nil || v.Result.Files != 1 || v.Result.Commits != 1 || v.Result.Head != taskHead || v.NextAction != "" {
 		t.Fatalf("progress erased the folder task's own count: %s", raw)
 	}
 	db.SetProjectTaskProgress(nil)
@@ -560,7 +560,7 @@ func TestManageProjectsTaskMutationsAnswerCompactRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(raw) > proposeTaskBudget || out["next_action"] != "none" || out["task"].(map[string]any)["id"] != "to-archive" || strings.Contains(raw, "worktree_branch") {
+	if len(raw) > proposeTaskBudget || out["next_action"] != nil || out["task"].(map[string]any)["id"] != "to-archive" || strings.Contains(raw, "worktree_branch") {
 		t.Fatalf("archive_task answer: %s", raw)
 	}
 }
