@@ -30,7 +30,10 @@ func TestRemoteWaitTasksNoticeNamesMachineAndTasks(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result["status"] != "watching" || result["machine"] != "box" || result["notice"] != want || result["untrusted_content"] != true {
+	// The envelope says where and that the content is untrusted; its data
+	// is the watch.
+	data := envelopeDataMap(result)
+	if result["state"] != "watching" || data["status"] != "watching" || result["machine"] != "box" || data["notice"] != want || result["untrusted_content"] != true {
 		t.Fatalf("wait_tasks result: %s", out)
 	}
 	if run, _ := h.intent(t, "run-1"); run.Status != pebblestore.V3RunIntentRunning || run.TaskWait != nil {

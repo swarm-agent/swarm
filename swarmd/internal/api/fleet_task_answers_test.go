@@ -110,7 +110,11 @@ func TestFleetTaskAnswersCompactForOrchestrator(t *testing.T) {
 	}
 	var checked struct {
 		Untrusted bool `json:"untrusted_content"`
-		Data      struct {
+		// The task is done (nothing for its own next_action); its report
+		// was cut, so the envelope says how to read the rest.
+		NextAction string         `json:"next_action"`
+		Next       map[string]any `json:"next"`
+		Data       struct {
 			Task tool.ProjectTaskView `json:"task"`
 		} `json:"data"`
 	}
@@ -118,7 +122,7 @@ func TestFleetTaskAnswersCompactForOrchestrator(t *testing.T) {
 		t.Fatal(err)
 	}
 	v := checked.Data.Task
-	if !checked.Untrusted || v.ID != taskID || v.RunStatus != "completed" || v.SessionID == "" || v.Progress.Now == "" || v.Result == nil || !strings.HasPrefix(v.Result.Summary, "Audit: the store") || v.NextAction == "" || v.More == "" {
+	if !checked.Untrusted || v.ID != taskID || v.RunStatus != "completed" || v.SessionID == "" || v.Progress.Now == "" || v.Result == nil || !strings.HasPrefix(v.Result.Summary, "Audit: the store") || v.More == "" || !v.Result.ResultTruncated || checked.NextAction == "" || checked.Next["action"] != tool.FleetReadTaskSessionAction || checked.Next["machine"] != "box" || checked.Next["task_id"] != taskID {
 		t.Fatalf("linked get_task view: %s", read)
 	}
 	if strings.Contains(read, "plan line the Orchestrator") || strings.Contains(read, "full_plan_markdown") {
