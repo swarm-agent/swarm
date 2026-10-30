@@ -99,6 +99,13 @@ type catalogParityHarness struct {
 	jobs map[string]map[string]string
 	// workers are each machine's seeded active worker (seedWorkers).
 	workers map[string]string
+	// sessionFolders are each machine's registered workspace that
+	// manage_sessions create binds to (seedSessions), named in cases as
+	// folder:home and folder:remote.
+	sessionFolders map[string]string
+	// sessionPermissions are the pending requests seedSessions made, by
+	// session, named in cases as perm:SESSION.
+	sessionPermissions map[string]string
 }
 
 func newCatalogParityHarness(t *testing.T) *catalogParityHarness {
@@ -158,6 +165,7 @@ func newCatalogParityHarness(t *testing.T) *catalogParityHarness {
 	parity.seedWorkers(t)
 	parity.seedSetup(t)
 	parity.seedStage6(t)
+	parity.seedSessions(t)
 	return parity
 }
 
@@ -277,7 +285,7 @@ func catalogParityCases() map[string]map[string][]catalogParityCase {
 		projects[action] = cases
 	}
 	return map[string]map[string][]catalogParityCase{"manage_projects": projects, "manage_workflows": manageWorkflowsParityCases(), "manage_jobs": manageJobsParityCases(), "manage_workers": manageWorkersParityCases(), "manage_setup": manageSetupParityCases(),
-		"manage_fleet": manageFleetParityCases(), "manage_media": manageMediaParityCases(), "manage_custom_agents": manageCustomAgentsParityCases(), "manage_themes": manageThemeParityCases(), "manage_designs": manageDesignsParityCases()}
+		"manage_fleet": manageFleetParityCases(), "manage_media": manageMediaParityCases(), "manage_custom_agents": manageCustomAgentsParityCases(), "manage_themes": manageThemeParityCases(), "manage_designs": manageDesignsParityCases(), "manage_sessions": manageSessionsParityCases()}
 }
 
 // catalogParityToolNames are the tools with parity cases, sorted.
@@ -395,7 +403,7 @@ func TestCatalogParityCoversEveryAction(t *testing.T) {
 					linked = true
 				}
 			}
-			// manage_workflows and manage_jobs: every action that reaches a
+			// Every tool but manage_projects: each action that reaches a
 			// linked machine is held to parity there too.
 			if catalog.Name != "manage_projects" && action.Reach == tool.CatalogReachAny && !linked {
 				t.Fatalf("%s %s reaches linked machines but has no linked parity case", catalog.Name, action.Action)

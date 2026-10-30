@@ -166,3 +166,60 @@ func TestManageWorkersLevelsAreTheSwarmToolsLevels(t *testing.T) {
 		t.Fatalf("relay listing drops manage_workers for a read client: %s", listed)
 	}
 }
+
+// Purpose: each manage_sessions action Swarm Control serves needs the level
+// of the swarm_* tool with the same effect (ToolScope): reads are read,
+// start, message, stop and set_model are write, and answering a pending
+// request stays approve. archive, unarchive and compact have no swarm_*
+// tool and change sessions: write. Threat: a write key approving an
+// agent's tool call through the catalog, or a level silently changed in the
+// move. Boundary: tool.Catalog's manage_sessions declarations against
+// ToolScope; the relay forwards the client's levels for the catalog tool.
+func TestManageSessionsLevelsAreTheSwarmToolsLevels(t *testing.T) {
+	swarmTool := map[string]string{
+		"inspect": "swarm_list_sessions", "list": "swarm_list_sessions", "list_by_state": "swarm_list_sessions", "search": "swarm_list_sessions",
+		"get": "swarm_get_session", "read_messages": "swarm_get_session",
+		"create": "swarm_start_session", "send_message": "swarm_send_message", "stop": "swarm_stop_run", "pause": "swarm_stop_run",
+		tool.ManageSessionsResolvePermissionAction: "swarm_resolve_permission", tool.ManageSessionsSetModelAction: "swarm_set_session_model",
+	}
+	noSwarmTool := map[string]bool{"archive": true, "unarchive": true, "compact": true}
+	sessions, ok := tool.CatalogToolNamed("manage_sessions")
+	if !ok {
+		t.Fatal("manage_sessions is not a catalog tool")
+	}
+	for _, action := range sessions.Actions {
+		if !action.ControlCallable() {
+			continue
+		}
+		if noSwarmTool[action.Action] {
+			if action.Level != tool.CatalogLevelWrite {
+				t.Fatalf("manage_sessions %s changes sessions and needs write, not %s", action.Action, action.Level)
+			}
+			continue
+		}
+		name, ok := swarmTool[action.Action]
+		if !ok {
+			t.Fatalf("manage_sessions %s has no swarm_* tool to take its level from", action.Action)
+		}
+		if action.Level.Scope() != ToolScope(name) {
+			t.Fatalf("manage_sessions %s needs %s; %s needs %s", action.Action, action.Level.Scope(), name, ToolScope(name))
+		}
+	}
+	if resolve, _ := sessions.Action(tool.ManageSessionsResolvePermissionAction); resolve.Level != tool.CatalogLevelApprove {
+		t.Fatalf("resolve_permission is %s, not approve", resolve.Level)
+	}
+	// The relay forwards a client's levels for manage_sessions and does not
+	// gate it by name.
+	var got []string
+	s := &Service{control: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Header.Get(ClientLevelsHeader))
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}`))
+	})}
+	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "manage_sessions", "arguments": map[string]any{"action": "list"}}})
+	if out := string(s.handle(Config{AllowWrite: true, Token: "device"}, frame{Client: &frameClient{Scopes: []string{ScopeRead}}, Body: body})); strings.Contains(out, "does not allow") || len(got) != 1 || got[0] != ScopeRead {
+		t.Fatalf("manage_sessions read client: %s %v", out, got)
+	}
+	if listed := string(filterTools([]byte(`{"result":{"tools":[{"name":"manage_sessions"}]}}`), []string{ScopeRead})); !strings.Contains(listed, "manage_sessions") {
+		t.Fatalf("relay listing: %s", listed)
+	}
+}

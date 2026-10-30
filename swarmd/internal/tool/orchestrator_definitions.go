@@ -14,7 +14,7 @@ func OrchestratorDefinitions(definitions []Definition) []Definition {
 		case "manage_workspace":
 			definition = orchestratorManageWorkspaceDefinition(definition)
 		case "manage-sessions", "manage_sessions":
-			definition = orchestratorManageSessionsDefinition(definition)
+			definition = catalogOrchestratorDefinition(manageSessionsToolName, definition.Name)
 		}
 		out = append(out, definition)
 	}
@@ -88,40 +88,13 @@ func orchestratorManageWorkspaceDefinition(definition Definition) Definition {
 	return definition
 }
 
-func orchestratorManageSessionsDefinition(definition Definition) Definition {
-	parameters, properties := copyDefinitionProperties(definition, func(key string) bool {
-		switch key {
-		case "proposals":
-			// deploy is not an action the Orchestrator can complete.
-			return false
-		case "commits", "message", "recovery", "files", "expected_branch", "expected_head", "request_id":
-			// Committing session worktrees or repositories directly is a side
-			// route around tasks; integrate_task delivers finished task work.
-			return false
-		}
-		return true
-	})
-	for _, key := range []string{"trigger", "client_request_id", "session_ids", "all", "stop_active"} {
-		if property, ok := properties[key].(map[string]any); ok {
-			copied := make(map[string]any, len(property))
-			for name, value := range property {
-				if name != "description" {
-					copied[name] = value
-				}
-			}
-			properties[key] = copied
-		}
+// catalogOrchestratorDefinition is a catalog tool's Orchestrator definition
+// (its orchestrator profile), under the name the runtime registers it by.
+// Other agents keep the runtime's full definition of the same tool.
+func catalogOrchestratorDefinition(tool, name string) Definition {
+	definition := catalogDeclared(tool).OrchestratorDefinition()
+	if name != "" {
+		definition.Name = name
 	}
-	properties["action"] = map[string]any{"type": "string", "description": "inspect|list|list_by_state|search|get|read_messages|archive|unarchive|create|stop|pause|send_message|compact"}
-	if wait, ok := properties["wait_seconds"].(map[string]any); ok {
-		copied := make(map[string]any, len(wait))
-		for key, value := range wait {
-			copied[key] = value
-		}
-		copied["description"] = "send_message: bounded wait for the launched run; if still running, report pending instead of polling get."
-		properties["wait_seconds"] = copied
-	}
-	definition.Description = "Sessions: list, search, get, read_messages, archive, stop. Follow tasks with manage_projects; tell a task more with message_task."
-	definition.Parameters = parameters
 	return definition
 }

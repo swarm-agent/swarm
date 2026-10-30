@@ -314,7 +314,8 @@ func envelopeNext(catalog CatalogTool, declared CatalogAction, args map[string]a
 		// reads on at that cursor.
 		var text string
 		if key == "next_cursor" && catalogStringCursor(catalog) && json.Unmarshal(raw, &text) == nil {
-			if strings.TrimSpace(text) != "" {
+			// has_more false: the last page, whatever cursor it keeps.
+			if strings.TrimSpace(text) != "" && string(object["has_more"]) != "false" {
 				encoded, _ := json.Marshal(map[string]any{"cursor": text})
 				candidates = append(candidates, encoded)
 			}
@@ -523,7 +524,7 @@ func CheckEnvelope(answer string) error {
 		}
 		return nil
 	}
-	if bytes.Contains(envelope.Data, []byte(`"result_truncated":true`)) || bytes.Contains(envelope.Data, []byte(`"next_cursor":`)) && envelopeDataCut(catalog, envelope.Data) || envelopeDataPaged(envelope.Data) {
+	if bytes.Contains(envelope.Data, []byte(`"result_truncated":true`)) || bytes.Contains(envelope.Data, []byte(`"next_cursor":`)) && envelopeDataCut(catalog, envelope.Data) || envelopeDataPaged(envelope.Data) || bytes.Contains(envelope.Data, []byte(`"budget_exhausted":true`)) {
 		return errors.New("the answer was cut but carries no next")
 	}
 	return nil
@@ -537,7 +538,9 @@ func envelopeDataCut(catalog CatalogTool, data json.RawMessage) bool {
 		return false
 	}
 	if text, ok := object["next_cursor"].(string); ok && catalogStringCursor(catalog) {
-		return strings.TrimSpace(text) != ""
+		// An answer that says it has no more (manage_sessions keeps its
+		// cursor on the last page) is not cut.
+		return strings.TrimSpace(text) != "" && object["has_more"] != false
 	}
 	_, ok := envelopeCursor(object["next_cursor"])
 	return ok
@@ -694,6 +697,8 @@ func (r *Runtime) ExecuteControlCatalog(ctx context.Context, call ControlCatalog
 		return r.executeCatalogServiceTool(identity.ContextWithPrincipal(ctx, p), scope, manageThemeToolName, args)
 	case manageDesignToolName:
 		return r.executeManageDesign(identity.ContextWithPrincipal(ctx, p), scope, args)
+	case manageSessionsToolName:
+		return r.executeManageSessions(identity.ContextWithPrincipal(ctx, p), scope, args)
 	}
 	return "", fmt.Errorf("%s has no handler", catalog.Name)
 }

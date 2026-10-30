@@ -81,6 +81,12 @@ func (h *catalogParityHarness) resolveCase(t *testing.T, c catalogParityCase) ca
 		if strings.HasPrefix(text, "job:") {
 			return h.resolveJob(machine, text)
 		}
+		if folder, ok := strings.CutPrefix(text, "folder:"); ok && h.sessionFolders[folder] != "" {
+			return h.sessionFolders[folder]
+		}
+		if session, ok := strings.CutPrefix(text, "perm:"); ok && h.sessionPermissions[session] != "" {
+			return h.sessionPermissions[session]
+		}
 		name, ok := strings.CutPrefix(text, "wf:")
 		if !ok {
 			return text

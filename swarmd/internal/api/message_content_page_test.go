@@ -195,8 +195,13 @@ func TestManageSessionsReadMessagesPagesALongMessage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// manage_sessions answers in the catalog envelope; the page is data.
+		data, err := tool.EnvelopeData(out)
+		if err != nil {
+			t.Fatal(err)
+		}
 		var view map[string]any
-		if err := json.Unmarshal([]byte(out), &view); err != nil {
+		if err := json.Unmarshal(data, &view); err != nil {
 			t.Fatal(err)
 		}
 		return view

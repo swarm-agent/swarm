@@ -79,7 +79,9 @@ func manageSessionsDefinition() Definition {
 	}}
 }
 
-func (r *Runtime) executeManageSessions(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
+// manageSessionsAnswer runs one manage_sessions action on this machine and
+// returns its own answer; executeManageSessions puts it in the envelope.
+func (r *Runtime) manageSessionsAnswer(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
 	if boolValue(args["recovery"]) {
 		return r.manageSessionsRecovery(ctx, scope, args)
 	}
@@ -1064,6 +1066,17 @@ func (r *Runtime) manageSessionsRead(scope WorkspaceScope, args map[string]any) 
 	if budgetExhausted {
 		response["budget_exhausted"] = true
 		response["has_more_newer"] = true
+		// The page was cut: next reads the messages after the last one
+		// returned, unless a cut message's own next reads on first.
+		cutMessage := false
+		for _, item := range out {
+			if message, ok := item.(map[string]any); ok && message["next"] != nil {
+				cutMessage = true
+			}
+		}
+		if !cutMessage {
+			response["next"] = map[string]any{"action": "read_messages", "session_id": id, "mode": "after", "after_seq": lastMessageSeq(shown), "limit": limit, "max_chars": budget}
+		}
 	}
 	if boundary > 0 {
 		response["note"] = manageSessionsContextClearedNote
