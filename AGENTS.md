@@ -65,7 +65,11 @@ Rules:
 
 - **Each action exists once:** one service function, one rule set, one HTTP
   route. The Orchestrator's native tools call that service; the MCP tools call
-  that route.
+  that route, except catalog tools, which MCP serves by running the
+  Orchestrator's own handler ([docs/tool-catalog.md](docs/tool-catalog.md)).
+- **A new tool or action is a catalog entry plus its parity test; nothing adds
+  a swarm_* tool or reshapes results outside the envelope.** The catalog
+  (`swarmd/internal/tool/catalog*.go`) is the only place a tool exists.
 - **No dead ends:** what an outside AI can do through MCP, the Orchestrator can
   do natively, on the same records. A new capability is built once, then wired
   to both in the same change. Never a second store, a second rule set or a
