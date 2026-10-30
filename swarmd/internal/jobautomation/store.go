@@ -1123,26 +1123,10 @@ func (s *Store) rerunLocked(d Delivery) (Delivery, bool, error) {
 	if !Terminal(d.State) {
 		return d, false, nil
 	}
-	// Item queues outlive their successful make step. Recover only items
-	// that never dispatched and failed specifically on a now-ready dependency.
-	itemsReset := false
-	dependency := TriggerRunner{Store: s}
-	for i := range d.Steps {
-		step := &d.Steps[i]
-		if i >= len(d.Definition) || d.Definition[i].ForEach == nil {
-			continue
-		}
-		for j := range step.Items {
-			item := &step.Items[j]
-			if item.State != "failed" || item.JobID != "" || item.After == "" || !strings.HasPrefix(item.Error, "waits for "+item.After+", which did not finish: ") {
-				continue
-			}
-			if ready, _ := dependency.itemDependency(d.Account, step.Items, item.After); ready {
-				item.State, item.Error = "waiting for "+item.After, ""
-				itemsReset = true
-			}
-		}
-	}
+	// Item queues outlive their successful make step. Recover items whose
+	// job's newest end succeeded, and items that never dispatched and failed
+	// specifically on a recovered or now-ready dependency.
+	itemsReset := s.reviveItemsLocked(&d, "")
 	reset := false
 	if d.State == StateBlocked {
 		// A blocked review loop runs again from the top with a new round

@@ -498,7 +498,14 @@ func (r *Runner) consume(ctx context.Context, account string, sig pebblestore.Si
 		}
 	}
 	if pebblestore.IsWorkflowItemSource(result.RequestSource) {
-		return r.store.db.PutJSON(itemEndKey(account, result.JobID), result)
+		if err := r.store.db.PutJSON(itemEndKey(account, result.JobID), result); err != nil {
+			return err
+		}
+		// A follow-up's success reopens the item, and the items that failed
+		// only waiting on it, even after the owning delivery finished.
+		if itemEndSucceeded(*result) {
+			return r.store.ReviveItems(account, result.RequestSource, result.JobID)
+		}
 	}
 	return nil
 }
