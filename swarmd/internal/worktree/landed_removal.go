@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"swarm/packages/swarmd/internal/appstorage"
 )
@@ -47,6 +48,10 @@ func IsLandedWorktreeKept(err error) bool {
 	var kept *LandedWorktreeKeptError
 	return errors.As(err, &kept)
 }
+
+// landedRemovalWait bounds how long RemoveLandedWorktree waits for the
+// quarantined files to be deleted.
+const landedRemovalWait = 5 * time.Second
 
 // ErrLandedWorktreeGone reports that the worktree is no longer on disk.
 var ErrLandedWorktreeGone = errors.New("worktree is already gone")
@@ -146,7 +151,9 @@ func (s *Service) RemoveLandedWorktree(in LandedWorktree) (LandedWorktreeRemoval
 	if !contained {
 		return LandedWorktreeRemoval{}, keep("worktree has commits that are not in %s", target)
 	}
-	if err := removeManagedWorktree(repoRoot, path); err != nil && !errors.Is(err, errTrashDeletionQueued) && !errors.Is(err, errTrashDeletionBackground) {
+	// A large checkout is deleted in the background once it left its path
+	// and its registration; the caller is not held for it.
+	if err := removeManagedWorktreeWait(repoRoot, path, landedRemovalWait); err != nil && !errors.Is(err, errTrashDeletionQueued) && !errors.Is(err, errTrashDeletionBackground) {
 		return LandedWorktreeRemoval{}, fmt.Errorf("remove landed worktree: %w", err)
 	}
 	if still, err := worktreePathRegistered(repoRoot, path); err != nil {

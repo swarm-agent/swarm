@@ -281,6 +281,16 @@ func (sch *WorkerScheduler) Notify(signal store.SchedulingSignal) {
 
 // Run blocks until ctx is cancelled.
 func (sch *WorkerScheduler) Run(ctx context.Context) {
+	if sch.service != nil && sch.service.host != nil {
+		// Finished jobs' landed checkouts are removed for as long as the
+		// scheduler runs.
+		sweepDone := make(chan struct{})
+		go func() {
+			defer close(sweepDone)
+			sch.service.runLandedWorktreeSweep(ctx, landedWorktreeSweepDelay, landedWorktreeSweepInterval)
+		}()
+		defer func() { <-sweepDone }()
+	}
 	for ctx.Err() == nil {
 		now := sch.clock.Now()
 		// process bounds each phase itself: worker work per wake, V2 work

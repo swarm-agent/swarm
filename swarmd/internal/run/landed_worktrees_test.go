@@ -1,0 +1,443 @@
+package run
+
+import (
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"swarm/packages/swarmd/internal/identity"
+	sessionruntime "swarm/packages/swarmd/internal/session"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	workspaceruntime "swarm/packages/swarmd/internal/workspace"
+	"swarm/packages/swarmd/internal/worktree"
+)
+
+// landedFixture is a real Pebble store, the real session, workspace and
+// worktree services and a real Git folder on dev, with a worker whose jobs
+// each get their own managed checkout on their own agent branch, recorded the
+// way worker admission records them (session snapshot + run receipt).
+type landedJobsFixture struct {
+	t       *testing.T
+	raw     *pebblestore.Store
+	db      *pebblestore.SessionStore
+	repo    string
+	source  string
+	trees   *worktree.Service
+	worker  pebblestore.WorkerRecord
+	service *WorkerExecutionService
+	p       identity.Principal
+}
+
+const landedAccount, landedUser = "acct-landed", "user-landed"
+
+func newLandedJobsFixture(t *testing.T) *landedJobsFixture {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	f := &landedJobsFixture{t: t}
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "landed.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	f.raw = store
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.p = identity.Principal{Type: identity.PrincipalTypeUser, UserID: landedUser, AccountScopeID: landedAccount, AccountScopeSource: identity.AccountScopeSourceServerState}
+	workspaces := workspaceruntime.NewService(pebblestore.NewWorkspaceStore(store))
+	f.repo = t.TempDir()
+	f.git(f.repo, "init", "-q", "-b", "dev")
+	f.git(f.repo, "commit", "-q", "--allow-empty", "-m", "base")
+	added, err := workspaces.AddForPrincipal(f.p, f.repo, "site", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.source = added.WorkspacePath
+	f.trees = worktree.NewService(pebblestore.NewWorktreeStore(store), workspaces, nil)
+	t.Cleanup(f.trees.Close)
+	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
+	f.db = sessions.Store()
+	f.worker, err = f.db.WorkerStore().CreateWorker(landedAccount, landedUser, pebblestore.CreateWorkerRequest{Name: "Builder", Instructions: "Build.", IdempotencyKey: "builder"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.service = &WorkerExecutionService{host: &AutomationV2ExecutionHost{runs: &Service{sessions: sessions}, trees: f.trees}}
+	return f
+}
+
+func (f *landedJobsFixture) git(dir string, args ...string) string {
+	f.t.Helper()
+	out, err := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid"}, args...)...).CombinedOutput()
+	if err != nil {
+		f.t.Fatalf("git %v: %v %s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+type landedJob struct {
+	id, session, path, branch, head string
+}
+
+// job admits one worker run with its own checkout, commits one file there and
+// records the run with status.
+func (f *landedJobsFixture) job(id, status string) landedJob {
+	f.t.Helper()
+	j := landedJob{id: id, session: "worker-execution-" + id, branch: "agent/worker-" + id}
+	alloc, err := f.trees.AllocateDetachedWorkspaceRequestedForPrincipal(f.p, f.source, j.session, "", j.branch)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	j.path = alloc.WorkspacePath
+	if err := os.WriteFile(filepath.Join(j.path, id+".txt"), []byte(id), 0o600); err != nil {
+		f.t.Fatal(err)
+	}
+	f.git(j.path, "add", id+".txt")
+	f.git(j.path, "commit", "-q", "-m", "work "+id)
+	j.head = f.git(j.path, "rev-parse", "HEAD")
+	f.session(j.session, j.path, j.branch, map[string]any{"worker_id": f.worker.ID, "worker_execution_run_id": id})
+	run := pebblestore.WorkerRunRecord{ID: id, WorkerID: f.worker.ID, UserID: landedUser, AccountScopeID: landedAccount, SessionID: j.session, RequestSource: "direct", Status: status}
+	if pebblestore.AutomationV2Terminal(status) {
+		run.CompletedAt = time.Now().UnixMilli()
+	}
+	if _, err := f.db.WorkerStore().RecordWorkerRun(landedAccount, run); err != nil {
+		f.t.Fatal(err)
+	}
+	return j
+}
+
+func (f *landedJobsFixture) session(id, path, branch string, extra map[string]any) {
+	f.t.Helper()
+	meta := map[string]any{"swarm_v3_source_workspace_path": f.source, "swarm_v3_runtime_workspace_path": path, "swarm_v3_worktree_owner_session_id": id}
+	for k, v := range extra {
+		meta[k] = v
+	}
+	if err := f.db.CreateSession(pebblestore.SessionSnapshot{ID: id, UserID: landedUser, AccountScopeID: landedAccount, WorkspacePath: f.source, Title: "Job",
+		Metadata: meta, WorktreeEnabled: true, WorktreeRootPath: path, WorktreeBranch: branch, WorktreeBaseBranch: "dev", CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *landedJobsFixture) merge(j landedJob) {
+	f.t.Helper()
+	f.git(f.repo, "merge", "-q", "--no-ff", "-m", "merge "+j.id, j.branch)
+}
+
+func (f *landedJobsFixture) run(id string) pebblestore.WorkerRunRecord {
+	f.t.Helper()
+	r, found, err := f.db.WorkerStore().GetWorkerRun(landedAccount, f.worker.ID, id)
+	if err != nil || !found {
+		f.t.Fatalf("run %s: %v %v", id, found, err)
+	}
+	return r
+}
+
+func (f *landedJobsFixture) branchTip(branch string) string {
+	return f.git(f.repo, "rev-parse", "refs/heads/"+branch)
+}
+
+func (f *landedJobsFixture) signals(kind string) []pebblestore.Signal {
+	f.t.Helper()
+	page, err := pebblestore.NewSignalStore(f.raw).ListAfter(0, 200, pebblestore.SignalFilter{Account: landedAccount, KindPrefixes: []string{kind}})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return page.Signals
+}
+
+func (f *landedJobsFixture) assertRemoved(j landedJob, trigger string) {
+	f.t.Helper()
+	if _, err := os.Stat(j.path); !os.IsNotExist(err) {
+		f.t.Fatalf("job %s checkout still on disk: %v", j.id, err)
+	}
+	if tip := f.branchTip(j.branch); tip != j.head {
+		f.t.Fatalf("job %s branch at %s, want kept at %s", j.id, tip, j.head)
+	}
+	r := f.run(j.id)
+	rm := r.WorktreeRemoval
+	if rm == nil || rm.State != pebblestore.WorktreeRemovalRemoved || rm.Path != j.path || rm.Branch != j.branch || rm.Head != j.head || rm.TargetBranch != "dev" || rm.Trigger != trigger {
+		f.t.Fatalf("job %s removal record = %+v", j.id, rm)
+	}
+	if r.Status != "succeeded" && r.Status != "failed" && r.Status != "cancelled" {
+		f.t.Fatalf("job %s result changed to %s", j.id, r.Status)
+	}
+	found := false
+	for _, sig := range f.signals("worktree.removed") {
+		if sig.Refs["run_id"] == j.id && sig.Attrs["path"] == j.path && sig.Attrs["branch"] == j.branch && sig.Attrs["head"] == j.head {
+			found = true
+		}
+	}
+	if !found {
+		f.t.Fatalf("no worktree.removed activity event for job %s", j.id)
+	}
+}
+
+func (f *landedJobsFixture) assertKept(j landedJob) {
+	f.t.Helper()
+	if _, err := os.Stat(j.path); err != nil {
+		f.t.Fatalf("job %s checkout removed: %v", j.id, err)
+	}
+	if tip := f.branchTip(j.branch); tip == "" {
+		f.t.Fatalf("job %s branch missing", j.id)
+	}
+	if rm := f.run(j.id).WorktreeRemoval; rm != nil {
+		f.t.Fatalf("job %s recorded a removal while kept: %+v", j.id, rm)
+	}
+}
+
+// Requirement: right after Swarm lands a finished run's work, its merged,
+// clean checkout is removed, its branch, result and commits stay, and the
+// removal is in the run's history and the activity feed.
+// Threat: landed checkouts (0.6-1.2 GB each) filling the disk; a removal
+// nobody can see. Owner: WorkerExecutionService.RemoveLandedWorktree (called
+// by the API after IntegrateProjectTask) over a real store and real Git.
+func TestLandedRunWorktreeIsRemovedAfterItsWorkLands(t *testing.T) {
+	f := newLandedJobsFixture(t)
+	j := f.job("landed01", "succeeded")
+	f.merge(j)
+
+	outcome, err := f.service.RemoveLandedWorktree(j.session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.Removed || outcome.Removal.Head != j.head {
+		t.Fatalf("outcome = %+v", outcome)
+	}
+	f.assertRemoved(j, LandedWorktreeTriggerLanded)
+	if got := f.git(f.repo, "log", "--format=%H", "-1", j.branch); got != j.head {
+		t.Fatalf("commits of the removed run unreadable: %s", got)
+	}
+	// Repeating it (a retried landing) is a no-op, not a failure.
+	again, err := f.service.RemoveLandedWorktree(j.session)
+	if err != nil || again.Removed {
+		t.Fatalf("second removal = %+v, %v", again, err)
+	}
+	if n := len(f.signals("worktree.removed")); n != 1 {
+		t.Fatalf("worktree.removed events = %d, want 1", n)
+	}
+}
+
+// Requirement: the periodic sweep removes the backlog of finished runs whose
+// work is in the target branch (merged by Swarm or outside it) and keeps every
+// unsafe checkout: uncommitted or untracked changes, commits not in the
+// target, an unfinished run (running, or waiting on a provider limit), the
+// folder itself, and a checkout another run works in.
+// Threat: deleting work that exists nowhere else or a checkout in use.
+// Owner: WorkerExecutionService.SweepLandedWorktrees.
+func TestLandedWorktreeSweepRemovesBacklogAndKeepsUnsafeCheckouts(t *testing.T) {
+	f := newLandedJobsFixture(t)
+	merged := f.job("merged01", "succeeded")
+	f.merge(merged)
+	failedMerged := f.job("failmrg1", "failed")
+	f.merge(failedMerged)
+
+	dirty := f.job("dirty001", "succeeded")
+	f.merge(dirty)
+	if err := os.WriteFile(filepath.Join(dirty.path, "notes.txt"), []byte("draft"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unmerged := f.job("unmerged", "succeeded")
+	running := f.job("running1", "running")
+	f.merge(running)
+	waiting := f.job("waiting1", pebblestore.WorkerRunStatusWaiting)
+	f.merge(waiting)
+	inUse := f.job("inuse001", "succeeded")
+	f.merge(inUse)
+	// Another unfinished run's session works in inUse's checkout (a review
+	// reading it in place).
+	f.session("worker-execution-reviewer", inUse.path, inUse.branch, map[string]any{"worker_id": f.worker.ID, "worker_execution_run_id": "reviewer", "swarm_v3_worktree_owner_session_id": inUse.session})
+	if _, err := f.db.WorkerStore().RecordWorkerRun(landedAccount, pebblestore.WorkerRunRecord{ID: "reviewer", WorkerID: f.worker.ID, UserID: landedUser, AccountScopeID: landedAccount, SessionID: "worker-execution-reviewer", RequestSource: "direct", Status: "running"}); err != nil {
+		t.Fatal(err)
+	}
+	// A finished run whose recorded checkout is the folder itself.
+	f.session("worker-execution-folder01", f.source, "dev", map[string]any{"worker_id": f.worker.ID, "worker_execution_run_id": "folder01"})
+	if _, err := f.db.WorkerStore().RecordWorkerRun(landedAccount, pebblestore.WorkerRunRecord{ID: "folder01", WorkerID: f.worker.ID, UserID: landedUser, AccountScopeID: landedAccount, SessionID: "worker-execution-folder01", RequestSource: "direct", Status: "succeeded", CompletedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := f.service.SweepLandedWorktrees()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 2 {
+		t.Fatalf("sweep removed %d checkouts, want 2", removed)
+	}
+	f.assertRemoved(merged, LandedWorktreeTriggerSweep)
+	f.assertRemoved(failedMerged, LandedWorktreeTriggerSweep)
+	for _, j := range []landedJob{dirty, unmerged, running, waiting, inUse} {
+		f.assertKept(j)
+	}
+	if _, err := os.Stat(filepath.Join(f.source, ".git")); err != nil {
+		t.Fatalf("folder damaged: %v", err)
+	}
+	if rm := f.run("folder01").WorktreeRemoval; rm != nil {
+		t.Fatalf("folder run recorded a removal: %+v", rm)
+	}
+	if got := f.git(dirty.path, "status", "--porcelain"); !strings.Contains(got, "notes.txt") {
+		t.Fatalf("dirty checkout lost its untracked file: %q", got)
+	}
+	// Each checkout is kept for its own reason, not by accident.
+	for _, tc := range []struct {
+		session, reason string
+	}{
+		{dirty.session, "uncommitted or untracked"},
+		{unmerged.session, "not in dev"},
+		{running.session, "the run is running"},
+		{waiting.session, "the run is waiting"},
+		{inUse.session, "in use by worker-execution-reviewer"},
+		{"worker-execution-folder01", "folder itself"},
+	} {
+		outcome, err := f.service.RemoveLandedWorktree(tc.session)
+		if err != nil || outcome.Removed || !strings.Contains(outcome.Kept, tc.reason) {
+			t.Fatalf("%s: outcome %+v, %v; want kept because %q", tc.session, outcome, err, tc.reason)
+		}
+	}
+}
+
+// Requirement: a task of Swarm's own agents keeps its checkout while it waits
+// on a provider limit, and once finished and landed its checkout is removed
+// with the removal in the task's history and the activity feed.
+// Owner: WorkerExecutionService.RemoveLandedWorktree (task-owned sessions).
+func TestLandedTaskWorktreeKeptWhileLimitWaitingAndRemovedOnceFinished(t *testing.T) {
+	f := newLandedJobsFixture(t)
+	const session, branch = "task-session-landed", "agent/task-landed"
+	alloc, err := f.trees.AllocateDetachedWorkspaceRequestedForPrincipal(f.p, f.source, session, "", branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(alloc.WorkspacePath, "task.txt"), []byte("task"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.git(alloc.WorkspacePath, "add", "task.txt")
+	f.git(alloc.WorkspacePath, "commit", "-q", "-m", "task work")
+	head := f.git(alloc.WorkspacePath, "rev-parse", "HEAD")
+	f.git(f.repo, "merge", "-q", "--ff-only", branch)
+	f.session(session, alloc.WorkspacePath, branch, map[string]any{"project_id": "project-l", "task_id": "task-l"})
+	if err := f.db.PutProject(landedAccount, &pebblestore.ProjectRecord{ID: "project-l", Name: "project-l"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.PutProjectTask(landedAccount, &pebblestore.ProjectTaskRecord{ID: "task-l", Title: "Landed task", ProjectID: "project-l", AccountID: landedAccount,
+		SessionID: session, Agent: "coder", Status: pebblestore.ProjectTaskStatusLimitWaiting, WorkspacePath: alloc.WorkspacePath, WorktreeBranch: branch, BaseBranch: "dev"}); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := f.service.RemoveLandedWorktree(session)
+	if err != nil || outcome.Removed || !strings.Contains(outcome.Kept, "in use by task task-l") {
+		t.Fatalf("limit-waiting task: %+v, %v; want kept", outcome, err)
+	}
+	if _, err := os.Stat(alloc.WorkspacePath); err != nil {
+		t.Fatalf("limit-waiting task's checkout removed: %v", err)
+	}
+
+	if _, err := f.db.UpdateProjectTask(landedAccount, "project-l", "task-l", func(task *pebblestore.ProjectTaskRecord) error {
+		task.Status = "completed"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err = f.service.RemoveLandedWorktree(session)
+	if err != nil || !outcome.Removed {
+		t.Fatalf("finished task: %+v, %v; want removed", outcome, err)
+	}
+	if _, err := os.Stat(alloc.WorkspacePath); !os.IsNotExist(err) {
+		t.Fatalf("finished task's checkout still on disk: %v", err)
+	}
+	task, _, err := f.db.GetProjectTask(landedAccount, "project-l", "task-l")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rm := task.WorktreeRemoval; rm == nil || rm.State != pebblestore.WorktreeRemovalRemoved || rm.Head != head || rm.Branch != branch || rm.Path != alloc.WorkspacePath {
+		t.Fatalf("task removal record = %+v", rm)
+	}
+	if task.Status != "completed" || task.WorktreeBranch != branch {
+		t.Fatalf("task result changed: %+v", task)
+	}
+	events := f.signals("worktree.removed")
+	if len(events) != 1 || events[0].Refs["task_id"] != "task-l" || events[0].Attrs["head"] != head {
+		t.Fatalf("worktree.removed events = %+v", events)
+	}
+	if tip := f.branchTip(branch); tip != head {
+		t.Fatalf("task branch at %s, want kept at %s", tip, head)
+	}
+}
+
+// Requirement: a failed removal keeps the checkout, is recorded on the run
+// and reported once, and is not retried until its backoff passes.
+// Threat: a silent failure, or a tight retry loop hammering the disk.
+func TestLandedWorktreeRemovalFailureIsRecordedAndBackedOff(t *testing.T) {
+	f := newLandedJobsFixture(t)
+	j := f.job("broken01", "succeeded")
+	f.merge(j)
+	calls := 0
+	f.service.landed.removerForTest = landedRemoverFunc(func(worktree.LandedWorktree) (worktree.LandedWorktreeRemoval, error) {
+		calls++
+		return worktree.LandedWorktreeRemoval{}, errors.New("disk refused")
+	})
+	now := time.Unix(1_800_000_000, 0)
+	f.service.landed.nowForTest = func() time.Time { return now }
+
+	if _, err := f.service.RemoveLandedWorktree(j.session); err == nil {
+		t.Fatal("removal failure was not reported")
+	}
+	rm := f.run(j.id).WorktreeRemoval
+	if rm == nil || rm.State != pebblestore.WorktreeRemovalFailed || rm.Attempts != 1 || rm.LastError != "disk refused" || rm.NextAttemptAt <= now.UnixMilli() {
+		t.Fatalf("failure record = %+v", rm)
+	}
+	if _, err := f.service.SweepLandedWorktrees(); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("removal retried before its backoff: %d attempts", calls)
+	}
+	if n := len(f.signals("worktree.remove_failed")); n != 1 {
+		t.Fatalf("worktree.remove_failed events = %d, want 1", n)
+	}
+	if _, err := os.Stat(j.path); err != nil {
+		t.Fatalf("checkout removed after a failed removal: %v", err)
+	}
+	if tip := f.branchTip(j.branch); tip != j.head {
+		t.Fatalf("branch moved to %s", tip)
+	}
+}
+
+type landedRemoverFunc func(worktree.LandedWorktree) (worktree.LandedWorktreeRemoval, error)
+
+func (fn landedRemoverFunc) RemoveLandedWorktree(in worktree.LandedWorktree) (worktree.LandedWorktreeRemoval, error) {
+	return fn(in)
+}
+
+// Requirement: anything that needs a removed run's checkout again (a
+// follow-up message) recreates it from the kept branch at the same path, as
+// PrepareFollowup does before the follow-up runs.
+// Owner: WorkerExecutionService.restoreRemovedRunWorktree.
+func TestFollowupRecreatesARemovedRunWorktreeFromItsBranch(t *testing.T) {
+	f := newLandedJobsFixture(t)
+	j := f.job("follow01", "succeeded")
+	f.merge(j)
+	if outcome, err := f.service.RemoveLandedWorktree(j.session); err != nil || !outcome.Removed {
+		t.Fatalf("removal = %+v, %v", outcome, err)
+	}
+	snap, _, err := f.db.GetSession(j.session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.restoreRemovedRunWorktree(snap, f.run(j.id)); err != nil {
+		t.Fatal(err)
+	}
+	state, err := f.trees.InspectTaskWorkspace(j.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.BranchName != j.branch || state.HeadCommit != j.head || !state.Clean {
+		t.Fatalf("recreated checkout = %+v", state)
+	}
+	if err := f.trees.ValidateSessionRepositoryLaneForRead(f.source, j.path, j.session, j.branch); err != nil {
+		t.Fatalf("recreated checkout is not the session's lane: %v", err)
+	}
+}

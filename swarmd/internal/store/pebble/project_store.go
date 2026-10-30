@@ -588,6 +588,10 @@ type ProjectTaskRecord struct {
 	Stall     *ProjectTaskStall `json:"stall,omitempty"`
 	CreatedAt int64             `json:"created_at"`
 	UpdatedAt int64             `json:"updated_at"`
+
+	// WorktreeRemoval records Swarm removing the task's checkout once its
+	// work landed (the branch and result stay).
+	WorktreeRemoval *WorktreeRemoval `json:"worktree_removal,omitempty"`
 }
 
 func (t *ProjectTaskRecord) Validate() error {

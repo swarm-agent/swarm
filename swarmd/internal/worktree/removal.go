@@ -50,6 +50,13 @@ func noSymlinkDirectory(path string) error {
 }
 
 func removeManagedWorktree(source, path string) error {
+	return removeManagedWorktreeWait(source, path, 2*time.Minute)
+}
+
+// removeManagedWorktreeWait waits at most wait for the quarantined files to
+// be deleted; past it deletion continues in the background
+// (errTrashDeletionBackground) and trash recovery retries any failure.
+func removeManagedWorktreeWait(source, path string, wait time.Duration) error {
 	removalMu.Lock()
 	defer removalMu.Unlock()
 	root, err := worktreeCacheRoot(source)
@@ -114,7 +121,7 @@ func removeManagedWorktree(source, path string) error {
 	} else {
 		return err
 	}
-	return finishRemoval(entry, receipt)
+	return finishRemovalWithWait(entry, receipt, wait)
 }
 
 func finishRemoval(entry string, receipt removalReceipt) error {

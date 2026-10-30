@@ -38,6 +38,8 @@ type WorkerExecutionService struct {
 	presetMu                    sync.Mutex
 	// scheduledDispatchForTest replaces Dispatch for a due scheduled slot.
 	scheduledDispatchForTest func(account, owner string, req store.WorkerRunAdmission) error
+	// landed removes finished jobs' checkouts once their work landed.
+	landed landedWorktreeSweep
 }
 
 func NewWorkerExecutionService(runs *Service, repository *store.SessionStore, trees *worktree.Service, apply func(sessions.SessionMutationInput) (sessions.SessionMutationResult, error), enqueue func(identity.Principal, store.V3SessionRunIntent) bool) (*WorkerExecutionService, error) {
@@ -2101,6 +2103,11 @@ func (s *WorkerExecutionService) PrepareFollowup(account, user, sessionID string
 		}
 	}
 	if err := s.refreshFollowupModel(snapshot, w); err != nil {
+		return err
+	}
+	// A checkout removed after the job's work landed is recreated from its
+	// kept branch before the follow-up runs in it.
+	if err := s.restoreRemovedRunWorktree(snapshot, r); err != nil {
 		return err
 	}
 	if m := sandbox.Default(); m != nil {

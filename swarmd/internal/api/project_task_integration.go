@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -47,6 +49,33 @@ var inspectIntegrationGitState = inspectTaskGitStateContext
 // IntegrateProjectTask is the shared native-tool and HTTP integration boundary.
 // Native callers select the current durable lane; HTTP callers supply their selection.
 func (s *Server) IntegrateProjectTask(ctx context.Context, p identity.Principal, projectID, taskID string, selections ...tool.ProjectTaskIntegrationSelection) (map[string]any, error) {
+	result, err := s.integrateProjectTask(ctx, p, projectID, taskID, selections...)
+	if err == nil {
+		s.removeLandedTaskWorktree(p, projectID, taskID)
+	}
+	return result, err
+}
+
+// removeLandedTaskWorktree removes a finished task's checkout right after its
+// work landed in the folder's branch (run.WorkerExecutionService
+// RemoveLandedWorktree applies every safety rule). The integration already
+// succeeded: a kept checkout is normal and a failed removal is recorded and
+// reported there, never returned as an integration failure.
+func (s *Server) removeLandedTaskWorktree(p identity.Principal, projectID, taskID string) {
+	execution, err := s.workerExecutionService()
+	if err != nil {
+		return
+	}
+	task, found, err := s.sessions.Store().GetProjectTask(p.AccountScopeID, projectID, taskID)
+	if err != nil || !found || task == nil || task.SessionID == "" {
+		return
+	}
+	if _, err := execution.RemoveLandedWorktree(task.SessionID); err != nil {
+		log.Printf("remove landed checkout of task %s: %v", taskID, err)
+	}
+}
+
+func (s *Server) integrateProjectTask(ctx context.Context, p identity.Principal, projectID, taskID string, selections ...tool.ProjectTaskIntegrationSelection) (map[string]any, error) {
 	if !p.Valid() || p.Type != identity.PrincipalTypeUser || p.UserID == "" || p.AccountScopeID == "" {
 		return nil, integrationFailure(http.StatusForbidden, errors.New("integrate task requires an authenticated user identity"))
 	}
@@ -86,6 +115,9 @@ func (s *Server) IntegrateProjectTask(ctx context.Context, p identity.Principal,
 	}
 	if _, err := s.resolveProjectTaskSource(p, proj, task.SourceWorkspace.Path, task.SourceWorkspace.WorkspaceID, task.SourceWorkspace.WorkspaceGeneration, true); err != nil {
 		return nil, integrationFailure(http.StatusConflict, err)
+	}
+	if result, ok := integratedAfterWorktreeRemoval(ctx, task, selectedSession, capturedPath, selection); ok {
+		return result, nil
 	}
 	ctx = worktreeruntime.WithDeliveryExecution(ctx)
 	gitState := inspectIntegrationGitState(ctx, *task, db)
@@ -274,6 +306,27 @@ func (s *Server) IntegrateProjectTask(ctx context.Context, p identity.Principal,
 		return nil, fmt.Errorf("Git integration verified at %s but task receipt persistence failed; reconcile task state without rerunning Git: %w", receipt.ResultingTargetHead, err)
 	}
 	return map[string]any{"status": "integrated", "task": sanitizeProjectTaskForClient(updated), "integration": map[string]any{"target_branch": parentState.BranchName, "previous_target_head": parentState.HeadCommit, "resulting_target_head": result.ResultingParentHead, "warning": receipt.Warning}}, nil
+}
+
+// integratedAfterWorktreeRemoval answers a repeated integration of a task
+// whose checkout Swarm removed after its work landed: the recorded HEAD is
+// still an ancestor of the target branch, so the work stays integrated and
+// nothing is run again. Any other state takes the ordinary path.
+func integratedAfterWorktreeRemoval(ctx context.Context, task *pebblestore.ProjectTaskRecord, session pebblestore.SessionSnapshot, capturedPath string, selection tool.ProjectTaskIntegrationSelection) (map[string]any, bool) {
+	rm := task.WorktreeRemoval
+	if rm == nil || rm.State != pebblestore.WorktreeRemovalRemoved || rm.Head == "" || rm.Path != filepath.Clean(strings.TrimSpace(session.WorktreeRootPath)) ||
+		rm.Branch != selection.SourceBranch || rm.TargetBranch != selection.TargetBranch {
+		return nil, false
+	}
+	if _, err := os.Lstat(rm.Path); !errors.Is(err, os.ErrNotExist) {
+		return nil, false
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if err := sandbox.Command(checkCtx, "-C", capturedPath, "merge-base", "--is-ancestor", rm.Head, "refs/heads/"+selection.TargetBranch).Run(); err != nil {
+		return nil, false
+	}
+	return map[string]any{"status": "already_integrated", "task": sanitizeProjectTaskForClient(task), "integration": map[string]any{"target_branch": selection.TargetBranch, "warning": "the task's checkout was removed after its work landed; its branch " + rm.Branch + " is kept at " + rm.Head}}, true
 }
 
 // projectTaskDeltaIntegrable reports whether integration must deliver the

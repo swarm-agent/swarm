@@ -1,0 +1,626 @@
+package run
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"swarm/packages/swarmd/internal/appstorage"
+	store "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/worktree"
+)
+
+// A finished job's checkout is removed once its work is in the folder's
+// target branch (worktree.Service.RemoveLandedWorktree); its branch, result
+// and history stay. This happens right after Swarm lands the work and in a
+// periodic sweep that also finds work merged outside Swarm and checkouts left
+// from before.
+const (
+	landedWorktreeSweepDelay    = 2 * time.Minute
+	landedWorktreeSweepInterval = 15 * time.Minute
+	// A kept checkout (unmerged, dirty, in use) is looked at again after this.
+	landedWorktreeRecheck = time.Hour
+	// A failed removal is retried with backoff, at most this many times.
+	landedWorktreeMaxAttempts    = 5
+	landedWorktreeFailureBackoff = 10 * time.Minute
+
+	LandedWorktreeTriggerLanded = "landed"
+	LandedWorktreeTriggerSweep  = "sweep"
+)
+
+type landedWorktreeRemover interface {
+	RemoveLandedWorktree(worktree.LandedWorktree) (worktree.LandedWorktreeRemoval, error)
+}
+
+type landedWorktreeSweep struct {
+	mu        sync.Mutex // serializes evaluation and record writes
+	nextCheck map[string]time.Time
+	// removerForTest replaces the worktree service's Git removal.
+	removerForTest landedWorktreeRemover
+	nowForTest     func() time.Time
+}
+
+// LandedWorktreeOutcome reports one evaluation: Removed with what was
+// removed, or Kept with why the checkout stays.
+type LandedWorktreeOutcome struct {
+	SessionID string
+	Removed   bool
+	Removal   worktree.LandedWorktreeRemoval
+	Kept      string
+}
+
+func (s *WorkerExecutionService) landedNow() time.Time {
+	if s.landed.nowForTest != nil {
+		return s.landed.nowForTest()
+	}
+	return time.Now()
+}
+
+func (s *WorkerExecutionService) landedRemover() landedWorktreeRemover {
+	if s.landed.removerForTest != nil {
+		return s.landed.removerForTest
+	}
+	return s.host.trees
+}
+
+// runLandedWorktreeSweep runs the periodic sweep until ctx ends (the worker
+// scheduler's lifetime, see WorkerScheduler.Run).
+func (s *WorkerExecutionService) runLandedWorktreeSweep(ctx context.Context, delay, interval time.Duration) {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	lastError := ""
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		_, err := s.SweepLandedWorktrees()
+		message := ""
+		if err != nil {
+			message = err.Error()
+		}
+		// Report a changed failure once, never every pass.
+		if message != "" && message != lastError && ctx.Err() == nil {
+			log.Printf("landed worktree sweep: %s", message)
+		}
+		lastError = message
+		timer.Reset(interval)
+	}
+}
+
+// RemoveLandedWorktree removes the checkout of a finished job's session right
+// after Swarm landed its work (an integration, a workflow merge or delivery).
+// Every rule of the sweep applies; a kept checkout is not an error.
+func (s *WorkerExecutionService) RemoveLandedWorktree(sessionID string) (LandedWorktreeOutcome, error) {
+	if s == nil || s.host == nil {
+		return LandedWorktreeOutcome{SessionID: sessionID}, errors.New("worker execution authorities unavailable")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	s.landed.mu.Lock()
+	defer s.landed.mu.Unlock()
+	accounts := map[string]bool{}
+	if snap, found, err := s.host.runs.sessions.Store().GetSession(sessionID); err != nil {
+		return LandedWorktreeOutcome{SessionID: sessionID}, err
+	} else if found {
+		accounts[snap.AccountScopeID] = true
+	}
+	inUse, err := s.landedWorktreesInUse(accounts)
+	if err != nil {
+		return LandedWorktreeOutcome{SessionID: sessionID}, err
+	}
+	return s.removeLandedSessionWorktree(sessionID, LandedWorktreeTriggerLanded, inUse)
+}
+
+// SweepLandedWorktrees evaluates every finished job checkout it can find: the
+// sessions of finished worker runs and the owners of managed worktrees on
+// disk. It reports how many checkouts it removed.
+func (s *WorkerExecutionService) SweepLandedWorktrees() (int, error) {
+	if s == nil || s.host == nil {
+		return 0, errors.New("worker execution authorities unavailable")
+	}
+	s.landed.mu.Lock()
+	defer s.landed.mu.Unlock()
+	accounts := map[string]bool{}
+	candidates, err := s.landedWorktreeCandidates(accounts)
+	var failures []error
+	if err != nil {
+		failures = append(failures, err)
+	}
+	inUse, err := s.landedWorktreesInUse(accounts)
+	if err != nil {
+		// Without the full picture of what is in use nothing is removed.
+		return 0, errors.Join(append(failures, err)...)
+	}
+	now := s.landedNow()
+	if s.landed.nextCheck == nil {
+		s.landed.nextCheck = map[string]time.Time{}
+	}
+	removed := 0
+	for _, sessionID := range candidates {
+		if next, ok := s.landed.nextCheck[sessionID]; ok && now.Before(next) {
+			continue
+		}
+		outcome, err := s.removeLandedSessionWorktree(sessionID, LandedWorktreeTriggerSweep, inUse)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("session %s: %w", sessionID, err))
+		}
+		if outcome.Removed {
+			removed++
+			delete(s.landed.nextCheck, sessionID)
+			continue
+		}
+		s.landed.nextCheck[sessionID] = now.Add(landedWorktreeRecheck)
+	}
+	return removed, errors.Join(failures...)
+}
+
+// landedWorktreeCandidates lists sessions that may own a finished job's
+// checkout, without repeats, and adds their accounts to accounts.
+func (s *WorkerExecutionService) landedWorktreeCandidates(accounts map[string]bool) ([]string, error) {
+	db := s.host.runs.sessions.Store()
+	seen := map[string]bool{}
+	var out []string
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id != "" && !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	var failures []error
+	ws := db.WorkerStore()
+	for cursor := ""; ; {
+		page, err := ws.ListWorkersForScheduling(cursor, 25)
+		if err != nil {
+			failures = append(failures, err)
+			break
+		}
+		for _, w := range page.Workers {
+			accounts[w.AccountScopeID] = true
+			for after := ""; ; {
+				runs, next, err := ws.ListWorkerRuns(w.AccountScopeID, w.ID, 100, after)
+				if err != nil {
+					failures = append(failures, err)
+					break
+				}
+				for _, r := range runs {
+					if store.AutomationV2Terminal(r.Status) {
+						add(r.SessionID)
+					}
+				}
+				if next == "" {
+					break
+				}
+				after = next
+			}
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	// Checkouts on disk whose durable owner is known (tasks of Swarm's own
+	// agents and older runs).
+	root, err := appstorage.WorktreesRoot()
+	if err == nil {
+		repos, readErr := os.ReadDir(root)
+		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			failures = append(failures, readErr)
+		}
+		for _, repo := range repos {
+			if !repo.IsDir() || repo.Type()&os.ModeSymlink != 0 || strings.HasPrefix(repo.Name(), ".") {
+				continue
+			}
+			entries, err := os.ReadDir(filepath.Join(root, repo.Name()))
+			if err != nil {
+				failures = append(failures, err)
+				continue
+			}
+			for _, entry := range entries {
+				if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || strings.HasPrefix(entry.Name(), ".") {
+					continue
+				}
+				claim, found, err := db.GetWorktreeOwnership(filepath.Join(root, repo.Name(), entry.Name()))
+				if err != nil {
+					failures = append(failures, err)
+					continue
+				}
+				if found {
+					accounts[claim.AccountScopeID] = true
+					add(claim.OwnerSessionID)
+				}
+			}
+		}
+	}
+	return out, errors.Join(failures...)
+}
+
+// landedWorktreesInUse maps each path a live session or an unfinished job
+// works in to that session (or job), so no other job's checkout is removed
+// from under it: active sessions (their worktree, folder and grants),
+// unfinished worker runs (their sessions and any path in their input, such as
+// a review's lane) and unfinished tasks of accounts (their checkout and
+// review lane).
+func (s *WorkerExecutionService) landedWorktreesInUse(accounts map[string]bool) (map[string]string, error) {
+	db := s.host.runs.sessions.Store()
+	inUse := map[string]string{}
+	addSession := func(snap store.SessionSnapshot, user string) {
+		for _, path := range []string{snap.WorktreeRootPath, snap.WorkspacePath} {
+			if path = strings.TrimSpace(path); path != "" {
+				inUse[filepath.Clean(path)] = user
+			}
+		}
+		for _, grant := range snap.WorkspaceGrants {
+			if path := strings.TrimSpace(grant.Path); path != "" {
+				inUse[filepath.Clean(path)] = user
+			}
+		}
+	}
+	active, err := db.ListActiveSessionLifecycles(0)
+	if err != nil {
+		return nil, err
+	}
+	for _, lc := range active {
+		if lc.AccountScopeID != "" {
+			accounts[lc.AccountScopeID] = true
+		}
+		snap, found, err := db.GetSession(lc.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			addSession(snap, lc.SessionID)
+		}
+	}
+	ws := db.WorkerStore()
+	for cursor := ""; ; {
+		page, err := ws.ListWorkersForScheduling(cursor, 25)
+		if err != nil {
+			return nil, err
+		}
+		for _, w := range page.Workers {
+			accounts[w.AccountScopeID] = true
+			pending, err := ws.UnfinishedWorkerRuns(w.AccountScopeID, w.ID, "")
+			if err != nil {
+				return nil, err
+			}
+			for _, r := range pending {
+				user := "worker run " + r.ID
+				if r.SessionID != "" {
+					snap, found, err := db.GetSession(r.SessionID)
+					if err != nil {
+						return nil, err
+					}
+					if found {
+						addSession(snap, r.SessionID)
+					}
+				}
+				collectAbsolutePaths(r.Input, func(path string) { inUse[path] = user })
+			}
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	for account := range accounts {
+		if account == "" {
+			continue
+		}
+		projects, err := db.ListProjects(account, 1000)
+		if err != nil {
+			return nil, err
+		}
+		for _, project := range projects {
+			// Archived tasks run nothing.
+			tasks, err := db.ListProjectTasksByArchive(account, project.ID, false)
+			if err != nil {
+				return nil, err
+			}
+			for _, task := range tasks {
+				if projectTaskFinishedForWorktreeRemoval(task.Status) {
+					continue
+				}
+				user := "task " + task.ID
+				if path := strings.TrimSpace(task.WorkspacePath); path != "" {
+					inUse[filepath.Clean(path)] = user
+				}
+				collectAbsolutePaths(task.ReviewTarget, func(path string) { inUse[path] = user })
+			}
+		}
+	}
+	return inUse, nil
+}
+
+func collectAbsolutePaths(value any, add func(string)) {
+	switch v := value.(type) {
+	case string:
+		if v = strings.TrimSpace(v); filepath.IsAbs(v) {
+			add(filepath.Clean(v))
+		}
+	case map[string]any:
+		for _, item := range v {
+			collectAbsolutePaths(item, add)
+		}
+	case []any:
+		for _, item := range v {
+			collectAbsolutePaths(item, add)
+		}
+	}
+}
+
+// projectTaskFinishedForWorktreeRemoval: the task's run is over. Queued,
+// planning, running, waiting (on a provider limit included), stopped-but-open
+// and approval states keep the checkout.
+func projectTaskFinishedForWorktreeRemoval(status string) bool {
+	switch status {
+	case "completed", "failed", "cancelled", "needs_review", "rejected", "superseded", "accepted":
+		return true
+	}
+	return false
+}
+
+func (s *WorkerExecutionService) removeLandedSessionWorktree(sessionID, trigger string, inUse map[string]string) (LandedWorktreeOutcome, error) {
+	out := LandedWorktreeOutcome{SessionID: sessionID}
+	kept := func(reason string) (LandedWorktreeOutcome, error) {
+		out.Kept = reason
+		return out, nil
+	}
+	db := s.host.runs.sessions.Store()
+	snap, found, err := db.GetSession(sessionID)
+	if err != nil {
+		return out, err
+	}
+	if !found {
+		return kept("session not found")
+	}
+	path := strings.TrimSpace(snap.WorktreeRootPath)
+	source := mapString(snap.Metadata, "swarm_v3_source_workspace_path")
+	if !snap.WorktreeEnabled || path == "" || strings.TrimSpace(snap.WorktreeBranch) == "" || strings.TrimSpace(snap.WorktreeBaseBranch) == "" || source == "" {
+		return kept("session has no checkout of its own on a branch with a target")
+	}
+	path = filepath.Clean(path)
+	if path == filepath.Clean(source) {
+		return kept("the checkout is the folder itself")
+	}
+	if mapString(snap.Metadata, "swarm_v3_worktree_owner_session_id") != sessionID {
+		return kept("the session does not own the checkout")
+	}
+	if claim, ok, err := db.GetWorktreeOwnership(path); err != nil {
+		return out, err
+	} else if ok && (claim.OwnerSessionID != sessionID || claim.ClaimantSessionID != "" || claim.OperationState != "") {
+		return kept("the checkout is claimed by another session or a recovery")
+	}
+	if user, ok := inUse[path]; ok && user != sessionID {
+		return kept("the checkout is in use by " + user)
+	}
+	if intent, active, err := db.GetV3SessionActiveRunIntent(sessionID); err != nil {
+		return out, err
+	} else if active {
+		return kept("the session's run is " + string(intent.Status))
+	}
+	if lc, ok, err := db.GetSessionLifecycle(sessionID); err != nil {
+		return out, err
+	} else if ok && lc.Active {
+		return kept("the session's run is active")
+	}
+	run, task, err := s.landedWorktreeOwners(snap)
+	if err != nil {
+		return out, err
+	}
+	if run == nil && task == nil {
+		return kept("the checkout is not a worker run's or task's")
+	}
+	if run != nil && (!store.AutomationV2Terminal(run.Status) || run.FollowupStatus == "running") {
+		return kept("the run is " + run.Status)
+	}
+	if task != nil && !projectTaskFinishedForWorktreeRemoval(task.Status) {
+		return kept("the task is " + task.Status)
+	}
+	now := s.landedNow()
+	for _, prior := range []*store.WorktreeRemoval{landedRunRemoval(run), landedTaskRemoval(task)} {
+		if prior == nil || prior.State != store.WorktreeRemovalFailed || prior.Path != path {
+			continue
+		}
+		if prior.Attempts >= landedWorktreeMaxAttempts {
+			return kept(fmt.Sprintf("removal failed %d times (%s); remove the checkout by hand", prior.Attempts, prior.LastError))
+		}
+		if prior.NextAttemptAt > now.UnixMilli() {
+			return kept("a failed removal is retried later")
+		}
+	}
+	removal, err := s.landedRemover().RemoveLandedWorktree(worktree.LandedWorktree{Source: source, Path: path, Branch: snap.WorktreeBranch, TargetBranch: snap.WorktreeBaseBranch})
+	switch {
+	case errors.Is(err, worktree.ErrLandedWorktreeGone):
+		return kept("the checkout is already gone")
+	case worktree.IsLandedWorktreeKept(err):
+		return kept(strings.TrimPrefix(err.Error(), "worktree kept: "))
+	case err != nil:
+		if recordErr := s.recordLandedWorktreeFailure(snap, run, task, path, trigger, err, now); recordErr != nil {
+			return out, errors.Join(err, recordErr)
+		}
+		return out, err
+	}
+	out.Removed, out.Removal = true, removal
+	return out, s.recordLandedWorktreeRemoval(snap, run, task, removal, trigger, now)
+}
+
+func landedRunRemoval(r *store.WorkerRunRecord) *store.WorktreeRemoval {
+	if r == nil {
+		return nil
+	}
+	return r.WorktreeRemoval
+}
+
+func landedTaskRemoval(t *store.ProjectTaskRecord) *store.WorktreeRemoval {
+	if t == nil {
+		return nil
+	}
+	return t.WorktreeRemoval
+}
+
+// landedWorktreeOwners reads the worker run and the task a session works
+// for, when they are this session's.
+func (s *WorkerExecutionService) landedWorktreeOwners(snap store.SessionSnapshot) (*store.WorkerRunRecord, *store.ProjectTaskRecord, error) {
+	db := s.host.runs.sessions.Store()
+	var run *store.WorkerRunRecord
+	if runID, workerID := mapString(snap.Metadata, "worker_execution_run_id"), mapString(snap.Metadata, "worker_id"); runID != "" && workerID != "" {
+		r, found, err := db.WorkerStore().GetWorkerRun(snap.AccountScopeID, workerID, runID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if found && r.SessionID == snap.ID {
+			run = &r
+		}
+	}
+	var task *store.ProjectTaskRecord
+	if projectID, taskID := mapString(snap.Metadata, "project_id"), mapString(snap.Metadata, "task_id"); projectID != "" && taskID != "" {
+		t, found, err := db.GetProjectTask(snap.AccountScopeID, projectID, taskID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if found && t != nil && (t.SessionID == snap.ID || filepath.Clean(strings.TrimSpace(t.WorkspacePath)) == filepath.Clean(snap.WorktreeRootPath)) {
+			task = t
+		}
+	}
+	if task == nil && run != nil && run.ProjectID != "" {
+		// A worker job's task (reconcileRunTask's default id).
+		t, found, err := db.GetProjectTask(snap.AccountScopeID, run.ProjectID, "task_"+run.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if found && t != nil && t.WorkerRunID == run.ID {
+			task = t
+		}
+	}
+	return run, task, nil
+}
+
+func landedWorktreeRefs(snap store.SessionSnapshot, run *store.WorkerRunRecord, task *store.ProjectTaskRecord) map[string]string {
+	refs := map[string]string{"session_id": snap.ID}
+	if run != nil {
+		refs["worker_id"], refs["run_id"] = run.WorkerID, run.ID
+	}
+	if task != nil {
+		refs["project_id"], refs["task_id"] = task.ProjectID, task.ID
+	}
+	return refs
+}
+
+func landedWorktreeSubject(run *store.WorkerRunRecord, task *store.ProjectTaskRecord) string {
+	switch {
+	case run != nil:
+		return "run " + run.ID
+	case task != nil:
+		return "task " + task.ID
+	}
+	return "job"
+}
+
+// recordLandedWorktreeRemoval writes the removal into the run's and the
+// task's history and raises one worktree.removed activity event.
+func (s *WorkerExecutionService) recordLandedWorktreeRemoval(snap store.SessionSnapshot, run *store.WorkerRunRecord, task *store.ProjectTaskRecord, removal worktree.LandedWorktreeRemoval, trigger string, now time.Time) error {
+	record := store.WorktreeRemoval{State: store.WorktreeRemovalRemoved, Path: removal.Path, Branch: removal.Branch, Head: removal.Head, TargetBranch: removal.TargetBranch, Trigger: trigger, At: now.UnixMilli()}
+	var failures []error
+	if err := s.writeLandedWorktreeRecord(snap, run, task, record); err != nil {
+		failures = append(failures, err)
+	}
+	subject := landedWorktreeSubject(run, task)
+	_, err := s.host.runs.sessions.Store().AppendSignalOnce(store.Signal{
+		Kind: "worktree.removed", Severity: store.SignalSeverityInfo, Account: snap.AccountScopeID,
+		Summary:  fmt.Sprintf("Removed the checkout of finished %s: its branch %s is in %s", subject, removal.Branch, removal.TargetBranch),
+		DedupKey: "worktree.removed:" + snap.ID + ":" + removal.Head + ":" + fmt.Sprint(record.At),
+		Refs:     landedWorktreeRefs(snap, run, task),
+		Attrs:    map[string]string{"path": removal.Path, "branch": removal.Branch, "head": removal.Head, "target_branch": removal.TargetBranch, "trigger": trigger},
+	})
+	if err != nil {
+		failures = append(failures, err)
+	}
+	return errors.Join(failures...)
+}
+
+// recordLandedWorktreeFailure keeps the checkout and records the failure with
+// a backoff; the first failure of a checkout is reported once as activity.
+func (s *WorkerExecutionService) recordLandedWorktreeFailure(snap store.SessionSnapshot, run *store.WorkerRunRecord, task *store.ProjectTaskRecord, path, trigger string, cause error, now time.Time) error {
+	attempts := 0
+	for _, prior := range []*store.WorktreeRemoval{landedRunRemoval(run), landedTaskRemoval(task)} {
+		if prior != nil && prior.State == store.WorktreeRemovalFailed && prior.Path == path && prior.Attempts > attempts {
+			attempts = prior.Attempts
+		}
+	}
+	attempts++
+	record := store.WorktreeRemoval{State: store.WorktreeRemovalFailed, Path: path, Branch: snap.WorktreeBranch, TargetBranch: snap.WorktreeBaseBranch, Trigger: trigger, At: now.UnixMilli(), Attempts: attempts, LastError: cause.Error()}
+	if attempts < landedWorktreeMaxAttempts {
+		record.NextAttemptAt = now.Add(landedWorktreeFailureBackoff << min(attempts-1, 6)).UnixMilli()
+	}
+	var failures []error
+	if err := s.writeLandedWorktreeRecord(snap, run, task, record); err != nil {
+		failures = append(failures, err)
+	}
+	if attempts == 1 || attempts == landedWorktreeMaxAttempts {
+		_, err := s.host.runs.sessions.Store().AppendSignalOnce(store.Signal{
+			Kind: "worktree.remove_failed", Severity: store.SignalSeverityWarning, Account: snap.AccountScopeID,
+			Summary:  fmt.Sprintf("Could not remove the checkout of finished %s (attempt %d of %d): %s", landedWorktreeSubject(run, task), attempts, landedWorktreeMaxAttempts, cause.Error()),
+			DedupKey: fmt.Sprintf("worktree.remove_failed:%s:%s:%d", snap.ID, path, attempts),
+			Refs:     landedWorktreeRefs(snap, run, task),
+			Attrs:    map[string]string{"path": path, "branch": snap.WorktreeBranch, "target_branch": snap.WorktreeBaseBranch, "trigger": trigger},
+		})
+		if err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
+}
+
+func (s *WorkerExecutionService) writeLandedWorktreeRecord(snap store.SessionSnapshot, run *store.WorkerRunRecord, task *store.ProjectTaskRecord, record store.WorktreeRemoval) error {
+	db := s.host.runs.sessions.Store()
+	var failures []error
+	if run != nil {
+		ws := db.WorkerStore()
+		current, found, err := ws.GetWorkerRun(run.AccountScopeID, run.WorkerID, run.ID)
+		if err != nil {
+			failures = append(failures, err)
+		} else if found {
+			copy := record
+			current.WorktreeRemoval = &copy
+			if _, err := ws.RecordWorkerRun(current.AccountScopeID, current); err != nil {
+				failures = append(failures, fmt.Errorf("record worktree removal on run %s: %w", current.ID, err))
+			}
+		}
+	}
+	if task != nil {
+		_, err := db.UpdateProjectTask(snap.AccountScopeID, task.ProjectID, task.ID, func(t *store.ProjectTaskRecord) error {
+			copy := record
+			t.WorktreeRemoval = &copy
+			return nil
+		})
+		if err != nil {
+			failures = append(failures, fmt.Errorf("record worktree removal on task %s: %w", task.ID, err))
+		}
+	}
+	return errors.Join(failures...)
+}
+
+// restoreRemovedRunWorktree recreates a run's removed checkout from its kept
+// branch before a follow-up runs in it again.
+func (s *WorkerExecutionService) restoreRemovedRunWorktree(snap store.SessionSnapshot, r store.WorkerRunRecord) error {
+	if r.WorktreeRemoval == nil || r.WorktreeRemoval.State != store.WorktreeRemovalRemoved || !snap.WorktreeEnabled {
+		return nil
+	}
+	path := filepath.Clean(strings.TrimSpace(snap.WorktreeRootPath))
+	if path != r.WorktreeRemoval.Path {
+		return nil
+	}
+	source := mapString(snap.Metadata, "swarm_v3_source_workspace_path")
+	if _, err := s.host.trees.RestoreRemovedWorktree(source, path, snap.WorktreeBranch, r.WorktreeRemoval.Head); err != nil {
+		return fmt.Errorf("%w: the job's checkout was removed after its work landed and cannot be recreated from its branch: %v", store.ErrWorkerConflict, err)
+	}
+	return nil
+}

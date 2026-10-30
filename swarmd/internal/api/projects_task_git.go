@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"errors"
+	"os"
 	"strings"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -50,6 +52,16 @@ func inspectTaskGitStateContext(ctx context.Context, task pebblestore.ProjectTas
 		// possibly moved or removed checkout as if delivery were still pending.
 		a.State, a.ReasonCode, a.Reason = receipt.State, "delivery_receipt", "Job delivery recorded"
 		return res
+	}
+	if rm := task.WorktreeRemoval; rm != nil && rm.State == pebblestore.WorktreeRemovalRemoved && rm.Head != "" {
+		if _, err := os.Lstat(rm.Path); errors.Is(err, os.ErrNotExist) {
+			// Swarm removed the checkout because its HEAD was in the target
+			// branch (work merged outside Swarm included); the branch stays.
+			a.State, a.ReasonCode, a.SourceOID, a.Freshness = "integrated", "worktree_removed", rm.Head, "recorded"
+			a.Reason = "The task's work is in " + rm.TargetBranch + "; its checkout was removed and its branch " + rm.Branch + " kept"
+			res.baseBranch, res.baseCommit, res.gitStatus, res.isIntegrated = rm.TargetBranch, task.BaseCommit, "clean", true
+			return res
+		}
 	}
 	if db == nil || task.SessionID == "" || task.Archived || task.Status == "pending_approval" || task.Status == "planning" || task.Status == "queued" || task.Agent == "image" || task.Agent == "video" || task.Agent == "sound" || task.Agent == "audio" {
 		return res

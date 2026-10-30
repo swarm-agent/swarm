@@ -202,6 +202,10 @@ type WorkerRunRecord struct {
 	StartedAt           int64                          `json:"started_at,omitempty"`
 	CompletedAt         int64                          `json:"completed_at,omitempty"`
 	CreatedAt           int64                          `json:"created_at"`
+
+	// WorktreeRemoval records Swarm removing the run's checkout once its
+	// work landed (the branch and result stay).
+	WorktreeRemoval *WorktreeRemoval `json:"worktree_removal,omitempty"`
 }
 
 type WorkerIdempotencyRecord struct {
