@@ -53,9 +53,14 @@ the first and last attempt. Anything that needs the checkout again (a
 follow-up message to the job, a task reopen, a reviewer reading the job in
 place) recreates it at the same path from the kept branch, as long as the
 branch is still at the recorded `head`; a branch moved since is refused
-rather than checked out. A repeated `swarm_integrate_task` of such a task
-answers `already_integrated` from the record, and the task's delivery state
-reads `integrated` (`reason_code` `worktree_removed`).
+rather than checked out. The recreated worktree is recorded as
+`worktree_removal` `state` `restored` and is not removed again for 30 minutes,
+so the work it was recreated for has time to start. A repeated
+`swarm_integrate_task` of such a task answers `already_integrated` from the
+record, and the task's delivery state reads `integrated` (`reason_code`
+`worktree_removed`). Both hold only when the recorded `head` has at least one
+commit beyond the task's base. A task with no commits whose worktree was
+removed is never reported as integrated.
 
 Workflows were called job automations. The MCP tools and the API path are
 named for workflows (`swarm_set_workflow`, `/v3/workflows`); the internal

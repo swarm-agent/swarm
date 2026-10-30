@@ -493,6 +493,14 @@ func (s *WorkerExecutionService) removeLandedSessionWorktree(sessionID, trigger 
 		return kept("the task is " + task.Status)
 	}
 	now := s.landedNow()
+	// A checkout recreated for new work (RestoreRemovedSessionWorktree) is
+	// kept while that work starts: a follow-up is marked only when its run is
+	// appended, a reopened task only after its reopen checks.
+	for _, prior := range []*store.WorktreeRemoval{landedRunRemoval(run), landedTaskRemoval(task)} {
+		if prior != nil && prior.State == store.WorktreeRemovalRestored && prior.Path == path && now.Sub(time.UnixMilli(prior.At)) < landedRestoreGrace {
+			return kept("the checkout was recreated for new work")
+		}
+	}
 	for _, prior := range []*store.WorktreeRemoval{landedRunRemoval(run), landedTaskRemoval(task)} {
 		if prior == nil || prior.State != store.WorktreeRemovalFailed || prior.Path != path {
 			continue
@@ -676,18 +684,66 @@ func (s *WorkerExecutionService) writeLandedWorktreeRecord(snap store.SessionSna
 	return errors.Join(failures...)
 }
 
+// landedRestoreGrace is how long a recreated checkout is kept before the
+// ordinary rules (an active session, run, follow-up or task) alone decide.
+// The work it was recreated for marks itself active well within it.
+const landedRestoreGrace = 30 * time.Minute
+
+// RestoreRemovedSessionWorktree recreates a session's checkout that Swarm
+// removed after its work landed, at its recorded path from its kept branch,
+// and records it on the run and task as restored. It holds the evaluation
+// slot across the recreation and the record, so no landed removal or sweep
+// can evaluate the checkout in between, and the record keeps it for
+// landedRestoreGrace afterwards, until the new work (a follow-up, a reopen, a
+// review) is marked active. It reports false when there is no removal of the
+// session's checkout to undo.
+func (s *WorkerExecutionService) RestoreRemovedSessionWorktree(sessionID string) (bool, error) {
+	if s == nil || s.host == nil {
+		return false, errors.New("worker execution authorities unavailable")
+	}
+	s.landed.acquire(-1)
+	defer s.landed.release()
+	snap, found, err := s.host.runs.sessions.Store().GetSession(strings.TrimSpace(sessionID))
+	if err != nil {
+		return false, err
+	}
+	if !found || !snap.WorktreeEnabled || strings.TrimSpace(snap.WorktreeRootPath) == "" {
+		return false, nil
+	}
+	path := filepath.Clean(strings.TrimSpace(snap.WorktreeRootPath))
+	run, task, err := s.landedWorktreeOwners(snap)
+	if err != nil {
+		return false, err
+	}
+	var removed *store.WorktreeRemoval
+	for _, prior := range []*store.WorktreeRemoval{landedRunRemoval(run), landedTaskRemoval(task)} {
+		if prior != nil && prior.State == store.WorktreeRemovalRemoved && prior.Path == path {
+			removed = prior
+			break
+		}
+	}
+	if removed == nil {
+		return false, nil
+	}
+	source := mapString(snap.Metadata, "swarm_v3_source_workspace_path")
+	recreated, err := s.host.trees.RestoreRemovedWorktree(source, path, snap.WorktreeBranch, removed.Head)
+	if err != nil {
+		return false, err
+	}
+	record := store.WorktreeRemoval{State: store.WorktreeRemovalRestored, Path: path, Branch: snap.WorktreeBranch, Head: removed.Head, TargetBranch: removed.TargetBranch, Trigger: removed.Trigger, At: s.landedNow().UnixMilli()}
+	if err := s.writeLandedWorktreeRecord(snap, run, task, record); err != nil {
+		return recreated, fmt.Errorf("record the recreated checkout: %w", err)
+	}
+	return recreated, nil
+}
+
 // restoreRemovedRunWorktree recreates a run's removed checkout from its kept
 // branch before a follow-up runs in it again.
 func (s *WorkerExecutionService) restoreRemovedRunWorktree(snap store.SessionSnapshot, r store.WorkerRunRecord) error {
 	if r.WorktreeRemoval == nil || r.WorktreeRemoval.State != store.WorktreeRemovalRemoved || !snap.WorktreeEnabled {
 		return nil
 	}
-	path := filepath.Clean(strings.TrimSpace(snap.WorktreeRootPath))
-	if path != r.WorktreeRemoval.Path {
-		return nil
-	}
-	source := mapString(snap.Metadata, "swarm_v3_source_workspace_path")
-	if _, err := s.host.trees.RestoreRemovedWorktree(source, path, snap.WorktreeBranch, r.WorktreeRemoval.Head); err != nil {
+	if _, err := s.RestoreRemovedSessionWorktree(snap.ID); err != nil {
 		return fmt.Errorf("%w: the job's checkout was removed after its work landed and cannot be recreated from its branch: %v", store.ErrWorkerConflict, err)
 	}
 	return nil

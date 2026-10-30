@@ -10,6 +10,10 @@ import (
 const (
 	WorktreeRemovalRemoved = "removed"
 	WorktreeRemovalFailed  = "failed"
+	// WorktreeRemovalRestored: the removed checkout was recreated from its
+	// kept branch for new work (a follow-up, a reopen, an in-place review)
+	// at At; it is not removed again while that work starts.
+	WorktreeRemovalRestored = "restored"
 )
 
 // WorktreeRemoval records Swarm removing a finished job's checkout after its

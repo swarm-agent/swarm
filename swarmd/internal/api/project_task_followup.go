@@ -453,13 +453,14 @@ func (s *Server) restoreRemovedTaskWorktree(task *pebblestore.ProjectTaskRecord)
 	if rm == nil || rm.State != pebblestore.WorktreeRemovalRemoved || rm.Path != filepath.Clean(strings.TrimSpace(task.WorkspacePath)) {
 		return nil
 	}
-	restorer, ok := s.worktrees.(interface {
-		RestoreRemovedWorktree(source, path, branch, head string) (bool, error)
-	})
-	if !ok {
-		return nil
+	// Recreated through the worker execution service: under its evaluation
+	// slot and recorded as restored, so no landed removal or sweep removes it
+	// again before the reopened task is marked active.
+	execution, err := s.workerExecutionService()
+	if err != nil {
+		return fmt.Errorf("the task's checkout was removed after its work landed and cannot be recreated now: %w", err)
 	}
-	if _, err := restorer.RestoreRemovedWorktree(task.SourceWorkspace.Path, task.WorkspacePath, task.WorktreeBranch, rm.Head); err != nil {
+	if _, err := execution.RestoreRemovedSessionWorktree(task.SessionID); err != nil {
 		return fmt.Errorf("the task's checkout was removed after its work landed and cannot be recreated from its branch: %w", err)
 	}
 	return nil

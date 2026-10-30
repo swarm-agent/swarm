@@ -407,6 +407,150 @@ func TestLandedWorktreeKeptWhileAFollowupIsQueuedOrRunning(t *testing.T) {
 	f.assertRemoved(j, LandedWorktreeTriggerLanded)
 }
 
+// Requirement: a checkout recreated for new work is never removed again
+// before that work is marked active. PrepareFollowup recreates a run's
+// checkout before the follow-up is reserved (and without a sandbox manager it
+// is never reserved: the run is marked only once its V3 run is appended);
+// ReopenProjectTask recreates a task's checkout before the task moves to
+// in_progress. In that window the run or task still reads as finished and
+// landed. RestoreRemovedSessionWorktree recreates under the evaluation slot
+// and records the checkout as restored, which keeps it for landedRestoreGrace.
+// Threat (review finding): a sweep passed its checks in that window and
+// removed the freshly recreated checkout, so the follow-up or reopened task
+// started in a missing directory. Owners: restoreRemovedRunWorktree,
+// RestoreRemovedSessionWorktree and removeLandedSessionWorktree, over a real
+// store and Git.
+func TestRecreatedCheckoutIsKeptBetweenRecreateAndMarking(t *testing.T) {
+	f := newLandedJobsFixture(t)
+	now := time.Unix(1_800_000_000, 0)
+	f.service.landed.nowForTest = func() time.Time { return now }
+	j := f.job("recreat1", "succeeded")
+	f.merge(j)
+	if outcome, err := f.service.RemoveLandedWorktree(j.session); err != nil || !outcome.Removed {
+		t.Fatalf("removal = %+v, %v", outcome, err)
+	}
+	snap, _, err := f.db.GetSession(j.session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// PrepareFollowup's recreate, with no reservation after it.
+	if err := f.service.restoreRemovedRunWorktree(snap, f.run(j.id)); err != nil {
+		t.Fatal(err)
+	}
+	if rm := f.run(j.id).WorktreeRemoval; rm == nil || rm.State != pebblestore.WorktreeRemovalRestored || rm.Path != j.path || rm.Head != j.head {
+		t.Fatalf("restore record = %+v", rm)
+	}
+	if r := f.run(j.id); r.FollowupActive() {
+		t.Fatalf("fixture: the follow-up is already marked %s", r.FollowupStatus)
+	}
+	// A sweep and a landed removal in the window before the follow-up is
+	// marked keep the checkout.
+	if removed, err := f.service.SweepLandedWorktrees(); err != nil || removed != 0 {
+		t.Fatalf("sweep after recreate removed %d: %v", removed, err)
+	}
+	outcome, err := f.service.RemoveLandedWorktree(j.session)
+	if err != nil || outcome.Removed || !strings.Contains(outcome.Kept, "recreated for new work") {
+		t.Fatalf("landed removal after recreate = %+v, %v", outcome, err)
+	}
+	if state, err := f.trees.InspectTaskWorkspace(j.path); err != nil || state.HeadCommit != j.head || state.BranchName != j.branch {
+		t.Fatalf("recreated checkout = %+v, %v", state, err)
+	}
+	// Past the grace, with no follow-up started, the ordinary rules apply.
+	now = now.Add(landedRestoreGrace + time.Minute)
+	if outcome, err := f.service.RemoveLandedWorktree(j.session); err != nil || !outcome.Removed {
+		t.Fatalf("after the grace = %+v, %v; want removed", outcome, err)
+	}
+	if _, err := os.Stat(j.path); !os.IsNotExist(err) {
+		t.Fatalf("checkout still present after the grace: %v", err)
+	}
+}
+
+// Requirement: the recreation waits for an evaluation already in flight
+// (which holds the slot from its state checks to its Git removal), so an
+// evaluation can never see the run as idle and then remove a checkout
+// recreated while it waited. Owner: RestoreRemovedSessionWorktree's slot.
+func TestRecreateWaitsForAnEvaluationInFlight(t *testing.T) {
+	f := newLandedJobsFixture(t)
+	j := f.job("inflight", "succeeded")
+	f.merge(j)
+	if outcome, err := f.service.RemoveLandedWorktree(j.session); err != nil || !outcome.Removed {
+		t.Fatalf("removal = %+v, %v", outcome, err)
+	}
+	f.service.landed.acquire(-1) // an evaluation holds the slot
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.service.RestoreRemovedSessionWorktree(j.session)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		f.service.landed.release()
+		t.Fatalf("recreate did not wait for the evaluation in flight: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if _, err := os.Stat(j.path); !os.IsNotExist(err) {
+		f.service.landed.release()
+		t.Fatalf("checkout recreated while an evaluation held the slot: %v", err)
+	}
+	f.service.landed.release()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Minute):
+		t.Fatal("recreate did not finish after the slot was released")
+	}
+	if removed, err := f.service.SweepLandedWorktrees(); err != nil || removed != 0 {
+		t.Fatalf("sweep removed the recreated checkout: %d %v", removed, err)
+	}
+	if _, err := os.Stat(j.path); err != nil {
+		t.Fatalf("recreated checkout missing: %v", err)
+	}
+}
+
+// Requirement: a reopened task's recreated checkout is kept the same way
+// while the task still reads completed (ReopenProjectTask recreates it
+// through RestoreRemovedSessionWorktree before moving it to in_progress).
+func TestReopenedTaskCheckoutIsKeptBeforeTheTaskIsActive(t *testing.T) {
+	f := newLandedJobsFixture(t)
+	const session, branch = "task-session-reopen", "agent/task-reopen"
+	alloc, err := f.trees.AllocateDetachedWorkspaceRequestedForPrincipal(f.p, f.source, session, "", branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(alloc.WorkspacePath, "task.txt"), []byte("task"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.git(alloc.WorkspacePath, "add", "task.txt")
+	f.git(alloc.WorkspacePath, "commit", "-q", "-m", "task work")
+	f.git(f.repo, "merge", "-q", "--ff-only", branch)
+	f.session(session, alloc.WorkspacePath, branch, map[string]any{"project_id": "project-r", "task_id": "task-r"})
+	if err := f.db.PutProject(landedAccount, &pebblestore.ProjectRecord{ID: "project-r", Name: "project-r"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.PutProjectTask(landedAccount, &pebblestore.ProjectTaskRecord{ID: "task-r", Title: "Reopened task", ProjectID: "project-r", AccountID: landedAccount,
+		SessionID: session, Agent: "coder", Status: "completed", WorkspacePath: alloc.WorkspacePath, WorktreeBranch: branch, BaseBranch: "dev"}); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, err := f.service.RemoveLandedWorktree(session); err != nil || !outcome.Removed {
+		t.Fatalf("removal = %+v, %v", outcome, err)
+	}
+	if restored, err := f.service.RestoreRemovedSessionWorktree(session); err != nil || !restored {
+		t.Fatalf("restore = %v, %v", restored, err)
+	}
+	if removed, err := f.service.SweepLandedWorktrees(); err != nil || removed != 0 {
+		t.Fatalf("sweep removed the reopened task's checkout: %d %v", removed, err)
+	}
+	if _, err := os.Stat(alloc.WorkspacePath); err != nil {
+		t.Fatalf("reopened task's checkout missing: %v", err)
+	}
+	task, _, err := f.db.GetProjectTask(landedAccount, "project-r", "task-r")
+	if err != nil || task.WorktreeRemoval == nil || task.WorktreeRemoval.State != pebblestore.WorktreeRemovalRestored {
+		t.Fatalf("task restore record = %+v, %v", task, err)
+	}
+}
+
 // Requirement: a removal right after a landing never waits behind a sweep:
 // while another evaluation holds the slot it waits at most its bound, keeps
 // the checkout without error or record, and the sweep removes it later.

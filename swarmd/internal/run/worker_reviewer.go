@@ -301,7 +301,9 @@ func (s *WorkerExecutionService) resolveJobReviewTarget(ctx context.Context, r s
 		// A job whose checkout was removed after its work landed is reviewed
 		// in its checkout recreated from the kept branch.
 		if rm := task.WorktreeRemoval; rm != nil && rm.State == store.WorktreeRemovalRemoved && rm.Path == filepath.Clean(strings.TrimSpace(task.WorkspacePath)) {
-			if _, err := s.host.trees.RestoreRemovedWorktree(task.SourceWorkspace.Path, task.WorkspacePath, task.WorktreeBranch, rm.Head); err != nil {
+			// Recreated under the evaluation slot and recorded as restored,
+			// so no sweep removes it before this review is recorded.
+			if _, err := s.RestoreRemovedSessionWorktree(laneOwner); err != nil {
 				return nil, fmt.Errorf("the reviewed job's checkout was removed after its work landed and cannot be recreated from its branch: %w", err)
 			}
 		}
