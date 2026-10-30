@@ -321,12 +321,36 @@ func integratedAfterWorktreeRemoval(ctx context.Context, task *pebblestore.Proje
 	if _, err := os.Lstat(rm.Path); !errors.Is(err, os.ErrNotExist) {
 		return nil, false
 	}
+	base, _ := session.Metadata["base_commit"].(string)
+	if task.BaseCommit != "" {
+		base = task.BaseCommit
+	}
+	// A task with no commits beyond its base is never integrated; it takes
+	// the ordinary path, which refuses it.
+	if !removedWorktreeHasCommits(ctx, capturedPath, base, rm.Head) {
+		return nil, false
+	}
 	checkCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	if err := sandbox.Command(checkCtx, "-C", capturedPath, "merge-base", "--is-ancestor", rm.Head, "refs/heads/"+selection.TargetBranch).Run(); err != nil {
 		return nil, false
 	}
 	return map[string]any{"status": "already_integrated", "task": sanitizeProjectTaskForClient(task), "integration": map[string]any{"target_branch": selection.TargetBranch, "warning": "the task's checkout was removed after its work landed; its branch " + rm.Branch + " is kept at " + rm.Head}}, true
+}
+
+// removedWorktreeHasCommits reports whether a removed checkout's recorded
+// head has at least one commit beyond the task's recorded base in repo: the
+// base is known, differs from the head and is its ancestor. A zero-commit
+// task's head equals its base and is trivially in the target branch; it must
+// never read as integrated.
+func removedWorktreeHasCommits(ctx context.Context, repo, base, head string) bool {
+	repo, base, head = strings.TrimSpace(repo), strings.TrimSpace(base), strings.TrimSpace(head)
+	if repo == "" || base == "" || head == "" || base == head || !controlMCPGitRevision.MatchString(base) || !controlMCPGitRevision.MatchString(head) {
+		return false
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	return sandbox.Command(checkCtx, "-C", repo, "merge-base", "--is-ancestor", base, head).Run() == nil
 }
 
 // projectTaskDeltaIntegrable reports whether integration must deliver the

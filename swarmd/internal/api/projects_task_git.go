@@ -54,7 +54,9 @@ func inspectTaskGitStateContext(ctx context.Context, task pebblestore.ProjectTas
 		return res
 	}
 	if rm := task.WorktreeRemoval; rm != nil && rm.State == pebblestore.WorktreeRemovalRemoved && rm.Head != "" {
-		if _, err := os.Lstat(rm.Path); errors.Is(err, os.ErrNotExist) {
+		// Only a head with commits beyond the task's base is its landed
+		// work; a zero-commit task falls through to the ordinary handling.
+		if _, err := os.Lstat(rm.Path); errors.Is(err, os.ErrNotExist) && removedWorktreeHasCommits(ctx, task.SourceWorkspace.Path, task.BaseCommit, rm.Head) {
 			// Swarm removed the checkout because its HEAD was in the target
 			// branch (work merged outside Swarm included); the branch stays.
 			a.State, a.ReasonCode, a.SourceOID, a.Freshness = "integrated", "worktree_removed", rm.Head, "recorded"

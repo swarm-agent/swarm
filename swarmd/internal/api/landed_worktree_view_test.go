@@ -9,7 +9,66 @@ import (
 
 	"swarm/packages/swarmd/internal/jobautomation"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 )
+
+// Requirement (AGENTS.md): a task is integrated only when it produced commits
+// beyond its base that are in the target branch. A zero-commit task's head is
+// its base, trivially contained in the target, so RemoveLandedWorktree may
+// remove its clean checkout; afterwards neither the task's delivery state
+// (inspectTaskGitStateContext) nor a repeated integration
+// (integratedAfterWorktreeRemoval) may report it integrated from the removal
+// record. A task whose removed head carries a landed commit still does.
+// Threat (review finding): failed or cancelled tasks with no commits showed as
+// integrated once their checkout was removed. Owners: removedWorktreeHasCommits
+// and its two callers, over a real Git folder.
+func TestRemovedZeroCommitTaskIsNeverReportedIntegrated(t *testing.T) {
+	folder := t.TempDir()
+	outboxPinGit(t, folder, "init", "-q", "-b", "dev")
+	outboxPinGit(t, folder, "commit", "-q", "--allow-empty", "-m", "base")
+	base := outboxPinGit(t, folder, "rev-parse", "HEAD")
+	outboxPinGit(t, folder, "branch", "agent/empty", base)
+	outboxPinGit(t, folder, "checkout", "-q", "-b", "agent/work")
+	writeRebaseFile(t, folder, "work.go", "package work\n")
+	outboxPinGit(t, folder, "add", ".")
+	outboxPinGit(t, folder, "commit", "-q", "-m", "work")
+	workHead := outboxPinGit(t, folder, "rev-parse", "HEAD")
+	outboxPinGit(t, folder, "checkout", "-q", "dev")
+	outboxPinGit(t, folder, "merge", "-q", "--ff-only", "agent/work")
+	gone := filepath.Join(t.TempDir(), "removed")
+
+	task := func(branch, head string) *pebblestore.ProjectTaskRecord {
+		return &pebblestore.ProjectTaskRecord{ID: "task-z", Status: "failed", BaseCommit: base, BaseBranch: "dev", WorktreeBranch: branch, WorkspacePath: gone,
+			SourceWorkspace: pebblestore.ProjectTaskSource{Path: folder},
+			WorktreeRemoval: &pebblestore.WorktreeRemoval{State: pebblestore.WorktreeRemovalRemoved, Path: gone, Branch: branch, Head: head, TargetBranch: "dev"}}
+	}
+	session := pebblestore.SessionSnapshot{WorktreeRootPath: gone, Metadata: map[string]any{"base_commit": base}}
+	ctx := context.Background()
+
+	empty := task("agent/empty", base)
+	state := inspectTaskGitStateContext(ctx, *empty, nil)
+	if state.isIntegrated || state.deliveryAssessment.State == "integrated" || state.deliveryAssessment.ReasonCode == "worktree_removed" {
+		t.Fatalf("zero-commit removed task reads as integrated: %+v %+v", state, state.deliveryAssessment)
+	}
+	if result, ok := integratedAfterWorktreeRemoval(ctx, empty, session, folder, tool.ProjectTaskIntegrationSelection{SourceBranch: "agent/empty", TargetBranch: "dev"}); ok {
+		t.Fatalf("zero-commit removed task answered %v", result)
+	}
+	// No recorded base: never integrated from the record either.
+	unknown := task("agent/work", workHead)
+	unknown.BaseCommit = ""
+	if state := inspectTaskGitStateContext(ctx, *unknown, nil); state.isIntegrated {
+		t.Fatalf("removed task without a base reads as integrated")
+	}
+
+	landed := task("agent/work", workHead)
+	state = inspectTaskGitStateContext(ctx, *landed, nil)
+	if !state.isIntegrated || state.deliveryAssessment.State != "integrated" || state.deliveryAssessment.ReasonCode != "worktree_removed" {
+		t.Fatalf("landed removed task = %+v %+v, want integrated", state, state.deliveryAssessment)
+	}
+	if result, ok := integratedAfterWorktreeRemoval(ctx, landed, session, folder, tool.ProjectTaskIntegrationSelection{SourceBranch: "agent/work", TargetBranch: "dev"}); !ok || result["status"] != "already_integrated" {
+		t.Fatalf("landed removed task = %v %v, want already_integrated", result, ok)
+	}
+}
 
 // Requirement: a job whose checkout Swarm removed after its work landed
 // (worktree.Service.RemoveLandedWorktree keeps its branch) still shows its
