@@ -23,6 +23,7 @@ import { ToolSyntaxLine, inferToolSyntaxLanguage, pathFromToolSummary } from "..
 import { displayAgentName } from "../services/agent-display";
 import { toolActivityStartSummary } from "../services/tool-activity";
 import { describeToolActivity } from "../services/tool-message";
+import { isPendingWorkerProposalResult, workerToolAnswer } from "../services/worker-tool-answer";
 import { ToolActivityShell } from "./tool-activity-shell";
 import { DesktopV3ArtifactPreviewThumbnail } from "./desktop-v3-artifact-preview-thumbnail";
 import { desktopV3ArtifactDirectContentURL, desktopV3ArtifactDownloadName, desktopV3ArtifactMessageSelection, fetchDesktopV3ArtifactDownload, normalizeDesktopV3ArtifactCatalogEntry, preflightDesktopV3ArtifactDirectContent, revealDesktopV3Artifact, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
@@ -2647,13 +2648,7 @@ function shouldRenderPreviewAsPlain(toolName: string): boolean {
   }
 }
 
-export function isPendingWorkerProposalResult(payload: unknown): boolean {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
-  const result = payload as Record<string, unknown>;
-  return result.status === 'pending_review'
-    && result.next_action === 'await_worker_acceptance'
-    && result.review_kind === 'worker_v2';
-}
+export { isPendingWorkerProposalResult };
 
 function parseToolJSON(value: string): Record<string, unknown> | null {
   const trimmed = value.trim();
@@ -3401,7 +3396,9 @@ function ToolMessageBody({
     // Worker V2 approval is a durable permission rendered in the Workers sidebar,
     // not an actionable card (or a second tool result) in the chat transcript.
     if (isPendingWorkerProposalResult(payload) || isPendingWorkerProposalResult(parseToolJSON(toolMessage.completedOutput))) return null;
-    if (parseAutomationProposal(payload)) return <AutomationProposalCard payload={payload} />;
+    // A catalog envelope's answer is its data (workerToolAnswer).
+    const answer = workerToolAnswer(payload);
+    if (parseAutomationProposal(answer)) return <AutomationProposalCard payload={answer} />;
   }
   if (["manage_projects", "manage-projects"].includes(normalizedToolName)) {
     return (
