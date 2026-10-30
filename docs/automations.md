@@ -566,9 +566,29 @@ A reopen step with no rounds left sends nothing and still ends the delivery
 `blocked`.
 
 Every delivery and step is recorded durably with its state (`pending`,
-`running`, `waiting` (a reopen step waiting for its job), `succeeded`,
-`failed`, `skipped`, `stopped` or, for a delivery, `blocked` or `sent_back`), attempts, start and finish times, exit code, output line, log
-tail and outcome. Each step also keeps `failures`: every failed attempt's
+`running`, `waiting` (a reopen step waiting for its job, a step waiting for a
+provider's limit to reset, or a delivery parked on such a step; see below),
+`succeeded`, `failed`, `skipped`, `stopped` or, for a delivery, `blocked` or
+`sent_back`), attempts, start and finish times, exit code, output line, log
+tail and outcome.
+
+A delivery is shown as `waiting` while its only unfinished work is steps
+waiting for a provider's usage, rate or session limit to reset and no step
+is running. It comes with `until` (the earliest reset, unix ms) and `reason`
+(the waiting step's reason, built from its worker run's `queue_reason`).
+This applies to `GET /v3/workflows` `latest_deliveries`, `GET
+/v3/job-deliveries` and `GET /v3/job-deliveries/{id}` (`state=waiting`
+lists these deliveries, and `state=running` leaves them out), and the
+fleet's `last_delivery`. Nothing else changes: the delivery is unfinished,
+its step and worker run resume by themselves at the reset (also after a
+daemon restart, or when the reset passed while the machine was off), and it
+shows `running` again once the step runs. A delivery with any step running,
+including a reopen step waiting for its job, shows `running`. `GET
+/v3/box/busy` counts worker runs waiting on a provider limit as
+`limit_waiting`, not as `worker_runs` or `reviews`, so they do not make the
+machine busy and an update drain does not wait on them.
+
+Each step also keeps `failures`: every failed attempt's
 `attempt`, `rerun`, `at` and `reason` (the newest 20), kept across reruns.
 A deliver step whose Git inspection did not finish in time (the machine is
 busy, or the job is large) tries again up to 10 times with growing waits
