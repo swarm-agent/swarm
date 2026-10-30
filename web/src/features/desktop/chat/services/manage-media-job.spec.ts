@@ -35,6 +35,24 @@ test('other calls name no job', () => {
   assert.equal(manageMediaJobRef(call({ tool: 'manage_projects', argumentsJson: { action: 'create_task', agent: 'coder', project_id: 'p' }, outputJson: { task_id: 't' } })), null)
 })
 
+// Purpose: manage_projects now answers in the catalog envelope {tool, action,
+// machine, state, data, ...}, whose machine is always set (this machine's own
+// name). Threat: every media card lost (task id read from the top level), or
+// every card dropped as "linked" because the envelope names a machine.
+test('a manage_projects envelope names its media task from data', () => {
+  const envelope = (data: Record<string, unknown>) => ({ tool: 'manage_projects', action: 'propose_task', machine: 'home', state: 'ok', data, untrusted_content: false })
+  const proposed = call({ tool: 'manage_projects', argumentsJson: { action: 'propose_task', agent: 'image' }, outputJson: envelope({ task: { id: 'task_i1', project_id: 'p1' } }) })
+  assert.deepEqual(manageMediaJobRef(proposed), { projectId: 'p1', taskId: 'task_i1' })
+  const fromText = call({ tool: 'manage_projects', argumentsText: JSON.stringify({ action: 'create_task', project_id: 'p2' }), output: JSON.stringify(envelope({ proposal: { task_id: 'task_s1', agent: 'sound' } })) })
+  assert.deepEqual(manageMediaJobRef(fromText), { projectId: 'p2', taskId: 'task_s1' })
+  // Sent to a linked machine: its machine argument, so no card here.
+  assert.equal(manageMediaJobRef(call({ tool: 'manage_projects', argumentsJson: { action: 'propose_task', agent: 'image', machine: 'box' }, outputJson: envelope({ task: { id: 'r1', project_id: 'p' } }) })), null)
+  // An older linked answer ({machine, data}) still makes no card.
+  assert.equal(manageMediaJobRef(call({ tool: 'manage_projects', argumentsJson: { action: 'propose_task', agent: 'image', project_id: 'p' }, outputJson: { machine: 'box', action: 'propose_task', data: { task: { id: 'r1' } } } })), null)
+  // The envelope's top level is not the answer.
+  assert.equal(manageMediaJobRef(call({ tool: 'manage_projects', argumentsJson: { action: 'propose_task', agent: 'image', project_id: 'p' }, outputJson: { ...envelope({}), task_id: 'x' } })), null)
+})
+
 test('a job is generating, then ready or failed', () => {
   assert.equal(manageMediaJobState(null), 'generating')
   assert.equal(manageMediaJobState({ status: 'running', deliverables: [{ status: 'generating' }] }), 'generating')

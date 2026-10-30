@@ -418,8 +418,20 @@ fn tool_output<'a>(recorded: &'a Value, content: &'a str) -> &'a str {
 /// create_task or propose_task for the image, video or sound agent (its
 /// `task_id`). None for anything else, and for a linked machine's call (its
 /// media is not in this machine's list).
+/// Whether a result is the tool catalog's envelope: {tool, action, machine,
+/// state, data, ...}. Its data is the action's own answer, and its machine
+/// is always set (this machine's own name, or a linked one's).
+pub fn is_envelope(out: &Value) -> bool {
+    out.is_object() && ["tool", "action", "machine", "state"].iter().all(|k| !s(out, k).is_empty()) && out.get("data").is_some()
+}
+
 pub fn media_card(name: &str, args: &Value, output: &str) -> Option<Entry> {
     let out = serde_json::from_str::<Value>(output.trim()).ok()?;
+    // manage_projects answers in the envelope; a message stored before it
+    // holds the answer itself, or a linked machine's {machine, data}. In
+    // the envelope a linked call is told by its machine argument.
+    let envelope = is_envelope(&out);
+    let out = if envelope { out.get("data").cloned().unwrap_or(Value::Null) } else { out };
     // Arguments may come as JSON text.
     let parsed;
     let args = match args {
@@ -429,7 +441,7 @@ pub fn media_card(name: &str, args: &Value, output: &str) -> Option<Entry> {
         }
         other => other,
     };
-    if !s(args, "machine").is_empty() || !s(&out, "machine").is_empty() {
+    if !s(args, "machine").is_empty() || (!envelope && !s(&out, "machine").is_empty()) {
         return None;
     }
     let first = |vals: [&str; 4]| vals.into_iter().find(|v| !v.trim().is_empty()).unwrap_or("").trim().to_string();
@@ -980,6 +992,18 @@ mod tests {
         // A task for the video agent is a card too.
         let task = media_card("manage_projects", &json!({"action": "create_task", "agent": "video", "title": "Teaser"}), &json!({"task": {"id": "task_v1"}}).to_string());
         assert!(matches!(task, Some(Entry::Media { task_id, kind: crate::data::MediaKind::Video, .. }) if task_id.as_ref() == "task_v1"));
+
+        // The catalog envelope: the answer is data, and its machine (this
+        // machine's own name) does not make it a linked call.
+        let envelope = |data: Value| json!({"tool": "manage_projects", "action": "propose_task", "machine": "home", "state": "ok", "data": data, "untrusted_content": false}).to_string();
+        let task = media_card("manage_projects", &json!({"action": "propose_task", "agent": "image", "title": "Logo"}), &envelope(json!({"task": {"id": "task_i1"}})));
+        assert!(matches!(task, Some(Entry::Media { task_id, kind: crate::data::MediaKind::Image, title }) if task_id.as_ref() == "task_i1" && title.as_ref() == "Logo"));
+        let proposed = media_card("manage_projects", &json!({"action": "create_task"}), &envelope(json!({"proposal": {"task_id": "task_s1", "agent": "sound"}})));
+        assert!(matches!(proposed, Some(Entry::Media { task_id, kind: crate::data::MediaKind::Sound, .. }) if task_id.as_ref() == "task_s1"));
+        // Sent to a linked machine (its machine argument): no card.
+        assert!(media_card("manage_projects", &json!({"action": "propose_task", "agent": "image", "machine": "box"}), &envelope(json!({"task": {"id": "r1"}}))).is_none());
+        // A top-level task_id is no longer read from an envelope.
+        assert!(media_card("manage_projects", &json!({"action": "propose_task", "agent": "image"}), &json!({"tool": "manage_projects", "action": "propose_task", "machine": "home", "state": "ok", "data": {}, "task_id": "x"}).to_string()).is_none());
     }
 
     #[test]

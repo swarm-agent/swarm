@@ -1,4 +1,5 @@
 import type { StructuredToolMessage } from '../types/chat'
+import { manageProjectsAnswer, manageProjectsLinked } from './manage-projects-answer'
 
 // The media job a finished chat tool call started, so the transcript can show
 // that job as a card under the call. The job itself (status, files) is never
@@ -43,20 +44,26 @@ export function manageMediaJobRef(message: Pick<StructuredToolMessage, 'tool' | 
   const tool = message.tool.trim().toLowerCase().replace(/-/g, '_')
   const args = message.argumentsJson ?? parsed(message.argumentsText)
   const out = message.outputJson ?? parsed(message.output) ?? parsed(message.completedOutput)
-  if (!out || text(args, 'machine') || text(out, 'machine')) return null
+  if (!out || text(args, 'machine')) return null
   const action = text(args, 'action')
   if (tool === 'manage_media' && (action === 'generate' || action === 'retry')) {
+    if (text(out, 'machine')) return null
     const parts = text(out, 'job_id').split('/')
     if (parts.length !== 3 || parts[0] !== 'media' || !parts[1] || !parts[2]) return null
     return { projectId: parts[1], taskId: parts[2] }
   }
   if (tool === 'manage_projects' && (action === 'create_task' || action === 'propose_task')) {
-    const task = record(out.task)
-    const proposal = record(out.proposal)
-    const agent = text(args, 'agent') || text(out, 'agent') || text(task, 'agent') || text(proposal, 'agent')
+    // The envelope's data is the answer; an older message held it at the
+    // top level. The envelope always names a machine (this one's own name),
+    // so a linked call is told by its machine argument.
+    if (manageProjectsLinked(args, out)) return null
+    const answer = manageProjectsAnswer(out).data
+    const task = record(answer?.task)
+    const proposal = record(answer?.proposal)
+    const agent = text(args, 'agent') || text(answer, 'agent') || text(task, 'agent') || text(proposal, 'agent')
     if (!MEDIA_AGENTS.has(agent)) return null
-    const projectId = text(args, 'project_id') || text(out, 'project_id') || text(task, 'project_id') || text(proposal, 'project_id')
-    const taskId = text(out, 'task_id') || text(task, 'id') || text(proposal, 'task_id')
+    const projectId = text(args, 'project_id') || text(answer, 'project_id') || text(task, 'project_id') || text(proposal, 'project_id')
+    const taskId = text(answer, 'task_id') || text(task, 'id') || text(proposal, 'task_id')
     return projectId && taskId ? { projectId, taskId } : null
   }
   return null

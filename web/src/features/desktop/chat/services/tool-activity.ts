@@ -1,4 +1,5 @@
 import { describeToolActivity, type ToolActivitySemanticKind } from './tool-message'
+import { manageProjectsAnswer } from './manage-projects-answer'
 import type { StructuredToolMessage, ToolMessageState } from '../types/chat'
 
 export type ToolActivityDisplayState = 'running' | 'done' | 'error' | 'cancelled'
@@ -35,8 +36,10 @@ export function toolActivityPresentation(
 ): ToolActivityPresentation {
   const descriptor = describeToolActivity(toolName, argumentsJson)
   const projectTool = toolName.trim().toLowerCase().replace(/-/g, '_') === 'manage_projects'
-  const task = jsonRecord(outputJson?.task)
-  const resultStatus = jsonString(outputJson, 'task_status') || jsonString(task, 'status') || jsonString(outputJson, 'status')
+  // manage_projects answers in the envelope; its data is the action's answer.
+  const answer = projectTool ? manageProjectsAnswer(outputJson).data : outputJson
+  const task = jsonRecord(answer?.task)
+  const resultStatus = jsonString(answer, 'task_status') || jsonString(task, 'status') || jsonString(answer, 'status')
   const displayState = resolveToolActivityDisplayState(
     projectTool && state === 'done' && ['failed', 'error'].includes(resultStatus) ? 'error' : state,
     lifecycleStatus,

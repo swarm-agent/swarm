@@ -100,12 +100,18 @@ pub fn summarize(name: &str, arguments: &Value, output: &str, error: &str, exit_
     }
     let args = json(arguments);
     let out = serde_json::from_str::<Value>(output.trim()).unwrap_or(Value::Null);
-    // A linked machine's answer comes wrapped ({action, machine, data}); the
-    // result is its data.
-    let out = match out.get("data") {
+    // A catalog answer (manage_projects) is the envelope {tool, action,
+    // machine, state, data, ...}, and an older linked machine's answer
+    // {action, machine, data}; the result is its data. The envelope's state
+    // stands in for a status the data lacks (not_watched, timed_out, ...).
+    let state = if super::map::is_envelope(&out) { text(&out, "state").filter(|st| *st != "ok").map(str::to_string) } else { None };
+    let mut out = match out.get("data") {
         Some(data) if data.is_object() || data.is_array() => data.clone(),
         _ => out,
     };
+    if let (Some(state), Some(object)) = (state, out.as_object_mut()) {
+        object.entry("status").or_insert(Value::String(state));
+    }
     let said = match kind(name).as_str() {
         "bash" | "shell" | "sh" | "exec" | "run" | "run_command" | "command" | "terminal" => shell(&out, output, exit_code),
         k if k.starts_with("git_") => shell(&out, output, exit_code),
@@ -485,6 +491,12 @@ mod tests {
         assert_eq!(summarize("weird", &Value::Null, &json!({"entries": [1, 2], "x": 1}).to_string(), "", None), "2 entries");
         let remote = json!({"action": "list", "machine": "build-box", "data": {"count": 4, "projects": [1, 2, 3, 4]}, "untrusted_content": true}).to_string();
         assert_eq!(summarize("manage_projects", &args(json!({"action": "list", "machine": "build-box"})), &remote, "", None), "4 projects");
+        // The catalog envelope: the summary is its data's, with its state
+        // when the data has no status of its own.
+        let envelope = |action: &str, state: &str, data: Value| json!({"tool": "manage_projects", "action": action, "machine": "home", "state": state, "data": data, "untrusted_content": true}).to_string();
+        assert_eq!(summarize("manage_projects", &args(json!({"action": "propose_task"})), &envelope("propose_task", "ok", json!({"task": {"id": "task_8f2", "status": "queued"}})), "", None), "queued · task_8f2");
+        assert_eq!(summarize("manage_projects", &args(json!({"action": "list_machines"})), &envelope("list_machines", "ok", json!({"machines": [{"name": "a"}, {"name": "b"}]})), "", None), "2 machines");
+        assert_eq!(summarize("manage_projects", &args(json!({"action": "wait_tasks"})), &envelope("wait_tasks", "timed_out", json!({"tasks": [1, 2]})), "", None), "timed_out · 2 tasks");
     }
 
     #[test]
