@@ -156,6 +156,7 @@ func newCatalogParityHarness(t *testing.T) *catalogParityHarness {
 	parity.seedWorkflows(t)
 	parity.seedJobs(t)
 	parity.seedWorkers(t)
+	parity.seedSetup(t)
 	return parity
 }
 
@@ -177,10 +178,18 @@ func (h *catalogParityHarness) orchestratorTool(t *testing.T, name string, args 
 	// it; manage_workers is the Orchestrator's only), as
 	// Service.executeManageJobsTool and executeManageWorkersCatalogTool do.
 	agent := catalogParityAgent
-	if name == "manage_workers" {
+	if name == "manage_workers" || name == "manage_setup" {
 		agent = agentruntime.SwarmOrchestratorAgentID
 	}
-	ctx, cancel := context.WithTimeout(tool.WithCatalogAgent(tool.WithVideoRunContext(context.Background(), tool.VideoRunContext{SessionID: session, RunID: "run-1"}), agent), 20*time.Second)
+	base := tool.WithVideoRunContext(context.Background(), tool.VideoRunContext{SessionID: session, RunID: "run-1"})
+	if name == "manage_setup" {
+		// What the run's person-decision gate gives a call the person
+		// approved (run.Service.executeManageSetupTool); refusal without it
+		// is TestManageSetupHandlerHoldsChangesToThePersonsDecision and the
+		// run's TestManageSetupChangeAlwaysWaitsForThePerson.
+		base = tool.WithPersonDecision(base)
+	}
+	ctx, cancel := context.WithTimeout(tool.WithCatalogAgent(base, agent), 20*time.Second)
 	defer cancel()
 	raw, _ := json.Marshal(args)
 	return h.runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, tool.WorkspaceScope{SessionID: session, Principal: h.p}, tool.Call{Name: name, Arguments: string(raw)})
@@ -262,7 +271,7 @@ func parityArgs(args ...any) map[string]any {
 // catalogParityCases holds, per catalog tool, one case for every action (see
 // TestCatalogParityCoversEveryAction).
 func catalogParityCases() map[string]map[string][]catalogParityCase {
-	return map[string]map[string][]catalogParityCase{"manage_projects": manageProjectsParityCases(), "manage_workflows": manageWorkflowsParityCases(), "manage_jobs": manageJobsParityCases(), "manage_workers": manageWorkersParityCases()}
+	return map[string]map[string][]catalogParityCase{"manage_projects": manageProjectsParityCases(), "manage_workflows": manageWorkflowsParityCases(), "manage_jobs": manageJobsParityCases(), "manage_workers": manageWorkersParityCases(), "manage_setup": manageSetupParityCases()}
 }
 
 // catalogParityToolNames are the tools with parity cases, sorted.
@@ -500,7 +509,11 @@ func (h *catalogParityHarness) runParityCases(t *testing.T, toolName, action str
 			}
 			c = h.resolveCase(t, c)
 			orchOut, orchErr := h.orchestratorTool(t, toolName, c.orchestrator)
-			controlOut, controlErr := h.controlTool(t, catalogParityFullKey, toolName, c.control)
+			key := catalogParityFullKey
+			if toolName == "manage_setup" {
+				key = catalogParitySetupKey
+			}
+			controlOut, controlErr := h.controlTool(t, key, toolName, c.control)
 			if c.compare == parityNotServed {
 				if controlErr == "" || !strings.Contains(controlErr, "for Swarm Control") {
 					t.Fatalf("%s: Swarm Control served an unlisted action: %s %s", name, controlOut, controlErr)

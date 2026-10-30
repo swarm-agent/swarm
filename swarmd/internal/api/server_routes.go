@@ -69,6 +69,7 @@ func (s *Server) registerOnboardingRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(JobDeliveriesPath+"/", s.handleJobDeliveries)
 	mux.HandleFunc(JobsPath+"/", s.handleJobs)
 	mux.HandleFunc(WorkerActionsPath+"/", s.handleWorkerActions)
+	mux.HandleFunc(SetupActionsPath+"/", s.handleSetupActions)
 	mux.HandleFunc("/v3/signals/sinks", s.handleSignalSinks)
 	mux.HandleFunc("/v3/signals/sinks/", s.handleSignalSinks)
 	mux.HandleFunc("/v1/secrets", s.handleSecrets)

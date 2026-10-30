@@ -35,6 +35,10 @@ func (s *Server) CallFleetWork(ctx context.Context, p identity.Principal, machin
 	if name == tool.ManageJobsToolName {
 		return s.callFleetJobs(ctx, p, machine, action, args)
 	}
+	if name == tool.ManageSetupToolName {
+		// Setup that reaches a linked machine runs on its own ManageSetup.
+		return s.callFleetCatalog(ctx, p, machine, SetupActionsPath, action, args)
+	}
 	if name == tool.ManageWorkersToolName || name == "manage_automation" {
 		// Every worker action runs on the machine's own ManageWorkers.
 		result, err := s.callFleetCatalog(ctx, p, machine, WorkerActionsPath, action, args)

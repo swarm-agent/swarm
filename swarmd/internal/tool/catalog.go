@@ -212,7 +212,7 @@ func (t CatalogTool) ControlSchema(allowed func(CatalogAction) bool) (map[string
 
 // Catalog lists the catalog tools.
 func Catalog() []CatalogTool {
-	return []CatalogTool{manageProjectsCatalog(), manageWorkflowsCatalog(), manageJobsCatalog(), manageWorkersCatalog()}
+	return []CatalogTool{manageProjectsCatalog(), manageWorkflowsCatalog(), manageJobsCatalog(), manageWorkersCatalog(), manageSetupCatalog()}
 }
 
 // CatalogToolNamed returns the catalog tool.

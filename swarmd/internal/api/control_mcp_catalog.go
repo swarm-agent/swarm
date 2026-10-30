@@ -129,7 +129,11 @@ func (c *controlMCPCall) catalogLevels() (levels []string, bound bool) {
 
 // controlCatalogServiceScopes are the API scopes a catalog action's service
 // may check for a Swarm Control caller.
-var controlCatalogServiceScopes = []string{"sessions:read", "sessions:write", "projects:read", "projects:write", "automations:read", "automations:write", "signals:read", "swarm:read"}
+var controlCatalogServiceScopes = []string{"sessions:read", "sessions:write", "projects:read", "projects:write", "automations:read", "automations:write", "signals:read", "swarm:read",
+	// manage_setup's routes (ManageSetup runs the swarm_* setup handlers on
+	// a key holding only these): usage, settings, secret names, the key
+	// levels some handlers and routes check, and admin.
+	"usage:read", "usage:write", "settings:write", "secrets:read", "swarm:write", "swarm:approve", "swarm:manage", "admin"}
 
 // controlCatalogHeldScopes are those the key holds, as its HasScope answers
 // (aliases included), so a service never acts above the key.
@@ -144,7 +148,7 @@ func controlCatalogHeldScopes(record *pebblestore.ScopedTokenRecord) []string {
 }
 
 // catalogToolTitles are the MCP titles of the catalog tools.
-var catalogToolTitles = map[string]string{"manage_projects": "Projects and tasks", "manage_workflows": "Workflows", "manage_jobs": "Worker jobs", "manage_workers": "Workers"}
+var catalogToolTitles = map[string]string{"manage_projects": "Projects and tasks", "manage_workflows": "Workflows", "manage_jobs": "Worker jobs", "manage_workers": "Workers", "manage_setup": "Machine setup"}
 
 // catalogTools are the catalog tools this caller sees: the default listing
 // (essentials) or every Swarm Control action (tools=all), only actions the

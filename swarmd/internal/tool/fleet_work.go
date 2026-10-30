@@ -30,6 +30,13 @@ func FleetWorkActionAllowed(name, action string) bool {
 		// worker service (POST /v3/worker-actions/{action}).
 		_, ok := catalogDeclared(manageWorkersToolName).Action(action)
 		return ok
+	case manageSetupToolName:
+		// Machine setup that reaches a linked machine (models, providers,
+		// usage, limits, media models, update drains) runs there through
+		// its own setup service (POST /v3/setup-actions/{action}); keys,
+		// secrets, permissions and sign-in never do.
+		declared, ok := catalogDeclared(manageSetupToolName).Action(action)
+		return ok && declared.Reach == CatalogReachAny
 	}
 	return false
 }

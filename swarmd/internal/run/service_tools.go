@@ -1950,6 +1950,14 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				permissionMode = strings.Split(permissionMode, "+")[0]
 			}
 		}
+		// A manage_setup change needs the person's decision every time: the
+		// generic bypass suffix never skips it, and an allow (a rule or the
+		// default) becomes a pending request below. Only an explicit deny
+		// answers without the person.
+		setupChange := canonicalToolName(toolCalls[i].Name) == tool.ManageSetupToolName && tool.ManageSetupChange(toolCalls[i].Arguments)
+		if setupChange {
+			permissionMode = strings.Split(permissionMode, "+")[0]
+		}
 		var executionScope *tool.WorkspaceScope
 		if canonicalToolName(toolCalls[i].Name) == "bash" && permission.BashCommandReadsWorkspacePaths(permissionArguments) {
 			executionScope = s.permissionExecutionScope(ctx, sessionID)
@@ -1975,6 +1983,26 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 			decisions[i].Result.Output = permissionOutputPayload(false, "error", "permission authorization failed", toolCalls[i].Name, toolCalls[i].Arguments)
 			decisions[i].Result.Error = privacy.SanitizeText(fmt.Sprintf("permission authorization failed: %v", err))
 			continue
+		}
+		if setupChange && auth.Decision == permission.AuthorizationApprove {
+			record, createErr := s.permissions.CreatePending(permission.CreateInput{
+				SessionID:         sessionID,
+				RunID:             runID,
+				Step:              step,
+				CallID:            toolCalls[i].CallID,
+				ToolName:          toolCalls[i].Name,
+				ToolArguments:     permissionArguments,
+				ToolCallArguments: strings.TrimSpace(toolCalls[i].Arguments),
+				Requirement:       "tool",
+				Mode:              permissionMode,
+			})
+			if createErr != nil {
+				decisions[i].Err = createErr
+				decisions[i].Result.Output = permissionOutputPayload(false, "error", "the person's decision could not be requested", toolCalls[i].Name, toolCalls[i].Arguments)
+				decisions[i].Result.Error = privacy.SanitizeText(fmt.Sprintf("manage_setup needs the person's decision, which could not be requested: %v", createErr))
+				continue
+			}
+			auth = permission.AuthorizationResult{Decision: permission.AuthorizationPending, Requirement: "tool", Reason: "manage_setup changes need the person's decision every time", Source: "manage_setup", Record: &record}
 		}
 
 		switch auth.Decision {
@@ -2094,6 +2122,13 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 					}
 					decisions[index].Feedback = normalizePermissionFeedback(resolved.Reason)
 					decisions[index].ApprovedArguments = strings.TrimSpace(resolved.ApprovedArguments)
+					if canonicalToolName(call.Name) == tool.ManageSetupToolName && tool.ManageSetupChange(call.Arguments) {
+						// The person decided this exact call: it runs as the
+						// model asked, never with edited arguments, and its
+						// approved arguments are the run's proof of the
+						// decision (executeControlPlaneTool).
+						decisions[index].ApprovedArguments = strings.TrimSpace(call.Arguments)
+					}
 				case pebblestore.PermissionStatusDenied:
 					if isClientTool {
 						// A client tool's deny is the client reporting that the tool
@@ -2357,6 +2392,11 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 	case "manage_jobs":
 		principal, _ := identity.PrincipalFromContext(ctx)
 		output, err := s.executeManageJobsTool(ctx, principal, sessionID, call.Arguments, agentProfile)
+		result.Output = output
+		return true, result, err
+	case "manage_setup":
+		principal, _ := identity.PrincipalFromContext(ctx)
+		output, err := s.executeManageSetupTool(ctx, principal, sessionID, call, approvedArguments, agentProfile)
 		result.Output = output
 		return true, result, err
 	case "manage_workflows":

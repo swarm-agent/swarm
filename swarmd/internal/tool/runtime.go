@@ -1538,6 +1538,7 @@ func (r *Runtime) Definitions() []Definition {
 		manageCustomAgentsDefinition(),
 		manageWorkflowsDefinition(),
 		manageJobsDefinition(),
+		manageSetupDefinition(),
 		manageAutomationV2Definition(),
 		swarmDesignDefinition(),
 		manageMediaDefinition(),
@@ -2251,6 +2252,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return r.executeManageWorkflows(ctx, scope, args)
 	case "manage-jobs", "manage_jobs":
 		return r.executeManageJobs(ctx, scope, args)
+	case "manage-setup", "manage_setup":
+		return r.executeManageSetup(ctx, scope, args)
 	case "manage-connections", "manage_connections", "manage-environments", "manage_environments":
 		return "", ErrEnvironmentToolsRemoved
 	case LeaseEnvironmentToolName:
