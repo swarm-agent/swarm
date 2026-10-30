@@ -281,6 +281,11 @@ type WorkspaceScope struct {
 	WorktreeBaseBranch         string
 	WorktreeBaseCommit         string
 	SourceWorkspacePath        string
+	// ControlCaller is set only by ExecuteControlCatalog: a Swarm Control
+	// (MCP) caller, the person's own AI with an AI key. It has no
+	// conversation in Swarm (SessionID is empty); its verified user
+	// principal stands where the home Orchestrator's session does.
+	ControlCaller bool
 }
 
 type manageSessionService interface {

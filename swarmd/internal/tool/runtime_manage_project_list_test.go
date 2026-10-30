@@ -86,8 +86,13 @@ func TestManageProjectsListTasksCurrentNewestFirstOnLargeProject(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// The action's own answer is the envelope's data.
+		data, err := EnvelopeData(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
 		var out listing
-		if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		if err := json.Unmarshal(data, &out); err != nil {
 			t.Fatal(err)
 		}
 		return out, len(raw)

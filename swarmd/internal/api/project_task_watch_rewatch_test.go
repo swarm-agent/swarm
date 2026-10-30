@@ -87,8 +87,13 @@ func (w *watchToolFixture) callTasks(t *testing.T, action string, ids ...string)
 	if err != nil {
 		t.Fatalf("%s: %v", action, err)
 	}
+	// The watch is the envelope's data.
+	data, err := tool.EnvelopeData(out)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var result map[string]any
-	if err := json.Unmarshal([]byte(out), &result); err != nil {
+	if err := json.Unmarshal(data, &result); err != nil {
 		t.Fatalf("%s result %s: %v", action, out, err)
 	}
 	return result

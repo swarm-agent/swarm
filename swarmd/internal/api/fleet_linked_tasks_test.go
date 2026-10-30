@@ -16,7 +16,8 @@ import (
 	"swarm/packages/swarmd/internal/workspace"
 )
 
-// linkedTaskCall runs one native manage_projects call as the home session.
+// linkedTaskCall runs one native manage_projects call as the home session and
+// returns its envelope (tool, action, machine, state, data, ...).
 func linkedTaskCall(t *testing.T, h *remoteWaitHarness, session string, args map[string]any) (map[string]any, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -26,11 +27,20 @@ func linkedTaskCall(t *testing.T, h *remoteWaitHarness, session string, args map
 	if err != nil {
 		return nil, err
 	}
+	if _, err := tool.EnvelopeData(out); err != nil {
+		t.Fatal(err)
+	}
 	var decoded map[string]any
 	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
 		t.Fatalf("tool output: %s %v", out, err)
 	}
 	return decoded, nil
+}
+
+// envelopeDataMap is an envelope's data object (nil when it is not one).
+func envelopeDataMap(envelope map[string]any) map[string]any {
+	data, _ := envelope["data"].(map[string]any)
+	return data
 }
 
 // linkedTaskRoute calls a linked-task route on the home as user.
@@ -85,7 +95,7 @@ func TestFleetLinkedTaskRecordAndList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sent["untrusted_content"] != true || sent["linked_record_error"] != nil {
+	if sent["untrusted_content"] != true || sent["machine"] != "box" || envelopeDataMap(sent)["linked_record_error"] != nil || envelopeDataMap(sent)["linked_task_id"] == nil {
 		t.Fatalf("send result: %v", sent)
 	}
 	var created struct {
@@ -164,7 +174,8 @@ func TestFleetLinkedTaskRecordAndList(t *testing.T) {
 		t.Fatalf("project list: %d %v", code, out)
 	}
 	native, err := linkedTaskCall(t, h, "home-orch", map[string]any{"action": "list_linked_tasks"})
-	if err != nil || native["session_id"] != "home-orch" || len(native["linked_tasks"].([]any)) != 2 || native["untrusted_content"] != true {
+	listed, _ := envelopeDataMap(native)["linked_tasks"].([]any)
+	if err != nil || envelopeDataMap(native)["session_id"] != "home-orch" || len(listed) != 2 || native["untrusted_content"] != true {
 		t.Fatalf("native list: %v %v", native, err)
 	}
 	// Another user cannot list this user's session; bad requests are refused.
@@ -212,7 +223,8 @@ func TestFleetLinkedTaskSessionRead(t *testing.T) {
 		t.Fatalf("messages: %v", view["messages"])
 	}
 	native, err := linkedTaskCall(t, h, "home-orch", map[string]any{"action": "read_task_session", "machine": "box", "project_id": "remote-project", "task_id": "t1", "limit": 1})
-	if err != nil || native["untrusted_content"] != true || len(native["messages"].([]any)) != 1 || native["has_more_older"] != true {
+	read, _ := envelopeDataMap(native)["messages"].([]any)
+	if err != nil || native["untrusted_content"] != true || native["machine"] != "box" || len(read) != 1 || envelopeDataMap(native)["has_more_older"] != true {
 		t.Fatalf("native read: %v %v", native, err)
 	}
 	after, err := h.remote.s.sessions.ListSessionMessages("rs-t1", 0, 100)

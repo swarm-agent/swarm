@@ -109,12 +109,22 @@ func TestOrchestratorTaskErrorsNameTheFix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The action's own answer is the envelope's data; its next step is
+	// also the envelope's next_action.
+	data, err := tool.EnvelopeData(out)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var sources map[string]any
-	if err := json.Unmarshal([]byte(out), &sources); err != nil {
+	if err := json.Unmarshal(data, &sources); err != nil {
 		t.Fatal(err)
 	}
 	next, _ := sources["next_step"].(string)
 	if !strings.Contains(next, "Ask the person to ready this folder in the app") || strings.Contains(next, "request_workspace_setup") {
 		t.Fatalf("list_sources next_step = %q", next)
+	}
+	var envelope tool.Envelope
+	if err := json.Unmarshal([]byte(out), &envelope); err != nil || envelope.NextAction != next {
+		t.Fatalf("list_sources envelope next_action = %q, want the next step: %v", envelope.NextAction, err)
 	}
 }

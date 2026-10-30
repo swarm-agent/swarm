@@ -47,6 +47,9 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 	taskID := strings.TrimSpace(asString(args["task_id"]))
 	switch action {
 	case "wait_tasks":
+		if scope.ControlCaller {
+			return r.controlTaskSnapshot(ctx, scope, "", args)
+		}
 		run, ok := VideoRunContextFromContext(ctx)
 		if !ok || run.SessionID != scope.SessionID || r.sessions == nil {
 			return "", errors.New("wait_tasks requires trusted current provider run context")

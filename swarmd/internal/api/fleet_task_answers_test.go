@@ -58,20 +58,22 @@ func TestFleetTaskAnswersCompactForOrchestrator(t *testing.T) {
 	if len(sent) > 600 {
 		t.Fatalf("linked propose_task is %d bytes: %s", len(sent), sent)
 	}
+	// The envelope: machine and untrusted; its data is the machine's answer
+	// with the home's own linked_task_id.
 	var proposed struct {
-		Machine      string `json:"machine"`
-		Untrusted    bool   `json:"untrusted_content"`
-		LinkedTaskID string `json:"linked_task_id"`
-		Data         struct {
-			Task       tool.ProjectTaskRow `json:"task"`
-			NextAction string              `json:"next_action"`
+		Machine   string `json:"machine"`
+		Untrusted bool   `json:"untrusted_content"`
+		Data      struct {
+			Task         tool.ProjectTaskRow `json:"task"`
+			NextAction   string              `json:"next_action"`
+			LinkedTaskID string              `json:"linked_task_id"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(sent), &proposed); err != nil {
 		t.Fatal(err)
 	}
 	taskID := proposed.Data.Task.ID
-	if taskID == "" || proposed.Machine != "box" || !proposed.Untrusted || proposed.LinkedTaskID != taskID || proposed.Data.Task.Title != "Read-only audit" || proposed.Data.Task.Agent != "finder" || proposed.Data.Task.RunStatus == "" || proposed.Data.NextAction == "" {
+	if taskID == "" || proposed.Machine != "box" || !proposed.Untrusted || proposed.Data.LinkedTaskID != taskID || proposed.Data.Task.Title != "Read-only audit" || proposed.Data.Task.Agent != "finder" || proposed.Data.Task.RunStatus == "" || proposed.Data.NextAction == "" {
 		t.Fatalf("linked propose_task answer: %s", sent)
 	}
 	for _, leaked := range []string{"pipeline_stages", "model_preview", "submission_hash", "account_id", "context_pool_summary", "home_session_id"} {

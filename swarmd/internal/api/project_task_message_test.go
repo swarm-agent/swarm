@@ -51,12 +51,21 @@ func messageTaskRuntime(t *testing.T, server *Server) *tool.Runtime {
 	return rt
 }
 
+// callManageProjects returns the action's own answer: the envelope's data.
 func callManageProjects(t *testing.T, rt *tool.Runtime, sessionID string, p identity.Principal, args map[string]any) (string, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	raw, _ := json.Marshal(args)
-	return rt.ExecuteForWorkspaceScopeWithRuntime(ctx, tool.WorkspaceScope{SessionID: sessionID, Principal: p}, tool.Call{Name: "manage_projects", Arguments: string(raw)})
+	out, err := rt.ExecuteForWorkspaceScopeWithRuntime(ctx, tool.WorkspaceScope{SessionID: sessionID, Principal: p}, tool.Call{Name: "manage_projects", Arguments: string(raw)})
+	if err != nil {
+		return "", err
+	}
+	data, err := tool.EnvelopeData(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data), nil
 }
 
 // Purpose: the Orchestrator's message_task on a running task reaches that
@@ -577,11 +586,14 @@ func TestFleetLinkedTaskSessionReadIsBoundedByDefault(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var view map[string]any
-		if err := json.Unmarshal([]byte(out), &view); err != nil {
+		var envelope map[string]any
+		if err := json.Unmarshal([]byte(out), &envelope); err != nil {
 			t.Fatal(err)
 		}
-		return view, len(out)
+		if envelope["untrusted_content"] != true || envelope["machine"] != "box" {
+			t.Fatalf("read envelope: %v", envelope)
+		}
+		return envelopeDataMap(envelope), len(out)
 	}
 
 	view, size := read(map[string]any{})
@@ -589,7 +601,7 @@ func TestFleetLinkedTaskSessionReadIsBoundedByDefault(t *testing.T) {
 		t.Fatalf("default read is %d bytes, want at most 5 KB", size)
 	}
 	messages, _ := view["messages"].([]any)
-	if len(messages) == 0 || len(messages) > 5 || view["has_more_older"] != true || view["untrusted_content"] != true {
+	if len(messages) == 0 || len(messages) > 5 || view["has_more_older"] != true {
 		t.Fatalf("default read: %d messages %v", len(messages), view)
 	}
 	newest := messages[len(messages)-1].(map[string]any)

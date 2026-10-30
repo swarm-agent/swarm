@@ -230,8 +230,12 @@ func (h *remoteWaitHarness) registerWith(t *testing.T, runtime *tool.Runtime, id
 	if err != nil {
 		t.Fatal(err)
 	}
-	var result map[string]any
-	if err := json.Unmarshal([]byte(out), &result); err != nil || result["status"] != "watching" || result["next_action"] != nil || result["machine"] != "box" || result["untrusted_content"] != true || !strings.HasPrefix(asTestString(result["notice"]), "Watching ") {
+	// The envelope says where and how: box, watching, untrusted; its data is
+	// the watch.
+	var envelope map[string]any
+	err = json.Unmarshal([]byte(out), &envelope)
+	result := envelopeDataMap(envelope)
+	if err != nil || envelope["state"] != "watching" || envelope["next_action"] != nil || envelope["machine"] != "box" || envelope["untrusted_content"] != true || result["status"] != "watching" || result["next_action"] != nil || !strings.HasPrefix(asTestString(result["notice"]), "Watching ") {
 		t.Fatalf("registration result: %s %v", out, err)
 	}
 	h.watchID, _ = result["watch_id"].(string)

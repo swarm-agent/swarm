@@ -104,6 +104,8 @@ const (
 type Server struct {
 	automations *automationHTTPServices
 	designJobs  *designJobRuntime
+	// toolCatalog runs catalog tools for Swarm Control (control_mcp_catalog.go).
+	toolCatalog controlCatalogRuntime
 
 	memory                  *memory.Service
 	auth                    *auth.Service

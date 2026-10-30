@@ -53,6 +53,16 @@ func waitTaskStatus(t *testing.T, db *pebblestore.SessionStore, account, project
 	}
 }
 
+// toolData is a manage_projects answer's data, after checking the envelope.
+func toolData(t *testing.T, out string) string {
+	t.Helper()
+	data, err := tool.EnvelopeData(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
 func decodeToolAnswer(t *testing.T, out string) map[string]any {
 	t.Helper()
 	var answer map[string]any
@@ -237,7 +247,7 @@ func TestListTasksCountsByOutcomeOnThisMachine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	answer := decodeToolAnswer(t, out)
+	answer := decodeToolAnswer(t, toolData(t, out))
 	// The counts cover every matching task, not only the page.
 	if rows, _ := answer["tasks"].([]any); len(rows) != 2 || answer["total"] != float64(8) {
 		t.Fatalf("page: %s", out)
@@ -271,7 +281,7 @@ func TestListTasksCountsOldFinishedTasksAsIdleOnThisMachine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	checkOutcomeCountsAre(t, "home idle", decodeToolAnswer(t, out), outcomeCountsIdleWant)
+	checkOutcomeCountsAre(t, "home idle", decodeToolAnswer(t, toolData(t, out)), outcomeCountsIdleWant)
 }
 
 // Purpose: the idle rule of TestListTasksCountsOldFinishedTasksAsIdleOnThisMachine

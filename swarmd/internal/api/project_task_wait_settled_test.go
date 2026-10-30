@@ -251,10 +251,12 @@ func (h *remoteWaitHarness) waitUntil(t *testing.T, until string, ids ...string)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var result map[string]any
-	if err := json.Unmarshal([]byte(out), &result); err != nil {
+	// The watch is the envelope's data.
+	var envelope map[string]any
+	if err := json.Unmarshal([]byte(out), &envelope); err != nil {
 		t.Fatal(err)
 	}
+	result := envelopeDataMap(envelope)
 	h.watchID, _ = result["watch_id"].(string)
 	h.endRun(t, "run-1")
 	return result

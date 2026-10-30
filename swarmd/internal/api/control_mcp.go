@@ -17,6 +17,7 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/buildinfo"
 	"swarm/packages/swarmd/internal/remote"
+	toolcatalog "swarm/packages/swarmd/internal/tool"
 )
 
 // Swarm Control MCP: a Model Context Protocol (streamable HTTP, JSON response
@@ -423,7 +424,7 @@ func (c *controlMCPCall) visibleTools() []controlMCPTool {
 			visible = append(visible, tool)
 		}
 	}
-	return visible
+	return append(visible, c.catalogTools()...)
 }
 
 func (c *controlMCPCall) callTool(params json.RawMessage) (map[string]any, *controlMCPError) {
@@ -433,6 +434,16 @@ func (c *controlMCPCall) callTool(params json.RawMessage) (map[string]any, *cont
 	}
 	if err := json.Unmarshal(params, &p); err != nil || strings.TrimSpace(p.Name) == "" {
 		return nil, &controlMCPError{Code: -32602, Message: "tools/call requires a tool name"}
+	}
+	if catalog, ok := toolcatalog.CatalogToolNamed(p.Name); ok && c.server != nil && c.server.toolCatalog != nil {
+		args := map[string]any{}
+		if len(bytes.TrimSpace(p.Arguments)) > 0 && string(bytes.TrimSpace(p.Arguments)) != "null" {
+			if err := json.Unmarshal(p.Arguments, &args); err != nil {
+				return nil, &controlMCPError{Code: -32602, Message: "tool arguments must be a JSON object"}
+			}
+		}
+		value, err := c.callCatalogTool(catalog, args)
+		return controlMCPToolResult(value, err), nil
 	}
 	var tool *controlMCPTool
 	for _, candidate := range controlMCPTools() {

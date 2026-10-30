@@ -245,7 +245,11 @@ func TestOrchestratorListTasksSaysWhatHappenedOnThisMachine(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		out, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, tool.Call{Name: "manage_projects", Arguments: string(raw)})
-		return []byte(out), err
+		if err != nil {
+			return nil, err
+		}
+		// The action's own answer is the envelope's data.
+		return []byte(toolData(t, out)), nil
 	}
 	raw, err := list(map[string]any{})
 	if err != nil {

@@ -71,8 +71,13 @@ func TestWaitTasksWatchesAndReturnsAtOnce(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
+		// The action's own answer is the envelope's data.
+		data, err := tool.EnvelopeData(out)
+		if err != nil {
+			t.Fatal(err)
+		}
 		var result map[string]any
-		if err := json.Unmarshal([]byte(out), &result); err != nil {
+		if err := json.Unmarshal(data, &result); err != nil {
 			t.Fatalf("result %s: %v", out, err)
 		}
 		return result, nil

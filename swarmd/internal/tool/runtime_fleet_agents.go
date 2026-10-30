@@ -34,15 +34,8 @@ func (r *Runtime) executeFleetAgentsAtWork(ctx context.Context, scope WorkspaceS
 	if r == nil || r.sessions == nil || !scope.Principal.Valid() || scope.Principal.Type != identity.PrincipalTypeUser {
 		return "", errors.New("agents_at_work requires an authenticated session")
 	}
-	session, found, err := r.sessions.GetSession(scope.SessionID)
-	if err != nil {
+	if _, err := r.homeConversation(scope, "fleet session ownership mismatch", "agents_at_work is only available to the home's Orchestrator"); err != nil {
 		return "", err
-	}
-	if !found || session.AccountScopeID != scope.Principal.AccountScopeID || session.UserID != scope.Principal.UserID {
-		return "", errors.New("fleet session ownership mismatch")
-	}
-	if scope.TaskHistoryOnly || asString(session.Metadata["task_id"]) != "" || asString(session.Metadata["project_task_id"]) != "" {
-		return "", errors.New("agents_at_work is only available to the home's Orchestrator")
 	}
 	service, ok := r.getProjectTaskLifecycleService().(FleetAgentsAtWork)
 	if !ok {

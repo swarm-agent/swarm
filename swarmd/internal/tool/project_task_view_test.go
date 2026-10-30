@@ -106,6 +106,12 @@ func runManageProjects(t *testing.T, r *Runtime, scope WorkspaceScope, args map[
 	if err != nil {
 		return "", nil, err
 	}
+	// The action's own answer is the envelope's data.
+	data, err := EnvelopeData(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = string(data)
 	var decoded map[string]any
 	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
 		t.Fatalf("output is not JSON: %s", raw)

@@ -146,7 +146,8 @@ func TestLinkedTaskNeedsYouWatchAndResolve(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if answered["session_id"] != "rs-t1" || answered["permission"].(map[string]any)["status"] != pebblestore.PermissionStatusApproved || answered["untrusted_content"] != true {
+	answer := envelopeDataMap(answered)
+	if answer["session_id"] != "rs-t1" || answer["permission"].(map[string]any)["status"] != pebblestore.PermissionStatusApproved || answered["untrusted_content"] != true || answered["machine"] != "box" {
 		t.Fatalf("answer: %v", answered)
 	}
 	select {
@@ -250,7 +251,7 @@ func TestLinkedTaskPermissionRefusals(t *testing.T) {
 
 	// Deny answers it once, as denied.
 	denied, err := linkedTaskCall(t, h, "home-orch", map[string]any{"action": "resolve_task_permission", "machine": "box", "project_id": "remote-project", "task_id": "t1", "permission_id": own.ID, "decision": "deny", "reason": "not now"})
-	if err != nil || denied["permission"].(map[string]any)["status"] != pebblestore.PermissionStatusDenied {
+	if err != nil || envelopeDataMap(denied)["permission"].(map[string]any)["status"] != pebblestore.PermissionStatusDenied {
 		t.Fatalf("deny: %v %v", denied, err)
 	}
 	if got, _, _ := perms.GetPermission(foreign.SessionID, foreign.ID); got.Status != pebblestore.PermissionStatusPending {
@@ -302,7 +303,7 @@ func TestLinkedTaskHeldByDrain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	listed := machines["machines"].([]any)[0].(map[string]any)
+	listed := envelopeDataMap(machines)["machines"].([]any)[0].(map[string]any)
 	status, _ := listed["status"].(map[string]any)
 	if listed["name"] != "box" || status == nil || status["draining"] != true || !strings.Contains(status["summary"].(string), "draining since") || machines["untrusted_content"] != true {
 		t.Fatalf("list_machines: %v", machines)

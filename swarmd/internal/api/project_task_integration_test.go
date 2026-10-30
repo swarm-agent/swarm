@@ -249,7 +249,12 @@ func TestProjectTaskIntegrateNativeAndHTTP(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := json.Unmarshal([]byte(out), &result); err != nil {
+				// The integration receipt is the envelope's data.
+				data, err := tool.EnvelopeData(out)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := json.Unmarshal(data, &result); err != nil {
 					t.Fatal(err)
 				}
 			} else if entry == "detached-tip-workflow" {

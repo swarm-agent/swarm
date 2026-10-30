@@ -177,19 +177,35 @@ func FleetMachineUnavailableError(machine string, machines []FleetMachineInfo, l
 	}
 	return fmt.Errorf("linked work for machine %q is off, so tasks cannot be sent or read there; the person turns it on for that machine in the app's Permissions page; %s", machine, known)
 }
+
+// homeConversation is the caller's conversation when it is the home's own
+// Orchestrator: owned by the principal and not a task's session. A Swarm
+// Control caller has no conversation; its verified user principal is the
+// authority, and the zero snapshot is returned.
+func (r *Runtime) homeConversation(scope WorkspaceScope, mismatch, notOrchestrator string) (pebblestore.SessionSnapshot, error) {
+	if scope.ControlCaller {
+		return pebblestore.SessionSnapshot{}, nil
+	}
+	session, found, err := r.sessions.GetSession(scope.SessionID)
+	if err != nil {
+		return session, err
+	}
+	if !found || session.AccountScopeID != scope.Principal.AccountScopeID || session.UserID != scope.Principal.UserID {
+		return session, errors.New(mismatch)
+	}
+	if scope.TaskHistoryOnly || asString(session.Metadata["task_id"]) != "" || asString(session.Metadata["project_task_id"]) != "" {
+		return session, errors.New(notOrchestrator)
+	}
+	return session, nil
+}
+
 func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
 	if r == nil || r.sessions == nil || !scope.Principal.Valid() || scope.Principal.Type != identity.PrincipalTypeUser {
 		return "", errors.New("fleet requires an authenticated session")
 	}
-	session, found, err := r.sessions.GetSession(scope.SessionID)
+	session, err := r.homeConversation(scope, "fleet session ownership mismatch", "linked machine delegation is only available to the home's Orchestrator")
 	if err != nil {
 		return "", err
-	}
-	if !found || session.AccountScopeID != scope.Principal.AccountScopeID || session.UserID != scope.Principal.UserID {
-		return "", errors.New("fleet session ownership mismatch")
-	}
-	if scope.TaskHistoryOnly || asString(session.Metadata["task_id"]) != "" || asString(session.Metadata["project_task_id"]) != "" {
-		return "", errors.New("linked machine delegation is only available to the home's Orchestrator")
 	}
 	service, ok := r.getProjectTaskLifecycleService().(FleetProjects)
 	if !ok {
@@ -240,6 +256,9 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 		return "", FleetMachineUnavailableError(machine, machines, linked)
 	}
 	if action == "wait_tasks" {
+		if scope.ControlCaller {
+			return r.controlTaskSnapshot(ctx, scope, machine, args)
+		}
 		if asBool(args["cancel"]) {
 			// Ending a watch reads nothing from the machine.
 			run, ok := VideoRunContextFromContext(ctx)
@@ -366,15 +385,8 @@ func (r *Runtime) executeResolveTaskPermission(ctx context.Context, scope Worksp
 	if r == nil || r.sessions == nil || !scope.Principal.Valid() || scope.Principal.Type != identity.PrincipalTypeUser {
 		return "", errors.New("resolve_task_permission requires an authenticated session")
 	}
-	session, found, err := r.sessions.GetSession(scope.SessionID)
-	if err != nil {
+	if _, err := r.homeConversation(scope, "session ownership mismatch", "resolve_task_permission is only available to the home's Orchestrator"); err != nil {
 		return "", err
-	}
-	if !found || session.AccountScopeID != scope.Principal.AccountScopeID || session.UserID != scope.Principal.UserID {
-		return "", errors.New("session ownership mismatch")
-	}
-	if scope.TaskHistoryOnly || asString(session.Metadata["task_id"]) != "" || asString(session.Metadata["project_task_id"]) != "" {
-		return "", errors.New("resolve_task_permission is only available to the home's Orchestrator")
 	}
 	resolver, ok := r.getProjectTaskLifecycleService().(TaskPermissionResolver)
 	if !ok {

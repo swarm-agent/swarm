@@ -836,6 +836,8 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 	}
 	toolRuntime.SetProjectTaskLifecycleService(apiServer)
 	toolRuntime.SetCustomAgentLifecycleService(apiServer)
+	// Swarm Control serves the tool catalog through the same handlers.
+	apiServer.SetToolCatalogRuntime(toolRuntime)
 	runSvc.SetWorkflowLifecycleService(apiServer)
 	// Automation mutations always commit through canonical V3 authority before
 	// waking realtime. Wake failures cannot turn a committed execution into retry.

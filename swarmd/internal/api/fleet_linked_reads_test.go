@@ -46,9 +46,18 @@ func TestLinkedMachineReadsLikeMCP(t *testing.T) {
 	if _, err := signals.Append(pebblestore.Signal{Source: pebblestore.SignalSourceSwarmd, Kind: "update.drain.started", Severity: pebblestore.SignalSeverityInfo, Summary: "New executions held for installer update", DedupKey: "update.drain:" + drain.Since.Format(time.RFC3339Nano)}); err != nil {
 		t.Fatal(err)
 	}
+	// read returns the answer's data after checking its envelope: the
+	// machine read, untrusted.
 	read := func(args map[string]any) (map[string]any, error) {
 		args["machine"] = "box"
-		return linkedTaskCall(t, h, "home-orch", args)
+		envelope, err := linkedTaskCall(t, h, "home-orch", args)
+		if err != nil {
+			return nil, err
+		}
+		if envelope["untrusted_content"] != true || envelope["machine"] != "box" || envelope["action"] != args["action"] {
+			t.Fatalf("envelope: %v", envelope)
+		}
+		return envelopeDataMap(envelope), nil
 	}
 
 	// machine_status: swarm_status's data.
@@ -59,7 +68,7 @@ func TestLinkedMachineReadsLikeMCP(t *testing.T) {
 	attention, _ := status["attention"].(map[string]any)
 	machine, _ := status["machine"].(map[string]any)
 	drainView, _ := machine["drain"].(map[string]any)
-	if status["untrusted_content"] != true || status["machine_name"] != "box" || attention == nil || attention["blocked_sessions"] != float64(2) || drainView == nil || drainView["draining"] != true || drainView["since_ms"] != float64(drain.Since.UnixMilli()) {
+	if status["machine_name"] != "box" || attention == nil || attention["blocked_sessions"] != float64(2) || drainView == nil || drainView["draining"] != true || drainView["since_ms"] != float64(drain.Since.UnixMilli()) {
 		t.Fatalf("machine_status: %v", status)
 	}
 	if _, ok := status["running_now"]; !ok {
@@ -73,7 +82,7 @@ func TestLinkedMachineReadsLikeMCP(t *testing.T) {
 	}
 	pending, _ := view["pending_permissions"].([]any)
 	messages, _ := view["messages"].([]any)
-	if view["session_id"] != "rs-t1" || view["untrusted_content"] != true || view["read_only"] != true || len(pending) != 1 || len(messages) == 0 {
+	if view["session_id"] != "rs-t1" || view["read_only"] != true || len(pending) != 1 || len(messages) == 0 {
 		t.Fatalf("get_task_session: %v", view)
 	}
 	first := pending[0].(map[string]any)
@@ -113,7 +122,7 @@ func TestLinkedMachineReadsLikeMCP(t *testing.T) {
 			}
 		}
 	}
-	if !waiting || page["cursor"] == nil || page["untrusted_content"] != true {
+	if !waiting || page["cursor"] == nil {
 		t.Fatalf("activity page: %v", page)
 	}
 	// activity without a cursor: the machine's signals.

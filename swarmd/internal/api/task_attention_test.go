@@ -111,7 +111,8 @@ func TestNeedsAttentionCountsOnlyTasksThePersonMustActOnThisMachine(t *testing.T
 		if err != nil {
 			t.Fatalf("%v: %v", args, err)
 		}
-		return out
+		// The action's own answer is the envelope's data.
+		return toolData(t, out)
 	}
 	rows, answer := outcomeTestRows(t, []byte(call(map[string]any{"action": "list_tasks", "project_id": "proj-attn", "include_workflow_tasks": true, "limit": float64(50)})))
 	checkAttentionRows(t, "home", rows)

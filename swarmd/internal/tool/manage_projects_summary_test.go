@@ -82,7 +82,13 @@ func TestManageProjectsListAndGetReturnCompactProjects(t *testing.T) {
 	runtime.SetManageProjectStore(store)
 	scope := WorkspaceScope{Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-compact", AccountScopeID: account}}
 	call := func(args map[string]any) (string, error) {
-		return runtime.executeManageProjects(context.Background(), scope, args)
+		raw, err := runtime.executeManageProjects(context.Background(), scope, args)
+		if err != nil {
+			return "", err
+		}
+		// The action's own answer is the envelope's data.
+		data, err := EnvelopeData(raw)
+		return string(data), err
 	}
 	forbidden := []string{iconURL[:40], "icon_png_data_url", "theme", "session-hidden", "automation-hidden", "Foreign", "App\""}
 

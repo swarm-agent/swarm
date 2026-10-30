@@ -63,9 +63,19 @@ func TestFleetLinkedTaskSessionReadsALongMessageInFull(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var view map[string]any
-		if err := json.Unmarshal([]byte(out), &view); err != nil {
+		var envelope map[string]any
+		if err := json.Unmarshal([]byte(out), &envelope); err != nil {
 			t.Fatal(err)
+		}
+		view, _ := envelope["data"].(map[string]any)
+		// A cut message is never cut silently: the envelope's next is
+		// the first cut message's continuation.
+		if items, _ := view["messages"].([]any); len(items) > 0 {
+			if cut, _ := items[0].(map[string]any)["next"].(map[string]any); cut != nil {
+				if next, _ := envelope["next"].(map[string]any); next["message_id"] != cut["message_id"] || next["content_offset"] != cut["content_offset"] {
+					t.Fatalf("envelope next %v, want the cut message's %v", envelope["next"], cut)
+				}
+			}
 		}
 		return view
 	}

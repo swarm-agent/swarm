@@ -469,7 +469,8 @@ func TestManageProjectsEnvironmentActionsLocalAndLinked(t *testing.T) {
 	}
 	// Local, on the machine itself.
 	local := run(f.remote.s, f.remote, f.remoteP, `{"action":"update_environment","workspace_path":"`+f.folder+`","environment":{"base_image":"debian:12","setup":["apt-get install -y git"],"wait_seconds":10}}`)
-	if local["action"] != tool.FolderEnvironmentUpdate || local["machine"] != nil || local["untrusted_content"] != nil {
+	// The envelope names the machine it ran on: here, the machine's own name.
+	if name, _ := local["machine"].(string); local["action"] != tool.FolderEnvironmentUpdate || name == "" || name == "box" || local["untrusted_content"] != false {
 		t.Fatalf("local answer: %v", local)
 	}
 	// Linked, from the home.

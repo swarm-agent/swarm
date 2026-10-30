@@ -90,15 +90,8 @@ func (r *Runtime) executeFolderEnvironments(ctx context.Context, scope Workspace
 	if r == nil || r.sessions == nil || !scope.Principal.Valid() || scope.Principal.Type != identity.PrincipalTypeUser {
 		return "", errors.New("folder environments require an authenticated session")
 	}
-	session, found, err := r.sessions.GetSession(scope.SessionID)
-	if err != nil {
+	if _, err := r.homeConversation(scope, "folder environment session ownership mismatch", "folder environments are managed by the Orchestrator, not by tasks; agents in a folder use lease_environment"); err != nil {
 		return "", err
-	}
-	if !found || session.AccountScopeID != scope.Principal.AccountScopeID || session.UserID != scope.Principal.UserID {
-		return "", errors.New("folder environment session ownership mismatch")
-	}
-	if scope.TaskHistoryOnly || asString(session.Metadata["task_id"]) != "" || asString(session.Metadata["project_task_id"]) != "" {
-		return "", errors.New("folder environments are managed by the Orchestrator, not by tasks; agents in a folder use lease_environment")
 	}
 	service, ok := r.getProjectTaskLifecycleService().(FolderEnvironments)
 	if !ok {
