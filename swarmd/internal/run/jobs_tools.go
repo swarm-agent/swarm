@@ -2,13 +2,16 @@ package run
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
+
 	"swarm/packages/swarmd/internal/identity"
 	store "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
 
+// executeManageJobsTool runs a session's manage_jobs call through the catalog
+// handler (tool.Runtime, the one Swarm Control runs), as the session's own
+// principal and agent: its answer is the catalog envelope.
 func (s *Service) executeManageJobsTool(ctx context.Context, principal identity.Principal, sessionID, arguments string, profile store.AgentProfile) (string, error) {
 	current, found, err := s.sessions.GetSession(sessionID)
 	if err != nil {
@@ -24,18 +27,15 @@ func (s *Service) executeManageJobsTool(ctx context.Context, principal identity.
 	if enabled == nil || !*enabled {
 		return "", errors.New("manage_jobs must be enabled in the agent tool contract")
 	}
-	service, ok := s.workflowLifecycle.(tool.JobsService)
-	if !ok {
+	if _, ok := s.workflowLifecycle.(tool.JobsService); !ok {
 		return "", errors.New("jobs service unavailable")
 	}
-	var args map[string]any
-	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
-		return "", err
+	if s.tools == nil {
+		return "", errors.New("jobs service unavailable")
 	}
-	out, err := service.ManageJobs(ctx, principal, sessionID, profile.Name, args)
-	if err != nil {
-		return "", err
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	data, err := json.Marshal(out)
-	return string(data), err
+	ctx = tool.WithCatalogAgent(ctx, profile.Name)
+	return s.tools.ExecuteForWorkspaceScopeWithRuntime(ctx, tool.WorkspaceScope{SessionID: sessionID, Principal: principal}, tool.Call{Name: "manage_jobs", Arguments: arguments})
 }

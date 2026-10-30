@@ -89,6 +89,9 @@ type CatalogAction struct {
 	// envelope's state only when it is one of these. Any other status (a
 	// task's run status, a machine's status) stays in data.
 	States []string
+	// WaitingStatuses are the statuses of the answer's own record (a job's)
+	// that wait on someone: the envelope's state is waiting for them.
+	WaitingStatuses []string
 	// NextAction is the action's next step when its answer names none
 	// (envelope next_action). Empty when there is nothing to do next.
 	NextAction string
@@ -209,7 +212,7 @@ func (t CatalogTool) ControlSchema(allowed func(CatalogAction) bool) (map[string
 
 // Catalog lists the catalog tools.
 func Catalog() []CatalogTool {
-	return []CatalogTool{manageProjectsCatalog(), manageWorkflowsCatalog()}
+	return []CatalogTool{manageProjectsCatalog(), manageWorkflowsCatalog(), manageJobsCatalog()}
 }
 
 // CatalogToolNamed returns the catalog tool.

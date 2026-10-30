@@ -2247,6 +2247,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return r.executeManageProjects(ctx, scope, args)
 	case "manage-workflows", "manage_workflows":
 		return r.executeManageWorkflows(ctx, scope, args)
+	case "manage-jobs", "manage_jobs":
+		return r.executeManageJobs(ctx, scope, args)
 	case "manage-connections", "manage_connections", "manage-environments", "manage_environments":
 		return "", ErrEnvironmentToolsRemoved
 	case LeaseEnvironmentToolName:

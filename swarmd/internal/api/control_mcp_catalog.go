@@ -47,7 +47,7 @@ func (s *Server) HomeMachineName() string {
 
 // catalogActionAllowed reports whether this caller may see and call the
 // action: the key's level for the action and, as every Swarm Control tool,
-// the API scopes behind it (projects, sessions or automations). Agent-bound
+// the API scopes behind it (projects, sessions, automations or signals). Agent-bound
 // and application keys never drive the person's projects.
 func (c *controlMCPCall) catalogActionAllowed(action tool.CatalogAction) bool {
 	if c == nil || c.request == nil || fleetActivityGatewayCaller(c.request) {
@@ -117,7 +117,7 @@ func (c *controlMCPCall) catalogLevels() (levels []string, bound bool) {
 
 // controlCatalogServiceScopes are the API scopes a catalog action's service
 // may check for a Swarm Control caller.
-var controlCatalogServiceScopes = []string{"sessions:read", "sessions:write", "projects:read", "projects:write", "automations:read", "automations:write", "swarm:read"}
+var controlCatalogServiceScopes = []string{"sessions:read", "sessions:write", "projects:read", "projects:write", "automations:read", "automations:write", "signals:read", "swarm:read"}
 
 // controlCatalogHeldScopes are those the key holds, as its HasScope answers
 // (aliases included), so a service never acts above the key.
@@ -132,7 +132,7 @@ func controlCatalogHeldScopes(record *pebblestore.ScopedTokenRecord) []string {
 }
 
 // catalogToolTitles are the MCP titles of the catalog tools.
-var catalogToolTitles = map[string]string{"manage_projects": "Projects and tasks", "manage_workflows": "Workflows"}
+var catalogToolTitles = map[string]string{"manage_projects": "Projects and tasks", "manage_workflows": "Workflows", "manage_jobs": "Worker jobs"}
 
 // catalogTools are the catalog tools this caller sees: the default listing
 // (essentials) or every Swarm Control action (tools=all), only actions the

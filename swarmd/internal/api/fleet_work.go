@@ -32,6 +32,9 @@ func (s *Server) CallFleetWork(ctx context.Context, p identity.Principal, machin
 	if !pebblestore.LinkedWorkOn(access.Link(machine).Work) {
 		return nil, fmt.Errorf("linked.%s.work is off", machine)
 	}
+	if name == tool.ManageJobsToolName {
+		return s.callFleetJobs(ctx, p, machine, action, args)
+	}
 	path, method := "/v3/workers", http.MethodGet
 	if name == "manage_workflows" {
 		path = JobAutomationsPath

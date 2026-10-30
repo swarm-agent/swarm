@@ -93,6 +93,9 @@ type catalogParityHarness struct {
 	// workflowFolder is the home's workflow project folder (seedWorkflows).
 	homeWorkflows, remoteWorkflows *jobautomation.Store
 	workflowFolder                 string
+	// jobs are each machine's seeded job ids by name (seedJobs): "" is the
+	// home, "box" the linked machine.
+	jobs map[string]map[string]string
 }
 
 func newCatalogParityHarness(t *testing.T) *catalogParityHarness {
@@ -148,6 +151,7 @@ func newCatalogParityHarness(t *testing.T) *catalogParityHarness {
 	h.home.s.SetToolCatalogRuntime(h.runtime)
 	parity := &catalogParityHarness{remoteWaitHarness: h}
 	parity.seedWorkflows(t)
+	parity.seedJobs(t)
 	return parity
 }
 
@@ -165,7 +169,9 @@ func (h *catalogParityHarness) orchestratorTool(t *testing.T, name string, args 
 	if machine, _ := args["machine"].(string); args["action"] == "wait_tasks" && machine == "" {
 		session = "home-project-orch"
 	}
-	ctx, cancel := context.WithTimeout(tool.WithVideoRunContext(context.Background(), tool.VideoRunContext{SessionID: session, RunID: "run-1"}), 20*time.Second)
+	// The run service passes the session's agent (manage_jobs grants name
+	// it), as Service.executeManageJobsTool does.
+	ctx, cancel := context.WithTimeout(tool.WithCatalogAgent(tool.WithVideoRunContext(context.Background(), tool.VideoRunContext{SessionID: session, RunID: "run-1"}), catalogParityAgent), 20*time.Second)
 	defer cancel()
 	raw, _ := json.Marshal(args)
 	return h.runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, tool.WorkspaceScope{SessionID: session, Principal: h.p}, tool.Call{Name: name, Arguments: string(raw)})
@@ -206,8 +212,8 @@ func (h *catalogParityHarness) controlTool(t *testing.T, scopes []string, name s
 }
 
 // catalogParityFullKey is a key at every level with the API scopes behind
-// manage_projects and manage_workflows.
-var catalogParityFullKey = []string{"swarm:read", "swarm:write", "swarm:approve", "swarm:manage", "sessions:read", "sessions:write", "projects:read", "projects:write", "automations:read", "automations:write"}
+// manage_projects, manage_workflows and manage_jobs.
+var catalogParityFullKey = []string{"swarm:read", "swarm:write", "swarm:approve", "swarm:manage", "sessions:read", "sessions:write", "projects:read", "projects:write", "automations:read", "automations:write", "signals:read"}
 
 // catalogParityCompare is how a parity case compares the two answers.
 type catalogParityCompare string
@@ -247,7 +253,7 @@ func parityArgs(args ...any) map[string]any {
 // catalogParityCases holds, per catalog tool, one case for every action (see
 // TestCatalogParityCoversEveryAction).
 func catalogParityCases() map[string]map[string][]catalogParityCase {
-	return map[string]map[string][]catalogParityCase{"manage_projects": manageProjectsParityCases(), "manage_workflows": manageWorkflowsParityCases()}
+	return map[string]map[string][]catalogParityCase{"manage_projects": manageProjectsParityCases(), "manage_workflows": manageWorkflowsParityCases(), "manage_jobs": manageJobsParityCases()}
 }
 
 // catalogParityToolNames are the tools with parity cases, sorted.
@@ -365,9 +371,9 @@ func TestCatalogParityCoversEveryAction(t *testing.T) {
 					linked = true
 				}
 			}
-			// manage_workflows: every action that reaches a linked machine
-			// is held to parity there too.
-			if catalog.Name == "manage_workflows" && action.Reach == tool.CatalogReachAny && !linked {
+			// manage_workflows and manage_jobs: every action that reaches a
+			// linked machine is held to parity there too.
+			if catalog.Name != "manage_projects" && action.Reach == tool.CatalogReachAny && !linked {
 				t.Fatalf("%s %s reaches linked machines but has no linked parity case", catalog.Name, action.Action)
 			}
 			delete(cases, action.Action)

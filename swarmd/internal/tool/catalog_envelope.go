@@ -61,11 +61,15 @@ const (
 	// EnvelopeStatePartial: the call ran but part of its answer is missing
 	// (data_error, linked_record_error).
 	EnvelopeStatePartial = "partial"
+	// EnvelopeStateWaiting: the record the call read or changed waits on
+	// someone (a job's question for answer_job, or a tool approval);
+	// CatalogAction.WaitingStatuses names those statuses.
+	EnvelopeStateWaiting = "waiting"
 )
 
 // EnvelopeStates is the documented set of envelope states
 // (docs/tool-catalog.md).
-var EnvelopeStates = []string{EnvelopeStateOK, EnvelopeStateWatching, EnvelopeStateCancelled, ControlTaskWaitMilestone, ControlTaskWaitSettled, ControlTaskWaitTimedOut, EnvelopeStatePartial}
+var EnvelopeStates = []string{EnvelopeStateOK, EnvelopeStateWatching, EnvelopeStateCancelled, ControlTaskWaitMilestone, ControlTaskWaitSettled, ControlTaskWaitTimedOut, EnvelopeStatePartial, EnvelopeStateWaiting}
 
 // EnvelopeStateKnown reports whether state is in EnvelopeStates.
 func EnvelopeStateKnown(state string) bool {
@@ -257,6 +261,11 @@ func envelopeState(declared CatalogAction, object, decoded map[string]json.RawMe
 		}
 	}
 	status := envelopeText(object, "status")
+	for _, waiting := range declared.WaitingStatuses {
+		if status == waiting {
+			return EnvelopeStateWaiting
+		}
+	}
 	for _, state := range declared.States {
 		if status == state {
 			return state
@@ -297,9 +306,27 @@ func envelopeNext(catalog CatalogTool, declared CatalogAction, args map[string]a
 	}
 	var candidates []json.RawMessage
 	for _, key := range []string{"next", "next_cursor"} {
-		if raw, ok := object[key]; ok {
-			candidates = append(candidates, raw)
+		raw, ok := object[key]
+		if !ok {
+			continue
 		}
+		// An opaque string cursor (a tool whose cursor input is a string)
+		// reads on at that cursor.
+		var text string
+		if key == "next_cursor" && catalogStringCursor(catalog) && json.Unmarshal(raw, &text) == nil {
+			if strings.TrimSpace(text) != "" {
+				encoded, _ := json.Marshal(map[string]any{"cursor": text})
+				candidates = append(candidates, encoded)
+			}
+			continue
+		}
+		candidates = append(candidates, raw)
+	}
+	// A cut JSON text page (manage_jobs reads): the same read at the next
+	// page offset, pinned by the first page's digest.
+	if offset, digest, ok := envelopePageContinuation(object); ok {
+		encoded, _ := json.Marshal(map[string]any{"page_offset": offset, "page_digest": digest})
+		candidates = append(candidates, encoded)
 	}
 	list := func(raw json.RawMessage) []map[string]json.RawMessage {
 		var items []map[string]json.RawMessage
@@ -341,7 +368,29 @@ func envelopeNext(catalog CatalogTool, declared CatalogAction, args map[string]a
 
 // envelopeContinuationInputs are the inputs a continuation replaces; the
 // call's other arguments carry over to it.
-var envelopeContinuationInputs = map[string]bool{"cursor": true, "since_cursor": true, "message_id": true, "message_seq": true, "content_offset": true}
+var envelopeContinuationInputs = map[string]bool{"cursor": true, "since_cursor": true, "message_id": true, "message_seq": true, "content_offset": true, "page_offset": true, "page_digest": true}
+
+// catalogStringCursor reports whether the tool's cursor input is an opaque
+// string (manage_jobs' run pages) rather than an offset.
+func catalogStringCursor(catalog CatalogTool) bool {
+	field, ok := catalog.Field("cursor")
+	return ok && field.Schema["type"] == "string"
+}
+
+// envelopePageContinuation reads a cut JSON text page: its next offset and
+// the digest that pins it.
+func envelopePageContinuation(object map[string]json.RawMessage) (int, string, bool) {
+	raw, ok := object["next_page_offset"]
+	if !ok {
+		return 0, "", false
+	}
+	var offset float64
+	var digest string
+	if json.Unmarshal(raw, &offset) != nil || offset <= 0 || offset != float64(int(offset)) || json.Unmarshal(object["page_digest"], &digest) != nil || strings.TrimSpace(digest) == "" {
+		return 0, "", false
+	}
+	return int(offset), digest, true
+}
 
 // envelopeNextCall turns one continuation into the arguments of the call
 // that reads on, or nil when it is not a call the catalog declares.
@@ -474,7 +523,7 @@ func CheckEnvelope(answer string) error {
 		}
 		return nil
 	}
-	if bytes.Contains(envelope.Data, []byte(`"result_truncated":true`)) || bytes.Contains(envelope.Data, []byte(`"next_cursor":`)) && envelopeDataCut(envelope.Data) {
+	if bytes.Contains(envelope.Data, []byte(`"result_truncated":true`)) || bytes.Contains(envelope.Data, []byte(`"next_cursor":`)) && envelopeDataCut(catalog, envelope.Data) || envelopeDataPaged(envelope.Data) {
 		return errors.New("the answer was cut but carries no next")
 	}
 	return nil
@@ -482,12 +531,26 @@ func CheckEnvelope(answer string) error {
 
 // envelopeDataCut reports whether data names a further page (a next_cursor
 // that continues).
-func envelopeDataCut(data json.RawMessage) bool {
+func envelopeDataCut(catalog CatalogTool, data json.RawMessage) bool {
 	var object map[string]any
 	if json.Unmarshal(data, &object) != nil {
 		return false
 	}
+	if text, ok := object["next_cursor"].(string); ok && catalogStringCursor(catalog) {
+		return strings.TrimSpace(text) != ""
+	}
 	_, ok := envelopeCursor(object["next_cursor"])
+	return ok
+}
+
+// envelopeDataPaged reports whether data is a JSON text page with more to
+// read (next_page_offset).
+func envelopeDataPaged(data json.RawMessage) bool {
+	var object map[string]json.RawMessage
+	if json.Unmarshal(data, &object) != nil {
+		return false
+	}
+	_, _, ok := envelopePageContinuation(object)
 	return ok
 }
 
@@ -615,6 +678,8 @@ func (r *Runtime) ExecuteControlCatalog(ctx context.Context, call ControlCatalog
 		return r.executeManageProjects(identity.ContextWithPrincipal(ctx, p), scope, args)
 	case manageWorkflowsToolName:
 		return r.executeManageWorkflows(identity.ContextWithPrincipal(ctx, p), scope, args)
+	case manageJobsToolName:
+		return r.executeManageJobs(identity.ContextWithPrincipal(ctx, p), scope, args)
 	}
 	return "", fmt.Errorf("%s has no handler", catalog.Name)
 }

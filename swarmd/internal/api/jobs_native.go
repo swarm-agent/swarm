@@ -14,14 +14,51 @@ import (
 	"swarm/packages/swarmd/internal/jobautomation"
 	"swarm/packages/swarmd/internal/permission"
 	store "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 )
 
-// ManageJobs is the native adapter to the existing control handlers. Identity and
-// agent name are trusted run inputs, never model arguments. No owner credential
-// is created: the internal request carries only the job operations' scopes.
+// nativeJobMutations are the manage_jobs actions that change a job or start
+// agent work: each needs the owner's grant for a session caller.
+var nativeJobMutations = map[string]bool{
+	"give_job": true, "message_job": true, "rerun_failed_steps": true,
+	"answer_job": true, "deliver_job": true, "stop_job": true, "schedule_job": true,
+}
+
+// nativeJobReadScopes and nativeJobWriteScopes are the API scopes a job
+// action's internal request carries: reads, and changes as well. A Swarm
+// Control caller holds only those its key holds too.
+var (
+	nativeJobReadScopes  = []string{"sessions:read", "automations:read", "swarm:read", "signals:read", "projects:read"}
+	nativeJobWriteScopes = []string{"sessions:write", "automations:write"}
+)
+
+// nativeJobInputs are the only arguments that reach the job handlers:
+// callers cannot smuggle then, model overrides, integration flags or a
+// different authority through manage_jobs.
+var nativeJobInputs = []string{"job_id", "worker", "brief", "message", "answer", "question_id", "reason", "schedule", "name", "project", "since", "until", "status", "cursor", "client_request_id", "idempotency_key"}
+
+// ManageJobs is the one job service behind manage_jobs: the Orchestrator and
+// every agent granted manage_jobs (a session caller), Swarm Control (a caller
+// whose key scopes ride in ctx, tool.ControlScopesFromContext) and a linked
+// home (POST /v3/jobs/{action}) all run it, and it runs the same handlers as
+// the swarm_* job tools. Identity and agent name are trusted run inputs,
+// never model arguments. No owner credential is created: the internal
+// request carries only the job operations' scopes. With machine in args the
+// action runs on that linked machine's own ManageJobs and its answer comes
+// back as it came.
 func (s *Server) ManageJobs(ctx context.Context, p identity.Principal, sessionID, agent string, args map[string]any) (any, error) {
 	if !p.Valid() || s.sessions == nil {
 		return nil, errors.New("manage_jobs requires a session principal")
+	}
+	action := controlMCPString(args, "action")
+	if _, ok := manageJobsAction(action); !ok {
+		return nil, errors.New("unknown manage_jobs action")
+	}
+	mutate := nativeJobMutations[action]
+	machine := controlMCPString(args, "machine")
+	held, control := tool.ControlScopesFromContext(ctx)
+	if control {
+		return s.manageJobsAs(ctx, p, held, control, store.SessionSnapshot{}, action, machine, args)
 	}
 	current, found, err := s.sessions.Store().GetSession(sessionID)
 	if err != nil {
@@ -30,8 +67,6 @@ func (s *Server) ManageJobs(ctx context.Context, p identity.Principal, sessionID
 	if !found || current.AccountScopeID != p.AccountScopeID || current.UserID != p.UserID {
 		return nil, errors.New("manage_jobs session principal mismatch")
 	}
-	action := controlMCPString(args, "action")
-	mutate := action == "give_job" || action == "message_job" || action == "rerun_failed_steps"
 	if mutate {
 		// Worker identity comes from the account-owned record, not the base
 		// system agent or model-supplied arguments.
@@ -58,13 +93,28 @@ func (s *Server) ManageJobs(ctx context.Context, p identity.Principal, sessionID
 		if !nativeJobActionGranted(policy, agent, action) {
 			return nil, fmt.Errorf("owner must allow manage_jobs.%s.%s in account permission rules", agent, action)
 		}
-		if controlMCPInt(args, "page_offset", 0) != 0 {
-			return nil, errors.New("mutations cannot be replayed for paging")
-		}
 	}
-	scopes := []string{"sessions:read", "automations:read", "swarm:read", "signals:read", "projects:read"}
+	return s.manageJobsAs(ctx, p, nil, false, current, action, machine, args)
+}
+
+// manageJobsAs runs one job action for a caller already checked: a session
+// caller (current, its grant checked) or a Swarm Control or linked caller
+// (control, holding held).
+func (s *Server) manageJobsAs(ctx context.Context, p identity.Principal, held []string, control bool, current store.SessionSnapshot, action, machine string, args map[string]any) (any, error) {
+	mutate := nativeJobMutations[action]
+	if mutate && controlMCPInt(args, "page_offset", 0) != 0 {
+		return nil, errors.New("mutations cannot be replayed for paging")
+	}
+	if machine != "" {
+		return s.manageJobsLinked(ctx, p, control, current, action, machine, args)
+	}
+	scopes := append([]string(nil), nativeJobReadScopes...)
 	if mutate {
-		scopes = append(scopes, "sessions:write", "automations:write")
+		scopes = append(scopes, nativeJobWriteScopes...)
+	}
+	if control {
+		// A Swarm Control or linked caller acts only within its key.
+		scopes = nativeJobScopesHeld(scopes, held)
 	}
 	req, err := http.NewRequestWithContext(identity.ContextWithPrincipal(ctx, p), http.MethodPost, "/mcp", nil)
 	if err != nil {
@@ -72,10 +122,8 @@ func (s *Server) ManageJobs(ctx context.Context, p identity.Principal, sessionID
 	}
 	req = requestWithScopedToken(req, &store.ScopedTokenRecord{Scopes: scopes})
 	c := &controlMCPCall{request: req, next: s.internalRouteHandler(), server: s}
-	// Only the documented inputs reach handlers; callers cannot smuggle then,
-	// model overrides, integration flags or a different authority through this tool.
 	clean := map[string]any{}
-	for _, key := range []string{"job_id", "worker", "brief", "message", "project", "since", "until", "status", "cursor", "client_request_id", "idempotency_key"} {
+	for _, key := range nativeJobInputs {
 		if v, ok := args[key]; ok {
 			clean[key] = v
 		}
@@ -86,7 +134,7 @@ func (s *Server) ManageJobs(ctx context.Context, p identity.Principal, sessionID
 		return nil, errors.New("limit must be between 1 and 50")
 	}
 	clean["limit"] = float64(limit)
-	if mutate {
+	if mutate && !control {
 		if err := s.refuseNativeJobSelfTarget(c, current, action, clean); err != nil {
 			return nil, err
 		}
@@ -101,37 +149,22 @@ func (s *Server) ManageJobs(ctx context.Context, p identity.Principal, sessionID
 		out, err = controlMCPGiveJob(c, clean)
 	case "message_job":
 		out, err = controlMCPMessageJob(c, clean)
+	case "answer_job":
+		out, err = controlMCPAnswerJob(c, clean)
+	case "deliver_job":
+		out, err = controlMCPDeliverJob(c, clean)
+	case "stop_job":
+		out, err = controlMCPStopJob(c, clean)
+	case "schedule_job":
+		out, err = controlMCPScheduleJob(c, clean)
 	case "rerun_failed_steps":
 		clean["automation"] = true
 		out, err = controlMCPDeliverJob(c, clean)
 	case "deliveries":
-		var ds *jobautomation.Store
-		ds, err = s.jobAutomationStore()
-		if err == nil {
-			automationID := controlMCPString(args, "id")
-			if automationID != "" {
-				automation, lookupErr := ds.Get(p.AccountScopeID, automationID)
-				if errors.Is(lookupErr, jobautomation.ErrNotFound) {
-					automation, lookupErr = ds.FindByName(p.AccountScopeID, automationID)
-				}
-				if lookupErr != nil {
-					return nil, fmt.Errorf("workflow %q: %w", automationID, lookupErr)
-				}
-				automationID = automation.ID
-			}
-			var deliveries []jobautomation.Delivery
-			jobID := controlMCPString(args, "job_id")
-			deliveries, err = ds.ListDeliveries(p.AccountScopeID, jobautomation.DeliveryFilter{AutomationID: automationID, JobID: jobID, Limit: limit})
-			views := []map[string]any{}
-			for _, d := range deliveries {
-				views = append(views, jobDeliveryView(d))
-			}
-			answer := map[string]any{"deliveries": views}
-			if note := deliveryJobIDNote(jobID, len(deliveries)); note != "" && err == nil {
-				answer["note"] = note
-			}
-			out = answer
+		if !nativeJobScopeHeld(scopes, "automations:read") {
+			return nil, controlMCPToolFailure("this connection lacks the automations:read permission")
 		}
+		out, err = s.nativeJobDeliveries(p, args, limit)
 	default:
 		return nil, errors.New("unknown manage_jobs action")
 	}
@@ -139,6 +172,102 @@ func (s *Server) ManageJobs(ctx context.Context, p identity.Principal, sessionID
 		return nil, err
 	}
 	return nativeJobPage(out, args, mutate)
+}
+
+// nativeJobDeliveries lists a workflow's (id or name) or a job's deliveries.
+func (s *Server) nativeJobDeliveries(p identity.Principal, args map[string]any, limit int) (any, error) {
+	ds, err := s.jobAutomationStore()
+	if err != nil {
+		return nil, err
+	}
+	automationID := controlMCPString(args, "id")
+	if automationID != "" {
+		automation, lookupErr := ds.Get(p.AccountScopeID, automationID)
+		if errors.Is(lookupErr, jobautomation.ErrNotFound) {
+			automation, lookupErr = ds.FindByName(p.AccountScopeID, automationID)
+		}
+		if lookupErr != nil {
+			return nil, fmt.Errorf("workflow %q: %w", automationID, lookupErr)
+		}
+		automationID = automation.ID
+	}
+	jobID := controlMCPString(args, "job_id")
+	deliveries, err := ds.ListDeliveries(p.AccountScopeID, jobautomation.DeliveryFilter{AutomationID: automationID, JobID: jobID, Limit: limit})
+	if err != nil {
+		return nil, err
+	}
+	views := []map[string]any{}
+	for _, d := range deliveries {
+		views = append(views, jobDeliveryView(d))
+	}
+	answer := map[string]any{"deliveries": views}
+	if note := deliveryJobIDNote(jobID, len(deliveries)); note != "" {
+		answer["note"] = note
+	}
+	return answer, nil
+}
+
+// manageJobsLinked runs the action on a linked machine's own ManageJobs
+// (POST /v3/jobs/{action}) and returns its answer as it came. Linked work is
+// the home Orchestrator's (or a Swarm Control caller's): a task's own
+// session never reaches it. Under linked.{name}.work ask, an action that
+// starts or continues agent work there waits for the person: a session
+// caller has no approval prompt for it here, so it is refused rather than
+// sent; a Swarm Control caller's person approves in their own AI's chat.
+func (s *Server) manageJobsLinked(ctx context.Context, p identity.Principal, control bool, current store.SessionSnapshot, action, machine string, args map[string]any) (any, error) {
+	if !control {
+		if project, _ := current.Metadata["task_id"].(string); project != "" {
+			return nil, errors.New("linked work is only available to the home Orchestrator")
+		}
+		if task, _ := current.Metadata["project_task_id"].(string); task != "" {
+			return nil, errors.New("linked work is only available to the home Orchestrator")
+		}
+		if tool.FleetTaskStart(tool.ManageJobsToolName, action) {
+			access, err := s.sessions.Store().GetAccountPermissions(p.AccountScopeID)
+			if err != nil {
+				return nil, err
+			}
+			if access.Link(machine).Work == store.RuleAsk {
+				return nil, fmt.Errorf("linked.%s.work is ask: manage_jobs %s starts work on %s only with the person's approval, and manage_jobs has no approval prompt for it; the person can set the rule to auto on the Permissions page", machine, action, machine)
+			}
+		}
+	}
+	body := map[string]any{}
+	for key, value := range args {
+		if key != "machine" && key != "action" {
+			body[key] = value
+		}
+	}
+	return s.CallFleetWork(ctx, p, machine, tool.ManageJobsToolName, action, body)
+}
+
+// nativeJobScopesHeld keeps the scopes the caller's key holds.
+func nativeJobScopesHeld(scopes, held []string) []string {
+	var out []string
+	for _, scope := range scopes {
+		if nativeJobScopeHeld(held, scope) {
+			out = append(out, scope)
+		}
+	}
+	return out
+}
+
+func nativeJobScopeHeld(scopes []string, want string) bool {
+	for _, scope := range scopes {
+		if scope == want {
+			return true
+		}
+	}
+	return false
+}
+
+// manageJobsAction is the declared manage_jobs action.
+func manageJobsAction(name string) (tool.CatalogAction, bool) {
+	catalog, ok := tool.CatalogToolNamed(tool.ManageJobsToolName)
+	if !ok {
+		return tool.CatalogAction{}, false
+	}
+	return catalog.Action(name)
 }
 
 func nativeJobActionGranted(policy permission.Policy, agent, action string) bool {
@@ -162,7 +291,9 @@ func (s *Server) refuseNativeJobSelfTarget(c *controlMCPCall, current store.Sess
 	ownWorker, _ := current.Metadata["worker_id"].(string)
 	ownRun, _ := current.Metadata["worker_execution_run_id"].(string)
 	ownJob := "worker/" + ownWorker + "/" + ownRun
-	if action == "give_job" {
+	// give_job and schedule_job name a worker, not a job: never the caller's
+	// own worker.
+	if action == "give_job" || action == "schedule_job" {
 		worker, err := c.resolveWorker(controlMCPString(args, "worker"))
 		if err != nil {
 			return err

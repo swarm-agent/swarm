@@ -78,6 +78,9 @@ func (h *catalogParityHarness) resolveCase(t *testing.T, c catalogParityCase) ca
 		store, account = h.remoteWorkflows, h.remote.account
 	}
 	resolve := func(text string) string {
+		if strings.HasPrefix(text, "job:") {
+			return h.resolveJob(machine, text)
+		}
 		name, ok := strings.CutPrefix(text, "wf:")
 		if !ok {
 			return text
