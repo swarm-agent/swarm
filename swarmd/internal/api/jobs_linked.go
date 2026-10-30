@@ -66,6 +66,13 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Errorf("no job action %q", name))
 		return
 	}
+	// ManageJobs runs the action on an internal request carrying only the
+	// caller's scopes: a key bound to one worker, agent or trigger would lose
+	// that binding there, so it is refused here.
+	if record, ok := ScopedTokenFromRequest(r); ok && catalogBoundKey(record) {
+		writeError(w, http.StatusForbidden, errors.New("a key bound to one worker, agent or trigger cannot use the job route"))
+		return
+	}
 	if !s.requireScopeAny(w, r, action.APIScopes...) {
 		return
 	}

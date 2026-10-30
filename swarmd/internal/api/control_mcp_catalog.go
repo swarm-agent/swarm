@@ -54,7 +54,7 @@ func (c *controlMCPCall) catalogActionAllowed(action tool.CatalogAction) bool {
 		return false
 	}
 	record, ok := ScopedTokenFromRequest(c.request)
-	if !ok {
+	if !ok || catalogBoundKey(record) {
 		return false
 	}
 	levels, bound := c.catalogLevels()
@@ -62,6 +62,18 @@ func (c *controlMCPCall) catalogActionAllowed(action tool.CatalogAction) bool {
 		return false
 	}
 	return catalogScopesHeld(record.HasScope, action)
+}
+
+// catalogBoundKey reports a key bound to one worker, one agent or a trigger.
+// The catalog handlers run their actions on internal requests that carry
+// only the caller's scopes, never such a binding, so the per-worker and
+// per-agent checks of the routes behind them would not see it: a bound key
+// is refused every catalog tool (its own swarm_* tools keep the binding).
+func catalogBoundKey(record *pebblestore.ScopedTokenRecord) bool {
+	if record == nil {
+		return false
+	}
+	return strings.TrimSpace(record.WorkerID) != "" || strings.TrimSpace(record.AgentName) != "" || isTriggerCredential(record)
 }
 
 // catalogScopesHeld reports whether the key holds one of the API scopes of
@@ -189,6 +201,9 @@ func (c *controlMCPCall) callCatalogTool(catalog tool.CatalogTool, args map[stri
 			return nil, controlMCPToolFailure("%s %s is machine setup a relay client may not do", catalog.Name, action.Action)
 		}
 		return nil, controlMCPToolFailure("this key is limited to %s; %s %s needs %s", strings.Join(levels, ", "), catalog.Name, action.Action, action.Level.Scope())
+	}
+	if record, ok := ScopedTokenFromRequest(c.request); ok && catalogBoundKey(record) {
+		return nil, controlMCPToolFailure("this key is bound to one worker, agent or trigger and cannot call %s; use the key's own tools", catalog.Name)
 	}
 	if !c.catalogActionAllowed(action) {
 		return nil, controlMCPToolFailure("this connection cannot call %s %s; it needs %s", catalog.Name, action.Action, strings.Join(action.APIScopes, " or "))

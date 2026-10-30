@@ -223,7 +223,14 @@ func (e *jobsEndToEnd) control(t *testing.T, scopes []string, args map[string]an
 
 func (e *jobsEndToEnd) controlCall(t *testing.T, scopes []string, args map[string]any) (string, string) {
 	t.Helper()
-	req := requestWithScopedToken(withTestPrincipal(httptest.NewRequest(http.MethodPost, "/mcp", nil)), &pebblestore.ScopedTokenRecord{ID: "key-jobs", Scopes: scopes})
+	return e.controlCallWith(t, &pebblestore.ScopedTokenRecord{ID: "key-jobs", Scopes: scopes}, args)
+}
+
+// controlCallWith runs a manage_jobs call through Swarm Control's tools/call
+// with the given key.
+func (e *jobsEndToEnd) controlCallWith(t *testing.T, record *pebblestore.ScopedTokenRecord, args map[string]any) (string, string) {
+	t.Helper()
+	req := requestWithScopedToken(withTestPrincipal(httptest.NewRequest(http.MethodPost, "/mcp", nil)), record)
 	ctx, cancel := context.WithTimeout(req.Context(), 20*time.Second)
 	defer cancel()
 	c := &controlMCPCall{request: req.WithContext(ctx), server: e.server}
@@ -492,5 +499,110 @@ func TestManageJobsLevelsScopesAndLinkedRule(t *testing.T) {
 	}
 	if _, refused := h.controlTool(t, catalogParityFullKey, "manage_jobs", map[string]any{"action": "list_runs", "machine": "box"}); !strings.Contains(refused, "linked.box.work is off") {
 		t.Fatalf("Swarm Control read on an off machine: %q", refused)
+	}
+}
+
+// Purpose:
+//   - Requirement: a key bound to one worker (or one agent, or a trigger)
+//     never acts outside that binding through a catalog tool. The catalog
+//     handlers run each action on an internal request that carries only the
+//     caller's scopes, so the per-worker checks of the routes behind them
+//     cannot see the binding; the binding is therefore refused at both
+//     entries: Swarm Control's catalog gate (listing and call) and a linked
+//     machine's POST /v3/jobs/{action}.
+//   - Threat/regression: a worker-bound key with sessions:write giving or
+//     scheduling a job on another worker, or messaging, answering, delivering
+//     or stopping another worker's job (the reviewer's finding).
+//   - Boundary/authority: controlMCPCall.callCatalogTool,
+//     controlMCPCall.catalogActionAllowed (catalogBoundKey), handleJobs, over a
+//     daemon with a real worker, a running job and a pending question.
+//   - Narrowest layer: the bypass was at those two entries; the assertions
+//     check the refusal and that the job, its question, the worker's runs and
+//     the account's workers are unchanged.
+func TestManageJobsRefusesWorkerBoundKeys(t *testing.T) {
+	e := newJobsEndToEnd(t)
+	p := testPrincipal()
+	other, err := e.sessions.CreateWorker(context.Background(), p.AccountScopeID, p.UserID, pebblestore.CreateWorkerRequest{Name: "bound-worker", Role: "coder"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobID, sessionID := e.job(t, "bound-run", nil)
+	question := e.ask(t, sessionID, "ask-bound", "Which branch?")
+	full := []string{"swarm:read", "swarm:write", "sessions:read", "sessions:write", "projects:read", "automations:read", "automations:write", "signals:read"}
+	keys := map[string]*pebblestore.ScopedTokenRecord{
+		"worker-bound": {ID: "key-worker", Scopes: full, WorkerID: other.ID, WorkerName: other.Name},
+		"agent-bound":  {ID: "key-agent", Scopes: full, AgentName: "support"},
+		"trigger":      {ID: "key-trigger", Scopes: []string{"automations:trigger"}, WorkerID: other.ID},
+	}
+	workersBefore, err := e.sessions.Store().WorkerStore().ListWorkers(p.AccountScopeID, pebblestore.ListWorkersQuery{Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runsBefore, _, _ := e.sessions.Store().WorkerStore().ListWorkerRuns(p.AccountScopeID, e.workerID, 100, "")
+	schedule := map[string]any{"kind": "interval", "interval_seconds": float64(3600)}
+	calls := []map[string]any{
+		{"action": "give_job", "worker": e.workerID, "brief": "Outside the binding.", "project": "jobs-project"},
+		{"action": "schedule_job", "worker": e.workerID, "brief": "Outside the binding.", "schedule": schedule, "project": "jobs-project", "name": "Bound schedule"},
+		{"action": "message_job", "job_id": jobID, "message": "Outside the binding."},
+		{"action": "answer_job", "job_id": jobID, "answer": "main"},
+		{"action": "deliver_job", "job_id": jobID},
+		{"action": "stop_job", "job_id": jobID},
+		{"action": "get_job", "job_id": jobID},
+	}
+	for name, key := range keys {
+		// Not listed.
+		c := &controlMCPCall{request: requestWithScopedToken(withTestPrincipal(httptest.NewRequest(http.MethodPost, "/mcp", nil)), key), server: e.server}
+		for _, listed := range c.visibleTools() {
+			if strings.HasPrefix(listed.Name, "manage_") {
+				t.Fatalf("%s key lists catalog tool %s", name, listed.Name)
+			}
+		}
+		for _, args := range calls {
+			// Refused through Swarm Control.
+			if out, refused := e.controlCallWith(t, key, args); !strings.Contains(refused, "bound to one worker, agent or trigger") {
+				t.Fatalf("%s key %v through Swarm Control: out %s refused %q", name, args["action"], out, refused)
+			}
+			// Refused on the linked machine's job route.
+			body := map[string]any{}
+			for k, v := range args {
+				if k != "action" {
+					body[k] = v
+				}
+			}
+			raw, _ := json.Marshal(body)
+			req := requestWithScopedToken(withTestPrincipal(httptest.NewRequest(http.MethodPost, JobsPath+"/"+args["action"].(string), strings.NewReader(string(raw)))), key)
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			e.server.handleJobs(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("%s key %v on %s: %d %s", name, args["action"], JobsPath, rec.Code, rec.Body.String())
+			}
+		}
+	}
+	// Nothing changed: the job runs, its question waits, no run, worker or
+	// message was added.
+	runID := strings.TrimPrefix(jobID, "worker/"+e.workerID+"/")
+	run, found, err := e.sessions.Store().WorkerStore().GetWorkerRun(p.AccountScopeID, e.workerID, runID)
+	if err != nil || !found || run.Status != "running" {
+		t.Fatalf("the job changed: %+v %v %v", run, found, err)
+	}
+	if record, ok, err := e.perms.GetPermission(sessionID, question); err != nil || !ok || record.Status != pebblestore.PermissionStatusPending {
+		t.Fatalf("the question was answered: %+v %v %v", record, ok, err)
+	}
+	if runsAfter, _, _ := e.sessions.Store().WorkerStore().ListWorkerRuns(p.AccountScopeID, e.workerID, 100, ""); len(runsAfter) != len(runsBefore) {
+		t.Fatalf("a refused call added a run: %d -> %d", len(runsBefore), len(runsAfter))
+	}
+	if workersAfter, err := e.sessions.Store().WorkerStore().ListWorkers(p.AccountScopeID, pebblestore.ListWorkersQuery{Limit: 100}); err != nil || len(workersAfter.Workers) != len(workersBefore.Workers) {
+		t.Fatalf("a refused schedule_job added a worker: %d -> %d %v", len(workersBefore.Workers), len(workersAfter.Workers), err)
+	}
+	for _, m := range e.userMessages(t, sessionID) {
+		if m.Content == "Outside the binding." {
+			t.Fatal("a refused message_job reached the job")
+		}
+	}
+	// The same calls with an unbound key still run (the gate is the binding,
+	// not the scopes).
+	if _, refused := e.controlCall(t, full, map[string]any{"action": "get_job", "job_id": jobID}); refused != "" {
+		t.Fatalf("an unbound key was refused: %s", refused)
 	}
 }
