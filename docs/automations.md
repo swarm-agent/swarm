@@ -433,8 +433,25 @@ With `fixes`:
   `round` is the number of reopens the automation already sent into that
   job, so every later delivery of the job continues the count, including one
   for a turn the person sent after a follow-up failed.
-- A job takes one follow-up at a time. When the job is still running (its run
-  or another follow-up is in flight), the step **waits**, within its
+- A busy **task** (Swarm's own agent: `task/<project>/<task>`) gets the
+  message **queued**, exactly as a person's message sent through the session
+  message path is (`swarm_send_message`, `message_task`): when its run, or a
+  follow-up the person sent meanwhile, is in flight, the step does not wait.
+  The message is stored for that run, reaches the agent with its next tool
+  result (or starts the next turn when the run ends without reading it), and
+  the step succeeds at once with `outcome.queued: true`, `outcome.followup`
+  naming that run and the output `sent (queued) to <job> for its current run
+  <run> (round N)`. The round is counted then and the delivery ends
+  `sent_back` as after any reopen. That run's end is the task's next job end:
+  it starts the next round, which reviews whatever head the run ends at, also
+  when the task committed more after the reviewed head. Only a real refusal
+  fails the step, with its reason: the task was deleted, archived, cancelled,
+  superseded or rejected, or stopped by the person, or its rounds are
+  exhausted. While no run can take the message yet (the task is planning or
+  waits for plan approval, its run is still starting, or its status says
+  running before a run is recorded), the step waits as below.
+- A worker job takes one follow-up at a time. When the job is still running
+  (its run or another follow-up is in flight), the step **waits**, within its
   `timeout_seconds`, for it to settle, then sends its follow-up. A follow-up
   that starts just before the step's own send (the send is refused with "a
   follow-up is already running in this job") is waited for the same way; if
@@ -466,8 +483,9 @@ With `fixes`:
   delivery ends `blocked` with that reason (`automation.delivery.blocked`),
   so the delegating AI can read the reviewer's session (`swarm_get_job`) and
   send findings by hand or re-run the delivery.
-- A cancelled job is never reopened: the step fails with the reason. A step
-  with neither findings nor a message to send fails too.
+- A cancelled job is never reopened: the step fails with the reason, as it
+  does for a deleted, archived or person-stopped task. A step with neither
+  findings nor a message to send fails too.
 
 ## What the work hands over, and where
 
