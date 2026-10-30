@@ -13,7 +13,36 @@ import (
 	"unicode/utf8"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 )
+
+// controlMCPTaskWorkflow is the task's workflow as get_task shows it
+// (tool.ProjectTaskWorkflow over the task route's progress): the deciding
+// delivery's delivery_id, round and state, and why a review blocked or sent
+// it back, findings bounded. more names this server's call for the full
+// text. nil when the task has no workflow.
+func controlMCPTaskWorkflow(task map[string]any) map[string]any {
+	progress := controlMCPMap(task["progress"])
+	if progress == nil {
+		return nil
+	}
+	wf := tool.ProjectTaskWorkflow(progress)
+	if wf == nil {
+		return nil
+	}
+	raw, err := json.Marshal(wf)
+	if err != nil {
+		return nil
+	}
+	var out map[string]any
+	if json.Unmarshal(raw, &out) != nil || len(out) == 0 {
+		return nil
+	}
+	if _, cut := out["more"]; cut {
+		out["more"] = "swarm_list_workflows delivery_id=" + controlMCPString(out, "delivery_id")
+	}
+	return out
+}
 
 // Delegation in one hop: an outside AI (the person's own Claude, ChatGPT or
 // Codex) hands one piece of work to a Swarm role, waits for it and reads what
@@ -302,6 +331,9 @@ func controlMCPWaitTask(c *controlMCPCall, args map[string]any) (any, error) {
 			out[key] = controlMCPTruncate(text, limit)
 		}
 	}
+	if wf := controlMCPTaskWorkflow(task); wf != nil {
+		out["progress"] = map[string]any{"workflow": wf}
+	}
 	if next := c.taskNext(task); next != "" {
 		out["next"] = next
 	}
@@ -414,6 +446,9 @@ func controlMCPTaskResult(c *controlMCPCall, args map[string]any) (any, error) {
 	}
 	if text, ok := task["last_error"].(string); ok && strings.TrimSpace(text) != "" {
 		out["last_error"] = controlMCPTruncate(text, 400)
+	}
+	if wf := controlMCPTaskWorkflow(task); wf != nil {
+		out["progress"] = map[string]any{"workflow": wf}
 	}
 	if sessionID, _ := task["session_id"].(string); sessionID != "" {
 		if detail, err := c.dispatch(http.MethodGet, controlMCPSessionPath(sessionID), url.Values{"message_limit": {"0"}, "event_limit": {"0"}}, nil); err == nil {

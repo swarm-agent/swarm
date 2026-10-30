@@ -374,6 +374,27 @@ func projectTaskNext(t *pebblestore.ProjectTaskRecord, progress *projectTaskProg
 }
 
 // compactProjectTask is the default get_task view of a task.
+// ProjectTaskWorkflow is a task's progress (the task route's "progress") as
+// get_task shows it in progress.workflow: the deciding delivery's id, round
+// and state, and why a review blocked or sent it back with the findings
+// bounded (findings_truncated, more). nil when the task has no workflow.
+// Swarm Control's task tools read it here, so they show the same fields
+// under the same bounds as get_task.
+func ProjectTaskWorkflow(progress any) any {
+	raw, err := json.Marshal(progress)
+	if err != nil {
+		return nil
+	}
+	var p projectTaskProgressRead
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil
+	}
+	if wf := compactProjectTask(projectTaskRead{Progress: &p}, false).Progress.Workflow; wf != nil {
+		return wf
+	}
+	return nil
+}
+
 func compactProjectTask(read projectTaskRead, remote bool) ProjectTaskView {
 	t := &read.ProjectTaskRecord
 	t.EnsureTaskAttempts()
