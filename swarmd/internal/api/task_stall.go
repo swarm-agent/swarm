@@ -72,6 +72,13 @@ type taskStallGit struct {
 	Commits int
 }
 
+// taskStallGitEntry is a task's cached worktree read and the episode it was
+// read in.
+type taskStallGitEntry struct {
+	episode string
+	git     taskStallGit
+}
+
 // taskStallVerdict is the check's answer for one task.
 type taskStallVerdict struct {
 	// Episode names the task's progress as observed: a different episode is
@@ -324,7 +331,7 @@ func (s *Server) taskStallVerdict(ctx context.Context, account string, task pebb
 	if err != nil {
 		return taskStallVerdict{}, false
 	}
-	deliveries, eval := s.taskProgressRecords(account, task)
+	deliveries, eval := s.taskStallProgressRecords(account, task)
 	latest := latestDeliveries(deliveries)
 	progress := computeTaskProgress(task, deliveries, eval, nowMs)
 	markTaskProgressAttention(&progress, task)
@@ -527,6 +534,32 @@ func (s *Server) taskStallVerdict(ctx context.Context, account string, task pebb
 	return v, true
 }
 
+// taskStallProgressRecords is taskProgressRecords for the check, which reads
+// every task every minute: each workflow's newest delivery in full and, of
+// older ones, only ordering, states, times and job ends
+// (jobautomation.Store.JobProgressDeliveries), so a long delivery history is
+// not decoded whole per task per tick. Everything the check reads from
+// progress (state, summary, integration, idle) is the same as from the full
+// history; only the wording of older history entries can differ.
+func (s *Server) taskStallProgressRecords(account string, task pebblestore.ProjectTaskRecord) ([]jobautomation.Delivery, *jobautomation.JobEvaluation) {
+	var deliveries []jobautomation.Delivery
+	var eval *jobautomation.JobEvaluation
+	if store, err := s.jobAutomationStore(); err == nil && (taskStatusClass(task.Status) != progressWaiting || task.Status == pebblestore.ProjectTaskStatusLimitWaiting) {
+		jobID := taskProgressJobID(task)
+		if list, err := store.JobProgressDeliveries(account, jobID); err == nil {
+			deliveries = list
+		} else {
+			log.Printf("swarmd stall check: read deliveries of %s: %v", jobID, err)
+		}
+		if e, found, err := store.JobEvaluation(account, jobID); err == nil && found {
+			eval = &e
+		} else if err != nil {
+			log.Printf("swarmd stall check: read evaluation of %s: %v", jobID, err)
+		}
+	}
+	return deliveries, eval
+}
+
 // taskStallExhaustedReview is the newest finished delivery when it ended
 // blocked because a reopen step ran out of rounds.
 func taskStallExhaustedReview(latest []jobautomation.Delivery) (jobautomation.Delivery, bool) {
@@ -601,11 +634,13 @@ func (s *Server) taskSessionOnTool(sessionID string, lastSeq uint64) bool {
 // taskStallGitState reads the task's worktree with Git (head, dirty,
 // commits), at most once per episode and within the per-check budget.
 func (s *Server) taskStallGitState(ctx context.Context, task pebblestore.ProjectTaskRecord, episode string, budget *int) (taskStallGit, bool) {
-	key := task.ID + ":" + episode
+	// One entry per task, for its current episode: a new episode replaces
+	// the old one instead of adding to the map.
+	key := task.ID
 	s.taskStallGitMu.Lock()
-	if cached, ok := s.taskStallGitCache[key]; ok {
+	if cached, ok := s.taskStallGitCache[key]; ok && cached.episode == episode {
 		s.taskStallGitMu.Unlock()
-		return cached, true
+		return cached.git, true
 	}
 	s.taskStallGitMu.Unlock()
 	if budget != nil {
@@ -626,9 +661,9 @@ func (s *Server) taskStallGitState(ctx context.Context, task pebblestore.Project
 	}
 	s.taskStallGitMu.Lock()
 	if s.taskStallGitCache == nil || len(s.taskStallGitCache) > 10_000 {
-		s.taskStallGitCache = map[string]taskStallGit{}
+		s.taskStallGitCache = map[string]taskStallGitEntry{}
 	}
-	s.taskStallGitCache[key] = out
+	s.taskStallGitCache[key] = taskStallGitEntry{episode: episode, git: out}
 	s.taskStallGitMu.Unlock()
 	return out, true
 }

@@ -806,6 +806,105 @@ func (s *Store) JobDeliveries(account, jobID string) ([]Delivery, error) {
 	return out, nil
 }
 
+// deliveryHistoryHead is what a periodic progress reader needs from a
+// delivery that is not its workflow's newest: ordering, its follow-up, the
+// times and states its history entries are dated by, and its job end
+// (status, finish time, branch and commit count). Decoding only these keeps
+// the reader from materializing every definition, step outcome, item and
+// result body of a long delivery history.
+type deliveryHistoryHead struct {
+	ID             string `json:"id"`
+	Account        string `json:"account"`
+	AutomationID   string `json:"automation_id"`
+	AutomationName string `json:"automation_name"`
+	Followup       string `json:"followup,omitempty"`
+	State          string `json:"state"`
+	CreatedAt      int64  `json:"created_at"`
+	FinishedAt     int64  `json:"finished_at,omitempty"`
+	Steps          []struct {
+		ID         string `json:"id"`
+		Type       string `json:"type"`
+		State      string `json:"state"`
+		StartedAt  int64  `json:"started_at,omitempty"`
+		FinishedAt int64  `json:"finished_at,omitempty"`
+	} `json:"steps"`
+	Result struct {
+		Status     string `json:"status"`
+		FinishedAt int64  `json:"finished_at"`
+		Git        *struct {
+			Branch  string     `json:"branch"`
+			Commits []struct{} `json:"commits"`
+		} `json:"git,omitempty"`
+	} `json:"result"`
+}
+
+// JobProgressDeliveries is JobDeliveries for a periodic progress reader (the
+// stall check), in the same order (newest first): the newest delivery of each
+// workflow is read in full; every older one carries only ID, Account,
+// AutomationID, AutomationName, Followup, State, CreatedAt, FinishedAt, each
+// step's ID, Type, State, StartedAt and FinishedAt, and Result.Status,
+// Result.FinishedAt, Result.Git.Branch and the number of Result.Git.Commits
+// (each commit left empty). Task progress computed from it has the same
+// state, outcome, summary, integration, workflow and idle time as from the
+// full history; only the wording of older history entries can differ, so it
+// is not for client-facing task reads.
+func (s *Store) JobProgressDeliveries(account, jobID string) ([]Delivery, error) {
+	ids := []string{}
+	err := s.db.IteratePrefix(keyByJobPrefix+hexKey(account)+"/"+hexKey(jobID)+"/", 1000, func(_ string, value []byte) error {
+		var id string
+		if err := json.Unmarshal(value, &id); err != nil {
+			return err
+		}
+		ids = append(ids, id)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	heads := make([]Delivery, 0, len(ids))
+	for _, id := range ids {
+		var h deliveryHistoryHead
+		found, err := s.db.GetJSON(deliveryKey(account, id), &h)
+		if err != nil {
+			return nil, err
+		}
+		if !found || h.Account != account {
+			continue
+		}
+		d := Delivery{ID: h.ID, Account: h.Account, AutomationID: h.AutomationID, AutomationName: h.AutomationName, Followup: h.Followup, State: h.State, CreatedAt: h.CreatedAt, FinishedAt: h.FinishedAt}
+		if len(h.Steps) > 0 {
+			d.Steps = make([]StepRecord, len(h.Steps))
+			for i, step := range h.Steps {
+				d.Steps[i] = StepRecord{ID: step.ID, Type: step.Type, State: step.State, StartedAt: step.StartedAt, FinishedAt: step.FinishedAt}
+			}
+		}
+		d.Result.Status, d.Result.FinishedAt = h.Result.Status, h.Result.FinishedAt
+		if h.Result.Git != nil {
+			d.Result.Git = &ResultGit{Branch: h.Result.Git.Branch, Commits: make([]ResultCommit, len(h.Result.Git.Commits))}
+		}
+		heads = append(heads, d)
+	}
+	sortDeliveries(heads)
+	out := make([]Delivery, 0, len(heads))
+	newest := map[string]bool{}
+	for _, h := range heads {
+		if newest[h.AutomationID] {
+			out = append(out, h)
+			continue
+		}
+		d, err := s.GetDelivery(account, h.ID)
+		if errors.Is(err, ErrNotFound) {
+			continue // removed since the scan: the next one of its workflow is read in full
+		}
+		if err != nil {
+			return nil, err
+		}
+		newest[h.AutomationID] = true
+		out = append(out, d)
+	}
+	return out, nil
+}
+
 // DeliveryFilter selects deliveries for a listing.
 type DeliveryFilter struct {
 	// JobID is a job id (task/<project>/<task>, worker/<worker>/<run>, ...)

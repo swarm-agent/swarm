@@ -165,7 +165,7 @@ type Server struct {
 	// read in tests; the cache keeps one Git read per task episode.
 	taskStallGitFn    func(context.Context, pebblestore.ProjectTaskRecord) (taskStallGit, bool)
 	taskStallGitMu    sync.Mutex
-	taskStallGitCache map[string]taskStallGit
+	taskStallGitCache map[string]taskStallGitEntry
 	// taskStallSummarized is set once this process sent (or had nothing
 	// for) the one summary of old work the check leaves alone.
 	taskStallSummarized bool

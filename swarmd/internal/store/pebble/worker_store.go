@@ -1077,16 +1077,28 @@ func (ws *WorkerStore) GetWorker(account, workerID string) (WorkerRecord, bool, 
 	var w WorkerRecord
 	ok, err := ws.store.GetJSON(KeyWorker(account, workerID), &w)
 	if err != nil || !ok {
-		// Also check if lookup by automation ID resolves it
+		// Also check if lookup by automation ID resolves it: one hop to a
+		// worker record, never another automation lookup (an index entry
+		// naming itself or another missing id must not recurse).
 		var resolvedID string
 		autoOk, autoErr := ws.store.GetJSON(KeyWorkerByAutomation(account, workerID), &resolvedID)
-		if autoErr == nil && autoOk && resolvedID != "" {
-			return ws.GetWorker(account, resolvedID)
+		if autoErr == nil && autoOk && resolvedID != "" && resolvedID != workerID {
+			return ws.getWorkerRecord(account, resolvedID)
 		}
 		return WorkerRecord{}, false, err
 	}
 	if w.AccountScopeID != account {
 		return WorkerRecord{}, false, nil
+	}
+	return w, true, nil
+}
+
+// getWorkerRecord reads one worker record by its id only.
+func (ws *WorkerStore) getWorkerRecord(account, workerID string) (WorkerRecord, bool, error) {
+	var w WorkerRecord
+	ok, err := ws.store.GetJSON(KeyWorker(account, strings.TrimSpace(workerID)), &w)
+	if err != nil || !ok || w.AccountScopeID != account {
+		return WorkerRecord{}, false, err
 	}
 	return w, true, nil
 }

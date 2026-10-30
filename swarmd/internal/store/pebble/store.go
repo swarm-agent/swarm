@@ -162,8 +162,10 @@ func secureDirectory(path string) error {
 	return os.Chmod(path, 0o700)
 }
 
+// Close closes the database once; a later call returns nil. Its error
+// reports iterators or snapshots that were opened and never closed.
 func (s *Store) Close() error {
-	if s == nil || s.db == nil {
+	if s == nil || s.db == nil || s.closed.Load() {
 		return nil
 	}
 	if s.runnerExpiryCancel != nil {
