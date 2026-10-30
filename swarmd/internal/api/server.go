@@ -158,6 +158,9 @@ type Server struct {
 	outboxStatus            func() outbox.Status
 	jobAutomations          *jobautomation.Runner
 	jobAutomationCallFn     func(context.Context) (*controlMCPCall, error)
+	// fleetAgentsFinished keeps the agents-at-work read's finished-task
+	// summary for a few seconds (fleet_agents.go).
+	fleetAgentsFinished fleetAgentsFinishedCache
 	// Stall detection (task_stall.go): taskStallGitFn replaces the worktree
 	// read in tests; the cache keeps one Git read per task episode.
 	taskStallGitFn    func(context.Context, pebblestore.ProjectTaskRecord) (taskStallGit, bool)

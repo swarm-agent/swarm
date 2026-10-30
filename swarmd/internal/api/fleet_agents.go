@@ -58,7 +58,6 @@ const (
 	fleetAgentsTarget    = 80
 	fleetAgentsField     = 256
 	fleetAgentsProjects  = 200
-	fleetAgentsTasks     = 1000
 )
 
 // Workflow steps a task's run can stand at, in pipeline order.
@@ -616,10 +615,79 @@ func (s *Server) fleetAgentsTools(run *fleetAgentRun, now int64) {
 	run.Files = files
 }
 
+// fleetAgentsFinishedTTL is how long one machine's finished-task summary
+// (recent tasks, today's landed and failed) is served from memory. The read
+// is polled every few seconds by several clients; the summary is history,
+// so a few seconds' lag is fine, while the agents at work are read fresh.
+const fleetAgentsFinishedTTL = 5 * time.Second
+
+// fleetAgentsFinishedCacheMax bounds the summaries kept (one per account,
+// machine name and since).
+const fleetAgentsFinishedCacheMax = 64
+
+type fleetAgentsFinishedKey struct {
+	account, machine string
+	since            int64
+}
+
+type fleetAgentsFinishedEntry struct {
+	at             time.Time
+	recent         []fleetAgentFinished
+	landed, failed int
+}
+
+type fleetAgentsFinishedCache struct {
+	mu      sync.Mutex
+	entries map[fleetAgentsFinishedKey]fleetAgentsFinishedEntry
+	// now is the cache's clock; nil is time.Now (a test moves it).
+	now func() time.Time
+	// progressReads counts the task progress reads (deliveries,
+	// evaluation, run state) the store reads have made, for tests.
+	progressReads int
+}
+
 // localAgentsFinished is this Swarm's latest finished tasks (newest first)
-// and how many landed and failed since `since`. A workflow step's own task
-// is left out: its work belongs to the task it serves.
+// and how many landed and failed since `since`, kept for
+// fleetAgentsFinishedTTL. Callers that poll share one read; the lock makes
+// concurrent cold reads wait for that one instead of each scanning.
 func (s *Server) localAgentsFinished(p identity.Principal, machine string, now, since int64) ([]fleetAgentFinished, int, int) {
+	cache := &s.fleetAgentsFinished
+	key := fleetAgentsFinishedKey{account: p.AccountScopeID, machine: machine, since: since}
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	at := time.Now()
+	if cache.now != nil {
+		at = cache.now()
+	}
+	if entry, ok := cache.entries[key]; ok && at.Sub(entry.at) >= 0 && at.Sub(entry.at) < fleetAgentsFinishedTTL {
+		return append([]fleetAgentFinished{}, entry.recent...), entry.landed, entry.failed
+	}
+	recent, landed, failed := s.readAgentsFinished(p, machine, now, since, &cache.progressReads)
+	if cache.entries == nil {
+		cache.entries = map[fleetAgentsFinishedKey]fleetAgentsFinishedEntry{}
+	}
+	for k, entry := range cache.entries {
+		if at.Sub(entry.at) >= fleetAgentsFinishedTTL || at.Before(entry.at) {
+			delete(cache.entries, k)
+		}
+	}
+	if len(cache.entries) >= fleetAgentsFinishedCacheMax {
+		cache.entries = map[fleetAgentsFinishedKey]fleetAgentsFinishedEntry{}
+	}
+	cache.entries[key] = fleetAgentsFinishedEntry{at: at, recent: append([]fleetAgentFinished{}, recent...), landed: landed, failed: failed}
+	return recent, landed, failed
+}
+
+// readAgentsFinished reads the finished-task summary from the store. A
+// workflow step's own task is left out: its work belongs to the task it
+// serves.
+//
+// The task records are read as stored (ListProjectTaskRecordsForList), not
+// hydrated: hydration reads each task's session, run state, terminal event
+// and plan document, which on a machine with thousands of finished worker
+// runs is most of the store. A task's progress needs none of it; it is
+// computed only for the tasks shown and the tasks that ended today.
+func (s *Server) readAgentsFinished(p identity.Principal, machine string, now, since int64, progressReads *int) ([]fleetAgentFinished, int, int) {
 	recent := []fleetAgentFinished{}
 	store := s.sessions.Store()
 	if store == nil {
@@ -631,7 +699,7 @@ func (s *Server) localAgentsFinished(p identity.Principal, machine string, now, 
 	}
 	finished := []pebblestore.ProjectTaskRecord{}
 	for _, project := range projects {
-		tasks, err := store.ListProjectTasks(p.AccountScopeID, project.ID, fleetAgentsTasks)
+		tasks, _, err := store.ListProjectTaskRecordsForList(p.AccountScopeID, project.ID)
 		if err != nil {
 			continue
 		}
@@ -647,19 +715,20 @@ func (s *Server) localAgentsFinished(p identity.Principal, machine string, now, 
 	landed, failed := 0, 0
 	for i, task := range finished {
 		today := task.UpdatedAt >= since
-		if !today && i >= fleetAgentsRecent {
+		shown := i < fleetAgentsRecent
+		if !today && !shown {
 			break
 		}
-		progress := s.taskProgressFor(p.AccountScopeID, task, now)
-		if today {
-			if progress.TaskState == pebblestore.ProjectTaskStateLanded {
-				landed++
-			}
-			if taskStatusClass(task.Status) == progressFailed {
-				failed++
-			}
+		if today && taskStatusClass(task.Status) == progressFailed {
+			failed++
 		}
-		if len(recent) < fleetAgentsRecent {
+		task.EnsureTaskAttempts()
+		progress := s.taskProgressFor(p.AccountScopeID, task, now)
+		*progressReads++
+		if today && progress.TaskState == pebblestore.ProjectTaskStateLanded {
+			landed++
+		}
+		if shown {
 			recent = append(recent, fleetAgentFinished{Machine: machine, ProjectID: task.ProjectID, TaskID: task.ID, SessionID: task.SessionID, Title: task.Title,
 				State: progress.TaskState, Reason: oneLineProgress(progress.TaskStateReason, maxProgressSummary), At: task.UpdatedAt})
 		}
