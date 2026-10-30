@@ -167,6 +167,48 @@ func TestManageWorkersLevelsAreTheSwarmToolsLevels(t *testing.T) {
 	}
 }
 
+// Purpose: each manage_workspace action Swarm Control serves needs the level
+// of the swarm_* tool with the same effect (ToolScope): the reads are
+// swarm_list_workspaces' read, registering a folder is swarm_add_workspace's
+// write. The changes with no swarm_* tool are write, and unlinking a
+// workspace from the catalog (delete) is manage. Threat: a read key changing
+// the catalog, or a write key unlinking workspaces. Boundary: tool.Catalog's
+// manage_workspace declarations against ToolScope.
+func TestManageWorkspaceLevelsAreTheSwarmToolsLevels(t *testing.T) {
+	swarmTool := map[string]string{
+		"inspect": "swarm_list_workspaces", "list": "swarm_list_workspaces", "inspect_map": "swarm_list_workspaces", "get_map": "swarm_list_workspaces", "list_source_media_directories": "swarm_list_workspaces",
+		"create": "swarm_add_workspace",
+	}
+	noSwarmTool := map[string]tool.CatalogLevel{"update": tool.CatalogLevelWrite, "update_map": tool.CatalogLevelWrite, "set_default": tool.CatalogLevelWrite, "add_source_media_directory": tool.CatalogLevelWrite, "remove_source_media_directory": tool.CatalogLevelWrite, "delete": tool.CatalogLevelManage}
+	workspaces, ok := tool.CatalogToolNamed("manage_workspace")
+	if !ok {
+		t.Fatal("manage_workspace is not a catalog tool")
+	}
+	served := 0
+	for _, action := range workspaces.Actions {
+		if !action.ControlCallable() {
+			continue
+		}
+		served++
+		if level, ok := noSwarmTool[action.Action]; ok {
+			if action.Level != level {
+				t.Fatalf("manage_workspace %s needs %s, not %s", action.Action, level, action.Level)
+			}
+			continue
+		}
+		name, ok := swarmTool[action.Action]
+		if !ok {
+			t.Fatalf("manage_workspace %s has no level to check", action.Action)
+		}
+		if action.Level.Scope() != ToolScope(name) {
+			t.Fatalf("manage_workspace %s needs %s; %s needs %s", action.Action, action.Level.Scope(), name, ToolScope(name))
+		}
+	}
+	if served != len(swarmTool)+len(noSwarmTool) {
+		t.Fatalf("manage_workspace serves %d actions; %d are checked", served, len(swarmTool)+len(noSwarmTool))
+	}
+}
+
 // Purpose: each manage_sessions action Swarm Control serves needs the level
 // of the swarm_* tool with the same effect (ToolScope): reads are read,
 // start, message, stop and set_model are write, and answering a pending

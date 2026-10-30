@@ -75,6 +75,7 @@ func TestCatalogEnvelopeContractEveryAction(t *testing.T) {
 		"manage_workflows": {"list": true, "get": true, "deliveries": true, "history": true, "export": true},
 		"manage_fleet":     {"list_machines": true, "status": true, "agents_at_work": true, "activity": true, "list_runs": true, "list_linked_tasks": true},
 		"manage_sessions":  {"list": true, "get": true, "search": true, "list_by_state": true},
+		"manage_workspace": {"inspect": true, "list": true, "inspect_map": true, "get_map": true},
 	}
 	for _, toolName := range catalogParityToolNames(all) {
 		for _, action := range catalogParityActionNames(all[toolName]) {
@@ -122,6 +123,18 @@ func TestCatalogEnvelopeContractEveryAction(t *testing.T) {
 	// Every manage_sessions action Swarm Control serves answered an envelope,
 	// here and on the linked machine, but those whose service the harness
 	// does not run (execution capacity, a provider's model catalog).
+	// Every manage_workspace action Swarm Control serves answered one too.
+	workspaces, _ := tool.CatalogToolNamed("manage_workspace")
+	for _, action := range workspaces.Actions {
+		if !action.ControlCallable() {
+			continue
+		}
+		for _, name := range []string{"manage_workspace " + action.Action, "manage_workspace " + action.Action + "@box"} {
+			if !checked[name] {
+				t.Fatalf("%s answered no envelope to check", name)
+			}
+		}
+	}
 	sessions, _ := tool.CatalogToolNamed("manage_sessions")
 	for _, action := range sessions.Actions {
 		if !action.ControlCallable() || action.Action == "inspect" || action.Action == tool.ManageSessionsSetModelAction {

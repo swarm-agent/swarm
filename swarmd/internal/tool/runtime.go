@@ -227,7 +227,10 @@ type Runtime struct {
 	// workflowLifecycle serves manage_workflows (runtime_manage_workflows.go).
 	workflowLifecycle    WorkflowLifecycleService
 	customAgentLifecycle CustomAgentLifecycleService
-	background           *backgroundCommands
+	// workspaceCatalog serves manage_workspace for Swarm Control
+	// (runtime_manage_workspace_catalog.go).
+	workspaceCatalog WorkspaceCatalogService
+	background       *backgroundCommands
 }
 
 type manageSessionController interface {

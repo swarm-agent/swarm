@@ -13,6 +13,7 @@ import (
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/jobautomation"
+	"swarm/packages/swarmd/internal/run"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 	"swarm/packages/swarmd/internal/workspace"
@@ -106,6 +107,14 @@ type catalogParityHarness struct {
 	// sessionPermissions are the pending requests seedSessions made, by
 	// session, named in cases as perm:SESSION.
 	sessionPermissions map[string]string
+	// remoteRuntime is the linked machine's catalog runtime (seedSessions).
+	remoteRuntime *tool.Runtime
+	// workspaceRun is the home's run service: the Orchestrator's
+	// manage_workspace (seedWorkspaces).
+	workspaceRun *run.Service
+	// catalogTokens are values cases name by token (ws:..., maprev:...),
+	// resolved as they are (numbers stay numbers).
+	catalogTokens map[string]any
 }
 
 func newCatalogParityHarness(t *testing.T) *catalogParityHarness {
@@ -166,6 +175,7 @@ func newCatalogParityHarness(t *testing.T) *catalogParityHarness {
 	parity.seedSetup(t)
 	parity.seedStage6(t)
 	parity.seedSessions(t)
+	parity.seedWorkspaces(t)
 	return parity
 }
 
@@ -201,6 +211,9 @@ func (h *catalogParityHarness) orchestratorTool(t *testing.T, name string, args 
 	ctx, cancel := context.WithTimeout(tool.WithCatalogAgent(base, agent), 20*time.Second)
 	defer cancel()
 	raw, _ := json.Marshal(args)
+	if name == "manage_workspace" {
+		return h.orchestratorWorkspace(ctx, session, args)
+	}
 	return h.runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, tool.WorkspaceScope{SessionID: session, Principal: h.p}, tool.Call{Name: name, Arguments: string(raw)})
 }
 
@@ -285,7 +298,7 @@ func catalogParityCases() map[string]map[string][]catalogParityCase {
 		projects[action] = cases
 	}
 	return map[string]map[string][]catalogParityCase{"manage_projects": projects, "manage_workflows": manageWorkflowsParityCases(), "manage_jobs": manageJobsParityCases(), "manage_workers": manageWorkersParityCases(), "manage_setup": manageSetupParityCases(),
-		"manage_fleet": manageFleetParityCases(), "manage_media": manageMediaParityCases(), "manage_custom_agents": manageCustomAgentsParityCases(), "manage_themes": manageThemeParityCases(), "manage_designs": manageDesignsParityCases(), "manage_sessions": manageSessionsParityCases()}
+		"manage_fleet": manageFleetParityCases(), "manage_media": manageMediaParityCases(), "manage_custom_agents": manageCustomAgentsParityCases(), "manage_themes": manageThemeParityCases(), "manage_designs": manageDesignsParityCases(), "manage_sessions": manageSessionsParityCases(), "manage_workspace": manageWorkspaceParityCases()}
 }
 
 // catalogParityToolNames are the tools with parity cases, sorted.

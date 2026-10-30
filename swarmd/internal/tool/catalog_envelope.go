@@ -699,6 +699,8 @@ func (r *Runtime) ExecuteControlCatalog(ctx context.Context, call ControlCatalog
 		return r.executeManageDesign(identity.ContextWithPrincipal(ctx, p), scope, args)
 	case manageSessionsToolName:
 		return r.executeManageSessions(identity.ContextWithPrincipal(ctx, p), scope, args)
+	case manageWorkspaceToolName:
+		return r.executeManageWorkspaceControl(identity.ContextWithPrincipal(ctx, p), scope, args)
 	}
 	return "", fmt.Errorf("%s has no handler", catalog.Name)
 }

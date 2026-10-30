@@ -26,6 +26,7 @@ func (h *catalogParityHarness) seedSessions(t *testing.T) {
 	h.sessionPermissions = map[string]string{}
 	remoteRuntime := tool.NewRuntime(1)
 	t.Cleanup(func() { _ = remoteRuntime.Close() })
+	h.remoteRuntime = remoteRuntime
 	remoteRuntime.SetManageSessionService(h.remote.s.sessions)
 	remoteRuntime.SetProjectTaskLifecycleService(h.remote.s)
 	h.remote.s.SetToolCatalogRuntime(remoteRuntime)

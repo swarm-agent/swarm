@@ -2843,6 +2843,11 @@ func (s *Service) permissionArgumentsForCall(sessionID, sessionMode string, call
 	case "manage_worktree":
 		return arguments, nil
 	case "manage_workspace":
+		if manageWorkspaceMachine(arguments) != "" {
+			// A linked machine's catalog: the person approves the call as
+			// written; that machine's own handler validates it.
+			return arguments, nil
+		}
 		args, parseErr := parseManageWorkspaceArguments(arguments)
 		if parseErr != nil {
 			return "", parseErr

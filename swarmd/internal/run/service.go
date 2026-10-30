@@ -768,7 +768,7 @@ func NewService(sessions *sessionruntime.Service, modelSvc *model.Service, provi
 	if agents != nil {
 		agents.SetReservedToolNames(IsReservedToolName)
 	}
-	return &Service{
+	s := &Service{
 		sessions:    sessions,
 		model:       modelSvc,
 		providers:   providers,
@@ -779,6 +779,11 @@ func NewService(sessions *sessionruntime.Service, modelSvc *model.Service, provi
 		events:      events,
 		activeRuns:  make(map[string]*activeSessionRun),
 	}
+	if tools != nil {
+		// manage_workspace's catalog handler for callers with no conversation.
+		tools.SetWorkspaceCatalogService(s)
+	}
+	return s
 }
 
 func (s *Service) ExecuteToolForSessionScope(ctx context.Context, workspacePath string, call tool.Call) (string, error) {

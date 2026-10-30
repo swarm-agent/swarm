@@ -27,7 +27,7 @@ const CatalogLinkedPath = "/v3/tool-catalog"
 
 // catalogLinkedTools are the catalog tools a home runs here through
 // CatalogLinkedPath. Other catalog tools keep their own linked routes.
-var catalogLinkedTools = map[string]bool{"manage_sessions": true}
+var catalogLinkedTools = map[string]bool{"manage_sessions": true, "manage_workspace": true}
 
 // ManageSessionControl runs manage_sessions resolve_permission or set_model
 // for p. The internal request carries only the session scopes (for a Swarm

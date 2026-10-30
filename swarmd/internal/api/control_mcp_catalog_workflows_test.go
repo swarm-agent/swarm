@@ -101,6 +101,9 @@ func (h *catalogParityHarness) resolveCase(t *testing.T, c catalogParityCase) ca
 	walk = func(value any) any {
 		switch v := value.(type) {
 		case string:
+			if value, ok := h.catalogTokens[v]; ok {
+				return value
+			}
 			return resolve(v)
 		case map[string]any:
 			out := make(map[string]any, len(v))

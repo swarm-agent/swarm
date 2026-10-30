@@ -266,6 +266,15 @@ func (s *Service) inspectWorkspaceMap(sessionID string, principal identity.Princ
 	if err := s.validateWorkspaceMapSessionOwner(sessionID, principal); err != nil {
 		return "", err
 	}
+	return s.readWorkspaceMap(principal, args)
+}
+
+// readWorkspaceMap is inspect_map/get_map after the caller is authorized
+// (a conversation's session, or a Swarm Control key's level).
+func (s *Service) readWorkspaceMap(principal identity.Principal, args manageWorkspaceArguments) (string, error) {
+	if s == nil || s.workspaceMap == nil {
+		return "", errors.New("manage_workspace workspace map is not configured")
+	}
 	if args.ExpectedRevision != 0 || args.ContentSet || args.Intent != "" || args.PermissionScope != "" || args.WorkspaceID != "" || args.WorkspaceGeneration != 0 || len(args.WorkspaceIDs) != 0 || args.PrimaryWorkspaceID != "" || args.WorktreeName != "" || args.WorktreePath != "" || args.ExpectedWorktreePath != "" || args.WorkspacePathSet || args.WorkspaceNameSet || args.ThemeIDSet {
 		return "", errors.New("manage_workspace inspect_map/get_map do not accept mutation or workspace selector fields")
 	}
@@ -282,6 +291,15 @@ func (s *Service) updateWorkspaceMap(sessionID string, principal identity.Princi
 	}
 	if err := s.validateWorkspaceMapSessionOwner(sessionID, principal); err != nil {
 		return "", err
+	}
+	return s.writeWorkspaceMap(sessionID, principal, args)
+}
+
+// writeWorkspaceMap is update_map after the caller is authorized; sessionID
+// is the conversation's, or empty for a Swarm Control caller.
+func (s *Service) writeWorkspaceMap(sessionID string, principal identity.Principal, args manageWorkspaceArguments) (string, error) {
+	if s == nil || s.workspaceMap == nil {
+		return "", errors.New("manage_workspace workspace map is not configured")
 	}
 	if args.PermissionScope != "workspace_map_update" {
 		return "", errors.New("manage_workspace update_map approved permission_scope is invalid")

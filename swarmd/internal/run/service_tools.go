@@ -1796,7 +1796,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 		permissionMode := sessionMode
 		permissionArguments := strings.TrimSpace(toolCalls[i].Arguments)
 		var err error
-		if canonicalToolName(toolCalls[i].Name) == "manage_workspace" && manageWorkspaceMutationAction(toolCalls[i].Arguments) == "map_update" {
+		if canonicalToolName(toolCalls[i].Name) == "manage_workspace" && manageWorkspaceMutationAction(toolCalls[i].Arguments) == "map_update" && manageWorkspaceMachine(toolCalls[i].Arguments) == "" {
 			payload, payloadErr := s.buildManageWorkspacePermissionPayload(sessionID, toolCalls[i].Arguments)
 			if payloadErr != nil {
 				err = payloadErr
@@ -2295,62 +2295,7 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 				principal = identity.Principal{Type: identity.PrincipalTypeUser, UserID: session.UserID, AccountScopeID: session.AccountScopeID, SessionID: session.ID, AccountScopeSource: identity.AccountScopeSourceSession}
 			}
 		}
-		arguments := strings.TrimSpace(call.Arguments)
-		if manageWorkspaceMutationAction(call.Arguments) != "" {
-			if strings.TrimSpace(approvedArguments) == "" {
-				return true, result, errors.New("manage_workspace catalog mutation requires approved canonical arguments")
-			}
-			var permissionPayload map[string]any
-			// Permission resolution returns the stored structured permission payload;
-			// unwrap its backend-owned approved_arguments before execution.
-			if json.Unmarshal([]byte(strings.TrimSpace(approvedArguments)), &permissionPayload) != nil {
-				return true, result, errors.New("manage_workspace approved permission payload is invalid")
-			}
-			approved, ok := permissionPayload["approved_arguments"].(map[string]any)
-			if !ok {
-				// Older permission resolvers may already return the canonical nested
-				// arguments directly; accept only when the backend scope binding exists.
-				approved = permissionPayload
-			}
-			approvedAction := manageWorkspaceMutationAction(manageWorkspaceArgumentsJSON(approved))
-			requestedAction := manageWorkspaceMutationAction(call.Arguments)
-			if len(approved) == 0 || approvedAction != requestedAction {
-				return true, result, errors.New("manage_workspace approved arguments do not match the requested action")
-			}
-			expectedScope := "workspace_" + manageWorkspaceMutationAction(call.Arguments)
-			if requestedAction == "map_update" {
-				expectedScope = "workspace_map_update"
-			}
-			if approvedScope := strings.TrimSpace(mapString(approved, "permission_scope")); approvedScope != expectedScope {
-				return true, result, errors.New("manage_workspace approved permission scope is invalid")
-			}
-			if strings.TrimSpace(mapString(approved, "intent")) == "" {
-				return true, result, errors.New("manage_workspace approved intent is missing")
-			}
-			if requestedAction == "map_update" {
-				requestedArgs, parseErr := parseManageWorkspaceArguments(call.Arguments)
-				if parseErr != nil {
-					return true, result, parseErr
-				}
-				approvedContent, normalizeErr := pebblestore.NormalizeWorkspaceMapContent(mapString(approved, "content"))
-				if normalizeErr != nil {
-					return true, result, normalizeErr
-				}
-				requestedContent, normalizeErr := pebblestore.NormalizeWorkspaceMapContent(requestedArgs.Content)
-				if normalizeErr != nil {
-					return true, result, normalizeErr
-				}
-				if manageWorkspaceInt64(approved["expected_revision"]) != requestedArgs.ExpectedRevision || strings.TrimSpace(mapString(approved, "intent")) != requestedArgs.Intent || approvedContent != requestedContent {
-					return true, result, errors.New("manage_workspace approved map arguments do not match the requested revision, intent, and content")
-				}
-			}
-			rawApproved, marshalErr := json.Marshal(approved)
-			if marshalErr != nil {
-				return true, result, marshalErr
-			}
-			arguments = string(rawApproved)
-		}
-		output, err := s.executeManageWorkspaceTool(sessionID, arguments, principal, applySessionMutation)
+		output, err := s.ExecuteManageWorkspace(ctx, sessionID, principal, call, approvedArguments, applySessionMutation)
 		result.Output = output
 		return true, result, err
 	case tool.SwarmDesignToolName:

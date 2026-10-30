@@ -12,7 +12,7 @@ func OrchestratorDefinitions(definitions []Definition) []Definition {
 		case "bash":
 			definition = orchestratorBashDefinition(definition)
 		case "manage_workspace":
-			definition = orchestratorManageWorkspaceDefinition(definition)
+			definition = catalogOrchestratorDefinition(manageWorkspaceToolName, definition.Name)
 		case "manage-sessions", "manage_sessions":
 			definition = catalogOrchestratorDefinition(manageSessionsToolName, definition.Name)
 		}
@@ -20,11 +20,6 @@ func OrchestratorDefinitions(definitions []Definition) []Definition {
 	}
 	return out
 }
-
-// orchestratorWorkspaceActions are the catalog actions of manage_workspace.
-// Worktree and session-retargeting actions are refused in project chats and
-// are not shown.
-var orchestratorWorkspaceActions = []string{"inspect", "list", "inspect_map", "get_map", "update_map", "create", "update", "delete", "set_default", "add_source_media_directory", "list_source_media_directories", "remove_source_media_directory"}
 
 func copyDefinitionProperties(definition Definition, keep func(string) bool) (map[string]any, map[string]any) {
 	parameters := make(map[string]any, len(definition.Parameters))
@@ -70,20 +65,6 @@ func orchestratorBashDefinition(definition Definition) Definition {
 		properties[key] = shown[key]
 	}
 	definition.Description = "Run a shell command in the workspace. Explain its effects and flag what needs the person's attention."
-	definition.Parameters = parameters
-	return definition
-}
-
-func orchestratorManageWorkspaceDefinition(definition Definition) Definition {
-	kept := map[string]bool{"action": true, "workspace_id": true, "workspace_generation": true, "workspace_path": true, "workspace_name": true, "intent": true, "expected_revision": true, "content": true, "directory_path": true}
-	parameters, properties := copyDefinitionProperties(definition, func(key string) bool { return kept[key] })
-	properties["action"] = map[string]any{"type": "string", "enum": append([]string(nil), orchestratorWorkspaceActions...)}
-	for _, key := range []string{"workspace_id", "directory_path"} {
-		if _, ok := properties[key]; ok {
-			properties[key] = map[string]any{"type": "string"}
-		}
-	}
-	definition.Description = "Workspace catalog and Workspace Map. create registers an existing folder; update/delete need workspace_id, workspace_generation and intent; delete keeps files."
 	definition.Parameters = parameters
 	return definition
 }

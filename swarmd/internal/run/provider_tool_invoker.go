@@ -611,6 +611,11 @@ func providerManagedToolRequiresTurnRestart(call tool.Call, result tool.Result) 
 	if mapBool(payload, "restart_turn") {
 		return true
 	}
+	// A catalog tool (manage_workspace) answers in the envelope: the
+	// action's own restart_turn is in data.
+	if data, ok := payload["data"].(map[string]any); ok && mapString(payload, "tool") != "" && mapBool(data, "restart_turn") {
+		return true
+	}
 	if strings.EqualFold(strings.TrimSpace(call.Name), "exit_plan_mode") && mapBool(payload, "mode_changed") {
 		return true
 	}
