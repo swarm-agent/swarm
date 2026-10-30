@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/jobautomation"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 	"swarm/packages/swarmd/internal/workspace"
@@ -88,6 +89,10 @@ func TestControlMCPSwarmToolNamesFrozen(t *testing.T) {
 // runtime.
 type catalogParityHarness struct {
 	*remoteWaitHarness
+	// homeWorkflows and remoteWorkflows are each machine's workflow store;
+	// workflowFolder is the home's workflow project folder (seedWorkflows).
+	homeWorkflows, remoteWorkflows *jobautomation.Store
+	workflowFolder                 string
 }
 
 func newCatalogParityHarness(t *testing.T) *catalogParityHarness {
@@ -141,11 +146,20 @@ func newCatalogParityHarness(t *testing.T) *catalogParityHarness {
 		t.Fatal(err)
 	}
 	h.home.s.SetToolCatalogRuntime(h.runtime)
-	return &catalogParityHarness{h}
+	parity := &catalogParityHarness{remoteWaitHarness: h}
+	parity.seedWorkflows(t)
+	return parity
 }
 
-// orchestrator runs the call as the home's Orchestrator, in its running turn.
+// orchestrator runs the manage_projects call as the home's Orchestrator, in
+// its running turn.
 func (h *catalogParityHarness) orchestrator(t *testing.T, args map[string]any) (string, error) {
+	t.Helper()
+	return h.orchestratorTool(t, "manage_projects", args)
+}
+
+// orchestratorTool runs a catalog tool's call as the home's Orchestrator.
+func (h *catalogParityHarness) orchestratorTool(t *testing.T, name string, args map[string]any) (string, error) {
 	t.Helper()
 	session := "home-orch"
 	if machine, _ := args["machine"].(string); args["action"] == "wait_tasks" && machine == "" {
@@ -154,7 +168,7 @@ func (h *catalogParityHarness) orchestrator(t *testing.T, args map[string]any) (
 	ctx, cancel := context.WithTimeout(tool.WithVideoRunContext(context.Background(), tool.VideoRunContext{SessionID: session, RunID: "run-1"}), 20*time.Second)
 	defer cancel()
 	raw, _ := json.Marshal(args)
-	return h.runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, tool.WorkspaceScope{SessionID: session, Principal: h.p}, tool.Call{Name: "manage_projects", Arguments: string(raw)})
+	return h.runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, tool.WorkspaceScope{SessionID: session, Principal: h.p}, tool.Call{Name: name, Arguments: string(raw)})
 }
 
 // controlRequest is a Swarm Control request by the home's owner with a key
@@ -168,11 +182,17 @@ func (h *catalogParityHarness) controlRequest(scopes []string, agentName string)
 // the error text the MCP client is shown.
 func (h *catalogParityHarness) control(t *testing.T, scopes []string, args map[string]any) (string, string) {
 	t.Helper()
+	return h.controlTool(t, scopes, "manage_projects", args)
+}
+
+// controlTool runs a catalog tool's call through Swarm Control's tools/call.
+func (h *catalogParityHarness) controlTool(t *testing.T, scopes []string, name string, args map[string]any) (string, string) {
+	t.Helper()
 	req := h.controlRequest(scopes, "")
 	ctx, cancel := context.WithTimeout(req.Context(), 20*time.Second)
 	defer cancel()
 	c := &controlMCPCall{request: req.WithContext(ctx), server: h.home.s}
-	params, _ := json.Marshal(map[string]any{"name": "manage_projects", "arguments": args})
+	params, _ := json.Marshal(map[string]any{"name": name, "arguments": args})
 	result, rpcErr := c.callTool(params)
 	if rpcErr != nil {
 		t.Fatalf("tools/call: %+v", rpcErr)
@@ -186,8 +206,8 @@ func (h *catalogParityHarness) control(t *testing.T, scopes []string, args map[s
 }
 
 // catalogParityFullKey is a key at every level with the API scopes behind
-// manage_projects.
-var catalogParityFullKey = []string{"swarm:read", "swarm:write", "swarm:approve", "swarm:manage", "sessions:read", "sessions:write", "projects:read", "projects:write"}
+// manage_projects and manage_workflows.
+var catalogParityFullKey = []string{"swarm:read", "swarm:write", "swarm:approve", "swarm:manage", "sessions:read", "sessions:write", "projects:read", "projects:write", "automations:read", "automations:write"}
 
 // catalogParityCompare is how a parity case compares the two answers.
 type catalogParityCompare string
@@ -224,9 +244,33 @@ func parityArgs(args ...any) map[string]any {
 	return out
 }
 
-// catalogParityCases holds one case for every catalog action (see
+// catalogParityCases holds, per catalog tool, one case for every action (see
 // TestCatalogParityCoversEveryAction).
-func catalogParityCases() map[string][]catalogParityCase {
+func catalogParityCases() map[string]map[string][]catalogParityCase {
+	return map[string]map[string][]catalogParityCase{"manage_projects": manageProjectsParityCases(), "manage_workflows": manageWorkflowsParityCases()}
+}
+
+// catalogParityToolNames are the tools with parity cases, sorted.
+func catalogParityToolNames(cases map[string]map[string][]catalogParityCase) []string {
+	names := make([]string, 0, len(cases))
+	for name := range cases {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// catalogParityActionNames are a tool's actions with parity cases, sorted.
+func catalogParityActionNames(cases map[string][]catalogParityCase) []string {
+	names := make([]string, 0, len(cases))
+	for name := range cases {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func manageProjectsParityCases() map[string][]catalogParityCase {
 	same := func(compare catalogParityCompare, args map[string]any) []catalogParityCase {
 		return []catalogParityCase{{orchestrator: args, control: args, compare: compare}}
 	}
@@ -298,26 +342,43 @@ func catalogParityCases() map[string][]catalogParityCase {
 // catalog entry served by one surface and drifting from the other. Boundary:
 // tool.Catalog against catalogParityCases.
 func TestCatalogParityCoversEveryAction(t *testing.T) {
-	cases := catalogParityCases()
+	all := catalogParityCases()
 	for _, catalog := range tool.Catalog() {
+		cases, ok := all[catalog.Name]
+		if !ok {
+			t.Fatalf("catalog tool %s has no parity cases: add them to catalogParityCases", catalog.Name)
+		}
 		for _, action := range catalog.Actions {
 			list, ok := cases[action.Action]
 			if !ok || len(list) == 0 {
 				t.Fatalf("%s %s has no parity case: add one to catalogParityCases", catalog.Name, action.Action)
 			}
+			linked := false
 			for _, c := range list {
 				if (c.compare == parityNotServed) == action.ControlCallable() {
-					t.Fatalf("%s: parity case %s for an action Swarm Control serves=%v", action.Action, c.compare, action.ControlCallable())
+					t.Fatalf("%s %s: parity case %s for an action Swarm Control serves=%v", catalog.Name, action.Action, c.compare, action.ControlCallable())
 				}
 				if c.orchestrator["action"] != action.Action || c.control["action"] != action.Action {
-					t.Fatalf("%s: parity case calls %v / %v", action.Action, c.orchestrator["action"], c.control["action"])
+					t.Fatalf("%s %s: parity case calls %v / %v", catalog.Name, action.Action, c.orchestrator["action"], c.control["action"])
 				}
+				if machine, _ := c.orchestrator["machine"].(string); machine != "" {
+					linked = true
+				}
+			}
+			// manage_workflows: every action that reaches a linked machine
+			// is held to parity there too.
+			if catalog.Name == "manage_workflows" && action.Reach == tool.CatalogReachAny && !linked {
+				t.Fatalf("%s %s reaches linked machines but has no linked parity case", catalog.Name, action.Action)
 			}
 			delete(cases, action.Action)
 		}
+		for action := range cases {
+			t.Fatalf("parity case for %s %q, which the catalog does not declare", catalog.Name, action)
+		}
+		delete(all, catalog.Name)
 	}
-	for action := range cases {
-		t.Fatalf("parity case for %q, which the catalog does not declare", action)
+	for name := range all {
+		t.Fatalf("parity cases for %q, which is not a catalog tool", name)
 	}
 }
 
@@ -396,21 +457,35 @@ func parityKeys(value any) string {
 // in-process daemons linked like production. No provider runs.
 func TestCatalogParityOrchestratorAndControl(t *testing.T) {
 	h := newCatalogParityHarness(t)
-	cases := catalogParityCases()
-	actions := make([]string, 0, len(cases))
-	for action := range cases {
-		actions = append(actions, action)
-	}
-	sort.Strings(actions)
+	all := catalogParityCases()
 	served := 0
-	for _, action := range actions {
-		for i, c := range cases[action] {
+	for _, toolName := range catalogParityToolNames(all) {
+		for _, action := range catalogParityActionNames(all[toolName]) {
+			served += h.runParityCases(t, toolName, action, all[toolName][action])
+		}
+	}
+	if served == 0 {
+		t.Fatal("no parity case ran")
+	}
+}
+
+// runParityCases runs one action's parity cases and returns how many ran
+// through both surfaces.
+func (h *catalogParityHarness) runParityCases(t *testing.T, toolName, action string, cases []catalogParityCase) int {
+	t.Helper()
+	served := 0
+	{
+		for i, c := range cases {
 			name := action
+			if toolName != "manage_projects" {
+				name = toolName + " " + action
+			}
 			if machine, _ := c.orchestrator["machine"].(string); machine != "" {
 				name += "@" + machine
 			}
-			orchOut, orchErr := h.orchestrator(t, c.orchestrator)
-			controlOut, controlErr := h.control(t, catalogParityFullKey, c.control)
+			c = h.resolveCase(t, c)
+			orchOut, orchErr := h.orchestratorTool(t, toolName, c.orchestrator)
+			controlOut, controlErr := h.controlTool(t, catalogParityFullKey, toolName, c.control)
 			if c.compare == parityNotServed {
 				if controlErr == "" || !strings.Contains(controlErr, "for Swarm Control") {
 					t.Fatalf("%s: Swarm Control served an unlisted action: %s %s", name, controlOut, controlErr)
@@ -480,9 +555,7 @@ func TestCatalogParityOrchestratorAndControl(t *testing.T) {
 			}
 		}
 	}
-	if served == 0 {
-		t.Fatal("no parity case ran")
-	}
+	return served
 }
 
 // Purpose: Swarm Control lists manage_projects in its default listing,

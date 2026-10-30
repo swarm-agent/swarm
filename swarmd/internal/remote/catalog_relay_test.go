@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"swarm/packages/swarmd/internal/tool"
 )
 
 // Purpose: the relay holds a client to its own levels on catalog tools. A
@@ -44,5 +46,47 @@ func TestRelayForwardsClientLevelsForCatalogTools(t *testing.T) {
 	listed := string(filterTools([]byte(`{"result":{"tools":[{"name":"manage_projects"},{"name":"swarm_stop_run"}]}}`), []string{ScopeRead}))
 	if !strings.Contains(listed, "manage_projects") || strings.Contains(listed, "swarm_stop_run") {
 		t.Fatalf("relay listing: %s", listed)
+	}
+	// manage_workflows is a catalog tool too: forwarded with the client's
+	// levels, listed for Swarm Control to filter per action.
+	if out := call("manage_workflows", ScopeRead); strings.Contains(out, "does not allow") || len(got) != 3 || got[2] != ScopeRead {
+		t.Fatalf("manage_workflows read client: %s %v", out, got)
+	}
+	if listed := string(filterTools([]byte(`{"result":{"tools":[{"name":"manage_workflows"}]}}`), []string{ScopeRead})); !strings.Contains(listed, "manage_workflows") {
+		t.Fatalf("relay listing: %s", listed)
+	}
+}
+
+// Purpose: each manage_workflows action needs the level of the swarm_* tool
+// with the same effect (ToolScope), so moving workflows into the catalog
+// neither widens nor narrows what a key may do; stop_all stays manage. help
+// has no swarm_* tool and only reads. Threat: a write key turning the
+// machine-wide stop switch, or a level silently changed in the move.
+// Boundary: tool.Catalog's manage_workflows declarations against ToolScope.
+func TestManageWorkflowsLevelsAreTheSwarmToolsLevels(t *testing.T) {
+	swarmTool := map[string]string{
+		"list": "swarm_list_workflows", "get": "swarm_list_workflows", "deliveries": "swarm_list_workflows",
+		"history": "swarm_workflow_history", "propose": "swarm_set_workflow", "enable": "swarm_set_workflow", "disable": "swarm_set_workflow",
+		"delete": "swarm_delete_workflow", "export": "swarm_export_workflow", "import": "swarm_import_workflow",
+		"restore": "swarm_restore_workflow", "stop_all": "swarm_stop_workflows",
+	}
+	workflows, ok := tool.CatalogToolNamed("manage_workflows")
+	if !ok {
+		t.Fatal("manage_workflows is not a catalog tool")
+	}
+	for _, action := range workflows.Actions {
+		name, ok := swarmTool[action.Action]
+		if !ok {
+			if action.Action != "help" || action.Level != tool.CatalogLevelRead {
+				t.Fatalf("%s has no swarm_* tool to take its level from (level %s)", action.Action, action.Level)
+			}
+			continue
+		}
+		if action.Level.Scope() != ToolScope(name) {
+			t.Fatalf("manage_workflows %s needs %s; %s needs %s", action.Action, action.Level.Scope(), name, ToolScope(name))
+		}
+	}
+	if stop, _ := workflows.Action("stop_all"); stop.Level != tool.CatalogLevelManage {
+		t.Fatalf("stop_all is %s, not manage", stop.Level)
 	}
 }

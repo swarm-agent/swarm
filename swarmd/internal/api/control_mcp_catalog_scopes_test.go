@@ -134,9 +134,11 @@ func TestRelayClientLevelsBindEveryCatalogAction(t *testing.T) {
 // catalog tool. Boundary: CatalogAction.APIScopes and
 // controlMCPCall.catalogActionAllowed / callCatalogTool.
 func TestCatalogActionsNeedTheirRoutesScopes(t *testing.T) {
-	for _, action := range tool.Catalog()[0].Actions {
-		if len(action.APIScopes) == 0 {
-			t.Fatalf("%s declares no API scopes", action.Action)
+	for _, catalog := range tool.Catalog() {
+		for _, action := range catalog.Actions {
+			if len(action.APIScopes) == 0 {
+				t.Fatalf("%s %s declares no API scopes", catalog.Name, action.Action)
+			}
 		}
 	}
 	h := newCatalogParityHarness(t)

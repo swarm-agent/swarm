@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"errors"
-	"sort"
 	"strings"
 	"testing"
 
@@ -20,7 +19,7 @@ func catalogEnvelopeCheck(t *testing.T, name, answer string) map[string]any {
 		t.Fatalf("%s: %v\n%s", name, err, answer)
 	}
 	envelope := parityDecode(t, answer)
-	catalog, _ := tool.CatalogToolNamed("manage_projects")
+	catalog, _ := tool.CatalogToolNamed(envelope["tool"].(string))
 	action, _ := catalog.Action(envelope["action"].(string))
 	state := envelope["state"].(string)
 	allowed := state == tool.EnvelopeStateOK || state == tool.EnvelopeStatePartial
@@ -68,35 +67,53 @@ func catalogFollow(t *testing.T, h *catalogParityHarness, name string, next map[
 // production; tool.CheckEnvelope states the contract. No provider runs.
 func TestCatalogEnvelopeContractEveryAction(t *testing.T) {
 	h := newCatalogParityHarness(t)
-	cases := catalogParityCases()
-	actions := make([]string, 0, len(cases))
-	for action := range cases {
-		actions = append(actions, action)
-	}
-	sort.Strings(actions)
+	all := catalogParityCases()
 	checked := map[string]bool{}
-	for _, action := range actions {
-		for _, c := range cases[action] {
-			if c.compare == parityNotServed {
-				continue
-			}
-			name := action
-			if machine, _ := c.orchestrator["machine"].(string); machine != "" {
-				name += "@" + machine
-			}
-			if out, err := h.orchestrator(t, c.orchestrator); err == nil {
-				catalogEnvelopeCheck(t, name+" (Orchestrator)", out)
-				checked[name] = true
-			}
-			if out, refused := h.control(t, catalogParityFullKey, c.control); refused == "" {
-				envelope := catalogEnvelopeCheck(t, name+" (Swarm Control)", out)
-				checked[name] = true
-				switch action {
-				case "list", "get", "list_tasks", "list_machines", "list_linked_tasks", "agents_at_work", "machine_status", "get_task_session", "activity", "read_task_session", "wait_tasks":
-					if text, _ := envelope["next_action"].(string); text == "" {
-						t.Fatalf("%s: a read with a next step has no next_action: %s", name, out)
+	// The reads that always lead somewhere carry next_action.
+	leads := map[string]map[string]bool{
+		"manage_projects":  {"list": true, "get": true, "list_tasks": true, "list_machines": true, "list_linked_tasks": true, "agents_at_work": true, "machine_status": true, "get_task_session": true, "activity": true, "read_task_session": true, "wait_tasks": true},
+		"manage_workflows": {"list": true, "get": true, "deliveries": true, "history": true, "export": true},
+	}
+	for _, toolName := range catalogParityToolNames(all) {
+		for _, action := range catalogParityActionNames(all[toolName]) {
+			for _, c := range all[toolName][action] {
+				if c.compare == parityNotServed {
+					continue
+				}
+				name := action
+				if toolName != "manage_projects" {
+					name = toolName + " " + action
+				}
+				if machine, _ := c.orchestrator["machine"].(string); machine != "" {
+					name += "@" + machine
+				}
+				c = h.resolveCase(t, c)
+				if out, err := h.orchestratorTool(t, toolName, c.orchestrator); err == nil {
+					catalogEnvelopeCheck(t, name+" (Orchestrator)", out)
+					checked[name] = true
+				}
+				if out, refused := h.controlTool(t, catalogParityFullKey, toolName, c.control); refused == "" {
+					envelope := catalogEnvelopeCheck(t, name+" (Swarm Control)", out)
+					checked[name] = true
+					if leads[toolName][action] {
+						if text, _ := envelope["next_action"].(string); text == "" {
+							t.Fatalf("%s: a read with a next step has no next_action: %s", name, out)
+						}
 					}
 				}
+			}
+		}
+	}
+	// Every manage_workflows action answered an envelope, here and (but help)
+	// on the linked machine.
+	workflows, _ := tool.CatalogToolNamed("manage_workflows")
+	for _, action := range workflows.Actions {
+		for _, name := range []string{"manage_workflows " + action.Action, "manage_workflows " + action.Action + "@box"} {
+			if strings.HasSuffix(name, "@box") && action.Reach != tool.CatalogReachAny {
+				continue
+			}
+			if !checked[name] {
+				t.Fatalf("%s answered no envelope to check", name)
 			}
 		}
 	}
