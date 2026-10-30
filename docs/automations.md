@@ -163,8 +163,8 @@ An automation belongs to an account and has:
 Every update raises the automation's `revision`. An automation applies only to
 task and job ends after it was created. Tasks and jobs started by a workflow
 (an `agent` step) never trigger workflows; a follow-up of the original work
-(`swarm_send_message` into a task's session, `manage_jobs` `message_job` or
-`swarm_message_job` for a job) ends again and does.
+(`manage_sessions` `send_message` into a task's session, `manage_jobs`
+`message_job` or `swarm_message_job` for a job) ends again and does.
 
 A task's run ending is its job end only when the run leaves the task with a
 result: `needs_review`, `completed`, `failed`, `blocked` or `cancelled`. A run
@@ -496,7 +496,7 @@ With `fixes`:
   for a turn the person sent after a follow-up failed.
 - A busy **task** (Swarm's own agent: `task/<project>/<task>`) gets the
   message **queued**, exactly as a person's message sent through the session
-  message path is (`swarm_send_message`, `message_task`): when its run, or a
+  message path is (`manage_sessions` `send_message`, `message_task`): when its run, or a
   follow-up the person sent meanwhile, is in flight, the step does not wait.
   The message is stored for that run, reaches the agent with its next tool
   result (or starts the next turn when the run ends without reading it), and
@@ -962,7 +962,7 @@ most twice; an ok pushes the head.
 2. `review` starts a reviewer job on the task's exact head, as a new session
    in the coder's own worktree (read-only; `checkout` defaults to `same`).
 3. On `block`, `fix` sends the findings into the task's own session (as
-   `swarm_send_message` does). The coder fixes them in the same worktree; that
+   `manage_sessions` `send_message` does). The coder fixes them in the same worktree; that
    follow-up's end starts the workflow again (round 1).
 4. On `ok`, `push` runs with `SWARM_HEAD` at the reviewed head. The task's
    commits are in the folder's repository from the moment they are made.
