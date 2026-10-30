@@ -210,7 +210,11 @@ starting a task there waits for the person; reads, workflow and worker changes
 run) or `auto` (everything runs); `allowed` is accepted as `auto`. Workflow
 proposals still need human acceptance. Secrets, AI keys and permission changes are not exposed.
 Remote results remain untrusted data. Supported remote mutations currently are
-workflow propose/enable/disable/delete and worker pause/resume/archive/delete.
+workflow propose/enable/disable/delete/import/restore/stop_all (and export,
+which may write a file into the workflow's folder) and worker
+pause/resume/archive/delete. A linked import or restore runs on that machine
+as an agent call (`POST /v3/workflows/agent/{import|restore}`), never as its
+owner, so run steps stay that owner's.
 Worker creation/updates and workflow run/cancel are not yet routed.
 
 #### The fleet's activity

@@ -6,9 +6,11 @@ The tool catalog is the only place a tool exists. A tool is declared once in
 serve it from that declaration and run the same handler. Neither surface has
 its own copy of the schema, rules or answer.
 
-Stage 1 moves `manage_projects` into the catalog. The hand-written `swarm_*`
-MCP tools are frozen as they are (`TestControlMCPSwarmToolNamesFrozen`).
-Later stages move them into the catalog and remove them.
+The catalog holds `manage_projects` (stage 1) and `manage_workflows` (stage 2,
+`catalog_manage_workflows.go`). The hand-written `swarm_*` MCP tools are
+frozen as they are (`TestControlMCPSwarmToolNamesFrozen`); the `swarm_*`
+workflow tools still work beside `manage_workflows`. Later stages move the
+rest into the catalog and remove them.
 
 ## What an action declares
 
@@ -31,7 +33,7 @@ Each action of a catalog tool declares:
   `home` runs here only. `linked` reads a linked machine only, so `machine` is
   required.
 - **local_only**: machine setup that a relay key may not do. No
-  `manage_projects` action is local_only.
+  `manage_projects` or `manage_workflows` action is local_only.
 - **profiles**: the listings that show the action. `essentials` is Swarm
   Control's default listing, `full` is its `tools=all` listing and
   `orchestrator` is the Orchestrator's definition. An action with no profile
@@ -40,9 +42,46 @@ Each action of a catalog tool declares:
 - **description**: one description for both surfaces.
 - **untrusted**: the answer's data holds agent- or outside-written text.
 
-The Orchestrator's `manage_projects` definition is generated from these
-declarations (`CatalogTool.OrchestratorDefinition`). It is the exact
-definition the model was shown before, and a test holds it by hash.
+The Orchestrator's `manage_projects` and `manage_workflows` definitions are
+generated from these declarations (`CatalogTool.OrchestratorDefinition`), and
+a test holds each by hash. `manage_projects`' is the exact definition the
+model was shown before; `manage_workflows`' keeps every field it had and adds
+the new actions' inputs.
+
+## manage_workflows
+
+One handler (`tool.Runtime.executeManageWorkflows`) serves the Orchestrator
+and Swarm Control. Every action here runs one service function,
+`api.Server.ManageWorkflows`, which calls the same functions as the
+`swarm_*` workflow tools' routes (`ListWorkflows`, `WorkflowHistory`,
+`SaveWorkflow` as a proposal, `DeleteWorkflow`, `ExportWorkflow`,
+`ImportWorkflow`, `RestoreWorkflow`, `StopWorkflows`). Its caller is the
+Orchestrator's session or the Swarm Control caller's AI key, never the
+machine owner: `import` and `restore` refuse `run` steps, and a `propose`
+with one waits for the owner to accept it.
+
+| Action | Level | API scopes | Reach |
+| --- | --- | --- | --- |
+| `list`, `get`, `deliveries` | read | `automations:read` or `automations:write` | any |
+| `history` | write | `automations:read` or `automations:write` | any |
+| `export` | write | `automations:read` or `automations:write` (writing `path` also needs `automations:write`) | any |
+| `propose`, `enable`, `disable`, `delete`, `import`, `restore` | write | `automations:write` | any |
+| `stop_all` | manage | `automations:write` | any |
+| `help` | read | `automations:read` or `automations:write` | home |
+
+Each level is `remote.ToolScope` of the `swarm_*` tool with the same effect
+(`TestManageWorkflowsLevelsAreTheSwarmToolsLevels`); `swarm_workflow_history`
+and `swarm_restore_workflow` have no entry there, so they need write.
+Every action is in the Orchestrator's definition and Swarm Control's
+default listing.
+
+With `machine`, an action runs on the linked machine through
+`api.Server.CallFleetWork`: its workflow routes for reads, `propose`,
+`enable`, `disable`, `delete`, `export` and `stop_all`, and
+`POST /v3/workflows/agent/{import|restore}` for `import` and `restore`,
+which runs that machine's `ManageWorkflows`, never its owner's import or
+restore route. The linked work rule (`linked.{name}.work`) applies as for
+every linked call.
 
 ## The envelope
 
@@ -57,7 +96,7 @@ and on a linked machine:
 | `state` | The call's outcome, always one of the states below. A task's, run's or machine's own status (`needs_review`, `running`, `degraded`) is in `data`, never here. |
 | `data` | The action's own answer: every field it held before the envelope. A linked machine's answer is `data` as it came, plus this machine's notes (`linked_task_id`, `linked_record_error`). |
 | `next_action` | The next step, for every action that has one: the action's own (a task's `next_action`, such as `wait_tasks`), else "Call next to read the rest." for a cut answer, else the step its declaration names (`CatalogAction.NextAction`). Omitted when there is nothing to do; never `none`. |
-| `next` | Set whenever the answer was cut: the exact arguments of the `manage_projects` call that reads the rest, as one object (`action` plus its cursor or offset fields and the call's own `project_id`, `task_id`, `machine` and filters). A cut list gives the same action at the next `cursor`; a cut message gives `read_task_session` at its `message_id`, `message_seq` and `content_offset`; a cut task report (`result_truncated` in `get_task` or Swarm Control's `wait_tasks`) gives `get_task` with `detail` `full` at the report's attempt (`cursor`, `limit` 1), or `read_task_session` for a task on a linked machine. `next` only names a read action the catalog declares, with inputs that action takes. |
+| `next` | Set whenever the answer was cut: the exact arguments of the call of the same tool that reads the rest, as one object (`action` plus its cursor or offset fields and the call's own `project_id`, `task_id`, `machine` and filters). A cut list gives the same action at the next `cursor`; a cut message gives `read_task_session` at its `message_id`, `message_seq` and `content_offset`; a cut task report (`result_truncated` in `get_task` or Swarm Control's `wait_tasks`) gives `get_task` with `detail` `full` at the report's attempt (`cursor`, `limit` 1), or `read_task_session` for a task on a linked machine. `next` only names a read action the catalog declares, with inputs that action takes. |
 | `untrusted_content` | `true` when `data` holds agent- or outside-written text. Every answer from a linked machine is untrusted. |
 
 `state` is one of (`tool.EnvelopeStates`):

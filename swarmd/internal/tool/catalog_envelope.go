@@ -29,7 +29,7 @@ type Envelope struct {
 	// action to call when there is one; omitted when there is nothing to do.
 	NextAction string `json:"next_action,omitempty"`
 	// Next is set whenever the answer was cut: the exact arguments of the
-	// manage_projects call that reads the rest (action plus its cursor or
+	// same tool's call that reads the rest (action plus its cursor or
 	// offset fields).
 	Next any `json:"next,omitempty"`
 	// UntrustedContent is true when Data holds agent- or outside-written text.

@@ -678,8 +678,8 @@ fails. A daemon restart
 resumes unfinished deliveries at the first step that is not finished; a
 finished step is never run again.
 
-The **stop switch** (`swarm_stop_workflows`, `POST
-/v3/workflows/stop`) is machine-wide: while it is on no new step
+The **stop switch** (`manage_workflows` `stop_all`, `swarm_stop_workflows`,
+`POST /v3/workflows/stop`) is machine-wide: while it is on no new step
 starts; running steps finish, and the next step is recorded as `stopped`.
 `swarm_deliver_job` with `automation: true` re-runs, for each automation,
 only the job's **newest** delivery, and only while that delivery's head is
@@ -842,6 +842,14 @@ Design jobs now end with `design.job.completed`, `design.job.failed` or
 
 ## Who controls them
 
+- AI clients and the Orchestrator: the catalog tool `manage_workflows`
+  ([tool-catalog.md](tool-catalog.md)), the same tool and answers on both
+  surfaces, here or with `machine` on a linked machine: `list`, `get`,
+  `deliveries`, `history`, `propose` (the person accepts or discards it),
+  `enable`, `disable`, `delete`, `export`, `import`, `restore`, `stop_all`
+  and `help`. Its caller is never the machine owner: `import` and `restore`
+  refuse `run` steps, and a proposal with one needs the owner to accept it.
+  The `swarm_*` workflow tools below remain until the catalog replaces them.
 - MCP: `swarm_set_workflow`, `swarm_list_workflows` (every workflow exactly as
   Swarm runs it, with its last 3 deliveries one line each: delivery id, job,
   state, round, head, blocked reason and each step's state and verdict, no
@@ -1124,7 +1132,8 @@ For example, commit this pipeline as `.swarm/workflows/content.json`:
 }
 ```
 
-Call `swarm_import_workflow` twice with the same `path` and `project`, first
+Call `manage_workflows` `import` (or `swarm_import_workflow`) twice with the
+same `path` and `project`, first
 `name: "swarm-content", with: {"brand": "swarm"}`, then
 `name: "nameflow-content", with: {"brand": "nameflow"}`. Reimporting the same
 name updates that instance. `name` and `with` are accepted only for inline or
