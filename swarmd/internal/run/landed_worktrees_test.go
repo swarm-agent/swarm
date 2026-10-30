@@ -1,6 +1,7 @@
 package run
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -262,7 +263,7 @@ func TestLandedWorktreeSweepRemovesBacklogAndKeepsUnsafeCheckouts(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	removed, err := f.service.SweepLandedWorktrees()
+	removed, err := f.service.SweepLandedWorktrees(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,7 +391,7 @@ func TestLandedWorktreeKeptWhileAFollowupIsQueuedOrRunning(t *testing.T) {
 			t.Fatalf("follow-up %s: %+v, %v; want kept", status, outcome, err)
 		}
 		f.service.landed.nextCheck = nil
-		if removed, err := f.service.SweepLandedWorktrees(); err != nil || removed != 0 {
+		if removed, err := f.service.SweepLandedWorktrees(context.Background()); err != nil || removed != 0 {
 			t.Fatalf("sweep with a %s follow-up removed %d: %v", status, removed, err)
 		}
 		f.assertKept(j)
@@ -445,7 +446,7 @@ func TestRecreatedCheckoutIsKeptBetweenRecreateAndMarking(t *testing.T) {
 	}
 	// A sweep and a landed removal in the window before the follow-up is
 	// marked keep the checkout.
-	if removed, err := f.service.SweepLandedWorktrees(); err != nil || removed != 0 {
+	if removed, err := f.service.SweepLandedWorktrees(context.Background()); err != nil || removed != 0 {
 		t.Fatalf("sweep after recreate removed %d: %v", removed, err)
 	}
 	outcome, err := f.service.RemoveLandedWorktree(j.session)
@@ -501,7 +502,7 @@ func TestRecreateWaitsForAnEvaluationInFlight(t *testing.T) {
 	case <-time.After(2 * time.Minute):
 		t.Fatal("recreate did not finish after the slot was released")
 	}
-	if removed, err := f.service.SweepLandedWorktrees(); err != nil || removed != 0 {
+	if removed, err := f.service.SweepLandedWorktrees(context.Background()); err != nil || removed != 0 {
 		t.Fatalf("sweep removed the recreated checkout: %d %v", removed, err)
 	}
 	if _, err := os.Stat(j.path); err != nil {
@@ -534,7 +535,7 @@ func TestFollowupArrivingDuringAnEvaluationGetsItsCheckout(t *testing.T) {
 	})
 	swept := make(chan error, 1)
 	go func() {
-		_, err := f.service.SweepLandedWorktrees()
+		_, err := f.service.SweepLandedWorktrees(context.Background())
 		swept <- err
 	}()
 	select {
@@ -582,7 +583,7 @@ func TestFollowupArrivingDuringAnEvaluationGetsItsCheckout(t *testing.T) {
 	// Later evaluations keep it while the follow-up starts.
 	f.service.landed.removerForTest = nil
 	f.service.landed.nextCheck = nil
-	if removed, err := f.service.SweepLandedWorktrees(); err != nil || removed != 0 {
+	if removed, err := f.service.SweepLandedWorktrees(context.Background()); err != nil || removed != 0 {
 		t.Fatalf("sweep after the claim removed %d: %v", removed, err)
 	}
 	if outcome, err := f.service.RemoveLandedWorktree(j.session); err != nil || outcome.Removed || !strings.Contains(outcome.Kept, "reserved for new work") {
@@ -623,7 +624,7 @@ func TestSessionMessageArrivingDuringAnEvaluationKeepsItsCheckout(t *testing.T) 
 		t.Fatal(err)
 	}
 	if err := f.db.PutProjectTask(landedAccount, &pebblestore.ProjectTaskRecord{ID: "task-msg", Title: "Task", ProjectID: "project-msg", AccountID: landedAccount,
-		SessionID: session, Agent: "coder", Status: "completed", WorkspacePath: alloc.WorkspacePath, WorktreeBranch: branch, BaseBranch: "dev"}); err != nil {
+		SessionID: session, Agent: "coder", Status: "needs_review", WorkspacePath: alloc.WorkspacePath, WorktreeBranch: branch, BaseBranch: "dev"}); err != nil {
 		t.Fatal(err)
 	}
 	entered, proceed := make(chan struct{}), make(chan struct{})
@@ -692,7 +693,7 @@ func TestClaimKeepsANeverRemovedCheckout(t *testing.T) {
 	if recreated, err := f.service.ClaimSessionWorktree(j.session); err != nil || recreated {
 		t.Fatalf("claim = %v, %v", recreated, err)
 	}
-	if removed, err := f.service.SweepLandedWorktrees(); err != nil || removed != 0 {
+	if removed, err := f.service.SweepLandedWorktrees(context.Background()); err != nil || removed != 0 {
 		t.Fatalf("sweep removed a claimed checkout: %d %v", removed, err)
 	}
 	f.assertKept(j)
@@ -732,7 +733,7 @@ func TestReopenedTaskCheckoutIsKeptBeforeTheTaskIsActive(t *testing.T) {
 	if restored, err := f.service.ClaimSessionWorktree(session); err != nil || !restored {
 		t.Fatalf("restore = %v, %v", restored, err)
 	}
-	if removed, err := f.service.SweepLandedWorktrees(); err != nil || removed != 0 {
+	if removed, err := f.service.SweepLandedWorktrees(context.Background()); err != nil || removed != 0 {
 		t.Fatalf("sweep removed the reopened task's checkout: %d %v", removed, err)
 	}
 	if _, err := os.Stat(alloc.WorkspacePath); err != nil {
@@ -769,10 +770,63 @@ func TestLandedRemovalDoesNotWaitBehindAnotherEvaluation(t *testing.T) {
 		t.Fatalf("landing waited %s behind another evaluation", elapsed)
 	}
 	f.assertKept(j)
-	if removed, err := f.service.SweepLandedWorktrees(); err != nil || removed != 1 {
+	if removed, err := f.service.SweepLandedWorktrees(context.Background()); err != nil || removed != 1 {
 		t.Fatalf("sweep removed %d: %v", removed, err)
 	}
 	f.assertRemoved(j, LandedWorktreeTriggerSweep)
+}
+
+// Requirement: a daemon stop never waits for a whole sweep pass. Once the
+// sweep's context ends it stops between candidates (never in the middle of a
+// checkout's removal), so the checkout it was removing is finished and
+// recorded, and the rest are left for the next start.
+// Threat (review finding): WorkerScheduler.Run waits for the sweep goroutine
+// on shutdown and SweepLandedWorktrees ignored cancellation, so a stop with a
+// large backlog blocked for minutes. Owner: SweepLandedWorktrees(ctx); the
+// context is cancelled from inside the first real removal.
+func TestLandedWorktreeSweepStopsBetweenCandidatesWhenCancelled(t *testing.T) {
+	f := newLandedJobsFixture(t)
+	jobs := []landedJob{f.job("cancel01", "succeeded"), f.job("cancel02", "succeeded"), f.job("cancel03", "succeeded")}
+	for _, j := range jobs {
+		f.merge(j)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	f.service.landed.removerForTest = landedRemoverFunc(func(in worktree.LandedWorktree) (worktree.LandedWorktreeRemoval, error) {
+		calls++
+		cancel() // the daemon stops while this removal runs
+		return f.trees.RemoveLandedWorktree(in)
+	})
+	removed, err := f.service.SweepLandedWorktrees(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled sweep error = %v, want context.Canceled", err)
+	}
+	if calls != 1 || removed != 1 {
+		t.Fatalf("cancelled sweep made %d removals and removed %d, want 1 and 1", calls, removed)
+	}
+	gone, kept := 0, 0
+	for _, j := range jobs {
+		if _, statErr := os.Stat(j.path); os.IsNotExist(statErr) {
+			f.assertRemoved(j, LandedWorktreeTriggerSweep) // finished and recorded
+			gone++
+		} else {
+			f.assertKept(j)
+			kept++
+		}
+	}
+	if gone != 1 || kept != 2 {
+		t.Fatalf("after cancel: %d removed, %d kept; want 1 and 2", gone, kept)
+	}
+	// A context already ended evaluates nothing.
+	if n, err := f.service.SweepLandedWorktrees(ctx); n != 0 || !errors.Is(err, context.Canceled) || calls != 1 {
+		t.Fatalf("sweep with an ended context = %d, %v, %d removals", n, err, calls)
+	}
+	// The next pass finishes the rest.
+	f.service.landed.removerForTest = nil
+	if n, err := f.service.SweepLandedWorktrees(context.Background()); err != nil || n != 2 {
+		t.Fatalf("next pass removed %d: %v", n, err)
+	}
 }
 
 // Requirement: a failed removal keeps the checkout, is recorded on the run
@@ -797,7 +851,7 @@ func TestLandedWorktreeRemovalFailureIsRecordedAndBackedOff(t *testing.T) {
 	if rm == nil || rm.State != pebblestore.WorktreeRemovalFailed || rm.Attempts != 1 || rm.LastError != "disk refused" || rm.NextAttemptAt <= now.UnixMilli() {
 		t.Fatalf("failure record = %+v", rm)
 	}
-	if _, err := f.service.SweepLandedWorktrees(); err != nil {
+	if _, err := f.service.SweepLandedWorktrees(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 1 {

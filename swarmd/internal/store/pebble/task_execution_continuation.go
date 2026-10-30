@@ -2,6 +2,22 @@ package pebblestore
 
 import "errors"
 
+// TaskContinuationStateRefusal is the task-state part of the continuation
+// rule: a message never continues an archived, integrated, completed,
+// rejected or not yet admitted task (those go through approval or reopen).
+// prepareTaskExecutionContinuation applies it when a later message's run is
+// admitted; callers may apply it earlier to avoid preparing work (such as
+// recreating a removed checkout) for a message that will be refused.
+func TaskContinuationStateRefusal(task *ProjectTaskRecord) error {
+	if task == nil {
+		return errors.New("task continuation requires its current owning session")
+	}
+	if task.Archived || task.IsIntegrated || task.Status == "completed" || task.Status == "rejected" || task.Status == "pending_approval" || task.Status == "planning" || task.Status == "queued" {
+		return errors.New("task continuation requires an admitted task; use the canonical task approval or reopen lifecycle")
+	}
+	return nil
+}
+
 // Called under the project and session locks by ApplyV3SessionMutation. The
 // retry's message, run intent and task receipt must commit together, including
 // when a fast failure occurs before any client observes the running state.
@@ -35,8 +51,8 @@ func (s *SessionStore) prepareTaskExecutionContinuation(input V3SessionMutationI
 		// its task is still queued; the job marks the task in_progress itself.
 		return nil, nil
 	}
-	if task.Archived || task.IsIntegrated || task.Status == "completed" || task.Status == "rejected" || task.Status == "pending_approval" || task.Status == "planning" || task.Status == "queued" {
-		return nil, errors.New("task continuation requires an admitted task; use the canonical task approval or reopen lifecycle")
+	if err := TaskContinuationStateRefusal(task); err != nil {
+		return nil, err
 	}
 	previous, found, err := s.GetV3SessionRunState(current.ID)
 	if err != nil {

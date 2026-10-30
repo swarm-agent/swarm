@@ -148,4 +148,39 @@ func TestSessionMessageRecreatesARemovedTaskCheckoutBeforeTheRun(t *testing.T) {
 	if _, err := os.Stat(movedPath); !os.IsNotExist(err) {
 		t.Fatalf("refused message left a checkout: %v", err)
 	}
+
+	// A message the task rules refuse (a completed or integrated task, which
+	// must be reopened) recreates nothing and records no restored state: the
+	// admission rule (pebblestore.TaskContinuationStateRefusal) is applied
+	// before the checkout is claimed.
+	// Threat (review finding): the checkout was recreated and recorded
+	// restored, then the message was refused.
+	for _, tc := range []struct {
+		id     string
+		modify func(*pebblestore.ProjectTaskRecord)
+	}{
+		{"taskmsg3", func(t *pebblestore.ProjectTaskRecord) { t.Status = "completed" }},
+		{"taskmsg4", func(t *pebblestore.ProjectTaskRecord) { t.IsIntegrated = true }},
+	} {
+		refusedSession, refusedPath, _, _ := task(tc.id)
+		if _, err := sessions.Store().UpdateProjectTask(p.AccountScopeID, "project-m", tc.id, func(t *pebblestore.ProjectTaskRecord) error {
+			tc.modify(t)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := server.acceptSessionsV3Message(p, refusedSession, sessionsV3MessageRequest{ClientRequestID: "continue-" + tc.id, Role: "user", Content: "Also add a test."}); err == nil {
+			t.Fatalf("%s: message to a task that must be reopened was accepted", tc.id)
+		}
+		if _, err := os.Stat(refusedPath); !os.IsNotExist(err) {
+			t.Fatalf("%s: refused message recreated the checkout: %v", tc.id, err)
+		}
+		record, _, err := sessions.Store().GetProjectTask(p.AccountScopeID, "project-m", tc.id)
+		if err != nil || record.WorktreeRemoval == nil || record.WorktreeRemoval.State != pebblestore.WorktreeRemovalRemoved {
+			t.Fatalf("%s: task record = %+v, %v; want still removed", tc.id, record.WorktreeRemoval, err)
+		}
+		if _, appended, err := sessions.Store().GetV3SessionOperationIdempotencyRecord(p.AccountScopeID, refusedSession, sessionruntime.SessionMutationAppendMessage, "continue-"+tc.id); err != nil || appended {
+			t.Fatalf("%s: refused message appended: %v %v", tc.id, appended, err)
+		}
+	}
 }

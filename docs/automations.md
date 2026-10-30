@@ -34,6 +34,8 @@ while the daemon schedules workers, which also finds work merged outside
 Swarm (for example a pull request merged on the forge) and older finished
 worktrees (it reads every session's state, so an active session never goes
 unseen). A worktree kept for any reason is looked at again an hour later.
+When the daemon stops, a sweep stops after the worktree it is on; the rest
+wait for the next pass.
 
 Each removal is recorded on the run and the task as `worktree_removal`
 (`state` `removed`, `path`, `branch`, `head`, `target_branch`, `trigger`
@@ -59,7 +61,9 @@ example a person continuing a finished Coder task) always reserves the
 worktree before its run is admitted, waiting for any removal being decided at
 that moment, and recreates it if that removal went through. A reserved
 worktree, removed before or not, is not removed for 30 minutes, so the work
-has time to start. A recreated one is recorded as `worktree_removal` `state`
+has time to start. A message the task refuses anyway (a completed, rejected
+or integrated task, which must be reopened) reserves and recreates nothing.
+A recreated one is recorded as `worktree_removal` `state`
 `restored`. A repeated
 `swarm_integrate_task` of such a task answers `already_integrated` from the
 record, and the task's delivery state reads `integrated` (`reason_code`

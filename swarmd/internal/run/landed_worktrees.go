@@ -118,7 +118,7 @@ func (s *WorkerExecutionService) runLandedWorktreeSweep(ctx context.Context, del
 			return
 		case <-timer.C:
 		}
-		_, err := s.SweepLandedWorktrees()
+		_, err := s.SweepLandedWorktrees(ctx)
 		message := ""
 		if err != nil {
 			message = err.Error()
@@ -164,10 +164,18 @@ func (s *WorkerExecutionService) RemoveLandedWorktree(sessionID string) (LandedW
 
 // SweepLandedWorktrees evaluates every finished job checkout it can find: the
 // sessions of finished worker runs and the owners of managed worktrees on
-// disk. It reports how many checkouts it removed.
-func (s *WorkerExecutionService) SweepLandedWorktrees() (int, error) {
+// disk. It reports how many checkouts it removed. Once ctx ends (the daemon
+// stops) it stops between candidates, never in the middle of one checkout's
+// evaluation or removal, so a stop never waits for a whole pass.
+func (s *WorkerExecutionService) SweepLandedWorktrees(ctx context.Context) (int, error) {
 	if s == nil || s.host == nil {
 		return 0, errors.New("worker execution authorities unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
 	}
 	accounts := map[string]bool{}
 	candidates, err := s.landedWorktreeCandidates(accounts)
@@ -179,6 +187,10 @@ func (s *WorkerExecutionService) SweepLandedWorktrees() (int, error) {
 	var inUse map[string]string
 	var inUseAt time.Time
 	for _, sessionID := range candidates {
+		if err := ctx.Err(); err != nil {
+			failures = append(failures, err)
+			break
+		}
 		outcome, done, err := s.sweepLandedCandidate(sessionID, accounts, &inUse, &inUseAt)
 		if err != nil {
 			failures = append(failures, fmt.Errorf("session %s: %w", sessionID, err))
@@ -800,10 +812,45 @@ func (s *WorkerExecutionService) PrepareSessionMessage(account, user, sessionID 
 	if strings.HasPrefix(sessionID, "worker-execution-") {
 		return s.PrepareFollowup(account, user, sessionID)
 	}
+	if refused, err := s.taskMessageWillBeRefused(sessionID); err != nil {
+		return err
+	} else if refused {
+		// The run admission refuses it (completed, integrated, rejected...);
+		// nothing is claimed or recreated for a message that never runs.
+		return nil
+	}
 	if _, err := s.ClaimSessionWorktree(sessionID); err != nil {
 		return fmt.Errorf("%w: the session's checkout was removed after its work landed and cannot be recreated from its branch: %v", store.ErrWorkerConflict, err)
 	}
 	return nil
+}
+
+// taskMessageWillBeRefused reports whether the session's task refuses a
+// message: the same task rules the run admission applies
+// (store.TaskContinuationStateRefusal, plus a task that is not this
+// session's). A session without a task is never refused here.
+func (s *WorkerExecutionService) taskMessageWillBeRefused(sessionID string) (bool, error) {
+	db := s.host.runs.sessions.Store()
+	snap, found, err := db.GetSession(sessionID)
+	if err != nil || !found {
+		return false, err
+	}
+	projectID := mapString(snap.Metadata, "project_id")
+	taskID := mapString(snap.Metadata, "task_id")
+	if taskID == "" {
+		taskID = mapString(snap.Metadata, "project_task_id")
+	}
+	if taskID == "" {
+		return false, nil
+	}
+	task, found, err := db.GetProjectTask(snap.AccountScopeID, projectID, taskID)
+	if err != nil {
+		return false, err
+	}
+	if !found || task == nil || task.SessionID != snap.ID {
+		return true, nil
+	}
+	return store.TaskContinuationStateRefusal(task) != nil, nil
 }
 
 // restoreRemovedRunWorktree claims a run's checkout for its follow-up,
