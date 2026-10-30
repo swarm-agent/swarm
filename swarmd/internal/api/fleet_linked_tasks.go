@@ -27,6 +27,7 @@ import (
 //	GET /v3/fleet/linked-tasks?session_id=ID | ?project_id=ID   the records
 //	GET /v3/fleet/linked-tasks/session?machine=&project_id=&task_id=[&limit=&max_chars=&role=]
 //	                                                           the remote task session's latest messages
+//	    [&message_id=&message_seq=&content_offset=]            the next chunk of one message a read cut
 //
 // The session view needs sessions:read, the records sessions:read or
 // projects:read; gateway tokens read neither.
@@ -209,11 +210,17 @@ func (s *Server) ReadFleetLinkedTaskSession(ctx context.Context, p identity.Prin
 		Messages     []pebblestore.MessageSnapshot `json:"messages"`
 		HasMoreOlder bool                          `json:"has_more_older"`
 	}
-	fetch := read.Limit
-	if read.Role != "all" {
-		fetch = fleetLinkedTaskSessionScanLimit
+	path := "/v3/sessions/" + url.PathEscape(observed.RemoteSessionID) + "/messages?"
+	if next := read.Continue; next != nil {
+		// The exact message: the first after the one before its sequence.
+		path += "after_seq=" + strconv.FormatUint(next.MessageSeq-1, 10) + "&limit=1"
+	} else {
+		fetch := read.Limit
+		if read.Role != "all" {
+			fetch = fleetLinkedTaskSessionScanLimit
+		}
+		path += "tail=true&limit=" + strconv.Itoa(fetch)
 	}
-	path := "/v3/sessions/" + url.PathEscape(observed.RemoteSessionID) + "/messages?tail=true&limit=" + strconv.Itoa(fetch)
 	err = client.JSON(ctx, http.MethodGet, path, nil, &page)
 	s.noteFleetContact(linked, err)
 	if err != nil {
@@ -226,10 +233,34 @@ func (s *Server) ReadFleetLinkedTaskSession(ctx context.Context, p identity.Prin
 		}
 		return nil, linkedTaskFail(http.StatusBadGateway, "%s", fleetUnreachableError(machine, linked).Error())
 	}
-	messages, more := boundLinkedTaskMessages(page.Messages, read)
+	var messages []map[string]any
+	if next := read.Continue; next != nil {
+		if len(page.Messages) == 0 || page.Messages[0].ID != next.MessageID || page.Messages[0].GlobalSeq != next.MessageSeq {
+			return nil, linkedTaskFail(http.StatusNotFound, "message %s (message_seq %d) was not found in the session of task %s on %s", next.MessageID, next.MessageSeq, taskID, machine)
+		}
+		chunk, err := tool.ChunkMessageContent(page.Messages[0].Content, next.ContentOffset, read.MaxChars)
+		if err != nil {
+			return nil, linkedTaskFail(http.StatusBadRequest, "%v", err)
+		}
+		messages = []map[string]any{linkedTaskMessageItem(page.Messages[0], chunk)}
+	} else {
+		var more bool
+		messages, more = boundLinkedTaskMessages(page.Messages, read)
+		view["has_more_older"] = page.HasMoreOlder || more
+		view["role"] = read.Role
+	}
+	// A cut message says how to read on: the exact parameters of the next
+	// chunk.
+	for _, item := range messages {
+		if item["truncated"] == true {
+			item["next"] = map[string]any{
+				"action": tool.FleetReadTaskSessionAction, "machine": machine, "project_id": projectID, "task_id": taskID,
+				"message_id": item["id"], "message_seq": item["global_seq"], "content_offset": item["content_offset"], "max_chars": read.MaxChars,
+			}
+		}
+	}
 	view["messages"] = messages
-	view["has_more_older"] = page.HasMoreOlder || more
-	view["role"], view["max_chars"] = read.Role, read.MaxChars
+	view["max_chars"] = read.MaxChars
 	return view, nil
 }
 
@@ -246,6 +277,11 @@ func normalizeFleetTaskSessionRead(read tool.FleetTaskSessionRead) (tool.FleetTa
 		read.MaxChars = fleetLinkedTaskSessionDefaultMaxChars
 	}
 	read.MaxChars = min(read.MaxChars, fleetLinkedTaskSessionMaxChars)
+	if next := read.Continue; next != nil {
+		if strings.TrimSpace(next.MessageID) == "" || next.MessageSeq < 1 || next.ContentOffset < 0 {
+			return read, errors.New("continuing a message needs message_id, a positive message_seq and a content_offset that is not negative")
+		}
+	}
 	switch read.Role = strings.ToLower(strings.TrimSpace(read.Role)); read.Role {
 	case "":
 		read.Role = "assistant,tool"
@@ -258,8 +294,9 @@ func normalizeFleetTaskSessionRead(read tool.FleetTaskSessionRead) (tool.FleetTa
 
 // boundLinkedTaskMessages keeps the latest read.Limit messages of read.Role
 // whose encoded content fits read.MaxChars in total, newest first, so the
-// newest work is always kept; the oldest kept one may be cut. more reports
-// that matching messages were left out.
+// newest work is always kept; the oldest kept one may be cut, and then says
+// where its next chunk starts. more reports that matching messages were left
+// out.
 func boundLinkedTaskMessages(page []pebblestore.MessageSnapshot, read tool.FleetTaskSessionRead) ([]map[string]any, bool) {
 	matches := func(role string) bool {
 		switch read.Role {
@@ -282,13 +319,13 @@ func boundLinkedTaskMessages(page []pebblestore.MessageSnapshot, read tool.Fleet
 			more = true
 			break
 		}
-		content, truncated := fitLinkedTaskContent(message.Content, remain)
-		used += encodedLinkedTaskLen(content)
-		item := map[string]any{"id": message.ID, "role": message.Role, "content": content, "global_seq": message.GlobalSeq, "created_at": message.CreatedAt}
-		if truncated {
-			item["truncated"] = true
+		chunk, err := tool.ChunkMessageContent(message.Content, 0, remain)
+		if err != nil {
+			// Offset 0 is always inside the content.
+			continue
 		}
-		picked = append(picked, item)
+		used += chunk.EncodedLen()
+		picked = append(picked, linkedTaskMessageItem(message, chunk))
 	}
 	for i, j := 0, len(picked)-1; i < j; i, j = i+1, j-1 {
 		picked[i], picked[j] = picked[j], picked[i]
@@ -299,32 +336,22 @@ func boundLinkedTaskMessages(page []pebblestore.MessageSnapshot, read tool.Fleet
 	return picked, more
 }
 
-// fitLinkedTaskContent cuts text, on a rune boundary, until its JSON
-// encoding fits budget bytes.
-func fitLinkedTaskContent(text string, budget int) (string, bool) {
-	if encodedLinkedTaskLen(text) <= budget {
-		return text, false
+// linkedTaskMessageItem is one message (or one chunk of it) of a linked task
+// session read. A chunk that does not reach the content's end is truncated
+// and says where it ends (content_offset) and the full size (total_bytes); a
+// chunk after the first says where it starts (content_start).
+func linkedTaskMessageItem(message pebblestore.MessageSnapshot, chunk tool.MessageContentChunk) map[string]any {
+	item := map[string]any{"id": message.ID, "role": message.Role, "content": chunk.Content, "global_seq": message.GlobalSeq, "created_at": message.CreatedAt}
+	if chunk.Start > 0 {
+		item["content_start"] = chunk.Start
 	}
-	cut := min(len(text), budget)
-	for cut > 0 {
-		for cut > 0 && cut < len(text) && !utf8.RuneStart(text[cut]) {
-			cut--
-		}
-		over := encodedLinkedTaskLen(text[:cut]) - budget
-		if over <= 0 {
-			break
-		}
-		cut -= over
-		if cut < 0 {
-			cut = 0
-		}
+	if chunk.Truncated || chunk.Start > 0 {
+		item["content_offset"], item["total_bytes"] = chunk.End, chunk.TotalBytes
 	}
-	return text[:cut], true
-}
-
-func encodedLinkedTaskLen(text string) int {
-	raw, _ := json.Marshal(text)
-	return len(raw)
+	if chunk.Truncated {
+		item["truncated"] = true
+	}
+	return item
 }
 
 func clipLinkedTaskText(text string, maxBytes int) string {
@@ -441,7 +468,22 @@ func (s *Server) handleFleetLinkedTasks(w http.ResponseWriter, r *http.Request) 
 			}
 			maxChars = parsed
 		}
-		view, err := s.ReadFleetLinkedTaskSession(r.Context(), principal, query.Get("machine"), query.Get("project_id"), query.Get("task_id"), tool.FleetTaskSessionRead{Limit: limit, MaxChars: maxChars, Role: query.Get("role")})
+		read := tool.FleetTaskSessionRead{Limit: limit, MaxChars: maxChars, Role: query.Get("role")}
+		if query.Has("message_id") || query.Has("message_seq") || query.Has("content_offset") {
+			next := tool.MessageContinuation{MessageID: strings.TrimSpace(query.Get("message_id"))}
+			seq, seqErr := strconv.ParseUint(strings.TrimSpace(query.Get("message_seq")), 10, 64)
+			offset, offsetErr := 0, error(nil)
+			if raw := strings.TrimSpace(query.Get("content_offset")); raw != "" {
+				offset, offsetErr = strconv.Atoi(raw)
+			}
+			if next.MessageID == "" || seqErr != nil || seq < 1 || offsetErr != nil || offset < 0 {
+				writeError(w, http.StatusBadRequest, errors.New("continuing a message needs message_id, a positive message_seq and a content_offset that is not negative"))
+				return
+			}
+			next.MessageSeq, next.ContentOffset = seq, offset
+			read.Continue = &next
+		}
+		view, err := s.ReadFleetLinkedTaskSession(r.Context(), principal, query.Get("machine"), query.Get("project_id"), query.Get("task_id"), read)
 		if err != nil {
 			writeError(w, linkedTaskStatus(err), err)
 			return

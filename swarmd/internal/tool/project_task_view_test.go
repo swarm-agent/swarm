@@ -176,7 +176,9 @@ func TestManageProjectsGetTaskCompactByDefault(t *testing.T) {
 		t.Fatalf("workflow: %+v", v.Progress.Workflow)
 	}
 	res := v.Result
-	if res == nil || !strings.HasPrefix(res.Summary, "Report: the parser") || len(res.Summary) > projectTaskReportBytes || len(res.Summary) < 900 || res.Branch != "agent/keep-comments" || res.Head != head || res.Commits != 3 || res.Files != 2 || len(res.Deliverables) != 1 || res.Deliverables[0] != "Code PR & Verified Tests (ready)" {
+	// The shortened report says so and how to read it all; those few fields
+	// share the view's budget with the report.
+	if res == nil || !strings.HasPrefix(res.Summary, "Report: the parser") || len(res.Summary) > projectTaskReportBytes || len(res.Summary) < 750 || !res.ResultTruncated || res.ReadFull == "" || res.Branch != "agent/keep-comments" || res.Head != head || res.Commits != 3 || res.Files != 2 || len(res.Deliverables) != 1 || res.Deliverables[0] != "Code PR & Verified Tests (ready)" {
 		t.Fatalf("result: %+v", res)
 	}
 	if v.Integration != "not_integrated" || v.NextAction != "wait_tasks" || !strings.Contains(v.More, "detail=") {

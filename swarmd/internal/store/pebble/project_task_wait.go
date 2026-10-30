@@ -577,9 +577,9 @@ func (s *SessionStore) projectTaskWatchLocalOutcome(input *V3SessionMutationInpu
 		if !ready {
 			allReady = false
 		}
-		summary = clipProjectTaskWaitSummary(summary)
 		row := projectTaskWaitProgressRow(waitProgress)
-		row["task_id"], row["attempt_id"], row["session_id"], row["title"], row["status"], row["summary"] = target.TaskID, attemptID, sessionID, title, status, summary
+		row["task_id"], row["attempt_id"], row["session_id"], row["title"], row["status"] = target.TaskID, attemptID, sessionID, title, status
+		setProjectTaskWaitSummary(row, summary, "manage-sessions read_messages session_id="+sessionID+" role=assistant; follow each cut message's next")
 		if attemptID != target.AttemptID {
 			row["pinned_attempt_id"] = target.AttemptID
 		}
@@ -674,6 +674,18 @@ func clipProjectTaskWaitSummary(summary string) string {
 		summary = string([]rune(summary)[:min(len([]rune(summary)), 500)])
 	}
 	return summary
+}
+
+// setProjectTaskWaitSummary puts an outcome row's summary in row. A
+// shortened summary says so (result_truncated), with the full size
+// (result_bytes) and how to read all of it (read_full), so a long result is
+// never silently taken for the whole.
+func setProjectTaskWaitSummary(row map[string]any, summary, readFull string) {
+	clipped := clipProjectTaskWaitSummary(summary)
+	row["summary"] = clipped
+	if clipped != summary {
+		row["result_truncated"], row["result_bytes"], row["read_full"] = true, len(summary), readFull
+	}
 }
 
 // prepareRemoteProjectTaskWait records a wait on attempts the trusted runtime
@@ -781,7 +793,8 @@ func projectTaskWatchRemoteOutcome(op *V3ProjectTaskWaitMutation, waitValue V3Pr
 			allReady = false
 		}
 		row := projectTaskWaitProgressRow(progress)
-		row["machine"], row["task_id"], row["attempt_id"], row["session_id"], row["title"], row["status"], row["summary"] = wait.Machine, target.TaskID, attemptID, sessionID, title, status, clipProjectTaskWaitSummary(summary)
+		row["machine"], row["task_id"], row["attempt_id"], row["session_id"], row["title"], row["status"] = wait.Machine, target.TaskID, attemptID, sessionID, title, status
+		setProjectTaskWaitSummary(row, summary, "manage_projects read_task_session machine="+wait.Machine+" project_id="+wait.ProjectID+" task_id="+target.TaskID+"; follow each cut message's next")
 		if attemptID != target.AttemptID {
 			row["pinned_attempt_id"] = target.AttemptID
 		}

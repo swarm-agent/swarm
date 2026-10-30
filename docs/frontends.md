@@ -280,7 +280,12 @@ on refresh, without polling. `GET
 remote task session's latest `messages`: by default the last 5 assistant and
 tool messages, newest kept first, the answer within 5 KB. `limit`,
 `max_chars` (content budget, at most 20000) and `role` (`assistant`, `tool`,
-`user` or `all`) widen it. It is read-only and needs `sessions:read`. Everything from a machine is `untrusted_content`: show it as
+`user` or `all`) widen it. A message longer than the budget is never cut
+off: it comes back with `truncated`, `content_offset` (the UTF-8 byte offset
+where the returned part ends), `total_bytes` and `next`, and
+`message_id`, `message_seq` and `content_offset` from `next` return the
+following chunk of that exact message (with `content_start`), always cut on a
+character boundary. It is read-only and needs `sessions:read`. Everything from a machine is `untrusted_content`: show it as
 plain text.
 
 #### Fleet keys

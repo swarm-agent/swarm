@@ -190,12 +190,17 @@ type projectTaskWorkflow struct {
 }
 
 type projectTaskResult struct {
-	Summary      string   `json:"summary,omitempty"`
-	Branch       string   `json:"branch,omitempty"`
-	Head         string   `json:"head,omitempty"`
-	Commits      int      `json:"commits"`
-	Files        int      `json:"files"`
-	Deliverables []string `json:"deliverables,omitempty"`
+	Summary string `json:"summary,omitempty"`
+	// ResultTruncated says Summary is shortened; ResultBytes is the full
+	// report's size and ReadFull how to read all of it.
+	ResultTruncated bool     `json:"result_truncated,omitempty"`
+	ResultBytes     int      `json:"result_bytes,omitempty"`
+	ReadFull        string   `json:"read_full,omitempty"`
+	Branch          string   `json:"branch,omitempty"`
+	Head            string   `json:"head,omitempty"`
+	Commits         int      `json:"commits"`
+	Files           int      `json:"files"`
+	Deliverables    []string `json:"deliverables,omitempty"`
 }
 
 // projectTaskPlanGuard is what approve_task/refine_task need for a task
@@ -375,16 +380,18 @@ func compactProjectTask(read projectTaskRead, remote bool) ProjectTaskView {
 	}
 
 	result := &projectTaskResult{Branch: t.WorktreeBranch, Commits: max(t.UnintegratedCommits, 0)}
+	report, reportSession := "", t.SessionID
 	if a := t.ActiveAttempt(); a != nil && strings.TrimSpace(a.Summary) != "" {
-		result.Summary = clipBytes(a.Summary, projectTaskReportBytes)
+		report, reportSession = strings.TrimSpace(a.Summary), firstNonEmptyText(a.SessionID, t.SessionID)
 	} else {
 		for i := len(t.Attempts) - 1; i >= 0; i-- {
 			if strings.TrimSpace(t.Attempts[i].Summary) != "" {
-				result.Summary = clipBytes(t.Attempts[i].Summary, projectTaskReportBytes)
+				report, reportSession = strings.TrimSpace(t.Attempts[i].Summary), firstNonEmptyText(t.Attempts[i].SessionID, t.SessionID)
 				break
 			}
 		}
 	}
+	result.Summary = clipBytes(report, projectTaskReportBytes)
 	if da := t.DeliveryAssessment; da != nil {
 		result.Head = da.SourceOID
 		result.Files = len(da.Files)
@@ -493,8 +500,25 @@ func compactProjectTask(read projectTaskRead, remote bool) ProjectTaskView {
 			view.Progress.Stage = "Needs you"
 		}
 	}
+	markProjectTaskResultCut(&view, report, reportSession, remote)
 	fitProjectTaskView(&view)
+	markProjectTaskResultCut(&view, report, reportSession, remote)
 	return view
+}
+
+// markProjectTaskResultCut says when the view shows less than the task's
+// report, how long the report is and how to read it all: the task session's
+// messages, paged within a message by each cut message's next.
+func markProjectTaskResultCut(view *ProjectTaskView, report, sessionID string, remote bool) {
+	if view.Result == nil || report == "" || view.Result.Summary == report {
+		return
+	}
+	view.Result.ResultTruncated, view.Result.ResultBytes = true, len(report)
+	if remote {
+		view.Result.ReadFull = "read_task_session, then each cut message's next"
+	} else {
+		view.Result.ReadFull = "manage-sessions read_messages session_id=" + clipBytes(sessionID, 160) + ", then each cut message's next"
+	}
 }
 
 // fitProjectTaskView shortens the report until the view fits its budget.

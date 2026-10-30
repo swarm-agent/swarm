@@ -68,6 +68,9 @@ func manageSessionsDefinition() Definition {
 			"max_chars":                 map[string]any{"type": "integer", "minimum": 1, "maximum": manageSessionsMaxChars, "description": "read_messages: content budget"},
 			"role":                      map[string]any{"type": "string", "description": "read_messages: only this role"},
 			"mode":                      map[string]any{"type": "string", "description": "read_messages: tail|before|after|around (*_seq)"},
+			"message_id":                map[string]any{"type": "string", "description": "read_messages: a cut message's next"},
+			"message_seq":               map[string]any{"type": "integer"},
+			"content_offset":            map[string]any{"type": "integer"},
 			"before_seq":                map[string]any{"type": "integer"},
 			"after_seq":                 map[string]any{"type": "integer"},
 			"around_seq":                map[string]any{"type": "integer"},
@@ -999,6 +1002,12 @@ func (r *Runtime) manageSessionsRead(scope WorkspaceScope, args map[string]any) 
 	if err != nil {
 		return "", err
 	}
+	budget := boundedInt(args["max_chars"], 12000, manageSessionsMaxChars)
+	if next, ok, err := MessageContinuationFromArgs(args); err != nil {
+		return "", err
+	} else if ok {
+		return r.manageSessionsReadMessageChunk(session, boundary, next, budget)
+	}
 	limit := boundedInt(args["limit"], 30, manageSessionsMaxRead)
 	mode := strings.ToLower(strings.TrimSpace(stringValue(args["mode"])))
 	roleFilter := strings.ToLower(strings.TrimSpace(stringValue(args["role"])))
@@ -1027,33 +1036,78 @@ func (r *Runtime) manageSessionsRead(scope WorkspaceScope, args map[string]any) 
 		return "", err
 	}
 	msgs = messagesFromBoundary(msgs, boundary)
-	budget := boundedInt(args["max_chars"], 12000, manageSessionsMaxChars)
 	out := make([]any, 0, len(msgs))
 	used := 0
+	// Messages the budget left out are reported, never dropped silently: the
+	// page ends at the last message returned.
+	shown := msgs[:0:0]
+	budgetExhausted := false
 	for _, m := range msgs {
 		if roleFilter != "" && !strings.EqualFold(m.Role, roleFilter) {
+			shown = append(shown, m)
 			continue
 		}
-		text := m.Content
 		remain := budget - used
 		if remain <= 0 {
+			budgetExhausted = true
 			break
 		}
-		if len(text) > remain {
-			text = truncateUTF8Bytes(text, remain)
+		chunk, err := ChunkMessageContent(m.Content, 0, remain)
+		if err != nil {
+			return "", err
 		}
-		used += len(text)
-		item := map[string]any{"id": m.ID, "seq": m.GlobalSeq, "role": m.Role, "content": text, "created_at": m.CreatedAt}
-		if m.Metadata["source"] == "feedback_delivery" {
-			item["feedback_delivery"] = map[string]any{"message_id": m.Metadata["message_id"], "run_id": m.Metadata["run_id"], "delivery_status": m.Metadata["delivery_status"], "incorporation_status": m.Metadata["incorporation_status"]}
-		}
-		out = append(out, item)
+		used += chunk.EncodedLen()
+		out = append(out, manageSessionsMessageItem(id, m, chunk, budget))
+		shown = append(shown, m)
 	}
-	response := map[string]any{"action": "read_messages", "session_id": id, "title": session.Title, "mode": mode, "messages": out, "characters": used, "content_trust": "untrusted", "next_before_seq": firstMessageSeq(msgs), "next_after_seq": lastMessageSeq(msgs)}
+	response := map[string]any{"action": "read_messages", "session_id": id, "title": session.Title, "mode": mode, "messages": out, "characters": used, "content_trust": "untrusted", "next_before_seq": firstMessageSeq(msgs), "next_after_seq": lastMessageSeq(shown)}
+	if budgetExhausted {
+		response["budget_exhausted"] = true
+		response["has_more_newer"] = true
+	}
 	if boundary > 0 {
 		response["note"] = manageSessionsContextClearedNote
 	}
 	return marshalManageSessions(response)
+}
+
+// manageSessionsMessageItem is one read_messages message, or one chunk of
+// it (ChunkMessageContent). A cut message carries next: the exact arguments
+// that read its following chunk.
+func manageSessionsMessageItem(sessionID string, m pebblestore.MessageSnapshot, chunk MessageContentChunk, budget int) map[string]any {
+	item := map[string]any{"id": m.ID, "seq": m.GlobalSeq, "role": m.Role, "content": chunk.Content, "created_at": m.CreatedAt}
+	if m.Metadata["source"] == "feedback_delivery" {
+		item["feedback_delivery"] = map[string]any{"message_id": m.Metadata["message_id"], "run_id": m.Metadata["run_id"], "delivery_status": m.Metadata["delivery_status"], "incorporation_status": m.Metadata["incorporation_status"]}
+	}
+	if chunk.Start > 0 {
+		item["content_start"] = chunk.Start
+	}
+	if chunk.Truncated || chunk.Start > 0 {
+		item["content_offset"], item["total_bytes"] = chunk.End, chunk.TotalBytes
+	}
+	if chunk.Truncated {
+		item["truncated"] = true
+		item["next"] = map[string]any{"action": "read_messages", "session_id": sessionID, "message_id": m.ID, "message_seq": m.GlobalSeq, "content_offset": chunk.End, "max_chars": budget}
+	}
+	return item
+}
+
+// manageSessionsReadMessageChunk reads the next chunk of one exact message
+// (read_messages with message_id, message_seq and content_offset).
+func (r *Runtime) manageSessionsReadMessageChunk(session pebblestore.SessionSnapshot, boundary uint64, next MessageContinuation, budget int) (string, error) {
+	msgs, err := r.listSessionMessages(session.ID, next.MessageSeq-1, 1)
+	if err != nil {
+		return "", err
+	}
+	msgs = messagesFromBoundary(msgs, boundary)
+	if len(msgs) == 0 || msgs[0].ID != next.MessageID || msgs[0].GlobalSeq != next.MessageSeq {
+		return "", fmt.Errorf("message %s (message_seq %d) was not found in session %s", next.MessageID, next.MessageSeq, session.ID)
+	}
+	chunk, err := ChunkMessageContent(msgs[0].Content, next.ContentOffset, budget)
+	if err != nil {
+		return "", err
+	}
+	return marshalManageSessions(map[string]any{"action": "read_messages", "session_id": session.ID, "title": session.Title, "mode": "message", "messages": []any{manageSessionsMessageItem(session.ID, msgs[0], chunk, budget)}, "characters": chunk.EncodedLen(), "content_trust": "untrusted"})
 }
 
 func (r *Runtime) manageSessionsGit(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {

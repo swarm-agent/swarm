@@ -38,10 +38,13 @@ type FleetLinkedTasks interface {
 // FleetTaskSessionRead bounds a linked task session read: how many of the
 // latest messages, their total content size, and which role ("" is assistant
 // and tool messages; "all" is every role). Zero values take the defaults.
+// Continue, when set, reads the next chunk of one message instead
+// (ChunkMessageContent).
 type FleetTaskSessionRead struct {
 	Limit    int
 	MaxChars int
 	Role     string
+	Continue *MessageContinuation
 }
 
 // FleetReadTaskSessionAction reads a linked task's session messages through
@@ -277,6 +280,11 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 			return "", errors.New("linked task records unavailable")
 		}
 		read := FleetTaskSessionRead{Limit: asInt(args["limit"], 0), MaxChars: asInt(args["max_chars"], 0), Role: strings.TrimSpace(asString(args["role"]))}
+		if next, ok, err := MessageContinuationFromArgs(args); err != nil {
+			return "", err
+		} else if ok {
+			read.Continue = &next
+		}
 		view, err := linkedTasks.ReadFleetLinkedTaskSession(ctx, scope.Principal, machine, strings.TrimSpace(asString(args["project_id"])), strings.TrimSpace(asString(args["task_id"])), read)
 		if err != nil {
 			return "", err

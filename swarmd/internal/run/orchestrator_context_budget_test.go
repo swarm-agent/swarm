@@ -31,7 +31,10 @@ const (
 	// stalled linked task and answer it in the chat, add about 400. Task
 	// watches (the cancel_watch action, the milestones parameter and the
 	// reply-then-end-your-turn instruction, all trimmed) add about 160.
-	orchestratorToolBudgetBytes   = 35*1024 + 640
+	// Paging within one long message (message_id, message_seq and
+	// content_offset on read_task_session and read_messages, so a cut
+	// result can be read to its end) adds about 330.
+	orchestratorToolBudgetBytes   = 35*1024 + 1024
 	orchestratorPromptBudgetBytes = 4608
 )
 

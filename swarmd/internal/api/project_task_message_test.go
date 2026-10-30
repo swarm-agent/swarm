@@ -602,8 +602,11 @@ func TestFleetLinkedTaskSessionReadIsBoundedByDefault(t *testing.T) {
 		}
 	}
 
+	// The content stays within 20 KB; the one cut message's continuation
+	// (content_offset, total_bytes and its next arguments) adds a few
+	// hundred bytes of framing.
 	wide, size := read(map[string]any{"max_chars": 50000, "limit": 100})
-	if size > 21*1024 || size <= 5*1024 {
+	if size > 22*1024 || size <= 5*1024 {
 		t.Fatalf("max_chars read is %d bytes, want more than 5 KB and capped near 20 KB", size)
 	}
 	if wide["max_chars"] != float64(20000) {
