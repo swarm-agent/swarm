@@ -3796,7 +3796,7 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		var taskUpdates []pebblestore.ProjectTaskUpdate
 		if pebblestore.ProjectConversationID(resolved.Session) != "" {
 			var next string
-			taskUpdates, next, err = e.server.sessions.Store().PendingProjectTaskUpdates(job.Principal.AccountScopeID, job.Principal.UserID, job.SessionID, job.RunID, taskUpdateCursor)
+			taskUpdates, next, err = e.server.sessions.Store().StepProjectTaskUpdates(job.Principal.AccountScopeID, job.Principal.UserID, job.SessionID, job.RunID, taskUpdateCursor)
 			if err != nil {
 				return sessionV3ProviderLoopResult{}, err
 			}

@@ -234,6 +234,9 @@ func (s *SessionStore) prepareSessionWake(input *V3SessionMutationInput) error {
 		} else if ok {
 			epochID = epoch.EpochID
 		}
+		if op.TaskUpdateRootRunID, err = s.currentSessionWakeRoot(input.SessionID, op.TaskUpdateRootRunID, metadata); err != nil {
+			return err
+		}
 		runID := SessionWakeRunID(input.SessionID, op.ID)
 		input.RunIntent = &V3SessionRunIntent{SessionID: input.SessionID, UserID: input.UserID, AccountScopeID: input.AccountScopeID, RunID: runID, SourceMessageID: message.ID, Status: V3RunIntentPendingExecutor, EpochID: epochID, TaskUpdateRootRunID: op.TaskUpdateRootRunID, CreatedAt: now, UpdatedAt: now}
 		op.DeliveredRunID, op.NewTurn = runID, true
@@ -245,6 +248,33 @@ func (s *SessionStore) prepareSessionWake(input *V3SessionMutationInput) error {
 		input.EventType = "session.wake.delivered"
 	}
 	return nil
+}
+
+// currentSessionWakeRoot is the task-report generation a new wake turn reads:
+// the one it was woken for while that is still current. A wake delivered after
+// the person started a newer generation (a note re-delivered after their
+// message) takes its watch's current generation, or its own ("") when the
+// watch already ended, so the turn never fails the owner fence
+// (ErrProjectTaskWaitStale) while the outcome it carries is still delivered.
+// Reports of a superseded generation stay superseded.
+func (s *SessionStore) currentSessionWakeRoot(sessionID, root string, metadata map[string]any) (string, error) {
+	if root == "" {
+		return "", nil
+	}
+	err := s.validateTaskUpdateOwnerFence(V3SessionRunIntent{SessionID: sessionID, RunID: root, TaskUpdateRootRunID: root})
+	if !errors.Is(err, ErrProjectTaskWaitStale) {
+		return root, err
+	}
+	if id, _ := metadata["task_watch_id"].(string); id != "" {
+		watch, ok, err := s.GetV3SessionTaskWatch(sessionID, id)
+		if err != nil {
+			return "", err
+		}
+		if ok && watch.UpdateRoot != root {
+			return s.currentSessionWakeRoot(sessionID, watch.UpdateRoot, nil)
+		}
+	}
+	return "", nil
 }
 
 // setSessionWakeInBatch writes or removes the wake note this mutation made or

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 
 	"github.com/cockroachdb/pebble"
 )
@@ -166,6 +167,23 @@ func (s *SessionStore) PendingProjectTaskUpdates(account, user, parent, run, aft
 	}
 	return s.pendingProjectTaskUpdates(owner, after)
 }
+
+// StepProjectTaskUpdates is what one provider step of run reads: its pending
+// task reports (PendingProjectTaskUpdates). A run that no longer owns the
+// conversation's reports (a person's message started a newer generation, or
+// it is no longer the current run) reads none and its turn goes on, so a
+// superseded generation never fails a turn with the raw
+// ErrProjectTaskWaitStale text. Its reports stay with their current owner;
+// any other error (account, user, storage) still fails the step.
+func (s *SessionStore) StepProjectTaskUpdates(account, user, parent, run, after string) ([]ProjectTaskUpdate, string, error) {
+	updates, next, err := s.PendingProjectTaskUpdates(account, user, parent, run, after)
+	if errors.Is(err, ErrProjectTaskWaitStale) {
+		log.Printf("debug: run %s of session %s does not own its task reports; the step reads none", run, parent)
+		return nil, "", nil
+	}
+	return updates, next, err
+}
+
 func (s *SessionStore) pendingProjectTaskUpdates(owner V3SessionRunIntent, after string) ([]ProjectTaskUpdate, string, error) {
 	fence, err := s.taskUpdateFence(owner.SessionID)
 	if err != nil {

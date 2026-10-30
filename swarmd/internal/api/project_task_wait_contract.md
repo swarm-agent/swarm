@@ -195,8 +195,14 @@ registering run's task-update root) and binds its task sessions to it at
 registration; the turns it starts carry it as `TaskUpdateRootRunID`, so they
 read those reports, and a watch's own delivery never advances the task-update
 fence. A person's message advances the fence (reports made before it are
-superseded, as before) and moves the conversation's local watches and their
-task bindings to that message's run, so later reports still reach the watch.
+superseded, as before) and moves every watch of the conversation (local and
+linked-machine) to that message's run, and a local watch's task bindings too,
+so later reports still reach the watch and its wake turns pass the owner
+fence. A wake note re-delivered as a new turn after a newer message takes the
+watch's current generation (or its own once the watch ended). A provider step
+of a run that no longer owns the reports reads none and goes on
+(`StepProjectTaskUpdates`); it never fails the run with
+`ErrProjectTaskWaitStale`.
 The V3 message boundary rejects task-originated messages to Orchestrator sessions,
 including non-triggering notes; ordinary user chat and parent-to-task feedback
 remain available. Timer tools and session messaging are not alternate wake paths.

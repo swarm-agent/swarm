@@ -870,17 +870,15 @@ func (s *SessionStore) bindTaskWatchReportsInBatch(batch *pebble.Batch, watch *V
 // moveTaskWatchesToGenerationInBatch runs when a person's message starts a
 // new report generation (it advances the task-update fence, which supersedes
 // reports made before it). Watches survive that message, so they follow it:
-// each local watch now reads reports of the new run's generation, and its
-// task sessions report to it from now on.
+// every watch (local or on a linked machine) now belongs to the new run's
+// generation, so the turns it starts pass the owner fence like any turn of
+// it; a local watch's task sessions also report to it from now on.
 func (s *SessionStore) moveTaskWatchesToGenerationInBatch(batch *pebble.Batch, sessionID string, run V3SessionRunIntent, fence string) error {
 	watches, err := s.ListV3SessionTaskWatches(sessionID)
 	if err != nil {
 		return err
 	}
 	for _, watch := range watches {
-		if watch.Wait.Machine != "" {
-			continue
-		}
 		watch.UpdateRoot, watch.EpochID = taskUpdateRoot(run), run.EpochID
 		raw, err := json.Marshal(watch)
 		if err != nil {
@@ -888,6 +886,9 @@ func (s *SessionStore) moveTaskWatchesToGenerationInBatch(batch *pebble.Batch, s
 		}
 		if err := batch.Set([]byte(KeyV3SessionTaskWatch(watch.SessionID, watch.WatchID)), raw, nil); err != nil {
 			return err
+		}
+		if watch.Wait.Machine != "" {
+			continue // a linked machine's reports do not reach this store
 		}
 		binding, err := json.Marshal(projectTaskUpdateBinding{watch.UpdateRoot, watch.EpochID, fence})
 		if err != nil {

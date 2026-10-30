@@ -2422,7 +2422,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		var taskUpdates []pebblestore.ProjectTaskUpdate
 		if options.ApplySessionMutation != nil && pebblestore.ProjectConversationID(sessionSnapshot) != "" {
 			var next string
-			taskUpdates, next, err = s.sessions.Store().PendingProjectTaskUpdates(options.Principal.AccountScopeID, options.Principal.UserID, sessionID, runID, taskUpdateCursor)
+			taskUpdates, next, err = s.sessions.Store().StepProjectTaskUpdates(options.Principal.AccountScopeID, options.Principal.UserID, sessionID, runID, taskUpdateCursor)
 			if err != nil {
 				return RunResult{}, err
 			}
