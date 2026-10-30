@@ -58,13 +58,15 @@ and Swarm Control. Every action here runs one service function,
 `ImportWorkflow`, `RestoreWorkflow`, `StopWorkflows`). Its caller is the
 Orchestrator's session or the Swarm Control caller's AI key, never the
 machine owner: `import` and `restore` refuse `run` steps, and a `propose`
-with one waits for the owner to accept it.
+with one waits for the owner to accept it. For a Swarm Control caller the
+service holds only the API scopes the key holds (`tool.WithControlScopes`),
+so a route's own scope checks see the key, never a wider set.
 
 | Action | Level | API scopes | Reach |
 | --- | --- | --- | --- |
 | `list`, `get`, `deliveries` | read | `automations:read` or `automations:write` | any |
 | `history` | write | `automations:read` or `automations:write` | any |
-| `export` | write | `automations:read` or `automations:write` (writing `path` also needs `automations:write`) | any |
+| `export` | write | `automations:read` or `automations:write` (writing `path` also needs the key to hold `automations:write`, checked before a linked call too) | any |
 | `propose`, `enable`, `disable`, `delete`, `import`, `restore` | write | `automations:write` | any |
 | `stop_all` | manage | `automations:write` | any |
 | `help` | read | `automations:read` or `automations:write` | home |

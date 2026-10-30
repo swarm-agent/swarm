@@ -10,6 +10,40 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 )
 
+type controlScopesContextKey struct{}
+
+// controlScopes is a Swarm Control caller's key scopes, carried in context.
+type controlScopes struct{ scopes []string }
+
+// WithControlScopes marks ctx as a Swarm Control call whose key holds
+// scopes: services bound the caller to them (ControlScopesFromContext).
+func WithControlScopes(ctx context.Context, scopes []string) context.Context {
+	return context.WithValue(ctx, controlScopesContextKey{}, controlScopes{scopes: append([]string{}, scopes...)})
+}
+
+// ControlScopesFromContext returns a Swarm Control caller's key scopes; ok
+// is false for any other caller (the Orchestrator, a route).
+func ControlScopesFromContext(ctx context.Context) ([]string, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	value, ok := ctx.Value(controlScopesContextKey{}).(controlScopes)
+	if !ok {
+		return nil, false
+	}
+	return append([]string{}, value.scopes...), true
+}
+
+// controlScopeHeld reports whether a Swarm Control caller's key holds scope.
+func controlScopeHeld(scope WorkspaceScope, want string) bool {
+	for _, held := range scope.ControlScopes {
+		if held == want {
+			return true
+		}
+	}
+	return false
+}
+
 // SetWorkflowLifecycleService wires the shared workflow authority (the API
 // server) that serves manage_workflows for the Orchestrator and Swarm
 // Control. Without it manage_workflows refuses every call.
@@ -70,6 +104,13 @@ func (r *Runtime) executeManageWorkflows(ctx context.Context, scope WorkspaceSco
 		call[key] = value
 	}
 	call["action"] = declared.Action
+	// export reads at automations:read, but writing its file is a change:
+	// a Swarm Control key needs automations:write for path, as on the
+	// export route, here and on a linked machine (whose route sees the
+	// link's credentials, not this key).
+	if _, writes := args["path"]; writes && declared.Action == "export" && scope.ControlCaller && !controlScopeHeld(scope, "automations:write") {
+		return "", errors.New("manage_workflows export with path writes a file and needs automations:write; this key does not hold it")
+	}
 	if machine := strings.TrimSpace(asString(args["machine"])); machine != "" {
 		if declared.Reach == CatalogReachHome {
 			return "", fmt.Errorf("manage_workflows %s runs on this machine only; omit machine", declared.Action)

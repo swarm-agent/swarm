@@ -556,7 +556,11 @@ type ControlCatalogCall struct {
 	// levels); local_only actions are refused.
 	LevelsBound bool
 	// KeyID is the caller's AI key record; it names the caller as a sender.
-	KeyID     string
+	KeyID string
+	// Scopes are the API scopes the caller's key holds (as the key's
+	// HasScope answers them). They bound what the action's service may do
+	// for this caller (ControlScopesFromContext); none holds nothing.
+	Scopes    []string
 	Tool      string
 	Arguments map[string]any
 }
@@ -604,7 +608,8 @@ func (r *Runtime) ExecuteControlCatalog(ctx context.Context, call ControlCatalog
 	if key := strings.TrimSpace(call.KeyID); key != "" {
 		sender = "key:" + key
 	}
-	scope := WorkspaceScope{Principal: p, ControlCaller: true, ControlSender: sender}
+	scope := WorkspaceScope{Principal: p, ControlCaller: true, ControlSender: sender, ControlScopes: append([]string{}, call.Scopes...)}
+	ctx = WithControlScopes(ctx, scope.ControlScopes)
 	switch catalog.Name {
 	case manageProjectsToolName:
 		return r.executeManageProjects(identity.ContextWithPrincipal(ctx, p), scope, args)

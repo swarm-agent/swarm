@@ -1,10 +1,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -385,5 +389,71 @@ func TestManageWorkflowsLevelsAndScopes(t *testing.T) {
 	}
 	if stop, _ := h.homeWorkflows.StopState(); stop.Stopped {
 		t.Fatal("a refused relay stop_all turned the switch")
+	}
+}
+
+// Purpose: manage_workflows export reads at automations:read, but its path
+// writes a file into a project folder, which the export route and
+// swarm_export_workflow allow only with automations:write. Through the
+// catalog the key's own scopes must bind the same way: a key with only
+// automations:read and no swarm:* levels (unbound levels allow every
+// action) is refused export with path, here and on a linked machine (whose
+// route sees the link's credentials, not the key), and no file is written;
+// its export without path still reads. The service function itself
+// (ManageWorkflows) also refuses when its context carries only read: it
+// never hands a Swarm Control caller automations:write the key lacks. A key
+// with automations:write writes the file. Threat: a read-only scoped key
+// creating or overwriting files through the catalog. Boundary:
+// controlMCPCall.callCatalogTool -> tool.Runtime.executeManageWorkflows ->
+// api.Server.ManageWorkflows -> ExportWorkflow, on two in-process daemons.
+func TestManageWorkflowsExportPathNeedsTheKeysWriteScope(t *testing.T) {
+	h := newCatalogParityHarness(t)
+	readOnly := []string{"automations:read"}
+	for _, machine := range []string{"", "box"} {
+		store, account := h.homeWorkflows, h.home.account
+		if machine != "" {
+			store, account = h.remoteWorkflows, h.remote.account
+		}
+		parity, err := store.FindByName(account, "Parity")
+		if err != nil {
+			t.Fatal(err)
+		}
+		args := func(more ...any) map[string]any {
+			out := parityArgs(append([]any{"action", "export", "id", parity.ID}, more...)...)
+			if machine != "" {
+				out["machine"] = machine
+			}
+			return out
+		}
+		target := filepath.Join(parity.Scope.Folder, "exports", "parity.json")
+		for _, path := range []string{"exports/parity.json", ""} {
+			if _, refused := h.controlTool(t, readOnly, "manage_workflows", args("path", path)); !strings.Contains(refused, "automations:write") {
+				t.Fatalf("machine %q: read-only key export path %q: %q", machine, path, refused)
+			}
+		}
+		for _, written := range []string{target, filepath.Join(parity.Scope.Folder, ".swarm", "workflows", "Parity.json")} {
+			if _, err := os.Stat(written); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("machine %q: a refused export wrote %s: %v", machine, written, err)
+			}
+		}
+		out, refused := h.controlTool(t, readOnly, "manage_workflows", args())
+		if data := workflowEnvelopeData(t, "export", out, refused); data["name"] != "Parity" {
+			t.Fatalf("machine %q: read-only export: %s", machine, out)
+		}
+	}
+	// The service boundary: a Swarm Control caller holding only read.
+	parity, _ := h.homeWorkflows.FindByName(h.home.account, "Parity")
+	ctx := tool.WithControlScopes(context.Background(), []string{"automations:read", "sessions:read", "swarm:read"})
+	if _, err := h.home.s.ManageWorkflows(ctx, h.p, "key:read", map[string]any{"action": "export", "id": parity.ID, "path": "exports/service.json"}); err == nil || !strings.Contains(err.Error(), "automations:write") {
+		t.Fatalf("ManageWorkflows gave a read-only key write: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(parity.Scope.Folder, "exports", "service.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a refused service export wrote a file: %v", err)
+	}
+	// A key with automations:write writes it.
+	out, refused := h.controlTool(t, catalogParityFullKey, "manage_workflows", map[string]any{"action": "export", "id": parity.ID, "path": "exports/parity.json"})
+	workflowEnvelopeData(t, "export", out, refused)
+	if _, err := os.Stat(filepath.Join(parity.Scope.Folder, "exports", "parity.json")); err != nil {
+		t.Fatalf("a write key's export wrote no file: %v", err)
 	}
 }

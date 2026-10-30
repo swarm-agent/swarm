@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"swarm/packages/swarmd/internal/remote"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
 
@@ -114,6 +115,22 @@ func (c *controlMCPCall) catalogLevels() (levels []string, bound bool) {
 	return levels, true
 }
 
+// controlCatalogServiceScopes are the API scopes a catalog action's service
+// may check for a Swarm Control caller.
+var controlCatalogServiceScopes = []string{"sessions:read", "sessions:write", "projects:read", "projects:write", "automations:read", "automations:write", "swarm:read"}
+
+// controlCatalogHeldScopes are those the key holds, as its HasScope answers
+// (aliases included), so a service never acts above the key.
+func controlCatalogHeldScopes(record *pebblestore.ScopedTokenRecord) []string {
+	var held []string
+	for _, scope := range controlCatalogServiceScopes {
+		if record.HasScope(scope) {
+			held = append(held, scope)
+		}
+	}
+	return held
+}
+
 // catalogToolTitles are the MCP titles of the catalog tools.
 var catalogToolTitles = map[string]string{"manage_projects": "Projects and tasks", "manage_workflows": "Workflows"}
 
@@ -197,10 +214,12 @@ func (c *controlMCPCall) callCatalogTool(catalog tool.CatalogTool, args map[stri
 	}
 	// The caller is named by its AI key where a session would be.
 	keyID := ""
+	var held []string
 	if record, ok := ScopedTokenFromRequest(c.request); ok && record != nil {
 		keyID = record.ID
+		held = controlCatalogHeldScopes(record)
 	}
-	answer, err := c.server.toolCatalog.ExecuteControlCatalog(c.request.Context(), tool.ControlCatalogCall{Principal: principal, Levels: levels, LevelsBound: bound, KeyID: keyID, Tool: catalog.Name, Arguments: args})
+	answer, err := c.server.toolCatalog.ExecuteControlCatalog(c.request.Context(), tool.ControlCatalogCall{Principal: principal, Levels: levels, LevelsBound: bound, KeyID: keyID, Scopes: held, Tool: catalog.Name, Arguments: args})
 	if err != nil {
 		return nil, controlMCPToolFailure("%s", err.Error())
 	}

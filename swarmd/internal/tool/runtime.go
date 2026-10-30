@@ -292,6 +292,9 @@ type WorkspaceScope struct {
 	// "user:ID" without a key record) where a session would: the sender
 	// of a task it sends to a linked machine.
 	ControlSender string
+	// ControlScopes are the API scopes the Swarm Control caller's key holds
+	// (ControlCatalogCall.Scopes); unused for other callers.
+	ControlScopes []string
 }
 
 type manageSessionService interface {
