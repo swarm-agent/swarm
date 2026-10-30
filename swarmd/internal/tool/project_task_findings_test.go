@@ -65,8 +65,10 @@ func TestManageProjectsGetTaskShowsWorkflowFindings(t *testing.T) {
 	if !utf8.ValidString(wf.Findings) || utf8.RuneCountInString(wf.Findings) != projectTaskFindingsRunes || !strings.HasPrefix(findings, wf.Findings) || !wf.FindingsTruncated || wf.More != "manage_workflows action=deliveries delivery_id=dl-1" {
 		t.Fatalf("findings: %d runes valid %v truncated %v more %q", utf8.RuneCountInString(wf.Findings), utf8.ValidString(wf.Findings), wf.FindingsTruncated, wf.More)
 	}
-	// The findings come on top of the budget: the report keeps its length.
-	if res := view.Task.Result; res == nil || len(res.Summary) < 900 {
+	// The findings come on top of the budget: the report keeps the length it
+	// has without them (TestManageProjectsGetTaskCompactByDefault's floor),
+	// and still says it was shortened and how to read it all.
+	if res := view.Task.Result; res == nil || len(res.Summary) < 750 || !res.ResultTruncated || res.ReadFull == "" {
 		t.Fatalf("findings displaced the report: %+v", view.Task.Result)
 	}
 	if len(raw) > getTaskBudget+len(wf.Findings)*2+400 {
