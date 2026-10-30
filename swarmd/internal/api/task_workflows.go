@@ -393,10 +393,19 @@ func (s *Server) reopenTaskSent(ctx context.Context, req jobautomation.ReopenReq
 		// Its status says a run, but none is recorded yet: nothing can
 		// take the message.
 		return jobautomation.ReopenSent{}, &jobautomation.BusyError{Reason: "the task " + req.JobID + " is still running (" + task.Status + ")"}
-	case active && s.v3SessionExecutor.queuedNoteRunID(task.SessionID) == "":
-		// A run that is recorded but does not take messages yet: a send
-		// now would start a second run beside it.
-		return jobautomation.ReopenSent{}, &jobautomation.BusyError{Reason: "the task " + req.JobID + " is still running: its run is starting and cannot take a message yet"}
+	case active:
+		noteRun := s.v3SessionExecutor.queuedNoteRunID(task.SessionID)
+		if noteRun == "" {
+			// A run that is recorded but does not take messages yet: a send
+			// now would start a second run beside it.
+			return jobautomation.ReopenSent{}, &jobautomation.BusyError{Reason: "the task " + req.JobID + " is still running: its run is starting and cannot take a message yet"}
+		}
+		if taskRunEndFollowup(task.ID, noteRun) == "" {
+			// The run continues the task's first run (after a provider
+			// limit): its end is the task's first end, which no round can
+			// be keyed by. Wait for it and send a follow-up of its own.
+			return jobautomation.ReopenSent{}, &jobautomation.BusyError{Reason: "the task " + req.JobID + " is still running its first run"}
+		}
 	}
 	// The message path: with an active run that takes notes the message is
 	// queued for it; otherwise it starts the task's follow-up run.
@@ -413,7 +422,14 @@ func (s *Server) reopenTaskSent(ctx context.Context, req jobautomation.ReopenReq
 		if forRun == "" {
 			return jobautomation.ReopenSent{}, errors.New("the follow-up was queued without the run it waits for")
 		}
-		return jobautomation.ReopenSent{Followup: forRun, Queued: true}, nil
+		// The round is keyed by the follow-up the task's end will name for
+		// that run (signalTaskRunEnded): a limit continuation <run>.limit<n>
+		// ends <run>.
+		followup := taskRunEndFollowup(task.ID, forRun)
+		if followup == "" {
+			return jobautomation.ReopenSent{}, errors.New("the follow-up was queued for the task's first run " + forRun + ", whose end cannot start a new round")
+		}
+		return jobautomation.ReopenSent{Followup: followup, Queued: true}, nil
 	}
 	followup, _ := run["run_id"].(string)
 	if followup == "" {

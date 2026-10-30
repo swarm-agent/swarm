@@ -440,7 +440,9 @@ With `fixes`:
   The message is stored for that run, reaches the agent with its next tool
   result (or starts the next turn when the run ends without reading it), and
   the step succeeds at once with `outcome.queued: true`, `outcome.followup`
-  naming that run and the output `sent (queued) to <job> for its current run
+  naming that run as the task's end names it (a continuation after a provider
+  limit, `<run>.limit<n>`, is named `<run>`; a continuation of the task's
+  first run cannot be named, so the step waits for it) and the output `sent (queued) to <job> for its current run
   <run> (round N)`. The round is counted then and the delivery ends
   `sent_back` as after any reopen. That run's end is the task's next job end:
   it starts the next round, which reviews whatever head the run ends at, also

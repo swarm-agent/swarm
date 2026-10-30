@@ -20,6 +20,19 @@ func taskRunJobID(projectID, taskID string) string {
 	return "task/" + projectID + "/" + taskID
 }
 
+// taskRunEndFollowup is the follow-up id a task's job end names for the run
+// runID (Result.Followup): the task's first run is the task's end (""); every
+// later run in its session (a follow-up, or a reopened attempt) is named by
+// its run id. A continuation after a provider limit (run id <run>.limit<n>)
+// ends the run it continues, not a new follow-up.
+func taskRunEndFollowup(taskID, runID string) string {
+	followup := pebblestore.ProjectTaskLimitRunBase(runID)
+	if followup == pebblestore.InitialTaskRunID(taskID) {
+		return ""
+	}
+	return followup
+}
+
 // signalTaskRunEnded records task.run.succeeded, task.run.failed or
 // task.run.cancelled when a run in a task's own session ends with the task in
 // a result state (taskRunLeftResult), so workflows
@@ -80,14 +93,7 @@ func (s *Server) signalTaskRunEnded(job sessionV3ExecutorJob, status string, res
 	if !taskRunLeftResult(task.Status) {
 		return
 	}
-	// The task's first run is the task's end; every later run in its session
-	// (a follow-up, or a reopened attempt) is named by its run id.
-	// A continuation after a provider limit (run id <run>.limit<n>) ends the
-	// run it continues, not a new follow-up.
-	followup := pebblestore.ProjectTaskLimitRunBase(job.RunID)
-	if followup == pebblestore.InitialTaskRunID(task.ID) {
-		followup = ""
-	}
+	followup := taskRunEndFollowup(task.ID, job.RunID)
 	attrs := map[string]string{"job_id": taskRunJobID(projectID, taskID), "role": task.Agent}
 	// Provider completion does not mean the reconciled task did its work.
 	if task.Status == "blocked" {
