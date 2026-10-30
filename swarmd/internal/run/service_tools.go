@@ -7913,8 +7913,19 @@ const (
 
 // manageSessionsPersonDecisionIdentity is the approval identity of a
 // manage_sessions call the person must approve, or "" for any other action.
+// It reads the exact "action" key, as the handler
+// (tool.Runtime.executeManageSessions) does; a call with a differently-cased
+// action key is treated as a person's decision (the handler refuses it too),
+// so a decoy key can never skip the prompt.
 func manageSessionsPersonDecisionIdentity(arguments string) string {
-	switch permission.ManageSessionsAction(arguments) {
+	var args map[string]any
+	if json.Unmarshal([]byte(strings.TrimSpace(arguments)), &args) != nil {
+		return ""
+	}
+	if tool.CatalogActionKeyUnambiguous(args) != nil {
+		return sessionPermissionAnswerIdentity
+	}
+	switch strings.ToLower(strings.TrimSpace(mapString(args, "action"))) {
 	case tool.ManageSessionsResolvePermissionAction:
 		return sessionPermissionAnswerIdentity
 	case tool.ManageSessionsSetModelAction:

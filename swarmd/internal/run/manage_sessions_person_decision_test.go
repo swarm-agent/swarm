@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -20,7 +21,11 @@ import (
 // default, and strips the generic bypass suffix (personDecisionMode), so the
 // call waits on a prompt in the calling conversation. Threat: an agent, or
 // injected session content steering it, approving a child's Bash command or
-// commit with allow_once and no prompt (the gap in stage 4's first cut).
+// commit with allow_once and no prompt (the gap in stage 4's first cut), or
+// skipping the prompt with a decoy key that differs from "action" only in
+// case (a case-insensitive decoder classified the decoy while the handler
+// ran the exact key): the gate reads the exact key and treats any such call
+// as a person's decision.
 // Negative case: while the prompt waits, and after the person denies it, the
 // child's request is still pending and the call is not approved. Control:
 // manage_sessions get is not gated. Boundary: gateToolCalls over a real
@@ -61,9 +66,14 @@ func TestManageSessionsPersonDecisionsWaitForThePerson(t *testing.T) {
 	}{
 		{sessionPermissionAnswerIdentity, map[string]any{"action": tool.ManageSessionsResolvePermissionAction, "session_id": "child", "permission_id": child.ID, "decision": "allow_once"}},
 		{sessionModelChangeIdentity, map[string]any{"action": tool.ManageSessionsSetModelAction, "session_id": "child", "provider": "p", "model": "m"}},
+		// A decoy key that differs from "action" only in case: a struct
+		// decoder would read the decoy (get), the handler the exact key.
+		{sessionPermissionAnswerIdentity, map[string]any{"action": tool.ManageSessionsResolvePermissionAction, "session_id": "child", "permission_id": child.ID, "decision": "allow_once", "ACTION": "get"}},
+		{sessionPermissionAnswerIdentity, map[string]any{"action": tool.ManageSessionsSetModelAction, "session_id": "child", "provider": "p", "model": "m", "Action": "get"}},
+		{sessionPermissionAnswerIdentity, map[string]any{"action": "get", "session_id": "child", "permission_id": child.ID, "decision": "allow_once", "aCtIoN": tool.ManageSessionsResolvePermissionAction}},
 	} {
 		raw, _ := json.Marshal(tc.args)
-		call := tool.Call{CallID: "person-" + tc.identity, Name: "manage-sessions", Arguments: string(raw)}
+		call := tool.Call{CallID: fmt.Sprintf("person-%d", i), Name: "manage-sessions", Arguments: string(raw)}
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		type gated struct {
 			mask []bool

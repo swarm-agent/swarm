@@ -46,6 +46,9 @@ func (r *Runtime) fleetCatalog() (FleetCatalog, bool) {
 // Swarm Control alike: one handler. With machine= the action runs on the
 // linked machine (its own manage_sessions handler, FleetCatalog).
 func (r *Runtime) executeManageSessions(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
+	if err := CatalogActionKeyUnambiguous(args); err != nil {
+		return "", err
+	}
 	catalog := catalogDeclared(manageSessionsToolName)
 	name := strings.ToLower(strings.TrimSpace(stringValue(args["action"])))
 	declared, ok := catalog.Action(name)
@@ -81,6 +84,20 @@ func (r *Runtime) executeManageSessions(ctx context.Context, scope WorkspaceScop
 		return "", err
 	}
 	return r.catalogEnvelope(catalog, declared.Action, call, answer, false)
+}
+
+// CatalogActionKeyUnambiguous refuses a catalog call whose arguments carry
+// a key that differs from "action" only in case. The handler reads the exact
+// key, while a struct decoder (a permission classifier) matches any case and
+// keeps the last: such a call could be approved as one action and run as
+// another.
+func CatalogActionKeyUnambiguous(args map[string]any) error {
+	for key := range args {
+		if key != "action" && strings.EqualFold(key, "action") {
+			return fmt.Errorf("argument %q is not \"action\"; give the action once, as \"action\"", key)
+		}
+	}
+	return nil
 }
 
 // createSessionScope authorizes create's workspace_path: inside the

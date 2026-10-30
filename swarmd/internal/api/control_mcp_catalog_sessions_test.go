@@ -331,6 +331,23 @@ func TestManageSessionsEndToEndOverSwarmControl(t *testing.T) {
 	if record, ok, _ := perms.GetPermission(sessionID, pending.ID); !ok || record.Status != pebblestore.PermissionStatusPending {
 		t.Fatalf("a refused answer changed the request: %+v", record)
 	}
+	// A decoy key that differs from "action" only in case is refused by the
+	// handler itself, on every surface, and the request stays pending.
+	for _, decoy := range []map[string]any{
+		{"action": tool.ManageSessionsResolvePermissionAction, "session_id": sessionID, "permission_id": pending.ID, "decision": "allow_once", "ACTION": "get"},
+		{"action": "get", "session_id": sessionID, "permission_id": pending.ID, "decision": "allow_once", "Action": tool.ManageSessionsResolvePermissionAction},
+	} {
+		if _, _, refused := call(catalogParityFullKey, decoy); !strings.Contains(refused, `is not "action"`) {
+			t.Fatalf("Swarm Control ran a call with a decoy action key: %q", refused)
+		}
+		decoyRaw, _ := json.Marshal(decoy)
+		if _, err := h.runtime.ExecuteForWorkspaceScopeWithRuntime(context.Background(), tool.WorkspaceScope{SessionID: "home-orch", Principal: h.p}, tool.Call{Name: "manage_sessions", Arguments: string(decoyRaw)}); err == nil || !strings.Contains(err.Error(), `is not "action"`) {
+			t.Fatalf("a conversation ran a call with a decoy action key: %v", err)
+		}
+		if record, ok, _ := perms.GetPermission(sessionID, pending.ID); !ok || record.Status != pebblestore.PermissionStatusPending {
+			t.Fatalf("a decoy call changed the request: %+v", record)
+		}
+	}
 	raw, _ := json.Marshal(answer)
 	if _, err := h.runtime.ExecuteForWorkspaceScopeWithRuntime(context.Background(), tool.WorkspaceScope{SessionID: sessionID, Principal: h.p}, tool.Call{Name: "manage_sessions", Arguments: string(raw)}); err == nil || !strings.Contains(err.Error(), "own requests") {
 		t.Fatalf("a conversation answered its own request: %v", err)

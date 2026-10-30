@@ -33,6 +33,9 @@ func (r *Runtime) SetWorkspaceCatalogService(service WorkspaceCatalogService) {
 // own manage_workspace handler); otherwise local runs it here with the
 // call's arguments (machine removed) and returns its own answer.
 func (r *Runtime) ManageWorkspaceCatalog(ctx context.Context, scope WorkspaceScope, args map[string]any, local func(args map[string]any) (string, error)) (string, error) {
+	if err := CatalogActionKeyUnambiguous(args); err != nil {
+		return "", err
+	}
 	catalog := catalogDeclared(manageWorkspaceToolName)
 	name := strings.ToLower(strings.TrimSpace(stringValue(args["action"])))
 	switch name {
