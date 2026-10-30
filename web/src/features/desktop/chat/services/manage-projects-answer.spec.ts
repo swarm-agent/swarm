@@ -9,7 +9,7 @@
 // functions the chat tool view uses; no runtime or network is needed.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { manageProjectsAnswer, manageProjectsLinked } from './manage-projects-answer'
+import { catalogAnswerData, manageProjectsAnswer, manageProjectsLinked } from './manage-projects-answer'
 import { toolActivityPresentation } from './tool-activity'
 
 const envelope = (action: string, state: string, data: Record<string, unknown>, machine = 'home') =>
@@ -20,6 +20,15 @@ test('the envelope is read through data', () => {
   assert.deepEqual(answer, { data: { tasks: [] }, state: 'timed_out', machine: 'home', nextAction: 'Tell the person.', envelope: true })
   assert.equal(manageProjectsLinked({ action: 'get_task' }, envelope('get_task', 'ok', {})), false)
   assert.equal(manageProjectsLinked({ action: 'get_task', machine: 'box' }, envelope('get_task', 'ok', {}, 'box')), true)
+})
+
+// manage_sessions answers in the same envelope: its session card reads data,
+// and a message stored before the envelope keeps its answer.
+test('a manage_sessions answer is read through data', () => {
+  const sessions = { tool: 'manage_sessions', action: 'list', machine: 'home', state: 'ok', data: { items: [{ id: 's1' }], has_more: false }, untrusted_content: true }
+  assert.deepEqual(catalogAnswerData(sessions), { items: [{ id: 's1' }], has_more: false })
+  assert.deepEqual(catalogAnswerData({ action: 'list', items: [] }), { action: 'list', items: [] })
+  assert.equal(catalogAnswerData(null), null)
 })
 
 test('older messages keep their answer', () => {

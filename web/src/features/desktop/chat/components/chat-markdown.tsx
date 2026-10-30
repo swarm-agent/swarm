@@ -24,6 +24,7 @@ import { displayAgentName } from "../services/agent-display";
 import { toolActivityStartSummary } from "../services/tool-activity";
 import { describeToolActivity } from "../services/tool-message";
 import { isPendingWorkerProposalResult, workerToolAnswer } from "../services/worker-tool-answer";
+import { catalogAnswerData } from "../services/manage-projects-answer";
 import { ToolActivityShell } from "./tool-activity-shell";
 import { DesktopV3ArtifactPreviewThumbnail } from "./desktop-v3-artifact-preview-thumbnail";
 import { desktopV3ArtifactDirectContentURL, desktopV3ArtifactDownloadName, desktopV3ArtifactMessageSelection, fetchDesktopV3ArtifactDownload, normalizeDesktopV3ArtifactCatalogEntry, preflightDesktopV3ArtifactDirectContent, revealDesktopV3Artifact, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
@@ -2410,10 +2411,12 @@ export function ManageArtifactCard({
 }
 
 function ManageSessionsCard({ toolMessage }: { toolMessage: StructuredToolMessage }) {
-  const output = toolMessage.outputJson ?? parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
-  if (!output) return null;
+  const raw = toolMessage.outputJson ?? parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
+  // manage_sessions answers in the catalog envelope; its data is the action's answer.
+  const output = catalogAnswerData(raw);
+  if (!raw || !output) return null;
   const args = toolMessage.argumentsJson ?? null;
-  const action = toolJsonString(output, "action") || toolJsonString(args, "action") || "sessions";
+  const action = toolJsonString(raw, "action") || toolJsonString(output, "action") || toolJsonString(args, "action") || "sessions";
   const deployResults = Array.isArray(output.results) ? output.results : [];
   const followUpCandidates = Array.isArray(output.follow_up_candidates) ? output.follow_up_candidates : [];
   const archiveCandidates = Array.isArray(output.archive_candidates) ? output.archive_candidates : [];

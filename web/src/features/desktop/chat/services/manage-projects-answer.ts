@@ -44,6 +44,16 @@ export function manageProjectsAnswer(out: Record<string, unknown> | null | undef
   return { data: out, state: '', machine, nextAction: text(out, 'next_action'), envelope: false }
 }
 
+/**
+ * A catalog tool's own answer (manage_sessions and the other catalog tools
+ * answer in the same envelope): the envelope's data, or, for a message
+ * stored before the envelope, the answer as it was.
+ */
+export function catalogAnswerData(out: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+  if (!out) return null
+  return isManageProjectsEnvelope(out) ? record(out.data) : out
+}
+
 /** Whether the call ran on a linked machine: its machine argument, or an older message's wrapper. */
 export function manageProjectsLinked(args: Record<string, unknown> | null | undefined, out: Record<string, unknown> | null | undefined): boolean {
   if (text(args, 'machine')) return true
