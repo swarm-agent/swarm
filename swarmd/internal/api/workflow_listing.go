@@ -69,7 +69,8 @@ func workflowDeliveryLine(d jobautomation.Delivery) map[string]any {
 		}
 		steps = append(steps, line)
 	}
-	out := map[string]any{"delivery_id": d.ID, "job_id": d.JobID, "state": d.State, "round": d.Round, "created_at": d.CreatedAt, "steps": steps}
+	out := map[string]any{"delivery_id": d.ID, "job_id": d.JobID, "round": d.Round, "created_at": d.CreatedAt, "steps": steps}
+	putDeliveryStatus(out, d, 300)
 	if d.Head != "" {
 		out["head"] = d.Head
 	}

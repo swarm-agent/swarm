@@ -21,6 +21,13 @@ import (
 // It makes Busy true; such a run is a pending intent that runs after a
 // restart, so it does not affect RestartResumable.
 //
+// LimitWaiting counts unfinished worker runs (reviews among them) waiting for
+// their provider's usage, rate or session limit to reset, which can be days.
+// They hold no capacity and no agent turn, and rerun themselves at the reset,
+// also after a restart or power-off: they are unfinished but not running, so
+// they do not make Busy true and are not in WorkerRuns or Reviews. A drain
+// does not wait on them.
+//
 // RestartResumable says whether every item counted resumes after a restart.
 // Durable worker runs, follow-ups and reviews without a live agent turn do
 // (ReconcileWorker picks them up at startup). Agent runs in progress do not:
@@ -34,6 +41,7 @@ type boxBusy struct {
 	Sessions          int  `json:"sessions"`
 	Queued            int  `json:"queued"`
 	WorkerRuns        int  `json:"worker_runs"`
+	LimitWaiting      int  `json:"limit_waiting"`
 	EnvironmentBuilds int  `json:"environment_builds"`
 	RestartResumable  bool `json:"restart_resumable"`
 }
@@ -67,7 +75,7 @@ func (s *Server) boxBusyFrom(held, queued []string) (boxBusy, error) {
 		if err != nil {
 			return out, err
 		}
-		if out.WorkerRuns, err = s.sessions.CountUnfinishedWorkerRuns(); err != nil {
+		if out.WorkerRuns, out.LimitWaiting, err = s.sessions.Store().WorkerStore().CountWorkerRunsByWait(); err != nil {
 			return out, errors.New("count unfinished worker runs: " + err.Error())
 		}
 	}

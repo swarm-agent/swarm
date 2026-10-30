@@ -362,16 +362,26 @@ func (ws *WorkerStore) CountWorkerRuns(account string, sinceMs, untilMs int64) (
 }
 
 // CountUnfinishedWorkerRuns counts every account's unfinished runs on this
-// machine, each checked against its run record. A restart of the daemon
-// interrupts them, so an update waits until this is zero.
+// machine, each checked against its run record, except the runs waiting for
+// a provider's limit to reset (CountWorkerRunsByWait). A restart of the
+// daemon interrupts them, so an update waits until this is zero.
 func (ws *WorkerStore) CountUnfinishedWorkerRuns() (int, error) {
+	active, _, err := ws.CountWorkerRunsByWait()
+	return active, err
+}
+
+// CountWorkerRunsByWait counts every account's unfinished runs on this
+// machine: active (admitted, queued, preparing, running) and limitWaiting
+// (WorkerRunStatusWaiting: the run holds no capacity and no agent turn, and
+// reruns itself at its RetryAt, also after a restart). A waiting run is
+// unfinished but not running: an update drain need not wait days for it.
+func (ws *WorkerStore) CountWorkerRunsByWait() (active, limitWaiting int, err error) {
 	if ws == nil || ws.store == nil {
-		return 0, ErrWorkerInvalid
+		return 0, 0, ErrWorkerInvalid
 	}
 	snap := ws.store.db.NewSnapshot()
 	defer snap.Close()
-	count := 0
-	err := iteratePrefixFromReader(snap, keyWorkerRunActivePrefix, int(^uint(0)>>1), func(key string, value []byte) error {
+	err = iteratePrefixFromReader(snap, keyWorkerRunActivePrefix, int(^uint(0)>>1), func(key string, value []byte) error {
 		var entry workerRunIndexEntry
 		account, _, ok := strings.Cut(strings.TrimPrefix(key, keyWorkerRunActivePrefix), "/")
 		if !ok || json.Unmarshal(value, &entry) != nil {
@@ -383,10 +393,14 @@ func (ws *WorkerStore) CountUnfinishedWorkerRuns() (int, error) {
 		if err != nil {
 			return err
 		}
-		if found && !AutomationV2Terminal(run.Status) {
-			count++
+		switch {
+		case !found || AutomationV2Terminal(run.Status):
+		case run.Status == WorkerRunStatusWaiting:
+			limitWaiting++
+		default:
+			active++
 		}
 		return nil
 	})
-	return count, err
+	return active, limitWaiting, err
 }

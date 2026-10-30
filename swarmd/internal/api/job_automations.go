@@ -945,6 +945,26 @@ func jobAutomationStepMigrations(steps []jobautomation.Step) []map[string]any {
 	return out
 }
 
+// putDeliveryStatus sets a delivery view's state as it is shown
+// (jobautomation.Delivery.Status): "waiting", with until (unix ms) and
+// reason, while its only unfinished work waits on a provider's limit to
+// reset; else the stored state. maxReason > 0 cuts the reason.
+func putDeliveryStatus(view map[string]any, d jobautomation.Delivery, maxReason int) {
+	status := d.Status()
+	view["state"] = status.State
+	if status.State != jobautomation.StateWaiting {
+		return
+	}
+	view["until"] = status.Until
+	reason := status.Reason
+	if maxReason > 0 {
+		reason = controlMCPTruncate(reason, maxReason)
+	}
+	if reason != "" {
+		view["reason"] = reason
+	}
+}
+
 // jobDeliveryView is a delivery without its full result (the result is
 // read with the job). withLogs adds each step's log tail.
 func jobDeliveryView(d jobautomation.Delivery) map[string]any {
@@ -981,8 +1001,9 @@ func jobDeliveryView(d jobautomation.Delivery) map[string]any {
 	}
 	out := map[string]any{
 		"delivery_id": d.ID, "automation_id": d.AutomationID, "automation": d.AutomationName, "automation_revision": d.AutomationRevision,
-		"job_id": d.JobID, "round": d.Round, "state": d.State, "steps": steps, "created_at": d.CreatedAt,
+		"job_id": d.JobID, "round": d.Round, "steps": steps, "created_at": d.CreatedAt,
 	}
+	putDeliveryStatus(out, d, 0)
 	if d.Followup != "" {
 		out["followup"] = d.Followup
 	}

@@ -28,7 +28,9 @@ func (ws *WorkerStore) BoxExecutionCounts() (followups, reviews int, err error) 
 		if r.FollowupActive() {
 			followups++
 		}
-		if r.Role == WorkerRoleReviewer && !AutomationV2Terminal(r.Status) {
+		// A review waiting for its provider's limit to reset is not running:
+		// CountWorkerRunsByWait counts it as limit-waiting.
+		if r.Role == WorkerRoleReviewer && !AutomationV2Terminal(r.Status) && r.Status != WorkerRunStatusWaiting {
 			reviews++
 		}
 		return nil

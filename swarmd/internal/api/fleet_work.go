@@ -179,8 +179,13 @@ func compactFleetList(raw json.RawMessage) (json.RawMessage, error) {
 				if len(deliveries) > 0 {
 					if d, ok := deliveries[0].(map[string]any); ok {
 						last := map[string]any{}
-						for _, key := range []string{"state", "created_at", "updated_at", "finished_at"} {
+						// until and reason come with state "waiting": a
+						// delivery parked on a provider's limit.
+						for _, key := range []string{"state", "until", "reason", "created_at", "updated_at", "finished_at"} {
 							if v, ok := d[key]; ok {
+								if text, ok := v.(string); ok && len(text) > 300 {
+									v = text[:300]
+								}
 								last[key] = v
 							}
 						}

@@ -254,6 +254,51 @@ func Terminal(state string) bool {
 	return false
 }
 
+// LimitWaiting reports whether a step waits for a provider's usage, rate or
+// session limit to reset: state waiting with the time it runs again. A reopen
+// step waiting for its job to settle has no NextAttemptAt; it is still
+// working (it asks again within its timeout), so it is not limit-waiting.
+func LimitWaiting(step StepRecord) bool {
+	return step.State == StateWaiting && step.NextAttemptAt > 0
+}
+
+// DeliveryStatus is a delivery's state as it is shown. It is the stored
+// state, except that an unfinished delivery whose only unfinished work is
+// steps waiting on a provider's limit (LimitWaiting), with no step running,
+// shows StateWaiting with Until (the earliest reset, unix ms) and Reason (the
+// waiting step's reason: the provider limit and when it resets). Nothing is
+// stored differently: the delivery stays unfinished and its steps resume by
+// themselves at the reset, after which it shows running again.
+type DeliveryStatus struct {
+	State  string
+	Until  int64
+	Reason string
+}
+
+// Status is the delivery's state as it is shown (see DeliveryStatus).
+func (d Delivery) Status() DeliveryStatus {
+	out := DeliveryStatus{State: d.State}
+	if d.State != StateRunning || d.ItemsReopened != "" {
+		return out
+	}
+	for _, step := range d.Steps {
+		switch {
+		case step.State == StateRunning:
+			return DeliveryStatus{State: d.State}
+		case step.State == StateWaiting && !LimitWaiting(step):
+			return DeliveryStatus{State: d.State} // a reopen step asking its job
+		case LimitWaiting(step):
+			if out.Until == 0 || step.NextAttemptAt < out.Until {
+				out.Until, out.Reason = step.NextAttemptAt, step.Reason
+			}
+		}
+	}
+	if out.Until > 0 {
+		out.State = StateWaiting
+	}
+	return out
+}
+
 // StopState is the machine-wide stop switch.
 type StopState struct {
 	Stopped bool   `json:"stopped"`
@@ -993,7 +1038,10 @@ func filterDeliveries(in []Delivery, filter DeliveryFilter) []Delivery {
 		if filter.AutomationID != "" && d.AutomationID != filter.AutomationID {
 			continue
 		}
-		if filter.State != "" && d.State != filter.State {
+		// The state filter matches the state as shown (Delivery.Status):
+		// "waiting" lists the deliveries parked on a provider's limit and
+		// "running" leaves them out.
+		if filter.State != "" && d.Status().State != filter.State {
 			continue
 		}
 		out = append(out, d)
