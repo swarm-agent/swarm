@@ -90,3 +90,40 @@ func TestManageWorkflowsLevelsAreTheSwarmToolsLevels(t *testing.T) {
 		t.Fatalf("stop_all is %s, not manage", stop.Level)
 	}
 }
+
+// Purpose: each manage_jobs action needs the level of the swarm_* job tool
+// with the same effect (ToolScope), so moving jobs into the catalog neither
+// widens nor narrows what a key may do: reads stay read, and giving,
+// messaging, answering, delivering, stopping, scheduling and re-running a
+// job stay write. A relay client is forwarded with its levels for
+// manage_jobs as for every catalog tool. Threat: a read key starting or
+// stopping work through the catalog, or a level silently changed in the
+// move. Boundary: tool.Catalog's manage_jobs declarations against ToolScope
+// and forwardTool.
+func TestManageJobsLevelsAreTheSwarmToolsLevels(t *testing.T) {
+	swarmTool := map[string]string{
+		"list_runs": "swarm_list_runs", "get_job": "swarm_get_job", "deliveries": "swarm_list_workflows",
+		"rerun_failed_steps": "swarm_deliver_job", "give_job": "swarm_give_job", "message_job": "swarm_message_job",
+		"answer_job": "swarm_answer_job", "deliver_job": "swarm_deliver_job", "stop_job": "swarm_stop_job",
+		"schedule_job": "swarm_schedule_job",
+	}
+	jobs, ok := tool.CatalogToolNamed("manage_jobs")
+	if !ok {
+		t.Fatal("manage_jobs is not a catalog tool")
+	}
+	if len(jobs.Actions) != len(swarmTool) {
+		t.Fatalf("manage_jobs declares %d actions; %d have a swarm_* tool", len(jobs.Actions), len(swarmTool))
+	}
+	for _, action := range jobs.Actions {
+		name, ok := swarmTool[action.Action]
+		if !ok {
+			t.Fatalf("%s has no swarm_* tool to take its level from (level %s)", action.Action, action.Level)
+		}
+		if action.Level.Scope() != ToolScope(name) {
+			t.Fatalf("manage_jobs %s needs %s; %s needs %s", action.Action, action.Level.Scope(), name, ToolScope(name))
+		}
+	}
+	if listed := string(filterTools([]byte(`{"result":{"tools":[{"name":"manage_jobs"}]}}`), []string{ScopeRead})); !strings.Contains(listed, "manage_jobs") {
+		t.Fatalf("relay listing drops manage_jobs for a read client: %s", listed)
+	}
+}
