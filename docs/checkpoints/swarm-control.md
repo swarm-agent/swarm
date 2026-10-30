@@ -61,6 +61,12 @@ with `machine` reaching linked machines ([tool catalog](../tool-catalog.md)). Us
 jobs and workers; the `swarm_*` job and worker tools below stay unchanged until they are
 removed.
 
+The catalog tools `manage_sessions` and `manage_workspace` are in the default
+list too and cover the session and workspace `swarm_*` tools below (which
+stay until they are removed); `docs/tool-catalog.md` lists their actions and
+levels. `swarm_create_workspace` (a new, empty repository) has no catalog
+action yet.
+
 ## All tools
 
 | Tool | Relay scope | Routes reached |

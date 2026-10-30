@@ -48,7 +48,7 @@ request IDs. Let normal MCP clients implement their own handshake:
 ```
 
 ```json
-{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"swarm_list_workspaces","arguments":{}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"manage_workspace","arguments":{"action":"list"}}}
 ```
 
 Initialize should identify `swarm-control`; its version comes from the build.
@@ -112,7 +112,7 @@ metadata or remove authentication as a workaround.
    an optional `prompt`, which starts its first run (`swarm_start_session` still
    takes a plan instead of a prompt). Finder can do a read-only smoke test.
    Project orchestration instead needs a project (folders the person named,
-   registered with `swarm_add_workspace`, grouped by `swarm_create_project`,
+   registered with `manage_workspace` `create`, grouped by `swarm_create_project`,
    `project.md` ready per `swarm_get_project`) and the orchestrator agent.
    Preserve the returned `data.session_id`.
 3. Every `manage_sessions` answer is the catalog envelope: the call's outcome is

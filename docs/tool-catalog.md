@@ -13,7 +13,7 @@ The catalog holds every tool below:
 | `manage_projects` | 1 (6 adds `get_task_changes`, `read_task_file`) | `catalog_manage_projects.go` |
 | `manage_workflows` | 2 | `catalog_manage_workflows.go` |
 | `manage_jobs`, `manage_workers` | 3 | `catalog_manage_jobs.go`, `catalog_manage_workers.go` |
-| `manage_sessions`, `manage_workspace` | 4 (landing separately) | `catalog_manage_sessions.go`, `catalog_manage_workspace.go` |
+| `manage_sessions`, `manage_workspace` | 4 | `catalog_manage_sessions.go`, `catalog_manage_workspace.go` |
 | `manage_setup` | 5 | `catalog_manage_setup.go` |
 | `manage_fleet` | 6 | `catalog_manage_fleet.go` |
 | `manage_media` | 6 | `catalog_manage_media.go` |
@@ -57,8 +57,8 @@ Each action of a catalog tool declares:
   `home` runs here only. `linked` reads a linked machine only, so `machine` is
   required.
 - **local_only**: machine setup that a relay key may not do. No
-  `manage_projects`, `manage_workflows` or `manage_sessions` action is
-  local_only.
+  `manage_projects`, `manage_workflows`, `manage_sessions` or
+  `manage_workspace` action is local_only.
 - **profiles**: the listings that show the action. `essentials` is Swarm
   Control's default listing, `full` is its `tools=all` listing and
   `orchestrator` is the Orchestrator's definition (for `manage_jobs`, also
@@ -70,16 +70,17 @@ Each action of a catalog tool declares:
 - **waiting statuses**: the statuses of the answer's own record that wait on
   someone; such an answer's state is `waiting` (`manage_jobs`).
 
-The Orchestrator's `manage_projects`, `manage_workflows`, `manage_jobs` and
-`manage_workers` definitions are generated from these declarations
-(`CatalogTool.OrchestratorDefinition`), and a test holds each by hash.
-`manage_projects`' is the exact definition the model was shown before;
-`manage_workflows`', `manage_jobs`' and `manage_workers`' keep every field and
-the description they had and add the new actions' inputs (`manage_jobs`' and
-`manage_workers`' schemas now accept other properties, as every catalog tool's
-does).
-`manage_sessions`' replaces the hand-written trim with its orchestrator
-profile (`TestManageSessionsOrchestratorDefinitionIsTheCatalogs`).
+The Orchestrator's `manage_projects`, `manage_workflows`, `manage_jobs`,
+`manage_workers`, `manage_sessions` and `manage_workspace` definitions are
+generated from these declarations (`CatalogTool.OrchestratorDefinition`).
+`manage_projects`' is held by hash: the exact definition the model was shown
+before. `manage_workflows`', `manage_jobs`' and `manage_workers`' are held by
+hash too and keep every field and the description they had, adding the new
+actions' inputs (`manage_jobs`' and `manage_workers`' schemas now accept other
+properties, as every catalog tool's does). `manage_sessions`' and
+`manage_workspace`'s replace the hand-written trims with their orchestrator
+profiles (`TestManageSessionsOrchestratorDefinitionIsTheCatalogs`,
+`TestManageWorkspaceOrchestratorDefinitionIsTheCatalogs`).
 
 ## manage_workflows
 
@@ -387,7 +388,13 @@ message names `next`; `list`'s opaque cursor carries over as `next`.
 Each level is `remote.ToolScope` of the `swarm_*` tool with the same effect
 (`TestManageSessionsLevelsAreTheSwarmToolsLevels`); `archive`, `unarchive`
 and `compact` have no `swarm_*` tool and change sessions, so they need
-write. `set_model` is called only when the person asks. Every action above
+write. `set_model` is called only when the person asks. In a conversation,
+`resolve_permission` and `set_model` always ask the person first: the run
+gives them their own approval identities (`session_permission_answer`,
+`session_model_change`), which have no default allow and ignore permission
+bypass (`run.manageSessionsPersonDecisionIdentity`,
+`TestManageSessionsPersonDecisionsWaitForThePerson`). Through MCP the key's
+level is that check (approve for `resolve_permission`). Every action above
 is in the Orchestrator's definition (generated from the catalog's
 orchestrator profile) and in Swarm Control's default listing. The Swarm
 agent's own session tooling (`review_worktrees`, `git_status`, `commit` and
@@ -400,6 +407,44 @@ machine's own `manage_sessions` handler, at `POST /v3/tool-catalog/{tool}`
 linked work rule applies: off refuses every call, ask refuses the calls
 that start a run there (`create` with a prompt, a triggering
 `send_message`), auto runs everything.
+
+## manage_workspace
+
+One entry (`tool.Runtime.ManageWorkspaceCatalog`) answers every call in the
+envelope. A conversation's call (the Orchestrator's or the Swarm agent's)
+runs `run.Service.ExecuteManageWorkspace`: catalog and Workspace Map
+changes run only with the person's approved arguments, and a change to the
+session's own workspace switches it and restarts the turn, as before. A
+Swarm Control call has no conversation and runs
+`run.Service.ManageWorkspaceControl` (the run service registers it on the
+tool runtime): the same catalog and Workspace Map functions with no session
+to retarget. Swarm sets the action's permission scope itself and refuses one
+from the caller; `create` applies `swarm_add_workspace`'s checks (an
+existing, non-empty folder outside system and Swarm storage, not inside a
+registered workspace).
+
+| Action | Level | API scopes | Reach |
+| --- | --- | --- | --- |
+| `inspect`, `list`, `inspect_map`, `get_map`, `list_source_media_directories` | read | `sessions:read` or `sessions:write` | any |
+| `create`, `update`, `update_map`, `set_default`, `add_source_media_directory`, `remove_source_media_directory` | write | `sessions:write` | any |
+| `delete` | manage | `sessions:write` | any |
+
+The reads take `swarm_list_workspaces`' level and `create` takes
+`swarm_add_workspace`'s (`TestManageWorkspaceLevelsAreTheSwarmToolsLevels`).
+The other changes have no `swarm_*` tool. They need write, except `delete`,
+which removes a workspace from the catalog and needs manage, like
+`manage_projects` `delete`. Every action above is in the Orchestrator's
+definition (its orchestrator profile, replacing the hand-written trim) and
+in Swarm Control's default listing. The Swarm agent's session and worktree
+actions (`set_session`, `adopt_worktree`, `discover_worktrees`,
+`reclaim_worktree`, `copy_worktree`, `cancel_worktree_recovery`) need a
+conversation: they have no profile, that agent keeps its full definition,
+and Swarm Control does not serve them.
+
+With `machine`, an action runs on the linked machine's own handler through
+`POST /v3/tool-catalog/manage_workspace`, as for `manage_sessions`; the
+linked work rule's off refuses. In a conversation a linked catalog change
+still asks the person first (the call as written).
 
 ## The envelope
 

@@ -62,7 +62,7 @@ so credentials cannot be forwarded to a different destination. This adapter
 supports Swarm's stateless JSON HTTP transport, not arbitrary SSE MCP servers.
 
 Refresh/reconnect the plugin after configuration. A useful proof is a successful
-`swarm_list_models` or `swarm_list_workspaces` call, followed by the person's
+`swarm_list_models` or `manage_workspace` `list` call, followed by the person's
 requested small task. Never call an installed plugin "connected" on manifest
 inspection alone. Preserve IDs after ambiguous writes and inspect existing
 sessions before retries.
