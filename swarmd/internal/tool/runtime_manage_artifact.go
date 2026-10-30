@@ -1678,7 +1678,7 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 	}
 	budgetOperation := newMediaBudgetOperation()
 	budgetCtx := provideriface.WithBillableDispatchGuard(identity.ContextWithPrincipal(ctx, scope.Principal), func() error {
-		return r.checkMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID, budgetOperation)
+		return r.checkMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID, "image", budgetOperation)
 	})
 	generated, err := r.imageGeneration.GenerateManagedImage(budgetCtx, imagegen.ManagedGenerateRequest{
 		SelectionID: selectionID, Prompt: prompt, Size: size, Settings: settings,
@@ -2448,7 +2448,7 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		}
 		budgetOperation := newMediaBudgetOperation()
 		budgetCtx := provideriface.WithBillableDispatchGuard(identity.ContextWithPrincipal(ctx, scope.Principal), func() error {
-			return r.checkMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID, budgetOperation)
+			return r.checkMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID, "video", budgetOperation)
 		})
 		generated, err := r.videoGeneration.GenerateManagedVideo(budgetCtx, videogen.ManagedVideoRequest{
 			Operation:       op,
@@ -2916,7 +2916,7 @@ func (r *Runtime) generateManagedAudioArtifact(
 
 		budgetOperation := newMediaBudgetOperation()
 		budgetCtx := provideriface.WithBillableDispatchGuard(identity.ContextWithPrincipal(ctx, scope.Principal), func() error {
-			return r.checkMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID, budgetOperation)
+			return r.checkMediaWorkerBudget(scope.Principal.AccountScopeID, scope.SessionID, "audio", budgetOperation)
 		})
 		generated, err := r.audioGeneration.GenerateManagedAudio(budgetCtx, audiogen.ManagedAudioRequest{
 			Prompt:          currentPrompt,

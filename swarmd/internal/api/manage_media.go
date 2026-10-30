@@ -285,6 +285,9 @@ func (s *Server) estimateManagedMedia(ctx context.Context, p identity.Principal,
 	if input.Operation == "speech" {
 		opts.Speech = true
 		opts.InputCharacters = int64(utf8.RuneCountInString(input.Speech.Text))
+		// Token-rated speech is priced from request upper bounds before
+		// generation; the receipt records the provider's actual usage.
+		opts.PromptTokens, opts.AudioOutputTokens = pebblestore.SpeechAdmissionTokenBounds(input.Speech.Text, input.Speech.Style, input.Speech.Language)
 	}
 	if input.Agent == "image" && s.imageGen != nil {
 		selection, err := s.imageGen.ResolveModelSelection(input.Model)
@@ -339,7 +342,9 @@ func (s *Server) estimateManagedMedia(ctx context.Context, p identity.Principal,
 			opts.Resolution = videoOpts.DefaultRes
 		}
 	}
-	return s.sessions.EstimateMediaCostWithOptions(opts), nil
+	estimate := s.sessions.EstimateMediaCostWithOptions(opts)
+	estimate.AdmissionKind, estimate.AdmissionCount = opts.Kind, opts.Count
+	return estimate, nil
 }
 
 var manageMediaErrors = mediaErrorWording{

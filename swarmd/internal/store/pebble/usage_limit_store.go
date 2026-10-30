@@ -236,6 +236,12 @@ type MediaCostEstimate struct {
 	PricingSummary  string  `json:"pricing_summary"`
 	SnapshotID      string  `json:"snapshot_id,omitempty"`
 	SnapshotVersion string  `json:"snapshot_version,omitempty"`
+	// Admission-only request shape, never serialized: when the price is not
+	// resolved, worker admission reserves the unpriced ceiling of AdmissionKind
+	// ("image", "audio", "video"; anything else uses the other-kind ceiling)
+	// once per requested output (AdmissionCount, at least one).
+	AdmissionKind  string `json:"-"`
+	AdmissionCount int    `json:"-"`
 }
 
 func toFloat64(v any) (float64, bool) {

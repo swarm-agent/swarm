@@ -151,6 +151,31 @@ func transcriptionTokenCost(rec ModelCatalogRecord, opts MediaCostEstimateOption
 	return cost, true
 }
 
+// Speech admission bounds. Token usage is only known from the provider
+// response, so admission prices token-rated speech from upper bounds on the
+// request; the receipt settles the real usage afterwards.
+//   - Prompt tokens: one token per three UTF-8 bytes of the script, style and
+//     language (text tokenizes at ~4 bytes per token; CJK at ~3), plus a fixed
+//     allowance for the direction wrapper the provider receives.
+//   - Audio tokens: Gemini TTS emits 25 audio tokens per second; a slow 10
+//     UTF-8 bytes (ASCII characters) per second bounds the spoken length.
+const (
+	speechAdmissionPromptBytesPerToken  = 3
+	speechAdmissionPromptOverheadTokens = 64
+	speechAdmissionAudioTokensPerSecond = 25
+	speechAdmissionBytesPerSecond       = 10
+)
+
+// SpeechAdmissionTokenBounds returns upper bounds for the prompt and audio
+// output tokens of one speech generation, for pre-generation pricing only.
+func SpeechAdmissionTokenBounds(text, style, language string) (promptTokens, audioOutputTokens int64) {
+	promptBytes := int64(len(text) + len(style) + len(language))
+	promptTokens = (promptBytes+speechAdmissionPromptBytesPerToken-1)/speechAdmissionPromptBytesPerToken + speechAdmissionPromptOverheadTokens
+	textBytes := int64(len(text))
+	audioOutputTokens = (textBytes*speechAdmissionAudioTokensPerSecond + speechAdmissionBytesPerSecond - 1) / speechAdmissionBytesPerSecond
+	return promptTokens, audioOutputTokens
+}
+
 func validTokenRate(rate float64) bool {
 	return rate >= 0 && !math.IsNaN(rate) && !math.IsInf(rate, 0)
 }

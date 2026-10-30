@@ -38,8 +38,12 @@ populate these counters; historical receipts are not backfilled by this change.
 Existing account spending limits and media batch confirmation still apply.
 Generation resolves and pins the selected model, then uses the existing media
 cost estimator for worker budget admission. Unknown pricing is not treated as
-free under a cost cap: an unpriced receipt counts at a conservative estimate
-(see docs/box-limits.md). A speech job's timing transcription is a model call
+free under a cost cap: an unpriced receipt counts at a conservative estimate,
+and a request still unpriced at admission is reserved at the same per-kind
+ceiling for each requested output, refused only when that would cross the cap
+(see docs/box-limits.md). Speech priced per token is estimated before
+generation from upper bounds on its prompt and audio tokens taken from the
+script length; its receipt records the provider's real usage. A speech job's timing transcription is a model call
 with audio input; when the catalog has no matching speech rows it is priced at
 the model's token rates, audio input at the highest standard-tier audio rate. This worker gate applies only to tasks explicitly created
 by `manage_media`, not ordinary project-conversation or approval tasks.

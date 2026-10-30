@@ -253,19 +253,34 @@ func (s *SessionStore) CheckWorkerSessionBudget(account, sessionID, provider, mo
 
 // Media callers supply the canonical dimension-specific pricing status.
 func (s *SessionStore) CheckWorkerSessionBudgetWithPrice(account, sessionID, priceStatus string, operationIDs ...string) error {
-	return s.checkWorkerSessionBudget(account, sessionID, priceStatus, nil, operationIDs...)
+	return s.checkWorkerSessionBudget(account, sessionID, priceStatus, nil, false, operationIDs...)
 }
 
 // CheckWorkerMediaAdmission reserves the estimate when an operation ID is supplied.
-// Calls without an ID are read-only admission previews.
+// Calls without an ID are read-only admission previews. An unresolved price is
+// neither free nor a refusal: daily cost caps count it at the unpriced media
+// ceiling of its kind per requested output, the same conservative estimate an
+// unpriced receipt carries, and still refuse when that would cross the cap.
 func (s *SessionStore) CheckWorkerMediaAdmission(account, sessionID string, estimate MediaCostEstimate, operationIDs ...string) error {
 	if math.IsNaN(estimate.CostUSD) || math.IsInf(estimate.CostUSD, 0) || estimate.CostUSD < 0 {
 		return errors.New("invalid media cost estimate")
 	}
-	return s.checkWorkerSessionBudget(account, sessionID, estimate.PriceStatus, &estimate.CostUSD, operationIDs...)
+	cost := estimate.CostUSD
+	unpriced := !budgetPriceResolved(estimate.PriceStatus)
+	if unpriced {
+		cost = unpricedMediaAdmissionUSD(estimate)
+	}
+	return s.checkWorkerSessionBudget(account, sessionID, estimate.PriceStatus, &cost, unpriced, operationIDs...)
 }
 
-func (s *SessionStore) checkWorkerSessionBudget(account, sessionID, priceStatus string, estimatedCost *float64, operationIDs ...string) error {
+func budgetPriceResolved(priceStatus string) bool {
+	return priceStatus == "known" || priceStatus == "free" || priceStatus == "subscription"
+}
+
+// unpricedCeiling marks estimatedCost as the unpriced media ceiling: daily
+// account and worker cost caps admit it at that cost instead of refusing the
+// unknown price. Model turns never set it.
+func (s *SessionStore) checkWorkerSessionBudget(account, sessionID, priceStatus string, estimatedCost *float64, unpricedCeiling bool, operationIDs ...string) error {
 	if s == nil || s.store == nil {
 		return errors.New("store is not configured")
 	}
@@ -346,12 +361,12 @@ func (s *SessionStore) checkWorkerSessionBudget(account, sessionID, priceStatus 
 		if accountPolicy.DailyCostLimitUSD > 0 && usage.PricingCoverageIncomplete {
 			return fmt.Errorf("%w: unresolved account pricing coverage", ErrWorkerBudget)
 		}
-		if accountPolicy.DailyCostLimitUSD > 0 && priceStatus != "known" && priceStatus != "free" && priceStatus != "subscription" {
+		if accountPolicy.DailyCostLimitUSD > 0 && !budgetPriceResolved(priceStatus) && !unpricedCeiling {
 			return fmt.Errorf("%w: account-capped provider pricing is unknown", ErrWorkerBudget)
 		}
 		estimate := usage.UnpricedEstimateUSD()
 		if accountPolicy.DailyCostLimitUSD > 0 && (usage.TotalCostUSD+estimate >= accountPolicy.DailyCostLimitUSD || usage.TotalCostUSD+estimate+accountReserved+cost > accountPolicy.DailyCostLimitUSD) {
-			return fmt.Errorf("%w: daily account usage limit exceeded%s", ErrWorkerBudget, unpricedLimitDetail(usage.UnknownReceipts, estimate))
+			return fmt.Errorf("%w: daily account usage limit exceeded%s%s", ErrWorkerBudget, unpricedLimitDetail(usage.UnknownReceipts, estimate), unpricedAdmissionDetail(unpricedCeiling, cost))
 		}
 		keys = append(keys, accountBudgetReservationKey(account))
 	}
@@ -370,13 +385,11 @@ func (s *SessionStore) checkWorkerSessionBudget(account, sessionID, priceStatus 
 		if total.Coverage == "repaired_receipts_incomplete" {
 			return fmt.Errorf("%w: worker receipt coverage is incomplete", ErrWorkerBudget)
 		}
-		if policy.DailyCostLimitUSD > 0 {
-			if priceStatus != "known" && priceStatus != "free" && priceStatus != "subscription" {
-				return fmt.Errorf("%w: provider pricing is unknown", ErrWorkerBudget)
-			}
+		if policy.DailyCostLimitUSD > 0 && !budgetPriceResolved(priceStatus) && !unpricedCeiling {
+			return fmt.Errorf("%w: provider pricing is unknown", ErrWorkerBudget)
 		}
 		if policy.DailyCostLimitUSD > 0 && total.CatalogCostUSD+total.ProviderCostUSD+total.ProviderEstimateCostUSD+total.UnpricedEstimateUSD()+reserved+cost > policy.DailyCostLimitUSD {
-			return fmt.Errorf("%w: daily worker usage limit exceeded%s", ErrWorkerBudget, unpricedLimitDetail(total.UnknownReceipts, total.UnpricedEstimateUSD()))
+			return fmt.Errorf("%w: daily worker usage limit exceeded%s%s", ErrWorkerBudget, unpricedLimitDetail(total.UnknownReceipts, total.UnpricedEstimateUSD()), unpricedAdmissionDetail(unpricedCeiling, cost))
 		}
 		keys = append(keys, workerBudgetKey(account, scope.ID)+"/reservation")
 	}
@@ -391,7 +404,7 @@ func (s *SessionStore) checkWorkerSessionBudget(account, sessionID, priceStatus 
 			}
 			// An estimate is not incurred usage: refuse without recording a
 			// crossing or emitting a limit.reached signal.
-			if total.CatalogCostUSD+total.ProviderCostUSD+total.ProviderEstimateCostUSD+*estimatedCost > limits.JobCostUSD {
+			if total.CatalogCostUSD+total.ProviderCostUSD+total.ProviderEstimateCostUSD+cost > limits.JobCostUSD {
 				return &LimitReached{"limit.reached", "job_cost_usd", limits.JobCostUSD}
 			}
 		}

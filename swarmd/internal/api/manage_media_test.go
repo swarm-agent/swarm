@@ -156,8 +156,9 @@ func TestManageMediaSessionUsage(t *testing.T) {
 
 // Purpose: ManageMedia generate must use CreateProjectTask with owned origin,
 // explicit options and attached inputs. Real task/store boundaries with a blocked
-// deterministic provider prove CheckWorkerMediaAdmission rejects unknown pricing
-// and excessive estimates without reserving allowance, while background media
+// deterministic provider prove CheckWorkerMediaAdmission counts unknown pricing at
+// the unpriced ceiling per output, rejecting it and excessive estimates that
+// would cross a cap without reserving allowance, while background media
 // permits model turns in the caller and other workers. Receipts retain attribution.
 func TestManageMediaGenerateOrigin(t *testing.T) {
 	db, err := pebblestore.Open(t.TempDir())
@@ -204,9 +205,13 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := map[string]any{"inputs": []any{map[string]any{"path": "input.png"}, map[string]any{"job_id": "media/project/prior", "file": float64(1)}}, "action": "generate", "kind": "image", "brief": "A blue circle", "model": rec.Model, "aspect_ratio": "1:1", "resolution": "1K", "count": float64(25)}
-	// Even pending batches require known pricing under a cap.
-	if _, err := server.ManageMedia(context.Background(), scope, args); err == nil {
-		t.Fatal("unknown price accepted")
+	// Even pending batches count unknown pricing under a cap: 25 images at the
+	// $0.50 unpriced image ceiling cross a $10 cap before any job exists.
+	if err := store.PutUsageLimit(pebblestore.UsageLimitRecord{AccountScopeID: p.AccountScopeID, Enabled: true, DailyCostLimitUSD: 10}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.ManageMedia(context.Background(), scope, args); err == nil || !strings.Contains(err.Error(), "unpriced media request counted at $12.50") {
+		t.Fatalf("unknown price over the cap: %v", err)
 	}
 	rec.Pricing = json.RawMessage(`{"billing":{"status":"verified","lines":[{"kind":"billing_rate","billable":"image_output","unit":"image","price_usd":0.03,"variant":"1K","conditions":{"tier":"paid","service_tier":"standard"}},{"kind":"billing_rate","billable":"image_output","unit":"million_tokens","price_usd":30,"conditions":{"tier":"paid","service_tier":"standard"}}]}}`)
 	if err := pebblestore.NewModelCatalogStore(db).SetRecord(rec); err != nil {
@@ -581,13 +586,20 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 	if err := pebblestore.NewModelCatalogStore(db).SetRecord(rec); err != nil {
 		t.Fatal(err)
 	}
+	// The $0.50 unpriced image ceiling crosses a $0.40 cap.
+	if err := store.PutUsageLimit(pebblestore.UsageLimitRecord{AccountScopeID: p.AccountScopeID, Enabled: true, DailyCostLimitUSD: 0.4}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := server.ManageMedia(context.Background(), scope, args); err == nil {
-		t.Fatal("unknown price accepted")
+		t.Fatal("unknown price over the cap accepted")
 	}
 	if client.calls.Load() != 0 {
 		t.Fatal("unknown-priced capped generation reached provider")
 	}
 	assertUnreserved()
+	if err := store.PutUsageLimit(pebblestore.UsageLimitRecord{AccountScopeID: p.AccountScopeID, Enabled: true, DailyCostLimitUSD: 100}); err != nil {
+		t.Fatal(err)
+	}
 	rec.Pricing = priced
 	if err := pebblestore.NewModelCatalogStore(db).SetRecord(rec); err != nil {
 		t.Fatal(err)

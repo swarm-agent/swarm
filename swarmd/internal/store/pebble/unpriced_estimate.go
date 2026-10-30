@@ -55,11 +55,26 @@ func stampMediaUnpricedEstimate(m *SessionMediaUsageRecord) {
 	if unknownBudgetReceipt(m.PriceStatus) == 0 {
 		return
 	}
-	value, ok := unpricedMediaReceiptCeilingUSD[strings.ToLower(strings.TrimSpace(m.Kind))]
-	if !ok {
-		value = unpricedMediaOtherKindCeilingUSD
-	}
+	value := unpricedMediaCeilingUSD(m.Kind)
 	m.UnpricedEstimateUSD = &value
+}
+
+func unpricedMediaCeilingUSD(kind string) float64 {
+	if value, ok := unpricedMediaReceiptCeilingUSD[strings.ToLower(strings.TrimSpace(kind))]; ok {
+		return value
+	}
+	return unpricedMediaOtherKindCeilingUSD
+}
+
+// unpricedMediaAdmissionUSD is what an unpriced media request reserves under a
+// daily cost cap: the receipt ceiling of its kind once per requested output,
+// never less than any partial estimate the caller resolved.
+func unpricedMediaAdmissionUSD(estimate MediaCostEstimate) float64 {
+	cost := unpricedMediaCeilingUSD(estimate.AdmissionKind) * float64(max(estimate.AdmissionCount, 1))
+	if validTokenRate(estimate.CostUSD) && estimate.CostUSD > cost {
+		return estimate.CostUSD
+	}
+	return cost
 }
 
 func (s *SessionStore) unpricedTurnEstimateUSD(u SessionTurnUsageSnapshot) float64 {
@@ -206,4 +221,11 @@ func unpricedLimitDetail(receipts int64, estimate float64) string {
 		return ""
 	}
 	return fmt.Sprintf(" (includes $%.2f estimated for %d unpriced receipts)", estimate, receipts)
+}
+
+func unpricedAdmissionDetail(unpriced bool, cost float64) string {
+	if !unpriced {
+		return ""
+	}
+	return fmt.Sprintf(" (unpriced media request counted at $%.2f)", cost)
 }
