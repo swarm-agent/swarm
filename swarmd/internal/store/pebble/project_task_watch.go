@@ -360,8 +360,10 @@ func (e *ProjectTaskWatchMilestoneDue) Error() string {
 
 // projectTaskWatchMilestone names the stage a task's outcome row has reached,
 // for milestone updates: review started (an agent step of its workflow runs),
-// sent back (round N), landed (pushed with its commit, delivered or merged),
-// blocked or failed. Empty when the row is at no milestone.
+// sent back (round N) by a review block, rebase needed (round N): <failure>
+// when the review passed and the push failed (ProjectTaskReopen), landed
+// (pushed with its commit, delivered or merged), blocked or failed. Empty
+// when the row is at no milestone.
 func projectTaskWatchMilestone(row map[string]any) string {
 	str := func(key string) string { v, _ := row[key].(string); return v }
 	round := 0
@@ -379,7 +381,7 @@ func projectTaskWatchMilestone(row map[string]any) string {
 	case str("workflow_state") == projectTaskWorkflowFailed || str("status") == "failed":
 		return "failed"
 	case str("workflow_state") == "sent_back" || (str("workflow_state") == projectTaskWorkflowRunning && str("workflow_step_type") == "reopen"):
-		return fmt.Sprintf("sent back (round %d)", round)
+		return ProjectTaskReopen{Round: round, Cause: str("reopen_cause"), Failure: str("reopen_failure")}.Milestone()
 	case str("workflow_state") == projectTaskWorkflowRunning && str("workflow_step_type") == "agent":
 		return fmt.Sprintf("review started (round %d)", round)
 	}

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"strconv"
 	"strings"
 	"time"
 
@@ -68,11 +67,10 @@ func taskProgressOutcome(class, state string, latest []jobautomation.Delivery, w
 				return clipOutcome(out)
 			}
 		case jobautomation.StateSentBack:
-			round := d.Round
-			if d.SentBack != nil && d.SentBack.Round > 0 {
-				round = d.SentBack.Round
-			}
-			return "sent_back (round " + strconv.Itoa(round) + ")"
+			// "sent_back (round n)" for a review block; a passed review
+			// whose push failed adds " rebase: <failure>".
+			reopen, _ := deliveryReopen(d, step)
+			return clipOutcome(reopen.Outcome())
 		case jobautomation.StateBlocked:
 			reason := d.BlockedReason
 			if reason == "" && step < len(d.Steps) {

@@ -59,7 +59,9 @@ workflow deliveries and its integration.
 ### `outcome` and `stale`
 
 `outcome` is what happened to the task's work, read from its latest workflow
-delivery: `running <step>`, `sent_back (round n)`, `pushed <head12>` (a run
+delivery: `running <step>`, `sent_back (round n)` (a review block),
+`sent_back (round n) rebase: <failure>` (the review passed, the push after it
+failed: the agent rebases), `pushed <head12>` (a run
 step after the review, such as the owner's push script), `delivered <target>`,
 `blocked <reason>` or `failed <step>`; `workflow pending` while the task's end
 is not evaluated yet. With no workflow it is `integrated`, `delivered <where>`
@@ -372,7 +374,10 @@ that run reads at its next step, re-delivered as a new turn if the run ends
 without reading it; with the conversation idle, it starts a new turn.
 
 A watch also wakes on milestones (`milestones`, default on; `wait_tasks
-milestones=false` turns them off): review started, sent back (round N),
+milestones=false` turns them off): review started, sent back (round N) by
+a review block, rebase needed (round N): <failure> when the review passed and
+the push failed (rows carry `reopen_cause`: `review_block`, `push_failed` or
+`check_failed`, and `reopen_failure`),
 landed (pushed with its commit, delivered or merged), blocked or failed. A
 milestone wake keeps the watch. At most one milestone wake per watch per
 minute: stages reached within the minute are coalesced into the next wake,

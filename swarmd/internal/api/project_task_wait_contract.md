@@ -80,7 +80,9 @@ changing the run.
   run ends without reading it (also after a restart); with none it starts a
   new pending run (`SessionWakeRunID`). Nothing is dropped.
 - Milestones (default on, `milestones=false` off): when not settled, a task
-  reaching review started, sent back (round N), landed, blocked or failed
+  reaching review started, sent back (round N) by a review block, rebase
+  needed (round N): <failure> when the review passed but the push failed
+  (`reopen_cause` `push_failed`, `reopen_failure`), landed, blocked or failed
   wakes the conversation with `Delegated project task milestones` and keeps
   the watch (`last_milestones`, `deliveries`). At most one milestone wake per
   watch per `ProjectTaskWatchMilestoneInterval` (a minute): a held milestone

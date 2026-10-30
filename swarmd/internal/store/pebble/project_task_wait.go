@@ -133,6 +133,13 @@ type V3ProjectTaskWaitProgress struct {
 	WorkflowSteps    int    `json:"workflow_steps,omitempty"`
 	WorkflowStepType string `json:"workflow_step_type,omitempty"`
 	WorkflowRound    int    `json:"workflow_round,omitempty"`
+	// ReopenCause and ReopenFailure say why the shown delivery's reopen step
+	// sends (or sent) the work back (ProjectTaskReopen): review_block,
+	// push_failed (review passed, the push failed: rebase) or check_failed,
+	// with the failed step's short reason. WorkflowRound is then the
+	// follow-up's round.
+	ReopenCause      string `json:"reopen_cause,omitempty"`
+	ReopenFailure    string `json:"reopen_failure,omitempty"`
 	IntegrationState string `json:"integration_state,omitempty"`
 	// Live is the run's live state (ProjectTaskLive): waiting on a pending
 	// permission or question, or held by an update drain or admission.
@@ -175,6 +182,10 @@ func ProjectTaskWaitProgressFrom(progress any) *V3ProjectTaskWaitProgress {
 				Steps    int    `json:"steps"`
 				StepType string `json:"step_type"`
 				Round    int    `json:"round"`
+				// The reopen this delivery stands at (task progress).
+				ReopenCause   string `json:"reopen_cause"`
+				ReopenFailure string `json:"reopen_failure"`
+				ReopenRound   int    `json:"reopen_round"`
 			} `json:"deliveries"`
 		} `json:"workflow"`
 		Integration *struct {
@@ -205,6 +216,13 @@ func ProjectTaskWaitProgressFrom(progress any) *V3ProjectTaskWaitProgress {
 			d := w.Deliveries[pick]
 			out.Workflow, out.WorkflowStepType = clipProjectTaskWaitField(d.Workflow), clipProjectTaskWaitField(d.StepType)
 			out.WorkflowStep, out.WorkflowSteps, out.WorkflowRound = max(d.Step, 0), max(d.Steps, 0), max(d.Round, 0)
+			if d.ReopenCause != "" {
+				reopen := ProjectTaskReopen{Round: d.ReopenRound, Cause: d.ReopenCause, Failure: d.ReopenFailure}.Normalized()
+				out.ReopenCause, out.ReopenFailure = reopen.Cause, reopen.Failure
+				if reopen.Round > 0 {
+					out.WorkflowRound = reopen.Round
+				}
+			}
 		}
 	}
 	if in := view.Integration; in != nil {
@@ -258,6 +276,13 @@ func projectTaskWaitProgressRow(p *V3ProjectTaskWaitProgress) map[string]any {
 	}
 	if p.WorkflowRound > 0 {
 		row["workflow_round"] = p.WorkflowRound
+	}
+	if p.ReopenCause != "" {
+		reopen := ProjectTaskReopen{Cause: p.ReopenCause, Failure: p.ReopenFailure}.Normalized()
+		row["reopen_cause"] = reopen.Cause
+		if reopen.Failure != "" {
+			row["reopen_failure"] = reopen.Failure
+		}
 	}
 	if p.IntegrationState != "" {
 		row["integration_state"] = p.IntegrationState

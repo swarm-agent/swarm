@@ -190,6 +190,11 @@ func projectTaskState(task ProjectTaskRecord, outcome string, stale, idle bool) 
 	case ProjectTaskCountInProgress:
 		switch word {
 		case "sent_back":
+			// A review block, or a passed review whose push failed (a
+			// rebase), named apart by ProjectTaskReopen.
+			if reopen, ok := ParseProjectTaskReopenOutcome(outcome); ok {
+				return ProjectTaskStateRunning, reopen.StateReason()
+			}
 			return ProjectTaskStateRunning, outcome + "; the agent addresses the findings"
 		case "running":
 			return ProjectTaskStateRunning, "workflow " + outcome

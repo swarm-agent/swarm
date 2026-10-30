@@ -99,6 +99,39 @@ type taskProgressDelivery struct {
 	Round    int    `json:"round"`
 	// SentBack is the reopen step, round and reason of a sent_back delivery.
 	SentBack *jobautomation.SentBack `json:"sent_back,omitempty"`
+	// ReopenCause, ReopenFailure and ReopenRound describe the reopen step
+	// the delivery stands at (sent_back, or a reopen step running):
+	// review_block (findings to address), push_failed (the review passed,
+	// the push failed: rebase) or check_failed, the failed step's short
+	// reason and the follow-up's round (deliveryReopen).
+	ReopenCause   string `json:"reopen_cause,omitempty"`
+	ReopenFailure string `json:"reopen_failure,omitempty"`
+	ReopenRound   int    `json:"reopen_round,omitempty"`
+}
+
+// deliveryReopen is the reopen the delivery stands at, if any: the reopen
+// step that sent it back (sent_back), or the reopen step running now (its
+// follow-up is the next round). ok is false when it stands at no reopen.
+func deliveryReopen(d jobautomation.Delivery, step int) (pebblestore.ProjectTaskReopen, bool) {
+	stepID, round := "", 0
+	switch {
+	case d.State == jobautomation.StateSentBack && d.SentBack != nil:
+		stepID, round = d.SentBack.Step, d.SentBack.Round
+		if round <= 0 {
+			round = d.Round
+		}
+	case d.State == jobautomation.StateSentBack:
+		if step >= 0 && step < len(d.Steps) {
+			stepID = d.Steps[step].ID
+		}
+		round = d.Round
+	case !jobautomation.Terminal(d.State) && step >= 0 && step < len(d.Steps) && d.Steps[step].Type == jobautomation.StepReopen:
+		stepID, round = d.Steps[step].ID, d.Round+1
+	default:
+		return pebblestore.ProjectTaskReopen{}, false
+	}
+	cause, failure := jobautomation.ReopenCause(d, stepID)
+	return pebblestore.ProjectTaskReopen{Round: round, Cause: cause, Failure: failure}.Normalized(), true
 }
 
 type taskProgressIntegration struct {
@@ -328,6 +361,9 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 			view := taskProgressDelivery{ID: d.ID, Workflow: d.AutomationName, State: state, Steps: len(d.Steps), Round: d.Round, SentBack: d.SentBack}
 			if len(d.Steps) > 0 {
 				view.Step, view.StepType = step+1, d.Steps[step].Type
+			}
+			if reopen, ok := deliveryReopen(d, step); ok {
+				view.ReopenCause, view.ReopenFailure, view.ReopenRound = reopen.Cause, reopen.Failure, reopen.Round
 			}
 			workflow.Deliveries = append(workflow.Deliveries, view)
 			switch state {

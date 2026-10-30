@@ -96,6 +96,9 @@ type projectTaskProgressRead struct {
 				Round  int    `json:"round"`
 				Reason string `json:"reason"`
 			} `json:"sent_back"`
+			// ReopenCause: review_block, push_failed or check_failed
+			// (pebblestore.ProjectTaskReopen).
+			ReopenCause string `json:"reopen_cause"`
 		} `json:"deliveries"`
 	} `json:"workflow"`
 	Integration *struct {
@@ -187,6 +190,10 @@ type projectTaskWorkflow struct {
 	Round    int    `json:"round,omitempty"`
 	Outcome  string `json:"outcome,omitempty"`
 	Reason   string `json:"reason,omitempty"`
+	// ReopenCause says why a reopen sent the work back: review_block
+	// (findings to address) or push_failed (review passed; rebase and
+	// retry), or check_failed.
+	ReopenCause string `json:"reopen_cause,omitempty"`
 }
 
 type projectTaskResult struct {
@@ -305,6 +312,14 @@ func projectTaskNext(t *pebblestore.ProjectTaskRecord, progress *projectTaskProg
 		case "running", "pending":
 			return "wait_tasks", "workflow finishes its steps"
 		case "sent_back":
+			for _, d := range progress.Workflow.Deliveries {
+				switch d.ReopenCause {
+				case pebblestore.ProjectTaskReopenPushFailed:
+					return "wait_tasks", "review passed; agent rebases after the failed push, then the workflow retries"
+				case pebblestore.ProjectTaskReopenCheckFailed:
+					return "wait_tasks", "agent fixes the failed step"
+				}
+			}
 			return "wait_tasks", "agent addresses the sent-back findings"
 		case "failed", "blocked":
 			if remote {
@@ -369,6 +384,9 @@ func compactProjectTask(read projectTaskRead, remote bool) ProjectTaskView {
 			}
 			if d.SentBack != nil {
 				wf.Reason = clipBytes(d.SentBack.Reason, projectTaskTextBytes)
+			}
+			if d.ReopenCause != "" {
+				wf.ReopenCause = pebblestore.ProjectTaskReopen{Cause: d.ReopenCause}.Normalized().Cause
 			}
 		}
 		if wf.Reason == "" && (wf.State == "blocked" || wf.State == "failed") {
