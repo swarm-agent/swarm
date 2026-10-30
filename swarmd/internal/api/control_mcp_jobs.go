@@ -607,6 +607,14 @@ func (c *controlMCPCall) jobState(kind, a, b string) (map[string]any, controlMCP
 			case "pending_executor", "waiting_tasks":
 				state["run_active"] = true
 			}
+			// A follow-up the receipt does not track (admitted without the
+			// sandbox's follow-up capacity) still replaces the job's error.
+			if latest, ok := c.untrackedFollowupRun(refs.sessionID, refs.run); ok {
+				delete(state, "error")
+				if !latest.Active && latest.Status != sessionruntime.RunIntentCompleted && strings.TrimSpace(latest.BlockedReason) != "" {
+					state["error"] = controlMCPTruncate(latest.BlockedReason, 400)
+				}
+			}
 			questions, approvals := []map[string]any{}, 0
 			var waiting []string
 			for _, raw := range controlMCPList(detail["pending_permissions"]) {
@@ -681,6 +689,32 @@ func (c *controlMCPCall) jobState(kind, a, b string) (map[string]any, controlMCP
 	}
 	state["status"] = status
 	return state, refs, nil
+}
+
+// untrackedFollowupRun is the job session's latest run when it is a follow-up
+// the receipt does not track: the receipt's own run settled, no
+// followup_status was recorded, and the latest run was created after the
+// receipt completed. Read only after the session detail was dispatched (and so
+// ownership-checked) for this caller.
+func (c *controlMCPCall) untrackedFollowupRun(sessionID string, run map[string]any) (sessionruntime.SessionRunState, bool) {
+	if c.server == nil || c.server.sessions == nil || sessionID == "" {
+		return sessionruntime.SessionRunState{}, false
+	}
+	if followup, _ := run["followup_status"].(string); followup != "" {
+		return sessionruntime.SessionRunState{}, false
+	}
+	if status, _ := run["status"].(string); status != "succeeded" && status != "failed" {
+		return sessionruntime.SessionRunState{}, false
+	}
+	completedAt := int64(controlMCPNumber(run["completed_at"]))
+	if completedAt <= 0 {
+		return sessionruntime.SessionRunState{}, false
+	}
+	latest, ok, err := c.server.sessions.GetSessionRunState(sessionID)
+	if err != nil || !ok || latest.RunID == "" || latest.CreatedAt <= completedAt {
+		return sessionruntime.SessionRunState{}, false
+	}
+	return latest, true
 }
 
 // controlMCPRunStopped reports a worker job whose own run was stopped and that
