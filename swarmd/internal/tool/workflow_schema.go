@@ -5,29 +5,12 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 )
 
-// WorkflowLifecycleService is implemented by the API's shared workflow authority.
-// Native callers may propose but have no acceptance operation.
+// WorkflowLifecycleService is implemented by the API's shared workflow
+// authority: one function serves every manage_workflows action here, for the
+// Orchestrator and Swarm Control alike. The caller is never the machine owner
+// and has no acceptance operation; who names it (its session, or its AI key).
 type WorkflowLifecycleService interface {
-	ManageWorkflows(context.Context, identity.Principal, string, map[string]any) (any, error)
-}
-
-func manageWorkflowsDefinition() Definition {
-	return Definition{Type: "function", Name: "manage_workflows", Description: "Manage workflows that run when tasks or worker jobs end. Propose new workflows or changes for the person to accept or discard; never self-accept. Enable and disable existing workflows immediately. Call help for examples. for_each queues one independent worker job per object in a committed JSON array with bounded parallelism. " + WorkflowTriggerDescription + FleetWorkDescription, Parameters: map[string]any{
-		"type": "object", "required": []string{"action"}, "properties": map[string]any{
-			"machine": map[string]any{"type": "string", "description": FleetWorkDescription},
-			"inputs":  WorkflowInputsSchema(), "with": WorkflowWithSchema(),
-			"on":         WorkflowTriggerSchema(),
-			"rotate_key": map[string]any{"type": "boolean", "description": "Webhook key rotation is not yet supported for native proposals; use the person's HTTP save or MCP path."},
-			"action":     map[string]any{"type": "string", "enum": []string{"list", "get", "deliveries", "history", "propose", "disable", "enable", "delete", "help"}},
-			"id":         map[string]any{"type": "string"}, "name": map[string]any{"type": "string"},
-			"job_id":      map[string]any{"type": "string", "description": "task id or job id"},
-			"delivery_id": map[string]any{"type": "string", "description": "list or deliveries: one delivery's steps, findings in full (get_task shows them capped). Otherwise one line per delivery: job, state, round, head, each step's state and verdict."},
-			"detail":      map[string]any{"type": "string", "enum": []string{"deliveries"}, "description": "list: each workflow's last 3 deliveries with their steps' outcomes (bounded), instead of one line each."},
-			"project":     map[string]any{"type": "string"}, "workspace": map[string]any{"type": "string"},
-			"scope": map[string]any{"type": "object", "properties": map[string]any{"role": map[string]any{"type": "string"}, "worker": map[string]any{"type": "string"}, "job": map[string]any{"type": "string"}, "schedule": map[string]any{"type": "string"}}},
-			"when":  map[string]any{"type": "string", "enum": []string{"succeeded", "failed", "always"}}, "enabled": map[string]any{"type": "boolean"}, "retries": map[string]any{"type": "integer"}, "revision": map[string]any{"type": "integer"},
-			"result": map[string]any{"type": "object"}, "steps": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"for_each": WorkflowForEachSchema()}}, "description": "Ordered agent/reopen/run/deliver steps; for_each queues one independent worker job per committed JSON item."},
-		}}}
+	ManageWorkflows(ctx context.Context, p identity.Principal, who string, args map[string]any) (any, error)
 }
 
 // WorkflowForEachSchema is shared by native and MCP workflow steps.

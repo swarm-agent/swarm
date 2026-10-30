@@ -170,6 +170,16 @@ func (s *Server) StopWorkflows(caller WorkflowCaller, stopped *bool) (jobautomat
 	}
 	return s.setJobAutomationsStopped(*stopped, caller.Principal.UserID)
 }
+
+// workflowStopView is manage_workflows stop_all's answer: the switch as it
+// now is, and what that means.
+func workflowStopView(stop jobautomation.StopState) map[string]any {
+	next := "no new workflow step starts on this machine until stop_all with stopped false; running steps finish"
+	if !stop.Stopped {
+		next = "workflows run again; deliveries the switch stopped re-run with swarm_deliver_job (automation: true)"
+	}
+	return map[string]any{"stop": stop, "next": next}
+}
 func controlMCPListAutomations(c *controlMCPCall, args map[string]any) (any, error) {
 	opts, err := workflowListOptions(func(key string) string { return controlMCPString(args, key) })
 	if err != nil {

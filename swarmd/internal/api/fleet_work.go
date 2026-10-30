@@ -46,15 +46,40 @@ func (s *Server) CallFleetWork(ctx context.Context, p identity.Principal, machin
 			query.Set(key, fmt.Sprint(v))
 		}
 	}
+	// The body each POST route takes: the routes decode strictly.
+	bodyKeys := []string{"expected_revision", "client_request_id"}
 	switch action {
 	case "list":
 	case "propose":
 		path += "/propose"
 		method = http.MethodPost
+		bodyKeys = append(bodyKeys, "id", "name", "project", "workspace", "scope", "when", "enabled", "retries", "revision", "result", "steps", "on", "inputs", "with")
+	case "export":
+		path += "/export"
+		method = http.MethodPost
+		bodyKeys = []string{"id", "name", "path", "overwrite"}
+	case "import", "restore":
+		// The machine's agent route (ManageWorkflows), never its owner's
+		// import or restore route: run steps stay the machine owner's.
+		path += "/" + WorkflowLinkedChangeRoute + "/" + action
+		method = http.MethodPost
+		bodyKeys = []string{"id", "name", "revision", "definition", "path", "project", "workspace", "with"}
+	case "stop_all":
+		path += "/stop"
+		method = http.MethodPost
+		if _, ok := args["stopped"].(bool); !ok {
+			return nil, errors.New("stop_all needs stopped: true or false")
+		}
+		bodyKeys = []string{"stopped"}
 	case "history", "deliveries":
 		if action == "history" {
 			path += "/history"
 			query.Set("id", id)
+			for _, key := range []string{"name", "revision"} {
+				if v, ok := args[key]; ok {
+					query.Set(key, fmt.Sprint(v))
+				}
+			}
 		} else if controlMCPString(args, "delivery_id") != "" {
 			// One delivery in detail, with its full findings: the
 			// workflow listing route reads delivery_id (ListWorkflows).
@@ -87,16 +112,9 @@ func (s *Server) CallFleetWork(ctx context.Context, p identity.Principal, machin
 		path += "?" + query.Encode()
 	}
 	body := map[string]any{}
-	for _, key := range []string{"expected_revision", "client_request_id"} {
+	for _, key := range bodyKeys {
 		if v, ok := args[key]; ok {
 			body[key] = v
-		}
-	}
-	if action == "propose" {
-		for _, key := range []string{"id", "name", "project", "workspace", "scope", "when", "enabled", "retries", "revision", "result", "steps", "on", "inputs", "with"} {
-			if v, ok := args[key]; ok {
-				body[key] = v
-			}
 		}
 	}
 	client, linked, _, err := s.fleetMachineClient(p.AccountScopeID, machine)

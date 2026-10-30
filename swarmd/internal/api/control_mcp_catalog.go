@@ -46,7 +46,7 @@ func (s *Server) HomeMachineName() string {
 
 // catalogActionAllowed reports whether this caller may see and call the
 // action: the key's level for the action and, as every Swarm Control tool,
-// the API scopes behind it (projects or sessions, read or write). Agent-bound
+// the API scopes behind it (projects, sessions or automations). Agent-bound
 // and application keys never drive the person's projects.
 func (c *controlMCPCall) catalogActionAllowed(action tool.CatalogAction) bool {
 	if c == nil || c.request == nil || fleetActivityGatewayCaller(c.request) {
@@ -114,6 +114,9 @@ func (c *controlMCPCall) catalogLevels() (levels []string, bound bool) {
 	return levels, true
 }
 
+// catalogToolTitles are the MCP titles of the catalog tools.
+var catalogToolTitles = map[string]string{"manage_projects": "Projects and tasks", "manage_workflows": "Workflows"}
+
 // catalogTools are the catalog tools this caller sees: the default listing
 // (essentials) or every Swarm Control action (tools=all), only actions the
 // caller may call.
@@ -138,7 +141,7 @@ func (c *controlMCPCall) catalogTools() []controlMCPTool {
 				break
 			}
 		}
-		tools = append(tools, controlMCPTool{Name: catalog.Name, Title: "Projects and tasks", Description: catalog.Description, InputSchema: schema, Annotations: annotations})
+		tools = append(tools, controlMCPTool{Name: catalog.Name, Title: catalogToolTitles[catalog.Name], Description: catalog.Description, InputSchema: schema, Annotations: annotations})
 	}
 	return tools
 }

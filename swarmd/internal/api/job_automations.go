@@ -1148,6 +1148,13 @@ func jobAutomationHTTPError(w http.ResponseWriter, err error) {
 	}
 }
 
+// WorkflowLinkedChangeRoute is under /v3/workflows: a linked home's agent
+// imports or restores a workflow on this machine (manage_workflows import
+// and restore with machine=). It runs ManageWorkflows, the agent authority,
+// never the owner's import or restore route, so run steps stay this
+// machine owner's.
+const WorkflowLinkedChangeRoute = "agent"
+
 // handleJobAutomations serves /v3/workflows, /v3/workflows/stop
 // and /v3/workflows/{id}.
 func (s *Server) handleJobAutomations(w http.ResponseWriter, r *http.Request) {
@@ -1186,7 +1193,7 @@ func (s *Server) handleJobAutomations(w http.ResponseWriter, r *http.Request) {
 	}
 	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, JobAutomationsPath), "/")
 	switch {
-	case r.Method == http.MethodPost && (rest == "propose" || strings.HasSuffix(rest, "/enable") || strings.HasSuffix(rest, "/disable")):
+	case r.Method == http.MethodPost && (rest == "propose" || rest == WorkflowLinkedChangeRoute+"/import" || rest == WorkflowLinkedChangeRoute+"/restore" || strings.HasSuffix(rest, "/enable") || strings.HasSuffix(rest, "/disable")):
 		var args map[string]any
 		if err := decodeJSONStrict(w, r, 256*1024, &args); err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -1198,6 +1205,8 @@ func (s *Server) handleJobAutomations(w http.ResponseWriter, r *http.Request) {
 		}
 		if rest == "propose" {
 			args["action"] = "propose"
+		} else if strings.HasPrefix(rest, WorkflowLinkedChangeRoute+"/") {
+			args["action"] = strings.TrimPrefix(rest, WorkflowLinkedChangeRoute+"/")
 		} else {
 			parts := strings.Split(rest, "/")
 			if len(parts) != 2 {

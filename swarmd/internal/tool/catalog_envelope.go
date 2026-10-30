@@ -109,15 +109,23 @@ func (r *Runtime) homeMachineName() string {
 }
 
 var (
-	manageProjectsCatalogOnce sync.Once
-	manageProjectsCatalogMemo CatalogTool
+	catalogDeclaredOnce sync.Once
+	catalogDeclaredMemo map[string]CatalogTool
 )
 
-// manageProjectsDeclared is the declaration, built once for lookups.
-func manageProjectsDeclared() CatalogTool {
-	manageProjectsCatalogOnce.Do(func() { manageProjectsCatalogMemo = manageProjectsCatalog() })
-	return manageProjectsCatalogMemo
+// catalogDeclared is a catalog tool's declaration, built once for lookups.
+func catalogDeclared(name string) CatalogTool {
+	catalogDeclaredOnce.Do(func() {
+		catalogDeclaredMemo = map[string]CatalogTool{}
+		for _, t := range Catalog() {
+			catalogDeclaredMemo[t.Name] = t
+		}
+	})
+	return catalogDeclaredMemo[name]
 }
+
+// manageProjectsDeclared is manage_projects' declaration.
+func manageProjectsDeclared() CatalogTool { return catalogDeclared(manageProjectsToolName) }
 
 // manageProjectsWrapsData reports whether the handler's answer carries
 // another service's answer under data (a linked machine's project answer,
@@ -140,15 +148,24 @@ var manageProjectsHomeNotes = []string{"linked_task_id", "linked_task", "linked_
 // order (a task view's state first).
 func (r *Runtime) manageProjectsEnvelope(action string, args map[string]any, answer string) (string, error) {
 	machine := strings.TrimSpace(asString(args["machine"]))
+	return r.catalogEnvelope(manageProjectsDeclared(), action, args, answer, manageProjectsWrapsData(action, machine))
+}
+
+// catalogEnvelope puts one catalog tool's answer into the envelope. wraps
+// says the answer carries another service's answer under data (a linked
+// machine's answer): that answer is the envelope's data, with the home's
+// notes.
+func (r *Runtime) catalogEnvelope(catalog CatalogTool, action string, args map[string]any, answer string, wraps bool) (string, error) {
+	machine := strings.TrimSpace(asString(args["machine"]))
 	var decoded map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(answer), &decoded); err != nil {
-		return "", fmt.Errorf("manage_projects %s answer is not a JSON object: %w", action, err)
+		return "", fmt.Errorf("%s %s answer is not a JSON object: %w", catalog.Name, action, err)
 	}
-	declared, _ := manageProjectsDeclared().Action(action)
+	declared, _ := catalog.Action(action)
 	untrusted := declared.Untrusted || machine != "" || strings.TrimSpace(string(decoded["untrusted_content"])) == "true"
 	var data json.RawMessage
 	var object map[string]json.RawMessage
-	if manageProjectsWrapsData(action, machine) {
+	if wraps {
 		data = decoded["data"]
 		var notes []string
 		for _, key := range manageProjectsHomeNotes {
@@ -197,12 +214,12 @@ func (r *Runtime) manageProjectsEnvelope(action string, args map[string]any, ans
 	if len(data) == 0 {
 		data = json.RawMessage("null")
 	}
-	parts := EnvelopeParts{Tool: manageProjectsToolName, Action: action, Machine: machine, Data: data, Untrusted: untrusted}
+	parts := EnvelopeParts{Tool: catalog.Name, Action: action, Machine: machine, Data: data, Untrusted: untrusted}
 	if machine == "" {
 		parts.Machine = r.homeMachineName()
 	}
 	parts.State = envelopeState(declared, object, decoded)
-	next := envelopeNext(declared, args, machine, object)
+	next := envelopeNext(catalog, declared, args, machine, object)
 	if next != nil {
 		parts.Next = next
 	}
@@ -274,7 +291,7 @@ func envelopeNextAction(declared CatalogAction, object map[string]json.RawMessag
 // (next_cursor) becomes this call again at that cursor; a continuation
 // object (a cut message's next, a cut task result's next) is checked against
 // the catalog and completed with the machine. nil when nothing was cut.
-func envelopeNext(declared CatalogAction, args map[string]any, machine string, object map[string]json.RawMessage) map[string]any {
+func envelopeNext(catalog CatalogTool, declared CatalogAction, args map[string]any, machine string, object map[string]json.RawMessage) map[string]any {
 	if object == nil {
 		return nil
 	}
@@ -315,7 +332,7 @@ func envelopeNext(declared CatalogAction, args map[string]any, machine string, o
 		if json.Unmarshal(raw, &value) != nil || !envelopeContinuation(value) {
 			continue
 		}
-		if next := envelopeNextCall(declared, args, machine, value); next != nil {
+		if next := envelopeNextCall(catalog, declared, args, machine, value); next != nil {
 			return next
 		}
 	}
@@ -328,7 +345,7 @@ var envelopeContinuationInputs = map[string]bool{"cursor": true, "since_cursor":
 
 // envelopeNextCall turns one continuation into the arguments of the call
 // that reads on, or nil when it is not a call the catalog declares.
-func envelopeNextCall(declared CatalogAction, args map[string]any, machine string, value any) map[string]any {
+func envelopeNextCall(catalog CatalogTool, declared CatalogAction, args map[string]any, machine string, value any) map[string]any {
 	next := map[string]any{}
 	switch v := value.(type) {
 	case map[string]any:
@@ -354,7 +371,7 @@ func envelopeNextCall(declared CatalogAction, args map[string]any, machine strin
 		return nil
 	}
 	name, _ := next["action"].(string)
-	action, ok := manageProjectsDeclared().Action(name)
+	action, ok := catalog.Action(name)
 	// Reading on is a read: a continuation never names a change.
 	if !ok || name != action.Action || action.Level != CatalogLevelRead {
 		return nil
@@ -591,6 +608,8 @@ func (r *Runtime) ExecuteControlCatalog(ctx context.Context, call ControlCatalog
 	switch catalog.Name {
 	case manageProjectsToolName:
 		return r.executeManageProjects(identity.ContextWithPrincipal(ctx, p), scope, args)
+	case manageWorkflowsToolName:
+		return r.executeManageWorkflows(identity.ContextWithPrincipal(ctx, p), scope, args)
 	}
 	return "", fmt.Errorf("%s has no handler", catalog.Name)
 }

@@ -2363,7 +2363,7 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 		if !agentruntime.IsOrchestratorAgentName(agentProfile.Name) {
 			return true, result, errors.New("workflow management requires the Orchestrator")
 		}
-		output, err := s.executeManageWorkflowsTool(sessionID, call.Arguments, agentProfile)
+		output, err := s.executeManageWorkflowsTool(ctx, sessionID, call.Arguments, agentProfile)
 		result.Output = output
 		return true, result, err
 	case "manage_automation", "manage_workers":

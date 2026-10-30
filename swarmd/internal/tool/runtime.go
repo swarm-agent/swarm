@@ -224,6 +224,8 @@ type Runtime struct {
 	projects             manageProjectStore
 	projectTaskDeployer  ProjectTaskDeployer
 	projectTaskLifecycle ProjectTaskLifecycleService
+	// workflowLifecycle serves manage_workflows (runtime_manage_workflows.go).
+	workflowLifecycle    WorkflowLifecycleService
 	customAgentLifecycle CustomAgentLifecycleService
 	background           *backgroundCommands
 }
@@ -2240,6 +2242,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return r.executeManageActions(scope, args)
 	case "manage-projects", "manage_projects":
 		return r.executeManageProjects(ctx, scope, args)
+	case "manage-workflows", "manage_workflows":
+		return r.executeManageWorkflows(ctx, scope, args)
 	case "manage-connections", "manage_connections", "manage-environments", "manage_environments":
 		return "", ErrEnvironmentToolsRemoved
 	case LeaseEnvironmentToolName:

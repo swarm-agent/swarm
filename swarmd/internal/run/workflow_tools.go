@@ -2,19 +2,28 @@ package run
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
+
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
 
+// SetWorkflowLifecycleService wires the shared workflow authority. The tool
+// runtime serves manage_workflows from the catalog with it (the same handler
+// Swarm Control runs); linked worker management uses its fleet routes.
 func (s *Service) SetWorkflowLifecycleService(service tool.WorkflowLifecycleService) {
 	s.workflowLifecycle = service
+	if s.tools != nil {
+		s.tools.SetWorkflowLifecycleService(service)
+	}
 }
 
-func (s *Service) executeManageWorkflowsTool(sessionID, arguments string, profile pebblestore.AgentProfile) (string, error) {
+// executeManageWorkflowsTool runs the Orchestrator's manage_workflows call
+// through the catalog handler (tool.Runtime), as the session's own principal:
+// its answer is the catalog envelope, the same as Swarm Control's.
+func (s *Service) executeManageWorkflowsTool(ctx context.Context, sessionID, arguments string, profile pebblestore.AgentProfile) (string, error) {
 	current, _, err := s.automationV2ToolSession(sessionID)
 	if err != nil {
 		return "", err
@@ -22,23 +31,12 @@ func (s *Service) executeManageWorkflowsTool(sessionID, arguments string, profil
 	if !agentruntime.IsOrchestratorAgentName(profile.Name) {
 		return "", errors.New("workflow management requires the Orchestrator")
 	}
-	if s.workflowLifecycle == nil {
+	if s.tools == nil {
 		return "", errors.New("workflow service unavailable")
 	}
-	var args map[string]any
-	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
-		return "", err
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	if mapString(args, "machine") != "" {
-		return s.executeFleetWork(current, "manage_workflows", args)
-	}
-	if rotate, _ := args["rotate_key"].(bool); rotate {
-		return "", errors.New("webhook key rotation is not supported for native workflow proposals; use the person's HTTP save or MCP path")
-	}
-	out, err := s.workflowLifecycle.ManageWorkflows(context.Background(), identity.Principal{AccountScopeID: current.AccountScopeID, UserID: current.UserID, Type: identity.PrincipalTypeUser}, sessionID, args)
-	if err != nil {
-		return "", err
-	}
-	data, err := json.Marshal(out)
-	return string(data), err
+	principal := identity.Principal{AccountScopeID: current.AccountScopeID, UserID: current.UserID, Type: identity.PrincipalTypeUser}
+	return s.tools.ExecuteForWorkspaceScopeWithRuntime(ctx, tool.WorkspaceScope{SessionID: sessionID, Principal: principal}, tool.Call{Name: "manage_workflows", Arguments: arguments})
 }

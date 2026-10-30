@@ -10,13 +10,23 @@ import (
 	"swarm/packages/swarmd/internal/jobautomation"
 )
 
-const workflowHelp = `Workflows run when tasks or worker jobs end. Scope by role (coder, swarm, finder, designer) or worker ID, with project/workspace selecting the folder. Steps: agent {worker, brief}; reopen {from, message, max_rounds}; run {command, args, timeout_seconds} (owner-authorized script); deliver {to: folder|merge|publish|outbox, path, what}. Conditions use if:[{step, verdict: ok|block}] or {step, status: succeeded|failed}. Optional fields: when: succeeded|failed|always, retries, enabled, result:{kind,path,describe}; agent supports checkout, fixes:security and produce. Example native reviewer with send-back: scope:{role:"coder"}, steps:[{id:"review",type:"agent",worker:"reviewer",brief:"Review the changes"},{type:"reopen",from:"review",if:[{step:"review",verdict:"block"}],max_rounds:2}]. Custom reviewer: replace worker:"reviewer" with the reviewer worker's ID. Worker job reviewed natively: use scope:{worker:"worker-id"} with that same native reviewer and send-back. Propose saves a pending proposal; only the person accepts or discards it. Enable/disable immediately toggle an existing workflow.`
+const workflowHelp = `Workflows run when tasks or worker jobs end. Scope by role (coder, swarm, finder, designer) or worker ID, with project/workspace selecting the folder. Steps: agent {worker, brief}; reopen {from, message, max_rounds}; run {command, args, timeout_seconds} (owner-authorized script); deliver {to: folder|merge|publish|outbox, path, what}. Conditions use if:[{step, verdict: ok|block}] or {step, status: succeeded|failed}. Optional fields: when: succeeded|failed|always, retries, enabled, result:{kind,path,describe}; agent supports checkout, fixes:security and produce. Example native reviewer with send-back: scope:{role:"coder"}, steps:[{id:"review",type:"agent",worker:"reviewer",brief:"Review the changes"},{type:"reopen",from:"review",if:[{step:"review",verdict:"block"}],max_rounds:2}]. Custom reviewer: replace worker:"reviewer" with the reviewer worker's ID. Worker job reviewed natively: use scope:{worker:"worker-id"} with that same native reviewer and send-back. Propose saves a pending proposal; only the person accepts or discards it. Enable/disable immediately toggle an existing workflow. Fork or reuse: export {name} returns portable JSON (path also writes .swarm/workflows/<name>.json into its folder); import {definition, name:"copy"} adds it under a new name, or import {path, project} reads a committed file or directory. Roll back: history {name} lists revisions, history {name, revision} reads one, restore {name, revision} makes it current as a new revision (also after delete). Import and restore refuse run steps; the machine owner sets those. stop_all {stopped:true} stops every new workflow step on the machine; stopped:false resumes.`
 
-// ManageWorkflows is the native lifecycle boundary. It never exposes acceptance
-// and never derives machine-owner authority from the agent's supplied arguments.
-func (s *Server) ManageWorkflows(ctx context.Context, p identity.Principal, sessionID string, args map[string]any) (any, error) {
-	caller := WorkflowCaller{Context: ctx, Principal: p, Who: sessionID, Scopes: []string{"sessions:read", "automations:read", "swarm:read"}}
-	switch controlMCPString(args, "action") {
+// ManageWorkflows is the agent lifecycle boundary: the one service function
+// behind every manage_workflows action, for the Orchestrator and Swarm
+// Control (tool catalog) alike. It never exposes acceptance and never derives
+// machine-owner authority from the caller or its arguments: run steps stay
+// the owner's. who names the caller (its session, or its AI key). Changes
+// carry automations:write, the scope of the routes behind them.
+func (s *Server) ManageWorkflows(ctx context.Context, p identity.Principal, who string, args map[string]any) (any, error) {
+	action := controlMCPString(args, "action")
+	scopes := []string{"sessions:read", "automations:read", "swarm:read"}
+	switch action {
+	case "export", "import", "restore", "delete", "stop_all":
+		scopes = append(scopes, "automations:write")
+	}
+	caller := WorkflowCaller{Context: ctx, Principal: p, Who: who, Scopes: scopes}
+	switch action {
 	case "help":
 		return map[string]any{"guide": workflowHelp}, nil
 	case "list":
@@ -100,6 +110,24 @@ func (s *Server) ManageWorkflows(ctx context.Context, p identity.Principal, sess
 			return nil, err
 		}
 		return map[string]any{"automation": jobAutomationView(a)}, nil
+	case "delete":
+		return s.DeleteWorkflow(caller, args)
+	case "export":
+		return s.ExportWorkflow(caller, args)
+	case "import":
+		return s.ImportWorkflow(caller, args)
+	case "restore":
+		return s.RestoreWorkflow(caller, args)
+	case "stop_all":
+		stopped, ok := args["stopped"].(bool)
+		if !ok {
+			return nil, errors.New("stop_all needs stopped: true or false")
+		}
+		stop, err := s.StopWorkflows(caller, &stopped)
+		if err != nil {
+			return nil, err
+		}
+		return workflowStopView(stop), nil
 	default:
 		return nil, errors.New("unknown manage_workflows action; use help")
 	}
