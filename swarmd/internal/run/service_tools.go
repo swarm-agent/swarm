@@ -1958,6 +1958,16 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 		if setupChange {
 			permissionMode = strings.Split(permissionMode, "+")[0]
 		}
+		if canonicalToolName(toolCalls[i].Name) == "manage_sessions" {
+			if identity := manageSessionsPersonDecisionIdentity(toolCalls[i].Arguments); identity != "" {
+				// Answering another session's pending request and switching a
+				// session's model are the person's decisions: each call waits for
+				// the person in this chat, even under permission bypass. Only an
+				// explicit rule for the exact identity pre-approves it.
+				authorizationToolName = identity
+				permissionMode = personDecisionMode(permissionMode)
+			}
+		}
 		var executionScope *tool.WorkspaceScope
 		if canonicalToolName(toolCalls[i].Name) == "bash" && permission.BashCommandReadsWorkspacePaths(permissionArguments) {
 			executionScope = s.permissionExecutionScope(ctx, sessionID)
@@ -7945,6 +7955,38 @@ func manageWorkspaceArgumentsJSON(arguments map[string]any) string {
 		return ""
 	}
 	return string(raw)
+}
+
+// Approval identities of the manage_sessions actions that only the person
+// decides: answering a session's pending request (resolve_permission) and
+// switching a session's model (set_model). The policy has no default allow
+// for either, so each call prompts.
+const (
+	sessionPermissionAnswerIdentity = "session_permission_answer"
+	sessionModelChangeIdentity      = "session_model_change"
+)
+
+// manageSessionsPersonDecisionIdentity is the approval identity of a
+// manage_sessions call the person must approve, or "" for any other action.
+func manageSessionsPersonDecisionIdentity(arguments string) string {
+	switch permission.ManageSessionsAction(arguments) {
+	case tool.ManageSessionsResolvePermissionAction:
+		return sessionPermissionAnswerIdentity
+	case tool.ManageSessionsSetModelAction:
+		return sessionModelChangeIdentity
+	}
+	return ""
+}
+
+// personDecisionMode is the permission mode for a call only the person
+// decides: no generic bypass suffix, and modes that would skip or refuse the
+// prompt (yolo, read, readwrite) ask instead.
+func personDecisionMode(mode string) string {
+	base := strings.ToLower(strings.TrimSpace(strings.Split(mode, "+")[0]))
+	if base == "yolo" || base == "read" || base == "readwrite" {
+		return sessionruntime.ModeAuto
+	}
+	return strings.Split(mode, "+")[0]
 }
 
 func manageWorkspaceMutationAction(arguments string) string {
