@@ -53,9 +53,12 @@ the first and last attempt. Anything that needs the checkout again (a
 follow-up message to the job, a task reopen, a reviewer reading the job in
 place) recreates it at the same path from the kept branch, as long as the
 branch is still at the recorded `head`; a branch moved since is refused
-rather than checked out. The recreated worktree is recorded as
-`worktree_removal` `state` `restored` and is not removed again for 30 minutes,
-so the work it was recreated for has time to start. A repeated
+rather than checked out. A follow-up, reopen or in-place review always
+reserves the job's worktree first, waiting for any removal being decided at
+that moment, and recreates it if that removal went through. A reserved
+worktree, removed before or not, is not removed for 30 minutes, so the work
+has time to start. A recreated one is recorded as `worktree_removal` `state`
+`restored`. A repeated
 `swarm_integrate_task` of such a task answers `already_integrated` from the
 record, and the task's delivery state reads `integrated` (`reason_code`
 `worktree_removed`). Both hold only when the recorded `head` has at least one

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -298,14 +297,11 @@ func (s *WorkerExecutionService) resolveJobReviewTarget(ctx context.Context, r s
 	}
 	folder := task.WorktreeBranch == "" && task.WorkspacePath == task.SourceWorkspace.Path && task.WorkspacePath != "" && task.WorkerRunID == ""
 	if !folder {
-		// A job whose checkout was removed after its work landed is reviewed
-		// in its checkout recreated from the kept branch.
-		if rm := task.WorktreeRemoval; rm != nil && rm.State == store.WorktreeRemovalRemoved && rm.Path == filepath.Clean(strings.TrimSpace(task.WorkspacePath)) {
-			// Recreated under the evaluation slot and recorded as restored,
-			// so no sweep removes it before this review is recorded.
-			if _, err := s.RestoreRemovedSessionWorktree(laneOwner); err != nil {
-				return nil, fmt.Errorf("the reviewed job's checkout was removed after its work landed and cannot be recreated from its branch: %w", err)
-			}
+		// The reviewed job's checkout is claimed under the evaluation slot
+		// (recreated from its kept branch if it was removed), so no landed
+		// removal or sweep removes it before this review is recorded.
+		if _, err := s.ClaimSessionWorktree(laneOwner); err != nil {
+			return nil, fmt.Errorf("the reviewed job's checkout cannot be reserved or recreated from its branch: %w", err)
 		}
 		if err := s.host.trees.ValidateSessionRepositoryLaneForRead(task.SourceWorkspace.Path, task.WorkspacePath, laneOwner, task.WorktreeBranch); err != nil {
 			return nil, err

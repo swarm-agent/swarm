@@ -449,18 +449,23 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 // reopen continues in it as in a retained checkout. The branch must still be
 // at the recorded head.
 func (s *Server) restoreRemovedTaskWorktree(task *pebblestore.ProjectTaskRecord) error {
-	rm := task.WorktreeRemoval
-	if rm == nil || rm.State != pebblestore.WorktreeRemovalRemoved || rm.Path != filepath.Clean(strings.TrimSpace(task.WorkspacePath)) {
-		return nil
-	}
-	// Recreated through the worker execution service: under its evaluation
-	// slot and recorded as restored, so no landed removal or sweep removes it
-	// again before the reopened task is marked active.
+	// Claimed through the worker execution service, always under its
+	// evaluation slot: the removal record is re-read there, the checkout is
+	// recreated if a removal finished meanwhile, and the claim keeps it until
+	// the reopened task is marked active.
 	execution, err := s.workerExecutionService()
 	if err != nil {
-		return fmt.Errorf("the task's checkout was removed after its work landed and cannot be recreated now: %w", err)
+		rm := task.WorktreeRemoval
+		if rm != nil && rm.State == pebblestore.WorktreeRemovalRemoved && rm.Path == filepath.Clean(strings.TrimSpace(task.WorkspacePath)) {
+			return fmt.Errorf("the task's checkout was removed after its work landed and cannot be recreated now: %w", err)
+		}
+		// Without the service there is no landed removal or sweep either.
+		return nil
 	}
-	if _, err := execution.RestoreRemovedSessionWorktree(task.SessionID); err != nil {
+	if strings.TrimSpace(task.SessionID) == "" {
+		return nil
+	}
+	if _, err := execution.ClaimSessionWorktree(task.SessionID); err != nil {
 		return fmt.Errorf("the task's checkout was removed after its work landed and cannot be recreated from its branch: %w", err)
 	}
 	return nil

@@ -413,12 +413,12 @@ func TestLandedWorktreeKeptWhileAFollowupIsQueuedOrRunning(t *testing.T) {
 // is never reserved: the run is marked only once its V3 run is appended);
 // ReopenProjectTask recreates a task's checkout before the task moves to
 // in_progress. In that window the run or task still reads as finished and
-// landed. RestoreRemovedSessionWorktree recreates under the evaluation slot
+// landed. ClaimSessionWorktree recreates under the evaluation slot
 // and records the checkout as restored, which keeps it for landedRestoreGrace.
 // Threat (review finding): a sweep passed its checks in that window and
 // removed the freshly recreated checkout, so the follow-up or reopened task
 // started in a missing directory. Owners: restoreRemovedRunWorktree,
-// RestoreRemovedSessionWorktree and removeLandedSessionWorktree, over a real
+// ClaimSessionWorktree and removeLandedSessionWorktree, over a real
 // store and Git.
 func TestRecreatedCheckoutIsKeptBetweenRecreateAndMarking(t *testing.T) {
 	f := newLandedJobsFixture(t)
@@ -449,7 +449,7 @@ func TestRecreatedCheckoutIsKeptBetweenRecreateAndMarking(t *testing.T) {
 		t.Fatalf("sweep after recreate removed %d: %v", removed, err)
 	}
 	outcome, err := f.service.RemoveLandedWorktree(j.session)
-	if err != nil || outcome.Removed || !strings.Contains(outcome.Kept, "recreated for new work") {
+	if err != nil || outcome.Removed || !strings.Contains(outcome.Kept, "reserved for new work") {
 		t.Fatalf("landed removal after recreate = %+v, %v", outcome, err)
 	}
 	if state, err := f.trees.InspectTaskWorkspace(j.path); err != nil || state.HeadCommit != j.head || state.BranchName != j.branch {
@@ -468,7 +468,7 @@ func TestRecreatedCheckoutIsKeptBetweenRecreateAndMarking(t *testing.T) {
 // Requirement: the recreation waits for an evaluation already in flight
 // (which holds the slot from its state checks to its Git removal), so an
 // evaluation can never see the run as idle and then remove a checkout
-// recreated while it waited. Owner: RestoreRemovedSessionWorktree's slot.
+// recreated while it waited. Owner: ClaimSessionWorktree's slot.
 func TestRecreateWaitsForAnEvaluationInFlight(t *testing.T) {
 	f := newLandedJobsFixture(t)
 	j := f.job("inflight", "succeeded")
@@ -479,7 +479,7 @@ func TestRecreateWaitsForAnEvaluationInFlight(t *testing.T) {
 	f.service.landed.acquire(-1) // an evaluation holds the slot
 	done := make(chan error, 1)
 	go func() {
-		_, err := f.service.RestoreRemovedSessionWorktree(j.session)
+		_, err := f.service.ClaimSessionWorktree(j.session)
 		done <- err
 	}()
 	select {
@@ -509,9 +509,115 @@ func TestRecreateWaitsForAnEvaluationInFlight(t *testing.T) {
 	}
 }
 
+// Requirement: a follow-up that arrives while a sweep is evaluating the
+// job's never-removed checkout (the sweep holds the slot from its state
+// checks through the Git removal) still runs in a checkout: its claim waits
+// for the slot, re-reads the removal record the sweep wrote, recreates the
+// checkout from the kept branch and claims it, so no later evaluation removes
+// it before the follow-up is marked. Without a sandbox manager PrepareFollowup
+// never reserves the follow-up, so the claim is the only marker.
+// Threat (review finding): PrepareFollowup read no removal record before the
+// sweep finished, skipped the restore, and the follow-up started in a deleted
+// directory. Owners: ClaimSessionWorktree (called by PrepareFollowup through
+// restoreRemovedRunWorktree) and removeLandedSessionWorktree, over a real
+// store and Git. The sweep is held inside its Git removal by a remover that
+// waits for the test, then runs the real worktree.Service removal.
+func TestFollowupArrivingDuringAnEvaluationGetsItsCheckout(t *testing.T) {
+	f := newLandedJobsFixture(t)
+	j := f.job("arrive01", "succeeded")
+	f.merge(j)
+	entered, proceed := make(chan struct{}), make(chan struct{})
+	f.service.landed.removerForTest = landedRemoverFunc(func(in worktree.LandedWorktree) (worktree.LandedWorktreeRemoval, error) {
+		close(entered)
+		<-proceed
+		return f.trees.RemoveLandedWorktree(in)
+	})
+	swept := make(chan error, 1)
+	go func() {
+		_, err := f.service.SweepLandedWorktrees()
+		swept <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Minute):
+		t.Fatal("sweep never reached its removal")
+	}
+	// The follow-up arrives now, with the run as PrepareFollowup reads it:
+	// finished, no follow-up marked, no removal recorded yet.
+	snap, _, err := f.db.GetSession(j.session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := f.run(j.id)
+	if stale.WorktreeRemoval != nil || stale.FollowupActive() {
+		t.Fatalf("fixture: run already marked: %+v", stale)
+	}
+	claimed := make(chan error, 1)
+	go func() { claimed <- f.service.restoreRemovedRunWorktree(snap, stale) }()
+	select {
+	case err := <-claimed:
+		t.Fatalf("follow-up claim did not wait for the evaluation in flight: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(proceed)
+	if err := <-swept; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-claimed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Minute):
+		t.Fatal("follow-up claim never finished")
+	}
+	// The follow-up's checkout is there, on its branch at its head, clean.
+	state, err := f.trees.InspectTaskWorkspace(j.path)
+	if err != nil || state.BranchName != j.branch || state.HeadCommit != j.head || !state.Clean {
+		t.Fatalf("follow-up checkout = %+v, %v", state, err)
+	}
+	if rm := f.run(j.id).WorktreeRemoval; rm == nil || rm.State != pebblestore.WorktreeRemovalRestored {
+		t.Fatalf("run record = %+v, want restored", rm)
+	}
+	// Later evaluations keep it while the follow-up starts.
+	f.service.landed.removerForTest = nil
+	f.service.landed.nextCheck = nil
+	if removed, err := f.service.SweepLandedWorktrees(); err != nil || removed != 0 {
+		t.Fatalf("sweep after the claim removed %d: %v", removed, err)
+	}
+	if outcome, err := f.service.RemoveLandedWorktree(j.session); err != nil || outcome.Removed || !strings.Contains(outcome.Kept, "reserved for new work") {
+		t.Fatalf("landed removal after the claim = %+v, %v", outcome, err)
+	}
+	if _, err := os.Stat(j.path); err != nil {
+		t.Fatalf("follow-up checkout removed: %v", err)
+	}
+}
+
+// Requirement: a claim on a checkout that was never removed (nothing to
+// recreate) still keeps it from every evaluation for the claim window, and
+// writes no removal record. Owner: ClaimSessionWorktree.
+func TestClaimKeepsANeverRemovedCheckout(t *testing.T) {
+	f := newLandedJobsFixture(t)
+	now := time.Unix(1_800_000_000, 0)
+	f.service.landed.nowForTest = func() time.Time { return now }
+	j := f.job("claim001", "succeeded")
+	f.merge(j)
+	if recreated, err := f.service.ClaimSessionWorktree(j.session); err != nil || recreated {
+		t.Fatalf("claim = %v, %v", recreated, err)
+	}
+	if removed, err := f.service.SweepLandedWorktrees(); err != nil || removed != 0 {
+		t.Fatalf("sweep removed a claimed checkout: %d %v", removed, err)
+	}
+	f.assertKept(j)
+	now = now.Add(landedRestoreGrace + time.Minute)
+	if outcome, err := f.service.RemoveLandedWorktree(j.session); err != nil || !outcome.Removed {
+		t.Fatalf("after the claim window = %+v, %v; want removed", outcome, err)
+	}
+}
+
 // Requirement: a reopened task's recreated checkout is kept the same way
 // while the task still reads completed (ReopenProjectTask recreates it
-// through RestoreRemovedSessionWorktree before moving it to in_progress).
+// through ClaimSessionWorktree before moving it to in_progress).
 func TestReopenedTaskCheckoutIsKeptBeforeTheTaskIsActive(t *testing.T) {
 	f := newLandedJobsFixture(t)
 	const session, branch = "task-session-reopen", "agent/task-reopen"
@@ -536,7 +642,7 @@ func TestReopenedTaskCheckoutIsKeptBeforeTheTaskIsActive(t *testing.T) {
 	if outcome, err := f.service.RemoveLandedWorktree(session); err != nil || !outcome.Removed {
 		t.Fatalf("removal = %+v, %v", outcome, err)
 	}
-	if restored, err := f.service.RestoreRemovedSessionWorktree(session); err != nil || !restored {
+	if restored, err := f.service.ClaimSessionWorktree(session); err != nil || !restored {
 		t.Fatalf("restore = %v, %v", restored, err)
 	}
 	if removed, err := f.service.SweepLandedWorktrees(); err != nil || removed != 0 {

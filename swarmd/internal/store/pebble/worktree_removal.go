@@ -87,6 +87,46 @@ func (s *SessionStore) ListEveryActiveSessionLifecycle() ([]SessionLifecycleSnap
 	}
 }
 
+// SetWorkerRunWorktreeRemoval writes only a worker run's worktree removal
+// record, reading the current run under workersMu like every other
+// read-modify-write of a run (ReserveWorkerFollowup, SetSandboxCleanupError),
+// so a concurrent follow-up reservation or status change is never overwritten
+// with a stale copy.
+func (ws *WorkerStore) SetWorkerRunWorktreeRemoval(account, workerID, runID string, record WorktreeRemoval) error {
+	if ws == nil || ws.store == nil || ws.store.db == nil {
+		return errors.New("store is not open")
+	}
+	ws.store.workersMu.Lock()
+	var published *workerRealtimeMutation
+	defer func() {
+		ws.store.workersMu.Unlock()
+		if published != nil {
+			ws.store.publishWorkerRealtime(published)
+		}
+	}()
+	current, found, err := ws.GetWorkerRun(account, workerID, runID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrWorkerNotFound
+	}
+	copy := record
+	current.WorktreeRemoval = &copy
+	m := &workerRealtimeMutation{accountScopeID: account, userID: current.UserID, workerID: workerID}
+	if err := m.put(KeyWorkerRun(account, workerID, runID), current); err != nil {
+		return err
+	}
+	if err := m.setPayload(WorkerRealtimePayload{WorkerID: workerID, ChangeSummary: "worktree " + record.State}); err != nil {
+		return err
+	}
+	if err := ws.store.commitWorkerRealtime(m); err != nil {
+		return err
+	}
+	published = m
+	return nil
+}
+
 // AppendSignalOnce records one activity event exactly once per DedupKey.
 func (s *SessionStore) AppendSignalOnce(sig Signal) (Signal, error) {
 	if strings.TrimSpace(sig.Source) == "" {
