@@ -722,13 +722,21 @@ func (s *WorkerExecutionService) ClaimSessionWorktree(sessionID string) (bool, e
 		return false, errors.New("worker execution authorities unavailable")
 	}
 	sessionID = strings.TrimSpace(sessionID)
+	// A session no evaluation could ever remove a checkout of (no checkout
+	// of its own, or no worker run or task behind it; see
+	// removeLandedSessionWorktree) needs no claim and never waits for the slot.
+	if snap, found, err := s.host.runs.sessions.Store().GetSession(sessionID); err != nil {
+		return false, err
+	} else if !found || !landedRemovalCandidate(snap) {
+		return false, nil
+	}
 	s.landed.acquire(-1)
 	defer s.landed.release()
 	snap, found, err := s.host.runs.sessions.Store().GetSession(sessionID)
 	if err != nil {
 		return false, err
 	}
-	if !found || !snap.WorktreeEnabled || strings.TrimSpace(snap.WorktreeRootPath) == "" {
+	if !found || !landedRemovalCandidate(snap) {
 		return false, nil
 	}
 	path := filepath.Clean(strings.TrimSpace(snap.WorktreeRootPath))
@@ -764,6 +772,38 @@ func (s *WorkerExecutionService) ClaimSessionWorktree(sessionID string) (bool, e
 		return recreated, fmt.Errorf("record the recreated checkout: %w", err)
 	}
 	return recreated, nil
+}
+
+// landedRemovalCandidate reports whether removeLandedSessionWorktree could
+// ever remove this session's checkout: a worktree of its own, owned by the
+// session, behind a worker run or a project task (landedWorktreeOwners).
+func landedRemovalCandidate(snap store.SessionSnapshot) bool {
+	if !snap.WorktreeEnabled || strings.TrimSpace(snap.WorktreeRootPath) == "" || mapString(snap.Metadata, "swarm_v3_worktree_owner_session_id") != snap.ID {
+		return false
+	}
+	workerRun := mapString(snap.Metadata, "worker_execution_run_id") != "" && mapString(snap.Metadata, "worker_id") != ""
+	projectTask := mapString(snap.Metadata, "project_id") != "" && mapString(snap.Metadata, "task_id") != ""
+	return workerRun || projectTask
+}
+
+// PrepareSessionMessage is the one preparation a message needs before it may
+// start a run in a session (POST /v3/sessions/{id}/messages). A worker job's
+// session goes through PrepareFollowup, which claims its checkout; any other
+// session (a project task's, a person continuing a finished Coder session)
+// claims its checkout through ClaimSessionWorktree: it waits for a removal
+// being decided, recreates the checkout from its kept branch if it was
+// removed, and keeps it from later evaluations until the run is active. A
+// checkout that cannot be recreated refuses the message (ErrWorkerConflict)
+// before anything is appended.
+func (s *WorkerExecutionService) PrepareSessionMessage(account, user, sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if strings.HasPrefix(sessionID, "worker-execution-") {
+		return s.PrepareFollowup(account, user, sessionID)
+	}
+	if _, err := s.ClaimSessionWorktree(sessionID); err != nil {
+		return fmt.Errorf("%w: the session's checkout was removed after its work landed and cannot be recreated from its branch: %v", store.ErrWorkerConflict, err)
+	}
+	return nil
 }
 
 // restoreRemovedRunWorktree claims a run's checkout for its follow-up,

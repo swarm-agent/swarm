@@ -1929,7 +1929,7 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	if runIntent.RunID == "" {
 		runIntent.RunID = stableSessionsV3PrimaryRunID(sessionID, clientRequestID)
 	}
-	if err := s.prepareWorkerJobFollowup(principal, sessionID, clientRequestID); err != nil {
+	if err := s.prepareWorkerJobFollowup(principal, session, sessionID, clientRequestID); err != nil {
 		return sessionruntime.SessionMutationResult{}, nil, err
 	}
 	payloadHash, err := sessionsV3MessagePayloadHash(sessionID, req, message, runIntent.Status, runIntent.BlockedReason)
@@ -2062,8 +2062,16 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 // (ErrWorkerConflict) is returned before anything is appended, so a caller is
 // never told a follow-up was accepted that the run gate would then refuse. A
 // retry of an already appended message replays without re-checking.
-func (s *Server) prepareWorkerJobFollowup(principal identity.Principal, sessionID, clientRequestID string) error {
-	if !strings.HasPrefix(sessionID, "worker-execution-") {
+//
+// Every other session with a checkout of its own (a project task's, a person
+// continuing a finished Coder session) gets the same checkout claim through
+// the same entry (WorkerExecutionService.PrepareSessionMessage): a checkout
+// Swarm removed after its work landed is recreated from its kept branch, and
+// a removal being decided right now is waited for, before the run is
+// admitted.
+func (s *Server) prepareWorkerJobFollowup(principal identity.Principal, session pebblestore.SessionSnapshot, sessionID, clientRequestID string) error {
+	workerJob := strings.HasPrefix(sessionID, "worker-execution-")
+	if !workerJob && (!session.WorktreeEnabled || strings.TrimSpace(session.WorktreeRootPath) == "") {
 		return nil
 	}
 	if _, replay, err := s.sessions.Store().GetV3SessionOperationIdempotencyRecord(principal.AccountScopeID, sessionID, sessionruntime.SessionMutationAppendMessage, clientRequestID); err != nil {
@@ -2073,9 +2081,14 @@ func (s *Server) prepareWorkerJobFollowup(principal identity.Principal, sessionI
 	}
 	execution, err := s.workerExecutionService()
 	if err != nil {
-		return err
+		if workerJob {
+			return err
+		}
+		// The service owns every landed removal and sweep: without it no
+		// checkout is removed or being removed.
+		return nil
 	}
-	return execution.PrepareFollowup(principal.AccountScopeID, principal.UserID, sessionID)
+	return execution.PrepareSessionMessage(principal.AccountScopeID, principal.UserID, sessionID)
 }
 
 func (s *Server) sessionsV3ActiveCheckpointMessageRunJob(principal identity.Principal, sessionID, runID, epochID string) (sessionV3ExecutorJob, bool, error) {

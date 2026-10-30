@@ -53,8 +53,10 @@ the first and last attempt. Anything that needs the checkout again (a
 follow-up message to the job, a task reopen, a reviewer reading the job in
 place) recreates it at the same path from the kept branch, as long as the
 branch is still at the recorded `head`; a branch moved since is refused
-rather than checked out. A follow-up, reopen or in-place review always
-reserves the job's worktree first, waiting for any removal being decided at
+rather than checked out. A follow-up, reopen, in-place review or a message
+to the job's or task's session (`POST /v3/sessions/{id}/messages`, for
+example a person continuing a finished Coder task) always reserves the
+worktree before its run is admitted, waiting for any removal being decided at
 that moment, and recreates it if that removal went through. A reserved
 worktree, removed before or not, is not removed for 30 minutes, so the work
 has time to start. A recreated one is recorded as `worktree_removal` `state`

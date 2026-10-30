@@ -593,6 +593,93 @@ func TestFollowupArrivingDuringAnEvaluationGetsItsCheckout(t *testing.T) {
 	}
 }
 
+// Requirement: a message to a finished task's session that arrives while an
+// evaluation of its never-removed checkout holds the slot (from its state
+// checks through the Git removal) still gets its checkout: the message's
+// preparation (PrepareSessionMessage, called by POST /v3/sessions/{id}/messages
+// before the run is admitted) waits for the slot, re-reads the record the
+// evaluation wrote, recreates the checkout and claims it. A session no
+// evaluation could remove (no task or worker run behind it) never waits.
+// Threat (review finding): a message admitted between the evaluation's
+// intent/lifecycle check and its removal started a run in a checkout being
+// deleted. Owner: WorkerExecutionService.PrepareSessionMessage over a real
+// store and Git; the evaluation is held inside the real removal.
+func TestSessionMessageArrivingDuringAnEvaluationKeepsItsCheckout(t *testing.T) {
+	f := newLandedJobsFixture(t)
+	const session, branch = "task-session-msg", "agent/task-msg"
+	alloc, err := f.trees.AllocateDetachedWorkspaceRequestedForPrincipal(f.p, f.source, session, "", branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(alloc.WorkspacePath, "task.txt"), []byte("task"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.git(alloc.WorkspacePath, "add", "task.txt")
+	f.git(alloc.WorkspacePath, "commit", "-q", "-m", "task work")
+	head := f.git(alloc.WorkspacePath, "rev-parse", "HEAD")
+	f.git(f.repo, "merge", "-q", "--ff-only", branch)
+	f.session(session, alloc.WorkspacePath, branch, map[string]any{"project_id": "project-msg", "task_id": "task-msg"})
+	if err := f.db.PutProject(landedAccount, &pebblestore.ProjectRecord{ID: "project-msg", Name: "project-msg"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.PutProjectTask(landedAccount, &pebblestore.ProjectTaskRecord{ID: "task-msg", Title: "Task", ProjectID: "project-msg", AccountID: landedAccount,
+		SessionID: session, Agent: "coder", Status: "completed", WorkspacePath: alloc.WorkspacePath, WorktreeBranch: branch, BaseBranch: "dev"}); err != nil {
+		t.Fatal(err)
+	}
+	entered, proceed := make(chan struct{}), make(chan struct{})
+	f.service.landed.removerForTest = landedRemoverFunc(func(in worktree.LandedWorktree) (worktree.LandedWorktreeRemoval, error) {
+		close(entered)
+		<-proceed
+		return f.trees.RemoveLandedWorktree(in)
+	})
+	evaluated := make(chan error, 1)
+	go func() {
+		_, err := f.service.RemoveLandedWorktree(session)
+		evaluated <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Minute):
+		t.Fatal("evaluation never reached its removal")
+	}
+	// An interactive session with its own checkout but no task or run behind
+	// it is never removed, so its message does not wait for the slot.
+	f.session("plain-session", filepath.Join(t.TempDir(), "plain"), "agent/plain", nil)
+	if err := f.service.PrepareSessionMessage(landedAccount, landedUser, "plain-session"); err != nil {
+		t.Fatalf("plain session message: %v", err)
+	}
+	prepared := make(chan error, 1)
+	go func() { prepared <- f.service.PrepareSessionMessage(landedAccount, landedUser, session) }()
+	select {
+	case err := <-prepared:
+		t.Fatalf("message preparation did not wait for the evaluation in flight: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(proceed)
+	if err := <-evaluated; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-prepared:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Minute):
+		t.Fatal("message preparation never finished")
+	}
+	state, err := f.trees.InspectTaskWorkspace(alloc.WorkspacePath)
+	if err != nil || state.BranchName != branch || state.HeadCommit != head || !state.Clean {
+		t.Fatalf("checkout for the message's run = %+v, %v", state, err)
+	}
+	f.service.landed.removerForTest = nil
+	if outcome, err := f.service.RemoveLandedWorktree(session); err != nil || outcome.Removed || !strings.Contains(outcome.Kept, "reserved for new work") {
+		t.Fatalf("removal after the message = %+v, %v; want kept", outcome, err)
+	}
+	if _, err := os.Stat(alloc.WorkspacePath); err != nil {
+		t.Fatalf("message's checkout removed: %v", err)
+	}
+}
+
 // Requirement: a claim on a checkout that was never removed (nothing to
 // recreate) still keeps it from every evaluation for the claim window, and
 // writes no removal record. Owner: ClaimSessionWorktree.
