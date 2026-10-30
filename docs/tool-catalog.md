@@ -54,11 +54,29 @@ and on a linked machine:
 | --- | --- |
 | `tool`, `action` | What ran. |
 | `machine` | Where it ran: this machine's own name (its Swarm name, or `home`), or the linked machine's name. Always set. |
-| `state` | The action's outcome word: the answer's `status` (`ok`, `watching`, `stopped`, …), `ok` when it has none. |
+| `state` | The call's outcome, always one of the states below. A task's, run's or machine's own status (`needs_review`, `running`, `degraded`) is in `data`, never here. |
 | `data` | The action's own answer: every field it held before the envelope. A linked machine's answer is `data` as it came, plus this machine's notes (`linked_task_id`, `linked_record_error`). |
-| `next_action` | One sentence when there is a next step. |
-| `next` | The cursor or continuation when the answer was cut (`next_cursor`, or a cut message's `next`). An answer is never cut silently. |
+| `next_action` | The next step, for every action that has one: the action's own (a task's `next_action`, such as `wait_tasks`), else "Call next to read the rest." for a cut answer, else the step its declaration names (`CatalogAction.NextAction`). Omitted when there is nothing to do; never `none`. |
+| `next` | Set whenever the answer was cut: the exact arguments of the `manage_projects` call that reads the rest, as one object (`action` plus its cursor or offset fields and the call's own `project_id`, `task_id`, `machine` and filters). A cut list gives the same action at the next `cursor`; a cut message gives `read_task_session` at its `message_id`, `message_seq` and `content_offset`; a cut task report (`result_truncated` in `get_task` or Swarm Control's `wait_tasks`) gives `get_task` with `detail` `full` at the report's attempt (`cursor`, `limit` 1), or `read_task_session` for a task on a linked machine. `next` only names a read action the catalog declares, with inputs that action takes. |
 | `untrusted_content` | `true` when `data` holds agent- or outside-written text. Every answer from a linked machine is untrusted. |
+
+`state` is one of (`tool.EnvelopeStates`):
+
+| State | Meaning |
+| --- | --- |
+| `ok` | The call did what it was asked. |
+| `watching` | The Orchestrator's `wait_tasks` recorded a watch; a new turn brings the outcomes. Its `data.notice` says what to tell the person, and it has no `next_action`. |
+| `cancelled` | `cancel_watch` (or `wait_tasks` with `cancel`) ended watches. |
+| `milestone`, `settled`, `timed_out` | Swarm Control's `wait_tasks` (below). |
+| `partial` | The call ran but part of its answer is missing: the home could not keep its record of a send (`linked_record_error`) or could not read the machine's answer (`data_error`). |
+
+An action's answer `status` becomes `state` only when the action declares it (`CatalogAction.States`). A refused or failed call is not an envelope: it is a tool error that carries the reason (MCP `isError`). `tool.CheckEnvelope` holds an answer to this contract, and `TestCatalogEnvelopeContractEveryAction` runs every action through both surfaces against it.
+
+Data the task views carry for every reader:
+
+- `get_task` (and each task of Swarm Control's `wait_tasks`) has `review` when a review recorded a verdict: `verdict` (`ok`, `warn` or `block`), `round`, `step`, `delivery_id`, and a `findings` summary with `findings_truncated` and `more` (the call with the full text). `progress.workflow` still shows the loop's state and a blocking review's full findings.
+- A landed task's `result.commits` and `result.files` come from the task's own range even after its checkout was removed: base..its branch in its source repository, or base..the head its integration recorded once the branch is deleted.
+- `list_machines` and `agents_at_work` use one reachability rule (`tool.FleetMachineReachable`): when the answer contacted the machine, it is online exactly when that contact succeeded; otherwise the last recorded contact decides.
 
 ## How MCP serves the catalog
 
