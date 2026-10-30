@@ -1732,6 +1732,11 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 		return
 	}
 	if r.Method == http.MethodGet {
+		next, nextErr := parseMessageContinuationQuery(r.URL.Query())
+		if nextErr != nil {
+			writeError(w, http.StatusBadRequest, nextErr)
+			return
+		}
 		query, ok := parseSessionsV3MessagesPageQuery(w, r)
 		if !ok {
 			return
@@ -1741,6 +1746,11 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 			return
 		} else if !found {
 			writeSessionNotFound(w)
+			return
+		}
+		if next != nil {
+			// One chunk of one exact message (session_message_chunk.go).
+			s.readSessionMessageChunk(w, r, sessionID, *next)
 			return
 		}
 		var messages []pebblestore.MessageSnapshot

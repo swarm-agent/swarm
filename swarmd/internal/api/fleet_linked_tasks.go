@@ -242,7 +242,7 @@ func (s *Server) ReadFleetLinkedTaskSession(ctx context.Context, p identity.Prin
 		if err != nil {
 			return nil, linkedTaskFail(http.StatusBadRequest, "%v", err)
 		}
-		messages = []map[string]any{linkedTaskMessageItem(page.Messages[0], chunk)}
+		messages = []map[string]any{messageChunkItem(page.Messages[0], chunk)}
 	} else {
 		var more bool
 		messages, more = boundLinkedTaskMessages(page.Messages, read)
@@ -325,7 +325,7 @@ func boundLinkedTaskMessages(page []pebblestore.MessageSnapshot, read tool.Fleet
 			continue
 		}
 		used += chunk.EncodedLen()
-		picked = append(picked, linkedTaskMessageItem(message, chunk))
+		picked = append(picked, messageChunkItem(message, chunk))
 	}
 	for i, j := 0, len(picked)-1; i < j; i, j = i+1, j-1 {
 		picked[i], picked[j] = picked[j], picked[i]
@@ -334,24 +334,6 @@ func boundLinkedTaskMessages(page []pebblestore.MessageSnapshot, read tool.Fleet
 		picked = []map[string]any{}
 	}
 	return picked, more
-}
-
-// linkedTaskMessageItem is one message (or one chunk of it) of a linked task
-// session read. A chunk that does not reach the content's end is truncated
-// and says where it ends (content_offset) and the full size (total_bytes); a
-// chunk after the first says where it starts (content_start).
-func linkedTaskMessageItem(message pebblestore.MessageSnapshot, chunk tool.MessageContentChunk) map[string]any {
-	item := map[string]any{"id": message.ID, "role": message.Role, "content": chunk.Content, "global_seq": message.GlobalSeq, "created_at": message.CreatedAt}
-	if chunk.Start > 0 {
-		item["content_start"] = chunk.Start
-	}
-	if chunk.Truncated || chunk.Start > 0 {
-		item["content_offset"], item["total_bytes"] = chunk.End, chunk.TotalBytes
-	}
-	if chunk.Truncated {
-		item["truncated"] = true
-	}
-	return item
 }
 
 func clipLinkedTaskText(text string, maxBytes int) string {
@@ -469,20 +451,12 @@ func (s *Server) handleFleetLinkedTasks(w http.ResponseWriter, r *http.Request) 
 			maxChars = parsed
 		}
 		read := tool.FleetTaskSessionRead{Limit: limit, MaxChars: maxChars, Role: query.Get("role")}
-		if query.Has("message_id") || query.Has("message_seq") || query.Has("content_offset") {
-			next := tool.MessageContinuation{MessageID: strings.TrimSpace(query.Get("message_id"))}
-			seq, seqErr := strconv.ParseUint(strings.TrimSpace(query.Get("message_seq")), 10, 64)
-			offset, offsetErr := 0, error(nil)
-			if raw := strings.TrimSpace(query.Get("content_offset")); raw != "" {
-				offset, offsetErr = strconv.Atoi(raw)
-			}
-			if next.MessageID == "" || seqErr != nil || seq < 1 || offsetErr != nil || offset < 0 {
-				writeError(w, http.StatusBadRequest, errors.New("continuing a message needs message_id, a positive message_seq and a content_offset that is not negative"))
-				return
-			}
-			next.MessageSeq, next.ContentOffset = seq, offset
-			read.Continue = &next
+		next, err := parseMessageContinuationQuery(query)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
 		}
+		read.Continue = next
 		view, err := s.ReadFleetLinkedTaskSession(r.Context(), principal, query.Get("machine"), query.Get("project_id"), query.Get("task_id"), read)
 		if err != nil {
 			writeError(w, linkedTaskStatus(err), err)

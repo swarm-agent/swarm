@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -382,6 +383,15 @@ func controlMCPTaskResult(c *controlMCPCall, args map[string]any) (any, error) {
 	if attempts := controlMCPList(task["attempts"]); len(attempts) > 0 {
 		if summary, _ := controlMCPMap(attempts[len(attempts)-1])["summary"].(string); strings.TrimSpace(summary) != "" {
 			out["report"] = controlMCPTruncate(summary, controlMCPTaskReportChars)
+			// A shortened report says so, with its full size and the read
+			// that returns all of it: the task session's latest messages,
+			// each cut one continued by its next.
+			if utf8.RuneCountInString(summary) > controlMCPTaskReportChars {
+				out["result_truncated"], out["result_bytes"] = true, len(summary)
+				if sessionID := controlMCPString(task, "session_id"); sessionID != "" {
+					out["read_full"] = map[string]any{"tool": "swarm_get_session", "session_id": sessionID, "messages": 1, "then": "follow the cut message's next until truncated is gone"}
+				}
+			}
 		}
 	}
 	deliverables := []map[string]any{}

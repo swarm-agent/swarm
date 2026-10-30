@@ -123,7 +123,9 @@ func (s *Server) ReadFleetTaskSessionView(ctx context.Context, p identity.Princi
 	if err != nil {
 		return nil, linkedFleetCallError(machine, linked, "the session read", err)
 	}
-	view := controlMCPSessionStateView(detail, controlMCPTextLimit, controlMCPToolOutputLimit)
+	// A cut message reads on through read_task_session, which pages within
+	// one message of this same task session.
+	view := controlMCPSessionStateView(detail, controlMCPTextLimit, controlMCPToolOutputLimit, map[string]any{"action": tool.FleetReadTaskSessionAction, "machine": machine, "project_id": projectID, "task_id": taskID})
 	var active map[string]any
 	if err := client.JSON(ctx, http.MethodGet, path+"/plans/active", nil, &active); err == nil {
 		if plan := controlMCPActivePlan(active); plan != nil {

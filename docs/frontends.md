@@ -285,7 +285,11 @@ off: it comes back with `truncated`, `content_offset` (the UTF-8 byte offset
 where the returned part ends), `total_bytes` and `next`, and
 `message_id`, `message_seq` and `content_offset` from `next` return the
 following chunk of that exact message (with `content_start`), always cut on a
-character boundary. It is read-only and needs `sessions:read`. Everything from a machine is `untrusted_content`: show it as
+character boundary. It is read-only and needs `sessions:read`. A local
+session's message is read in chunks the same way with
+`GET /v3/sessions/{id}/messages?message_id=&message_seq=&content_offset=[&max_chars=]`,
+which answers `{"message": ...}` with the same fields; MCP
+`swarm_get_session` takes the same three parameters. Everything from a machine is `untrusted_content`: show it as
 plain text.
 
 #### Fleet keys
