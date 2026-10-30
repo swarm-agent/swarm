@@ -55,6 +55,12 @@ is `controlMCPCoreTools` in `control_mcp.go`; the job tools are in
 `swarm_manage_worker` (below; full keys only) complete the default list. A key lists only
 the tools its level allows.
 
+The catalog tools `manage_jobs` and `manage_workers` (also in the default list) serve
+every job and worker action for Swarm Control and the Orchestrator from one declaration,
+with `machine` reaching linked machines ([tool catalog](../tool-catalog.md)). Use them for
+jobs and workers; the `swarm_*` job and worker tools below stay unchanged until they are
+removed.
+
 ## All tools
 
 | Tool | Relay scope | Routes reached |

@@ -7,13 +7,19 @@ serve it from that declaration and run the same handler. Neither surface has
 its own copy of the schema, rules or answer.
 
 The catalog holds `manage_projects` (stage 1), `manage_workflows` (stage 2,
-`catalog_manage_workflows.go`) and `manage_jobs` (stage 3,
-`catalog_manage_jobs.go`). The hand-written `swarm_*` MCP tools are frozen as
-they are (`TestControlMCPSwarmToolNamesFrozen`); the `swarm_*` workflow, job
-and worker tools still work beside the catalog tools. `manage_workers` is not
-in the catalog yet: the Orchestrator's `manage_workers` and the `swarm_*`
-worker tools are unchanged. Later stages move the rest into the catalog and
-remove them.
+`catalog_manage_workflows.go`), and `manage_jobs` and `manage_workers` (stage
+3, `catalog_manage_jobs.go` and `catalog_manage_workers.go`). The hand-written
+`swarm_*` MCP tools are frozen as they are
+(`TestControlMCPSwarmToolNamesFrozen`); the `swarm_*` workflow, job and worker
+tools still work beside the catalog tools. Later stages move the rest into the
+catalog and remove them.
+
+A key bound to one worker, one agent or a trigger never calls a catalog tool:
+Swarm Control neither lists nor runs them for it, and the linked routes
+(`POST /v3/jobs/{action}`, `POST /v3/worker-actions/{action}`) answer 403
+(`catalogBoundKey`). The catalog services run each action on internal requests
+that carry only scopes, so the routes behind them could not hold such a key to
+its binding; the key keeps its own `swarm_*` tools.
 
 ## What an action declares
 
@@ -48,13 +54,14 @@ Each action of a catalog tool declares:
 - **waiting statuses**: the statuses of the answer's own record that wait on
   someone; such an answer's state is `waiting` (`manage_jobs`).
 
-The Orchestrator's `manage_projects`, `manage_workflows` and `manage_jobs`
-definitions are generated from these declarations
+The Orchestrator's `manage_projects`, `manage_workflows`, `manage_jobs` and
+`manage_workers` definitions are generated from these declarations
 (`CatalogTool.OrchestratorDefinition`), and a test holds each by hash.
 `manage_projects`' is the exact definition the model was shown before;
-`manage_workflows`' and `manage_jobs`' keep every field they had and add the
-new actions' inputs (`manage_jobs`' schema now accepts other properties, as
-every catalog tool's does; the handler passes only its declared inputs on).
+`manage_workflows`', `manage_jobs`' and `manage_workers`' keep every field and
+the description they had and add the new actions' inputs (`manage_jobs`' and
+`manage_workers`' schemas now accept other properties, as every catalog tool's
+does).
 
 ## manage_workflows
 
@@ -134,6 +141,34 @@ A job whose status is `needs_input` (a question for `answer_job`),
 read too large to answer inline is a JSON text page whose `next` is the same
 read with `page_offset` and `page_digest`; a cut run list's `next` is
 `list_runs` at its `cursor`.
+
+## manage_workers
+
+One handler (`tool.Runtime.executeManageWorkers`) serves the Orchestrator and
+Swarm Control; the Orchestrator's definition and its `manage_automation` alias
+are generated from the declaration. Every action runs one service function,
+`api.Server.ManageWorkers`: `assign_task` runs the `swarm_assign_worker_task`
+handler (`POST /v3/workers/{id}/direct`); every other action runs
+`run.Service.ManageWorkers`, the Orchestrator's worker code. A conversation
+caller must be the Orchestrator; a Swarm Control caller is held to its key's
+level and scopes and has no conversation: `create` and `propose` make a worker
+that waits for the person's acceptance in Swarm (as the Orchestrator's do), and
+`review`, `context` and `progress` need `worker_id`. `activate` is refused for
+every caller: activation is the person's acceptance.
+
+| Action | Level | API scopes | Reach |
+| --- | --- | --- | --- |
+| `help`, `list`, `inspect`, `review`, `context`, `progress` | read | `automations:read` or `automations:write` | any |
+| `propose`, `test`, `request`, `assign_task` | write | `automations:write` | any |
+| `create`, `update`, `attach`, `disable_automation`, `delete`, `activate`, `pause`, `resume`, `archive` | manage | `automations:write` | any |
+
+Each level is `remote.ToolScope` of the `swarm_*` worker tool with the same
+effect (`TestManageWorkersLevelsAreTheSwarmToolsLevels`). With `machine`, the
+action runs on the linked machine's own `ManageWorkers` through
+`POST /v3/worker-actions/{action}` with the caller's scopes; a linked `list`
+stays the bounded summary (no instructions; `inspect` reads them). `off`
+refuses every linked action; under `ask` the Orchestrator's `test`, `request`
+and `assign_task` there wait for the person's approval (`FleetTaskStart`).
 
 ## The envelope
 

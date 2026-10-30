@@ -176,7 +176,7 @@ an approval the person gives in Swarm); a cut answer gives `next`, the exact
 call that reads the rest.
 
 - `give_job` gives one of the person's own workers a job: its id or name from
-  `swarm_list_workers` (coder, designer and finder are Swarm's own agents:
+  `manage_workers` `list` (coder, designer and finder are Swarm's own agents:
   use `swarm_run_task` with that role; to review work, use a workflow with a
   `reviewer` step, section 8b), the `project` and `folder`, and a `brief` that
   says what to do and how to know it is done. `get_job` returns the status,
@@ -186,9 +186,15 @@ call that reads the rest.
   Use this when the person names one of their own workers. (`swarm_get_job`
   still waits with `wait_seconds` and adds the diff or transcript on
   request.)
-- `swarm_list_workers` lists the box's workers (`include_jobs` adds their
-  latest jobs). Listing and resolving names create no workers.
-- `swarm_deploy_worker` explicitly creates a requested worker: a name, a role
+Use the `manage_workers` tool for workers, with `action` and optional
+`machine` the same way: `list` and `inspect` read them (listing and resolving
+names create no workers), `update` saves a worker's definition at its
+`expected_revision`, `pause`, `resume`, `archive` and `delete` change its
+state (needs a full key), and `assign_task` starts a run of a worker on a
+`task`. `create` and `propose` make a worker that waits for the person to
+accept it in Swarm before it runs; nobody else can activate it.
+
+- `swarm_deploy_worker` makes a requested worker ready at once: a name, a role
   (coder, designer or finder: what it can do and which role model it uses) and
   standing instructions for every job it gets. For an existing worker, use
   `manage_jobs`: `give_job`, follow with `get_job`, answer with `answer_job`,
@@ -197,8 +203,8 @@ call that reads the rest.
   provisioned.
 - `manage_jobs` `schedule_job` deploys a worker that runs one job on a
   schedule (interval or cron with a timezone) in a project's folder. Each run
-  is a job you can read with `get_job`; `swarm_manage_worker` pauses it or
-  switches the schedule (needs a full key).
+  is a job you can read with `get_job`; `manage_workers` `pause` pauses it
+  and `disable_automation` turns its schedule off (needs a full key).
 
 Anything that acts in the world (for example publishing a post) waits for the
 person's approval in Swarm. You never approve those.
