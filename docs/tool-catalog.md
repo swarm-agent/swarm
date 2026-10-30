@@ -6,11 +6,14 @@ The tool catalog is the only place a tool exists. A tool is declared once in
 serve it from that declaration and run the same handler. Neither surface has
 its own copy of the schema, rules or answer.
 
-The catalog holds `manage_projects` (stage 1) and `manage_workflows` (stage 2,
-`catalog_manage_workflows.go`). The hand-written `swarm_*` MCP tools are
-frozen as they are (`TestControlMCPSwarmToolNamesFrozen`); the `swarm_*`
-workflow tools still work beside `manage_workflows`. Later stages move the
-rest into the catalog and remove them.
+The catalog holds `manage_projects` (stage 1), `manage_workflows` (stage 2,
+`catalog_manage_workflows.go`) and `manage_jobs` (stage 3,
+`catalog_manage_jobs.go`). The hand-written `swarm_*` MCP tools are frozen as
+they are (`TestControlMCPSwarmToolNamesFrozen`); the `swarm_*` workflow, job
+and worker tools still work beside the catalog tools. `manage_workers` is not
+in the catalog yet: the Orchestrator's `manage_workers` and the `swarm_*`
+worker tools are unchanged. Later stages move the rest into the catalog and
+remove them.
 
 ## What an action declares
 
@@ -36,17 +39,22 @@ Each action of a catalog tool declares:
   `manage_projects` or `manage_workflows` action is local_only.
 - **profiles**: the listings that show the action. `essentials` is Swarm
   Control's default listing, `full` is its `tools=all` listing and
-  `orchestrator` is the Orchestrator's definition. An action with no profile
+  `orchestrator` is the Orchestrator's definition (for `manage_jobs`, also
+  every agent whose tool contract has it). An action with no profile
   (an alias, a task-card step the person takes in their app, a task's own
   `report_task`) is declared but not served to MCP.
 - **description**: one description for both surfaces.
 - **untrusted**: the answer's data holds agent- or outside-written text.
+- **waiting statuses**: the statuses of the answer's own record that wait on
+  someone; such an answer's state is `waiting` (`manage_jobs`).
 
-The Orchestrator's `manage_projects` and `manage_workflows` definitions are
-generated from these declarations (`CatalogTool.OrchestratorDefinition`), and
-a test holds each by hash. `manage_projects`' is the exact definition the
-model was shown before; `manage_workflows`' keeps every field it had and adds
-the new actions' inputs.
+The Orchestrator's `manage_projects`, `manage_workflows` and `manage_jobs`
+definitions are generated from these declarations
+(`CatalogTool.OrchestratorDefinition`), and a test holds each by hash.
+`manage_projects`' is the exact definition the model was shown before;
+`manage_workflows`' and `manage_jobs`' keep every field they had and add the
+new actions' inputs (`manage_jobs`' schema now accepts other properties, as
+every catalog tool's does; the handler passes only its declared inputs on).
 
 ## manage_workflows
 
@@ -85,6 +93,48 @@ which runs that machine's `ManageWorkflows`, never its owner's import or
 restore route. The linked work rule (`linked.{name}.work`) applies as for
 every linked call.
 
+## manage_jobs
+
+One handler (`tool.Runtime.executeManageJobs`) serves the Orchestrator, every
+agent whose tool contract has `manage_jobs`, and Swarm Control. Every action
+runs one service function, `api.Server.ManageJobs`, which runs the same
+handlers as the `swarm_*` job tools (`swarm_list_runs`, `swarm_get_job`,
+`swarm_give_job`, `swarm_message_job`, `swarm_answer_job`,
+`swarm_deliver_job`, `swarm_stop_job`, `swarm_schedule_job`). A caller in a
+conversation needs the owner's grant for each change
+(`manage_jobs.<agent>.<action>`, [agent tools](agent-tools.md)) and cannot act
+on its own job or worker; a Swarm Control caller is held to its key's level
+and the API scopes it holds (`tool.WithControlScopes`).
+
+| Action | Level | API scopes | Reach |
+| --- | --- | --- | --- |
+| `list_runs` | read | `signals:read` | any |
+| `get_job` | read | `sessions:read` | any |
+| `deliveries` | read | `automations:read` or `automations:write` | any |
+| `give_job`, `message_job`, `answer_job`, `deliver_job`, `stop_job`, `schedule_job`, `rerun_failed_steps` | write | `sessions:write` (the routes behind them check their own scopes too) | any |
+
+Each level is `remote.ToolScope` of the `swarm_*` tool with the same effect
+(`TestManageJobsLevelsAreTheSwarmToolsLevels`; `deliveries` takes
+`swarm_list_workflows`', `rerun_failed_steps` `swarm_deliver_job`'s). Every
+action is in the Orchestrator's definition and Swarm Control's default
+listing.
+
+With `machine`, an action runs on the linked machine through
+`api.Server.CallFleetWork`, which calls that machine's
+`POST /v3/jobs/{action}`: the route runs the machine's own `ManageJobs` with
+the caller's scopes (a scoped key's, or the job scopes for the link), never
+another route. The linked work rule applies: `off` refuses every action;
+under `ask`, a conversation's `give_job`, `message_job`, `answer_job`,
+`rerun_failed_steps` and `schedule_job` there are refused with the reason,
+since `manage_jobs` has no approval prompt for them yet (a Swarm Control
+caller's person approves in their own AI's chat).
+
+A job whose status is `needs_input` (a question for `answer_job`),
+`waiting_on_approval` or `pending_approval` answers with state `waiting`. A
+read too large to answer inline is a JSON text page whose `next` is the same
+read with `page_offset` and `page_digest`; a cut run list's `next` is
+`list_runs` at its `cursor`.
+
 ## The envelope
 
 Every answer comes back in one envelope, built by one function
@@ -98,7 +148,7 @@ and on a linked machine:
 | `state` | The call's outcome, always one of the states below. A task's, run's or machine's own status (`needs_review`, `running`, `degraded`) is in `data`, never here. |
 | `data` | The action's own answer: every field it held before the envelope. A linked machine's answer is `data` as it came, plus this machine's notes (`linked_task_id`, `linked_record_error`). |
 | `next_action` | The next step, for every action that has one: the action's own (a task's `next_action`, such as `wait_tasks`), else "Call next to read the rest." for a cut answer, else the step its declaration names (`CatalogAction.NextAction`). Omitted when there is nothing to do; never `none`. |
-| `next` | Set whenever the answer was cut: the exact arguments of the call of the same tool that reads the rest, as one object (`action` plus its cursor or offset fields and the call's own `project_id`, `task_id`, `machine` and filters). A cut list gives the same action at the next `cursor`; a cut message gives `read_task_session` at its `message_id`, `message_seq` and `content_offset`; a cut task report (`result_truncated` in `get_task` or Swarm Control's `wait_tasks`) gives `get_task` with `detail` `full` at the report's attempt (`cursor`, `limit` 1), or `read_task_session` for a task on a linked machine. `next` only names a read action the catalog declares, with inputs that action takes. |
+| `next` | Set whenever the answer was cut: the exact arguments of the call of the same tool that reads the rest, as one object (`action` plus its cursor or offset fields and the call's own `project_id`, `task_id`, `machine` and filters). A cut list gives the same action at the next `cursor`; a cut message gives `read_task_session` at its `message_id`, `message_seq` and `content_offset`; a cut task report (`result_truncated` in `get_task` or Swarm Control's `wait_tasks`) gives `get_task` with `detail` `full` at the report's attempt (`cursor`, `limit` 1), or `read_task_session` for a task on a linked machine; a cut JSON text page (`next_page_offset`) gives the same read at `page_offset` with its `page_digest`; an opaque string cursor (`manage_jobs` `list_runs`) gives the same read at that `cursor`. `next` only names a read action the catalog declares, with inputs that action takes. |
 | `untrusted_content` | `true` when `data` holds agent- or outside-written text. Every answer from a linked machine is untrusted. |
 
 `state` is one of (`tool.EnvelopeStates`):
@@ -110,6 +160,7 @@ and on a linked machine:
 | `cancelled` | `cancel_watch` (or `wait_tasks` with `cancel`) ended watches. |
 | `milestone`, `settled`, `timed_out` | Swarm Control's `wait_tasks` (below). |
 | `partial` | The call ran but part of its answer is missing: the home could not keep its record of a send (`linked_record_error`) or could not read the machine's answer (`data_error`). |
+| `waiting` | The record the call read or changed waits on someone: a job waiting on its question or an approval (`CatalogAction.WaitingStatuses`). Its own status stays in `data`. |
 
 An action's answer `status` becomes `state` only when the action declares it (`CatalogAction.States`). A refused or failed call is not an envelope: it is a tool error that carries the reason (MCP `isError`). `tool.CheckEnvelope` holds an answer to this contract, and `TestCatalogEnvelopeContractEveryAction` runs every action through both surfaces against it.
 

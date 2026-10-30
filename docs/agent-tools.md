@@ -1,23 +1,34 @@
 # Native agent tools: jobs
 
-`manage_jobs` lets Swarm and custom agents inspect the same jobs as Swarm
-Control, without an MCP key. Custom agents must explicitly include
-`manage_jobs` in their tool contract. Calls use the running session's principal
-and account; arguments cannot select another identity.
+`manage_jobs` lets Swarm and custom agents work the same jobs as Swarm
+Control, without an MCP key. It is a catalog tool (see
+[tool catalog](tool-catalog.md)): Swarm Control serves the same declaration
+and handler, and every answer is the catalog envelope. Custom agents must
+explicitly include `manage_jobs` in their tool contract. Calls use the running
+session's principal and account; arguments cannot select another identity.
 
 | Action | Inputs | Behavior |
 | --- | --- | --- |
 | `list_runs` | `since`, `until` (RFC 3339), `status` array, `worker`, `limit`, `cursor` | Shared `swarm_list_runs` handler; newest runs, with its continuation cursor. |
-| `get_job` | `job_id` | Shared `swarm_get_job` handler, including workflow steps and blocked reasons. |
+| `get_job` | `job_id` | Shared `swarm_get_job` handler, including workflow steps and blocked reasons. A job waiting on a question or an approval answers with state `waiting`. |
 | `deliveries` | `id` (workflow ID), optional `job_id`, `limit` | Latest deliveries, using the same delivery views as Control, including states, reasons and attempts. |
 | `rerun_failed_steps` | `job_id` | Shared `swarm_deliver_job automation=true`; not Git integration. |
 | `give_job` | `worker`, `brief`, `project`, optional `folder`, `idempotency_key` | Shared `swarm_give_job`; starts an existing worker. |
 | `message_job` | `job_id`, `message`, optional `client_request_id` | Shared `swarm_message_job`; follow up or reopen a finished job. |
+| `answer_job` | `job_id`, `answer`, optional `question_id` | Shared `swarm_answer_job`; answers the worker's question, never a tool approval. |
+| `deliver_job` | `job_id` | Shared `swarm_deliver_job`; a local git merge, or a pull request where the folder's owner set up publishing. |
+| `stop_job` | `job_id`, optional `reason` | Shared `swarm_stop_job`; cancels the job for good. |
+| `schedule_job` | `worker`, `brief`, `schedule`, `project`, optional `folder`, `name` | Shared `swarm_schedule_job`; deploys a worker that runs the job on the schedule. |
+
+Every action takes `machine` to run on a linked machine, through that
+machine's own job service (`POST /v3/jobs/{action}`). `then`, `wait_seconds`,
+`review_job`, `model` and the diff, transcript and media options of the
+`swarm_*` job tools are not `manage_jobs` inputs.
 
 Limits are 1–50 (default 50). Oversized reads return `json_page`,
-`page_digest`, and `next_page_offset`. Repeat the identical read with
-`page_offset` set to that offset and the returned `page_digest`; concatenate
-JSON text pages. A changed result refuses continuation: restart at zero.
+`page_digest`, and `next_page_offset`; the envelope's `next` is the same read
+with `page_offset` set to that offset and the returned `page_digest`.
+Concatenate the JSON text pages. A changed result refuses continuation: restart at zero.
 Each response stays below 64 KiB; no host spill files are created. Large
 mutation responses tell the agent to read the job/deliveries, not repeat the
 mutation.
@@ -34,7 +45,18 @@ permission rule of kind `tool`, decision `allow`, with the exact tool key:
 manage_jobs.<agent-name>.rerun_failed_steps
 manage_jobs.<agent-name>.give_job
 manage_jobs.<agent-name>.message_job
+manage_jobs.<agent-name>.answer_job
+manage_jobs.<agent-name>.deliver_job
+manage_jobs.<agent-name>.stop_job
+manage_jobs.<agent-name>.schedule_job
 ```
+
+These grants are for agents in a conversation. A Swarm Control caller is
+held to its AI key's level and scopes instead. With `machine`, the grant is
+checked here; under the machine's linked work rule `ask`, an agent's
+`give_job`, `message_job`, `answer_job`, `rerun_failed_steps` and
+`schedule_job` there are refused (`manage_jobs` has no approval prompt for
+them yet), and `off` refuses every linked action.
 
 For workers, `<agent-name>` is the custom agent name when configured; otherwise
 use `worker_<worker-id>` (the `worker_` prefix followed by the full worker ID).
@@ -49,9 +71,9 @@ allow for another agent does not substitute for this grant. A matching deny
 (or a `manage_jobs` deny) wins. Use the existing owner permission-rule API;
 this tool cannot change grants. Normal tool permission checks still apply.
 
-Self-targeting is refused even with a grant: an agent cannot message/rerun
-its own job, start its own worker (including by name), or message/rerun the
-job whose workflow delivery contains it as a step or fan-out item.
+Self-targeting is refused even with a grant: an agent cannot act on its own
+job, start or schedule its own worker (including by name), or act on the job
+whose workflow delivery contains it as a step or fan-out item.
 
 # Native agent tools: background commands (`bash`)
 

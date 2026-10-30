@@ -10,7 +10,7 @@ check, review chain or push.
 
 With no workflow nothing changes: a task or job ends with its branch and
 worktree, and the person integrates it by hand (`swarm_integrate_task`,
-`swarm_deliver_job`, or their own git).
+`manage_jobs` `deliver_job` (or `swarm_deliver_job`), or their own git).
 
 ### When Swarm removes a finished job's worktree
 
@@ -163,8 +163,8 @@ An automation belongs to an account and has:
 Every update raises the automation's `revision`. An automation applies only to
 task and job ends after it was created. Tasks and jobs started by a workflow
 (an `agent` step) never trigger workflows; a follow-up of the original work
-(`swarm_send_message` into a task's session, `swarm_message_job` for a job)
-ends again and does.
+(`swarm_send_message` into a task's session, `manage_jobs` `message_job` or
+`swarm_message_job` for a job) ends again and does.
 
 A task's run ending is its job end only when the run leaves the task with a
 result: `needs_review`, `completed`, `failed`, `blocked` or `cancelled`. A run
@@ -681,7 +681,8 @@ finished step is never run again.
 The **stop switch** (`manage_workflows` `stop_all`, `swarm_stop_workflows`,
 `POST /v3/workflows/stop`) is machine-wide: while it is on no new step
 starts; running steps finish, and the next step is recorded as `stopped`.
-`swarm_deliver_job` with `automation: true` re-runs, for each automation,
+`manage_jobs` `rerun_failed_steps` (the same as `swarm_deliver_job` with
+`automation: true`) re-runs, for each automation,
 only the job's **newest** delivery, and only while that delivery's head is
 still the job's current head; older deliveries are never re-run (they are
 listed under `unchanged` with reason `superseded`, a newest delivery for an
@@ -823,8 +824,9 @@ and `step_id`:
 - `automation.delivery.blocked` (severity warning; attrs: `reason`
   `rounds_exhausted` or `review unreadable: <reviewer job id>`, `round`,
   `head`, the last `findings` shortened, and `next`: send the findings by
-  hand with `swarm_message_job`, or after a fix `swarm_deliver_job` with
-  `automation: true`; for an unreadable review, first read the reviewer
+  hand with `manage_jobs` `message_job` (`swarm_message_job`), or after a fix
+  `manage_jobs` `rerun_failed_steps` (`swarm_deliver_job` with
+  `automation: true`); for an unreadable review, first read the reviewer
   job's session)
 
 A delivery that ends `rounds_exhausted` does not leave its task idle. The
@@ -858,8 +860,9 @@ Design jobs now end with `design.job.completed`, `design.job.failed` or
   same options on `GET /v3/workflows` and the Orchestrator's
   `manage_workflows` `list`, whose `deliveries` action also lists one line per
   delivery), `swarm_delete_workflow`, `swarm_stop_workflows`; `then` on
-  `swarm_give_job` and `swarm_schedule_job`; deliveries in `swarm_get_job`;
-  `automation: true` on `swarm_deliver_job`.
+  `swarm_give_job` and `swarm_schedule_job`; deliveries in the catalog tool
+  `manage_jobs` (`get_job`, `deliveries`, `rerun_failed_steps`; the same as
+  `swarm_get_job` and `automation: true` on `swarm_deliver_job`).
 - API (`automations:read` to read, `automations:write` to change, and
   `admin` or the local owner to save a `run` step):
   `GET/POST /v3/workflows`, `GET/DELETE /v3/workflows/{id}`,
