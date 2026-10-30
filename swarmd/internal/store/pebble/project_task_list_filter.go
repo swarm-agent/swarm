@@ -63,7 +63,11 @@ const projectTaskWorkflowIDPrefix = "task_wf_"
 // as a reviewer run: its automation is a workflow's, or its id is a workflow
 // step's (kept when a follow-up relaunch clears the automation).
 func ProjectTaskWorkflowSpawned(t ProjectTaskRecord) bool {
-	return strings.HasPrefix(t.AutomationID, "workflow:") || strings.HasPrefix(t.ID, projectTaskWorkflowIDPrefix)
+	return projectTaskWorkflowSpawned(t.AutomationID, t.ID)
+}
+
+func projectTaskWorkflowSpawned(automationID, id string) bool {
+	return strings.HasPrefix(automationID, "workflow:") || strings.HasPrefix(id, projectTaskWorkflowIDPrefix)
 }
 
 // ProjectTaskReviewedTaskID is the task of t's own project that the reviewer

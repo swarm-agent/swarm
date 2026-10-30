@@ -682,11 +682,12 @@ func (s *Server) localAgentsFinished(p identity.Principal, machine string, now, 
 // workflow step's own task is left out: its work belongs to the task it
 // serves.
 //
-// The task records are read as stored (ListProjectTaskRecordsForList), not
-// hydrated: hydration reads each task's session, run state, terminal event
-// and plan document, which on a machine with thousands of finished worker
-// runs is most of the store. A task's progress needs none of it; it is
-// computed only for the tasks shown and the tasks that ended today.
+// Tasks are selected on their briefs (ListProjectTaskBriefs: a project's
+// unarchived tasks, newest change first), so a read stops at the tasks it
+// shows and the tasks that ended today and never decodes the rest of the
+// history. Only those tasks' records are read, as stored (not hydrated:
+// hydration reads each task's session, run state, terminal event and plan
+// document); their progress is computed from them.
 func (s *Server) readAgentsFinished(p identity.Principal, machine string, now, since int64, progressReads *int) ([]fleetAgentFinished, int, int) {
 	recent := []fleetAgentFinished{}
 	store := s.sessions.Store()
@@ -697,28 +698,42 @@ func (s *Server) readAgentsFinished(p identity.Principal, machine string, now, s
 	if err != nil {
 		return recent, 0, 0
 	}
-	finished := []pebblestore.ProjectTaskRecord{}
+	// Each project's newest fleetAgentsRecent finished tasks and those that
+	// ended today hold every task the merged list below reaches: a task
+	// among the overall newest fleetAgentsRecent has fewer than that many
+	// newer ones in its own project.
+	finished := []pebblestore.ProjectTaskBrief{}
 	for _, project := range projects {
-		tasks, _, err := store.ListProjectTaskRecordsForList(p.AccountScopeID, project.ID)
-		if err != nil {
-			continue
-		}
-		for _, task := range tasks {
-			class := taskStatusClass(task.Status)
-			if task.Archived || pebblestore.ProjectTaskWorkflowSpawned(task) || class == progressWorking || class == progressWaiting {
-				continue
+		var picked []pebblestore.ProjectTaskBrief
+		err := store.ListProjectTaskBriefs(p.AccountScopeID, project.ID, false, func(task pebblestore.ProjectTaskBrief) bool {
+			if task.UpdatedAt < since && len(picked) >= fleetAgentsRecent {
+				return false
 			}
-			finished = append(finished, task)
+			class := taskStatusClass(task.Status)
+			if task.WorkflowSpawned() || class == progressWorking || class == progressWaiting {
+				return true
+			}
+			picked = append(picked, task)
+			return true
+		})
+		if err != nil {
+			continue // a project that cannot be read is left out, as a whole
 		}
+		finished = append(finished, picked...)
 	}
 	sort.SliceStable(finished, func(i, j int) bool { return finished[i].UpdatedAt > finished[j].UpdatedAt })
 	landed, failed := 0, 0
-	for i, task := range finished {
-		today := task.UpdatedAt >= since
+	for i, brief := range finished {
+		today := brief.UpdatedAt >= since
 		shown := i < fleetAgentsRecent
 		if !today && !shown {
 			break
 		}
+		record, found, err := store.GetProjectTaskRecord(p.AccountScopeID, brief.ProjectID, brief.ID)
+		if err != nil || !found || record == nil {
+			continue
+		}
+		task := *record
 		if today && taskStatusClass(task.Status) == progressFailed {
 			failed++
 		}

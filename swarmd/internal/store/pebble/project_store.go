@@ -1089,6 +1089,7 @@ func (s *SessionStore) getProjectTask(accountScopeID, projectID, taskID string, 
 		return nil, false, err
 	}
 	defer closer.Close()
+	s.store.projectTaskRecordDecodes.Add(1)
 	var rec ProjectTaskRecord
 	if err := json.Unmarshal(val, &rec); err != nil {
 		return nil, false, err
@@ -1117,6 +1118,7 @@ func (s *SessionStore) ListProjectTasks(accountScopeID, projectID string, limit 
 
 	var tasks []ProjectTaskRecord
 	err := s.store.IteratePrefix(ProjectTaskPrefix(accountScopeID, projectID), 10000, func(_ string, value []byte) error {
+		s.store.projectTaskRecordDecodes.Add(1)
 		var rec ProjectTaskRecord
 		if err := json.Unmarshal(value, &rec); err != nil {
 			return nil
@@ -1160,6 +1162,7 @@ func (s *SessionStore) ListProjectTaskRecordsForList(accountScopeID, projectID s
 	var tasks []ProjectTaskRecord
 	err := s.store.IteratePrefix(ProjectTaskPrefix(accountScopeID, projectID), scanBound, func(_ string, value []byte) error {
 		scanned++
+		s.store.projectTaskRecordDecodes.Add(1)
 		var rec ProjectTaskRecord
 		if err := json.Unmarshal(value, &rec); err != nil {
 			return nil
@@ -1192,6 +1195,7 @@ func (s *SessionStore) ListRecentProjectTasks(accountScopeID, projectID string, 
 	}
 	var tasks []ProjectTaskRecord
 	err := s.store.IteratePrefix(ProjectTaskPrefix(accountScopeID, projectID), 10000, func(_ string, value []byte) error {
+		s.store.projectTaskRecordDecodes.Add(1)
 		var rec ProjectTaskRecord
 		if err := json.Unmarshal(value, &rec); err != nil {
 			return nil
@@ -1235,6 +1239,7 @@ func (s *SessionStore) ListProjectTasksByArchive(accountScopeID, projectID strin
 	var scanned int
 	err := s.store.IteratePrefix(ProjectTaskPrefix(accountScopeID, projectID), 10001, func(_ string, value []byte) error {
 		scanned++
+		s.store.projectTaskRecordDecodes.Add(1)
 		var rec ProjectTaskRecord
 		if err := json.Unmarshal(value, &rec); err != nil {
 			return err

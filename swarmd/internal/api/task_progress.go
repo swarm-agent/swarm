@@ -242,10 +242,15 @@ func mediaTaskAgent(agent string) bool {
 
 // taskProgressJobID is the workflow job id of a task's job.
 func taskProgressJobID(task pebblestore.ProjectTaskRecord) string {
+	return taskProgressJobIDOf(pebblestore.ProjectTaskBriefOf(task))
+}
+
+// taskProgressJobIDOf is taskProgressJobID from a task's brief.
+func taskProgressJobIDOf(task pebblestore.ProjectTaskBrief) string {
 	switch {
 	case task.WorkerID != "" && task.WorkerRunID != "":
 		return controlMCPJobID(controlMCPJobWorker, task.WorkerID, task.WorkerRunID)
-	case task.Design != nil:
+	case task.Design:
 		return controlMCPJobID(controlMCPJobDesign, task.ProjectID, task.ID)
 	case mediaTaskAgent(task.Agent):
 		return controlMCPJobID(controlMCPJobMedia, task.ProjectID, task.ID)

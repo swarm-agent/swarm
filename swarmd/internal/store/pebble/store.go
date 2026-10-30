@@ -52,17 +52,20 @@ type Store struct {
 	taskWatchMilestoneDue       func(sessionID, watchID string, at int64)
 	mediaRecoveryPending        bool
 	beforeProjectTaskUpdateHook func(taskID string) error
-	signalsMu                   sync.Mutex
-	workersMu                   sync.Mutex
-	limitSignals                *SignalStore
-	workerRunObserver           func(worker WorkerRecord, run WorkerRunRecord)
-	jobReviewObserver           func(account, worker, run string, review JobReview)
-	designJobEndObserver        func(task ProjectTaskRecord)
-	workerPublisherMu           sync.RWMutex
-	workerPublisher             func(V3RealtimeOutboxRecord)
-	workerBudgetPublisher       func(NotificationRecord)
-	schedulingObserver          atomic.Pointer[func(SchedulingSignal)]
-	budgetReadObserver          atomic.Pointer[func(string)]
+	// projectTaskRecordDecodes counts full task records decoded for reads
+	// (SessionStore.ProjectTaskRecordDecodes).
+	projectTaskRecordDecodes atomic.Int64
+	signalsMu                sync.Mutex
+	workersMu                sync.Mutex
+	limitSignals             *SignalStore
+	workerRunObserver        func(worker WorkerRecord, run WorkerRunRecord)
+	jobReviewObserver        func(account, worker, run string, review JobReview)
+	designJobEndObserver     func(task ProjectTaskRecord)
+	workerPublisherMu        sync.RWMutex
+	workerPublisher          func(V3RealtimeOutboxRecord)
+	workerBudgetPublisher    func(NotificationRecord)
+	schedulingObserver       atomic.Pointer[func(SchedulingSignal)]
+	budgetReadObserver       atomic.Pointer[func(string)]
 }
 
 // storeBlockCacheBytes sizes the shared sstable block cache. Pebble's 8 MiB
@@ -136,6 +139,10 @@ func openWithOptions(path string, opts *pebble.Options) (store *Store, err error
 			return nil, err
 		}
 		if err := NewSessionStore(store).prepareProjectArchiveIndex(); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		if err := NewSessionStore(store).prepareProjectTaskBriefs(); err != nil {
 			_ = db.Close()
 			return nil, err
 		}

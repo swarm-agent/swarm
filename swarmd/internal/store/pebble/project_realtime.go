@@ -125,6 +125,9 @@ func setProjectRealtimeMutationInBatch(batch *pebble.Batch, account string, m *p
 				if err := repository.bindTaskUsageInBatch(batch, account, task); err != nil {
 					return err
 				}
+				if err := setProjectTaskBriefInBatch(batch, repository.store.db, account, key, &task); err != nil {
+					return err
+				}
 			}
 		}
 		if strings.HasPrefix(key, KeyProjectAccountPrefix+keyPart(account)+"/") {
@@ -158,6 +161,9 @@ func setProjectRealtimeMutationInBatch(batch *pebble.Batch, account string, m *p
 			return ErrProjectInvalid
 		}
 		if strings.HasPrefix(key, KeyProjectTaskAccountPrefix) && len(repositories) > 0 {
+			if err := setProjectTaskBriefInBatch(batch, repositories[0].store.db, account, key, nil); err != nil {
+				return err
+			}
 			var prior ProjectTaskRecord
 			found, err := repositories[0].store.GetJSON(key, &prior)
 			if err != nil {

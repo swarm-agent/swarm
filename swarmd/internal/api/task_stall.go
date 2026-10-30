@@ -58,6 +58,9 @@ const (
 	taskStallGitTimeout = 15 * time.Second
 	// taskStallMaxProjects bounds the projects read per check.
 	taskStallMaxProjects = 1000
+	// taskStallMaxTasks bounds the unarchived tasks of one project the check
+	// reads; a larger project is reported and left out of the check.
+	taskStallMaxTasks = 10000
 )
 
 const (
@@ -128,6 +131,13 @@ func (s *Server) RunTaskStallDetector(ctx context.Context) {
 
 // CheckStalledTasks runs one stall check over account's unarchived project
 // tasks at now.
+//
+// Tasks are listed by their briefs (pebblestore.ProjectTaskBrief), never as
+// whole records: the candidate filter, the worker check, the records the
+// verdict reads besides the task (run state, projection, deliveries, job
+// evaluation, pending approvals) and the horizon need only the brief. A
+// task's full record is read only when it is still work the check follows
+// (taskStallInputs.leftAlone is false); old history costs its brief.
 func (s *Server) CheckStalledTasks(ctx context.Context, account string, now time.Time) {
 	if s == nil || s.sessions == nil || s.sessions.Store() == nil || strings.TrimSpace(account) == "" {
 		return
@@ -146,12 +156,26 @@ func (s *Server) CheckStalledTasks(ctx context.Context, account string, now time
 	budget := taskStallGitPerTick
 	skipped, complete := 0, true
 	for _, project := range projects {
-		tasks, err := db.ListProjectTasksByArchive(account, project.ID, false)
+		var tasks []pebblestore.ProjectTaskBrief
+		err := db.ListProjectTaskBriefs(account, project.ID, false, func(task pebblestore.ProjectTaskBrief) bool {
+			tasks = append(tasks, task)
+			return len(tasks) <= taskStallMaxTasks
+		})
+		if err == nil && len(tasks) > taskStallMaxTasks {
+			err = fmt.Errorf("more than %d unarchived tasks", taskStallMaxTasks)
+		}
 		if err != nil {
 			log.Printf("swarmd stall check: list tasks of %s: %v", project.ID, err)
 			complete = false
 			continue
 		}
+		// Oldest created first, as the board lists them.
+		sort.Slice(tasks, func(i, j int) bool {
+			if tasks[i].CreatedAt == tasks[j].CreatedAt {
+				return tasks[i].ID < tasks[j].ID
+			}
+			return tasks[i].CreatedAt < tasks[j].CreatedAt
+		})
 		for _, task := range tasks {
 			if ctx.Err() != nil {
 				return
@@ -206,40 +230,58 @@ func (s *Server) summarizeOldTasks(account string, skipped int, limits pebblesto
 
 // checkTaskStall checks one task. old reports that the task is unfinished
 // old work the check left alone (counted in the one summary).
-func (s *Server) checkTaskStall(ctx context.Context, account string, task pebblestore.ProjectTaskRecord, now time.Time, limits pebblestore.Limits, gitBudget *int) (old bool) {
+func (s *Server) checkTaskStall(ctx context.Context, account string, brief pebblestore.ProjectTaskBrief, now time.Time, limits pebblestore.Limits, gitBudget *int) (old bool) {
 	db := s.sessions.Store()
-	rec, found, err := db.GetTaskStall(account, task.ID)
+	rec, found, err := db.GetTaskStall(account, brief.ID)
 	if err != nil {
-		log.Printf("swarmd stall check: read stall of %s: %v", task.ID, err)
+		log.Printf("swarmd stall check: read stall of %s: %v", brief.ID, err)
 		return false
 	}
-	if !taskStallCandidate(task) {
+	if !taskStallCandidate(brief) {
 		if found {
-			s.endTaskStall(account, task, rec)
+			s.endTaskStall(account, brief, rec)
 		}
 		return false
 	}
-	if legacy, ok := s.taskStallLegacyWorkerRun(account, task); !ok {
+	if legacy, ok := s.taskStallLegacyWorkerRun(account, brief); !ok {
 		return false // the worker could not be read: claim nothing
 	} else if legacy {
-		s.leaveOldTask(account, task, rec, found)
-		return taskStatusClass(task.Status) != "finished"
+		s.leaveOldTask(account, brief, rec, found)
+		return taskStatusClass(brief.Status) != "finished"
 	}
-	v, ok := s.taskStallVerdict(ctx, account, task, now, limits, gitBudget)
+	in, ok := s.readTaskStallInputs(account, brief)
+	if !ok {
+		return false // a record could not be read: claim nothing
+	}
+	if in.leftAlone(brief, now, limits) {
+		s.leaveOldTask(account, brief, rec, found)
+		return taskStatusClass(brief.Status) != "finished"
+	}
+	// Work the check follows: its full record, hydrated as the board reads it.
+	full, exists, err := db.GetProjectTask(account, brief.ProjectID, brief.ID)
+	if err != nil || !exists || full == nil {
+		if err != nil {
+			log.Printf("swarmd stall check: read task %s: %v", brief.ID, err)
+		}
+		return false
+	}
+	task := *full
+	brief = pebblestore.ProjectTaskBriefOf(task)
+	v, ok := s.taskStallVerdict(ctx, account, task, in, now, limits, gitBudget)
 	if !ok {
 		return false // a record could not be read: claim nothing
 	}
 	if v.Recent > 0 && now.Sub(time.UnixMilli(v.Recent)) > taskStallHorizon(limits) {
-		s.leaveOldTask(account, task, rec, found)
+		s.leaveOldTask(account, brief, rec, found)
 		return taskStatusClass(task.Status) != "finished"
 	}
 	if found && rec.Episode != v.Episode {
-		s.endTaskStall(account, task, rec)
+		s.endTaskStall(account, brief, rec)
 		found = false
 	}
 	if v.Kind == "" {
 		if found {
-			s.endTaskStall(account, task, rec)
+			s.endTaskStall(account, brief, rec)
 		}
 		return false
 	}
@@ -273,7 +315,7 @@ func (s *Server) checkTaskStall(ctx context.Context, account string, task pebble
 // worker no longer runs jobs here: gone, archived, deleted, or not active.
 // Such a task belongs to the retired worker pipeline; a recovery turn would
 // re-run its old worker run. ok is false when the worker could not be read.
-func (s *Server) taskStallLegacyWorkerRun(account string, task pebblestore.ProjectTaskRecord) (legacy, ok bool) {
+func (s *Server) taskStallLegacyWorkerRun(account string, task pebblestore.ProjectTaskBrief) (legacy, ok bool) {
 	if strings.TrimSpace(task.WorkerRunID) == "" {
 		return false, true
 	}
@@ -293,9 +335,9 @@ func (s *Server) taskStallLegacyWorkerRun(account string, task pebblestore.Proje
 // it earlier (before the horizon applied) is closed quietly: its marker is
 // cleared without a task.unstalled signal, so nothing is announced for work
 // that cannot move and the task reads as its own records say.
-func (s *Server) leaveOldTask(account string, task pebblestore.ProjectTaskRecord, rec pebblestore.TaskStallRecord, found bool) {
+func (s *Server) leaveOldTask(account string, task pebblestore.ProjectTaskBrief, rec pebblestore.TaskStallRecord, found bool) {
 	db := s.sessions.Store()
-	if task.Stall != nil {
+	if task.Stalled {
 		if _, err := db.SetProjectTaskStall(account, task.ProjectID, task.ID, task.UpdatedAt, nil); err != nil {
 			log.Printf("swarmd stall check: clear mark of %s: %v", task.ID, err)
 			return
@@ -311,36 +353,101 @@ func (s *Server) leaveOldTask(account string, task pebblestore.ProjectTaskRecord
 // taskStallCandidate reports whether task is one the check follows: an
 // unarchived agent task with its own session (media and design jobs have
 // their own pipelines and signals).
-func taskStallCandidate(task pebblestore.ProjectTaskRecord) bool {
-	return !task.Archived && strings.TrimSpace(task.SessionID) != "" && task.Design == nil && !mediaTaskAgent(task.Agent)
+func taskStallCandidate(task pebblestore.ProjectTaskBrief) bool {
+	return !task.Archived && strings.TrimSpace(task.SessionID) != "" && !task.Design && !mediaTaskAgent(task.Agent)
 }
 
-// taskStallVerdict decides whether task is stalled at now. ok is false when a
-// record it needs could not be read.
-func (s *Server) taskStallVerdict(ctx context.Context, account string, task pebblestore.ProjectTaskRecord, now time.Time, limits pebblestore.Limits, gitBudget *int) (taskStallVerdict, bool) {
+// taskStallInputs are the records the verdict reads besides the task
+// itself, read from its brief.
+type taskStallInputs struct {
+	state      pebblestore.V3SessionRunState
+	stateFound bool
+	projection pebblestore.V3SessionProjection
+	deliveries []jobautomation.Delivery
+	latest     []jobautomation.Delivery
+	eval       *jobautomation.JobEvaluation
+	pending    []pebblestore.PermissionRecord
+	// lastChange and recent are the verdict's LastChange and Recent for
+	// the brief's UpdatedAt and LimitRetryAt (times).
+	lastChange, recent int64
+}
+
+// readTaskStallInputs reads task's inputs. ok is false when a record they
+// need could not be read.
+func (s *Server) readTaskStallInputs(account string, task pebblestore.ProjectTaskBrief) (taskStallInputs, bool) {
+	db := s.sessions.Store()
+	var in taskStallInputs
+	var err error
+	if in.state, in.stateFound, err = db.GetV3SessionRunState(task.SessionID); err != nil {
+		return taskStallInputs{}, false
+	}
+	if in.projection, _, err = db.GetV3SessionProjection(task.SessionID); err != nil {
+		return taskStallInputs{}, false
+	}
+	in.deliveries, in.eval = s.taskStallProgressRecords(account, task)
+	in.latest = latestDeliveries(in.deliveries)
+	if s.perm != nil && in.stateFound && in.state.Active {
+		if in.pending, err = s.perm.ListPending(task.SessionID, 5); err != nil {
+			return taskStallInputs{}, false
+		}
+	}
+	in.lastChange, in.recent = in.times(task.UpdatedAt, task.LimitRetryAt)
+	return in, true
+}
+
+// times is when the task's records last changed (LastChange) and the later
+// of that and any armed wait's deadline (Recent).
+func (in taskStallInputs) times(updatedAt, limitRetryAt int64) (lastChange, recent int64) {
+	lastChange = max(updatedAt, in.state.UpdatedAt, in.state.StartedAt, in.state.CompletedAt, in.projection.UpdatedAt)
+	if in.eval != nil {
+		lastChange = max(lastChange, in.eval.EndedAt)
+	}
+	for _, d := range in.latest {
+		lastChange = max(lastChange, d.CreatedAt, d.StartedAt, d.FinishedAt)
+		for _, step := range d.Steps {
+			lastChange = max(lastChange, step.StartedAt, step.FinishedAt)
+		}
+	}
+	recent = max(lastChange, limitRetryAt)
+	for _, d := range in.latest {
+		for _, step := range d.Steps {
+			recent = max(recent, step.NextAttemptAt)
+		}
+	}
+	return lastChange, recent
+}
+
+// leftAlone reports that task is old work (its records last changed, or
+// its armed wait was due, longer ago than the horizon) that the verdict
+// would reach without a worktree read: what the full verdict would decide,
+// decided without its full record. A finished task that ended within the
+// worktree window still takes the full verdict, so the per-check Git budget
+// and the worktree cache are spent exactly as before.
+func (in taskStallInputs) leftAlone(task pebblestore.ProjectTaskBrief, now time.Time, limits pebblestore.Limits) bool {
+	if in.recent <= 0 || now.Sub(time.UnixMilli(in.recent)) <= taskStallHorizon(limits) {
+		return false
+	}
+	idle := time.Duration(now.UnixMilli()-in.lastChange) * time.Millisecond
+	if in.lastChange <= 0 {
+		idle = 0
+	}
+	gitDue := taskStatusClass(task.Status) == "finished" && task.Agent != pebblestore.WorkerRoleReviewer && strings.TrimSpace(task.WorkspacePath) != "" &&
+		idle >= taskStallRecoverGrace && idle < taskStallGitWindow
+	return !gitDue
+}
+
+// taskStallVerdict decides whether task is stalled at now, from its inputs.
+// ok is false when a record it needs could not be read.
+func (s *Server) taskStallVerdict(ctx context.Context, account string, task pebblestore.ProjectTaskRecord, in taskStallInputs, now time.Time, limits pebblestore.Limits, gitBudget *int) (taskStallVerdict, bool) {
 	db := s.sessions.Store()
 	nowMs := now.UnixMilli()
 	stallAfter := time.Duration(limits.StallAfterMinutes) * time.Minute
 	runSilent := time.Duration(limits.RunSilentMinutes) * time.Minute
 
-	state, stateFound, err := db.GetV3SessionRunState(task.SessionID)
-	if err != nil {
-		return taskStallVerdict{}, false
-	}
-	projection, _, err := db.GetV3SessionProjection(task.SessionID)
-	if err != nil {
-		return taskStallVerdict{}, false
-	}
-	deliveries, eval := s.taskStallProgressRecords(account, task)
-	latest := latestDeliveries(deliveries)
+	state, stateFound, projection := in.state, in.stateFound, in.projection
+	deliveries, eval, latest, pending := in.deliveries, in.eval, in.latest, in.pending
 	progress := computeTaskProgress(task, deliveries, eval, nowMs)
 	markTaskProgressAttention(&progress, task)
-	var pending []pebblestore.PermissionRecord
-	if s.perm != nil && stateFound && state.Active {
-		if pending, err = s.perm.ListPending(task.SessionID, 5); err != nil {
-			return taskStallVerdict{}, false
-		}
-	}
 
 	// The episode: everything whose change is movement.
 	fp := []string{task.ID, strconv.FormatInt(task.UpdatedAt, 10), task.Status}
@@ -348,29 +455,20 @@ func (s *Server) taskStallVerdict(ctx context.Context, account string, task pebb
 		fp = append(fp, state.RunID, state.Status, strconv.FormatUint(state.EventSeq, 10))
 	}
 	fp = append(fp, strconv.FormatUint(projection.LastEventSeq, 10))
-	lastChange := max(task.UpdatedAt, state.UpdatedAt, state.StartedAt, state.CompletedAt, projection.UpdatedAt)
 	if eval != nil {
 		fp = append(fp, "eval", eval.Followup, strconv.FormatBool(eval.Evaluated()))
-		lastChange = max(lastChange, eval.EndedAt)
 	}
 	for _, d := range latest {
 		fp = append(fp, d.ID, d.State, strconv.Itoa(d.Round))
-		lastChange = max(lastChange, d.CreatedAt, d.StartedAt, d.FinishedAt)
 		for _, step := range d.Steps {
 			fp = append(fp, step.ID, step.State, strconv.Itoa(step.Attempts), strconv.FormatInt(step.NextAttemptAt, 10))
-			lastChange = max(lastChange, step.StartedAt, step.FinishedAt)
 		}
 	}
 	for _, p := range pending {
 		fp = append(fp, "perm", p.ID)
 	}
 	sum := sha256.Sum256([]byte(strings.Join(fp, "\x00")))
-	recent := max(lastChange, task.LimitRetryAt)
-	for _, d := range latest {
-		for _, step := range d.Steps {
-			recent = max(recent, step.NextAttemptAt)
-		}
-	}
+	lastChange, recent := in.times(task.UpdatedAt, task.LimitRetryAt)
 	v := taskStallVerdict{Episode: hex.EncodeToString(sum[:8]), LastChange: lastChange, Recent: recent, RunID: state.RunID}
 	idle := time.Duration(nowMs-lastChange) * time.Millisecond
 	if lastChange <= 0 {
@@ -541,11 +639,11 @@ func (s *Server) taskStallVerdict(ctx context.Context, account string, task pebb
 // not decoded whole per task per tick. Everything the check reads from
 // progress (state, summary, integration, idle) is the same as from the full
 // history; only the wording of older history entries can differ.
-func (s *Server) taskStallProgressRecords(account string, task pebblestore.ProjectTaskRecord) ([]jobautomation.Delivery, *jobautomation.JobEvaluation) {
+func (s *Server) taskStallProgressRecords(account string, task pebblestore.ProjectTaskBrief) ([]jobautomation.Delivery, *jobautomation.JobEvaluation) {
 	var deliveries []jobautomation.Delivery
 	var eval *jobautomation.JobEvaluation
 	if store, err := s.jobAutomationStore(); err == nil && (taskStatusClass(task.Status) != progressWaiting || task.Status == pebblestore.ProjectTaskStatusLimitWaiting) {
-		jobID := taskProgressJobID(task)
+		jobID := taskProgressJobIDOf(task)
 		if list, err := store.JobProgressDeliveries(account, jobID); err == nil {
 			deliveries = list
 		} else {
@@ -792,7 +890,7 @@ func (s *Server) wakeTaskDelegator(ctx context.Context, task pebblestore.Project
 
 // endTaskStall ends a task's stall episode: task.unstalled when it was
 // alerted, the marker cleared and the record removed.
-func (s *Server) endTaskStall(account string, task pebblestore.ProjectTaskRecord, rec pebblestore.TaskStallRecord) {
+func (s *Server) endTaskStall(account string, task pebblestore.ProjectTaskBrief, rec pebblestore.TaskStallRecord) {
 	db := s.sessions.Store()
 	if rec.Alerted && s.signals != nil {
 		if _, err := s.signals.AppendOnce(pebblestore.Signal{
@@ -806,7 +904,7 @@ func (s *Server) endTaskStall(account string, task pebblestore.ProjectTaskRecord
 			return
 		}
 	}
-	if task.Stall != nil {
+	if task.Stalled {
 		if _, err := db.SetProjectTaskStall(account, task.ProjectID, task.ID, task.UpdatedAt, nil); err != nil {
 			log.Printf("swarmd stall check: clear mark of %s: %v", task.ID, err)
 		}

@@ -77,6 +77,11 @@ func fleetAgentsScaleSeed(t *testing.T, f *fleetTestSwarm, now int64) {
 	if err := batch.Commit(nil); err != nil {
 		t.Fatal(err)
 	}
+	// The records were written beside the canonical write path; build their
+	// briefs as the store's open does for records written before the index.
+	if err := store.RebuildProjectTaskBriefs(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // Purpose: the agents-at-work read (GET /v3/fleet/agents, polled every few
