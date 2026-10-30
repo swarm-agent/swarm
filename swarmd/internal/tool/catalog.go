@@ -84,6 +84,14 @@ type CatalogAction struct {
 	Untrusted bool
 	// Description is the one description shown to the Orchestrator and MCP.
 	Description string
+	// States are the outcome states (EnvelopeStates) the action's answer
+	// can carry besides ok and partial: its answer's status is the
+	// envelope's state only when it is one of these. Any other status (a
+	// task's run status, a machine's status) stays in data.
+	States []string
+	// NextAction is the action's next step when its answer names none
+	// (envelope next_action). Empty when there is nothing to do next.
+	NextAction string
 }
 
 // Listed reports whether the profile lists the action.

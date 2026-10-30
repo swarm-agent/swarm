@@ -201,8 +201,39 @@ func manageProjectsCatalog() CatalogTool {
 		FolderEnvironmentUpdate: sessionWrite, FolderEnvironmentRebuild: sessionWrite,
 		ResolveTaskPermissionAction: sessionWrite,
 	}
+	// Outcome states an answer can carry besides ok and partial
+	// (EnvelopeStates): a watch, a held wait, a cancelled watch.
+	states := map[string][]string{
+		"wait_tasks":   {EnvelopeStateWatching, EnvelopeStateCancelled, ControlTaskWaitMilestone, ControlTaskWaitSettled, ControlTaskWaitTimedOut},
+		"cancel_watch": {EnvelopeStateCancelled},
+	}
+	// The next step of each action whose answer names none. An action with
+	// nothing to do next has none.
+	nextActions := map[string]string{
+		"list":                      "get or list_tasks with a project's id reads it.",
+		"get":                       "list_tasks reads the project's work; propose_task sends new work.",
+		"list_tasks":                "get_task with a task's id reads its state and result.",
+		"list_machines":             "Pass a machine's name as machine to send or read work there; agents_at_work shows what runs.",
+		"list_linked_tasks":         "get_task with a task's machine and id reads it.",
+		"read_task_session":         "get_task reads the task's state and result.",
+		FleetAgentsAtWorkAction:     "get_task with a task's machine, project_id and task_id reads one task.",
+		FleetMachineStatusAction:    "agents_at_work or list_tasks with this machine reads its work.",
+		FleetTaskSessionAction:      "read_task_session reads its messages; resolve_task_permission answers a pending request only on the person's word.",
+		FleetMachineActivityAction:  "Call activity again with since_cursor set to data.cursor for what follows.",
+		ResolveTaskPermissionAction: "wait_tasks follows the task.",
+		"create":                    "propose_task sends work to the new project.",
+		"list_sources":              "propose_task with a ready source's workspace_path sends work there.",
+		FolderEnvironmentList:       "get_environment with a folder's workspace_path reads one.",
+		FolderEnvironmentUpdate:     "get_environment reads its build status.",
+		FolderEnvironmentRebuild:    "get_environment reads its build status.",
+		"message_task":              "wait_tasks follows the task.",
+		"stop_task":                 "message_task resumes it.",
+		"reopen_task":               "wait_tasks follows the task.",
+	}
 	for i := range actions {
 		actions[i].Tool = manageProjectsToolName
+		actions[i].States = states[actions[i].Action]
+		actions[i].NextAction = nextActions[actions[i].Action]
 		if scopes, ok := routeScopes[actions[i].Action]; ok {
 			actions[i].APIScopes = scopes
 		} else if actions[i].Level == CatalogLevelRead {

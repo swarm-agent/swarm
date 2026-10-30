@@ -396,7 +396,7 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 	if err != nil {
 		return "", err
 	}
-	return r.manageProjectsEnvelope(action, strings.TrimSpace(asString(args["machine"])), answer)
+	return r.manageProjectsEnvelope(action, args, answer)
 }
 
 // manageProjectsAnswer is the action's own answer, before the envelope.
