@@ -367,6 +367,77 @@ func TestLandedTaskWorktreeKeptWhileLimitWaitingAndRemovedOnceFinished(t *testin
 	}
 }
 
+// Requirement: a finished run whose follow-up is queued or running keeps its
+// checkout. PrepareFollowup recreates a removed checkout and marks the
+// follow-up queued before its V3 run exists, so in that window the run is
+// terminal and its session idle; only WorkerRunRecord.FollowupActive shows
+// the checkout is about to be used.
+// Threat (review finding): a landed removal or sweep in that window removed
+// the recreated checkout again and the follow-up started in a missing
+// directory. Owner: WorkerExecutionService.removeLandedSessionWorktree.
+func TestLandedWorktreeKeptWhileAFollowupIsQueuedOrRunning(t *testing.T) {
+	f := newLandedJobsFixture(t)
+	j := f.job("queued01", "succeeded")
+	f.merge(j)
+	for _, status := range []string{"queued", "running"} {
+		r := f.run(j.id)
+		r.FollowupStatus = status
+		if _, err := f.db.WorkerStore().RecordWorkerRun(landedAccount, r); err != nil {
+			t.Fatal(err)
+		}
+		outcome, err := f.service.RemoveLandedWorktree(j.session)
+		if err != nil || outcome.Removed || !strings.Contains(outcome.Kept, "follow-up is "+status) {
+			t.Fatalf("follow-up %s: %+v, %v; want kept", status, outcome, err)
+		}
+		f.service.landed.nextCheck = nil
+		if removed, err := f.service.SweepLandedWorktrees(); err != nil || removed != 0 {
+			t.Fatalf("sweep with a %s follow-up removed %d: %v", status, removed, err)
+		}
+		f.assertKept(j)
+	}
+	// Once the follow-up is over the checkout goes.
+	r := f.run(j.id)
+	r.FollowupStatus = "succeeded"
+	if _, err := f.db.WorkerStore().RecordWorkerRun(landedAccount, r); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, err := f.service.RemoveLandedWorktree(j.session); err != nil || !outcome.Removed {
+		t.Fatalf("after the follow-up: %+v, %v; want removed", outcome, err)
+	}
+	f.assertRemoved(j, LandedWorktreeTriggerLanded)
+}
+
+// Requirement: a removal right after a landing never waits behind a sweep:
+// while another evaluation holds the slot it waits at most its bound, keeps
+// the checkout without error or record, and the sweep removes it later.
+// Threat (review finding): IntegrateProjectTask's response waited for a
+// whole sweep pass over a large backlog. Owners:
+// WorkerExecutionService.RemoveLandedWorktree and SweepLandedWorktrees
+// (landedWorktreeSweep.acquire); the slot is held directly so the test is
+// deterministic.
+func TestLandedRemovalDoesNotWaitBehindAnotherEvaluation(t *testing.T) {
+	f := newLandedJobsFixture(t)
+	j := f.job("busy0001", "succeeded")
+	f.merge(j)
+	f.service.landed.landingWaitForTest = 50 * time.Millisecond
+	f.service.landed.acquire(-1) // a sweep is evaluating another checkout
+	start := time.Now()
+	outcome, err := f.service.RemoveLandedWorktree(j.session)
+	elapsed := time.Since(start)
+	f.service.landed.release()
+	if err != nil || outcome.Removed || !strings.Contains(outcome.Kept, "sweep removes this one later") {
+		t.Fatalf("landing while busy: %+v, %v", outcome, err)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("landing waited %s behind another evaluation", elapsed)
+	}
+	f.assertKept(j)
+	if removed, err := f.service.SweepLandedWorktrees(); err != nil || removed != 1 {
+		t.Fatalf("sweep removed %d: %v", removed, err)
+	}
+	f.assertRemoved(j, LandedWorktreeTriggerSweep)
+}
+
 // Requirement: a failed removal keeps the checkout, is recorded on the run
 // and reported once, and is not retried until its backoff passes.
 // Threat: a silent failure, or a tight retry loop hammering the disk.

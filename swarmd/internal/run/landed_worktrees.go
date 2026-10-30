@@ -39,8 +39,16 @@ type landedWorktreeRemover interface {
 }
 
 type landedWorktreeSweep struct {
-	mu        sync.Mutex // serializes evaluation and record writes
+	// slot serializes one checkout's evaluation and record writes (a
+	// one-place semaphore). The sweep holds it per checkout, never for a whole
+	// pass; a removal right after a landing waits for it at most
+	// landedLandingWait and otherwise leaves the checkout to the sweep, so a
+	// finished integration never waits behind a sweep.
+	once      sync.Once
+	slot      chan struct{}
 	nextCheck map[string]time.Time
+	// landingWaitForTest replaces landedLandingWait.
+	landingWaitForTest time.Duration
 	// removerForTest replaces the worktree service's Git removal.
 	removerForTest landedWorktreeRemover
 	nowForTest     func() time.Time
@@ -54,6 +62,30 @@ type LandedWorktreeOutcome struct {
 	Removal   worktree.LandedWorktreeRemoval
 	Kept      string
 }
+
+// landedLandingWait bounds how long a removal right after a landing waits
+// for another evaluation to finish.
+const landedLandingWait = 10 * time.Second
+
+// acquire takes the evaluation slot, waiting at most wait (forever when wait
+// is negative); it reports whether it got it.
+func (l *landedWorktreeSweep) acquire(wait time.Duration) bool {
+	l.once.Do(func() { l.slot = make(chan struct{}, 1) })
+	if wait < 0 {
+		l.slot <- struct{}{}
+		return true
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case l.slot <- struct{}{}:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+func (l *landedWorktreeSweep) release() { <-l.slot }
 
 func (s *WorkerExecutionService) landedNow() time.Time {
 	if s.landed.nowForTest != nil {
@@ -103,8 +135,15 @@ func (s *WorkerExecutionService) RemoveLandedWorktree(sessionID string) (LandedW
 		return LandedWorktreeOutcome{SessionID: sessionID}, errors.New("worker execution authorities unavailable")
 	}
 	sessionID = strings.TrimSpace(sessionID)
-	s.landed.mu.Lock()
-	defer s.landed.mu.Unlock()
+	wait := landedLandingWait
+	if s.landed.landingWaitForTest > 0 {
+		wait = s.landed.landingWaitForTest
+	}
+	if !s.landed.acquire(wait) {
+		// The work already landed; the sweep looks at this checkout later.
+		return LandedWorktreeOutcome{SessionID: sessionID, Kept: "another checkout is being evaluated; the sweep removes this one later"}, nil
+	}
+	defer s.landed.release()
 	accounts := map[string]bool{}
 	if snap, found, err := s.host.runs.sessions.Store().GetSession(sessionID); err != nil {
 		return LandedWorktreeOutcome{SessionID: sessionID}, err
@@ -125,40 +164,62 @@ func (s *WorkerExecutionService) SweepLandedWorktrees() (int, error) {
 	if s == nil || s.host == nil {
 		return 0, errors.New("worker execution authorities unavailable")
 	}
-	s.landed.mu.Lock()
-	defer s.landed.mu.Unlock()
 	accounts := map[string]bool{}
 	candidates, err := s.landedWorktreeCandidates(accounts)
 	var failures []error
 	if err != nil {
 		failures = append(failures, err)
 	}
-	inUse, err := s.landedWorktreesInUse(accounts)
-	if err != nil {
-		// Without the full picture of what is in use nothing is removed.
-		return 0, errors.Join(append(failures, err)...)
+	removed := 0
+	var inUse map[string]string
+	var inUseAt time.Time
+	for _, sessionID := range candidates {
+		outcome, done, err := s.sweepLandedCandidate(sessionID, accounts, &inUse, &inUseAt)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("session %s: %w", sessionID, err))
+			if !done {
+				// Without the full picture of what is in use nothing
+				// more is removed this pass.
+				break
+			}
+		}
+		if outcome.Removed {
+			removed++
+		}
 	}
+	return removed, errors.Join(failures...)
+}
+
+// landedInUseMaxAge bounds how old the picture of checkouts in use may be
+// when a sweep evaluates a checkout; past it the picture is read again.
+const landedInUseMaxAge = 30 * time.Second
+
+// sweepLandedCandidate evaluates one candidate under the per-checkout lock.
+// done is false when the picture of checkouts in use could not be read.
+func (s *WorkerExecutionService) sweepLandedCandidate(sessionID string, accounts map[string]bool, inUse *map[string]string, inUseAt *time.Time) (LandedWorktreeOutcome, bool, error) {
+	s.landed.acquire(-1)
+	defer s.landed.release()
 	now := s.landedNow()
 	if s.landed.nextCheck == nil {
 		s.landed.nextCheck = map[string]time.Time{}
 	}
-	removed := 0
-	for _, sessionID := range candidates {
-		if next, ok := s.landed.nextCheck[sessionID]; ok && now.Before(next) {
-			continue
-		}
-		outcome, err := s.removeLandedSessionWorktree(sessionID, LandedWorktreeTriggerSweep, inUse)
+	if next, ok := s.landed.nextCheck[sessionID]; ok && now.Before(next) {
+		return LandedWorktreeOutcome{SessionID: sessionID}, true, nil
+	}
+	if *inUse == nil || time.Since(*inUseAt) > landedInUseMaxAge {
+		fresh, err := s.landedWorktreesInUse(accounts)
 		if err != nil {
-			failures = append(failures, fmt.Errorf("session %s: %w", sessionID, err))
+			return LandedWorktreeOutcome{SessionID: sessionID}, false, err
 		}
-		if outcome.Removed {
-			removed++
-			delete(s.landed.nextCheck, sessionID)
-			continue
-		}
+		*inUse, *inUseAt = fresh, time.Now()
+	}
+	outcome, err := s.removeLandedSessionWorktree(sessionID, LandedWorktreeTriggerSweep, *inUse)
+	if outcome.Removed {
+		delete(s.landed.nextCheck, sessionID)
+	} else {
 		s.landed.nextCheck[sessionID] = now.Add(landedWorktreeRecheck)
 	}
-	return removed, errors.Join(failures...)
+	return outcome, true, err
 }
 
 // landedWorktreeCandidates lists sessions that may own a finished job's
@@ -263,7 +324,9 @@ func (s *WorkerExecutionService) landedWorktreesInUse(accounts map[string]bool) 
 			}
 		}
 	}
-	active, err := db.ListActiveSessionLifecycles(0)
+	// Every lifecycle record is read: a page limit would silently miss
+	// active sessions once a machine has many finished ones.
+	active, err := db.ListEveryActiveSessionLifecycle()
 	if err != nil {
 		return nil, err
 	}
@@ -418,8 +481,13 @@ func (s *WorkerExecutionService) removeLandedSessionWorktree(sessionID, trigger 
 	if run == nil && task == nil {
 		return kept("the checkout is not a worker run's or task's")
 	}
-	if run != nil && (!store.AutomationV2Terminal(run.Status) || run.FollowupStatus == "running") {
+	if run != nil && !store.AutomationV2Terminal(run.Status) {
 		return kept("the run is " + run.Status)
+	}
+	// A follow-up is queued (PrepareFollowup recreated the checkout and has
+	// not appended its run yet) or running in the checkout.
+	if run != nil && run.FollowupActive() {
+		return kept("the run's follow-up is " + run.FollowupStatus)
 	}
 	if task != nil && !projectTaskFinishedForWorktreeRemoval(task.Status) {
 		return kept("the task is " + task.Status)

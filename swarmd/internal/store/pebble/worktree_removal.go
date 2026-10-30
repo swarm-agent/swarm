@@ -1,6 +1,10 @@
 package pebblestore
 
-import "strings"
+import (
+	"encoding/json"
+	"errors"
+	"strings"
+)
 
 // Worktree removal states recorded on a finished worker run or project task.
 const (
@@ -40,6 +44,43 @@ func (s *SessionStore) GetWorktreeOwnership(path string) (WorktreeOwnership, boo
 		return WorktreeOwnership{}, false, err
 	}
 	return record, true, nil
+}
+
+// ListEveryActiveSessionLifecycle returns every active session lifecycle,
+// paging through all lifecycle records (active or not) so none is missed
+// past a page limit, unlike ListActiveSessionLifecycles. A record that cannot
+// be read fails the whole list: callers deciding that a checkout is unused
+// must not act on a partial picture.
+func (s *SessionStore) ListEveryActiveSessionLifecycle() ([]SessionLifecycleSnapshot, error) {
+	if s == nil || s.store == nil || s.store.db == nil || s.store.closed.Load() {
+		return nil, errors.New("pebble store is closed")
+	}
+	const page = 1000
+	var out []SessionLifecycleSnapshot
+	start := ""
+	for {
+		seen, last := 0, ""
+		err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: SessionLifecyclePrefix(), StartKey: start, Limit: page}, func(key string, value []byte) (bool, error) {
+			seen, last = seen+1, key
+			var snapshot SessionLifecycleSnapshot
+			if err := json.Unmarshal(value, &snapshot); err != nil {
+				return false, err
+			}
+			snapshot.SessionID = strings.TrimSpace(snapshot.SessionID)
+			snapshot.AccountScopeID = strings.TrimSpace(snapshot.AccountScopeID)
+			if snapshot.Active && snapshot.SessionID != "" {
+				out = append(out, snapshot)
+			}
+			return true, nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		if seen < page {
+			return out, nil
+		}
+		start = last + "\x00"
+	}
 }
 
 // AppendSignalOnce records one activity event exactly once per DedupKey.
