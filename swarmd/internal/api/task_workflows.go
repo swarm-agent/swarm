@@ -331,53 +331,93 @@ func (s *Server) waitTaskJob(ctx context.Context, account, jobID string) (jobaut
 	}
 }
 
-// reopenTask sends a reopen step's follow-up into the task's own session,
-// exactly as swarm_send_message does: the same session and worktree, never a
-// new task. A cancelled task is refused; a task whose run is still going is
-// answered busy, so the reopen step waits for it. It returns the follow-up's
-// run id, whose end is the task's next job end (task.run.*).
+// reopenTask is reopenTaskSent's follow-up run id.
 func (s *Server) reopenTask(ctx context.Context, req jobautomation.ReopenRequest) (string, error) {
+	sent, err := s.reopenTaskSent(ctx, req)
+	return sent.Followup, err
+}
+
+// reopenTaskSent sends a reopen step's follow-up into the task's own session,
+// exactly as swarm_send_message does: the same session and worktree, never a
+// new task. A task that is busy with a run (its own, or a follow-up the
+// person sent meanwhile) gets the message queued for that run, as the
+// message path queues a person's message (acceptSessionsV3QueuedNote): it is
+// delivered with the run's next tool result, or starts the next turn when
+// the run ends without one, so the run's end is the task's next job end.
+// Only a real refusal fails: a deleted, archived, cancelled, superseded or
+// rejected task, or one the person stopped. While no run can take the
+// message yet (planning, waiting for plan approval, a run that is starting,
+// or a status not yet reconciled with its run) it is answered busy, so the
+// reopen step waits for it. It returns the run that carries the message,
+// whose end is the task's next job end (task.run.*).
+func (s *Server) reopenTaskSent(ctx context.Context, req jobautomation.ReopenRequest) (jobautomation.ReopenSent, error) {
 	projectID, taskID, ok := parseTaskJobID(req.JobID)
 	if !ok {
-		return "", &jobautomation.RefusedError{Reason: req.JobID + " is not a task"}
+		return jobautomation.ReopenSent{}, &jobautomation.RefusedError{Reason: req.JobID + " is not a task"}
 	}
 	c, err := s.jobAutomationWriteCall(ctx)
 	if err != nil {
-		return "", err
+		return jobautomation.ReopenSent{}, err
 	}
 	p, ok := PrincipalFromRequest(c.request)
 	if !ok || p.AccountScopeID != req.Account {
-		return "", &jobautomation.RefusedError{Reason: "reopen steps run only for the machine owner's automations"}
+		return jobautomation.ReopenSent{}, &jobautomation.RefusedError{Reason: "reopen steps run only for the machine owner's automations"}
 	}
 	task, found, err := s.sessions.Store().GetProjectTask(req.Account, projectID, taskID)
 	if err != nil {
-		return "", err
+		return jobautomation.ReopenSent{}, err
 	}
-	if !found || task == nil || task.SessionID == "" {
-		return "", &jobautomation.RefusedError{Reason: "the task " + req.JobID + " has no session to reopen"}
+	if !found || task == nil {
+		return jobautomation.ReopenSent{}, &jobautomation.RefusedError{Reason: "the task " + req.JobID + " no longer exists (deleted): it is not reopened"}
+	}
+	if task.SessionID == "" {
+		return jobautomation.ReopenSent{}, &jobautomation.RefusedError{Reason: "the task " + req.JobID + " has no session to reopen"}
+	}
+	if task.Archived {
+		return jobautomation.ReopenSent{}, &jobautomation.RefusedError{Reason: "the task " + req.JobID + " is archived: it is not reopened"}
 	}
 	switch task.Status {
 	case "cancelled", "superseded", "rejected":
-		return "", &jobautomation.RefusedError{Reason: "the task " + req.JobID + " was " + task.Status + ": it is not reopened"}
-	case "in_progress", "queued", "planning", "pending_approval":
-		return "", &jobautomation.BusyError{Reason: "the task " + req.JobID + " is still running (" + task.Status + ")"}
+		return jobautomation.ReopenSent{}, &jobautomation.RefusedError{Reason: "the task " + req.JobID + " was " + task.Status + ": it is not reopened"}
+	case pebblestore.ProjectTaskStatusStopped:
+		return jobautomation.ReopenSent{}, &jobautomation.RefusedError{Reason: "the task " + req.JobID + " was stopped by the person: it is not reopened"}
+	case "planning", "pending_approval":
+		return jobautomation.ReopenSent{}, &jobautomation.BusyError{Reason: "the task " + req.JobID + " is still running (" + task.Status + ")"}
 	}
-	if state, found, err := s.sessions.Store().GetV3SessionRunState(task.SessionID); err != nil {
-		return "", err
-	} else if found && state.Active {
-		return "", &jobautomation.BusyError{Reason: "the task " + req.JobID + " is still running a follow-up"}
+	_, active, err := s.sessions.GetSessionActiveRunIntent(task.SessionID)
+	if err != nil {
+		return jobautomation.ReopenSent{}, err
 	}
+	switch {
+	case !active && (task.Status == "in_progress" || task.Status == "queued"):
+		// Its status says a run, but none is recorded yet: nothing can
+		// take the message.
+		return jobautomation.ReopenSent{}, &jobautomation.BusyError{Reason: "the task " + req.JobID + " is still running (" + task.Status + ")"}
+	case active && s.v3SessionExecutor.queuedNoteRunID(task.SessionID) == "":
+		// A run that is recorded but does not take messages yet: a send
+		// now would start a second run beside it.
+		return jobautomation.ReopenSent{}, &jobautomation.BusyError{Reason: "the task " + req.JobID + " is still running: its run is starting and cannot take a message yet"}
+	}
+	// The message path: with an active run that takes notes the message is
+	// queued for it; otherwise it starts the task's follow-up run.
 	run, err := c.sendMessage(task.SessionID, req.Message, req.RequestID)
 	if err != nil {
 		var refused controlMCPToolError
 		if errors.As(err, &refused) && refused.status == http.StatusConflict {
-			return "", &jobautomation.BusyError{Reason: "the task " + req.JobID + " is still running: " + refused.message}
+			return jobautomation.ReopenSent{}, &jobautomation.BusyError{Reason: "the task " + req.JobID + " is still running: " + refused.message}
 		}
-		return "", err
+		return jobautomation.ReopenSent{}, err
+	}
+	if queued, _ := run["queued"].(bool); queued {
+		forRun, _ := run["queued_for_run_id"].(string)
+		if forRun == "" {
+			return jobautomation.ReopenSent{}, errors.New("the follow-up was queued without the run it waits for")
+		}
+		return jobautomation.ReopenSent{Followup: forRun, Queued: true}, nil
 	}
 	followup, _ := run["run_id"].(string)
 	if followup == "" {
-		return "", errors.New("the follow-up was accepted without a run id")
+		return jobautomation.ReopenSent{}, errors.New("the follow-up was accepted without a run id")
 	}
-	return followup, nil
+	return jobautomation.ReopenSent{Followup: followup}, nil
 }

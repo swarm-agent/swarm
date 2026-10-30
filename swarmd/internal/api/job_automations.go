@@ -685,6 +685,18 @@ func (s *Server) jobAutomationOwnerCall(ctx context.Context, tokenID, tokenName 
 	return &controlMCPCall{request: req, next: s.internalRouteHandler(), server: s}, nil
 }
 
+// ReopenOrQueue is Reopen for the reopen step (jobautomation.QueueingReopener):
+// a task that is busy with a run gets the follow-up queued for that run, as
+// the message path does (reopenTaskSent), instead of being waited for. A
+// worker job keeps Reopen's answers.
+func (a jobAutomationReopener) ReopenOrQueue(ctx context.Context, req jobautomation.ReopenRequest) (jobautomation.ReopenSent, error) {
+	if strings.HasPrefix(req.JobID, jobautomation.KindTask+"/") {
+		return a.s.reopenTaskSent(ctx, req)
+	}
+	followup, err := a.Reopen(ctx, req)
+	return jobautomation.ReopenSent{Followup: followup}, err
+}
+
 // Reopen sends the follow-up into the job's own session through
 // swarm_message_job's own path (controlMCPMessageJob): the same session and
 // worktree, never a new job. A cancelled job is refused with the reason; a
