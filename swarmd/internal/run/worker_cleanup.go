@@ -7,6 +7,11 @@ import (
 	"time"
 )
 
+// reviewCleanupMaxAttempts bounds a terminal reviewer run's checkout cleanup:
+// after this many failed attempts the failure is reported once
+// (job.cleanup_failed) and the run is never retried again by itself.
+const reviewCleanupMaxAttempts = 5
+
 func markReviewCleanupPending(r *store.WorkerRunRecord) {
 	if r.Role == store.WorkerRoleReviewer && !reviewFixesAllowed(r.Input) && r.Cleanup == nil {
 		r.Cleanup = &store.WorkerRunCleanup{State: "pending"}
@@ -92,6 +97,12 @@ func (s *WorkerExecutionService) performReviewCleanup(r store.WorkerRunRecord) e
 	if c.State == "done" || c.NextAttemptAt > now.UnixMilli() {
 		return nil
 	}
+	if c.State == "failed" && (c.FailureReported || c.Attempts >= reviewCleanupMaxAttempts) {
+		// Exhausted: the one warning was raised when the last attempt failed.
+		// Re-saving the run every backoff period forever re-announced the old
+		// failed run to every activity reader and retried with no end.
+		return nil
+	}
 	previous := c.State
 	c.State = "pending"
 	c.Attempts++
@@ -104,8 +115,8 @@ func (s *WorkerExecutionService) performReviewCleanup(r store.WorkerRunRecord) e
 	cleanupErr := s.cleanupReview(r)
 	if cleanupErr != nil {
 		c.State, c.LastError = "failed", cleanupErr.Error()
-		if c.Attempts >= 5 {
-			c.FailureReported = true
+		if c.Attempts >= reviewCleanupMaxAttempts {
+			c.FailureReported, c.NextAttemptAt = true, 0
 		}
 	} else {
 		c.State, c.LastError, c.NextAttemptAt = "done", "", 0

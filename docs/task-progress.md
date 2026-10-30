@@ -249,6 +249,24 @@ provider. It reads a task's worktree with Git only for the uncommitted case
 below: at most once per stall episode and 20 tasks per check, and only for
 finished tasks that changed in the last 24 hours.
 
+The check follows only work that can still move. It leaves alone, with no
+recovery and no alert:
+
+- a task whose records last changed (or whose provider-limit reset passed)
+  longer ago than `stall_horizon_hours` (limits; default 24);
+- an archived task;
+- a task mirroring a worker run (`task_wrun_*`) whose worker is gone,
+  archived, deleted or not active. The stall check never re-runs a worker's
+  run as a recovery.
+
+Such a task keeps the state its own records give it. A stall marker an
+earlier check put on it is cleared without a `task.unstalled` signal. The
+first complete check of a daemon process sends at most **one** info signal
+for this old work, kind `task.stall_check_skipped` (attrs `count`,
+`horizon_hours`, `machine`): "N old unfinished tasks were not checked for
+stalls …". It never sends one signal per task. A restart over the same old
+work sends nothing again.
+
 A task is **not** stalled while it has an armed wait: an idle conversation
 with an active task watch (`wait_tasks`; the watch starts its next turn), a
 background command still running, a running or waiting workflow step, or a

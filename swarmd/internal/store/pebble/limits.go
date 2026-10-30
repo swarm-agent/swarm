@@ -29,13 +29,19 @@ type Limits struct {
 	// See docs/task-progress.md ("Stalled tasks"). Zero selects the default.
 	StallAfterMinutes int `json:"stall_after_minutes"`
 	RunSilentMinutes  int `json:"run_silent_minutes"`
+	// StallHorizonHours bounds which tasks the stall check follows at all:
+	// a task whose records last changed longer ago is old work, neither
+	// recovered nor alerted. Zero selects the default.
+	StallHorizonHours int `json:"stall_horizon_hours"`
 }
 
 // Stall detection defaults and bounds (minutes).
 const (
 	DefaultStallAfterMinutes = 20
 	DefaultRunSilentMinutes  = 30
+	DefaultStallHorizonHours = 24
 	maxStallMinutes          = 24 * 60
+	maxStallHorizonHours     = 30 * 24
 )
 
 // fillStallDefaults gives a record written before the stall limits existed
@@ -47,12 +53,15 @@ func (l *Limits) fillStallDefaults() {
 	if l.RunSilentMinutes == 0 {
 		l.RunSilentMinutes = DefaultRunSilentMinutes
 	}
+	if l.StallHorizonHours == 0 {
+		l.StallHorizonHours = DefaultStallHorizonHours
+	}
 }
 
 func DefaultLimits() Limits {
 	return Limits{ProjectCacheBytes: 10 << 30, WorkerJobConcurrency: 100, DelegationWaves: 5, ActiveChildren: 5, SwarmChildren: 5,
 		HelperConcurrency: 4, HelpersPerJob: 20, HelperTimeoutSeconds: 300, HelperTokens: 32000,
-		StallAfterMinutes: DefaultStallAfterMinutes, RunSilentMinutes: DefaultRunSilentMinutes}
+		StallAfterMinutes: DefaultStallAfterMinutes, RunSilentMinutes: DefaultRunSilentMinutes, StallHorizonHours: DefaultStallHorizonHours}
 }
 
 var ErrLimitsConflict = errors.New("limits revision conflict")
@@ -80,6 +89,9 @@ func (l Limits) Validate() error {
 	}
 	if l.StallAfterMinutes < 0 || l.StallAfterMinutes > maxStallMinutes || l.RunSilentMinutes < 0 || l.RunSilentMinutes > maxStallMinutes {
 		return errors.New("stall_after_minutes and run_silent_minutes must be 1..1440 (0 selects the default)")
+	}
+	if l.StallHorizonHours < 0 || l.StallHorizonHours > maxStallHorizonHours {
+		return errors.New("stall_horizon_hours must be 1..720 (0 selects the default)")
 	}
 	if l.WorkerJobConcurrency < 1 || l.WorkerJobConcurrency > 10000 || l.DelegationWaves < 0 || l.DelegationWaves > 256 || l.ActiveChildren < 1 || l.ActiveChildren > 256 || l.SwarmChildren < 1 || l.SwarmChildren > 256 || l.JobTokens < 0 || l.JobTokens > 1000000000 || math.IsNaN(l.JobCostUSD) || math.IsInf(l.JobCostUSD, 0) || l.JobCostUSD < 0 || l.JobCostUSD > 1000000 {
 		return errors.New("limits exceed hard bounds: concurrency 1..10000, waves 0..256, children 1..256, job tokens 0..1000000000, job USD 0..1000000")

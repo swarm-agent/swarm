@@ -86,5 +86,6 @@ func controlMCPLimitsSchema() map[string]any {
 		"swarm_children":         map[string]any{"type": "integer", "minimum": 1, "maximum": 256},
 		"stall_after_minutes":    map[string]any{"type": "integer", "minimum": 0, "maximum": 1440, "description": "Minutes an unfinished task may go unchanged with no run, queued run, workflow step or armed wait before it raises task.stalled; zero selects 20."},
 		"run_silent_minutes":     map[string]any{"type": "integer", "minimum": 0, "maximum": 1440, "description": "Minutes an active task run may go without a new event (not on a tool, background command or approval) before it raises task.stalled; zero selects 30."},
+		"stall_horizon_hours":    map[string]any{"type": "integer", "minimum": 0, "maximum": 720, "description": "Hours after its last change that an unfinished task is old work the stall check leaves alone (no recovery, no task.stalled); zero selects 24."},
 	})
 }

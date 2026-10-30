@@ -204,6 +204,21 @@ func (s *Store) commitWorkerRealtime(m *workerRealtimeMutation) error {
 		case "failed":
 			metadata.ActivityKind = "job.failed"
 		}
+		// A re-save of a run already stored with this final status (cleanup
+		// bookkeeping, a sandbox cleanup error, a follow-up release) is not a
+		// transition: the run's terminal activity was recorded when it ended.
+		// The worker.updated invalidation still goes out; no activity kind.
+		if AutomationV2Terminal(run.Status) {
+			var previous WorkerRunRecord
+			found, readErr := s.GetJSON(key, &previous)
+			if readErr != nil {
+				s.sessionMutations.abandonOutbox(reserved)
+				return readErr
+			}
+			if found && previous.Status == run.Status {
+				metadata.ActivityKind = ""
+			}
+		}
 		payload, err = json.Marshal(metadata)
 		if err != nil {
 			s.sessionMutations.abandonOutbox(reserved)

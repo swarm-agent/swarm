@@ -163,7 +163,10 @@ type Server struct {
 	taskStallGitFn    func(context.Context, pebblestore.ProjectTaskRecord) (taskStallGit, bool)
 	taskStallGitMu    sync.Mutex
 	taskStallGitCache map[string]taskStallGit
-	publishConfig     string
+	// taskStallSummarized is set once this process sent (or had nothing
+	// for) the one summary of old work the check leaves alone.
+	taskStallSummarized bool
+	publishConfig       string
 	// outboxDelivery writes a workflow deliver step's files to the outbox.
 	outboxDelivery              OutboxDeliveryWriter
 	secretValues                secretValueSetter

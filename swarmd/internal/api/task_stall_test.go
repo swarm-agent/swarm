@@ -611,3 +611,225 @@ func TestTaskStallReasonReachesLinkedTaskList(t *testing.T) {
 		t.Fatalf("an ordinary reason was passed through: %+v", got.Tasks[1])
 	}
 }
+
+// kindSignals lists the account's task signals of kind (whatever the task).
+func (f stallFixture) kindSignals(t *testing.T, kind string) []pebblestore.Signal {
+	t.Helper()
+	page, err := f.server.signals.ListAfter(0, 500, pebblestore.SignalFilter{Account: f.account, KindPrefixes: []string{"task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []pebblestore.Signal
+	for _, sig := range page.Signals {
+		if sig.Kind == kind {
+			out = append(out, sig)
+		}
+	}
+	return out
+}
+
+// Purpose: the check follows only work that can still move. An unfinished
+// task whose records last changed longer ago than the horizon (24 h by
+// default) is neither recovered nor alerted: an exhausted review gets no
+// extra round, a task with no next step raises no task.stalled, nobody is
+// woken and no stall marker is written. The same shapes still recover and
+// alert when fresh (positive control in a second store, checked within the
+// horizon), so the horizon is not a blanket off switch.
+// Threat: the forge's first sweep, which re-ran weeks-old work, failed every
+// recovery and sent about 25 task.stalled warnings in 3 minutes.
+// Boundary: Server.CheckStalledTasks over real project tasks, sessions,
+// workflow deliveries, the signal store and the session messages route on a
+// temporary Pebble store; time is passed in, never slept.
+func TestTaskStallOldWorkPastHorizonIsLeftAloneFreshStillActs(t *testing.T) {
+	steps := []jobautomation.Step{{ID: "review", Type: jobautomation.StepAgent, Worker: "reviewer"}, {ID: "fix", Type: jobautomation.StepReopen, From: "review", MaxRounds: 1}}
+	exhausted := func(d *jobautomation.Delivery) {
+		at := time.Now().UnixMilli()
+		d.State, d.StartedAt, d.FinishedAt = jobautomation.StateBlocked, at, at
+		d.BlockedReason = jobautomation.RoundsExhaustedReason("fix")
+		d.Steps[0].State, d.Steps[0].FinishedAt = jobautomation.StateSucceeded, at
+		d.Steps[0].Outcome = map[string]any{"verdict": "block", "findings": "1. high a.go:1 unchecked"}
+		d.Steps[1].State, d.Steps[1].FinishedAt, d.Steps[1].Reason = jobautomation.StateFailed, at, jobautomation.RoundsExhaustedReason("fix")
+	}
+	type shapes struct {
+		f                     stallFixture
+		origin, review, quiet string
+		reviewTask, quietTask pebblestore.ProjectTaskRecord
+	}
+	setup := func(name string) shapes {
+		f := newStallFixture(t, filepath.Join(t.TempDir(), name+".pebble"))
+		origin := f.session(t, name+"-orchestrator")
+		review := f.session(t, name+"-review")
+		reviewTask := taskSessionFixture(t, f.server, review, pebblestore.ProjectTaskRecord{ID: "task_" + name + "_review", ProjectID: "proj-" + name, Agent: "coder", Status: "in_progress", OriginSessionID: origin.ID})
+		f.settleRun(t, review.ID, pebblestore.InitialTaskRunID(reviewTask.ID), sessionruntime.RunIntentCompleted)
+		f.delivery(t, reviewTask.ProjectID, reviewTask.ID, "wf-"+name, "", steps, exhausted)
+		quiet := f.session(t, name+"-quiet")
+		quietTask := taskSessionFixture(t, f.server, quiet, pebblestore.ProjectTaskRecord{ID: "task_" + name + "_quiet", ProjectID: "proj-" + name, Agent: "coder", Status: "in_progress", OriginSessionID: origin.ID})
+		return shapes{f: f, origin: origin.ID, review: review.ID, quiet: quiet.ID, reviewTask: reviewTask, quietTask: quietTask}
+	}
+
+	old := setup("old")
+	defer old.f.close()
+	later := time.Now().Add(25 * time.Hour)
+	old.f.check(later)
+	old.f.check(later.Add(time.Minute))
+	for _, id := range []string{old.reviewTask.ID, old.quietTask.ID} {
+		if got := old.f.signals(t, "task.stalled", id); len(got) != 0 {
+			t.Fatalf("old task %s alerted: %+v", id, got)
+		}
+		if stored := old.f.task(t, old.reviewTask.ProjectID, id); stored.Stall != nil {
+			t.Fatalf("old task %s was marked stalled: %+v", id, stored.Stall)
+		}
+		if _, found, err := old.f.server.sessions.Store().GetTaskStall(old.f.account, id); err != nil || found {
+			t.Fatalf("old task %s has a stall episode: found=%v err=%v", id, found, err)
+		}
+	}
+	if n := len(old.f.userMessages(t, old.review, "One extra round")); n != 0 {
+		t.Fatalf("old exhausted review was recovered: %d extra rounds", n)
+	}
+	if done, err := old.f.server.sessions.Store().HasTaskStallRecovery(old.f.account, old.reviewTask.ID, taskStallRecoveryReviewExtra); err != nil || done {
+		t.Fatalf("old task recovery receipt: %v %v", done, err)
+	}
+	if n := len(old.f.userMessages(t, old.origin, "stalled")); n != 0 {
+		t.Fatalf("the delegator was woken %d times for old work", n)
+	}
+	if state, _, _ := old.f.server.sessions.Store().GetV3SessionRunState(old.review); state.RunID != pebblestore.InitialTaskRunID(old.reviewTask.ID) {
+		t.Fatalf("old task got a new run: %+v", state)
+	}
+
+	fresh := setup("fresh")
+	defer fresh.f.close()
+	soon := time.Now().Add(25 * time.Minute)
+	fresh.f.check(soon)
+	fresh.f.check(soon.Add(time.Minute))
+	if n := len(fresh.f.userMessages(t, fresh.review, "One extra round")); n != 1 {
+		t.Fatalf("fresh exhausted review: %d extra rounds, want 1", n)
+	}
+	if got := fresh.f.signals(t, "task.stalled", fresh.quietTask.ID); len(got) != 1 || got[0].Attrs["stall"] != pebblestore.ProjectTaskStallNoNextStep {
+		t.Fatalf("fresh quiet task = %+v, want one no_next_step", got)
+	}
+}
+
+// Purpose: a project task mirroring a worker run whose worker no longer runs
+// jobs (gone, or not active) belongs to the retired worker pipeline: the
+// stall check never re-runs it as recovery and never alerts on it, even
+// within the horizon; a stall marker an earlier check left on it is cleared
+// without a task.unstalled announcement.
+// Threat: the forge's task_wrun_* mirrors of the retired Coder worker, whose
+// "recovery" re-ran old worker runs that failed at once, each then raising
+// task.stalled and reading needs_you.
+// Boundary: Server.CheckStalledTasks with the worker read from the real
+// WorkerStore on the same temporary Pebble store.
+func TestTaskStallLegacyWorkerRunMirrorIsNeverRecoveredOrAlerted(t *testing.T) {
+	f := newStallFixture(t, filepath.Join(t.TempDir(), "legacy.pebble"))
+	defer f.close()
+	p := testPrincipal()
+	ws := pebblestore.NewWorkerStore(f.server.sessions.Store().Underlying())
+	idle, err := ws.CreateWorker(f.account, p.UserID, pebblestore.CreateWorkerRequest{Role: pebblestore.WorkerRoleCoder, Name: "Coder", IdempotencyKey: "legacy-coder"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retired, err := ws.CreateWorker(f.account, p.UserID, pebblestore.CreateWorkerRequest{Role: pebblestore.WorkerRoleCoder, Name: "Old coder", IdempotencyKey: "retired-coder"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idle.LifecycleState == pebblestore.WorkerLifecycleStateActive {
+		t.Fatalf("fixture worker is active: %s", idle.LifecycleState)
+	}
+	steps := []jobautomation.Step{{ID: "review", Type: jobautomation.StepAgent, Worker: "reviewer"}, {ID: "fix", Type: jobautomation.StepReopen, From: "review", MaxRounds: 1}}
+	mirror := func(id, workerID string) (pebblestore.ProjectTaskRecord, string) {
+		s := f.session(t, "worker-execution-"+id)
+		if _, err := ws.RecordWorkerRun(f.account, pebblestore.WorkerRunRecord{ID: id, WorkerID: workerID, UserID: p.UserID, Role: pebblestore.WorkerRoleCoder, SessionID: s.ID, Status: "failed", Error: "old run", CreatedAt: 1, StartedAt: 1, CompletedAt: 2}); err != nil {
+			t.Fatal(err)
+		}
+		task := taskSessionFixture(t, f.server, s, pebblestore.ProjectTaskRecord{ID: "task_" + id, Title: "Coder", ProjectID: "proj-legacy", Agent: "coder", Status: "in_progress", WorkerID: workerID, WorkerRunID: id})
+		f.settleRun(t, s.ID, pebblestore.InitialTaskRunID(task.ID), sessionruntime.RunIntentCompleted)
+		f.delivery(t, task.ProjectID, task.ID, "wf-"+id, "", steps, func(d *jobautomation.Delivery) {
+			at := time.Now().UnixMilli()
+			d.State, d.StartedAt, d.FinishedAt = jobautomation.StateBlocked, at, at
+			d.BlockedReason = jobautomation.RoundsExhaustedReason("fix")
+			d.Steps[0].State, d.Steps[0].FinishedAt = jobautomation.StateSucceeded, at
+			d.Steps[0].Outcome = map[string]any{"verdict": "block", "findings": "1. high a.go:1 unchecked"}
+			d.Steps[1].State, d.Steps[1].FinishedAt, d.Steps[1].Reason = jobautomation.StateFailed, at, jobautomation.RoundsExhaustedReason("fix")
+		})
+		return task, s.ID
+	}
+	gone, goneSession := mirror("wrun_gone", retired.ID)
+	notActive, notActiveSession := mirror("wrun_idle", idle.ID)
+	if err := ws.DeleteWorker(f.account, p.UserID, retired.ID, retired.Revision); err != nil {
+		t.Fatal(err)
+	}
+	// An earlier check (before this rule) marked one of them.
+	if ok, err := f.server.sessions.Store().SetProjectTaskStall(f.account, gone.ProjectID, gone.ID, f.task(t, gone.ProjectID, gone.ID).UpdatedAt, &pebblestore.ProjectTaskStall{Kind: pebblestore.ProjectTaskStallReviewExhausted, Reason: "review exhausted", Since: 1, TaskUpdatedAt: f.task(t, gone.ProjectID, gone.ID).UpdatedAt}); err != nil || !ok {
+		t.Fatalf("seed marker: %v %v", ok, err)
+	}
+	if err := f.server.sessions.Store().PutTaskStall(f.account, pebblestore.TaskStallRecord{ProjectID: gone.ProjectID, TaskID: gone.ID, Episode: "old", Kind: pebblestore.ProjectTaskStallReviewExhausted, Reason: "review exhausted", Alerted: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	at := time.Now().Add(30 * time.Minute)
+	f.check(at)
+	f.check(at.Add(time.Minute))
+	for _, c := range []struct {
+		task    pebblestore.ProjectTaskRecord
+		session string
+	}{{gone, goneSession}, {notActive, notActiveSession}} {
+		if n := len(f.userMessages(t, c.session, "One extra round")); n != 0 {
+			t.Fatalf("legacy mirror %s was re-run as recovery (%d)", c.task.ID, n)
+		}
+		if state, _, _ := f.server.sessions.Store().GetV3SessionRunState(c.session); state.RunID != pebblestore.InitialTaskRunID(c.task.ID) {
+			t.Fatalf("legacy mirror %s got a new run: %+v", c.task.ID, state)
+		}
+		for _, kind := range []string{"task.stalled", "task.unstalled"} {
+			if got := f.signals(t, kind, c.task.ID); len(got) != 0 {
+				t.Fatalf("legacy mirror %s raised %s: %+v", c.task.ID, kind, got)
+			}
+		}
+		stored := f.task(t, c.task.ProjectID, c.task.ID)
+		if _, reason := pebblestore.ProjectTaskState(stored, "", false, false); stored.Stall != nil || strings.HasPrefix(reason, "stalled") {
+			t.Fatalf("legacy mirror %s still reads stalled: %+v %q", c.task.ID, stored.Stall, reason)
+		}
+		if _, found, err := f.server.sessions.Store().GetTaskStall(f.account, c.task.ID); err != nil || found {
+			t.Fatalf("legacy mirror %s keeps a stall episode: %v %v", c.task.ID, found, err)
+		}
+	}
+}
+
+// Purpose: no backfill of alerts for old work. The first check of a daemon
+// process over many old unfinished tasks sends at most one summary signal
+// ("N old unfinished tasks were not checked ...") and no task.stalled; later
+// checks and a restart over the same old work send nothing more.
+// Threat: one Telegram message per old task (about 25 in 3 minutes on the
+// forge) when the stall feature first ran.
+// Boundary: Server.CheckStalledTasks and SignalStore.AppendOnce; the restart
+// reopens the same Pebble path with a new Server.
+func TestTaskStallFirstSweepOverOldWorkSendsOneSummary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "summary.pebble")
+	f := newStallFixture(t, path)
+	const n = 6
+	for i := 0; i < n; i++ {
+		id := "old-" + string(rune('a'+i))
+		taskSessionFixture(t, f.server, f.session(t, id), pebblestore.ProjectTaskRecord{ID: "task_" + id, ProjectID: "proj-summary", Agent: "coder", Status: "in_progress"})
+	}
+	later := time.Now().Add(48 * time.Hour)
+	f.check(later)
+	f.check(later.Add(time.Minute))
+	f.check(later.Add(2 * time.Minute))
+	summaries := f.kindSignals(t, "task.stall_check_skipped")
+	if len(summaries) != 1 || summaries[0].Attrs["count"] != "6" || summaries[0].Attrs["horizon_hours"] != "24" ||
+		!strings.Contains(summaries[0].Summary, "6 old unfinished tasks were not checked") || summaries[0].Severity != pebblestore.SignalSeverityInfo {
+		t.Fatalf("summaries = %+v, want exactly one for 6 tasks", summaries)
+	}
+	if got := f.kindSignals(t, "task.stalled"); len(got) != 0 {
+		t.Fatalf("old work raised %d task.stalled", len(got))
+	}
+	f.close()
+	f = newStallFixture(t, path)
+	defer f.close()
+	f.check(later.Add(3 * time.Minute))
+	if got := f.kindSignals(t, "task.stall_check_skipped"); len(got) != 1 {
+		t.Fatalf("after restart: %d summaries, want still 1", len(got))
+	}
+	if got := f.kindSignals(t, "task.stalled"); len(got) != 0 {
+		t.Fatalf("after restart: %d task.stalled", len(got))
+	}
+}

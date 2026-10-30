@@ -34,6 +34,14 @@ import (
 // conversation that delegated the task with the same text, and marks the
 // task so task_state_reason names the stall everywhere the task is read.
 // When the task moves again: task.unstalled, and the episode ends.
+//
+// The check follows only work that can still move. A task whose records last
+// changed longer ago than the horizon (stall_horizon_hours, default 24), and a
+// worker-run mirror whose worker is gone, archived or no longer admits runs,
+// is old work: never recovered (a recovery would re-run a legacy worker run),
+// never alerted, and its task state is left as its own records say. The
+// first check of a daemon process sends at most one summary signal naming how
+// many old unfinished tasks it left alone, never one per task.
 
 const (
 	// taskStallTick is how often the check runs.
@@ -84,6 +92,10 @@ type taskStallVerdict struct {
 	RunID string
 	// LastChange is when the task's records last changed (Unix ms).
 	LastChange int64
+	// Recent is the later of LastChange and any armed wait's deadline (a
+	// provider-limit reset): the time the horizon is measured from, so a
+	// long wait that is due still counts as work that can move.
+	Recent int64
 }
 
 // RunTaskStallDetector runs the stall check for the machine owner's account
@@ -125,37 +137,94 @@ func (s *Server) CheckStalledTasks(ctx context.Context, account string, now time
 		return
 	}
 	budget := taskStallGitPerTick
+	skipped, complete := 0, true
 	for _, project := range projects {
 		tasks, err := db.ListProjectTasksByArchive(account, project.ID, false)
 		if err != nil {
 			log.Printf("swarmd stall check: list tasks of %s: %v", project.ID, err)
+			complete = false
 			continue
 		}
 		for _, task := range tasks {
 			if ctx.Err() != nil {
 				return
 			}
-			s.checkTaskStall(ctx, account, task, now, limits, &budget)
+			if s.checkTaskStall(ctx, account, task, now, limits, &budget) {
+				skipped++
+			}
 		}
+	}
+	if complete {
+		s.summarizeOldTasks(account, skipped, limits)
 	}
 }
 
-func (s *Server) checkTaskStall(ctx context.Context, account string, task pebblestore.ProjectTaskRecord, now time.Time, limits pebblestore.Limits, gitBudget *int) {
+// taskStallHorizon is how long after its last change a task is still work
+// the check follows.
+func taskStallHorizon(limits pebblestore.Limits) time.Duration {
+	hours := limits.StallHorizonHours
+	if hours <= 0 {
+		hours = pebblestore.DefaultStallHorizonHours
+	}
+	return time.Duration(hours) * time.Hour
+}
+
+// summarizeOldTasks sends, once per daemon process (its first complete
+// check), the one summary of the old unfinished tasks the check left alone.
+// The dedup key carries the count and horizon, so a restart over the same
+// old work sends nothing again.
+func (s *Server) summarizeOldTasks(account string, skipped int, limits pebblestore.Limits) {
+	s.taskStallGitMu.Lock()
+	done := s.taskStallSummarized
+	s.taskStallSummarized = true
+	s.taskStallGitMu.Unlock()
+	if done || skipped == 0 || s.signals == nil {
+		return
+	}
+	horizon := taskStallHorizon(limits)
+	hours := strconv.Itoa(int(horizon / time.Hour))
+	noun := "tasks were"
+	if skipped == 1 {
+		noun = "task was"
+	}
+	if _, err := s.signals.AppendOnce(pebblestore.Signal{
+		Kind: "task.stall_check_skipped", Severity: pebblestore.SignalSeverityInfo, Source: pebblestore.SignalSourceSwarmd, Account: account,
+		Summary:  strconv.Itoa(skipped) + " old unfinished " + noun + " not checked for stalls on " + s.taskStallMachine() + " (older than " + hours + " h, or a retired worker's run)",
+		DedupKey: "task.stall_check_skipped:" + strconv.Itoa(skipped) + ":" + hours,
+		Attrs:    map[string]string{"count": strconv.Itoa(skipped), "horizon_hours": hours, "machine": s.taskStallMachine()},
+	}); err != nil {
+		log.Printf("swarmd signal task.stall_check_skipped not recorded: %v", err)
+	}
+}
+
+// checkTaskStall checks one task. old reports that the task is unfinished
+// old work the check left alone (counted in the one summary).
+func (s *Server) checkTaskStall(ctx context.Context, account string, task pebblestore.ProjectTaskRecord, now time.Time, limits pebblestore.Limits, gitBudget *int) (old bool) {
 	db := s.sessions.Store()
 	rec, found, err := db.GetTaskStall(account, task.ID)
 	if err != nil {
 		log.Printf("swarmd stall check: read stall of %s: %v", task.ID, err)
-		return
+		return false
 	}
 	if !taskStallCandidate(task) {
 		if found {
 			s.endTaskStall(account, task, rec)
 		}
-		return
+		return false
+	}
+	if legacy, ok := s.taskStallLegacyWorkerRun(account, task); !ok {
+		return false // the worker could not be read: claim nothing
+	} else if legacy {
+		s.leaveOldTask(account, task, rec, found)
+		return taskStatusClass(task.Status) != "finished"
 	}
 	v, ok := s.taskStallVerdict(ctx, account, task, now, limits, gitBudget)
 	if !ok {
-		return // a record could not be read: claim nothing
+		return false // a record could not be read: claim nothing
+	}
+	if v.Recent > 0 && now.Sub(time.UnixMilli(v.Recent)) > taskStallHorizon(limits) {
+		s.leaveOldTask(account, task, rec, found)
+		return taskStatusClass(task.Status) != "finished"
 	}
 	if found && rec.Episode != v.Episode {
 		s.endTaskStall(account, task, rec)
@@ -165,20 +234,20 @@ func (s *Server) checkTaskStall(ctx context.Context, account string, task pebble
 		if found {
 			s.endTaskStall(account, task, rec)
 		}
-		return
+		return false
 	}
 	if !found {
 		rec = pebblestore.TaskStallRecord{ProjectID: task.ProjectID, TaskID: task.ID, Episode: v.Episode, Kind: v.Kind, Reason: v.Reason, Since: v.LastChange}
 	}
 	if rec.Alerted {
-		return // one alert per episode
+		return false // one alert per episode
 	}
 	if v.Recover != "" {
 		sent, failure := s.recoverTaskStall(ctx, account, task, v)
 		if sent {
 			// The recovery is a new turn: the task moves, and the next check
 			// sees a new episode. Nothing is alerted.
-			return
+			return false
 		}
 		if failure != "" {
 			v.Reason += "; automatic recovery failed: " + failure
@@ -187,9 +256,49 @@ func (s *Server) checkTaskStall(ctx context.Context, account string, task pebble
 	rec.Kind, rec.Reason = v.Kind, v.Reason
 	if err := db.PutTaskStall(account, rec); err != nil {
 		log.Printf("swarmd stall check: record stall of %s: %v", task.ID, err)
-		return
+		return false
 	}
 	s.alertTaskStall(ctx, account, task, v, rec, now)
+	return false
+}
+
+// taskStallLegacyWorkerRun reports whether task mirrors a worker run whose
+// worker no longer runs jobs here: gone, archived, deleted, or not active.
+// Such a task belongs to the retired worker pipeline; a recovery turn would
+// re-run its old worker run. ok is false when the worker could not be read.
+func (s *Server) taskStallLegacyWorkerRun(account string, task pebblestore.ProjectTaskRecord) (legacy, ok bool) {
+	if strings.TrimSpace(task.WorkerRunID) == "" {
+		return false, true
+	}
+	workerID := strings.TrimSpace(task.WorkerID)
+	if workerID == "" {
+		return true, true
+	}
+	w, found, err := pebblestore.NewWorkerStore(s.sessions.Store().Underlying()).GetWorker(account, workerID)
+	if err != nil {
+		log.Printf("swarmd stall check: read worker of %s: %v", task.ID, err)
+		return false, false
+	}
+	return !found || w.LifecycleState != pebblestore.WorkerLifecycleStateActive, true
+}
+
+// leaveOldTask leaves old work alone. A stall episode the check recorded for
+// it earlier (before the horizon applied) is closed quietly: its marker is
+// cleared without a task.unstalled signal, so nothing is announced for work
+// that cannot move and the task reads as its own records say.
+func (s *Server) leaveOldTask(account string, task pebblestore.ProjectTaskRecord, rec pebblestore.TaskStallRecord, found bool) {
+	db := s.sessions.Store()
+	if task.Stall != nil {
+		if _, err := db.SetProjectTaskStall(account, task.ProjectID, task.ID, task.UpdatedAt, nil); err != nil {
+			log.Printf("swarmd stall check: clear mark of %s: %v", task.ID, err)
+			return
+		}
+	}
+	if found {
+		if err := db.DeleteTaskStall(account, rec.TaskID); err != nil {
+			log.Printf("swarmd stall check: end stall of %s: %v", task.ID, err)
+		}
+	}
 }
 
 // taskStallCandidate reports whether task is one the check follows: an
@@ -249,7 +358,13 @@ func (s *Server) taskStallVerdict(ctx context.Context, account string, task pebb
 		fp = append(fp, "perm", p.ID)
 	}
 	sum := sha256.Sum256([]byte(strings.Join(fp, "\x00")))
-	v := taskStallVerdict{Episode: hex.EncodeToString(sum[:8]), LastChange: lastChange, RunID: state.RunID}
+	recent := max(lastChange, task.LimitRetryAt)
+	for _, d := range latest {
+		for _, step := range d.Steps {
+			recent = max(recent, step.NextAttemptAt)
+		}
+	}
+	v := taskStallVerdict{Episode: hex.EncodeToString(sum[:8]), LastChange: lastChange, Recent: recent, RunID: state.RunID}
 	idle := time.Duration(nowMs-lastChange) * time.Millisecond
 	if lastChange <= 0 {
 		idle = 0
@@ -534,6 +649,11 @@ func (s *Server) inspectTaskStallGit(ctx context.Context, task pebblestore.Proje
 // accepted; failure says why it could not be.
 func (s *Server) recoverTaskStall(ctx context.Context, account string, task pebblestore.ProjectTaskRecord, v taskStallVerdict) (bool, string) {
 	db := s.sessions.Store()
+	if strings.TrimSpace(task.WorkerRunID) != "" {
+		// A worker run's job is owned by its worker; a recovery turn here
+		// would re-run that worker run. The person decides instead.
+		return false, "a worker's run is never re-run by the stall check"
+	}
 	var id, message string
 	switch v.Recover {
 	case taskStallRecoveryReviewExtra:
