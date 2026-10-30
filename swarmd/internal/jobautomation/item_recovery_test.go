@@ -12,14 +12,17 @@ import (
 // Store.ReviveItems so the item returns to done and the items that failed
 // only waiting on it (along the after chain) wait again; TriggerRunner's
 // item queue then starts each exactly once with its deterministic key, even
-// though the plan delivery already finished. Items whose job is still
-// blocked, and their dependents, stay failed; a later unrelated end starts
-// nothing again.
+// though the plan delivery already finished. That delivery runs again
+// (without its finished steps running again) while revived items are
+// pending, and finishes again with its previous result once they settle.
+// Items whose job is still blocked, and their dependents, stay failed; a
+// later unrelated end starts nothing and does not reopen the delivery.
 // Threat: the live regression where a day's plan output was never started
 // because failed items never followed their jobs' later success, and the
 // opposite harms: a still-failed job releasing its dependents, or a
 // dependent started twice.
-// Owners: Runner.consume, Store.ReviveItems/reviveItemsLocked,
+// Owners: Runner.consume/dispatch, Store.ReviveItems/reviveItemsLocked/
+// reopenForItems/putDeliveryLocked,
 // TriggerRunner.tickItems/itemDependency over the real Pebble store and
 // signal feed. Only the worker start/running/outcome adapters and the merge
 // deliverer are stubbed; this is the narrowest layer holding the item-end
@@ -46,26 +49,36 @@ func TestForEachItemFollowsItsJobsFollowupSuccess(t *testing.T) {
 	}
 	source := "workflow/planner/delivery/plan/step/make"
 	starts := map[string]int{}
+	finished := map[string]bool{} // maker jobs whose run ended successfully
 	tr := TriggerRunner{Store: h.store, Account: func() string { return testAccount },
 		Start: func(_ context.Context, _ Automation, _, key string) (string, error) {
 			starts[key]++
 			return "worker/maker/" + key[:12], nil
 		},
 		Running: func(_ context.Context, _ Automation, job string) (bool, error) {
-			return strings.HasPrefix(job, "worker/maker/"), nil // started dependents keep running
+			return strings.HasPrefix(job, "worker/maker/") && !finished[job], nil // started dependents keep running
 		},
 		ItemOutcome: func(_ context.Context, _ Automation, job string) (string, error) {
+			if finished[job] {
+				return "", nil
+			}
 			return "worker job failed: blocked: speech budget exceeded", nil
 		},
 	}
+	// The plan delivery is finished (succeeded at FinishedAt 1) until items
+	// are revived, then running with its finished state kept until they settle.
+	planState, reopened := StateSucceeded, ""
 	items := func() []ItemRecord {
 		t.Helper()
 		d, err := h.store.GetDelivery(testAccount, plan.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if d.State != StateSucceeded {
-			t.Fatalf("plan delivery state = %s", d.State)
+		if d.State != planState || d.ItemsReopened != reopened || (planState == StateRunning) != (d.FinishedAt == 0) {
+			t.Fatalf("plan delivery state = %s reopened from %q finished at %d, want %s from %q", d.State, d.ItemsReopened, d.FinishedAt, planState, reopened)
+		}
+		if d.Steps[0].State != StateSucceeded || d.Steps[0].Attempts != 0 {
+			t.Fatalf("the plan's finished make step ran again: %+v", d.Steps[0])
 		}
 		return d.Steps[0].Items
 	}
@@ -113,7 +126,10 @@ func TestForEachItemFollowsItsJobsFollowupSuccess(t *testing.T) {
 
 	// A follow-up on main succeeds and its content-post delivery merges: main
 	// is done and its chain waits again, though the plan delivery finished.
+	// The plan delivery runs again; the delivery runner (h.process) leaves
+	// its finished steps alone.
 	end("main", "followup-1", true)
+	planState, reopened = StateRunning, StateSucceeded
 	if len(deliverer.delivered) != 1 {
 		t.Fatalf("content-post merges = %d", len(deliverer.delivered))
 	}
@@ -145,11 +161,52 @@ func TestForEachItemFollowsItsJobsFollowupSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	want("done", "started", "waiting for cut", "failed", "failed")
+
+	// cut's job succeeds (no workflow of its own): short, waiting on it,
+	// starts. The delivery keeps running while short runs.
+	finished[got[1].JobID] = true
+	cutEnd := workerResult(folder, "cut")
+	cutEnd.JobID, cutEnd.RequestSource = got[1].JobID, source
+	if err := h.store.db.PutJSON(itemEndKey(testAccount, cutEnd.JobID), cutEnd); err != nil {
+		t.Fatal(err)
+	}
+	tr.Tick(context.Background())
+	h.process()
+	got = want("done", "done", "started", "failed", "failed")
+	if total() != 2 {
+		t.Fatalf("short: %+v starts=%v", got, starts)
+	}
+
+	// short ends: no item is pending, so the plan delivery finishes again
+	// with its previous result; later ticks start nothing and change nothing.
+	finished[got[2].JobID] = true
+	planState, reopened = StateSucceeded, ""
+	tr.Tick(context.Background())
+	want("done", "done", "done", "failed", "failed")
+	settled, err := h.store.GetDelivery(testAccount, plan.ID)
+	if err != nil || settled.FinishedAt <= 1 {
+		t.Fatalf("settled plan delivery: %+v %v", settled, err)
+	}
+	if _, found, err := h.store.db.GetBytes(keyPendingItemsPrefix + hexKey(testAccount) + "/" + plan.ID); err != nil || found {
+		t.Fatal("the settled delivery is still queued for items", err)
+	}
+	end("main", "followup-3", true)
+	tr.Tick(context.Background())
+	want("done", "done", "done", "failed", "failed")
+	if again, _ := h.store.GetDelivery(testAccount, plan.ID); again.FinishedAt != settled.FinishedAt || total() != 2 {
+		t.Fatalf("an unrelated end reopened the settled delivery: %+v starts=%v", again, starts)
+	}
+	for key, n := range starts {
+		if n != 1 {
+			t.Fatalf("item key %s started %d times", key, n)
+		}
+	}
 }
 
 // Purpose: the owner's rerun of a finished plan delivery (Store.RerunNewest,
 // swarm_deliver_job automation=true) applies the same recovery to items whose
-// job had already succeeded before the automatic path existed, and is
+// job had already succeeded before the automatic path existed, reopening
+// the delivery to running without resetting its succeeded step, and is
 // idempotent: a second rerun changes nothing. A failed item whose job never
 // succeeded stays failed.
 // Threat: deliveries stuck from before the fix having no supported recovery,
@@ -182,7 +239,7 @@ func TestForEachOwnerRerunRevivesItemsOfSucceededJobs(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, err := h.store.RerunNewest(testAccount, "parent", "")
-	if err != nil || len(out) != 1 || !out[0].Rerun || out[0].Delivery.State != StateSucceeded {
+	if err != nil || len(out) != 1 || !out[0].Rerun || out[0].Delivery.State != StateRunning || out[0].Delivery.ItemsReopened != StateSucceeded || out[0].Delivery.Steps[0].State != StateSucceeded {
 		t.Fatalf("rerun: %+v %v", out, err)
 	}
 	got := out[0].Delivery.Steps[0].Items

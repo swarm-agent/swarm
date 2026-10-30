@@ -146,6 +146,11 @@ type Delivery struct {
 	// Produced is what this delivery's produce steps wrote (see
 	// CurrentDeliverables).
 	Produced []Deliverable `json:"produced,omitempty"`
+	// ItemsReopened is the finished state a delivery had when its for_each
+	// items were revived (a failed item's job succeeded later). The delivery
+	// is running, none of its steps runs again, and it finishes again with
+	// this state once none of its items is pending.
+	ItemsReopened string `json:"items_reopened,omitempty"`
 }
 
 // SentBack is how a delivery that ended sent_back sent the work back.
@@ -689,6 +694,11 @@ func (s *Store) putDeliveryLocked(d Delivery) error {
 	for i := range d.Steps {
 		d.Steps[i].LogTail = "" // kept under its own key
 	}
+	pending := itemsPending(d)
+	if d.ItemsReopened != "" && !pending {
+		// Its revived items settled: it finishes again with its result.
+		d.State, d.FinishedAt, d.ItemsReopened = d.ItemsReopened, s.now().UnixMilli(), ""
+	}
 	data, err := json.Marshal(d)
 	if err != nil {
 		return err
@@ -699,14 +709,6 @@ func (s *Store) putDeliveryLocked(d Delivery) error {
 		return err
 	}
 	pendingKey := []byte(keyPendingItemsPrefix + hexKey(d.Account) + "/" + d.ID)
-	pending := false
-	for _, step := range d.Steps {
-		for _, item := range step.Items {
-			if itemPending(item) {
-				pending = true
-			}
-		}
-	}
 	if pending {
 		err = batch.Set(pendingKey, []byte(d.ID), nil)
 	} else {
@@ -1168,6 +1170,8 @@ func (s *Store) rerunLocked(d Delivery) (Delivery, bool, error) {
 	}
 	if reset {
 		d.State, d.FinishedAt, d.SentBack = StatePending, 0, nil
+	} else {
+		reopenForItems(&d)
 	}
 	d.Reruns++
 	return d, true, s.putDeliveryLocked(d)

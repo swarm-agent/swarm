@@ -134,8 +134,8 @@ func (s *Store) reviveItemsLocked(d *Delivery, job string) bool {
 
 // ReviveItems re-evaluates, after an item job ended, the for_each items of
 // the delivery whose step started it (source is the job's request source).
-// The delivery may already be finished: its items are queued again whatever
-// its state, and the item queue (tickItems) dispatches them.
+// The delivery may already be finished: it then runs again until the revived
+// items settle, and the item queue (tickItems) dispatches them.
 func (s *Store) ReviveItems(account, source, job string) error {
 	if !pebble.IsWorkflowItemSource(source) || job == "" {
 		return nil
@@ -153,7 +153,31 @@ func (s *Store) ReviveItems(account, source, job string) error {
 	if d.AutomationID != parts[1] || !s.reviveItemsLocked(&d, job) {
 		return nil
 	}
+	reopenForItems(&d)
 	return s.putDeliveryLocked(d)
+}
+
+// itemsPending reports whether any for_each item of d is still to run.
+func itemsPending(d Delivery) bool {
+	for _, step := range d.Steps {
+		for _, item := range step.Items {
+			if itemPending(item) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// reopenForItems makes a finished delivery whose items were revived running
+// again until they settle (putDeliveryLocked finishes it again with the state
+// it had). Its steps keep their records: the runner does not run it
+// (Runner.dispatch skips it); only the item queue advances it.
+func reopenForItems(d *Delivery) {
+	if !Terminal(d.State) || !itemsPending(*d) {
+		return
+	}
+	d.ItemsReopened, d.State, d.FinishedAt = d.State, StateRunning, 0
 }
 
 // The result receipt is written only after consume has materialized every

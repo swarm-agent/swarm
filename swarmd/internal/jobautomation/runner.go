@@ -552,6 +552,9 @@ func (r *Runner) dispatch(ctx context.Context, sync bool) time.Duration {
 	}
 	r.mu.Unlock()
 	for _, d := range list {
+		if d.ItemsReopened != "" {
+			continue // its steps finished; only its revived items run
+		}
 		if wait := nextAttemptWait(d, now); wait > 0 {
 			if due == 0 || wait < due {
 				due = wait
@@ -606,7 +609,7 @@ func nextAttemptWait(d Delivery, now int64) time.Duration {
 // finished, until it ends, waits for a retry or the context ends.
 func (r *Runner) runDelivery(ctx context.Context, account, id string) {
 	d, err := r.store.GetDelivery(account, id)
-	if err != nil || Terminal(d.State) {
+	if err != nil || Terminal(d.State) || d.ItemsReopened != "" {
 		return
 	}
 	if d.State == StatePending {
