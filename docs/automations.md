@@ -12,6 +12,45 @@ With no workflow nothing changes: a task or job ends with its branch and
 worktree, and the person integrates it by hand (`swarm_integrate_task`,
 `swarm_deliver_job`, or their own git).
 
+### When Swarm removes a finished job's worktree
+
+A task's or job's worktree (its checkout of the folder on its `agent/…`
+branch) stays while it can still be needed. Swarm removes it (`git worktree
+remove` and its Git metadata) and **keeps the branch** once all of these
+hold:
+
+- the run or task is finished: succeeded, failed or cancelled (a task:
+  completed, failed, cancelled, needs review, accepted, rejected or
+  superseded). Admitted, queued, preparing, running and waiting runs, a task
+  waiting on a provider limit, and a stopped task that stays open keep it;
+- its `HEAD` is already in the folder's target branch (the branch its work
+  lands on), merged by Swarm or outside it;
+- it has no uncommitted or untracked changes, is not the folder itself, and
+  no other run, review or unfinished task works in it.
+
+Swarm checks right after it lands the work itself (`swarm_integrate_task`, a
+`merge` deliver step, `swarm_deliver_job`), and in a sweep every 15 minutes
+while the daemon schedules workers, which also finds work merged outside
+Swarm (for example a pull request merged on the forge) and older finished
+worktrees. A worktree kept for any reason is looked at again an hour later.
+
+Each removal is recorded on the run and the task as `worktree_removal`
+(`state` `removed`, `path`, `branch`, `head`, `target_branch`, `trigger`
+`landed` or `sweep`, `at`) and raised once as a `worktree.removed` signal
+(info; refs `session_id` and `run_id`/`worker_id` or `project_id`/`task_id`;
+attrs `path`, `branch`, `head`, `target_branch`, `trigger`). The run's result,
+its commits and its branch stay readable. A removal that fails keeps the
+worktree, is recorded with `state` `failed`, `attempts`, `last_error` and
+`next_attempt_at`, is retried with a backoff from 10 minutes (at most five
+attempts), and is reported as a `worktree.remove_failed` signal (warning) on
+the first and last attempt. Anything that needs the checkout again (a
+follow-up message to the job, a task reopen, a reviewer reading the job in
+place) recreates it at the same path from the kept branch, as long as the
+branch is still at the recorded `head`; a branch moved since is refused
+rather than checked out. A repeated `swarm_integrate_task` of such a task
+answers `already_integrated` from the record, and the task's delivery state
+reads `integrated` (`reason_code` `worktree_removed`).
+
 Workflows were called job automations. The MCP tools and the API path are
 named for workflows (`swarm_set_workflow`, `/v3/workflows`); the internal
 names are unchanged: the `automation.*` signals, the `automations:read` and
@@ -397,7 +436,9 @@ With `fixes`:
   recorded as BLOCK (`reviewer fixes unreadable`).
 - The reviewer's checkout is kept after the job ends, like a coder's job
   checkout, so the delivery and later `run` steps can read its head; it is
-  not deleted as a read-only reviewer's checkout is. Reviewer jobs stay
+  not deleted as a read-only reviewer's checkout is (it is removed only once
+  its work is in the target branch, see
+  [When Swarm removes a finished job's worktree](#when-swarm-removes-a-finished-jobs-worktree)). Reviewer jobs stay
   undeliverable with `swarm_deliver_job`: their fixes reach a job only
   through the delivery head.
 
