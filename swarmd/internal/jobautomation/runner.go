@@ -151,6 +151,26 @@ type Reopener interface {
 	Reopen(ctx context.Context, req ReopenRequest) (followup string, err error)
 }
 
+// ReopenSent is a QueueingReopener's answer once the follow-up is accepted:
+// the run that carries it, and whether it was queued for a run already in
+// flight (Queued) rather than starting one of its own. A queued message
+// reaches the running agent as the person's message with its next tool
+// result, or starts the next turn when that run ends without one; either
+// way that run's end is the job's next end.
+type ReopenSent struct {
+	Followup string
+	Queued   bool
+}
+
+// QueueingReopener is a Reopener that, for a job whose run is in flight,
+// queues the follow-up for that run the way the message path does
+// (swarm_send_message, message_task) instead of answering busy. It still
+// refuses (RefusedError) a job that must not be reopened, and answers busy
+// only while no run can take the message yet.
+type QueueingReopener interface {
+	ReopenOrQueue(ctx context.Context, req ReopenRequest) (ReopenSent, error)
+}
+
 // BusyError is a Reopener's answer for a job whose run or follow-up is still
 // running: nothing was sent, and the reopen step waits and asks again.
 type BusyError struct{ Reason string }
@@ -1375,10 +1395,11 @@ func (r *Runner) runReopen(ctx context.Context, d *Delivery, record *StepRecord,
 	}
 	text := strings.Join(append(parts, ReopenClosing), "\n\n")
 	req := ReopenRequest{Account: d.Account, JobID: d.JobID, Message: text, RequestID: agentIdempotencyKey(*d, step.ID)}
-	// A job takes one follow-up at a time: while its run or follow-up is in
-	// flight the step waits (state waiting, with the reason), within its
-	// timeout, and asks again on each new signal or every reopenRecheck. It
-	// sends once, when the job has settled; only then is the round counted.
+	// A QueueingReopener queues the message for a run in flight (sent,
+	// queued) like the message path. Otherwise, and while no run can take
+	// it yet, the step waits (state waiting, with the reason), within its
+	// timeout, and asks again on each new signal or every reopenRecheck. The
+	// round is counted once the message is accepted.
 	for {
 		var changed <-chan struct{}
 		if r.feed != nil {
@@ -1502,7 +1523,14 @@ func (r *Runner) sendReopen(ctx context.Context, d *Delivery, record *StepRecord
 	if failure := r.roundsExhausted(d, record, step); failure.reason != "" {
 		return false, failure, ""
 	}
-	followup, err := r.reopen.Reopen(ctx, req)
+	var sent ReopenSent
+	var err error
+	if queueing, ok := r.reopen.(QueueingReopener); ok {
+		sent, err = queueing.ReopenOrQueue(ctx, req)
+	} else {
+		sent.Followup, err = r.reopen.Reopen(ctx, req)
+	}
+	followup := sent.Followup
 	if err != nil {
 		var refused *RefusedError
 		if errors.As(err, &refused) {
@@ -1523,6 +1551,13 @@ func (r *Runner) sendReopen(ctx context.Context, d *Delivery, record *StepRecord
 	record.Reason = ""
 	record.Outcome = map[string]any{"followup": followup, "round": d.Round + 1}
 	record.Output = "reopened " + d.JobID + " (round " + strconv.Itoa(d.Round+1) + ")"
+	if sent.Queued {
+		// The job was busy: the findings wait in its session for the run in
+		// flight, and that run's end starts the next round, whatever head
+		// it ends at.
+		record.Outcome["queued"] = true
+		record.Output = "sent (queued) to " + d.JobID + " for its current run " + followup + " (round " + strconv.Itoa(d.Round+1) + ")"
+	}
 	return true, stepFailure{}, ""
 }
 
