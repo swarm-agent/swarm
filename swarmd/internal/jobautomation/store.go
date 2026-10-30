@@ -554,13 +554,24 @@ func (d Delivery) TriggerHead() string {
 	return ""
 }
 
+// CoversHead reports whether the delivery is a real outcome for its trigger
+// head, so another end of the job at that head creates no delivery. A
+// delivery recorded blocked although its own job end did not end blocked
+// (stored before EndedBlocked required a failed status: an earlier run's
+// "blocked: " text on a successful end) never ran its steps and covers
+// nothing.
+func (d Delivery) CoversHead() bool {
+	return d.State != StateBlocked || d.Result.EndedBlocked()
+}
+
 // CreateDelivery records a delivery unless one with its id exists already.
 // created is false for a delivery that exists: a job end delivers once. It is
 // also false when the automation already has a delivery (active or finished)
 // for the job at the job end's head: the existing delivery, whose id differs
 // from DeliveryID of this job end, is returned and nothing is recorded (at
 // most one delivery per automation, job and head), except when a blocked
-// follow-up must record the reason this automation's reopen could not finish.
+// follow-up must record the reason this automation's reopen could not finish
+// and except over a delivery that does not cover its head (CoversHead).
 func (s *Store) CreateDelivery(a Automation, result Result) (Delivery, bool, error) {
 	id := DeliveryID(result.JobID, result.Followup, a.ID, a.Revision)
 	s.mu.Lock()
@@ -608,7 +619,7 @@ func (s *Store) CreateDelivery(a Automation, result Result) (Delivery, bool, err
 		if p.AutomationID != a.ID {
 			continue
 		}
-		if !(reopened && result.EndedBlocked()) && head != "" && p.TriggerHead() == head {
+		if !(reopened && result.EndedBlocked()) && head != "" && p.TriggerHead() == head && p.CoversHead() {
 			return p, false, nil
 		}
 		roundBase = max(roundBase, p.RoundBase)

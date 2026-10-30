@@ -92,6 +92,130 @@ func TestStaleBlockedErrorDoesNotBlockReopenRound(t *testing.T) {
 	}
 }
 
+// Requirement: a delivery already at a job's head covers that head (another
+// end there creates no delivery) only when it is a real outcome. A delivery
+// stored blocked although its own job end did not end blocked (Result status
+// succeeded with an earlier run's "blocked: " text, as recorded before
+// EndedBlocked required a failed status) covers nothing: the next end at that
+// head creates a fresh pending delivery that runs its steps at the same round
+// (no round consumed). A genuinely blocked delivery (status failed with a
+// "blocked: " error) still covers its head.
+// Threat (socials machine, 2026-10-30): a round-1 delivery created blocked by
+// the stale-error bug kept covering its head, so the job's next end there was
+// skipped as duplicate_head and the fixed work could never be re-reviewed
+// without a new commit.
+// Owners: Delivery.CoversHead in Store.CreateDelivery and Runner.consume
+// (skippedDuplicateHead) over the real store, runner and signal feed; the
+// pre-fix delivery is written through the store's own put, and only the
+// reviewer job and the job's session are stubbed. Layer: the consumer over
+// the real store is where job ends become (or skip) deliveries.
+func TestStaleBlockedDeliveryDoesNotCoverItsHead(t *testing.T) {
+	const stale = "blocked: Narration can't be generated"
+	for _, tc := range []struct {
+		name, status, err string
+		covers            bool
+	}{
+		{"stale", StatusSucceeded, stale, false},
+		{"genuine", StatusFailed, "blocked: approval required", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			reopener := &sessionReopener{}
+			h.withReopener(reopener)
+			folder := t.TempDir()
+			writeScript(t, folder, "push.sh", "echo \"$SWARM_HEAD\" >> \"$PWD/pushed\"\n")
+			h.agents.outcomes = []AgentOutcome{{Verdict: VerdictBlock, Findings: "1. high a.go:1 narration missing"}, {Verdict: VerdictOK}}
+			h.process()
+			a := reviewLoop(folder, 2)
+			a.When = WhenSucceeded
+			a = h.automation(a)
+
+			result := workerResult(folder, "run-1")
+			h.results.results["run-1"] = result
+			h.jobEnd("run-1", "", "succeeded", "direct")
+			h.process() // round 0: review blocks, reopen sends followup-1
+			if len(reopener.sent) != 1 {
+				t.Fatalf("round 0 reopens = %d", len(reopener.sent))
+			}
+
+			// followup-1's delivery at head c, stored blocked with every step
+			// skipped (as the pre-fix daemon recorded it).
+			head := strings.Repeat("c", 40)
+			end := *result
+			git := *result.Git
+			git.Head = head
+			end.Git, end.Followup, end.Status, end.Error = &git, "followup-1", tc.status, tc.err
+			blocked, created, err := h.store.CreateDelivery(a, end)
+			if err != nil || !created || blocked.Round != 1 {
+				t.Fatalf("seed delivery = %+v created %v err %v", blocked, created, err)
+			}
+			blocked.State, blocked.BlockedReason = StateBlocked, tc.err
+			for i := range blocked.Steps {
+				blocked.Steps[i].State, blocked.Steps[i].Reason = StateSkipped, tc.err
+			}
+			h.store.mu.Lock()
+			err = h.store.putDeliveryLocked(blocked)
+			h.store.mu.Unlock()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// The job ends again at the same head, succeeded, its result
+			// still carrying the stale text.
+			again := *result
+			again.Git, again.Error = &git, stale
+			h.results.results["run-1"] = &again
+			h.jobEnd("run-1", "person-2", "succeeded", "direct")
+			h.process()
+
+			list := h.deliveries(result.JobID)
+			skipped := h.signalsOf("automation.delivery.skipped")
+			if tc.covers {
+				if len(list) != 2 || len(h.agents.started) != 1 {
+					t.Fatalf("genuine blocker no longer covers its head: %d deliveries, %d reviews", len(list), len(h.agents.started))
+				}
+				if len(skipped) != 1 || skipped[0].Refs["delivery_id"] != blocked.ID || skipped[0].Attrs["reason"] != ReasonDuplicateHead ||
+					skipped[0].Attrs["head"] != head || skipped[0].Attrs["followup"] != "person-2" {
+					t.Fatalf("skipped signals = %+v", skipped)
+				}
+				for _, d := range list {
+					if d.ID == blocked.ID && (d.State != StateBlocked || d.BlockedReason != tc.err) {
+						t.Fatalf("genuine blocked delivery changed: %+v", d)
+					}
+				}
+				return
+			}
+			if len(skipped) != 0 {
+				t.Fatalf("stale blocked delivery covered its head: %+v", skipped)
+			}
+			var d Delivery
+			for _, item := range list {
+				if item.Followup == "person-2" {
+					d = item
+				}
+				if item.ID == blocked.ID && item.State != StateBlocked {
+					t.Fatalf("stale delivery rewritten: %+v", item)
+				}
+			}
+			if len(list) != 3 || d.ID == "" {
+				t.Fatalf("no fresh delivery at the stale head: %+v", list)
+			}
+			if d.Round != 1 || d.TriggerHead() != head {
+				t.Fatalf("fresh delivery round %d head %s, want round 1 at %s", d.Round, d.TriggerHead(), head)
+			}
+			if d.State != StateSucceeded || d.BlockedReason != "" || len(reopener.sent) != 1 {
+				t.Fatalf("fresh delivery = state %s reason %q, reopens %d", d.State, d.BlockedReason, len(reopener.sent))
+			}
+			if len(h.agents.started) != 2 || h.agents.started[1].Head != head || d.Steps[0].State != StateSucceeded {
+				t.Fatalf("head not re-reviewed: %+v", d)
+			}
+			if d.Steps[2].State != StateSucceeded || strings.TrimSpace(readFile(t, filepath.Join(folder, "pushed"))) != head {
+				t.Fatalf("push step did not run at the head: %+v", d.Steps[2])
+			}
+		})
+	}
+}
+
 // Requirement: EndedBlocked is true only for a failed run whose error is a
 // declared blocker. Threat: error text alone (left by an earlier run) marking
 // a successful or cancelled end blocked. Owner: Result.EndedBlocked; a pure
