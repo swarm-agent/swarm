@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -560,11 +562,23 @@ func (s *Server) readReviewFixCheckout(ctx context.Context, sessionID, runID str
 		out, err := sandbox.TimedGitOutput(gitCtx, dir, nil, append([]string{"-c", "safe.directory=" + dir}, args...)...)
 		return strings.TrimSpace(string(out)), err
 	}
-	current, err := git("symbolic-ref", "--quiet", "--short", "HEAD")
-	if err != nil || current != branch {
-		return nil, true, fmt.Errorf("the reviewer's checkout is not on %s", branch)
+	headRef := "HEAD"
+	if _, statErr := os.Lstat(dir); errors.Is(statErr, os.ErrNotExist) {
+		// Swarm removed the checkout once its work landed and kept the
+		// branch: the head and fix commits are read from that branch in the
+		// folder, which also holds the commits for later steps to fetch.
+		source := strings.TrimSpace(controlMCPMetadataString(session.Metadata, "swarm_v3_source_workspace_path"))
+		if source == "" || !filepath.IsAbs(source) || filepath.Clean(source) == filepath.Clean(dir) {
+			return nil, true, errors.New("the reviewer's fix checkout was removed and its folder is not recorded")
+		}
+		dir, headRef = filepath.Clean(source), "refs/heads/"+branch
+	} else {
+		current, err := git("symbolic-ref", "--quiet", "--short", "HEAD")
+		if err != nil || current != branch {
+			return nil, true, fmt.Errorf("the reviewer's checkout is not on %s", branch)
+		}
 	}
-	head, err := git("rev-parse", "--verify", "--end-of-options", "HEAD^{commit}")
+	head, err := git("rev-parse", "--verify", "--end-of-options", headRef+"^{commit}")
 	if err != nil || !controlMCPCommitID.MatchString(head) {
 		return nil, true, errors.New("the reviewer's checkout head could not be read")
 	}

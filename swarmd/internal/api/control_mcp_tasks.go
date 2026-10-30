@@ -466,7 +466,7 @@ func controlMCPTaskResult(c *controlMCPCall, args map[string]any) (any, error) {
 			return out, nil
 		}
 		changesArgs := map[string]any{"session_id": sessionID, "diff_chars": 0}
-		keys := []string{"commits", "files", "files_truncated", "note"}
+		keys := []string{"commits", "files", "files_truncated", "note", "checkout_note"}
 		if include, _ := args["include_diff"].(bool); include {
 			changesArgs["diff_chars"] = controlMCPInt(args, "diff_chars", controlMCPDefaultDiffChars)
 			keys = append(keys, "diff", "diff_truncated", "diff_note")

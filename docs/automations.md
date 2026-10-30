@@ -32,14 +32,20 @@ Swarm checks right after it lands the work itself (`swarm_integrate_task`, a
 `merge` deliver step, `swarm_deliver_job`), and in a sweep every 15 minutes
 while the daemon schedules workers, which also finds work merged outside
 Swarm (for example a pull request merged on the forge) and older finished
-worktrees. A worktree kept for any reason is looked at again an hour later.
+worktrees (it reads every session's state, so an active session never goes
+unseen). A worktree kept for any reason is looked at again an hour later.
 
 Each removal is recorded on the run and the task as `worktree_removal`
 (`state` `removed`, `path`, `branch`, `head`, `target_branch`, `trigger`
 `landed` or `sweep`, `at`) and raised once as a `worktree.removed` signal
 (info; refs `session_id` and `run_id`/`worker_id` or `project_id`/`task_id`;
 attrs `path`, `branch`, `head`, `target_branch`, `trigger`). The run's result,
-its commits and its branch stay readable. A removal that fails keeps the
+its commits and its branch stay readable: `swarm_get_changes`, the task and
+job views, the task diff and a fixing reviewer's result read the commits,
+files and head from the kept branch in the folder (`checkout_note` says so).
+A run whose follow-up is queued or running keeps its worktree. A removal
+right after a landing waits at most 10 seconds for another evaluation;
+otherwise it leaves the worktree to the sweep. A removal that fails keeps the
 worktree, is recorded with `state` `failed`, `attempts`, `last_error` and
 `next_attempt_at`, is retried with a backoff from 10 minutes (at most five
 attempts), and is reported as a `worktree.remove_failed` signal (warning) on

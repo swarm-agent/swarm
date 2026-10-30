@@ -507,6 +507,12 @@ type changesRange struct {
 	RecordedBase string
 	Head         string
 	Note         string
+	// HeadRef is the revision Head was read from: "HEAD" of the checkout,
+	// or refs/heads/<branch> in the folder when the checkout was removed
+	// (KeptBranch set). With a kept branch there is no working tree: changes
+	// are read between commits only.
+	HeadRef    string
+	KeptBranch string
 }
 
 var errChangesNoBase = errors.New("no usable base revision")
@@ -523,33 +529,72 @@ func changesFolder(folder string) (string, error) {
 	return resolved, nil
 }
 
+// changesFolderOrKeptBranch resolves the folder a session's changes are read
+// in and the revision of its head. A session whose own checkout is gone (Swarm
+// removes a finished job's checkout once its work landed, and keeps its
+// branch) is read in its source folder at refs/heads/<branch>, so its
+// commits, files and head stay readable. Anything else that is not available
+// keeps the original error.
+func changesFolderOrKeptBranch(ctx context.Context, t changesTarget) (dir, headRef, keptBranch string, err error) {
+	resolved, err := changesFolder(t.Folder)
+	if err == nil {
+		return resolved, "HEAD", "", nil
+	}
+	source := strings.TrimSpace(t.SourcePath)
+	branch := strings.TrimSpace(t.Branch)
+	if !t.HasWorktree || source == "" || !filepath.IsAbs(source) || filepath.Clean(source) == filepath.Clean(t.Folder) ||
+		!controlMCPGitRevision.MatchString(branch) || strings.Contains(branch, "..") || branch == t.BaseBranch {
+		return "", "", "", err
+	}
+	if _, statErr := os.Lstat(t.Folder); !errors.Is(statErr, os.ErrNotExist) {
+		return "", "", "", err
+	}
+	folder, folderErr := changesFolder(source)
+	if folderErr != nil {
+		return "", "", "", err
+	}
+	ref := "refs/heads/" + branch
+	if _, _, gitErr := controlMCPGit(ctx, folder, 200, "rev-parse", "--verify", "--quiet", "--end-of-options", ref+"^{commit}"); gitErr != nil {
+		return "", "", "", err
+	}
+	return folder, ref, branch, nil
+}
+
+// keptBranchNote tells a reader its changes come from the kept branch.
+func keptBranchNote(branch string) string {
+	return "the session's checkout was removed; its commits and files are read from its kept branch " + branch + " in the folder"
+}
+
 // resolveChangesRange finds the range swarm_get_changes and the task diff
 // route read: the recorded worktree base (or the merge-base with its base
 // branch), moved to the newer target a rebased job now sits on
 // (worktree.EffectiveTaskBase), up to HEAD. All Git runs through controlMCPGit.
 func resolveChangesRange(ctx context.Context, t changesTarget) (changesRange, error) {
-	resolved, err := changesFolder(t.Folder)
+	resolved, headRef, kept, err := changesFolderOrKeptBranch(ctx, t)
 	if err != nil {
 		return changesRange{}, err
 	}
-	out := changesRange{Dir: resolved}
+	out := changesRange{Dir: resolved, HeadRef: headRef, KeptBranch: kept}
 	base := ""
 	if t.HasWorktree {
 		base = t.BaseCommit
 		if base == "" && controlMCPGitRevision.MatchString(t.BaseBranch) {
-			if mergeBase, _, err := controlMCPGit(ctx, resolved, 200, "merge-base", "HEAD", t.BaseBranch); err == nil {
+			if mergeBase, _, err := controlMCPGit(ctx, resolved, 200, "merge-base", headRef, t.BaseBranch); err == nil {
 				base = strings.TrimSpace(mergeBase)
 			}
 		}
 	}
 	if base == "" {
+		if kept != "" {
+			return changesRange{}, errChangesNoBase
+		}
 		base = "HEAD"
 		out.Note = "this session works directly in its folder (no worktree base): showing uncommitted changes against HEAD"
 	}
 	if !controlMCPGitRevision.MatchString(base) {
 		return changesRange{}, errChangesNoBase
 	}
-	head, _, err := controlMCPGit(ctx, resolved, 200, "rev-parse", "HEAD")
+	head, _, err := controlMCPGit(ctx, resolved, 200, "rev-parse", "--verify", "--end-of-options", headRef+"^{commit}")
 	if err != nil {
 		return changesRange{}, err
 	}
@@ -661,12 +706,19 @@ func controlMCPGetChanges(c *controlMCPCall, args map[string]any) (any, error) {
 	if branch != "" {
 		out["branch"] = branch
 	}
+	// to is the end of the file and diff ranges: the working tree of a
+	// checkout, or the kept branch's head when the checkout was removed.
+	to := ""
+	if span.KeptBranch != "" {
+		to = span.Head
+		out["checkout_note"] = keptBranchNote(span.KeptBranch)
+	}
 	pathspec := []string{}
 	if scope != "" {
 		pathspec = []string{"--", scope}
 	}
 	if base != "HEAD" {
-		log, _, err := controlMCPGit(ctx, resolved, 64<<10, "log", "--no-color", fmt.Sprintf("--max-count=%d", controlMCPMaxCommits), "--format=%h %s", base+"..HEAD")
+		log, _, err := controlMCPGit(ctx, resolved, 64<<10, "log", "--no-color", fmt.Sprintf("--max-count=%d", controlMCPMaxCommits), "--format=%h %s", base+".."+span.HeadRef)
 		if err != nil {
 			return nil, err
 		}
@@ -678,7 +730,7 @@ func controlMCPGetChanges(c *controlMCPCall, args map[string]any) (any, error) {
 		}
 		out["commits"] = commits
 	}
-	changed, _, err := changedFiles(ctx, resolved, base, "", false, controlMCPMaxChangedFiles, pathspec)
+	changed, _, err := changedFiles(ctx, resolved, base, to, false, controlMCPMaxChangedFiles, pathspec)
 	if err != nil {
 		return nil, err
 	}
@@ -686,13 +738,16 @@ func controlMCPGetChanges(c *controlMCPCall, args map[string]any) (any, error) {
 	for _, file := range changed {
 		files = append(files, map[string]any{"path": file.Path, "status": file.Status})
 	}
-	untracked, _, err := controlMCPGit(ctx, resolved, 64<<10, append([]string{"ls-files", "--others", "--exclude-standard", "-z"}, pathspec...)...)
-	if err != nil {
-		return nil, err
-	}
-	for _, path := range strings.Split(strings.TrimSuffix(untracked, "\x00"), "\x00") {
-		if path != "" && len(files) < controlMCPMaxChangedFiles {
-			files = append(files, map[string]any{"path": path, "status": "untracked"})
+	// The folder's own untracked files are not the session's.
+	if to == "" {
+		untracked, _, err := controlMCPGit(ctx, resolved, 64<<10, append([]string{"ls-files", "--others", "--exclude-standard", "-z"}, pathspec...)...)
+		if err != nil {
+			return nil, err
+		}
+		for _, path := range strings.Split(strings.TrimSuffix(untracked, "\x00"), "\x00") {
+			if path != "" && len(files) < controlMCPMaxChangedFiles {
+				files = append(files, map[string]any{"path": path, "status": "untracked"})
+			}
 		}
 	}
 	out["files"] = files
@@ -701,7 +756,11 @@ func controlMCPGetChanges(c *controlMCPCall, args map[string]any) (any, error) {
 	}
 	diffChars := controlMCPInt(args, "diff_chars", controlMCPDefaultDiffChars)
 	if diffChars > 0 {
-		diff, truncated, err := controlMCPGit(ctx, resolved, min(diffChars, controlMCPMaxDiffChars), append([]string{"diff", "--no-color", "--no-ext-diff", "--no-textconv", base}, pathspec...)...)
+		diffArgs := []string{"diff", "--no-color", "--no-ext-diff", "--no-textconv", base}
+		if to != "" {
+			diffArgs = append(diffArgs, to)
+		}
+		diff, truncated, err := controlMCPGit(ctx, resolved, min(diffChars, controlMCPMaxDiffChars), append(diffArgs, pathspec...)...)
 		if err != nil {
 			return nil, err
 		}
