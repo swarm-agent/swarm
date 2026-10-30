@@ -76,7 +76,10 @@ func (r jobAutomationResults) result(ctx context.Context, sig pebblestore.Signal
 	switch {
 	case strings.HasPrefix(sig.Kind, "worker.run."):
 		out, err := r.s.workerJobAutomationResult(ctx, sig.Refs["worker_id"], sig.Refs["run_id"], strings.TrimPrefix(sig.Kind, "worker.run."), lastAttempt)
-		if out != nil && sig.Attrs["error"] != "" {
+		// The error is the ending run's own: a follow-up's end carries its
+		// outcome on the signal, and the job's earlier runs (whose receipt
+		// keeps the first run's error) never describe it.
+		if out != nil && (sig.Attrs["error"] != "" || jobautomation.SignalFollowup(sig) != "") {
 			out.Error = sig.Attrs["error"]
 		}
 		return out, err
@@ -159,6 +162,11 @@ func (s *Server) workerJobAutomationResult(ctx context.Context, workerID, runID,
 	switch ended {
 	case jobautomation.StatusSucceeded, jobautomation.StatusFailed, jobautomation.StatusCancelled:
 		out.Status = ended
+	}
+	// A run that ended successfully has no error, whatever an earlier run of
+	// the same job left behind.
+	if out.Status == jobautomation.StatusSucceeded {
+		out.Error = ""
 	}
 	out.Folder = c.jobFolder(refs, core.result)
 	out.Brief, _ = controlMCPMap(refs.run["input"])["prompt"].(string)

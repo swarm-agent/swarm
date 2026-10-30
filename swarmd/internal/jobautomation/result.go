@@ -154,6 +154,14 @@ func ResultKey(jobID, followup string) string {
 	return jobID + "#" + followup
 }
 
+// EndedBlocked reports a job end whose own run stopped on a declared blocker:
+// the run's status says it did not succeed and its error is the blocker.
+// Error text alone is not enough: a successful run must never be read as
+// blocked because an earlier run's blocker is still on the job.
+func (r Result) EndedBlocked() bool {
+	return r.Status == StatusFailed && strings.HasPrefix(r.Error, "blocked: ")
+}
+
 // NormalizeStatus maps a job's own end state to succeeded, failed or
 // cancelled.
 func NormalizeStatus(status string) string {

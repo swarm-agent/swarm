@@ -2641,6 +2641,13 @@ func (s *WorkerExecutionService) reconcileWorkerTaskTerminal(accountScopeID, pro
 	if taskRecord.Status == "completed" {
 		return nil
 	}
+	// The receipt keeps its own run's outcome after follow-ups ran in the job's
+	// session; each follow-up projects its own outcome onto the task. Terminal
+	// repair must not put the first run's blocker or failure back on a task a
+	// later run settled. Only cancelling the job still closes its task.
+	if (r.FollowupRunID != "" || r.FollowupStatus != "") && runStatus != "cancelled" {
+		return nil
+	}
 	targetStatus := ""
 	switch runStatus {
 	case "succeeded":
@@ -2676,7 +2683,7 @@ func (s *WorkerExecutionService) reconcileWorkerTaskTerminal(accountScopeID, pro
 				t.Status = "completed"
 			} else {
 				t.Status = "needs_review"
-				if t.ActionNeeded == "" || strings.HasPrefix(t.ActionNeeded, "Action Needed: 0") || t.ActionNeeded == "Executing reopened task" {
+				if t.ActionNeeded == "" || strings.HasPrefix(t.ActionNeeded, "Action Needed: 0") || t.ActionNeeded == "Executing reopened task" || store.ProjectTaskFailedRunAction(t.ActionNeeded) {
 					if t.UnintegratedCommits > 0 {
 						baseBranch := t.BaseBranch
 						if baseBranch == "" {

@@ -124,7 +124,11 @@ func (s *Server) taskJobResult(ctx context.Context, account, projectID, taskID, 
 			out.Review["fix_head"] = review.FixHead
 		}
 	}
-	out.Error = controlMCPString(view, "last_error")
+	// The error describes the ending run only: a run that succeeded carries
+	// none, even when an earlier run's error is still on the task.
+	if out.Status != jobautomation.StatusSucceeded {
+		out.Error = controlMCPString(view, "last_error")
+	}
 	if task.AutomationID != "" {
 		out.RequestSource = jobautomation.RequestSourceAutomation
 	}

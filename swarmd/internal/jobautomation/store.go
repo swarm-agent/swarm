@@ -608,7 +608,7 @@ func (s *Store) CreateDelivery(a Automation, result Result) (Delivery, bool, err
 		if p.AutomationID != a.ID {
 			continue
 		}
-		if !(reopened && strings.HasPrefix(result.Error, "blocked: ")) && head != "" && p.TriggerHead() == head {
+		if !(reopened && result.EndedBlocked()) && head != "" && p.TriggerHead() == head {
 			return p, false, nil
 		}
 		roundBase = max(roundBase, p.RoundBase)
@@ -648,7 +648,7 @@ func (s *Store) CreateDelivery(a Automation, result Result) (Delivery, bool, err
 	for _, step := range a.Steps {
 		d.Steps = append(d.Steps, StepRecord{ID: step.ID, Type: step.Type, State: StatePending})
 	}
-	if reopened && strings.HasPrefix(result.Error, "blocked: ") {
+	if reopened && result.EndedBlocked() {
 		d.State, d.BlockedReason = StateBlocked, result.Error
 		for i := range d.Steps {
 			d.Steps[i].State, d.Steps[i].Reason = StateSkipped, result.Error

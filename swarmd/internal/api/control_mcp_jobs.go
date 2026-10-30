@@ -565,7 +565,14 @@ func (c *controlMCPCall) jobState(kind, a, b string) (map[string]any, controlMCP
 			state["cleanup"] = cleanup
 		}
 		status, _ = refs.run["status"].(string)
-		if errText, _ := refs.run["error"].(string); strings.TrimSpace(errText) != "" {
+		// The receipt keeps its first run's error; once a follow-up started,
+		// the job's error is that follow-up's own (none while it runs or after
+		// it completed).
+		errKey := "error"
+		if followup, _ := refs.run["followup_status"].(string); followup != "" {
+			errKey = "followup_error"
+		}
+		if errText, _ := refs.run[errKey].(string); strings.TrimSpace(errText) != "" {
 			state["error"] = controlMCPTruncate(errText, 400)
 		}
 	}

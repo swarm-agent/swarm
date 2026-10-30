@@ -370,6 +370,9 @@ func (r *Runner) Scan(ctx context.Context) error {
 // followupOf is the follow-up a worker.run or task.run signal reports (its
 // dedup key is worker.run:<run>:<follow-up run> or task.run:<task>:<follow-up
 // run>); "" for the job's first run.
+// SignalFollowup is followupOf for the daemon's result builders.
+func SignalFollowup(sig pebblestore.Signal) string { return followupOf(sig) }
+
 func followupOf(sig pebblestore.Signal) string {
 	if !strings.HasPrefix(sig.Kind, "worker.run.") && !strings.HasPrefix(sig.Kind, "task.run.") {
 		return ""
@@ -461,7 +464,7 @@ func (r *Runner) consume(ctx context.Context, account string, sig pebblestore.Si
 			// its round even when the workflow normally matches successes.
 			match := *result
 			match.Status = StatusSucceeded
-			if result.Followup == "" || !strings.HasPrefix(result.Error, "blocked: ") || !a.Matches(&match) {
+			if result.Followup == "" || !result.EndedBlocked() || !a.Matches(&match) {
 				continue
 			}
 			previous, err := r.store.JobDeliveries(account, result.JobID)
