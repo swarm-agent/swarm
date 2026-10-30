@@ -128,6 +128,8 @@ func (s *Server) manageJobsAs(ctx context.Context, p identity.Principal, held []
 			clean[key] = v
 		}
 	}
+	// manage_jobs' folder is the swarm_* handlers' workspace (the folder
+	// c.place picks in a multi-folder project, give_job and schedule_job).
 	clean["workspace"] = controlMCPString(args, "folder")
 	limit := controlMCPInt(args, "limit", 50)
 	if limit < 1 || limit > 50 {

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/jobautomation"
 	"swarm/packages/swarmd/internal/permission"
 	runruntime "swarm/packages/swarmd/internal/run"
@@ -135,6 +136,10 @@ type jobsEndToEnd struct {
 	runtime *tool.Runtime
 	perms   *permission.Service
 	folder  string
+	// folders are the project's folders admission accepts; admittedPaths
+	// the folder each admitted job ran in, in order.
+	folders       map[string]bool
+	admittedPaths []string
 }
 
 func newJobsEndToEnd(t *testing.T) *jobsEndToEnd {
@@ -173,7 +178,7 @@ func newJobsEndToEnd(t *testing.T) *jobsEndToEnd {
 	runtime.SetManageSessionService(f.sessions)
 	runtime.SetWorkflowLifecycleService(f.server)
 	f.server.SetToolCatalogRuntime(runtime)
-	e := &jobsEndToEnd{jobCorrectionFixture: f, runtime: runtime, perms: perms, folder: folder}
+	e := &jobsEndToEnd{jobCorrectionFixture: f, runtime: runtime, perms: perms, folder: folder, folders: map[string]bool{folder: true}}
 	// Admission (POST /v3/workers/{id}/direct) prepares the job's worktree
 	// and resolves its model, which needs the agent and model-settings
 	// authorities this daemon does not run: it is recorded as admission
@@ -191,11 +196,12 @@ func newJobsEndToEnd(t *testing.T) *jobsEndToEnd {
 			WorkspacePath string         `json:"workspace_path"`
 			Input         map[string]any `json:"input"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.WorkspacePath != folder || body.Input["project_id"] != "jobs-project" {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || !e.folders[body.WorkspacePath] || body.Input["project_id"] != "jobs-project" {
 			writeError(w, http.StatusBadRequest, errors.New("unexpected admission request"))
 			return
 		}
 		admitted++
+		e.admittedPaths = append(e.admittedPaths, body.WorkspacePath)
 		runID := fmt.Sprintf("e2e-run-%d", admitted)
 		_, sessionID := f.job(t, runID, func(run *pebblestore.WorkerRunRecord) { run.Input = map[string]any{"prompt": body.Prompt} })
 		writeJSON(w, http.StatusOK, map[string]any{"run": map[string]any{"id": runID, "session_id": sessionID, "status": "running"}})
@@ -612,5 +618,150 @@ func TestManageJobsRefusesWorkerBoundKeys(t *testing.T) {
 	// not the scopes).
 	if _, refused := e.controlCall(t, full, map[string]any{"action": "get_job", "job_id": jobID}); refused != "" {
 		t.Fatalf("an unbound key was refused: %s", refused)
+	}
+}
+
+// addProjectFolder adds a second git folder to jobs-project, registered in
+// the daemon's workspace catalog, and returns its path and workspace ID.
+func (e *jobsEndToEnd) addProjectFolder(t *testing.T) (string, string) {
+	t.Helper()
+	p := testPrincipal()
+	second := t.TempDir()
+	outboxPinGit(t, second, "init", "-q", "-b", "dev")
+	outboxPinGit(t, second, "commit", "-q", "--allow-empty", "-m", "start")
+	added, err := e.server.workspace.AddForPrincipal(p, second, "second", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, found, err := e.sessions.Store().GetProject(p.AccountScopeID, "jobs-project")
+	if err != nil || !found {
+		t.Fatalf("jobs-project: %v %v", found, err)
+	}
+	project.Workspaces = append(project.Workspaces, pebblestore.ProjectWorkspaceRef{WorkspaceID: added.WorkspaceID, Path: second, Role: "secondary_code"})
+	if err := e.sessions.Store().PutProject(p.AccountScopeID, project); err != nil {
+		t.Fatal(err)
+	}
+	e.folders[second] = true
+	return second, added.WorkspaceID
+}
+
+// Purpose:
+//   - Requirement: manage_jobs give_job and schedule_job take folder, which
+//     picks one folder of a project with several, from the Orchestrator and
+//     from Swarm Control. ManageJobs hands it to the swarm_* handlers as
+//     their workspace argument (manageJobsAs), the only input c.place reads.
+//   - Threat/regression: folder dropped on the way, so a job or schedule on a
+//     multi-folder project fails ("several folders") or lands in the wrong
+//     folder.
+//   - Boundary/authority: tool.Runtime.executeManageJobs (both surfaces) ->
+//     api.Server.ManageJobs/manageJobsAs -> controlMCPGiveJob and
+//     controlMCPScheduleJob -> controlMCPCall.place. The give admission
+//     request records the folder it was sent; the scheduled worker's primary
+//     binding is the folder's workspace ID in the real worker store.
+//   - Narrowest layer: the mapping sits between the catalog handler and the
+//     swarm_* handlers; only calls through both surfaces show where the job
+//     and the schedule land.
+func TestManageJobsFolderPicksTheProjectFolder(t *testing.T) {
+	e := newJobsEndToEnd(t)
+	p := testPrincipal()
+	second, secondID := e.addProjectFolder(t)
+	full := []string{"swarm:read", "swarm:write", "sessions:read", "sessions:write", "projects:read", "automations:read", "automations:write", "signals:read"}
+
+	// Without folder the project has two to choose from: refused, nothing
+	// admitted.
+	if _, refused := e.controlCall(t, full, map[string]any{"action": "give_job", "worker": e.workerID, "brief": "No folder.", "project": "jobs-project"}); !strings.Contains(refused, "several folders") {
+		t.Fatalf("give_job without folder on a two-folder project: %q", refused)
+	}
+	if len(e.admittedPaths) != 0 {
+		t.Fatalf("a refused give_job was admitted: %v", e.admittedPaths)
+	}
+
+	// give_job in the second folder, from each surface.
+	if _, given := e.control(t, full, map[string]any{"action": "give_job", "worker": e.workerID, "brief": "From Swarm Control.", "project": "jobs-project", "folder": second, "idempotency_key": "folder-control"}); given["workspace"] != second {
+		t.Fatalf("Swarm Control give_job: %v", given)
+	}
+	if _, given := e.orchestrator(t, map[string]any{"action": "give_job", "worker": e.workerID, "brief": "From the Orchestrator.", "project": "jobs-project", "folder": second, "idempotency_key": "folder-orch"}); given["workspace"] != second {
+		t.Fatalf("Orchestrator give_job: %v", given)
+	}
+	if strings.Join(e.admittedPaths, ",") != second+","+second {
+		t.Fatalf("jobs were admitted in %v, want %s twice", e.admittedPaths, second)
+	}
+
+	// schedule_job in the second folder, from each surface: the scheduled
+	// worker is bound to that folder.
+	schedule := map[string]any{"kind": "interval", "interval_seconds": float64(3600)}
+	for i, call := range []func(map[string]any) (string, map[string]any){
+		func(args map[string]any) (string, map[string]any) { return e.control(t, full, args) },
+		func(args map[string]any) (string, map[string]any) { return e.orchestrator(t, args) },
+	} {
+		name := []string{"Second folder from Swarm Control", "Second folder from the Orchestrator"}[i]
+		_, scheduled := call(map[string]any{"action": "schedule_job", "worker": e.workerID, "brief": "Check it.", "schedule": schedule, "project": "jobs-project", "folder": second, "name": name})
+		worker, _ := scheduled["worker"].(map[string]any)
+		id, _ := worker["id"].(string)
+		record, found, err := e.sessions.Store().WorkerStore().GetWorker(p.AccountScopeID, id)
+		if err != nil || !found || record.LocalBindings["primary"] != secondID {
+			t.Fatalf("%s: scheduled worker %+v bound %v, want %s (%v %v)", name, scheduled, record.LocalBindings, secondID, found, err)
+		}
+	}
+}
+
+// Purpose:
+//   - Requirement: folder reaches a linked machine too: manage_jobs
+//     schedule_job with machine and folder, from the Orchestrator and from
+//     Swarm Control, schedules the job in that folder of the machine's
+//     two-folder project (the linked route POST /v3/jobs/{action} runs the
+//     machine's ManageJobs, which maps folder to the handler's workspace).
+//   - Threat/regression: folder lost between the home and the machine, so a
+//     linked schedule on a multi-folder project is refused or bound to the
+//     wrong folder.
+//   - Boundary/authority: CallFleetWork -> callFleetJobs -> the machine's
+//     handleJobs -> ManageJobs/manageJobsAs -> controlMCPScheduleJob, over the
+//     parity harness's two linked in-process daemons; the machine's worker
+//     store holds the result.
+//   - Narrowest layer: only a call through both daemons shows the input
+//     survives the link.
+func TestManageJobsFolderReachesTheLinkedMachine(t *testing.T) {
+	h := newCatalogParityHarness(t)
+	remote := h.remote.s.sessions.Store()
+	// Activating the scheduled worker checks its folder against the
+	// machine's workspace catalog, as the daemon wires it.
+	h.remote.s.runner.(*runruntime.Service).SetWorkspaceService(h.remote.s.workspace)
+	second := t.TempDir()
+	outboxPinGit(t, second, "init", "-q", "-b", "dev")
+	outboxPinGit(t, second, "commit", "-q", "--allow-empty", "-m", "start")
+	added, err := h.remote.s.workspace.AddForPrincipal(identity.Principal{Type: identity.PrincipalTypeUser, UserID: h.remote.user, AccountScopeID: h.remote.account}, second, "second", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, found, err := remote.GetProject(h.remote.account, "remote-project")
+	if err != nil || !found {
+		t.Fatalf("remote-project: %v %v", found, err)
+	}
+	project.Workspaces = append(project.Workspaces, pebblestore.ProjectWorkspaceRef{WorkspaceID: added.WorkspaceID, Path: second, Role: "secondary_code"})
+	if err := remote.PutProject(h.remote.account, project); err != nil {
+		t.Fatal(err)
+	}
+	schedule := map[string]any{"kind": "interval", "interval_seconds": float64(3600)}
+	call := func(name string) map[string]any {
+		return map[string]any{"action": "schedule_job", "machine": "box", "worker": h.jobs["box"]["worker"], "brief": "Check it.", "schedule": schedule, "project": "remote-project", "folder": second, "name": name}
+	}
+	answers := map[string]string{}
+	out, refused := h.controlTool(t, catalogParityFullKey, "manage_jobs", call("Linked from Swarm Control"))
+	if refused != "" {
+		t.Fatalf("Swarm Control linked schedule_job: %s", refused)
+	}
+	answers["Linked from Swarm Control"] = out
+	if out, err = h.orchestratorTool(t, "manage_jobs", call("Linked from the Orchestrator")); err != nil {
+		t.Fatalf("Orchestrator linked schedule_job: %v", err)
+	}
+	answers["Linked from the Orchestrator"] = out
+	for name, out := range answers {
+		_, data := jobsEnvelope(t, out)
+		worker, _ := data["worker"].(map[string]any)
+		id, _ := worker["id"].(string)
+		record, found, err := remote.WorkerStore().GetWorker(h.remote.account, id)
+		if err != nil || !found || record.LocalBindings["primary"] != added.WorkspaceID {
+			t.Fatalf("%s: scheduled worker on box %v bound %v, want %s (%v %v)", name, data, record.LocalBindings, added.WorkspaceID, found, err)
+		}
 	}
 }
