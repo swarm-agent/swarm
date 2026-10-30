@@ -83,6 +83,17 @@ func FleetTaskSessionReadAllowed(name, action string) bool {
 	return name == "manage_projects" && action == FleetReadTaskSessionAction
 }
 
+// FleetMachineReachable is the one reachability rule for a linked machine,
+// used by list_machines and agents_at_work alike: when the answer contacted
+// the machine, it is online exactly when that contact succeeded; otherwise
+// its recorded link state (the last contact succeeded) decides.
+func FleetMachineReachable(recorded, contacted bool, contactErr error) bool {
+	if contacted {
+		return contactErr == nil
+	}
+	return recorded
+}
+
 type FleetMachineInfo struct {
 	Name      string `json:"name"`
 	Online    bool   `json:"online"`
@@ -251,10 +262,15 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 				if !pebblestore.LinkedWorkOn(machines[i].Access) {
 					continue
 				}
-				if line, err := reader.FleetMachineStatusLine(ctx, scope.Principal, machines[i].Name); err != nil {
+				line, err := reader.FleetMachineStatusLine(ctx, scope.Principal, machines[i].Name)
+				// This read is the latest contact: it decides online, as it
+				// does for agents_at_work.
+				machines[i].Online = FleetMachineReachable(machines[i].Online, true, err)
+				if err != nil {
 					machines[i].StatusError = clipBytes(err.Error(), 300)
+					machines[i].LastError = "last contact failed"
 				} else {
-					machines[i].Status = line
+					machines[i].Status, machines[i].LastError = line, ""
 				}
 			}
 		}

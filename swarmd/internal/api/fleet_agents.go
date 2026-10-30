@@ -17,6 +17,7 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/jobautomation"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 )
 
 // The fleet's agents at work: one read of which agent runs are active right
@@ -303,7 +304,8 @@ func (s *Server) FleetAgents(ctx context.Context, p identity.Principal, now, sin
 		go func(i int, name string) {
 			defer wg.Done()
 			remote, err := s.fleetAgentsMachine(ctx, p, name, since)
-			if err != nil {
+			// The same rule as list_machines: this contact decides.
+			if !tool.FleetMachineReachable(false, true, err) {
 				answers[i].machine = fleetAgentMachine{Name: name, State: "offline", Reason: fleetActivityShortError(err)}
 				return
 			}
