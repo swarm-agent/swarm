@@ -230,6 +230,15 @@ record keeps its placeholder.
   reopen step sent the work back (review findings, a failed push to rebase)
   and nothing was handed over; each such delivery carries `sent_back`
   (`step`, `round`, `reason`).
+- Why a review stopped the work: a delivery with a step whose verdict is
+  `block` (or that ended `sent_back`, `failed` or `blocked` with a step's
+  findings) carries `findings_step`, `verdict` and `findings`, capped to 4000
+  characters on a rune boundary. When cut, `findings_truncated` is true and
+  `more` names the call with the full text
+  (`manage_workflows action=deliveries delivery_id=<id>`). `get_task` shows
+  them on `progress.workflow` with the delivery's `delivery_id` and `round`.
+  `manage_workflows action=deliveries job_id=` takes a bare task id as well as
+  a job id; when nothing matches, its answer carries a `note` saying so.
 - absent while the task has not ended.
 
 ### `history`

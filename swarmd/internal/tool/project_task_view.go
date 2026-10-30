@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -85,6 +86,7 @@ type projectTaskProgressRead struct {
 	Workflow *struct {
 		State      string `json:"state"`
 		Deliveries []struct {
+			ID       string `json:"id"`
 			Workflow string `json:"workflow"`
 			State    string `json:"state"`
 			Step     int    `json:"step"`
@@ -98,7 +100,12 @@ type projectTaskProgressRead struct {
 			} `json:"sent_back"`
 			// ReopenCause: review_block, push_failed or check_failed
 			// (pebblestore.ProjectTaskReopen).
-			ReopenCause string `json:"reopen_cause"`
+			ReopenCause       string `json:"reopen_cause"`
+			FindingsStep      string `json:"findings_step"`
+			Verdict           string `json:"verdict"`
+			Findings          string `json:"findings"`
+			FindingsTruncated bool   `json:"findings_truncated"`
+			More              string `json:"more"`
 		} `json:"deliveries"`
 	} `json:"workflow"`
 	Integration *struct {
@@ -194,6 +201,33 @@ type projectTaskWorkflow struct {
 	// (findings to address) or push_failed (review passed; rebase and
 	// retry), or check_failed.
 	ReopenCause string `json:"reopen_cause,omitempty"`
+	// DeliveryID is the shown delivery; manage_workflows action=deliveries
+	// delivery_id=<it> reads its steps in full.
+	DeliveryID string `json:"delivery_id,omitempty"`
+	// FindingsStep, Verdict and Findings say why a review blocked or sent
+	// the work back (task progress deliveryFindings), the findings capped to
+	// projectTaskFindingsRunes; FindingsTruncated and More (the call with
+	// the full text) are set when they were cut. The findings are the
+	// reviewer's text: untrusted.
+	FindingsStep      string `json:"findings_step,omitempty"`
+	Verdict           string `json:"verdict,omitempty"`
+	Findings          string `json:"findings,omitempty"`
+	FindingsTruncated bool   `json:"findings_truncated,omitempty"`
+	More              string `json:"more,omitempty"`
+}
+
+// projectTaskFindingsRunes bounds a workflow's findings in get_task; a
+// linked machine's answer is bounded here as well.
+const projectTaskFindingsRunes = 4000
+
+// projectTaskFindingsMore is the call that returns a delivery's full
+// findings.
+func projectTaskFindingsMore(deliveryID string, remote bool) string {
+	more := "manage_workflows action=deliveries delivery_id=" + deliveryID
+	if remote {
+		more += " with this task's machine"
+	}
+	return more
 }
 
 type projectTaskResult struct {
@@ -365,11 +399,18 @@ func compactProjectTask(read projectTaskRead, remote bool) ProjectTaskView {
 	if p != nil && p.Workflow != nil && p.Workflow.State != "" && p.Workflow.State != "none" {
 		wf := &projectTaskWorkflow{State: p.Workflow.State, Running: p.Workflow.State == "running" || p.Workflow.State == "pending"}
 		if len(p.Workflow.Deliveries) > 0 {
-			d := p.Workflow.Deliveries[0]
+			// The running delivery, else the one that decides the workflow's
+			// state (the one sent back, failed or blocked), else the newest.
+			d, picked := p.Workflow.Deliveries[0], false
 			for _, candidate := range p.Workflow.Deliveries {
 				if candidate.State == "running" {
-					d = candidate
+					d, picked = candidate, true
 					break
+				}
+			}
+			for _, candidate := range p.Workflow.Deliveries {
+				if !picked && candidate.State == p.Workflow.State {
+					d, picked = candidate, true
 				}
 			}
 			wf.Name, wf.Round = clipBytes(d.Workflow, 80), d.Round
@@ -387,6 +428,15 @@ func compactProjectTask(read projectTaskRead, remote bool) ProjectTaskView {
 			}
 			if d.ReopenCause != "" {
 				wf.ReopenCause = pebblestore.ProjectTaskReopen{Cause: d.ReopenCause}.Normalized().Cause
+			}
+			wf.DeliveryID = clipBytes(d.ID, 160)
+			wf.FindingsStep, wf.Verdict = clipBytes(d.FindingsStep, 80), clipBytes(d.Verdict, 16)
+			if findings := strings.ToValidUTF8(strings.TrimSpace(d.Findings), string(utf8.RuneError)); findings != "" {
+				cut := clipRunes(findings, projectTaskFindingsRunes)
+				wf.Findings, wf.FindingsTruncated = cut, d.FindingsTruncated || cut != findings
+				if wf.FindingsTruncated && wf.DeliveryID != "" {
+					wf.More = projectTaskFindingsMore(wf.DeliveryID, remote)
+				}
 			}
 		}
 		if wf.Reason == "" && (wf.State == "blocked" || wf.State == "failed") {
@@ -540,14 +590,23 @@ func markProjectTaskResultCut(view *ProjectTaskView, report, sessionID string, r
 }
 
 // fitProjectTaskView shortens the report until the view fits its budget.
+// A workflow's delivery and findings (bounded on their own) come on top of
+// the budget, so they never cut the report.
 func fitProjectTaskView(view *ProjectTaskView) {
+	budget := projectTaskViewBytes
+	if wf := view.Progress.Workflow; wf != nil {
+		extra := projectTaskWorkflow{DeliveryID: wf.DeliveryID, FindingsStep: wf.FindingsStep, Verdict: wf.Verdict, Findings: wf.Findings, FindingsTruncated: wf.FindingsTruncated, More: wf.More}
+		if raw, err := json.Marshal(extra); err == nil {
+			budget += len(raw)
+		}
+	}
 	for range 4 {
 		raw, err := json.Marshal(view)
-		if err != nil || len(raw) <= projectTaskViewBytes || view.Result == nil || view.Result.Summary == "" {
+		if err != nil || len(raw) <= budget || view.Result == nil || view.Result.Summary == "" {
 			return
 		}
 		// JSON escaping can make the encoded text longer than the text.
-		keep := len(view.Result.Summary) - (len(raw) - projectTaskViewBytes) - 16
+		keep := len(view.Result.Summary) - (len(raw) - budget) - 16
 		if keep < 80 {
 			view.Result.Summary = ""
 			return

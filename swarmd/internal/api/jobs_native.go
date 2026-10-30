@@ -120,12 +120,17 @@ func (s *Server) ManageJobs(ctx context.Context, p identity.Principal, sessionID
 				automationID = automation.ID
 			}
 			var deliveries []jobautomation.Delivery
-			deliveries, err = ds.ListDeliveries(p.AccountScopeID, jobautomation.DeliveryFilter{AutomationID: automationID, JobID: controlMCPString(args, "job_id"), Limit: limit})
+			jobID := controlMCPString(args, "job_id")
+			deliveries, err = ds.ListDeliveries(p.AccountScopeID, jobautomation.DeliveryFilter{AutomationID: automationID, JobID: jobID, Limit: limit})
 			views := []map[string]any{}
 			for _, d := range deliveries {
 				views = append(views, jobDeliveryView(d))
 			}
-			out = map[string]any{"deliveries": views}
+			answer := map[string]any{"deliveries": views}
+			if note := deliveryJobIDNote(jobID, len(deliveries)); note != "" && err == nil {
+				answer["note"] = note
+			}
+			out = answer
 		}
 	default:
 		return nil, errors.New("unknown manage_jobs action")

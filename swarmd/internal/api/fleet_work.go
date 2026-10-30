@@ -55,6 +55,10 @@ func (s *Server) CallFleetWork(ctx context.Context, p identity.Principal, machin
 		if action == "history" {
 			path += "/history"
 			query.Set("id", id)
+		} else if controlMCPString(args, "delivery_id") != "" {
+			// One delivery in detail, with its full findings: the
+			// workflow listing route reads delivery_id (ListWorkflows).
+			path = JobAutomationsPath
 		} else {
 			path = JobDeliveriesPath
 			query.Set("automation_id", id)

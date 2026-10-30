@@ -1312,7 +1312,11 @@ func (s *Server) handleJobDeliveries(w http.ResponseWriter, r *http.Request) {
 		for _, d := range list {
 			out = append(out, jobDeliveryView(d))
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deliveries": out})
+		answer := map[string]any{"ok": true, "deliveries": out}
+		if note := deliveryJobIDNote(query.Get("job_id"), len(list)); note != "" {
+			answer["note"] = note
+		}
+		writeJSON(w, http.StatusOK, answer)
 	case len(parts) == 1 && rest != "" && r.Method == http.MethodGet:
 		d, err := store.GetDelivery(account, parts[0])
 		if err != nil {
@@ -1453,7 +1457,7 @@ func (s *Server) ListWorkflows(caller WorkflowCaller, opts WorkflowListOptions) 
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"delivery": workflowDeliveryDetail(d)}, nil
+		return map[string]any{"delivery": workflowDeliveryDetail(d, true)}, nil
 	}
 	list, err := store.List(account)
 	if err != nil {
@@ -1480,7 +1484,7 @@ func (s *Server) ListWorkflows(caller WorkflowCaller, opts WorkflowListOptions) 
 		deliveries := []map[string]any{}
 		for _, d := range latest {
 			if opts.Detail == workflowDetailDeliveries {
-				deliveries = append(deliveries, workflowDeliveryDetail(d))
+				deliveries = append(deliveries, workflowDeliveryDetail(d, false))
 			} else {
 				deliveries = append(deliveries, workflowDeliveryLine(d))
 			}
@@ -1758,7 +1762,7 @@ func controlMCPAutomationTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_list_workflows", Title: "List workflows",
-			Description: "This account's workflows, each exactly as Swarm runs it (scope, when, steps, revision, enabled), with its history count and last change (time, who; swarm_workflow_history reads revisions and swarm_restore_workflow restores them), its last 3 deliveries one line each (delivery_id, job, state, round, head, blocked reason, and each step's state and verdict; no findings), and whether the machine-wide stop switch is on. For step detail (attempts, exit code, output, findings cut to 1500 characters) pass delivery_id for one delivery, or detail: \"deliveries\" for the last 3 of every workflow.",
+			Description: "This account's workflows, each exactly as Swarm runs it (scope, when, steps, revision, enabled), with its history count and last change (time, who; swarm_workflow_history reads revisions and swarm_restore_workflow restores them), its last 3 deliveries one line each (delivery_id, job, state, round, head, blocked reason, and each step's state and verdict; no findings), and whether the machine-wide stop switch is on. For step detail (attempts, exit code, output) pass delivery_id for one delivery, with each step's findings in full, or detail: \"deliveries\" for the last 3 of every workflow (findings cut to 1500 characters). Why a review sent a task back is also on the task's progress.workflow (delivery_id, round, capped findings).",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"delivery_id": controlMCPStringProp("One delivery (a delivery_id from the listing) in bounded detail, instead of the list.", 0, 200),
 				"detail":      map[string]any{"type": "string", "enum": []string{workflowDetailDeliveries}, "description": "deliveries: each workflow's last 3 deliveries with their steps' outcomes (bounded), instead of one line each."},

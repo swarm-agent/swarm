@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"swarm/packages/swarmd/internal/jobautomation"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -107,6 +108,16 @@ type taskProgressDelivery struct {
 	ReopenCause   string `json:"reopen_cause,omitempty"`
 	ReopenFailure string `json:"reopen_failure,omitempty"`
 	ReopenRound   int    `json:"reopen_round,omitempty"`
+	// Why a review stopped the work (deliveryFindings): set when a step's
+	// verdict is block, or the delivery ended sent_back, failed or blocked
+	// with a step's findings. Findings are capped to
+	// maxProgressFindingsRunes; FindingsTruncated and More (the call that
+	// returns the full text) say when they were cut.
+	FindingsStep      string `json:"findings_step,omitempty"`
+	Verdict           string `json:"verdict,omitempty"`
+	Findings          string `json:"findings,omitempty"`
+	FindingsTruncated bool   `json:"findings_truncated,omitempty"`
+	More              string `json:"more,omitempty"`
 }
 
 // deliveryReopen is the reopen the delivery stands at, if any: the reopen
@@ -132,6 +143,67 @@ func deliveryReopen(d jobautomation.Delivery, step int) (pebblestore.ProjectTask
 	}
 	cause, failure := jobautomation.ReopenCause(d, stepID)
 	return pebblestore.ProjectTaskReopen{Round: round, Cause: cause, Failure: failure}.Normalized(), true
+}
+
+// maxProgressFindingsRunes bounds a delivery's findings in task progress; the
+// full text is one delivery_id call away (deliveryFindingsMore).
+const maxProgressFindingsRunes = 4000
+
+// deliveryFindingsMore is the call that returns a delivery's full step
+// findings.
+func deliveryFindingsMore(deliveryID string) string {
+	return "manage_workflows action=deliveries delivery_id=" + deliveryID
+}
+
+// deliveryFindings sets view's findings from d: the last step whose verdict
+// is block (with or without findings), else, when the delivery ended
+// sent_back, failed or blocked, the last step that recorded findings.
+// Nothing is set for a delivery that neither blocked nor stopped.
+func deliveryFindings(d jobautomation.Delivery, view *taskProgressDelivery) {
+	pick := -1
+	for i := len(d.Steps) - 1; i >= 0; i-- {
+		if verdict, _ := d.Steps[i].Outcome["verdict"].(string); verdict == jobautomation.VerdictBlock {
+			pick = i
+			break
+		}
+	}
+	if pick < 0 {
+		switch d.State {
+		case jobautomation.StateSentBack, jobautomation.StateFailed, jobautomation.StateBlocked:
+			for i := len(d.Steps) - 1; i >= 0; i-- {
+				if f, _ := d.Steps[i].Outcome["findings"].(string); strings.TrimSpace(f) != "" {
+					pick = i
+					break
+				}
+			}
+		}
+	}
+	if pick < 0 {
+		return
+	}
+	step := d.Steps[pick]
+	view.FindingsStep = step.ID
+	view.Verdict, _ = step.Outcome["verdict"].(string)
+	findings, _ := step.Outcome["findings"].(string)
+	findings = strings.TrimSpace(findings)
+	if findings == "" {
+		return
+	}
+	view.Findings, view.FindingsTruncated = capRunes(findings, maxProgressFindingsRunes)
+	if view.FindingsTruncated {
+		view.More = deliveryFindingsMore(d.ID)
+	}
+}
+
+// capRunes cuts text to at most limit runes, on a rune boundary, and reports
+// whether it was cut. Invalid UTF-8 is replaced so the result is valid.
+func capRunes(text string, limit int) (string, bool) {
+	text = strings.ToValidUTF8(text, string(utf8.RuneError))
+	r := []rune(text)
+	if len(r) <= limit {
+		return text, false
+	}
+	return string(r[:limit]), true
 }
 
 type taskProgressIntegration struct {
@@ -365,6 +437,7 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 			if reopen, ok := deliveryReopen(d, step); ok {
 				view.ReopenCause, view.ReopenFailure, view.ReopenRound = reopen.Cause, reopen.Failure, reopen.Round
 			}
+			deliveryFindings(d, &view)
 			workflow.Deliveries = append(workflow.Deliveries, view)
 			switch state {
 			case workflowRunning:

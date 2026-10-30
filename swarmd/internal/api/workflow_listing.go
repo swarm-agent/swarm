@@ -1,9 +1,11 @@
 package api
 
 import (
+	"fmt"
 	"strings"
 
 	"swarm/packages/swarmd/internal/jobautomation"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // A workflow listing is bounded: by default each workflow's definition and
@@ -46,6 +48,16 @@ func workflowListOptions(get func(string) string) (WorkflowListOptions, error) {
 	return opts, nil
 }
 
+// deliveryJobIDNote says a job_id filter matched no delivery, so an empty
+// list is never read as "this task had no workflow" by mistake. "" when no
+// job_id was given or something matched.
+func deliveryJobIDNote(jobID string, matched int) string {
+	if strings.TrimSpace(jobID) == "" || matched > 0 {
+		return ""
+	}
+	return fmt.Sprintf("no deliveries match job_id %q: no workflow delivery was recorded for that task or job id (job_id takes a task id or a job id such as task/<project>/<task> or worker/<worker>/<run>)", jobID)
+}
+
 // workflowDeliveryLine is one delivery as one compact line: no findings,
 // outputs, reasons or log tails.
 func workflowDeliveryLine(d jobautomation.Delivery) map[string]any {
@@ -70,8 +82,11 @@ func workflowDeliveryLine(d jobautomation.Delivery) map[string]any {
 // workflowDeliveryDetail is a delivery with its steps' outcomes, every text
 // cut to maxWorkflowDetailText characters, every list to
 // maxWorkflowDetailItems and each step's failures to the newest
-// maxWorkflowDetailFailures. Log tails are never included.
-func workflowDeliveryDetail(d jobautomation.Delivery) map[string]any {
+// maxWorkflowDetailFailures. Log tails are never included. With fullFindings
+// (one delivery read by delivery_id, where get_task points for the full
+// text) each step's findings are returned whole: the review record already
+// bounds them to pebblestore.MaxJobReviewFindingsBytes.
+func workflowDeliveryDetail(d jobautomation.Delivery, fullFindings bool) map[string]any {
 	d.Steps = append([]jobautomation.StepRecord(nil), d.Steps...)
 	for i := range d.Steps {
 		d.Steps[i].LogTail = ""
@@ -86,9 +101,16 @@ func workflowDeliveryDetail(d jobautomation.Delivery) map[string]any {
 		}
 	}
 	if steps, ok := view["steps"].([]map[string]any); ok {
-		for _, step := range steps {
+		for i, step := range steps {
 			for key, value := range step {
 				step[key] = boundWorkflowValue(value)
+			}
+			if !fullFindings || i >= len(d.Steps) {
+				continue
+			}
+			findings, _ := d.Steps[i].Outcome["findings"].(string)
+			if outcome, ok := step["outcome"].(map[string]any); ok && findings != "" {
+				outcome["findings"] = controlMCPTruncate(findings, pebblestore.MaxJobReviewFindingsBytes)
 			}
 		}
 	}

@@ -808,6 +808,9 @@ func (s *Store) JobDeliveries(account, jobID string) ([]Delivery, error) {
 
 // DeliveryFilter selects deliveries for a listing.
 type DeliveryFilter struct {
+	// JobID is a job id (task/<project>/<task>, worker/<worker>/<run>, ...)
+	// or a bare task id, which matches the task's job ids
+	// (TaskJobIDMatches).
 	JobID        string
 	AutomationID string
 	State        string
@@ -816,7 +819,7 @@ type DeliveryFilter struct {
 
 // ListDeliveries lists an account's deliveries, newest first.
 func (s *Store) ListDeliveries(account string, filter DeliveryFilter) ([]Delivery, error) {
-	if filter.JobID != "" {
+	if filter.JobID != "" && strings.Contains(filter.JobID, "/") {
 		list, err := s.JobDeliveries(account, filter.JobID)
 		if err != nil {
 			return nil, err
@@ -842,9 +845,27 @@ func (s *Store) ListDeliveries(account string, filter DeliveryFilter) ([]Deliver
 	return limitDeliveries(out, filter.Limit), nil
 }
 
+// taskJobKinds are the job id kinds whose last part is a project task id:
+// task/<project>/<task>, design/<project>/<task> and media/<project>/<task>.
+var taskJobKinds = map[string]bool{"task": true, "design": true, "media": true}
+
+// TaskJobIDMatches reports whether jobID is one of the job ids of the bare
+// task id taskID (<kind>/<project>/<taskID> for a task job kind).
+func TaskJobIDMatches(jobID, taskID string) bool {
+	if taskID == "" || strings.Contains(taskID, "/") {
+		return false
+	}
+	parts := strings.Split(jobID, "/")
+	return len(parts) == 3 && taskJobKinds[parts[0]] && parts[1] != "" && parts[2] == taskID
+}
+
 func filterDeliveries(in []Delivery, filter DeliveryFilter) []Delivery {
 	out := in[:0]
+	bare := filter.JobID != "" && !strings.Contains(filter.JobID, "/")
 	for _, d := range in {
+		if bare && !TaskJobIDMatches(d.JobID, filter.JobID) {
+			continue
+		}
 		if filter.AutomationID != "" && d.AutomationID != filter.AutomationID {
 			continue
 		}

@@ -46,7 +46,8 @@ func (s *Server) ManageWorkflows(ctx context.Context, p identity.Principal, sess
 		if err != nil {
 			return nil, err
 		}
-		list, err := store.ListDeliveries(account, jobautomation.DeliveryFilter{AutomationID: controlMCPString(args, "id"), JobID: controlMCPString(args, "job_id"), Limit: 50})
+		jobID := controlMCPString(args, "job_id")
+		list, err := store.ListDeliveries(account, jobautomation.DeliveryFilter{AutomationID: controlMCPString(args, "id"), JobID: jobID, Limit: 50})
 		if err != nil {
 			return nil, err
 		}
@@ -56,7 +57,11 @@ func (s *Server) ManageWorkflows(ctx context.Context, p identity.Principal, sess
 			line["automation"] = d.AutomationName
 			out = append(out, line)
 		}
-		return map[string]any{"deliveries": out, "next": "pass delivery_id for one delivery's steps in bounded detail"}, nil
+		answer := map[string]any{"deliveries": out, "next": "pass delivery_id for one delivery's steps, with its full findings"}
+		if note := deliveryJobIDNote(jobID, len(list)); note != "" {
+			answer["note"] = note
+		}
+		return answer, nil
 	case "propose":
 		data, err := json.Marshal(args)
 		if err != nil {

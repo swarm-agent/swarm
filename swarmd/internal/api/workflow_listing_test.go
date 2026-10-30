@@ -65,8 +65,11 @@ func seedWorkflowListing(t *testing.T, store *jobautomation.Store, workflows, de
 // last 3 deliveries one line each (job, state, round, head, blocked reason,
 // each step's state and verdict) with no findings, outputs or reports; detail
 // comes only with an explicit delivery_id or detail "deliveries" and is still
-// bounded (findings cut to 1500 characters). The MCP route, HTTP and the
-// native manage_workflows list/deliveries read the same listing.
+// bounded: detail "deliveries" cuts findings to 1500 characters, and one
+// delivery_id returns each step's findings whole up to the review record's
+// own bound (pebblestore.MaxJobReviewFindingsBytes), since get_task points
+// there for the full text. The MCP route, HTTP and the native
+// manage_workflows list/deliveries read the same listing.
 // Threat (forge, 2026-10-28): swarm_list_workflows returned 159 KB for 4
 // workflows because every recent delivery embedded every step's findings and
 // outputs; a delivery_id from another account must not be readable.
@@ -132,14 +135,20 @@ func TestWorkflowListingIsCompactByDefaultAndBoundedInDetail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n, text := size(one); n > 16*1024 || !strings.Contains(text, "FINDINGTEXT") || strings.Contains(text, `"automations"`) {
+	if n, text := size(one); n > 32*1024 || !strings.Contains(text, "FINDINGTEXT") || strings.Contains(text, `"automations"`) {
 		t.Fatalf("one delivery = %d bytes", n)
 	}
 	detail := one.(map[string]any)["delivery"].(map[string]any)
 	review := detail["steps"].([]any)[0].(map[string]any)
 	findings := review["outcome"].(map[string]any)["findings"].(string)
-	if !strings.HasPrefix(findings, "1. high a.go:1 the limit is not checked.") || !strings.Contains(findings, "[truncated ") || len([]rune(findings)) > maxWorkflowDetailText+60 {
-		t.Fatalf("findings in detail = %d characters", len([]rune(findings)))
+	// The seeded findings (~18 KB) exceed the record bound, so the full
+	// text is cut there, and only there.
+	if n := len([]rune(findings)); !strings.HasPrefix(findings, "1. high a.go:1 the limit is not checked.") || !strings.Contains(findings, "[truncated ") || n < pebblestore.MaxJobReviewFindingsBytes || n > pebblestore.MaxJobReviewFindingsBytes+60 {
+		t.Fatalf("findings in one delivery = %d characters, want the record bound %d", n, pebblestore.MaxJobReviewFindingsBytes)
+	}
+	// Other texts of the one delivery stay bounded.
+	if report, _ := review["outcome"].(map[string]any)["report"].(string); len([]rune(report)) > maxWorkflowDetailText+60 {
+		t.Fatalf("report in one delivery = %d characters", len([]rune(report)))
 	}
 	if failures := detail["steps"].([]any)[2].(map[string]any)["failures"].([]any); len(failures) != maxWorkflowDetailFailures {
 		t.Fatalf("failures in detail = %d, want the newest %d", len(failures), maxWorkflowDetailFailures)
