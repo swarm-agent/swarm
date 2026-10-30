@@ -434,8 +434,33 @@ func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 		e.finish(job)
 		return false
 	}
+	e.clearWorkerFollowupTaskOutcome(job, snapshot.Metadata)
 	go func() { defer e.server.endActiveRun(); e.run(ctx, job) }()
 	return true
+}
+
+// clearWorkerFollowupTaskOutcome clears a worker job's task error and
+// failed/blocked action when a follow-up run of the job starts: the job's own
+// run has settled (its receipt succeeded or failed), so what the task still
+// says about an earlier run no longer describes the job. The job's first run
+// and other sessions are left alone.
+func (e *sessionV3Executor) clearWorkerFollowupTaskOutcome(job sessionV3ExecutorJob, metadata map[string]any) {
+	if !strings.HasPrefix(job.SessionID, "worker-execution-") {
+		return
+	}
+	worker, _ := metadata["worker_id"].(string)
+	receipt, _ := metadata["worker_execution_run_id"].(string)
+	projectID, _ := metadata["project_id"].(string)
+	taskID, _ := metadata["task_id"].(string)
+	if worker == "" || receipt == "" || projectID == "" || taskID == "" {
+		return
+	}
+	db := e.server.sessions.Store()
+	r, ok, err := db.WorkerStore().GetWorkerRun(job.Principal.AccountScopeID, worker, receipt)
+	if err != nil || !ok || (r.Status != "succeeded" && r.Status != "failed") {
+		return
+	}
+	_ = db.ClearProjectTaskRunOutcomeForSession(r.AccountScopeID, projectID, taskID, job.SessionID)
 }
 
 func (e *sessionV3Executor) finish(job sessionV3ExecutorJob) {
