@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"swarm/packages/swarmd/internal/identity"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 )
 
@@ -27,7 +28,7 @@ func TestSessionMCPTokenIsolationAndToolInventories(t *testing.T) {
 	endpoint := testEndpoint(t)
 	server := httptest.NewServer(endpoint)
 	defer server.Close()
-	if err := endpoint.SetAddress(server.Listener.Addr().String()); err != nil {
+	if err := setTestAddress(endpoint, server.Listener.Addr().String()); err != nil {
 		t.Fatal(err)
 	}
 	p := testPrincipal()
@@ -47,7 +48,7 @@ func TestSessionMCPTokenIsolationAndToolInventories(t *testing.T) {
 		}
 		defer detach()
 	}
-	token, err := endpoint.security.CreateSessionToken(p.AccountScopeID, p.UserID, "coder")
+	token, err := endpoint.SessionToken(p, "coder")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +68,7 @@ func TestSessionMCPTokenIsolationAndToolInventories(t *testing.T) {
 			t.Fatalf("cross-session status=%d", w.Code)
 		}
 	}
-	foreign, err := endpoint.security.CreateSessionToken("other-account", p.UserID, "coder")
+	foreign, err := endpoint.SessionToken(identity.Principal{AccountScopeID: "other-account", UserID: p.UserID}, "coder")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +80,7 @@ func TestSessionMCPTokenIsolationAndToolInventories(t *testing.T) {
 		t.Fatalf("unoffered execution: %s calls=%d", w.Body, invoker.calls.Load())
 	}
 	for _, id := range []string{"orchestrator", "coder"} {
-		key, err := endpoint.security.CreateSessionToken(p.AccountScopeID, p.UserID, id)
+		key, err := endpoint.SessionToken(p, id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -117,5 +118,14 @@ func TestSessionMCPTokenIsolationAndToolInventories(t *testing.T) {
 	w = post(token, "", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read"}}`)
 	if w.Code != http.StatusUnauthorized || invoker.calls.Load() != 1 {
 		t.Fatalf("revoked execution: %d calls=%d", w.Code, invoker.calls.Load())
+	}
+	// A credential in the canonical store with the session scope but no
+	// provider-written binding selects no session at all.
+	unbound, _, err := endpoint.security.CreateInternalToken("unbound", []string{SessionMCPScope}, p.AccountScopeID, p.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w = post(unbound, "", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read"}}`); w.Code != http.StatusUnauthorized || invoker.calls.Load() != 1 {
+		t.Fatalf("unbound credential reached executor: %d calls=%d", w.Code, invoker.calls.Load())
 	}
 }

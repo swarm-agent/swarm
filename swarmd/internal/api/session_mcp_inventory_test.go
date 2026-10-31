@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"swarm/packages/swarmd/internal/identity"
-	"swarm/packages/swarmd/internal/provider/claudecode"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	runruntime "swarm/packages/swarmd/internal/run"
 	"swarm/packages/swarmd/internal/security"
@@ -37,7 +36,7 @@ func TestSessionMCPResolvedSystemAgentInventories(t *testing.T) {
 	}
 	defer credentialStore.Close()
 	f.server.security = security.NewService(pebblestore.NewClientAuthStore(credentialStore), nil)
-	endpoint := claudecode.NewSessionMCP(f.server.security, nil, t.TempDir())
+	endpoint := testSessionMCPEndpoint(t, f.server.security)
 	f.server.SetSessionMCP(endpoint)
 	p := identity.Principal{AccountScopeID: row.AccountScopeID, UserID: row.UserID}
 	for _, name := range []string{"swarm", "coder"} {
@@ -55,7 +54,7 @@ func TestSessionMCPResolvedSystemAgentInventories(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer detach()
-			token, err := f.server.security.CreateSessionToken(p.AccountScopeID, p.UserID, id)
+			token, err := endpoint.SessionToken(p, id)
 			if err != nil {
 				t.Fatal(err)
 			}

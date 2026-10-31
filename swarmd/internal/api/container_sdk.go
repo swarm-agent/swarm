@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"swarm/packages/swarmd/internal/provider/claudecode"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -33,7 +34,7 @@ func (s *Server) ContainerSDKHandler() http.Handler {
 			writeError(w, http.StatusUnauthorized, errors.New("invalid scoped bearer token"))
 			return
 		}
-		if rec.SessionID != "" {
+		if claudecode.IsSessionMCPCredential(rec) {
 			writeError(w, http.StatusForbidden, errors.New("session credentials require the loopback session MCP handler"))
 			return
 		}

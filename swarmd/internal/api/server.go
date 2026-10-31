@@ -414,6 +414,7 @@ func NewCoreServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelS
 		runCtx:             runCtx,
 		runCancel:          runCancel,
 	}
+	server.connectClaudeCodeSessionMCP(providers)
 	if workspaceAware, ok := runSvc.(interface{ SetWorkspaceService(*workspace.Service) }); ok && workspaceAware != nil {
 		workspaceAware.SetWorkspaceService(workspaceSvc)
 	}
@@ -955,8 +956,7 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) LoopbackAPIHandler() http.Handler {
 	api := s.Handler()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/mcp" && s.sessionMCP != nil && s.sessionMCP.Handles(r) {
-			s.sessionMCP.ServeHTTP(w, r)
+		if r.URL.Path == "/mcp" && s.sessionMCP != nil && s.sessionMCP.ServeIfSession(w, r) {
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, providerKeyPagePrefix) {
@@ -4421,7 +4421,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 				writeError(w, http.StatusUnauthorized, err)
 				return
 			}
-			if rec != nil && rec.SessionID != "" {
+			if claudecode.IsSessionMCPCredential(rec) {
 				writeError(w, http.StatusForbidden, errors.New("session credentials require the loopback session MCP handler"))
 				return
 			}
@@ -4528,7 +4528,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 // gateAIKey limits AI keys to Swarm Control, where their level is enforced
 // per tool; every other route would bypass that level.
 func gateAIKey(w http.ResponseWriter, r *http.Request, rec *pebblestore.ScopedTokenRecord) bool {
-	if rec != nil && rec.SessionID != "" {
+	if claudecode.IsSessionMCPCredential(rec) {
 		writeError(w, http.StatusForbidden, errors.New("session credentials work only through the loopback session MCP handler"))
 		return false
 	}

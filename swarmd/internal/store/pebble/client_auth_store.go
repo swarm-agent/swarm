@@ -114,10 +114,8 @@ type ScopedTokenRecord struct {
 	Scopes         []string `json:"scopes"`
 	AccountScopeID string   `json:"account_scope_id"`
 	UserID         string   `json:"user_id"`
-	// SessionID confines an internal scoped credential to one session MCP endpoint.
-	SessionID  string `json:"session_id,omitempty"`
-	WorkerID   string `json:"worker_id,omitempty"`
-	WorkerName string `json:"worker_name,omitempty"`
+	WorkerID       string   `json:"worker_id,omitempty"`
+	WorkerName     string   `json:"worker_name,omitempty"`
 	// AgentName binds the token to one sealed agent's sessions (default-deny).
 	AgentName string `json:"agent_name,omitempty"`
 	// Rate limits for agent-bound tokens; zero means the daemon default.

@@ -84,9 +84,6 @@ type V3CheckpointBoundaryMutation struct {
 }
 
 type V3SessionMutationInput struct {
-	// ClaudeCodeSessionID updates only provider continuation state under the mutation lock.
-	ClaudeCodeSessionID *string
-
 	completion       *sessionMutationCompletion
 	accountLockHeld  bool                         // Set only after acquiring the account keyed lock.
 	TaskReport       *V3ProjectTaskReportMutation `json:"-"`
@@ -3512,30 +3509,11 @@ func (s *SessionStore) prepareV3UsageForMutation(input V3SessionMutationInput, n
 }
 
 func (s *SessionStore) prepareV3SessionForMutation(input V3SessionMutationInput, seq uint64, now int64) (SessionSnapshot, bool, error) {
-	if input.ClaudeCodeSessionID != nil {
-		current, ok, err := s.GetSession(input.SessionID)
-		if err != nil {
-			return SessionSnapshot{}, false, err
-		}
-		if !ok || current.AccountScopeID != input.AccountScopeID || current.UserID != input.UserID {
-			return SessionSnapshot{}, false, errors.New("provider session owner mismatch")
-		}
-		if input.Kind != V3SessionMutationUpdateMetadata || strings.TrimSpace(*input.ClaudeCodeSessionID) == "" || len(*input.ClaudeCodeSessionID) > 256 || strings.ContainsAny(*input.ClaudeCodeSessionID, "/\\\r\n\x00") {
-			return SessionSnapshot{}, false, errors.New("invalid Claude Code continuation mutation")
-		}
-		current.ClaudeCodeSessionID = *input.ClaudeCodeSessionID
-		current.UpdatedAt = now
-		return current, true, nil
-	}
-
 	if input.Session != nil {
 		if input.Kind == V3SessionMutationCreateSession && seq > 1 {
 			return SessionSnapshot{}, false, fmt.Errorf("session %q already exists", input.SessionID)
 		}
 		session := normalizeSessionOwnership(*input.Session)
-		// Imported/client-provided snapshots cannot select another CLI's history.
-		// Only the dedicated continuation mutation may establish this identity.
-		session.ClaudeCodeSessionID = ""
 		session.ID = input.SessionID
 		if input.Kind != V3SessionMutationCreateSession {
 			current, ok, err := s.GetSession(input.SessionID)
@@ -3545,7 +3523,6 @@ func (s *SessionStore) prepareV3SessionForMutation(input V3SessionMutationInput,
 			if !ok {
 				return SessionSnapshot{}, false, fmt.Errorf("session %q not found", input.SessionID)
 			}
-			session.ClaudeCodeSessionID = current.ClaudeCodeSessionID
 			if projectID := ProjectConversationID(current); projectID != "" && ProjectConversationID(session) != projectID {
 				return SessionSnapshot{}, false, errors.New("project conversation identity is immutable")
 			}

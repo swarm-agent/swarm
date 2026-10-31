@@ -754,10 +754,7 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 		exaprovider.NewAdapter(authStore),
 	)
 	providers.RegisterRunner(anthropic.NewRunner(authStore))
-	sessionMCP := claudecode.NewSessionMCP(securitySvc, authStore, filepath.Join(cfg.DataDir, "claudecode"))
-	claudeCodeRunner := claudecode.NewRunner(authStore, claudeCodeCLI)
-	claudeCodeRunner.SetSessionMCP(sessionMCP, sessionSvc)
-	providers.RegisterRunner(claudeCodeRunner)
+	providers.RegisterRunner(claudecode.NewRunner(authStore, claudeCodeCLI))
 	// Copilot runner registration is disabled with the adapter above; leave the
 	// code in place for re-enablement after paid-plan validation is possible.
 	providers.RegisterRunner(codex.NewRunner(codexClient))
@@ -835,7 +832,6 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 	memoryDone := make(chan struct{})
 	runSvc.SetMemoryStore(memorySvc.Store)
 	apiServer := api.NewCoreServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
-	apiServer.SetSessionMCP(sessionMCP)
 	if configureClient != nil {
 		configureClient(apiServer, store)
 	}
@@ -1372,10 +1368,6 @@ func (d *Daemon) Run() error {
 	d.httpServer.Addr = ln.Addr().String()
 	if d.apiServer != nil {
 		d.apiServer.SetProviderKeyPageAddr(d.httpServer.Addr)
-		if err := d.apiServer.SetSessionMCPAddress(d.httpServer.Addr); err != nil {
-			_ = ln.Close()
-			return err
-		}
 		// The fleet: listen for the homes this Swarm invited, if it did.
 		if err := d.apiServer.StartFleetListener(); err != nil {
 			log.Printf("swarmd fleet: %v", err)

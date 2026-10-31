@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/permission"
-	"swarm/packages/swarmd/internal/provider/claudecode"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"swarm/packages/swarmd/internal/security"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -36,14 +35,14 @@ func TestSessionMCPCanonicalExecutorWorkspaceAndPermission(t *testing.T) {
 	}
 	defer credentials.Close()
 	sec := security.NewService(pebblestore.NewClientAuthStore(credentials), nil)
-	endpoint := claudecode.NewSessionMCP(sec, nil, t.TempDir())
+	endpoint := testSessionMCPEndpoint(t, sec)
 	detach, err := endpoint.WithToolExecutor(ctx, p, provideriface.Request{SessionID: job.SessionID, Tools: []provideriface.ToolDefinition{{Name: "bash"}}, ToolInvoker: invoker})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer detach()
 	f.server.SetSessionMCP(endpoint)
-	token, err := sec.CreateSessionToken(p.AccountScopeID, p.UserID, job.SessionID)
+	token, err := endpoint.SessionToken(p, job.SessionID)
 	if err != nil {
 		t.Fatal(err)
 	}

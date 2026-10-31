@@ -16,7 +16,6 @@ import (
 
 	"swarm/packages/swarmd/internal/identity"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
-	"swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -37,7 +36,6 @@ type Runner struct {
 	authStore *pebblestore.AuthStore
 	cli       *CLI
 	mcp       *SessionMCP
-	sessions  *session.Service
 }
 
 func NewRunner(authStore *pebblestore.AuthStore, cli *CLI) *Runner {
@@ -51,8 +49,11 @@ func (r *Runner) ID() string {
 	return ProviderID
 }
 
-// ExecutionEpochLifecycle requests durable input so a lost CLI session can be
-// reseeded. The runner sends only the new user suffix when resuming.
+// ExecutionEpochLifecycle declares that every request carries the full epoch
+// input. The runner resumes its CLI session only while that input extends the
+// exact input the session was seeded with in the same epoch and lineage, and
+// sends only the unseen suffix then; at every other boundary it starts a fresh
+// CLI session seeded with the full input.
 func (r *Runner) ExecutionEpochLifecycle() provideriface.ExecutionEpochLifecycleCapabilities {
 	return provideriface.ExecutionEpochLifecycleCapabilities{
 		ContextMode: provideriface.ExecutionEpochContextStatelessFullInput,
@@ -109,41 +110,106 @@ func (r *Runner) runSingle(ctx context.Context, req provideriface.Request, onEve
 		return provideriface.Response{}, err
 	}
 
-	if r.mcp == nil || r.sessions == nil {
-		return provideriface.Response{}, errors.New("standing session MCP is not configured")
-	}
-	resumeID, err := r.sessions.ClaudeCodeSession(principal, req.SessionID)
+	// The system prompt lives in a per-turn private directory, never in a
+	// directory another request of the same session could rewrite.
+	turnDir, err := os.MkdirTemp("", "swarm-claudecode-")
 	if err != nil {
-		return provideriface.Response{}, err
+		return provideriface.Response{}, fmt.Errorf("create claude code turn directory: %w", err)
 	}
-	workDir, configPath, err := r.mcp.prepare(principal, req.SessionID)
-	if err != nil {
-		return provideriface.Response{}, err
-	}
+	defer os.RemoveAll(turnDir)
 
 	turnCtx, cancelTurn := context.WithCancel(ctx)
 	defer cancelTurn()
 
-	plan, err := r.planTurn(turnCtx, req, workDir)
-	if err != nil {
-		return provideriface.Response{}, err
-	}
-	plan.resumeID = resumeID
-	plan.args = append(plan.args, "--mcp-config", configPath, "--allowedTools", "mcp__"+mcpServerName)
-	if resumeID != "" {
-		plan.args = append(plan.args, "--resume", resumeID)
-		_, dynamic := provideriface.SplitStaticInstructionsAndDynamicContext(req.Instructions)
-		plan.stdin, err = streamJSONUserMessage(buildTranscriptPrompt(newUserInput(req.Input), dynamic))
+	toolsEnabled := len(req.Tools) > 0 && !strings.EqualFold(strings.TrimSpace(req.ToolChoice), "none")
+	persistent := conversationTurn(req)
+	if !persistent && !toolsEnabled {
+		// One-shot and session-less requests (Router, titles, compaction,
+		// metadata, memory, design): no CLI session, no resume, no record and
+		// no MCP server, exactly as a stateless provider call.
+		plan, err := r.planTurn(turnCtx, req, turnDir)
 		if err != nil {
 			return provideriface.Response{}, err
 		}
+		plan.args = append(plan.args, "--no-session-persistence")
+		if err := provideriface.CheckBillableDispatch(ctx); err != nil {
+			return provideriface.Response{}, err
+		}
+		return executeTurn(turnCtx, path, plan, req.Model, onEvent)
 	}
-	plan.onInit = func(id string) error {
-		err := r.sessions.RecordClaudeCodeSession(principal, req.SessionID, id)
+	if strings.TrimSpace(req.SessionID) == "" {
+		return provideriface.Response{}, errors.New("claude code tools require a durable Swarm session")
+	}
+	if r.mcp == nil {
+		return provideriface.Response{}, errors.New("standing session MCP is not configured")
+	}
+	config, err := r.mcp.prepare(principal, req.SessionID)
+	if err != nil {
+		return provideriface.Response{}, err
+	}
+	mcpArgs := []string{"--mcp-config", config.configPath, "--allowedTools", "mcp__" + mcpServerName}
+
+	if !persistent {
+		// A tool-using request outside the conversation's own turns gets the
+		// session's tools but a stateless CLI run with the full input.
+		plan, err := r.planTurn(turnCtx, req, turnDir)
+		if err != nil {
+			return provideriface.Response{}, err
+		}
+		plan.args = append(append(plan.args, mcpArgs...), "--no-session-persistence")
+		detach, err := r.mcp.attach(turnCtx, principal, req, &plan)
+		if err != nil {
+			return provideriface.Response{}, err
+		}
+		defer detach()
+		if err := provideriface.CheckBillableDispatch(ctx); err != nil {
+			return provideriface.Response{}, err
+		}
+		return executeTurn(turnCtx, path, plan, req.Model, onEvent)
+	}
+
+	previous, found, err := loadContinuation(config.dir)
+	if err != nil {
+		return provideriface.Response{}, err
+	}
+	resumeID := ""
+	if found && resumable(req, previous) {
+		resumeID = previous.CLISessionID
+	}
+	record := cliContinuation{ExecutionEpochID: req.ExecutionEpochID, ProviderLineageID: req.ProviderLineageID, InputItems: len(req.Input), InputDigest: inputDigest(req.Input)}
+	onInit := func(id string) error {
+		next := record
+		next.CLISessionID = id
+		err := saveContinuation(config.dir, next)
 		if err != nil {
 			cancelTurn()
 		}
 		return err
+	}
+	conversationPlan := func(resumeID string) (turnPlan, error) {
+		plan, err := r.planTurn(turnCtx, req, turnDir)
+		if err != nil {
+			return turnPlan{}, err
+		}
+		// The CLI keys its saved sessions by working directory: run every
+		// turn of this conversation in the session's private directory.
+		plan.workDir = config.dir
+		plan.args = append(plan.args, mcpArgs...)
+		plan.onInit = onInit
+		if resumeID != "" {
+			plan.resumeID = resumeID
+			plan.args = append(plan.args, "--resume", resumeID)
+			_, dynamic := provideriface.SplitStaticInstructionsAndDynamicContext(req.Instructions)
+			plan.stdin, err = streamJSONUserMessage(buildTranscriptPrompt(resumedInput(req.Input, previous.InputItems), dynamic))
+			if err != nil {
+				return turnPlan{}, err
+			}
+		}
+		return plan, nil
+	}
+	plan, err := conversationPlan(resumeID)
+	if err != nil {
+		return provideriface.Response{}, err
 	}
 	detach, err := r.mcp.attach(turnCtx, principal, req, &plan)
 	if err != nil {
@@ -157,12 +223,10 @@ func (r *Runner) runSingle(ctx context.Context, req provideriface.Request, onEve
 	if resumeID != "" && errors.Is(err, errCLIResumeUnavailable) && turnCtx.Err() == nil {
 		// Only explicit pre-init resume refusal can seed history again. General
 		// provider/tool failures must not duplicate billable turns or side effects.
-		fresh, planErr := r.planTurn(turnCtx, req, workDir)
+		fresh, planErr := conversationPlan("")
 		if planErr != nil {
 			return provideriface.Response{}, planErr
 		}
-		fresh.args = append(fresh.args, "--mcp-config", configPath, "--allowedTools", "mcp__"+mcpServerName)
-		fresh.onInit = plan.onInit
 		detach()
 		detachFresh, attachErr := r.mcp.attach(turnCtx, principal, req, &fresh)
 		if attachErr != nil {

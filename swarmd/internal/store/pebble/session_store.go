@@ -73,9 +73,6 @@ type SessionAutomationBinding struct {
 }
 
 type SessionSnapshot struct {
-	// ClaudeCodeSessionID is provider-owned continuation state, not user metadata.
-	ClaudeCodeSessionID string `json:"claude_code_session_id,omitempty"`
-
 	AutomationV2            *SessionAutomationV2Binding  `json:"automation_v2,omitempty"`
 	Automation              *SessionAutomationBinding    `json:"automation,omitempty"`
 	ID                      string                       `json:"id"`

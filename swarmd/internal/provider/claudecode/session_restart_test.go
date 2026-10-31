@@ -48,13 +48,14 @@ func TestSessionMCPInFlightDisconnectRetrySameToken(t *testing.T) {
 	server := httptest.NewServer(endpoint)
 	defer func() { server.Close() }()
 	addr := server.Listener.Addr().String()
-	if err := endpoint.SetAddress(addr); err != nil {
+	if err := setTestAddress(endpoint, addr); err != nil {
 		t.Fatal(err)
 	}
-	_, config, err := endpoint.prepare(testPrincipal(), "restart")
+	prepared, err := endpoint.prepare(testPrincipal(), "restart")
 	if err != nil {
 		t.Fatal(err)
 	}
+	config := prepared.configPath
 	original, _ := os.ReadFile(config)
 	invoker := &restartInvoker{entered: make(chan struct{})}
 	plan := turnPlan{input: &turnInput{}, restart: &restartSignal{}, correlat: newToolUseCorrelator()}
@@ -103,8 +104,8 @@ func TestSessionMCPInFlightDisconnectRetrySameToken(t *testing.T) {
 		t.Fatalf("CLI did not see one transport failure: %q %s", scanner.Text(), stderr.String())
 	}
 	// Recreate the endpoint, not just its HTTP server; persistent authentication
-	// is the same secret store. Store reopen is covered by the resume test.
-	endpoint = NewSessionMCP(endpoint.security, endpoint.auth, endpoint.root)
+	// is the same credential store. Store reopen is covered by the resume test.
+	endpoint = reopenTestEndpoint(endpoint, endpoint.security)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
@@ -112,7 +113,7 @@ func TestSessionMCPInFlightDisconnectRetrySameToken(t *testing.T) {
 	server = httptest.NewUnstartedServer(endpoint)
 	server.Listener = listener
 	server.Start()
-	if err = endpoint.SetAddress(addr); err != nil {
+	if err = setTestAddress(endpoint, addr); err != nil {
 		t.Fatal(err)
 	}
 	nextPlan := turnPlan{input: &turnInput{}, restart: &restartSignal{}, correlat: newToolUseCorrelator()}
@@ -121,10 +122,11 @@ func TestSessionMCPInFlightDisconnectRetrySameToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer detachNext()
-	_, nextConfig, err := endpoint.prepare(testPrincipal(), "restart")
+	nextPrepared, err := endpoint.prepare(testPrincipal(), "restart")
 	if err != nil {
 		t.Fatal(err)
 	}
+	nextConfig := nextPrepared.configPath
 	after, _ := os.ReadFile(nextConfig)
 	if nextConfig != config || !bytes.Equal(original, after) {
 		t.Fatal("restart changed config or token")

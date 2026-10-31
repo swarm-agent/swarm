@@ -85,19 +85,21 @@ Each Swarm provider request is one non-interactive Claude Code turn: `claude -p`
 - `--restricted` ignores user, project, and local settings files, and their hooks.
 - `--tools ""` removes every built-in Claude Code tool.
 - `--strict-mcp-config` and `--disable-slash-commands` keep out other MCP servers and commands.
-- CLI session persistence is enabled so later turns can resume the conversation.
+- CLI session persistence is enabled only for a conversation's own turns, so later turns can resume. One-shot requests (Router, titles, compaction, task metadata, memory, design jobs) run with `--no-session-persistence`.
 
 **Tools and permissions:**
 - The CLI connects to the daemon's standing `http://127.0.0.1:<configured API port>/mcp` endpoint (or the configured IPv6 loopback address), not a per-turn server. Use a fixed daemon API port to preserve the URL across restarts.
-- A private `--mcp-config` file is created on the session's first Claude Code turn and reused. Its Authorization header contains a session-bound internal scoped token; the token is sealed in Swarm's existing credential store and is not invalidated on restart. It cannot authorize other sessions or ordinary API routes.
+- A private `--mcp-config` file is created on the session's first Claude Code turn and reused. Its Authorization header contains an internal scoped key from Swarm's credential store with only the `session:mcp` scope; a provider-owned binding ties it to exactly one owner and session. Restart does not invalidate it. It cannot authorize other sessions or ordinary API routes.
+- If the API address changes, the next turn rewrites the config's URL with the same key. If the key was revoked or lapsed, the next turn issues a new one and rewrites the config.
 - `tools/list` is the current run's resolved inventory: the Orchestrator catalog or a task agent's worktree tools. An inactive session refuses execution until its next run attaches the canonical executor.
 - Every call runs through Swarm's tool invoker, so Swarm permissions, approvals, and durable V3 records apply.
 - Claude Code itself pre-approves only that server (`--permission-mode dontAsk`).
 
 **Conversation state:**
-- The first turn seeds the CLI from Swarm's durable history. Swarm records the CLI session ID from `system/init` on the V3 session; later turns use `--resume <id>` and send only new user input, not the conversation again.
+- Swarm still sends the complete epoch input on every request (`stateless_full_input`). The first conversation turn seeds the CLI with it. Swarm records the CLI session ID from `system/init` with the execution epoch, provider lineage and a digest of that input, in a provider-owned file (not on the V3 session).
+- A later ordinary turn (`session_turn`) uses `--resume <id>` and sends only the items the CLI has not seen. This happens only when the epoch and lineage match and the recorded input is an exact prefix of the new input. Every other boundary starts a fresh CLI session seeded with the complete input: compaction, checkpoint and plan-guard fresh context, bounded history, restart after a tool, and a provider/model handoff, including a return from another provider.
 - If the CLI explicitly refuses a missing session before initialization, Swarm starts one fresh session seeded from durable history and records its new ID. Other provider failures do not trigger a history replay.
-- The system prompt and MCP config are `0600` files in a private session directory under the configured daemon data root. Tokens and prompt contents never appear on argv.
+- The MCP config is a `0600` file in a private session directory under `<data dir>/claudecode`. The system prompt is a `0600` file in a per-turn temporary directory, removed after the turn. Tokens and prompt contents never appear on argv.
 - A daemon shutdown may stop the CLI process. The next turn reuses its recorded CLI session ID, endpoint and token. Transient HTTP disconnects remain the CLI's reconnect/retry responsibility; Swarm does not replace the endpoint or credentials per turn.
 
 **Environment:** the child process gets only an allowlisted environment. `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and `CLAUDE_CODE_OAUTH_TOKEN` are never passed.
@@ -113,7 +115,7 @@ Each Swarm provider request is one non-interactive Claude Code turn: `claude -p`
 
 ## Validation boundary
 
-Deterministic tests use a fixture CLI and real loopback HTTP, credential storage, V3 session mutations, and the canonical tool executor. They check config/token reuse after store reopen, resume and missing-history reseeding, cross-session rejection, resolved Orchestrator/Coder inventories, permission denial without a tool side effect, and one in-flight disconnect followed by a successful retry at the same address. The fixture explicitly requests that retry; this does not establish Anthropic's real CLI reconnect policy. Provider-backed daemon-restart qualification remains a separate live check.
+Deterministic tests use a fixture CLI and real loopback HTTP, credential storage, V3 session mutations, and the canonical tool executor. They check config/token reuse after store reopen, URL rewrite and key reissue, resume and missing-history reseeding, fresh sessions at context boundaries, stateless one-shot and side requests, cross-session rejection, resolved Orchestrator/Coder inventories, permission denial without a tool side effect, and one in-flight disconnect followed by a successful retry at the same address. The fixture explicitly requests that retry; this does not establish Anthropic's real CLI reconnect policy. Provider-backed daemon-restart qualification remains a separate live check.
 
 ## Usage limits (`/claude`)
 
