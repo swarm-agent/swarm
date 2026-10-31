@@ -90,7 +90,9 @@ type AgentRequest struct {
 	Checkout string
 	// ReviewJob is the job a reviewer reviews: the newest earlier step's job
 	// that produced the result or moved the head, "" for the triggering job.
-	ReviewJob string
+	ReviewJob        string
+	ReviewBase       string
+	PreviousFindings string
 	// Produce is the workflow's result the agent must write (a produce
 	// step), nil otherwise.
 	Produce *ResultSpec
@@ -111,6 +113,7 @@ type AgentOutcome struct {
 	Result   *Result
 	Verdict  string
 	Findings string
+	Handoff  string
 	// ReviewUnreadable is true when the job's review record carries the
 	// malformed-review reason (no verdict could be parsed). The verdict is
 	// then block with no findings, and a reopen step must not send it.
@@ -1243,15 +1246,19 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 	}
 	jobID, _ := record.Outcome["job_id"].(string)
 	head := d.Head
-	if jobID == "" && strings.TrimSpace(head) == "" {
-		reviewer := strings.EqualFold(strings.TrimSpace(step.Worker), "reviewer")
+	reviewer := strings.EqualFold(strings.TrimSpace(step.Worker), "reviewer")
+	if jobID == "" {
+
 		if roles, ok := r.agent.(interface {
 			Role(context.Context, string, string) (string, error)
 		}); ok && !reviewer {
 			role, err := roles.Role(ctx, d.Account, step.Worker)
 			reviewer = err == nil && role == "reviewer"
 		}
-		if reviewer {
+		if step.Since != "" && !reviewer {
+			return stepFailure{reason: "since is only for a reviewer", refused: true}
+		}
+		if reviewer && strings.TrimSpace(head) == "" {
 			// The triggering job committed nothing, but an earlier step that
 			// produced the result committed it: that job's head is the work
 			// the reviewer reviews (ReviewJob), so it is the review's head.
@@ -1271,14 +1278,38 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 		}
 	}
 	if jobID == "" {
+		if !reviewer && followsReview(*d, step) && CheckoutFor(step, "") == CheckoutNew && step.Fixes == "" {
+			allowed, err := r.store.reserveFreshFix(*d, step.ID)
+			if err != nil {
+				return stepFailure{reason: "reserve fresh fix: " + err.Error(), next: "rerun"}
+			}
+			if !allowed {
+				d.BlockedReason = ReasonJobRoundsExhausted
+				return stepFailure{reason: d.BlockedReason, refused: true}
+			}
+		}
 		key := agentIdempotencyKey(*d, step.ID)
 		if record.LimitWaits > 0 {
 			// The job before ended on a provider limit: a new job, once.
 			key += ".limit" + strconv.Itoa(record.LimitWaits)
 		}
-		req := AgentRequest{Account: d.Account, Folder: d.Folder, Worker: step.Worker, Brief: step.Brief, Result: d.Result, Head: head,
+		req := AgentRequest{Account: d.Account, Folder: d.Folder, Worker: step.Worker, Brief: agentBrief(*d, step.Brief), Result: d.Result, Head: head,
 			IdempotencyKey: key, Fixes: step.Fixes, Checkout: step.Checkout,
 			ReviewJob: latestWorkJob(*d, step.ID), Deliverables: d.CurrentDeliverables()}
+		if step.Since != "" {
+			base, findings, err := sinceContext(*d, step.Since)
+			if err != nil {
+				return stepFailure{reason: err.Error(), refused: true}
+			}
+			if r.verify == nil {
+				return stepFailure{reason: "cannot verify since ancestry", refused: true}
+			}
+			ancestor, err := r.verify(ctx, d.Folder, HeadRef{Commit: base}, HeadRef{Commit: head, Worktree: d.HeadWorktree})
+			if err != nil || !ancestor {
+				return stepFailure{reason: "since head is not a verified ancestor of the delivery head", refused: true}
+			}
+			req.ReviewBase, req.PreviousFindings = base, findings
+		}
 		if step.Produce && d.Spec != nil {
 			spec := *d.Spec
 			req.Produce = &spec
@@ -1292,7 +1323,11 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 			return stepFailure{reason: truncate("could not start the job: "+err.Error(), 300), next: "rerun"}
 		}
 		jobID = started
-		record.Outcome = map[string]any{"job_id": jobID}
+		base := req.ReviewBase
+		if base == "" && req.Result.Git != nil {
+			base = req.Result.Git.BaseCommit
+		}
+		record.Outcome = map[string]any{"job_id": jobID, "base": base, "review_head": head}
 		if err := r.store.SaveDelivery(*d); err != nil {
 			log.Printf("swarmd job automations: save delivery %s: %v", d.ID, err)
 		}
@@ -1309,7 +1344,15 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 	if limited, ok := r.providerLimitWait(record, jobID, outcome); ok {
 		return limited
 	}
-	out := map[string]any{"job_id": jobID, "status": outcome.Status}
+	out := map[string]any{"job_id": jobID, "status": outcome.Status, "base": record.Outcome["base"]}
+	if outcome.Verdict != "" {
+		out["head"] = record.Outcome["review_head"]
+	}
+	handoff := outcome.Handoff
+	if strings.TrimSpace(handoff) == "" && outcome.Result != nil {
+		handoff = outcome.Result.Report
+	}
+	out["handoff"] = truncate(handoff, MaxHandoffBytes)
 	if res := outcome.Result; res != nil {
 		if res.Git != nil {
 			out["head"] = res.Git.Head
@@ -1336,6 +1379,9 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 	}
 	record.Outcome = out
 	record.Output = jobID
+	if outcome.Verdict != "" {
+		record.Output = truncate(outcome.Findings, maxFindingsBytes)
+	}
 	move := r.moveHead
 	if step.Fixes != "" {
 		move = func(ctx context.Context, d *Delivery, outcome AgentOutcome, out map[string]any) stepFailure {
@@ -1570,10 +1616,15 @@ const maxPlaceholderOutputBytes = 500
 // expanded again. A step with no recorded output becomes "(no output)".
 func reopenMessage(d Delivery, message string) string {
 	return stepOutputPlaceholder.ReplaceAllStringFunc(message, func(m string) string {
-		id := stepOutputPlaceholder.FindStringSubmatch(m)[1]
+		match := stepOutputPlaceholder.FindStringSubmatch(m)
+		id := match[1]
 		for _, s := range d.Steps {
 			if s.ID == id {
-				if out := strings.TrimSpace(strings.ReplaceAll(s.Output, "\n", " ")); out != "" {
+				text := s.Output
+				if match[2] != "output" {
+					text, _ = s.Outcome[match[2]].(string)
+				}
+				if out := strings.TrimSpace(strings.ReplaceAll(text, "\n", " ")); out != "" {
 					return truncate(out, maxPlaceholderOutputBytes)
 				}
 			}

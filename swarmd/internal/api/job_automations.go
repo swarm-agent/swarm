@@ -354,6 +354,9 @@ func (a jobAutomationAgents) Start(ctx context.Context, req jobautomation.AgentR
 	if err != nil {
 		return "", &jobautomation.RefusedError{Reason: err.Error()}
 	}
+	if req.ReviewBase != "" && role != pebblestore.WorkerRoleReviewer {
+		return "", &jobautomation.RefusedError{Reason: "since is only for a reviewer"}
+	}
 	checkout := jobautomation.CheckoutFor(jobautomation.Step{Worker: req.Worker, Fixes: req.Fixes, Checkout: req.Checkout}, role)
 	if role != pebblestore.WorkerRoleReviewer && checkout != jobautomation.CheckoutNew {
 		return "", &jobautomation.RefusedError{Reason: "checkout " + checkout + " is only for a reviewer; " + req.Worker + " is a " + firstNonEmptyString(role, "swarm") + " worker and works in its own worktree"}
@@ -448,6 +451,7 @@ func (a jobAutomationAgents) Wait(ctx context.Context, account, jobID string) (j
 			}
 			out := jobautomation.AgentOutcome{JobID: jobID, Status: status}
 			out.Error, _ = run["error"].(string)
+			out.Handoff = s.automationHandoff(controlMCPString(run, "session_id"))
 			result, resultErr := s.workerJobAutomationResult(ctx, workerID, runID, status, true)
 			if resultErr == nil {
 				out.Result = result

@@ -135,6 +135,10 @@ func (s Step) validateBriefPlaceholders() error {
 			if !itemPlaceholder.MatchString(match[0]) {
 				return invalid("step %s: invalid placeholder %s", s.ID, match[0])
 			}
+		case "steps":
+			if !stepOutputPlaceholder.MatchString(match[0]) {
+				return invalid("step %s: invalid placeholder %s", s.ID, match[0])
+			}
 		case "inputs":
 			if !inputPlaceholder.MatchString(match[0]) {
 				return invalid("step %s: invalid placeholder %s", s.ID, match[0])

@@ -290,6 +290,34 @@ owner configured, and nothing when there are none.
 
 ### `agent` steps
 
+Agent `brief` templates accept `{{steps.<id>.output}}`, `.verdict`, `.head`
+and `.handoff`, referencing earlier steps only. Substitution is single-pass;
+missing values become `(no output)`. Each value is capped at 16,000 bytes and
+the rendered brief at 20,000 bytes. Reviewer `output` is its findings (also
+capped at 16,000 bytes), not a job ID. Reopen substitutions retain their
+existing single-line, 500-byte cap.
+
+A reviewer agent may set `"since": "review"`, naming an earlier completed
+review step. It receives that review's findings and reviews only the delta
+from its recorded head to the current delivery head. The head must be a
+verified ancestor; missing or unreadable reviews are refused. The outcome
+records `base`. An `ok` requires every previous finding closed and no new
+finding in the delta.
+
+Every agent outcome records `handoff` (at most 4,000 bytes): the existing
+`task_progress` done/complete summary, or the job's report if none was given.
+Agents are asked to state what changed, what was tested and how, and what is
+open. Pass `{{steps.fix.handoff}}` into the next fresh session instead of
+reopening history.
+
+Fresh writable agent steps following a review count as correction attempts:
+at most five starts per (account, automation, triggering job), across delivery
+retries and revisions. A retry of the same delivery/step uses its existing
+reservation, even after restart. Reservations precede dispatch (a failed start
+still consumes one); they are independent of reopen rounds. Workflows also
+have at most 20 steps, and agent-step jobs never trigger workflows themselves.
+Existing reopen behavior and its per-step/rebase round accounting are unchanged.
+
 A reviewer step (`worker: reviewer` or a worker whose role is reviewer) is
 `skipped` with reason **“the job made no commits: nothing to review”** when
 its result has `no_commits: true`: Swarm positively assessed the worker job's
@@ -956,10 +984,10 @@ The step's output is the branch URL; a failed push signals
 
 ## Example: Swarm's coder, a reviewer, then push
 
-Work given to the coder that comes with Swarm (`swarm_run_task` with role
-`coder`) is reviewed by Swarm's native reviewer; a block goes back into
-the coder's own session, where it fixes its own work in its own worktree, at
-most twice; an ok pushes the head.
+Work given to Swarm's coder is checked, reviewed, and corrected in fresh
+sessions. The fix starts at the delivery head; its verified commits move that
+head forward. A second reviewer checks only the correction delta and closure
+of the first findings. A remaining block never pushes.
 
 ```json
 {
@@ -968,29 +996,32 @@ most twice; an ok pushes the head.
     "name": "coder review push",
     "scope": { "folder": "/srv/site", "role": "coder" },
     "steps": [
+      { "id": "gate", "type": "run", "command": "/usr/local/libexec/swarm-deliver/check.sh" },
       { "id": "review", "type": "agent", "worker": "reviewer",
         "brief": "Review this task's exact head against its brief." },
-      { "id": "fix", "type": "reopen", "from": "review", "max_rounds": 2,
-        "message": "The reviewer blocked your work. Its findings:",
+      { "id": "push-clean", "type": "run", "command": "/usr/local/libexec/swarm-deliver/push.sh",
+        "if": [{ "step": "review", "verdict": "ok" }] },
+      { "id": "fix", "type": "agent", "worker": "coder",
+        "brief": "Fix these findings, test and commit: {{steps.review.output}}. Prior handoff: {{steps.review.handoff}}",
         "if": [{ "step": "review", "verdict": "block" }] },
+      { "id": "review-fix", "type": "agent", "worker": "reviewer", "since": "review",
+        "brief": "Check closure and the delta. Fix handoff: {{steps.fix.handoff}}",
+        "if": [{ "step": "fix", "status": "succeeded" }] },
       { "id": "push", "type": "run", "command": "/usr/local/libexec/swarm-deliver/push.sh",
-        "if": [{ "step": "review", "verdict": "ok" }] }
+        "if": [{ "step": "review-fix", "verdict": "ok" }] }
     ]
   }
 }
 ```
 
-1. The coder's task ends (`task.run.succeeded`): delivery round 0 of job
-   `task/<project>/<task>` starts.
-2. `review` starts a reviewer job on the task's exact head, as a new session
-   in the coder's own worktree (read-only; `checkout` defaults to `same`).
-3. On `block`, `fix` sends the findings into the task's own session: queued
-   for its run if one is in flight, otherwise starting the task's next run in
-   that session (by hand, `manage_projects` `message_task` sends the same kind
-   of follow-up). The coder fixes them in the same worktree; that follow-up's
-   end starts the workflow again (round 1).
-4. On `ok`, `push` runs with `SWARM_HEAD` at the reviewed head. The task's
-   commits are in the folder's repository from the moment they are made.
+1. The task ends and `gate` runs the owner's checks; failure stops delivery.
+2. `review` starts a fresh read-only reviewer session at the exact head.
+3. A clean review runs `push-clean`; otherwise a fresh `fix` coder receives
+   findings and handoff in its own worktree, using one correction attempt.
+4. `review-fix` receives the previous findings and only the delta after
+   `review`'s head. Only its `ok` runs `push` at the updated `SWARM_HEAD`.
+   A second block ends without pushing; add explicitly bounded fresh steps
+   for more attempts. No step resumes the previous agent's conversation.
 
 Any step can be another of Swarm's own agents instead, for example
 `{ "type": "agent", "worker": "finder", "brief": "Write release notes for this change." }`.

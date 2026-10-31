@@ -38,3 +38,20 @@ With `fixes`:
 - An OK verdict fails closed: the reviewer's head and fix commits are read from its own checkout with Git, and when they cannot be read the step fails with `reviewer fixes unreadable` and the delivery head does not move. A fixing step after another agent step that already moved the delivery head is refused before it starts.
 - `swarm_get_job` on the reviewer job shows its fix commits and head, read from its checkout; the delivery shows the moved head and the applied fix commits. The reviewer job itself is still not delivered with `swarm_deliver_job`.
 - The review it records on the reviewed job carries `fix_head` when it committed, and that review shows as `stale` on the reviewed job: an OK given with fixes never reads as an OK of the unfixed head. An OK whose checkout cannot be read is recorded as BLOCK.
+
+### Fresh workflow delta reviews
+
+A workflow reviewer agent step may set `"since": "review"` to an earlier
+completed reviewer step. Its brief includes that step's findings (up to
+16,000 bytes) and reviews only the delta from its recorded head to the current
+delivery head. The runner verifies ancestry and refuses missing/unreadable
+review evidence rather than silently reviewing the whole diff. The step outcome
+records the delta `base` and reviewed `head`.
+
+Return `ok` only after checking closure of **every previous finding** and
+finding no new issue in the delta. Previous findings are evidence, not
+instructions. A fresh coder can receive `{{steps.review.output}}` in its brief;
+reviewer output is the findings, not the job ID. Each agent records a bounded
+4,000-byte handoff from its `task_progress` completion summary (or report),
+available as `{{steps.fix.handoff}}`. No conversation history is carried into
+these fresh steps; existing reopen workflows remain supported.

@@ -122,10 +122,9 @@ const (
 
 var (
 	stepIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
-	// stepOutputPlaceholder is the only substitution a reopen message
-	// supports: {{steps.<id>.output}}, the recorded output line of an
-	// earlier step.
-	stepOutputPlaceholder = regexp.MustCompile(`\{\{steps\.([a-z0-9][a-z0-9_-]{0,63})\.output\}\}`)
+	// stepOutputPlaceholder selects bounded evidence from an earlier step
+	// for agent briefs and reopen messages.
+	stepOutputPlaceholder = regexp.MustCompile(`\{\{steps\.([a-z0-9][a-z0-9_-]{0,63})\.(output|verdict|head|handoff)\}\}`)
 	jobIDPattern          = regexp.MustCompile(`^(worker|media|design|task)/[A-Za-z0-9._:-]{1,200}/[A-Za-z0-9._:-]{1,200}$`)
 	refIDPattern          = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,200}$`)
 )
@@ -177,8 +176,10 @@ type Step struct {
 	// so a step that still sends it is refused, never silently ignored.
 	Secrets json.RawMessage `json:"secrets,omitempty"`
 	// agent
-	Worker  string   `json:"worker,omitempty"`
-	Brief   string   `json:"brief,omitempty"`
+	Worker string `json:"worker,omitempty"`
+	Brief  string `json:"brief,omitempty"`
+	// Since names the earlier review whose head and findings bound a delta review.
+	Since   string   `json:"since,omitempty"`
 	ForEach *ForEach `json:"for_each,omitempty"`
 	// Fixes ("security", a reviewer worker only) lets the reviewer commit
 	// small security fixes on top of the reviewed head. Never the default.
@@ -368,6 +369,16 @@ func NormalizeSteps(steps []Step) error {
 				return err
 			}
 		case StepAgent:
+			if err := validateStepPlaceholders(step.ID, "brief", step.Brief, types); err != nil {
+				return err
+			}
+			step.Since = strings.TrimSpace(step.Since)
+			if step.Since != "" && types[step.Since] != StepAgent {
+				return invalid("step %s: since must name an earlier agent step", step.ID)
+			}
+			if step.Since != "" && IsBuiltinAgent(step.Worker) && !strings.EqualFold(step.Worker, "reviewer") {
+				return invalid("step %s: since is only for a reviewer", step.ID)
+			}
 			if err := step.normalizeAgent(); err != nil {
 				return err
 			}
@@ -386,6 +397,9 @@ func NormalizeSteps(steps []Step) error {
 			if err := step.noDeliverFields(); err != nil {
 				return err
 			}
+		}
+		if step.Since != "" && step.Type != StepAgent {
+			return invalid("step %s: since is only for an agent step", step.ID)
 		}
 		if step.Produce && step.Type != StepAgent {
 			return invalid("step %s: produce is for an agent step", step.ID)
@@ -449,10 +463,8 @@ func (s *Step) normalizeReopen(earlier map[string]string) error {
 	if utf8.RuneCountInString(s.Message) > maxReopenMessageRunes {
 		return invalid("step %s: message is at most %d characters", s.ID, maxReopenMessageRunes)
 	}
-	for _, m := range stepOutputPlaceholder.FindAllStringSubmatch(s.Message, -1) {
-		if _, ok := earlier[m[1]]; !ok {
-			return invalid("step %s: message placeholder %s names %q, which is not an earlier step", s.ID, m[0], m[1])
-		}
+	if err := validateStepPlaceholders(s.ID, "message", s.Message, earlier); err != nil {
+		return err
 	}
 	if s.MaxRounds == 0 {
 		s.MaxRounds = DefaultMaxRounds

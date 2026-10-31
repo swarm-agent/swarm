@@ -282,7 +282,7 @@ func (s *Server) waitTaskJob(ctx context.Context, account, jobID string) (jobaut
 			}
 		}
 		if controlMCPTaskSettled[task.Status] && !active {
-			out := jobautomation.AgentOutcome{JobID: jobID, Status: jobautomation.NormalizeStatus(task.Status), Error: task.LastError}
+			out := jobautomation.AgentOutcome{JobID: jobID, Status: jobautomation.NormalizeStatus(task.Status), Error: task.LastError, Handoff: s.automationHandoff(task.SessionID)}
 			switch task.Status {
 			case "failed", "blocked", "rejected", "needs_input", "pending_approval":
 				out.Status = jobautomation.StatusFailed
