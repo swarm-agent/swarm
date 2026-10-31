@@ -354,3 +354,29 @@ func (r *Runtime) controlSwarmAnswer(ctx context.Context, scope WorkspaceScope, 
 	}
 	return service.ControlSwarmAnswer(ctx, scope.Principal, who, swarmTool, args)
 }
+
+// CatalogConversationArgs drops an action's Swarm Control inputs from a
+// conversation's call (control false), before it is run here or routed to a
+// linked machine, which runs a linked call as a Swarm Control one and would
+// otherwise act on them (an active worker, a task's model, a held wait). An
+// input the action also takes as its own stays. The caller's map is not
+// changed.
+func CatalogConversationArgs(declared CatalogAction, control bool, args map[string]any) map[string]any {
+	if control || len(declared.ControlInputs) == 0 {
+		return args
+	}
+	own := map[string]bool{}
+	for _, input := range declared.Inputs {
+		own[input] = true
+	}
+	out := make(map[string]any, len(args))
+	for key, value := range args {
+		out[key] = value
+	}
+	for _, key := range declared.ControlInputs {
+		if !own[key] {
+			delete(out, key)
+		}
+	}
+	return out
+}

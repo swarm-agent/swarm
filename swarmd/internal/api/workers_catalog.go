@@ -44,6 +44,11 @@ func (s *Server) ManageWorkers(ctx context.Context, p identity.Principal, who, a
 		return nil, errors.New("unknown manage_workers action")
 	}
 	held, control := tool.ControlScopesFromContext(ctx)
+	// A conversation's call never carries the action's Swarm Control inputs
+	// (the swarm_* worker tools' immediate changes), here or through a link:
+	// a linked machine runs the call as a Swarm Control one and would make
+	// or change the worker at once, without the person's acceptance.
+	args = workerConversationArgs(declared, control, args)
 	var current store.SessionSnapshot
 	if control {
 		// A Swarm Control or linked caller acts within its key: one of the
@@ -110,7 +115,7 @@ func (s *Server) ManageWorkers(ctx context.Context, p identity.Principal, who, a
 	if !ok {
 		return nil, errors.New("worker service unavailable")
 	}
-	out, err := runner.ManageWorkers(ctx, p, who, agent, workerConversationArgs(declared, control, args))
+	out, err := runner.ManageWorkers(ctx, p, who, agent, args)
 	if err != nil {
 		return nil, err
 	}
@@ -213,17 +218,7 @@ func (s *Server) workerControlCall(ctx context.Context, p identity.Principal, he
 // workerConversationArgs drops an action's Swarm Control inputs from a
 // conversation's call before the run service sees it.
 func workerConversationArgs(declared tool.CatalogAction, control bool, args map[string]any) map[string]any {
-	if control || len(declared.ControlInputs) == 0 {
-		return args
-	}
-	out := make(map[string]any, len(args))
-	for key, value := range args {
-		out[key] = value
-	}
-	for _, key := range declared.ControlInputs {
-		delete(out, key)
-	}
-	return out
+	return tool.CatalogConversationArgs(declared, control, args)
 }
 
 // workerAnswerWith adds fields to the run service's worker answer (its data,

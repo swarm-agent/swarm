@@ -401,6 +401,12 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		withAction["action"] = action
 		args = withAction
 	}
+	if declared, ok := manageProjectsDeclared().Action(action); ok {
+		// A conversation's call never carries the action's Swarm Control
+		// inputs (a task's model, held waits), here or through a link,
+		// whose machine runs the call as a Swarm Control one.
+		args = CatalogConversationArgs(declared, scope.ControlCaller, args)
+	}
 	args = manageProjectsSwarmArgs(args)
 	args, before, err := r.manageProjectsControlBefore(ctx, scope, action, args)
 	if err != nil {

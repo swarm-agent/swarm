@@ -62,3 +62,44 @@ func TestManageProjectsTakesTheSwarmToolInputs(t *testing.T) {
 		}
 	}
 }
+
+// Purpose:
+//   - Requirement: a conversation's manage_projects call drops the action's
+//     Swarm Control inputs (propose_task's model and wait_seconds, get's and
+//     wait_tasks' and the folder environments' wait_seconds) before it runs
+//     here or goes to a linked machine, which runs a linked call as a Swarm
+//     Control one; a Swarm Control caller keeps them.
+//   - Threat/regression: the Orchestrator choosing a task's model or holding
+//     a call on a linked machine through manage_projects.
+//   - Boundary/authority: CatalogConversationArgs over the declared
+//     ControlInputs, as executeManageProjects applies it first.
+//   - Narrowest layer: the filter over the real declarations.
+func TestManageProjectsConversationDropsSwarmControlInputs(t *testing.T) {
+	catalog := manageProjectsDeclared()
+	checked := 0
+	for _, declared := range catalog.Actions {
+		if len(declared.ControlInputs) == 0 {
+			continue
+		}
+		checked++
+		call := map[string]any{"action": declared.Action, "machine": "box"}
+		for _, key := range declared.ControlInputs {
+			call[key] = "x"
+		}
+		conversation := CatalogConversationArgs(declared, false, call)
+		for _, key := range declared.ControlInputs {
+			if _, kept := conversation[key]; kept {
+				t.Fatalf("%s: a conversation kept Swarm Control input %s", declared.Action, key)
+			}
+		}
+		if conversation["machine"] != "box" || len(call) != len(declared.ControlInputs)+2 {
+			t.Fatalf("%s: the filter lost an own input or changed the caller's map", declared.Action)
+		}
+		if control := CatalogConversationArgs(declared, true, call); !reflect.DeepEqual(control, call) {
+			t.Fatalf("%s: a Swarm Control call lost inputs", declared.Action)
+		}
+	}
+	if checked < 4 {
+		t.Fatalf("only %d manage_projects actions have Swarm Control inputs", checked)
+	}
+}
