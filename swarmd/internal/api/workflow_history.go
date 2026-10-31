@@ -202,10 +202,3 @@ func (s *Server) handleWorkflowHistory(w http.ResponseWriter, r *http.Request, a
 	}
 	writeJSON(w, 200, out)
 }
-func workflowHistoryTools() []controlMCPTool {
-	props := map[string]any{"id": controlMCPStringProp("Workflow id, including a deleted workflow.", 0, 200), "name": controlMCPStringProp("Workflow name.", 0, 200), "revision": map[string]any{"type": "integer", "minimum": 1}}
-	return []controlMCPTool{
-		{Name: "swarm_workflow_history", Title: "Workflow history", Description: "Read the last 100 workflow changes newest first, including after deletion, with changed top-level fields and writer. Supply revision for its portable swarm_workflow definition (or deleted marker). Use swarm_restore_workflow to roll back.", InputSchema: controlMCPObject(nil, props), Annotations: controlMCPReadOnly, call: controlMCPWorkflowHistory},
-		{Name: "swarm_restore_workflow", Title: "Restore workflow", Description: "Restore a retained definition as a new revision, recreating a deleted workflow. Uses set validation and permissions; run steps require the owner's full key. History remains readable with swarm_workflow_history.", InputSchema: controlMCPObject([]string{"revision"}, props), Annotations: controlMCPWrites, call: controlMCPRestoreWorkflow},
-	}
-}

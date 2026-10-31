@@ -176,7 +176,7 @@ func controlMCPListProviders(c *controlMCPCall, args map[string]any) (any, error
 			runsAgents := c.controlMCPRunsAgents(id)
 			entry["runs_agents"] = runsAgents
 			if !ready {
-				connect := controlMCPProviderConnect(id, types, runsAgents, c.levelAllows)
+				connect := controlMCPProviderConnect(id, types, runsAgents, c.advertisedToolAllowed)
 				entry["connect"] = connect
 				if runsAgents {
 					options = append(options, controlMCPConnectSummary(id, connect))

@@ -9,13 +9,6 @@ import (
 	"net/url"
 )
 
-func controlMCPWorkerBudgetSchema() map[string]any {
-	return map[string]any{"anyOf": []any{controlMCPObject([]string{"daily_usd"}, map[string]any{
-		"daily_usd":    map[string]any{"type": "number", "minimum": 0},
-		"daily_tokens": map[string]any{"type": "integer", "minimum": 0},
-	}), map[string]any{"type": "null"}}, "description": "Daily UTC limits; zero is unset. Null clears limits without clearing spend or holds. Account limits still apply."}
-}
-
 type controlMCPWorkerBudget struct {
 	DailyUSD    *float64 `json:"daily_usd"`
 	DailyTokens int64    `json:"daily_tokens"`

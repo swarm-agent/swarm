@@ -11,27 +11,6 @@ import (
 // per-message media limit).
 const controlMCPMaxAttachments = 8
 
-// controlMCPAttachmentsSchema is files sent with a message: Swarm uploads each
-// to the session's media and attaches it, so the agent sees images natively
-// and can pass any of them to media tools by asset_id.
-func controlMCPAttachmentsSchema() map[string]any {
-	return map[string]any{
-		"type":        "array",
-		"maxItems":    controlMCPMaxAttachments,
-		"description": "Files sent with the message (images, video, audio, documents; at most 20 MiB each). Swarm uploads them to the session and attaches them; the agent sees images and can use any file in media generation by its asset_id.",
-		"items": map[string]any{
-			"type":     "object",
-			"required": []string{"data_base64"},
-			"properties": map[string]any{
-				"filename":    controlMCPStringProp("", 0, 255),
-				"mime_type":   controlMCPStringProp("e.g. image/png; Swarm also detects it from the bytes.", 0, 120),
-				"data_base64": map[string]any{"type": "string", "description": "The file's bytes, base64."},
-			},
-			"additionalProperties": false,
-		},
-	}
-}
-
 // uploadAttachments uploads a message's files to the session and returns the
 // references the message carries.
 func (c *controlMCPCall) uploadAttachments(sessionID string, raw any) ([]map[string]any, error) {

@@ -28,11 +28,6 @@ var controlMCPAgentName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 // prefixes are not enforced in V3 sessions.
 var controlMCPAgentToolSets = []string{"read_only", "read_write", "build"}
 
-// Client keys may start, read and drive sessions and nothing else.
-var controlMCPClientKeyScopes = []string{"sessions:read", "sessions:write", clientAppScope}
-
-var controlMCPClientKeyDays = []int{1, 7, 30, 90, 365}
-
 func controlMCPIsSystemAgent(name string) bool {
 	if slices.Contains(controlMCPSessionAgents, name) {
 		return true
@@ -59,74 +54,6 @@ func (c *controlMCPCall) customAgent(name string) error {
 		return controlMCPToolFailure("agent %q is not a session agent (see list_agents)", name)
 	}
 	return nil
-}
-
-func controlMCPListAgents(c *controlMCPCall, _ map[string]any) (any, error) {
-	response, err := c.dispatch(http.MethodGet, "/v2/agents", nil, nil)
-	if err != nil {
-		// The full view resolves each agent's model and fails before a
-		// provider is connected; the summary view (no descriptions) does not.
-		if response, err = c.dispatch(http.MethodGet, "/v2/agents", url.Values{"view": {"summary"}}, nil); err != nil {
-			return nil, err
-		}
-	}
-	custom := []map[string]any{}
-	for _, item := range controlMCPList(controlMCPMap(response["state"])["profiles"]) {
-		profile := controlMCPMap(item)
-		name, _ := profile["name"].(string)
-		// Only agents start_session admits (see customAgent).
-		if mode, _ := profile["mode"].(string); mode != agentruntime.ModeSubagent || !controlMCPAgentName.MatchString(name) || controlMCPReservedIDs[name] || controlMCPIsSystemAgent(name) {
-			continue
-		}
-		entry := controlMCPPick(profile, "name", "enabled")
-		if description, _ := profile["description"].(string); description != "" {
-			entry["description"] = controlMCPTruncate(description, 200)
-		}
-		if len(custom) >= controlMCPMaxListItems {
-			break
-		}
-		custom = append(custom, entry)
-	}
-	return map[string]any{"built_in": controlMCPSessionAgents, "custom": custom}, nil
-}
-
-func controlMCPDefineAgent(c *controlMCPCall, args map[string]any) (any, error) {
-	name := controlMCPString(args, "name")
-	response, err := c.dispatch(http.MethodPut, "/v3/agents/"+url.PathEscape(name), nil, args)
-	if err != nil {
-		return nil, err
-	}
-	result := controlMCPPick(controlMCPMap(response["profile"]), "name", "enabled")
-	result["tools"] = args["tools"]
-	return map[string]any{"agent": result, "next": fmt.Sprintf("start_session with agent %q", name)}, nil
-}
-
-func controlMCPCreateClientKey(c *controlMCPCall, args map[string]any) (any, error) {
-	name := controlMCPString(args, "name")
-	if name == "" || len(name) > 64 {
-		return nil, controlMCPToolFailure("name is required (at most 64 characters)")
-	}
-	body := map[string]any{"name": name, "scopes": controlMCPClientKeyScopes}
-	if days := controlMCPInt(args, "days", 0); days != 0 {
-		if !slices.Contains(controlMCPClientKeyDays, days) {
-			return nil, controlMCPToolFailure("days must be one of %v, or left out (the key then works until 90 days unused)", controlMCPClientKeyDays)
-		}
-		body["expires_in_seconds"] = days * 24 * 60 * 60
-	}
-	response, err := c.dispatch(http.MethodPost, "/v3/auth/tokens", nil, body)
-	if err != nil {
-		return nil, err
-	}
-	token, _ := response["token"].(string)
-	if token == "" {
-		return nil, controlMCPToolFailure("Swarm did not return a key")
-	}
-	record := controlMCPPick(controlMCPMap(response["record"]), "id", "name", "scopes", "expires_at", "lapses_at", "lapse_reason")
-	return map[string]any{
-		"key":    token,
-		"record": record,
-		"use":    "Shown once. Send it as 'Authorization: Bearer <key>' to this box's HTTP API from a server process (for example the Node SDK: new SwarmClient({ baseUrl, token })). Never put it in browser code.",
-	}, nil
 }
 
 // controlMCPChatGPTMaxWaitSeconds caps swarm_connect_chatgpt status

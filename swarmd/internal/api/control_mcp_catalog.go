@@ -16,8 +16,8 @@ import (
 // each catalog tool is one MCP tool generated from its declaration, filtered
 // by the caller's key level per action, and a call runs the same handler the
 // Orchestrator runs (tool.Runtime.ExecuteControlCatalog), not an HTTP round
-// trip. The answer is the catalog envelope as it is. The swarm_* tools are a
-// separate, frozen set (TestControlMCPSwarmToolNamesFrozen).
+// trip. The answer is the catalog envelope as it is. Swarm Control serves no
+// other tool: the swarm_* tools are gone (TestControlMCPServesOnlyCatalogTools).
 
 // controlCatalogRuntime is the tool runtime as Swarm Control uses it.
 type controlCatalogRuntime interface {
@@ -93,7 +93,7 @@ func (c *controlMCPCall) catalogActionAllowed(action tool.CatalogAction) bool {
 // The catalog handlers run their actions on internal requests that carry
 // only the caller's scopes, never such a binding, so the per-worker and
 // per-agent checks of the routes behind them would not see it: a bound key
-// is refused every catalog tool (its own swarm_* tools keep the binding).
+// is refused every catalog tool, so Swarm Control lists none for it.
 func catalogBoundKey(record *pebblestore.ScopedTokenRecord) bool {
 	if record == nil {
 		return false

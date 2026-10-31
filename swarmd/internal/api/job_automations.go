@@ -18,7 +18,6 @@ import (
 	"swarm/packages/swarmd/internal/outbox"
 	"swarm/packages/swarmd/internal/sandbox"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
-	"swarm/packages/swarmd/internal/tool"
 )
 
 // Job automations (docs/automations.md): when a job ends Swarm records one
@@ -1533,18 +1532,6 @@ func (s *Server) saveWorkflowArgs(caller WorkflowCaller, args map[string]any, sk
 	return workflowSaveView(saved, created), nil
 }
 
-func controlMCPSetAutomation(c *controlMCPCall, args map[string]any) (any, error) {
-	out, err := c.workflowDispatch(http.MethodPost, JobAutomationsPath, nil, args)
-	if err != nil {
-		return nil, err
-	}
-	out["next"] = workflowSaveNext
-	if key, _ := out["trigger_key"].(string); key != "" {
-		out["next"] = workflowSaveNext + " The trigger key is shown only now; store it securely."
-	}
-	return out, nil
-}
-
 // ListWorkflows lists the account's workflows: by default each definition
 // with its last deliveries one compact line each (WorkflowListOptions selects
 // bounded detail or one delivery).
@@ -1633,19 +1620,6 @@ func (s *Server) DeleteWorkflow(caller WorkflowCaller, args map[string]any) (any
 		return nil, err
 	}
 	return map[string]any{"deleted": id, "name": a.Name}, nil
-}
-
-func controlMCPStopAutomations(c *controlMCPCall, args map[string]any) (any, error) {
-	out, err := c.workflowDispatch(http.MethodPost, JobAutomationsPath+"/stop", nil, args)
-	if err != nil {
-		return nil, err
-	}
-	stopped, _ := controlMCPMap(out["stop"])["stopped"].(bool)
-	next := "no new automation step starts on this machine until you turn it off; running steps finish"
-	if !stopped {
-		next = "automations run again; deliveries the switch stopped re-run with swarm_deliver_job (automation: true)"
-	}
-	return map[string]any{"stopped": stopped, "next": next}, nil
 }
 
 // controlMCPThen creates the automation of a `then` argument: the steps,
@@ -1804,98 +1778,4 @@ func (c *controlMCPCall) jobCurrentHead(kind, a, b string) (string, error) {
 		return "", err
 	}
 	return core.head, nil
-}
-
-// controlMCPAutomationStepsSchema is the JSON schema of an automation's steps.
-func controlMCPAutomationStepsSchema() map[string]any {
-	return map[string]any{"type": "array", "minItems": 0, "maxItems": jobautomation.MaxSteps, "description": "Ordered steps; empty only when on is set. A failed step stops the rest unless continue_on_failure; a step whose if does not hold is skipped and the rest still run.",
-		"items": map[string]any{"type": "object", "required": []string{"type"}, "properties": map[string]any{
-			"id":   controlMCPStringProp("Step id (lowercase, digits, - or _). Default step-N.", 0, 64),
-			"type": map[string]any{"type": "string", "enum": []string{jobautomation.StepRun, jobautomation.StepAgent, jobautomation.StepReopen, jobautomation.StepDeliver}},
-			"if": map[string]any{"type": "array", "maxItems": jobautomation.MaxStepConditions, "description": "Conditions that must all hold for the step to run, else it is skipped: {step, status: succeeded|failed} or, for an agent step, {step, verdict: ok|block} (the verdict of the review its job recorded; no verdict never matches).",
-				"items": map[string]any{"type": "object", "required": []string{"step"}, "properties": map[string]any{
-					"step":    controlMCPStringProp("An earlier step's id.", 1, 64),
-					"status":  map[string]any{"type": "string", "enum": []string{jobautomation.StateSucceeded, jobautomation.StateFailed}},
-					"verdict": map[string]any{"type": "string", "enum": []string{jobautomation.VerdictOK, jobautomation.VerdictBlock}},
-				}}},
-			"from":                controlMCPStringProp("reopen: the earlier agent step whose findings are sent into the triggering task's or job's own session (as swarm_send_message or swarm_message_job does). Optional when message is set.", 0, 64),
-			"message":             controlMCPStringProp("reopen: text placed before the findings, or sent alone when from recorded none (an ok review) or from is omitted. {{steps.<id>.output}} is replaced by that earlier step's recorded output line.", 0, 4000),
-			"max_rounds":          map[string]any{"type": "integer", "minimum": 1, "maximum": jobautomation.MaxRounds, "description": "reopen: how many times this reopen step may reopen the job (each reopen step counts its own rounds; the job as a whole allows the sum of its reopen steps' max_rounds); past it the delivery ends blocked (rounds_exhausted: step <id>). Default 2."},
-			"command":             controlMCPStringProp("run: the machine owner's script, as an absolute path or a path relative to the folder (e.g. deliver/push.sh). It runs on the host as the daemon's user, in the folder, with the machine's own credentials, and only if the file (symlinks resolved) is owned by root and not writable by group or others; a relative path must resolve to a singly linked file inside the folder (prefer an absolute path in a directory only root can write). It gets the job's result JSON on stdin and SWARM_* variables; its last output line is the step's output. Only the machine's owner may set a run step (a full AI key); a write key is refused.", 0, 1024),
-			"args":                map[string]any{"type": "array", "maxItems": jobautomation.MaxStepArgs, "items": map[string]any{"type": "string"}},
-			"worker":              controlMCPStringProp("agent: one of Swarm's own agents (swarm, coder, finder, designer, reviewer), run as a task; reviewer is Swarm's native reviewer at the triggering job's exact head, read-only unless fixes is security. Any worker, including a custom reviewer, can be named by its worker id; no worker is deployed automatically.", 0, 200),
-			"for_each":            tool.WorkflowForEachSchema(),
-			"brief":               controlMCPStringProp("agent: the brief; the triggering task's or job's result is attached.", 0, 20000),
-			"fixes":               map[string]any{"type": "string", "enum": []string{jobautomation.FixesSecurity}, "description": "agent, reviewer or a reviewer worker named by its id: \"security\" lets the reviewer commit small security-only fixes on a branch at the reviewed head instead of blocking for them. Its commits move the delivery head only with an OK verdict and at most " + strconv.Itoa(jobautomation.MaxReviewerFixLines) + " changed lines (else the step fails: reviewer fixes too large). Without it a reviewer is read-only."},
-			"checkout":            map[string]any{"type": "string", "enum": []string{jobautomation.CheckoutSame, jobautomation.CheckoutNew, jobautomation.CheckoutNone}, "description": "agent: where the step's agent works. same: a new session in the worktree of the job it follows, read-only (a reviewer only; the default for a reviewer). new: its own worktree at the job's head (swarm, the coder, a reviewer with fixes, any other worker). none: the folder itself (finder and designer, as their tasks always do). Omit it for the agent's default."},
-			"produce":             map[string]any{"type": "boolean", "description": "agent: the agent writes the workflow's result file (result: {kind: file, path, describe}); Swarm checks it exists, records its sha256 and adds it to what the delivery hands over. Not for finder or reviewer (they do not write files). A reviewer started after it reviews the produced work."},
-			"to":                  map[string]any{"type": "string", "enum": []string{jobautomation.DeliverFolder, jobautomation.DeliverMerge, jobautomation.DeliverPublish, jobautomation.DeliverOutbox}, "description": "deliver: where the deliverables go. folder: copied into path, a directory inside the folder (never overwriting a different file). merge: the work's branch merged into the folder's branch (swarm_integrate_task or swarm_deliver_job). publish: a pull request through the folder's publish rule. outbox: the machine's bucket (SWARM_OUTBOX_URL), with a manifest at machines/<machine>/deliveries/<delivery>/<step>.json."},
-			"path":                controlMCPStringProp("deliver to folder: the directory inside the folder (relative, e.g. reports).", 0, 512),
-			"what":                map[string]any{"type": "array", "maxItems": 50, "items": map[string]any{"type": "string", "maxLength": 512}, "description": "deliver: the deliverables by name, as the work's result lists them (branch, report, a file path). Default: the workflow's result; without one, everything that fits the target (files, media and the report for folder and outbox; the branch for merge and publish)."},
-			"timeout_seconds":     map[string]any{"type": "integer", "minimum": 1, "maximum": jobautomation.MaxStepTimeoutSeconds, "description": "Default 600."},
-			"continue_on_failure": map[string]any{"type": "boolean", "description": "Default false: a failed step stops the rest."},
-		}}}
-}
-
-func controlMCPThenSchema() map[string]any {
-	return map[string]any{"type": "object", "description": "Optional steps to run when the job ends (a workflow scoped to this job). Without it nothing runs: integrate by hand.",
-		"required": []string{"steps"}, "properties": map[string]any{
-			"steps":   controlMCPAutomationStepsSchema(),
-			"when":    map[string]any{"type": "string", "enum": []string{jobautomation.WhenSucceeded, jobautomation.WhenFailed, jobautomation.WhenAlways}, "description": "Default succeeded."},
-			"retries": map[string]any{"type": "integer", "minimum": 0, "maximum": jobautomation.MaxRetries, "description": "Automatic retries of a failed step, with backoff. Default 0."},
-		}}
-}
-
-func controlMCPAutomationTools() []controlMCPTool {
-	return append(append(workflowTransferTools(), workflowHistoryTools()...), []controlMCPTool{
-		{
-			Name: "swarm_set_workflow", Title: "Set a workflow",
-			Description: "Create or update (by name) a workflow: what Swarm does when work ends in a folder. It starts when a task of Swarm's own agents ends (swarm_run_task: swarm, coder, finder, designer; its first run and each follow-up in its session) or when a worker job ends. Its ordered steps are each: another agent working on the result (agent: swarm, coder, finder or designer as a task in the folder, a coder starting at the work's head; or Swarm's native reviewer task at that head, or a custom worker id), a follow-up that sends its message and/or an agent step's findings back into the work's own session so the same agent fixes its own work (reopen, bounded by max_rounds), handing the work's result over (deliver: to a directory of the folder, merged into the folder's branch, a pull request, or the machine's outbox bucket), or the machine owner's root-owned script run on the host in the folder (run: push, deploy, alert). Every result lists its deliverables (branch, files with sha256, media, report); result names the one the work must hand over, and an agent step with produce: true writes it when the work did not (research turned into a report). A step's if runs it only when earlier steps' status or review verdict match. Scope it to every task and job in the folder, one agent's tasks (role), one worker's jobs, one job or one schedule's jobs; when succeeded, failed or always. swarm_list_workflows shows exactly what each one does. Swarm runs only these steps and reports what happened; with no workflow the work just ends with its branch and the person integrates it by hand. Changes retain history readable with swarm_workflow_history and reversible with swarm_restore_workflow. Offer it; do not set it up unasked. for_each queues one worker job per object in a committed JSON array with bounded parallelism and optional after_field dependencies on id_field (default id). " + tool.WorkflowTriggerDescription,
-			InputSchema: controlMCPObject([]string{"name", "steps"}, map[string]any{
-				"inputs": tool.WorkflowInputsSchema(), "with": tool.WorkflowWithSchema(),
-				"on":         tool.WorkflowTriggerSchema(),
-				"rotate_key": map[string]any{"type": "boolean", "description": "Replace the webhook signing key; the save result shows it only once."},
-				"name":       controlMCPStringProp("Unique name; setting an existing name updates it (its revision rises).", 1, 200),
-				"project":    controlMCPStringProp("Project (id or name) whose folder the workflow watches, when scope.folder is not given.", 0, 256),
-				"workspace":  controlMCPStringProp("Which of the project's folders (absolute path), when it has several.", 0, 4096),
-				"scope": map[string]any{"type": "object", "properties": map[string]any{
-					"folder":   controlMCPStringProp("Absolute path of the project folder.", 0, 4096),
-					"role":     map[string]any{"type": "string", "enum": []string{"swarm", "coder", "finder", "designer"}, "description": "Only the tasks this one of Swarm's own agents finished in the folder."},
-					"worker":   controlMCPStringProp("Only this worker's jobs (worker id).", 0, 200),
-					"job":      controlMCPStringProp("Only this task or job (task/<project>/<task> or a job id).", 0, 700),
-					"schedule": controlMCPStringProp("Only this schedule's jobs (schedule id).", 0, 200),
-				}},
-				"when":    map[string]any{"type": "string", "enum": []string{jobautomation.WhenSucceeded, jobautomation.WhenFailed, jobautomation.WhenAlways}, "description": "Default succeeded."},
-				"retries": map[string]any{"type": "integer", "minimum": 0, "maximum": jobautomation.MaxRetries, "description": "Automatic retries of a failed step, with backoff. Default 0."},
-				"enabled": map[string]any{"type": "boolean", "description": "Default true."},
-				"result": map[string]any{"type": "object", "required": []string{"kind"}, "description": "What the work must hand over (optional): a file (path, relative to the folder) or media file, the report, or the branch, and describe what it must contain. A deliver step hands it over by default; when the work did not produce it, an agent step with produce: true writes it.", "properties": map[string]any{
-					"kind":     map[string]any{"type": "string", "enum": []string{jobautomation.DeliverableFile, jobautomation.DeliverableMedia, jobautomation.DeliverableReport, jobautomation.DeliverableBranch}},
-					"path":     controlMCPStringProp("file or media: its path relative to the folder (e.g. reports/audit.md).", 0, 512),
-					"describe": controlMCPStringProp("What the result must be or contain, for the agent that produces it and the reviewer that checks it.", 0, 4000),
-				}},
-				"steps": controlMCPAutomationStepsSchema(),
-			}),
-			Annotations: controlMCPWrites, call: controlMCPSetAutomation,
-		},
-		{
-			Name: "swarm_list_workflows", Title: "List workflows",
-			Description: "This account's workflows, each exactly as Swarm runs it (scope, when, steps, revision, enabled), with its history count and last change (time, who; swarm_workflow_history reads revisions and swarm_restore_workflow restores them), its last 3 deliveries one line each (delivery_id, job, state, round, head, blocked reason, and each step's state and verdict; no findings), and whether the machine-wide stop switch is on. For step detail (attempts, exit code, output) pass delivery_id for one delivery, with each step's findings in full, or detail: \"deliveries\" for the last 3 of every workflow (findings cut to 1500 characters). Why a review sent a task back is also on swarm_task_result and swarm_wait_task (progress.workflow: delivery_id, round, capped findings).",
-			InputSchema: controlMCPObject(nil, map[string]any{
-				"delivery_id": controlMCPStringProp("One delivery (a delivery_id from the listing) in bounded detail, instead of the list.", 0, 200),
-				"detail":      map[string]any{"type": "string", "enum": []string{workflowDetailDeliveries}, "description": "deliveries: each workflow's last 3 deliveries with their steps' outcomes (bounded), instead of one line each."},
-			}), Annotations: controlMCPReadOnly, call: controlMCPListAutomations,
-		},
-		{
-			Name: "swarm_delete_workflow", Title: "Delete a workflow",
-			Description: "Delete a workflow by id or name. Its history and past deliveries stay readable; swarm_restore_workflow recreates a retained revision. One already running finishes.",
-			InputSchema: controlMCPObject(nil, map[string]any{"id": controlMCPStringProp("", 0, 200), "name": controlMCPStringProp("", 0, 200)}),
-			Annotations: controlMCPDestructive, call: controlMCPDeleteAutomation,
-		},
-		{
-			Name: "swarm_stop_workflows", Title: "Stop or resume all workflows",
-			Description: "The machine-wide stop switch: while on, no new workflow step starts (running steps finish; the next step is recorded as stopped). Turn it off to resume; swarm_deliver_job with automation: true re-runs stopped steps.",
-			InputSchema: controlMCPObject([]string{"stopped"}, map[string]any{"stopped": map[string]any{"type": "boolean"}}),
-			Annotations: controlMCPWrites, call: controlMCPStopAutomations,
-		},
-	}...)
 }

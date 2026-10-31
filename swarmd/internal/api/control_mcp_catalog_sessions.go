@@ -89,7 +89,7 @@ func (s *Server) sessionControlCall(ctx context.Context, p identity.Principal) (
 		return nil, err
 	}
 	req = requestWithScopedToken(req, &pebblestore.ScopedTokenRecord{Scopes: scopes})
-	return &controlMCPCall{request: req, next: s.internalRouteHandler(), server: s, sessionNext: map[string]any{"tool": "manage_sessions", "action": "get"}}, nil
+	return &controlMCPCall{request: req, next: s.internalRouteHandler(), server: s}, nil
 }
 
 // ManageSessionSwarm runs the swarm_* session tools' own code for one part

@@ -65,38 +65,35 @@ func (c *controlMCPCall) taskNext(task map[string]any) string {
 	can := c.advertisedToolAllowed
 	switch controlMCPString(task, "status") {
 	case "needs_review":
-		if can("swarm_task_result") && can("swarm_integrate_task") {
-			return "read swarm_task_result (include_diff for the patch), then authorize swarm_integrate_task to merge into the target branch"
+		if can("manage_projects get_task") && can("manage_projects integrate_task") {
+			return "read manage_projects get_task (get_task_changes for the patch), then authorize manage_projects integrate_task to merge into the target branch"
 		}
-		if can("swarm_task_result") {
-			return "read swarm_task_result; delivery requires an authorized client"
+		if can("manage_projects get_task") {
+			return "read manage_projects get_task; delivery requires an authorized client"
 		}
 	case "completed":
-		if can("swarm_task_result") {
-			return "the task is finished: read swarm_task_result for its output and actual integration evidence"
+		if can("manage_projects get_task") {
+			return "the task is finished: read manage_projects get_task for its output and actual integration evidence"
 		}
 	case "failed", "blocked", "cancelled", "superseded", pebblestore.ProjectTaskStatusStopped:
-		if can("swarm_task_result") && can("swarm_get_session") && can("swarm_send_message") && can("swarm_run_task") {
-			return "inspect swarm_task_result and swarm_get_session before continuing with swarm_send_message where supported; swarm_run_task creates a new task receipt"
+		if can("manage_projects get_task") && can("manage_sessions get") && can("manage_sessions send_message") && can("manage_projects propose_task") {
+			return "inspect manage_projects get_task and manage_sessions get before continuing with manage_sessions send_message where supported; manage_projects propose_task creates a new task receipt"
 		}
-		if can("swarm_task_result") {
-			return "read swarm_task_result; continuation requires an authorized client"
+		if can("manage_projects get_task") {
+			return "read manage_projects get_task; continuation requires an authorized client"
 		}
 	case "needs_input":
-		if can("swarm_get_session") && can("swarm_resolve_permission") {
-			return "read action_needed and swarm_get_session pending_permissions; swarm_resolve_permission answers the exact question or approval receipt"
+		if can("manage_sessions get") && can("manage_sessions resolve_permission") {
+			return "read action_needed and manage_sessions get pending_permissions; manage_sessions resolve_permission answers the exact question or approval receipt"
 		}
-		if can("swarm_get_session") {
-			return "read swarm_get_session pending_permissions; an authorized client must answer the exact question or approval receipt"
+		if can("manage_sessions get") {
+			return "read manage_sessions get pending_permissions; an authorized client must answer the exact question or approval receipt"
 		}
 	case "pending_approval":
-		if can("swarm_approve_task") {
-			return "the task waits for approval: swarm_approve_task approves or rejects it"
-		}
-		return "the task waits for an authorized client to approve or reject it"
+		return "the task waits for the person to approve or reject it in their Swarm app"
 	case "queued", "in_progress", "planning":
-		if can("swarm_wait_task") {
-			return "the task is running: swarm_wait_task returns when it settles"
+		if can("manage_projects wait_tasks") {
+			return "the task is running: manage_projects wait_tasks returns when it settles"
 		}
 	}
 	return "inspect the task receipt with an authorized client"

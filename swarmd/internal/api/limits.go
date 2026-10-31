@@ -69,23 +69,3 @@ func controlMCPGetLimits(c *controlMCPCall, args map[string]any) (any, error) {
 func controlMCPSetLimits(c *controlMCPCall, args map[string]any) (any, error) {
 	return c.dispatch(http.MethodPut, "/v3/limits", nil, args)
 }
-
-func controlMCPLimitsSchema() map[string]any {
-	return controlMCPObject([]string{"worker_job_concurrency", "job_tokens", "job_cost_usd", "delegation_waves", "active_children", "swarm_children"}, map[string]any{
-		"project_cache_bytes":    map[string]any{"type": "integer", "minimum": 0, "description": "Per-project soft cache cap in bytes; zero selects 10 GiB."},
-		"helper_concurrency":     map[string]any{"type": "integer", "minimum": 1, "maximum": 256},
-		"helpers_per_job":        map[string]any{"type": "integer", "minimum": 1, "maximum": 10000},
-		"helper_timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 3600},
-		"helper_tokens":          map[string]any{"type": "integer", "minimum": 1, "maximum": 1000000000, "description": "Per-helper cumulative token budget, enforced after provider usage receipts. An over-budget helper is stopped and reported at the next step; no pre-dispatch estimate is used."},
-		"revision":               map[string]any{"type": "integer", "minimum": 0},
-		"worker_job_concurrency": map[string]any{"type": "integer", "minimum": 1, "maximum": 10000},
-		"job_tokens":             map[string]any{"type": "integer", "minimum": 0, "maximum": 1000000000},
-		"job_cost_usd":           map[string]any{"type": "number", "minimum": 0, "maximum": 1000000},
-		"delegation_waves":       map[string]any{"type": "integer", "minimum": 0, "maximum": 256},
-		"active_children":        map[string]any{"type": "integer", "minimum": 1, "maximum": 256},
-		"swarm_children":         map[string]any{"type": "integer", "minimum": 1, "maximum": 256},
-		"stall_after_minutes":    map[string]any{"type": "integer", "minimum": 0, "maximum": 1440, "description": "Minutes an unfinished task may go unchanged with no run, queued run, workflow step or armed wait before it raises task.stalled; zero selects 20."},
-		"run_silent_minutes":     map[string]any{"type": "integer", "minimum": 0, "maximum": 1440, "description": "Minutes an active task run may go without a new event (not on a tool, background command or approval) before it raises task.stalled; zero selects 30."},
-		"stall_horizon_hours":    map[string]any{"type": "integer", "minimum": 0, "maximum": 720, "description": "Hours after its last change that an unfinished task is old work the stall check leaves alone (no recovery, no task.stalled); zero selects 24."},
-	})
-}

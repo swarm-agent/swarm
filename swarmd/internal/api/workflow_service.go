@@ -2,10 +2,8 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
-	"net/url"
 
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/jobautomation"
@@ -135,25 +133,6 @@ func workflowSaveView(a jobautomation.Automation, created bool) map[string]any {
 	return map[string]any{"automation": jobAutomationView(a), "created": created, "next": next}
 }
 
-func (c *controlMCPCall) workflowDispatch(method, path string, query url.Values, body any) (map[string]any, error) {
-	out, err := c.dispatch(method, path, query, body)
-	if err != nil {
-		var refusal controlMCPToolError
-		if errors.As(err, &refusal) {
-			var response map[string]any
-			if json.Unmarshal([]byte(refusal.body), &response) == nil {
-				if message, ok := response["error"].(string); ok {
-					refusal.message = message
-					return nil, refusal
-				}
-			}
-		}
-		return nil, controlMCPToolFailure("%s", err)
-	}
-	delete(out, "ok")
-	return out, nil
-}
-
 func (s *Server) workflowAccount(caller WorkflowCaller) (*jobautomation.Store, string, error) {
 	if !caller.Principal.Valid() {
 		return nil, "", identity.ErrPrincipalRequired
@@ -190,51 +169,4 @@ func workflowStopView(stop jobautomation.StopState) map[string]any {
 	}
 	// stopped is swarm_stop_workflows' answer: whether the switch is on.
 	return map[string]any{"stop": stop, "stopped": stop.Stopped, "next": next}
-}
-func controlMCPListAutomations(c *controlMCPCall, args map[string]any) (any, error) {
-	opts, err := workflowListOptions(func(key string) string { return controlMCPString(args, key) })
-	if err != nil {
-		return nil, err
-	}
-	query := url.Values{}
-	if opts.DeliveryID != "" {
-		query.Set("delivery_id", opts.DeliveryID)
-	}
-	if opts.Detail != "" {
-		query.Set("detail", opts.Detail)
-	}
-	return c.workflowDispatch(http.MethodGet, JobAutomationsPath, query, nil)
-}
-func controlMCPDeleteAutomation(c *controlMCPCall, args map[string]any) (any, error) {
-	id := controlMCPString(args, "id")
-	if id == "" {
-		return c.workflowDispatch(http.MethodDelete, JobAutomationsPath, url.Values{"name": {controlMCPString(args, "name")}}, nil)
-	}
-	if !controlMCPSafeID.MatchString(id) {
-		return nil, controlMCPToolFailure("invalid workflow id")
-	}
-	return c.workflowDispatch(http.MethodDelete, JobAutomationsPath+"/"+id, nil, nil)
-}
-func controlMCPWorkflowHistory(c *controlMCPCall, args map[string]any) (any, error) {
-	query := url.Values{}
-	for _, key := range []string{"id", "name", "revision"} {
-		if value, ok := args[key]; ok {
-			data, _ := json.Marshal(value)
-			if text, ok := value.(string); ok {
-				query.Set(key, text)
-			} else {
-				query.Set(key, string(data))
-			}
-		}
-	}
-	return c.workflowDispatch(http.MethodGet, JobAutomationsPath+"/history", query, nil)
-}
-func controlMCPRestoreWorkflow(c *controlMCPCall, args map[string]any) (any, error) {
-	return c.workflowDispatch(http.MethodPost, JobAutomationsPath+"/restore", nil, args)
-}
-func controlMCPImportWorkflow(c *controlMCPCall, args map[string]any) (any, error) {
-	return c.workflowDispatch(http.MethodPost, JobAutomationsPath+"/import", nil, args)
-}
-func controlMCPExportWorkflow(c *controlMCPCall, args map[string]any) (any, error) {
-	return c.workflowDispatch(http.MethodPost, JobAutomationsPath+"/export", nil, args)
 }

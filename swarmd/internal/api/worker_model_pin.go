@@ -8,19 +8,6 @@ import (
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
 
-func controlMCPWorkerModelSchema(nullable bool) map[string]any {
-	schema := controlMCPObject([]string{"provider", "model", "thinking"}, map[string]any{
-		"provider": controlMCPStringProp("Connected provider from swarm_list_models.", 1, 100),
-		"model":    controlMCPStringProp("Model from swarm_list_models.", 1, 256),
-		"thinking": controlMCPStringProp("Supported thinking option.", 0, 100),
-		"fast":     map[string]any{"type": "boolean", "description": "Only where swarm_list_models shows fast: true."},
-	})
-	if nullable {
-		return map[string]any{"anyOf": []any{schema, map[string]any{"type": "null"}}}
-	}
-	return schema
-}
-
 // workerModel validates through the same provider/catalog authority as list_models,
 // without requiring its sessions:read grant: these tools retain their write scopes.
 func (c *controlMCPCall) workerModel(raw any) (*store.SessionModelProfileSnapshot, error) {

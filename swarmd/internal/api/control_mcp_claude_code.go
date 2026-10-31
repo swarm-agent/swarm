@@ -171,21 +171,3 @@ func controlMCPConnectClaudeCode(c *controlMCPCall, args map[string]any) (any, e
 	out["next"] = "Claude Code is now this account's active provider. swarm_list_models shows its models; swarm_set_agent_model changes a role's model when the person asks."
 	return out, nil
 }
-
-// controlMCPClaudeCodeDescription says, on its own, everything an AI needs to
-// set the provider up.
-var controlMCPClaudeCodeDescription = "Set up the Claude Code CLI on this machine as Swarm's model provider (claudecode), using the person's Claude plan. Swarm runs the `claude` CLI as its own service user, which needs its own install and its own Claude sign-in; Swarm never reads, copies or stores Claude credentials, and the person's own Claude login is never copied. " +
-	"action status reports state (not_installed, not_working, needs_update, signed_out or signed_in), cli_version, signed_in and provider_active; when the CLI is not ready, run_on_the_machine is the exact command to run: `" + controlMCPClaudeCodeSetupCommand + "` (Swarm's installer). It installs or finds the CLI for Swarm's user, sets SWARM_CLAUDE_CODE_CLI_PATH and, in the person's terminal, starts `claude auth login` as that user; they finish in their browser. Re-running it is safe and reports the current state. " +
-	"Once status shows signed_in, action activate makes Claude Code the active provider for this account, the same as the setup page's Save and make active; no owner password or web form is needed. Steps: status, the person runs the command, status until signed_in, activate."
-
-func controlMCPClaudeCodeTool() controlMCPTool {
-	return controlMCPTool{
-		Name: "swarm_connect_claude_code", Title: "Connect Claude Code",
-		Description: controlMCPClaudeCodeDescription,
-		InputSchema: controlMCPObject([]string{"action"}, map[string]any{
-			"action": map[string]any{"type": "string", "enum": []string{"status", "activate"},
-				"description": "status: what is set up and the command to run when something is missing. activate: make Claude Code the active provider (needs signed_in)."},
-		}),
-		Annotations: controlMCPWrites, call: controlMCPConnectClaudeCode,
-	}
-}

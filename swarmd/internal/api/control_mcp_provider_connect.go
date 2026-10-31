@@ -40,9 +40,10 @@ func controlMCPProviderConnectMethod(provider string, credentialTypes []string, 
 			"needs":  "a ChatGPT plan; the person signs in in their own browser",
 		}
 		steps := []string{}
-		if allows("swarm_connect_chatgpt") {
-			connect["tool"] = "swarm_connect_chatgpt"
-			steps = append(steps, "Call swarm_connect_chatgpt with action start; give the person the link and the code at once, then call action status with login_id and wait_seconds until it reports success.")
+		if allows("manage_setup connect_chatgpt") {
+			connect["tool"] = "manage_setup"
+			connect["action"] = "connect_chatgpt"
+			steps = append(steps, "Call manage_setup action connect_chatgpt with step start; give the person the link and the code at once, then call it with step status, login_id and wait_seconds until it reports success.")
 		}
 		steps = append(steps,
 			"Or the person runs on the machine: sudo swarmctl setup codex-login --timeout 15m (it prints the link and code and waits until they approve).",
@@ -57,9 +58,10 @@ func controlMCPProviderConnectMethod(provider string, credentialTypes []string, 
 		steps := []string{
 			"On a box from install.sh, the person runs in their own terminal on the machine: " + controlMCPClaudeCodeSetupCommand + " (it installs or finds Claude Code for Swarm's user, points Swarm at it and starts claude auth login as that user; they finish in their browser).",
 		}
-		if allows("swarm_connect_claude_code") {
-			connect["tool"] = "swarm_connect_claude_code"
-			steps = append(steps, "Call swarm_connect_claude_code with action status until it reports signed_in, then action activate to turn it on for this account (no setup page or owner password needed).")
+		if allows("manage_setup connect_claude_code") {
+			connect["tool"] = "manage_setup"
+			connect["action"] = "connect_claude_code"
+			steps = append(steps, "Call manage_setup action connect_claude_code with step status until it reports signed_in, then step activate to turn it on for this account (no setup page or owner password needed).")
 		}
 		steps = append(steps,
 			"Otherwise the person installs Claude Code 2.1.248 or later where Swarm's daemon finds it: on the daemon's PATH (for example /usr/local/bin), or named by SWARM_CLAUDE_CODE_CLI_PATH in the daemon's environment.",
@@ -82,9 +84,10 @@ func controlMCPProviderConnectMethod(provider string, credentialTypes []string, 
 			"needs":  fmt.Sprintf("a %s API key, which the person adds themselves; never ask for it in chat", provider),
 		}
 		steps := []string{}
-		if allows("swarm_request_provider_key") {
-			connect["tool"] = "swarm_request_provider_key"
-			steps = append(steps, fmt.Sprintf("First call swarm_request_provider_key with provider %s; the person opens a tailnet link on a device in their tailnet (a loopback link on this machine) and pastes the key on that one-time page. Fleet clients use swarm_fleet_request_provider_key with the named machines.", provider))
+		if allows("manage_setup request_provider_key") {
+			connect["tool"] = "manage_setup"
+			connect["action"] = "request_provider_key"
+			steps = append(steps, fmt.Sprintf("First call manage_setup action request_provider_key with provider %s; the person opens a tailnet link on a device in their tailnet (a loopback link on this machine) and pastes the key on that one-time page. Fleet clients use swarm_fleet_request_provider_key with the named machines.", provider))
 		}
 		steps = append(steps,
 			"The person adds it on Swarm's setup page, under Settings > Providers (in the desktop app: Settings > Auth).",
