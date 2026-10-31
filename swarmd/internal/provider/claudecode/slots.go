@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -96,9 +97,11 @@ func (c *CLI) AddAccount() (id, loginCommand string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	current, err := user.Current()
-	if err != nil {
-		return "", "", err
+	// The login must run as the daemon's user. A uid without a passwd entry
+	// (common in sandboxes and containers) uses sudo's numeric "#uid" form.
+	runAs := "#" + strconv.Itoa(os.Getuid())
+	if current, lookupErr := user.Current(); lookupErr == nil && current.Username != "" {
+		runAs = current.Username
 	}
 	var random [16]byte
 	if _, err = rand.Read(random[:]); err != nil {
@@ -130,7 +133,7 @@ func (c *CLI) AddAccount() (id, loginCommand string, err error) {
 		return "", "", err
 	}
 	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
-	return id, "sudo -u " + quote(current.Username) + " -- env CLAUDE_CONFIG_DIR=" + quote(filepath.Join(base, relative)) + " " + quote(path) + " auth login", nil
+	return id, "sudo -u " + quote(runAs) + " -- env CLAUDE_CONFIG_DIR=" + quote(filepath.Join(base, relative)) + " " + quote(path) + " auth login", nil
 }
 
 func (c *CLI) OrderAccounts(ids []string) error {
