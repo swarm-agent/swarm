@@ -2081,6 +2081,11 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 			return "", fmt.Errorf("invalid JSON arguments for tool %q: %w", call.Name, err)
 		}
 	}
+	// A catalog call missing a required input is refused as Swarm Control
+	// refuses it, before any handler runs.
+	if err := CatalogCallRequired(CatalogAgentFromContext(ctx), call.Name, args); err != nil {
+		return "", err
+	}
 
 	ctx = sandbox.WithJobCheckout(ctx, scope.PrimaryPath)
 	if registered := sandbox.ReviewSessionCheckout(scope.SessionID); registered != "" {

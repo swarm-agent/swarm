@@ -21,7 +21,9 @@ import (
 // description, expected_revision and replace, merges a change onto the
 // current revision, refuses unknown fields and no longer takes revision;
 // import and restore answer state refused for a run step.)
-const manageWorkflowsDefinitionSHA256 = "a7fcae441f6f2abb300b73391b52dc37364ff5f446d290873d298a0c607283ba"
+// The parity fixes changed it on purpose: its action field lists each
+// action's required inputs (CatalogAction.Required).
+const manageWorkflowsDefinitionSHA256 = "5f31c213f949ceb20c85724a67a255c8d1bfc6eb596234c7f52c3b6534375be5"
 
 // Purpose: manage_workflows exists once, in the catalog. The Orchestrator's
 // definition is generated from the declarations (held by hash) and names

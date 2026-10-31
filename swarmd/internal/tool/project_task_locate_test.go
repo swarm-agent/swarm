@@ -150,6 +150,40 @@ func TestCatalogDeclaresRequiredInputs(t *testing.T) {
 					t.Fatalf("%s %s requires %q, which it does not take", tool.Name, action.Action, input)
 				}
 			}
+			// Every tool: the generated schema lists the declared inputs
+			// as required and the description has its "Requires:" line;
+			// a call missing one is refused, a call with all of them is not.
+			if len(action.Required) == 0 {
+				continue
+			}
+			required, _ := tool.InputSchema(action)["required"].([]string)
+			if strings.Join(required, ",") != "action,"+strings.Join(action.Required, ",") {
+				t.Fatalf("%s %s schema required = %v, declared %v", tool.Name, action.Action, required, action.Required)
+			}
+			if !strings.Contains(action.RequirementNote(), "Requires: "+strings.Join(action.Required, ", ")) {
+				t.Fatalf("%s %s note = %q", tool.Name, action.Action, action.RequirementNote())
+			}
+			full := map[string]any{"action": action.Action}
+			for _, input := range action.Required {
+				full[input] = "x"
+			}
+			if err := CatalogCallRequired("", tool.Name, full); err != nil {
+				t.Fatalf("%s %s refused a call with every required input: %v", tool.Name, action.Action, err)
+			}
+			delete(full, action.Required[0])
+			if err := CatalogCallRequired("", strings.ReplaceAll(tool.Name, "_", "-"), full); err == nil || !strings.Contains(err.Error(), action.Required[0]+" is required for "+tool.Name+" "+action.Action) {
+				t.Fatalf("%s %s without %s: %v", tool.Name, action.Action, action.Required[0], err)
+			}
+			// Another agent's call to an Orchestrator-only action is left to
+			// the handler's authority check, which refuses it first; any
+			// other action is checked for every agent (manage_jobs grants
+			// name the agent, the Orchestrator's own session is "swarm").
+			if err := CatalogCallRequired("system-coder", tool.Name, full); (err == nil) != catalogOrchestratorOnlyAction(tool.Name, action.Action) {
+				t.Fatalf("%s %s: another agent's call without %s: %v", tool.Name, action.Action, action.Required[0], err)
+			}
+			if err := CatalogCallRequired("swarm-orchestrator", tool.Name, full); err == nil {
+				t.Fatalf("%s %s: the Orchestrator's call without %s passed", tool.Name, action.Action, action.Required[0])
+			}
 		}
 	}
 	for name, want := range map[string][]string{

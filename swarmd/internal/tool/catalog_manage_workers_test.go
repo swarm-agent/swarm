@@ -20,6 +20,8 @@ import (
 // changed it on purpose: inspect takes swarm_get_worker's run_id and list
 // swarm_list_workers' include_jobs; the swarm_* worker tools' immediate
 // inputs are Swarm Control inputs the definition does not show.
+// The parity fixes changed it on purpose: its action field lists each
+// action's required inputs (CatalogAction.Required).
 const manageWorkersDefinitionSHA256 = "1c24b16a934d10afb01e1116600e9670bcc0fb9af0e53f6720b5f63125eae64d"
 
 // Purpose: manage_workers exists once, in the catalog. The Orchestrator's

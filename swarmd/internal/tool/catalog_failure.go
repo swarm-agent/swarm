@@ -81,7 +81,7 @@ func IsFailureEnvelope(text string) bool {
 // catalogCallFailure is the Orchestrator's answer to a failed catalog call:
 // its failure envelope, with the action and machine the call named.
 func (r *Runtime) catalogCallFailure(call Call, err error) (string, bool) {
-	catalog, ok := CatalogToolNamed(strings.TrimSpace(call.Name))
+	catalog, ok := CatalogToolOfCall(call.Name)
 	if !ok || err == nil {
 		return "", false
 	}

@@ -112,6 +112,7 @@ func manageWorkflowsCatalog() CatalogTool {
 	}
 	for i := range actions {
 		actions[i].Tool = manageWorkflowsToolName
+		actions[i].Required = catalogRequiredOf(actions[i].Tool, actions[i].Action)
 		actions[i].NextAction = nextActions[actions[i].Action]
 		if routeRead[actions[i].Action] {
 			actions[i].APIScopes = readScopes

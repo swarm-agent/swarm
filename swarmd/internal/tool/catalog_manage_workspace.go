@@ -113,6 +113,7 @@ func manageWorkspaceCatalog() CatalogTool {
 	}
 	for i := range actions {
 		actions[i].Tool = manageWorkspaceToolName
+		actions[i].Required = catalogRequiredOf(actions[i].Tool, actions[i].Action)
 		actions[i].NextAction = nextActions[actions[i].Action]
 		if actions[i].Level == CatalogLevelRead {
 			actions[i].APIScopes = readScopes

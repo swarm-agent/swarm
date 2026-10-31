@@ -59,6 +59,10 @@ func (r *Runtime) ManageWorkspaceCatalog(ctx context.Context, scope WorkspaceSco
 	// as a Swarm Control one. Here a conversation's change runs only as the
 	// person approved it, from its own arguments.
 	call = CatalogConversationArgs(declared, scope.ControlCaller, call)
+	// The Orchestrator's manage_workspace runs here, not through executeOne.
+	if err := CatalogCallRequired(CatalogAgentFromContext(ctx), manageWorkspaceToolName, call); err != nil {
+		return "", err
+	}
 	if machine := strings.TrimSpace(stringValue(args["machine"])); machine != "" {
 		if declared.Reach == CatalogReachHome {
 			return "", fmt.Errorf("manage_workspace %s runs on this machine only; omit machine", declared.Action)

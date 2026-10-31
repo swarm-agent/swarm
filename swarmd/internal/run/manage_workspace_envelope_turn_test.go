@@ -18,7 +18,7 @@ import (
 func TestManageWorkspaceEnvelopeKeepsTurnRestart(t *testing.T) {
 	answer := func(restart bool) string {
 		t.Helper()
-		out, err := (*tool.Runtime)(nil).ManageWorkspaceCatalog(context.Background(), tool.WorkspaceScope{}, map[string]any{"action": "update"}, func(map[string]any) (string, error) {
+		out, err := (*tool.Runtime)(nil).ManageWorkspaceCatalog(context.Background(), tool.WorkspaceScope{}, map[string]any{"action": "update", "workspace_id": "ws-1", "workspace_generation": float64(1)}, func(map[string]any) (string, error) {
 			if restart {
 				return `{"action":"update","status":"ok","restart_turn":true}`, nil
 			}

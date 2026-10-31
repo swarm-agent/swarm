@@ -64,6 +64,7 @@ func manageCustomAgentsCatalog() CatalogTool {
 	}
 	for i := range actions {
 		actions[i].Tool = manageCustomAgentsToolName
+		actions[i].Required = catalogRequiredOf(actions[i].Tool, actions[i].Action)
 		actions[i].Reach = CatalogReachHome
 		actions[i].Profiles = full
 		// Instructions and descriptions are written by agents or people.
@@ -147,6 +148,7 @@ func manageDesignCatalog() CatalogTool {
 	}
 	for i := range actions {
 		actions[i].Tool = manageDesignToolName
+		actions[i].Required = catalogRequiredOf(actions[i].Tool, actions[i].Action)
 		// remote.ToolScope of swarm_design; its handler and the design job
 		// route need sessions:write.
 		actions[i].Level = CatalogLevelWrite

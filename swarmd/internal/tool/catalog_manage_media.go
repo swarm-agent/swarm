@@ -88,6 +88,7 @@ func manageMediaCatalog() CatalogTool {
 	}
 	for i := range actions {
 		actions[i].Tool = ManageMediaToolName
+		actions[i].Required = catalogRequiredOf(actions[i].Tool, actions[i].Action)
 		actions[i].NextAction = nextActions[actions[i].Action]
 	}
 	return CatalogTool{Name: ManageMediaToolName, Description: manageMediaDescription, Fields: manageMediaFields(), Actions: actions}

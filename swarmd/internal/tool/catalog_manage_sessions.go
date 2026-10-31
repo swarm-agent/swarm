@@ -165,6 +165,7 @@ func manageSessionsCatalog() CatalogTool {
 	}
 	for i := range actions {
 		actions[i].Tool = manageSessionsToolName
+		actions[i].Required = catalogRequiredOf(actions[i].Tool, actions[i].Action)
 		actions[i].NextAction = nextActions[actions[i].Action]
 		if actions[i].Level == CatalogLevelRead {
 			actions[i].APIScopes = readScopes

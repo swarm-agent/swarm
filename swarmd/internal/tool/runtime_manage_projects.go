@@ -413,11 +413,10 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		return "", err
 	}
 	// The declared required inputs, refused as Swarm Control's schema check
-	// refuses them, so both surfaces give the same reason.
-	if declared, ok := manageProjectsDeclared().Action(action); ok {
-		if err := CheckCatalogRequired(declared, args); err != nil {
-			return "", err
-		}
+	// refuses them, so both surfaces give the same reason (after the
+	// handler's own authority and reach gates, as executeOne).
+	if err := CatalogCallRequired(CatalogAgentFromContext(ctx), manageProjectsToolName, args); err != nil {
+		return "", err
 	}
 	answer, err := r.manageProjectsAnswer(ctx, scope, args)
 	if err != nil {

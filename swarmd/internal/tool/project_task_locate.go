@@ -27,9 +27,14 @@ const projectTaskLocateMaxProjects = 1000
 
 // TaskProjectFromTaskID reports whether the action finds its project from its
 // task id when project_id is omitted (catalog: it takes project_id and
-// task_id or task_ids, and is not the task session's own report).
+// task_id or task_ids, and is not the task session's own report nor a new
+// task's proposal, whose task_id names no task yet).
 func TaskProjectFromTaskID(action CatalogAction) bool {
-	if action.Tool != manageProjectsToolName || action.Action == "report_task" || action.Action == "inspect_files" || action.Action == "list_linked_tasks" {
+	switch action.Action {
+	case "report_task", "inspect_files", "list_linked_tasks", "propose_task", "create_task":
+		return false
+	}
+	if action.Tool != manageProjectsToolName {
 		return false
 	}
 	return envelopeTakes(action, "project_id") && (envelopeTakes(action, "task_id") || envelopeTakes(action, "task_ids"))

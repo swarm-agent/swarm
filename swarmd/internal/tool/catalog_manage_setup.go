@@ -166,6 +166,7 @@ func manageSetupCatalog() CatalogTool {
 	}
 	for i := range actions {
 		actions[i].Tool = manageSetupToolName
+		actions[i].Required = catalogRequiredOf(actions[i].Tool, actions[i].Action)
 		actions[i].Reach = CatalogReachAny
 		if localOnly[actions[i].Action] || home[actions[i].Action] {
 			actions[i].Reach = CatalogReachHome

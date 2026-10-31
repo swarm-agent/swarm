@@ -1752,6 +1752,19 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 			decisions[i].Result.Error = message
 			continue
 		}
+		// A catalog call missing a required input is refused before the
+		// person is asked to approve it, with Swarm Control's reason.
+		if s.tools != nil {
+			agent := ""
+			if len(profile) > 0 {
+				agent = profile[0].Name
+			}
+			if output, err := s.tools.CatalogRequiredFailure(agent, toolCalls[i]); err != nil {
+				decisions[i].Result.Output = output
+				decisions[i].Result.Error = err.Error()
+				continue
+			}
+		}
 		if canonicalToolName(toolCalls[i].Name) == "manage_projects" {
 			principal, _ := identity.PrincipalFromContext(ctx)
 			var agentProfile pebblestore.AgentProfile

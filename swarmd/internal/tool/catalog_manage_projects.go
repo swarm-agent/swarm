@@ -285,8 +285,11 @@ func manageProjectsCatalog() CatalogTool {
 		FleetMachineStatusAction: {"machine"}, FleetMachineActivityAction: {"machine"},
 		ResolveTaskPermissionAction: {"task_id", "permission_id", "decision"},
 		TaskChangesAction:           task, TaskFileAction: {"task_id", "path"},
-		"integrate_task": task, "update_task": task, "archive_task": task, "unarchive_task": task, "delete_task": task,
-		"update": {"id"}, "delete": {"id"},
+		"integrate_task": task, "update_task": {"task_id", "expected_revision"}, "archive_task": {"task_id", "expected_revision"}, "unarchive_task": {"task_id", "expected_revision"}, "delete_task": {"task_id", "expected_revision"},
+		"approve_task": task, "accept_task": task, "deploy_task": task, "refine_task": task, "edit_requirements": task,
+		"propose_task": {"project_id"}, "create_task": {"project_id"}, "reconcile_tasks": {"project_id"},
+		"list_media": {"project_id"}, "get_media": {"project_id", "id"},
+		"create": {"name", "client_request_id"}, "update": {"id"}, "delete": {"id"},
 		"list_sources": {"project_id"}, "inspect_source": {"project_id"},
 		FolderEnvironmentGet: {"workspace_path"}, FolderEnvironmentUpdate: {"workspace_path", "environment"}, FolderEnvironmentRebuild: {"workspace_path"},
 	}

@@ -132,6 +132,7 @@ func manageWorkersCatalog() CatalogTool {
 	}
 	for i := range actions {
 		actions[i].Tool = manageWorkersToolName
+		actions[i].Required = catalogRequiredOf(actions[i].Tool, actions[i].Action)
 		actions[i].Reach = CatalogReachAny
 		actions[i].Profiles = core
 		actions[i].Untrusted = true

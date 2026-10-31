@@ -157,7 +157,12 @@ func TestManageSetupHandlerHoldsChangesToThePersonsDecision(t *testing.T) {
 		if action.Level == CatalogLevelRead {
 			continue
 		}
+		// Every required input is given, so the decision gate, not a
+		// missing input, is what refuses.
 		args := map[string]any{"action": action.Action}
+		for _, input := range action.Required {
+			args[input] = "x"
+		}
 		if _, err := orchestrator("system-orchestrator", false, args); err == nil || !strings.Contains(err.Error(), "needs the person's decision") {
 			t.Fatalf("undecided %s: %v", action.Action, err)
 		}

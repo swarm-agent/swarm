@@ -165,6 +165,13 @@ func FleetProjectActionAllowed(action string) bool {
 	return false
 }
 
+// fleetProjectServedLinked reports a project action a linked machine serves
+// through executeFleetProjects; any other is refused there with
+// FleetActionUnavailableError.
+func fleetProjectServedLinked(action string) bool {
+	return FleetProjectActionAllowed(action) || action == "wait_tasks" || action == FleetReadTaskSessionAction || action == ResolveTaskPermissionAction || fleetLinkedReadAction(action)
+}
+
 // FleetActionUnavailableError says an action is not served on a linked
 // machine and lists what is: the project actions, wait_tasks and
 // read_task_session.
@@ -236,7 +243,7 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 		action = "list"
 	}
 	machine := strings.TrimSpace(asString(args["machine"]))
-	if machine != "" && !FleetProjectActionAllowed(action) && action != "wait_tasks" && action != FleetReadTaskSessionAction && action != ResolveTaskPermissionAction && !fleetLinkedReadAction(action) {
+	if machine != "" && !fleetProjectServedLinked(action) {
 		return "", FleetActionUnavailableError(action)
 	}
 	machines, err := service.ListFleetMachines(ctx, scope.Principal)

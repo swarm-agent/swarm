@@ -131,6 +131,7 @@ func manageJobsCatalog() CatalogTool {
 	}
 	for i := range actions {
 		actions[i].Tool = manageJobsToolName
+		actions[i].Required = catalogRequiredOf(actions[i].Tool, actions[i].Action)
 		actions[i].NextAction = nextActions[actions[i].Action]
 		actions[i].WaitingStatuses = JobsWaitingStatuses
 		if declared, ok := scopes[actions[i].Action]; ok {

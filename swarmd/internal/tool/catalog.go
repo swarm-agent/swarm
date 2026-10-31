@@ -1,9 +1,12 @@
 package tool
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
+
+	agentruntime "swarm/packages/swarmd/internal/agent"
 )
 
 // The tool catalog is the one place a tool exists. Each action of a catalog
@@ -183,6 +186,82 @@ func CheckCatalogRequired(action CatalogAction, args map[string]any) error {
 		}
 	}
 	return nil
+}
+
+// CatalogToolOfCall is the catalog tool a call names: the catalog name, or
+// the Orchestrator's hyphenated spelling of it (manage-sessions).
+func CatalogToolOfCall(name string) (CatalogTool, bool) {
+	return CatalogToolNamed(strings.ReplaceAll(strings.TrimSpace(name), "-", "_"))
+}
+
+// CatalogCallRequired is the required-input check of a catalog tool's call
+// (CheckCatalogRequired on the action it names). A call to another tool, one
+// that names no action (the handler's default action) or names one the
+// catalog does not declare (a handler alias) passes: its handler decides.
+// The Orchestrator runs it before a call is approved or executed
+// (run.Service.gateToolCalls, Runtime.executeOne, ManageWorkspaceCatalog), as
+// Swarm Control does before its schema check (controlMCPCall.callCatalogTool).
+//
+// agent is the calling conversation's agent ("" when unknown). The handlers'
+// own gates refuse first where they apply, so their reason is the one given:
+// another agent's call to an Orchestrator-only action is held by the
+// handler's authority check (catalogOrchestratorOnlyAction), and a call
+// naming a machine for an action not served there by its reach check.
+func CatalogCallRequired(agent, toolName string, args map[string]any) error {
+	catalog, ok := CatalogToolOfCall(toolName)
+	if !ok {
+		return nil
+	}
+	name := strings.ToLower(strings.TrimSpace(asString(args["action"])))
+	if name == "" {
+		return nil
+	}
+	action, ok := catalog.Action(name)
+	if !ok {
+		return nil
+	}
+	if agent = strings.TrimSpace(agent); agent != "" && !agentruntime.IsOrchestratorAgentName(agent) && catalogOrchestratorOnlyAction(catalog.Name, action.Action) {
+		return nil
+	}
+	if strings.TrimSpace(asString(args["machine"])) != "" {
+		if action.Reach == CatalogReachHome {
+			return nil
+		}
+		if catalog.Name == manageProjectsToolName && !fleetProjectServedLinked(action.Action) && !FolderEnvironmentAction(action.Action) && !taskWorkReadAction(action.Action) {
+			// Refused there as not served on a linked machine.
+			return nil
+		}
+	}
+	return CheckCatalogRequired(action, args)
+}
+
+// catalogOrchestratorOnlyAction reports an action whose handler refuses any
+// conversation but the Orchestrator's (catalogOrchestratorOnly, manage_setup
+// and manage_workers), so another agent is told that, not what it left out.
+func catalogOrchestratorOnlyAction(toolName, action string) bool {
+	switch toolName {
+	case manageFleetToolName, manageDesignToolName, manageThemeToolName, manageCustomAgentsToolName, ManageMediaToolName, manageSetupToolName, manageWorkersToolName:
+		return true
+	case manageProjectsToolName:
+		return taskWorkReadAction(action)
+	}
+	return false
+}
+
+// CatalogRequiredFailure is a catalog call's required-input refusal and its
+// failure envelope (the Orchestrator's tool output); a nil error when the
+// call has every required input.
+func (r *Runtime) CatalogRequiredFailure(agent string, call Call) (string, error) {
+	var args map[string]any
+	if json.Unmarshal([]byte(strings.TrimSpace(call.Arguments)), &args) != nil || args == nil {
+		return "", nil
+	}
+	err := CatalogCallRequired(agent, call.Name, args)
+	if err == nil {
+		return "", nil
+	}
+	output, _ := r.catalogCallFailure(call, err)
+	return output, err
 }
 
 // catalogProjectFromTaskNote says when a task action needs project_id.
