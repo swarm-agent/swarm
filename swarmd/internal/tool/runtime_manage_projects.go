@@ -390,7 +390,16 @@ func (r *Runtime) resolveProjectThemeID(accountScopeID string, raw any) (string,
 func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
 	action := strings.ToLower(strings.TrimSpace(asString(args["action"])))
 	if action == "" {
+		// An omitted action is list everywhere below, as the permission
+		// gate reads it (a read): the default is written back so no later
+		// check can take the call for another action.
 		action = "list"
+		withAction := make(map[string]any, len(args)+1)
+		for key, value := range args {
+			withAction[key] = value
+		}
+		withAction["action"] = action
+		args = withAction
 	}
 	args = manageProjectsSwarmArgs(args)
 	answer, err := r.manageProjectsAnswer(ctx, scope, args)

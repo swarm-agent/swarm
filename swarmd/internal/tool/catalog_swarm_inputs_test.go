@@ -50,7 +50,7 @@ func TestManageProjectsTakesTheSwarmToolInputs(t *testing.T) {
 	// changes nothing.
 	for args, want := range map[*map[string]any]bool{
 		{"action": "update", "id": "p1"}: true,
-		{"id": "p1"}:                     true,
+		{"id": "p1"}:                     false,
 		{"action": "update", "id": "p1", "description": ""}:      false,
 		{"action": "update", "id": "p1", "workspaces": []any{}}:  false,
 		{"action": "update", "id": "p1", "project_context": "x"}: false,

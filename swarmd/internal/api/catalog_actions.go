@@ -72,6 +72,14 @@ var catalogConversationScopes = map[string][]string{
 	tool.ManageDesignToolName: {"sessions:read", "projects:read", "projects:write"},
 }
 
+// catalogConversationActionScopes are the route scopes one action's handler
+// also reads through: manage_projects update (with nothing to change)
+// reads the project before it writes project.md again, as
+// swarm_retry_project_context does.
+var catalogConversationActionScopes = map[string]map[string][]string{
+	"manage_projects": {"update": {"projects:read", "projects:write"}},
+}
+
 // catalogServedAction is the declared action ManageCatalogAction serves.
 func catalogServedAction(toolName, action string) (tool.CatalogTool, tool.CatalogAction, catalogSwarmHandler, bool) {
 	catalog, ok := tool.CatalogToolNamed(toolName)
@@ -175,6 +183,7 @@ func (s *Server) ManageCatalogAction(ctx context.Context, p identity.Principal, 
 		// A conversation's call holds the action's route scopes and level,
 		// plus the project routes its tool's handlers go through.
 		declared.APIScopes = append(append([]string(nil), declared.APIScopes...), catalogConversationScopes[toolName]...)
+		declared.APIScopes = append(declared.APIScopes, catalogConversationActionScopes[toolName][declared.Action]...)
 	}
 	call, err := s.setupCall(ctx, p, who, control, held, declared)
 	if err != nil {
@@ -195,7 +204,7 @@ func (s *Server) ManageCatalogAction(ctx context.Context, p identity.Principal, 
 // catalogProjectContextRetry is manage_projects update with nothing to change:
 // swarm_retry_project_context's handler writes project.md again.
 func catalogProjectContextRetry(c *controlMCPCall, args map[string]any) (any, error) {
-	if !tool.ProjectContextRetryCall(args) {
+	if !tool.ProjectUpdateChangesNothing(args) {
 		return nil, controlMCPToolFailure("update writes project.md again only when it names the project (id) and changes nothing else")
 	}
 	return controlMCPRetryProjectContext(c, map[string]any{"project_id": controlMCPString(args, "id")})

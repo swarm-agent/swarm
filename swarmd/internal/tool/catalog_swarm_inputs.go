@@ -104,10 +104,19 @@ var projectUpdateEdits = []string{"name", "description", "workspaces", "project_
 // ProjectContextRetryCall reports an update that names a project and changes
 // nothing: it writes the project's project.md again from its folders, the
 // effect of swarm_retry_project_context (refused while an attempt runs).
+// Only an explicit update counts: an omitted action is list, a read the
+// permission gate lets run unapproved, and must never write.
 func ProjectContextRetryCall(args map[string]any) bool {
-	if action := strings.ToLower(strings.TrimSpace(asString(args["action"]))); action != "" && action != "update" {
+	if strings.ToLower(strings.TrimSpace(asString(args["action"]))) != "update" {
 		return false
 	}
+	return ProjectUpdateChangesNothing(args)
+}
+
+// ProjectUpdateChangesNothing reports update arguments that name a project
+// (id) and no edit. The service checks it on a call already routed as
+// update, whose arguments no longer carry the action.
+func ProjectUpdateChangesNothing(args map[string]any) bool {
 	if strings.TrimSpace(asString(args["id"])) == "" {
 		return false
 	}
