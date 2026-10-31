@@ -24,6 +24,15 @@ test('a finished media call names its job', () => {
   assert.deepEqual(manageMediaJobRef(task), { projectId: 'p9', taskId: 'task_v1' })
 })
 
+test('a media call answered in the catalog envelope names its job', () => {
+  // manage_media answers in the catalog envelope, which always names a
+  // machine (this one's own name): the job is in data, and only a machine
+  // argument makes the call a linked one.
+  const envelope = { tool: 'manage_media', action: 'generate', machine: 'home', state: 'ok', data: { job_id: 'media/proj_2/task_m2', status: 'queued' }, untrusted_content: false }
+  assert.deepEqual(manageMediaJobRef(call({ argumentsJson: { action: 'generate', kind: 'image', brief: 'a bee' }, outputJson: envelope })), { projectId: 'proj_2', taskId: 'task_m2' })
+  assert.equal(manageMediaJobRef(call({ argumentsJson: { action: 'generate', machine: 'box' }, outputJson: { ...envelope, machine: 'box' } })), null)
+})
+
 test('other calls name no job', () => {
   const output = JSON.stringify({ job_id: 'media/p/t' })
   assert.equal(manageMediaJobRef(call({ state: 'running', argumentsJson: { action: 'generate' }, output })), null)

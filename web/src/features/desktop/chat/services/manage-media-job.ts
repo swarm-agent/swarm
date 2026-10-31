@@ -47,8 +47,10 @@ export function manageMediaJobRef(message: Pick<StructuredToolMessage, 'tool' | 
   if (!out || text(args, 'machine')) return null
   const action = text(args, 'action')
   if (tool === 'manage_media' && (action === 'generate' || action === 'retry')) {
-    if (text(out, 'machine')) return null
-    const parts = text(out, 'job_id').split('/')
+    // The catalog envelope's data is the answer (an older message held it at
+    // the top level); a linked call is told by its machine argument.
+    if (manageProjectsLinked(args, out)) return null
+    const parts = text(manageProjectsAnswer(out).data, 'job_id').split('/')
     if (parts.length !== 3 || parts[0] !== 'media' || !parts[1] || !parts[2]) return null
     return { projectId: parts[1], taskId: parts[2] }
   }
