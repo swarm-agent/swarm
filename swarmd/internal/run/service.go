@@ -3075,6 +3075,10 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		runtimeScope.SessionID = strings.TrimSpace(sessionSnapshot.ID)
 		runtimeScope.ReadOnlyBash = agentruntime.IsFinderAgentName(agentProfile.Name) || agentProfile.Name == agentruntime.HelperAgentID
 		runtimeCtx := tool.WithWorkspaceScope(ctx, runtimeScope)
+		// The calling session's agent: catalog tools on this path
+		// (manage_fleet, manage_designs, manage_media, manage_projects) check
+		// it, as the dedicated manage_jobs/manage_setup paths do.
+		runtimeCtx = tool.WithCatalogAgent(runtimeCtx, agentProfile.Name)
 		runtimeCtx = tool.WithArtifactRunContext(runtimeCtx, s.providerManagedArtifactRunContext(providerToolInvokerConfig{
 			sessionID:          sessionID,
 			runID:              runID,

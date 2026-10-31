@@ -948,6 +948,9 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 					runtimeScope.SessionID = strings.TrimSpace(config.sessionID)
 					runtimeScope.ReadOnlyBash = agentruntime.IsFinderAgentName(config.agentProfile.Name) || config.agentProfile.Name == agentruntime.HelperAgentID
 					runtimeCtx := tool.WithWorkspaceScope(ctx, runtimeScope)
+					// The calling session's agent, for the catalog tools on
+					// this path (as in Service.runTurn).
+					runtimeCtx = tool.WithCatalogAgent(runtimeCtx, config.agentProfile.Name)
 					runtimeCtx = tool.WithArtifactRunContext(runtimeCtx, s.providerManagedArtifactRunContext(config))
 					if authorContext := tool.BindArtifactV3AuthorRunContext(config.artifactV3AuthorContext, config.runID); authorContext != nil {
 						runtimeCtx = tool.WithArtifactV3AuthorRunContext(runtimeCtx, *authorContext)
