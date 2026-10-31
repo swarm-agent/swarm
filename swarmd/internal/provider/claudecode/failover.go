@@ -46,7 +46,11 @@ func (r *Runner) runAccounts(ctx context.Context, req provideriface.Request, onE
 		turnReq := req
 		// CLI history is account-local. Account failover must seed the durable
 		// input rather than resume a transcript owned by another credential.
-		turnReq.ProviderLineageID += "/claudecode-account/" + slot.ID
+		// Both lineage fields carry the account so an ordinary turn (where the
+		// executor sets previous == current) still resumes within the account.
+		// An absent lineage stays absent, so stateless requests remain stateless.
+		turnReq.ProviderLineageID = accountLineage(req.ProviderLineageID, slot.ID)
+		turnReq.PreviousProviderLineageID = accountLineage(req.PreviousProviderLineageID, slot.ID)
 		tracker := &accountToolTracker{inner: req.ToolInvoker}
 		if req.ToolInvoker != nil {
 			turnReq.ToolInvoker = tracker
@@ -90,6 +94,16 @@ func (r *Runner) runAccounts(ctx context.Context, req provideriface.Request, onE
 		return provideriface.Response{Usage: rejectedUsage}, &AccountLimitWait{Until: earliest}
 	}
 	return provideriface.Response{}, errNoSignedInAccounts
+}
+
+// accountLineage scopes a provider lineage to one Claude Code account. CLI
+// history lives in the account's config directory, so a continuation recorded
+// under one account never matches a request routed to another.
+func accountLineage(lineage, slotID string) string {
+	if strings.TrimSpace(lineage) == "" {
+		return lineage
+	}
+	return lineage + "/claudecode-account/" + slotID
 }
 
 type accountToolTracker struct {

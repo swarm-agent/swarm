@@ -607,6 +607,8 @@ func TestSessionMCPAccountRoutingPreservesEndpointAndResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := f.last()
+	// Ordinary turns carry the executor's previous lineage, equal to the current one.
+	req.PreviousProviderLineageID = req.ProviderLineageID
 	req.Input = append(req.Input, assistantItem("done"), userItem("same-account-next"))
 	if _, err := f.runner.CreateResponse(f.ctx, req); err != nil {
 		t.Fatal(err)
@@ -643,5 +645,71 @@ func TestSessionMCPAccountRoutingPreservesEndpointAndResume(t *testing.T) {
 	}
 	if len(f.calls()) != 3 {
 		t.Fatalf("CLI calls=%d", len(f.calls()))
+	}
+}
+
+// Purpose: the V3 executor sets PreviousProviderLineageID equal to
+// ProviderLineageID on every ordinary session_turn, and the daemon always
+// configures account slots, so every production turn goes through runAccounts.
+// Regression (review BLOCKING finding): runAccounts scoped only the current
+// lineage to the account, so resumable() saw previous != current and every turn
+// reseeded a fresh CLI session; --resume was never used. A real lineage change
+// (previous differs) must still reseed, and an absent lineage must not gain an
+// account suffix that turns a stateless request into a persisted conversation.
+// The process-level fake CLI over the account runner is the narrowest layer that
+// observes the CLI arguments production would pass.
+func TestSessionMCPAccountRoutingResumesExecutorTurns(t *testing.T) {
+	f := newCLIFixture(t)
+	f.cli.ConfigureSlots(f.auth, f.root)
+	f.cli.cachedAt = time.Now()
+	f.cli.cached = CLIStatus{Ready: true}
+
+	req := conversationRequest("executor-turns", "epoch", "lineage", userItem("first-input"))
+	req.BoundaryReason = "epoch_fresh_context"
+	if _, err := f.runner.CreateResponse(f.ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	first := f.last()
+	if first.Resume != "" || first.SID == "" {
+		t.Fatalf("first turn=%+v", first)
+	}
+	// Ordinary executor turn: previous lineage equals the current lineage.
+	req.BoundaryReason = "session_turn"
+	req.PreviousProviderLineageID = req.ProviderLineageID
+	req.Input = append(req.Input, assistantItem("done"), userItem("second-input"))
+	if _, err := f.runner.CreateResponse(f.ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	second := f.last()
+	if second.Resume != first.SID || strings.Contains(second.Input, "first-input") || !strings.Contains(second.Input, "second-input") {
+		t.Fatalf("executor turn 2 did not resume: %+v", second)
+	}
+	record := f.continuation(req.SessionID)
+	if record.ProviderLineageID != "lineage/claudecode-account/default" {
+		t.Fatalf("continuation lineage=%q", record.ProviderLineageID)
+	}
+
+	// A genuine lineage change still reseeds with the full durable input.
+	req.PreviousProviderLineageID = "other-lineage"
+	req.Input = append(req.Input, assistantItem("done"), userItem("third-input"))
+	if _, err := f.runner.CreateResponse(f.ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if third := f.last(); third.Resume != "" || !strings.Contains(third.Input, "first-input") {
+		t.Fatalf("lineage change resumed: %+v", third)
+	}
+
+	// No lineage: the request stays stateless and records nothing.
+	empty := conversationRequest("no-lineage", "epoch", "", userItem("x"))
+	empty.Tools, empty.ToolInvoker = nil, nil
+	empty.ToolChoice = "none"
+	if _, err := f.runner.CreateResponse(f.ctx, empty); err != nil {
+		t.Fatal(err)
+	}
+	if call := f.last(); call.Resume != "" || !call.has("--no-session-persistence") || call.has("--mcp-config") {
+		t.Fatalf("empty-lineage request was not stateless: %+v", call)
+	}
+	if _, err := os.Stat(continuationPath(f.sessionDir(empty.SessionID))); !os.IsNotExist(err) {
+		t.Fatalf("empty-lineage request recorded a continuation: %v", err)
 	}
 }
