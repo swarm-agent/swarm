@@ -40,6 +40,62 @@ func workflowScopesHeld(want, held []string) []string {
 // (tool.ControlScopesFromContext), so the routes' own checks (export's
 // path needs automations:write) see the key, never a wider set.
 func (s *Server) ManageWorkflows(ctx context.Context, p identity.Principal, who string, args map[string]any) (any, error) {
+	out, err := s.manageWorkflows(ctx, p, who, args)
+	// Shared services (place, the swarm_* routes) word refusals for the
+	// swarm_* tools; manage_workflows answers name catalog tools only.
+	return out, workflowCatalogError(err)
+}
+
+// workflowCatalogTerms rewrites the swarm_* tool names shared refusals use
+// (place's project and folder refusals above all) into catalog tools and
+// actions. The longer phrases come first; swarm_workflow, the portable
+// format's version key, is not a tool and stays.
+var workflowCatalogTerms = strings.NewReplacer(
+	"create one with swarm_create_project (a name and those folders)", "create one with manage_projects create (a name and those folders), or ask the person to create it in their Swarm app",
+	"or create it with swarm_create_project", "or create it with manage_projects create (or ask the person to, in their Swarm app)",
+	"pass the project id from swarm_list_projects", "pass the project id from manage_projects list",
+	"add one with swarm_set_project_workspaces", "add one with manage_projects update (workspaces)",
+	"add it with swarm_set_project_workspaces", "add it with manage_projects update (workspaces)",
+	"swarm_create_project", "manage_projects create",
+	"swarm_list_projects", "manage_projects list",
+	"swarm_set_project_workspaces", "manage_projects update",
+	"swarm_list_workflows", "manage_workflows list",
+	"swarm_workflow_history", "manage_workflows history",
+	"swarm_restore_workflow", "manage_workflows restore",
+	"swarm_delete_workflow", "manage_workflows delete",
+	"swarm_set_workflow", "manage_workflows propose",
+	"swarm_stop_workflows", "manage_workflows stop_all",
+	"swarm_get_job", "manage_jobs get_job",
+	"swarm_deliver_job (automation: true)", "manage_jobs rerun_failed_steps",
+)
+
+// workflowCatalogError is err in catalog terms, keeping its type (a tool
+// refusal stays one) and what it wraps.
+func workflowCatalogError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var refusal controlMCPToolError
+	if errors.As(err, &refusal) && refusal.message == err.Error() {
+		refusal.message = workflowCatalogTerms.Replace(refusal.message)
+		return refusal
+	}
+	text := workflowCatalogTerms.Replace(err.Error())
+	if text == err.Error() {
+		return err
+	}
+	return workflowCatalogTextError{text: text, err: err}
+}
+
+type workflowCatalogTextError struct {
+	text string
+	err  error
+}
+
+func (e workflowCatalogTextError) Error() string { return e.text }
+func (e workflowCatalogTextError) Unwrap() error { return e.err }
+
+func (s *Server) manageWorkflows(ctx context.Context, p identity.Principal, who string, args map[string]any) (any, error) {
 	action := controlMCPString(args, "action")
 	scopes := []string{"sessions:read", "automations:read", "swarm:read"}
 	switch action {

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -32,6 +33,46 @@ func (h *catalogParityHarness) workflowFixesMachine(t *testing.T, machine string
 	}
 	m.projectName, m.folder = record.Name, record.Workspaces[0].Path
 	return m
+}
+
+// disabledDefinition is a portable, disabled one-step workflow.
+func disabledDefinition(name string) map[string]any {
+	return map[string]any{"swarm_workflow": float64(1), "name": name, "enabled": false, "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "x"}}}
+}
+
+// Purpose: manage_workflows rewrites shared refusals into catalog terms
+// without changing their type, and the swarm_* tools' shared texts keep
+// their own contract. Threat: an Orchestrator sent to swarm_create_project,
+// which it does not have; or a refusal that stops being a tool refusal (MCP
+// isError) once rewritten. Boundary: workflowCatalogError over place's
+// refusal text; the narrowest layer that owns the mapping.
+func TestWorkflowCatalogErrorRewritesSharedRefusals(t *testing.T) {
+	for legacy, want := range map[string]string{
+		"there is no project yet: ask the person which folders their work is in and create one with swarm_create_project (a name and those folders)": "manage_projects create",
+		`several projects are named "p": pass the project id from swarm_list_projects`:                                                               "manage_projects list",
+		"project p has no folder: add one with swarm_set_project_workspaces":                                                                         "manage_projects update (workspaces)",
+		"/x is not a folder of project p (/y): add it with swarm_set_project_workspaces":                                                             "manage_projects update (workspaces)",
+	} {
+		got := workflowCatalogError(controlMCPToolFailure("%s", legacy))
+		var refusal controlMCPToolError
+		if !errors.As(got, &refusal) || !strings.Contains(got.Error(), want) || workflowLegacyToolName.MatchString(got.Error()) {
+			t.Fatalf("%q -> %q (%T)", legacy, got, got)
+		}
+	}
+	wrapped := fmt.Errorf("linked machine box refused import: %w", jobautomation.ErrNotFound)
+	if got := workflowCatalogError(wrapped); got != wrapped {
+		t.Fatalf("an error without a swarm_* name changed: %v", got)
+	}
+	plain := fmt.Errorf("remote: no project \"p\": or create it with swarm_create_project: %w", jobautomation.ErrNotFound)
+	if got := workflowCatalogError(plain); !errors.Is(got, jobautomation.ErrNotFound) || !strings.Contains(got.Error(), "manage_projects create") {
+		t.Fatalf("a linked refusal: %v", got)
+	}
+	if got := workflowCatalogError(controlMCPToolFailure("swarm_workflow must be version 1")); got.Error() != "swarm_workflow must be version 1" {
+		t.Fatalf("the format key changed: %q", got)
+	}
+	if workflowCatalogError(nil) != nil {
+		t.Fatal("nil error")
+	}
 }
 
 // workflowLegacyToolName matches a swarm_* tool name; swarm_workflow is the
@@ -84,6 +125,7 @@ func TestManageWorkflowsParityFixes(t *testing.T) {
 				t.Helper()
 				out, err := h.orchestratorTool(t, "manage_workflows", at(args))
 				if err != nil {
+					answers = append(answers, err.Error())
 					return nil, err.Error()
 				}
 				answers = append(answers, out)
@@ -93,6 +135,7 @@ func TestManageWorkflowsParityFixes(t *testing.T) {
 				t.Helper()
 				out, refused := h.controlTool(t, catalogParityFullKey, "manage_workflows", at(args))
 				if refused != "" {
+					answers = append(answers, refused)
 					return nil, refused
 				}
 				answers = append(answers, out)
@@ -239,8 +282,22 @@ func TestManageWorkflowsParityFixes(t *testing.T) {
 			if _, err := m.store.FindByName(m.account, "Desc lost"); err == nil {
 				t.Fatal("a refused import made a workflow")
 			}
+			// 4: place's refusals (a project the call names that this
+			// machine lacks) name catalog tools, on import and propose,
+			// through both surfaces (the final check below finds no
+			// swarm_* name in them).
+			for _, call := range []func(map[string]any) (map[string]any, string){orchestrator, control} {
+				for _, args := range []map[string]any{
+					{"action": "import", "definition": disabledDefinition("Lost import"), "project": "Project elsewhere"},
+					{"action": "propose", "name": "Lost proposal", "project": "Project elsewhere", "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "x"}}},
+				} {
+					if _, refused := call(args); !strings.Contains(refused, `no project "Project elsewhere"`) || !strings.Contains(refused, "manage_projects create") {
+						t.Fatalf("%s with an unknown project: %q", args["action"], refused)
+					}
+				}
+			}
 			// 4: a disabled import says it does not run until enabled.
-			disabled := map[string]any{"swarm_workflow": float64(1), "name": "Off copy", "enabled": false, "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "x"}}}
+			disabled := disabledDefinition("Off copy")
 			data = ok("import disabled", control, map[string]any{"action": "import", "definition": disabled, "project": m.project})
 			if next := fmt.Sprint(data["next"]); !strings.Contains(next, "does not run until it is enabled") || strings.Contains(next, "runs when") {
 				t.Fatalf("disabled import next: %q", next)
@@ -295,7 +352,10 @@ func TestManageWorkflowsParityFixes(t *testing.T) {
 				t.Fatalf("the owner's import route: %d %s", w.Code, w.Body)
 			}
 
-			// 4: no answer names a swarm_* tool.
+			// 4: no answer or refusal names a swarm_* tool.
+			if len(answers) < 25 {
+				t.Fatalf("only %d answers and refusals were checked", len(answers))
+			}
 			for _, answer := range answers {
 				for _, name := range workflowLegacyToolName.FindAllString(answer, -1) {
 					if name != "swarm_workflow" {

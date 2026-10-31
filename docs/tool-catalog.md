@@ -162,8 +162,11 @@ Naming, changes and answers, the same here and on a linked machine:
   catalog answers the envelope with state `refused`, `data.reason` and a
   `next_action` (import without the run step, or ask the machine's owner).
   Nothing is saved.
-- **Answers** name catalog tools and actions only. A saved workflow that is
-  disabled is said not to run until it is enabled.
+- **Answers** name catalog tools and actions only, refusals included: the
+  project and folder refusals shared with the `swarm_*` tools are reworded
+  on this path (`workflowCatalogError`) to `manage_projects` `create`,
+  `list` or `update`, here and from a linked machine. A saved workflow that
+  is disabled is said not to run until it is enabled.
 
 ## manage_jobs
 

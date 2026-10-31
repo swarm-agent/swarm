@@ -16,6 +16,16 @@ import (
 
 // CallFleetWork deliberately accepts operations rather than remote URLs.
 func (s *Server) CallFleetWork(ctx context.Context, p identity.Principal, machine, name, action string, args map[string]any) (json.RawMessage, error) {
+	out, err := s.callFleetWork(ctx, p, machine, name, action, args)
+	if name == "manage_workflows" {
+		// A linked machine's routes answer in the swarm_* tools' terms;
+		// manage_workflows answers in catalog terms.
+		err = workflowCatalogError(err)
+	}
+	return out, err
+}
+
+func (s *Server) callFleetWork(ctx context.Context, p identity.Principal, machine, name, action string, args map[string]any) (json.RawMessage, error) {
 	if !tool.FleetWorkActionAllowed(name, action) {
 		return nil, errors.New("operation is not available on a linked machine")
 	}
