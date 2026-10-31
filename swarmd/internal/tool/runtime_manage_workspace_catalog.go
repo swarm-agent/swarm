@@ -54,6 +54,11 @@ func (r *Runtime) ManageWorkspaceCatalog(ctx context.Context, scope WorkspaceSco
 		call[key] = value
 	}
 	call["action"] = declared.Action
+	// A conversation's call never carries the action's Swarm Control inputs
+	// (create's path and name) to a linked machine, which runs a linked call
+	// as a Swarm Control one. Here a conversation's change runs only as the
+	// person approved it, from its own arguments.
+	call = CatalogConversationArgs(declared, scope.ControlCaller, call)
 	if machine := strings.TrimSpace(stringValue(args["machine"])); machine != "" {
 		if declared.Reach == CatalogReachHome {
 			return "", fmt.Errorf("manage_workspace %s runs on this machine only; omit machine", declared.Action)
@@ -77,6 +82,12 @@ func (r *Runtime) ManageWorkspaceCatalog(ctx context.Context, scope WorkspaceSco
 // executeManageWorkspaceControl is Swarm Control's manage_workspace.
 func (r *Runtime) executeManageWorkspaceControl(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
 	return r.ManageWorkspaceCatalog(ctx, scope, args, func(call map[string]any) (string, error) {
+		if mapString(call, "action") == "create" {
+			// swarm_add_workspace's path or swarm_create_workspace's name.
+			if answer, handled, err := r.manageWorkspaceSwarmCreate(ctx, scope, call); handled {
+				return answer, err
+			}
+		}
 		if r.workspaceCatalog == nil {
 			return "", errors.New("manage_workspace is not configured on this machine")
 		}

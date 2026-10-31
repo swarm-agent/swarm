@@ -34,19 +34,10 @@ var catalogLinkedTools = map[string]bool{"manage_sessions": true, "manage_worksp
 // Control caller, only those its key holds), so the routes' own checks see
 // the caller, never a wider set.
 func (s *Server) ManageSessionControl(ctx context.Context, p identity.Principal, action string, args map[string]any) (map[string]any, error) {
-	if s == nil || !p.Valid() {
-		return nil, identity.ErrPrincipalRequired
-	}
-	scopes := []string{"sessions:read", "sessions:write"}
-	if held, ok := tool.ControlScopesFromContext(ctx); ok {
-		scopes = workflowScopesHeld(scopes, held)
-	}
-	req, err := http.NewRequestWithContext(identity.ContextWithPrincipal(ctx, p), http.MethodPost, controlMCPPath, nil)
+	c, err := s.sessionControlCall(ctx, p)
 	if err != nil {
 		return nil, err
 	}
-	req = requestWithScopedToken(req, &pebblestore.ScopedTokenRecord{Scopes: scopes})
-	c := &controlMCPCall{request: req, next: s.internalRouteHandler(), server: s}
 	if err := c.requireTokenScope("sessions:write"); err != nil {
 		return nil, err
 	}
@@ -72,6 +63,151 @@ func (s *Server) ManageSessionControl(ctx context.Context, p identity.Principal,
 		out, err = controlMCPSetSessionModel(c, pick("session_id", "provider", "model", "thinking"))
 	default:
 		return nil, fmt.Errorf("manage_sessions %s is not a session control action", action)
+	}
+	if err != nil {
+		return nil, errors.New(controlMCPErrorText(err))
+	}
+	answer, _ := out.(map[string]any)
+	return answer, nil
+}
+
+// sessionControlCall is the internal call the manage_sessions and
+// manage_workspace services run the swarm_* session functions on: the
+// session scopes only (for a Swarm Control caller, only those its key
+// holds), so the routes' own checks see the caller, never a wider set.
+// A cut message's next names manage_sessions get.
+func (s *Server) sessionControlCall(ctx context.Context, p identity.Principal) (*controlMCPCall, error) {
+	if s == nil || !p.Valid() {
+		return nil, identity.ErrPrincipalRequired
+	}
+	scopes := []string{"sessions:read", "sessions:write"}
+	if held, ok := tool.ControlScopesFromContext(ctx); ok {
+		scopes = workflowScopesHeld(scopes, held)
+	}
+	req, err := http.NewRequestWithContext(identity.ContextWithPrincipal(ctx, p), http.MethodPost, controlMCPPath, nil)
+	if err != nil {
+		return nil, err
+	}
+	req = requestWithScopedToken(req, &pebblestore.ScopedTokenRecord{Scopes: scopes})
+	return &controlMCPCall{request: req, next: s.internalRouteHandler(), server: s, sessionNext: map[string]any{"tool": "manage_sessions", "action": "get"}}, nil
+}
+
+// ManageSessionSwarm runs the swarm_* session tools' own code for one part
+// of a manage_sessions answer (tool.SessionSwarmService), so the catalog
+// action takes those tools' inputs and answers their fields with one
+// implementation:
+//   - get: swarm_get_session (session, messages, the next chunk of a cut
+//     message, a held wait);
+//   - list: swarm_list_sessions (sessions; project_id's conversations);
+//   - start_session: swarm_start_session (a plan, attachments, an
+//     orchestrator session's project; per-session access stays refused);
+//   - send_message: swarm_send_message (idempotent by client_request_id,
+//     attachments);
+//   - state: the state swarm_start_session and swarm_send_message answer
+//     after starting work, for a session the action already changed;
+//   - stop_report: swarm_stop_run's report for a run the action stopped.
+func (s *Server) ManageSessionSwarm(ctx context.Context, p identity.Principal, part string, args map[string]any) (map[string]any, error) {
+	c, err := s.sessionControlCall(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	pick := func(keys ...string) map[string]any {
+		out := map[string]any{}
+		for _, key := range keys {
+			if value, ok := args[key]; ok && value != nil {
+				out[key] = value
+			}
+		}
+		return out
+	}
+	sessionID := controlMCPString(args, "session_id")
+	var out any
+	switch part {
+	case "get":
+		out, err = controlMCPGetSession(c, pick("session_id", "messages", "detail_chars", "message_id", "message_seq", "content_offset", "wait_seconds"))
+	case "list":
+		call := pick("project_id")
+		if limit := controlMCPInt(args, "limit", 0); limit > 0 {
+			call["limit"] = float64(min(limit, controlMCPMaxListItems))
+		}
+		out, err = controlMCPListSessions(c, call)
+	case "start_session":
+		out, err = controlMCPStartSession(c, pick("workspace_path", "project_id", "prompt", "plan", "agent", "title", "provider", "model", "thinking", "wait_seconds", "access", "attachments"))
+	case "send_message":
+		out, err = controlMCPSendMessage(c, pick("session_id", "content", "client_request_id", "wait_seconds", "attachments"))
+	case "state":
+		state, stateErr := c.sessionState(sessionID, 3, 0)
+		if stateErr != nil {
+			return map[string]any{"state_error": "work started, but its state could not be read; call manage_sessions get"}, nil
+		}
+		if runID := controlMCPString(args, "run_id"); runID != "" {
+			state["started"] = map[string]any{"run_id": runID, "accepted": true}
+		}
+		out = state
+	case "stop_report":
+		out, err = c.catalogStopReport(sessionID, controlMCPString(args, "run_id"), controlMCPString(args, "status"), controlMCPInt(args, "wait_seconds", 0))
+	default:
+		return nil, fmt.Errorf("manage_sessions has no swarm_* part %q", part)
+	}
+	if err != nil {
+		return nil, errors.New(controlMCPErrorText(err))
+	}
+	answer, _ := out.(map[string]any)
+	return answer, nil
+}
+
+// catalogStopReport is swarm_stop_run's report (controlMCPStopReport) for a
+// run manage_sessions stop already stopped: the run's status, the plan's
+// state, the session and its last message. waitSeconds holds a Swarm
+// Control call until the run ends, as swarm_stop_run waits; a conversation
+// passes 0. A session with no active run reports not_running.
+func (c *controlMCPCall) catalogStopReport(sessionID, runID, status string, waitSeconds int) (map[string]any, error) {
+	if status == "not_running" || runID == "" {
+		state, err := c.sessionState(sessionID, 1, 0)
+		if err != nil {
+			return nil, err
+		}
+		out := map[string]any{"session_id": sessionID, "run_status": "not_running", "summary": "The session has no active run; nothing was stopped."}
+		if session := controlMCPMap(state["session"]); session != nil {
+			out["session"] = session
+		}
+		if messages, _ := state["messages"].([]map[string]any); len(messages) > 0 {
+			out["last_message"] = messages[len(messages)-1]
+		}
+		return out, nil
+	}
+	waited, waitErr := c.waitForSession(sessionID, min(waitSeconds, controlMCPStopWaitSeconds))
+	state, stateErr := c.sessionState(sessionID, 1, 0)
+	if waitErr != nil || stateErr != nil {
+		return map[string]any{"session_id": sessionID, "run_id": runID, "run_status": "stop_requested", "summary": "Stop was requested; the final state could not be read. Check with manage_sessions get."}, nil
+	}
+	return controlMCPStopReport(sessionID, runID, waited, state), nil
+}
+
+// ManageWorkspaceSwarm runs swarm_add_workspace's or swarm_create_workspace's
+// own handler for manage_workspace create over Swarm Control
+// (tool.WorkspaceSwarmService): add registers an existing folder by path
+// (name its display name), create makes a new, empty repository by name in
+// this machine's workspace folder.
+func (s *Server) ManageWorkspaceSwarm(ctx context.Context, p identity.Principal, part string, args map[string]any) (map[string]any, error) {
+	c, err := s.sessionControlCall(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	call := map[string]any{}
+	for _, key := range []string{"path", "name"} {
+		if value, ok := args[key]; ok && value != nil {
+			call[key] = value
+		}
+	}
+	var out any
+	switch part {
+	case "add":
+		out, err = controlMCPAddWorkspace(c, call)
+	case "create":
+		out, err = controlMCPCreateWorkspace(c, call)
+	default:
+		return nil, fmt.Errorf("manage_workspace has no swarm_* part %q", part)
 	}
 	if err != nil {
 		return nil, errors.New(controlMCPErrorText(err))
@@ -159,7 +295,9 @@ func catalogLinkedStartsRun(name string, args map[string]any) bool {
 	}
 	switch controlMCPString(args, "action") {
 	case "create":
-		return controlMCPString(args, "prompt") != ""
+		// A prompt or a plan (swarm_start_session's) starts the session.
+		_, plan := args["plan"]
+		return controlMCPString(args, "prompt") != "" || plan
 	case "send_message":
 		for _, key := range []string{"trigger", "trigger_run"} {
 			if value, ok := args[key].(bool); ok && !value {

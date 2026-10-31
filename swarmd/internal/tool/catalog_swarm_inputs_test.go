@@ -162,3 +162,54 @@ func TestProposeTaskAnswersSwarmRunTaskFields(t *testing.T) {
 		t.Fatal("an empty base_branch is answered, as swarm_run_task does not")
 	}
 }
+
+// Purpose:
+//   - Requirement: only a Swarm Control call runs a swarm_* session tool's
+//     handler, and only for that tool's own inputs: create with plan,
+//     attachments, project_id or access (swarm_start_session); send_message
+//     that starts a run with attachments or a client_request_id
+//     (swarm_send_message, whose key is an idempotency key). A conversation
+//     never does; attachments on a note are refused; content is prompt.
+//   - Threat/regression: a conversation reaching the swarm_* route, or the
+//     runtime's own send_message (and its controller) replaced for every
+//     Swarm Control message.
+//   - Boundary/authority: manageSessionsSwarmRoute, manageSessionsSwarmArgs.
+//   - Narrowest layer: the pure routing functions.
+func TestManageSessionsSwarmRouteIsSwarmControlsOnly(t *testing.T) {
+	cases := []struct {
+		action  string
+		control bool
+		args    map[string]any
+		want    string
+		refused bool
+	}{
+		{"create", true, map[string]any{"prompt": "p", "workspace_path": "/w"}, "", false},
+		{"create", true, map[string]any{"plan": map[string]any{}}, "start_session", false},
+		{"create", true, map[string]any{"project_id": "p", "prompt": "p"}, "start_session", false},
+		{"create", true, map[string]any{"access": map[string]any{}}, "start_session", false},
+		{"create", false, map[string]any{"plan": map[string]any{}, "access": map[string]any{}}, "", false},
+		{"send_message", true, map[string]any{"prompt": "p"}, "", false},
+		{"send_message", true, map[string]any{"prompt": "p", "client_request_id": "k"}, "send_message", false},
+		{"send_message", true, map[string]any{"prompt": "p", "attachments": []any{}}, "send_message", false},
+		{"send_message", true, map[string]any{"prompt": "p", "trigger": false, "client_request_id": "k"}, "", false},
+		{"send_message", true, map[string]any{"prompt": "p", "trigger": false, "attachments": []any{}}, "", true},
+		{"send_message", false, map[string]any{"prompt": "p", "client_request_id": "k", "attachments": []any{}}, "", false},
+		{"get", true, map[string]any{"session_id": "s", "wait_seconds": float64(3)}, "", false},
+	}
+	for _, c := range cases {
+		got, err := manageSessionsSwarmRoute(c.action, c.control, c.args)
+		if (err != nil) != c.refused || got != c.want {
+			t.Fatalf("%s control=%v %v: %q %v, want %q refused=%v", c.action, c.control, c.args, got, err, c.want, c.refused)
+		}
+	}
+	args := map[string]any{"content": "Go."}
+	manageSessionsSwarmArgs("send_message", args)
+	if args["prompt"] != "Go." || args["content"] != nil {
+		t.Fatalf("content is not prompt: %v", args)
+	}
+	args = map[string]any{"prompt": "Own.", "content": "Theirs."}
+	manageSessionsSwarmArgs("send_message", args)
+	if args["prompt"] != "Own." || args["content"] != nil {
+		t.Fatalf("content overrode prompt: %v", args)
+	}
+}

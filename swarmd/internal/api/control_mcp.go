@@ -196,6 +196,23 @@ type controlMCPCall struct {
 	// workflowDelivery marks a workflow deliver step's call: integration is
 	// attempted once so the runner's durable attempt count stays exact.
 	workflowDelivery bool
+	// sessionNext is the tool a cut message's next names (with its own
+	// session_id, message_id, message_seq and content_offset): nil is
+	// swarm_get_session; a manage_sessions call names manage_sessions get.
+	sessionNext map[string]any
+}
+
+// sessionNextBase is the start of a cut message's next for sessionID.
+func (c *controlMCPCall) sessionNextBase(sessionID string) map[string]any {
+	base := map[string]any{"tool": "swarm_get_session"}
+	if c.sessionNext != nil {
+		base = map[string]any{}
+		for key, value := range c.sessionNext {
+			base[key] = value
+		}
+	}
+	base["session_id"] = sessionID
+	return base
 }
 
 // controlMCPToolError is reported to the model as a tool result with isError,

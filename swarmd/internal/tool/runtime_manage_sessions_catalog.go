@@ -60,6 +60,11 @@ func (r *Runtime) executeManageSessions(ctx context.Context, scope WorkspaceScop
 		call[key] = value
 	}
 	call["action"] = declared.Action
+	// A conversation's call never carries the action's Swarm Control inputs
+	// (a held wait, a plan, attachments), here or through a link, whose
+	// machine runs the call as a Swarm Control one.
+	call = CatalogConversationArgs(declared, scope.ControlCaller, call)
+	manageSessionsSwarmArgs(declared.Action, call)
 	if machine := strings.TrimSpace(stringValue(args["machine"])); machine != "" {
 		if declared.Reach == CatalogReachHome {
 			return "", fmt.Errorf("manage_sessions %s runs on this machine only; omit machine", declared.Action)
@@ -67,12 +72,17 @@ func (r *Runtime) executeManageSessions(ctx context.Context, scope WorkspaceScop
 		return r.linkedCatalogCall(ctx, scope, catalog, declared, machine, call)
 	}
 	delete(call, "machine")
+	swarmPart, err := manageSessionsSwarmRoute(declared.Action, scope.ControlCaller, call)
+	if err != nil {
+		return "", err
+	}
 	var answer string
-	var err error
-	switch declared.Action {
-	case ManageSessionsResolvePermissionAction, ManageSessionsSetModelAction:
+	switch {
+	case swarmPart != "":
+		answer, err = r.manageSessionsSwarm(ctx, scope, swarmPart, call)
+	case declared.Action == ManageSessionsResolvePermissionAction, declared.Action == ManageSessionsSetModelAction:
 		answer, err = r.manageSessionsControl(ctx, scope, declared.Action, call)
-	case "create":
+	case declared.Action == "create":
 		if scope, err = r.createSessionScope(scope, call); err != nil {
 			return "", err
 		}
@@ -82,6 +92,11 @@ func (r *Runtime) executeManageSessions(ctx context.Context, scope WorkspaceScop
 	}
 	if err != nil {
 		return "", err
+	}
+	if swarmPart == "" {
+		if answer, err = r.manageSessionsSwarmFields(ctx, scope, declared.Action, call, answer); err != nil {
+			return "", err
+		}
 	}
 	return r.catalogEnvelope(catalog, declared.Action, call, answer, false)
 }

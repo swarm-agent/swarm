@@ -1270,7 +1270,7 @@ func (c *controlMCPCall) sessionState(sessionID string, limit, detail int) (map[
 	if err != nil {
 		return nil, err
 	}
-	out := controlMCPSessionStateView(response, textLimit, toolLimit, map[string]any{"tool": "swarm_get_session", "session_id": sessionID})
+	out := controlMCPSessionStateView(response, textLimit, toolLimit, c.sessionNextBase(sessionID))
 	session := controlMCPMap(response["session"])
 	if children := c.sessionChildren(sessionID, controlMCPMap(session["metadata"])); len(children) > 0 {
 		out["children"] = children
@@ -1305,7 +1305,9 @@ func (c *controlMCPCall) sessionMessageChunk(sessionID string, next tool.Message
 		return nil, controlMCPToolFailure("Swarm returned no message chunk")
 	}
 	if message["truncated"] == true {
-		message["next"] = map[string]any{"tool": "swarm_get_session", "session_id": sessionID, "message_id": message["id"], "message_seq": message["global_seq"], "content_offset": message["content_offset"]}
+		next := c.sessionNextBase(sessionID)
+		next["message_id"], next["message_seq"], next["content_offset"] = message["id"], message["global_seq"], message["content_offset"]
+		message["next"] = next
 	}
 	return map[string]any{"session_id": sessionID, "message": message, "untrusted_content": true}, nil
 }

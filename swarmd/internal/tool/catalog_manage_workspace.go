@@ -25,6 +25,10 @@ func manageWorkspaceFields() []CatalogField {
 		{"expected_revision", map[string]any{"type": "integer", "minimum": 1}},
 		{"content", map[string]any{"type": "string", "maxLength": 32768, "description": "update_map replacement Markdown beginning with '# Workspace Map'"}},
 		{"directory_path", str},
+		// swarm_add_workspace's and swarm_create_workspace's inputs, for
+		// create over Swarm Control.
+		{"path", map[string]any{"type": "string", "maxLength": 4096, "description": "create over Swarm Control: an existing, non-empty folder's absolute path (as swarm_add_workspace); name is then its display name"}},
+		{"name", map[string]any{"type": "string", "maxLength": 100, "description": "create over Swarm Control: with path, its display name; alone, a new, empty repository of this name in this machine's workspace folder (as swarm_create_workspace)"}},
 		// The Swarm agent's own session tooling (no listing shows it).
 		{"theme_id", str},
 		{"workspace_ids", map[string]any{"type": "array", "items": str}},
@@ -69,7 +73,7 @@ func manageWorkspaceCatalog() CatalogTool {
 			Description: "Alias of inspect_map."},
 		{Action: "update_map", Inputs: m("expected_revision", "content", "intent"), Level: write, Reach: anyM, Profiles: core,
 			Description: "Replace the Workspace Map at expected_revision; intent says why."},
-		{Action: "create", Inputs: m("workspace_path", "workspace_name", "intent"), Level: write, Reach: anyM, Profiles: core,
+		{Action: "create", Inputs: m("workspace_path", "workspace_name", "intent"), ControlInputs: []string{"path", "name"}, Level: write, Reach: anyM, Profiles: core,
 			Description: "Register an existing folder as a workspace (no files change)."},
 		{Action: "update", Inputs: m("workspace_id", "workspace_generation", "workspace_path", "workspace_name", "intent"), Level: write, Reach: anyM, Profiles: core,
 			Description: "Rename or move a workspace's catalog entry."},

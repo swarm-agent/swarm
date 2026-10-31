@@ -7,6 +7,8 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"runtime/debug"
@@ -19,6 +21,7 @@ import (
 	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/model"
+	"swarm/packages/swarmd/internal/modelprofile"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 	"swarm/packages/swarmd/internal/workspace"
@@ -29,14 +32,10 @@ import (
 // return, each with its one-line reason. Keep it short: a drop is a decision,
 // not a gap.
 var swarmCatalogDrops = map[string]string{
-	"swarm_approve_task.action":        "action is the catalog's own field; approving or rejecting a waiting task card is the person's step in their app (approve_task is not served to Swarm Control)",
-	"swarm_connect_chatgpt.action":     "action is the catalog's own field; connect_chatgpt takes it as step",
-	"swarm_connect_claude_code.action": "action is the catalog's own field; connect_claude_code takes it as step",
-	"swarm_create_key.kind":            "manage_setup's kind is media_models' media kind; create_key takes it as key_kind",
-	"swarm_design.edit_path":           "an edit is manage_designs edit, which takes edit_path",
-	"swarm_request_media.retry_of":     "a retry is manage_media retry, whose job_id is retry_of",
-	"swarm_get_job.include_media":      "MCP image blocks are not envelope data; manage_media read returns a media job's file as base64",
-	"swarm_run_task.role":              "manage_projects' role is read_task_session's message role; agent names the task's agent",
+	"swarm_approve_task.action":    "action is the catalog's own field; approving or rejecting a waiting task card is the person's step in their app (approve_task is not served to Swarm Control)",
+	"swarm_design.edit_path":       "an edit is manage_designs edit, which takes edit_path",
+	"swarm_request_media.retry_of": "a retry is manage_media retry, whose job_id is retry_of",
+	"swarm_get_job.include_media":  "MCP image blocks are not envelope data; manage_media read returns a media job's file as base64",
 	// swarm_task_result's flat answer is get_task's compact task view
 	// (data.task), which the Orchestrator and Swarm Control share.
 	"swarm_task_result.answer.task_id":              "data.task.id",
@@ -49,6 +48,22 @@ var swarmCatalogDrops = map[string]string{
 	"swarm_task_result.answer.next":                 "the envelope's next is get_task's next step",
 	"swarm_get_worker.answer.recent_runs":           "inspect is the worker review the Orchestrator shares (data.worker); a worker's latest runs are list include_jobs' recent_jobs and manage_fleet list_runs",
 	"swarm_manage_worker.action":                    "action is the catalog's own field: pause, resume, archive and delete are manage_workers actions; cancel_run is update with run_id, enable_schedule and disable_schedule are update with schedule_id and schedule_enabled",
+}
+
+// swarmCatalogRenames are the swarm_* inputs ("tool.input") their catalog
+// action takes under another name, because the swarm_* name is taken there
+// (most often by the catalog's own action field), with the same meaning.
+// The test requires the action to take the new name and not the old one.
+var swarmCatalogRenames = map[string]string{
+	// resolve_permission's allow_once or deny_once; ManageSessionControl
+	// passes decision to swarm_resolve_permission's handler as its action.
+	"swarm_resolve_permission.action":  "decision",
+	"swarm_connect_chatgpt.action":     "step",
+	"swarm_connect_claude_code.action": "step",
+	// manage_setup's kind is media_models' media kind.
+	"swarm_create_key.kind": "key_kind",
+	// manage_projects' role is read_task_session's message role.
+	"swarm_run_task.role": "agent",
 }
 
 // swarmCatalogInputs are the inputs a catalog action takes: its own and its
@@ -101,6 +116,19 @@ func TestEverySwarmToolInputIsACatalogInput(t *testing.T) {
 		properties, _ := swarm[name].InputSchema["properties"].(map[string]any)
 		for input := range properties {
 			key := name + "." + input
+			if renamed, ok := swarmCatalogRenames[key]; ok {
+				if listed[key] {
+					t.Fatalf("%s is both renamed and dropped", key)
+				}
+				if !inputs[renamed] {
+					t.Errorf("%s is renamed %s, but %s %s does not take %s", key, renamed, home.tool, home.action, renamed)
+				}
+				if inputs[input] && input != "action" {
+					t.Errorf("%s is renamed %s, but %s %s still takes %s: remove the rename", key, renamed, home.tool, home.action, input)
+				}
+				seen[key] = true
+				continue
+			}
 			if inputs[input] {
 				if listed[key] {
 					t.Fatalf("%s is listed but %s %s takes %s: remove the entry", key, home.tool, home.action, input)
@@ -121,6 +149,11 @@ func TestEverySwarmToolInputIsACatalogInput(t *testing.T) {
 	for key := range listed {
 		if strings.Count(key, ".") == 1 && !seen[key] {
 			t.Fatalf("%s is listed but is not an input of that swarm_* tool", key)
+		}
+	}
+	for key := range swarmCatalogRenames {
+		if !seen[key] {
+			t.Fatalf("%s is renamed but is not an input of that swarm_* tool", key)
 		}
 	}
 }
@@ -179,6 +212,18 @@ var swarmAnswerProbes = map[string]swarmAnswerProbe{
 	"swarm_request_update":     {swarm: map[string]any{"max_seconds": float64(0)}, catalog: map[string]any{"action": "request_update", "max_seconds": float64(0)}},
 	"swarm_get_environment":    {swarm: map[string]any{"project": "probe-project"}, catalog: map[string]any{"action": "get_environment", "project": "probe-project"}},
 	"swarm_set_environment":    {swarm: map[string]any{"project": "probe-project", "base_image": "img:a", "wait_seconds": float64(5)}, catalog: map[string]any{"action": "update_environment", "project": "probe-project", "base_image": "img:b", "wait_seconds": float64(5)}},
+	// Sessions and workspaces (seedSessions' ms-* sessions and permissions;
+	// $sessfolder its registered folder; $addfolder_* unregistered folders
+	// with content; probe-sub-* delegated child sessions).
+	// Listed unprobed (the swarm_* side cannot answer in this harness):
+	// these are the calls that would answer with the services it lacks.
+	"swarm_start_session":      {swarm: map[string]any{"workspace_path": "$sessfolder", "prompt": "Probe A.", "title": "Probe A"}, catalog: map[string]any{"action": "create", "workspace_path": "$sessfolder", "prompt": "Probe B.", "title": "Probe B"}},
+	"swarm_stop_run":           {swarm: map[string]any{"session_id": "probe-sub-a"}, catalog: map[string]any{"action": "stop", "session_id": "probe-sub-b"}},
+	"swarm_send_message":       {swarm: map[string]any{"session_id": "ms-msg-1", "content": "Probe A.", "client_request_id": "probe-a"}, catalog: map[string]any{"action": "send_message", "session_id": "ms-msg-2", "content": "Probe B.", "client_request_id": "probe-b"}},
+	"swarm_resolve_permission": {swarm: map[string]any{"session_id": "ms-perm-1", "permission_id": "$perm1", "action": "allow_once"}, catalog: map[string]any{"action": "resolve_permission", "session_id": "ms-perm-2", "permission_id": "$perm2", "decision": "allow_once"}},
+	"swarm_set_session_model":  {swarm: map[string]any{"session_id": "probe-model-a", "provider": "fixture-provider", "model": "fixture-model", "thinking": "low"}, catalog: map[string]any{"action": "set_model", "session_id": "probe-model-b", "provider": "fixture-provider", "model": "fixture-model", "thinking": "low"}},
+	"swarm_add_workspace":      {swarm: map[string]any{"path": "$addfolder_a", "name": "Probe A"}, catalog: map[string]any{"action": "create", "path": "$addfolder_b", "name": "Probe B"}},
+	"swarm_create_workspace":   {swarm: map[string]any{"name": "probe-new-a"}, catalog: map[string]any{"action": "create", "name": "probe-new-b"}},
 	"swarm_revoke_key":         {swarm: map[string]any{"key_id": "$key_a"}, catalog: map[string]any{"action": "revoke_key", "key_id": "$key_b"}},
 }
 
@@ -217,6 +262,16 @@ var swarmAnswerUnprobed = map[string]swarmUnprobed{
 	"swarm_save_media":           {reason: "no media job exists without media models", handler: "controlMCPSaveMedia", servedBy: "catalogSwarmHandlers"},
 	"swarm_request_media":        {reason: "a media job runs a media model, and none is configured", handler: "controlMCPRequestMedia", servedBy: "catalogSwarmHandlers"},
 	"swarm_design":               {reason: "a design runs the designer's model provider", handler: "controlMCPDesign", servedBy: "catalogSwarmHandlers"},
+	// A session the swarm_* route creates, or a run it stops, needs the
+	// primary runtime's topology binding, the agents' tool runtimes and a
+	// run the run service holds active. Swarm Control's create with plan,
+	// attachments, project_id or access runs swarm_start_session itself
+	// (ManageSessionSwarm); the runtime's own create and stop answer the
+	// same fields through the code those tools share (sessionState,
+	// controlMCPStopReport), and TestManageSessionsRuntimeAnswersCarryTheSwarmFields
+	// runs them.
+	"swarm_start_session": {reason: "a session the swarm_* route creates needs the primary runtime's topology binding and the agents' tool runtimes, which this harness does not run", handler: "controlMCPStartSession", servedBy: "ManageSessionSwarm"},
+	"swarm_stop_run":      {reason: "the swarm_* stop needs a run the run service holds active, which this harness does not run", shared: "controlMCPStopReport", servedBy: "catalogStopReport"},
 	// propose_task and integrate_task are the Orchestrator's own actions,
 	// not the swarm_* handlers: the swarm_* answer's field names (read from
 	// its handler) are the catalog answer's (read from the code that makes
@@ -233,6 +288,9 @@ type swarmUnprobed struct {
 	refusedByDesign bool
 	handler         string
 	servedBy        string
+	// shared is the answer code the swarm_* tool's handler and the catalog
+	// code servedBy both call, when the catalog does not run the handler.
+	shared string
 	// swarmAnswer is the api function that builds the swarm_* answer (its
 	// out map); catalogFields, or the keys of the maps catalogAnswer
 	// returns, are the catalog answer's fields. Every swarm_* field but
@@ -298,9 +356,11 @@ func TestEverySwarmAnswerFieldIsInTheCatalogEnvelope(t *testing.T) {
 			if strings.TrimSpace(unprobed.reason) == "" {
 				t.Fatalf("%s is unprobed without a reason", name)
 			}
-			// Both surfaces must still refuse; an answer means the entry
-			// went stale.
-			if probe.catalog != nil {
+			// The reason must still hold: a catalog action refused by
+			// design still refuses, and otherwise the swarm_* tool still
+			// cannot answer here (its catalog action may: the runtime's own
+			// code answers without the services the swarm_* route needs).
+			if probe.catalog != nil && unprobed.refusedByDesign {
 				if _, refused := h.controlTool(t, catalogKey, home.tool, place(probe.catalog)); refused == "" {
 					t.Errorf("%s is listed unprobed but %s %s answers: compare its answer instead", name, home.tool, home.action)
 				}
@@ -441,10 +501,40 @@ func (h *catalogParityHarness) seedSwarmAnswerProbes(t *testing.T, folder string
 		}
 	}
 	h.wireModelCatalog(t)
+	// Delegated child sessions swarm_stop_run and manage_sessions stop
+	// stop through the subagent route.
+	for _, id := range []string{"probe-sub-a", "probe-sub-b", "probe-model-a", "probe-model-b"} {
+		metadata := map[string]any{"lineage_kind": "delegated_subagent"}
+		if strings.HasPrefix(id, "probe-model") {
+			metadata = nil
+		}
+		in := pebblestore.V3SessionMutationInput{SessionID: id, Kind: pebblestore.V3SessionMutationCreateSession, ClientRequestID: "create-" + id, Session: &pebblestore.SessionSnapshot{ID: id, Mode: "auto", WorkspacePath: folder, Metadata: metadata}}
+		in.AccountScopeID, in.UserID, in.PayloadHash = h.home.account, h.home.user, in.ClientRequestID
+		if _, err := store.ApplyV3SessionMutation(in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The model profiles behind a session's model, and the run controller
+	// behind the runtime's own send_message and create (a recording stand-in).
+	h.home.s.SetModelProfileService(modelprofile.NewService(pebblestore.NewModelProfileStore(store.Underlying())))
+	h.runtime.SetManageSessionController(&catalogSessionController{t: t, f: h.home})
+	// Folders with content to register, and this machine's workspace
+	// folder for new repositories.
+	addFolders := map[string]string{}
+	for _, name := range []string{"$addfolder_a", "$addfolder_b"} {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("probe\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		addFolders[name] = dir
+	}
+	if h.home.s.workspaceRoot == "" {
+		h.home.s.workspaceRoot = t.TempDir()
+	}
 	// The folder environment store and a fake image builder (no Docker).
 	h.home.s.SetSandboxEnvironmentStore(pebblestore.NewSandboxEnvironmentStore(store.Underlying()))
 	h.home.s.envBuilder = &fakeEnvironmentBuilder{}
-	values := map[string]any{"$msg_a": controlMCPJobID(controlMCPJobWorker, h.jobs[""]["worker"], "probe-msg-a"), "$msg_b": controlMCPJobID(controlMCPJobWorker, h.jobs[""]["worker"], "probe-msg-b"), "$folder": folder, "$worker": h.workers[""], "$job": h.jobs[""]["parity"], "$jobworker": h.jobs[""]["worker"], "$jobdone": h.jobs[""]["done"]}
+	values := map[string]any{"$perm1": h.sessionPermissions["ms-perm-1"], "$perm2": h.sessionPermissions["ms-perm-2"], "$sessfolder": h.sessionFolders["home"], "$addfolder_a": addFolders["$addfolder_a"], "$addfolder_b": addFolders["$addfolder_b"], "$msg_a": controlMCPJobID(controlMCPJobWorker, h.jobs[""]["worker"], "probe-msg-a"), "$msg_b": controlMCPJobID(controlMCPJobWorker, h.jobs[""]["worker"], "probe-msg-b"), "$folder": folder, "$worker": h.workers[""], "$job": h.jobs[""]["parity"], "$jobworker": h.jobs[""]["worker"], "$jobdone": h.jobs[""]["done"]}
 	if h.home.s.security != nil {
 		for _, name := range []string{"$key_a", "$key_b"} {
 			_, record, err := h.home.s.security.CreateScopedToken("probe "+name, []string{"swarm:read"}, h.home.account, h.home.user, time.Hour, "", "")
@@ -587,6 +677,24 @@ func TestEveryUnprobedSwarmAnswerIsCheckedStatically(t *testing.T) {
 			continue
 		}
 		switch {
+		case unprobed.shared != "":
+			uses := func(declaration string) bool {
+				node, ok := declarations[declaration]
+				found := false
+				if ok {
+					ast.Inspect(node, func(n ast.Node) bool {
+						if ident, ok := n.(*ast.Ident); ok && ident.Name == unprobed.shared {
+							found = true
+						}
+						return !found
+					})
+				}
+				return found
+			}
+			handler := calls[name][strings.LastIndex(calls[name], ".")+1:]
+			if !uses(handler) || !uses(unprobed.servedBy) {
+				t.Errorf("%s: %s and %s do not both run %s", name, handler, unprobed.servedBy, unprobed.shared)
+			}
 		case unprobed.handler != "":
 			if got := calls[name]; !strings.HasSuffix(got, "."+unprobed.handler) {
 				t.Errorf("%s runs %s, not %s", name, got, unprobed.handler)
