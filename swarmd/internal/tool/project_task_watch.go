@@ -92,6 +92,11 @@ func projectTaskWatchIDs(args map[string]any) ([]string, error) {
 	return ids, nil
 }
 
+// ProjectTaskWatchNextAction is the next step of a watch that returned at
+// once (state watching): the envelope's next_action on the Orchestrator's
+// wait_tasks (catalogEnvelope), as the Swarm Control wait names its own.
+const ProjectTaskWatchNextAction = "You will get a new turn when a watched task reaches a milestone; cancel_watch stops it."
+
 // registerProjectTaskWatch commits the watch and answers with status
 // watching. Tasks already watched by this conversation are not watched twice.
 func (r *Runtime) registerProjectTaskWatch(scope WorkspaceScope, op *pebblestore.V3ProjectTaskWaitMutation, ids, titles []string) (map[string]any, error) {

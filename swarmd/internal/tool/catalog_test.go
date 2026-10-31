@@ -176,10 +176,16 @@ func TestManageProjectsEnvelope(t *testing.T) {
 	if e := decode(out); err != nil || e.State != "ok" || e.NextAction == "none" || e.NextAction == "" || !strings.Contains(out, `"status":"needs_review"`) {
 		t.Fatalf("run status as state: %s %v", out, err)
 	}
-	// A declared outcome is the state.
+	// A declared outcome is the state. A watch that returned at once names
+	// its next step (the new turn, cancel_watch), as the Swarm Control wait
+	// does, so the envelope contract holds on both surfaces.
 	out, err = r.manageProjectsEnvelope("wait_tasks", nil, `{"tool":"manage_projects","action":"wait_tasks","status":"watching"}`)
-	if err != nil || decode(out).State != EnvelopeStateWatching {
+	if e := decode(out); err != nil || e.State != EnvelopeStateWatching || e.NextAction != ProjectTaskWatchNextAction || !strings.Contains(e.NextAction, "cancel_watch") || CheckEnvelope(out) != nil {
 		t.Fatalf("watch state: %s %v", out, err)
+	}
+	// Its data stays the watch: the next step is the envelope's.
+	if data, _ := decode(out).Data.(map[string]any); data == nil || data["next_action"] != nil {
+		t.Fatalf("watch data carries next_action: %s", out)
 	}
 	// A cut task result names the call that reads it in full.
 	cutTask := `{"status":"ok","task":{"id":"t1","result":{"summary":"short…","result_truncated":true,"next":{"action":"get_task","project_id":"p1","task_id":"t1","detail":"full","cursor":0,"limit":1}}}}`

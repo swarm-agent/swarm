@@ -235,6 +235,10 @@ func (r *Runtime) catalogEnvelope(catalog CatalogTool, action string, args map[s
 		parts.Next = next
 	}
 	parts.NextAction = envelopeNextAction(declared, object, next != nil)
+	if parts.State == EnvelopeStateWatching && parts.NextAction == "" {
+		// A watch returned at once: the new turn is the next step.
+		parts.NextAction = ProjectTaskWatchNextAction
+	}
 	out, err := json.Marshal(NewEnvelope(parts))
 	return string(out), err
 }

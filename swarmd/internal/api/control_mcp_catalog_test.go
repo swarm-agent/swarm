@@ -603,7 +603,9 @@ func (h *catalogParityHarness) runParityCases(t *testing.T, toolName, action str
 						t.Fatalf("%s: %s differs: %v / %v", name, key, orch[key], control[key])
 					}
 				}
-				if orch["state"] != "watching" || (control["state"] != tool.ControlTaskWaitTimedOut && control["state"] != tool.ControlTaskWaitSettled) || control["next_action"] == nil {
+				// Both name a next step: the Orchestrator's watch its new
+				// turn, the Swarm Control wait its own.
+				if orch["state"] != "watching" || orch["next_action"] != tool.ProjectTaskWatchNextAction || (control["state"] != tool.ControlTaskWaitTimedOut && control["state"] != tool.ControlTaskWaitSettled) || control["next_action"] == nil {
 					t.Fatalf("%s: states %v / %v\n%s", name, orch["state"], control["state"], controlOut)
 				}
 				// The tasks are what get_task answers for each.
