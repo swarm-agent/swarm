@@ -426,7 +426,8 @@ tool runtime): the same catalog and Workspace Map functions with no session
 to retarget. Swarm sets the action's permission scope itself and refuses one
 from the caller; `create` applies `swarm_add_workspace`'s checks (an
 existing, non-empty folder outside system and Swarm storage, not inside a
-registered workspace).
+registered workspace). `update` applies the same path checks when it moves a
+workspace, for every caller (`workspace.Service.UpdateCatalogEntryForPrincipal`).
 
 | Action | Level | API scopes | Reach |
 | --- | --- | --- | --- |

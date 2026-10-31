@@ -410,6 +410,19 @@ func (s *Service) UpdateCatalogEntryForPrincipal(principal identity.Principal, w
 	}
 	resolvedPath := strings.TrimSpace(newPath)
 	if resolvedPath != "" {
+		requested, err := absoluteWorkspacePath(resolvedPath)
+		if err != nil {
+			return Resolution{}, err
+		}
+		moving := filepath.Clean(requested) != entry.Path
+		// A move gets create's path checks, for every caller: an absolute
+		// path outside system and Swarm storage (as requested and, below, as
+		// resolved) and not nested inside another registered workspace.
+		if moving {
+			if err := s.validateRepositorySetupPath(newPath, requested); err != nil {
+				return Resolution{}, err
+			}
+		}
 		resolvedPath, err = resolvePath(resolvedPath)
 		if err != nil {
 			return Resolution{}, err
@@ -418,6 +431,12 @@ func (s *Service) UpdateCatalogEntryForPrincipal(principal identity.Principal, w
 			return Resolution{}, err
 		}
 		if resolvedPath != entry.Path {
+			if err := s.validateRepositorySetupPath(newPath, resolvedPath); err != nil {
+				return Resolution{}, err
+			}
+			if err := s.validateRepositorySetupNestingExcept(principal, resolvedPath, entry.WorkspaceID); err != nil {
+				return Resolution{}, err
+			}
 			if _, err := s.requireRepositoryForPrincipal(principal, resolvedPath); err != nil {
 				return Resolution{}, err
 			}

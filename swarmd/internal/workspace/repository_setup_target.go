@@ -70,11 +70,21 @@ func (s *Service) validateRepositorySetupPath(input string, paths ...string) err
 // validateRepositorySetupNesting refuses a canonical setup path nested inside
 // another workspace registered to the same account.
 func (s *Service) validateRepositorySetupNesting(principal identity.Principal, resolved string) error {
+	return s.validateRepositorySetupNestingExcept(principal, resolved, "")
+}
+
+// validateRepositorySetupNestingExcept is validateRepositorySetupNesting for
+// a workspace being moved: its own current entry (exceptWorkspaceID) does not
+// count, since it leaves that path.
+func (s *Service) validateRepositorySetupNestingExcept(principal identity.Principal, resolved, exceptWorkspaceID string) error {
 	entries, err := s.store.ListForAccount(principal.AccountScopeID, math.MaxInt32)
 	if err != nil {
 		return err
 	}
 	for _, entry := range entries {
+		if exceptWorkspaceID != "" && entry.WorkspaceID == exceptWorkspaceID {
+			continue
+		}
 		if entry.Path != resolved && pathWithinRoot(entry.Path, resolved) {
 			return fmt.Errorf("Swarm refuses %q: it is inside the registered workspace %q; choose a folder outside it", resolved, entry.Path)
 		}
