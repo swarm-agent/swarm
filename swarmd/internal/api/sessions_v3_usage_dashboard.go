@@ -559,7 +559,14 @@ func (s *Server) handleSessionsV3UsageAt(w http.ResponseWriter, r *http.Request,
 		providerList = append(providerList, *item)
 	}
 	sort.Slice(providerList, func(i, j int) bool {
-		return providerList[i].TotalTokens > providerList[j].TotalTokens
+		a, b := providerList[i], providerList[j]
+		if a.TotalTokens != b.TotalTokens {
+			return a.TotalTokens > b.TotalTokens
+		}
+		if a.CostUSD != b.CostUSD {
+			return a.CostUSD > b.CostUSD
+		}
+		return a.Provider < b.Provider // map key: unique, so the order is total
 	})
 
 	modelList := make([]SessionUsageModelItem, 0, len(modelMap))
@@ -567,7 +574,18 @@ func (s *Server) handleSessionsV3UsageAt(w http.ResponseWriter, r *http.Request,
 		modelList = append(modelList, *item)
 	}
 	sort.Slice(modelList, func(i, j int) bool {
-		return modelList[i].TotalTokens > modelList[j].TotalTokens
+		a, b := modelList[i], modelList[j]
+		if a.TotalTokens != b.TotalTokens {
+			return a.TotalTokens > b.TotalTokens
+		}
+		if a.CostUSD != b.CostUSD {
+			return a.CostUSD > b.CostUSD
+		}
+		// provider:model is the map key: unique, so the order is total.
+		if a.Provider != b.Provider {
+			return a.Provider < b.Provider
+		}
+		return a.Model < b.Model
 	})
 
 	sessionList := make([]SessionUsageSessionItem, 0, len(sessionUsageMap))
@@ -581,7 +599,13 @@ func (s *Server) handleSessionsV3UsageAt(w http.ResponseWriter, r *http.Request,
 		if hasUsageI != hasUsageJ {
 			return hasUsageI
 		}
-		return sessionList[i].LastActiveAt > sessionList[j].LastActiveAt
+		if sessionList[i].LastActiveAt != sessionList[j].LastActiveAt {
+			return sessionList[i].LastActiveAt > sessionList[j].LastActiveAt
+		}
+		if sessionList[i].CostUSD != sessionList[j].CostUSD {
+			return sessionList[i].CostUSD > sessionList[j].CostUSD
+		}
+		return sessionList[i].SessionID < sessionList[j].SessionID // map key: unique
 	})
 	if len(sessionList) > sessionLimit {
 		sessionList = sessionList[:sessionLimit]
