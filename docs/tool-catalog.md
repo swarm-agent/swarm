@@ -65,6 +65,16 @@ of both and compares the answer's top-level fields with the envelope data.
 A pair whose call both surfaces refuse fails unless `swarmAnswerUnprobed`
 names why (the hermetic harness runs no provider, worktree service,
 workspace authority, sandbox environments, secret slots or media models).
+Those answers are not compared by execution:
+`TestEveryUnprobedSwarmAnswerIsCheckedStatically` checks that the `swarm_*`
+tool runs the named handler and that the catalog code serving the action
+calls that same handler. `swarm_run_task` and `swarm_integrate_task` are
+served by the Orchestrator's own `propose_task` and `integrate_task`, so
+their answer fields are only mapped to where the catalog's data has them,
+read from the source.
+The filter is `tool.CatalogConversationArgs`: a conversation's call drops an
+action's control inputs before it runs here or goes to a linked machine,
+which runs a linked call as a Swarm Control one.
 A deliberate drop is listed once, with its reason, in `swarmCatalogDrops`:
 an input named `action` (the catalog's own field: `connect_chatgpt` and
 `connect_claude_code` take it as `step`; `swarm_manage_worker`'s values are

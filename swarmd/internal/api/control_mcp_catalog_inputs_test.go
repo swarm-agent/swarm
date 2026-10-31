@@ -3,6 +3,12 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
+	"reflect"
+	"runtime"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -185,28 +191,51 @@ var swarmAnswerUnprobed = map[string]swarmUnprobed{
 
 	// The hermetic harness runs no provider, worktree service, workspace
 	// authority, sandbox environments, secret slots or media models, so
-	// these refuse on both surfaces with the same handler's reason.
-	"swarm_answer_job":           {reason: "no seeded job is waiting on a question: one needs a worker run that asked"},
-	"swarm_deliver_job":          {reason: "no seeded job has a result to merge: one needs a finished worker run with commits"},
-	"swarm_integrate_task":       {reason: "integration needs a task with a real worktree branch, which the worktree service makes"},
-	"swarm_run_task":             {reason: "a task needs the worktree service and the router's model provider"},
-	"swarm_assign_worker_task":   {reason: "a run needs a worker bound to a folder, and binding needs the workspace authority"},
-	"swarm_create_worker":        {reason: "a new worker is bound to its folder through the workspace authority"},
-	"swarm_give_job":             {reason: "a job's folder is checked by the workspace authority"},
-	"swarm_schedule_job":         {reason: "a scheduled worker is bound to its folder through the workspace authority"},
-	"swarm_get_environment":      {reason: "sandbox environments are not configured"},
-	"swarm_set_environment":      {reason: "sandbox environments are not configured"},
-	"swarm_list_secrets":         {reason: "secret slots are not configured"},
-	"swarm_connect_claude_code":  {reason: "no Claude Code provider is registered"},
-	"swarm_request_provider_key": {reason: "no provider that takes an API key is registered"},
-	"swarm_request_fleet_key":    {reason: "no provider that takes an API key is registered"},
-	"swarm_revoke_fleet_key":     {reason: "no fleet key exists without a provider that takes an API key"},
-	"swarm_media_models":         {reason: "media models are not configured"},
-	"swarm_set_media_models":     {reason: "media models are not configured"},
-	"swarm_read_media":           {reason: "no media job has a file without media models"},
-	"swarm_save_media":           {reason: "no media job exists without media models"},
-	"swarm_request_media":        {reason: "a media job runs a media model, and none is configured"},
-	"swarm_design":               {reason: "a design runs the designer's model provider"},
+	// these refuse on both surfaces with the same handler's reason. Their
+	// answers are checked statically (TestEveryUnprobedSwarmAnswerIsCheckedStatically):
+	// handler names the swarm_* handler the catalog code servedBy calls,
+	// so the catalog's data is that handler's answer; answer lists, read
+	// from source and not executed, where the catalog's data has each field
+	// of a swarm_* answer made by other code.
+	"swarm_answer_job":           {reason: "no seeded job is waiting on a question: one needs a worker run that asked", handler: "controlMCPAnswerJob", servedBy: "manageJobsAs"},
+	"swarm_deliver_job":          {reason: "no seeded job has a result to merge: one needs a finished worker run with commits", handler: "controlMCPDeliverJob", servedBy: "manageJobsAs"},
+	"swarm_give_job":             {reason: "a job's folder is checked by the workspace authority", handler: "controlMCPGiveJob", servedBy: "manageJobsAs"},
+	"swarm_schedule_job":         {reason: "a scheduled worker is bound to its folder through the workspace authority", handler: "controlMCPScheduleJob", servedBy: "manageJobsAs"},
+	"swarm_assign_worker_task":   {reason: "a run needs a worker bound to a folder, and binding needs the workspace authority", handler: "controlMCPAssignWorkerTask", servedBy: "assignWorkerTask"},
+	"swarm_create_worker":        {reason: "a new worker is bound to its folder through the workspace authority", handler: "controlMCPCreateWorker", servedBy: "workerControlRoutes"},
+	"swarm_get_environment":      {reason: "sandbox environments are not configured", handler: "controlMCPGetEnvironment", servedBy: "catalogSwarmHandlers"},
+	"swarm_set_environment":      {reason: "sandbox environments are not configured", handler: "controlMCPSetEnvironment", servedBy: "catalogSwarmHandlers"},
+	"swarm_list_secrets":         {reason: "secret slots are not configured", handler: "controlMCPListSecrets", servedBy: "runSetupAction"},
+	"swarm_connect_claude_code":  {reason: "no Claude Code provider is registered", handler: "controlMCPConnectClaudeCode", servedBy: "runSetupAction"},
+	"swarm_request_provider_key": {reason: "no provider that takes an API key is registered", handler: "controlMCPRequestProviderKey", servedBy: "runSetupAction"},
+	"swarm_request_fleet_key":    {reason: "no provider that takes an API key is registered", handler: "controlMCPRequestFleetKey", servedBy: "runSetupAction"},
+	"swarm_revoke_fleet_key":     {reason: "no fleet key exists without a provider that takes an API key", handler: "controlMCPRevokeFleetKey", servedBy: "runSetupAction"},
+	"swarm_media_models":         {reason: "media models are not configured", handler: "controlMCPListMediaModels", servedBy: "catalogSwarmHandlers"},
+	"swarm_set_media_models":     {reason: "media models are not configured", handler: "controlMCPSetMediaModels", servedBy: "runSetupAction"},
+	"swarm_read_media":           {reason: "no media job has a file without media models", handler: "controlMCPReadMedia", servedBy: "catalogSwarmHandlers"},
+	"swarm_save_media":           {reason: "no media job exists without media models", handler: "controlMCPSaveMedia", servedBy: "catalogSwarmHandlers"},
+	"swarm_request_media":        {reason: "a media job runs a media model, and none is configured", handler: "controlMCPRequestMedia", servedBy: "catalogSwarmHandlers"},
+	"swarm_design":               {reason: "a design runs the designer's model provider", handler: "controlMCPDesign", servedBy: "catalogSwarmHandlers"},
+	// propose_task and integrate_task are the Orchestrator's own actions,
+	// not the swarm_* handlers: where each swarm_* answer field is.
+	"swarm_run_task": {reason: "a task needs the worktree service and the router's model provider", answer: map[string]string{
+		"task_id":         "data.task_id",
+		"session_id":      "data.session_id",
+		"status":          "data.task_status (and data.task.status)",
+		"workspace_path":  "data.workspace_path",
+		"worktree_branch": "data.worktree_branch",
+		"base_branch":     "data.task.base_branch",
+		"role":            "data.task.agent (role is the agent, as swarm_task_result.answer.role)",
+		"title":           "data.task.title",
+		"settled":         "with wait_seconds (Swarm Control): swarm_wait_task's answer merged into data",
+		"waited_seconds":  "as settled",
+		"next":            "the envelope's next",
+	}},
+	"swarm_integrate_task": {reason: "integration needs a task with a real worktree branch, which the worktree service makes", answer: map[string]string{
+		"status":      "data.status (IntegrateProjectTask's result, copied into the answer)",
+		"task":        "data.task (the whole task record; swarm_integrate_task answers its summary)",
+		"integration": "data's integration fields from the same IntegrateProjectTask result",
+	}},
 }
 
 // swarmUnprobed is why a pair has no compared answer. refusedByDesign: the
@@ -215,6 +244,9 @@ var swarmAnswerUnprobed = map[string]swarmUnprobed{
 type swarmUnprobed struct {
 	reason          string
 	refusedByDesign bool
+	handler         string
+	servedBy        string
+	answer          map[string]string
 }
 
 // Purpose:
@@ -491,5 +523,88 @@ func (h *catalogParityHarness) wireModelCatalog(t *testing.T) {
 	if h.home.s.agentModelSettings == nil {
 		settings := pebblestore.NewAgentModelSettingsStore(db)
 		h.home.s.SetAgentModelSettingsService(agentmodelsettings.NewService(settings), settings)
+	}
+}
+
+// Purpose:
+//   - Requirement: a pair the harness cannot answer (swarmAnswerUnprobed,
+//     not refused by design) still has its answer fields accounted for: the
+//     swarm_* tool's handler is, by function identity, the one named, and
+//     the catalog code that serves the action calls that same handler, so
+//     the catalog's data is that handler's answer; or, for a catalog action
+//     run by other code, every swarm_* answer field is mapped to where the
+//     catalog's data has it.
+//   - Threat/regression: an unprobed pair hiding an answer gap, or an entry
+//     naming a handler the swarm_* tool or the catalog no longer runs.
+//   - Boundary/authority: controlMCPTools' call functions (runtime identity)
+//     and the api package's non-test source (go/ast: the servedBy
+//     declaration references the handler).
+//   - Narrowest layer: the registries and source; the mapped answers of
+//     swarm_run_task and swarm_integrate_task are read from source and are
+//     not executed by this test.
+func TestEveryUnprobedSwarmAnswerIsCheckedStatically(t *testing.T) {
+	calls := map[string]string{}
+	for _, candidate := range controlMCPTools() {
+		calls[candidate.Name] = runtime.FuncForPC(reflect.ValueOf(candidate.call).Pointer()).Name()
+	}
+	fset := token.NewFileSet()
+	packages, err := parser.ParseDir(fset, ".", func(info fs.FileInfo) bool { return !strings.HasSuffix(info.Name(), "_test.go") }, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declarations := map[string]ast.Node{}
+	for _, pkg := range packages {
+		for _, file := range pkg.Files {
+			for _, decl := range file.Decls {
+				switch d := decl.(type) {
+				case *ast.FuncDecl:
+					declarations[d.Name.Name] = d
+				case *ast.GenDecl:
+					for _, spec := range d.Specs {
+						if value, ok := spec.(*ast.ValueSpec); ok {
+							for _, name := range value.Names {
+								declarations[name.Name] = value
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	for _, name := range sortedSwarmHomes() {
+		unprobed, listed := swarmAnswerUnprobed[name]
+		if !listed || unprobed.refusedByDesign {
+			continue
+		}
+		switch {
+		case unprobed.handler != "":
+			if got := calls[name]; !strings.HasSuffix(got, "."+unprobed.handler) {
+				t.Errorf("%s runs %s, not %s", name, got, unprobed.handler)
+				continue
+			}
+			served, ok := declarations[unprobed.servedBy]
+			if !ok {
+				t.Errorf("%s: %s is not declared in the api package", name, unprobed.servedBy)
+				continue
+			}
+			called := false
+			ast.Inspect(served, func(node ast.Node) bool {
+				if ident, ok := node.(*ast.Ident); ok && ident.Name == unprobed.handler {
+					called = true
+				}
+				return !called
+			})
+			if !called {
+				t.Errorf("%s: the catalog code %s does not run %s", name, unprobed.servedBy, unprobed.handler)
+			}
+		case len(unprobed.answer) > 0:
+			for field, where := range unprobed.answer {
+				if strings.TrimSpace(field) == "" || strings.TrimSpace(where) == "" {
+					t.Errorf("%s: answer field %q has no place", name, field)
+				}
+			}
+		default:
+			t.Errorf("%s is unprobed with neither a shared handler nor a mapped answer", name)
+		}
 	}
 }
