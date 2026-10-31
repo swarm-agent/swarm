@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 )
@@ -66,6 +67,11 @@ type CatalogAction struct {
 	Action string
 	// Inputs are the field names this action takes (besides action).
 	Inputs []string
+	// Required are the inputs the action cannot run without, here and on a
+	// linked machine (each one of Inputs). project_id of a task action that
+	// finds its project from the task id (TaskProjectFromTaskID) is not
+	// required; RequirementNote says when it is needed.
+	Required []string
 	// ControlInputs are fields only Swarm Control's call of the action takes
 	// (a caller with no conversation: wait_tasks' wait_seconds). They are
 	// not in the Orchestrator's definition.
@@ -143,15 +149,60 @@ func (t CatalogTool) Action(name string) (CatalogAction, bool) {
 }
 
 // InputSchema is the action's own input schema: action plus only the fields
-// the action takes.
+// the action takes; required names action and the action's Required inputs.
 func (t CatalogTool) InputSchema(action CatalogAction) map[string]any {
-	properties := map[string]any{"action": map[string]any{"type": "string", "enum": []string{action.Action}, "description": action.Description}}
+	properties := map[string]any{"action": map[string]any{"type": "string", "enum": []string{action.Action}, "description": action.Description + action.RequirementNote()}}
 	for _, name := range append(append([]string(nil), action.Inputs...), action.ControlInputs...) {
 		if field, ok := t.Field(name); ok {
 			properties[name] = field.Schema
 		}
 	}
-	return map[string]any{"type": "object", "properties": properties, "required": []string{"action"}, "additionalProperties": true}
+	return map[string]any{"type": "object", "properties": properties, "required": append([]string{"action"}, action.Required...), "additionalProperties": true}
+}
+
+// catalogRequiredFix names where a missing required input comes from.
+var catalogRequiredFix = map[string]string{
+	"project_id": "manage_projects action=list lists your projects and their ids",
+	"task_id":    "list_tasks lists a project's tasks and their ids",
+	"task_ids":   "list_tasks lists a project's tasks and their ids",
+	"machine":    "list_machines lists the linked machines",
+}
+
+// CheckCatalogRequired refuses a call missing one of the action's Required
+// inputs, naming the input and where it comes from. The Orchestrator's
+// handler and Swarm Control's catalog call (before its schema check) both
+// use it, so both surfaces refuse with the same reason.
+func CheckCatalogRequired(action CatalogAction, args map[string]any) error {
+	for _, key := range action.Required {
+		if _, ok := args[key]; !ok {
+			reason := fmt.Sprintf("%s is required for %s %s", key, action.Tool, action.Action)
+			if fix := catalogRequiredFix[key]; fix != "" {
+				reason += "; " + fix
+			}
+			return fmt.Errorf("%s", reason)
+		}
+	}
+	return nil
+}
+
+// catalogProjectFromTaskNote says when a task action needs project_id.
+const catalogProjectFromTaskNote = "project_id may be omitted: it is found from the task id (on a linked machine, for tasks this caller sent there)"
+
+// RequirementNote is the action's required inputs as its description states
+// them (" Requires: task_id, message."), with when a task action needs its
+// project_id; "" when nothing is required.
+func (a CatalogAction) RequirementNote() string {
+	var parts []string
+	if len(a.Required) > 0 {
+		parts = append(parts, "Requires: "+strings.Join(a.Required, ", "))
+	}
+	if TaskProjectFromTaskID(a) {
+		parts = append(parts, catalogProjectFromTaskNote)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " " + strings.Join(parts, "; ") + "."
 }
 
 // schema is the tool's input schema for the listed actions: an action field
@@ -160,9 +211,17 @@ func (t CatalogTool) schema(actions []CatalogAction, control bool) map[string]an
 	names := make([]string, 0, len(actions))
 	used := map[string]bool{}
 	lines := make([]string, 0, len(actions))
+	// The Orchestrator is shown no per-action descriptions: its action field
+	// states each action's required inputs instead.
+	var required []string
+	projectFromTask := false
 	for _, action := range actions {
 		names = append(names, action.Action)
-		lines = append(lines, action.Action+": "+action.Description)
+		lines = append(lines, action.Action+": "+action.Description+action.RequirementNote())
+		if len(action.Required) > 0 {
+			required = append(required, action.Action+" "+strings.Join(action.Required, ", "))
+		}
+		projectFromTask = projectFromTask || TaskProjectFromTaskID(action)
 		for _, input := range action.Inputs {
 			used[input] = true
 		}
@@ -176,6 +235,15 @@ func (t CatalogTool) schema(actions []CatalogAction, control bool) map[string]an
 	actionField := map[string]any{"type": "string", "enum": names}
 	if describeActions {
 		actionField["description"] = strings.Join(lines, " ")
+	} else if len(required) > 0 || projectFromTask {
+		var note []string
+		if len(required) > 0 {
+			note = append(note, "Required inputs: "+strings.Join(required, "; ")+".")
+		}
+		if projectFromTask {
+			note = append(note, "Task actions: "+catalogProjectFromTaskNote+".")
+		}
+		actionField["description"] = strings.Join(note, " ")
 	}
 	properties := map[string]any{"action": actionField}
 	for _, field := range t.Fields {

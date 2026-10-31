@@ -23,6 +23,9 @@ import (
 // fields); held waits and a task's model are Swarm Control inputs.
 // It changed again on purpose: update_environment takes replace and its
 // description says it merges unless replace is true (with base_image).
+// The parity fixes changed it on purpose: its action field states each
+// action's required inputs and that a task action finds project_id from its
+// task id.
 const manageProjectsDefinitionSHA256 = "0ba5dbf64c05ebd880674c78e6ba9f2e56dbd5ac42d9b6ea84dbaf213ff21af9"
 
 // Purpose: the catalog is the only place manage_projects exists. The

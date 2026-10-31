@@ -272,8 +272,27 @@ func manageProjectsCatalog() CatalogTool {
 		"reopen_task":               "wait_tasks follows the task.",
 		TaskChangesAction:           "read_task_file reads a changed file in full.",
 	}
+	// The inputs each action cannot run without, here and on a linked
+	// machine (machine itself for the linked reads). A task action's
+	// project_id is found from its task id when omitted
+	// (TaskProjectFromTaskID), so it is not listed for them.
+	task := []string{"task_id"}
+	required := map[string][]string{
+		"wait_tasks": {"task_ids"}, "get_task": task, "list_tasks": {"project_id"},
+		"message_task": {"task_id", "message"}, "stop_task": task,
+		"reopen_task":       {"task_id", "feedback", "expected_revision", "client_request_id"},
+		"read_task_session": {"machine", "task_id"}, FleetTaskSessionAction: {"machine", "task_id"},
+		FleetMachineStatusAction: {"machine"}, FleetMachineActivityAction: {"machine"},
+		ResolveTaskPermissionAction: {"task_id", "permission_id", "decision"},
+		TaskChangesAction:           task, TaskFileAction: {"task_id", "path"},
+		"integrate_task": task, "update_task": task, "archive_task": task, "unarchive_task": task, "delete_task": task,
+		"update": {"id"}, "delete": {"id"},
+		"list_sources": {"project_id"}, "inspect_source": {"project_id"},
+		FolderEnvironmentGet: {"workspace_path"}, FolderEnvironmentUpdate: {"workspace_path", "environment"}, FolderEnvironmentRebuild: {"workspace_path"},
+	}
 	for i := range actions {
 		actions[i].Tool = manageProjectsToolName
+		actions[i].Required = required[actions[i].Action]
 		actions[i].States = states[actions[i].Action]
 		actions[i].NextAction = nextActions[actions[i].Action]
 		if scopes, ok := routeScopes[actions[i].Action]; ok {

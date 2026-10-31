@@ -225,6 +225,10 @@ func (c *controlMCPCall) callCatalogTool(catalog tool.CatalogTool, args map[stri
 		}
 	}
 	declared["action"] = action.Action
+	// A missing required input is refused with the Orchestrator's reason.
+	if err := tool.CheckCatalogRequired(action, declared); err != nil {
+		return nil, controlMCPToolFailure("%s", err.Error())
+	}
 	if err := controlMCPValidateArgs(schema, declared); err != nil {
 		return nil, err
 	}

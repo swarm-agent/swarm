@@ -412,6 +412,13 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 	if err != nil {
 		return "", err
 	}
+	// The declared required inputs, refused as Swarm Control's schema check
+	// refuses them, so both surfaces give the same reason.
+	if declared, ok := manageProjectsDeclared().Action(action); ok {
+		if err := CheckCatalogRequired(declared, args); err != nil {
+			return "", err
+		}
+	}
 	answer, err := r.manageProjectsAnswer(ctx, scope, args)
 	if err != nil {
 		return "", err
@@ -428,6 +435,12 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 // manageProjectsAnswer is the action's own answer, before the envelope.
 func (r *Runtime) manageProjectsAnswer(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
 	args = normalizeProjectTaskWatchArgs(args)
+	// A task named without its project: the project is found from the task
+	// id where the machine can (locateTaskProject).
+	args, err := r.locateTaskProject(ctx, scope, args)
+	if err != nil {
+		return "", err
+	}
 	if action := strings.ToLower(strings.TrimSpace(asString(args["action"]))); FolderEnvironmentAction(action) {
 		return r.executeFolderEnvironments(ctx, scope, action, args)
 	}
