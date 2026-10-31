@@ -78,7 +78,11 @@ func (s *Server) localFolderEnvironment(ctx context.Context, p identity.Principa
 		}
 		out["environment"] = view
 	case tool.FolderEnvironmentUpdate:
-		view, build, err := s.UpdateSandboxEnvironment(ctx, p, change)
+		update := s.UpdateSandboxEnvironment
+		if change.Replace {
+			update = s.replaceSandboxEnvironment
+		}
+		view, build, err := update(ctx, p, change)
 		if err != nil {
 			return nil, err
 		}
@@ -124,6 +128,11 @@ func (s *Server) linkedFolderEnvironment(ctx context.Context, p identity.Princip
 		route += "?" + query.Encode()
 	case tool.FolderEnvironmentUpdate:
 		method, body = http.MethodPatch, change
+		if change.Replace {
+			// The machine's held wait runs on the merge only; a replace
+			// answers at once there.
+			method, body = http.MethodPut, replaceSandboxEnvironmentBody(change)
+		}
 	case tool.FolderEnvironmentRebuild:
 		method, route = http.MethodPost, route+"/rebuild"
 		body = map[string]any{"workspace_path": path, "wait_seconds": wait}
@@ -155,6 +164,10 @@ func fleetUnreachableError(machine string, linked pebblestore.FleetMachine) erro
 // sandboxEnvironmentChangeFromArgs reads update_environment's arguments.
 func sandboxEnvironmentChangeFromArgs(args map[string]any) (SandboxEnvironmentChange, error) {
 	change := SandboxEnvironmentChange{WorkspacePath: strings.TrimSpace(controlMCPString(args, "workspace_path"))}
+	if err := environmentReplaceConflict(args); err != nil {
+		return change, err
+	}
+	change.Replace, _ = args["replace"].(bool)
 	if raw, ok := args["base_image"]; ok && raw != nil {
 		image, isText := raw.(string)
 		if !isText {
@@ -247,4 +260,59 @@ func environmentArgInt(args map[string]any, name string) (int, error) {
 		return n, nil
 	}
 	return 0, fmt.Errorf("%s must be a whole number", name)
+}
+
+// environmentReplaceConflict refuses replace: true with an input that only
+// means something to a merge (append_setup, unset_env) or with another
+// operation (rebuild, reset), and without base_image (an environment always
+// has one; the definition route reads an empty one as "keep the current
+// definition"). update_environment merges by default: only the fields given
+// change; replace: true sets the whole definition, so setup and env not given
+// are cleared.
+func environmentReplaceConflict(args map[string]any) error {
+	if replace, _ := args["replace"].(bool); !replace {
+		return nil
+	}
+	if image, _ := args["base_image"].(string); strings.TrimSpace(image) == "" {
+		return errors.New("replace sets the whole definition and needs base_image")
+	}
+	for _, key := range []string{"append_setup", "unset_env", "rebuild", "reset"} {
+		if value, ok := args[key]; ok && value != nil && value != false {
+			return fmt.Errorf("replace sets the whole definition (base_image, setup, env, max_leases); %s does not go with it", key)
+		}
+	}
+	return nil
+}
+
+// replaceSandboxEnvironment is update_environment's replace: true here: the
+// whole definition, then the held wait (as the merge holds it).
+func (s *Server) replaceSandboxEnvironment(ctx context.Context, p identity.Principal, change SandboxEnvironmentChange) (map[string]any, bool, error) {
+	setup := []string{}
+	if change.Setup != nil {
+		setup = *change.Setup
+	}
+	view, build, err := s.DefineSandboxEnvironment(ctx, p, change.WorkspacePath, pebblestore.SandboxEnvironmentDefinition{BaseImage: change.BaseImage, Setup: setup, Env: change.Env}, change.MaxLeases)
+	if err != nil || change.WaitSeconds <= 0 {
+		return view, build, err
+	}
+	view, err = s.GetSandboxEnvironment(ctx, p, change.WorkspacePath, change.WaitSeconds)
+	return view, build, err
+}
+
+// replaceSandboxEnvironmentBody is the PUT body of a replace sent to a
+// linked machine.
+func replaceSandboxEnvironmentBody(change SandboxEnvironmentChange) map[string]any {
+	setup := []string{}
+	if change.Setup != nil {
+		setup = *change.Setup
+	}
+	env := change.Env
+	if env == nil {
+		env = map[string]string{}
+	}
+	body := map[string]any{"workspace_path": change.WorkspacePath, "base_image": change.BaseImage, "setup": setup, "env": env}
+	if change.MaxLeases != nil {
+		body["max_leases"] = *change.MaxLeases
+	}
+	return body
 }

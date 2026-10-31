@@ -21,7 +21,9 @@ import (
 // workspace, files, project_md, include_diff and include_linked, and the
 // folder environments' project, workspace, include_log and flat definition
 // fields); held waits and a task's model are Swarm Control inputs.
-const manageProjectsDefinitionSHA256 = "243e8a5b878397d77ef562a6a58f63d843d90e1d08e1811d7811a930e42f8aef"
+// It changed again on purpose: update_environment takes replace and its
+// description says it merges unless replace is true (with base_image).
+const manageProjectsDefinitionSHA256 = "0ba5dbf64c05ebd880674c78e6ba9f2e56dbd5ac42d9b6ea84dbaf213ff21af9"
 
 // Purpose: the catalog is the only place manage_projects exists. The
 // Orchestrator's definition is generated from the declarations and stays the

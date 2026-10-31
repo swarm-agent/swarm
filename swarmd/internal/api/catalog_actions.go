@@ -65,7 +65,7 @@ var catalogSwarmHandlers = map[string]map[string]catalogSwarmHandler{
 		// (tool.folderEnvironmentSwarmShaped); a folder named by
 		// workspace_path is the folder environment service's.
 		tool.FolderEnvironmentGet:    catalogSwarmEnvironment(controlMCPGetEnvironment),
-		tool.FolderEnvironmentUpdate: catalogSwarmEnvironment(controlMCPSetEnvironment),
+		tool.FolderEnvironmentUpdate: catalogSwarmEnvironment(catalogUpdateEnvironment),
 	},
 }
 
@@ -228,6 +228,37 @@ func catalogSwarmEnvironment(handler catalogSwarmHandler) catalogSwarmHandler {
 		}
 		return handler(c, call)
 	}
+}
+
+// catalogUpdateEnvironment is update_environment for a folder named the
+// swarm_* way (project, workspace). It merges like every update_environment
+// (the PATCH route, UpdateSandboxEnvironment): only the fields given change.
+// replace: true sets the whole definition (swarm_set_environment's PUT);
+// reset and rebuild are swarm_set_environment's own.
+func catalogUpdateEnvironment(c *controlMCPCall, args map[string]any) (any, error) {
+	if err := environmentReplaceConflict(args); err != nil {
+		return nil, controlMCPToolFailure("%s", err.Error())
+	}
+	replace, _ := args["replace"].(bool)
+	reset, _ := args["reset"].(bool)
+	rebuild, _ := args["rebuild"].(bool)
+	if replace || reset || rebuild {
+		call := make(map[string]any, len(args))
+		for key, value := range args {
+			if key != "replace" {
+				call[key] = value
+			}
+		}
+		return controlMCPSetEnvironment(c, call)
+	}
+	if err := c.requireTokenScope("sessions:write"); err != nil {
+		return nil, err
+	}
+	place, err := c.place(controlMCPString(args, "project"), controlMCPString(args, "workspace"))
+	if err != nil {
+		return nil, err
+	}
+	return controlMCPMergeEnvironment(c, place, args)
 }
 
 // catalogProjectContextRetry is manage_projects update with nothing to change:

@@ -176,6 +176,8 @@ var swarmAnswerProbes = map[string]swarmAnswerProbe{
 	"swarm_set_limits":         {swarm: map[string]any{"expected_revision": "$limits_revision", "limits": "$limits"}, catalog: map[string]any{"action": "set_limits", "expected_revision": "$limits_revision", "limits": "$limits"}},
 	"swarm_set_permissions":    {swarm: map[string]any{"expected_revision": "$perm_revision", "client_request_id": "probe-a", "tasks": "approve"}, catalog: map[string]any{"action": "set_permissions", "expected_revision": "$perm_revision", "client_request_id": "probe-b", "tasks": "approve"}},
 	"swarm_request_update":     {swarm: map[string]any{"max_seconds": float64(0)}, catalog: map[string]any{"action": "request_update", "max_seconds": float64(0)}},
+	"swarm_get_environment":    {swarm: map[string]any{"project": "probe-project"}, catalog: map[string]any{"action": "get_environment", "project": "probe-project"}},
+	"swarm_set_environment":    {swarm: map[string]any{"project": "probe-project", "base_image": "img:a", "wait_seconds": float64(5)}, catalog: map[string]any{"action": "update_environment", "project": "probe-project", "base_image": "img:b", "wait_seconds": float64(5)}},
 	"swarm_revoke_key":         {swarm: map[string]any{"key_id": "$key_a"}, catalog: map[string]any{"action": "revoke_key", "key_id": "$key_b"}},
 }
 
@@ -203,8 +205,6 @@ var swarmAnswerUnprobed = map[string]swarmUnprobed{
 	"swarm_schedule_job":         {reason: "a scheduled worker is bound to its folder through the workspace authority", handler: "controlMCPScheduleJob", servedBy: "manageJobsAs"},
 	"swarm_assign_worker_task":   {reason: "a run needs a worker bound to a folder, and binding needs the workspace authority", handler: "controlMCPAssignWorkerTask", servedBy: "assignWorkerTask"},
 	"swarm_create_worker":        {reason: "a new worker is bound to its folder through the workspace authority", handler: "controlMCPCreateWorker", servedBy: "workerControlRoutes"},
-	"swarm_get_environment":      {reason: "sandbox environments are not configured", handler: "controlMCPGetEnvironment", servedBy: "catalogSwarmHandlers"},
-	"swarm_set_environment":      {reason: "sandbox environments are not configured", handler: "controlMCPSetEnvironment", servedBy: "catalogSwarmHandlers"},
 	"swarm_list_secrets":         {reason: "secret slots are not configured", handler: "controlMCPListSecrets", servedBy: "runSetupAction"},
 	"swarm_connect_claude_code":  {reason: "no Claude Code provider is registered", handler: "controlMCPConnectClaudeCode", servedBy: "runSetupAction"},
 	"swarm_request_provider_key": {reason: "no provider that takes an API key is registered", handler: "controlMCPRequestProviderKey", servedBy: "runSetupAction"},
@@ -324,6 +324,13 @@ func TestEverySwarmAnswerFieldIsInTheCatalogEnvelope(t *testing.T) {
 		}
 		swarmOut, swarmErr := h.swarmTool(t, swarmKey, name, place(probe.swarm))
 		catalogOut, catalogErr := h.controlTool(t, catalogKey, home.tool, place(probe.catalog))
+		// A probe that drains this daemon (swarm_request_update) must not
+		// refuse the probes after it: the drain it began is cancelled.
+		if manager := h.home.s.ExecutionCapacity(); manager != nil {
+			if status := manager.DrainStatus(); status.Draining {
+				manager.CancelDrain(status.Generation)
+			}
+		}
 		if swarmErr != "" || catalogErr != "" {
 			if swarmErr == "" || catalogErr == "" {
 				// Answers are not printed: a probe's answer may hold a secret.
@@ -441,6 +448,9 @@ func (h *catalogParityHarness) seedSwarmAnswerProbes(t *testing.T, folder string
 		}
 	}
 	h.wireModelCatalog(t)
+	// The folder environment store and a fake image builder (no Docker).
+	h.home.s.SetSandboxEnvironmentStore(pebblestore.NewSandboxEnvironmentStore(store.Underlying()))
+	h.home.s.envBuilder = &fakeEnvironmentBuilder{}
 	values := map[string]any{"$msg_a": controlMCPJobID(controlMCPJobWorker, h.jobs[""]["worker"], "probe-msg-a"), "$msg_b": controlMCPJobID(controlMCPJobWorker, h.jobs[""]["worker"], "probe-msg-b"), "$folder": folder, "$worker": h.workers[""], "$job": h.jobs[""]["parity"], "$jobworker": h.jobs[""]["worker"], "$jobdone": h.jobs[""]["done"]}
 	if h.home.s.security != nil {
 		for _, name := range []string{"$key_a", "$key_b"} {

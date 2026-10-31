@@ -65,6 +65,10 @@ type SandboxEnvironmentChange struct {
 	UnsetEnv      []string          `json:"unset_env,omitempty"`
 	MaxLeases     *int              `json:"max_leases,omitempty"`
 	WaitSeconds   int               `json:"wait_seconds,omitempty"`
+	// Replace is update_environment's replace: true, the whole definition
+	// (DefineSandboxEnvironment, PUT) instead of the merge (PATCH). It is
+	// never part of the PATCH body.
+	Replace bool `json:"-"`
 }
 
 // sandboxEnvironmentRefusedFields are never part of an environment: secret

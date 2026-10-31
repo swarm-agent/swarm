@@ -61,6 +61,11 @@ func FleetEnvironmentChange(name, action string) bool {
 // environment actions (kept short: the Orchestrator's tool budget).
 const FolderEnvironmentDescription = " Folder environments: list_environments, get/update/rebuild_environment (workspace_path; machine ok)."
 
+// FolderEnvironmentUpdateDescription is update_environment's description:
+// it merges whatever names the folder (workspace_path, or project and
+// workspace); a full replace needs replace: true.
+const FolderEnvironmentUpdateDescription = "Define or change a folder's environment. It merges: only the fields given change, the rest stay. replace: true sets the whole definition instead: base_image is required, and setup and env not given are cleared."
+
 // folderEnvironmentArgs flattens the environment object (update_environment's
 // fields and wait_seconds) into the call's arguments; top-level fields of the
 // same name are accepted too. action and machine are not sent.
