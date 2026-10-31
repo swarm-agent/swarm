@@ -174,6 +174,16 @@ Each action of a catalog tool declares:
   own input schema (`CatalogTool.InputSchema`). **control inputs** are fields
   only a Swarm Control call takes (`wait_tasks`' `wait_seconds`); they are
   not in the Orchestrator's definition.
+- **required**: the inputs the action cannot run without, here and on a
+  linked machine (`CatalogAction.Required`; `machine` for the linked reads).
+  They are the action schema's `required` list, Swarm Control's action
+  descriptions say "Requires: ...", and the Orchestrator's action field lists
+  them. Both surfaces refuse a missing one with the same reason, naming where
+  it comes from (`tool.CheckCatalogRequired`). A `manage_projects` task action
+  may omit `project_id`: it is found from the task id, here from the account's
+  projects and on a linked machine from the home's records of the tasks this
+  conversation or caller sent there; a task id in two projects is refused
+  naming them (`TaskProjectFromTaskID`, `locateTaskProject`).
 - **level**: `read`, `write`, `approve` or `manage`. These are the same four
   levels as the `swarm:*` key scopes (`remote.ToolScope`).
 - **API scopes**: the scopes of the route behind the action. A key needs one
@@ -446,7 +456,10 @@ Fleet monitoring, moved out of `manage_projects`. One handler
 (`tool.Runtime.executeManageFleet`) serves the Orchestrator and Swarm Control;
 each action runs the one implementation it had. `status` and `activity` work
 for this machine too (omit `machine`), which `manage_projects`'
-`machine_status` and `activity` never did.
+`machine_status` and `activity` never did. `status` has the same fields here
+and on a linked machine: `activity_cursor` (for `activity`) and the `outbox`
+when it is on or failing are derived from the machine's summary by one
+function (`api.boxStatusFeedFields`).
 
 | Action | Runs | Level | API scopes | Reach |
 | --- | --- | --- | --- | --- |
@@ -658,14 +671,15 @@ and on a linked machine:
 | State | Meaning |
 | --- | --- |
 | `ok` | The call did what it was asked. |
-| `watching` | The Orchestrator's `wait_tasks` recorded a watch; a new turn brings the outcomes. Its `data.notice` says what to tell the person, and it has no `next_action`. |
+| `watching` | The Orchestrator's `wait_tasks` recorded a watch; a new turn brings the outcomes. Its `data.notice` says what to tell the person, and its `next_action` says a new turn comes when a watched task reaches a milestone and that `cancel_watch` stops it. |
 | `cancelled` | `cancel_watch` (or `wait_tasks` with `cancel`) ended watches. |
 | `milestone`, `settled`, `timed_out` | Swarm Control's `wait_tasks` (below). |
 | `partial` | The call ran but part of its answer is missing: the home could not keep its record of a send (`linked_record_error`) or could not read the machine's answer (`data_error`). |
 | `waiting` | The record the call read or changed waits on someone: a job waiting on its question or an approval (`CatalogAction.WaitingStatuses`). Its own status stays in `data`. |
-| `refused` | The action declined what was asked and changed nothing: `data.reason` says why and `next_action` what to do instead. Only an action that declares it answers it (`manage_workflows` `import` and `restore` of a run step). |
+| `refused` | The call was not accepted and changed nothing: `data.reason` says why and `next_action` what to do instead when there is a fix. An action that declares it answers it as its outcome (`manage_workflows` `import` and `restore` of a run step); any other refused call (a missing or wrong input, a rule, a record that does not exist) answers it as its failure envelope. |
+| `error` | The call could not run: a service or machine unavailable or unreachable. `data.reason` says why. |
 
-An action's answer `status` becomes `state` only when the action declares it (`CatalogAction.States`). Any other refused or failed call is not an envelope: it is a tool error that carries the reason (MCP `isError`). `tool.CheckEnvelope` holds an answer to this contract, and `TestCatalogEnvelopeContractEveryAction` runs every action through both surfaces against it.
+An action's answer `status` becomes `state` only when the action declares it (`CatalogAction.States`). A refused or failed call is still a tool error (MCP `isError`, the Orchestrator's failed tool call), and its answer is the envelope too, here and from a linked machine (`tool.FailureEnvelope`): state `refused` or `error`, `data.reason`, the fix in `next_action` (the part of the reason after its last "; "), `untrusted_content` when the call named a linked machine. The state is read from the reason alone, so both surfaces give the identical envelope; the Go error keeps its plain reason. Session reads (`read_task_session`, `get_task_session`, `manage-sessions` `read_messages`) page a message's readable content: provider-internal fields (thought signatures, encrypted reasoning, raw provider payloads) are left out of the text budget and counted in one `provider_internal` line, and the readable fields come first (`tool.ReadableMessageContent`); a `content_offset` continues the same text. `tool.CheckEnvelope` holds an answer to this contract, and `TestCatalogEnvelopeContractEveryAction` runs every action through both surfaces against it.
 
 Data the task views carry for every reader:
 
