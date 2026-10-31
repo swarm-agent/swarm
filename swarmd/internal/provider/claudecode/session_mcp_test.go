@@ -41,7 +41,12 @@ func (l *testLocation) Addr() string {
 var testLocations sync.Map // *SessionMCP -> *testLocation
 
 func newTestSessionMCP(sec *security.Service, location *testLocation) *SessionMCP {
-	endpoint := NewSessionMCP(sec, location.Root, location.Addr)
+	endpoint := NewSessionMCP(sec, location.Root())
+	if addr := location.Addr(); addr != "" {
+		if err := endpoint.SetAddress(addr); err != nil {
+			panic(err)
+		}
+	}
 	testLocations.Store(endpoint, location)
 	return endpoint
 }
@@ -53,7 +58,7 @@ func setTestAddress(endpoint *SessionMCP, addr string) error {
 	location.mu.Lock()
 	location.addr = addr
 	location.mu.Unlock()
-	return nil
+	return endpoint.SetAddress(addr)
 }
 
 // reopenTestEndpoint recreates the endpoint (a daemon restart) over the same

@@ -134,9 +134,15 @@ func resumable(req provideriface.Request, record cliContinuation) bool {
 }
 
 // resumedInput selects what the CLI has not seen: the items after the recorded
-// prefix, without the assistant messages, tool calls and tool results the CLI
-// produced itself.
+// prefix and last assistant reply. Queued notes preceding that reply were
+// already delivered on stdin during the previous turn; replaying them would
+// duplicate user input. Tool calls/results were produced by the CLI itself.
 func resumedInput(input []map[string]any, start int) []map[string]any {
+	for i := start; i < len(input); i++ {
+		if strings.EqualFold(strings.TrimSpace(stringField(input[i], "role")), "assistant") {
+			start = i + 1
+		}
+	}
 	var result []map[string]any
 	for _, item := range input[start:] {
 		switch strings.ToLower(strings.TrimSpace(stringField(item, "type"))) {

@@ -14,7 +14,7 @@ func (s *Server) SetSessionMCP(endpoint *claudecode.SessionMCP) { s.sessionMCP =
 
 // connectClaudeCodeSessionMCP gives a registered Claude Code runner the standing
 // /mcp endpoint. Its state lives under the configured daemon data directory and
-// its URL is the bound loopback API address; both are read when a turn starts.
+// its root is captured before recovery and its address is published on bind.
 func (s *Server) connectClaudeCodeSessionMCP(providers *registry.Registry) {
 	if s == nil || providers == nil || s.security == nil {
 		return
@@ -27,7 +27,7 @@ func (s *Server) connectClaudeCodeSessionMCP(providers *registry.Registry) {
 	if !ok {
 		return
 	}
-	endpoint := claudecode.NewSessionMCP(s.security, s.claudeCodeSessionRoot, s.loopbackAPIAddr)
+	endpoint := claudecode.NewSessionMCP(s.security, s.claudeCodeSessionRoot())
 	claudeCode.SetSessionMCP(endpoint)
 	s.SetSessionMCP(endpoint)
 }
@@ -38,12 +38,4 @@ func (s *Server) claudeCodeSessionRoot() string {
 		return ""
 	}
 	return filepath.Join(dataDir, "claudecode")
-}
-
-// loopbackAPIAddr is the bound loopback API listener address the daemon reports
-// through SetProviderKeyPageAddr (empty until bound or when not loopback).
-func (s *Server) loopbackAPIAddr() string {
-	s.providerKeys.mu.Lock()
-	defer s.providerKeys.mu.Unlock()
-	return s.providerKeys.addr
 }

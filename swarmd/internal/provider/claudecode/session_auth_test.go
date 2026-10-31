@@ -11,6 +11,8 @@ import (
 
 	"swarm/packages/swarmd/internal/identity"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
+	"swarm/packages/swarmd/internal/security"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 type countingInvoker struct{ calls atomic.Int64 }
@@ -127,5 +129,32 @@ func TestSessionMCPTokenIsolationAndToolInventories(t *testing.T) {
 	}
 	if w = post(unbound, "", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read"}}`); w.Code != http.StatusUnauthorized || invoker.calls.Load() != 1 {
 		t.Fatalf("unbound credential reached executor: %d calls=%d", w.Code, invoker.calls.Load())
+	}
+}
+
+// Purpose: IsSessionMCPCredential is a credential-kind discriminator, not a
+// scope authorization check. Its narrow unit boundary rejects wildcard/admin
+// and mixed/non-internal records even though HasScope may authorize session:mcp.
+func TestSessionMCPCredentialRequiresExactInternalMarker(t *testing.T) {
+	for _, tc := range []struct {
+		name, kind string
+		scopes     []string
+		want       bool
+	}{
+		{"internal marker", security.KeyKindInternal, []string{SessionMCPScope}, true},
+		{"wildcard", security.KeyKindInternal, []string{"*"}, false},
+		{"admin", security.KeyKindInternal, []string{"admin"}, false},
+		{"prefix wildcard", security.KeyKindInternal, []string{"session:*"}, false},
+		{"mixed scopes", security.KeyKindInternal, []string{SessionMCPScope, "*"}, false},
+		{"ordinary kind", "", []string{SessionMCPScope}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsSessionMCPCredential(&pebblestore.ScopedTokenRecord{Kind: tc.kind, Scopes: tc.scopes}); got != tc.want {
+				t.Fatalf("classification=%v want=%v", got, tc.want)
+			}
+		})
+	}
+	if IsSessionMCPCredential(nil) {
+		t.Fatal("nil credential classified")
 	}
 }

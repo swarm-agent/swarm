@@ -36,6 +36,7 @@ type fakeCLICall struct {
 	Resume    string   `json:"resume"`
 	SID       string   `json:"sid"`
 	Input     string   `json:"input"`
+	Queued    string   `json:"queued"`
 	Tool      string   `json:"tool"`
 	PromptDir string   `json:"prompt_dir"`
 }
@@ -115,7 +116,8 @@ if config:
  c=json.load(open(config))['mcpServers']['swarm']
  req=urllib.request.Request(c['url'],data=json.dumps({'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'bash','arguments':{},'_meta':{'claudecode/toolUseId':'fixture-%d'%n}}}).encode(),headers={**c['headers'],'Content-Type':'application/json'})
  tool=json.load(urllib.request.urlopen(req,timeout=5))['result']['content'][0]['text']
-with open(calls,'a') as out: out.write(json.dumps({'args':args,'cwd':os.getcwd(),'resume':resume,'sid':sid,'input':line,'tool':tool,'prompt_dir':os.path.dirname(prompt)})+'\n')
+queued=sys.stdin.readline() if (STATE/'queue').exists() else ''
+with open(calls,'a') as out: out.write(json.dumps({'args':args,'cwd':os.getcwd(),'resume':resume,'sid':sid,'input':line,'queued':queued,'tool':tool,'prompt_dir':os.path.dirname(prompt)})+'\n')
 print(json.dumps({'type':'result','subtype':'success','result':'done'}),flush=True)
 sys.stdin.read()
 `
@@ -476,5 +478,107 @@ func TestClaudeCodeResumeRespectsContextBoundaries(t *testing.T) {
 	}
 	if call := f.last(); call.Resume != seeded.SID || strings.Contains(call.Input, "old message") {
 		t.Fatalf("ordinary turn did not resume: %+v", call)
+	}
+}
+
+// Purpose: Runner.run/resumedInput must not replay durable user notes already
+// delivered by queuedInputToolInvoker on CLI stdin. A process fixture plus real
+// MCP call is the narrowest layer exercising delivery, continuation, and resume.
+// Assert exactly one note, retained resume identity, and the next new user input.
+func TestClaudeCodeResumeDoesNotReplayDeliveredQueuedNote(t *testing.T) {
+	f := newCLIFixture(t)
+	const note = "queued-note-once"
+	marker := filepath.Join(f.state, "queue")
+	if err := os.WriteFile(marker, []byte("queue"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	req := conversationRequest("queued-resume", "epoch", "lineage", userItem("begin"))
+	req.QueuedUserInput = &queuedInputStub{messages: []string{note}}
+	if _, err := f.runner.CreateResponse(f.ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	first := f.last()
+	if strings.Count(first.Queued, note) != 1 {
+		t.Fatalf("queued stdin=%q", first.Queued)
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	req.QueuedUserInput = nil
+	req.Input = append(req.Input, userItem(note), assistantItem("done"), userItem("next-user-input"))
+	if _, err := f.runner.CreateResponse(f.ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	second := f.last()
+	if second.Resume != first.SID || strings.Contains(second.Input, note) || !strings.Contains(second.Input, "next-user-input") {
+		t.Fatalf("resumed input=%+v", second)
+	}
+	calls := f.calls()
+	if len(calls) != 2 {
+		t.Fatalf("CLI calls=%d", len(calls))
+	}
+	if strings.Count(first.Input+first.Queued+second.Input+second.Queued, note) != 1 {
+		t.Fatal("queued note duplicated across turns")
+	}
+}
+
+// Purpose: a recovered conversation reaches Runner.run before the daemon binds
+// its loopback listener. It must wait without dispatching or changing durable
+// continuation, then resume the same CLI session after SetAddress. This real
+// runner/process/store-reopen fixture isolates the readiness boundary; cancelled
+// waits must return without starting a CLI process or creating credentials.
+func TestSessionMCPRecoveredTurnWaitsForLoopbackAddress(t *testing.T) {
+	f := newCLIFixture(t)
+	req := conversationRequest("pending-recovery", "epoch", "lineage", userItem("begin"))
+	if _, err := f.runner.CreateResponse(f.ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	first := f.last()
+	f.server.Close()
+	if err := f.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.openStore()
+	f.endpoint = newTestSessionMCP(f.sec, &testLocation{root: filepath.Join(f.root, "claudecode")})
+	f.runner = NewRunner(f.auth, f.cli)
+	f.runner.SetSessionMCP(f.endpoint)
+	req.Input = append(req.Input, assistantItem("done"), userItem("recovered-next"))
+	done := make(chan error, 1)
+	go func() { _, err := f.runner.CreateResponse(f.ctx, req); done <- err }()
+	select {
+	case err := <-done:
+		t.Fatalf("turn failed before bind: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if len(f.calls()) != 1 {
+		t.Fatal("CLI dispatched before listener readiness")
+	}
+	f.startServer(f.addr)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-f.ctx.Done():
+		t.Fatal(f.ctx.Err())
+	}
+	second := f.last()
+	if second.Resume != first.SID || len(f.calls()) != 2 || !strings.Contains(second.Input, "recovered-next") {
+		t.Fatalf("recovered call=%+v", second)
+	}
+
+	endpoint := NewSessionMCP(f.sec, t.TempDir())
+	runner := NewRunner(f.auth, f.cli)
+	runner.SetSessionMCP(endpoint)
+	ctx, cancel := context.WithCancel(f.ctx)
+	cancel()
+	if _, err := runner.CreateResponse(ctx, req); err == nil {
+		t.Fatal("cancelled wait succeeded")
+	}
+	if len(f.calls()) != 2 {
+		t.Fatal("cancelled turn dispatched")
+	}
+	if entries, err := os.ReadDir(endpoint.root); err != nil || len(entries) != 0 {
+		t.Fatalf("cancelled wait mutated state: %v %v", entries, err)
 	}
 }

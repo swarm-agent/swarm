@@ -90,6 +90,7 @@ Each Swarm provider request is one non-interactive Claude Code turn: `claude -p`
 **Tools and permissions:**
 - The CLI connects to the daemon's standing `http://127.0.0.1:<configured API port>/mcp` endpoint (or the configured IPv6 loopback address), not a per-turn server. Use a fixed daemon API port to preserve the URL across restarts.
 - A private `--mcp-config` file is created on the session's first Claude Code turn and reused. Its Authorization header contains an internal scoped key from Swarm's credential store with only the `session:mcp` scope; a provider-owned binding ties it to exactly one owner and session. Restart does not invalidate it. It cannot authorize other sessions or ordinary API routes.
+- Recovered turns wait cancellably for the bound loopback address; their storage root is captured before recovery starts. Wildcard and admin keys still use Swarm Control, not the session endpoint.
 - If the API address changes, the next turn rewrites the config's URL with the same key. If the key was revoked or lapsed, the next turn issues a new one and rewrites the config.
 - `tools/list` is the current run's resolved inventory: the Orchestrator catalog or a task agent's worktree tools. An inactive session refuses execution until its next run attaches the canonical executor.
 - Every call runs through Swarm's tool invoker, so Swarm permissions, approvals, and durable V3 records apply.
@@ -98,6 +99,7 @@ Each Swarm provider request is one non-interactive Claude Code turn: `claude -p`
 **Conversation state:**
 - Swarm still sends the complete epoch input on every request (`stateless_full_input`). The first conversation turn seeds the CLI with it. Swarm records the CLI session ID from `system/init` with the execution epoch, provider lineage and a digest of that input, in a provider-owned file (not on the V3 session).
 - A later ordinary turn (`session_turn`) uses `--resume <id>` and sends only the items the CLI has not seen. This happens only when the epoch and lineage match and the recorded input is an exact prefix of the new input. Every other boundary starts a fresh CLI session seeded with the complete input: compaction, checkpoint and plan-guard fresh context, bounded history, restart after a tool, and a provider/model handoff, including a return from another provider.
+- Queued user notes delivered to the CLI during a turn are not replayed on resume: items before the last assistant reply are already part of its conversation.
 - If the CLI explicitly refuses a missing session before initialization, Swarm starts one fresh session seeded from durable history and records its new ID. Other provider failures do not trigger a history replay.
 - The MCP config is a `0600` file in a private session directory under `<data dir>/claudecode`. The system prompt is a `0600` file in a per-turn temporary directory, removed after the turn. Tokens and prompt contents never appear on argv.
 - A daemon shutdown may stop the CLI process. The next turn reuses its recorded CLI session ID, endpoint and token. Transient HTTP disconnects remain the CLI's reconnect/retry responsibility; Swarm does not replace the endpoint or credentials per turn.

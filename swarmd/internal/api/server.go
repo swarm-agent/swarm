@@ -379,9 +379,16 @@ type mcpService interface {
 	SetEnabled(id string, enabled bool) (mcpruntime.Server, *pebblestore.EventEnvelope, error)
 }
 
+// CoreServerOption configures construction before pending V3 runs recover.
+type CoreServerOption func(*Server)
+
+func WithDataDir(path string) CoreServerOption {
+	return func(s *Server) { s.dataDir = path }
+}
+
 // NewCoreServer composes canonical backend APIs without Desktop routes, assets
 // or browser authentication. NewServer adds the existing Desktop composition.
-func NewCoreServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *model.Service, runSvc runService, sessionSvc *sessionruntime.Service, workspaceSvc *workspace.Service, discoverySvc *discovery.Service, securitySvc *security.Service, providers *registry.Registry, permSvc permissionService, notificationSvc notificationService, events *pebblestore.EventLog, hub *stream.Hub) *Server {
+func NewCoreServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *model.Service, runSvc runService, sessionSvc *sessionruntime.Service, workspaceSvc *workspace.Service, discoverySvc *discovery.Service, securitySvc *security.Service, providers *registry.Registry, permSvc permissionService, notificationSvc notificationService, events *pebblestore.EventLog, hub *stream.Hub, options ...CoreServerOption) *Server {
 	runCtx, runCancel := context.WithCancel(context.Background())
 	artifactPreviewKey := make([]byte, 32)
 	if _, err := rand.Read(artifactPreviewKey); err != nil {
@@ -413,6 +420,9 @@ func NewCoreServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelS
 		reviewCommitActive: make(map[string]string),
 		runCtx:             runCtx,
 		runCancel:          runCancel,
+	}
+	for _, option := range options {
+		option(server)
 	}
 	server.connectClaudeCodeSessionMCP(providers)
 	if workspaceAware, ok := runSvc.(interface{ SetWorkspaceService(*workspace.Service) }); ok && workspaceAware != nil {

@@ -3,6 +3,8 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -17,7 +19,11 @@ import (
 func testSessionMCPEndpoint(t *testing.T, sec *security.Service) *claudecode.SessionMCP {
 	t.Helper()
 	root := t.TempDir()
-	return claudecode.NewSessionMCP(sec, func() string { return root }, func() string { return "127.0.0.1:1" })
+	endpoint := claudecode.NewSessionMCP(sec, root)
+	if err := endpoint.SetAddress("127.0.0.1:1"); err != nil {
+		t.Fatal(err)
+	}
+	return endpoint
 }
 
 // Purpose: the daemon mounts session MCP only on its loopback API listener.
@@ -68,17 +74,16 @@ func TestSessionMCPLoopbackMountAndTransportConfinement(t *testing.T) {
 
 // Purpose: the API server, not daemon wiring outside the provider scope,
 // connects a registered Claude Code runner to the standing endpoint. The
-// endpoint must stay unusable until the daemon has given the server its data
-// directory and bound loopback API address, and work after both are set.
+// storage root must be captured before recovery, while the address remains
+// unavailable until the loopback listener is bound.
 func TestSessionMCPConnectedFromRegisteredRunner(t *testing.T) {
 	s, _, _, cleanup := setupScopedAuthTestServer(t)
 	defer cleanup()
 	providers := registry.New()
 	providers.RegisterRunner(claudecode.NewRunner(nil, nil))
-	s.sessionMCP = nil
-	s.SetDataDir("")
-	s.SetProviderKeyPageAddr("")
-	s.connectClaudeCodeSessionMCP(providers)
+	root := t.TempDir()
+	s = NewCoreServer(nil, nil, nil, nil, nil, nil, nil, s.security, providers, nil, nil, nil, nil, WithDataDir(root))
+	t.Cleanup(s.CancelInFlightRuns)
 	if s.sessionMCP == nil {
 		t.Fatal("registered Claude Code runner was not connected to the session endpoint")
 	}
@@ -86,6 +91,7 @@ func TestSessionMCPConnectedFromRegisteredRunner(t *testing.T) {
 	if _, err := s.sessionMCP.SessionToken(p, "fixture-session"); err == nil {
 		t.Fatal("session credential issued before the daemon configured storage and address")
 	}
+	// Later server configuration must not change the endpoint's captured root.
 	s.SetDataDir(t.TempDir())
 	s.SetProviderKeyPageAddr("0.0.0.0:7781")
 	if _, err := s.sessionMCP.SessionToken(p, "fixture-session"); err == nil {
@@ -94,5 +100,8 @@ func TestSessionMCPConnectedFromRegisteredRunner(t *testing.T) {
 	s.SetProviderKeyPageAddr("127.0.0.1:7781")
 	if _, err := s.sessionMCP.SessionToken(p, "fixture-session"); err != nil {
 		t.Fatalf("configured endpoint: %v", err)
+	}
+	if entries, err := os.ReadDir(filepath.Join(root, "claudecode", "sessions")); err != nil || len(entries) != 1 {
+		t.Fatalf("endpoint did not retain construction-time root: %v %v", entries, err)
 	}
 }

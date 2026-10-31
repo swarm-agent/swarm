@@ -26,8 +26,9 @@ const SessionMCPScope = "session:mcp"
 
 // IsSessionMCPCredential reports whether a validated scoped key is a session
 // tools credential, which only the loopback session MCP handler accepts.
+// Do not use HasScope: wildcard/admin authorization is not a credential marker.
 func IsSessionMCPCredential(rec *pebblestore.ScopedTokenRecord) bool {
-	return rec != nil && rec.HasScope(SessionMCPScope)
+	return rec != nil && rec.Kind == security.KeyKindInternal && len(rec.Scopes) == 1 && rec.Scopes[0] == SessionMCPScope
 }
 
 // SessionMCP is mounted once on the daemon's loopback API listener. Its state
@@ -35,24 +36,47 @@ func IsSessionMCPCredential(rec *pebblestore.ScopedTokenRecord) bool {
 // the CLI config, and the CLI continuation. Credentials survive restart; active
 // executors are installed only by the provider run loop.
 type SessionMCP struct {
-	security *security.Service
-	root     func() string
-	address  func() string
-	mu       sync.RWMutex
-	active   map[string]*mcpTools
+	security  *security.Service
+	root      string
+	address   string
+	ready     chan struct{}
+	readyOnce sync.Once
+	mu        sync.RWMutex
+	active    map[string]*mcpTools
 }
 
-// NewSessionMCP resolves its storage root and the loopback API address when a
-// turn needs them: both are known only once the daemon has configured them.
-func NewSessionMCP(sec *security.Service, root, address func() string) *SessionMCP {
-	return &SessionMCP{security: sec, root: root, address: address, active: make(map[string]*mcpTools)}
+// NewSessionMCP captures the storage root before run recovery can start. A run
+// waits for SetAddress rather than failing while the daemon binds its listener.
+func NewSessionMCP(sec *security.Service, root string) *SessionMCP {
+	return &SessionMCP{security: sec, root: strings.TrimSpace(root), ready: make(chan struct{}), active: make(map[string]*mcpTools)}
+}
+
+func (s *SessionMCP) SetAddress(addr string) error {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(addr))
+	ip := net.ParseIP(host)
+	if err != nil || ip == nil || !ip.IsLoopback() || port == "" || port == "0" {
+		return errors.New("session MCP requires a bound loopback API listener")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.address = net.JoinHostPort(host, port)
+	s.readyOnce.Do(func() { close(s.ready) })
+	return nil
+}
+
+// WaitReady is cancellable so daemon shutdown never strands a recovered turn.
+func (s *SessionMCP) WaitReady(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.ready:
+		return ctx.Err()
+	}
 }
 
 func (s *SessionMCP) endpointURL() (string, error) {
-	addr := ""
-	if s.address != nil {
-		addr = strings.TrimSpace(s.address())
-	}
+	// The caller holds mu, as it does for storageRoot and config creation.
+	addr := s.address
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return "", errors.New("session MCP API listener is not ready")
@@ -65,10 +89,8 @@ func (s *SessionMCP) endpointURL() (string, error) {
 }
 
 func (s *SessionMCP) storageRoot() (string, error) {
-	root := ""
-	if s.root != nil {
-		root = strings.TrimSpace(s.root())
-	}
+	// root is captured at construction and never mutated.
+	root := s.root
 	if root == "" || !filepath.IsAbs(root) {
 		return "", errors.New("session MCP storage root is not configured")
 	}

@@ -125,6 +125,10 @@ func (s *Server) SetProviderKeyPageAddr(addr string) {
 	s.providerKeys.mu.Lock()
 	s.providerKeys.addr = addr
 	s.providerKeys.mu.Unlock()
+	if addr != "" && s.sessionMCP != nil {
+		// addr has already been validated as a bound loopback address.
+		_ = s.sessionMCP.SetAddress(addr)
+	}
 }
 
 func (reg *providerKeyRegistry) clock() time.Time {

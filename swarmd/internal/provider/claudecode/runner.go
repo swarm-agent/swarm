@@ -143,6 +143,9 @@ func (r *Runner) runSingle(ctx context.Context, req provideriface.Request, onEve
 	if r.mcp == nil {
 		return provideriface.Response{}, errors.New("standing session MCP is not configured")
 	}
+	if err := r.mcp.WaitReady(turnCtx); err != nil {
+		return provideriface.Response{}, err
+	}
 	config, err := r.mcp.prepare(principal, req.SessionID)
 	if err != nil {
 		return provideriface.Response{}, err
