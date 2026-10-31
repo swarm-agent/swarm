@@ -104,13 +104,15 @@ const (
 	MaxSteps                  = 20
 	MaxStepArgs               = 32
 	maxNameRunes              = 200
-	maxBriefRunes             = 20000
-	maxArgBytes               = 4096
-	maxCommandBytes           = 1024
-	MaxStepConditions         = 8
-	DefaultMaxRounds          = 2
-	MaxRounds                 = 5
-	maxReopenMessageRunes     = 4000
+	// MaxDescriptionRunes bounds a workflow's optional description.
+	MaxDescriptionRunes   = 2000
+	maxBriefRunes         = 20000
+	maxArgBytes           = 4096
+	maxCommandBytes       = 1024
+	MaxStepConditions     = 8
+	DefaultMaxRounds      = 2
+	MaxRounds             = 5
+	maxReopenMessageRunes = 4000
 )
 
 var (
@@ -215,11 +217,13 @@ type Automation struct {
 	ID             string            `json:"id"`
 	Account        string            `json:"account"`
 	Name           string            `json:"name"`
-	Scope          Scope             `json:"scope"`
-	When           string            `json:"when"`
-	Enabled        bool              `json:"enabled"`
-	Retries        int               `json:"retries"`
-	Steps          []Step            `json:"steps"`
+	// Description says what the workflow is for (optional, one paragraph).
+	Description string `json:"description,omitempty"`
+	Scope       Scope  `json:"scope"`
+	When        string `json:"when"`
+	Enabled     bool   `json:"enabled"`
+	Retries     int    `json:"retries"`
+	Steps       []Step `json:"steps"`
 	// Result is what the work must hand over (optional): see ResultSpec.
 	Result    *ResultSpec `json:"result,omitempty"`
 	Revision  uint64      `json:"revision"`
@@ -250,6 +254,10 @@ func (a *Automation) normalize() error {
 	a.Name = strings.TrimSpace(a.Name)
 	if a.Name == "" || utf8.RuneCountInString(a.Name) > maxNameRunes || strings.ContainsAny(a.Name, "\r\n") {
 		return invalid("name is required (one line, at most %d characters)", maxNameRunes)
+	}
+	a.Description = strings.TrimSpace(a.Description)
+	if utf8.RuneCountInString(a.Description) > MaxDescriptionRunes {
+		return invalid("description has at most %d characters", MaxDescriptionRunes)
 	}
 	if err := a.Scope.normalize(); err != nil {
 		return err

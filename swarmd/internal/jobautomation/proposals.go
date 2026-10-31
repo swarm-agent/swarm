@@ -5,6 +5,9 @@ import "errors"
 var ErrProposalConflict = errors.New("workflow proposal or active revision changed; review it again")
 
 // Propose keeps a session's pending revision separate from the running definition.
+// The proposal replaces the accepted workflow of its name, or with in.BaseID
+// set, that workflow (a change that renames it); a name another workflow
+// already has is refused.
 func (s *Store) Propose(account, session string, in Automation) (Automation, error) {
 	if account == "" || session == "" {
 		return Automation{}, errors.New("account and proposing session are required")
@@ -18,21 +21,36 @@ func (s *Store) Propose(account, session string, in Automation) (Automation, err
 	if err != nil {
 		return Automation{}, err
 	}
+	baseID := in.BaseID
+	in.BaseID, in.BaseRevision = "", 0
 	in.ID, err = newID("jauto_")
 	if err != nil {
 		return Automation{}, err
 	}
 	in.Account, in.Proposed, in.ProposedBy = account, true, session
 	in.Revision, in.CreatedAt, in.UpdatedAt = 1, s.now().UnixMilli(), s.now().UnixMilli()
+	if baseID != "" {
+		for _, a := range list {
+			if a.ID == baseID && !a.Proposed {
+				in.BaseID, in.BaseRevision = a.ID, a.Revision
+			}
+		}
+		if in.BaseID == "" {
+			return Automation{}, ErrNotFound
+		}
+	}
 	var previous *Automation
 	for _, a := range list {
-		if a.Name != in.Name {
+		if a.Name != in.Name && (baseID == "" || a.BaseID != baseID) {
 			continue
 		}
-		if !a.Proposed {
+		if !a.Proposed && a.Name == in.Name {
+			if baseID != "" && a.ID != baseID {
+				return Automation{}, invalid("another workflow is already named %q (%s)", in.Name, a.ID)
+			}
 			in.BaseID, in.BaseRevision = a.ID, a.Revision
 		}
-		if a.Proposed && a.ProposedBy == session {
+		if a.Proposed && a.ProposedBy == session && previous == nil {
 			copy := a
 			previous = &copy
 			in.ID, in.CreatedAt, in.Revision = a.ID, a.CreatedAt, a.Revision+1
@@ -68,13 +86,24 @@ func (s *Store) AcceptProposal(account, id string, revision uint64, who string, 
 	}
 	var previous *Automation
 	for _, current := range list {
-		if !current.Proposed && current.Name == a.Name {
+		if current.Proposed {
+			continue
+		}
+		// The reviewed base, by id (a proposal may rename it); with no base,
+		// the workflow of the proposal's name.
+		if (a.BaseID != "" && current.ID == a.BaseID) || (a.BaseID == "" && current.Name == a.Name) {
 			copy := current
 			previous = &copy
 		}
 	}
 	if (previous == nil && a.BaseID != "") || (previous != nil && (previous.ID != a.BaseID || previous.Revision != a.BaseRevision)) {
 		return Automation{}, ErrProposalConflict
+	}
+	// A rename must not take another workflow's name.
+	for _, current := range list {
+		if !current.Proposed && current.Name == a.Name && (previous == nil || current.ID != previous.ID) {
+			return Automation{}, ErrProposalConflict
+		}
 	}
 	proposalID := a.ID
 	if previous != nil {

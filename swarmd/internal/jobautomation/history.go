@@ -33,8 +33,13 @@ func definitionFields(a *Automation) map[string]any {
 	if a == nil {
 		return map[string]any{}
 	}
-	return map[string]any{"scope_worker_id": a.ScopeWorkerID, "inputs": a.Inputs, "with": a.With, "on": a.On, "trigger_owner": a.TriggerOwner, "name": a.Name, "scope": a.Scope, "when": a.When, "enabled": a.Enabled, "retries": a.Retries, "steps": a.Steps, "result": a.Result}
+	return map[string]any{"scope_worker_id": a.ScopeWorkerID, "inputs": a.Inputs, "with": a.With, "on": a.On, "trigger_owner": a.TriggerOwner, "name": a.Name, "description": a.Description, "scope": a.Scope, "when": a.When, "enabled": a.Enabled, "retries": a.Retries, "steps": a.Steps, "result": a.Result}
 }
+
+// ChangedFields names the definition's top-level fields that differ between
+// a and b (nil: no definition), as history records them.
+func ChangedFields(a, b *Automation) []string { return changedFields(a, b) }
+
 func changedFields(a, b *Automation) []string {
 	before, after := definitionFields(a), definitionFields(b)
 	keys := map[string]bool{}
