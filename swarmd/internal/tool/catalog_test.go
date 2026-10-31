@@ -14,8 +14,10 @@ import (
 
 // manageProjectsDefinitionSHA256 is the hash of the Orchestrator's
 // manage_projects definition (json.Marshal, sorted keys). The definition is
-// a prompt contract: it changes only on purpose, with this hash.
-const manageProjectsDefinitionSHA256 = "c10bb622fef482b555e8f67722fecd549cb781f58404d934cf20c0d0ade4b494"
+// a prompt contract: it changes only on purpose, with this hash. Stage 6
+// changed it on purpose: get_task_changes and read_task_file (with path,
+// diff_chars, page_offset and page_digest) joined it.
+const manageProjectsDefinitionSHA256 = "033871792dc11736adaa6f296f0deeb9ab271f425f87523f39503b5e61ddc665"
 
 // Purpose: the catalog is the only place manage_projects exists. The
 // Orchestrator's definition is generated from the declarations and stays the
@@ -90,7 +92,7 @@ func TestManageProjectsCatalogReachMatchesTheHandler(t *testing.T) {
 		case "wait_tasks", "cancel_watch", FleetReadTaskSessionAction, ResolveTaskPermissionAction, FleetAgentsAtWorkAction:
 			return true
 		}
-		return FleetProjectActionAllowed(action) || fleetLinkedReadAction(action) || FolderEnvironmentAction(action)
+		return FleetProjectActionAllowed(action) || fleetLinkedReadAction(action) || FolderEnvironmentAction(action) || taskWorkReadAction(action)
 	}
 	for _, action := range manageProjectsCatalog().Actions {
 		takesMachine := false

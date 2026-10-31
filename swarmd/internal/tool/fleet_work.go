@@ -14,7 +14,14 @@ type FleetWork interface {
 func FleetWorkActionAllowed(name, action string) bool {
 	switch name {
 	case "manage_projects":
-		return FleetProjectActionAllowed(action)
+		// A task's diff and files are read on the machine through its own
+		// catalog service (POST /v3/catalog-actions/manage_projects/{action}).
+		return FleetProjectActionAllowed(action) || taskWorkReadAction(action)
+	case ManageMediaToolName, manageDesignToolName:
+		// Media and designs that reach a linked machine run there through its
+		// own catalog service (POST /v3/catalog-actions/{tool}/{action}).
+		declared, ok := catalogDeclared(name).Action(action)
+		return ok && declared.Reach == CatalogReachAny
 	case "manage_workflows":
 		switch action {
 		case "list", "get", "history", "deliveries", "propose", "enable", "disable", "delete", "export", "import", "restore", "stop_all":

@@ -35,6 +35,11 @@ func (s *Server) CallFleetWork(ctx context.Context, p identity.Principal, machin
 	if name == tool.ManageJobsToolName {
 		return s.callFleetJobs(ctx, p, machine, action, args)
 	}
+	if _, _, _, served := catalogServedAction(name, action); served {
+		// Media, designs and a task's diff and files run on the machine's
+		// own ManageCatalogAction.
+		return s.callFleetCatalog(ctx, p, machine, CatalogActionsPath+"/"+name, action, args)
+	}
 	if name == tool.ManageSetupToolName {
 		// Setup that reaches a linked machine runs on its own ManageSetup.
 		return s.callFleetCatalog(ctx, p, machine, SetupActionsPath, action, args)

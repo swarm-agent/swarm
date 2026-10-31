@@ -405,6 +405,12 @@ func (r *Runtime) manageProjectsAnswer(ctx context.Context, scope WorkspaceScope
 	if action := strings.ToLower(strings.TrimSpace(asString(args["action"]))); FolderEnvironmentAction(action) {
 		return r.executeFolderEnvironments(ctx, scope, action, args)
 	}
+	if action := strings.ToLower(strings.TrimSpace(asString(args["action"]))); taskWorkReadAction(action) {
+		// A task's diff or file: the swarm_get_changes and swarm_read_file
+		// handlers, here or on the linked machine.
+		declared, _ := manageProjectsDeclared().Action(action)
+		return r.catalogServiceAnswer(ctx, scope, manageProjectsDeclared(), declared, args)
+	}
 	if strings.ToLower(strings.TrimSpace(asString(args["action"]))) == FleetAgentsAtWorkAction {
 		return r.executeFleetAgentsAtWork(ctx, scope, args)
 	}

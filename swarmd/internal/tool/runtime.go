@@ -1539,6 +1539,7 @@ func (r *Runtime) Definitions() []Definition {
 		manageWorkflowsDefinition(),
 		manageJobsDefinition(),
 		manageSetupDefinition(),
+		manageFleetDefinition(),
 		manageAutomationV2Definition(),
 		swarmDesignDefinition(),
 		manageMediaDefinition(),
@@ -2229,11 +2230,22 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 	case "manage-skill", "manage_skill":
 		return executeManageSkill(scope, args)
 	case "manage_custom_agents":
-		return r.executeManageCustomAgents(scope, args)
+		return r.executeManageCustomAgentsCatalog(scope, args)
 	case "manage-agent", "manage_agent":
 		return r.executeManageAgent(scope, args)
-	case "manage-theme", "manage_theme":
+	case "manage_theme":
+		// The catalog's manage_theme (get); the agents' manage-theme
+		// actions stay the theme tool's.
+		if manageThemeCatalogAction(args) {
+			return r.executeCatalogServiceTool(ctx, scope, manageThemeToolName, args)
+		}
 		return r.executeManageTheme(scope, args)
+	case "manage-theme":
+		return r.executeManageTheme(scope, args)
+	case "manage-fleet", "manage_fleet":
+		return r.executeManageFleet(ctx, scope, args)
+	case manageDesignToolName:
+		return r.executeManageDesign(ctx, scope, args)
 	case "manage-sessions", "manage_sessions":
 		return r.executeManageSessions(ctx, scope, args)
 	case "manage-workspace", "manage_workspace":
@@ -2267,7 +2279,7 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 	case "manage_design":
 		return "", errors.New("manage_design was replaced by swarm_design")
 	case ManageMediaToolName:
-		return r.executeManageMedia(ctx, scope, args)
+		return r.executeManageMediaCatalog(ctx, scope, args)
 	case SwarmDesignToolName:
 		return "", errSwarmDesignRunServiceOnly
 	case "manage-artifact", "manage_artifact":

@@ -157,6 +157,7 @@ func newCatalogParityHarness(t *testing.T) *catalogParityHarness {
 	parity.seedJobs(t)
 	parity.seedWorkers(t)
 	parity.seedSetup(t)
+	parity.seedStage6(t)
 	return parity
 }
 
@@ -271,7 +272,12 @@ func parityArgs(args ...any) map[string]any {
 // catalogParityCases holds, per catalog tool, one case for every action (see
 // TestCatalogParityCoversEveryAction).
 func catalogParityCases() map[string]map[string][]catalogParityCase {
-	return map[string]map[string][]catalogParityCase{"manage_projects": manageProjectsParityCases(), "manage_workflows": manageWorkflowsParityCases(), "manage_jobs": manageJobsParityCases(), "manage_workers": manageWorkersParityCases(), "manage_setup": manageSetupParityCases()}
+	projects := manageProjectsParityCases()
+	for action, cases := range manageProjectsTaskWorkParityCases() {
+		projects[action] = cases
+	}
+	return map[string]map[string][]catalogParityCase{"manage_projects": projects, "manage_workflows": manageWorkflowsParityCases(), "manage_jobs": manageJobsParityCases(), "manage_workers": manageWorkersParityCases(), "manage_setup": manageSetupParityCases(),
+		"manage_fleet": manageFleetParityCases(), "manage_media": manageMediaParityCases(), "manage_custom_agents": manageCustomAgentsParityCases(), "manage_theme": manageThemeParityCases(), "manage_designs": manageDesignsParityCases()}
 }
 
 // catalogParityToolNames are the tools with parity cases, sorted.
@@ -521,6 +527,23 @@ func (h *catalogParityHarness) runParityCases(t *testing.T, toolName, action str
 				continue
 			}
 			served++
+			if c.compare == paritySessionBound {
+				// Documented difference (paritySessionBound): the same
+				// outcome kind, and every envelope keeps the contract.
+				if (orchErr != nil) != (controlErr != "") {
+					t.Fatalf("%s case %d: Orchestrator %v %s; Swarm Control %q %s", name, i, orchErr, orchOut, controlErr, controlOut)
+				}
+				if orchErr == nil {
+					orch, control := parityDecode(t, orchOut), parityDecode(t, controlOut)
+					for _, key := range []string{"tool", "action", "machine"} {
+						if orch[key] != control[key] {
+							t.Fatalf("%s: %s differs: %v / %v", name, key, orch[key], control[key])
+						}
+					}
+				}
+				t.Logf("%s: session-bound: %v / %s", name, orchErr, controlErr)
+				continue
+			}
 			if orchErr != nil || controlErr != "" {
 				if orchErr == nil || controlErr == "" || parityTwin(controlErr, c.twin) != orchErr.Error() {
 					t.Fatalf("%s case %d: Orchestrator %v %s; Swarm Control %q %s", name, i, orchErr, orchOut, controlErr, controlOut)

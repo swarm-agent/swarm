@@ -73,6 +73,7 @@ func TestCatalogEnvelopeContractEveryAction(t *testing.T) {
 	leads := map[string]map[string]bool{
 		"manage_projects":  {"list": true, "get": true, "list_tasks": true, "list_machines": true, "list_linked_tasks": true, "agents_at_work": true, "machine_status": true, "get_task_session": true, "activity": true, "read_task_session": true, "wait_tasks": true},
 		"manage_workflows": {"list": true, "get": true, "deliveries": true, "history": true, "export": true},
+		"manage_fleet":     {"list_machines": true, "status": true, "agents_at_work": true, "activity": true, "list_runs": true, "list_linked_tasks": true},
 	}
 	for _, toolName := range catalogParityToolNames(all) {
 		for _, action := range catalogParityActionNames(all[toolName]) {

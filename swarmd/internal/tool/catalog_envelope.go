@@ -138,7 +138,7 @@ func manageProjectsWrapsData(action, machine string) bool {
 	if action == FleetAgentsAtWorkAction || FolderEnvironmentAction(action) {
 		return true
 	}
-	return machine != "" && FleetProjectActionAllowed(action)
+	return machine != "" && (FleetProjectActionAllowed(action) || taskWorkReadAction(action))
 }
 
 // manageProjectsHomeNotes are the home's own notes on a linked answer.
@@ -684,6 +684,16 @@ func (r *Runtime) ExecuteControlCatalog(ctx context.Context, call ControlCatalog
 		return r.executeManageWorkers(identity.ContextWithPrincipal(ctx, p), scope, args)
 	case manageSetupToolName:
 		return r.executeManageSetup(identity.ContextWithPrincipal(ctx, p), scope, args)
+	case manageFleetToolName:
+		return r.executeManageFleet(identity.ContextWithPrincipal(ctx, p), scope, args)
+	case ManageMediaToolName:
+		return r.executeManageMediaCatalog(identity.ContextWithPrincipal(ctx, p), scope, args)
+	case manageCustomAgentsToolName:
+		return r.executeManageCustomAgentsCatalog(scope, args)
+	case manageThemeToolName:
+		return r.executeCatalogServiceTool(identity.ContextWithPrincipal(ctx, p), scope, manageThemeToolName, args)
+	case manageDesignToolName:
+		return r.executeManageDesign(identity.ContextWithPrincipal(ctx, p), scope, args)
 	}
 	return "", fmt.Errorf("%s has no handler", catalog.Name)
 }

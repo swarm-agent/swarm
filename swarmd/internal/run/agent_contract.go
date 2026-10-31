@@ -355,6 +355,12 @@ func resolveAgentToolStates(profile pebblestore.AgentProfile, knownTools map[str
 		if _, implemented := knownTools[tool.ManageMediaToolName]; implemented {
 			resolved.Tools[tool.ManageMediaToolName] = ResolvedAgentTool{Enabled: true, Source: "runtime.orchestrator_media_tasks"}
 		}
+		// Fleet monitoring moved from manage_projects into the catalog's
+		// manage_fleet (read only): a stored profile from before it cannot
+		// hide it.
+		if _, implemented := knownTools[tool.ManageFleetToolName]; implemented {
+			resolved.Tools[tool.ManageFleetToolName] = ResolvedAgentTool{Enabled: true, Source: "runtime.orchestrator_catalog"}
+		}
 		// Its tools for the person's machine are code-owned too: a stored profile
 		// from before them cannot hide them. Each session's access gates every
 		// call in the permission service.
