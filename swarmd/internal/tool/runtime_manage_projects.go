@@ -408,6 +408,21 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		args = CatalogConversationArgs(declared, scope.ControlCaller, args)
 	}
 	args = manageProjectsSwarmArgs(args)
+	// A task named without its project: the project is found from the task
+	// id where the machine can (locateTaskProject), once, so the answer and
+	// every step after it (the diff read, swarm_wait_task) use it.
+	located, err := r.locateTaskProject(ctx, scope, normalizeProjectTaskWatchArgs(args))
+	if err != nil {
+		return "", err
+	}
+	if project := strings.TrimSpace(asString(located["project_id"])); project != "" && strings.TrimSpace(asString(args["project_id"])) == "" {
+		withProject := make(map[string]any, len(args)+1)
+		for key, value := range args {
+			withProject[key] = value
+		}
+		withProject["project_id"] = project
+		args = withProject
+	}
 	args, before, err := r.manageProjectsControlBefore(ctx, scope, action, args)
 	if err != nil {
 		return "", err
@@ -434,12 +449,6 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 // manageProjectsAnswer is the action's own answer, before the envelope.
 func (r *Runtime) manageProjectsAnswer(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
 	args = normalizeProjectTaskWatchArgs(args)
-	// A task named without its project: the project is found from the task
-	// id where the machine can (locateTaskProject).
-	args, err := r.locateTaskProject(ctx, scope, args)
-	if err != nil {
-		return "", err
-	}
 	if action := strings.ToLower(strings.TrimSpace(asString(args["action"]))); FolderEnvironmentAction(action) {
 		return r.executeFolderEnvironments(ctx, scope, action, args)
 	}
