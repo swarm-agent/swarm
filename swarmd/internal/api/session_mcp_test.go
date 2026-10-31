@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/provider/claudecode"
@@ -103,5 +105,57 @@ func TestSessionMCPConnectedFromRegisteredRunner(t *testing.T) {
 	}
 	if entries, err := os.ReadDir(filepath.Join(root, "claudecode", "sessions")); err != nil || len(entries) != 1 {
 		t.Fatalf("endpoint did not retain construction-time root: %v %v", entries, err)
+	}
+}
+
+// Purpose: the daemon configures the data directory through Server.SetDataDir
+// after NewCoreServer (daemon wiring is outside this change's scope), so a run
+// recovered during construction may reach the endpoint before its storage
+// root exists. SetDataDir must hand the root to the endpoint, and WaitReady
+// must hold such a turn until both the root and the loopback address are set,
+// instead of failing or writing state anywhere else. Uses the real API server
+// option/setter path and the real endpoint; no daemon is needed.
+func TestSessionMCPRootFromSetDataDirAndWaitReadyNeedsBoth(t *testing.T) {
+	s, _, _, cleanup := setupScopedAuthTestServer(t)
+	defer cleanup()
+	providers := registry.New()
+	providers.RegisterRunner(claudecode.NewRunner(nil, nil))
+	s = NewCoreServer(nil, nil, nil, nil, nil, nil, nil, s.security, providers, nil, nil, nil, nil)
+	t.Cleanup(s.CancelInFlightRuns)
+	if s.sessionMCP == nil {
+		t.Fatal("registered Claude Code runner was not connected to the session endpoint")
+	}
+	p := identity.Principal{AccountScopeID: "fixture-account", UserID: "fixture-user"}
+	waitBriefly := func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		return s.sessionMCP.WaitReady(ctx)
+	}
+	s.SetProviderKeyPageAddr("127.0.0.1:7781")
+	if err := waitBriefly(); err == nil {
+		t.Fatal("endpoint ready with an address but no storage root")
+	}
+	if _, err := s.sessionMCP.SessionToken(p, "fixture-session"); err == nil {
+		t.Fatal("session credential issued without a storage root")
+	}
+	root := t.TempDir()
+	s.SetDataDir(root)
+	if err := waitBriefly(); err != nil {
+		t.Fatalf("endpoint not ready after SetDataDir and bind: %v", err)
+	}
+	if _, err := s.sessionMCP.SessionToken(p, "fixture-session"); err != nil {
+		t.Fatalf("configured endpoint: %v", err)
+	}
+	if entries, err := os.ReadDir(filepath.Join(root, "claudecode", "sessions")); err != nil || len(entries) != 1 {
+		t.Fatalf("session state not under SetDataDir root: %v %v", entries, err)
+	}
+	// A second data directory must not move existing credential bindings.
+	other := t.TempDir()
+	s.SetDataDir(other)
+	if _, err := s.sessionMCP.SessionToken(p, "fixture-session"); err != nil {
+		t.Fatal(err)
+	}
+	if entries, _ := os.ReadDir(other); len(entries) != 0 {
+		t.Fatalf("endpoint root moved to a later data directory: %v", entries)
 	}
 }

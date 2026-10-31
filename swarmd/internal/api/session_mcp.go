@@ -13,8 +13,9 @@ import (
 func (s *Server) SetSessionMCP(endpoint *claudecode.SessionMCP) { s.sessionMCP = endpoint }
 
 // connectClaudeCodeSessionMCP gives a registered Claude Code runner the standing
-// /mcp endpoint. Its state lives under the configured daemon data directory and
-// its root is captured before recovery and its address is published on bind.
+// /mcp endpoint. Its state lives under the configured daemon data directory:
+// the root is handed over by WithDataDir or SetDataDir, the address on bind,
+// and a recovered turn waits (WaitReady) until both are set.
 func (s *Server) connectClaudeCodeSessionMCP(providers *registry.Registry) {
 	if s == nil || providers == nil || s.security == nil {
 		return

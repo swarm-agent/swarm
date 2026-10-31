@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"swarm/packages/swarmd/internal/identity"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -105,4 +106,48 @@ func testToolsServer(t *testing.T, ctx context.Context, tools []provideriface.To
 	}
 	t.Cleanup(detach)
 	return testSessionServer(t, endpoint, "fixture")
+}
+
+// Purpose: the endpoint storage root may arrive after construction. WaitReady
+// must wait for both the root and the address (in either order); the root is
+// absolute, set once, and never moved, so credential bindings and CLI configs
+// stay at one location. Unit-level: only SessionMCP state is involved.
+func TestSessionMCPSetRootOnceAndWaitReadyNeedsRootAndAddress(t *testing.T) {
+	endpoint := NewSessionMCP(nil, "")
+	wait := func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		return endpoint.WaitReady(ctx)
+	}
+	if err := wait(); err == nil {
+		t.Fatal("ready with neither root nor address")
+	}
+	if _, err := endpoint.storageRoot(); err == nil {
+		t.Fatal("storage root reported before it was set")
+	}
+	if err := endpoint.SetRoot("relative/root"); err == nil {
+		t.Fatal("relative root accepted")
+	}
+	root := t.TempDir()
+	if err := endpoint.SetRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := wait(); err == nil {
+		t.Fatal("ready with a root but no address")
+	}
+	if err := endpoint.SetAddress("127.0.0.1:7781"); err != nil {
+		t.Fatal(err)
+	}
+	if err := wait(); err != nil {
+		t.Fatalf("not ready with root and address: %v", err)
+	}
+	if err := endpoint.SetRoot(root); err != nil {
+		t.Fatalf("same root rejected: %v", err)
+	}
+	if err := endpoint.SetRoot(t.TempDir()); err == nil {
+		t.Fatal("root moved after it was set")
+	}
+	if got, err := endpoint.storageRoot(); err != nil || got != root {
+		t.Fatalf("root=%q err=%v", got, err)
+	}
 }

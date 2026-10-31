@@ -38,6 +38,8 @@ func IsSessionMCPCredential(rec *pebblestore.ScopedTokenRecord) bool {
 type SessionMCP struct {
 	security  *security.Service
 	root      string
+	rootSet   chan struct{}
+	rootOnce  sync.Once
 	address   string
 	ready     chan struct{}
 	readyOnce sync.Once
@@ -45,10 +47,34 @@ type SessionMCP struct {
 	active    map[string]*mcpTools
 }
 
-// NewSessionMCP captures the storage root before run recovery can start. A run
-// waits for SetAddress rather than failing while the daemon binds its listener.
+// NewSessionMCP creates the endpoint. root may be empty when the daemon data
+// directory is configured later through SetRoot. A run waits for both the root
+// and SetAddress rather than failing while the daemon finishes startup.
 func NewSessionMCP(sec *security.Service, root string) *SessionMCP {
-	return &SessionMCP{security: sec, root: strings.TrimSpace(root), ready: make(chan struct{}), active: make(map[string]*mcpTools)}
+	s := &SessionMCP{security: sec, rootSet: make(chan struct{}), ready: make(chan struct{}), active: make(map[string]*mcpTools)}
+	if strings.TrimSpace(root) != "" {
+		_ = s.SetRoot(root)
+	}
+	return s
+}
+
+// SetRoot sets the provider storage root once. The root is never changed after
+// it is set: credential bindings and CLI configs must stay at one location.
+func (s *SessionMCP) SetRoot(root string) error {
+	root = strings.TrimSpace(root)
+	if root == "" || !filepath.IsAbs(root) {
+		return errors.New("session MCP storage root must be an absolute path")
+	}
+	set := false
+	s.rootOnce.Do(func() {
+		s.root = root
+		set = true
+		close(s.rootSet)
+	})
+	if !set && s.root != root {
+		return errors.New("session MCP storage root is already set")
+	}
+	return nil
 }
 
 func (s *SessionMCP) SetAddress(addr string) error {
@@ -64,14 +90,17 @@ func (s *SessionMCP) SetAddress(addr string) error {
 	return nil
 }
 
-// WaitReady is cancellable so daemon shutdown never strands a recovered turn.
+// WaitReady waits for both the storage root and the bound listener address. It
+// is cancellable so daemon shutdown never strands a recovered turn.
 func (s *SessionMCP) WaitReady(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-s.ready:
-		return ctx.Err()
+	for _, ch := range []chan struct{}{s.rootSet, s.ready} {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ch:
+		}
 	}
+	return ctx.Err()
 }
 
 func (s *SessionMCP) endpointURL() (string, error) {
@@ -89,7 +118,12 @@ func (s *SessionMCP) endpointURL() (string, error) {
 }
 
 func (s *SessionMCP) storageRoot() (string, error) {
-	// root is captured at construction and never mutated.
+	// root is written once before rootSet closes and never mutated afterwards.
+	select {
+	case <-s.rootSet:
+	default:
+		return "", errors.New("session MCP storage root is not configured")
+	}
 	root := s.root
 	if root == "" || !filepath.IsAbs(root) {
 		return "", errors.New("session MCP storage root is not configured")

@@ -609,6 +609,13 @@ func (s *Server) SetDataDir(path string) {
 		return
 	}
 	s.dataDir = strings.TrimSpace(path)
+	if s.sessionMCP != nil {
+		if root := s.claudeCodeSessionRoot(); root != "" {
+			if err := s.sessionMCP.SetRoot(root); err != nil {
+				log.Printf("claude code session MCP: %v", err)
+			}
+		}
+	}
 }
 
 func (s *Server) SetIdentityService(identitySvc *identity.Service) {

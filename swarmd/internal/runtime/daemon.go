@@ -831,7 +831,7 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 	memorySvc := memory.NewService(pebblestore.NewMemoryStore(store), &memory.RuntimeProvider{Runners: providers, Catalog: pebblestore.NewModelCatalogStore(store), Sessions: sessionSvc.Store()})
 	memoryDone := make(chan struct{})
 	runSvc.SetMemoryStore(memorySvc.Store)
-	apiServer := api.NewCoreServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub, api.WithDataDir(cfg.DataDir))
+	apiServer := api.NewCoreServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
 	if configureClient != nil {
 		configureClient(apiServer, store)
 	}

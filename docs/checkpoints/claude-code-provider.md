@@ -90,7 +90,7 @@ Each Swarm provider request is one non-interactive Claude Code turn: `claude -p`
 **Tools and permissions:**
 - The CLI connects to the daemon's standing `http://127.0.0.1:<configured API port>/mcp` endpoint (or the configured IPv6 loopback address), not a per-turn server. Use a fixed daemon API port to preserve the URL across restarts.
 - A private `--mcp-config` file is created on the session's first Claude Code turn and reused. Its Authorization header contains an internal scoped key from Swarm's credential store with only the `session:mcp` scope; a provider-owned binding ties it to exactly one owner and session. Restart does not invalidate it. It cannot authorize other sessions or ordinary API routes.
-- Recovered turns wait cancellably for the bound loopback address; their storage root is captured before recovery starts. Wildcard and admin keys still use Swarm Control, not the session endpoint.
+- Recovered turns wait cancellably until the endpoint has both its storage root (set once from the daemon data directory) and the bound loopback address. Wildcard and admin keys still use Swarm Control, not the session endpoint.
 - If the API address changes, the next turn rewrites the config's URL with the same key. If the key was revoked or lapsed, the next turn issues a new one and rewrites the config.
 - `tools/list` is the current run's resolved inventory: the Orchestrator catalog or a task agent's worktree tools. An inactive session refuses execution until its next run attaches the canonical executor.
 - Every call runs through Swarm's tool invoker, so Swarm permissions, approvals, and durable V3 records apply.
