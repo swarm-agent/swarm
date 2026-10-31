@@ -81,8 +81,9 @@ var swarmToolsRetired = map[string]string{
 }
 
 // swarmToolCatalogLanding are catalog tools landing in a parallel stage: a
-// home in one of them is held to the catalog once the tool is in it.
-var swarmToolCatalogLanding = map[string]bool{"manage_sessions": true, "manage_workspace": true}
+// home in one of them is held to the catalog once the tool is in it. Stage 4
+// (manage_sessions, manage_workspace) has landed: none are pending.
+var swarmToolCatalogLanding = map[string]bool{}
 
 // Purpose:
 //   - Requirement: after stage 6 every swarm_* tool has a catalog home (a
