@@ -170,6 +170,7 @@ func (s *Server) workerJobAutomationResult(ctx context.Context, workerID, runID,
 		out.Error = ""
 	}
 	out.Folder = c.jobFolder(refs, core.result)
+	out.Uncommitted = jobResultUncommitted(controlMCPMap(view["result"]))
 	out.Brief, _ = controlMCPMap(refs.run["input"])["prompt"].(string)
 	out.RequestSource, _ = refs.run["request_source"].(string)
 	out.ScheduleID, _ = refs.run["automation_id"].(string)
@@ -1080,6 +1081,19 @@ func jobDeliveryView(d jobautomation.Delivery) map[string]any {
 	if d.BlockedReason != "" {
 		out["blocked_reason"] = d.BlockedReason
 	}
+	if d.RebasedFrom != "" {
+		out["rebased_from"], out["rebased_onto"] = d.RebasedFrom, d.RebasedOnto
+	}
+	if tb := d.TaskBranch; tb != nil {
+		branch := map[string]any{"step": tb.Step, "head": tb.Head, "advanced": tb.Advanced}
+		if tb.Reason != "" {
+			branch["reason"] = tb.Reason
+		}
+		out["task_branch"] = branch
+	}
+	if d.HandoverRerun != "" {
+		out["handover_rerun"] = d.HandoverRerun
+	}
 	if sb := d.SentBack; sb != nil {
 		sent := map[string]any{"step": sb.Step, "round": sb.Round}
 		if sb.Reason != "" {
@@ -1482,7 +1496,7 @@ func controlMCPAutomationSteps(raw any) ([]jobautomation.Step, error) {
 	}
 	var steps []jobautomation.Step
 	if err := json.Unmarshal(encoded, &steps); err != nil {
-		return nil, controlMCPToolFailure("steps must be a list of {id, type: run|agent|reopen|deliver, if, command, args, worker, brief, fixes, checkout, produce, from, message, max_rounds, to, path, what, timeout_seconds, continue_on_failure}: %s", err.Error())
+		return nil, controlMCPToolFailure("steps must be a list of {id, type: run|agent|reopen|deliver, if, command, args, worker, brief, fixes, checkout, produce, rebase, from, message, max_rounds, to, path, what, timeout_seconds, continue_on_failure}: %s", err.Error())
 	}
 	if err := jobautomation.NormalizeSteps(steps); err != nil {
 		return nil, controlMCPToolFailure("%s", err.Error())

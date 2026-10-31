@@ -193,6 +193,11 @@ type Step struct {
 	// file (Automation.Result); its file is then a deliverable of the
 	// delivery.
 	Produce bool `json:"produce,omitempty"`
+	// Rebase (a coder or swarm agent step) has the agent rebase the delivery
+	// head onto the tip of the job's target branch. Its head may then move
+	// the delivery head without descending from it, only under the checks of
+	// Runner.rebaseHead (see docs/automations.md).
+	Rebase bool `json:"rebase,omitempty"`
 	// deliver: To is where (folder, merge, publish, outbox), Path the
 	// directory in the folder for to: folder, What the deliverables by name
 	// (default: the workflow's result, else what fits the target).
@@ -406,6 +411,9 @@ func NormalizeSteps(steps []Step) error {
 		if step.Produce && step.Type != StepAgent {
 			return invalid("step %s: produce is for an agent step", step.ID)
 		}
+		if err := step.validateRebase(); err != nil {
+			return err
+		}
 		if err := step.normalizeConditions(types); err != nil {
 			return err
 		}
@@ -540,6 +548,25 @@ func (s *Step) normalizeAgent() error {
 		return invalid("step %s: %s works in the folder (checkout none), as its tasks always do; the job's commits are the folder's branches, named in its brief", s.ID, worker)
 	case (worker == "reviewer" || !IsBuiltinAgent(worker)) && s.Checkout == CheckoutNone:
 		return invalid("step %s: a worker always works in a worktree: checkout must be same (a reviewer) or new", s.ID)
+	}
+	return nil
+}
+
+// validateRebase checks the rebase option: only on an agent step whose
+// worker is coder or swarm (they commit in a worktree of their own), never
+// with fixes, produce, since or for_each.
+func (s *Step) validateRebase() error {
+	if !s.Rebase {
+		return nil
+	}
+	if s.Type != StepAgent {
+		return invalid("step %s: rebase is for an agent step whose worker is coder or swarm", s.ID)
+	}
+	if worker := strings.ToLower(strings.TrimSpace(s.Worker)); worker != "coder" && worker != "swarm" {
+		return invalid("step %s: rebase is only for a coder or swarm step (it rewrites the delivery head in its own worktree); %s is not one", s.ID, s.Worker)
+	}
+	if s.Fixes != "" || s.Produce || s.Since != "" || s.ForEach != nil {
+		return invalid("step %s: a rebase step has no fixes, produce, since or for_each", s.ID)
 	}
 	return nil
 }

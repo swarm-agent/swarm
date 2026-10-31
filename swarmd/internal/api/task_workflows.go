@@ -116,6 +116,7 @@ func (s *Server) taskJobResult(ctx context.Context, account, projectID, taskID, 
 	}
 	out.Folder = firstNonEmptyString(task.SourceWorkspace.Path, task.WorkspacePath)
 	out.Report = controlMCPString(view, "report")
+	out.Uncommitted = jobResultUncommitted(view)
 	if review, err := s.taskReview(task); err != nil {
 		return nil, err
 	} else if review != nil {

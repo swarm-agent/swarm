@@ -368,7 +368,44 @@ and no reopen step sent the work back (see `sent_back` below).
   A head that does not descend fails the step and the delivery head stays.
   A reviewer is read-only (by default it reads the job's own worktree in
   place, below) and so never moves the head, unless its step sets `fixes`
-  (below).
+  (below). A `rebase` step (below) may move it to a head that does not
+  descend from it, under its own checks.
+- When the step moved the head and the triggering job is a project task on
+  the delivery's branch, Swarm **fast-forwards the task's own branch and
+  worktree** to the new head, so a later `message_task` or `reopen_task`
+  follow-up starts from the delivered work instead of the stale head. It
+  does so only as a fast-forward of a clean, idle worktree on that branch;
+  otherwise (a rebase, uncommitted changes, a running task, another branch)
+  nothing moves and the reason is recorded on the delivery (`task_branch`:
+  `head`, `advanced`, `reason`), on the task (`workflow_branch`) and in an
+  `automation.task_branch.not_advanced` signal. The step never fails for it.
+
+#### Rebase steps (`rebase: true`)
+
+A fresh `agent` step whose worker is `coder` or `swarm` may set
+`rebase: true` (not with `fixes`, `produce`, `since` or `for_each`). When it
+starts, Swarm reads the tip of the job's target branch (`base_branch`) in the
+folder, records it on the step (`outcome.rebase_onto`) and tells the agent to
+rebase its worktree (started at the delivery head) onto that tip, to leave
+nothing uncommitted, and to name the files the rebase conflicted on in its
+handoff on one line: `Rebase conflicts: a.go, b.go` (or
+`Rebase conflicts: none`).
+
+A rebase rewrites history, so its head does not descend from the delivery
+head. Swarm moves the delivery head to it only when all hold:
+
+- the new head descends from the recorded target tip;
+- the job reported no uncommitted changes;
+- the files the new head changes against that tip are the files the old
+  head changed against the old base, give or take only the files the
+  handoff names as conflicted.
+
+Then the delivery records `rebased_from` (the old head) and `rebased_onto`,
+and `outcome.moved_head` has `rebased: true`. Any check that fails refuses
+the step (`rebase not accepted: …`, the reason in `outcome.rebase_refused`)
+and the head stays. A rebase head that does descend from the delivery head
+(nothing was rewritten) moves it as any agent step does. A rebased head is
+not a fast-forward, so the task's own branch is not moved (above).
 
 #### Where the agent works (`checkout`)
 
@@ -732,6 +769,26 @@ failed (see `for_each` below); the response lists them under
 `nothing_to_rerun` means there was no failed or stopped step and no item to
 revive.
 
+`manage_projects` `rerun_delivery` with a `task_id` is the same explicit
+rerun of the task's newest delivery, found by the task (the service is
+`RerunTaskDelivery`; see the changelog for its catalog status).
+
+**A same-head hand-over re-runs a failed gate.** A gate (`run` step) can fail
+for a reason outside the code: the gate script itself, a flaky test, a
+provider outage. When a task's newest delivery failed on a `run` step, or was
+sent back by a reopen step because a `run` step failed, and the task hands
+its work over again with no new commit (a `message_task` or `reopen_task`
+follow-up ending at the head that delivery covers, including the head an
+agent step moved it to), that hand-over creates no delivery
+(`duplicate_head`) and instead re-runs that delivery from the failed `run`
+step: the same rerun as `POST /v3/job-deliveries/{id}/rerun`. Steps before it
+are kept; it and the steps after it run again, a reopen step among them, so a
+gate that fails again sends the work back again within its `max_rounds`. The
+delivery records the follow-up as `handover_rerun` (one rerun per
+follow-up), and the signal `automation.delivery.rerun` (`reason`
+`handover_same_head`, `step`) says so. A delivery that failed on an agent
+step, a review block and a worker job's hand-over are not re-run this way.
+
 ## The result JSON
 
 ```json
@@ -1029,6 +1086,29 @@ of the first findings. A remaining block never pushes.
 
 Any step can be another of Swarm's own agents instead, for example
 `{ "type": "agent", "worker": "finder", "brief": "Write release notes for this change." }`.
+
+When the target branch moved and the push refuses with "rebase needed", the
+same shape rebases without a person: let the push fail into a rebase step,
+review the rebased head, then push again. The review after a rebase has no
+`since`: `since` needs the earlier review's head to be an ancestor of the
+delivery head, which a rebase rewrites, so that step is refused there.
+
+```json
+{ "id": "push", "type": "run", "command": "/usr/local/libexec/swarm-deliver/push.sh", "continue_on_failure": true,
+  "if": [{ "step": "review-fix", "verdict": "ok" }] },
+{ "id": "rebase", "type": "agent", "worker": "coder", "rebase": true,
+  "brief": "The push needs a rebase: {{steps.push.output}}",
+  "if": [{ "step": "push", "status": "failed" }] },
+{ "id": "review-rebase", "type": "agent", "worker": "reviewer",
+  "brief": "Check the rebase kept the reviewed change. Handoff: {{steps.rebase.handoff}}",
+  "if": [{ "step": "rebase", "status": "succeeded" }] },
+{ "id": "push-rebased", "type": "run", "command": "/usr/local/libexec/swarm-deliver/push.sh",
+  "if": [{ "step": "review-rebase", "verdict": "ok" }] }
+```
+
+A fix step's commits also fast-forward the task's own branch, so a later
+follow-up of the task starts from the fixed head; a rebased head does not
+(see `agent` steps).
 
 ## Example: a review loop
 

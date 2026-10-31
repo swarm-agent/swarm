@@ -57,6 +57,10 @@ type Result struct {
 	// NoCommits means the lane was positively assessed as having no commits
 	// since its captured base. Missing Git alone means unknown, not empty.
 	NoCommits bool `json:"no_commits,omitempty"`
+	// Uncommitted names the changes the job left uncommitted in its own
+	// worktree, as its delivery assessment reported them; empty when it
+	// reported none.
+	Uncommitted []string `json:"uncommitted_changes,omitempty"`
 	// Review is a reviewer job's recorded verdict and findings.
 	Review map[string]any `json:"review,omitempty"`
 	// Deliverables is everything the job produced that a workflow can hand

@@ -508,6 +508,10 @@ type ProjectTaskRecord struct {
 	ReviewCleanup                   *WorkerRunCleanup       `json:"review_cleanup,omitempty"`
 	ReviewFixes                     string                  `json:"review_fixes,omitempty"`
 	ReviewTarget                    map[string]any          `json:"review_target,omitempty"`
+	// WorkflowBranch is the newest attempt of a workflow to fast-forward
+	// the task's branch and worktree to the head one of its agent steps
+	// moved the task's delivery to, and why it did not when it did not.
+	WorkflowBranch *ProjectTaskWorkflowBranch `json:"workflow_branch,omitempty"`
 	// StartCommit is the commit the task's worktree starts at, set only by a
 	// workflow's agent step (the delivery head); "" starts at the folder's
 	// branch.

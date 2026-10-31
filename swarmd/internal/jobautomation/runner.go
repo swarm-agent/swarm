@@ -236,6 +236,10 @@ type Runner struct {
 	verify  HeadVerifier
 	lines   LineCounter
 	deliver Deliverer
+	// rebase reads what a rebase step's checks need; branch fast-forwards a
+	// task's own branch to a moved delivery head. Either may be nil.
+	rebase  RebaseChecker
+	branch  TaskBranchAdvancer
 	emit    func(pebblestore.Signal)
 	now     func() time.Time
 	backoff func(attempt int) time.Duration
@@ -269,14 +273,26 @@ type Options struct {
 	// produce steps wrote.
 	Deliver Deliverer
 	Emit    func(pebblestore.Signal)
+	// Rebase and TaskBranch default to Agent when it implements them (the
+	// daemon's agent runner does).
+	Rebase     RebaseChecker
+	TaskBranch TaskBranchAdvancer
 }
 
 func NewRunner(opts Options) *Runner {
-	return &Runner{
+	r := &Runner{
 		store: opts.Store, feed: opts.Feed, account: opts.Account, results: opts.Results, run: opts.Run, agent: opts.Agent, reopen: opts.Reopen,
 		head: opts.Head, verify: opts.Verify, lines: opts.Lines, deliver: opts.Deliver, emit: opts.Emit, now: time.Now, backoff: defaultBackoff, recheck: reopenRecheck,
+		rebase: opts.Rebase, branch: opts.TaskBranch,
 		active: map[string]bool{}, attempts: map[uint64]int{}, wake: make(chan struct{}, 1),
 	}
+	if checker, ok := opts.Agent.(RebaseChecker); ok && r.rebase == nil {
+		r.rebase = checker
+	}
+	if advancer, ok := opts.Agent.(TaskBranchAdvancer); ok && r.branch == nil {
+		r.branch = advancer
+	}
+	return r
 }
 
 func defaultBackoff(attempt int) time.Duration {
@@ -529,7 +545,7 @@ func (r *Runner) consume(ctx context.Context, account string, sig pebblestore.Si
 			// their blocker and persist the normal completion timestamp.
 			r.finish(&d, StateBlocked)
 		}
-		if !created && d.ID != DeliveryID(result.JobID, result.Followup, a.ID, a.Revision) {
+		if !created && d.ID != DeliveryID(result.JobID, result.Followup, a.ID, a.Revision) && !r.rerunOnHandover(d, *result) {
 			r.skippedDuplicateHead(d, *result)
 		}
 	}
@@ -1296,6 +1312,15 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 		req := AgentRequest{Account: d.Account, Folder: d.Folder, Worker: step.Worker, Brief: renderAgentBrief(*d, step), Result: d.Result, Head: head,
 			IdempotencyKey: key, Fixes: step.Fixes, Checkout: step.Checkout,
 			ReviewJob: latestWorkJob(*d, step.ID), Deliverables: d.CurrentDeliverables()}
+		onto := ""
+		if step.Rebase {
+			branch, tip, failure := r.rebaseTarget(ctx, d)
+			if failure.reason != "" || ctx.Err() != nil {
+				return failure
+			}
+			onto = tip
+			req.Brief += rebaseBrief(branch, tip)
+		}
 		if step.Since != "" {
 			base, findings, err := sinceContext(*d, step.Since)
 			if err != nil {
@@ -1328,6 +1353,9 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 			base = req.Result.Git.BaseCommit
 		}
 		record.Outcome = map[string]any{"job_id": jobID, "base": base, "review_head": head}
+		if onto != "" {
+			record.Outcome["rebase_onto"], record.Outcome["rebase_from"] = onto, head
+		}
 		if err := r.store.SaveDelivery(*d); err != nil {
 			log.Printf("swarmd job automations: save delivery %s: %v", d.ID, err)
 		}
@@ -1345,6 +1373,11 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 		return limited
 	}
 	out := map[string]any{"job_id": jobID, "status": outcome.Status, "base": record.Outcome["base"]}
+	for _, key := range []string{"rebase_onto", "rebase_from"} {
+		if v, ok := record.Outcome[key].(string); ok && v != "" {
+			out[key] = v
+		}
+	}
 	if outcome.Verdict != "" {
 		out["head"] = record.Outcome["review_head"]
 	}
@@ -1388,8 +1421,15 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 			return r.applyReviewerFixes(ctx, d, record, outcome, out)
 		}
 	}
+	if step.Rebase {
+		move = r.rebaseHead
+	}
+	from := d.Head
 	if failure := move(ctx, d, outcome, out); failure.reason != "" {
 		return failure
+	}
+	if d.Head != from {
+		r.syncTaskBranch(ctx, d, step.ID, from, out)
 	}
 	if NormalizeStatus(outcome.Status) != StatusSucceeded {
 		reason := outcome.Error

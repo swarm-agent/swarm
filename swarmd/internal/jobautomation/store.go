@@ -161,6 +161,18 @@ type Delivery struct {
 	// Produced is what this delivery's produce steps wrote (see
 	// CurrentDeliverables).
 	Produced []Deliverable `json:"produced,omitempty"`
+	// RebasedFrom is the delivery head a rebase step replaced (the newest
+	// one), and RebasedOnto the target branch tip it rebased onto: the base
+	// the delivery's changed files are measured from since.
+	RebasedFrom string `json:"rebased_from,omitempty"`
+	RebasedOnto string `json:"rebased_onto,omitempty"`
+	// TaskBranch is the newest attempt to bring the triggering task's own
+	// branch and worktree to a head an agent step moved the delivery to.
+	TaskBranch *TaskBranchSync `json:"task_branch,omitempty"`
+	// HandoverRerun is the follow-up whose same-head end re-ran the
+	// delivery's failed run step (Runner.rerunOnHandover), so a replayed
+	// signal never re-runs it twice.
+	HandoverRerun string `json:"handover_rerun,omitempty"`
 	// ItemsReopened is the finished state a delivery had when its for_each
 	// items were revived (a failed item's job succeeded later). The delivery
 	// is running, none of its steps runs again, and it finishes again with
@@ -747,6 +759,21 @@ func (s *Store) CreateDelivery(a Automation, result Result) (Delivery, bool, err
 	createdAt := s.now().UnixMilli()
 	roundBase, rebaseBase := 0, 0
 	stepBase := map[string]int{}
+	// A follow-up that ends at the head an agent step moved the newest
+	// delivery to (the task's branch was fast-forwarded to it) hands over
+	// nothing new either, when that delivery re-runs on a hand-over
+	// (HandoverRerunStep): it is returned like a duplicate head.
+	if result.Followup != "" && head != "" {
+		for _, p := range previous {
+			if p.AutomationID != a.ID {
+				continue
+			}
+			if _, rerun := HandoverRerunStep(p); rerun && p.Head == head && p.TriggerHead() != head {
+				return p, false, nil
+			}
+			break // only the newest delivery of the automation
+		}
+	}
 	for _, p := range previous {
 		// Deliveries of one job are ordered by creation: a new one is
 		// always the newest, even within the same millisecond.
@@ -1280,6 +1307,7 @@ func (s *Store) rerunLocked(d Delivery) (RerunOutcome, error) {
 		d.StepRoundBase = reopenBases(d.Definition, rounds)
 		if d.Result.Git != nil {
 			d.Head, d.HeadWorktree = d.Result.Git.Head, d.Result.Git.Worktree
+			d.RebasedFrom, d.RebasedOnto = "", ""
 		}
 	}
 	for i := range d.Steps {
@@ -1315,6 +1343,54 @@ func (s *Store) rerunLocked(d Delivery) (RerunOutcome, error) {
 		return RerunOutcome{}, err
 	}
 	return RerunOutcome{Delivery: stored, Rerun: true, Revived: revived}, nil
+}
+
+// RerunAfterHandover re-runs a finished delivery from the failed run step
+// HandoverRerunStep names, because the job handed its work over again with
+// no new commit (follow-up followup ended at the head the delivery covers).
+// That step and every step after it run again (the reopen step that sent
+// the work back among them, so a gate that fails again sends it back
+// again, within its max_rounds); steps before it are kept. It records
+// followup, so the same hand-over never re-runs the delivery twice, and
+// counts as a re-run (Reruns). Rerun is false, with ReasonNothingToRerun,
+// for a delivery that is not finished, has no such step, or was already
+// re-run for followup.
+func (s *Store) RerunAfterHandover(account, id, followup string) (RerunOutcome, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var d Delivery
+	found, err := s.db.GetJSON(deliveryKey(account, id), &d)
+	if err != nil {
+		return RerunOutcome{}, err
+	}
+	if !found || d.Account != account {
+		return RerunOutcome{}, ErrNotFound
+	}
+	at := handoverRerunIndex(d)
+	if !Terminal(d.State) || d.ItemsReopened != "" || at < 0 || followup == "" || d.HandoverRerun == followup {
+		return RerunOutcome{Delivery: d, Reason: ReasonNothingToRerun}, nil
+	}
+	for i := at; i < len(d.Steps); i++ {
+		resetStep(&d.Steps[i])
+	}
+	d.State, d.FinishedAt, d.SentBack, d.HandoverRerun = StatePending, 0, nil, followup
+	d.Reruns++
+	if err := s.putDeliveryLocked(d); err != nil {
+		return RerunOutcome{}, err
+	}
+	return RerunOutcome{Delivery: d, Rerun: true}, nil
+}
+
+// NewestJobDelivery is the job's newest delivery (any automation).
+func (s *Store) NewestJobDelivery(account, jobID string) (Delivery, error) {
+	list, err := s.JobDeliveries(account, jobID) // newest first
+	if err != nil {
+		return Delivery{}, err
+	}
+	if len(list) == 0 {
+		return Delivery{}, ErrNotFound
+	}
+	return list[0], nil
 }
 
 // ---- stop switch and cursor --------------------------------------------------
