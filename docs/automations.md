@@ -291,8 +291,9 @@ owner configured, and nothing when there are none.
 ### `agent` steps
 
 Agent `brief` templates accept `{{steps.<id>.output}}`, `.verdict`, `.head`
-and `.handoff`, referencing earlier steps only. Substitution is single-pass;
-missing values become `(no output)`. Each value is capped at 16,000 bytes and
+and `.handoff`, referencing earlier steps only. `for_each` agent steps do not
+support these step-result placeholders or `since`; definitions using them are
+refused. Substitution is single-pass; missing values become `(no output)`. Each value is capped at 16,000 bytes and
 the rendered brief at 20,000 bytes. Reviewer `output` is its findings (also
 capped at 16,000 bytes), not a job ID. Reopen substitutions retain their
 existing single-line, 500-byte cap.

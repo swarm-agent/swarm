@@ -75,6 +75,14 @@ func (s *Step) normalizeForEach() error {
 	if s.Type != StepAgent || IsBuiltinAgent(s.Worker) || s.Worker == "media" {
 		return invalid("for_each requires a deployed worker on an agent step")
 	}
+	// Item jobs bypass runAgent's step-context and delta-review rendering.
+	// Refuse unsupported definition fields rather than silently ignoring them.
+	if strings.TrimSpace(s.Since) != "" {
+		return invalid("for_each does not accept since")
+	}
+	if stepOutputPlaceholder.MatchString(s.Brief) {
+		return invalid("for_each does not accept step-result placeholders in brief")
+	}
 	if s.Fixes != "" || s.Produce || s.Checkout != "" {
 		return invalid("for_each does not accept fixes, produce or checkout")
 	}
