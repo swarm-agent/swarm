@@ -335,6 +335,14 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		// usage_summary carries request_count; context_growth is the
+		// per-turn first-request size get_session and the GPUI read here.
+		growth, err := s.sessionContextGrowth(sessionID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		response["context_growth"] = growth
 		writeJSON(w, http.StatusOK, response)
 	case "repositories":
 		s.handleSessionV3Repositories(w, r, principal, sessionID)
@@ -3336,7 +3344,7 @@ func (s *Server) sessionsV3PrimaryUsageResponse(principal identity.Principal, se
 	if hasSummary {
 		summaryPayload = summary
 	}
-	turns, err := s.sessions.ListTurnUsage(sessionID, sessionUsageContextGrowthLimit)
+	growth, err := s.sessionContextGrowth(sessionID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -3345,7 +3353,7 @@ func (s *Server) sessionsV3PrimaryUsageResponse(principal identity.Principal, se
 		"session_id":        session.ID,
 		"has_usage_summary": hasSummary,
 		"usage_summary":     summaryPayload,
-		"context_growth":    pebblestore.SessionContextGrowth(turns),
+		"context_growth":    growth,
 	}, true, nil
 }
 

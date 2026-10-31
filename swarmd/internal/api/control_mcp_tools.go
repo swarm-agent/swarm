@@ -767,6 +767,10 @@ func controlMCPActivePlan(active map[string]any) map[string]any {
 // it says truncated, content_offset (the UTF-8 byte offset where the shown
 // part ends), total_bytes and next, nextBase plus the exact message_id,
 // message_seq and content_offset that read its following chunk.
+// controlMCPContextGrowthLimit bounds the newest turns get_session lists in
+// context_growth (oldest first); the count left out is reported.
+const controlMCPContextGrowthLimit = 50
+
 func controlMCPSessionStateView(response map[string]any, textLimit, toolLimit int, nextBase map[string]any) map[string]any {
 	session := controlMCPMap(response["session"])
 	out := map[string]any{"session": controlMCPSessionSummary(session)}
@@ -784,6 +788,20 @@ func controlMCPSessionStateView(response map[string]any, textLimit, toolLimit in
 	}
 	if len(pending) > 0 {
 		out["pending_permissions"] = pending
+	}
+	// Session usage as the detail route reports it: request_count counts
+	// provider requests, and context_growth gives each recent turn's
+	// first-request context and request count. A replaying session shows
+	// up as a growing first-request size.
+	if usage := controlMCPPick(controlMCPMap(response["usage_summary"]), "provider", "model", "context_window", "turn_count", "request_count", "total_tokens", "remaining_tokens", "estimated_cost_usd"); len(usage) > 0 {
+		out["usage"] = usage
+	}
+	if growth := controlMCPList(response["context_growth"]); len(growth) > 0 {
+		if omitted := len(growth) - controlMCPContextGrowthLimit; omitted > 0 {
+			growth = growth[omitted:]
+			out["context_growth_omitted"] = omitted
+		}
+		out["context_growth"] = growth
 	}
 	messages := []map[string]any{}
 	for _, raw := range controlMCPList(response["messages"]) {

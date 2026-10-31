@@ -17,6 +17,18 @@ import (
 // reports in context_growth.
 const sessionUsageContextGrowthLimit = 200
 
+// sessionContextGrowth is a session's context-growth view: for each recent
+// turn, its first request's input+cache_read and its request count. The
+// session detail and usage routes both report it, so get_session and the
+// GPUI (which read the detail route) see the same list as the usage route.
+func (s *Server) sessionContextGrowth(sessionID string) ([]pebblestore.SessionContextGrowthTurn, error) {
+	turns, err := s.sessions.ListTurnUsage(sessionID, sessionUsageContextGrowthLimit)
+	if err != nil {
+		return nil, err
+	}
+	return pebblestore.SessionContextGrowth(turns), nil
+}
+
 func sessionV3ProviderUsageRecord(providerID string, modelName string, contextWindow int, runID string, step int, usage provideriface.TokenUsage) (pebblestore.SessionTurnUsageSnapshot, bool) {
 	providerID = strings.ToLower(strings.TrimSpace(providerID))
 	if !sessionV3ShouldTrackProviderUsage(providerID, usage) {
