@@ -1,9 +1,11 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -175,56 +177,42 @@ func TestGuidanceNamesOnlyCatalogTools(t *testing.T) {
 		}
 	}
 
-	// The plugin: every file under plugins/swarm.
-	plugin := filepath.Join(controlMCPGuidanceRoot, "plugins", "swarm")
+	// Only tracked files are guidance: docs/ also holds ignored historical
+	// and scratch notes that a local checkout may have.
+	tracked, err := controlMCPGuidanceTrackedFiles(controlMCPGuidanceRoot, "plugins/swarm", "docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The plugin: every tracked file under plugins/swarm.
 	files := 0
-	err := filepath.WalkDir(plugin, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil || entry.IsDir() {
-			return err
-		}
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return err
+	for rel, raw := range tracked {
+		if !strings.HasPrefix(rel, "plugins/swarm/") {
+			continue
 		}
 		files++
-		rel, _ := filepath.Rel(controlMCPGuidanceRoot, path)
-		problems = append(problems, controlMCPGuidanceProblems(filepath.ToSlash(rel), string(raw), served, controlMCPGuidanceSwarmNameAllowed, true)...)
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("read %s: %v", plugin, err)
+		problems = append(problems, controlMCPGuidanceProblems(rel, raw, served, controlMCPGuidanceSwarmNameAllowed, true)...)
 	}
 	if files == 0 {
-		t.Fatalf("no plugin files under %s", plugin)
+		t.Fatal("no tracked plugin files under plugins/swarm")
 	}
 
 	// The docs: no swarm_* tool name, except docs/tool-catalog.md's record.
 	// Docs describe Orchestrator-only actions too, so only swarm_* names are
 	// checked there.
-	docs := filepath.Join(controlMCPGuidanceRoot, "docs")
 	catalogDoc := ""
-	err = filepath.WalkDir(docs, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".md") {
-			return err
+	for rel, raw := range tracked {
+		if !strings.HasPrefix(rel, "docs/") || !strings.HasSuffix(rel, ".md") {
+			continue
 		}
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(controlMCPGuidanceRoot, path)
-		rel = filepath.ToSlash(rel)
 		allowed := controlMCPGuidanceDocSwarmNameAllowed
 		if rel == "docs/tool-catalog.md" {
-			catalogDoc = string(raw)
+			catalogDoc = raw
 			allowed = func(name string) bool {
 				return controlMCPToolCatalogHistory[name] || controlMCPGuidanceDocSwarmNameAllowed(name)
 			}
 		}
-		problems = append(problems, controlMCPGuidanceProblems(rel, string(raw), served, allowed, false)...)
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("read %s: %v", docs, err)
+		problems = append(problems, controlMCPGuidanceProblems(rel, raw, served, allowed, false)...)
 	}
 	if catalogDoc == "" {
 		t.Fatal("docs/tool-catalog.md is missing; it keeps the record of the swarm_* tools")
@@ -274,5 +262,107 @@ func TestGuidanceCheckCatchesStaleNames(t *testing.T) {
 		if controlMCPGuidanceSwarmNameAllowed(name) || (controlMCPGuidanceDocSwarmNameAllowed(name) && name != "swarm_design") {
 			t.Fatalf("%s is a retired Swarm Control tool but is allowed outside docs/tool-catalog.md", name)
 		}
+	}
+}
+
+// controlMCPGuidanceTrackedFiles reads the files Git tracks under dirs of
+// the repository at root, keyed by their slash path relative to root.
+// Ignored and untracked files are not read. A tracked file deleted from the
+// working tree is not guidance and is left out.
+func controlMCPGuidanceTrackedFiles(root string, dirs ...string) (map[string]string, error) {
+	cmd := exec.Command("git", append([]string{"-C", root, "ls-files", "-z", "--"}, dirs...)...)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("list tracked files under %v in %s: %w", dirs, root, err)
+	}
+	files := map[string]string{}
+	for _, rel := range strings.Split(string(out), "\x00") {
+		if rel == "" {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read tracked %s: %w", rel, err)
+		}
+		files[rel] = string(raw)
+	}
+	return files, nil
+}
+
+// Purpose:
+//   - Requirement: TestGuidanceNamesOnlyCatalogTools judges only checked-in
+//     guidance; docs/ is ignored by default (.gitignore /docs/*) and holds
+//     ignored historical and scratch notes in ordinary checkouts.
+//   - Threat/regression: a local ignored or untracked note that names a
+//     swarm_* tool fails the guard in one checkout and passes in a clean one
+//     (the test depends on untracked local files); or the listing silently
+//     drops tracked guidance.
+//   - Boundary/authority: controlMCPGuidanceTrackedFiles over git ls-files.
+//   - Narrowest layer: a throwaway Git repository with one tracked, one
+//     ignored and one untracked file.
+func TestGuidanceTrackedFilesSkipIgnoredFiles(t *testing.T) {
+	root := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(rel, text string) {
+		t.Helper()
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("init", "-q")
+	write(".gitignore", "/docs/*\n!/docs/kept.md\n")
+	write("docs/kept.md", "Use `manage_projects` `propose_task`.\n")
+	write("plugins/swarm/skill.md", "Use `manage_jobs` `give_job`.\n")
+	git("add", "-A")
+	// Written after the add: an ignored note and an untracked plugin file,
+	// both naming a retired tool.
+	write("docs/scratch.md", "Call swarm_run_task.\n")
+	write("plugins/swarm/draft.md", "Call swarm_run_task.\n")
+
+	files, err := controlMCPGuidanceTrackedFiles(root, "plugins/swarm", "docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for rel := range files {
+		got = append(got, rel)
+	}
+	sort.Strings(got)
+	if want := []string{"docs/kept.md", "plugins/swarm/skill.md"}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("tracked files = %v, want %v (ignored and untracked files must be skipped)", got, want)
+	}
+	if files["docs/kept.md"] != "Use `manage_projects` `propose_task`.\n" {
+		t.Fatalf("docs/kept.md content = %q", files["docs/kept.md"])
+	}
+	// The skipped files exist and would be flagged if read.
+	for _, rel := range []string{"docs/scratch.md", "plugins/swarm/draft.md"} {
+		raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(controlMCPGuidanceProblems(rel, string(raw), controlMCPServedCatalog(), controlMCPGuidanceDocSwarmNameAllowed, false)) == 0 {
+			t.Fatalf("%s would not be flagged; the fixture proves nothing", rel)
+		}
+	}
+	// Outside a Git repository the listing fails clearly instead of reading
+	// nothing.
+	outside := t.TempDir()
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(outside))
+	if _, err := controlMCPGuidanceTrackedFiles(outside, "docs"); err == nil {
+		t.Fatal("listing outside a Git repository did not fail")
 	}
 }
