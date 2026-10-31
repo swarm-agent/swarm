@@ -1008,7 +1008,7 @@ func (r *Runtime) manageSessionsRead(scope WorkspaceScope, args map[string]any) 
 	if next, ok, err := MessageContinuationFromArgs(args); err != nil {
 		return "", err
 	} else if ok {
-		return r.manageSessionsReadMessageChunk(session, boundary, next, budget)
+		return r.manageSessionsReadMessageChunk(session, boundary, next, budget, readMessagesPageRestFromArgs(args))
 	}
 	limit := boundedInt(args["limit"], 30, manageSessionsMaxRead)
 	mode := strings.ToLower(strings.TrimSpace(stringValue(args["mode"])))
@@ -1043,7 +1043,11 @@ func (r *Runtime) manageSessionsRead(scope WorkspaceScope, args map[string]any) 
 	// Messages the budget left out are reported, never dropped silently: the
 	// page ends at the last message returned.
 	shown := msgs[:0:0]
-	budgetExhausted := false
+	// A page ends at its first cut message (the budget is spent there): the
+	// rest of the page is read after that message's last chunk.
+	var cut pebblestore.MessageSnapshot
+	var cutChunk MessageContentChunk
+	cutAt := -1
 	for _, m := range msgs {
 		if roleFilter != "" && !strings.EqualFold(m.Role, roleFilter) {
 			shown = append(shown, m)
@@ -1051,7 +1055,6 @@ func (r *Runtime) manageSessionsRead(scope WorkspaceScope, args map[string]any) 
 		}
 		remain := budget - used
 		if remain <= 0 {
-			budgetExhausted = true
 			break
 		}
 		chunk, err := ChunkMessageContent(m.Content, 0, remain)
@@ -1059,23 +1062,31 @@ func (r *Runtime) manageSessionsRead(scope WorkspaceScope, args map[string]any) 
 			return "", err
 		}
 		used += chunk.EncodedLen()
-		out = append(out, manageSessionsMessageItem(id, m, chunk, budget))
 		shown = append(shown, m)
+		if chunk.Truncated {
+			cut, cutChunk, cutAt = m, chunk, len(out)
+			out = append(out, nil)
+			break
+		}
+		out = append(out, manageSessionsMessageItem(id, m, chunk, budget, nil))
+	}
+	// rest reads exactly the page's messages not returned yet, in the call's
+	// window and with its role filter; nil when the page is whole.
+	rest := readMessagesPageRest(msgs, shown, mode, args, roleFilter)
+	if cutAt >= 0 {
+		out[cutAt] = manageSessionsMessageItem(id, cut, cutChunk, budget, rest)
 	}
 	response := map[string]any{"action": "read_messages", "session_id": id, "title": session.Title, "mode": mode, "messages": out, "characters": used, "content_trust": "untrusted", "next_before_seq": firstMessageSeq(msgs), "next_after_seq": lastMessageSeq(shown)}
-	if budgetExhausted {
+	if rest != nil {
 		response["budget_exhausted"] = true
 		response["has_more_newer"] = true
-		// The page was cut: next reads the messages after the last one
-		// returned, unless a cut message's own next reads on first.
-		cutMessage := false
-		for _, item := range out {
-			if message, ok := item.(map[string]any); ok && message["next"] != nil {
-				cutMessage = true
-			}
-		}
-		if !cutMessage {
-			response["next"] = map[string]any{"action": "read_messages", "session_id": id, "mode": "after", "after_seq": lastMessageSeq(shown), "limit": limit, "max_chars": budget}
+		// The page was cut: next reads the rest of it, after the cut
+		// message's own chunks when one was cut (its last chunk names the
+		// rest of the page as its next).
+		if cutAt >= 0 {
+			response["next"] = out[cutAt].(map[string]any)["next"]
+		} else {
+			response["next"] = readMessagesCall(id, budget, rest, nil)
 		}
 	}
 	if boundary > 0 {
@@ -1084,10 +1095,75 @@ func (r *Runtime) manageSessionsRead(scope WorkspaceScope, args map[string]any) 
 	return marshalManageSessions(response)
 }
 
+// readMessagesPageRestKeys are the arguments that name the rest of a cut
+// read_messages page (readMessagesPageRest).
+var readMessagesPageRestKeys = []string{"mode", "before_seq", "after_seq", "limit", "role"}
+
+// readMessagesPageRest is the window of a cut page's messages not returned
+// yet (msgs after shown), as read_messages arguments that read exactly them:
+// an after page continues after the last shown message; a before, around or
+// tail page continues as the newest of them before the page's end, so a
+// continuation never reads outside the window the call asked for. The role
+// filter carries over. nil when the page is whole.
+func readMessagesPageRest(msgs, shown []pebblestore.MessageSnapshot, mode string, args map[string]any, role string) map[string]any {
+	left := len(msgs) - len(shown)
+	if left <= 0 {
+		return nil
+	}
+	var rest map[string]any
+	switch mode {
+	case "after":
+		after := lastMessageSeq(shown)
+		if after == 0 {
+			after = uint64Value(args["after_seq"])
+		}
+		rest = map[string]any{"mode": "after", "after_seq": after}
+	case "before":
+		rest = map[string]any{"mode": "before", "before_seq": uint64Value(args["before_seq"])}
+	default:
+		rest = map[string]any{"mode": "before", "before_seq": lastMessageSeq(msgs) + 1}
+	}
+	rest["limit"] = left
+	if role != "" {
+		rest["role"] = role
+	}
+	return rest
+}
+
+// readMessagesPageRestFromArgs is the rest of a page a message chunk call
+// carries (the cut message's next), or nil.
+func readMessagesPageRestFromArgs(args map[string]any) map[string]any {
+	if strings.TrimSpace(stringValue(args["mode"])) == "" {
+		return nil
+	}
+	rest := map[string]any{}
+	for _, key := range readMessagesPageRestKeys {
+		if value, ok := args[key]; ok && value != nil {
+			rest[key] = value
+		}
+	}
+	return rest
+}
+
+// readMessagesCall is the read_messages call that reads on: the rest of a
+// page, and before it, when message is set, the next chunk of a cut
+// message.
+func readMessagesCall(sessionID string, budget int, rest, message map[string]any) map[string]any {
+	call := map[string]any{"action": "read_messages", "session_id": sessionID, "max_chars": budget}
+	for key, value := range rest {
+		call[key] = value
+	}
+	for key, value := range message {
+		call[key] = value
+	}
+	return call
+}
+
 // manageSessionsMessageItem is one read_messages message, or one chunk of
 // it (ChunkMessageContent). A cut message carries next: the exact arguments
-// that read its following chunk.
-func manageSessionsMessageItem(sessionID string, m pebblestore.MessageSnapshot, chunk MessageContentChunk, budget int) map[string]any {
+// that read its following chunk, with the rest of its page (rest) so the
+// chain reads on past the message once it is whole.
+func manageSessionsMessageItem(sessionID string, m pebblestore.MessageSnapshot, chunk MessageContentChunk, budget int, rest map[string]any) map[string]any {
 	item := map[string]any{"id": m.ID, "seq": m.GlobalSeq, "role": m.Role, "content": chunk.Content, "created_at": m.CreatedAt}
 	if m.Metadata["source"] == "feedback_delivery" {
 		item["feedback_delivery"] = map[string]any{"message_id": m.Metadata["message_id"], "run_id": m.Metadata["run_id"], "delivery_status": m.Metadata["delivery_status"], "incorporation_status": m.Metadata["incorporation_status"]}
@@ -1100,14 +1176,14 @@ func manageSessionsMessageItem(sessionID string, m pebblestore.MessageSnapshot, 
 	}
 	if chunk.Truncated {
 		item["truncated"] = true
-		item["next"] = map[string]any{"action": "read_messages", "session_id": sessionID, "message_id": m.ID, "message_seq": m.GlobalSeq, "content_offset": chunk.End, "max_chars": budget}
+		item["next"] = readMessagesCall(sessionID, budget, rest, map[string]any{"message_id": m.ID, "message_seq": m.GlobalSeq, "content_offset": chunk.End})
 	}
 	return item
 }
 
 // manageSessionsReadMessageChunk reads the next chunk of one exact message
 // (read_messages with message_id, message_seq and content_offset).
-func (r *Runtime) manageSessionsReadMessageChunk(session pebblestore.SessionSnapshot, boundary uint64, next MessageContinuation, budget int) (string, error) {
+func (r *Runtime) manageSessionsReadMessageChunk(session pebblestore.SessionSnapshot, boundary uint64, next MessageContinuation, budget int, rest map[string]any) (string, error) {
 	msgs, err := r.listSessionMessages(session.ID, next.MessageSeq-1, 1)
 	if err != nil {
 		return "", err
@@ -1120,7 +1196,16 @@ func (r *Runtime) manageSessionsReadMessageChunk(session pebblestore.SessionSnap
 	if err != nil {
 		return "", err
 	}
-	return marshalManageSessions(map[string]any{"action": "read_messages", "session_id": session.ID, "title": session.Title, "mode": "message", "messages": []any{manageSessionsMessageItem(session.ID, msgs[0], chunk, budget)}, "characters": chunk.EncodedLen(), "content_trust": "untrusted"})
+	item := manageSessionsMessageItem(session.ID, msgs[0], chunk, budget, rest)
+	response := map[string]any{"action": "read_messages", "session_id": session.ID, "title": session.Title, "mode": "message", "messages": []any{item}, "characters": chunk.EncodedLen(), "content_trust": "untrusted"}
+	if chunk.Truncated {
+		response["next"] = item["next"]
+	} else if rest != nil {
+		// The message is whole: next reads the rest of the page it was cut on.
+		response["has_more_newer"] = true
+		response["next"] = readMessagesCall(session.ID, budget, rest, nil)
+	}
+	return marshalManageSessions(response)
 }
 
 func (r *Runtime) manageSessionsGit(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {

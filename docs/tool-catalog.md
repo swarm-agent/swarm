@@ -376,7 +376,11 @@ them the session's permission and model-profile routes
 caller's key holds. A conversation never answers its own pending requests.
 `create` binds to a registered workspace (a Swarm Control caller has no
 conversation roots, so it must name one). A cut `read_messages` page or
-message names `next`; `list`'s opaque cursor carries over as `next`.
+message names `next`. Following it reads exactly the rest of the page the
+call asked for: the role filter carries over, a `before`, `around` or tail
+page continues inside its window (never as an open `after` read), and a cut
+message's last chunk names the rest of its page, so no later message on that
+page is skipped. `list`'s opaque cursor carries over as `next`.
 
 | Action | Level | API scopes | Reach |
 | --- | --- | --- | --- |

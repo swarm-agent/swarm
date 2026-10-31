@@ -289,31 +289,16 @@ func TestManageSessionsEndToEndOverSwarmControl(t *testing.T) {
 		t.Fatalf("send_message: %v (enqueued %v)", envelope, controller.enqueued)
 	}
 
-	// Read the messages page by page, following next, until the long
-	// message is whole.
+	// Read the messages page by page, following next, until done: the long
+	// message is whole and the message after it on the same page (cut there
+	// by the budget) is read too.
 	catalogSessionMessages(t, h.home, sessionID)
-	envelope, _ = must(map[string]any{"action": "read_messages", "session_id": sessionID, "limit": float64(4), "max_chars": float64(400)})
-	got := ""
-	for step := 0; ; step++ {
-		if step > 20 {
-			t.Fatal("paging did not finish")
-		}
-		for _, raw := range envelopeDataMap(envelope)["messages"].([]any) {
-			if m := raw.(map[string]any); m["id"] == sessionID+"-m2" {
-				got += m["content"].(string)
-			}
-		}
-		next, _ := envelope["next"].(map[string]any)
-		if next == nil {
-			break
-		}
-		if next["action"] != "read_messages" || next["session_id"] != sessionID {
-			t.Fatalf("next is not a read_messages call: %v", next)
-		}
-		envelope = catalogFollowTool(t, h, "manage_sessions", next)
+	read := catalogFollowReadMessages(t, h, map[string]any{"action": "read_messages", "session_id": sessionID, "limit": float64(4), "max_chars": float64(400)})
+	if read.content[sessionID+"-m2"] != catalogSessionLong {
+		t.Fatalf("paging read %d of %d bytes of the long message", len(read.content[sessionID+"-m2"]), len(catalogSessionLong))
 	}
-	if got != catalogSessionLong {
-		t.Fatalf("paging read %d of %d bytes of the long message", len(got), len(catalogSessionLong))
+	if read.content[sessionID+"-m1"] != "Start." || read.content[sessionID+"-m3"] != "Done." {
+		t.Fatalf("paging skipped a message on the cut page: %v", read.order)
 	}
 
 	// A pending request: a read key is refused before anything runs, the
@@ -409,5 +394,124 @@ func TestManageSessionsLinkedWorkRule(t *testing.T) {
 	h.remote.s.handleCatalogLinked(w, req)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("a local caller reached the linked catalog route: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// catalogReadMessages is what following a read_messages chain read: each
+// message's content (chunks joined), the order messages first came in, their
+// seqs, and every continuation followed.
+type catalogReadMessages struct {
+	content map[string]string
+	order   []string
+	seq     map[string]float64
+	nexts   []map[string]any
+	cut     bool
+}
+
+// catalogFollowReadMessages calls read_messages over Swarm Control and follows
+// the envelope's next until there is none.
+func catalogFollowReadMessages(t *testing.T, h *catalogParityHarness, first map[string]any) catalogReadMessages {
+	t.Helper()
+	read := catalogReadMessages{content: map[string]string{}, seq: map[string]float64{}}
+	out, refused := h.controlTool(t, catalogParityFullKey, "manage_sessions", first)
+	if refused != "" {
+		t.Fatalf("read_messages: %s", refused)
+	}
+	envelope := catalogEnvelopeCheck(t, "manage_sessions read_messages", out)
+	for step := 0; ; step++ {
+		if step > 40 {
+			t.Fatal("paging did not finish")
+		}
+		for _, raw := range envelopeDataMap(envelope)["messages"].([]any) {
+			m := raw.(map[string]any)
+			id, _ := m["id"].(string)
+			if _, seen := read.content[id]; !seen {
+				read.order = append(read.order, id)
+			}
+			if m["truncated"] == true {
+				read.cut = true
+			}
+			read.content[id] += m["content"].(string)
+			read.seq[id], _ = m["seq"].(float64)
+		}
+		next, _ := envelope["next"].(map[string]any)
+		if next == nil {
+			return read
+		}
+		if next["action"] != "read_messages" || next["session_id"] != first["session_id"] {
+			t.Fatalf("next is not a read_messages call: %v", next)
+		}
+		read.nexts = append(read.nexts, next)
+		envelope = catalogFollowTool(t, h, "manage_sessions", next)
+	}
+}
+
+// Purpose: following read_messages' next reads exactly the window the first
+// call asked for, with its role filter, past a message the budget cut: every
+// continuation (the page's and each chunk's of a cut message) keeps the role
+// and the call's window, and the chain reads each message in the window once
+// and in full. A role page returns only that role's messages; a before page
+// never reads at or after its before_seq nor older than its limit. Threat: a
+// continuation that dropped role or turned a before/tail page into an
+// open-ended after read (reading past the asked window), or a cut message
+// whose last chunk ended the chain so later messages on its page were never
+// returned. Boundary: Runtime.manageSessionsRead and the catalog envelope's
+// next over Swarm Control (controlMCPCall.callTool).
+func TestManageSessionsReadMessagesContinuationsKeepTheWindow(t *testing.T) {
+	h := newCatalogParityHarness(t)
+	const session = "ms-page"
+	fleetActivityTestSession(t, h.home, session)
+	long := strings.Repeat("Assistant detail é. ", 60)
+	messages := []pebblestore.MessageSnapshot{
+		{ID: "u1", Role: "user", Content: "Question one."},
+		{ID: "a1", Role: "assistant", Content: long},
+		{ID: "u2", Role: "user", Content: "Question two."},
+		{ID: "a2", Role: "assistant", Content: "Answer two."},
+		{ID: "u3", Role: "user", Content: "Last question."},
+		{ID: "a3", Role: "assistant", Content: "After the window."},
+	}
+	for _, m := range messages {
+		m := m
+		if _, err := h.home.s.sessions.Store().ApplyV3SessionMutation(pebblestore.V3SessionMutationInput{SessionID: session, AccountScopeID: h.home.account, UserID: h.home.user, Kind: pebblestore.V3SessionMutationAppendMessage, ClientRequestID: m.ID, PayloadHash: m.ID, Message: &m}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all := catalogFollowReadMessages(t, h, map[string]any{"action": "read_messages", "session_id": session, "limit": float64(30), "max_chars": float64(20000)})
+	for _, m := range messages {
+		if all.content[m.ID] != m.Content {
+			t.Fatalf("the whole read lost %s: %v", m.ID, all.order)
+		}
+	}
+
+	// Role: only assistant messages, the cut one whole, the ones after it
+	// on the page read; every continuation keeps role.
+	byRole := catalogFollowReadMessages(t, h, map[string]any{"action": "read_messages", "session_id": session, "role": "assistant", "limit": float64(10), "max_chars": float64(300)})
+	if !byRole.cut || len(byRole.nexts) == 0 {
+		t.Fatalf("the role page was not cut: %v", byRole.order)
+	}
+	if strings.Join(byRole.order, ",") != "a1,a2,a3" || byRole.content["a1"] != long || byRole.content["a2"] != "Answer two." || byRole.content["a3"] != "After the window." {
+		t.Fatalf("role read: %v", byRole.order)
+	}
+	for _, next := range byRole.nexts {
+		if next["role"] != "assistant" {
+			t.Fatalf("a continuation dropped role: %v", next)
+		}
+	}
+
+	// Before: the window is the three messages before u3 (a1, u2, a2); the
+	// chain reads exactly them, a1 whole, and nothing at or after u3 or
+	// older than the window.
+	beforeSeq := all.seq["u3"]
+	before := catalogFollowReadMessages(t, h, map[string]any{"action": "read_messages", "session_id": session, "mode": "before", "before_seq": beforeSeq, "limit": float64(3), "max_chars": float64(300)})
+	if !before.cut || len(before.nexts) == 0 {
+		t.Fatalf("the before page was not cut: %v", before.order)
+	}
+	if strings.Join(before.order, ",") != "a1,u2,a2" || before.content["a1"] != long || before.content["u2"] != "Question two." || before.content["a2"] != "Answer two." {
+		t.Fatalf("before read left its window: %v", before.order)
+	}
+	for _, next := range before.nexts {
+		if next["mode"] != "before" || next["before_seq"] != beforeSeq {
+			t.Fatalf("a continuation of a before page left its window: %v", next)
+		}
 	}
 }
