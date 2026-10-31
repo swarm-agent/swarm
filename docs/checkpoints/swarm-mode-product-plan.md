@@ -402,7 +402,7 @@ POST   /v3/sessions/{session_id}/swarm-jobs/{job_id}:materialize
 
 Mutation requests require account/session/workspace identity, idempotency key, expected job revision where relevant, and canonical payload hashing. Item list cursors are opaque and scoped to the job/filter. No endpoint returns unbounded item payloads.
 
-The model-facing tool should be a dedicated, single-purpose tool such as `swarm_generate`, not an extension of `task`:
+The model-facing tool should be a dedicated, single-purpose tool such as a `generate` tool, not an extension of `task`:
 
 - `estimate` validates a brief and returns approval-safe facts;
 - `create` creates the durable job from the exact estimate/brief digest;
@@ -646,7 +646,7 @@ Validation expectations:
 
 Work:
 
-- register a dedicated `swarm_generate`-style tool with estimate/create/lifecycle actions and strict path/count schemas;
+- register a dedicated `generate`-style tool with estimate/create/lifecycle actions and strict path/count schemas;
 - add Swarm mode to composer execution choices and mode instructions;
 - build estimate/approval, progress, virtualized item gallery/table, item details, cancel/pause/resume/retry, shortlist, and collection-location surfaces;
 - hydrate state through canonical V3 state and targeted item queries;

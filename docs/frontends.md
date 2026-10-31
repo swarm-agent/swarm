@@ -237,12 +237,12 @@ To show how many agents run now and what each is doing, read the home's
 answer covers the home and each machine linked for the account, read through
 the link in parallel (5 seconds each) only while `linked.{name}.work` is
 `ask` or `auto`. The same service answers AIs, with no second
-implementation: Swarm Control's `swarm_agents_at_work` (through this route)
+implementation: Swarm Control's `manage_fleet` `agents_at_work` (through this route)
 and the Orchestrator's `manage_projects action=agents_at_work` (today is the
 UTC day for both); each takes an optional `machine`:
 
 - `agents`: one entry per run holding an execution lease now (the same set
-  `swarm_status` counts as `running_now`): `machine`, `agent`, `session_id`,
+  `manage_fleet` `status` counts as `running_now`): `machine`, `agent`, `session_id`,
   `run_id`, `title`, the task's `project_id`, `task_id` and `task_title` when
   the run is a task's, `worker_name`, `started_at`, `now` (the last tool call:
   `kind` read/edit/command/commit/other, `tool`, a one-line `target` such as
@@ -415,8 +415,8 @@ Use GET/PATCH `/v3/permissions` for account rules and live state; refresh on
 `permissions.updated`. Writes require `expected_revision` and `client_request_id`;
 a 409 returns the current record. Session access POST and session-create `access`
 are retired (400 pointing to `/v3/permissions`); session access GET is an account
-permissions alias. MCP exposes `swarm_get_permissions` and
-`swarm_set_permissions`; the latter accepts home and linked rules only and needs
+permissions alias. MCP exposes `manage_setup` actions `permissions` and
+`set_permissions`; the latter accepts home and linked rules only and needs
 `swarm:approve`.
 
 Pending device calls include `target_device` (client session id) and `execution`.

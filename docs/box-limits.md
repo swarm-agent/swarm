@@ -7,7 +7,7 @@ Read first, retain every field, and use the returned revision. Stale writes retu
 always taken from authentication. Scoped keys need `usage:read` (or `usage:write`)
 to read and `usage:write` to change limits; a session grant alone is insufficient.
 
-MCP exposes `swarm_get_limits` and `swarm_set_limits`. The SDK exposes
+MCP exposes `manage_setup` actions `limits` and `set_limits`. The SDK exposes
 `client.limits.get()` and `client.limits.set(revision, limits)`.
 
 | Field | Default | Hard bounds |
@@ -70,7 +70,7 @@ used.
 
 ### Worker daily spending limits
 
-MCP `swarm_deploy_worker` accepts `budget: {"daily_usd": 10, "daily_tokens": 100000}` (tokens optional); omission preserves the policy and `budget: null` clears its limits. Zero means unset, not a zero-spend cap. `automations:write` is sufficient. `swarm_list_workers` includes the worker's policy, today's indexed UTC spend, and blocked status/reason. Account limits still apply; changing a policy does not erase usage, reservations, or existing budget holds. Limits stop subsequent model calls, not an already-running call's final invoice. The catalog tool `manage_workers` (the Orchestrator's and Swarm Control's) accepts the same budget on create/propose/update; the budget is part of the worker proposal and takes effect only when the person accepts it. Existing-worker budget updates also require acceptance. Acceptance commits the policy and worker together through the canonical budget service's shared persistence boundary.
+MCP `manage_workers` `create` with a `role` (a worker ready at once) accepts `budget: {"daily_usd": 10, "daily_tokens": 100000}` (tokens optional); omission preserves the policy and `budget: null` clears its limits. Zero means unset, not a zero-spend cap. `manage_workers` `list` includes the worker's policy, today's indexed UTC spend, and blocked status/reason. Account limits still apply; changing a policy does not erase usage, reservations, or existing budget holds. Limits stop subsequent model calls, not an already-running call's final invoice. `manage_workers` also accepts the same budget on create/propose/update of a worker definition (the Orchestrator's calls and Swarm Control's without `role`, `preset` or `worker`); there the budget is part of the worker proposal and takes effect only when the person accepts it. Existing-worker budget updates also require acceptance. Acceptance commits the policy and worker together through the canonical budget service's shared persistence boundary.
 
 Claude Code and Codex model usage counts as $0 subscription cost toward worker USD budgets; media generation and priced API usage still count at their price, tokens still count for every provider, and a new model call whose provider pricing is unknown is still refused under a USD limit. A new media request whose price is unknown is admitted at its unpriced ceiling instead (below).
 
@@ -84,4 +84,4 @@ A receipt Swarm could not price is not free, and it does not stop all work eithe
 
 Admission uses the same rules before generation. A worker media request (image, video, sound, speech) is priced from the catalog before a job is created; token-priced speech (Gemini TTS) uses upper bounds from its request: prompt tokens of one per three UTF-8 bytes of the script, style and language plus 64, and audio tokens of 25 per second at a slow 10 bytes of script per second. Its reservation is that estimate, and the real receipt settles it. A media request Swarm still cannot price is admitted and reserved at the media receipt ceiling of its kind, once per requested output, and refused when today's known cost plus unpriced estimates, open reservations and that ceiling would exceed the account or worker daily USD limit. A per-job `job_cost_usd` limit still refuses unknown pricing.
 
-The estimate does not create a day hold: raising the limit, or a receipt being priced later, admits work again. `GET /v3/usage/limits` (and the `limits` of `GET /v3/usage`, shown by `swarm_get_usage`) reports `today_unpriced_receipts` and `today_unpriced_estimate_usd`; worker usage and worker budget status report `unpriced_estimate_usd`. `today_cost_usd` and `limit_exceeded` stay known cost only.
+The estimate does not create a day hold: raising the limit, or a receipt being priced later, admits work again. `GET /v3/usage/limits` (and the `limits` of `GET /v3/usage`, shown by `manage_setup` `usage`) reports `today_unpriced_receipts` and `today_unpriced_estimate_usd`; worker usage and worker budget status report `unpriced_estimate_usd`. `today_cost_usd` and `limit_exceeded` stay known cost only.

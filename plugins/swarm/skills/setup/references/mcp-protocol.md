@@ -109,11 +109,11 @@ metadata or remove authentication as a workaround.
    role defaults from the live response. A tunnel is not Swarm's multi-machine
    relay: do not invent `machine` arguments if the tools don't accept them.
 2. `manage_sessions` action `create` takes a registered `workspace_path` and
-   an optional `prompt`, which starts its first run (`swarm_start_session` still
-   takes a plan instead of a prompt). Finder can do a read-only smoke test.
+   an optional `prompt`, which starts its first run (or a `plan` instead of a
+   prompt). Finder can do a read-only smoke test.
    Project orchestration instead needs a project (folders the person named,
-   registered with `manage_workspace` `create`, grouped by `swarm_create_project`,
-   `project.md` ready per `swarm_get_project`) and the orchestrator agent.
+   registered with `manage_workspace` `create`, grouped by `manage_projects`
+   `create`, `project.md` ready per `manage_projects` `get`) and the orchestrator agent.
    Preserve the returned `data.session_id`.
 3. Every `manage_sessions` answer is the catalog envelope: the call's outcome is
    `state`, the session's own status is in `data`. Follow with `get` (state,
@@ -129,7 +129,7 @@ metadata or remove authentication as a workaround.
    `send_message`: tell a task more with `manage_projects` `message_task`. `create` has no client idempotency parameter: after an
    ambiguous create, list recent sessions before retrying.
 6. Inspect actual tool evidence and `manage_projects` `get_task_changes`/`read_task_file`
-   (`swarm_get_changes`/`swarm_read_file` for a plain session); don't
+   (with `session_id` instead of a task for a plain session); don't
    infer success from the agent's summary or tunnel health. Follow the
    [using-swarm skill](../../using-swarm/SKILL.md) for permissions and longer work.
 

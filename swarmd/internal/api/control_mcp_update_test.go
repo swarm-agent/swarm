@@ -85,7 +85,7 @@ func TestControlMCPInitializeUpdateInstructions(t *testing.T) {
 	c := controlMCPProviderTestCall(t, nil, "sessions:read", "swarm:read", "signals:read")
 	result := controlMCPInitializeResult(nil, c.instructions())
 	text, _ := result["instructions"].(string)
-	if !strings.Contains(text, "machine.update.command") || !strings.Contains(text, "swarm_status") {
+	if !strings.Contains(text, "machine.update.command") || !strings.Contains(text, "manage_fleet action status") {
 		t.Fatalf("missing update discovery: %s", text)
 	}
 }

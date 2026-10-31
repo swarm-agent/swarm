@@ -29,14 +29,14 @@ results for changed inputs, environment, flags, and tests that inspect paths or
 files; this is not a promise that every test is cacheable across worktrees.
 
 The durable account-scoped box limits record accepts `project_cache_bytes` via
-`swarm_set_limits` and reports it via `swarm_get_limits`; zero selects 10 GiB
+`manage_setup` `set_limits` and reports it via `limits`; zero selects 10 GiB
 per project. Trimming and usage reporting read the current record each time;
 read failures are surfaced rather than using stale startup settings.
 At container creation, usage above this soft limit triggers `go clean -cache`.
 Active writers may exceed the limit. Module/pnpm stores are not deleted beneath
 running consumers, so dependency content alone can exceed it. This is not a
 hard disk quota. Custom images without Go cannot perform Go-cache trimming.
-`swarm_get_environment` reports `cache.bytes`, `cache.limit_bytes`, and the volume
+`manage_projects` `get_environment` reports `cache.bytes`, `cache.limit_bytes`, and the volume
 name; `cache_error` means the size could not be measured, not a measured zero.
 
 Real Docker cache tests skip explicitly when Docker or the local test image is

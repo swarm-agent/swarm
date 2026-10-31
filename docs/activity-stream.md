@@ -15,7 +15,7 @@ Each `activity` frame contains `seq`, `at` (Unix milliseconds), `kind`, `session
 - Writes have a five-second deadline. A disconnected or permanently blocked network cannot be guaranteed to receive a gap frame; reconnect with the last received cursor. Producers never wait for clients.
 - Project and worker filters are exact IDs. Filtering is not an authorization mechanism.
 
-`GET /v3/activity?cursor=...` returns one bounded replay page: `events`, `cursor`, and `gap`. MCP `swarm_activity({since_cursor:"0"})` uses this page and requires `sessions:read`. Its older `after` option remains the separate signal feed; do not mix those cursor spaces.
+`GET /v3/activity?cursor=...` returns one bounded replay page: `events`, `cursor`, and `gap`. MCP `manage_fleet` `activity` with `since_cursor` `"0"` uses this page and requires `sessions:read`. Its older `after` option remains the separate signal feed; do not mix those cursor spaces.
 
 ## SDK
 

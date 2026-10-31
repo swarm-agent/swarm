@@ -8,7 +8,7 @@ captured base. Other roles reject `review_job`; reviewers require it.
 Public surfaces:
 - `POST /v3/workers/{worker_id}/direct`: optional top-level `review_job` string.
 - SDK `client.workers.directRequest`: `DirectWorkerRequestParams.review_job`.
-- MCP `swarm_give_job`: `review_job` string, required for reviewer workers.
+- MCP `manage_jobs` `give_job`: `review_job` string, required for reviewer workers.
 
 Admission captures the reviewed job's immutable current head and creates a
 **detached** disposable linked worktree at that commit, without a branch.
@@ -52,7 +52,7 @@ On completion the daemon parses the final assistant report and durably records
 `{verdict, head, reviewer_job_id, model, at, reason}` on the reviewed worker job.
 Missing/malformed reports and failed/stopped reviewers record `block`. Evidence
 is latest-per-head; terminal replay does not overwrite a newer review. V3 worker
-run detail, SDK `workers.getRun`, and MCP `swarm_get_job` expose the latest
+run detail, SDK `workers.getRun`, and MCP `manage_jobs` `get_job` expose the latest
 `review` with `stale` computed against the job's current Git HEAD. An unavailable
 checkout is stale, never a valid approval. Existing review lifecycle fields are
 preserved for compatibility.
@@ -61,7 +61,7 @@ Recording emits an account-scoped `job.reviewed` signal with verdict/head and
 job IDs through the existing best-effort signal observer pattern; report/reason
 text is not forwarded. The feed is consumed by signal sinks and swarm-watch.
 
-`swarm_set_agent_model` accepts role `system-reviewer`; the canonical settings
+`manage_setup` `set_agent_model` accepts role `system-reviewer`; the canonical settings
 PATCH accepts `system_agents.reviewer`. Fresh defaults use the provider catalog's
 `review` recommendation, or the coder assignment if absent. Existing settings
 without the optional reviewer slot resolve catalog review/coder defaults;

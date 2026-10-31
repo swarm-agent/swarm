@@ -2,7 +2,7 @@
 
 Status: implemented on `dev` for worker jobs, with focused tests. Optional:
 a machine without an outbox works exactly as before, and its own API
-(`/v3/signals`, `swarm_get_job`) stays the way to read it.
+(`/v3/signals`, `manage_jobs` `get_job`) stays the way to read it.
 
 ## Why
 
@@ -138,7 +138,7 @@ record of kind `outbox.gap` says so (`attrs.from`, `attrs.to`).
 }
 ```
 
-- `status` is the job's status when it was exported (`swarm_get_job`).
+- `status` is the job's status when it was exported (`manage_jobs` `get_job`).
 - `outcome` is `media` when the job committed images, video or audio,
   `code` when it committed anything else, `report` when it committed nothing.
 - `git.bundle` holds the job's commits (`git bundle create … <branch>
@@ -148,7 +148,7 @@ record of kind `outbox.gap` says so (`attrs.from`, `attrs.to`).
   the job's head commit (never from the working folder). Thumbnails are the
   worker's own: a committed image next to a video. Swarm never decodes media.
 
-A media job (`swarm_request_media`, job id `media/<project>/<task>`) ends with
+A media job (`manage_media` `generate`, job id `media/<project>/<task>`) ends with
 `media.job.succeeded` or `media.job.failed` in the feed and exports a result
 the same way: `run_id` is its task id, `outcome` is `media`, `kind` is
 `image`, `video` or `sound`, and `model`, `aspect_ratio`, `resolution`,

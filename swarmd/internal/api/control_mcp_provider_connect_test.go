@@ -109,10 +109,10 @@ func TestControlMCPInstructionsOfferEveryProviderEqually(t *testing.T) {
 				t.Fatalf("instructions do not say how Claude Code is connected without Swarm handling Claude credentials: %s", text)
 			}
 			if !strings.Contains(text, "connect field") {
-				t.Fatalf("instructions do not point to swarm_list_providers' connect data: %s", text)
+				t.Fatalf("instructions do not point to manage_setup providers' connect data: %s", text)
 			}
-			if got := strings.Contains(text, "swarm_connect_chatgpt"); got != tc.chatGPTTool {
-				t.Fatalf("swarm_connect_chatgpt named = %v, want %v (a key never sees a tool it cannot call): %s", got, tc.chatGPTTool, text)
+			if got := strings.Contains(text, "manage_setup action connect_chatgpt"); got != tc.chatGPTTool {
+				t.Fatalf("manage_setup connect_chatgpt named = %v, want %v (a key never sees a tool it cannot call): %s", got, tc.chatGPTTool, text)
 			}
 			if !tc.chatGPTTool && !strings.Contains(text, "swarmctl setup codex-login") {
 				t.Fatalf("read key lost the ChatGPT option: %s", text)
@@ -120,8 +120,8 @@ func TestControlMCPInstructionsOfferEveryProviderEqually(t *testing.T) {
 		})
 	}
 	// A key without the provider tool gets no provider line at all.
-	if text := controlMCPProviderTestCall(t, nil, "sessions:read", "swarm:approve").instructions(); strings.Contains(text, "swarm_list_providers") {
-		t.Fatalf("instructions name swarm_list_providers to a key that cannot call it: %s", text)
+	if text := controlMCPProviderTestCall(t, nil, "sessions:read", "swarm:approve").instructions(); strings.Contains(text, "manage_setup action providers") {
+		t.Fatalf("instructions name manage_setup providers to a key that cannot call it: %s", text)
 	}
 }
 

@@ -51,7 +51,7 @@ Other machines reach the box over the tailnet ([connection.md](connection.md),
 
 ## A model provider
 
-`swarm_list_providers` shows which providers are ready; each one that is not
+`manage_setup` action `providers` shows which providers are ready; each one that is not
 has a `connect` field with the exact steps for this connection. If none is
 ready, ask the person which they have, present all of these options in one
 short list with what each needs, and follow their choice:
@@ -69,9 +69,9 @@ every role its recommended model; do not overwrite them with fixed models.
 
 ### ChatGPT plan
 
-`swarm_connect_chatgpt` with action `start` returns a link and a one-time
-code. Give both to the person at once; they approve in their own browser. Then
-call action `status` with the `login_id` and `wait_seconds` until it reports
+`manage_setup` action `connect_chatgpt` with `step` `start` returns a link and
+a one-time code. Give both to the person at once; they approve in their own
+browser. Then call it with `step` `status`, the `login_id` and `wait_seconds` until it reports
 `success`. Never reuse a code from an earlier attempt; on `error`, start
 again. The same sign-in by script on the machine prints the link and code and
 waits until it is approved:
@@ -87,8 +87,8 @@ or forwards Claude credentials. The person signs in themselves; Swarm never
 copies their own Claude login.
 
 On the box, the installer does steps 1 and 2 in the person's terminal, and
-`swarm_connect_claude_code` does step 3 (action `status` until `signed_in`,
-then action `activate`; no setup page or owner password):
+`manage_setup` action `connect_claude_code` does step 3 (`step` `status` until
+`signed_in`, then `step` `activate`; no setup page or owner password):
 
 ```sh
 sudo bash /var/lib/swarm-headless/install.sh claude-code
@@ -119,7 +119,8 @@ the machine:
 sudo bash /var/lib/swarm-headless/install.sh key PROVIDER < key-file
 ```
 
-With a full AI key, `swarm_request_provider_key` gives them a one-time link to
+With a full AI key, `manage_setup` action `request_provider_key` gives them a
+one-time link to
 paste it on instead.
 
 ### Vertex AI

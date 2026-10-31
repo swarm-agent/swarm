@@ -41,7 +41,7 @@ box. Two tools carry it:
   with `wanted`), `unset` (nothing in the table) or `unknown` (unreachable).
 - `swarm_fleet_set_models`: `{models: {coder: {provider: "<provider>",
   model: "<model>", thinking?: "<level>"}}}` merges into the table and applies
-  it to every machine, one `swarm_set_agent_model` per role per machine;
+  it to every machine, one role model change per role per machine;
   `{machine, models}` sets an override for that machine only; `{machine,
   clear_override: true}` drops it and applies the table there again;
   `apply: false` only records. Leave `thinking` out to use each machine's
@@ -101,7 +101,7 @@ This is a two-step flow:
    The AI gives the person the link and repeats `tell_the_person`, which names
    the destinations so they can match them against the hostnames on the page.
    No MCP notification or progress message is needed or sent.
-2. Call `swarm_list_providers` with `machine`, `provider`, and `wait_seconds`
+2. Call `manage_setup` with `action: providers`, `machine`, `provider`, and `wait_seconds`
    (at most **110**) for each named machine to wait for its outcome.
    If still waiting, call again; the initial request does not wait for saves.
 

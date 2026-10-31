@@ -97,8 +97,8 @@ asks (action `set_agent_model` does it, per role).
 ## 5. Their project
 
 Ask: "Which folders is your work in?" — existing folders or git repositories,
-possibly several. Create a project with `swarm_create_project`: a name and
-those folders. Swarm registers each folder in place and writes the project's
+possibly several. Create a project with `manage_projects` action `create`: a
+`name` and those folders in `workspaces`. Swarm registers each folder in place and writes the project's
 `project.md` from them.
 
 - `workspace_not_found`: the path is wrong; check it with the person.
@@ -107,20 +107,22 @@ those folders. Swarm registers each folder in place and writes the project's
   `sudo swarmctl workspace add PATH`
   (the command the error names), then create the project again.
 
-Use `swarm_create_workspace` (a new, empty repository; advanced tools) only
-when the person asks to start a new project from scratch.
+Use `manage_workspace` action `create` with only a `name` (a new, empty
+repository) only when the person asks to start a new project from scratch.
 
 ## 6. Prove a first task
 
 Use the person's real task, or agree on a small one in their project. Follow
-`using-swarm`: `swarm_run_task` with `project_id`, the registered workspace
-and a brief with acceptance criteria. Omit `role` to delegate to Swarm, which
+`using-swarm`: `manage_projects` with `action: propose_task`, `project_id`, the
+registered `workspace` and a `brief` with acceptance criteria. Omit `agent` to
+delegate to Swarm, which
 uses its task tool for regular specialists. No worker preset is required or
-created by this flow. Follow `swarm_wait_task`, read `swarm_task_result` and
+created by this flow. Follow with action `wait_tasks`, read action `get_task` and
 the session with `manage_sessions` (`get`, `read_messages`), and handle
 returned questions/approvals through their authorized controls
 (`manage_sessions` `resolve_permission`). Check actual files, diffs and validation receipts; use
-`swarm_integrate_task` only when the person wants the reviewed work integrated.
+`manage_projects` action `integrate_task` only when the person wants the
+reviewed work integrated.
 A timeout means keep waiting, never start a duplicate task.
 
 End with what runs where, the project/workspace, resolved models without

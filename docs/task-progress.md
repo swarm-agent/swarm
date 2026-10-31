@@ -110,7 +110,7 @@ shows a task shows one derived word instead, from one rule
 and `idle`, using the same bucket as the list counts):
 
 - `progress.task_state` and `progress.task_state_reason` on the task routes
-  (and so on MCP `swarm_list_tasks`);
+  (and so on MCP `manage_projects` `list_tasks`);
 - `state` first on every Orchestrator `list_tasks` row and `state` plus
   `state_reason` in `get_task`, here and on linked machines, where the raw
   field is named `run_status`;

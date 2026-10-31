@@ -2,15 +2,15 @@
 
 When work ends, Swarm records one **result** for it and runs the **steps the
 person (or their AI) configured** for that end. Work is a task of Swarm's own
-agents (`swarm_run_task`: swarm, coder, finder, designer; its first run and each
+agents (`manage_projects` `propose_task`: swarm, coder, finder, designer; its first run and each
 follow-up sent into its session) or a worker job (a worker run or follow-up, a
 media job, a design job). Swarm only provides
 primitives and reports what happened; it has no built-in merge, rebase,
 check, review chain or push.
 
 With no workflow nothing changes: a task or job ends with its branch and
-worktree, and the person integrates it by hand (`swarm_integrate_task`,
-`manage_jobs` `deliver_job` (or `swarm_deliver_job`), or their own git).
+worktree, and the person integrates it by hand (`manage_projects` `integrate_task`,
+`manage_jobs` `deliver_job`, or their own git).
 
 ### When Swarm removes a finished job's worktree
 
@@ -28,8 +28,8 @@ hold:
 - it has no uncommitted or untracked changes, is not the folder itself, and
   no other run, review or unfinished task works in it.
 
-Swarm checks right after it lands the work itself (`swarm_integrate_task`, a
-`merge` deliver step, `swarm_deliver_job`), and in a sweep every 15 minutes
+Swarm checks right after it lands the work itself (`manage_projects` `integrate_task`, a
+`merge` deliver step, `manage_jobs` `deliver_job`), and in a sweep every 15 minutes
 while the daemon schedules workers, which also finds work merged outside
 Swarm (for example a pull request merged on the forge) and older finished
 worktrees (it reads every session's state, so an active session never goes
@@ -42,7 +42,7 @@ Each removal is recorded on the run and the task as `worktree_removal`
 `landed` or `sweep`, `at`) and raised once as a `worktree.removed` signal
 (info; refs `session_id` and `run_id`/`worker_id` or `project_id`/`task_id`;
 attrs `path`, `branch`, `head`, `target_branch`, `trigger`). The run's result,
-its commits and its branch stay readable: `swarm_get_changes`, the task and
+its commits and its branch stay readable: `manage_projects` `get_task_changes`, the task and
 job views, the task diff and a fixing reviewer's result read the commits,
 files and head from the kept branch in the folder (`checkout_note` says so).
 A run whose follow-up is queued or running keeps its worktree. A removal
@@ -65,14 +65,14 @@ has time to start. A message the task refuses anyway (a completed, rejected
 or integrated task, which must be reopened) reserves and recreates nothing.
 A recreated one is recorded as `worktree_removal` `state`
 `restored`. A repeated
-`swarm_integrate_task` of such a task answers `already_integrated` from the
+`manage_projects` `integrate_task` of such a task answers `already_integrated` from the
 record, and the task's delivery state reads `integrated` (`reason_code`
 `worktree_removed`). Both hold only when the recorded `head` has at least one
 commit beyond the task's base. A task with no commits whose worktree was
 removed is never reported as integrated.
 
 Workflows were called job automations. The MCP tools and the API path are
-named for workflows (`swarm_set_workflow`, `/v3/workflows`); the internal
+named for workflows (`manage_workflows`, `/v3/workflows`); the internal
 names are unchanged: the `automation.*` signals, the `automations:read` and
 `automations:write` scopes, `then` and `automation: true` on the job tools.
 
@@ -137,8 +137,7 @@ Both sources retain the last 2000 IDs and queue events durably in feed order,
 starting at most one job at a time per workflow. Failed starts are recorded and
 not retried. Workflow reads include recent `events`, without their item payloads.
 The signals are `workflow.trigger.fired` and `workflow.trigger.failed`.
-Both `swarm_set_workflow` and `manage_workflows` include `on` in their tool
-schemas. Proposal acceptance remains required for Orchestrator-proposed workflows;
+`manage_workflows` includes `on` in its tool schema. Proposal acceptance remains required for Orchestrator-proposed workflows;
 a new webhook key is returned only to the person's client on acceptance, not to
 the Orchestrator. Explicit key rotation currently requires the HTTP save or MCP path.
 
@@ -166,7 +165,7 @@ task and job ends after it was created. Tasks and jobs started by a workflow
 ends again and does. A task's follow-up is `manage_projects` `message_task`
 (queued into its running run, or reopening it in its own session and worktree
 when it has finished) or the person's own message in the task's session; a
-job's is `manage_jobs` `message_job` or `swarm_message_job`. `manage_sessions`
+job's is `manage_jobs` `message_job`. `manage_sessions`
 `send_message` is for plain sessions only and refuses to start a run in a
 task's session.
 
@@ -219,7 +218,7 @@ owner configured, and nothing when there are none.
   Desktop or `swarm` on the machine, with no key), or a key with the `admin`
   scope (a `full` AI key). A `write` AI key, a remote device and any other
   key without `admin` are refused when they save an automation, or a `then`
-  on `swarm_give_job` or `swarm_schedule_job`, that contains a `run` step
+  on `manage_jobs` `give_job` or `manage_jobs` `schedule_job`, that contains a `run` step
   (HTTP 403, or a tool error), and nothing is stored or started. They may
   still save `agent` and `reopen` steps. The root-owned check below does not
   limit what a step can do on its own: every system interpreter is root-owned,
@@ -336,7 +335,7 @@ and no reopen step sent the work back (see `sent_back` below).
 - `worker` is one of Swarm's own agents (`swarm`, `coder`, `finder`,
   `designer`, `reviewer`), or a worker id. One of Swarm's own agents runs as
   a task in the folder, in the triggering work's project, exactly as
-  `swarm_run_task` would, with the brief and the triggering work's result; a
+  `manage_projects` `propose_task` would, with the brief and the triggering work's result; a
   coder's worktree starts at the delivery head, so its commits descend from
   the work it follows. Its task records the workflow that started it and its
   end never triggers workflows. Only `reviewer` may opt into `fixes: security`.
@@ -416,7 +415,7 @@ A workflow saved before `swarm` moved to its own worktree may still hold a
 is refused, but the stored revision still runs: the step runs with `checkout`
 `new`, and its run in the delivery records a `note` ("checkout none migrated
 to new ..."). This includes a re-run of a delivery pinned to that revision.
-`swarm_list_workflows` and `GET /v3/workflows/{id}` list such steps under
+`manage_workflows` `list` and `GET /v3/workflows/{id}` list such steps under
 `step_migrations` (stored and effective checkout, and a note); resave the
 workflow with `checkout: "new"` to clear it.
 
@@ -430,10 +429,10 @@ An `agent` step naming `reviewer` or a reviewer worker by its id may set `fixes`
 (the only value), so that the reviewer may commit small, security-only
 fixes (a missing escape, a path check, a secret in a log line) instead of
 blocking for them. It is opt-in per step and never the default: a reviewer
-started any other way (`swarm_give_job` with `review_job`, or an `agent` step
+started any other way (`manage_jobs` `give_job` with `review_job`, or an `agent` step
 without `fixes`) stays read-only, detached and report-only. Swarm never
-decides on its own to let a reviewer write. `swarm_set_workflow`, `then`
-and the API refuse `fixes` on a step whose worker is not a reviewer (a role
+decides on its own to let a reviewer write. `manage_workflows` `propose`,
+`then` and the API refuse `fixes` on a step whose worker is not a reviewer (a role
 name, a worker id or name that resolves to another role, or one that does
 not resolve); the daemon refuses it again when the job starts and at job
 admission, where only a job automation's request may carry it.
@@ -476,14 +475,14 @@ With `fixes`:
   `agent` step after another `agent` step that already moved the delivery
   head is refused without starting its job. Put the fixing review first.
 - The step's `outcome` shows the reviewer's `fix_commits`, `fix_lines`,
-  `fixes_applied` and, when not applied, `fixes_reason`; `swarm_get_job` on
+  `fixes_applied` and, when not applied, `fixes_reason`; `manage_jobs` `get_job` on
   the reviewer job shows its fix `commits` and `head` on its
   `agent/review-<run>` branch (read from its checkout; `fix_error` when that
-  read fails). `swarm_get_job` on the reviewed job and the delivery views
+  read fails). `manage_jobs` `get_job` on the reviewed job and the delivery views
   show the moved `head` and the applied `fix_commits`.
 - A fixing reviewer's review of the reviewed job is recorded with
   `fix_head` when it committed: its OK covers the reviewed head only with
-  those fixes, so `swarm_get_job` on the reviewed job shows that review as
+  those fixes, so `manage_jobs` `get_job` on the reviewed job shows that review as
   `stale`, never as a current OK of the unfixed head, whether or not the
   step applied the fixes. An OK whose fix checkout cannot be read is
   recorded as BLOCK (`reviewer fixes unreadable`).
@@ -492,7 +491,7 @@ With `fixes`:
   not deleted as a read-only reviewer's checkout is (it is removed only once
   its work is in the target branch, see
   [When Swarm removes a finished job's worktree](#when-swarm-removes-a-finished-jobs-worktree)). Reviewer jobs stay
-  undeliverable with `swarm_deliver_job`: their fixes reach a job only
+  undeliverable with `manage_jobs` `deliver_job`: their fixes reach a job only
   through the delivery head.
 
 ### `reopen` steps
@@ -503,7 +502,7 @@ With `fixes`:
 ```
 
 - Sends a follow-up into the **triggering job's own session**, exactly as
-  `swarm_message_job` does: the same session and worktree, never a new job.
+  `manage_jobs` `message_job` does: the same session and worktree, never a new job.
   The text is `message`, then the findings of the `agent` step named by
   `from`, verbatim and in full (up to 16,000 bytes), then: "Fix these in this
   worktree, commit, and report what you changed."
@@ -578,7 +577,7 @@ With `fixes`:
   `review_unreadable: true`, the step sends nothing into the coder's session,
   uses no round, fails with `review unreadable: <reviewer job id>`, and the
   delivery ends `blocked` with that reason (`automation.delivery.blocked`),
-  so the delegating AI can read the reviewer's session (`swarm_get_job`) and
+  so the delegating AI can read the reviewer's session (`manage_jobs` `get_job`) and
   send findings by hand or re-run the delivery.
 - A cancelled job is never reopened: the step fails with the reason, as it
   does for a deleted, archived or person-stopped task. A step with neither
@@ -605,8 +604,8 @@ kind of work, not only commits:
 | `to` | What happens |
 | --- | --- |
 | `folder` | Copied into `path`, a directory inside the folder. An equal file there is kept; a different one is never overwritten (the step fails). A path that leaves the folder, symlinks included, is refused. |
-| `merge` | The work's branch is merged into the folder's branch, as `swarm_integrate_task` (a task) or `swarm_deliver_job` (a worker job) do. Refused when the folder has a publish rule (use `publish`). |
-| `publish` | A pull request through the folder's publish rule (`install.sh workspace publish`), as `swarm_deliver_job` does. Worker jobs only. |
+| `merge` | The work's branch is merged into the folder's branch, as `manage_projects` `integrate_task` (a task) or `manage_jobs` `deliver_job` (a worker job) do. Refused when the folder has a publish rule (use `publish`). |
+| `publish` | A pull request through the folder's publish rule (`install.sh workspace publish`), as `manage_jobs` `deliver_job` does. Worker jobs only. |
 | `outbox` | Exported to the machine's outbox (`SWARM_OUTBOX_URL`: a bucket or a folder): each file as `machines/<machine>/blobs/sha256/<hex>` and a manifest at `machines/<machine>/deliveries/<delivery>/<step>.json`. Refused on a machine without an outbox. |
 
 A deliver step hands over `what` (deliverables by name), else the workflow's
@@ -712,10 +711,10 @@ fails. A daemon restart
 resumes unfinished deliveries at the first step that is not finished; a
 finished step is never run again.
 
-The **stop switch** (`manage_workflows` `stop_all`, `swarm_stop_workflows`,
+The **stop switch** (`manage_workflows` `stop_all`,
 `POST /v3/workflows/stop`) is machine-wide: while it is on no new step
 starts; running steps finish, and the next step is recorded as `stopped`.
-`manage_jobs` `rerun_failed_steps` (the same as `swarm_deliver_job` with
+`manage_jobs` `rerun_failed_steps` (the same as `manage_jobs` `deliver_job` with
 `automation: true`) re-runs, for each automation,
 only the job's **newest** delivery, and only while that delivery's head is
 still the job's current head; older deliveries are never re-run (they are
@@ -791,7 +790,7 @@ A job records its target branch's tip (`base_branch`, for example `dev`) as
 its base when it is created. A coder told to rebase onto a newer target, or
 to merge it in, moves its head past that base, and `base..head` would then
 list commits that are already on the target. So `base_commit` (in the result,
-in `swarm_get_job`'s result and in `swarm_get_changes`) is the job's
+in the `manage_jobs` `get_job` result and in `manage_projects` `get_task_changes`) is the job's
 **effective base**:
 
 - Swarm takes the merge-base of the job's head and the target's current tip.
@@ -806,7 +805,7 @@ in `swarm_get_job`'s result and in `swarm_get_changes`) is the job's
   descends from the recorded base at all (the target was rewritten and the
   job rebased onto it). The commits, files and diff are then listed from it,
   and the base recorded at creation is reported as `recorded_base_commit`
-  (`recorded_base` in `swarm_get_changes`).
+  (`recorded_base` in `manage_projects` `get_task_changes`).
 - Otherwise, including a job that was not rebased while the target moved on
   and a job the target already contains (delivered by a fast-forward or a
   merge, where that merge-base would be the head itself), the recorded base
@@ -863,8 +862,8 @@ and `step_id`:
 - `automation.delivery.blocked` (severity warning; attrs: `reason`
   `rounds_exhausted` or `review unreadable: <reviewer job id>`, `round`,
   `head`, the last `findings` shortened, and `next`: send the findings by
-  hand with `manage_jobs` `message_job` (`swarm_message_job`), or after a fix
-  `manage_jobs` `rerun_failed_steps` (`swarm_deliver_job` with
+  hand with `manage_jobs` `message_job`, or after a fix
+  `manage_jobs` `rerun_failed_steps` (`deliver_job` with
   `automation: true`); for an unreadable review, first read the reviewer
   job's session)
 
@@ -907,18 +906,16 @@ Design jobs now end with `design.job.completed`, `design.job.failed` or
   names, else that project on this machine, and refuses one the machine
   does not have rather than binding a wider folder. A disabled workflow
   does not run until it is enabled.
-  The `swarm_*` workflow tools below remain until the catalog replaces them.
-- MCP: `swarm_set_workflow`, `swarm_list_workflows` (every workflow exactly as
-  Swarm runs it, with its last 3 deliveries one line each: delivery id, job,
-  state, round, head, blocked reason and each step's state and verdict, no
-  findings; `delivery_id` reads one delivery's steps and `detail: "deliveries"`
-  every workflow's last 3, both bounded, findings cut to 1,500 characters; the
-  same options on `GET /v3/workflows` and the Orchestrator's
-  `manage_workflows` `list`, whose `deliveries` action also lists one line per
-  delivery), `swarm_delete_workflow`, `swarm_stop_workflows`; `then` on
-  `swarm_give_job` and `swarm_schedule_job`; deliveries in the catalog tool
-  `manage_jobs` (`get_job`, `deliveries`, `rerun_failed_steps`; the same as
-  `swarm_get_job` and `automation: true` on `swarm_deliver_job`).
+- MCP: the same `manage_workflows` tool, whose `list` shows every workflow
+  exactly as Swarm runs it, with its last 3 deliveries one line each: delivery
+  id, job, state, round, head, blocked reason and each step's state and
+  verdict, no findings; `delivery_id` reads one delivery's steps and
+  `detail: "deliveries"` every workflow's last 3, both bounded, findings cut
+  to 1,500 characters (the same options on `GET /v3/workflows`), and whose
+  `deliveries` action lists one line per delivery; `then` on `manage_jobs`
+  `give_job` and `schedule_job`; deliveries in `manage_jobs` (`get_job`,
+  `deliveries`, `rerun_failed_steps`, which is `deliver_job` with
+  `automation: true`).
 - API (`automations:read` to read, `automations:write` to change, and
   `admin` or the local owner to save a `run` step):
   `GET/POST /v3/workflows`, `GET/DELETE /v3/workflows/{id}` (an id or a
@@ -997,8 +994,9 @@ of the first findings. A remaining block never pushes.
 
 ```json
 {
-  "tool": "swarm_set_workflow",
+  "tool": "manage_workflows",
   "arguments": {
+    "action": "propose",
     "name": "coder review push",
     "scope": { "folder": "/srv/site", "role": "coder" },
     "steps": [
@@ -1043,8 +1041,9 @@ the automation says so: there is no built-in review chain.
 
 ```json
 {
-  "tool": "swarm_set_workflow",
+  "tool": "manage_workflows",
   "arguments": {
+    "action": "propose",
     "name": "review loop",
     "scope": { "folder": "/srv/site", "worker": "<coder worker id>" },
     "when": "succeeded",
@@ -1092,7 +1091,7 @@ the automation says so: there is no built-in review chain.
    their own rounds, so work that needed both of `fix`'s send-backs still
    gets `rebase`'s two; the job as a whole is bounded by 4 (2 + 2).
 
-`swarm_get_job` on the coder's job shows each delivery's round, head, state,
+`manage_jobs` `get_job` on the coder's job shows each delivery's round, head, state,
 blocked reason and the reviewer's applied fix commits, and each step's
 verdict and findings.
 
@@ -1160,19 +1159,19 @@ echo "uploaded $count file(s)"
 ```
 
 A design job's files are already in the folder at the paths its result
-lists. A media job's (`swarm_request_media`) result lists its files' names,
+lists. A media job's (`manage_media` `generate`) result lists its files' names,
 sha256 and types, but their bytes stay with the job until they are saved
-into a folder (`swarm_save_media`); a step does not receive them.
+into a folder (`manage_media` `save`); a step does not receive them.
 
 ## Custom agent tools for workers
 
-A worker can set optional `agent` to an enabled, non-system custom agent in the same account through `POST /v3/workers`, `PUT /v3/workers/{id}`, `swarm_deploy_worker` (custom worker creation), or `swarm_update_worker`. An empty string on update restores the role's default tools.
+A worker can set optional `agent` to an enabled, non-system custom agent in the same account through `POST /v3/workers`, `PUT /v3/workers/{id}`, `manage_workers` `create` (custom worker creation), or `manage_workers` `update`. An empty string on update restores the role's default tools.
 
 The worker retains its system role, model selection, prompts and checkout behavior. The custom agent supplies its current saved tool contract, including assigned custom tools, and additional prompt instructions. Tool edits apply on the next run without editing the worker. Code-owned tool restrictions still win. Workers without `agent` and custom agents' own sessions keep their existing behavior.
 
 Reviewer saves and run admission reject `write`, `edit`, `git_add`, `git_commit`, `task`, and custom tools with effect `write`; `bash` remains allowed. The workflow fixes option keeps its code-owned reviewer-fixer tools.
 
-`swarm_define_agent` accepts optional `tools_on` and `tools_off` arrays on top of the required `tools` preset (`read_only`, `read_write`, or `build`). For example, `tools: "build", tools_off: ["bash"], tools_on: ["websearch"]` persists explicit switches in the existing contract. Off wins for names in both arrays. Omitting both arrays preserves existing behavior. Permission policy still applies.
+`manage_custom_agents` `define` accepts optional `tools_on` and `tools_off` arrays on top of the required `tools` preset (`read_only`, `read_write`, or `build`). For example, `tools: "build", tools_off: ["bash"], tools_on: ["websearch"]` persists explicit switches in the existing contract. Off wins for names in both arrays. Omitting both arrays preserves existing behavior. Permission policy still applies.
 
 ## Inputs
 
@@ -1197,7 +1196,7 @@ For example, commit this pipeline as `.swarm/workflows/content.json`:
 }
 ```
 
-Call `manage_workflows` `import` (or `swarm_import_workflow`) twice with the
+Call `manage_workflows` `import` twice with the
 same `path` and `project`, first
 `name: "swarm-content", with: {"brand": "swarm"}`, then
 `name: "nameflow-content", with: {"brand": "nameflow"}`. Reimporting the same
@@ -1215,8 +1214,8 @@ its resolved ID is retained for matching while the saved template is preserved.
 resolve to exactly one active worker in the account (or use an existing worker
 ID); built-in step agents retain their meaning. Trigger starts still require a
 deployed worker. Reads retain templates and bindings separately. Use the same
-`inputs` and `with` fields with `swarm_set_workflow`, `/v3/workflows`, or native
-`manage_workflows` proposals; approvals are unchanged. Do not put secrets in
+`inputs` and `with` fields with `/v3/workflows` or `manage_workflows`
+proposals; approvals are unchanged. Do not put secrets in
 inputs, defaults or bindings.
 
 See [Worker daily spending limits](box-limits.md#worker-daily-spending-limits) for per-worker budgets.
@@ -1243,7 +1242,7 @@ as compact JSON with sorted keys). The rendered worker input must fit within
 
 Set `after_field: "reuses"` to let a 9:16 cut with `{"id":"cut","reuses":"wide"}` wait for the 16:9 video with `{"id":"wide"}` in the same file. `id_field` defaults to `id`. The cut shows `waiting for wide` until that job succeeds and all its job-end workflow deliveries finish successfully, including their deliver/merge steps, so it can use the committed files in the folder branch. A failed/blocked prerequisite or delivery fails the cut without starting it, with `waits for wide, which did not finish: <reason>`. Missing/empty references impose no dependency; unknown references, duplicate IDs, and cycles are refused before queuing. Waiting items consume no parallel slots.
 
-An item follows its job's newest end. When a failed or blocked item job later succeeds (for example after `swarm_message_job`), the item returns to `done`. Every item that failed only because it waited on it, with `waits for <id>, which did not finish: …`, shows `waiting for <id>` again, along its whole `after_field` chain. These items then start as above: once the job's own workflow deliveries succeed, within `max_parallel`, and at most once each, with the same start key. This happens even when the planner's delivery already finished. That delivery then shows `running` again (with `items_reopened` set to the state it had), but none of its finished steps runs again. Once none of its items is queued, waiting or started, it finishes again with the state it had before. Items that failed for their own reason stay failed while their job has not succeeded, and so do the items waiting on them. For items whose job succeeded before this recovery existed, `swarm_deliver_job` with `automation: true` on the planner's job (or `POST /v3/job-deliveries/{id}/rerun` on its delivery) applies the same recovery, also when the delivery has no failed step: a failed item returns to `done` once its job's newest end succeeded and its job's workflows delivered (the same check its dependents wait for), and the items that failed waiting on it wait again.
+An item follows its job's newest end. When a failed or blocked item job later succeeds (for example after `manage_jobs` `message_job`), the item returns to `done`. Every item that failed only because it waited on it, with `waits for <id>, which did not finish: …`, shows `waiting for <id>` again, along its whole `after_field` chain. These items then start as above: once the job's own workflow deliveries succeed, within `max_parallel`, and at most once each, with the same start key. This happens even when the planner's delivery already finished. That delivery then shows `running` again (with `items_reopened` set to the state it had), but none of its finished steps runs again. Once none of its items is queued, waiting or started, it finishes again with the state it had before. Items that failed for their own reason stay failed while their job has not succeeded, and so do the items waiting on them. For items whose job succeeded before this recovery existed, `manage_jobs` `deliver_job` with `automation: true` on the planner's job (or `POST /v3/job-deliveries/{id}/rerun` on its delivery) applies the same recovery, also when the delivery has no failed step: a failed item returns to `done` once its job's newest end succeeded and its job's workflows delivered (the same check its dependents wait for), and the items that failed waiting on it wait again.
 
 `max_parallel` is 1–5, default 1. The step succeeds after durable queuing; later
 steps do not wait. Delivery reads list each item's state, job id and error.

@@ -22,7 +22,7 @@ other built-ins, and can be enabled on custom agents with
   `duration_seconds`, `count` or video `operation`. The new job records
   `retry_of`, also returned by `get`. Ownership, model validation, admission,
   approval and session usage accounting apply just as for generation.
-  Managing clients can pass `retry_of` to MCP `swarm_request_media` with the
+  Managing clients can call MCP `manage_media` `retry` with that `job_id` and the
   same overrides; both transports use the shared retry helper.
 - `get` accepts `job_id` and optional `wait_seconds` (0–30), returning status,
   files, model, settings, errors and cost.

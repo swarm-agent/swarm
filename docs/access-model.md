@@ -63,7 +63,7 @@ work in its sandbox under the tool permission policy.
 
 Remote workflow actions are `list`, `get`, `history`, `deliveries`, `propose`, `enable`, `disable`, and `delete`. Workflow run/cancel and delivery rerun are not exposed remotely. Remote worker actions are `list`, `get`, `inspect`, `runs`, `pause`, `resume`, `archive`, and `delete` (also through `manage_automation`). Worker create/propose, update, run, acceptance, deployment and other actions are not remote; create/update need a separate proposal-preserving HTTP contract.
 
-Folder environments (the base image, setup commands, environment variables and `max_leases` a folder's sandbox and leases run in) are managed with `manage_projects` `list_environments`, `get_environment`, `update_environment` and `rebuild_environment`; the last three take `workspace_path`, the absolute path of a registered folder. Without `machine` they act on this Swarm; with `machine` the home calls the same route on the linked machine (`/v3/sandbox-environments`: `GET`, `GET /list`, `PATCH`, `POST /rebuild`), which runs the same service functions as a local caller and MCP's `swarm_set_environment`. `update_environment` merges: `base_image` sets the image, `append_setup` adds commands after the current ones (`setup` replaces them all, and both together are refused), `env` sets variables and `unset_env` removes them, `max_leases` sets the lease limit; fields left out are kept. A changed definition builds in the background; `wait_seconds` (at most 110) waits for it. A failed build reports its `error` and build `log` tail, and the folder keeps running on its previous ready image. `rebuild_environment` builds the current definition again (refused while a build runs). Only the home's Orchestrator does this for a linked machine; tasks use `lease_environment`. What the home may not do: secret grants and permission rules are never part of an environment. A request naming `secrets`, `secret_grants`, `grants`, `permissions` or a similar field is refused by name on the home and again on the machine (HTTP 403 over the link), and nothing is stored. Environment views carry no secret names or values. A machine that does not answer is reported as `could not reach linked machine NAME: NAME unreachable, the call failed at TIME; last successful contact at TIME`.
+Folder environments (the base image, setup commands, environment variables and `max_leases` a folder's sandbox and leases run in) are managed with `manage_projects` `list_environments`, `get_environment`, `update_environment` and `rebuild_environment`; the last three take `workspace_path`, the absolute path of a registered folder. Without `machine` they act on this Swarm; with `machine` the home calls the same route on the linked machine (`/v3/sandbox-environments`: `GET`, `GET /list`, `PATCH`, `POST /rebuild`), which runs the same service functions as a local caller and MCP's `manage_projects` `update_environment`. `update_environment` merges: `base_image` sets the image, `append_setup` adds commands after the current ones (`setup` replaces them all, and both together are refused), `env` sets variables and `unset_env` removes them, `max_leases` sets the lease limit; fields left out are kept. A changed definition builds in the background; `wait_seconds` (at most 110) waits for it. A failed build reports its `error` and build `log` tail, and the folder keeps running on its previous ready image. `rebuild_environment` builds the current definition again (refused while a build runs). Only the home's Orchestrator does this for a linked machine; tasks use `lease_environment`. What the home may not do: secret grants and permission rules are never part of an environment. A request naming `secrets`, `secret_grants`, `grants`, `permissions` or a similar field is refused by name on the home and again on the machine (HTTP 403 over the link), and nothing is stored. Environment views carry no secret names or values. A machine that does not answer is reported as `could not reach linked machine NAME: NAME unreachable, the call failed at TIME; last successful contact at TIME`.
 
 Worker lists return id, name, role, stored model (null if unset), enabled (idle or active), lifecycle state, and the latest run's state and timestamps (null if never run). History is read through the link with a bounded scan; incomplete history fails explicitly rather than presenting an older run as latest. Full definitions remain available through `get`.
 
@@ -123,7 +123,7 @@ allows it.
 
 **What a linked machine is doing.** `list_machines` gives each machine whose
 linked work rule is not `off` a one-line `status` read through the link from
-the machine's own `GET /v3/box/summary` (the data MCP `swarm_status` shows):
+the machine's own `GET /v3/box/summary` (the data MCP `manage_fleet` `status` shows):
 `running`, `draining` and `draining_since` while it drains for an update, its
 `update` state, and `blocked` (sessions waiting on a person), with a
 `summary` such as `running 0, draining since 2026-10-29T12:29:00Z, update
@@ -138,10 +138,10 @@ ask; under `off` it is refused):
 
 | `manage_projects` action (with `machine`) | machine route | same as MCP |
 |---|---|---|
-| `machine_status` | `GET /v3/box/summary`: status and reasons, `running_now`, `attention` (blocked sessions), `machine.drain` and `machine.update` (state, reason, since and deadline), `usage` against the daily cap, `keys`, `sandbox`, `permissions` | `swarm_status` |
-| `get_task_session` (`project_id`, `task_id`, optional `limit` messages, at most 20) | `GET /v3/sessions/{id}` and `/plans/active` for the session the machine reports for the task: the session, `active_run` and its status, `pending_permissions` (questions included), the latest messages trimmed, `plan`, `last_activity_at` | `swarm_get_session` |
-| `activity` with `since_cursor` | `GET /v3/activity?cursor=N`: one page of metadata events (jobs, tasks and sessions started, finished, failed, stopped, or waiting on a person) and the next `cursor` | `swarm_activity` with `since_cursor` |
-| `activity` without it (optional `after`, `limit`) | `GET /v3/signals`: job failures, update drains, refused keys, with the next `cursor` | `swarm_activity` |
+| `machine_status` | `GET /v3/box/summary`: status and reasons, `running_now`, `attention` (blocked sessions), `machine.drain` and `machine.update` (state, reason, since and deadline), `usage` against the daily cap, `keys`, `sandbox`, `permissions` | `manage_fleet` `status` |
+| `get_task_session` (`project_id`, `task_id`, optional `limit` messages, at most 20) | `GET /v3/sessions/{id}` and `/plans/active` for the session the machine reports for the task: the session, `active_run` and its status, `pending_permissions` (questions included), the latest messages trimmed, `plan`, `last_activity_at` | `manage_sessions` `get` |
+| `activity` with `since_cursor` | `GET /v3/activity?cursor=N`: one page of metadata events (jobs, tasks and sessions started, finished, failed, stopped, or waiting on a person) and the next `cursor` | `manage_fleet` `activity` with `since_cursor` |
+| `activity` without it (optional `after`, `limit`) | `GET /v3/signals`: job failures, update drains, refused keys, with the next `cursor` | `manage_fleet` `activity` |
 
 `get_task_session` reads only the session of a task this home sent to that
 machine (its linked-task record); any other task is refused. Linked task watches
@@ -192,7 +192,8 @@ key once, on the home, in Swarm's own key page; never in a chat or a client.
   installed again.
 - **Who can do what.** Reads need `sessions:read`. Requesting, installing and
   revoking need an owner session or an AI key with `swarm:approve` (MCP:
-  `swarm_list_fleet_keys`, `swarm_request_fleet_key`, `swarm_revoke_fleet_key`).
+  `manage_setup` actions `list_fleet_keys`, `request_fleet_key` and
+  `revoke_fleet_key`).
   Agents' gateway tokens never see or manage fleet keys, and no AI ever sees a
   value. A machine accepts `POST /v3/fleet/keys/install` and
   `/v3/fleet/keys/{id}/remove` only from its linked home over the link (not

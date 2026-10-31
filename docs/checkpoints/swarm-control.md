@@ -21,100 +21,88 @@ unsupported protocol versions are rejected.
 
 ## Default tools: workers and jobs
 
-By default `tools/list` shows only the worker and job tools, and the server
-instructions tell that story: a model provider (the person adds the key), a
-project with the person's folders, then a job for the coder, designer or
-finder, wait, read the result, follow up, answer questions, merge.
-Every other tool below stays callable by name and is listed when the client
-asks for all tools (`/mcp?tools=all`, `swarm mcp --all-tools`). The default set
-is `controlMCPCoreTools` in `control_mcp.go`; the job tools are in
-`control_mcp_jobs.go`.
+Swarm Control serves the tool catalog: one MCP tool per catalog tool, with an
+`action` field ([tool catalog](../tool-catalog.md)). By default `tools/list`
+shows the catalog's default (essentials) actions, and the server instructions
+tell the story: a model provider (the person adds the key), a project with
+the person's folders, then a task for Swarm or one of its agents, or a job
+for one of the person's own workers, wait, read the result, follow up,
+answer questions, merge. Every other Swarm Control action is listed when the
+client asks for all tools (`/mcp?tools=all`, `swarm mcp --all-tools`). Each
+row names the catalog tool and action; the routes are those its handler
+reaches.
 
-| Tool | Relay scope | Routes reached |
+| Tool and action | Relay scope | Routes reached |
 | --- | --- | --- |
-| `swarm_status` | `swarm:read` | `GET /v3/box/summary` (requires `signals:read`); adds `activity_cursor` |
-| `swarm_activity` (`after` cursor, `limit`, `min_severity`) | `swarm:read` | `GET /v3/signals` (requires `signals:read`); worker signals carry a `job_id` |
-| `swarm_agents_at_work` (`machine` optional) | `swarm:read` | `GET /v3/fleet/agents` (requires `sessions:read`): the agent runs active now on this machine and its linked machines, what each does, each machine's count or why it could not be read, and the latest finished tasks; the same answer the console and `manage_projects action=agents_at_work` read ([frontends.md](../frontends.md#the-fleets-agents-at-work)) |
-| `swarm_list_workers` (`include_jobs`) | `swarm:read` | `GET /v3/workers` (`POST /v3/workers:ensure-presets` when a preset is missing), `GET …/runs` |
-| `swarm_deploy_worker` (preset, or name, role and instructions) | `swarm:write` | `POST /v3/workers:ensure-presets`, or `POST /v3/workers` then `…/activate` with no folder binding |
-| `swarm_give_job` (worker, brief, project, workspace, files, `wait_seconds`) | `swarm:write` | `GET /v3/projects` (the project and one of its folders; refused when there is no project), `POST /v3/workers/{id}/direct` with `workspace_path` and `input.project_id` (Swarm picks that project when the folder is in several); returns `job_id` `worker/<worker>/<run>` |
-| `swarm_get_job` (`wait_seconds`, `include_diff`, `include_transcript`) | `swarm:read` | `GET …/runs/{rid}`, the run's session (pending questions, an active follow-up run) and project task; when settled, the `swarm_task_result` view (branch, commits, files, report, cost, diff); `project_id`, `session_id`; the transcript is the session's latest messages |
-| `swarm_message_job` (message, `wait_seconds`) | `swarm:write` | `POST /v3/sessions/{id}/messages` in the job's session, on the same branch. While the job's run is active (its first run or a follow-up) the message is queued for that run: the worker gets it with its next tool result, or it starts the next run when that run ends (`sent.delivery`, `sent.queued_for_run_id`). A stopped job continues. Refused while a question is open, after the job was cancelled, or while an earlier follow-up is still queued to start (the refusal names its run) |
-| `swarm_answer_job` | `swarm:write` | `POST /v3/sessions/{id}/permissions/{pid}/resolve` for an open `ask_user` question only, never a tool-call approval |
-| `swarm_deliver_job` | `swarm:write` | `POST /v3/projects/{pid}/tasks/{tid}/integrate` (a local git merge); when the folder has a publish rule (`swarmctl workspace publish`), the owner's command opens a pull request instead; Swarm never pushes otherwise |
-| `swarm_stop_job` | `swarm:write` | `POST /v3/workers/{id}/runs/{rid}/cancel` (or `…/run/stop` for a media job). Cancels a running or stopped job for good |
-| `swarm_schedule_job` (worker, brief, schedule, project, workspace) | `swarm:write` | `POST /v3/workers` with the schedule, `…/activate` bound to the folder, `…/automations/{aid}/enable` |
-| `swarm_request_media` (image, video, sound, project) | `swarm:write` | `POST /v3/projects/{pid}/tasks` (as `swarm_run_task`); returns `job_id` `media/<project>/<task>` |
-| `swarm_list_secrets` | `swarm:read` | `GET /v3/secrets/status` (requires `secrets:read`): names, allowed websites, whether a value is set, unexpired folder grants; never values |
-| `swarm_set_environment` (project, workspace, base_image, setup, env, `append_setup`, `unset_env`, max_leases, rebuild, reset, `wait_seconds`) | `swarm:write` | `PUT /v3/sandbox-environments` (or `PATCH` when `append_setup` or `unset_env` is given: a merge that keeps fields left out; `POST /v3/sandbox-environments/rebuild` with rebuild; `DELETE` with reset): stores the folder's definition and builds it in the background (setup as root in a temporary gVisor container on the sandbox network, no host folders; bash and git checked as the sandbox user; image `swarm-env:<hash>`, reused for the same definition); the folder's sandbox runs on its last ready image |
-| `swarm_get_environment` (`wait_seconds`, `include_log`) | `swarm:read` | `GET /v3/sandbox-environments`: definition, status, what the folder runs on, build log |
+| `manage_fleet` `status` | `swarm:read` | `GET /v3/box/summary` (requires `signals:read`); adds `activity_cursor` |
+| `manage_fleet` `activity` (`after` cursor, `limit`, `min_severity`) | `swarm:read` | `GET /v3/signals` (requires `signals:read`); worker signals carry a `job_id` |
+| `manage_fleet` `agents_at_work` (`machine` optional) | `swarm:read` | `GET /v3/fleet/agents` (requires `sessions:read`): the agent runs active now on this machine and its linked machines, what each does, each machine's count or why it could not be read, and the latest finished tasks; the same answer the console and `manage_projects action=agents_at_work` read ([frontends.md](../frontends.md#the-fleets-agents-at-work)) |
+| `manage_workers` `list` (`include_jobs`) | `swarm:read` | `GET /v3/workers` (`POST /v3/workers:ensure-presets` when a preset is missing), `GET …/runs` |
+| `manage_workers` `create` (preset, or name, role and instructions) | `swarm:write` | `POST /v3/workers:ensure-presets`, or `POST /v3/workers` then `…/activate` with no folder binding |
+| `manage_jobs` `give_job` (worker, brief, project, workspace, files, `wait_seconds`) | `swarm:write` | `GET /v3/projects` (the project and one of its folders; refused when there is no project), `POST /v3/workers/{id}/direct` with `workspace_path` and `input.project_id` (Swarm picks that project when the folder is in several); returns `job_id` `worker/<worker>/<run>` |
+| `manage_jobs` `get_job` (`wait_seconds`, `include_diff`, `include_transcript`) | `swarm:read` | `GET …/runs/{rid}`, the run's session (pending questions, an active follow-up run) and project task; when settled, the `manage_projects` `get_task` view (branch, commits, files, report, cost, diff); `project_id`, `session_id`; the transcript is the session's latest messages |
+| `manage_jobs` `message_job` (message, `wait_seconds`) | `swarm:write` | `POST /v3/sessions/{id}/messages` in the job's session, on the same branch. While the job's run is active (its first run or a follow-up) the message is queued for that run: the worker gets it with its next tool result, or it starts the next run when that run ends (`sent.delivery`, `sent.queued_for_run_id`). A stopped job continues. Refused while a question is open, after the job was cancelled, or while an earlier follow-up is still queued to start (the refusal names its run) |
+| `manage_jobs` `answer_job` | `swarm:write` | `POST /v3/sessions/{id}/permissions/{pid}/resolve` for an open `ask_user` question only, never a tool-call approval |
+| `manage_jobs` `deliver_job` | `swarm:write` | `POST /v3/projects/{pid}/tasks/{tid}/integrate` (a local git merge); when the folder has a publish rule (`swarmctl workspace publish`), the owner's command opens a pull request instead; Swarm never pushes otherwise |
+| `manage_jobs` `stop_job` | `swarm:write` | `POST /v3/workers/{id}/runs/{rid}/cancel` (or `…/run/stop` for a media job). Cancels a running or stopped job for good |
+| `manage_jobs` `schedule_job` (worker, brief, schedule, project, workspace) | `swarm:write` | `POST /v3/workers` with the schedule, `…/activate` bound to the folder, `…/automations/{aid}/enable` |
+| `manage_media` `generate` (image, video, sound, project) | `swarm:write` | `POST /v3/projects/{pid}/tasks` (as `manage_projects` `propose_task`); returns `job_id` `media/<project>/<task>` |
+| `manage_setup` `list_secrets` | `swarm:read` | `GET /v3/secrets/status` (requires `secrets:read`): names, allowed websites, whether a value is set, unexpired folder grants; never values |
+| `manage_projects` `update_environment` (project, workspace, base_image, setup, env, `append_setup`, `unset_env`, max_leases, rebuild, reset, `wait_seconds`) | `swarm:write` | `PUT /v3/sandbox-environments` (or `PATCH` when `append_setup` or `unset_env` is given: a merge that keeps fields left out; `POST /v3/sandbox-environments/rebuild` with rebuild; `DELETE` with reset): stores the folder's definition and builds it in the background (setup as root in a temporary gVisor container on the sandbox network, no host folders; bash and git checked as the sandbox user; image `swarm-env:<hash>`, reused for the same definition); the folder's sandbox runs on its last ready image |
+| `manage_projects` `get_environment` (`wait_seconds`, `include_log`) | `swarm:read` | `GET /v3/sandbox-environments`: definition, status, what the folder runs on, build log |
 
-`swarm_list_providers`, `swarm_connect_chatgpt`, `swarm_connect_claude_code`, `swarm_request_provider_key` (full keys only), `swarm_list_models`,
-`swarm_set_agent_model`, `swarm_get_usage`, `swarm_list_projects`, `swarm_create_project`
-(registers new folders in place), `swarm_get_project`, `swarm_set_project_workspaces` and
-`swarm_manage_worker` (below; full keys only) complete the default list. A key lists only
-the tools its level allows.
-
-The catalog tools `manage_jobs` and `manage_workers` (also in the default list) serve
-every job and worker action for Swarm Control and the Orchestrator from one declaration,
-with `machine` reaching linked machines ([tool catalog](../tool-catalog.md)). Use them for
-jobs and workers; the `swarm_*` job and worker tools below stay unchanged until they are
-removed.
-
-The catalog tools `manage_sessions` and `manage_workspace` are in the default
-list too and cover the session and workspace `swarm_*` tools below (which
-stay until they are removed); `docs/tool-catalog.md` lists their actions and
-levels. `swarm_create_workspace` (a new, empty repository) has no catalog
-action yet.
+A key lists only the actions its level and API scopes allow. The catalog
+tools serve every action for Swarm Control and the Orchestrator from one
+declaration, with `machine` reaching linked machines;
+[tool catalog](../tool-catalog.md) lists each action's level, scopes and
+listing.
 
 ## All tools
 
-| Tool | Relay scope | Routes reached |
+| Tool and action | Relay scope | Routes reached |
 | --- | --- | --- |
 | `swarm_list_machines` (relay only) | `swarm:read` | — |
-| `swarm_list_workspaces` | `swarm:read` | `GET /v1/workspace/list` (tool requires `sessions:read`) |
-| `swarm_list_sessions`, `swarm_get_session` (+ `wait_seconds`, `detail_chars` up to 20,000 per message or tool field) | `swarm:read` | `GET /v3/sessions[/{id}]`, `GET …/plans/active`; children: `GET /v3/projects/{pid}/tasks` (orchestrator) or sessions whose `parent_session_id` is this one; pending requests carry decoded `tool_arguments` and `kind` (`approval` or `question`, tool `ask_user`) |
-| `swarm_start_session` (prompt **or** plan; optional model, `wait_seconds`) | `swarm:write` | `POST /v3/sessions` (workspace agents) or `POST /v3/projects/{pid}/sessions` (`system-orchestrator`), always `auto`, then `…/messages` or the plan routes; returns `started` (ids only) plus one session read made afterwards; an unregistered `workspace_path` is reported as such |
-| `swarm_send_message` (+ `wait_seconds`) | `swarm:write` | `POST /v3/sessions/{id}/messages`; returns `started` plus the current session state |
-| `swarm_list_models` | `swarm:read` | `GET /v1/providers`, `GET /v1/model/catalog`, `GET /v1/agent-model-settings` (tool requires `sessions:read`) |
-| `swarm_set_session_model` | `swarm:write` | `PUT /v3/sessions/{id}/model-profile` (session-owned selection, validated against the catalog) |
-| `swarm_set_agent_model` | `swarm:write` | `PATCH /v1/agent-model-settings`, one role (tool requires `settings:write`) |
-| `swarm_set_media_models` | `swarm:manage` | `POST /v1/ui/settings` (tools.image/video/audio default models, media transcription model; requires `settings:write`) |
-| `swarm_run_plan` | `swarm:write` | `POST …/plans` (active), `POST …/plan-mode/plans/{pid}/start-automatic` |
-| `swarm_stop_run` | `swarm:write` | `POST …/run/stop`, then waits up to 10 s and reports the run's final status (`finished`, `failed`, `stopped` or `stopping`), the plan's state (a stopped plan is `paused`: it keeps progress and resumes only with a new message) and a summary. On a Coder, Designer or Finder job's session the job is `stopped`, not cancelled: it keeps its branch and worktree and `swarm_message_job` continues it |
-| `swarm_resolve_permission` (`allow_once`/`deny_once`, `answer` for `ask_user`) | `swarm:approve` | `POST …/permissions/{pid}/resolve` (one decision; Swarm has no session-scoped allowance, and persistent rules stay owner-only) |
-| `swarm_add_workspace` | `swarm:write` | `POST /v1/workspace/add` with `context_only` and `require_existing_content` (an existing, non-empty folder outside system/Swarm storage and outside registered workspaces; nothing initialised or committed; an already registered path is returned) (tool requires `sessions:write`) |
-| `swarm_create_workspace` | `swarm:write` | `POST /v1/workspace/repository/setup` then `POST /v1/workspace/add`: a new, empty repository under the daemon's workspace folder, only for a project started from scratch (tool requires `sessions:write`) |
-| `swarm_list_projects` | `swarm:read` | `GET /v3/projects` (workspaces with roles and `context_status`) |
-| `swarm_create_project` | `swarm:write` | `POST /v1/workspace/add` for each new folder (as `swarm_add_workspace`), then `POST /v3/projects` with the folders (by path or id; role `primary_code`, `auxiliary` or `docs`); Swarm then generates `project.md` |
-| `swarm_get_project` (+ `wait_seconds`) | `swarm:read` | `GET /v3/projects/{pid}`: workspaces, `project.md` and `context_generation`; the wait is woken by committed project updates on the realtime outbox until generation is `ready` or `failed` |
-| `swarm_update_project_context` (`swarm:manage`), `swarm_set_project_workspaces` (`swarm:write`, registers new folders) | | `PATCH /v3/projects/{pid}` with only `project_context` or only the full `workspaces` list; refused (with the next step) until generation is `ready` |
-| `swarm_retry_project_context` | `swarm:manage` | `POST /v3/projects/{pid}/context:retry` with the current attempt |
-| `swarm_list_tasks` | `swarm:read` | `GET /v3/projects/{pid}/tasks` (orchestrator tasks and worker runs, with branches and review state) |
-| `swarm_run_task` (project, role `coder|finder|designer|image|video|sound|swarm`, brief, optional title, workspace, files, model, `wait_seconds`) | `swarm:write` | `POST /v3/projects/{pid}/tasks` with `auto_approve` (the delegating AI is the gate) and a fixed `client_request_id`; coder needs a registered workspace; `files` become a scope paragraph of the brief; `model` is checked against the catalog |
-| `swarm_wait_task` (+ `wait_seconds`) | `swarm:read` | `GET /v3/projects/{pid}/tasks/{tid}`, woken by committed realtime records of the task's session or the project's task updates; settles on needs_review, completed, failed, blocked, rejected, needs_input, pending_approval |
-| `swarm_task_result` (+ `include_diff`, `diff_chars`) | `swarm:read` | `GET /v3/projects/{pid}/tasks/{tid}` (fresh git and delivery state) plus `GET /v3/sessions/{sid}` for `usage_summary`; commits, files and the optional diff come from the same local Git read as `swarm_get_changes` |
-| `swarm_integrate_task` | `swarm:write` | `POST /v3/projects/{pid}/tasks/{tid}/integrate` with the task's own session, agent branch and captured target branch (real git merge, refused on conflict with the conflicting files named: ask the agent with `manage_projects` `message_task` to rebase onto the target branch; if it merges the target in instead, the task's net change is still integrated as one commit; nothing is pushed) |
-| `swarm_approve_task` (`approve`/`reject`) | `swarm:manage` | `POST /v3/projects/{pid}/tasks/{tid}/approve` or `…/reject` (the Desktop's buttons) for a `pending_approval` task only, with the task's own session, plan and plan revision as guards; the media `…/accept` alias that publishes deliverables is not reachable |
-| `swarm_accept_review` | `swarm:approve` | `GET …/plans/active`, then `POST /v3/sessions/{id}/plan-mode/checkpoints/{cid}/accept` on the checkpoint waiting for review (tool requires `sessions:write`); a last checkpoint completes the plan |
-| `swarm_read_file` | `swarm:read` | session detail (worktree root, else workspace) or the registered-workspace list; the file is opened with `os.Root` beneath that folder (no `..`, absolute paths or symlink escape), `.git`, `.env*`, binary files and protected storage refused, 256 KiB cap; directories list up to 200 entries (tool requires `sessions:read`) |
-| `swarm_get_changes` (+ `path`, `diff_chars` up to 200,000) | `swarm:read` | session detail, then read-only Git through the sandbox router in the session's worktree against its base commit (or uncommitted changes against `HEAD` without a worktree): commits, changed and untracked files, bounded diff without external diff or textconv helpers (tool requires `sessions:read`) |
-| `swarm_get_worker` (+ run) | `swarm:read` | `GET /v3/workers[/{id}[/runs[/{rid}]]]` |
-| `swarm_assign_worker_task` | `swarm:write` | `POST /v3/workers/{id}/direct` |
-| `swarm_create_worker` (optional `schedule` + `scheduled_plan`) | `swarm:manage` | `POST /v3/workers` (schedule included), `POST …/activate` (primary workspace binding; the workspace must be in one project, or pass `project_id`), `POST …/automations/{aid}/enable` |
-| `swarm_update_worker` | `swarm:manage` | `PUT /v3/workers/{id}` (revision-guarded) |
-| `swarm_manage_worker` (pause/resume/archive/delete/cancel_run/enable_schedule/disable_schedule) | `swarm:manage` | `POST /v3/workers/{id}/{action}`, `…/runs/{rid}/cancel`, `…/automations/{aid}/enable\|disable` |
-| `swarm_get_usage` | `swarm:read` | `GET /v3/usage` (tool requires `sessions:read`); each top model carries `billing` (`subscription`, `metered` or `unpriced`) and `nominal_cost_usd` when known, the summary a `cost_note` explaining zero cost, and unset limits read `none`; limits carry `today_unpriced_receipts` and `today_unpriced_estimate_usd` (the estimate the daily cost limit counts for unpriced receipts) |
-| `swarm_set_usage_limits` | `swarm:manage` | `POST /v3/usage/limits` (tool requires `usage:write`) |
-| `swarm_list_providers` (+ `wait_seconds` with `provider`) | `swarm:read` | `GET /v1/providers` plus credential metadata from the auth service (count, active `auth_type` and `status`: `signed in` for a sign-in, `verified`/`failed`/`saved, not verified yet` for an API key; latest key link outcome; never key material, last four or labels; tool requires `sessions:read`); `runs_agents` (the provider has a registered runner); for each provider that is not ready, `connect`: `method` (`sign_in` ChatGPT, `claude_code_login`, `api_key`, `machine_identity` Vertex), `needs`, ordered `steps` for the person, and `tool` only when this key may call it; with none ready, `next` lists every agent provider as an equal option and tells the AI to ask the person which they have; `wait_seconds` waits, woken by the key registry, while that provider's link is waiting |
-| `swarm_request_provider_key` (local only, not offered over the relay) | `swarm:manage` | none: returns a one-time link to the key page on the loopback API listener (tool requires `admin`); the page saves through `POST /v1/auth/credentials` |
-| `swarm_connect_chatgpt` (`start`, or `status` with `login_id` and `wait_seconds` up to 25; local only, not offered over the relay) | `swarm:write` | `POST /v1/auth/codex/oauth/start` with the device method only, `GET /v1/auth/codex/oauth/status` for the caller's own sign-in; the tool calls these handlers itself (a write AI key, or `admin` for a token without levels), the person finishes sign-in in their own browser, and results never carry tokens |
-| `swarm_connect_claude_code` (`status` or `activate`; local only, not offered over the relay) | `swarm:write` | `status` probes the daemon user's Claude Code CLI (`claude --version`, `claude auth status`) and returns the `install.sh claude-code` command when it is not installed or signed in; `activate` (signed in only) calls the handler of `POST /v1/auth/credentials` itself with a fixed `claudecode` `cli` record, active, reusing the account's existing record (a write AI key, or `admin` for a token without levels); no Claude credential is read or stored |
+| `manage_workspace` `list` | `swarm:read` | `GET /v1/workspace/list` (tool requires `sessions:read`) |
+| `manage_sessions` `list` and `get` (+ `wait_seconds`, `detail_chars` up to 20,000 per message or tool field) | `swarm:read` | `GET /v3/sessions[/{id}]`, `GET …/plans/active`; children: `GET /v3/projects/{pid}/tasks` (orchestrator) or sessions whose `parent_session_id` is this one; pending requests carry decoded `tool_arguments` and `kind` (`approval` or `question`, tool `ask_user`) |
+| `manage_sessions` `create` (prompt **or** plan; optional model, `wait_seconds`) | `swarm:write` | `POST /v3/sessions` (workspace agents) or `POST /v3/projects/{pid}/sessions` (`system-orchestrator`), always `auto`, then `…/messages` or the plan routes; returns `started` (ids only) plus one session read made afterwards; an unregistered `workspace_path` is reported as such |
+| `manage_sessions` `send_message` (+ `wait_seconds`) | `swarm:write` | `POST /v3/sessions/{id}/messages`; returns `started` plus the current session state |
+| `manage_setup` `models` | `swarm:read` | `GET /v1/providers`, `GET /v1/model/catalog`, `GET /v1/agent-model-settings` (tool requires `sessions:read`) |
+| `manage_sessions` `set_model` | `swarm:write` | `PUT /v3/sessions/{id}/model-profile` (session-owned selection, validated against the catalog) |
+| `manage_setup` `set_agent_model` | `swarm:write` | `PATCH /v1/agent-model-settings`, one role (tool requires `settings:write`) |
+| `manage_setup` `set_media_models` | `swarm:manage` | `POST /v1/ui/settings` (tools.image/video/audio default models, media transcription model; requires `settings:write`) |
+| `manage_sessions` `stop` | `swarm:write` | `POST …/run/stop`, then waits up to 10 s and reports the run's final status (`finished`, `failed`, `stopped` or `stopping`), the plan's state (a stopped plan is `paused`: it keeps progress and resumes only with a new message) and a summary. On a Coder, Designer or Finder job's session the job is `stopped`, not cancelled: it keeps its branch and worktree and `manage_jobs` `message_job` continues it |
+| `manage_sessions` `resolve_permission` (`allow_once`/`deny_once`, `answer` for `ask_user`) | `swarm:approve` | `POST …/permissions/{pid}/resolve` (one decision; Swarm has no session-scoped allowance, and persistent rules stay owner-only) |
+| `manage_workspace` `create` with `path` | `swarm:write` | `POST /v1/workspace/add` with `context_only` and `require_existing_content` (an existing, non-empty folder outside system/Swarm storage and outside registered workspaces; nothing initialised or committed; an already registered path is returned) (tool requires `sessions:write`) |
+| `manage_workspace` `create` with only `name` | `swarm:write` | `POST /v1/workspace/repository/setup` then `POST /v1/workspace/add`: a new, empty repository under the daemon's workspace folder, only for a project started from scratch (tool requires `sessions:write`) |
+| `manage_projects` `list` | `swarm:read` | `GET /v3/projects` (workspaces with roles and `context_status`) |
+| `manage_projects` `create` | `swarm:write` | `POST /v1/workspace/add` for each new folder (as `manage_workspace` `create` with `path`), then `POST /v3/projects` with the folders (by path or id; role `primary_code`, `auxiliary` or `docs`); Swarm then generates `project.md` |
+| `manage_projects` `get` (+ `wait_seconds`) | `swarm:read` | `GET /v3/projects/{pid}`: workspaces, `project.md` and `context_generation`; the wait is woken by committed project updates on the realtime outbox until generation is `ready` or `failed` |
+| `manage_projects` `update` with `project_context` (`swarm:manage`) or `workspaces` (`swarm:write`, registers new folders) | | `PATCH /v3/projects/{pid}` with only `project_context` or only the full `workspaces` list; refused (with the next step) until generation is `ready` |
+| `manage_projects` `update` (a context retry) | `swarm:manage` | `POST /v3/projects/{pid}/context:retry` with the current attempt |
+| `manage_projects` `list_tasks` | `swarm:read` | `GET /v3/projects/{pid}/tasks` (orchestrator tasks and worker runs, with branches and review state) |
+| `manage_projects` `propose_task` (project, agent `coder|finder|designer|image|video|sound|swarm`, brief, optional title, workspace, files, model, `wait_seconds`) | `swarm:write` | `POST /v3/projects/{pid}/tasks` with `auto_approve` (the delegating AI is the gate) and a fixed `client_request_id`; coder needs a registered workspace; `files` become a scope paragraph of the brief; `model` is checked against the catalog |
+| `manage_projects` `wait_tasks` (+ `wait_seconds`) | `swarm:read` | `GET /v3/projects/{pid}/tasks/{tid}`, woken by committed realtime records of the task's session or the project's task updates; settles on needs_review, completed, failed, blocked, rejected, needs_input, pending_approval |
+| `manage_projects` `get_task` (+ `include_diff`, `diff_chars`) | `swarm:read` | `GET /v3/projects/{pid}/tasks/{tid}` (fresh git and delivery state) plus `GET /v3/sessions/{sid}` for `usage_summary`; commits, files and the optional diff come from the same local Git read as `manage_projects` `get_task_changes` |
+| `manage_projects` `integrate_task` | `swarm:write` | `POST /v3/projects/{pid}/tasks/{tid}/integrate` with the task's own session, agent branch and captured target branch (real git merge, refused on conflict with the conflicting files named: ask the agent with `manage_projects` `message_task` to rebase onto the target branch; if it merges the target in instead, the task's net change is still integrated as one commit; nothing is pushed) |
+| `manage_projects` `approve_task` (the person's step in their Swarm app; Swarm Control does not serve it) | `swarm:manage` | `POST /v3/projects/{pid}/tasks/{tid}/approve` or `…/reject` (the Desktop's buttons) for a `pending_approval` task only, with the task's own session, plan and plan revision as guards; the media `…/accept` alias that publishes deliverables is not reachable |
+| `manage_projects` `read_task_file` | `swarm:read` | session detail (worktree root, else workspace) or the registered-workspace list; the file is opened with `os.Root` beneath that folder (no `..`, absolute paths or symlink escape), `.git`, `.env*`, binary files and protected storage refused, 256 KiB cap; directories list up to 200 entries (tool requires `sessions:read`) |
+| `manage_projects` `get_task_changes` (+ `path`, `diff_chars` up to 200,000) | `swarm:read` | session detail, then read-only Git through the sandbox router in the session's worktree against its base commit (or uncommitted changes against `HEAD` without a worktree): commits, changed and untracked files, bounded diff without external diff or textconv helpers (tool requires `sessions:read`) |
+| `manage_workers` `inspect` (+ run) | `swarm:read` | `GET /v3/workers[/{id}[/runs[/{rid}]]]` |
+| `manage_workers` `assign_task` | `swarm:write` | `POST /v3/workers/{id}/direct` |
+| `manage_workers` `create` with a folder (optional `schedule` + `scheduled_plan`) | `swarm:manage` | `POST /v3/workers` (schedule included), `POST …/activate` (primary workspace binding; the workspace must be in one project, or pass `project_id`), `POST …/automations/{aid}/enable` |
+| `manage_workers` `update` | `swarm:manage` | `PUT /v3/workers/{id}` (revision-guarded) |
+| `manage_workers` `pause`, `resume`, `archive`, `delete`, and `update` with `run_id` (cancel a run) or `schedule_id` and `schedule_enabled` | `swarm:manage` | `POST /v3/workers/{id}/{action}`, `…/runs/{rid}/cancel`, `…/automations/{aid}/enable\|disable` |
+| `manage_setup` `usage` | `swarm:read` | `GET /v3/usage` (tool requires `sessions:read`); each top model carries `billing` (`subscription`, `metered` or `unpriced`) and `nominal_cost_usd` when known, the summary a `cost_note` explaining zero cost, and unset limits read `none`; limits carry `today_unpriced_receipts` and `today_unpriced_estimate_usd` (the estimate the daily cost limit counts for unpriced receipts) |
+| `manage_setup` `set_usage_limits` | `swarm:manage` | `POST /v3/usage/limits` (tool requires `usage:write`) |
+| `manage_setup` `providers` (+ `wait_seconds` with `provider`) | `swarm:read` | `GET /v1/providers` plus credential metadata from the auth service (count, active `auth_type` and `status`: `signed in` for a sign-in, `verified`/`failed`/`saved, not verified yet` for an API key; latest key link outcome; never key material, last four or labels; tool requires `sessions:read`); `runs_agents` (the provider has a registered runner); for each provider that is not ready, `connect`: `method` (`sign_in` ChatGPT, `claude_code_login`, `api_key`, `machine_identity` Vertex), `needs`, ordered `steps` for the person, and `tool` only when this key may call it; with none ready, `next` lists every agent provider as an equal option and tells the AI to ask the person which they have; `wait_seconds` waits, woken by the key registry, while that provider's link is waiting |
+| `manage_setup` `request_provider_key` (local only, not offered over the relay) | `swarm:manage` | none: returns a one-time link to the key page on the loopback API listener (tool requires `admin`); the page saves through `POST /v1/auth/credentials` |
+| `manage_setup` `connect_chatgpt` (`step` `start`, or `status` with `login_id` and `wait_seconds` up to 25; local only, not offered over the relay) | `swarm:write` | `POST /v1/auth/codex/oauth/start` with the device method only, `GET /v1/auth/codex/oauth/status` for the caller's own sign-in; the tool calls these handlers itself (a write AI key, or `admin` for a token without levels), the person finishes sign-in in their own browser, and results never carry tokens |
+| `manage_setup` `connect_claude_code` (`step` `status` or `activate`; local only, not offered over the relay) | `swarm:write` | `status` probes the daemon user's Claude Code CLI (`claude --version`, `claude auth status`) and returns the `install.sh claude-code` command when it is not installed or signed in; `activate` (signed in only) calls the handler of `POST /v1/auth/credentials` itself with a fixed `claudecode` `cli` record, active, reusing the account's existing record (a write AI key, or `admin` for a token without levels); no Claude credential is read or stored |
 
 **Sessions.** `swarm` (default) works in one workspace and delegates to
 sub-agents; `system-orchestrator` runs a project and turns work into tasks for
 agents and workers; `system-coder`, `system-designer` and `system-finder` work
-alone. `get_session` lists delegated children. `wait_seconds` (at most 110:
+alone. `manage_sessions` `get` lists delegated children. `wait_seconds` (at most 110:
 relay devices give up after 120 seconds; clients with a 60-second tool timeout
 should pass at most 50) waits until the run settles: it ended (`waited.outcome`
 `finished`, `failed` or `stopped`, from the session lifecycle) or it waits on a
@@ -143,14 +131,16 @@ that listener, requires a same-origin form post, and sends no-store, `DENY`
 framing and a strict CSP. The key is saved through the canonical credential
 route as the requesting key (owner-only scope, vault, onboarding and
 verify-before-save rules apply) and made active; a rejected key is not
-stored and the link stays usable for up to five attempts. `list_providers`
-then shows `saved`, `failed` with a redacted reason, or `expired`. Codes live
+stored and the link stays usable for up to five attempts. `manage_setup`
+`providers` then shows `saved`, `failed` with a redacted reason, or `expired`. Codes live
 in memory only.
 
 **Review.** Orchestrator tasks that need launch approval wait in
-`pending_approval` until `approve_task` (manage level). A plan whose last
-checkpoint needs review waits in `waiting_review` until `accept_review`.
-`get_changes` and `read_file` show what the agents produced first.
+`pending_approval` until the person approves them in their Swarm app. A plan
+whose last checkpoint needs review waits in `waiting_review` until the person
+accepts it (closing a plan's review over Swarm Control is retired with plans
+as the default). `manage_projects` `get_task_changes` and `read_task_file`
+show what the agents produced first.
 Finished orchestrator tasks and worker runs wait in
 `needs_review`. A worker run forks from the workspace's current branch (its
 integration target); work reaches that branch only through `integrate_task`.
@@ -178,7 +168,7 @@ workers that request capabilities. Routes whose handlers check no scope
 **Token budget.** Results are compact JSON sent once (no `structuredContent`
 copy). Sessions, runs, plans and workers are reduced to ids, names and
 status; text is truncated (messages 1,500, tool arguments 800, tool output
-300 characters, raised per call with `get_session` `detail_chars`) and plans
+300 characters, raised per call with `manage_sessions` `get` `detail_chars`) and plans
 show only per-checkpoint status. Server instructions name only tools the
 caller's level allows. The full tool list
 is 57 tools; the default list is 25.
@@ -329,7 +319,7 @@ device→relay `auth`, `mcp.response`, `consent.decision`.
   built by `containers/headless/app/install.sh up`: the app's Connect to
   Claude step showed a code, the client saw the machine only by name, a wrong
   code was refused, the right code paired it and its tools (e.g.
-  `swarm_list_workspaces`) served through the relay; after a container
+  `manage_workspace` `list`) served through the relay; after a container
   restart it reconnected without a new code; `swarm_remove_machine` refused a
   `SWARM_DEVICE_KEYS` machine and returned a removed one to waiting with a new
   code. Not yet run against the deployed Cloudflare relay.
@@ -352,13 +342,13 @@ machine, ChatGPT, Claude Code routines, and long-running reconnect behaviour.
 
 ### Delivery
 
-`swarm_deliver_job` merges a job into its folder, or opens its pull request
+`manage_jobs` `deliver_job` merges a job into its folder, or opens its pull request
 when the folder's owner set a publish command. Nothing is delivered without
 that call: a job ends when its agent has built, tested and committed its work.
 
 ### Speech narration
 
-`swarm_media_models` now lists supported Gemini TTS voices, WAV format, catalog prices and the conservative 8,000-UTF-8-byte complete-prompt limit. Use `kind: "sound"`, `operation: "speech"`, an explicit model, `text` and `voice`; optional `style`, `language` and `format` supply direction. No cloning, live voice, media inputs, duration selection or multiple outputs.
+`manage_media` `models` now lists supported Gemini TTS voices, WAV format, catalog prices and the conservative 8,000-UTF-8-byte complete-prompt limit. Use `kind: "sound"`, `operation: "speech"`, an explicit model, `text` and `voice`; optional `style`, `language` and `format` supply direction. No cloning, live voice, media inputs, duration selection or multiple outputs.
 
 ```json
 {"kind":"sound","operation":"speech","model":"gemini-2.5-flash-preview-tts","text":"Welcome to the demonstration.","voice":"Kore","style":"Calm narrator","language":"English","format":"wav"}
@@ -368,7 +358,7 @@ Speech uses `kind: "sound"` with `operation: "speech"` rather than introducing a
 
 HTTP project-task creation and SDK `CreateProjectTaskParams` use `agent: "sound"`, `operation: "speech"`, `model`, and nested `speech: {text, voice, style?, language?, format?}`. Existing authentication/project ownership rules apply.
 
-The job lists WAV audio and timing JSON as separate files; `swarm_save_media` saves both side by side. Each file exposes `cost_usd`, `price_status` and `pricing_summary`, backed by separate idempotent generation/transcription receipts. Missing catalog rates or usage stay explicitly `unknown`, not free. Retained audio avoids repeating synthesis after alignment failure. A failed alignment that already incurred usage requires a new job to authorize another paid attempt.
+The job lists WAV audio and timing JSON as separate files; `manage_media` `save` saves both side by side. Each file exposes `cost_usd`, `price_status` and `pricing_summary`, backed by separate idempotent generation/transcription receipts. Missing catalog rates or usage stay explicitly `unknown`, not free. Retained audio avoids repeating synthesis after alignment failure. A failed alignment that already incurred usage requires a new job to authorize another paid attempt.
 
 Completed speech media-result shape (the surrounding job envelope retains its ordinary identity/status fields). Angle-bracket values below are placeholders, not measured costs or output; runtime costs and sizes are numbers. Each `file` number selects that file for saving:
 

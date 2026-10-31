@@ -9,21 +9,22 @@ session's principal and account; arguments cannot select another identity.
 
 | Action | Inputs | Behavior |
 | --- | --- | --- |
-| `list_runs` | `since`, `until` (RFC 3339), `status` array, `worker`, `limit`, `cursor` | Shared `swarm_list_runs` handler; newest runs, with its continuation cursor. |
-| `get_job` | `job_id` | Shared `swarm_get_job` handler, including workflow steps and blocked reasons. A job waiting on a question or an approval answers with state `waiting`. |
+| `list_runs` | `since`, `until` (RFC 3339), `status` array, `worker`, `limit`, `cursor` | The handler Swarm Control's `list_runs` runs; newest runs, with its continuation cursor. |
+| `get_job` | `job_id` | The handler Swarm Control's `get_job` runs, including workflow steps and blocked reasons. A job waiting on a question or an approval answers with state `waiting`. |
 | `deliveries` | `id` (workflow ID), optional `job_id`, `limit` | Latest deliveries, using the same delivery views as Control, including states, reasons and attempts. |
-| `rerun_failed_steps` | `job_id` | Shared `swarm_deliver_job automation=true`; not Git integration. |
-| `give_job` | `worker`, `brief`, `project`, optional `folder`, `idempotency_key` | Shared `swarm_give_job`; starts an existing worker. |
-| `message_job` | `job_id`, `message`, optional `client_request_id` | Shared `swarm_message_job`; follow up or reopen a finished job. |
-| `answer_job` | `job_id`, `answer`, optional `question_id` | Shared `swarm_answer_job`; answers the worker's question, never a tool approval. |
-| `deliver_job` | `job_id` | Shared `swarm_deliver_job`; a local git merge, or a pull request where the folder's owner set up publishing. |
-| `stop_job` | `job_id`, optional `reason` | Shared `swarm_stop_job`; cancels the job for good. |
-| `schedule_job` | `worker`, `brief`, `schedule`, `project`, optional `folder`, `name` | Shared `swarm_schedule_job`; deploys a worker that runs the job on the schedule. |
+| `rerun_failed_steps` | `job_id` | The `deliver_job` handler with `automation=true`; not Git integration. |
+| `give_job` | `worker`, `brief`, `project`, optional `folder`, `idempotency_key` | The handler Swarm Control's `give_job` runs; starts an existing worker. |
+| `message_job` | `job_id`, `message`, optional `client_request_id` | The handler Swarm Control's `message_job` runs; follow up or reopen a finished job. |
+| `answer_job` | `job_id`, `answer`, optional `question_id` | The handler Swarm Control's `answer_job` runs; answers the worker's question, never a tool approval. |
+| `deliver_job` | `job_id` | The handler Swarm Control's `deliver_job` runs; a local git merge, or a pull request where the folder's owner set up publishing. |
+| `stop_job` | `job_id`, optional `reason` | The handler Swarm Control's `stop_job` runs; cancels the job for good. |
+| `schedule_job` | `worker`, `brief`, `schedule`, `project`, optional `folder`, `name` | The handler Swarm Control's `schedule_job` runs; deploys a worker that runs the job on the schedule. |
 
 Every action takes `machine` to run on a linked machine, through that
-machine's own job service (`POST /v3/jobs/{action}`). `then`, `wait_seconds`,
-`review_job`, `model` and the diff, transcript and media options of the
-`swarm_*` job tools are not `manage_jobs` inputs.
+machine's own job service (`POST /v3/jobs/{action}`). `then`, `model` and the
+held waits (`wait_seconds`) are Swarm Control inputs: a conversation's call
+drops them ([tool catalog](tool-catalog.md)). Images of a media job are not
+`get_job` data; `manage_media` `read` returns a file.
 
 Limits are 1–50 (default 50). Oversized reads return `json_page`,
 `page_digest`, and `next_page_offset`; the envelope's `next` is the same read
