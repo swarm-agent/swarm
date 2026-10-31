@@ -2547,6 +2547,8 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				return
 			}
 			switch event.Type {
+			case provideriface.StreamEventAccountSelected, provideriface.StreamEventAccountWaiting:
+				emit(StreamEvent{Type: string(event.Type), Step: step, Metadata: event.Metadata})
 			case provideriface.StreamEventOutputTextDelta:
 				emit(StreamEvent{Type: StreamEventAssistantDelta, Step: step, Delta: event.Delta})
 			case provideriface.StreamEventAssistantCommentary:

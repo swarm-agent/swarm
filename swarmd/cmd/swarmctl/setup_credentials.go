@@ -31,6 +31,8 @@ func runSetupCredentials(args []string, input io.Reader, output io.Writer) error
 		stdin = fs.Bool("api-key-stdin", false, "read provider API key from redirected stdin, never argv")
 		project = fs.String("project", "", "Google Cloud project")
 		location = fs.String("location", "global", "Vertex AI location: global or a region such as us-central1")
+	case "credential-order":
+		provider = fs.String("provider", "", "provider ID (claudecode)")
 	case "remove-credential":
 		provider = fs.String("provider", "", "provider ID")
 		id = fs.String("id", "", "credential ID from `setup credentials`")
@@ -44,6 +46,22 @@ func runSetupCredentials(args []string, input io.Reader, output io.Writer) error
 		}
 		return errors.New("invalid setup flags; use --help")
 	}
+	if args[0] == "credential-order" {
+		if *provider != "claudecode" || fs.NArg() != 1 {
+			return errors.New("usage: setup credential-order --provider claudecode a,b,c")
+		}
+		client, err := newSetupClient(*socket)
+		if err != nil {
+			return err
+		}
+		defer client.CloseIdleConnections()
+		var ignored map[string]any
+		if err := setupRequest(client, http.MethodPost, "/v1/claudecode/accounts", map[string]any{"order": strings.Split(fs.Arg(0), ",")}, &ignored); err != nil {
+			return err
+		}
+		fmt.Fprintln(output, "Claude Code account order saved.")
+		return nil
+	}
 	if fs.NArg() != 0 {
 		return errors.New("unexpected setup arguments; use --help")
 	}
@@ -55,6 +73,14 @@ func runSetupCredentials(args []string, input io.Reader, output io.Writer) error
 	case "add-credential":
 		method, route = http.MethodPost, "/v1/auth/credentials"
 		*provider = strings.ToLower(strings.TrimSpace(*provider))
+		if *provider == "claudecode" {
+			if *stdin {
+				return errors.New("Claude Code sign-in is performed by the person; drop --api-key-stdin")
+			}
+			method, route = http.MethodPost, "/v1/claudecode/accounts"
+			payload = map[string]any{}
+			break
+		}
 		if *provider == "vertex" {
 			if *stdin {
 				return errors.New("--provider vertex reads no key; drop --api-key-stdin")
@@ -129,12 +155,15 @@ func runSetupCredentials(args []string, input io.Reader, output io.Writer) error
 		return json.NewEncoder(output).Encode(map[string]any{"credentials": items})
 	case "add-credential":
 		var status struct {
-			ID string `json:"id"`
+			ID           string `json:"id"`
+			LoginCommand string `json:"login_command"`
 		}
 		if err := setupRequestShowingRejection(client, method, route, payload, &status); err != nil {
 			return err
 		}
-		if *provider == "vertex" {
+		if *provider == "claudecode" {
+			fmt.Fprintf(output, "Claude Code account slot added (id %s). Run this on the machine to sign in:\n%s\n", status.ID, status.LoginCommand)
+		} else if *provider == "vertex" {
 			fmt.Fprintf(output, "Vertex AI credential saved (id %s).\n", status.ID)
 		} else {
 			fmt.Fprintf(output, "API credential saved (id %s).\n", status.ID)

@@ -183,7 +183,7 @@ func controlMCPListProviders(c *controlMCPCall, args map[string]any) (any, error
 				}
 			}
 		}
-		if id == claudecode.ProviderID && ready {
+		if id == claudecode.ProviderID {
 			c.controlMCPAddClaudeCodeAccount(entry)
 		}
 		out = append(out, entry)
@@ -206,6 +206,12 @@ func (c *controlMCPCall) controlMCPAddClaudeCodeAccount(entry map[string]any) {
 	usage, err := c.dispatch(http.MethodGet, "/v1/claudecode/usage", nil, nil)
 	if err != nil {
 		return
+	}
+	if accounts, ok := usage["accounts"]; ok {
+		entry["accounts"] = accounts
+	}
+	if summary, ok := usage["limit_summary"]; ok {
+		entry["limit_summary"] = summary
 	}
 	cli := controlMCPMap(usage["cli"])
 	if loggedIn, _ := cli["logged_in"].(bool); !loggedIn {

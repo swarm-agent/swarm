@@ -1,17 +1,35 @@
 package provideriface
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type Status struct {
-	ID              string       `json:"id"`
-	Ready           bool         `json:"ready"`
-	Runnable        bool         `json:"runnable"`
-	RunsAgents      bool         `json:"runs_agents"`
-	Reason          string       `json:"reason,omitempty"`
-	RunReason       string       `json:"run_reason,omitempty"`
-	DefaultModel    string       `json:"default_model,omitempty"`
-	DefaultThinking string       `json:"default_thinking,omitempty"`
-	AuthMethods     []AuthMethod `json:"auth_methods,omitempty"`
+	ID              string          `json:"id"`
+	Ready           bool            `json:"ready"`
+	Runnable        bool            `json:"runnable"`
+	RunsAgents      bool            `json:"runs_agents"`
+	Reason          string          `json:"reason,omitempty"`
+	RunReason       string          `json:"run_reason,omitempty"`
+	DefaultModel    string          `json:"default_model,omitempty"`
+	DefaultThinking string          `json:"default_thinking,omitempty"`
+	AuthMethods     []AuthMethod    `json:"auth_methods,omitempty"`
+	Accounts        []AccountStatus `json:"accounts,omitempty"`
+}
+
+// AccountStatus exposes identity and observed routing state, never credentials.
+type AccountStatus struct {
+	ID               string     `json:"id"`
+	Order            int        `json:"order"`
+	Ready            bool       `json:"ready"`
+	Email            string     `json:"account_email,omitempty"`
+	Organization     string     `json:"organization_name,omitempty"`
+	OrganizationUUID string     `json:"organization_uuid,omitempty"`
+	Plan             string     `json:"plan,omitempty"`
+	LimitState       string     `json:"limit_state"`
+	LimitUntil       *time.Time `json:"limit_until,omitempty"`
+	Reason           string     `json:"reason,omitempty"`
 }
 
 type AuthMethod struct {

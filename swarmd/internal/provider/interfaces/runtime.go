@@ -426,6 +426,8 @@ const (
 	StreamEventDeltaModeAppend  StreamEventDeltaMode = "append"
 	StreamEventDeltaModeReplace StreamEventDeltaMode = "replace"
 
+	StreamEventAccountSelected       StreamEventType = "provider.account.selected"
+	StreamEventAccountWaiting        StreamEventType = "provider.account.waiting"
 	StreamEventOutputTextDelta       StreamEventType = "response.output_text.delta"
 	StreamEventReasoningSummaryDelta StreamEventType = "response.reasoning_summary_text.delta"
 	StreamEventAssistantCommentary   StreamEventType = "response.assistant_commentary.delta"

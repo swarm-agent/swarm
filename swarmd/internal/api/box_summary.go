@@ -13,6 +13,7 @@ import (
 	"swarm-refactor/swarmtui/pkg/buildinfo"
 	"swarm/packages/swarmd/internal/executioncapacity"
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/provider/claudecode"
 	runruntime "swarm/packages/swarmd/internal/run"
 	"swarm/packages/swarmd/internal/sandbox"
 	"swarm/packages/swarmd/internal/security"
@@ -244,6 +245,17 @@ func (s *Server) handleBoxSummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if client, ok := s.claudeCodeUsage.(claudeCodeAccountsClient); ok {
+		accounts, err := client.AccountStatuses(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if summary := claudecode.LimitSummary(accounts); summary != "" {
+			attention["provider_limits"] = []string{summary}
+			raise(BoxStatusAttention, summary)
+		}
+	}
 	keys := s.boxKeys(account, now, raise)
 
 	exportState, hasOutbox := s.outboxState()

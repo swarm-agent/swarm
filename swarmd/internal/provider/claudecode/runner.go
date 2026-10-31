@@ -93,6 +93,13 @@ func (r *Runner) run(ctx context.Context, req provideriface.Request, onEvent fun
 	if strings.TrimSpace(req.Model) == "" {
 		return provideriface.Response{}, errors.New("model is required")
 	}
+	if r.cli.slots != nil {
+		return r.runAccounts(ctx, req, onEvent)
+	}
+	return r.runSingle(ctx, req, onEvent)
+}
+
+func (r *Runner) runSingle(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
 	path, err := r.cli.ResolvePath()
 	if err != nil {
 		return provideriface.Response{}, err
@@ -357,7 +364,7 @@ func executeTurn(ctx context.Context, path string, plan turnPlan, model string, 
 		return provideriface.Response{}, fmt.Errorf("claude code exited without a result (%v)%s", waitErr, errorDetail(stderr.String()))
 	}
 	if failure := state.resultFailure(); failure != "" {
-		return provideriface.Response{}, errors.New(failure)
+		return state.response(), errors.New(failure)
 	}
 	if err := plan.input.deliveryError(); err != nil {
 		// A queued message was claimed but could not reach the CLI: fail the

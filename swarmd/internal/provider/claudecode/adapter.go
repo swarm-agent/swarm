@@ -63,6 +63,21 @@ func (a *Adapter) Status(ctx context.Context) (provideriface.Status, error) {
 	}
 	status.Ready = cliStatus.Ready
 	status.Reason = cliStatus.Reason
+	if a.cli.slots != nil {
+		accounts, err := a.cli.AccountStatuses(ctx)
+		if err != nil {
+			return provideriface.Status{}, err
+		}
+		status.Accounts = accounts
+		for _, account := range accounts {
+			if account.Ready {
+				status.Ready = true
+			}
+		}
+		if summary := LimitSummary(accounts); summary != "" {
+			status.Reason = summary
+		}
+	}
 	return status, nil
 }
 

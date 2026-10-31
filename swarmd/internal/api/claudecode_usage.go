@@ -32,9 +32,17 @@ type claudeCodeUsageCLI struct {
 	Reason           string `json:"reason,omitempty"`
 }
 
+type claudeCodeAccountsClient interface {
+	AccountStatuses(context.Context) ([]claudecode.SlotStatus, error)
+	AddAccount() (string, string, error)
+	OrderAccounts([]string) error
+}
+
 type claudeCodeUsageResponse struct {
-	CLI        claudeCodeUsageCLI     `json:"cli"`
-	RateLimits *claudecode.RateLimits `json:"rate_limits"`
+	Accounts     []claudecode.SlotStatus `json:"accounts,omitempty"`
+	LimitSummary string                  `json:"limit_summary,omitempty"`
+	CLI          claudeCodeUsageCLI      `json:"cli"`
+	RateLimits   *claudecode.RateLimits  `json:"rate_limits"`
 }
 
 func (s *Server) SetClaudeCodeUsageClient(client claudeCodeUsageClient) {
@@ -76,6 +84,15 @@ func (s *Server) handleClaudeCodeUsage(w http.ResponseWriter, r *http.Request) {
 	}}
 	if limits, ok := s.claudeCodeUsage.LatestRateLimits(); ok {
 		out.RateLimits = &limits
+	}
+	if client, ok := s.claudeCodeUsage.(claudeCodeAccountsClient); ok {
+		accounts, err := client.AccountStatuses(ctx)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		out.Accounts = accounts
+		out.LimitSummary = claudecode.LimitSummary(accounts)
 	}
 	writeJSON(w, http.StatusOK, out)
 }

@@ -37,6 +37,7 @@ func (s *Server) registerAuthVaultRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/auth/codex/oauth/status", s.ownerOnlyScope(s.handleCodexOAuthStatus))
 	mux.HandleFunc("/v1/auth/codex/oauth/complete", s.ownerOnlyScope(s.handleCodexOAuthComplete))
 	mux.HandleFunc("/v1/auth/credentials", s.ownerOnlyScope(s.handleAuthCredentials))
+	mux.HandleFunc("/v1/claudecode/accounts", s.ownerOnlyScope(s.handleClaudeCodeAccounts))
 	mux.HandleFunc("/v1/auth/credentials/verify", s.ownerOnlyScope(s.handleAuthCredentialVerify))
 	mux.HandleFunc("/v1/auth/credentials/active", s.ownerOnlyScope(s.handleAuthCredentialActive))
 	mux.HandleFunc("/v1/auth/credentials/delete", s.ownerOnlyScope(s.handleAuthCredentialDelete))

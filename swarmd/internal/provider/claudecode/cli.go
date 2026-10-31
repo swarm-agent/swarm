@@ -19,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 const (
@@ -128,10 +130,15 @@ type CLIStatus struct {
 
 // CLI locates and inspects the local Claude Code executable.
 type CLI struct {
-	lookupEnv func(string) (string, bool)
-	lookPath  func(string) (string, error)
-	run       func(ctx context.Context, path string, env []string, args ...string) ([]byte, error)
-	now       func() time.Time
+	// Slot configuration is installed once during daemon composition.
+	slots       *pebblestore.AuthStore
+	slotsRoot   string
+	slotMu      sync.Mutex
+	slotClients map[string]*CLI
+	lookupEnv   func(string) (string, bool)
+	lookPath    func(string) (string, error)
+	run         func(ctx context.Context, path string, env []string, args ...string) ([]byte, error)
+	now         func() time.Time
 
 	mu       sync.Mutex
 	cached   CLIStatus

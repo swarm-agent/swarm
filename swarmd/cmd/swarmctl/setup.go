@@ -41,7 +41,7 @@ func runSetup(args []string, input io.Reader, output io.Writer) error {
 	if len(args) > 0 && args[0] == "daily-limit" {
 		return runSetupDailyLimit(args, output)
 	}
-	if len(args) > 0 && (args[0] == "credentials" || args[0] == "add-credential" || args[0] == "remove-credential") {
+	if len(args) > 0 && (args[0] == "credentials" || args[0] == "add-credential" || args[0] == "credential-order" || args[0] == "remove-credential") {
 		return runSetupCredentials(args, input, output)
 	}
 	if len(args) > 0 && args[0] == "sealed-agent" {

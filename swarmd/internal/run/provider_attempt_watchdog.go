@@ -59,7 +59,30 @@ func providerAttemptObserverFromContext(ctx context.Context) providerAttemptObse
 	return observer
 }
 
-func runProviderAttempt(
+// providerResetWait is implemented by a provider only when every account has a
+// parsed reset. Wait outside the activity watchdog, with cancellation intact.
+func runProviderAttempt(ctx context.Context, runner provideriface.Runner, req provideriface.Request, timeout time.Duration, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+	for {
+		response, err := runProviderAttemptOnce(ctx, runner, req, timeout, onEvent)
+		var wait interface{ ProviderRetryAt() time.Time }
+		if !errors.As(err, &wait) {
+			return response, err
+		}
+		until := wait.ProviderRetryAt()
+		if onEvent != nil {
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventAccountWaiting, ProviderID: runner.ID(), Metadata: map[string]any{"retry_at": until.UTC().Format(time.RFC3339)}})
+		}
+		timer := time.NewTimer(time.Until(until))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return response, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func runProviderAttemptOnce(
 	ctx context.Context,
 	runner provideriface.Runner,
 	req provideriface.Request,

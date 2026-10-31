@@ -3348,6 +3348,12 @@ func controlMCPPlanUsage(chatgpt map[string]any, chatgptErr error, claude map[st
 		if limits := controlMCPMap(claude["rate_limits"]); limits != nil {
 			plan["rate_limits"] = controlMCPPick(limits, "status", "resets_at", "is_using_overage", "windows", "observed_at")
 		}
+		if accounts, ok := claude["accounts"]; ok {
+			plan["accounts"] = accounts
+		}
+		if summary, ok := claude["limit_summary"]; ok {
+			plan["limit_summary"] = summary
+		}
 		out["claude_code"] = plan
 	}
 	return out

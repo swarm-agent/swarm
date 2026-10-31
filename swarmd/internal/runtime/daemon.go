@@ -738,6 +738,7 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 	// Claude Code drives the person's own locally signed-in, unmodified CLI;
 	// Swarm never handles Claude credentials (see provider/claudecode).
 	claudeCodeCLI := claudecode.NewCLI()
+	claudeCodeCLI.ConfigureSlots(authStore, cfg.DataDir)
 	// Vertex AI runs Gemini with the machine's own Google identity (attached
 	// service account or GOOGLE_APPLICATION_CREDENTIALS); no key is stored.
 	vertexCredentials := google.NewApplicationDefaultCredentials()
