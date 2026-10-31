@@ -349,18 +349,16 @@ func (s *Server) DefineSandboxEnvironment(ctx context.Context, p identity.Princi
 		s.envBuildMu.Unlock()
 		return nil, false, envRefusal(http.StatusConflict, errors.New("daemon is draining; retry environment definition after restart"))
 	}
-	env, build, err := s.sandboxEnvironments.Define(p.AccountScopeID, root, def)
+	// The definition and max_leases are one store write, made before the
+	// build starts, so the build finishing can never land on a record that
+	// lacks either (Finish only sets build state on the current record).
+	env, build, err := s.sandboxEnvironments.DefineWithMaxLeases(p.AccountScopeID, root, def, maxLeases)
 	s.envBuildMu.Unlock()
 	if err != nil {
 		return nil, false, envRefusal(http.StatusBadRequest, err)
 	}
 	if build {
 		s.startSandboxEnvironmentBuild(env)
-	}
-	if maxLeases != nil {
-		if env, err = s.sandboxEnvironments.SetMaxLeases(p.AccountScopeID, root, *maxLeases); err != nil {
-			return nil, build, envRefusal(http.StatusBadRequest, err)
-		}
 	}
 	return sandboxEnvironmentView(root, env, true), build, nil
 }

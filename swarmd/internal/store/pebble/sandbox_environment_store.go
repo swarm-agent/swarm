@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -168,6 +169,19 @@ type SandboxEnvironmentStore struct {
 	now   func() time.Time
 }
 
+// sandboxEnvironmentWriteMu serializes every read-modify-write of an
+// environment record. The definition write (Define, SetMaxLeases, Rebuild,
+// Clear) and the build's status write (Finish) run on different goroutines;
+// without it a writer could store a record it read before another write
+// applied and drop that write (a finishing build reverting max_leases or a
+// new definition). It is package-wide so stores opened on the same database
+// share it; environment writes are rare explicit operations.
+var sandboxEnvironmentWriteMu sync.Mutex
+
+// sandboxEnvironmentFinishReadHook, when set by a test, runs in Finish after
+// it read the record and before it writes the outcome.
+var sandboxEnvironmentFinishReadHook func()
+
 func NewSandboxEnvironmentStore(store *Store) *SandboxEnvironmentStore {
 	return &SandboxEnvironmentStore{store: store, now: time.Now}
 }
@@ -190,11 +204,25 @@ func (s *SandboxEnvironmentStore) Get(workspacePath string) (SandboxEnvironment,
 // Define records a new definition for a folder. It returns the record and
 // whether a build must start (false when this definition is already ready).
 func (s *SandboxEnvironmentStore) Define(account, workspacePath string, def SandboxEnvironmentDefinition) (SandboxEnvironment, bool, error) {
+	return s.DefineWithMaxLeases(account, workspacePath, def, nil)
+}
+
+// DefineWithMaxLeases is Define that also sets the lease maximum (when
+// maxLeases is given) in the same write, so a build started for this
+// definition can never finish onto a record that lacks it.
+func (s *SandboxEnvironmentStore) DefineWithMaxLeases(account, workspacePath string, def SandboxEnvironmentDefinition, maxLeases *int) (SandboxEnvironment, bool, error) {
 	def, err := NormalizeSandboxEnvironmentDefinition(def)
 	if err != nil {
 		return SandboxEnvironment{}, false, err
 	}
+	if maxLeases != nil {
+		if err := checkMaxLeases(*maxLeases); err != nil {
+			return SandboxEnvironment{}, false, err
+		}
+	}
 	workspacePath = filepath.Clean(workspacePath)
+	sandboxEnvironmentWriteMu.Lock()
+	defer sandboxEnvironmentWriteMu.Unlock()
 	current, found, err := s.Get(workspacePath)
 	if err != nil {
 		return SandboxEnvironment{}, false, err
@@ -205,6 +233,9 @@ func (s *SandboxEnvironmentStore) Define(account, workspacePath string, def Sand
 	hash := SandboxEnvironmentHash(def)
 	if found && current.Hash == hash && (current.Status == SandboxEnvironmentBuilding || current.Status == SandboxEnvironmentReady) {
 		current.Definition = def
+		if maxLeases != nil {
+			current.MaxLeases = *maxLeases
+		}
 		current.UpdatedAt = s.now().UnixMilli()
 		if err := s.store.PutJSON(sandboxEnvironmentKey(workspacePath), current); err != nil {
 			return SandboxEnvironment{}, false, err
@@ -214,6 +245,9 @@ func (s *SandboxEnvironmentStore) Define(account, workspacePath string, def Sand
 	env := current
 	env.WorkspacePath, env.Account, env.Definition, env.Hash = workspacePath, account, def, hash
 	env.Status, env.Error, env.Log = SandboxEnvironmentBuilding, "", ""
+	if maxLeases != nil {
+		env.MaxLeases = *maxLeases
+	}
 	env.UpdatedAt = s.now().UnixMilli()
 	if err := s.store.PutJSON(sandboxEnvironmentKey(workspacePath), env); err != nil {
 		return SandboxEnvironment{}, false, err
@@ -222,14 +256,21 @@ func (s *SandboxEnvironmentStore) Define(account, workspacePath string, def Sand
 }
 
 // Finish records a build's outcome for the definition hash it built; a
-// result for a definition that has since been replaced is ignored.
+// result for a definition that has since been replaced is ignored. It only
+// sets the build-state fields on the current record (read under the write
+// lock), so it never replaces the definition or max_leases.
 func (s *SandboxEnvironmentStore) Finish(workspacePath, hash, image, imagePath, log string, buildErr error) (SandboxEnvironment, error) {
+	sandboxEnvironmentWriteMu.Lock()
+	defer sandboxEnvironmentWriteMu.Unlock()
 	env, found, err := s.Get(workspacePath)
 	if err != nil {
 		return SandboxEnvironment{}, err
 	}
 	if !found || env.Hash != hash {
 		return env, nil
+	}
+	if hook := sandboxEnvironmentFinishReadHook; hook != nil {
+		hook()
 	}
 	if len(log) > MaxSandboxEnvironmentLogBytes {
 		log = log[len(log)-MaxSandboxEnvironmentLogBytes:]
@@ -254,6 +295,8 @@ func (s *SandboxEnvironmentStore) Finish(workspacePath, hash, image, imagePath, 
 // Clear removes a folder's environment: its sandbox goes back to Swarm's
 // default image.
 func (s *SandboxEnvironmentStore) Clear(account, workspacePath string) error {
+	sandboxEnvironmentWriteMu.Lock()
+	defer sandboxEnvironmentWriteMu.Unlock()
 	env, found, err := s.Get(workspacePath)
 	if err != nil || !found {
 		return err
@@ -343,6 +386,8 @@ func (s *SandboxEnvironmentStore) List(account string) ([]SandboxEnvironment, er
 // an existing complete image for the same definition. It refuses while a
 // build is running.
 func (s *SandboxEnvironmentStore) Rebuild(account, workspacePath string) (SandboxEnvironment, error) {
+	sandboxEnvironmentWriteMu.Lock()
+	defer sandboxEnvironmentWriteMu.Unlock()
 	env, found, err := s.Get(workspacePath)
 	if err != nil {
 		return SandboxEnvironment{}, err
@@ -367,9 +412,11 @@ const MaxLeasesLimit = 64
 // SetMaxLeases sets how many leases of the folder's environment agents may
 // hold at once (0 turns leasing off). It never changes the build.
 func (s *SandboxEnvironmentStore) SetMaxLeases(account, workspacePath string, max int) (SandboxEnvironment, error) {
-	if max < 0 || max > MaxLeasesLimit {
-		return SandboxEnvironment{}, fmt.Errorf("max_leases must be between 0 and %d", MaxLeasesLimit)
+	if err := checkMaxLeases(max); err != nil {
+		return SandboxEnvironment{}, err
 	}
+	sandboxEnvironmentWriteMu.Lock()
+	defer sandboxEnvironmentWriteMu.Unlock()
 	env, found, err := s.Get(workspacePath)
 	if err != nil {
 		return SandboxEnvironment{}, err
@@ -386,4 +433,11 @@ func (s *SandboxEnvironmentStore) SetMaxLeases(account, workspacePath string, ma
 		return SandboxEnvironment{}, err
 	}
 	return env, nil
+}
+
+func checkMaxLeases(max int) error {
+	if max < 0 || max > MaxLeasesLimit {
+		return fmt.Errorf("max_leases must be between 0 and %d", MaxLeasesLimit)
+	}
+	return nil
 }
