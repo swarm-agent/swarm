@@ -105,6 +105,10 @@ func (r *Runner) run(ctx context.Context, req provideriface.Request, onEvent fun
 }
 
 func (r *Runner) runSingle(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+	principal, ok := identity.PrincipalFromContext(ctx)
+	if !ok {
+		return provideriface.Response{}, identity.ErrPrincipalRequired
+	}
 	path, err := r.cli.ResolvePath()
 	if err != nil {
 		return provideriface.Response{}, err

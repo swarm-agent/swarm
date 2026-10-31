@@ -72,10 +72,10 @@ accounts are limited, it waits cancellably until the earliest recorded reset.
 Account selection and waiting appear as provider events; status attention names
 the number of limited accounts and the next reset (UTC).
 
-This revision still seeds each CLI turn from Swarm's full durable history and
-disables CLI transcript persistence. Per-account CLI resume IDs are deferred to
-the standing-endpoint task `task_5e37e037`; account switching does not rely on a
-transcript from another config directory.
+Conversation turns use the standing endpoint and resume within the selected
+account. Switching accounts changes the continuation lineage and seeds a fresh
+CLI session from Swarm's durable input; it never resumes a transcript from
+another config directory. The endpoint config and session key remain the same.
 
 ## How a turn runs
 

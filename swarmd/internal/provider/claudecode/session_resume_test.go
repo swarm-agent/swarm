@@ -582,3 +582,66 @@ func TestSessionMCPRecoveredTurnWaitsForLoopbackAddress(t *testing.T) {
 		t.Fatalf("cancelled wait mutated state: %v %v", entries, err)
 	}
 }
+
+// Purpose: combining account retry (runAccounts) with standing MCP must pass
+// the endpoint to the account runner and keep CLI transcripts account-local.
+// This real CLI/MCP fixture is the narrowest integration boundary proving two
+// same-account turns resume, while a limited account switches to a fresh full
+// seed without losing tools or accidentally resuming another account's history.
+func TestSessionMCPAccountRoutingPreservesEndpointAndResume(t *testing.T) {
+	f := newCLIFixture(t)
+	f.cli.ConfigureSlots(f.auth, f.root)
+	now := time.Now()
+	f.cli.cachedAt = now
+	f.cli.cached = CLIStatus{Ready: true}
+	argValue := func(args []string, name string) string {
+		for i := 0; i+1 < len(args); i++ {
+			if args[i] == name {
+				return args[i+1]
+			}
+		}
+		return ""
+	}
+	req := conversationRequest("account-routing", "epoch", "lineage", userItem("original-account-input"))
+	if _, err := f.runner.CreateResponse(f.ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	first := f.last()
+	req.Input = append(req.Input, assistantItem("done"), userItem("same-account-next"))
+	if _, err := f.runner.CreateResponse(f.ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	second := f.last()
+	if second.Resume != first.SID || argValue(second.Args, "--mcp-config") != argValue(first.Args, "--mcp-config") || strings.Contains(second.Input, "original-account-input") {
+		t.Fatalf("same-account resume=%+v", second)
+	}
+	const accountID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if err := f.auth.AddClaudeCodeSlot(accountID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.auth.RecordClaudeCodeLimit("default", now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	slots, err := f.auth.ClaudeCodeSlots()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, slot := range slots {
+		if slot.ID == accountID {
+			cli := f.cli.clientForSlot(slot)
+			cli.cachedAt = now
+			cli.cached = CLIStatus{Ready: true}
+		}
+	}
+	req.Input = append(req.Input, assistantItem("done"), userItem("switched-account-next"))
+	if _, err := f.runner.CreateResponse(f.ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	third := f.last()
+	if third.Resume != "" || third.SID == first.SID || argValue(third.Args, "--mcp-config") != argValue(first.Args, "--mcp-config") || !strings.Contains(third.Input, "original-account-input") || !strings.Contains(third.Input, "switched-account-next") {
+		t.Fatalf("account switch=%+v", third)
+	}
+	if len(f.calls()) != 3 {
+		t.Fatalf("CLI calls=%d", len(f.calls()))
+	}
+}

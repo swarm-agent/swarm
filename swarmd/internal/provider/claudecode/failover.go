@@ -44,11 +44,14 @@ func (r *Runner) runAccounts(ctx context.Context, req provideriface.Request, onE
 		}
 		attempted = slot.ID
 		turnReq := req
+		// CLI history is account-local. Account failover must seed the durable
+		// input rather than resume a transcript owned by another credential.
+		turnReq.ProviderLineageID += "/claudecode-account/" + slot.ID
 		tracker := &accountToolTracker{inner: req.ToolInvoker}
 		if req.ToolInvoker != nil {
 			turnReq.ToolInvoker = tracker
 		}
-		single := &Runner{authStore: r.authStore, cli: cli}
+		single := &Runner{authStore: r.authStore, cli: cli, mcp: r.mcp}
 		response, turnErr := single.runSingle(ctx, turnReq, onEvent)
 		if turnErr == nil {
 			response.Usage = mergeAccountUsage(rejectedUsage, response.Usage)
@@ -82,8 +85,6 @@ func (r *Runner) runAccounts(ctx context.Context, req provideriface.Request, onE
 			return response, nil
 		}
 		rejectedUsage = mergeAccountUsage(rejectedUsage, response.Usage)
-		// TODO(task_5e37e037): replace stateless full-history seeding with the sibling
-		// task's durable per-account CLI session id/resume contract once available.
 	}
 	if !earliest.IsZero() {
 		return provideriface.Response{Usage: rejectedUsage}, &AccountLimitWait{Until: earliest}
