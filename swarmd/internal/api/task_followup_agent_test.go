@@ -2,6 +2,7 @@ package api
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"swarm/packages/swarmd/internal/jobautomation"
@@ -70,6 +71,62 @@ func TestFollowupKeepsFinderAgentAndItsWorkflows(t *testing.T) {
 	for state, want := range map[string]bool{"empty": true, "report_only": true, "": false, "unavailable": false, "not_integrated": false, "in_folder": false} {
 		if got := taskViewAssessedEmpty(map[string]any{"delivery_state": state}); got != want {
 			t.Fatalf("delivery_state %q: assessed empty = %v, want %v", state, got, want)
+		}
+	}
+}
+
+// Purpose: a follow-up (message_task or reopen_task) to a designer media task
+// (outcome media_bundle, as the task router records) still runs a Swarm
+// follow-up session: the reservation continues it as a swarm, general task, so
+// deployProjectTaskExecution never takes the direct-media path, which would
+// clear the follow-up session, find no deliverables to generate and drop the
+// feedback while the attempt is marked launched. A designer artifact task
+// keeps its agent and is not a media task either. Threat: the review finding
+// where keeping designer plus media_bundle made the follow-up a direct media
+// generation. Authority: SessionStore.ReserveTaskFollowup (the reservation
+// ReopenProjectTask and MessageProjectTask use) and isDirectMediaTask, the
+// rule deployProjectTaskExecution branches on.
+func TestFollowupToADesignerMediaTaskRunsASession(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	db := pebblestore.NewSessionStore(store)
+	if err := db.PutProject("account", &pebblestore.ProjectRecord{ID: "project", Name: "Project"}); err != nil {
+		t.Fatal(err)
+	}
+	// The router records designer media tasks with outcome media_bundle; the
+	// create-time contract does not admit them, so the record is written as
+	// the router leaves it.
+	media := &pebblestore.ProjectTaskRecord{ID: "task_media", ProjectID: "project", AccountID: "account", Title: "Poster set", Agent: "designer", OutcomeType: "media_bundle", Tier: "direct", Status: "needs_review", Revision: 1}
+	if err := store.PutJSON(pebblestore.KeyProjectTask("account", "project", media.ID), media); err != nil {
+		t.Fatal(err)
+	}
+	if !isDirectMediaTask(media) {
+		t.Fatal("fixture is not a direct media task")
+	}
+	if err := db.PutProjectTask("account", &pebblestore.ProjectTaskRecord{ID: "task_artifact", ProjectID: "project", AccountID: "account", Title: "Landing page", Agent: "designer", OutcomeType: "artifact", Status: "needs_review"}); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string][2]string{"task_media": {"swarm", "general"}, "task_artifact": {"designer", "artifact"}} {
+		task, ok, err := db.GetProjectTask("account", "project", id)
+		if err != nil || !ok {
+			t.Fatalf("%s: %v %v", id, ok, err)
+		}
+		followup, err := db.ReserveTaskFollowup("account", "project", id, "user", "message-"+id, "Make the title larger.", task.Revision, 1)
+		if err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+		if followup.Agent != want[0] || followup.OutcomeType != want[1] || followup.ActiveAttempt().Role != want[0] || !strings.HasPrefix(followup.SessionID, "task-followup-") {
+			t.Fatalf("%s: follow-up agent %q outcome %q role %q session %q, want %v", id, followup.Agent, followup.OutcomeType, followup.ActiveAttempt().Role, followup.SessionID, want)
+		}
+		if isDirectMediaTask(followup) {
+			t.Fatalf("%s: follow-up takes the direct-media path", id)
+		}
+		stored, _, _ := db.GetProjectTask("account", "project", id)
+		if stored == nil || isDirectMediaTask(stored) || stored.Agent != want[0] {
+			t.Fatalf("%s: stored follow-up %+v", id, stored)
 		}
 	}
 }

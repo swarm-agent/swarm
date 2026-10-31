@@ -324,7 +324,7 @@ func (s *SessionStore) ReserveTaskFollowupWithRepositories(account, project, tas
 		if origin != "" {
 			t.OriginSessionID = origin
 		}
-		agent := FollowupTaskAgent(t.Agent)
+		agent := followupAgentOfTask(t)
 		a := ProjectTaskAttempt{ID: id, ClientRequestID: key, PayloadHash: hash, RequestRevision: revision, UserID: user, Request: request, SessionID: "task-followup-" + id, RunID: "desktop-v3-run:task-followup-" + id, Role: agent, CreatedAt: now, Status: "in_progress", LaunchState: ProjectTaskAttemptLaunchReserved, Recovery: recovery, RepositoryContinuations: append([]ProjectTaskRepositoryContinuation(nil), repositories...)}
 		t.Attempts = append(t.Attempts, a)
 		t.ActiveAttemptID, t.SessionID, t.Status, t.Agent = id, a.SessionID, "in_progress", agent
@@ -374,6 +374,24 @@ func FollowupTaskAgent(agent string) string {
 		return agent
 	}
 	return "swarm"
+}
+
+// followupMediaOutcomes are the outcomes of a direct media task: a designer
+// task with one of them is generated directly (api isDirectMediaTask), not
+// run as an agent session.
+var followupMediaOutcomes = map[string]bool{"media_bundle": true, "video_clip": true, "video_story": true, "audio_clip": true}
+
+// followupAgentOfTask is the agent a follow-up reservation gives the task
+// (FollowupTaskAgent), except that a designer media task is continued by
+// Swarm, as before: kept as designer with its media outcome, the follow-up
+// would take the direct-media path, with no deliverables to generate and no
+// session to carry the feedback.
+func followupAgentOfTask(t *ProjectTaskRecord) string {
+	agent := FollowupTaskAgent(t.Agent)
+	if agent == "designer" && followupMediaOutcomes[strings.ToLower(strings.TrimSpace(t.OutcomeType))] {
+		return "swarm"
+	}
+	return agent
 }
 
 // IsFollowupAttemptRole reports whether role is one a follow-up reservation
