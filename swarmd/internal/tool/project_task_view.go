@@ -635,6 +635,9 @@ func compactProjectTask(read projectTaskRead, remote bool) ProjectTaskView {
 	}
 	view.Review = projectTaskLatestReview(p, remote)
 	cut := projectTaskReportCut{report: report, attempt: reportAttempt, projectID: t.ProjectID, taskID: t.ID, remote: remote}
+	if reportAttempt >= 0 {
+		cut.attemptID = t.Attempts[reportAttempt].ID
+	}
 	markProjectTaskResultCut(&view, cut)
 	fitProjectTaskView(&view)
 	markProjectTaskResultCut(&view, cut)
@@ -671,7 +674,10 @@ func projectTaskLatestReview(p *projectTaskProgressRead, remote bool) *projectTa
 type projectTaskReportCut struct {
 	report string
 	// attempt is the report's attempt index in the record (-1: unknown).
-	attempt           int
+	attempt int
+	// attemptID is that attempt's id: on a linked machine read_task_session
+	// reads its session, which after a follow-up is not the latest one.
+	attemptID         string
 	projectID, taskID string
 	remote            bool
 }
@@ -680,8 +686,9 @@ type projectTaskReportCut struct {
 // report, how long the report is and how to read it all, in prose
 // (read_full) and as the exact call (next): here, get_task detail=full at
 // the report's attempt, whose summary is the full report; on a linked
-// machine, read_task_session, paged within a message by each cut message's
-// next.
+// machine, read_task_session of the report's attempt (attempt_id: after a
+// follow-up the report may be an earlier attempt's), paged within a message
+// by each cut message's next.
 func markProjectTaskResultCut(view *ProjectTaskView, cut projectTaskReportCut) {
 	if view.Result == nil || cut.report == "" || view.Result.Summary == cut.report {
 		return
@@ -690,6 +697,9 @@ func markProjectTaskResultCut(view *ProjectTaskView, cut projectTaskReportCut) {
 	if cut.remote {
 		view.Result.ReadFull = "call next"
 		view.Result.Next = map[string]any{"action": FleetReadTaskSessionAction, "project_id": cut.projectID, "task_id": cut.taskID}
+		if cut.attemptID != "" {
+			view.Result.Next["attempt_id"] = cut.attemptID
+		}
 		return
 	}
 	view.Result.ReadFull = "call next"
@@ -714,6 +724,16 @@ func fitProjectTaskView(view *ProjectTaskView) {
 		extra := projectTaskWorkflow{DeliveryID: wf.DeliveryID, FindingsStep: wf.FindingsStep, Verdict: wf.Verdict, Findings: wf.Findings, FindingsTruncated: wf.FindingsTruncated, More: wf.More}
 		if raw, err := json.Marshal(extra); err == nil {
 			budget += len(raw)
+		}
+	}
+	// The envelope lifts a cut report's next to its own next as well; the
+	// attempt a linked read names is repeated there, so its copy comes out
+	// of the report's budget.
+	if view.Result != nil {
+		if attemptID, _ := view.Result.Next["attempt_id"].(string); attemptID != "" {
+			if raw, err := json.Marshal(map[string]string{"attempt_id": attemptID}); err == nil {
+				budget -= len(raw)
+			}
 		}
 	}
 	for range 4 {

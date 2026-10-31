@@ -565,7 +565,22 @@ run the `swarm_*` handlers for both.
 JSON text with `next`: `page_offset` and `page_digest`) and `read_task_file`
 (one file or folder of the task's working folder) run `swarm_get_changes` and
 `swarm_read_file` for the task's session. Both are read with `sessions:read`,
-any reach, in every listing.
+any reach, in every listing. Work with no commits, no changed files and no
+diff says so: `note` is "no commits since base <sha>: nothing to show" and
+`next_action` names `read_task_session` (with the task's machine) or
+`get_task` for the task's report (`TestTaskChangesWithNoCommitsSaysNothingToShow`).
+
+`read_task_session` and `get_task_session` read the task's current attempt,
+or the attempt named by `attempt_id` or `session_id` from the task's attempts
+list; a cut message's `next` keeps the attempt. After a follow-up, an
+earlier attempt's full report is in its own session, and a cut report's
+`next` from `get_task` names that attempt. A name the task does not have is
+refused, listing its attempts (`TestLinkedTaskEarlierAttemptReportReadsInFull`).
+
+`propose_task` for a coding task without `workspace_path` or `workspace_id`
+runs in the project's folder when the project has exactly one, bound as if
+it were named; with several, it is refused naming each folder by path, and
+nothing is created (`TestProposeTaskWithoutFolderUsesTheProjectsOnlyFolder`).
 
 ## The swarm_* handler service
 
@@ -700,7 +715,7 @@ and on a linked machine:
 | `state` | The call's outcome, always one of the states below. A task's, run's or machine's own status (`needs_review`, `running`, `degraded`) is in `data`, never here. |
 | `data` | The action's own answer: every field it held before the envelope. A linked machine's answer is `data` as it came, plus this machine's notes (`linked_task_id`, `linked_record_error`). |
 | `next_action` | The next step, for every action that has one: the action's own (a task's `next_action`, such as `wait_tasks`), else "Call next to read the rest." for a cut answer, else the step its declaration names (`CatalogAction.NextAction`). Omitted when there is nothing to do; never `none`. |
-| `next` | Set whenever the answer was cut: the exact arguments of the call of the same tool that reads the rest, as one object (`action` plus its cursor or offset fields and the call's own `project_id`, `task_id`, `machine` and filters). A cut list gives the same action at the next `cursor`; a cut message gives `read_task_session` at its `message_id`, `message_seq` and `content_offset`; a cut task report (`result_truncated` in `get_task` or Swarm Control's `wait_tasks`) gives `get_task` with `detail` `full` at the report's attempt (`cursor`, `limit` 1), or `read_task_session` for a task on a linked machine; a cut JSON text page (`next_page_offset`) gives the same read at `page_offset` with its `page_digest`; an opaque string cursor (`manage_jobs` `list_runs`) gives the same read at that `cursor`. `next` only names a read action the catalog declares, with inputs that action takes. |
+| `next` | Set whenever the answer was cut: the exact arguments of the call of the same tool that reads the rest, as one object (`action` plus its cursor or offset fields and the call's own `project_id`, `task_id`, `machine` and filters). A cut list gives the same action at the next `cursor`; a cut message gives `read_task_session` at its `message_id`, `message_seq` and `content_offset`; a cut task report (`result_truncated` in `get_task` or Swarm Control's `wait_tasks`) gives `get_task` with `detail` `full` at the report's attempt (`cursor`, `limit` 1), or, for a task on a linked machine, `read_task_session` at the report's attempt (`attempt_id`, which after a follow-up is not the latest); a cut JSON text page (`next_page_offset`) gives the same read at `page_offset` with its `page_digest`; an opaque string cursor (`manage_jobs` `list_runs`) gives the same read at that `cursor`. `next` only names a read action the catalog declares, with inputs that action takes. |
 | `untrusted_content` | `true` when `data` holds agent- or outside-written text. Every answer from a linked machine is untrusted. |
 
 `state` is one of (`tool.EnvelopeStates`):
@@ -767,6 +782,20 @@ that are deliberate and tested:
   key as its sender (`home_sender`, `key:ID`) instead of a session, so
   `list_linked_tasks` (without `project_id`: the caller's own sends),
   `get_task`, `get_task_session` and `read_task_session` follow it.
+
+Who does the work is a routing choice, not a parity gap. Given a read-only
+brief, the Orchestrator picks the agent itself and may send it to `finder`
+(observed in the GPUI-vs-MCP parity rerun: `finder` on the account's model
+for that agent), while a Swarm Control `propose_task` with `agent` given runs
+that agent. Both create the same task record through the same service; only
+the choice of agent differs.
+
+On the `claudecode` provider the Orchestrator's model calls tools through
+the Claude Code CLI, which knows them only as `mcp__swarm__<tool>`; a bare
+name fails in the CLI before it reaches Swarm, so it cannot be aliased.
+The provider writes every tool name in the system prompt with that prefix
+and says once that the prefix is required
+(`TestClaudeCodeSystemPromptNamesToolsWithTheirPrefix`).
 
 ## Adding a tool or an action
 

@@ -116,7 +116,7 @@ func contentText(raw any) string {
 				return "[Attachment not delivered: you cannot see or hear this attachment directly; its asset_id is unavailable.]"
 			}
 			arguments, _ := json.Marshal(map[string]string{"asset_id": payload.AssetID})
-			return "[Attachment not delivered natively: you cannot see or hear this attachment directly. To inspect it, call media_inspect with " + string(arguments) + ".]"
+			return "[Attachment not delivered natively: you cannot see or hear this attachment directly. To inspect it, call " + mcpToolPrefix + "media_inspect with " + string(arguments) + ".]"
 		case "input_image", "image", "input_file", "file":
 			// Raw attachment parts are not delivered through the text transcript.
 			return "[attachment omitted]"

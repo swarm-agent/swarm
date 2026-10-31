@@ -54,6 +54,35 @@ type FleetTaskSessionRead struct {
 	MaxChars int
 	Role     string
 	Continue *MessageContinuation
+	// Attempt names the attempt whose session is read; zero is the task's
+	// current attempt.
+	Attempt FleetTaskAttempt
+}
+
+// FleetTaskAttempt names one attempt of a linked task, from the task's
+// attempts list, by its attempt_id or its session_id: a session read then
+// reads that attempt's session (an earlier attempt's full report after a
+// follow-up), never only the latest. Zero is the current attempt.
+type FleetTaskAttempt struct {
+	AttemptID string
+	SessionID string
+}
+
+// FleetTaskAttemptFromArgs reads attempt_id and session_id.
+func FleetTaskAttemptFromArgs(args map[string]any) FleetTaskAttempt {
+	return FleetTaskAttempt{AttemptID: strings.TrimSpace(asString(args["attempt_id"])), SessionID: strings.TrimSpace(asString(args["session_id"]))}
+}
+
+// Continuation adds the attempt to a continuation's arguments, so reading
+// on stays on the same attempt's session.
+func (a FleetTaskAttempt) Continuation(next map[string]any) map[string]any {
+	if a.AttemptID != "" {
+		next["attempt_id"] = a.AttemptID
+	}
+	if a.SessionID != "" {
+		next["session_id"] = a.SessionID
+	}
+	return next
 }
 
 // FleetReadTaskSessionAction reads a linked task's session messages through
@@ -131,7 +160,7 @@ const (
 // FleetLinkedReader is the service behind the linked reads.
 type FleetLinkedReader interface {
 	ReadFleetMachineStatusView(ctx context.Context, p identity.Principal, machine string) (map[string]any, error)
-	ReadFleetTaskSessionView(ctx context.Context, p identity.Principal, machine, projectID, taskID string, messages int) (map[string]any, error)
+	ReadFleetTaskSessionView(ctx context.Context, p identity.Principal, machine, projectID, taskID string, attempt FleetTaskAttempt, messages int) (map[string]any, error)
 	ReadFleetActivity(ctx context.Context, p identity.Principal, machine, sinceCursor, after string, limit int) (map[string]any, error)
 }
 
@@ -314,7 +343,7 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 		case FleetMachineStatusAction:
 			view, err = reader.ReadFleetMachineStatusView(ctx, scope.Principal, machine)
 		case FleetTaskSessionAction:
-			view, err = reader.ReadFleetTaskSessionView(ctx, scope.Principal, machine, strings.TrimSpace(asString(args["project_id"])), strings.TrimSpace(asString(args["task_id"])), asInt(args["limit"], 0))
+			view, err = reader.ReadFleetTaskSessionView(ctx, scope.Principal, machine, strings.TrimSpace(asString(args["project_id"])), strings.TrimSpace(asString(args["task_id"])), FleetTaskAttemptFromArgs(args), asInt(args["limit"], 0))
 		default:
 			view, err = reader.ReadFleetActivity(ctx, scope.Principal, machine, asString(args["since_cursor"]), asString(args["after"]), asInt(args["limit"], 0))
 		}
@@ -330,7 +359,7 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 		if !ok {
 			return "", errors.New("linked task records unavailable")
 		}
-		read := FleetTaskSessionRead{Limit: asInt(args["limit"], 0), MaxChars: asInt(args["max_chars"], 0), Role: strings.TrimSpace(asString(args["role"]))}
+		read := FleetTaskSessionRead{Limit: asInt(args["limit"], 0), MaxChars: asInt(args["max_chars"], 0), Role: strings.TrimSpace(asString(args["role"])), Attempt: FleetTaskAttemptFromArgs(args)}
 		if next, ok, err := MessageContinuationFromArgs(args); err != nil {
 			return "", err
 		} else if ok {

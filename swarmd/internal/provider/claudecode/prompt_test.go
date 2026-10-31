@@ -16,7 +16,7 @@ func TestSessionMediaTranscriptRequiresInspection(t *testing.T) {
 		media any
 		want  string
 	}{
-		{"image", provideriface.SessionMediaPayload{AssetID: "fixture-image", Modality: "image", MIMEType: "image/png", Bytes: []byte("private-image-bytes"), DigestSHA256: "private-digest"}, `[Attachment not delivered natively: you cannot see or hear this attachment directly. To inspect it, call media_inspect with {"asset_id":"fixture-image"}.]`},
+		{"image", provideriface.SessionMediaPayload{AssetID: "fixture-image", Modality: "image", MIMEType: "image/png", Bytes: []byte("private-image-bytes"), DigestSHA256: "private-digest"}, `[Attachment not delivered natively: you cannot see or hear this attachment directly. To inspect it, call mcp__swarm__media_inspect with {"asset_id":"fixture-image"}.]`},
 		{"missing identity", provideriface.SessionMediaPayload{Bytes: []byte("private-image-bytes")}, "[Attachment not delivered: you cannot see or hear this attachment directly; its asset_id is unavailable.]"},
 		{"malformed", map[string]any{"bytes": "private-image-bytes"}, "[Attachment not delivered: you cannot see or hear this attachment directly; its asset_id is unavailable.]"},
 	} {

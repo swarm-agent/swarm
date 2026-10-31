@@ -83,7 +83,7 @@ func (s *Server) ReadFleetMachineStatusView(ctx context.Context, p identity.Prin
 // trimmed), with its active plan and last activity time. The session is the
 // one the machine reports for the task; a task this home did not send is
 // refused.
-func (s *Server) ReadFleetTaskSessionView(ctx context.Context, p identity.Principal, machine, projectID, taskID string, messages int) (map[string]any, error) {
+func (s *Server) ReadFleetTaskSessionView(ctx context.Context, p identity.Principal, machine, projectID, taskID string, attempt tool.FleetTaskAttempt, messages int) (map[string]any, error) {
 	if err := s.requireLinkedRead(ctx, p, machine); err != nil {
 		return nil, err
 	}
@@ -103,7 +103,7 @@ func (s *Server) ReadFleetTaskSessionView(ctx context.Context, p identity.Princi
 	} else if !sent {
 		return nil, linkedTaskFail(http.StatusForbidden, "task %s on %s was not sent from this home; its session is read on that machine", taskID, machine)
 	}
-	sessionID, err := s.linkedTaskSession(ctx, p, machine, projectID, taskID)
+	sessionID, err := s.linkedTaskSession(ctx, p, machine, projectID, taskID, attempt)
 	if err != nil {
 		return nil, err
 	}
@@ -124,8 +124,8 @@ func (s *Server) ReadFleetTaskSessionView(ctx context.Context, p identity.Princi
 		return nil, linkedFleetCallError(machine, linked, "the session read", err)
 	}
 	// A cut message reads on through read_task_session, which pages within
-	// one message of this same task session.
-	view := controlMCPSessionStateView(detail, controlMCPTextLimit, controlMCPToolOutputLimit, map[string]any{"action": tool.FleetReadTaskSessionAction, "machine": machine, "project_id": projectID, "task_id": taskID})
+	// one message of this same task session (the same attempt's).
+	view := controlMCPSessionStateView(detail, controlMCPTextLimit, controlMCPToolOutputLimit, attempt.Continuation(map[string]any{"action": tool.FleetReadTaskSessionAction, "machine": machine, "project_id": projectID, "task_id": taskID}))
 	var active map[string]any
 	if err := client.JSON(ctx, http.MethodGet, path+"/plans/active", nil, &active); err == nil {
 		if plan := controlMCPActivePlan(active); plan != nil {

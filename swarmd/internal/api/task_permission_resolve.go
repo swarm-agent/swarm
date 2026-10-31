@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -133,7 +134,7 @@ func (s *Server) resolveLinkedTaskPermission(ctx context.Context, p identity.Pri
 	} else if !sent {
 		return nil, linkedTaskFail(http.StatusForbidden, "task %s on %s was not sent from this home; answer its requests on that machine", taskID, machine)
 	}
-	sessionID, err := s.linkedTaskSession(ctx, p, machine, projectID, taskID)
+	sessionID, err := s.linkedTaskSession(ctx, p, machine, projectID, taskID, tool.FleetTaskAttempt{})
 	if err != nil {
 		return nil, err
 	}
@@ -178,9 +179,10 @@ func (s *Server) resolveLinkedTaskPermission(ctx context.Context, p identity.Pri
 	return map[string]any{"machine": machine, "project_id": projectID, "task_id": taskID, "session_id": sessionID, "permission": taskPermissionView(answer.Permission), "untrusted_content": true}, nil
 }
 
-// linkedTaskSession is the session of a linked task's current attempt, as
-// the machine reports it through the link (get_task).
-func (s *Server) linkedTaskSession(ctx context.Context, p identity.Principal, machine, projectID, taskID string) (string, error) {
+// linkedTaskSession is the session of a linked task's current attempt, or
+// of the attempt named (linkedTaskAttemptSession), as the machine reports it
+// through the link (get_task).
+func (s *Server) linkedTaskSession(ctx context.Context, p identity.Principal, machine, projectID, taskID string, attempt tool.FleetTaskAttempt) (string, error) {
 	raw, err := s.CallFleetProject(ctx, p, machine, "get_task", map[string]any{"project_id": projectID, "task_id": taskID})
 	if err != nil {
 		var refused *fleet.Error
@@ -195,11 +197,47 @@ func (s *Server) linkedTaskSession(ctx context.Context, p identity.Principal, ma
 	if json.Unmarshal(raw, &answer) != nil || answer.Task.ID != taskID || (answer.Task.ProjectID != "" && answer.Task.ProjectID != projectID) {
 		return "", linkedTaskFail(http.StatusBadGateway, "%s returned an unexpected record for task %s", machine, taskID)
 	}
-	sessionID := linkedTaskObservation(answer.Task).RemoteSessionID
-	if sessionID == "" || strings.ContainsAny(sessionID, "/\\?#%") {
-		return "", linkedTaskFail(http.StatusConflict, "task %s on %s has no session yet", taskID, machine)
+	_, sessionID, err := linkedTaskAttemptSession(answer.Task, machine, attempt)
+	return sessionID, err
+}
+
+// linkedTaskAttemptSession picks the attempt of a linked task whose session
+// a read takes: the current attempt's when none is named, else the attempt
+// of the task's attempts list with that attempt_id or session_id (both,
+// when both are given). An earlier attempt keeps its own session and full
+// report after a follow-up; naming it is how that report stays readable. A
+// name that is not in the list is refused with the attempts there are.
+func linkedTaskAttemptSession(task pebblestore.ProjectTaskRecord, machine string, attempt tool.FleetTaskAttempt) (string, string, error) {
+	attemptID, sessionID := strings.TrimSpace(attempt.AttemptID), strings.TrimSpace(attempt.SessionID)
+	task.EnsureTaskAttempts()
+	picked, pickedSession := "", ""
+	if attemptID == "" && sessionID == "" {
+		pickedSession = linkedTaskObservation(task).RemoteSessionID
+		if active := task.ActiveAttempt(); active != nil {
+			picked = active.ID
+		}
+	} else {
+		known := make([]string, 0, len(task.Attempts))
+		for _, a := range task.Attempts {
+			if (attemptID == "" || a.ID == attemptID) && (sessionID == "" || a.SessionID == sessionID) {
+				picked, pickedSession = a.ID, a.SessionID
+				break
+			}
+			known = append(known, fmt.Sprintf("%s (session %s)", a.ID, firstNonEmptyString(a.SessionID, "none yet")))
+		}
+		if picked == "" {
+			named := strings.TrimSpace(strings.Join([]string{attemptID, sessionID}, " "))
+			listed := "none"
+			if len(known) > 0 {
+				listed = strings.Join(known, ", ")
+			}
+			return "", "", linkedTaskFail(http.StatusNotFound, "task %s on %s has no attempt %s; its attempts: %s", task.ID, machine, named, listed)
+		}
 	}
-	return sessionID, nil
+	if pickedSession == "" || strings.ContainsAny(pickedSession, "/\\?#%") {
+		return "", "", linkedTaskFail(http.StatusConflict, "task %s on %s has no session yet", task.ID, machine)
+	}
+	return picked, pickedSession, nil
 }
 
 // linkedFleetCallError is a failed link call: the machine's own refusal, or

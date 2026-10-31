@@ -94,6 +94,42 @@ func (s *Server) resolveProjectTaskSource(p identity.Principal, proj *pebblestor
 	return candidates[0], nil
 }
 
+// projectTaskFolders are a project's distinct folder roots, in its order.
+func projectTaskFolders(proj *pebblestore.ProjectRecord) []string {
+	var folders []string
+	seen := map[string]bool{}
+	for _, ref := range proj.Workspaces {
+		root := strings.TrimSpace(ref.Path)
+		if root == "" || seen[root] {
+			continue
+		}
+		seen[root] = true
+		folders = append(folders, root)
+	}
+	return folders
+}
+
+// defaultProjectTaskSource is the source of a coding task proposed without
+// workspace_path or workspace_id (a Swarm Control caller usually names none):
+// the project's only folder, bound exactly as if it were named. A project
+// with several folders is refused with each one's path, so the caller names
+// one; the folder is never guessed. A project with no folder is refused.
+func (s *Server) defaultProjectTaskSource(p identity.Principal, proj *pebblestore.ProjectRecord, generation int64, requireRepository bool) (pebblestore.ProjectTaskSource, error) {
+	folders := projectTaskFolders(proj)
+	switch len(folders) {
+	case 0:
+		return pebblestore.ProjectTaskSource{}, errors.New("coding task source required: the project has no folder; add one to the project or give workspace_path; project chat remains available")
+	case 1:
+		bound, err := s.resolveProjectTaskSource(p, proj, folders[0], "", generation, requireRepository)
+		if err != nil {
+			return pebblestore.ProjectTaskSource{}, err
+		}
+		bound.Provenance = "unique_project_workspace"
+		return bound, nil
+	}
+	return pebblestore.ProjectTaskSource{}, fmt.Errorf("coding task source required: the project has %d folders, so name one as workspace_path: %s; project chat remains available", len(folders), strings.Join(folders, ", "))
+}
+
 func (s *Server) revalidateProjectTaskSource(p identity.Principal, proj *pebblestore.ProjectRecord, task *pebblestore.ProjectTaskRecord) error {
 	if isOrdinaryMediaAgent(task.Agent) && task.SessionID == "" && task.TaskProgram == nil && task.TaskProgramID == "" && task.PlanBinding == nil && task.PlanDocument == nil && len(task.CoderAssignments) == 0 && len(task.ProgramSources) == 0 && task.SourceWorkspace.Path == "" {
 		_, err := pebblestore.RouteAndPlanProjectTaskWithOptions(pebblestore.TaskPlanOptions{Agent: task.Agent, OutcomeType: task.OutcomeType, Tier: task.Tier, VariantCount: task.VariantCount})

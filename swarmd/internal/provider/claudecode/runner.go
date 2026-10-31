@@ -268,6 +268,11 @@ func (r *Runner) planTurn(ctx context.Context, req provideriface.Request, workDi
 		"--permission-mode", "dontAsk",
 		"--model", cliModel(req.Model, req.ContextWindow),
 	}
+	toolsEnabled := len(req.Tools) > 0 && !strings.EqualFold(strings.TrimSpace(req.ToolChoice), "none")
+	if toolsEnabled {
+		// The CLI knows the tools by their prefixed names only.
+		staticInstructions = mcpToolInstructions(staticInstructions, req.Tools)
+	}
 	if staticInstructions != "" {
 		promptPath := filepath.Join(workDir, "system-prompt.txt")
 		if err := os.WriteFile(promptPath, []byte(staticInstructions), 0o600); err != nil {
@@ -276,7 +281,6 @@ func (r *Runner) planTurn(ctx context.Context, req provideriface.Request, workDi
 		args = append(args, "--system-prompt-file", promptPath)
 	}
 
-	toolsEnabled := len(req.Tools) > 0 && !strings.EqualFold(strings.TrimSpace(req.ToolChoice), "none")
 	if toolsEnabled {
 		if req.ToolInvoker == nil {
 			return turnPlan{}, errors.New("claude code tools require a Swarm tool invoker")

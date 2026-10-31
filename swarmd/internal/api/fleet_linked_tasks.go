@@ -220,15 +220,21 @@ func (s *Server) ReadFleetLinkedTaskSession(ctx context.Context, p identity.Prin
 		"progress":  clipLinkedTaskText(observed.Progress, fleetLinkedTaskSessionProgressBytes),
 		"read_only": true, "untrusted_content": true,
 	}
-	if observed.RemoteSessionID == "" {
-		return nil, linkedTaskFail(http.StatusConflict, "task %s on %s has no session yet", taskID, machine)
+	// The current attempt's session, or the named attempt's: after a
+	// follow-up an earlier attempt's full report is in its own session.
+	attemptID, sessionID, err := linkedTaskAttemptSession(answer.Task, machine, read.Attempt)
+	if err != nil {
+		return nil, err
 	}
-	view["session_id"] = observed.RemoteSessionID
+	view["session_id"] = sessionID
+	if attemptID != "" {
+		view["attempt_id"] = attemptID
+	}
 	var page struct {
 		Messages     []pebblestore.MessageSnapshot `json:"messages"`
 		HasMoreOlder bool                          `json:"has_more_older"`
 	}
-	path := "/v3/sessions/" + url.PathEscape(observed.RemoteSessionID) + "/messages?"
+	path := "/v3/sessions/" + url.PathEscape(sessionID) + "/messages?"
 	if next := read.Continue; next != nil {
 		// The exact message: the first after the one before its sequence.
 		path += "after_seq=" + strconv.FormatUint(next.MessageSeq-1, 10) + "&limit=1"
@@ -271,10 +277,10 @@ func (s *Server) ReadFleetLinkedTaskSession(ctx context.Context, p identity.Prin
 	// chunk.
 	for _, item := range messages {
 		if item["truncated"] == true {
-			item["next"] = map[string]any{
+			item["next"] = read.Attempt.Continuation(map[string]any{
 				"action": tool.FleetReadTaskSessionAction, "machine": machine, "project_id": projectID, "task_id": taskID,
 				"message_id": item["id"], "message_seq": item["global_seq"], "content_offset": item["content_offset"], "max_chars": read.MaxChars,
-			}
+			})
 		}
 	}
 	view["messages"] = messages
@@ -468,7 +474,7 @@ func (s *Server) handleFleetLinkedTasks(w http.ResponseWriter, r *http.Request) 
 			}
 			maxChars = parsed
 		}
-		read := tool.FleetTaskSessionRead{Limit: limit, MaxChars: maxChars, Role: query.Get("role")}
+		read := tool.FleetTaskSessionRead{Limit: limit, MaxChars: maxChars, Role: query.Get("role"), Attempt: tool.FleetTaskAttempt{AttemptID: strings.TrimSpace(query.Get("attempt_id")), SessionID: strings.TrimSpace(query.Get("session_id"))}}
 		next, err := parseMessageContinuationQuery(query)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)

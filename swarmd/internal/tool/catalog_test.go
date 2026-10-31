@@ -28,7 +28,10 @@ import (
 // task id.
 // The flow report changed it on purpose: get_task takes detail flow, and
 // the flow action (with period) reads a project's roll-up.
-const manageProjectsDefinitionSHA256 = "ed6ef1a43cb0e463460c37025c4c76a2ee3e47c801bd596938f02cfe4dbbed76"
+// The GPUI-vs-MCP parity rerun changed it on purpose: read_task_session and
+// get_task_session take attempt_id or session_id (an earlier attempt's
+// session), and those fields' descriptions say so.
+const manageProjectsDefinitionSHA256 = "1384da24b50331d212f220317648f5417e609a5026300caedd7f42b5148a233f"
 
 // Purpose: the catalog is the only place manage_projects exists. The
 // Orchestrator's definition is generated from the declarations and stays the

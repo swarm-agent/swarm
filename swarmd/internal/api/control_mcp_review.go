@@ -557,5 +557,27 @@ func controlMCPGetChanges(c *controlMCPCall, args map[string]any) (any, error) {
 			out["diff_note"] = "diff cut at diff_chars; pass path to see one file, or a larger diff_chars"
 		}
 	}
+	// No commits, no changed files and no diff: say so in a sentence rather
+	// than answer with empty lists the caller must interpret.
+	if changesNothingToShow(out) {
+		note := fmt.Sprintf("no commits since base %s: nothing to show", base)
+		if span.Note != "" {
+			note += "; " + span.Note
+		}
+		out["note"] = note
+	}
 	return out, nil
+}
+
+// changesNothingToShow reports a changes answer with no commits, no changed
+// or new files and no diff.
+func changesNothingToShow(out map[string]any) bool {
+	if commits, _ := out["commits"].([]string); len(commits) > 0 {
+		return false
+	}
+	if files, _ := out["files"].([]map[string]any); len(files) > 0 {
+		return false
+	}
+	diff, _ := out["diff"].(string)
+	return strings.TrimSpace(diff) == ""
 }

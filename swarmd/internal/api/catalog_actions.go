@@ -320,8 +320,17 @@ func catalogTaskChanges(c *controlMCPCall, args map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Nothing was committed (controlMCPGetChanges' note says so): what the
+	// task did is in its report.
+	if view, ok := out.(map[string]any); ok && changesNothingToShow(view) {
+		view["next_action"] = catalogTaskChangesNothingNext
+	}
 	return nativeJobPage(out, args, false)
 }
+
+// catalogTaskChangesNothingNext is get_task_changes' next step when the work
+// has no commits: the task's report.
+const catalogTaskChangesNothingNext = "No commits to show: read_task_session (with the task's machine) or get_task reads the task's report."
 
 // catalogTaskFile is read_task_file: swarm_read_file in the task's session's
 // working folder.
