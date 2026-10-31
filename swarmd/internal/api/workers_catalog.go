@@ -146,71 +146,97 @@ func (s *Server) ManageWorkers(ctx context.Context, p identity.Principal, who, a
 	return json.RawMessage(out), nil
 }
 
-// workerControlRoutes are the Swarm Control inputs of manage_workers
-// actions that run a swarm_* worker handler (trigger), and every declared
-// input that handler applies (applies). A call naming a trigger that also
-// gives a declared input the handler does not apply is refused, naming those
-// inputs: nothing is dropped. update's agent is not a route: the run
-// service applies it with every other field in one revision-checked write.
-var workerControlRoutes = []struct {
-	action  string
-	trigger []string
-	applies []string
-	run     func(*controlMCPCall, map[string]any) (any, error)
-	fixed   map[string]any
-}{
-	// swarm_create_worker: a worker bound to one folder, with an optional
-	// schedule, active at once. workspace_requirements and local_bindings
-	// are the folder binding itself; document is a whole definition.
-	{"create", []string{"workspace_path", "project_id", "schedule", "scheduled_plan"}, []string{"name", "instructions", "description", "workspace_path", "project_id", "schedule", "scheduled_plan", "agent", "model", "budget", "requested_capabilities", "automations", "idempotency_key"}, controlMCPCreateWorker, nil},
-	// swarm_deploy_worker: a preset or custom worker by role, or saving an
-	// existing one by worker.
-	{"create", []string{"preset", "role", "worker"}, []string{"preset", "worker", "model", "budget", "name", "agent", "role", "instructions", "description"}, controlMCPDeployWorker, nil},
-	// swarm_manage_worker cancel_run: cancels one run, changes nothing else.
-	{"update", []string{"run_id"}, []string{"worker_id", "run_id"}, controlMCPManageWorker, map[string]any{"action": "cancel_run"}},
-	// swarm_manage_worker enable_schedule and disable_schedule, at the
-	// caller's expected_revision when given.
-	{"update", []string{"schedule_id"}, []string{"worker_id", "schedule_id", "schedule_enabled", "expected_revision"}, controlMCPManageWorker, nil},
+// workerSaveFields are the worker fields the save of an existing worker
+// writes (deployWorkerModel: PUT /v3/workers/{id}, one write at the revision
+// it read). The worker branch below lists them as written from this list.
+var workerSaveFields = []string{"name", "instructions", "description", "agent"}
+
+// workerControlBranch is one swarm_* worker handler branch a Swarm Control
+// manage_workers call runs. The first branch of the action, in table order,
+// whose trigger the call gives is the one that runs. selects name or guard
+// what the branch acts on and are never written; writes are every input the
+// branch writes. Any other declared input the call gives, including another
+// branch's trigger, is refused naming it, before anything runs. The handler
+// and that check both read this table; TestEveryWorkerControlBranchWritesWhatItLists
+// proves each listed write lands.
+type workerControlBranch struct {
+	action   string
+	triggers []string
+	selects  []string
+	writes   []string
+	run      func(*controlMCPCall, map[string]any) (any, error)
+	fixed    map[string]any
 }
 
-// workerControlCall runs the swarm_* worker handler a Swarm Control call's
-// inputs name (workerControlRoutes); handled is false when none does. Inputs
-// of two different handlers, or an input the named handler does not apply,
-// are refused before anything runs.
-func (s *Server) workerControlCall(ctx context.Context, p identity.Principal, held []string, declared tool.CatalogAction, args map[string]any) (any, bool, error) {
-	action := declared.Action
-	matched := -1
-	for i, route := range workerControlRoutes {
-		if route.action != action {
+func (b workerControlBranch) inputs() []string {
+	return append(append([]string(nil), b.selects...), b.writes...)
+}
+
+// workerControlRoutes are the branches, in the order their handlers choose.
+// update's agent is not a branch: the run service applies it with every
+// other field in one revision-checked write.
+var workerControlRoutes = []workerControlBranch{
+	// swarm_deploy_worker's worker branch: save an existing worker. role is
+	// a guard: a different one is refused, never applied.
+	{action: "create", triggers: []string{"worker"}, selects: []string{"worker", "role"}, writes: append(append([]string(nil), workerSaveFields...), "model", "budget"), run: controlMCPDeployWorker},
+	// swarm_deploy_worker's preset branch: deploy a preset worker.
+	{action: "create", triggers: []string{"preset"}, selects: []string{"preset"}, writes: []string{"description", "model", "budget"}, run: controlMCPDeployWorker},
+	// swarm_deploy_worker's custom branch: a new worker by role (or, when
+	// name is an existing worker's, that worker saved; role is then a guard).
+	{action: "create", triggers: []string{"role"}, writes: []string{"name", "role", "instructions", "description", "agent", "model", "budget"}, run: controlMCPDeployWorker},
+	// swarm_create_worker: a worker bound to one folder, with an optional
+	// schedule, active at once. workspace_requirements and local_bindings
+	// are the folder binding itself; document is a whole definition;
+	// requested_capabilities need the person's approval, which an
+	// immediately active worker cannot have (activation refuses them).
+	{action: "create", triggers: []string{"workspace_path", "project_id", "schedule", "scheduled_plan"}, selects: []string{"idempotency_key"}, writes: []string{"name", "instructions", "description", "workspace_path", "project_id", "schedule", "scheduled_plan", "agent", "model", "budget", "automations"}, run: controlMCPCreateWorker},
+	// swarm_manage_worker cancel_run: cancels one run, writes no field.
+	{action: "update", triggers: []string{"run_id"}, selects: []string{"worker_id", "run_id"}, run: controlMCPManageWorker, fixed: map[string]any{"action": "cancel_run"}},
+	// swarm_manage_worker enable_schedule and disable_schedule, at the
+	// caller's expected_revision when given.
+	{action: "update", triggers: []string{"schedule_id"}, selects: []string{"worker_id", "schedule_id", "expected_revision"}, writes: []string{"schedule_enabled"}, run: controlMCPManageWorker},
+}
+
+// workerControlBranchFor is the branch a call runs: the first of the action
+// whose trigger it gives.
+func workerControlBranchFor(action string, args map[string]any) (workerControlBranch, bool) {
+	for _, branch := range workerControlRoutes {
+		if branch.action != action {
 			continue
 		}
-		for _, key := range route.trigger {
+		for _, key := range branch.triggers {
 			if _, ok := args[key]; ok {
-				if matched >= 0 && matched != i {
-					return nil, true, controlMCPToolFailure("%s and %s are separate requests: give one", strings.Join(workerControlRoutes[matched].trigger, "/"), strings.Join(route.trigger, "/"))
-				}
-				matched = i
+				return branch, true
 			}
 		}
 	}
-	if matched < 0 {
+	return workerControlBranch{}, false
+}
+
+// workerControlCall runs the swarm_* worker branch a Swarm Control call's
+// inputs name (workerControlRoutes); handled is false when none does. An
+// input the branch does not take, including another branch's trigger, is
+// refused before anything runs.
+func (s *Server) workerControlCall(ctx context.Context, p identity.Principal, held []string, declared tool.CatalogAction, args map[string]any) (any, bool, error) {
+	action := declared.Action
+	branch, matched := workerControlBranchFor(action, args)
+	if !matched {
 		if _, orphan := args["schedule_enabled"]; orphan && action == "update" {
 			return nil, true, controlMCPToolFailure("schedule_enabled goes with schedule_id")
 		}
 		return nil, false, nil
 	}
-	route := workerControlRoutes[matched]
-	if extra := workerInputsNotApplied(declared, route.applies, args); len(extra) > 0 {
-		return nil, true, controlMCPToolFailure("%s do not go with %s: give them in a separate request", strings.Join(extra, ", "), strings.Join(route.trigger, "/"))
+	if extra := workerInputsNotApplied(declared, branch.inputs(), args); len(extra) > 0 {
+		return nil, true, controlMCPToolFailure("%s do not go with %s: give them in a separate request", strings.Join(extra, ", "), strings.Join(branch.triggers, "/"))
 	}
 	call := map[string]any{}
 	for key, value := range args {
 		call[key] = value
 	}
-	for key, value := range route.fixed {
+	for key, value := range branch.fixed {
 		call[key] = value
 	}
-	inputs := append([]string(nil), route.applies...)
+	inputs := branch.inputs()
 	if _, ok := args["schedule_id"]; ok && action == "update" {
 		enabled, set := args["schedule_enabled"].(bool)
 		if !set {
@@ -224,12 +250,12 @@ func (s *Server) workerControlCall(ctx context.Context, p identity.Principal, he
 	if _, ok := call["action"]; ok {
 		inputs = append(inputs, "action")
 	}
-	out, err := s.workerRouteCall(ctx, p, held, true, call, inputs, route.run)
+	out, err := s.workerRouteCall(ctx, p, held, true, call, inputs, branch.run)
 	return out, true, err
 }
 
 // workerInputsNotApplied are the action's declared inputs the call gives
-// that a route does not apply (machine is routed before), sorted.
+// that a branch does not take (machine is routed before), sorted.
 func workerInputsNotApplied(declared tool.CatalogAction, applies []string, args map[string]any) []string {
 	applied := map[string]bool{"machine": true}
 	for _, key := range applies {

@@ -87,10 +87,16 @@ func (c *controlMCPCall) deployWorkerModel(worker map[string]any, args map[strin
 		return nil, controlMCPToolFailure("changing an existing worker's role is not supported; create a new worker")
 	}
 	body := map[string]any{"expected_revision": controlMCPRevision(worker)}
-	for _, key := range []string{"instructions", "description", "agent"} {
-		if value, present := args[key]; present {
-			body[key] = value
+	for _, key := range workerSaveFields {
+		value, present := args[key]
+		if !present {
+			continue
 		}
+		if key == "name" && value == worker["name"] {
+			// The name the worker was found by: nothing to rename.
+			continue
+		}
+		body[key] = value
 	}
 	if len(body) > 1 {
 		id, _ := worker["id"].(string)

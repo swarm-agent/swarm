@@ -123,7 +123,7 @@ func TestManageWorkersSwarmControlInputsRunTheSwarmToolsCode(t *testing.T) {
 	if _, refused = h.controlTool(t, catalogParityFullKey, "manage_workers", map[string]any{"action": "update", "worker_id": h.workers[""], "schedule_id": "sched-1"}); !strings.Contains(refused, "schedule_enabled") {
 		t.Fatalf("schedule_id without schedule_enabled was not refused: %q", refused)
 	}
-	if _, refused = h.controlTool(t, catalogParityFullKey, "manage_workers", map[string]any{"action": "update", "worker_id": h.workers[""], "run_id": "run-1", "schedule_id": "s", "schedule_enabled": true}); !strings.Contains(refused, "separate requests") {
+	if _, refused = h.controlTool(t, catalogParityFullKey, "manage_workers", map[string]any{"action": "update", "worker_id": h.workers[""], "run_id": "run-1", "schedule_id": "s", "schedule_enabled": true}); !strings.Contains(refused, "schedule_id do not go with run_id") {
 		t.Fatalf("two swarm_* handlers' inputs in one call were not refused: %q", refused)
 	}
 
@@ -182,6 +182,25 @@ func TestManageWorkersSwarmControlInputsRunTheSwarmToolsCode(t *testing.T) {
 		t.Fatalf("a combined update did not apply every field in one write: %+v", after)
 	}
 
+	// create with worker and name renames that worker in the one save
+	// (deployWorkerModel's PUT at the revision it read), with the other
+	// fields given; it used to report success and keep the old name.
+	renamed := worker(target)
+	if _, refused = h.controlTool(t, catalogParityFullKey, "manage_workers", map[string]any{"action": "create", "worker": target, "name": "Renamed by create", "description": "Renamed too."}); refused != "" {
+		t.Fatalf("create with worker and name was refused: %s", refused)
+	}
+	if after := worker(target); after.Name != "Renamed by create" || after.Description != "Renamed too." || after.Revision != renamed.Revision+1 {
+		t.Fatalf("create with worker and name did not rename the worker in one write: %+v (was revision %d)", after, renamed.Revision)
+	}
+	// worker with a different role is refused, and nothing changes.
+	renamed = worker(target)
+	if _, refused = h.controlTool(t, catalogParityFullKey, "manage_workers", map[string]any{"action": "create", "worker": target, "role": "designer", "name": "Not applied"}); refused == "" {
+		t.Fatal("create with worker and a different role was not refused")
+	}
+	if after := worker(target); after.Name != renamed.Name || after.Revision != renamed.Revision {
+		t.Fatalf("a refused worker save changed the worker: %+v", after)
+	}
+
 	// create: a deploy by role keeps every definition input it takes
 	// (description, budget); one it cannot take is refused, naming it, and
 	// nothing is created.
@@ -198,6 +217,7 @@ func TestManageWorkersSwarmControlInputsRunTheSwarmToolsCode(t *testing.T) {
 		{"role": "finder", "name": "Refused A", "instructions": "Probe.", "requested_capabilities": []any{}},
 		{"preset": "reviewer", "automations": []any{}},
 		{"workspace_path": t.TempDir(), "name": "Refused B", "instructions": "Probe.", "local_bindings": map[string]any{"primary": "x"}},
+		{"workspace_path": t.TempDir(), "name": "Refused D", "instructions": "Probe.", "requested_capabilities": []any{}},
 		{"workspace_path": t.TempDir(), "name": "Refused C", "instructions": "Probe.", "workspace_requirements": []any{}, "document": map[string]any{}},
 	} {
 		call := map[string]any{"action": "create"}
@@ -240,11 +260,11 @@ func TestManageWorkersSwarmControlInputsRunTheSwarmToolsCode(t *testing.T) {
 
 	// The folder create carries its other definition inputs in the one
 	// create body (the harness cannot bind a folder, so the body is read).
-	body, _, err := controlMCPWorkerCreateBody(map[string]any{"name": "N", "instructions": "I", "agent": "helper", "idempotency_key": "key-1", "requested_capabilities": []any{map[string]any{"kind": "x"}}, "automations": []any{map[string]any{"name": "a"}}})
+	body, _, err := controlMCPWorkerCreateBody(map[string]any{"name": "N", "instructions": "I", "agent": "helper", "idempotency_key": "key-1", "automations": []any{map[string]any{"name": "a"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if body["agent"] != "helper" || body["idempotency_key"] != "key-1" || body["requested_capabilities"] == nil || len(body["automations"].([]any)) != 1 {
+	if body["agent"] != "helper" || body["idempotency_key"] != "key-1" || len(body["automations"].([]any)) != 1 {
 		t.Fatalf("the folder create body dropped a definition input: %v", body)
 	}
 

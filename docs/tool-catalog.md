@@ -53,10 +53,17 @@ linked machine, and the Orchestrator keeps its own watch and turn model:
   applies it with every other field in one write at the caller's
   `expected_revision`; `run_id` cancels a run and goes with nothing else;
   `schedule_id` honours `expected_revision`. A folder `create` also takes
-  `agent`, `model`, `budget`, `requested_capabilities`, `automations` and
-  `idempotency_key` (not `workspace_requirements`, `local_bindings` or
-  `document`); a `preset`, `role` or `worker` create takes `name`,
-  `description`, `instructions`, `agent`, `model` and `budget`.
+  `agent`, `model`, `budget`, `automations` and `idempotency_key` (not
+  `requested_capabilities`, which need the person's approval, nor
+  `workspace_requirements`, `local_bindings` or `document`). A `worker`
+  create saves that worker: `name` (a rename), `description`,
+  `instructions`, `agent`, `model` and `budget`, in one write at the
+  revision it read; a different `role` is refused. A `preset` create takes
+  `description`, `model` and `budget`; a `role` create takes `name`,
+  `instructions`, `description`, `agent`, `model` and `budget`. The branch
+  table (`workerControlRoutes`) is what both the handler and the refusal
+  read; `TestEveryWorkerControlBranchWritesWhatItLists` runs every branch
+  and fails on an input listed as written that does not land.
   `update_environment`'s `reset` and `rebuild` go with no other change.
 
 A folder environment read in the `swarm_*` shape (a `project` or

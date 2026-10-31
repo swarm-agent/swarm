@@ -2860,9 +2860,6 @@ func controlMCPWorkerCreateBody(args map[string]any) (map[string]any, map[string
 	if key := controlMCPString(args, "idempotency_key"); key != "" {
 		body["idempotency_key"] = key
 	}
-	if raw, ok := args["requested_capabilities"]; ok && raw != nil {
-		body["requested_capabilities"] = raw
-	}
 	automations := []any{}
 	if raw, ok := args["automations"]; ok && raw != nil {
 		list, ok := raw.([]any)
