@@ -196,6 +196,13 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 	if task.Archived {
 		return nil, &projectTaskFollowupError{409, errors.New("archived task cannot be reopened")}
 	}
+	// A design job runs the design pipeline, not an agent: a follow-up
+	// session would never report back (session sync, Git reconcile and the
+	// run-end signal skip design jobs), so it is refused before anything is
+	// reserved, as approve and deploy refuse it.
+	if task.Design != nil {
+		return nil, &projectTaskFollowupError{409, errDesignJobNotAgentTask}
+	}
 	sources, err := db.ResolveTaskFollowupSources(task, p.UserID)
 	if err != nil {
 		return nil, &projectTaskFollowupError{403, err}

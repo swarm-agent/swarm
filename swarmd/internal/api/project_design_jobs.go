@@ -626,5 +626,5 @@ func (s *Server) refuseDesignTaskMutation(w http.ResponseWriter, r *http.Request
 }
 
 // errDesignJobNotAgentTask refuses agent-task lifecycle operations (approve,
-// deploy) on a design job.
-var errDesignJobNotAgentTask = errors.New("this task is a design job: it runs the design pipeline, not an agent; there is nothing to approve or deploy")
+// deploy, message_task and reopen_task follow-ups) on a design job.
+var errDesignJobNotAgentTask = errors.New("this task is a design job: it runs the design pipeline, not an agent; there is nothing to approve, deploy or follow up")

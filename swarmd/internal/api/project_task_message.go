@@ -60,7 +60,7 @@ func (s *Server) MessageProjectTask(ctx context.Context, p identity.Principal, p
 	if in.Revision < 0 {
 		return tool.ProjectTaskMessageResult{}, &projectTaskFollowupError{http.StatusBadRequest, errors.New("expected_revision must be positive")}
 	}
-	task, sessionID, err := s.projectTaskControlTarget(p, projectID, taskID)
+	task, sessionID, err := s.projectTaskControlTarget(p, projectID, taskID, true)
 	if err != nil {
 		return tool.ProjectTaskMessageResult{}, err
 	}
@@ -119,7 +119,7 @@ func (s *Server) StopProjectTask(_ context.Context, p identity.Principal, projec
 	if !p.Valid() || p.Type != identity.PrincipalTypeUser || p.UserID == "" {
 		return tool.ProjectTaskStopResult{}, &projectTaskFollowupError{http.StatusForbidden, errors.New("authenticated user required")}
 	}
-	task, sessionID, err := s.projectTaskControlTarget(p, projectID, taskID)
+	task, sessionID, err := s.projectTaskControlTarget(p, projectID, taskID, false)
 	if err != nil {
 		return tool.ProjectTaskStopResult{}, err
 	}
@@ -150,7 +150,10 @@ func (s *Server) StopProjectTask(_ context.Context, p identity.Principal, projec
 
 // projectTaskControlTarget reads the account's task and the session of its
 // current attempt, which must be the principal's.
-func (s *Server) projectTaskControlTarget(p identity.Principal, projectID, taskID string) (*pebblestore.ProjectTaskRecord, string, error) {
+// refuseDesignJob refuses a design job before its session is looked at: a
+// message to it would queue a note in, or reopen, a session that is not an
+// agent's (errDesignJobNotAgentTask).
+func (s *Server) projectTaskControlTarget(p identity.Principal, projectID, taskID string, refuseDesignJob bool) (*pebblestore.ProjectTaskRecord, string, error) {
 	projectID, taskID = strings.TrimSpace(projectID), strings.TrimSpace(taskID)
 	if projectID == "" || taskID == "" {
 		return nil, "", &projectTaskFollowupError{http.StatusBadRequest, errors.New("project_id and task_id are required")}
@@ -167,6 +170,9 @@ func (s *Server) projectTaskControlTarget(p identity.Principal, projectID, taskI
 	}
 	if task.Archived {
 		return nil, "", &projectTaskFollowupError{http.StatusConflict, errors.New("archived task cannot be messaged or stopped")}
+	}
+	if refuseDesignJob && task.Design != nil {
+		return nil, "", &projectTaskFollowupError{http.StatusConflict, errDesignJobNotAgentTask}
 	}
 	task.EnsureTaskAttempts()
 	sessionID := strings.TrimSpace(task.SessionID)

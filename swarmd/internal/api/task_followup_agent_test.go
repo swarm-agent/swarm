@@ -1,12 +1,16 @@
 package api
 
 import (
+	"context"
+	"errors"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"swarm/packages/swarmd/internal/jobautomation"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 )
 
 // Purpose: a follow-up (message_task) to a finished finder task keeps agent
@@ -127,6 +131,44 @@ func TestFollowupToADesignerMediaTaskRunsASession(t *testing.T) {
 		stored, _, _ := db.GetProjectTask("account", "project", id)
 		if stored == nil || isDirectMediaTask(stored) || stored.Agent != want[0] {
 			t.Fatalf("%s: stored follow-up %+v", id, stored)
+		}
+	}
+}
+
+// Purpose: a follow-up to a design job, through message_task
+// (MessageProjectTask) or reopen_task (ReopenProjectTask), is refused with
+// errDesignJobNotAgentTask before anything is reserved, as approve and deploy
+// refuse it, and the task record (agent, outcome, status, session, attempts,
+// revision) is unchanged. Threat: the review finding where a kept
+// designer/ui_design agent let a design job's follow-up pass the store's task
+// contract and start a task-followup- session that never reports back
+// (session sync, Git reconcile and the run-end signal skip design jobs),
+// leaving the task in_progress. Authority: MessageProjectTask
+// (projectTaskControlTarget) and ReopenProjectTask over a real store; the
+// service functions are what the catalog tools and the HTTP reopen route call.
+func TestFollowupToADesignJobIsRefused(t *testing.T) {
+	for _, state := range []string{pebblestore.DesignJobRunning, pebblestore.DesignJobCompleted} {
+		s, store, _, p := newDesignJobTestServer(t)
+		if err := store.PutProject(p.AccountScopeID, &pebblestore.ProjectRecord{ID: "project-a", AccountID: p.AccountScopeID, Name: "Project"}); err != nil {
+			t.Fatal(err)
+		}
+		putDesignTask(t, store, p, state)
+		before, _, err := store.GetProjectTask(p.AccountScopeID, "project-a", "task_design01")
+		if err != nil || before == nil {
+			t.Fatalf("%s: %v", state, err)
+		}
+		_, messageErr := s.MessageProjectTask(context.Background(), p, "project-a", "task_design01", tool.ProjectTaskMessageInput{Message: "Make the header darker.", ClientRequestID: "msg-" + state})
+		_, reopenErr := s.ReopenProjectTask(context.Background(), p, "project-a", "task_design01", tool.ProjectTaskFollowupInput{Feedback: "Make the header darker.", ClientRequestID: "reopen-" + state, Revision: before.Revision})
+		for name, err := range map[string]error{"message_task": messageErr, "reopen_task": reopenErr} {
+			var failure *projectTaskFollowupError
+			if !errors.Is(err, errDesignJobNotAgentTask) || !errors.As(err, &failure) || failure.status != http.StatusConflict {
+				t.Fatalf("%s %s: %v", state, name, err)
+			}
+		}
+		after, _, err := store.GetProjectTask(p.AccountScopeID, "project-a", "task_design01")
+		if err != nil || after == nil || after.Agent != before.Agent || after.OutcomeType != before.OutcomeType || after.Status != before.Status ||
+			after.SessionID != before.SessionID || after.Revision != before.Revision || len(after.Attempts) != len(before.Attempts) || after.ActiveAttemptID != before.ActiveAttemptID || after.Design == nil {
+			t.Fatalf("%s: refused follow-up changed the task:\nbefore %+v\nafter  %+v", state, before, after)
 		}
 	}
 }
