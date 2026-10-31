@@ -1242,7 +1242,8 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 		return stepFailure{reason: "agent steps are not available on this daemon", next: "rerun", refused: true}
 	}
 	jobID, _ := record.Outcome["job_id"].(string)
-	if jobID == "" && strings.TrimSpace(d.Head) == "" {
+	head := d.Head
+	if jobID == "" && strings.TrimSpace(head) == "" {
 		reviewer := strings.EqualFold(strings.TrimSpace(step.Worker), "reviewer")
 		if roles, ok := r.agent.(interface {
 			Role(context.Context, string, string) (string, error)
@@ -1251,7 +1252,13 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 			reviewer = err == nil && role == "reviewer"
 		}
 		if reviewer {
-			return stepFailure{reason: "no head to review", next: "rerun", refused: true}
+			// The triggering job committed nothing, but an earlier step that
+			// produced the result committed it: that job's head is the work
+			// the reviewer reviews (ReviewJob), so it is the review's head.
+			head = latestWorkHead(*d, step.ID)
+			if strings.TrimSpace(head) == "" {
+				return stepFailure{reason: "no head to review", next: "rerun", refused: true}
+			}
 		}
 	}
 	if jobID == "" && step.Fixes != "" {
@@ -1269,7 +1276,7 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 			// The job before ended on a provider limit: a new job, once.
 			key += ".limit" + strconv.Itoa(record.LimitWaits)
 		}
-		req := AgentRequest{Account: d.Account, Folder: d.Folder, Worker: step.Worker, Brief: step.Brief, Result: d.Result, Head: d.Head,
+		req := AgentRequest{Account: d.Account, Folder: d.Folder, Worker: step.Worker, Brief: step.Brief, Result: d.Result, Head: head,
 			IdempotencyKey: key, Fixes: step.Fixes, Checkout: step.Checkout,
 			ReviewJob: latestWorkJob(*d, step.ID), Deliverables: d.CurrentDeliverables()}
 		if step.Produce && d.Spec != nil {

@@ -359,6 +359,28 @@ func latestWorkJob(d Delivery, stepID string) string {
 	return job
 }
 
+// latestWorkHead is the commit of the job latestWorkJob names, when that job
+// committed (its recorded head); "" otherwise.
+func latestWorkHead(d Delivery, stepID string) string {
+	job := latestWorkJob(d, stepID)
+	if job == "" {
+		return ""
+	}
+	head := ""
+	for _, rec := range d.Steps {
+		if rec.ID == stepID {
+			break
+		}
+		if id, _ := rec.Outcome["job_id"].(string); id == job && rec.State == StateSucceeded {
+			head, _ = rec.Outcome["head"].(string)
+		}
+	}
+	if !isCommitID(head) {
+		return ""
+	}
+	return head
+}
+
 // recordProduced finds the result file a produce step's job wrote and adds
 // it to the delivery's deliverables.
 func (r *Runner) recordProduced(ctx context.Context, d *Delivery, step Step, outcome AgentOutcome, out map[string]any) stepFailure {
