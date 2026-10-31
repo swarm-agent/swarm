@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 	"strings"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
@@ -106,7 +107,7 @@ func (s *Server) ManageWorkers(ctx context.Context, p identity.Principal, who, a
 		// changed through Swarm Control is active at once, so these run
 		// those tools' own handlers. A conversation never passes them
 		// (manage_workers' ControlInputs; the run service ignores them).
-		routed, handled, err := s.workerControlCall(ctx, p, held, declared.Action, args)
+		routed, handled, err := s.workerControlCall(ctx, p, held, declared, args)
 		if handled || err != nil {
 			return routed, err
 		}
@@ -146,32 +147,38 @@ func (s *Server) ManageWorkers(ctx context.Context, p identity.Principal, who, a
 }
 
 // workerControlRoutes are the Swarm Control inputs of manage_workers
-// actions that run a swarm_* worker handler, and the inputs it takes.
+// actions that run a swarm_* worker handler (trigger), and every declared
+// input that handler applies (applies). A call naming a trigger that also
+// gives a declared input the handler does not apply is refused, naming those
+// inputs: nothing is dropped. update's agent is not a route: the run
+// service applies it with every other field in one revision-checked write.
 var workerControlRoutes = []struct {
 	action  string
 	trigger []string
-	inputs  []string
+	applies []string
 	run     func(*controlMCPCall, map[string]any) (any, error)
 	fixed   map[string]any
 }{
 	// swarm_create_worker: a worker bound to one folder, with an optional
-	// schedule, active at once.
-	{"create", []string{"workspace_path", "project_id", "schedule", "scheduled_plan"}, []string{"name", "instructions", "description", "workspace_path", "project_id", "schedule", "scheduled_plan"}, controlMCPCreateWorker, nil},
+	// schedule, active at once. workspace_requirements and local_bindings
+	// are the folder binding itself; document is a whole definition.
+	{"create", []string{"workspace_path", "project_id", "schedule", "scheduled_plan"}, []string{"name", "instructions", "description", "workspace_path", "project_id", "schedule", "scheduled_plan", "agent", "model", "budget", "requested_capabilities", "automations", "idempotency_key"}, controlMCPCreateWorker, nil},
 	// swarm_deploy_worker: a preset or custom worker by role, or saving an
 	// existing one by worker.
 	{"create", []string{"preset", "role", "worker"}, []string{"preset", "worker", "model", "budget", "name", "agent", "role", "instructions", "description"}, controlMCPDeployWorker, nil},
-	// swarm_update_worker: its custom agent, saved at once.
-	{"update", []string{"agent"}, []string{"worker_id", "agent", "name", "description", "instructions"}, controlMCPUpdateWorker, nil},
-	// swarm_manage_worker cancel_run.
+	// swarm_manage_worker cancel_run: cancels one run, changes nothing else.
 	{"update", []string{"run_id"}, []string{"worker_id", "run_id"}, controlMCPManageWorker, map[string]any{"action": "cancel_run"}},
-	// swarm_manage_worker enable_schedule and disable_schedule.
-	{"update", []string{"schedule_id"}, []string{"worker_id", "schedule_id"}, controlMCPManageWorker, nil},
+	// swarm_manage_worker enable_schedule and disable_schedule, at the
+	// caller's expected_revision when given.
+	{"update", []string{"schedule_id"}, []string{"worker_id", "schedule_id", "schedule_enabled", "expected_revision"}, controlMCPManageWorker, nil},
 }
 
 // workerControlCall runs the swarm_* worker handler a Swarm Control call's
 // inputs name (workerControlRoutes); handled is false when none does. Inputs
-// of two different handlers in one call are refused.
-func (s *Server) workerControlCall(ctx context.Context, p identity.Principal, held []string, action string, args map[string]any) (any, bool, error) {
+// of two different handlers, or an input the named handler does not apply,
+// are refused before anything runs.
+func (s *Server) workerControlCall(ctx context.Context, p identity.Principal, held []string, declared tool.CatalogAction, args map[string]any) (any, bool, error) {
+	action := declared.Action
 	matched := -1
 	for i, route := range workerControlRoutes {
 		if route.action != action {
@@ -187,9 +194,15 @@ func (s *Server) workerControlCall(ctx context.Context, p identity.Principal, he
 		}
 	}
 	if matched < 0 {
+		if _, orphan := args["schedule_enabled"]; orphan && action == "update" {
+			return nil, true, controlMCPToolFailure("schedule_enabled goes with schedule_id")
+		}
 		return nil, false, nil
 	}
 	route := workerControlRoutes[matched]
+	if extra := workerInputsNotApplied(declared, route.applies, args); len(extra) > 0 {
+		return nil, true, controlMCPToolFailure("%s do not go with %s: give them in a separate request", strings.Join(extra, ", "), strings.Join(route.trigger, "/"))
+	}
 	call := map[string]any{}
 	for key, value := range args {
 		call[key] = value
@@ -197,7 +210,7 @@ func (s *Server) workerControlCall(ctx context.Context, p identity.Principal, he
 	for key, value := range route.fixed {
 		call[key] = value
 	}
-	inputs := append([]string(nil), route.inputs...)
+	inputs := append([]string(nil), route.applies...)
 	if _, ok := args["schedule_id"]; ok && action == "update" {
 		enabled, set := args["schedule_enabled"].(bool)
 		if !set {
@@ -213,6 +226,24 @@ func (s *Server) workerControlCall(ctx context.Context, p identity.Principal, he
 	}
 	out, err := s.workerRouteCall(ctx, p, held, true, call, inputs, route.run)
 	return out, true, err
+}
+
+// workerInputsNotApplied are the action's declared inputs the call gives
+// that a route does not apply (machine is routed before), sorted.
+func workerInputsNotApplied(declared tool.CatalogAction, applies []string, args map[string]any) []string {
+	applied := map[string]bool{"machine": true}
+	for _, key := range applies {
+		applied[key] = true
+	}
+	var extra []string
+	for _, key := range append(append([]string(nil), declared.Inputs...), declared.ControlInputs...) {
+		if _, given := args[key]; given && !applied[key] {
+			applied[key] = true
+			extra = append(extra, key)
+		}
+	}
+	sort.Strings(extra)
+	return extra
 }
 
 // workerConversationArgs drops an action's Swarm Control inputs from a

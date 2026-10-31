@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -91,6 +92,36 @@ func folderEnvironmentArgs(args map[string]any) (map[string]any, error) {
 	return sent, nil
 }
 
+// folderEnvironmentDefinitionFields are update_environment's definition
+// inputs (flat, or in environment).
+var folderEnvironmentDefinitionFields = []string{"base_image", "setup", "append_setup", "env", "unset_env", "max_leases"}
+
+// FolderEnvironmentUpdateConflict refuses an update_environment whose inputs
+// cannot apply together, naming them, instead of running one and dropping
+// the rest: reset removes the environment and rebuild builds the current
+// definition, so neither goes with a definition field, with replace or with
+// the other.
+func FolderEnvironmentUpdateConflict(args map[string]any) error {
+	for _, operation := range []string{"reset", "rebuild"} {
+		if !asBool(args[operation]) {
+			continue
+		}
+		var with []string
+		for _, key := range append(append([]string(nil), folderEnvironmentDefinitionFields...), "replace", "reset", "rebuild") {
+			if key == operation {
+				continue
+			}
+			if value, given := args[key]; given && value != nil && value != false {
+				with = append(with, key)
+			}
+		}
+		if len(with) > 0 {
+			return fmt.Errorf("%s does not go with %s: give them in a separate request", operation, strings.Join(with, ", "))
+		}
+	}
+	return nil
+}
+
 // folderEnvironmentSwarmShaped reports a get_environment or
 // update_environment call in the shape swarm_get_environment and
 // swarm_set_environment took: a project's folder (project, workspace, or no
@@ -150,6 +181,11 @@ func (r *Runtime) executeFolderEnvironments(ctx context.Context, scope Workspace
 	sent, err := folderEnvironmentArgs(args)
 	if err != nil {
 		return "", err
+	}
+	if action == FolderEnvironmentUpdate {
+		if err := FolderEnvironmentUpdateConflict(sent); err != nil {
+			return "", err
+		}
 	}
 	if machine == "" && folderEnvironmentSwarmShaped(action, sent) {
 		// The swarm_get_environment and swarm_set_environment shape (a

@@ -166,7 +166,7 @@ var swarmAnswerProbes = map[string]swarmAnswerProbe{
 	// $key_a and $key_b, and the current $perm_* and $limits_* values.
 	"swarm_assign_worker_task": {swarm: map[string]any{"worker_id": "$worker", "task": "Probe A.", "idempotency_key": "probe-a"}, catalog: map[string]any{"action": "assign_task", "worker_id": "$worker", "task": "Probe B.", "idempotency_key": "probe-b"}},
 	"swarm_message_job":        {swarm: map[string]any{"job_id": "$msg_a", "message": "Probe A."}, catalog: map[string]any{"action": "message_job", "job_id": "$msg_b", "message": "Probe B.", "client_request_id": "probe-b"}},
-	"swarm_update_worker":      {swarm: map[string]any{"worker_id": "$worker", "agent": ""}, catalog: map[string]any{"action": "update", "worker_id": "$worker", "agent": ""}},
+	"swarm_update_worker":      {swarm: map[string]any{"worker_id": "$worker", "agent": ""}, catalog: map[string]any{"action": "update", "worker_id": "$worker", "expected_revision": "$worker_revision", "agent": ""}},
 	"swarm_manage_worker":      {swarm: map[string]any{"worker_id": "$jobworker", "action": "cancel_run", "run_id": "probe-cancel-a"}, catalog: map[string]any{"action": "update", "worker_id": "$jobworker", "run_id": "probe-cancel-b"}},
 	"swarm_create_worker":      {swarm: map[string]any{"name": "Probe A", "instructions": "Probe.", "workspace_path": "$folder"}, catalog: map[string]any{"action": "create", "name": "Probe B", "instructions": "Probe.", "workspace_path": "$folder"}},
 	"swarm_deploy_worker":      {swarm: map[string]any{"preset": "finder"}, catalog: map[string]any{"action": "create", "preset": "reviewer"}},
@@ -465,6 +465,13 @@ func (h *catalogParityHarness) seedSwarmAnswerProbes(t *testing.T, folder string
 				return string(access.Tasks), true
 			}
 			return float64(access.Revision), true
+		case "$worker_revision":
+			// Read when placed: the swarm_* probe before it changes it.
+			record, found, err := store.WorkerStore().GetWorker(h.home.account, h.workers[""])
+			if err != nil || !found {
+				t.Fatalf("worker: %v %v", found, err)
+			}
+			return float64(record.Revision), true
 		case "$limits_revision", "$limits":
 			limits, err := store.GetLimits(h.home.account)
 			if err != nil {

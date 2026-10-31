@@ -17,7 +17,8 @@ import (
 //     workspace_path or the swarm_* way (project, workspace); a full replace
 //     needs replace: true with base_image, and clears setup and env not
 //     given.
-//     The declared description says exactly this.
+//     The declared description says exactly this. reset and rebuild with a
+//     change are refused, never run with the change dropped.
 //   - Threat/regression: a swarm_*-shaped update of one field
 //     ({project, env}) going to swarm_set_environment's PUT and silently
 //     wiping the folder's image and setup.
@@ -117,6 +118,22 @@ func TestUpdateEnvironmentMergesUnlessReplaceIsTrue(t *testing.T) {
 	}
 	if got := definition(); got.BaseImage != "img:2" || len(got.Setup) != 0 || len(got.Env) != 0 {
 		t.Fatalf("a workspace_path replace kept fields not given: %+v", got)
+	}
+
+	// reset and rebuild do not go with a change: refused in either shape,
+	// naming the inputs, and the definition stays.
+	kept := definition()
+	for _, args := range []map[string]any{
+		{"project": "env-project", "reset": true, "env": map[string]any{"D": "4"}},
+		{"workspace_path": folder, "rebuild": true, "setup": []any{"make"}},
+		{"workspace_path": folder, "rebuild": true, "reset": true},
+	} {
+		if refused := update(args); !strings.Contains(refused, "does not go with") {
+			t.Fatalf("update %v was not refused: %q", args, refused)
+		}
+	}
+	if got := definition(); !reflect.DeepEqual(got, kept) {
+		t.Fatalf("a refused reset or rebuild changed the definition: %+v -> %+v", kept, got)
 	}
 
 	// The declared description states the merge and the replace.

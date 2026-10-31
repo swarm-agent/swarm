@@ -48,6 +48,16 @@ linked machine, and the Orchestrator keeps its own watch and turn model:
   preset, role or worker, and `update` with `agent`, `run_id` (cancel that
   run) or `schedule_id` with `schedule_enabled`. Through Swarm Control a
   worker is active at once; the Orchestrator proposes it for acceptance.
+  Every input a call gives is applied, or the call is refused naming the
+  inputs that would not apply, and nothing changes. `update` with `agent`
+  applies it with every other field in one write at the caller's
+  `expected_revision`; `run_id` cancels a run and goes with nothing else;
+  `schedule_id` honours `expected_revision`. A folder `create` also takes
+  `agent`, `model`, `budget`, `requested_capabilities`, `automations` and
+  `idempotency_key` (not `workspace_requirements`, `local_bindings` or
+  `document`); a `preset`, `role` or `worker` create takes `name`,
+  `description`, `instructions`, `agent`, `model` and `budget`.
+  `update_environment`'s `reset` and `rebuild` go with no other change.
 
 A folder environment read in the `swarm_*` shape (a `project` or
 `workspace`, no `workspace_path`, or `include_log`) runs

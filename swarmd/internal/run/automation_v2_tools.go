@@ -839,79 +839,7 @@ func (s *Service) manageWorkersAction(current store.SessionSnapshot, readID, act
 		return s.executeCreateOrProposePendingWorker(readID, args, "manage_workers", true, profile...)
 
 	case "update":
-		budget, err := workerToolBudget(args)
-		if err != nil {
-			return "", err
-		}
-		workerID := strings.TrimSpace(firstNonEmptyString(mapString(args, "worker_id"), mapString(args, "id")))
-		if workerID == "" {
-			return "", errors.New("worker_id is required for update")
-		}
-		expectedRevision, ok := parseUint64Arg(args, "expected_revision")
-		if !ok || expectedRevision == 0 {
-			return "", errors.New("expected_revision is required for update")
-		}
-		selectedModel, err := s.workerToolModel(current, args)
-		if err != nil {
-			return "", err
-		}
-		req := store.UpdateWorkerRequest{
-			Budget:        budget,
-			ModelProfile:  selectedModel,
-			ProposeModel:  selectedModel != nil,
-			ChangeSummary: strings.TrimSpace(mapString(args, "change_summary")),
-		}
-		if val, ok := args["name"].(string); ok {
-			trimmed := strings.TrimSpace(val)
-			req.Name = &trimmed
-		}
-		if val, ok := args["description"].(string); ok {
-			trimmed := strings.TrimSpace(val)
-			req.Description = &trimmed
-		}
-		if val, ok := args["instructions"].(string); ok {
-			req.Instructions = &val
-		}
-		if capsRaw, ok := args["requested_capabilities"]; ok {
-			if err := unmarshalJSONArg(capsRaw, &req.RequestedCapabilities); err != nil {
-				return "", err
-			}
-		}
-		if wsReqsRaw, ok := args["workspace_requirements"]; ok {
-			if err := unmarshalJSONArg(wsReqsRaw, &req.WorkspaceRequirements); err != nil {
-				return "", err
-			}
-		}
-		if autosRaw, ok := args["automations"]; ok {
-			if err := unmarshalJSONArg(autosRaw, &req.Automations); err != nil {
-				return "", err
-			}
-		}
-		if metaRaw, ok := args["metadata"].(map[string]any); ok {
-			req.Metadata = metaRaw
-		}
-		existing, found, err := s.sessions.GetWorker(current.AccountScopeID, workerID)
-		if err != nil {
-			return "", err
-		}
-		if !found {
-			return "", store.ErrWorkerNotFound
-		}
-		if err := s.ValidateWorkerAgent(current.AccountScopeID, existing); err != nil {
-			return "", err
-		}
-		w, err := s.sessions.UpdateWorker(current.AccountScopeID, current.UserID, workerID, expectedRevision, req)
-		if err != nil {
-			return "", err
-		}
-		raw, err := json.Marshal(map[string]any{
-			"status": "updated",
-			"worker": w,
-		})
-		if selectedModel != nil || budget != nil {
-			return workerProposalToolOutput(w)
-		}
-		return string(raw), err
+		return s.updateWorkerFromArgs(current, args, false)
 
 	case "attach":
 		workerID := strings.TrimSpace(firstNonEmptyString(mapString(args, "worker_id"), mapString(args, "id")))
@@ -1183,4 +1111,100 @@ func (s *Service) workerToolView(w store.WorkerRecord) any {
 		store.WorkerRecord
 		Model map[string]any `json:"model"`
 	}{w, summary}
+}
+
+// updateWorkerFromArgs is manage_workers update: every field given is applied
+// in one write at the caller's expected_revision (a stale revision is
+// refused). allowAgent is true for a Swarm Control caller only, whose agent
+// input (swarm_update_worker's) changes the worker's custom agent in the
+// same write; a conversation's agent never reaches here.
+func (s *Service) updateWorkerFromArgs(current store.SessionSnapshot, args map[string]any, allowAgent bool) (string, error) {
+	budget, err := workerToolBudget(args)
+	if err != nil {
+		return "", err
+	}
+	workerID := strings.TrimSpace(firstNonEmptyString(mapString(args, "worker_id"), mapString(args, "id")))
+	if workerID == "" {
+		return "", errors.New("worker_id is required for update")
+	}
+	expectedRevision, ok := parseUint64Arg(args, "expected_revision")
+	if !ok || expectedRevision == 0 {
+		return "", errors.New("expected_revision is required for update")
+	}
+	selectedModel, err := s.workerToolModel(current, args)
+	if err != nil {
+		return "", err
+	}
+	req := store.UpdateWorkerRequest{
+		Budget:        budget,
+		ModelProfile:  selectedModel,
+		ProposeModel:  selectedModel != nil,
+		ChangeSummary: strings.TrimSpace(mapString(args, "change_summary")),
+	}
+	if val, ok := args["name"].(string); ok {
+		trimmed := strings.TrimSpace(val)
+		req.Name = &trimmed
+	}
+	if val, ok := args["description"].(string); ok {
+		trimmed := strings.TrimSpace(val)
+		req.Description = &trimmed
+	}
+	if val, ok := args["instructions"].(string); ok {
+		req.Instructions = &val
+	}
+	if capsRaw, ok := args["requested_capabilities"]; ok {
+		if err := unmarshalJSONArg(capsRaw, &req.RequestedCapabilities); err != nil {
+			return "", err
+		}
+	}
+	if wsReqsRaw, ok := args["workspace_requirements"]; ok {
+		if err := unmarshalJSONArg(wsReqsRaw, &req.WorkspaceRequirements); err != nil {
+			return "", err
+		}
+	}
+	if autosRaw, ok := args["automations"]; ok {
+		if err := unmarshalJSONArg(autosRaw, &req.Automations); err != nil {
+			return "", err
+		}
+	}
+	if metaRaw, ok := args["metadata"].(map[string]any); ok {
+		req.Metadata = metaRaw
+	}
+	if allowAgent {
+		// swarm_update_worker's agent (a Swarm Control input): applied in the
+		// same revision-checked write as every other field given.
+		if raw, present := args["agent"]; present {
+			agent, ok := raw.(string)
+			if !ok {
+				return "", errors.New("agent must be a custom agent name, or empty to clear it")
+			}
+			agent = strings.TrimSpace(agent)
+			req.Agent = &agent
+		}
+	}
+	existing, found, err := s.sessions.GetWorker(current.AccountScopeID, workerID)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", store.ErrWorkerNotFound
+	}
+	if req.Agent != nil {
+		existing.Agent = *req.Agent
+	}
+	if err := s.ValidateWorkerAgent(current.AccountScopeID, existing); err != nil {
+		return "", err
+	}
+	w, err := s.sessions.UpdateWorker(current.AccountScopeID, current.UserID, workerID, expectedRevision, req)
+	if err != nil {
+		return "", err
+	}
+	raw, err := json.Marshal(map[string]any{
+		"status": "updated",
+		"worker": w,
+	})
+	if selectedModel != nil || budget != nil {
+		return workerProposalToolOutput(w)
+	}
+	return string(raw), err
 }

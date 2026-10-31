@@ -2852,8 +2852,30 @@ func controlMCPWorkerCreateBody(args map[string]any) (map[string]any, map[string
 		}
 		body["metadata"] = map[string]any{"project_id": projectID}
 	}
+	// The other definition inputs a caller may give with a folder
+	// (manage_workers create over Swarm Control): applied in the same create.
+	if agent := controlMCPString(args, "agent"); agent != "" {
+		body["agent"] = agent
+	}
+	if key := controlMCPString(args, "idempotency_key"); key != "" {
+		body["idempotency_key"] = key
+	}
+	if raw, ok := args["requested_capabilities"]; ok && raw != nil {
+		body["requested_capabilities"] = raw
+	}
+	automations := []any{}
+	if raw, ok := args["automations"]; ok && raw != nil {
+		list, ok := raw.([]any)
+		if !ok {
+			return nil, nil, controlMCPToolFailure("automations must be a list")
+		}
+		automations = append(automations, list...)
+	}
 	if automation != nil {
-		body["automations"] = []map[string]any{automation}
+		automations = append(automations, automation)
+	}
+	if len(automations) > 0 {
+		body["automations"] = automations
 	}
 	return body, automation, nil
 }
@@ -2862,6 +2884,16 @@ func controlMCPCreateWorker(c *controlMCPCall, args map[string]any) (any, error)
 	body, automation, err := controlMCPWorkerCreateBody(args)
 	if err != nil {
 		return nil, err
+	}
+	if raw, present := args["budget"]; present {
+		if _, err := parseControlMCPWorkerBudget(raw); err != nil {
+			return nil, err
+		}
+	}
+	if raw, exists := args["model"]; exists && raw != nil {
+		if _, err := c.workerModel(raw); err != nil {
+			return nil, err
+		}
 	}
 	workspaceID, err := c.workspaceID(controlMCPString(args, "workspace_path"))
 	if err != nil {
@@ -2875,6 +2907,20 @@ func controlMCPCreateWorker(c *controlMCPCall, args map[string]any) (any, error)
 	workerID, _ := worker["id"].(string)
 	if !controlMCPSafeID.MatchString(workerID) {
 		return nil, controlMCPToolFailure("worker created without a usable id")
+	}
+	// A budget and a model given with the folder are set before the worker
+	// is active, so it never runs without them.
+	if raw, present := args["budget"]; present {
+		if _, err := c.deployWorkerWithBudget(worker, map[string]any{"budget": raw}); err != nil {
+			return nil, controlMCPToolFailure("worker %s created but budget not applied; not activated: %s", workerID, err)
+		}
+	}
+	if raw, exists := args["model"]; exists && raw != nil {
+		pinned, err := c.dispatch(http.MethodPut, "/v3/workers/"+workerID+"/model", nil, map[string]any{"expected_revision": controlMCPRevision(worker), "model": raw})
+		if err != nil {
+			return nil, controlMCPToolFailure("worker %s created but model not pinned; not activated: %s", workerID, err)
+		}
+		worker = controlMCPMap(pinned["worker"])
 	}
 	activated, err := c.dispatch(http.MethodPost, "/v3/workers/"+workerID+"/activate", nil, map[string]any{
 		"expected_revision": controlMCPRevision(worker),
@@ -2950,7 +2996,17 @@ func controlMCPManageWorker(c *controlMCPCall, args map[string]any) (any, error)
 		if err != nil {
 			return nil, err
 		}
-		response, err := c.dispatch(http.MethodPost, "/v3/workers/"+workerID+"/automations/"+scheduleID+"/"+strings.TrimSuffix(action, "_schedule"), nil, map[string]any{"expected_worker_revision": controlMCPRevision(worker)})
+		revision := controlMCPRevision(worker)
+		if raw, given := args["expected_revision"]; given {
+			// The caller's revision (manage_workers update), so a stale
+			// one is refused by the route instead of overwritten.
+			value, ok := raw.(float64)
+			if !ok || value < 1 || value != float64(uint64(value)) {
+				return nil, controlMCPToolFailure("expected_revision must be the worker's revision (a whole number)")
+			}
+			revision = uint64(value)
+		}
+		response, err := c.dispatch(http.MethodPost, "/v3/workers/"+workerID+"/automations/"+scheduleID+"/"+strings.TrimSuffix(action, "_schedule"), nil, map[string]any{"expected_worker_revision": revision})
 		if err != nil {
 			return nil, err
 		}

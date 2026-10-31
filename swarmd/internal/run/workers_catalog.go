@@ -41,6 +41,9 @@ func (s *Service) ManageWorkers(ctx context.Context, p identity.Principal, sessi
 	}
 	if _, control := tool.ControlScopesFromContext(ctx); control {
 		current := store.SessionSnapshot{AccountScopeID: p.AccountScopeID, UserID: p.UserID}
+		if action == "update" {
+			return s.updateWorkerFromArgs(current, args, true)
+		}
 		return s.manageWorkersAction(current, "", action, args, string(arguments))
 	}
 	current, found, err := s.sessions.GetSession(sessionID)
