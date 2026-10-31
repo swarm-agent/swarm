@@ -81,6 +81,9 @@ properties, as every catalog tool's does). `manage_sessions`' and
 `manage_workspace`'s replace the hand-written trims with their orchestrator
 profiles (`TestManageSessionsOrchestratorDefinitionIsTheCatalogs`,
 `TestManageWorkspaceOrchestratorDefinitionIsTheCatalogs`).
+`manage_workflows`' description and fields changed since, on purpose and with
+its hash: workflows named by id or name, propose's `description`,
+`expected_revision` and `replace` (and no `revision`), and the `refused` state.
 
 ## manage_workflows
 
@@ -118,6 +121,49 @@ With `machine`, an action runs on the linked machine through
 which runs that machine's `ManageWorkflows`, never its owner's import or
 restore route. The linked work rule (`linked.{name}.work`) applies as for
 every linked call.
+
+Naming, changes and answers, the same here and on a linked machine:
+
+- **A workflow by id or name.** `get`, `enable`, `disable`, `delete`,
+  `export`, `history`, `restore` and `propose` take a workflow's id or its
+  name in `id` or `name`, by one rule (`resolveWorkflowReference`): an exact
+  id, else the exact name, else the name in any case; among workflows of
+  that name the accepted one wins over pending proposals. Several matches
+  are refused, naming each (`name (id, state)`). On a linked machine the
+  home resolves against that machine's own list, then calls its route with
+  the id. `history` and `restore` also find a deleted workflow by name.
+- **Description.** A workflow has an optional `description` (at most 2,000
+  characters), shown by `list`, `get` and `export`, kept by `import`,
+  `restore` and history (a change to it is a changed field).
+- **propose.** A new workflow needs its full definition. Naming an existing
+  workflow (`id`, or `name` when a workflow has that exact name) makes the
+  call a change merged onto its current revision: only the fields given
+  change, `scope` key by key, each step given by its `id` into that step
+  (`null` removes a field), and with `id`, a different `name` renames it
+  (the workflow keeps its id). `expected_revision`, when given, must be the
+  current revision, else the change is refused; acceptance still checks the
+  base revision. Adding, removing or reordering steps is `replace: true`,
+  which sends the whole definition (keeping the name and folder it does
+  not set). A field propose does not take is refused, naming it, before
+  anything is saved and before a linked call. The answer has `changes` (the
+  changed fields), `merged_onto_revision` or `replaced`, and a `next_action`:
+  the person accepts or discards the proposal in their Swarm app; an AI
+  cannot.
+- **history** lists `pending_proposals` beside the revisions: each
+  proposal's id, `state` `pending`, who proposed it, the revision it
+  replaces and the fields it changes.
+- **export** carries the scope as the workflow's project (`project`, and
+  `workspace` in a project with several folders), never a folder path on
+  its own. `import` binds the call's `project`/`workspace` when given;
+  else the definition's project on this machine; a project the machine
+  does not have is refused, asking for `project`, never bound wider.
+- **Run steps.** `import` and `restore` of a run step stay the machine
+  owner's: the owner's routes answer 403 to a key without `admin`, and the
+  catalog answers the envelope with state `refused`, `data.reason` and a
+  `next_action` (import without the run step, or ask the machine's owner).
+  Nothing is saved.
+- **Answers** name catalog tools and actions only. A saved workflow that is
+  disabled is said not to run until it is enabled.
 
 ## manage_jobs
 
@@ -486,8 +532,9 @@ and on a linked machine:
 | `milestone`, `settled`, `timed_out` | Swarm Control's `wait_tasks` (below). |
 | `partial` | The call ran but part of its answer is missing: the home could not keep its record of a send (`linked_record_error`) or could not read the machine's answer (`data_error`). |
 | `waiting` | The record the call read or changed waits on someone: a job waiting on its question or an approval (`CatalogAction.WaitingStatuses`). Its own status stays in `data`. |
+| `refused` | The action declined what was asked and changed nothing: `data.reason` says why and `next_action` what to do instead. Only an action that declares it answers it (`manage_workflows` `import` and `restore` of a run step). |
 
-An action's answer `status` becomes `state` only when the action declares it (`CatalogAction.States`). A refused or failed call is not an envelope: it is a tool error that carries the reason (MCP `isError`). `tool.CheckEnvelope` holds an answer to this contract, and `TestCatalogEnvelopeContractEveryAction` runs every action through both surfaces against it.
+An action's answer `status` becomes `state` only when the action declares it (`CatalogAction.States`). Any other refused or failed call is not an envelope: it is a tool error that carries the reason (MCP `isError`). `tool.CheckEnvelope` holds an answer to this contract, and `TestCatalogEnvelopeContractEveryAction` runs every action through both surfaces against it.
 
 Data the task views carry for every reader:
 

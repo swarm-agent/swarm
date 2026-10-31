@@ -855,7 +855,24 @@ Design jobs now end with `design.job.completed`, `design.job.failed` or
   `deliveries`, `history`, `propose` (the person accepts or discards it),
   `enable`, `disable`, `delete`, `export`, `import`, `restore`, `stop_all`
   and `help`. Its caller is never the machine owner: `import` and `restore`
-  refuse `run` steps, and a proposal with one needs the owner to accept it.
+  refuse `run` steps (the answer's state is `refused`, with the reason and
+  what to do instead: import without the run step, or ask the machine's
+  owner), and a proposal with one needs the owner to accept it.
+  Every action names a workflow by its id or its name; a name several
+  workflows share is refused, naming each. A workflow has an optional
+  `description` (at most 2,000 characters), shown by `list`, `get` and
+  `export` and kept by `import`, `restore` and history. `propose` with an
+  existing workflow's id or name sends only what changes, merged onto its
+  current revision (each step by its `id`; `expected_revision` refuses the
+  change if the workflow moved on; a new `name` with `id` renames it);
+  `replace: true` sends the whole definition, as adding, removing or
+  reordering steps needs. Fields `propose` does not take are refused by
+  name. The person accepts or discards a proposal in their Swarm app;
+  `history` lists pending proposals with their state. `export` carries
+  the workflow's project as its scope; `import` binds the project the call
+  names, else that project on this machine, and refuses one the machine
+  does not have rather than binding a wider folder. A disabled workflow
+  does not run until it is enabled.
   The `swarm_*` workflow tools below remain until the catalog replaces them.
 - MCP: `swarm_set_workflow`, `swarm_list_workflows` (every workflow exactly as
   Swarm runs it, with its last 3 deliveries one line each: delivery id, job,
@@ -870,7 +887,8 @@ Design jobs now end with `design.job.completed`, `design.job.failed` or
   `swarm_get_job` and `automation: true` on `swarm_deliver_job`).
 - API (`automations:read` to read, `automations:write` to change, and
   `admin` or the local owner to save a `run` step):
-  `GET/POST /v3/workflows`, `GET/DELETE /v3/workflows/{id}`,
+  `GET/POST /v3/workflows`, `GET/DELETE /v3/workflows/{id}` (an id or a
+  name),
   `GET/POST /v3/workflows/stop`, `GET /v3/job-deliveries`
   (`job_id`, `automation_id`, `state`, `limit`), `GET
   /v3/job-deliveries/{id}`, `POST /v3/job-deliveries/{id}/rerun`.
