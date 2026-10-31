@@ -140,6 +140,10 @@ type ReopenRequest struct {
 	Message string
 	// RequestID makes the send idempotent across a restart.
 	RequestID string
+	// Recovery marks the stall check's one re-send of a recorded reopen
+	// whose run never came (the job has had no run for the stall window): a
+	// status that still says a run without one recorded is then not busy.
+	Recovery bool
 }
 
 // Reopener sends a follow-up into a job's own session exactly as
@@ -169,6 +173,15 @@ type ReopenSent struct {
 // only while no run can take the message yet.
 type QueueingReopener interface {
 	ReopenOrQueue(ctx context.Context, req ReopenRequest) (ReopenSent, error)
+}
+
+// FollowupRunChecker is a Reopener that can confirm a follow-up it accepted
+// is carried by a run recorded on the job's session. A reopen step records
+// the work as sent back only once the run is confirmed; an accepted
+// follow-up without a run blocks the delivery with ReasonReopenNotStarted,
+// never sent_back with no run.
+type FollowupRunChecker interface {
+	FollowupRunStarted(ctx context.Context, account, jobID, followup string) (bool, error)
 }
 
 // BusyError is a Reopener's answer for a job whose run or follow-up is still
@@ -1386,14 +1399,7 @@ func (r *Runner) runReopen(ctx context.Context, d *Delivery, record *StepRecord,
 	if failure := r.roundsExhausted(d, record, step); failure.reason != "" {
 		return failure
 	}
-	var parts []string
-	if step.Message != "" {
-		parts = append(parts, reopenMessage(*d, step.Message))
-	}
-	if findings != "" {
-		parts = append(parts, findings)
-	}
-	text := strings.Join(append(parts, ReopenClosing), "\n\n")
+	text := reopenText(*d, step, findings)
 	req := ReopenRequest{Account: d.Account, JobID: d.JobID, Message: text, RequestID: agentIdempotencyKey(*d, step.ID)}
 	// A QueueingReopener queues the message for a run in flight (sent,
 	// queued) like the message path. Otherwise, and while no run can take
@@ -1442,19 +1448,78 @@ func (r *Runner) runReopen(ctx context.Context, d *Delivery, record *StepRecord,
 	}
 }
 
+// reopenText is the follow-up a reopen step sends: its message (placeholders
+// replaced) and the from step's findings, then ReopenClosing.
+func reopenText(d Delivery, step Step, findings string) string {
+	var parts []string
+	if step.Message != "" {
+		parts = append(parts, reopenMessage(d, step.Message))
+	}
+	if findings != "" {
+		parts = append(parts, findings)
+	}
+	return strings.Join(append(parts, ReopenClosing), "\n\n")
+}
+
+// ReopenText is the follow-up the delivery's reopen step stepID sent (or
+// sends), as runReopen builds it; ok is false when the step is not a reopen
+// step of the delivery or has nothing to send.
+func ReopenText(d Delivery, stepID string) (string, bool) {
+	step, ok := d.step(stepID)
+	if !ok || step.Type != StepReopen {
+		return "", false
+	}
+	findings := ""
+	for _, s := range d.Steps {
+		if step.From != "" && s.ID == step.From {
+			findings, _ = s.Outcome["findings"].(string)
+		}
+	}
+	findings = strings.TrimSpace(findings)
+	if findings == "" && step.Message == "" {
+		return "", false
+	}
+	return reopenText(d, step, findings), true
+}
+
+// IsRebaseReopen reports whether the delivery's reopen step stepID sends (or
+// sent) the work back only because the push needs a rebase: the review
+// passed and the failed step said "rebase needed" (dev moved and changed
+// files the job also changed). Such a reopen is not the agent's fault: it
+// counts against RebaseMaxRounds, never against the review rounds.
+func IsRebaseReopen(d Delivery, stepID string) bool {
+	cause, failure := ReopenCause(d, stepID)
+	return cause == pebblestore.ProjectTaskReopenPushFailed && strings.Contains(strings.ToLower(failure), "rebase needed")
+}
+
 // roundsExhausted reads the reopens the automation sent into the job and
 // fails the reopen step, blocking the delivery, when another reopen would
 // exceed the step's own max_rounds (its reopens only, past its re-run base)
 // or the job's overall bound: the sum of the definition's reopen steps'
 // max_rounds, over all of them past the delivery's RoundBase. The blocked
-// reason names the step that ran out.
+// reason names the step that ran out. A rebase reopen (IsRebaseReopen) is
+// bound only by RebaseMaxRounds over the job's rebase reopens; review
+// rounds never count rebase reopens.
 func (r *Runner) roundsExhausted(d *Delivery, record *StepRecord, step Step) stepFailure {
 	rounds, err := r.store.ReopenRounds(d.Account, d.JobID, d.AutomationID)
 	if err != nil {
 		return stepFailure{reason: truncate("read the round count: "+err.Error(), 300), next: "rerun"}
 	}
 	d.Round = max(d.Round, rounds.Total)
-	total := d.Round - d.RoundBase
+	if IsRebaseReopen(*d, step.ID) {
+		used := max(rounds.Rebase-d.RebaseBase, 0)
+		if used >= RebaseMaxRounds {
+			_, failure := ReopenCause(*d, step.ID)
+			reason := truncate(fmt.Sprintf("%s: step %s: round %d not started: %d of %d rebase reopens used and the push still needs a rebase (%s)",
+				ReasonRebaseRoundsExhausted, step.ID, d.Round+1, used, RebaseMaxRounds, failure), 300)
+			d.BlockedReason = reason
+			record.Output = fmt.Sprintf("%d of %d rebase reopens used; nothing was sent", used, RebaseMaxRounds)
+			return stepFailure{reason: reason, next: "rebase onto the target by hand (swarm_message_job), or swarm_deliver_job automation=true once the target settles", refused: true}
+		}
+		return stepFailure{}
+	}
+	// Review rounds past the re-run base: rebase reopens are not among them.
+	total := max((d.Round-rounds.Rebase)-(d.RoundBase-d.RebaseBase), 0)
 	used := rounds.Step(step.ID)
 	if base, ok := d.StepRoundBase[step.ID]; ok {
 		used -= base
@@ -1531,6 +1596,26 @@ func (r *Runner) sendReopen(ctx context.Context, d *Delivery, record *StepRecord
 		sent.Followup, err = r.reopen.Reopen(ctx, req)
 	}
 	followup := sent.Followup
+	if err == nil {
+		if checker, ok := r.reopen.(FollowupRunChecker); ok {
+			// Never record sent_back with no run: the follow-up counts as
+			// sent only once a run on the job's session carries it.
+			started, checkErr := checker.FollowupRunStarted(ctx, d.Account, d.JobID, followup)
+			if checkErr != nil {
+				if ctx.Err() != nil {
+					return false, stepFailure{}, ""
+				}
+				return false, stepFailure{reason: truncate("confirm the follow-up's run: "+checkErr.Error(), 300), next: "rerun"}, ""
+			}
+			if !started {
+				reason := truncate(fmt.Sprintf("%s: step %s: round %d not started: %s accepted follow-up %q but no run started on its session",
+					ReasonReopenNotStarted, step.ID, d.Round+1, d.JobID, followup), 300)
+				d.BlockedReason = reason
+				record.Output = "the follow-up was accepted but no run started; no round was used"
+				return false, stepFailure{reason: reason, next: "swarm_message_job by hand, or swarm_deliver_job automation=true", refused: true}, ""
+			}
+		}
+	}
 	if err != nil {
 		var refused *RefusedError
 		if errors.As(err, &refused) {
@@ -1545,7 +1630,8 @@ func (r *Runner) sendReopen(ctx context.Context, d *Delivery, record *StepRecord
 		}
 		return false, stepFailure{reason: truncate("could not send the follow-up: "+err.Error(), 300), next: "rerun"}, ""
 	}
-	if err := r.store.PutReopen(d.Account, d.JobID, followup, ReopenRecord{DeliveryID: d.ID, AutomationID: d.AutomationID, Step: step.ID, Round: d.Round, RoundBase: d.RoundBase}); err != nil {
+	if err := r.store.PutReopen(d.Account, d.JobID, followup, ReopenRecord{DeliveryID: d.ID, AutomationID: d.AutomationID, Step: step.ID, Round: d.Round, RoundBase: d.RoundBase,
+		Rebase: IsRebaseReopen(*d, step.ID)}); err != nil {
 		return false, stepFailure{reason: truncate("record the reopen: "+err.Error(), 300), next: "rerun"}, ""
 	}
 	record.Reason = ""

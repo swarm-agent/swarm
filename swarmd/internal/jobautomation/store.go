@@ -78,6 +78,16 @@ const ReasonJobRoundsExhausted = ReasonRoundsExhausted + ": job"
 // already has a delivery (active or finished) for the job at that head.
 const ReasonDuplicateHead = "duplicate_head"
 
+// ReasonRebaseRoundsExhausted starts the blocked reason when a reopen sent
+// because the push needs a rebase (dev moved) would exceed RebaseMaxRounds.
+// It is not a rounds_exhausted reason: the review passed, so nothing about
+// it is a review that still blocks.
+const ReasonRebaseRoundsExhausted = "rebase_rounds_exhausted"
+
+// ReasonReopenNotStarted starts the blocked reason when the job's session
+// accepted a reopen step's follow-up but no run started to carry it.
+const ReasonReopenNotStarted = "reopen_not_started"
+
 // Reasons swarm_deliver_job automation=true leaves a delivery unchanged.
 const (
 	// ReasonSuperseded: an older delivery; only the newest is re-run.
@@ -120,15 +130,19 @@ type Delivery struct {
 	// StepRoundBase is RoundBase per reopen step id: each reopen step allows
 	// its own max_rounds past its base, counting only the reopens it sent.
 	StepRoundBase map[string]int `json:"step_round_base,omitempty"`
-	State         string         `json:"state"`
-	Retries       int            `json:"retries"`
-	Folder        string         `json:"folder"`
-	Steps         []StepRecord   `json:"steps"`
-	Definition    []Step         `json:"definition"`
-	Result        Result         `json:"result"`
-	CreatedAt     int64          `json:"created_at"`
-	StartedAt     int64          `json:"started_at,omitempty"`
-	FinishedAt    int64          `json:"finished_at,omitempty"`
+	// RebaseBase is ReopenRounds.Rebase where an explicit re-run restarted
+	// the count (part of RoundBase): rebase reopens past it count against
+	// RebaseMaxRounds, and the review rounds past RoundBase exclude them.
+	RebaseBase int          `json:"rebase_base,omitempty"`
+	State      string       `json:"state"`
+	Retries    int          `json:"retries"`
+	Folder     string       `json:"folder"`
+	Steps      []StepRecord `json:"steps"`
+	Definition []Step       `json:"definition"`
+	Result     Result       `json:"result"`
+	CreatedAt  int64        `json:"created_at"`
+	StartedAt  int64        `json:"started_at,omitempty"`
+	FinishedAt int64        `json:"finished_at,omitempty"`
 	// Reruns counts explicit re-runs (swarm_deliver_job automation: true).
 	Reruns int `json:"reruns,omitempty"`
 	// Head is the commit the delivery delivers: the triggering job's head,
@@ -176,15 +190,30 @@ type ReopenRecord struct {
 	Step      string `json:"step,omitempty"`
 	Round     int    `json:"round"`
 	RoundBase int    `json:"round_base,omitempty"`
+	// Rebase is set when the reopen sent the work back only because the push
+	// needs a rebase (IsRebaseReopen): it counts against RebaseMaxRounds,
+	// never against the review rounds (max_rounds or the job's bound).
+	Rebase bool `json:"rebase,omitempty"`
+	// Retry is set on a follow-up that re-sent an already counted round
+	// whose run never started (RecordReopenRetry): it counts no round.
+	Retry bool `json:"retry,omitempty"`
 }
 
 // ReopenRounds is how many follow-ups an automation's reopen steps sent into
 // one job: in total and per reopen step id. Unattributed counts older records
-// whose step could not be read back; they count against every step.
+// whose step could not be read back; they count against every step. Rebase
+// counts the rebase reopens (ReopenRecord.Rebase): they are in Total (the
+// round shown) but in no Steps entry, so they use none of the review rounds.
 type ReopenRounds struct {
 	Total        int
 	Steps        map[string]int
 	Unattributed int
+	Rebase       int
+}
+
+// Review is how many of Total were review rounds (not rebase reopens).
+func (r ReopenRounds) Review() int {
+	return r.Total - r.Rebase
 }
 
 // Step is how many reopens count against the reopen step id.
@@ -368,10 +397,14 @@ func (s *Store) ReopenRounds(account, jobID, automationID string) (ReopenRounds,
 		if err := json.Unmarshal(value, &rec); err != nil {
 			return fmt.Errorf("decode reopen: %w", err)
 		}
-		if rec.AutomationID != automationID {
+		if rec.AutomationID != automationID || rec.Retry {
 			return nil
 		}
 		out.Total++
+		if rec.Rebase {
+			out.Rebase++
+			return nil
+		}
 		if rec.Step == "" {
 			unnamed = append(unnamed, legacy{rec.DeliveryID, strings.TrimPrefix(key, prefix)})
 		} else {
@@ -421,6 +454,48 @@ func reopenBases(steps []Step, rounds ReopenRounds) map[string]int {
 		}
 	}
 	return out
+}
+
+// RecordReopenRetry records that the reopen of the sent_back delivery
+// deliveryID (its reopen step stepID), whose follow-up never ran, was sent
+// again as followup (the stall check's one retry). The step then names the
+// new follow-up, so its end continues the delivery's round, and keeps the
+// one it replaces as retried_followup. The new follow-up's reopen record is a
+// retry: it counts no round, since the round was counted when first sent.
+func (s *Store) RecordReopenRetry(account, deliveryID, stepID, followup string) error {
+	if strings.TrimSpace(followup) == "" {
+		return errors.New("a reopen retry needs the follow-up it sent")
+	}
+	d, err := s.GetDelivery(account, deliveryID)
+	if err != nil {
+		return err
+	}
+	if d.State != StateSentBack {
+		return fmt.Errorf("delivery %s is %s, not sent_back", deliveryID, d.State)
+	}
+	for i := range d.Steps {
+		rec := &d.Steps[i]
+		if rec.ID != stepID || rec.Type != StepReopen {
+			continue
+		}
+		previous, _ := rec.Outcome["followup"].(string)
+		if previous == "" {
+			return fmt.Errorf("reopen step %s of delivery %s sent no follow-up", stepID, deliveryID)
+		}
+		if previous == followup {
+			return nil
+		}
+		round := outcomeInt(rec.Outcome["round"])
+		if err := s.PutReopen(account, d.JobID, followup, ReopenRecord{DeliveryID: d.ID, AutomationID: d.AutomationID, Step: stepID,
+			Round: max(round-1, 0), RoundBase: d.RoundBase, Rebase: IsRebaseReopen(d, stepID), Retry: true}); err != nil {
+			return err
+		}
+		rec.Outcome["followup"], rec.Outcome["retried_followup"] = followup, previous
+		delete(rec.Outcome, "queued")
+		rec.Output = "re-sent to " + d.JobID + " (round " + strconv.Itoa(round) + "): follow-up " + previous + " left no run and no next step"
+		return s.SaveDelivery(d)
+	}
+	return fmt.Errorf("delivery %s has no reopen step %s", deliveryID, stepID)
 }
 
 // GetReopen reads what a reopen step recorded for a follow-up.
@@ -670,7 +745,7 @@ func (s *Store) CreateDelivery(a Automation, result Result) (Delivery, bool, err
 		}
 	}
 	createdAt := s.now().UnixMilli()
-	roundBase := 0
+	roundBase, rebaseBase := 0, 0
 	stepBase := map[string]int{}
 	for _, p := range previous {
 		// Deliveries of one job are ordered by creation: a new one is
@@ -685,6 +760,7 @@ func (s *Store) CreateDelivery(a Automation, result Result) (Delivery, bool, err
 			return p, false, nil
 		}
 		roundBase = max(roundBase, p.RoundBase)
+		rebaseBase = max(rebaseBase, p.RebaseBase)
 		for id, base := range p.StepRoundBase {
 			stepBase[id] = max(stepBase[id], base)
 		}
@@ -710,6 +786,7 @@ func (s *Store) CreateDelivery(a Automation, result Result) (Delivery, bool, err
 	}
 	d.Round = rounds.Total
 	d.RoundBase = min(roundBase, d.Round)
+	d.RebaseBase = min(rebaseBase, rounds.Rebase, d.RoundBase)
 	for id, base := range stepBase {
 		if base = min(base, rounds.Step(id)); base > 0 {
 			if d.StepRoundBase == nil {
@@ -1199,6 +1276,7 @@ func (s *Store) rerunLocked(d Delivery) (RerunOutcome, error) {
 		}
 		d.Round = max(d.Round, rounds.Total)
 		d.RoundBase, d.BlockedReason = d.Round, ""
+		d.RebaseBase = rounds.Rebase
 		d.StepRoundBase = reopenBases(d.Definition, rounds)
 		if d.Result.Git != nil {
 			d.Head, d.HeadWorktree = d.Result.Git.Head, d.Result.Git.Worktree

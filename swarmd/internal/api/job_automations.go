@@ -711,6 +711,35 @@ func (a jobAutomationReopener) ReopenOrQueue(ctx context.Context, req jobautomat
 	return jobautomation.ReopenSent{Followup: followup}, err
 }
 
+// FollowupRunStarted confirms a task's reopen follow-up is carried by a run
+// recorded on the task's session (jobautomation.FollowupRunChecker): the run
+// the message started, or the run it was queued for. A worker job's
+// follow-up is the run swarm_message_job returned, so it is not re-read.
+func (a jobAutomationReopener) FollowupRunStarted(_ context.Context, account, jobID, followup string) (bool, error) {
+	if !strings.HasPrefix(jobID, jobautomation.KindTask+"/") {
+		return true, nil
+	}
+	projectID, taskID, ok := parseTaskJobID(jobID)
+	if !ok {
+		return false, errors.New(jobID + " is not a task")
+	}
+	if strings.TrimSpace(followup) == "" {
+		return false, nil
+	}
+	if a.s == nil || a.s.sessions == nil || a.s.sessions.Store() == nil {
+		return false, errors.New("sessions unavailable")
+	}
+	task, found, err := a.s.sessions.Store().GetProjectTask(account, projectID, taskID)
+	if err != nil {
+		return false, err
+	}
+	if !found || task == nil || task.SessionID == "" {
+		return false, nil
+	}
+	_, found, err = a.s.sessions.GetSessionRunIntent(task.SessionID, followup)
+	return found, err
+}
+
 // Reopen sends the follow-up into the job's own session through
 // swarm_message_job's own path (controlMCPMessageJob): the same session and
 // worktree, never a new job. A cancelled job is refused with the reason; a

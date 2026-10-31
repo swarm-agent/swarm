@@ -389,9 +389,10 @@ func (s *Server) reopenTaskSent(ctx context.Context, req jobautomation.ReopenReq
 		return jobautomation.ReopenSent{}, err
 	}
 	switch {
-	case !active && (task.Status == "in_progress" || task.Status == "queued"):
+	case !active && (task.Status == "in_progress" || task.Status == "queued") && !req.Recovery:
 		// Its status says a run, but none is recorded yet: nothing can
-		// take the message.
+		// take the message. The stall check's recovery comes after a whole
+		// stall window with no run, so for it the status is stale.
 		return jobautomation.ReopenSent{}, &jobautomation.BusyError{Reason: "the task " + req.JobID + " is still running (" + task.Status + ")"}
 	case active:
 		noteRun := s.v3SessionExecutor.queuedNoteRunID(task.SessionID)

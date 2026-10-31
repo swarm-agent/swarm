@@ -66,6 +66,10 @@ const (
 const (
 	taskStallRecoveryReviewExtra = "review_extra"
 	taskStallRecoveryCommitNudge = "commit_nudge"
+	// taskStallRecoveryReopenRetry re-sends, once per delivery, the reopen
+	// of a workflow delivery that sent the task back when no run carried it
+	// for the stall window.
+	taskStallRecoveryReopenRetry = "reopen_retry"
 )
 
 // taskStallGit is what the uncommitted check reads from a task's worktree.
@@ -98,6 +102,10 @@ type taskStallVerdict struct {
 	Findings     string
 	AutomationID string
 	DeliveryID   string
+	// ReopenStep and Message are the sent_back delivery's reopen step and
+	// the follow-up it sent, re-sent by the reopen retry.
+	ReopenStep string
+	Message    string
 	// RunID is the task session's latest run.
 	RunID string
 	// LastChange is when the task's records last changed (Unix ms).
@@ -581,6 +589,25 @@ func (s *Server) taskStallVerdict(ctx context.Context, account string, task pebb
 		}
 		return v, true
 	}
+	// Sent back with no run: the newest delivery sent the work back into the
+	// task's session, yet no run has carried it for the stall window (the
+	// follow-up's run never started, or ended leaving no next step). Its
+	// reopen is re-sent once; after that the stall is reported.
+	if d, ok := taskStallSentBack(latest); ok && idle >= stallAfter {
+		v.AutomationID, v.DeliveryID, v.ReopenStep = d.AutomationID, d.ID, d.SentBack.Step
+		v.Kind = pebblestore.ProjectTaskStallNoNextStep
+		v.Reason = fmt.Sprintf("sent back by workflow %s (step %s, round %d) but no run for %s", d.AutomationName, d.SentBack.Step, d.SentBack.Round, taskStallMinutes(idle))
+		if _, done, err := db.GetTaskStallRecovery(account, task.ID, taskStallRecoveryReopenRetry, d.ID); err != nil {
+			return taskStallVerdict{}, false
+		} else if done {
+			v.Reason += " after one retry of the reopen"
+		} else if text, ok := jobautomation.ReopenText(d, d.SentBack.Step); ok {
+			v.Recover, v.Message = taskStallRecoveryReopenRetry, text
+		} else {
+			v.Reason += "; its follow-up could not be rebuilt"
+		}
+		return v, true
+	}
 	class := taskStatusClass(task.Status)
 	// Review exhausted: the newest delivery blocked because its reopen step
 	// ran out of rounds, and the reviewer still blocks.
@@ -668,6 +695,21 @@ func taskStallExhaustedReview(latest []jobautomation.Delivery) (jobautomation.De
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].CreatedAt > sorted[j].CreatedAt })
 	d := sorted[0]
 	if d.State != jobautomation.StateBlocked || !strings.HasPrefix(d.BlockedReason, jobautomation.ReasonRoundsExhausted) {
+		return jobautomation.Delivery{}, false
+	}
+	return d, true
+}
+
+// taskStallSentBack is the newest finished delivery when it ended sent_back
+// with the reopen step that sent the work back.
+func taskStallSentBack(latest []jobautomation.Delivery) (jobautomation.Delivery, bool) {
+	if len(latest) == 0 {
+		return jobautomation.Delivery{}, false
+	}
+	sorted := append([]jobautomation.Delivery(nil), latest...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].CreatedAt > sorted[j].CreatedAt })
+	d := sorted[0]
+	if d.State != jobautomation.StateSentBack || d.SentBack == nil || d.SentBack.Step == "" {
 		return jobautomation.Delivery{}, false
 	}
 	return d, true
@@ -798,6 +840,11 @@ func (s *Server) recoverTaskStall(ctx context.Context, account string, task pebb
 	case taskStallRecoveryCommitNudge:
 		id = v.Head
 		message = "Your run ended with uncommitted changes in your worktree and nothing is committed, so no review or next step can start. Finish the work, run the tests, commit, or say why not."
+	case taskStallRecoveryReopenRetry:
+		if v.Message == "" || v.DeliveryID == "" || v.ReopenStep == "" {
+			return false, "the workflow's follow-up could not be rebuilt"
+		}
+		id, message = v.DeliveryID, v.Message
 	default:
 		return false, ""
 	}
@@ -807,10 +854,25 @@ func (s *Server) recoverTaskStall(ctx context.Context, account string, task pebb
 		return false, ""
 	}
 	requestID := "task-stall:" + v.Recover + ":" + task.ID + ":" + id
-	followup, err := s.reopenTask(ctx, jobautomation.ReopenRequest{Account: account, JobID: taskRunJobID(task.ProjectID, task.ID), Message: message, RequestID: requestID})
+	jobID := taskRunJobID(task.ProjectID, task.ID)
+	retry := v.Recover == taskStallRecoveryReopenRetry
+	followup, err := s.reopenTask(ctx, jobautomation.ReopenRequest{Account: account, JobID: jobID, Message: message, RequestID: requestID, Recovery: retry})
 	if err != nil {
 		log.Printf("swarmd stall check: %s for task %s: %v", v.Recover, task.ID, err)
 		return false, clipOutcome(err.Error())
+	}
+	if retry {
+		// The retry counts only once a run carries it, and the delivery's
+		// reopen then names it, so its end continues the delivery's round.
+		started, err := jobAutomationReopener{s: s}.FollowupRunStarted(ctx, account, jobID, followup)
+		if err != nil || !started {
+			return false, "the workflow's follow-up was re-sent but no run started on the task's session"
+		}
+		if store, err := s.jobAutomationStore(); err != nil {
+			log.Printf("swarmd stall check: reopen retry for task %s: %v", task.ID, err)
+		} else if err := store.RecordReopenRetry(account, v.DeliveryID, v.ReopenStep, followup); err != nil {
+			log.Printf("swarmd stall check: record reopen retry of %s for task %s: %v", v.DeliveryID, task.ID, err)
+		}
 	}
 	if err := db.PutTaskStallRecovery(account, task.ID, pebblestore.TaskStallRecovery{Kind: v.Recover, ID: id, RunID: v.RunID, Followup: followup, At: time.Now().UnixMilli()}); err != nil {
 		log.Printf("swarmd stall check: record %s for task %s: %v", v.Recover, task.ID, err)

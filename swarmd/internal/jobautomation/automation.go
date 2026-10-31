@@ -105,13 +105,18 @@ const (
 	MaxStepArgs               = 32
 	maxNameRunes              = 200
 	// MaxDescriptionRunes bounds a workflow's optional description.
-	MaxDescriptionRunes   = 2000
-	maxBriefRunes         = 20000
-	maxArgBytes           = 4096
-	maxCommandBytes       = 1024
-	MaxStepConditions     = 8
-	DefaultMaxRounds      = 2
-	MaxRounds             = 5
+	MaxDescriptionRunes = 2000
+	maxBriefRunes       = 20000
+	maxArgBytes         = 4096
+	maxCommandBytes     = 1024
+	MaxStepConditions   = 8
+	DefaultMaxRounds    = 2
+	MaxRounds           = 5
+	// RebaseMaxRounds bounds the reopens a job gets only because its push
+	// needs a rebase (IsRebaseReopen: the review passed, dev moved). They
+	// have this bound of their own and use none of the review rounds, so
+	// a busy dev does not strand reviewed work.
+	RebaseMaxRounds       = 3
 	maxReopenMessageRunes = 4000
 )
 
