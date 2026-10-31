@@ -94,7 +94,10 @@ func (h *catalogParityHarness) gatedOrchestratorTool(t *testing.T, ctx context.C
 		return "", prompts, err
 	}
 	if result.Error != "" {
-		return "", prompts, errors.New(result.Error)
+		// A failed catalog call's output is its failure envelope (state
+		// refused or error), what the model is shown, as the ungated path
+		// (ExecuteForWorkspaceScopeWithRuntime) returns it.
+		return result.Output, prompts, errors.New(result.Error)
 	}
 	return result.Output, prompts, nil
 }

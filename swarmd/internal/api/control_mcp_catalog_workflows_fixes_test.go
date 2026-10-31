@@ -135,8 +135,10 @@ func TestManageWorkflowsParityFixes(t *testing.T) {
 				t.Helper()
 				out, refused := h.controlTool(t, catalogParityFullKey, "manage_workflows", at(args))
 				if refused != "" {
+					// The refusal is the failure envelope; its reason is
+					// what the Orchestrator's error says.
 					answers = append(answers, refused)
-					return nil, refused
+					return nil, catalogFailureReason(t, refused)
 				}
 				answers = append(answers, out)
 				return catalogEnvelopeCheck(t, fmt.Sprint(args["action"]), out), ""

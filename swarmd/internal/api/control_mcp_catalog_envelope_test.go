@@ -11,6 +11,29 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 )
 
+// catalogFailureReason is the reason of a refused or failed catalog call as
+// Swarm Control shows it: a failure envelope (tool.FailureEnvelope), checked
+// against the envelope contract, gives its data.reason; any other text is
+// returned as it is.
+func catalogFailureReason(t *testing.T, text string) string {
+	t.Helper()
+	if !tool.IsFailureEnvelope(text) {
+		return text
+	}
+	if err := tool.CheckEnvelope(text); err != nil {
+		t.Fatalf("failure envelope breaks the contract: %v: %s", err, text)
+	}
+	var envelope struct {
+		Data struct {
+			Reason string `json:"reason"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(text), &envelope); err != nil || envelope.Data.Reason == "" {
+		t.Fatalf("failure envelope without a reason: %s", text)
+	}
+	return envelope.Data.Reason
+}
+
 // catalogEnvelopeCheck checks one answer against the envelope contract and
 // the action's declared states (ok, partial and CatalogAction.States).
 func catalogEnvelopeCheck(t *testing.T, name, answer string) map[string]any {

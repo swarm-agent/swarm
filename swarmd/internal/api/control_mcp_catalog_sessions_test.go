@@ -322,7 +322,7 @@ func TestManageSessionsEndToEndOverSwarmControl(t *testing.T) {
 		{"action": tool.ManageSessionsResolvePermissionAction, "session_id": sessionID, "permission_id": pending.ID, "decision": "allow_once", "ACTION": "get"},
 		{"action": "get", "session_id": sessionID, "permission_id": pending.ID, "decision": "allow_once", "Action": tool.ManageSessionsResolvePermissionAction},
 	} {
-		if _, _, refused := call(catalogParityFullKey, decoy); !strings.Contains(refused, `is not "action"`) {
+		if _, _, refused := call(catalogParityFullKey, decoy); !strings.Contains(catalogFailureReason(t, refused), `is not "action"`) {
 			t.Fatalf("Swarm Control ran a call with a decoy action key: %q", refused)
 		}
 		decoyRaw, _ := json.Marshal(decoy)
