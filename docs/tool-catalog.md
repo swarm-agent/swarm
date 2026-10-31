@@ -78,6 +78,30 @@ not go with `append_setup`, `unset_env`, `rebuild` or `reset`. `get_task` and
 `swarm_task_result`'s and `swarm_get_worker`'s flat fields are read from
 their record there (`data.task`, `data.worker`).
 
+Sessions and workspaces. `manage_sessions` answers the `swarm_*` session
+tools' fields for every caller, from the code those tools use: `get` answers
+`session` and `messages` (and takes `messages`, `detail_chars`, and a cut
+message's `message_id`, `message_seq` and `content_offset`; an archived
+session is its own record, as `swarm_get_session` cannot read one), `list`
+answers `sessions` (and takes `project_id`), `create` and `send_message`
+answer `started`, `session` and `messages`, and `stop` answers `run_status`,
+`summary` and `session`. A part that cannot be read is named in
+`state_error`; the action's own answer stands. `send_message` takes
+`content` as `prompt`. Swarm Control inputs: `get`'s `wait_seconds`;
+`create`'s `plan`, `attachments`, `project_id` (an orchestrator session) and
+`access`, which run `swarm_start_session` (per-session access stays refused,
+as that tool refuses it); `send_message`'s `attachments`, and a message that
+starts a run with a `client_request_id`, which run `swarm_send_message` (its
+key is an idempotency key); attachments do not go with a note (`trigger`
+false). A linked `create` with a plan starts a run there, so the linked
+work rule `ask` waits for the person, as for a prompt. `resolve_permission`
+and `set_model` keep their person-approval steps unchanged. `manage_workspace`
+`create` over Swarm Control takes `swarm_add_workspace`'s `path` (with
+`name` its display name) and `swarm_create_workspace`'s `name` alone (a new,
+empty repository), run by those tools' handlers; they do not go with
+`workspace_path`, `workspace_name` or `intent`. A conversation's `create` runs
+only the arguments the person approved.
+
 Two tests hold this for every mapped pair (`swarmToolCatalogHomes`):
 `TestEverySwarmToolInputIsACatalogInput` compares each `swarm_*` input schema
 with the action's inputs and control inputs, and
@@ -99,17 +123,38 @@ the catalog does not return is a `swarmCatalogDrops` entry.
 The filter is `tool.CatalogConversationArgs`: a conversation's call drops an
 action's control inputs before it runs here or goes to a linked machine,
 which runs a linked call as a Swarm Control one.
+A renamed input is listed in `swarmCatalogRenames`, and the test requires
+the action to take the new name and not the old one. The name is taken in
+the catalog, most often by its own `action` field:
+
+- `swarm_resolve_permission`'s `action` (`allow_once` or `deny_once`) is
+  `manage_sessions` `resolve_permission`'s `decision`; the catalog passes
+  `decision` to that tool's handler as its `action`;
+- `swarm_connect_chatgpt`'s and `swarm_connect_claude_code`'s `action` is
+  `step`;
+- `swarm_create_key`'s `kind` is `key_kind` (`kind` is `media_models`' media
+  kind);
+- `swarm_run_task`'s `role` is `agent` (`role` is `read_task_session`'s
+  message role).
+
 A deliberate drop is listed once, with its reason, in `swarmCatalogDrops`:
-an input named `action` (the catalog's own field: `connect_chatgpt` and
-`connect_claude_code` take it as `step`; `swarm_manage_worker`'s values are
-`manage_workers` actions or `update` inputs; approving a task card is the
-person's step in their app), `create_key`'s `kind` (`key_kind`),
-`swarm_design`'s `edit_path` (`manage_designs` `edit`), `swarm_request_media`'s
-`retry_of` (`manage_media` `retry`), `swarm_get_job`'s `include_media` (images
-are not envelope data; `manage_media` `read` returns a file),
-`swarm_run_task`'s `role` (`agent`), and the `swarm_task_result` and
+`swarm_approve_task`'s `action` (approving a task card is the person's step
+in their app), `swarm_manage_worker`'s `action` (its values are
+`manage_workers` actions or `update` inputs), `swarm_design`'s `edit_path`
+(`manage_designs` `edit`), `swarm_request_media`'s `retry_of` (`manage_media`
+`retry`), `swarm_get_job`'s `include_media` (images are not envelope data;
+`manage_media` `read` returns a file), and the `swarm_task_result` and
 `swarm_get_worker` answer fields that `get_task` and `inspect` carry under
 their own names.
+
+`swarm_start_session` and `swarm_stop_run` cannot answer in the hermetic
+harness (a folder session needs the primary runtime's topology binding and
+the agents' tool runtimes; a stop needs a run the run service holds active).
+They are listed in `swarmAnswerUnprobed`: the static test checks that Swarm
+Control's `create` with `plan`, `attachments`, `project_id` or `access` runs
+`swarm_start_session`'s handler and that `stop` and `swarm_stop_run` share
+`controlMCPStopReport`, and `TestManageSessionsRuntimeAnswersCarryTheSwarmFields`
+runs the runtime's own `create` and `stop` with those fields.
 
 A key bound to one worker, one agent or a trigger never calls a catalog tool:
 Swarm Control neither lists nor runs them for it, and the linked routes
