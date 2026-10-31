@@ -9,11 +9,9 @@ import (
 
 const emptyTranscriptPrompt = "Continue the task using the latest context."
 
-// buildTranscriptPrompt serializes the complete, explicitly selected epoch input
-// into one user turn. Claude Code holds no conversation state between Swarm
-// requests (stateless_full_input); the durable V3 transcript stays the only
-// authority. Serialization is deterministic and append-only so the stable
-// prefix keeps hitting the provider prompt cache as the conversation grows.
+// buildTranscriptPrompt serializes explicitly selected input into one user turn.
+// First-session and missing-history seeds carry durable history; resumed turns
+// carry only the new user suffix. The V3 transcript remains durable authority.
 func buildTranscriptPrompt(input []map[string]any, dynamicContext string) string {
 	var builder strings.Builder
 	for _, item := range input {

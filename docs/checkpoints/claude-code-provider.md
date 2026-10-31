@@ -85,16 +85,20 @@ Each Swarm provider request is one non-interactive Claude Code turn: `claude -p`
 - `--restricted` ignores user, project, and local settings files, and their hooks.
 - `--tools ""` removes every built-in Claude Code tool.
 - `--strict-mcp-config` and `--disable-slash-commands` keep out other MCP servers and commands.
-- `--no-session-persistence` saves no transcript.
+- CLI session persistence is enabled so later turns can resume the conversation.
 
 **Tools and permissions:**
-- Swarm's tools are exposed only through a per-turn MCP server on `127.0.0.1`, which requires a bearer token.
+- The CLI connects to the daemon's standing `http://127.0.0.1:<configured API port>/mcp` endpoint (or the configured IPv6 loopback address), not a per-turn server. Use a fixed daemon API port to preserve the URL across restarts.
+- A private `--mcp-config` file is created on the session's first Claude Code turn and reused. Its Authorization header contains a session-bound internal scoped token; the token is sealed in Swarm's existing credential store and is not invalidated on restart. It cannot authorize other sessions or ordinary API routes.
+- `tools/list` is the current run's resolved inventory: the Orchestrator catalog or a task agent's worktree tools. An inactive session refuses execution until its next run attaches the canonical executor.
 - Every call runs through Swarm's tool invoker, so Swarm permissions, approvals, and durable V3 records apply.
 - Claude Code itself pre-approves only that server (`--permission-mode dontAsk`).
 
 **Conversation state:**
-- Swarm sends the complete conversation on every request (`stateless_full_input`). The V3 session stays the only conversation authority.
-- The system prompt and bridge config are written to `0600` files in a per-turn temporary directory, which is removed after the turn. They never appear on the command line.
+- The first turn seeds the CLI from Swarm's durable history. Swarm records the CLI session ID from `system/init` on the V3 session; later turns use `--resume <id>` and send only new user input, not the conversation again.
+- If the CLI explicitly refuses a missing session before initialization, Swarm starts one fresh session seeded from durable history and records its new ID. Other provider failures do not trigger a history replay.
+- The system prompt and MCP config are `0600` files in a private session directory under the configured daemon data root. Tokens and prompt contents never appear on argv.
+- A daemon shutdown may stop the CLI process. The next turn reuses its recorded CLI session ID, endpoint and token. Transient HTTP disconnects remain the CLI's reconnect/retry responsibility; Swarm does not replace the endpoint or credentials per turn.
 
 **Environment:** the child process gets only an allowlisted environment. `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and `CLAUDE_CODE_OAUTH_TOKEN` are never passed.
 

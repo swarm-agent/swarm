@@ -51,7 +51,7 @@ func TestClaudeCodeMCPImageContent(t *testing.T) {
 			case "denied":
 				c.Capabilities[0].State = provideriface.MediaCapabilityStateDenied
 			}
-			bridge := &mcpBridge{ctx: context.Background(), invoker: mediaToolInvoker{result}, byName: map[string]string{"media_inspect": "media_inspect"}, mediaContract: c}
+			bridge := &mcpTools{ctx: context.Background(), invoker: mediaToolInvoker{result}, byName: map[string]string{"media_inspect": "media_inspect"}, mediaContract: c}
 			if name == "count" {
 				bridge.mediaCount.Store(1)
 			}

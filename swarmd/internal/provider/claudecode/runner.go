@@ -16,6 +16,7 @@ import (
 
 	"swarm/packages/swarmd/internal/identity"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
+	"swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -29,12 +30,14 @@ const (
 
 // Runner executes one Swarm provider request as one non-interactive Claude Code
 // turn. The CLI runs with every built-in tool removed, user/project settings
-// ignored (--restricted), no session persistence, and only Swarm's tools
-// available through a per-turn loopback MCP bridge, so tool execution and
+// ignored (--restricted), persistent CLI sessions, and only Swarm's tools
+// available through the daemon's standing MCP endpoint, so tool execution and
 // permission decisions stay inside Swarm.
 type Runner struct {
 	authStore *pebblestore.AuthStore
 	cli       *CLI
+	mcp       *SessionMCP
+	sessions  *session.Service
 }
 
 func NewRunner(authStore *pebblestore.AuthStore, cli *CLI) *Runner {
@@ -48,8 +51,8 @@ func (r *Runner) ID() string {
 	return ProviderID
 }
 
-// ExecutionEpochLifecycle declares that every request carries the full epoch
-// input and that no Claude Code conversation survives between requests.
+// ExecutionEpochLifecycle requests durable input so a lost CLI session can be
+// reseeded. The runner sends only the new user suffix when resuming.
 func (r *Runner) ExecutionEpochLifecycle() provideriface.ExecutionEpochLifecycleCapabilities {
 	return provideriface.ExecutionEpochLifecycleCapabilities{
 		ContextMode: provideriface.ExecutionEpochContextStatelessFullInput,
@@ -70,7 +73,8 @@ type turnPlan struct {
 	workDir  string
 	stdin    []byte
 	input    *turnInput
-	bridge   *mcpBridge
+	resumeID string
+	onInit   func(string) error
 	restart  *restartSignal
 	correlat *toolUseCorrelator
 	// onRateLimits receives each rate_limit_event's rate_limit_info.
@@ -105,11 +109,17 @@ func (r *Runner) runSingle(ctx context.Context, req provideriface.Request, onEve
 		return provideriface.Response{}, err
 	}
 
-	workDir, err := os.MkdirTemp("", "swarm-claudecode-")
-	if err != nil {
-		return provideriface.Response{}, fmt.Errorf("create claude code turn directory: %w", err)
+	if r.mcp == nil || r.sessions == nil {
+		return provideriface.Response{}, errors.New("standing session MCP is not configured")
 	}
-	defer os.RemoveAll(workDir)
+	resumeID, err := r.sessions.ClaudeCodeSession(principal, req.SessionID)
+	if err != nil {
+		return provideriface.Response{}, err
+	}
+	workDir, configPath, err := r.mcp.prepare(principal, req.SessionID)
+	if err != nil {
+		return provideriface.Response{}, err
+	}
 
 	turnCtx, cancelTurn := context.WithCancel(ctx)
 	defer cancelTurn()
@@ -118,13 +128,50 @@ func (r *Runner) runSingle(ctx context.Context, req provideriface.Request, onEve
 	if err != nil {
 		return provideriface.Response{}, err
 	}
-	if plan.bridge != nil {
-		defer plan.bridge.Close()
+	plan.resumeID = resumeID
+	plan.args = append(plan.args, "--mcp-config", configPath, "--allowedTools", "mcp__"+mcpServerName)
+	if resumeID != "" {
+		plan.args = append(plan.args, "--resume", resumeID)
+		_, dynamic := provideriface.SplitStaticInstructionsAndDynamicContext(req.Instructions)
+		plan.stdin, err = streamJSONUserMessage(buildTranscriptPrompt(newUserInput(req.Input), dynamic))
+		if err != nil {
+			return provideriface.Response{}, err
+		}
 	}
+	plan.onInit = func(id string) error {
+		err := r.sessions.RecordClaudeCodeSession(principal, req.SessionID, id)
+		if err != nil {
+			cancelTurn()
+		}
+		return err
+	}
+	detach, err := r.mcp.attach(turnCtx, principal, req, &plan)
+	if err != nil {
+		return provideriface.Response{}, err
+	}
+	defer detach()
 	if err := provideriface.CheckBillableDispatch(ctx); err != nil {
 		return provideriface.Response{}, err
 	}
-	return executeTurn(turnCtx, path, plan, req.Model, onEvent)
+	response, err := executeTurn(turnCtx, path, plan, req.Model, onEvent)
+	if resumeID != "" && errors.Is(err, errCLIResumeUnavailable) && turnCtx.Err() == nil {
+		// Only explicit pre-init resume refusal can seed history again. General
+		// provider/tool failures must not duplicate billable turns or side effects.
+		fresh, planErr := r.planTurn(turnCtx, req, workDir)
+		if planErr != nil {
+			return provideriface.Response{}, planErr
+		}
+		fresh.args = append(fresh.args, "--mcp-config", configPath, "--allowedTools", "mcp__"+mcpServerName)
+		fresh.onInit = plan.onInit
+		detach()
+		detachFresh, attachErr := r.mcp.attach(turnCtx, principal, req, &fresh)
+		if attachErr != nil {
+			return provideriface.Response{}, attachErr
+		}
+		defer detachFresh()
+		return executeTurn(turnCtx, path, fresh, req.Model, onEvent)
+	}
+	return response, err
 }
 
 func (r *Runner) planTurn(ctx context.Context, req provideriface.Request, workDir string) (turnPlan, error) {
@@ -147,7 +194,6 @@ func (r *Runner) planTurn(ctx context.Context, req provideriface.Request, workDi
 		"--tools", "",
 		"--strict-mcp-config",
 		"--disable-slash-commands",
-		"--no-session-persistence",
 		"--permission-mode", "dontAsk",
 		"--model", cliModel(req.Model, req.ContextWindow),
 	}
@@ -161,29 +207,12 @@ func (r *Runner) planTurn(ctx context.Context, req provideriface.Request, workDi
 
 	toolsEnabled := len(req.Tools) > 0 && !strings.EqualFold(strings.TrimSpace(req.ToolChoice), "none")
 	if toolsEnabled {
-		invoker := req.ToolInvoker
-		if invoker != nil && req.QueuedUserInput != nil {
-			invoker = &queuedInputToolInvoker{inner: invoker, source: req.QueuedUserInput, input: plan.input}
+		if req.ToolInvoker == nil {
+			return turnPlan{}, errors.New("claude code tools require a Swarm tool invoker")
 		}
-		bridge, err := newMCPBridge(ctx, req.Tools, invoker, plan.correlat, plan.restart.Trigger)
-		if err != nil {
+		if _, _, err := buildMCPTools(req.Tools); err != nil {
 			return turnPlan{}, err
 		}
-		bridge.mediaContract = req.MediaContract
-		plan.bridge = bridge
-		config, err := bridge.Config()
-		if err != nil {
-			bridge.Close()
-			return turnPlan{}, err
-		}
-		configPath := filepath.Join(workDir, "mcp.json")
-		if err := os.WriteFile(configPath, config, 0o600); err != nil {
-			bridge.Close()
-			return turnPlan{}, fmt.Errorf("write claude code tool bridge config: %w", err)
-		}
-		// Swarm's own permission gate runs inside the ToolInvoker; Claude Code
-		// pre-approves only the bridge and denies everything else (dontAsk).
-		args = append(args, "--mcp-config", configPath, "--allowedTools", "mcp__"+mcpServerName)
 	}
 
 	var extraEnv []string
@@ -334,15 +363,22 @@ func executeTurn(ctx context.Context, path string, plan turnPlan, model string, 
 
 	state := newTurnState(model, plan.correlat)
 	state.onRateLimits = plan.onRateLimits
+	state.onInit = plan.onInit
 	state.onResult = func() {
 		// Never block the stdout reader on the input lock.
 		go plan.input.close()
 	}
 	readErr := readStream(ctx, stdout, state, onEvent)
+	if state.initErr != nil {
+		_ = cmd.Process.Signal(os.Interrupt)
+	}
 	closeErr := plan.input.close()
 	waitErr := cmd.Wait()
 	writeErr := firstError(<-writeDone, closeErr)
 
+	if state.initErr != nil {
+		return provideriface.Response{}, state.initErr
+	}
 	if err := ctx.Err(); err != nil {
 		return provideriface.Response{}, err
 	}
@@ -356,6 +392,12 @@ func executeTurn(ctx context.Context, path string, plan turnPlan, model string, 
 	}
 	if readErr != nil {
 		return provideriface.Response{}, fmt.Errorf("read claude code output: %w", readErr)
+	}
+	if plan.onInit != nil && !state.initialized && state.result != nil && !state.result.IsError {
+		return provideriface.Response{}, errors.New("claude code returned a result without a session init")
+	}
+	if plan.resumeID != "" && !state.initialized && resumeRefused(stderr.String()+"\n"+state.resultFailure()) {
+		return provideriface.Response{}, errCLIResumeUnavailable
 	}
 	if state.result == nil {
 		if writeErr != nil {
@@ -491,6 +533,9 @@ func readStream(ctx context.Context, stdout io.Reader, state *turnState, onEvent
 		if len(line) > 0 {
 			provideriface.ReportAttemptActivity(ctx, provideriface.AttemptActivityStreamEvent)
 			state.handleLine(line, onEvent)
+			if state.initErr != nil {
+				return state.initErr
+			}
 		}
 		if err == io.EOF {
 			return nil
@@ -520,6 +565,10 @@ func readLine(reader *bufio.Reader) ([]byte, error) {
 
 // turnState folds Claude Code stream-json output into a provider response.
 type turnState struct {
+	onInit      func(string) error
+	initialized bool
+	initErr     error
+
 	model       string
 	correlation *toolUseCorrelator
 
@@ -542,6 +591,8 @@ type turnState struct {
 }
 
 type streamLine struct {
+	SessionID string `json:"session_id"`
+
 	Type            string          `json:"type"`
 	Subtype         string          `json:"subtype"`
 	ParentToolUseID *string         `json:"parent_tool_use_id"`
@@ -618,8 +669,14 @@ func (s *turnState) handleLine(raw []byte, onEvent func(provideriface.StreamEven
 	}
 	switch line.Type {
 	case "system":
-		if line.Subtype == "init" && strings.TrimSpace(line.Model) != "" {
-			s.model = catalogModelName(line.Model)
+		if line.Subtype == "init" {
+			s.initialized = true
+			if strings.TrimSpace(line.Model) != "" {
+				s.model = catalogModelName(line.Model)
+			}
+			if s.onInit != nil {
+				s.initErr = s.onInit(strings.TrimSpace(line.SessionID))
+			}
 		}
 	case "stream_event":
 		var event streamEvent

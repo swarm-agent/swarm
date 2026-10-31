@@ -46,7 +46,7 @@ func (b runtimeBash) ExecuteTool(ctx context.Context, invocation provideriface.T
 	return result, nil
 }
 
-func newBashBridge(t *testing.T, ctx context.Context) (*mcpBridge, string) {
+func newBashBridge(t *testing.T, ctx context.Context) (*testMCPServer, string) {
 	t.Helper()
 	m, err := sandbox.NewManager(context.Background(), sandbox.Config{Mode: sandbox.ModeOff, Backend: sandbox.BackendBubblewrap}, nil)
 	if err != nil {
@@ -58,10 +58,7 @@ func newBashBridge(t *testing.T, ctx context.Context) (*mcpBridge, string) {
 	t.Cleanup(func() { sandbox.SetDefault(old) })
 	workspace := t.TempDir()
 	invoker := runtimeBash{runtime: tool.NewRuntime(1), scope: tool.WorkspaceScope{PrimaryPath: workspace}}
-	bridge, err := newMCPBridge(ctx, []provideriface.ToolDefinition{{Name: "bash", Parameters: map[string]any{"type": "object"}}}, invoker, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	bridge := testToolsServer(t, ctx, []provideriface.ToolDefinition{{Name: "bash", Parameters: map[string]any{"type": "object"}}}, invoker)
 	t.Cleanup(bridge.Close)
 	return bridge, workspace
 }
@@ -70,7 +67,7 @@ func newBashBridge(t *testing.T, ctx context.Context) (*mcpBridge, string) {
 // (Streamable HTTP: it accepts a JSON or an event-stream answer) with a
 // client that abandons a request whose response has not started within
 // cliRequestTimeout, and returns the bash tool's own receipt.
-func callBash(t *testing.T, bridge *mcpBridge, command string, timeoutMS int) map[string]any {
+func callBash(t *testing.T, bridge *testMCPServer, command string, timeoutMS int) map[string]any {
 	t.Helper()
 	args, _ := json.Marshal(map[string]any{"command": command, "timeout_ms": timeoutMS, "category": "read", "critical": false, "explanation": []string{"Run a fixture command in the temporary workspace"}})
 	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": map[string]any{"name": "bash", "arguments": json.RawMessage(args)}})
@@ -141,7 +138,7 @@ func callBash(t *testing.T, bridge *mcpBridge, command string, timeoutMS int) ma
 // seconds with "bash execution cancelled: context canceled" whatever
 // timeout_ms it set, because the CLI dropped the request and the bridge
 // cancelled the tool with it; long checks could never finish as one command.
-// Owners: mcpBridge.handle/callTool (the claudecode provider's tool path)
+// Owners: mcpTools.handle/callTool (the claudecode provider's tool path)
 // over the real bash tool (tool.Runtime, executeBash) and a loopback HTTP
 // client with a request timeout. No model or CLI binary is involved.
 func TestBridgeBashOutlivesTheClientRequestTimeout(t *testing.T) {
@@ -157,7 +154,7 @@ func TestBridgeBashOutlivesTheClientRequestTimeout(t *testing.T) {
 // after the tool call has returned.
 // Threat: a cut-off tool call that leaves its command running in the
 // sandbox, so a later check reads a half-done state.
-// Owner: mcpBridge.callTool over the real bash tool.
+// Owner: mcpTools.callTool over the real bash tool.
 func TestBridgeBashPastItsTimeoutIsStoppedAndReported(t *testing.T) {
 	bridge, workspace := newBashBridge(t, context.Background())
 	marker := filepath.Join(workspace, "finished")
@@ -176,7 +173,7 @@ func TestBridgeBashPastItsTimeoutIsStoppedAndReported(t *testing.T) {
 // ended by the watchdog's inactivity timeout (the CLI is silent meanwhile).
 // Threat: a bash call within its documented maximum cut off after the
 // watchdog's few minutes and the turn retried under it.
-// Owner: mcpBridge.callTool (heartbeat) with the attempt-activity reporter
+// Owner: mcpTools.callTool (heartbeat) with the attempt-activity reporter
 // runProviderAttempt installs.
 func TestBridgeKeepsTheAttemptAliveWhileAToolRuns(t *testing.T) {
 	oldHeartbeat, oldKeepAlive := mcpToolHeartbeat, mcpStreamKeepAlive
@@ -207,7 +204,6 @@ func TestTurnGivesTheCLIAToolTimeoutAboveSwarmsLongestToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer plan.bridge.Close()
 	for _, entry := range plan.env {
 		if value, ok := strings.CutPrefix(entry, "MCP_TOOL_TIMEOUT="); ok {
 			ms, err := strconv.Atoi(value)
@@ -237,7 +233,6 @@ func TestTurnGivesTheCLIAToolIdleTimeoutFromSwarmsLongestToolCall(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer plan.bridge.Close()
 	want := strconv.FormatInt((provideriface.MaxToolCallDuration + mcpToolTimeoutMargin).Milliseconds(), 10)
 	found := map[string]string{}
 	for _, entry := range plan.env {
@@ -272,7 +267,7 @@ func TestTurnGivesTheCLIAToolIdleTimeoutFromSwarmsLongestToolCall(t *testing.T) 
 // progress, for the whole time the tool runs, and only then the response.
 // Threat: progress that stops (or never starts) partway through a long call,
 // so the CLI's idle watchdog ends it.
-// Owner: mcpBridge.streamToolCall over the real bash tool; the keep-alive
+// Owner: mcpTools.streamToolCall over the real bash tool; the keep-alive
 // interval is shortened so the test is fast.
 func TestBridgeSendsProgressUntilALongToolCallEnds(t *testing.T) {
 	oldKeepAlive := mcpStreamKeepAlive

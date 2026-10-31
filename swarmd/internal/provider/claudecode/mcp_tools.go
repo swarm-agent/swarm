@@ -3,15 +3,11 @@ package claudecode
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"crypto/subtle"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -36,7 +32,7 @@ const (
 	mcpToolTimeoutMargin = 2 * time.Minute
 )
 
-// While a tool call runs, the bridge keeps its HTTP answer alive with an
+// While a tool call runs, the endpoint keeps its HTTP answer alive with an
 // event every mcpStreamKeepAlive (a progress notification when the client
 // asked for progress, otherwise an event-stream comment), and tells the
 // provider-attempt watchdog every mcpToolHeartbeat that the turn is waiting
@@ -66,7 +62,7 @@ func MCPToolTimeoutMillis() int64 {
 // What was checked for this job: streamToolCall sends notifications/progress
 // only when tools/call carries _meta.progressToken (otherwise just
 // event-stream comments). No Claude Code CLI binary or package was available
-// in the sandbox to check whether the CLI sends that token, so the bridge's
+// in the sandbox to check whether the CLI sends that token, so the endpoint's
 // progress cannot be relied on to reset the idle watchdog, and the watchdog
 // is raised to Swarm's own limit instead. The unit is assumed to be
 // milliseconds like MCP_TOOL_TIMEOUT; were it seconds, the value would be
@@ -88,18 +84,13 @@ var mcpSupportedProtocols = map[string]struct{}{
 
 var mcpToolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
-// mcpBridge exposes one turn's Swarm tools to the Claude Code CLI over a
-// loopback-only MCP endpoint guarded by a per-turn bearer token. Every tool call
-// is executed by the Swarm ToolInvoker, so Swarm permissions, persistence and
-// workspace authority apply exactly as for any other provider.
-type mcpBridge struct {
-	ctx      context.Context
-	invoker  provideriface.ToolInvoker
-	tools    []mcpTool
-	byName   map[string]string
-	token    string
-	listener net.Listener
-	server   *http.Server
+// mcpTools is the active run's executor behind the daemon's standing endpoint.
+// It owns no listener or credential: those belong to SessionMCP.
+type mcpTools struct {
+	ctx     context.Context
+	invoker provideriface.ToolInvoker
+	tools   []mcpTool
+	byName  map[string]string
 
 	onRestart     func()
 	correlation   *toolUseCorrelator
@@ -114,7 +105,7 @@ type mcpTool struct {
 	InputSchema map[string]any `json:"inputSchema"`
 }
 
-func newMCPBridge(ctx context.Context, definitions []provideriface.ToolDefinition, invoker provideriface.ToolInvoker, correlation *toolUseCorrelator, onRestart func()) (*mcpBridge, error) {
+func newMCPTools(ctx context.Context, definitions []provideriface.ToolDefinition, invoker provideriface.ToolInvoker, correlation *toolUseCorrelator, onRestart func()) (*mcpTools, error) {
 	if invoker == nil {
 		return nil, errors.New("claude code tools require a Swarm tool invoker")
 	}
@@ -122,56 +113,8 @@ func newMCPBridge(ctx context.Context, definitions []provideriface.ToolDefinitio
 	if err != nil {
 		return nil, err
 	}
-	token, err := randomToken()
-	if err != nil {
-		return nil, err
-	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return nil, fmt.Errorf("listen for claude code tool bridge: %w", err)
-	}
-	bridge := &mcpBridge{
-		ctx:         ctx,
-		invoker:     invoker,
-		tools:       tools,
-		byName:      byName,
-		token:       token,
-		listener:    listener,
-		onRestart:   onRestart,
-		correlation: correlation,
-	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mcp", bridge.handle)
-	bridge.server = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-	go func() { _ = bridge.server.Serve(listener) }()
-	return bridge, nil
-}
-
-func (b *mcpBridge) URL() string {
-	return "http://" + b.listener.Addr().String() + "/mcp"
-}
-
-// Config is the --mcp-config document. It holds the per-turn bearer token and
-// must only be written to a private (0600) file, never passed on argv.
-func (b *mcpBridge) Config() ([]byte, error) {
-	return json.Marshal(map[string]any{
-		"mcpServers": map[string]any{
-			mcpServerName: map[string]any{
-				"type":    "http",
-				"url":     b.URL(),
-				"headers": map[string]string{"Authorization": "Bearer " + b.token},
-			},
-		},
-	})
-}
-
-func (b *mcpBridge) Close() {
-	if b == nil || b.server == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_ = b.server.Shutdown(ctx)
+	return &mcpTools{ctx: ctx, invoker: invoker, tools: tools, byName: byName,
+		onRestart: onRestart, correlation: correlation}, nil
 }
 
 func buildMCPTools(definitions []provideriface.ToolDefinition) ([]mcpTool, map[string]string, error) {
@@ -220,18 +163,14 @@ type jsonRPCResponse struct {
 	Error   *jsonRPCError   `json:"error,omitempty"`
 }
 
-func (b *mcpBridge) handle(w http.ResponseWriter, r *http.Request) {
-	if !b.authorized(r) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
+func (b *mcpTools) handle(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
 	case http.MethodDelete:
 		w.WriteHeader(http.StatusOK)
 		return
 	default:
-		// No server-initiated stream: this bridge only answers requests.
+		// No server-initiated stream: this endpoint only answers requests.
 		w.Header().Set("Allow", "POST, DELETE")
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
@@ -312,7 +251,7 @@ func acceptsEventStream(r *http.Request) bool {
 // is reset by the progress notifications sent here only when the CLI passes
 // a progressToken, which was not confirmed; mcpToolTimeoutEnv raises that
 // watchdog to Swarm's own limit for that reason.
-func (b *mcpBridge) streamToolCall(w http.ResponseWriter, flusher http.Flusher, r *http.Request, message jsonRPCMessage) {
+func (b *mcpTools) streamToolCall(w http.ResponseWriter, flusher http.Flusher, r *http.Request, message jsonRPCMessage) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
@@ -367,17 +306,8 @@ func (b *mcpBridge) streamToolCall(w http.ResponseWriter, flusher http.Flusher, 
 	write("event: message\ndata: " + string(payload) + "\n\n")
 }
 
-func (b *mcpBridge) authorized(r *http.Request) bool {
-	header := strings.TrimSpace(r.Header.Get("Authorization"))
-	const prefix = "Bearer "
-	if !strings.HasPrefix(header, prefix) {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(strings.TrimSpace(header[len(prefix):])), []byte(b.token)) == 1
-}
-
 // dispatch returns false for notifications, which receive no response.
-func (b *mcpBridge) dispatch(requestCtx context.Context, message jsonRPCMessage) (jsonRPCResponse, bool) {
+func (b *mcpTools) dispatch(requestCtx context.Context, message jsonRPCMessage) (jsonRPCResponse, bool) {
 	if len(message.ID) == 0 || string(message.ID) == "null" {
 		return jsonRPCResponse{}, false
 	}
@@ -414,7 +344,7 @@ func (b *mcpBridge) dispatch(requestCtx context.Context, message jsonRPCMessage)
 	return response, true
 }
 
-func (b *mcpBridge) callTool(requestCtx context.Context, rawParams json.RawMessage) (map[string]any, *jsonRPCError) {
+func (b *mcpTools) callTool(requestCtx context.Context, rawParams json.RawMessage) (map[string]any, *jsonRPCError) {
 	var params struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments"`
@@ -595,14 +525,6 @@ func canonicalJSON(raw json.RawMessage) string {
 func writeJSON(w http.ResponseWriter, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(payload)
-}
-
-func randomToken() (string, error) {
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return "", fmt.Errorf("generate claude code tool bridge token: %w", err)
-	}
-	return hex.EncodeToString(buf), nil
 }
 
 func cloneJSONMap(input map[string]any) map[string]any {

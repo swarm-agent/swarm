@@ -64,7 +64,7 @@ func fakeClaudeScript(t *testing.T, dir string) string {
 
 // callBridgeTool sends one tools/call as the Claude Code CLI does and returns
 // the text of the tool result the CLI would hand the model.
-func callBridgeTool(t *testing.T, bridge *mcpBridge) string {
+func callBridgeTool(t *testing.T, bridge *testMCPServer) string {
 	t.Helper()
 	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": map[string]any{"name": "bash", "arguments": map[string]any{"command": "ls"}}})
 	req, err := http.NewRequest(http.MethodPost, bridge.URL(), bytes.NewReader(body))
@@ -130,7 +130,13 @@ func TestQueuedNoteIsWrittenToCLIStdinAsUserMessageNotToolOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer plan.bridge.Close()
+	endpoint := testEndpoint(t)
+	detach, err := endpoint.attach(ctx, testPrincipal(), provideriface.Request{SessionID: "queued", Tools: []provideriface.ToolDefinition{{Name: "bash"}}, ToolInvoker: fixedToolInvoker{output: toolOutput}, QueuedUserInput: source}, &plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer detach()
+	bridge := testSessionServer(t, endpoint, "queued")
 
 	type outcome struct {
 		response provideriface.Response
@@ -151,7 +157,7 @@ func TestQueuedNoteIsWrittenToCLIStdinAsUserMessageNotToolOutput(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	result := callBridgeTool(t, plan.bridge)
+	result := callBridgeTool(t, bridge)
 	if result != toolOutput || strings.Contains(result, "BANANA") {
 		t.Fatalf("tool result the CLI received = %q, want the tool's own output only", result)
 	}

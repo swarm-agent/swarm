@@ -33,6 +33,10 @@ func (s *Server) ContainerSDKHandler() http.Handler {
 			writeError(w, http.StatusUnauthorized, errors.New("invalid scoped bearer token"))
 			return
 		}
+		if rec.SessionID != "" {
+			writeError(w, http.StatusForbidden, errors.New("session credentials require the loopback session MCP handler"))
+			return
+		}
 		if !refuseRunnerKey(w, rec) {
 			return
 		}
