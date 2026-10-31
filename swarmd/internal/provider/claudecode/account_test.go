@@ -29,15 +29,15 @@ import (
 // fixtureTokens are fake secret values placed in the fixture config; none may
 // appear anywhere in the reported status.
 var fixtureTokens = []string{
-	"sk-ant-oat01-FIXTUREACCESSTOKEN",
-	"sk-ant-ort01-FIXTUREREFRESHTOKEN",
-	"sk-ant-api03-FIXTUREPRIMARYAPIKEY",
+	"fixture-access-token-value",
+	"fixture-refresh-token-value",
+	"fixture-primary-api-key-value",
 	"fixture-custom-api-key-response",
 }
 
 const fixtureConfig = `{
   "numStartups": 12,
-  "primaryApiKey": "sk-ant-api03-FIXTUREPRIMARYAPIKEY",
+  "primaryApiKey": "fixture-primary-api-key-value",
   "customApiKeyResponses": {"approved": ["fixture-custom-api-key-response"]},
   "oauthAccount": {
     "accountUuid": "00000000-0000-4000-8000-00000000000a",
@@ -46,8 +46,8 @@ const fixtureConfig = `{
     "organizationName": "Example Org",
     "organizationRole": "admin",
     "billingType": "stripe_subscription",
-    "accessToken": "sk-ant-oat01-FIXTUREACCESSTOKEN",
-    "refreshToken": "sk-ant-ort01-FIXTUREREFRESHTOKEN"
+    "accessToken": "fixture-access-token-value",
+    "refreshToken": "fixture-refresh-token-value"
   },
   "projects": {"/workspace/example": {"allowedTools": []}}
 }`
@@ -135,7 +135,7 @@ func TestStatusAccountOmittedWhenAbsentOrNotAnAccountSignIn(t *testing.T) {
 		ready  bool
 	}{
 		"no config file":          {auth: signedInClaudeAI, ready: true},
-		"no oauthAccount":         {config: `{"numStartups": 1, "primaryApiKey": "sk-ant-api03-FIXTUREPRIMARYAPIKEY"}`, auth: signedInClaudeAI, ready: true},
+		"no oauthAccount":         {config: `{"numStartups": 1, "primaryApiKey": "fixture-primary-api-key-value"}`, auth: signedInClaudeAI, ready: true},
 		"unreadable config":       {config: `{"oauthAccount": {`, auth: signedInClaudeAI, ready: true},
 		"partial account":         {config: `{"oauthAccount": {"organizationName": "Example Org"}}`, auth: signedInClaudeAI, ready: true},
 		"api key sign-in":         {config: fixtureConfig, auth: `{"loggedIn": true, "authMethod": "api_key"}`, ready: true},

@@ -35,18 +35,18 @@ import (
 var claudeCodeReadKey = []string{"swarm:read", "sessions:read"}
 
 const accountFixtureConfig = `{
-  "primaryApiKey": "sk-ant-api03-FIXTUREPRIMARYAPIKEY",
+  "primaryApiKey": "fixture-primary-api-key-value",
   "oauthAccount": {
     "accountUuid": "00000000-0000-4000-8000-00000000000a",
     "emailAddress": "person@example.com",
     "organizationUuid": "00000000-0000-4000-8000-00000000000b",
     "organizationName": "Example Org",
-    "accessToken": "sk-ant-oat01-FIXTUREACCESSTOKEN",
-    "refreshToken": "sk-ant-ort01-FIXTUREREFRESHTOKEN"
+    "accessToken": "fixture-access-token-value",
+    "refreshToken": "fixture-refresh-token-value"
   }
 }`
 
-var accountFixtureSecrets = []string{"FIXTUREPRIMARYAPIKEY", "FIXTUREACCESSTOKEN", "FIXTUREREFRESHTOKEN", "accessToken", "refreshToken", "primaryApiKey"}
+var accountFixtureSecrets = []string{"fixture-primary-api-key-value", "fixture-access-token-value", "fixture-refresh-token-value", "accessToken", "refreshToken", "primaryApiKey"}
 
 func assertAccountFields(t *testing.T, where string, got map[string]any) {
 	t.Helper()
