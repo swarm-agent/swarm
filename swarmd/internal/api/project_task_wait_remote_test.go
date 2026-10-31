@@ -42,12 +42,17 @@ func newRemoteWaitHarness(t *testing.T, tasks ...string) *remoteWaitHarness {
 	remote := newFleetTestSwarm(t, "remote")
 	t.Cleanup(remote.cleanup)
 	t.Cleanup(home.cleanup)
-	// Runs first (cleanups are LIFO): stop the home like daemon shutdown does,
-	// so watchers end before its store closes.
+	// Runs first (cleanups are LIFO): stop both daemons like daemon shutdown
+	// does, so the home's watchers and any task run a test started on the
+	// remote (propose_task starts one) end before either store closes.
 	t.Cleanup(func() {
 		home.s.CancelInFlightRuns()
+		remote.s.CancelInFlightRuns()
 		if !home.s.WaitForInFlightRuns(10 * time.Second) {
 			t.Error("linked wait watchers did not stop on shutdown")
+		}
+		if !remote.s.WaitForInFlightRuns(10 * time.Second) {
+			t.Error("remote task runs did not stop on shutdown")
 		}
 	})
 	body, _ := json.Marshal(map[string]string{"code": remote.invite(t), "name": "box"})
