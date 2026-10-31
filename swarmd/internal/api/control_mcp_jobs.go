@@ -1579,15 +1579,24 @@ func controlMCPStatus(c *controlMCPCall, _ map[string]any) (any, error) {
 		update["command"] = "sudo bash " + installer + " update"
 		update["how"] = "The person (or their AI running as the person, with sudo) runs it on the machine; it waits until no job runs and Swarm restarts by itself."
 	}
-	if export := controlMCPMap(summary["outbox"]); export != nil && (export["enabled"] == true || export["failing"] == true) {
+	boxStatusFeedFields(out, controlMCPMap(summary["outbox"]), controlMCPMap(summary["signals"]))
+	return out, nil
+}
+
+// boxStatusFeedFields adds what a status derives from a box summary beyond
+// its picked keys: the outbox when it is on or failing, and activity_cursor
+// (the signal feed's latest sequence) for activity. The home's swarm_status
+// and a linked machine's status (ReadFleetMachineStatus) both use it, so
+// they carry the same fields.
+func boxStatusFeedFields(out, export, feed map[string]any) {
+	if export != nil && (export["enabled"] == true || export["failing"] == true) {
 		out["outbox"] = export
 	}
-	if feed := controlMCPMap(summary["signals"]); feed != nil {
-		if latest, ok := feed["latest_seq"].(float64); ok {
+	if feed != nil {
+		if latest, ok := feed["latest_seq"].(float64); ok && latest >= 0 {
 			out["activity_cursor"] = strconv.FormatUint(uint64(latest), 10)
 		}
 	}
-	return out, nil
 }
 
 // controlMCPActivity reads the machine's signal feed after a cursor and adds

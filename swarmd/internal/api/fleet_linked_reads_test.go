@@ -74,6 +74,11 @@ func TestLinkedMachineReadsLikeMCP(t *testing.T) {
 	if _, ok := status["running_now"]; !ok {
 		t.Fatalf("machine_status without running_now: %v", status)
 	}
+	// The same derived field the home's status has: activity_cursor, the
+	// machine's feed position (the drain signal above), which activity takes.
+	if cursor, _ := status["activity_cursor"].(string); cursor == "" || cursor == "0" || strings.Trim(cursor, "0123456789") != "" {
+		t.Fatalf("machine_status without activity_cursor: %v", status)
+	}
 
 	// get_task_session: swarm_get_session's view of the sent task's session.
 	view, err := read(map[string]any{"action": "get_task_session", "project_id": "remote-project", "task_id": "t1"})

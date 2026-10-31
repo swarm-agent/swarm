@@ -52,6 +52,19 @@ func (s *Server) ReadFleetMachineStatus(ctx context.Context, p identity.Principa
 			out[key] = raw
 		}
 	}
+	// The same derived fields the home's status has (swarm_status).
+	decoded := func(key string) map[string]any {
+		raw, ok := summary[key]
+		if !ok || len(raw) == 0 || len(raw) > 256<<10 {
+			return nil
+		}
+		var value map[string]any
+		if json.Unmarshal(raw, &value) != nil {
+			return nil
+		}
+		return value
+	}
+	boxStatusFeedFields(out, decoded("outbox"), decoded("signals"))
 	return out, nil
 }
 
