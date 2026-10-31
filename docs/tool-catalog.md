@@ -19,14 +19,18 @@ The catalog holds every tool below:
 | `manage_media` | 6 | `catalog_manage_media.go` |
 | `manage_custom_agents`, `manage_themes`, `manage_designs` | 6 | `catalog_custom_agents_theme_design.go` |
 
-Stage 6 is the last stage that moves tools. The hand-written `swarm_*` MCP
-tools are frozen as they are (`TestControlMCPSwarmToolNamesFrozen`) and still
-work beside the catalog tools; the next stage deletes them. Every `swarm_*`
-tool has a catalog home (a tool and action with the same effect) or is
-retired with its reason (`swarmToolCatalogHomes` and `swarmToolsRetired`,
-`TestEverySwarmToolHasACatalogHome`). Retired: `swarm_set_session_access`,
-`swarm_run_plan` (plans are not the default) and `swarm_accept_review` (it
-closes a plan checkpoint's review).
+Stage 6 was the last stage that moved tools. Stage 7b removed the 87
+hand-written `swarm_*` MCP tools: Swarm Control lists and runs only the
+catalog tools, and a `swarm_*` name is an unknown tool, with no alias or
+compatibility layer (`TestControlMCPServesOnlyCatalogTools`). The relay
+forwards only catalog tools, and swarm-fleet neither lists nor forwards a
+`swarm_*` tool. Each removed tool had a catalog home (a tool and action with
+the same effect) or was retired with its reason; that mapping stays as the
+record of what to call instead (`swarmToolCatalogHomes` and
+`swarmToolsRetired`, `TestEverySwarmToolHasACatalogHome`), with the rename and
+drop tables below. Retired: `swarm_set_session_access`, `swarm_run_plan`
+(plans are not the default) and `swarm_accept_review` (it closed a plan
+checkpoint's review).
 
 ### A catalog action accepts every input of the tool it replaced
 
@@ -102,24 +106,24 @@ empty repository), run by those tools' handlers; they do not go with
 `workspace_path`, `workspace_name` or `intent`. A conversation's `create` runs
 only the arguments the person approved.
 
-Two tests hold this for every mapped pair (`swarmToolCatalogHomes`):
-`TestEverySwarmToolInputIsACatalogInput` compares each `swarm_*` input schema
-with the action's inputs and control inputs, and
-`TestEverySwarmAnswerFieldIsInTheCatalogEnvelope` makes a representative call
-of both and compares the answer's top-level fields with the envelope data.
-A pair whose call both surfaces refuse fails unless `swarmAnswerUnprobed`
-names why (the hermetic harness runs no provider, worktree service,
-workspace authority, sandbox environments, secret slots or media models).
-Those answers are not compared by execution:
-`TestEveryUnprobedSwarmAnswerIsCheckedStatically` checks that the `swarm_*`
-tool runs the named handler and that the catalog code serving the action
-calls that same handler. `swarm_run_task` and `swarm_integrate_task` are
-served by the Orchestrator's own `propose_task` and `integrate_task`; the
-test reads the `swarm_*` answer's field names from its handler's source and
-requires each in the catalog answer under the same name
+Two static record tests hold this for every mapped pair
+(`swarmToolCatalogHomes`) now that the `swarm_*` tools are gone.
+`TestEverySwarmToolInputIsACatalogInput` checks each removed tool's inputs,
+recorded when it was removed (`swarmToolInputs`), against the action's
+declared inputs and control inputs. `TestCatalogActionsRunTheSwarmHandlers`
+reads the api source and checks, for the pairs whose answers were never
+compared by execution (`catalogSwarmHandlerRecord`: the hermetic harness
+runs no provider, worktree service, workspace authority, sandbox
+environments, secret slots or media models), that the catalog code serving
+the action still calls the removed tool's handler. `swarm_run_task` and
+`swarm_integrate_task` were served by the Orchestrator's own `propose_task`
+and `integrate_task`; the test reads the old answer's field names from its
+handler's source and requires each in the catalog answer under the same name
 (`tool.ProposeTaskSwarmAnswerFields`, and the maps `integrateProjectTask`
-returns). `swarmAnswerUnprobed` only says why a pair has no probe; a field
-the catalog does not return is a `swarmCatalogDrops` entry.
+returns). Stage 7a compared every other pair's answer fields by calling both
+surfaces; that comparison went with the `swarm_*` tools, and the catalog's
+own envelope and parity tests hold its answers. A field the catalog does not
+return is a `swarmCatalogDrops` entry.
 The filter is `tool.CatalogConversationArgs`: a conversation's call drops an
 action's control inputs before it runs here or goes to a linked machine,
 which runs a linked call as a Swarm Control one.
@@ -147,12 +151,12 @@ in their app), `swarm_manage_worker`'s `action` (its values are
 `swarm_get_worker` answer fields that `get_task` and `inspect` carry under
 their own names.
 
-`swarm_start_session` and `swarm_stop_run` cannot answer in the hermetic
+`swarm_start_session` and `swarm_stop_run` could not answer in the hermetic
 harness (a folder session needs the primary runtime's topology binding and
 the agents' tool runtimes; a stop needs a run the run service holds active).
-They are listed in `swarmAnswerUnprobed`: the static test checks that Swarm
+They are in `catalogSwarmHandlerRecord`: the static test checks that Swarm
 Control's `create` with `plan`, `attachments`, `project_id` or `access` runs
-`swarm_start_session`'s handler and that `stop` and `swarm_stop_run` share
+`swarm_start_session`'s handler and that `stop` and that tool's handler share
 `controlMCPStopReport`, and `TestManageSessionsRuntimeAnswersCarryTheSwarmFields`
 runs the runtime's own `create` and `stop` with those fields.
 
@@ -162,7 +166,7 @@ Swarm Control neither lists nor runs them for it, and the linked routes
 `POST /v3/setup-actions/{action}`) answer 403
 (`catalogBoundKey`). The catalog services run each action on internal requests
 that carry only scopes, so the routes behind them could not hold such a key to
-its binding; the key keeps its own `swarm_*` tools.
+its binding. Such a key gets no Swarm Control tool.
 
 ## What an action declares
 
@@ -185,7 +189,7 @@ Each action of a catalog tool declares:
   conversation or caller sent there; a task id in two projects is refused
   naming them (`TaskProjectFromTaskID`, `locateTaskProject`).
 - **level**: `read`, `write`, `approve` or `manage`. These are the same four
-  levels as the `swarm:*` key scopes (`remote.ToolScope`).
+  levels as the `swarm:*` key scopes.
 - **API scopes**: the scopes of the route behind the action. A key needs one
   of them, because the call runs in-process and the route's own check never
   runs. Project and task actions take `projects:*` or `sessions:*` at the
@@ -246,9 +250,10 @@ so a route's own scope checks see the key, never a wider set.
 | `stop_all` | manage | `automations:write` | any |
 | `help` | read | `automations:read` or `automations:write` | home |
 
-Each level is `remote.ToolScope` of the `swarm_*` tool with the same effect
-(`TestManageWorkflowsLevelsAreTheSwarmToolsLevels`); `swarm_workflow_history`
-and `swarm_restore_workflow` have no entry there, so they need write.
+Each level is the level the removed `swarm_*` tool with the same effect
+needed (the `swarmToolLevels` record in remote's tests,
+`TestManageWorkflowsLevelsAreTheSwarmToolsLevels`); `swarm_workflow_history`
+and `swarm_restore_workflow` had no entry there, so they need write.
 Every action is in the Orchestrator's definition and Swarm Control's
 default listing.
 
@@ -328,8 +333,9 @@ and the API scopes it holds (`tool.WithControlScopes`).
 | `deliveries` | read | `automations:read` or `automations:write` | any |
 | `give_job`, `message_job`, `answer_job`, `deliver_job`, `stop_job`, `schedule_job`, `rerun_failed_steps`, `retry_now` | write | `sessions:write` (the routes behind them check their own scopes too) | any |
 
-Each level is `remote.ToolScope` of the `swarm_*` tool with the same effect
-(`TestManageJobsLevelsAreTheSwarmToolsLevels`; `deliveries` takes
+Each level is the level the removed `swarm_*` tool with the same effect
+needed (`swarmToolLevels`, `TestManageJobsLevelsAreTheSwarmToolsLevels`;
+`deliveries` takes
 `swarm_list_workflows`', `rerun_failed_steps` `swarm_deliver_job`'s;
 `retry_now`, which has none, is write because it continues agent work). Every
 action is in the Orchestrator's definition and Swarm Control's default
@@ -391,8 +397,9 @@ several workspaces needs it and is otherwise refused naming that field.
 | `propose`, `test`, `request`, `assign_task` | write | `automations:write` | any |
 | `create`, `update`, `attach`, `disable_automation`, `delete`, `activate`, `pause`, `resume`, `archive` | manage | `automations:write` | any |
 
-Each level is `remote.ToolScope` of the `swarm_*` worker tool with the same
-effect (`TestManageWorkersLevelsAreTheSwarmToolsLevels`). With `machine`, the
+Each level is the level the removed `swarm_*` worker tool with the same
+effect needed (`swarmToolLevels`,
+`TestManageWorkersLevelsAreTheSwarmToolsLevels`). With `machine`, the
 action runs on the linked machine's own `ManageWorkers` through
 `POST /v3/worker-actions/{action}` with the caller's scopes; a linked `list`
 stays the bounded summary (no instructions; `inspect` reads them). `off`
@@ -429,9 +436,10 @@ refused.
 | `create_key`, `create_client_key` | manage | `admin` | home, local only |
 | `request_update`, `cancel_update` | manage | `admin` | any |
 
-Each level is `remote.ToolScope` of the `swarm_*` tool with the same effect,
-and an action is local only exactly when that tool is in remote's
-`localOnlyTools` (`TestManageSetupLevelsAreTheSwarmToolsLevels`). Reads and
+Each level is the level the removed `swarm_*` tool with the same effect
+needed, and an action is local only exactly when that tool was (the
+`swarmToolLevels` and `swarmLocalOnlyTools` records in remote's tests,
+`TestManageSetupLevelsAreTheSwarmToolsLevels`). Reads and
 the change actions whose `swarm_*` tool was in the default listing are in
 Swarm Control's default listing; `set_usage_limits`, `set_permissions`,
 `create_client_key`, `request_update` and `cancel_update` are in `tools=all`.
@@ -602,9 +610,10 @@ page is skipped. `list`'s opaque cursor carries over as `next`.
 | `archive`, `unarchive`, `compact` | write | `sessions:write` | any |
 | `resolve_permission` | approve | `sessions:write` | any |
 
-Each level is `remote.ToolScope` of the `swarm_*` tool with the same effect
-(`TestManageSessionsLevelsAreTheSwarmToolsLevels`); `archive`, `unarchive`
-and `compact` have no `swarm_*` tool and change sessions, so they need
+Each level is the level the removed `swarm_*` tool with the same effect
+needed (`swarmToolLevels`, `TestManageSessionsLevelsAreTheSwarmToolsLevels`);
+`archive`, `unarchive` and `compact` had no `swarm_*` tool and change
+sessions, so they need
 write. `set_model` is called only when the person asks. In a conversation,
 `resolve_permission` and `set_model` follow the account's permission bypass
 switch. With it off, they always ask the person first: the run gives them
@@ -712,7 +721,8 @@ Data the task views carry for every reader:
 
 ## How MCP serves the catalog
 
-`tools/list` adds one MCP tool per catalog tool, generated from the catalog.
+`tools/list` lists one MCP tool per catalog tool, generated from the catalog,
+and nothing else.
 It has an `action` field and the inputs of the actions the caller may call.
 The default listing shows `essentials` actions and `tools=all` adds `full`
 ones. An action is listed and callable only when the key holds its level
@@ -722,7 +732,8 @@ application keys get no catalog tools.
 A relay client reaches Swarm Control with the relay device's token, which has
 API scopes but no levels. The relay forwards the client's own levels (its
 scopes within the device's ceiling) with each call
-(`remote.ClientLevelsHeader`) and does not gate catalog tools by name. Swarm
+(`remote.ClientLevelsHeader`) and does not gate catalog tools by name; it
+refuses and does not list any other tool name. Swarm
 Control narrows the key's levels to the forwarded ones, which bind even when
 empty, so each action is listed and run only at the client's level, and
 local_only actions are refused. Forwarded levels never widen a key.
