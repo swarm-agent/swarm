@@ -295,7 +295,7 @@ func controlMCPRetryNow(c *controlMCPCall, args map[string]any) (any, error) {
 	}
 	out, err := c.dispatch(http.MethodPost, LimitRetryPath, nil, body)
 	if job, _ := body["job_id"].(string); err != nil && job != "" {
-		return nil, controlMCPNotFound(err, "job", job, "swarm_list_workers with include_jobs")
+		return nil, controlMCPNotFound(err, "job", job, "manage_workers list with include_jobs")
 	}
 	return out, err
 }
