@@ -389,12 +389,16 @@ Each level is `remote.ToolScope` of the `swarm_*` tool with the same effect
 (`TestManageSessionsLevelsAreTheSwarmToolsLevels`); `archive`, `unarchive`
 and `compact` have no `swarm_*` tool and change sessions, so they need
 write. `set_model` is called only when the person asks. In a conversation,
-`resolve_permission` and `set_model` always ask the person first: the run
-gives them their own approval identities (`session_permission_answer`,
-`session_model_change`), which have no default allow and ignore permission
-bypass (`run.manageSessionsPersonDecisionIdentity`,
+`resolve_permission` and `set_model` follow the account's permission bypass
+switch. With it off, they always ask the person first: the run gives them
+their own approval identities (`session_permission_answer`,
+`session_model_change`), which have no default allow, and a bypass suffix in
+the session's mode text does not skip the prompt. Only an explicit rule for
+that identity pre-approves them. With the switch on, they are approved like
+every other tool call (`run.manageSessionsPersonDecisionIdentity`,
 `TestManageSessionsPersonDecisionsWaitForThePerson`). Through MCP the key's
-level is that check (approve for `resolve_permission`). Every action above
+level is the check (approve for `resolve_permission`), as it was for
+`swarm_resolve_permission`. Every action above
 is in the Orchestrator's definition (generated from the catalog's
 orchestrator profile) and in Swarm Control's default listing. The Swarm
 agent's own session tooling (`review_worktrees`, `git_status`, `commit` and

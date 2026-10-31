@@ -13,24 +13,24 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 )
 
-// Purpose: an Orchestrator (or any agent) run cannot answer another
-// session's pending permission request, or switch a session's model,
-// without the person: Service.gateToolCalls gives manage_sessions
-// resolve_permission and set_model their own approval identities
-// (manageSessionsPersonDecisionIdentity), which the policy never allows by
-// default, and strips the generic bypass suffix (personDecisionMode), so the
-// call waits on a prompt in the calling conversation. Threat: an agent, or
-// injected session content steering it, approving a child's Bash command or
-// commit with allow_once and no prompt (the gap in stage 4's first cut), or
-// skipping the prompt with a decoy key that differs from "action" only in
-// case (a case-insensitive decoder classified the decoy while the handler
-// ran the exact key): the gate reads the exact key and treats any such call
-// as a person's decision.
-// Negative case: while the prompt waits, and after the person denies it, the
-// child's request is still pending and the call is not approved. Control:
-// manage_sessions get is not gated. Boundary: gateToolCalls over a real
-// permission.Service and temp Pebble store; the layer where every native
-// tool call is authorized before it runs.
+// Purpose: in a conversation, manage_sessions resolve_permission and
+// set_model follow the account's permission bypass switch exactly. With the
+// switch off they always wait for the person: Service.gateToolCalls gives
+// them their own approval identities (manageSessionsPersonDecisionIdentity),
+// which the policy never allows by default, and drops a bypass suffix in the
+// mode text (personDecisionMode), so only the real switch can skip the
+// prompt. With the switch on they are approved like every other tool call,
+// as the MCP tool they replace (swarm_resolve_permission) is. Threat: an
+// agent, or injected session content steering it, approving a child's Bash
+// command or commit with allow_once and no prompt while the person has bypass
+// off (including through mode text that says bypass while the switch is off,
+// or a decoy key that differs from "action" only in case: the gate reads the
+// exact key and treats any such call as a person's decision). Negative case:
+// with the switch off, while the prompt waits and after the person denies
+// it, the child's request is still pending and the call is not approved.
+// Control: manage_sessions get is not gated. Boundary: gateToolCalls over a
+// real permission.Service (its SetBypassPermissions switch) and a temp Pebble
+// store; the layer where every native tool call is authorized before it runs.
 func TestManageSessionsPersonDecisionsWaitForThePerson(t *testing.T) {
 	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "permissions"))
 	if err != nil {
@@ -52,38 +52,50 @@ func TestManageSessionsPersonDecisionsWaitForThePerson(t *testing.T) {
 			t.Fatalf("%s: the child's request changed: %+v %v", stage, record, err)
 		}
 	}
-
-	// Reads stay prompt-free.
-	get, _ := json.Marshal(map[string]any{"action": "get", "session_id": "child"})
-	_, _, _, mask, _, err := s.gateToolCalls(context.Background(), "orch", "run-orch", 1, "auto+bypass_permissions", []tool.Call{{CallID: "get-1", Name: "manage_sessions", Arguments: string(get)}}, nil, nil)
-	if err != nil || !mask[0] {
-		t.Fatalf("manage_sessions get was gated: %v %v", mask, err)
+	resolve := map[string]any{"action": tool.ManageSessionsResolvePermissionAction, "session_id": "child", "permission_id": child.ID, "decision": "allow_once"}
+	setModel := map[string]any{"action": tool.ManageSessionsSetModelAction, "session_id": "child", "provider": "p", "model": "m"}
+	turn := 0
+	gate := func(mode string, args map[string]any) (chan []bool, context.CancelFunc) {
+		turn++
+		raw, _ := json.Marshal(args)
+		call := tool.Call{CallID: fmt.Sprintf("person-%d", turn), Name: "manage-sessions", Arguments: string(raw)}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		done := make(chan []bool, 1)
+		go func(step int) {
+			_, _, _, mask, _, err := s.gateToolCalls(ctx, "orch", "run-orch", step, mode, []tool.Call{call}, nil, nil)
+			if err != nil {
+				t.Errorf("gate: %v", err)
+			}
+			done <- mask
+		}(turn)
+		return done, cancel
 	}
 
-	for i, tc := range []struct {
-		identity string
-		args     map[string]any
+	// Reads stay prompt-free.
+	perms.SetBypassPermissions(false)
+	got, cancel := gate("auto", map[string]any{"action": "get", "session_id": "child"})
+	if mask := <-got; len(mask) != 1 || !mask[0] {
+		t.Fatalf("manage_sessions get was gated: %v", mask)
+	}
+	cancel()
+
+	// Switch off: every call waits for the person, also when the mode text
+	// carries a bypass suffix the switch does not back.
+	for _, tc := range []struct {
+		identity, mode string
+		args           map[string]any
 	}{
-		{sessionPermissionAnswerIdentity, map[string]any{"action": tool.ManageSessionsResolvePermissionAction, "session_id": "child", "permission_id": child.ID, "decision": "allow_once"}},
-		{sessionModelChangeIdentity, map[string]any{"action": tool.ManageSessionsSetModelAction, "session_id": "child", "provider": "p", "model": "m"}},
+		{sessionPermissionAnswerIdentity, "auto", resolve},
+		{sessionModelChangeIdentity, "auto", setModel},
+		{sessionPermissionAnswerIdentity, "auto+bypass_permissions", resolve},
+		{sessionModelChangeIdentity, "yolo+bypass_permissions", setModel},
 		// A decoy key that differs from "action" only in case: a struct
 		// decoder would read the decoy (get), the handler the exact key.
-		{sessionPermissionAnswerIdentity, map[string]any{"action": tool.ManageSessionsResolvePermissionAction, "session_id": "child", "permission_id": child.ID, "decision": "allow_once", "ACTION": "get"}},
-		{sessionPermissionAnswerIdentity, map[string]any{"action": tool.ManageSessionsSetModelAction, "session_id": "child", "provider": "p", "model": "m", "Action": "get"}},
-		{sessionPermissionAnswerIdentity, map[string]any{"action": "get", "session_id": "child", "permission_id": child.ID, "decision": "allow_once", "aCtIoN": tool.ManageSessionsResolvePermissionAction}},
+		{sessionPermissionAnswerIdentity, "auto", map[string]any{"action": tool.ManageSessionsResolvePermissionAction, "session_id": "child", "permission_id": child.ID, "decision": "allow_once", "ACTION": "get"}},
+		{sessionPermissionAnswerIdentity, "auto", map[string]any{"action": tool.ManageSessionsSetModelAction, "session_id": "child", "provider": "p", "model": "m", "Action": "get"}},
+		{sessionPermissionAnswerIdentity, "auto", map[string]any{"action": "get", "session_id": "child", "permission_id": child.ID, "decision": "allow_once", "aCtIoN": tool.ManageSessionsResolvePermissionAction}},
 	} {
-		raw, _ := json.Marshal(tc.args)
-		call := tool.Call{CallID: fmt.Sprintf("person-%d", i), Name: "manage-sessions", Arguments: string(raw)}
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		type gated struct {
-			mask []bool
-			err  error
-		}
-		done := make(chan gated, 1)
-		go func() {
-			_, _, _, mask, _, err := s.gateToolCalls(ctx, "orch", "run-orch", 2+i, "auto+bypass_permissions", []tool.Call{call}, nil, nil)
-			done <- gated{mask, err}
-		}()
+		done, cancel := gate(tc.mode, tc.args)
 		var prompt pebblestore.PermissionRecord
 		for deadline := time.Now().Add(10 * time.Second); ; {
 			pending, err := perms.ListPending("orch", 10)
@@ -95,12 +107,12 @@ func TestManageSessionsPersonDecisionsWaitForThePerson(t *testing.T) {
 				break
 			}
 			select {
-			case result := <-done:
-				t.Fatalf("%s ran without a prompt: approved=%v err=%v", tc.identity, result.mask, result.err)
+			case mask := <-done:
+				t.Fatalf("%s (%s) ran without a prompt with bypass off: approved=%v", tc.identity, tc.mode, mask)
 			default:
 			}
 			if time.Now().After(deadline) {
-				t.Fatalf("%s: no prompt for the person", tc.identity)
+				t.Fatalf("%s (%s): no prompt for the person", tc.identity, tc.mode)
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
@@ -111,11 +123,29 @@ func TestManageSessionsPersonDecisionsWaitForThePerson(t *testing.T) {
 		if _, err := perms.Resolve("orch", prompt.ID, "deny", "not now"); err != nil {
 			t.Fatal(err)
 		}
-		result := <-done
+		mask := <-done
 		cancel()
-		if result.err != nil || len(result.mask) != 1 || result.mask[0] {
-			t.Fatalf("%s approved after the person denied it: %v %v", tc.identity, result.mask, result.err)
+		if len(mask) != 1 || mask[0] {
+			t.Fatalf("%s (%s) approved after the person denied it: %v", tc.identity, tc.mode, mask)
 		}
 		childPending("after the person denied")
+	}
+
+	// Switch on: bypass means bypass; both calls are approved with no prompt,
+	// like every other tool call.
+	perms.SetBypassPermissions(true)
+	if !perms.BypassPermissions() {
+		t.Fatal("the bypass switch did not turn on")
+	}
+	for _, args := range []map[string]any{resolve, setModel} {
+		done, cancel := gate("auto", args)
+		mask := <-done
+		cancel()
+		if len(mask) != 1 || !mask[0] {
+			t.Fatalf("%v was not approved with bypass on: %v", args["action"], mask)
+		}
+		if pending, _ := perms.ListPending("orch", 10); len(pending) != 0 {
+			t.Fatalf("%v prompted with bypass on: %+v", args["action"], pending)
+		}
 	}
 }

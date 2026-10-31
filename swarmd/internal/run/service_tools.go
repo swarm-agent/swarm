@@ -1961,9 +1961,11 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 		if canonicalToolName(toolCalls[i].Name) == "manage_sessions" {
 			if identity := manageSessionsPersonDecisionIdentity(toolCalls[i].Arguments); identity != "" {
 				// Answering another session's pending request and switching a
-				// session's model are the person's decisions: each call waits for
-				// the person in this chat, even under permission bypass. Only an
-				// explicit rule for the exact identity pre-approves it.
+				// session's model are the person's decisions: with the account's
+				// bypass switch off, each call waits for the person in this chat
+				// (an explicit rule for the exact identity pre-approves it). With
+				// the switch on, they are approved like every tool call. Mode text
+				// alone never bypasses them: only the real switch does.
 				authorizationToolName = identity
 				permissionMode = personDecisionMode(permissionMode)
 			}
@@ -7938,8 +7940,10 @@ func manageSessionsPersonDecisionIdentity(arguments string) string {
 }
 
 // personDecisionMode is the permission mode for a call only the person
-// decides: no generic bypass suffix, and modes that would skip or refuse the
-// prompt (yolo, read, readwrite) ask instead.
+// decides: no bypass suffix in the mode text, and modes that would skip or
+// refuse the prompt (yolo, read, readwrite) ask instead. The account's real
+// bypass switch still applies (permission.Service.AuthorizeToolCall reads
+// it), so the call follows that switch and nothing else.
 func personDecisionMode(mode string) string {
 	base := strings.ToLower(strings.TrimSpace(strings.Split(mode, "+")[0]))
 	if base == "yolo" || base == "read" || base == "readwrite" {
