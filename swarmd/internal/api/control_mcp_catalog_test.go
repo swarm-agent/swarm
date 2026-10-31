@@ -277,7 +277,7 @@ func catalogParityCases() map[string]map[string][]catalogParityCase {
 		projects[action] = cases
 	}
 	return map[string]map[string][]catalogParityCase{"manage_projects": projects, "manage_workflows": manageWorkflowsParityCases(), "manage_jobs": manageJobsParityCases(), "manage_workers": manageWorkersParityCases(), "manage_setup": manageSetupParityCases(),
-		"manage_fleet": manageFleetParityCases(), "manage_media": manageMediaParityCases(), "manage_custom_agents": manageCustomAgentsParityCases(), "manage_theme": manageThemeParityCases(), "manage_designs": manageDesignsParityCases()}
+		"manage_fleet": manageFleetParityCases(), "manage_media": manageMediaParityCases(), "manage_custom_agents": manageCustomAgentsParityCases(), "manage_themes": manageThemeParityCases(), "manage_designs": manageDesignsParityCases()}
 }
 
 // catalogParityToolNames are the tools with parity cases, sorted.
@@ -527,19 +527,6 @@ func (h *catalogParityHarness) runParityCases(t *testing.T, toolName, action str
 				continue
 			}
 			served++
-			if c.compare == parityControlOnly {
-				catalog, _ := tool.CatalogToolNamed(toolName)
-				if declared, _ := catalog.Action(action); declared.Listed(tool.CatalogProfileOrchestrator) {
-					t.Fatalf("%s: control-only, yet in the Orchestrator's profile", name)
-				}
-				if controlErr == "" {
-					if err := tool.CheckEnvelope(controlOut); err != nil {
-						t.Fatalf("%s: %v\n%s", name, err, controlOut)
-					}
-				}
-				t.Logf("%s: Swarm Control only: %s", name, controlErr)
-				continue
-			}
 			if c.compare == paritySessionBound {
 				// Documented difference (paritySessionBound): the same
 				// outcome kind, and every envelope keeps the contract.

@@ -10,16 +10,17 @@ import (
 	"swarm/packages/swarmd/internal/design"
 )
 
-// manage_custom_agents, manage_theme and manage_designs in the catalog (not
+// manage_custom_agents, manage_themes and manage_designs in the catalog (not
 // manage_design, the retired tool swarm_design replaced).
 //
 //   - manage_custom_agents (list, get, define, disable) runs the account's
 //     custom agent service (CustomAgentLifecycleService, the API server's
 //     ManageCustomAgents) for the Orchestrator and Swarm Control alike; it
 //     answers what swarm_list_agents and swarm_define_agent answered for.
-//   - manage_theme (get) runs swarm_get_theme's handler (CatalogActionService).
-//     The theme catalog's other actions stay the manage-theme tool of the
-//     agents that have it.
+//   - manage_themes (get) runs swarm_get_theme's handler (CatalogActionService).
+//     Not named manage_theme: the run treats manage_theme and manage-theme as
+//     one tool, the agents' theme tool (its get, create, set and the rest),
+//     which keeps that name and its answers.
 //   - manage_designs (create, edit) runs swarm_design's handler
 //     (CatalogActionService): standalone HTML designs in a project folder.
 //     The Orchestrator's own run makes designs with the swarm_design tool the
@@ -27,7 +28,7 @@ import (
 
 const (
 	manageCustomAgentsToolName = "manage_custom_agents"
-	manageThemeToolName        = "manage_theme"
+	manageThemeToolName        = "manage_themes"
 	manageDesignToolName       = "manage_designs"
 )
 
@@ -110,12 +111,8 @@ func manageThemeCatalog() CatalogTool {
 			Tool: manageThemeToolName, Action: "get", Inputs: []string{"theme_id"}, Level: CatalogLevelRead, Reach: CatalogReachHome,
 			// /v1/ui/settings has no scope of its own; a key reading
 			// sessions or holding the read level may read it.
-			APIScopes: []string{"sessions:read", "swarm:read"},
-			// No Orchestrator profile: the run canonicalizes manage_theme and
-			// manage-theme to one tool, the agents' theme tool, which the
-			// Orchestrator's code-owned contract keeps off; a second
-			// definition by that name cannot exist beside it.
-			Profiles:    []CatalogProfile{CatalogProfileFull},
+			APIScopes:   []string{"sessions:read", "swarm:read"},
+			Profiles:    []CatalogProfile{CatalogProfileFull, CatalogProfileOrchestrator},
 			Description: "A theme's id, name and palette (#RRGGBB colors): the given theme_id, else the account's active theme, else Swarm's default (swarm_get_theme).",
 		}},
 	}
@@ -157,6 +154,12 @@ func manageDesignCatalog() CatalogTool {
 		actions[i].NextAction = "manage_jobs get_job with the job_id reads each design's status, check errors and cost."
 	}
 	return CatalogTool{Name: manageDesignToolName, Description: "Make standalone HTML designs, or edit one existing HTML file, in a project's folder. Report each design's path and status exactly as returned.", Fields: fields, Actions: actions}
+}
+
+// manageThemesDefinition is the Orchestrator's manage_themes, generated from
+// the catalog declaration.
+func manageThemesDefinition() Definition {
+	return manageThemeCatalog().OrchestratorDefinition()
 }
 
 // manageDesignsDefinition is the Orchestrator's manage_designs, generated

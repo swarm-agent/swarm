@@ -9,7 +9,7 @@ import (
 
 // Purpose:
 //   - Requirement: each action of the stage 6 catalog tools (manage_fleet,
-//     manage_media, manage_custom_agents, manage_theme, manage_designs, and
+//     manage_media, manage_custom_agents, manage_themes, manage_designs, and
 //     manage_projects' get_task_changes and read_task_file) needs the level
 //     of the swarm_* tool with the same effect (ToolScope), never lower, and
 //     none is local-only machine setup a relay client may not reach; the
@@ -28,7 +28,7 @@ func TestStage6CatalogLevelsAreTheSwarmToolsLevels(t *testing.T) {
 		"manage_media": {"models": "swarm_media_models", "generate": "swarm_request_media", "retry": "swarm_request_media", "get": "swarm_get_job",
 			"save": "swarm_save_media", "read": "swarm_read_media", "list": "swarm_read_media", "transcribe": "swarm_request_media"},
 		"manage_custom_agents": {"list": "swarm_list_agents", "get": "swarm_list_agents", "define": "swarm_define_agent", "disable": "swarm_define_agent"},
-		"manage_theme":         {"get": "swarm_get_theme"},
+		"manage_themes":        {"get": "swarm_get_theme"},
 		"manage_designs":       {"create": "swarm_design", "edit": "swarm_design"},
 		"manage_projects":      {"get_task_changes": "swarm_get_changes", "read_task_file": "swarm_read_file"},
 	}

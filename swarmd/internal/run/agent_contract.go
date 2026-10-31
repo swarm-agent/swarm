@@ -358,9 +358,10 @@ func resolveAgentToolStates(profile pebblestore.AgentProfile, knownTools map[str
 		// Fleet monitoring moved from manage_projects into the catalog's
 		// manage_fleet (read only): a stored profile from before it cannot
 		// hide it.
-		// manage_designs (the catalog's swarm_design) too: the Orchestrator's
+		// manage_designs (the catalog's swarm_design) and manage_themes (its
+		// swarm_get_theme) too: the Orchestrator's
 		// catalog tools are code-owned.
-		for _, name := range []string{tool.ManageFleetToolName, tool.ManageDesignToolName} {
+		for _, name := range []string{tool.ManageFleetToolName, tool.ManageDesignToolName, tool.ManageThemeToolName} {
 			if _, implemented := knownTools[name]; implemented {
 				resolved.Tools[name] = ResolvedAgentTool{Enabled: true, Source: "runtime.orchestrator_catalog"}
 			}

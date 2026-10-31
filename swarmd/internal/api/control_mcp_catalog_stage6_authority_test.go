@@ -26,14 +26,15 @@ func (h *catalogParityHarness) agentToolCall(t *testing.T, agent, session, name 
 //     theme tool for every action, get included: get answers the theme
 //     named by theme_id, theme or id, in the theme tool's answer
 //     (status, action, theme, workspace), also in a delegated task's
-//     session. The catalog's manage_theme get is Swarm Control's only.
+//     session. The catalog's get is another tool, manage_themes, for the
+//     Orchestrator and Swarm Control alike.
 //   - Threat/regression: the catalog's get taking over the agents' get,
 //     dropping the theme and id aliases (silently answering the active
 //     theme), changing the answer to an envelope, or refusing a task's
 //     session.
 //   - Boundary/authority: Runtime.ExecuteForWorkspaceScopeWithRuntime's
 //     manage_theme dispatch to executeManageTheme (manageThemeGet), and
-//     ExecuteControlCatalog for Swarm Control.
+//     the manage_themes catalog tool for the Orchestrator and Swarm Control.
 //   - Narrowest layer: the runtime entry point the run service calls
 //     (run.Service.executeManageThemeTool) with the daemon's UI settings.
 func TestAgentManageThemeGetIsTheThemeTool(t *testing.T) {
@@ -86,13 +87,20 @@ func TestAgentManageThemeGetIsTheThemeTool(t *testing.T) {
 	if _, err := h.agentToolCall(t, "swarm", "home-orch", "manage_theme", map[string]any{"action": "get"}); err == nil || !strings.Contains(err.Error(), "requires theme_id") {
 		t.Fatalf("theme tool get without a theme: %v", err)
 	}
-	// Swarm Control's catalog get answers the envelope.
-	out, refused := h.controlTool(t, catalogParityFullKey, "manage_theme", map[string]any{"action": "get", "theme_id": want})
-	if refused != "" || tool.CheckEnvelope(out) != nil {
-		t.Fatalf("Swarm Control manage_theme get: %q %s", refused, out)
+	// The catalog's manage_themes get answers the envelope for the
+	// Orchestrator and Swarm Control alike, with the named theme.
+	control, refused := h.controlTool(t, catalogParityFullKey, "manage_themes", map[string]any{"action": "get", "theme_id": want})
+	orch, err := h.agentToolCall(t, agentruntime.SwarmOrchestratorAgentID, "home-orch", "manage_themes", map[string]any{"action": "get", "theme_id": want})
+	if refused != "" || err != nil {
+		t.Fatalf("manage_themes get: Swarm Control %q, Orchestrator %v", refused, err)
 	}
-	if data, _ := parityDecode(t, out)["data"].(map[string]any); data["id"] != want {
-		t.Fatalf("Swarm Control manage_theme get answered another theme: %s", out)
+	for _, out := range []string{control, orch} {
+		if tool.CheckEnvelope(out) != nil {
+			t.Fatalf("manage_themes get is not an envelope: %s", out)
+		}
+		if data, _ := parityDecode(t, out)["data"].(map[string]any); data["id"] != want {
+			t.Fatalf("manage_themes get answered another theme: %s", out)
+		}
 	}
 }
 
@@ -165,36 +173,37 @@ func TestStage6RefusesWorkersAndOtherAgents(t *testing.T) {
 }
 
 // Purpose:
-//   - Requirement: the Orchestrator has manage_designs, generated from the
-//     catalog declaration, in its tool definitions; manage_theme get stays
-//     Swarm Control's only because manage_theme is the agents' theme tool.
+//   - Requirement: the Orchestrator has manage_designs and manage_themes,
+//     generated from the catalog declarations, in its tool definitions, and
+//     every action of both is in its profile.
 //   - Threat/regression: a catalog tool the brief requires for the
 //     Orchestrator missing from its definitions.
 //   - Boundary/authority: Runtime.Definitions and the catalog profiles.
 //   - Narrowest layer: the definitions themselves.
-func TestOrchestratorHasManageDesigns(t *testing.T) {
+func TestOrchestratorHasManageDesignsAndThemes(t *testing.T) {
 	h := newCatalogParityHarness(t)
-	found := false
+	want := map[string]string{"manage_designs": "create,edit", "manage_themes": "get"}
+	found := map[string]bool{}
 	for _, definition := range h.runtime.Definitions() {
-		if definition.Name == "manage_designs" {
-			found = true
-			enum, _ := definition.Parameters["properties"].(map[string]any)["action"].(map[string]any)["enum"].([]string)
-			if strings.Join(enum, ",") != "create,edit" {
-				t.Fatalf("manage_designs actions: %v", enum)
+		actions, ok := want[definition.Name]
+		if !ok {
+			continue
+		}
+		found[definition.Name] = true
+		enum, _ := definition.Parameters["properties"].(map[string]any)["action"].(map[string]any)["enum"].([]string)
+		if strings.Join(enum, ",") != actions {
+			t.Fatalf("%s actions: %v", definition.Name, enum)
+		}
+	}
+	for name := range want {
+		if !found[name] {
+			t.Fatalf("the Orchestrator's definitions have no %s", name)
+		}
+		catalog, _ := tool.CatalogToolNamed(name)
+		for _, action := range catalog.Actions {
+			if !action.Listed(tool.CatalogProfileOrchestrator) {
+				t.Fatalf("%s %s has no Orchestrator profile", name, action.Action)
 			}
 		}
-	}
-	if !found {
-		t.Fatal("the Orchestrator's definitions have no manage_designs")
-	}
-	designs, _ := tool.CatalogToolNamed("manage_designs")
-	theme, _ := tool.CatalogToolNamed("manage_theme")
-	for _, action := range designs.Actions {
-		if !action.Listed(tool.CatalogProfileOrchestrator) {
-			t.Fatalf("manage_designs %s has no Orchestrator profile", action.Action)
-		}
-	}
-	if get, _ := theme.Action("get"); get.Listed(tool.CatalogProfileOrchestrator) {
-		t.Fatal("manage_theme get is in the Orchestrator's profile beside the agents' theme tool of the same name")
 	}
 }

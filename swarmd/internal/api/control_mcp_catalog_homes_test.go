@@ -25,7 +25,7 @@ var swarmToolCatalogHomes = map[string]swarmToolCatalogHome{
 
 	"swarm_media_models": {"manage_media", "models"}, "swarm_request_media": {"manage_media", "generate"},
 	"swarm_read_media": {"manage_media", "read"}, "swarm_save_media": {"manage_media", "save"},
-	"swarm_design": {"manage_designs", "create"}, "swarm_get_theme": {"manage_theme", "get"},
+	"swarm_design": {"manage_designs", "create"}, "swarm_get_theme": {"manage_themes", "get"},
 	"swarm_list_agents": {"manage_custom_agents", "list"}, "swarm_define_agent": {"manage_custom_agents", "define"},
 
 	"swarm_create_project": {"manage_projects", "create"}, "swarm_get_project": {"manage_projects", "get"},

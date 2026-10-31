@@ -17,7 +17,7 @@ The catalog holds every tool below:
 | `manage_setup` | 5 | `catalog_manage_setup.go` |
 | `manage_fleet` | 6 | `catalog_manage_fleet.go` |
 | `manage_media` | 6 | `catalog_manage_media.go` |
-| `manage_custom_agents`, `manage_theme`, `manage_designs` | 6 | `catalog_custom_agents_theme_design.go` |
+| `manage_custom_agents`, `manage_themes`, `manage_designs` | 6 | `catalog_custom_agents_theme_design.go` |
 
 Stage 6 is the last stage that moves tools. The hand-written `swarm_*` MCP
 tools are frozen as they are (`TestControlMCPSwarmToolNamesFrozen`) and still
@@ -308,7 +308,7 @@ run the `swarm_*` handlers for both.
 | `read` | `swarm_read_media` | read | `sessions:read` | any |
 | `list`, `transcribe` | none (this conversation's own jobs and files) | read, write | `sessions:read`, `sessions:write` | home, a conversation only (not served to Swarm Control) |
 
-## manage_custom_agents, manage_theme and manage_designs
+## manage_custom_agents, manage_themes and manage_designs
 
 - `manage_custom_agents` (`list`, `get`, `define`, `disable`): the account's
   custom agent service (`api.Server.ManageCustomAgents`) for both surfaces;
@@ -316,13 +316,11 @@ run the `swarm_*` handlers for both.
   Read actions are read level with `agents:read` or `swarm:read`; `define`
   and `disable` are write with `agents:write` or `swarm:write`. Home only, in
   the Orchestrator's definition and `tools=all`.
-- `manage_theme` (`get`): `swarm_get_theme`'s handler, read, home only, in
-  `tools=all`, for Swarm Control only. An agent's `manage_theme` is the
-  agents' theme tool for every action, `get` included (its `theme` and `id`
-  aliases and its answer are unchanged): the run treats `manage_theme` and
-  `manage-theme` as one tool, so a second, get-only definition by that name
-  cannot sit beside it, and the Orchestrator's code-owned contract keeps the
-  theme tool off. `get` therefore has no Orchestrator profile
+- `manage_themes` (`get`): `swarm_get_theme`'s handler, read, home only, in
+  the Orchestrator's definition (code-owned in its contract) and `tools=all`.
+  It is not named `manage_theme`: the run treats `manage_theme` and
+  `manage-theme` as one tool, the agents' theme tool, whose every action,
+  `get` included (its `theme` and `id` aliases and its answer), is unchanged
   (`TestAgentManageThemeGetIsTheThemeTool`).
 - `manage_designs` (`create`, `edit` with `edit_path`): `swarm_design`'s
   handler, write with `sessions:write`, any reach, in Swarm Control's default
@@ -344,7 +342,7 @@ any reach, in every listing.
 The actions whose one implementation is a `swarm_*` tool's handler run
 through one service function, `api.Server.ManageCatalogAction`: `manage_fleet`
 `status` and `activity` here, `manage_media`'s Swarm Control and linked
-actions, `manage_theme`, `manage_designs`, and `get_task_changes` and
+actions, `manage_themes`, `manage_designs`, and `get_task_changes` and
 `read_task_file`. It runs the handler on an internal request that carries the
 Swarm Control caller's own key narrowed to the scopes it holds, a link's
 scopes, or a conversation's route scopes and level, never wider. In a
@@ -352,7 +350,9 @@ conversation only the home Orchestrator runs it: a task's session, a worker's
 job session (`worker_id`) and every other agent are refused, at the tool and
 again in the service (`TestStage6RefusesWorkersAndOtherAgents`); the
 session-bound `manage_media` actions of other agents keep running on their own
-session's project. With `machine` it runs on the linked machine's own
+session's project. The run passes the calling session's agent to every tool on
+its generic tool path, so the Orchestrator's catalog calls reach the service
+(`TestRunToolPathPassesTheSessionAgentToCatalogTools`). With `machine` it runs on the linked machine's own
 service through `POST /v3/catalog-actions/{tool}/{action}`, which serves only
 the actions that reach a linked machine. The linked work rule applies: `off` refuses
 every linked action; under `ask` a conversation's change there (a media job

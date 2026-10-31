@@ -10,7 +10,7 @@ import (
 )
 
 // Stage 6 of the tool catalog: manage_fleet, manage_media,
-// manage_custom_agents, manage_theme, manage_designs and manage_projects'
+// manage_custom_agents, manage_themes, manage_designs and manage_projects'
 // get_task_changes and read_task_file. Their parity cases join
 // catalogParityCases, so TestCatalogParityCoversEveryAction holds each action
 // to a case and TestCatalogParityOrchestratorAndControl runs each through the
@@ -23,13 +23,6 @@ import (
 // action and machine, or both a refusal. With machine= both run the linked
 // machine's own service and are held to parityExact.
 const paritySessionBound catalogParityCompare = "session_bound"
-
-// parityControlOnly: a catalog action with no Orchestrator profile whose name
-// an agent's own tool holds (manage_theme get: the run canonicalizes
-// manage_theme to the agents' theme tool, TestAgentManageThemeGetIsTheThemeTool).
-// Swarm Control must answer an envelope; the Orchestrator's same-named call is
-// another tool and is not compared.
-const parityControlOnly catalogParityCompare = "control_only"
 
 func parityOn(machines []string, args ...any) []catalogParityCase {
 	var out []catalogParityCase
@@ -96,10 +89,7 @@ func manageCustomAgentsParityCases() map[string][]catalogParityCase {
 
 func manageThemeParityCases() map[string][]catalogParityCase {
 	return map[string][]catalogParityCase{
-		"get": {
-			{orchestrator: parityArgs("action", "get"), control: parityArgs("action", "get"), compare: parityControlOnly},
-			{orchestrator: parityArgs("action", "get", "theme_id", "no-such-theme"), control: parityArgs("action", "get", "theme_id", "no-such-theme"), compare: parityControlOnly},
-		},
+		"get": append(parityHome("action", "get"), parityHome("action", "get", "theme_id", "no-such-theme")...),
 	}
 }
 
@@ -189,12 +179,12 @@ func TestStage6LinkedChangesUnderAskAndOff(t *testing.T) {
 
 // catalogStage6OrchestratorCall reports a stage 6 call only the home
 // Orchestrator makes (catalogOrchestratorOnly, ManageCatalogAction): every
-// manage_fleet, manage_designs, manage_theme and manage_custom_agents call,
+// manage_fleet, manage_designs, manage_themes and manage_custom_agents call,
 // manage_media's account-wide or linked ones, and manage_projects' task work
 // reads. The parity harness makes them as the Orchestrator, as the run does.
 func catalogStage6OrchestratorCall(name string, args map[string]any) bool {
 	switch name {
-	case "manage_fleet", "manage_designs", "manage_theme", "manage_custom_agents", "manage_media":
+	case "manage_fleet", "manage_designs", "manage_themes", "manage_custom_agents", "manage_media":
 		return true
 	case "manage_projects":
 		return args["action"] == "get_task_changes" || args["action"] == "read_task_file"

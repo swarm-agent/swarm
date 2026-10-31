@@ -149,7 +149,7 @@ func controlCatalogHeldScopes(record *pebblestore.ScopedTokenRecord) []string {
 
 // catalogToolTitles are the MCP titles of the catalog tools.
 var catalogToolTitles = map[string]string{"manage_projects": "Projects and tasks", "manage_workflows": "Workflows", "manage_jobs": "Worker jobs", "manage_workers": "Workers", "manage_setup": "Machine setup",
-	"manage_fleet": "Machines and what runs", "manage_media": "Images, video and sound", "manage_custom_agents": "Custom agents", "manage_theme": "Themes", "manage_designs": "HTML designs"}
+	"manage_fleet": "Machines and what runs", "manage_media": "Images, video and sound", "manage_custom_agents": "Custom agents", "manage_themes": "Themes", "manage_designs": "HTML designs"}
 
 // catalogTools are the catalog tools this caller sees: the default listing
 // (essentials) or every Swarm Control action (tools=all), only actions the

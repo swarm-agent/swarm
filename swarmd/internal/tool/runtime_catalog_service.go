@@ -13,7 +13,7 @@ import (
 // CatalogActionService runs a catalog action whose one implementation is the
 // handler of the swarm_* tool with the same effect (the API server's
 // ManageCatalogAction): manage_fleet's status and activity on this machine,
-// manage_media's read, manage_theme, manage_design and manage_projects'
+// manage_media's read, manage_themes, manage_designs and manage_projects'
 // get_task_changes and read_task_file. who names the caller: the calling
 // session, or the Swarm Control caller's AI key ("key:ID"), whose scopes ride
 // in ctx (ControlScopesFromContext). With machine in args it runs the action
@@ -95,7 +95,7 @@ func (r *Runtime) catalogServiceAnswer(ctx context.Context, scope WorkspaceScope
 }
 
 // executeCatalogServiceTool runs one action of a catalog tool whose every
-// action is served by CatalogActionService (manage_theme, manage_design) and
+// action is served by CatalogActionService (manage_themes, manage_designs) and
 // returns its answer in the catalog envelope: one handler for the
 // Orchestrator and Swarm Control.
 func (r *Runtime) executeCatalogServiceTool(ctx context.Context, scope WorkspaceScope, toolName string, args map[string]any) (string, error) {

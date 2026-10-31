@@ -1541,6 +1541,7 @@ func (r *Runtime) Definitions() []Definition {
 		manageSetupDefinition(),
 		manageFleetDefinition(),
 		manageDesignsDefinition(),
+		manageThemesDefinition(),
 		manageAutomationV2Definition(),
 		swarmDesignDefinition(),
 		manageMediaDefinition(),
@@ -2237,10 +2238,10 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 	case "manage-theme", "manage_theme":
 		// An agent's manage_theme is the theme tool, every action of it
 		// (get included, with its theme and id aliases and its answer).
-		// The catalog's manage_theme get is Swarm Control's only
-		// (ExecuteControlCatalog): the run canonicalizes both names to one
-		// tool, so an agent never reaches the catalog's.
+		// The catalog's get is manage_themes.
 		return r.executeManageTheme(scope, args)
+	case manageThemeToolName:
+		return r.executeCatalogServiceTool(ctx, scope, manageThemeToolName, args)
 	case "manage-fleet", "manage_fleet":
 		return r.executeManageFleet(ctx, scope, args)
 	case manageDesignToolName:
