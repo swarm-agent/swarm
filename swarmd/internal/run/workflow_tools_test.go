@@ -31,9 +31,10 @@ func (r *recordingWorkflowLifecycle) ManageWorkflows(_ context.Context, p identi
 // handler (tool.Runtime, the one Swarm Control runs) with the authenticated
 // session identity, never argument-supplied ownership, and answers in the
 // catalog envelope. Non-Orchestrator profiles and a task's own session are
-// refused before the lifecycle is called; trigger arguments reach the
-// service unchanged; unsupported rotation fails without a proposal instead
-// of silently succeeding. Boundary: Service.executeManageWorkflowsTool ->
+// refused before the lifecycle is called; argument-supplied ownership
+// (account, session_id) is refused by name, never used or silently dropped;
+// trigger arguments reach the service unchanged; unsupported rotation fails
+// without a proposal instead of silently succeeding. Boundary: Service.executeManageWorkflowsTool ->
 // tool.Runtime.executeManageWorkflows with a recording lifecycle, the
 // narrowest layer that holds both the run-side and catalog-side checks.
 func TestManageWorkflowsLifecycle(t *testing.T) {
@@ -53,7 +54,11 @@ func TestManageWorkflowsLifecycle(t *testing.T) {
 	lifecycle := &recordingWorkflowLifecycle{}
 	s.SetWorkflowLifecycleService(lifecycle)
 	ctx := context.Background()
-	out, err := s.executeManageWorkflowsTool(ctx, "author", `{"action":"propose","account":"foreign","session_id":"foreign","on":{"event":{"source":"webhook","id":"id"},"start":{"worker":"worker-id","brief":"Handle event"}}}`, store.AgentProfile{Name: "orchestrator"})
+	trigger := `"on":{"event":{"source":"webhook","id":"id"},"start":{"worker":"worker-id","brief":"Handle event"}}`
+	if _, err := s.executeManageWorkflowsTool(ctx, "author", `{"action":"propose","account":"foreign","session_id":"foreign",`+trigger+`}`, store.AgentProfile{Name: "orchestrator"}); err == nil || !strings.Contains(err.Error(), "propose does not take account, session_id") || lifecycle.calls != 0 {
+		t.Fatalf("argument-supplied ownership: %v (%d calls)", err, lifecycle.calls)
+	}
+	out, err := s.executeManageWorkflowsTool(ctx, "author", `{"action":"propose",`+trigger+`}`, store.AgentProfile{Name: "orchestrator"})
 	if err != nil {
 		t.Fatal(err)
 	}

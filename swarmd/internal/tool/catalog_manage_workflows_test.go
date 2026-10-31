@@ -17,8 +17,11 @@ import (
 // manage_workflows definition (json.Marshal, sorted keys). The definition is
 // a prompt contract: it changes only on purpose, with this hash. (Stage 3:
 // its FleetWorkDescription names manage_jobs' and manage_workers' machine
-// reach.)
-const manageWorkflowsDefinitionSHA256 = "6b1e16a34a2dfb9938e383a12cef71a1ddea87439f70408e01e90894f8bfe333"
+// reach. Parity fixes: a workflow is named by id or name; propose takes
+// description, expected_revision and replace, merges a change onto the
+// current revision, refuses unknown fields and no longer takes revision;
+// import and restore answer state refused for a run step.)
+const manageWorkflowsDefinitionSHA256 = "a7fcae441f6f2abb300b73391b52dc37364ff5f446d290873d298a0c607283ba"
 
 // Purpose: manage_workflows exists once, in the catalog. The Orchestrator's
 // definition is generated from the declarations (held by hash) and names
@@ -106,18 +109,89 @@ type recordingWorkflows struct {
 	linked []string
 }
 
+// recordedRefusal is a run-step refusal as ManageWorkflows answers it.
+var recordedRefusal = map[string]any{"status": EnvelopeStateRefused, "reason": "a run step needs the machine's owner", "next_action": "Import it without the run step, or ask this machine's owner to import it."}
+
 func (r *recordingWorkflows) ManageWorkflows(_ context.Context, _ identity.Principal, who string, args map[string]any) (any, error) {
 	r.calls = append(r.calls, asString(args["action"]))
 	r.who = append(r.who, who)
 	if _, has := args["machine"]; has {
 		return nil, context.Canceled
 	}
+	if args["action"] == "import" {
+		return recordedRefusal, nil
+	}
 	return map[string]any{"automations": []any{}, "stopped": false}, nil
 }
 
 func (r *recordingWorkflows) CallFleetWork(_ context.Context, _ identity.Principal, machine, name, action string, _ map[string]any) (json.RawMessage, error) {
 	r.linked = append(r.linked, machine+"/"+name+"/"+action)
+	if action == "import" {
+		return json.Marshal(recordedRefusal)
+	}
 	return json.RawMessage(`{"ok":true,"stop":{"stopped":true}}`), nil
+}
+
+// Purpose: propose never drops a field silently. A field propose does not
+// take (description before it existed, a misspelling, revision, which it
+// never used) is refused naming it, on both surfaces, here and before a
+// linked call (whose route would only see the fields it forwards); a
+// declared field passes. A run-step refusal from import is an envelope with
+// state refused and its next_action, here and from a linked machine, and
+// holds to the envelope contract. Threat: a definition saved without what
+// the caller sent, or a refusal the caller reads as plain text. Boundary:
+// executeManageWorkflows (CatalogUndeclaredInputs) and catalogEnvelope with
+// a recording service.
+func TestManageWorkflowsProposeRefusesUnknownFieldsAndImportRefusalIsAnEnvelope(t *testing.T) {
+	_, store := openTaskViewStore(t)
+	account, user := "account-wf", "user-wf"
+	p := identity.Principal{Type: identity.PrincipalTypeUser, UserID: user, AccountScopeID: account}
+	if err := store.CreateSessionForAccount(pebblestore.SessionSnapshot{ID: "orch", AccountScopeID: account, UserID: user}, user, account); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRuntime(1)
+	defer r.Close()
+	r.SetManageSessionService(session.NewService(store, nil))
+	service := &recordingWorkflows{}
+	r.SetWorkflowLifecycleService(service)
+	control := func(args map[string]any) (string, error) {
+		return r.ExecuteControlCatalog(context.Background(), ControlCatalogCall{Principal: p, Levels: []string{"swarm:write"}, KeyID: "k1", Tool: "manage_workflows", Arguments: args})
+	}
+	orchestrator := func(args map[string]any) (string, error) {
+		raw, _ := json.Marshal(args)
+		return r.ExecuteForWorkspaceScopeWithRuntime(context.Background(), WorkspaceScope{SessionID: "orch", Principal: p}, Call{Name: "manage_workflows", Arguments: string(raw)})
+	}
+	for _, machine := range []string{"", "box"} {
+		for surface, call := range map[string]func(map[string]any) (string, error){"control": control, "orchestrator": orchestrator} {
+			args := map[string]any{"action": "propose", "name": "Fork", "summary": "x", "revision": float64(2)}
+			if machine != "" {
+				args["machine"] = machine
+			}
+			if _, err := call(args); err == nil || !strings.Contains(err.Error(), "propose does not take revision, summary") || !strings.Contains(err.Error(), "expected_revision") {
+				t.Fatalf("%s machine %q: unknown fields: %v", surface, machine, err)
+			}
+			if len(service.calls)+len(service.linked) != 0 {
+				t.Fatalf("%s machine %q: a refused propose reached the service: %v %v", surface, machine, service.calls, service.linked)
+			}
+			imported := map[string]any{"action": "import", "definition": map[string]any{"swarm_workflow": float64(1)}}
+			if machine != "" {
+				imported["machine"] = machine
+			}
+			out, err := call(imported)
+			if err != nil || CheckEnvelope(out) != nil {
+				t.Fatalf("%s machine %q: import refusal: %s %v %v", surface, machine, out, err, CheckEnvelope(out))
+			}
+			var e Envelope
+			if err := json.Unmarshal([]byte(out), &e); err != nil || e.State != EnvelopeStateRefused || !strings.HasPrefix(e.NextAction, "Import it without the run step") || !strings.Contains(out, `"reason"`) {
+				t.Fatalf("%s machine %q: import refusal envelope: %s", surface, machine, out)
+			}
+			service.calls, service.linked, service.who = nil, nil, nil
+		}
+	}
+	// A declared field passes to the service.
+	if _, err := control(map[string]any{"action": "propose", "name": "Fork", "description": "Reviews every change", "expected_revision": float64(1)}); err != nil || strings.Join(service.calls, ",") != "propose" {
+		t.Fatalf("declared fields: %v %v", err, service.calls)
+	}
 }
 
 // Purpose: Swarm Control and the Orchestrator run manage_workflows through

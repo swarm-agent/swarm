@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,7 +50,8 @@ type EnvelopeParts struct {
 const HomeMachineFallback = "home"
 
 // Envelope states: the outcome of a call that ran. A call that is refused or
-// fails is a tool error carrying the reason (MCP isError), not an envelope.
+// fails is a tool error carrying the reason (MCP isError), not an envelope,
+// except a refusal an action declares as its outcome (state refused).
 const (
 	// EnvelopeStateOK: the call did what it was asked.
 	EnvelopeStateOK = "ok"
@@ -65,11 +67,16 @@ const (
 	// someone (a job's question for answer_job, or a tool approval);
 	// CatalogAction.WaitingStatuses names those statuses.
 	EnvelopeStateWaiting = "waiting"
+	// EnvelopeStateRefused: the action declined what was asked and says
+	// why (data.reason) and what to do instead (next_action); nothing
+	// changed. Only an action that declares it in CatalogAction.States
+	// answers it (manage_workflows import and restore of a run step).
+	EnvelopeStateRefused = "refused"
 )
 
 // EnvelopeStates is the documented set of envelope states
 // (docs/tool-catalog.md).
-var EnvelopeStates = []string{EnvelopeStateOK, EnvelopeStateWatching, EnvelopeStateCancelled, ControlTaskWaitMilestone, ControlTaskWaitSettled, ControlTaskWaitTimedOut, EnvelopeStatePartial, EnvelopeStateWaiting}
+var EnvelopeStates = []string{EnvelopeStateOK, EnvelopeStateWatching, EnvelopeStateCancelled, ControlTaskWaitMilestone, ControlTaskWaitSettled, ControlTaskWaitTimedOut, EnvelopeStatePartial, EnvelopeStateWaiting, EnvelopeStateRefused}
 
 // EnvelopeStateKnown reports whether state is in EnvelopeStates.
 func EnvelopeStateKnown(state string) bool {
@@ -448,6 +455,25 @@ func envelopeCarriedArgs(declared CatalogAction, args map[string]any) map[string
 		}
 	}
 	return out
+}
+
+// CatalogUndeclaredInputs names, sorted, the arguments of a catalog tool's
+// action that the action does not declare (action itself aside), with the
+// inputs it does declare: an action that must never drop a field silently
+// refuses the call naming them.
+func CatalogUndeclaredInputs(toolName, action string, args map[string]any) (unknown, declared []string) {
+	declaredAction, ok := catalogDeclared(toolName).Action(action)
+	if !ok {
+		return nil, nil
+	}
+	declared = append(append([]string(nil), declaredAction.Inputs...), declaredAction.ControlInputs...)
+	for key := range args {
+		if key != "action" && !envelopeTakes(declaredAction, key) {
+			unknown = append(unknown, key)
+		}
+	}
+	sort.Strings(unknown)
+	return unknown, declared
 }
 
 // envelopeTakes reports whether the action declares the input.

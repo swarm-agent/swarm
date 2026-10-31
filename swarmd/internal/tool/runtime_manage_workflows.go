@@ -80,6 +80,13 @@ func (r *Runtime) executeManageWorkflows(ctx context.Context, scope WorkspaceSco
 	if service == nil {
 		return "", errors.New("workflow service unavailable")
 	}
+	// propose never drops a field: one it does not take is refused, naming
+	// it, here and before a linked call (whose route would not see it).
+	if declared.Action == "propose" {
+		if unknown, inputs := CatalogUndeclaredInputs(manageWorkflowsToolName, declared.Action, args); len(unknown) > 0 {
+			return "", fmt.Errorf("propose does not take %s; nothing was proposed. It takes: %s", strings.Join(unknown, ", "), strings.Join(inputs, ", "))
+		}
+	}
 	if rotate, _ := args["rotate_key"].(bool); rotate {
 		return "", errors.New("webhook key rotation is not supported for native workflow proposals; use the person's HTTP save or MCP path")
 	}
