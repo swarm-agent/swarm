@@ -762,8 +762,11 @@ func (s *Store) CreateDelivery(a Automation, result Result) (Delivery, bool, err
 	// A follow-up that ends at the head an agent step moved the newest
 	// delivery to (the task's branch was fast-forwarded to it) hands over
 	// nothing new either, when that delivery re-runs on a hand-over
-	// (HandoverRerunStep): it is returned like a duplicate head.
-	if result.Followup != "" && head != "" {
+	// (HandoverRerunStep): it is returned like a duplicate head. Only a
+	// follow-up that succeeded hands over: a failed one gets its own
+	// delivery, and a blocked end of this automation's own reopen records
+	// the blocked delivery that closes the round (below).
+	if result.Followup != "" && head != "" && NormalizeStatus(result.Status) == StatusSucceeded && !(reopened && result.EndedBlocked()) {
 		for _, p := range previous {
 			if p.AutomationID != a.ID {
 				continue

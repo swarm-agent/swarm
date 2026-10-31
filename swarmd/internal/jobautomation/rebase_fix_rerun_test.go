@@ -418,6 +418,81 @@ func TestSameHeadHandoverRerunsTheDeliveryFromTheFailedGate(t *testing.T) {
 		}
 	})
 
+	// Requirement: the moved-head hand-over shortcut in CreateDelivery only
+	// applies to a follow-up that succeeded. A blocked end of this
+	// automation's own reopen, at the head a fix step moved to, still records
+	// the blocked delivery that closes the reopen round; a failed follow-up
+	// there still gets its own delivery.
+	// Threat: the blocker and the round's close silently dropped (reported
+	// as duplicate_head) because the follow-up ended at the moved head.
+	// Owner: Store.CreateDelivery via Runner.consume over the real store.
+	for _, tc := range []struct {
+		name, when, err string
+		want            string
+	}{
+		// The default workflow matches successes; its own reopen's blocked
+		// end still reaches CreateDelivery (Runner.consume).
+		{"blocked reopen follow-up at the head a fix step moved to", WhenSucceeded, "blocked: approval required", StateBlocked},
+		// A failed end reaches CreateDelivery when the workflow matches it.
+		{"failed follow-up at the head a fix step moved to", WhenAlways, "the coder crashed", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.withReopener(&sessionReopener{})
+			folder := t.TempDir()
+			writeScript(t, folder, "gate.sh", gate)
+			writeScript(t, folder, "push.sh", "echo pushed >> \"$PWD/pushes\"\n")
+			h.process()
+			h.automation(Automation{Name: "gate then push", Scope: Scope{Folder: folder}, Enabled: true, When: tc.when, Steps: []Step{
+				{ID: "fix", Type: StepAgent, Worker: "coder", Brief: "Fix it."},
+				{ID: "gate", Type: StepRun, Command: "gate.sh", ContinueOnFailure: true},
+				{ID: "back", Type: StepReopen, Message: "The gate failed: {{steps.gate.output}}", If: []Condition{{Step: "gate", Status: StateFailed}}},
+				{ID: "push", Type: StepRun, Command: "push.sh", If: []Condition{{Step: "gate", Status: StateSucceeded}}},
+			}})
+			fixHead := strings.Repeat("c", 40)
+			h.runner.verify = func(context.Context, string, HeadRef, HeadRef) (bool, error) { return true, nil }
+			h.agents.outcomes = []AgentOutcome{{Head: fixHead}}
+			result := taskResult(folder, "task-1", "coder")
+			h.results.results["task-1"] = result
+			h.taskEnd("task-1", "", "succeeded", "task")
+			h.process()
+			first := h.deliveries(jobID)[0]
+			if first.State != StateSentBack || first.Head != fixHead || first.Steps[2].Outcome["followup"] != "followup-1" {
+				t.Fatalf("first delivery = %s head %s steps %+v", first.State, first.Head, first.Steps)
+			}
+			followup := *result
+			git := *result.Git
+			git.Head = fixHead
+			followup.Git = &git
+			followup.Status, followup.Error = StatusFailed, tc.err
+			h.results.results["task-1"] = &followup
+			h.taskEnd("task-1", "followup-1", "failed", "task")
+			h.process()
+			var d Delivery
+			for _, item := range h.deliveries(jobID) {
+				if item.Followup == "followup-1" {
+					d = item
+				}
+			}
+			if d.ID == "" || d.ID == first.ID {
+				t.Fatalf("the follow-up's end recorded no delivery: %+v", h.deliveries(jobID))
+			}
+			if tc.want == StateBlocked {
+				if d.State != StateBlocked || d.BlockedReason != tc.err || d.Round != 1 {
+					t.Fatalf("blocked round = state %s reason %q round %d", d.State, d.BlockedReason, d.Round)
+				}
+				for _, step := range d.Steps {
+					if step.State != StateSkipped {
+						t.Fatalf("blocked round ran a step: %+v", d.Steps)
+					}
+				}
+			}
+			if len(h.signalsOf("automation.delivery.rerun")) != 0 {
+				t.Fatal("a follow-up that did not succeed re-ran the delivery")
+			}
+		})
+	}
+
 	t.Run("failed agent step is not re-run", func(t *testing.T) {
 		h, folder := setup(t, []Step{{ID: "fix", Type: StepAgent, Worker: "coder", Brief: "Fix it."}})
 		h.agents.status = "failed"
