@@ -28,6 +28,40 @@ retired with its reason (`swarmToolCatalogHomes` and `swarmToolsRetired`,
 `swarm_run_plan` (plans are not the default) and `swarm_accept_review` (it
 closes a plan checkpoint's review).
 
+### A catalog action accepts every input of the tool it replaced
+
+A catalog action takes every input of the `swarm_*` tool it replaces, under
+the same name and with the same meaning, run by the code that tool used
+(stage 7a). It also returns every field that tool's answer carried, in the
+envelope's `data` (or in the record `data` holds, such as `data.task`); a
+`swarm_*` answer's `next` hint is the envelope's `next_action` or `next`.
+Inputs only a Swarm Control caller can use are control inputs: held waits
+(`wait_seconds`), and on `manage_jobs` also `then` and `model`, which a
+conversation never passes to the job handlers, here or on a linked machine.
+The Orchestrator keeps its own watch and turn model.
+
+Two tests hold this for every mapped pair (`swarmToolCatalogHomes`):
+`TestEverySwarmToolInputIsACatalogInput` compares each `swarm_*` input schema
+with the action's inputs and control inputs, and
+`TestEverySwarmAnswerFieldIsInTheCatalogEnvelope` makes a representative call
+of both and compares the answer's top-level fields with the envelope data.
+A deliberate drop is listed once, with its reason, in `swarmCatalogDrops`: an
+input named `action` (the catalog's own field: `connect_chatgpt` and
+`connect_claude_code` take it as `step`; approving a task card is the
+person's step in their app), `create_key`'s `kind` (taken as `key_kind`),
+`swarm_design`'s `edit_path` (`manage_designs` `edit`), `swarm_request_media`'s
+`retry_of` (`manage_media` `retry`), `swarm_get_job`'s `include_media` (images
+are not envelope data; `manage_media` `read` returns a file) and
+`swarm_run_task`'s `role` (`agent`).
+
+Gaps not closed yet are named in `swarmCatalogOpenGaps`, and the test fails
+once one is closed so its entry goes too. They must be closed before the
+`swarm_*` tools are deleted: the `swarm_*` worker inputs of create, deploy,
+update and lifecycle control (`manage_workers`), the folder environments' flat
+inputs, place, log and held waits, `get`'s and `propose_task`'s held waits,
+`propose_task`'s per-task model, and the flat answer fields of
+`swarm_get_worker`, `swarm_task_result` and `swarm_wait_task`.
+
 A key bound to one worker, one agent or a trigger never calls a catalog tool:
 Swarm Control neither lists nor runs them for it, and the linked routes
 (`POST /v3/jobs/{action}`, `POST /v3/worker-actions/{action}`,
