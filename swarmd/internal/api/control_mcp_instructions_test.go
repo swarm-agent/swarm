@@ -174,6 +174,14 @@ func TestGuidanceNamesOnlyCatalogTools(t *testing.T) {
 	for name, set := range map[string][]controlMCPInstruction{"core": controlMCPCoreInstructionLines, "tools=all": controlMCPInstructionLines} {
 		for i, line := range set {
 			problems = append(problems, controlMCPGuidanceProblems(fmt.Sprintf("server instruction %s #%d", name, i), line.text, served, none, true)...)
+			// A gate naming an action Swarm Control does not serve hides
+			// the line from every caller.
+			for _, gate := range line.tools {
+				toolName, actionName, _ := strings.Cut(strings.TrimPrefix(gate, "!"), " ")
+				if actions := served[toolName]; actions == nil || (actionName != "" && !actions[actionName]) {
+					problems = append(problems, fmt.Sprintf("server instruction %s #%d: gated on %q, which is not in the catalog's MCP tool list", name, i, gate))
+				}
+			}
 		}
 	}
 
