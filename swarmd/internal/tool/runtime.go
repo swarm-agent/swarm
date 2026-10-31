@@ -2037,7 +2037,11 @@ func (r *Runtime) executeBatch(ctx context.Context, workspacePath string, calls 
 			output, err := r.executeOne(ctx, scope, current.call, progressFn)
 			if err != nil {
 				result.Error = err.Error()
-				if strings.TrimSpace(output) != "" {
+				if failure, ok := r.catalogCallFailure(current.call, err); ok {
+					// A catalog tool answers a failure in the envelope too
+					// (refused or error); the error keeps its plain reason.
+					result.Output = failure
+				} else if strings.TrimSpace(output) != "" {
 					result.Output = output
 				} else {
 					result.Output = err.Error()

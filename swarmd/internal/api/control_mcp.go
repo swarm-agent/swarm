@@ -460,7 +460,14 @@ func (c *controlMCPCall) callTool(params json.RawMessage) (map[string]any, *cont
 			}
 		}
 		value, err := c.callCatalogTool(catalog, args)
-		return controlMCPToolResult(value, err), nil
+		result := controlMCPToolResult(value, err)
+		if err != nil {
+			// A refused or failed catalog call answers in the envelope too
+			// (state refused or error, the reason in data), here and from a
+			// linked machine, as the Orchestrator is shown it.
+			result["content"] = []map[string]any{{"type": "text", "text": c.catalogFailureEnvelope(catalog, args, err)}}
+		}
+		return result, nil
 	}
 	var tool *controlMCPTool
 	for _, candidate := range controlMCPTools() {

@@ -573,10 +573,22 @@ func (h *catalogParityHarness) runParityCases(t *testing.T, toolName, action str
 				continue
 			}
 			if orchErr != nil || controlErr != "" {
-				if orchErr == nil || controlErr == "" || parityTwin(controlErr, c.twin) != orchErr.Error() {
+				// A refusal or failure answers in the envelope on both
+				// surfaces (state refused or error, the reason in data,
+				// next_action the fix it names): the same answer, whose
+				// reason is the Orchestrator's error.
+				failure := parityTwin(controlErr, c.twin)
+				var decoded struct {
+					State string `json:"state"`
+					Data  struct {
+						Reason string `json:"reason"`
+					} `json:"data"`
+				}
+				if orchErr == nil || controlErr == "" || json.Unmarshal([]byte(failure), &decoded) != nil || decoded.Data.Reason != orchErr.Error() || failure != orchOut ||
+					(decoded.State != tool.EnvelopeStateRefused && decoded.State != tool.EnvelopeStateError) || tool.CheckEnvelope(failure) != nil {
 					t.Fatalf("%s case %d: Orchestrator %v %s; Swarm Control %q %s", name, i, orchErr, orchOut, controlErr, controlOut)
 				}
-				t.Logf("%s: the same error: %s", name, orchErr)
+				t.Logf("%s: the same %s envelope: %s", name, decoded.State, orchErr)
 				continue
 			}
 			t.Logf("%s: %s envelopes", name, c.compare)

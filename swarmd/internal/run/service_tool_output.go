@@ -514,6 +514,11 @@ func prepareToolOutputForModel(call tool.Call, result tool.Result) string {
 	if errorText == "" && (name == "ask_user" || name == "ask-user" || name == "permission") {
 		return output
 	}
+	// A refused or failed catalog call answers in the envelope (state
+	// refused or error, the reason in data), as Swarm Control shows it.
+	if errorText != "" && len(output) <= maxToolInputBytes && tool.IsFailureEnvelope(output) {
+		return output
+	}
 	if errorText == "" && len(output) > maxToolInputBytes {
 		if compact, ok := prepareLargeReadToolOutputForModel(call, result, output); ok {
 			return compact

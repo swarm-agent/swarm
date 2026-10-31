@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sort"
 	"strings"
 
@@ -43,6 +44,30 @@ func (s *Server) HomeMachineName() string {
 		return ""
 	}
 	return strings.TrimSpace(cfg.SwarmName)
+}
+
+// catalogFailureEnvelope is a refused or failed catalog call's answer as
+// Swarm Control shows it: the envelope with state refused or error and the
+// reason the MCP client was shown (tool.FailureEnvelope), the same answer
+// the Orchestrator's runtime gives.
+func (c *controlMCPCall) catalogFailureEnvelope(catalog tool.CatalogTool, args map[string]any, err error) string {
+	reason := "tool failed"
+	var toolErr controlMCPToolError
+	if errors.As(err, &toolErr) {
+		reason = toolErr.message
+	}
+	action, _ := args["action"].(string)
+	action = strings.ToLower(strings.TrimSpace(action))
+	if action == "" {
+		action = "list"
+	}
+	machine, _ := args["machine"].(string)
+	machine = strings.TrimSpace(machine)
+	linked := machine != ""
+	if !linked && c.server != nil {
+		machine = c.server.HomeMachineName()
+	}
+	return tool.FailureEnvelope(catalog.Name, action, machine, linked, err, reason)
 }
 
 // catalogActionAllowed reports whether this caller may see and call the

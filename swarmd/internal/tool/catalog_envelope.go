@@ -49,9 +49,11 @@ type EnvelopeParts struct {
 // HomeMachineFallback names the home machine when it has no Swarm name.
 const HomeMachineFallback = "home"
 
-// Envelope states: the outcome of a call that ran. A call that is refused or
-// fails is a tool error carrying the reason (MCP isError), not an envelope,
-// except a refusal an action declares as its outcome (state refused).
+// Envelope states: the outcome of a call. A call that is refused or fails is
+// still a tool error (MCP isError, the Orchestrator's failed tool call), and
+// its answer is the envelope too: state refused or error, the reason in data
+// (FailureEnvelope). A refusal an action declares as its outcome (state
+// refused in CatalogAction.States) is a call that ran, not a tool error.
 const (
 	// EnvelopeStateOK: the call did what it was asked.
 	EnvelopeStateOK = "ok"
@@ -67,16 +69,21 @@ const (
 	// someone (a job's question for answer_job, or a tool approval);
 	// CatalogAction.WaitingStatuses names those statuses.
 	EnvelopeStateWaiting = "waiting"
-	// EnvelopeStateRefused: the action declined what was asked and says
-	// why (data.reason) and what to do instead (next_action); nothing
-	// changed. Only an action that declares it in CatalogAction.States
-	// answers it (manage_workflows import and restore of a run step).
+	// EnvelopeStateRefused: the call was not accepted and nothing changed;
+	// data.reason says why and next_action what to do instead when there is
+	// a fix. It is a declared outcome of an action that declares it in
+	// CatalogAction.States (manage_workflows import and restore of a run
+	// step), and the failure answer of any catalog call that was refused (a
+	// missing or wrong input, a rule, a record that does not exist).
 	EnvelopeStateRefused = "refused"
+	// EnvelopeStateError: the call could not run (a service or machine
+	// unavailable); data.reason says why.
+	EnvelopeStateError = "error"
 )
 
 // EnvelopeStates is the documented set of envelope states
 // (docs/tool-catalog.md).
-var EnvelopeStates = []string{EnvelopeStateOK, EnvelopeStateWatching, EnvelopeStateCancelled, ControlTaskWaitMilestone, ControlTaskWaitSettled, ControlTaskWaitTimedOut, EnvelopeStatePartial, EnvelopeStateWaiting, EnvelopeStateRefused}
+var EnvelopeStates = []string{EnvelopeStateOK, EnvelopeStateWatching, EnvelopeStateCancelled, ControlTaskWaitMilestone, ControlTaskWaitSettled, ControlTaskWaitTimedOut, EnvelopeStatePartial, EnvelopeStateWaiting, EnvelopeStateRefused, EnvelopeStateError}
 
 // EnvelopeStateKnown reports whether state is in EnvelopeStates.
 func EnvelopeStateKnown(state string) bool {
