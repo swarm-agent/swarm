@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
 	store "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -117,6 +118,15 @@ func (s *Server) ManageCatalogAction(ctx context.Context, p identity.Principal, 
 			if task, _ := session.Metadata[key].(string); task != "" {
 				return nil, fmt.Errorf("%s %s is the home Orchestrator's; a task's session cannot run it", toolName, declared.Action)
 			}
+		}
+		// A worker's job session acts only within what was accepted for
+		// it, and no other agent runs these account-wide handlers: only the
+		// home Orchestrator's own conversation does.
+		if worker, _ := session.Metadata["worker_id"].(string); strings.TrimSpace(worker) != "" {
+			return nil, fmt.Errorf("%s %s is the home Orchestrator's; a worker's session cannot run it", toolName, declared.Action)
+		}
+		if !agentruntime.IsOrchestratorAgentName(tool.CatalogAgentFromContext(ctx)) {
+			return nil, fmt.Errorf("%s %s is the home Orchestrator's; another agent cannot run it", toolName, declared.Action)
 		}
 	}
 	clean := map[string]any{}

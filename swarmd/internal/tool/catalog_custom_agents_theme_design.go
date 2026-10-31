@@ -111,19 +111,14 @@ func manageThemeCatalog() CatalogTool {
 			// /v1/ui/settings has no scope of its own; a key reading
 			// sessions or holding the read level may read it.
 			APIScopes: []string{"sessions:read", "swarm:read"},
-			// The Orchestrator's code-owned tool contract keeps the theme
-			// catalog off (it stays with the agents that use it).
+			// No Orchestrator profile: the run canonicalizes manage_theme and
+			// manage-theme to one tool, the agents' theme tool, which the
+			// Orchestrator's code-owned contract keeps off; a second
+			// definition by that name cannot exist beside it.
 			Profiles:    []CatalogProfile{CatalogProfileFull},
 			Description: "A theme's id, name and palette (#RRGGBB colors): the given theme_id, else the account's active theme, else Swarm's default (swarm_get_theme).",
 		}},
 	}
-}
-
-// manageThemeCatalogAction reports whether a manage_theme call is the
-// catalog's (its declared actions), not the agents' manage-theme tool.
-func manageThemeCatalogAction(args map[string]any) bool {
-	_, ok := catalogDeclared(manageThemeToolName).Action(asString(args["action"]))
-	return ok
 }
 
 func manageDesignCatalog() CatalogTool {
@@ -143,7 +138,7 @@ func manageDesignCatalog() CatalogTool {
 		{"edit_path", str("The existing .html file to edit in place (relative to the workspace).", 1000)},
 		{"wait_seconds", map[string]any{"type": "integer", "minimum": 0, "maximum": 110, "description": "Wait up to this many seconds for the job to settle."}},
 	}
-	profiles := []CatalogProfile{CatalogProfileEssentials, CatalogProfileFull}
+	profiles := []CatalogProfile{CatalogProfileEssentials, CatalogProfileFull, CatalogProfileOrchestrator}
 	actions := []CatalogAction{
 		{Action: "create", Inputs: []string{"machine", "project", "workspace", "brief", "count", "style", "variations", "batch_name", "folder", "wait_seconds"},
 			Description: "Make count standalone HTML designs from one brief, in parallel: one model call each, a browser check, and one repair call only for designs with errors. Files land in <folder>/<batch>-<id>/01.html … with results.json; nothing to merge. Every design costs money with the provider (swarm_design)."},
@@ -162,6 +157,12 @@ func manageDesignCatalog() CatalogTool {
 		actions[i].NextAction = "manage_jobs get_job with the job_id reads each design's status, check errors and cost."
 	}
 	return CatalogTool{Name: manageDesignToolName, Description: "Make standalone HTML designs, or edit one existing HTML file, in a project's folder. Report each design's path and status exactly as returned.", Fields: fields, Actions: actions}
+}
+
+// manageDesignsDefinition is the Orchestrator's manage_designs, generated
+// from the catalog declaration.
+func manageDesignsDefinition() Definition {
+	return manageDesignCatalog().OrchestratorDefinition()
 }
 
 // executeManageDesign runs one manage_designs action: edit is swarm_design

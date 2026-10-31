@@ -111,6 +111,9 @@ func (r *Runtime) executeManageFleet(ctx context.Context, scope WorkspaceScope, 
 	if !p.Valid() || strings.TrimSpace(p.AccountScopeID) == "" || strings.TrimSpace(p.UserID) == "" || p.Type != identity.PrincipalTypeUser {
 		return "", errors.New("manage_fleet requires an authenticated user identity")
 	}
+	if err := catalogOrchestratorOnly(ctx, scope, manageFleetToolName, declared.Action); err != nil {
+		return "", err
+	}
 	call := make(map[string]any, len(args))
 	for key, value := range args {
 		call[key] = value

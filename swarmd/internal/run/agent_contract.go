@@ -358,8 +358,12 @@ func resolveAgentToolStates(profile pebblestore.AgentProfile, knownTools map[str
 		// Fleet monitoring moved from manage_projects into the catalog's
 		// manage_fleet (read only): a stored profile from before it cannot
 		// hide it.
-		if _, implemented := knownTools[tool.ManageFleetToolName]; implemented {
-			resolved.Tools[tool.ManageFleetToolName] = ResolvedAgentTool{Enabled: true, Source: "runtime.orchestrator_catalog"}
+		// manage_designs (the catalog's swarm_design) too: the Orchestrator's
+		// catalog tools are code-owned.
+		for _, name := range []string{tool.ManageFleetToolName, tool.ManageDesignToolName} {
+			if _, implemented := knownTools[name]; implemented {
+				resolved.Tools[name] = ResolvedAgentTool{Enabled: true, Source: "runtime.orchestrator_catalog"}
+			}
 		}
 		// Its tools for the person's machine are code-owned too: a stored profile
 		// from before them cannot hide them. Each session's access gates every

@@ -89,7 +89,7 @@ func TestCatalogEnvelopeContractEveryAction(t *testing.T) {
 					name += "@" + machine
 				}
 				c = h.resolveCase(t, c)
-				if out, err := h.orchestratorTool(t, toolName, c.orchestrator); err == nil {
+				if out, err := h.orchestratorTool(t, toolName, c.orchestrator); err == nil && c.compare != parityControlOnly {
 					catalogEnvelopeCheck(t, name+" (Orchestrator)", out)
 					checked[name] = true
 				}

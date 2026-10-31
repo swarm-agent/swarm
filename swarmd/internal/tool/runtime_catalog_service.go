@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
 )
 
@@ -39,6 +40,21 @@ func catalogServiceCaller(scope WorkspaceScope, toolName string) (string, error)
 	return who, nil
 }
 
+// catalogOrchestratorOnly refuses a conversation's call that is not the
+// home Orchestrator's: the swarm_* handlers behind CatalogActionService read
+// and change account-wide records (any project's media and task work) and
+// start work on linked machines, which a worker or another agent must never
+// do on its own. A Swarm Control caller is held by its key's levels instead.
+func catalogOrchestratorOnly(ctx context.Context, scope WorkspaceScope, toolName, action string) error {
+	if scope.ControlCaller {
+		return nil
+	}
+	if !agentruntime.IsOrchestratorAgentName(CatalogAgentFromContext(ctx)) {
+		return fmt.Errorf("%s %s is the home Orchestrator's: it reads or changes account-wide records, never an agent's or a worker's", toolName, action)
+	}
+	return nil
+}
+
 // catalogServiceAnswer runs one action through CatalogActionService and
 // returns its answer as JSON: the answer itself here, or {"data": answer}
 // from a linked machine (the envelope's data is then the machine's answer as
@@ -46,6 +62,9 @@ func catalogServiceCaller(scope WorkspaceScope, toolName string) (string, error)
 func (r *Runtime) catalogServiceAnswer(ctx context.Context, scope WorkspaceScope, catalog CatalogTool, declared CatalogAction, args map[string]any) (string, error) {
 	who, err := catalogServiceCaller(scope, catalog.Name)
 	if err != nil {
+		return "", err
+	}
+	if err := catalogOrchestratorOnly(ctx, scope, catalog.Name, declared.Action); err != nil {
 		return "", err
 	}
 	service, ok := r.getWorkflowLifecycleService().(CatalogActionService)

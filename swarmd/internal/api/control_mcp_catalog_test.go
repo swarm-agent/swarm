@@ -179,7 +179,7 @@ func (h *catalogParityHarness) orchestratorTool(t *testing.T, name string, args 
 	// it; manage_workers is the Orchestrator's only), as
 	// Service.executeManageJobsTool and executeManageWorkersCatalogTool do.
 	agent := catalogParityAgent
-	if name == "manage_workers" || name == "manage_setup" {
+	if name == "manage_workers" || name == "manage_setup" || catalogStage6OrchestratorCall(name, args) {
 		agent = agentruntime.SwarmOrchestratorAgentID
 	}
 	base := tool.WithVideoRunContext(context.Background(), tool.VideoRunContext{SessionID: session, RunID: "run-1"})
@@ -527,6 +527,19 @@ func (h *catalogParityHarness) runParityCases(t *testing.T, toolName, action str
 				continue
 			}
 			served++
+			if c.compare == parityControlOnly {
+				catalog, _ := tool.CatalogToolNamed(toolName)
+				if declared, _ := catalog.Action(action); declared.Listed(tool.CatalogProfileOrchestrator) {
+					t.Fatalf("%s: control-only, yet in the Orchestrator's profile", name)
+				}
+				if controlErr == "" {
+					if err := tool.CheckEnvelope(controlOut); err != nil {
+						t.Fatalf("%s: %v\n%s", name, err, controlOut)
+					}
+				}
+				t.Logf("%s: Swarm Control only: %s", name, controlErr)
+				continue
+			}
 			if c.compare == paritySessionBound {
 				// Documented difference (paritySessionBound): the same
 				// outcome kind, and every envelope keeps the contract.

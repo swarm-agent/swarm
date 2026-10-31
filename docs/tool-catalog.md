@@ -317,14 +317,19 @@ run the `swarm_*` handlers for both.
   and `disable` are write with `agents:write` or `swarm:write`. Home only, in
   the Orchestrator's definition and `tools=all`.
 - `manage_theme` (`get`): `swarm_get_theme`'s handler, read, home only, in
-  `tools=all`. The agents' `manage-theme` tool keeps its other actions; the
-  Orchestrator's code-owned contract keeps the theme catalog off, so `get`
-  has no Orchestrator profile.
+  `tools=all`, for Swarm Control only. An agent's `manage_theme` is the
+  agents' theme tool for every action, `get` included (its `theme` and `id`
+  aliases and its answer are unchanged): the run treats `manage_theme` and
+  `manage-theme` as one tool, so a second, get-only definition by that name
+  cannot sit beside it, and the Orchestrator's code-owned contract keeps the
+  theme tool off. `get` therefore has no Orchestrator profile
+  (`TestAgentManageThemeGetIsTheThemeTool`).
 - `manage_designs` (`create`, `edit` with `edit_path`): `swarm_design`'s
   handler, write with `sessions:write`, any reach, in Swarm Control's default
-  listing. Not named `manage_design`, the retired tool `swarm_design`
-  replaced. The Orchestrator keeps making designs with its own `swarm_design`
-  tool, which the run service executes inside its run.
+  listing and the Orchestrator's definition (code-owned in its contract). Not
+  named `manage_design`, the retired tool `swarm_design` replaced. The
+  Designer keeps its own `swarm_design` tool, which the run service executes
+  inside its run.
 
 ## Task work in manage_projects
 
@@ -342,8 +347,12 @@ through one service function, `api.Server.ManageCatalogAction`: `manage_fleet`
 actions, `manage_theme`, `manage_designs`, and `get_task_changes` and
 `read_task_file`. It runs the handler on an internal request that carries the
 Swarm Control caller's own key narrowed to the scopes it holds, a link's
-scopes, or a conversation's route scopes and level, never wider; a task's
-session is refused. With `machine` it runs on the linked machine's own
+scopes, or a conversation's route scopes and level, never wider. In a
+conversation only the home Orchestrator runs it: a task's session, a worker's
+job session (`worker_id`) and every other agent are refused, at the tool and
+again in the service (`TestStage6RefusesWorkersAndOtherAgents`); the
+session-bound `manage_media` actions of other agents keep running on their own
+session's project. With `machine` it runs on the linked machine's own
 service through `POST /v3/catalog-actions/{tool}/{action}`, which serves only
 the actions that reach a linked machine. The linked work rule applies: `off` refuses
 every linked action; under `ask` a conversation's change there (a media job
