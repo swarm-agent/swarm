@@ -888,20 +888,26 @@ func (r *Runtime) manageSessionsGet(scope WorkspaceScope, id string) (string, er
 	}
 
 	if msgs, msgErr := r.listSessionMessageTail(s.ID, 1); msgErr == nil && len(msgs) > 0 {
-		m := msgs[len(msgs)-1]
-		rec["last_message"] = map[string]any{
-			"id":         m.ID,
-			"seq":        m.GlobalSeq,
-			"role":       m.Role,
-			"content":    truncateUTF8Bytes(m.Content, 500),
-			"created_at": m.CreatedAt,
-		}
+		rec["last_message"] = manageSessionLastMessage(msgs[len(msgs)-1])
 	}
 
 	if videoContext := manageSessionVideoContext(s.Metadata); videoContext != nil {
 		rec["video_context"] = videoContext
 	}
 	return marshalManageSessions(rec)
+}
+
+// manageSessionLastMessage is manage-sessions get's last_message: its content
+// is the readable content (ReadableMessageContent), so provider internals
+// never spend the 500 bytes, as in read_messages.
+func manageSessionLastMessage(m pebblestore.MessageSnapshot) map[string]any {
+	return map[string]any{
+		"id":         m.ID,
+		"seq":        m.GlobalSeq,
+		"role":       m.Role,
+		"content":    truncateUTF8Bytes(ReadableMessageContent(m.Content), 500),
+		"created_at": m.CreatedAt,
+	}
 }
 
 func manageSessionVideoContext(metadata map[string]any) map[string]any {

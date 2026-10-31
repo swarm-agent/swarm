@@ -3,6 +3,8 @@ package tool
 import (
 	"errors"
 	"strings"
+
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // TaskHistoryBinding resolves authority from retained session and task records,
@@ -31,7 +33,10 @@ func (r *Runtime) TaskHistoryBinding(scope WorkspaceScope) (string, string, erro
 	}
 	if found && t != nil {
 		for _, a := range t.Attempts {
-			if a.ID == attemptID && a.SessionID == s.ID && a.Role == "swarm" && a.UserID == s.UserID {
+			// The attempt records the task's kept agent as its role
+			// (pebblestore.FollowupTaskAgent); the session is tied to it
+			// by attempt id, session id and user.
+			if a.ID == attemptID && a.SessionID == s.ID && pebblestore.IsFollowupAttemptRole(a.Role) && a.UserID == s.UserID {
 				return projectID, taskID, nil
 			}
 		}

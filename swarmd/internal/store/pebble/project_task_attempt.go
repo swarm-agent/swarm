@@ -376,6 +376,14 @@ func FollowupTaskAgent(agent string) string {
 	return "swarm"
 }
 
+// IsFollowupAttemptRole reports whether role is one a follow-up reservation
+// records (FollowupTaskAgent): swarm, coder, finder or designer. The
+// follow-up session itself runs as Swarm whatever role it records; the role
+// keeps the task's agent for its workflow scope.
+func IsFollowupAttemptRole(role string) bool {
+	return role != "" && FollowupTaskAgent(role) == role
+}
+
 // TaskAttemptPage bounds returned history without trimming durable attempts.
 func (t *ProjectTaskRecord) TaskAttemptPage(cursor, limit int) ([]ProjectTaskAttempt, int, error) {
 	if cursor < 0 || limit < 1 || limit > 50 || cursor > len(t.Attempts) {
