@@ -122,7 +122,8 @@ metadata or remove authentication as a workaround.
 5. Resume follow-ups with `swarm_send_message`, using the same client_request_id
    when retrying that message. Start has no client idempotency parameter in the
    tested schema: after an ambiguous start, inspect recent sessions before retrying.
-6. Inspect actual tool evidence and `swarm_get_changes`/`swarm_read_file`; don't
+6. Inspect actual tool evidence and `manage_projects` `get_task_changes`/`read_task_file`
+   (`swarm_get_changes`/`swarm_read_file` for a plain session); don't
    infer success from the agent's summary or tunnel health. Follow the
    [using-swarm skill](../../using-swarm/SKILL.md) for permissions and longer work.
 

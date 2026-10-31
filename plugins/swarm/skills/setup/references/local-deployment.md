@@ -45,7 +45,7 @@ reinstalling is not a remedy for a connection problem.
   from the key file (for example `$(cat ~/.config/swarm/ai-key)`), never
   pasted into chat. The installer prints the Claude Code and Codex lines.
 
-Confirm a real call (`swarm_status`) succeeds before saying it is connected.
+Confirm a real call (`manage_fleet` action `status`) succeeds before saying it is connected.
 Other machines reach the box over the tailnet ([connection.md](connection.md),
 [remote.md](remote.md)).
 

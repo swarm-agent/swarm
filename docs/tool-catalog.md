@@ -6,14 +6,27 @@ The tool catalog is the only place a tool exists. A tool is declared once in
 serve it from that declaration and run the same handler. Neither surface has
 its own copy of the schema, rules or answer.
 
-The catalog holds `manage_projects` (stage 1), `manage_workflows` (stage 2,
-`catalog_manage_workflows.go`), and `manage_jobs` and `manage_workers` (stage
-3, `catalog_manage_jobs.go` and `catalog_manage_workers.go`) and `manage_setup`
-(stage 5, `catalog_manage_setup.go`). The hand-written
-`swarm_*` MCP tools are frozen as they are
-(`TestControlMCPSwarmToolNamesFrozen`); the `swarm_*` workflow, job, worker
-and setup tools still work beside the catalog tools. Later stages move the rest into the
-catalog and remove them.
+The catalog holds every tool below:
+
+| Tool | Stage | Declared in |
+| --- | --- | --- |
+| `manage_projects` | 1 (6 adds `get_task_changes`, `read_task_file`) | `catalog_manage_projects.go` |
+| `manage_workflows` | 2 | `catalog_manage_workflows.go` |
+| `manage_jobs`, `manage_workers` | 3 | `catalog_manage_jobs.go`, `catalog_manage_workers.go` |
+| `manage_sessions`, `manage_workspace` | 4 (landing separately) | `catalog_manage_sessions.go`, `catalog_manage_workspace.go` |
+| `manage_setup` | 5 | `catalog_manage_setup.go` |
+| `manage_fleet` | 6 | `catalog_manage_fleet.go` |
+| `manage_media` | 6 | `catalog_manage_media.go` |
+| `manage_custom_agents`, `manage_theme`, `manage_designs` | 6 | `catalog_custom_agents_theme_design.go` |
+
+Stage 6 is the last stage that moves tools. The hand-written `swarm_*` MCP
+tools are frozen as they are (`TestControlMCPSwarmToolNamesFrozen`) and still
+work beside the catalog tools; the next stage deletes them. Every `swarm_*`
+tool has a catalog home (a tool and action with the same effect) or is
+retired with its reason (`swarmToolCatalogHomes` and `swarmToolsRetired`,
+`TestEverySwarmToolHasACatalogHome`). Retired: `swarm_set_session_access`,
+`swarm_run_plan` (plans are not the default) and `swarm_accept_review` (it
+closes a plan checkpoint's review).
 
 A key bound to one worker, one agent or a trigger never calls a catalog tool:
 Swarm Control neither lists nor runs them for it, and the linked routes
@@ -245,6 +258,94 @@ cases (api); `TestManageSetupChangeAlwaysWaitsForThePerson` and
 `TestManageSetupRunRefusesUndecidedChanges` (run);
 `TestManageSetupCatalogDeclaresEverySetupAction` and
 `TestManageSetupHandlerHoldsChangesToThePersonsDecision` (tool).
+
+## manage_fleet
+
+Fleet monitoring, moved out of `manage_projects`. One handler
+(`tool.Runtime.executeManageFleet`) serves the Orchestrator and Swarm Control;
+each action runs the one implementation it had. `status` and `activity` work
+for this machine too (omit `machine`), which `manage_projects`'
+`machine_status` and `activity` never did.
+
+| Action | Runs | Level | API scopes | Reach |
+| --- | --- | --- | --- | --- |
+| `list_machines` | manage_projects `list_machines` | read | `sessions:read` | home |
+| `status` | here `swarm_status`'s handler; with `machine` the linked status read | read | `signals:read` or `sessions:read` | any |
+| `agents_at_work` | manage_projects `agents_at_work` (`swarm_agents_at_work`) | read | `sessions:read` | any |
+| `activity` | here `swarm_activity`'s handler; with `machine` the linked activity read | read | `sessions:read` or `signals:read` | any |
+| `list_runs` | manage_jobs `list_runs` (`swarm_list_runs`) | read | `signals:read` | any |
+| `list_linked_tasks` | manage_projects `list_linked_tasks` | read | `sessions:read` | home |
+
+Every action is in the Orchestrator's definition and Swarm Control's default
+listing. The Orchestrator has `manage_fleet` code-owned
+(`run.resolveAgentToolStates`). `manage_projects` keeps `list_machines`,
+`list_linked_tasks`, `agents_at_work`, `machine_status` and `activity` as
+aliases for one stage; their descriptions say they are deprecated. In a
+conversation, `status` and `activity` here run only for the home's own
+conversations, never a task's session.
+
+## manage_media
+
+The Orchestrator's `manage_media` actions plus `read`, which only Swarm
+Control had (`swarm_read_media`). Media models are set with `manage_setup`
+`set_media_models`. One handler (`tool.Runtime.executeManageMediaCatalog`)
+serves the Orchestrator, every agent with `manage_media` and Swarm Control.
+
+A conversation's media are its session's project's (the media service,
+`api.Server.ManageMedia`); a Swarm Control caller has no conversation and
+names the `project`, and its actions run the `swarm_*` media handlers. This
+is the one documented difference between the two surfaces
+(`paritySessionBound`): both answer the same way, an envelope of the same
+tool, action and machine, or a refusal. `read` and every call with `machine`
+run the `swarm_*` handlers for both.
+
+| Action | `swarm_*` tool | Level | API scopes | Reach |
+| --- | --- | --- | --- | --- |
+| `models` | `swarm_media_models` | read | `sessions:read` | any |
+| `generate`, `retry` | `swarm_request_media` (`retry_of`) | write | `sessions:write` | any |
+| `get` | `swarm_get_job` | read | `sessions:read` | any |
+| `save` | `swarm_save_media` | write | `sessions:write` | any |
+| `read` | `swarm_read_media` | read | `sessions:read` | any |
+| `list`, `transcribe` | none (this conversation's own jobs and files) | read, write | `sessions:read`, `sessions:write` | home, a conversation only (not served to Swarm Control) |
+
+## manage_custom_agents, manage_theme and manage_designs
+
+- `manage_custom_agents` (`list`, `get`, `define`, `disable`): the account's
+  custom agent service (`api.Server.ManageCustomAgents`) for both surfaces;
+  `swarm_list_agents` and `swarm_define_agent` map to `list` and `define`.
+  Read actions are read level with `agents:read` or `swarm:read`; `define`
+  and `disable` are write with `agents:write` or `swarm:write`. Home only, in
+  the Orchestrator's definition and `tools=all`.
+- `manage_theme` (`get`): `swarm_get_theme`'s handler, read, home only, in
+  `tools=all`. The agents' `manage-theme` tool keeps its other actions; the
+  Orchestrator's code-owned contract keeps the theme catalog off, so `get`
+  has no Orchestrator profile.
+- `manage_designs` (`create`, `edit` with `edit_path`): `swarm_design`'s
+  handler, write with `sessions:write`, any reach, in Swarm Control's default
+  listing. Not named `manage_design`, the retired tool `swarm_design`
+  replaced. The Orchestrator keeps making designs with its own `swarm_design`
+  tool, which the run service executes inside its run.
+
+## Task work in manage_projects
+
+`get_task_changes` (a task's commits, changed and new files and diff, paged as
+JSON text with `next`: `page_offset` and `page_digest`) and `read_task_file`
+(one file or folder of the task's working folder) run `swarm_get_changes` and
+`swarm_read_file` for the task's session. Both are read with `sessions:read`,
+any reach, in every listing.
+
+## The swarm_* handler service
+
+The actions whose one implementation is a `swarm_*` tool's handler run
+through one service function, `api.Server.ManageCatalogAction`: `manage_fleet`
+`status` and `activity` here, `manage_media`'s Swarm Control and linked
+actions, `manage_theme`, `manage_designs`, and `get_task_changes` and
+`read_task_file`. It runs the handler on an internal request that carries the
+Swarm Control caller's own key narrowed to the scopes it holds, a link's
+scopes, or a conversation's route scopes and level, never wider; a task's
+session is refused. With `machine` it runs on the linked machine's own
+service through `POST /v3/catalog-actions/{tool}/{action}`, which serves only
+the actions that reach a linked machine.
 
 ## The envelope
 

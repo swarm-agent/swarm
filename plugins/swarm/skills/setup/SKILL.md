@@ -13,7 +13,7 @@ You do the rest when you can run commands on that machine.
 
 ## 1. Is Swarm already there?
 
-Reuse what exists. Call `swarm_status`: if it answers, Swarm is installed and
+Reuse what exists. Call `manage_fleet` with action `status`: if it answers, Swarm is installed and
 connected — skip to section 4. A 401 is a key problem, not a missing install.
 On the machine, `ls ~/.config/swarm/ai-key` and `systemctl is-active
 swarm-headless` tell you whether the box is installed and this person has a
@@ -57,7 +57,7 @@ Add `--tailnet` only if the person wants to reach Swarm from other devices
 - **Codex:** the line the installer printed (it reads the key from an
   environment variable).
 
-Confirm a real call (`swarm_status`) succeeds before saying it is connected.
+Confirm a real call (`manage_fleet` action `status`) succeeds before saying it is connected.
 For other clients and remote setups, see [connection modes](references/connection.md)
 and [remote access](references/remote.md).
 
@@ -143,7 +143,7 @@ For protocol checks, response parsing or MCP errors, read
 
 ## Update Swarm
 
-Read `swarm_status` → `machine.update.command`. The standard headless command
+Read `manage_fleet` `status` → `machine.update.command`. The standard headless command
 is `sudo bash /var/lib/swarm-headless/install.sh update` (the retained installer,
 not its source checkout). The person, or their AI running as the person with
 sudo, runs it on the machine. It waits until no job runs and Swarm restarts

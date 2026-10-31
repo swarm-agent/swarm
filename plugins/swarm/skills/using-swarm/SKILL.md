@@ -27,9 +27,10 @@ For connecting a client, use the `setup` skill. For raw MCP probes, see the
 
 - Through swarm-fleet or the relay, call `swarm_list_machines` first and pass
   `machine` on every later call.
-- `swarm_status` says whether the box is all right (`ok`, `attention`,
-  `degraded` with reasons) and what needs attention, and gives an
-  `activity_cursor`.
+- `manage_fleet` action `status` says whether the box is all right (`ok`,
+  `attention`, `degraded` with reasons) and what needs attention, and gives
+  an `activity_cursor`; with `machine` it reads a linked machine. Its
+  `list_machines` lists this box's linked machines.
 - Machine setup is one tool, `manage_setup` (the same tool the Orchestrator
   has). Every change waits for the person: make one only when they ask.
 - `manage_setup` action `providers` shows which model providers are ready,
@@ -164,11 +165,15 @@ Publishing, pushing and deploying require the person's specific authorization.
 
 ## 7. Media
 
-`swarm_request_media` with `kind` image, video or sound, the `project` and a
-detailed `brief`. It returns a `job_id`; `manage_jobs` `get_job` shows the
-files when done (`swarm_get_job` with `include_media` also shows its
-images). `manage_setup` action `providers` shows whether a media provider is
-ready; `media_models` lists the media models and their options.
+`manage_media` action `generate` with `kind` image, video or sound, the
+`project` and a detailed `brief`. It returns a `job_id`; `manage_media` `get`
+(or `manage_jobs` `get_job`) shows the files when done, `save` writes them
+into a folder of the job's workspace and `read` returns a file's bytes
+(`swarm_get_job` with `include_media` also shows its images). `models` (or
+`manage_setup` action `media_models`) lists the media models and their
+options; `manage_setup` action `providers` shows whether a media provider is
+ready. Standalone HTML designs: `manage_designs` action `create` (or `edit`
+with `edit_path`); `manage_jobs` `get_job` reads each design's status.
 
 ## 8. Jobs for a worker, workers and schedules
 
@@ -301,10 +306,15 @@ Set one up only when the person asks for it or agrees to your offer.
 
 ## 9. Watch the box
 
-- `swarm_status`: one call for "is everything all right".
-- `swarm_activity` with the last `cursor`: what happened since — jobs
-  finished, failed or cancelled (with `job_id`), workers blocked, sandbox
-  changes. Keep the returned `cursor` for next time.
+- `manage_fleet` action `status`: one call for "is everything all right".
+- `manage_fleet` action `activity` with the last cursor (`since_cursor`, or
+  `after` with `activity_cursor` for the signal feed): what happened since —
+  jobs finished, failed or cancelled (with `job_id`), workers blocked,
+  sandbox changes. Keep the returned cursor for next time.
+- `manage_fleet` action `agents_at_work`: what agents run now, here and on
+  linked machines; `list_runs`: worker runs, newest first.
+- What a task changed: `manage_projects` action `get_task_changes` (its diff,
+  paged with `next`) and `read_task_file` (one file of its working folder).
 - `manage_setup` action `usage`: tokens and cost per model. Sign-in
   (subscription) providers show no metered cost; say so. `limits` and
   `set_usage_limits` read and lower the limits; raising them is the person's,
@@ -323,7 +333,7 @@ renewing.
 - New app and bot keys: the person makes them in Swarm (`manage_setup`
   `create_key` makes none: a key's secret goes only to the person).
   `swarm_create_key` still works until the `swarm_*` tools are removed.
-- `swarm_status` lists keys used from a new place today and keys stopping
+- `manage_fleet` `status` lists keys used from a new place today and keys stopping
   within a week; the signals are `key.new_address` and `key.expiring`. Tell
   the person about a new place and revoke the key if they do not recognize it.
 
@@ -349,7 +359,7 @@ if one is pasted, tell the person to revoke it.
 
 ## Update Swarm
 
-Read `swarm_status` → `machine.update.command`. On a standard headless install
+Read `manage_fleet` `status` → `machine.update.command`. On a standard headless install
 this is `sudo bash /var/lib/swarm-headless/install.sh update`. The person (or
 their AI running as the person, with sudo) runs it on that machine; it waits
 until no job runs and Swarm restarts by itself. If the field is absent, ask
