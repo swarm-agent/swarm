@@ -2,7 +2,8 @@
 // Swarm provider. Swarm never performs a Claude sign-in and never reads, stores,
 // or forwards Claude credentials: the person signs in with `claude auth login`
 // through Anthropic's own flow, and Swarm only starts the binary and asks it for
-// its authentication status.
+// its authentication status. To name the signed-in account, Swarm reads only
+// the identity fields of the global config's oauthAccount (account.go).
 package claudecode
 
 import (
@@ -118,6 +119,9 @@ type CLIStatus struct {
 	Path    string
 	Version string
 	Auth    AuthStatus
+	// Account is the signed-in Claude account's identity, set only when the
+	// CLI is ready with a Claude account sign-in.
+	Account Account
 	Ready   bool
 	Reason  string
 }
@@ -243,6 +247,11 @@ func (c *CLI) probe(ctx context.Context) CLIStatus {
 		return status
 	}
 	status.Ready = true
+	if strings.EqualFold(strings.TrimSpace(auth.AuthMethod), "claude.ai") {
+		// oauthAccount describes a Claude account sign-in; with another
+		// method it may be left over from an earlier one.
+		status.Account = c.readAccount()
+	}
 	status.Reason = fmt.Sprintf("Claude Code %s signed in (%s)", status.Version, authMethodLabel(auth.AuthMethod))
 	return status
 }

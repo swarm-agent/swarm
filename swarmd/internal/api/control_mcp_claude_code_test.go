@@ -37,6 +37,9 @@ type claudeCodeFixture struct {
 	server    *Server
 	authStore *pebblestore.AuthStore
 	stateDir  string
+	// configDir is CLAUDE_CONFIG_DIR, where the signed-in account's
+	// .claude.json goes; never the ambient HOME.
+	configDir string
 }
 
 func newClaudeCodeFixture(t *testing.T) *claudeCodeFixture {
@@ -54,7 +57,9 @@ func newClaudeCodeFixture(t *testing.T) *claudeCodeFixture {
 	server.SetClaudeCodeUsageClient(cli)
 	// Startup supplies this store for the onboarding defaults write.
 	server.agentModelSettingsStore = pebblestore.NewAgentModelSettingsStore(store)
-	return &claudeCodeFixture{server: server, authStore: authStore, stateDir: t.TempDir()}
+	configDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+	return &claudeCodeFixture{server: server, authStore: authStore, stateDir: t.TempDir(), configDir: configDir}
 }
 
 // installFakeCLI writes a stub `claude` whose sign-in state is a file, and
@@ -84,9 +89,15 @@ func (f *claudeCodeFixture) signIn(t *testing.T) {
 
 func (f *claudeCodeFixture) call(t *testing.T, scopes []string, action string) (map[string]any, string, bool) {
 	t.Helper()
+	return f.callTool(t, scopes, "swarm_connect_claude_code", map[string]any{"action": action})
+}
+
+// callTool runs one Swarm Control tool as a key holding scopes.
+func (f *claudeCodeFixture) callTool(t *testing.T, scopes []string, name string, args map[string]any) (map[string]any, string, bool) {
+	t.Helper()
 	req := requestWithScopedToken(withTestPrincipal(httptest.NewRequest(http.MethodPost, "/mcp", nil)), &pebblestore.ScopedTokenRecord{Scopes: scopes})
 	c := &controlMCPCall{request: req, next: f.server.internalRouteHandler(), server: f.server}
-	raw, _ := json.Marshal(map[string]any{"name": "swarm_connect_claude_code", "arguments": map[string]any{"action": action}})
+	raw, _ := json.Marshal(map[string]any{"name": name, "arguments": args})
 	result, rpcErr := c.callTool(raw)
 	if rpcErr != nil {
 		t.Fatalf("tools/call: %v", rpcErr)

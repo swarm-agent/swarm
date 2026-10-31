@@ -10,6 +10,7 @@ import (
 	"unicode"
 
 	"swarm/packages/swarmd/internal/auth"
+	"swarm/packages/swarmd/internal/provider/claudecode"
 )
 
 // Provider keys over Swarm Control. list_providers reports credential
@@ -182,6 +183,9 @@ func controlMCPListProviders(c *controlMCPCall, args map[string]any) (any, error
 				}
 			}
 		}
+		if id == claudecode.ProviderID && ready {
+			c.controlMCPAddClaudeCodeAccount(entry)
+		}
 		out = append(out, entry)
 	}
 	result := map[string]any{"providers": out}
@@ -189,6 +193,27 @@ func controlMCPListProviders(c *controlMCPCall, args map[string]any) (any, error
 		result["next"] = controlMCPNoProviderNext(options)
 	}
 	return result, nil
+}
+
+// controlMCPAddClaudeCodeAccount adds the signed-in Claude account (email,
+// organization and their ids) to the claudecode entry, read from the same
+// route plan_usage reads (GET /v1/claudecode/usage). Nothing is added when
+// this Swarm has no Claude Code, the route fails or it names no account.
+func (c *controlMCPCall) controlMCPAddClaudeCodeAccount(entry map[string]any) {
+	if c.server == nil || c.server.claudeCodeUsage == nil {
+		return
+	}
+	usage, err := c.dispatch(http.MethodGet, "/v1/claudecode/usage", nil, nil)
+	if err != nil {
+		return
+	}
+	cli := controlMCPMap(usage["cli"])
+	if loggedIn, _ := cli["logged_in"].(bool); !loggedIn {
+		return
+	}
+	for key, value := range controlMCPClaudeCodeAccount(cli) {
+		entry[key] = value
+	}
 }
 
 // waitForKeyRequest blocks up to seconds while the latest key link for this

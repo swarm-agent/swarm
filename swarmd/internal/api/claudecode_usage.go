@@ -23,6 +23,12 @@ type claudeCodeUsageCLI struct {
 	LoggedIn         bool   `json:"logged_in"`
 	AuthMethod       string `json:"auth_method,omitempty"`
 	SubscriptionType string `json:"subscription_type,omitempty"`
+	// The signed-in Claude account (identity only, never a credential), so
+	// machines that share one account can be told apart from ones that do not.
+	AccountEmail     string `json:"account_email,omitempty"`
+	AccountUUID      string `json:"account_uuid,omitempty"`
+	OrganizationName string `json:"organization_name,omitempty"`
+	OrganizationUUID string `json:"organization_uuid,omitempty"`
 	Reason           string `json:"reason,omitempty"`
 }
 
@@ -62,6 +68,10 @@ func (s *Server) handleClaudeCodeUsage(w http.ResponseWriter, r *http.Request) {
 		LoggedIn:         status.Auth.LoggedIn,
 		AuthMethod:       status.Auth.AuthMethod,
 		SubscriptionType: status.Auth.SubscriptionType,
+		AccountEmail:     status.Account.EmailAddress,
+		AccountUUID:      status.Account.AccountUUID,
+		OrganizationName: status.Account.OrganizationName,
+		OrganizationUUID: status.Account.OrganizationUUID,
 		Reason:           status.Reason,
 	}}
 	if limits, ok := s.claudeCodeUsage.LatestRateLimits(); ok {

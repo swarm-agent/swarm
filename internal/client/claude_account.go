@@ -11,6 +11,10 @@ type ClaudeCodeUsageCLI struct {
 	LoggedIn         bool   `json:"logged_in"`
 	AuthMethod       string `json:"auth_method,omitempty"`
 	SubscriptionType string `json:"subscription_type,omitempty"`
+	AccountEmail     string `json:"account_email,omitempty"`
+	AccountUUID      string `json:"account_uuid,omitempty"`
+	OrganizationName string `json:"organization_name,omitempty"`
+	OrganizationUUID string `json:"organization_uuid,omitempty"`
 	Reason           string `json:"reason,omitempty"`
 }
 

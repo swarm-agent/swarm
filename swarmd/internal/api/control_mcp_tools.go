@@ -3340,6 +3340,10 @@ func controlMCPPlanUsage(chatgpt map[string]any, chatgptErr error, claude map[st
 		plan := map[string]any{"connected": loggedIn, "subscription_type": cli["subscription_type"]}
 		if !loggedIn {
 			plan["reason"] = cli["reason"]
+		} else {
+			for key, value := range controlMCPClaudeCodeAccount(cli) {
+				plan[key] = value
+			}
 		}
 		if limits := controlMCPMap(claude["rate_limits"]); limits != nil {
 			plan["rate_limits"] = controlMCPPick(limits, "status", "resets_at", "is_using_overage", "windows", "observed_at")
@@ -3347,6 +3351,16 @@ func controlMCPPlanUsage(chatgpt map[string]any, chatgptErr error, claude map[st
 		out["claude_code"] = plan
 	}
 	return out
+}
+
+// controlMCPClaudeCodeAccountFields are the signed-in Claude account's
+// identity fields of GET /v1/claudecode/usage's cli: never a credential.
+var controlMCPClaudeCodeAccountFields = []string{"account_email", "account_uuid", "organization_name", "organization_uuid"}
+
+// controlMCPClaudeCodeAccount picks the account fields the route reported;
+// a field it left out stays out.
+func controlMCPClaudeCodeAccount(cli map[string]any) map[string]any {
+	return controlMCPPick(cli, controlMCPClaudeCodeAccountFields...)
 }
 
 // controlMCPAccessSchema is a session's access as the person chooses it.

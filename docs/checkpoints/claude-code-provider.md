@@ -68,6 +68,8 @@ Each Swarm provider request is one non-interactive Claude Code turn: `claude -p`
 
 `/claude` in the terminal UI (and `GET /v1/claudecode/usage`) shows the Claude Code version, sign-in and plan, and the latest five-hour and weekly usage Claude Code reported in a turn's stream (its `rate_limit_event`). The usage is known only after a Claude Code turn has run since the daemon started. The Claude login belongs to the daemon's OS user, so the reading covers every Swarm account on that daemon.
 
+When Claude Code is signed in with a Claude account, the route's `cli` also names that account: `account_email`, `account_uuid`, `organization_name` and `organization_uuid`. They come from `oauthAccount` in Claude Code's global config (`.claude.json` in `CLAUDE_CONFIG_DIR`, otherwise in the daemon user's home). Swarm reads only those identity fields, never a token or key, and leaves out any field the config does not have. `manage_setup` `providers` (the `claudecode` entry) and `plan_usage` (`claude_code`) carry the same fields, including for a linked machine, so machines that share one Claude account can be told apart from machines that do not.
+
 ## Limits
 
 - Media attachments are not supported, and fail closed.
