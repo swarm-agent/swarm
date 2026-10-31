@@ -32,6 +32,37 @@ func manageWorkspaceMachine(arguments string) string {
 	return strings.TrimSpace(machine)
 }
 
+// manageWorkspaceLocalArguments removes an empty machine argument ("",
+// whitespace or null) from a manage_workspace call: the catalog schema offers
+// machine on every action and an empty one means this machine, as the
+// catalog handler treats it, while the local argument parser does not know
+// the field. Any other machine value is left as written (a linked call, or a
+// malformed one the parser refuses).
+func manageWorkspaceLocalArguments(arguments string) string {
+	decoder := json.NewDecoder(strings.NewReader(strings.TrimSpace(arguments)))
+	decoder.UseNumber()
+	var args map[string]any
+	if decoder.Decode(&args) != nil || args == nil {
+		return arguments
+	}
+	value, present := args["machine"]
+	if !present {
+		return arguments
+	}
+	if value != nil {
+		text, isString := value.(string)
+		if !isString || strings.TrimSpace(text) != "" {
+			return arguments
+		}
+	}
+	delete(args, "machine")
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return arguments
+	}
+	return string(raw)
+}
+
 // ExecuteManageWorkspace runs a conversation's manage_workspace call (the
 // Orchestrator's or the Swarm agent's, after gateToolCalls) and answers in
 // the catalog envelope. With machine= it runs the linked machine's own
@@ -42,6 +73,7 @@ func (s *Service) ExecuteManageWorkspace(ctx context.Context, sessionID string, 
 	if s == nil || s.tools == nil {
 		return "", errors.New("manage_workspace is not configured")
 	}
+	call.Arguments = manageWorkspaceLocalArguments(call.Arguments)
 	scope := tool.WorkspaceScope{SessionID: strings.TrimSpace(sessionID), Principal: principal}
 	return s.tools.ManageWorkspaceCatalog(identity.ContextWithPrincipal(ctx, principal), scope, tool.ManageWorkspaceArgs(call.Arguments), func(map[string]any) (string, error) {
 		return s.executeManageWorkspaceCall(sessionID, call, approvedArguments, principal, applySessionMutation)

@@ -240,3 +240,67 @@ func TestManageSessionsLinkedArchiveThroughTheGate(t *testing.T) {
 		t.Fatal("a refused call changed this machine's sessions")
 	}
 }
+
+// Purpose: an empty machine ("" or whitespace) means this machine for a
+// conversation's manage_workspace and manage_sessions call, as it does over
+// Swarm Control: the catalog schema offers machine on every action. A null
+// machine also runs here in a conversation (Swarm Control's argument check
+// refuses it as not a string).
+// Threat: the conversation's gate and local parser refusing a call the MCP
+// surface runs (unknown field "machine"), so the two surfaces disagree on
+// the same declared input. Boundary: the run service's real gate and
+// execution (gatedOrchestratorTool) against Swarm Control's
+// controlMCPCall.callTool, compared on the envelope's data; the changes
+// (a workspace rename, a session archive) are asserted on this machine's
+// store.
+func TestCatalogEmptyMachineRunsHereInAConversation(t *testing.T) {
+	h := newCatalogParityHarness(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	data := func(label, out string) string {
+		t.Helper()
+		raw, err := tool.EnvelopeData(out)
+		if err != nil {
+			t.Fatalf("%s: %v (%s)", label, err, out)
+		}
+		return string(raw)
+	}
+	for _, name := range []string{"manage_workspace", "manage_sessions"} {
+		for _, machine := range []any{"", "  ", nil} {
+			args := map[string]any{"action": "list", "machine": machine}
+			conversation, _, err := h.gatedOrchestratorTool(t, ctx, "home-orch", name, args)
+			if err != nil {
+				t.Fatalf("%s list machine=%v in a conversation: %v", name, machine, err)
+			}
+			// Swarm Control's argument check refuses a null machine (not a
+			// string); "" and whitespace it runs here, and both answer alike.
+			if machine == nil {
+				continue
+			}
+			control, refused := h.controlTool(t, catalogParityFullKey, name, args)
+			if refused != "" {
+				t.Fatalf("%s list machine=%q over Swarm Control: %s", name, machine, refused)
+			}
+			if name == "manage_workspace" && data("conversation", conversation) != data("control", control) {
+				t.Fatalf("%s list machine=%q answers differ:\n%s\n%s", name, machine, conversation, control)
+			}
+			if name == "manage_sessions" && !strings.Contains(data("conversation", conversation), `"items"`) {
+				t.Fatalf("%s list machine=%q in a conversation: %s", name, machine, conversation)
+			}
+		}
+	}
+	// A change with an empty machine runs here, through the person's approval.
+	p := h.p
+	if _, _, err := h.gatedOrchestratorTool(t, ctx, "home-orch", "manage_workspace", map[string]any{"action": "update", "machine": "", "workspace_id": h.catalogTokens["ws.up-a.id"], "workspace_generation": h.catalogTokens["ws.up-a.gen"], "workspace_name": "Renamed here"}); err != nil {
+		t.Fatalf("manage_workspace update machine=\"\": %v", err)
+	}
+	if entry, ok, err := h.home.s.workspace.GetByWorkspaceIDForPrincipal(p, h.catalogTokens["ws.up-a.id"].(string)); err != nil || !ok || entry.Name != "Renamed here" {
+		t.Fatalf("the rename did not land on this machine: %+v %v", entry, err)
+	}
+	if _, _, err := h.gatedOrchestratorTool(t, ctx, "home-orch", "manage_sessions", map[string]any{"action": "archive", "machine": nil, "session_id": "ms-arc-1"}); err != nil {
+		t.Fatalf("manage_sessions archive machine=null: %v", err)
+	}
+	if !catalogSessionArchived(t, h.home, "ms-arc-1") || catalogSessionArchived(t, h.remote, "rms-arc-1") {
+		t.Fatal("an archive with an empty machine did not run on this machine only")
+	}
+}

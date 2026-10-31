@@ -827,7 +827,7 @@ func (s *Service) buildManageWorkspacePermissionPayload(sessionID, callArguments
 	if s == nil || s.sessions == nil {
 		return nil, errors.New("manage_workspace is not configured")
 	}
-	args, err := parseManageWorkspaceArguments(callArguments)
+	args, err := parseManageWorkspaceArguments(manageWorkspaceLocalArguments(callArguments))
 	if err != nil {
 		return nil, err
 	}
