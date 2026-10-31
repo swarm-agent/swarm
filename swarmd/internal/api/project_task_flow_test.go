@@ -160,3 +160,25 @@ func TestProjectTaskFlowReadsDurableRecords(t *testing.T) {
 		t.Fatalf("roll-up: %+v %v", rollup, err)
 	}
 }
+
+// Requirement: every unfinished task status counts as live in the flow
+// report, and a task waiting on a question or an approval waits on the
+// person. The statuses are the task statuses of
+// pebblestore.ProjectTaskCountBucket and the job statuses the daemon treats
+// as still running (job_automations.go reopen busy check). Threat: a task in
+// needs_input reported as finished, so its open run's wait counts as coding.
+// Owner: flowTaskLive (pure mapping; the phase effect is covered in
+// jobautomation.TestFlowWaitingOnPersonWithOpenRun).
+func TestFlowTaskLiveStatuses(t *testing.T) {
+	for status, want := range map[string][2]bool{
+		"needs_input": {true, true}, "waiting_on_approval": {true, true}, "pending_approval": {true, true},
+		"queued": {true, false}, "pending": {true, false}, "starting": {true, false}, "running": {true, false},
+		"planning": {true, false}, "in_progress": {true, false}, pebblestore.ProjectTaskStatusLimitWaiting: {true, false},
+		"completed": {false, false}, "needs_review": {false, false}, "failed": {false, false}, pebblestore.ProjectTaskStatusStopped: {false, false},
+	} {
+		live, person := flowTaskLive(status)
+		if live != want[0] || person != want[1] {
+			t.Errorf("%s: live %v person %v, want %v", status, live, person, want)
+		}
+	}
+}

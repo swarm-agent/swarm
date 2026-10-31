@@ -23,6 +23,7 @@ import (
 
 const (
 	flowRunsPerSession   = 1000
+	flowMessagesPerSess  = 100000
 	flowEventsPage       = 1000
 	flowRollupTasks      = 200
 	flowRollupTaskListed = 1000
@@ -130,13 +131,7 @@ func (s *Server) taskFlowSource(ctx context.Context, db *pebblestore.SessionStor
 		JobID: taskRunJobID(task.ProjectID, task.ID), ProjectID: task.ProjectID, TaskID: task.ID, Title: task.Title, Agent: task.Agent,
 		Now: time.Now().UnixMilli(), From: from, To: to, Events: map[string][]pebblestore.V3SessionEvent{},
 	}
-	switch strings.TrimSpace(task.Status) {
-	case "queued", "in_progress", "planning", "pending_approval", pebblestore.ProjectTaskStatusLimitWaiting:
-		// Unfinished: the time since its last activity counts (a task
-		// waiting on a provider limit counts it from its run's limit end).
-		src.Live = true
-		src.WaitingOnPerson = task.Status == "pending_approval"
-	}
+	src.Live, src.WaitingOnPerson = flowTaskLive(task.Status)
 	// The task's sessions: its own and each attempt's, with the attempt's role.
 	roles := map[string]string{}
 	order := []string{}
@@ -169,9 +164,15 @@ func (s *Server) taskFlowSource(ctx context.Context, db *pebblestore.SessionStor
 		if !found || strings.TrimSpace(session.AccountScopeID) != account {
 			continue
 		}
-		intents, err := db.ListV3SessionRunIntents(sessionID, 0, flowRunsPerSession)
+		// One more than the bound: a session with more runs is reported
+		// as partial (the store reads runs in key order, not time order).
+		intents, err := db.ListV3SessionRunIntents(sessionID, 0, flowRunsPerSession+1)
 		if err != nil {
 			return src, err
+		}
+		if len(intents) > flowRunsPerSession {
+			intents = intents[:flowRunsPerSession]
+			src.RunsTruncated = true
 		}
 		for _, intent := range intents {
 			run := jobautomation.FlowRun{SessionID: sessionID, RunID: intent.RunID, Role: roles[sessionID], Status: intent.Status, Reason: intent.BlockedReason,
@@ -231,16 +232,34 @@ func (s *Server) taskFlowSource(ctx context.Context, db *pebblestore.SessionStor
 			src.Deliveries = append(src.Deliveries, list...)
 		}
 	}
-	messages, err := db.ProjectTaskMessages(task)
+	// Every message sent to the task, not the task view's newest few.
+	messages, truncated, err := db.ProjectTaskMessagesAll(task, flowMessagesPerSess)
 	if err != nil {
 		return src, err
 	}
+	src.MessagesTruncated = truncated
 	for _, message := range messages {
 		if (from == 0 || message.At >= from) && (to == 0 || message.At <= to) {
 			src.Interventions++
 		}
 	}
 	return src, nil
+}
+
+// flowTaskLive reports whether a task with status is unfinished (the time
+// since its last activity counts) and whether it waits on the person. The
+// statuses are the project task statuses (pebblestore.ProjectTaskCountBucket)
+// and the job statuses the daemon treats as still running.
+func flowTaskLive(status string) (live, waitingOnPerson bool) {
+	switch strings.TrimSpace(status) {
+	case "pending_approval", "needs_input", "waiting_on_approval":
+		return true, true
+	case "queued", "pending", "starting", "planning", "in_progress", "running", pebblestore.ProjectTaskStatusLimitWaiting:
+		// A task waiting on a provider limit counts it from its run's
+		// limit end.
+		return true, false
+	}
+	return false, false
 }
 
 // flowEventKept is an event the flow report reads: tool calls and

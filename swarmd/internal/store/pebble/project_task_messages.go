@@ -43,10 +43,54 @@ type ProjectTaskMessage struct {
 // sent to task, oldest first. The task's sessions must be the account's (the
 // caller read the task under the account).
 func (s *SessionStore) ProjectTaskMessages(task *ProjectTaskRecord) ([]ProjectTaskMessage, error) {
+	out, _, err := s.projectTaskMessages(task, func(sessionID string) ([]MessageSnapshot, bool, error) {
+		messages, err := s.ListV3SessionMessageTail(sessionID, projectTaskMessageSessionTail)
+		return messages, false, err
+	})
+	if len(out) > ProjectTaskMessagesShown {
+		out = out[len(out)-ProjectTaskMessagesShown:]
+	}
+	return out, err
+}
+
+// projectTaskMessagesPage is the page size of ProjectTaskMessagesAll.
+const projectTaskMessagesPage = 500
+
+// ProjectTaskMessagesAll returns every message sent to task, oldest first:
+// not the view's newest ProjectTaskMessagesShown, nor a session's message
+// tail. Each session's messages are read in pages up to maxPerSession (all
+// when 0); truncated reports that a session had more.
+func (s *SessionStore) ProjectTaskMessagesAll(task *ProjectTaskRecord, maxPerSession int) (messages []ProjectTaskMessage, truncated bool, err error) {
+	return s.projectTaskMessages(task, func(sessionID string) ([]MessageSnapshot, bool, error) {
+		var out []MessageSnapshot
+		after := uint64(0)
+		for {
+			page, err := s.ListV3SessionMessages(sessionID, after, projectTaskMessagesPage)
+			if err != nil {
+				return nil, false, err
+			}
+			for _, m := range page {
+				if maxPerSession > 0 && len(out) >= maxPerSession {
+					return out, true, nil
+				}
+				out = append(out, m)
+				after = m.GlobalSeq
+			}
+			if len(page) < projectTaskMessagesPage {
+				return out, false, nil
+			}
+		}
+	})
+}
+
+// projectTaskMessages collects the messages sent to task from the sessions'
+// messages that read returns, oldest first.
+func (s *SessionStore) projectTaskMessages(task *ProjectTaskRecord, read func(sessionID string) ([]MessageSnapshot, bool, error)) ([]ProjectTaskMessage, bool, error) {
 	if s == nil || task == nil {
-		return nil, nil
+		return nil, false, nil
 	}
 	var out []ProjectTaskMessage
+	truncated := false
 	seen := map[string]bool{}
 	sessions := []string{task.SessionID}
 	for i, attempt := range task.Attempts {
@@ -63,10 +107,11 @@ func (s *SessionStore) ProjectTaskMessages(task *ProjectTaskRecord) ([]ProjectTa
 			continue
 		}
 		seen[sessionID] = true
-		messages, err := s.ListV3SessionMessageTail(sessionID, projectTaskMessageSessionTail)
+		messages, more, err := read(sessionID)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
+		truncated = truncated || more
 		delivered := map[string]string{}
 		for _, m := range messages {
 			if m.Role == "system" && m.Metadata["source"] == "feedback_delivery" {
@@ -93,10 +138,7 @@ func (s *SessionStore) ProjectTaskMessages(task *ProjectTaskRecord) ([]ProjectTa
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].At < out[j].At })
-	if len(out) > ProjectTaskMessagesShown {
-		out = out[len(out)-ProjectTaskMessagesShown:]
-	}
-	return out, nil
+	return out, truncated, nil
 }
 
 func clipProjectTaskMessage(text string) string {

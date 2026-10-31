@@ -43,7 +43,7 @@ Where phases overlap, the first one listed below wins:
 | Phase | From |
 |---|---|
 | `provider_limit` | A run ended on a provider usage, rate or session limit, until the next run of its session started. A workflow agent step's limit waits count too, until the stated reset or the step's next attempt. |
-| `needs_you` | A permission or question waited for the person (`permission.requested` to `permission.updated`). An unfinished task in `pending_approval` counts from its last activity. |
+| `needs_you` | A permission or question waited for the person (`permission.requested` to `permission.updated`). A permission still asked counts to now while the task is unfinished. A task in `pending_approval`, `needs_input` or `waiting_on_approval` with no open permission read counts from its last settled activity, even while its run is open. |
 | `testing` | A command tool call that runs tests: `go test`, `npm`/`pnpm`/`yarn`/`bun test`, `vitest`, `jest`, `pytest`, `cargo test`, `make test`, `run-critical-tests.sh` and the like (`jobautomation.FlowTestCommand`). |
 | `reviewing` | A workflow agent step whose worker is the reviewer (or that recorded a verdict), and runs of a reviewer task. |
 | `rebasing` | The first task run after a delivery was sent back only because dev moved. |
@@ -109,14 +109,17 @@ Counts with no time of their own rank last.
 
 `period` is `today` (from 00:00 UTC), `7d` (the default) or `30d`. The
 roll-up takes the project's tasks updated within the period, at most 200, and
-bounds each task's report to the period. It then sums their phases, tokens,
-reviews and rebases. It lists each task with its time and its top waste line,
+bounds each task's report to the period: phases are clipped to it, and only
+the runs and deliveries active in it count, each whole (a run's tokens and
+tool calls, a delivery's reviews, rebases and re-runs), with messages sent
+within it. It then sums their phases, tokens, reviews and rebases. It lists each task with its time and its top waste line,
 and ranks the top waste across them. Context growth and repeated tests are
 compared only within one task and name that task. `partial` is set when the
-task or event bounds were reached.
+task, event, run or message bounds were reached.
 
 ## Bounds
 
-Each session's first 20,000 tool and permission events and 1,000 runs are
-read. When that bound is reached, the report says so in `partial` and
-`notes`.
+Each session's first 20,000 tool and permission events, 1,000 runs and
+100,000 messages are read. Runs are read in store key order, not time order,
+so past the run bound which runs are missing is not chosen by time. When any
+bound is reached, the report says so in `partial` and `notes`.

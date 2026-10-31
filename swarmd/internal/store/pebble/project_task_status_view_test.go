@@ -191,6 +191,17 @@ func TestProjectTaskMessagesAreTheNewestThreeCut(t *testing.T) {
 	if want := strings.TrimSpace(long)[:ProjectTaskMessageTextRunes]; messages[2].Text != want {
 		t.Fatalf("long message = %q, want %q", messages[2].Text, want)
 	}
+
+	// Purpose: the flow report counts every hand intervention, so its read
+	// is not the view's newest three. Threat: "N hand interventions" capped
+	// at 3. Owner: SessionStore.ProjectTaskMessagesAll (same store).
+	all, truncated, err := store.ProjectTaskMessagesAll(task, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 4 || truncated || all[0].Text != "first follow-up" || all[3].RunID != "run-5" {
+		t.Fatalf("all messages = %+v truncated %v, want the 4 follow-ups", all, truncated)
+	}
 }
 
 // Purpose: ProjectTaskState is the one word every surface shows for a task

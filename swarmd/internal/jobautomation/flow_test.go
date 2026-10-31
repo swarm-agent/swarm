@@ -254,6 +254,90 @@ func TestFlowRollupSumsTasks(t *testing.T) {
 	if report.WallMS != 82*60_000 || report.Phases.Total() != report.WallMS || report.Phases.ProviderLimitMS != 2*60_000 {
 		t.Fatalf("bounded: wall %d %+v", report.WallMS, report.Phases)
 	}
+	// Run 1 (minutes 0-30) is before the period: its row, tools and
+	// tokens do not count. Both deliveries (from minute 132) do.
+	if len(report.Runs) != 2 || report.Runs[0].RunID != "run-2" || report.Tokens.Input != 600_000 || report.Tokens.Output != 10_000 || report.Tokens.Requests != 1 {
+		t.Fatalf("bounded runs/tokens: %+v %+v", report.Runs, report.Tokens)
+	}
+	if report.Reviews != 2 || report.Rebases != 1 || len(report.Deliveries) != 2 {
+		t.Fatalf("bounded deliveries: reviews %d rebases %d %+v", report.Reviews, report.Rebases, report.Deliveries)
+	}
+
+	// Purpose: a period after the first delivery leaves out its review and
+	// its rebase, and every run but the rebase run; the context-growth line
+	// (from run 1 and run 2) is gone with them. Threat: older reviews,
+	// rebases and tokens counted in "where did this week go".
+	late := flowJobFixture(t)
+	late.From = flowMin(150)
+	report = BuildFlowReport(late)
+	if len(report.Runs) != 1 || report.Runs[0].RunID != "run-3" || report.Tokens != (FlowTokens{}) {
+		t.Fatalf("late runs/tokens: %+v %+v", report.Runs, report.Tokens)
+	}
+	if report.Reviews != 1 || report.Rebases != 0 || len(report.Deliveries) != 1 || report.Deliveries[0].ID != "d2" {
+		t.Fatalf("late deliveries: reviews %d rebases %d %+v", report.Reviews, report.Rebases, report.Deliveries)
+	}
+	for _, w := range report.TopWaste {
+		if w.Kind == "context_growth" || w.Kind == FlowPhaseRebasing {
+			t.Fatalf("late top waste counts activity before the period: %+v", report.TopWaste)
+		}
+	}
+	// And the roll-up of that period sums only what is in it.
+	rollup = BuildFlowRollup("p1", "7d", flowMin(150), flowMin(300), []FlowReport{report})
+	if rollup.Tokens != (FlowTokens{}) || rollup.Reviews != 1 || rollup.Rebases != 0 {
+		t.Fatalf("late rollup: %+v reviews %d rebases %d", rollup.Tokens, rollup.Reviews, rollup.Rebases)
+	}
+	// A period that ends before run 3 leaves out run 3 and delivery d2.
+	early := flowJobFixture(t)
+	early.From, early.To = flowMin(100), flowMin(150)
+	report = BuildFlowReport(early)
+	if len(report.Runs) != 1 || report.Runs[0].RunID != "run-2" || report.Reviews != 1 || report.Rebases != 1 || len(report.Deliveries) != 1 {
+		t.Fatalf("early: runs %+v reviews %d rebases %d deliveries %+v", report.Runs, report.Reviews, report.Rebases, report.Deliveries)
+	}
+}
+
+// Requirement: a task waiting on the person (an unanswered question or
+// approval) counts that wait as needs_you even while its run is still open;
+// a waiting task whose permission event was not read waits from its last
+// settled activity. Threat: the person's wait reported as coding. Owner:
+// BuildFlowReport (the status mapping is api.flowTaskLive).
+func TestFlowWaitingOnPersonWithOpenRun(t *testing.T) {
+	seq := uint64(0)
+	events := flowTool(t, &seq, "run-1", "c1", "read", `{"path":"main.go"}`, flowMin(1), flowMin(2), "x")
+	seq++
+	events = append(events, flowEvent(t, seq, "permission.requested", flowMin(10), map[string]any{"run_id": "run-1", "tool_name": "ask_user", "call_id": "q1", "tool_instance_id": "run-1/q1"}))
+	src := FlowSource{TaskID: "t1", Now: flowMin(30), Live: true, WaitingOnPerson: true,
+		Runs:   []FlowRun{{SessionID: "s1", RunID: "run-1", Role: "coder", StartedAt: flowMin(0), Status: "running"}},
+		Events: map[string][]pebblestore.V3SessionEvent{"s1": events}}
+	report := BuildFlowReport(src)
+	if report.Phases.NeedsYouMS != 20*60_000 || report.Phases.CodingMS != 10*60_000 || report.WallMS != 30*60_000 {
+		t.Fatalf("open question: %+v wall %d", report.Phases, report.WallMS)
+	}
+	// The permission event was not read (only the tool call was).
+	src.Events = map[string][]pebblestore.V3SessionEvent{"s1": events[:2]}
+	report = BuildFlowReport(src)
+	if report.Phases.NeedsYouMS != 28*60_000 || report.Phases.CodingMS != 2*60_000 {
+		t.Fatalf("waiting without its event: %+v", report.Phases)
+	}
+}
+
+// Requirement: a run bound reached and a message bound reached are both
+// reported as partial with a note. Threat: arbitrarily dropped runs read as
+// a complete report.
+func TestFlowReportMarksReadBoundsPartial(t *testing.T) {
+	src := flowJobFixture(t)
+	if r := BuildFlowReport(src); r.Partial {
+		t.Fatalf("complete records reported partial: %+v", r.Notes)
+	}
+	src.RunsTruncated = true
+	r := BuildFlowReport(src)
+	if !r.Partial || !strings.Contains(strings.Join(r.Notes, "\n"), "more runs than the bound") {
+		t.Fatalf("runs bound: partial %v notes %q", r.Partial, r.Notes)
+	}
+	src.RunsTruncated, src.MessagesTruncated = false, true
+	r = BuildFlowReport(src)
+	if !r.Partial || !strings.Contains(strings.Join(r.Notes, "\n"), "more messages than the bound") {
+		t.Fatalf("messages bound: partial %v notes %q", r.Partial, r.Notes)
+	}
 }
 
 // Requirement: test commands are recognised by what they run.

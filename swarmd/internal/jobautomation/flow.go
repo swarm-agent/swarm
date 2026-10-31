@@ -103,13 +103,20 @@ type FlowSource struct {
 	Live            bool
 	WaitingOnPerson bool
 	// From and To bound the report (a roll-up's period); 0 is unbounded.
+	// Bounded, only the runs and deliveries active in [From, To] count
+	// (each whole: its tokens, tools, reviews and rebases), and the phases
+	// are clipped to it.
 	From int64
 	To   int64
 	Runs []FlowRun
+	// RunsTruncated: a session had more runs than were read.
+	RunsTruncated bool
 	// Events are each session's events, oldest first.
 	Events          map[string][]pebblestore.V3SessionEvent
 	EventsTruncated bool
-	Deliveries      []Delivery
+	// MessagesTruncated: a session had more messages than were read.
+	MessagesTruncated bool
+	Deliveries        []Delivery
 	// Interventions counts what a person sent the job by hand (messages,
 	// explicit re-runs are added from the deliveries).
 	Interventions int
@@ -301,10 +308,28 @@ func BuildFlowReport(src FlowSource) FlowReport {
 	if now <= 0 {
 		now = time.Now().UnixMilli()
 	}
-	report := FlowReport{JobID: src.JobID, ProjectID: src.ProjectID, TaskID: src.TaskID, Title: src.Title, Runs: []FlowRunReport{}, Deliveries: []FlowDeliveryReport{}, TopWaste: []FlowWaste{}, Partial: src.EventsTruncated}
+	report := FlowReport{JobID: src.JobID, ProjectID: src.ProjectID, TaskID: src.TaskID, Title: src.Title, Runs: []FlowRunReport{}, Deliveries: []FlowDeliveryReport{}, TopWaste: []FlowWaste{},
+		Partial: src.EventsTruncated || src.RunsTruncated || src.MessagesTruncated}
 	if src.EventsTruncated {
 		report.Notes = append(report.Notes, fmt.Sprintf("only the first %d tool and permission events of a session were read", FlowMaxEventsPerSession))
 	}
+	if src.RunsTruncated {
+		report.Notes = append(report.Notes, "a session had more runs than the bound; the runs read are in store key order, not time order, so some runs are missing")
+	}
+	if src.MessagesTruncated {
+		report.Notes = append(report.Notes, "a session had more messages than the bound; hand interventions may be undercounted")
+	}
+	// inPeriod: an activity from..to (to 0: still on) overlaps the
+	// report's bounds.
+	inPeriod := func(from, to int64) bool {
+		if to <= 0 {
+			to = now
+		}
+		return (src.From <= 0 || to >= src.From) && (src.To <= 0 || from <= src.To)
+	}
+	// settled is the last activity that did not run on to now (a waiting
+	// task waits on the person from there).
+	settled := int64(0)
 	report.Notes = append(report.Notes, "first_request_context_tokens: not recorded yet (usage is per run until per-request receipts land)")
 	spans := []flowSpan{}
 	first, last := int64(0), int64(0)
@@ -314,6 +339,9 @@ func BuildFlowReport(src FlowSource) FlowReport {
 		}
 		if to > last {
 			last = to
+		}
+		if to < now && to > settled {
+			settled = to
 		}
 	}
 
@@ -363,7 +391,6 @@ func BuildFlowReport(src FlowSource) FlowReport {
 			if u.Steps > 0 {
 				row.ContextPerRequest = (u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens) / int64(u.Steps)
 			}
-			report.Tokens.Add(row.Tokens)
 		}
 		// A run that ended on a provider limit waits until the next run
 		// of its session starts (or now, while the job is unfinished).
@@ -388,6 +415,7 @@ func BuildFlowReport(src FlowSource) FlowReport {
 	}
 
 	// Tool calls and permission waits, from each session's events.
+	waitOpen := false
 	sessions := make([]string, 0, len(src.Events))
 	for id := range src.Events {
 		sessions = append(sessions, id)
@@ -420,6 +448,9 @@ func BuildFlowReport(src FlowSource) FlowReport {
 						spans = append(spans, flowSpan{at, ev.TsUnixMs, FlowPhaseNeedsYou})
 					}
 				}
+				if ev.TsUnixMs < now {
+					settled = max(settled, ev.TsUnixMs)
+				}
 			case strings.HasPrefix(ev.EventType, "session.tool."):
 				var p flowToolEvent
 				if json.Unmarshal(ev.Payload, &p) != nil {
@@ -427,6 +458,9 @@ func BuildFlowReport(src FlowSource) FlowReport {
 				}
 				key := firstFlow(p.Instance, p.CallID)
 				runIdx := flowRunIndex(report.Runs, sessionID, p.RunID, ev.TsUnixMs)
+				if ev.TsUnixMs < now {
+					settled = max(settled, ev.TsUnixMs)
+				}
 				switch ev.EventType {
 				case "session.tool.started":
 					kind := ToolKind(p.ToolName)
@@ -452,6 +486,7 @@ func BuildFlowReport(src FlowSource) FlowReport {
 		if src.Live {
 			for _, at := range permissions {
 				spans = append(spans, flowSpan{at, now, FlowPhaseNeedsYou})
+				waitOpen = true
 			}
 		}
 		for _, c := range calls {
@@ -497,10 +532,17 @@ func BuildFlowReport(src FlowSource) FlowReport {
 	sort.SliceStable(deliveries, func(i, j int) bool { return deliveries[i].CreatedAt < deliveries[j].CreatedAt })
 	for _, d := range deliveries {
 		row := flowDelivery(d, now)
-		report.Deliveries = append(report.Deliveries, row)
-		report.Rebases += row.Rebases
-		report.Reviews += row.Reviews
-		report.Interventions += d.Reruns
+		deliveryEnd := d.FinishedAt
+		if deliveryEnd <= 0 && Terminal(d.State) {
+			deliveryEnd = d.CreatedAt
+		}
+		// Outside the bounds, only its spans count (clipped away below).
+		if inPeriod(d.CreatedAt, deliveryEnd) {
+			report.Deliveries = append(report.Deliveries, row)
+			report.Rebases += row.Rebases
+			report.Reviews += row.Reviews
+			report.Interventions += d.Reruns
+		}
 		for _, rec := range d.Steps {
 			def, _ := d.step(rec.ID)
 			phase := ""
@@ -563,13 +605,32 @@ func BuildFlowReport(src FlowSource) FlowReport {
 	report.Interventions += src.Interventions
 
 	// The report's span: first activity to last (now while unfinished),
-	// within the requested window.
+	// within the requested window. A job waiting on the person with no
+	// open permission read waits from its last settled activity (an open
+	// run's time to now is the person's, not coding).
 	if src.Live && first > 0 {
-		if src.WaitingOnPerson && now > last {
-			spans = append(spans, flowSpan{last, now, FlowPhaseNeedsYou})
+		if src.WaitingOnPerson && !waitOpen {
+			from := settled
+			if from <= 0 {
+				from = first
+			}
+			if now > from {
+				spans = append(spans, flowSpan{from, now, FlowPhaseNeedsYou})
+			}
 		}
 		last = now
 	}
+	// Runs outside the bounds: their spans are clipped away; their rows,
+	// tools and tokens do not count.
+	kept := report.Runs[:0]
+	for i, row := range report.Runs {
+		if runs[i].StartedAt > 0 && !inPeriod(runs[i].StartedAt, runs[i].EndedAt) {
+			continue
+		}
+		report.Tokens.Add(row.Tokens)
+		kept = append(kept, row)
+	}
+	report.Runs = kept
 	if src.From > 0 && first < src.From {
 		first = src.From
 	}
