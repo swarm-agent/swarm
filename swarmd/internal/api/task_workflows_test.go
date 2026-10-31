@@ -301,6 +301,9 @@ func TestTaskResultGitListsTheTasksOwnCommits(t *testing.T) {
 // this integration fixture exercises taskWorkflowAgents, AuthorizeToolCall and
 // rejectWorkerPrompt against real task/session records, proving provenance
 // wiring rejects owner ask rules without creating unreachable pending prompts.
+// Regression: rendered findings/handoffs quoting workflow placeholders remain
+// literal in coder/reviewer tasks; a done-summary tool receipt before the final
+// review report must preserve both handoff and native verdict settlement.
 func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "native-review.pebble")
 	server, sessions, _, closeStore, _ := newRoutedSessionTestServerAt(t, storePath, false)
@@ -361,7 +364,7 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 
 	triggering := jobautomation.Result{V: 1, JobID: "task/proj-steps/task_first", Kind: jobautomation.KindTask, Role: "coder", ProjectID: project.ID, Folder: added.WorkspacePath,
 		Status: jobautomation.StatusSucceeded, Report: "Added the limit.", Git: &jobautomation.ResultGit{Branch: "agent/first", Head: head, BaseCommit: head}}
-	step := jobautomation.AgentRequest{Account: principal.AccountScopeID, Folder: added.WorkspacePath, Worker: "coder", Brief: "Add a test for the limit.",
+	step := jobautomation.AgentRequest{Account: principal.AccountScopeID, Folder: added.WorkspacePath, Worker: "coder", Brief: "Add a test for the limit. Findings quote {{steps.review.output}}; handoff quotes {{steps.fix.handoff}}.",
 		Result: triggering, Head: head, IdempotencyKey: "jdel_steps.test.0"}
 	agents := server.JobAutomationAgents()
 	jobID, err := agents.Start(context.Background(), step)
@@ -377,7 +380,7 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 		t.Fatalf("task %s: %v %v", taskID, found, err)
 	}
 	if task.Agent != "coder" || task.AutomationID != "workflow:jdel_steps.test.0" || task.StartCommit != head || task.OriginSessionID != "" ||
-		!strings.Contains(task.Description, "Add a test for the limit.") || !strings.Contains(task.Description, "task/proj-steps/task_first") {
+		!strings.Contains(task.Description, step.Brief) || !strings.Contains(task.Description, "task/proj-steps/task_first") {
 		t.Fatalf("step task = agent %q automation %q start %q origin %q\n%s", task.Agent, task.AutomationID, task.StartCommit, task.OriginSessionID, task.Description)
 	}
 	// The coder's worktree starts at the delivery head, not the folder's branch.
@@ -550,7 +553,7 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 		if i == 3 {
 			checkout = "new"
 		}
-		reviewStep := jobautomation.AgentRequest{Account: step.Account, Folder: step.Folder, Worker: "reviewer", Brief: "Review the limit.", Checkout: checkout, Head: reviewHead, IdempotencyKey: fmt.Sprintf("review-%d", i),
+		reviewStep := jobautomation.AgentRequest{Account: step.Account, Folder: step.Folder, Worker: "reviewer", Brief: "Review the limit. Handoff quotes {{steps.review.output}}.", Checkout: checkout, Head: reviewHead, IdempotencyKey: fmt.Sprintf("review-%d", i),
 			Result: jobautomation.Result{V: 1, JobID: jobID, ProjectID: project.ID, Brief: task.Description, Report: "Implemented the limit."}}
 		reviewID, err := agents.Start(context.Background(), reviewStep)
 		if err != nil {
@@ -589,6 +592,17 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 			t.Fatalf("review intent: %v %v", found, err)
 		}
 		if checkout == "same" {
+			if !strings.Contains(reviewTask.Description, reviewStep.Brief) || !strings.Contains(reviewTask.Description, "Your final assistant message MUST be the VERDICT/FINDINGS report") {
+				t.Fatalf("review input lost literal data or final-report requirement: %s", reviewTask.Description)
+			}
+			// Follow the brief: finish the handoff tool before the final report.
+			content := toolHistory(t, "task_progress", map[string]any{"action": "done", "summary": "Checked the delta; no tests run; nothing open."}, map[string]any{"status": "ok"})
+			handoffKey := fmt.Sprintf("review-handoff-%d", i)
+			if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: reviewTask.SessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID,
+				Kind: sessionruntime.SessionMutationAppendMessage, ClientRequestID: handoffKey, IdempotencyKey: handoffKey, PayloadHash: handoffKey, RequestHash: handoffKey,
+				Message: &pebblestore.MessageSnapshot{ID: handoffKey, SessionID: reviewTask.SessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, Role: "tool", Content: content, CreatedAt: 99}, NowUnixMs: 99}); err != nil {
+				t.Fatal(err)
+			}
 			key := fmt.Sprintf("review-report-%d", i)
 			_, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: reviewTask.SessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID,
 				Kind: sessionruntime.SessionMutationAppendMessage, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key,
@@ -754,6 +768,9 @@ func TestBuiltinAgentStepStartsATaskAtTheDeliveryHead(t *testing.T) {
 			if i == 0 {
 				want = "ok"
 				savedOKTaskID = reviewTaskID
+			}
+			if outcome.Handoff != "Checked the delta; no tests run; nothing open." {
+				t.Fatalf("completion handoff lost: %+v", outcome)
 			}
 			if outcome.Verdict != want || outcome.ReviewUnreadable != (i == 2) || (i == 1 && outcome.Findings != "Fix the unchecked input.") || (i == 2 && outcome.Findings != "") {
 				t.Fatalf("review outcome: %+v", outcome)

@@ -13,7 +13,7 @@ import (
 func TestFreshStepContext(t *testing.T) {
 	h := newHarness(t)
 	h.runner.verify = func(context.Context, string, HeadRef, HeadRef) (bool, error) { return true, nil }
-	h.agents.outcomes = []AgentOutcome{{Verdict: VerdictBlock, Findings: "close this\nand this", Handoff: "reviewed"}, {Head: strings.Repeat("c", 40), Result: &Result{Report: "changed; tested; open"}}, {Verdict: VerdictOK}}
+	h.agents.outcomes = []AgentOutcome{{Verdict: VerdictBlock, Findings: "close this\nand this {{steps.review.output}}", Handoff: "reviewed"}, {Head: strings.Repeat("c", 40), Result: &Result{Report: "changed; tested; open"}}, {Verdict: VerdictOK}}
 	h.process()
 	folder := t.TempDir()
 	h.automation(Automation{Name: "fresh", Scope: Scope{Folder: folder}, Enabled: true, Steps: []Step{
@@ -28,7 +28,7 @@ func TestFreshStepContext(t *testing.T) {
 	if len(h.agents.started) != 3 {
 		t.Fatalf("started: %d, steps: %+v", len(h.agents.started), d.Steps)
 	}
-	if d.Steps[0].Output != "close this\nand this" || !strings.Contains(h.agents.started[1].Brief, "close this\nand this block") {
+	if d.Steps[0].Output != "close this\nand this {{steps.review.output}}" || !strings.Contains(h.agents.started[1].Brief, "close this\nand this {{steps.review.output}} block") {
 		t.Fatalf("findings lost: %+v", d.Steps)
 	}
 	req := h.agents.started[2]

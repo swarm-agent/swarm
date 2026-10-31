@@ -494,6 +494,13 @@ func (s *Step) normalizeRun() error {
 	return nil
 }
 
+// ValidateRenderedAgent checks agent execution options and brief size without
+// interpreting rendered evidence as template syntax. Definition placeholders
+// must already have been validated by NormalizeSteps before rendering.
+func ValidateRenderedAgent(s Step) error {
+	return s.normalizeAgent()
+}
+
 func (s *Step) normalizeAgent() error {
 	if s.Command != "" || len(s.Args) > 0 || s.From != "" || s.Message != "" || s.MaxRounds != 0 {
 		return invalid("step %s: an agent step has worker and brief, not command, args, from, message or max_rounds", s.ID)

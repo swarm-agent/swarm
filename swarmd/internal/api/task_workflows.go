@@ -197,7 +197,7 @@ func taskResultGit(ctx context.Context, worktree, base, head string) (*jobautoma
 // the work it follows. The task records the workflow that started it, so its
 // end never triggers workflows.
 func (s *Server) startBuiltinAgentStep(ctx context.Context, req jobautomation.AgentRequest) (string, error) {
-	if err := jobautomation.NormalizeSteps([]jobautomation.Step{{ID: "agent", Type: jobautomation.StepAgent, Worker: req.Worker, Brief: req.Brief, Fixes: req.Fixes, Checkout: req.Checkout}}); err != nil {
+	if err := jobautomation.ValidateRenderedAgent(jobautomation.Step{ID: "agent", Type: jobautomation.StepAgent, Worker: req.Worker, Brief: req.Brief, Fixes: req.Fixes, Checkout: req.Checkout}); err != nil {
 		return "", &jobautomation.RefusedError{Reason: err.Error()}
 	}
 	if req.Result.ProjectID == "" {
