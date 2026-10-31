@@ -1,6 +1,6 @@
 // A machine update that changes a tool's schema (not the number of tools)
 // must still tell the client to re-read the list, or the client keeps the old
-// schema and refuses new arguments (including swarm_set_workflow's on).
+// schema and refuses new arguments (including manage_workflows propose's on).
 // Purpose: toolsSignature is the fleet cache boundary; changing trigger fields
 // must invalidate the cached tools even when tool count and names stay fixed.
 import assert from 'node:assert/strict';
@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import { toolsSignature } from '../server.mjs';
 
 test('a changed tool schema changes what the client is told', () => {
-  const before = [{ name: 'swarm_set_workflow', description: 'Set a workflow', inputSchema: { type: 'object', properties: { name: { type: 'string' } } } }];
+  const before = [{ name: 'manage_workflows', description: 'Set a workflow', inputSchema: { type: 'object', properties: { name: { type: 'string' } } } }];
   const after = [{ ...before[0], inputSchema: { type: 'object', properties: { name: { type: 'string' }, on: { type: 'object', properties: { event: { type: 'object', properties: { source: { type: 'string', enum: ['pull', 'webhook'] }, url: { type: 'string' }, every_seconds: { type: 'integer' }, secret: { type: 'string' }, items: { type: 'string' }, id: { type: 'string' } } }, start: { type: 'object', properties: { worker: { type: 'string' }, brief: { type: 'string' } } } } }, rotate_key: { type: 'boolean' } } } }];
   assert.notEqual(toolsSignature(before), toolsSignature(after));
   // Reusable inputs must invalidate the same schema cache; unchanged copies must not.
@@ -24,7 +24,7 @@ test('a changed tool schema changes what the client is told', () => {
 // Purpose: toolsSignature must invalidate fleet discovery when worker budget
 // arguments arrive; this pure cache-boundary test prevents stale client schemas.
 test('worker budget schema invalidates the tool signature', () => {
-  const before = [{ name: 'swarm_deploy_worker', inputSchema: { type: 'object', properties: {} } }];
+  const before = [{ name: 'manage_workers', inputSchema: { type: 'object', properties: {} } }];
   const after = structuredClone(before);
   after[0].inputSchema.properties.budget = { anyOf: [{ type: 'object', required: ['daily_usd'], properties: { daily_usd: { type: 'number', minimum: 0 }, daily_tokens: { type: 'integer', minimum: 0 } } }, { type: 'null' }] };
   assert.notEqual(toolsSignature(before), toolsSignature(after));

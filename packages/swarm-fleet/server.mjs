@@ -1,7 +1,9 @@
 // swarm-fleet: one MCP server (stdio) for every Swarm machine you reach over
 // your tailnet. Each machine serves Swarm Control at /mcp; this process lists
-// the union of their tools with a `machine` argument and forwards each call to
-// that machine. Its only state is one fleet-wide agent model table (see
+// the union of their catalog tools (manage_projects, manage_sessions, ...)
+// with a `machine` argument and forwards each call to that machine. It never
+// lists or forwards a swarm_* tool: those were removed from Swarm Control for
+// the catalog. Its only state is one fleet-wide agent model table (see
 // "One model table for the fleet" in README.md), kept in SWARM_FLEET_STATE.
 //
 // Machines come from the tailnet itself: every peer carrying one of
@@ -40,7 +42,7 @@ const MAX_RESPONSE_BYTES = 8 << 20;
 const MACHINE_PROP = { type: 'string', maxLength: 64, description: 'Machine name from swarm_list_machines. Required when several are configured.' };
 const INSTRUCTIONS = 'swarm-fleet reaches your Swarm machines over your private tailnet. ' +
   'Call swarm_list_machines (or swarm_fleet_status for one view of every machine) first; pass `machine` to every other tool when more than one machine is configured. ' +
-  'For provider API keys, call swarm_fleet_request_provider_key with the named machines; give the person its returned link and repeat tell_the_person, then call swarm_list_providers with machine, provider and wait_seconds (at most 110) for each machine to wait for the outcome. Never ask for a key in chat. ' +
+  'For provider API keys, call swarm_fleet_request_provider_key with the named machines; give the person its returned link and repeat tell_the_person, then call manage_setup with action providers, machine, provider and wait_seconds (at most 110) for each machine to wait for the outcome. Never ask for a key in chat. ' +
   'Each machine allows only what your tailnet policy (or its AI key) grants this device: read only, or read and write. ' +
   'Every machine runs its roles (coder, reviewer, finder, designer, compact, router; advanced action and plan) on Swarm\'s recommended models; swarm_fleet_set_models overrides them fleet-wide (advanced, only when the person asks).';
 
@@ -164,17 +166,40 @@ const toolText = (value, isError = false) => ({ content: [{ type: 'text', text: 
 const short = error => String(error?.message || error).slice(0, 200);
 
 /**
- * What a machine lets this device do, from the tool names it lists (null when
- * unreached). Exact for AI keys and tailnet grants, whose level decides the
- * list; a plain scoped token lists every tool, so for it this is an upper bound.
+ * The catalog actions a machine lists, as "tool action" names (null when
+ * unreached): each catalog tool lists the actions the caller may call in its
+ * action enum. swarm_* tools are not catalog tools and give none.
+ */
+export function catalogActions(tools) {
+  if (!tools) return null;
+  const out = [];
+  for (const tool of tools) {
+    if (!tool?.name || String(tool.name).startsWith('swarm_')) continue;
+    const actions = tool.inputSchema?.properties?.action?.enum;
+    for (const action of Array.isArray(actions) ? actions : []) out.push(`${tool.name} ${action}`);
+  }
+  return out;
+}
+
+/**
+ * What a machine lets this device do, from the catalog actions it lists
+ * ("tool action" names; null when unreached). Exact for AI keys and tailnet
+ * grants, whose level decides the list; a plain scoped token lists every
+ * action, so for it this is an upper bound.
  */
 export function accessLevel(names) {
   if (!names) return 'none';
-  // A machine lists its default tools unless asked for all of them, so the
-  // worker and job tools count as much as the advanced ones.
-  if (names.includes('swarm_create_worker') || names.includes('swarm_manage_worker')) return 'full control';
-  if (names.includes('swarm_resolve_permission')) return 'read, write and approve';
-  return names.includes('swarm_request_provider_key') || names.includes('swarm_start_session') || names.includes('swarm_give_job') ? 'read and write' : 'read only';
+  // A machine lists its default actions unless asked for all of them; the
+  // worker, session and job actions below are all in that default listing.
+  if (names.includes('manage_workers create') || names.includes('manage_workers update')) return 'full control';
+  if (names.includes('manage_sessions resolve_permission')) return 'read, write and approve';
+  return names.includes('manage_setup request_provider_key') || names.includes('manage_sessions create') || names.includes('manage_jobs give_job') ? 'read and write' : 'read only';
+}
+
+/** The data of a catalog tool's answer (its envelope's data), or null. */
+function envelopeData(result) {
+  const envelope = toolJSON(result);
+  return envelope && typeof envelope === 'object' && envelope.data && typeof envelope.data === 'object' ? envelope.data : null;
 }
 
 /** The JSON a Swarm tool returned as text, or null. */
@@ -264,7 +289,7 @@ export function roleState(desired, actual, overridden) {
 const FLEET_TOOLS = [
   {
     name: 'swarm_fleet_request_provider_key', title: 'Add a provider across machines',
-    description: 'Add a provider API key across named machines. Returns one browser link as soon as every machine issues its page, without waiting for saves. Give the person the link and repeat tell_the_person, then call swarm_list_providers with machine, provider and wait_seconds (at most 110) for each machine to wait for the outcome: the person opens it on a device in their tailnet and pastes once, never in chat. The browser sends the key directly to each machine.',
+    description: 'Add a provider API key across named machines. Returns one browser link as soon as every machine issues its page, without waiting for saves. Give the person the link and repeat tell_the_person, then call manage_setup with action providers, machine, provider and wait_seconds (at most 110) for each machine to wait for the outcome: the person opens it on a device in their tailnet and pastes once, never in chat. The browser sends the key directly to each machine.',
     inputSchema: {type:'object', additionalProperties:false, required:['provider','machines'], properties:{provider:{type:'string',maxLength:100}, machines:{type:'array',minItems:1,maxItems:50,uniqueItems:true,items:{type:'string',maxLength:64}}, label:{type:'string',maxLength:64}}},
   },
   {
@@ -354,10 +379,14 @@ export function createFleet(configured, { proxy = '', notify = () => {}, send = 
   // The text of the first reachable machine (they run the same product).
   const ownInstructions = () => machines.map(m => instructions.get(m.name)).find(Boolean) || '';
   const refreshAll = async (force = false) => { await rediscover(force); await Promise.all(machines.map(refresh)); };
-  const access = name => accessLevel(tools.get(name)?.map(t => t.name) ?? null);
+  const access = name => accessLevel(catalogActions(tools.get(name) ?? null));
+  // canCall reports whether a machine lists that catalog action for this device.
+  const canCall = (machine, toolName, action) => (catalogActions(tools.get(machine.name) ?? null) || []).includes(`${toolName} ${action}`);
   function union() {
     const byName = new Map();
-    for (const machine of machines) for (const tool of tools.get(machine.name) || []) if (tool?.name && !byName.has(tool.name)) byName.set(tool.name, tool);
+    // Only catalog tools: a swarm_* tool an older machine still lists is
+    // neither listed nor forwarded.
+    for (const machine of machines) for (const tool of tools.get(machine.name) || []) if (tool?.name && !String(tool.name).startsWith('swarm_') && !byName.has(tool.name)) byName.set(tool.name, tool);
     const list = FLEET_TOOLS.slice();
     for (const tool of byName.values()) {
       if (FLEET_TOOLS.some(t => t.name === tool.name)) continue;
@@ -382,7 +411,7 @@ export function createFleet(configured, { proxy = '', notify = () => {}, send = 
   const callOn = (machine, name, args) => send(machine, { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }, { proxy, timeoutMs: callTimeoutMs(args) });
 
   // A machine's run counts for today, exact (the daemon's run index), with the
-  // failed runs' job ids; their reasons stay on the machine (swarm_get_job).
+  // failed runs' job ids; their reasons stay on the machine (manage_jobs get_job).
   function runsToday(runs, workers) {
     const failed = Array.isArray(runs.failed_runs) ? runs.failed_runs : [];
     return {
@@ -396,11 +425,10 @@ export function createFleet(configured, { proxy = '', notify = () => {}, send = 
   async function machineStatus(machine, timezone = '') {
     const base = { machine: machine.name, found_by: machine.source, reachable: tools.has(machine.name), access: access(machine.name) };
     if (!tools.has(machine.name)) return { ...base, error: errors.get(machine.name) || 'not reached' };
-    const has = name => tools.get(machine.name).some(t => t.name === name);
     const [status, sessions, usage] = await Promise.all([
-      has('swarm_status') ? callOn(machine, 'swarm_status', timezone ? { timezone } : {}).then(b => toolJSON(b?.result), () => null) : null,
-      has('swarm_list_sessions') ? callOn(machine, 'swarm_list_sessions', { limit: 50 }).then(b => toolJSON(b?.result), () => null) : null,
-      has('swarm_get_usage') ? callOn(machine, 'swarm_get_usage', { period: 'today' }).then(b => toolJSON(b?.result), () => null) : null,
+      canCall(machine, 'manage_fleet', 'status') ? callOn(machine, 'manage_fleet', { action: 'status', ...(timezone ? { timezone } : {}) }).then(b => envelopeData(b?.result), () => null) : null,
+      canCall(machine, 'manage_sessions', 'list') ? callOn(machine, 'manage_sessions', { action: 'list', limit: 50 }).then(b => envelopeData(b?.result), () => null) : null,
+      canCall(machine, 'manage_setup', 'usage') ? callOn(machine, 'manage_setup', { action: 'usage', period: 'today' }).then(b => envelopeData(b?.result), () => null) : null,
     ]);
     const list = Array.isArray(sessions?.sessions) ? sessions.sessions : null;
     return {
@@ -423,13 +451,11 @@ export function createFleet(configured, { proxy = '', notify = () => {}, send = 
     const desired = desiredFor(table, machine.name);
     const overrides = table.overrides[machine.name] || {};
     const roles = Object.keys(FLEET_ROLES);
-    // swarm_list_models is an advanced tool: not listed by default, still
-    // callable with read access.
     if (!tools.has(machine.name)) {
       return { ...base, roles: roles.map(role => ({ role, ...(desired[role] || {}), state: 'unknown' })), error: errors.get(machine.name) || 'cannot list models' };
     }
     let listed;
-    try { listed = toolJSON((await callOn(machine, 'swarm_list_models', {}))?.result); } catch (error) { listed = null; base.error = short(error); }
+    try { listed = envelopeData((await callOn(machine, 'manage_setup', { action: 'models' }))?.result); } catch (error) { listed = null; base.error = short(error); }
     const actual = {};
     for (const r of Array.isArray(listed?.roles) ? listed.roles : []) {
       const role = ROLE_OF_MACHINE_ROLE[r?.role];
@@ -457,7 +483,7 @@ export function createFleet(configured, { proxy = '', notify = () => {}, send = 
         if (!tools.has(machine.name)) { applied.push({ ...entry, error: errors.get(machine.name) || 'not reached' }); continue; }
         if (access(machine.name) === 'read only') { applied.push({ ...entry, error: 'read-only access on this machine: setting models needs a write or full AI key in SWARM_FLEET' }); continue; }
         try {
-          const body = await callOn(machine, 'swarm_set_agent_model', { role: FLEET_ROLES[role], provider: want.provider, model: want.model, ...(want.thinking ? { thinking: want.thinking } : {}), ...(want.fast ? { fast: true } : {}) });
+          const body = await callOn(machine, 'manage_setup', { action: 'set_agent_model', role: FLEET_ROLES[role], provider: want.provider, model: want.model, ...(want.thinking ? { thinking: want.thinking } : {}), ...(want.fast ? { fast: true } : {}) });
           if (body?.error) applied.push({ ...entry, error: String(body.error.message || 'error').slice(0, 200) });
           else if (body?.result?.isError) applied.push({ ...entry, error: String(body.result.content?.[0]?.text || 'refused').slice(0, 200) });
           else applied.push({ ...entry, ok: true });
@@ -505,7 +531,7 @@ export function createFleet(configured, { proxy = '', notify = () => {}, send = 
     const results = [];
     for (const machine of targets) {
       try {
-        const result = toolJSON((await callOn(machine, 'swarm_request_provider_key', {provider:args.provider, ...(args.label === undefined ? {} : {label:args.label})})).result);
+        const result = envelopeData((await callOn(machine, 'manage_setup', {action:'request_provider_key', provider:args.provider, ...(args.label === undefined ? {} : {label:args.label})})).result);
         const u = new URL(result?.url);
         // Only the named machine can receive the secret; never trust an arbitrary returned URL.
         if (u.origin !== machine.url.origin || u.protocol !== 'https:' || u.port !== '8444' || !/^[a-z0-9][a-z0-9-]*\.[a-z0-9][a-z0-9-]*\.ts\.net$/.test(u.hostname) || u.username || u.password || u.search || u.hash || !/^\/keys\/[A-Za-z0-9_-]{43}$/.test(u.pathname)) throw Error();
@@ -522,7 +548,7 @@ export function createFleet(configured, { proxy = '', notify = () => {}, send = 
       tell_the_person:`Open this link on a device in your tailnet to save the provider key to these machines: ${targets.map(m => m.name).join(', ')}; check them against the hostnames on the page, then paste the key once, never into chat.`,
       expires_in_seconds:Math.min(...results.map(r => r.expires_in_seconds)),
       machines:targets.map(m => ({machine:m.name,status:'waiting'})),
-      next:'call swarm_list_providers with machine, provider and wait_seconds (at most 110) for each machine to wait for the outcome',
+      next:'call manage_setup with action providers, machine, provider and wait_seconds (at most 110) for each machine to wait for the outcome',
     });
   }
 
@@ -549,6 +575,9 @@ export function createFleet(configured, { proxy = '', notify = () => {}, send = 
       if (name === 'swarm_fleet_models') return toolText({ models: table.models, overrides: table.overrides, machines: await Promise.all(machines.map(m => machineModels(m, table))) });
       try { return await setModels(args); } catch (error) { return toolText(short(error), true); }
     }
+    // The swarm_* tools were removed from Swarm Control: swarm-fleet does not
+    // forward them, whatever an older machine still lists.
+    if (name.startsWith('swarm_')) return toolText(`${name} is not a Swarm tool: the swarm_* tools were removed. Use the catalog tools (manage_projects, manage_sessions, manage_setup, ...) with an action.`, true);
     const wanted = typeof args.machine === 'string' ? args.machine : '';
     delete args.machine;
     if (!machines.some(m => m.name === wanted)) await rediscover();

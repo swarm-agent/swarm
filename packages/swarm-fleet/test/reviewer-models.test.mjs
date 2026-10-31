@@ -1,6 +1,8 @@
-// createFleet must list and apply reviewer assignments via the canonical role.
-// An injected MCP transport isolates the fleet mapping and verifies actual call
-// arguments, including rejection propagation rather than a false success.
+// createFleet must list and apply reviewer assignments via the canonical role,
+// through each machine's catalog (manage_setup models and set_agent_model,
+// answered in the catalog envelope). An injected MCP transport isolates the
+// fleet mapping and verifies actual call arguments, including rejection
+// propagation rather than a false success.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -13,14 +15,16 @@ test('fleet lists and sets reviewer models on each machine', async t => {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const calls = [];
   const text = value => ({ result: { content: [{ type: 'text', text: JSON.stringify(value) }] } });
+  const envelope = (action, data) => text({ tool: 'manage_setup', action, state: 'ok', data });
+  const catalogTool = (name, actions) => ({ name, inputSchema: { type: 'object', properties: { action: { type: 'string', enum: actions } } } });
   const fleet = createFleet([{ name: 'one', token: 'fixture' }, { name: 'two', token: 'fixture' }], {
     statePath: join(dir, 'state.json'),
     send: async (machine, msg) => {
-      if (msg.method === 'tools/list') return { result: { tools: [{ name: 'swarm_set_agent_model' }, { name: 'swarm_manage_worker' }] } };
+      if (msg.method === 'tools/list') return { result: { tools: [catalogTool('manage_setup', ['models', 'set_agent_model']), catalogTool('manage_workers', ['list', 'create', 'update'])] } };
       if (msg.method === 'initialize') return { result: {} };
-      if (msg.params.name === 'swarm_list_models') return text({ roles: [{ role: 'system-reviewer', provider: 'test', model: 'review' }] });
+      if (msg.params.name === 'manage_setup' && msg.params.arguments?.action === 'models') return envelope('models', { roles: [{ role: 'system-reviewer', provider: 'test', model: 'review' }] });
       calls.push([machine.name, msg.params]);
-      return machine.name === 'two' ? { result: { isError: true, content: [{ text: 'refused' }] } } : text({});
+      return machine.name === 'two' ? { result: { isError: true, content: [{ text: 'refused' }] } } : envelope('set_agent_model', {});
     },
   });
   t.after(() => fleet.stop());
@@ -32,7 +36,7 @@ test('fleet lists and sets reviewer models on each machine', async t => {
   }
   const set = await call('swarm_fleet_set_models', { models: { reviewer: { provider: 'test', model: 'review', thinking: 'high' } } });
   assert.equal(calls.length, 2);
-  for (const [, call] of calls) assert.deepEqual(call, { name: 'swarm_set_agent_model', arguments: { role: 'system-reviewer', provider: 'test', model: 'review', thinking: 'high' } });
+  for (const [, call] of calls) assert.deepEqual(call, { name: 'manage_setup', arguments: { action: 'set_agent_model', role: 'system-reviewer', provider: 'test', model: 'review', thinking: 'high' } });
   assert.equal(set.applied.find(r => r.machine === 'one').ok, true);
   assert.equal(set.applied.find(r => r.machine === 'two').ok, false);
 });

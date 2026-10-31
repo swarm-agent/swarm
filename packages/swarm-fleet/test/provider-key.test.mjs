@@ -11,11 +11,12 @@ test('fleet provider key returns pages without waiting or notifications', {timeo
  const calls = [], notifications = [];
  const fleet = createFleet(machines,{notify: message => notifications.push(message),send:async (machine,msg) => {
   calls.push([machine.name,msg.params]);
-  if (msg.params.name === 'swarm_list_providers') return new Promise(() => {});
-  assert.equal(msg.params.name,'swarm_request_provider_key');
-  assert.deepEqual(msg.params.arguments,{provider:'openai'});
+  if (msg.params.name === 'manage_setup' && msg.params.arguments?.action === 'providers') return new Promise(() => {});
+  assert.equal(msg.params.name,'manage_setup');
+  assert.deepEqual(msg.params.arguments,{action:'request_provider_key',provider:'openai'});
   const value = {url:`https://${machine.name}.example.ts.net:8444/keys/${'A'.repeat(43)}`,expires_in_seconds:machine.name === 'one' ? 600 : 590};
-  return {result:{content:[{type:'text',text:JSON.stringify(value)}]}};
+  const envelope = {tool:'manage_setup',action:'request_provider_key',machine:machine.name,state:'ok',data:value};
+  return {result:{content:[{type:'text',text:JSON.stringify(envelope)}]}};
  }});
  t.after(() => fleet.stop());
  const call = async (name,args) => (await fleet.handle({id:1,method:'tools/call',params:{name,arguments:args,_meta:{progressToken:'key-request'}}})).result;
@@ -29,11 +30,11 @@ test('fleet provider key returns pages without waiting or notifications', {timeo
  assert.deepEqual(JSON.parse(Buffer.from(url.hash.slice(6),'base64url')), [`https://two.example.ts.net:8444/keys/${'A'.repeat(43)}`]);
  assert.equal(result.tell_the_person,'Open this link on a device in your tailnet to save the provider key to these machines: one, two; check them against the hostnames on the page, then paste the key once, never into chat.');
  assert.equal(result.expires_in_seconds,590);
- assert.equal(result.next,'call swarm_list_providers with machine, provider and wait_seconds (at most 110) for each machine to wait for the outcome');
+ assert.equal(result.next,'call manage_setup with action providers, machine, provider and wait_seconds (at most 110) for each machine to wait for the outcome');
  assert.deepEqual(result.machines,[{machine:'one',status:'waiting'},{machine:'two',status:'waiting'}]);
  assert.deepEqual(calls.map(([name]) => name),['one','two']);
  assert.deepEqual(notifications,[]);
- assert.equal(accessLevel(['swarm_request_provider_key']),'read and write');
+ assert.equal(accessLevel(['manage_setup request_provider_key']),'read and write');
  const rejected = await call('swarm_fleet_request_provider_key',{...args,machines:['missing']});
  assert.equal(rejected.isError,true);
  assert.equal(calls.length,2);
@@ -43,7 +44,7 @@ test('fleet provider key returns pages without waiting or notifications', {timeo
 // Purpose: returned machine URLs are untrusted; createFleet must not make a
 // browser exfiltration link or silently omit a failed named destination.
 test('fleet refuses arbitrary key destinations and partial issuance', async () => {
- const fleet = createFleet(parseFleet('[{"name":"one","url":"https://one.example.ts.net:8444/mcp"}]'), {send:async () => ({result:{content:[{type:'text',text:JSON.stringify({url:`https://evil.example.ts.net:8444/keys/${'A'.repeat(43)}`})}]}})});
+ const fleet = createFleet(parseFleet('[{"name":"one","url":"https://one.example.ts.net:8444/mcp"}]'), {send:async () => ({result:{content:[{type:'text',text:JSON.stringify({tool:'manage_setup',action:'request_provider_key',state:'ok',data:{url:`https://evil.example.ts.net:8444/keys/${'A'.repeat(43)}`,expires_in_seconds:600}})}]}})});
  const result = (await fleet.handle({id:1,method:'tools/call',params:{name:'swarm_fleet_request_provider_key',arguments:{provider:'openai',machines:['one']}}})).result;
  assert.equal(result.isError,true);
  assert.equal(JSON.parse(result.content[0].text).url,undefined);
