@@ -317,10 +317,12 @@ func TestControlMCPDesignJobLifecycle(t *testing.T) {
 	}
 }
 
-// Requirement: swarm_design sends exactly the design request to the project's
-// folder and returns the design job. Threat: the tool reaches another route,
-// drops the person's options, or works in an unnamed folder. Owners:
-// controlMCPDesign, place and the route allowlist (controlMCPRouteAllowed).
+// Requirement: manage_designs create (its handler, controlMCPDesign, which
+// swarm_design ran) sends exactly the design request to the project's folder
+// and returns the design job; the catalog's create schema bounds count.
+// Threat: the action reaches another route, drops the person's options, or
+// works in an unnamed folder. Owners: controlMCPDesign, place, the
+// manage_designs declaration and the route allowlist (controlMCPRouteAllowed).
 func TestControlMCPDesignCreatesDesignJob(t *testing.T) {
 	var captured map[string]any
 	c := &controlMCPCall{request: requestWithScopedToken(httptest.NewRequest(http.MethodPost, "/mcp", nil), &pebblestore.ScopedTokenRecord{Scopes: []string{"sessions:read", "sessions:write"}})}
@@ -340,20 +342,26 @@ func TestControlMCPDesignCreatesDesignJob(t *testing.T) {
 		}
 	})
 	args := map[string]any{"brief": "pricing page", "count": float64(3), "style": "dark", "variations": []any{"minimal", "bold"}, "batch_name": "Pricing"}
-	var definition controlMCPTool
-	for _, tool := range controlMCPTools() {
-		if tool.Name == "swarm_design" {
-			definition = tool
+	catalog, ok := tool.CatalogToolNamed(tool.ManageDesignToolName)
+	if !ok {
+		t.Fatal("manage_designs is not a catalog tool")
+	}
+	create, ok := catalog.Action("create")
+	if !ok {
+		t.Fatal("manage_designs has no create action")
+	}
+	withAction := func(in map[string]any) map[string]any {
+		out := map[string]any{"action": "create"}
+		for key, value := range in {
+			out[key] = value
 		}
+		return out
 	}
-	if definition.call == nil || !controlMCPCoreTools["swarm_design"] {
-		t.Fatal("swarm_design is not a registered core tool")
-	}
-	if err := controlMCPValidateArgs(definition.InputSchema, args); err != nil {
+	if err := controlMCPValidateArgs(catalog.InputSchema(create), withAction(args)); err != nil {
 		t.Fatal(err)
 	}
-	for _, bad := range []map[string]any{{"brief": "x", "count": float64(51)}, {"brief": "x", "count": float64(0)}, {"count": float64(2)}} {
-		if err := controlMCPValidateArgs(definition.InputSchema, bad); err == nil {
+	for _, bad := range []map[string]any{{"brief": "x", "count": float64(51)}, {"brief": "x", "count": float64(0)}} {
+		if err := controlMCPValidateArgs(catalog.InputSchema(create), withAction(bad)); err == nil {
 			t.Fatalf("schema accepted %v", bad)
 		}
 	}

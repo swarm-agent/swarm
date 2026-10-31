@@ -17,8 +17,9 @@ import (
 
 // Purpose: authorized AI saves must update active worker definitions without a
 // human acceptance gate, while unsafe reviewer edits are atomic refusals.
-// controlMCPUpdateWorker, handleWorker and WorkerStore.UpdateWorker own this
-// boundary; real MCP dispatch and an isolated store prove persisted results.
+// PUT /v3/workers/{id} (handleWorker) and WorkerStore.UpdateWorker own this
+// boundary; real dispatch with an AI key's request and an isolated store
+// prove persisted results.
 func TestMCPWorkerDirectUpdate(t *testing.T) {
 	c, ws := newMCPPresetTestCall(t)
 	c.request = requestWithScopedToken(c.request, &store.ScopedTokenRecord{Scopes: []string{"admin"}})
@@ -32,7 +33,7 @@ func TestMCPWorkerDirectUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = controlMCPUpdateWorker(c, map[string]any{"worker_id": id, "instructions": "new guidance"}); err != nil {
+	if _, err = putWorkerRoute(c, id, map[string]any{"instructions": "new guidance"}); err != nil {
 		t.Fatal(err)
 	}
 	after, _, err := ws.GetWorker(account, id)
@@ -47,10 +48,10 @@ func TestMCPWorkerDirectUpdate(t *testing.T) {
 	if err != nil || !found || newRevision.Worker.Instructions != "new guidance" || newRevision.CommittedBy != testPrincipal().UserID || newRevision.ChangeSummary == "" {
 		t.Fatalf("new revision not recorded %+v %v", newRevision, err)
 	}
-	if _, err = controlMCPDefineAgent(c, map[string]any{"name": "writing-agent", "instructions": "Write", "tools": "build"}); err != nil {
+	if _, err = c.dispatch(http.MethodPut, "/v3/agents/writing-agent", nil, map[string]any{"name": "writing-agent", "instructions": "Write", "tools": "build"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = controlMCPUpdateWorker(c, map[string]any{"worker_id": id, "agent": "writing-agent"}); err == nil || !strings.Contains(err.Error(), "write") {
+	if _, err = putWorkerRoute(c, id, map[string]any{"agent": "writing-agent"}); err == nil || !strings.Contains(err.Error(), "write") {
 		t.Fatalf("unsafe update accepted %v", err)
 	}
 	unchanged, _, err := ws.GetWorker(account, id)
@@ -266,7 +267,7 @@ func TestWorkerDirectUpdatePreparedInstructions(t *testing.T) {
 	if !errors.Is(err, held) {
 		t.Fatalf("expected held preparation got %v", err)
 	}
-	if _, err = controlMCPUpdateWorker(c, map[string]any{"worker_id": id, "instructions": "new standing guidance"}); err != nil {
+	if _, err = putWorkerRoute(c, id, map[string]any{"instructions": "new standing guidance"}); err != nil {
 		t.Fatal(err)
 	}
 	hold = false
@@ -301,4 +302,18 @@ func TestWorkerDirectUpdatePreparedInstructions(t *testing.T) {
 			t.Fatalf("missing prepared instructions %q", check.want)
 		}
 	}
+}
+
+// putWorkerRoute saves fields on worker id through PUT /v3/workers/{id} at
+// its current revision, as an AI key's request does.
+func putWorkerRoute(c *controlMCPCall, id string, fields map[string]any) (map[string]any, error) {
+	worker, err := c.worker(id)
+	if err != nil {
+		return nil, err
+	}
+	body := map[string]any{"expected_revision": controlMCPRevision(worker)}
+	for key, value := range fields {
+		body[key] = value
+	}
+	return c.dispatch(http.MethodPut, "/v3/workers/"+id, nil, body)
 }

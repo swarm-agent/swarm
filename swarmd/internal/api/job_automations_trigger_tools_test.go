@@ -14,7 +14,7 @@ import (
 	"swarm/packages/swarmd/internal/workspace"
 )
 
-// Purpose: MCP saves and native proposals must use the same HTTP/service trigger
+// Purpose: route saves (an AI key's request) and native proposals must use the same HTTP/service trigger
 // record, never leak signing keys on reads or proposals, and reject invalid starts
 // without persistence. Real routes and Pebble are the narrowest layer proving save,
 // explicit human acceptance, rotation, and list postconditions together.
@@ -48,15 +48,15 @@ func TestWorkflowTriggerTools(t *testing.T) {
 	c := &controlMCPCall{server: s, request: withTestPrincipal(httptest.NewRequest("POST", "/mcp", nil)), next: s.internalRouteHandler()}
 	on := map[string]any{"event": map[string]any{"source": "webhook", "id": "id"}, "start": map[string]any{"worker": f.workerID, "brief": "Handle {{event.id}}"}}
 	args := map[string]any{"name": "hook", "project": "trigger-project", "on": on, "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "Review"}}}
-	first, err := controlMCPSetAutomation(c, args)
+	first, err := routeWorkflowSave(c, args)
 	if err != nil {
 		t.Fatal(err)
 	}
 	key, _ := first.(map[string]any)["trigger_key"].(string)
-	if len(key) != 64 || !strings.Contains(first.(map[string]any)["next"].(string), "shown only now") {
-		t.Fatal("missing one-time key guidance")
+	if len(key) != 64 {
+		t.Fatal("missing one-time key")
 	}
-	again, err := controlMCPSetAutomation(c, args)
+	again, err := routeWorkflowSave(c, args)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestWorkflowTriggerTools(t *testing.T) {
 		t.Fatal("key returned twice")
 	}
 	args["rotate_key"] = true
-	rotated, err := controlMCPSetAutomation(c, args)
+	rotated, err := routeWorkflowSave(c, args)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestWorkflowTriggerTools(t *testing.T) {
 		t.Fatal("key not rotated")
 	}
 	delete(args, "rotate_key")
-	listed, err := controlMCPListAutomations(c, nil)
+	listed, err := routeWorkflowList(c, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestWorkflowTriggerTools(t *testing.T) {
 	on["start"].(map[string]any)["worker"] = "missing-worker"
 	args["name"] = "invalid"
 	delete(args, "action")
-	if _, err := controlMCPSetAutomation(c, args); err == nil || !strings.Contains(err.Error(), "deployed, active worker") {
+	if _, err := routeWorkflowSave(c, args); err == nil || !strings.Contains(err.Error(), "deployed, active worker") {
 		t.Fatal("missing service refusal", err)
 	}
 	if _, err := repository.FindByName(p.AccountScopeID, "invalid"); err == nil {

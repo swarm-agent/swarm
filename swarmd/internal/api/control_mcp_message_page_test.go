@@ -10,7 +10,8 @@ import (
 )
 
 // Purpose: an outside AI reading through Swarm Control (MCP) can read a
-// task's long final message in full. swarm_get_session shows a cut message
+// task's long final message in full. manage_sessions get (its handler,
+// controlMCPGetSession, which swarm_get_session was) shows a cut message
 // with truncated, content_offset, total_bytes and next; passing next's
 // message_id, message_seq and content_offset back returns the following
 // chunk from the session messages route, until the concatenation equals
@@ -89,7 +90,7 @@ func TestControlMCPReadsALongTaskMessageInFull(t *testing.T) {
 		t.Fatalf("first part is not an exact prefix ending at content_offset %v", item["content_offset"])
 	}
 	next := controlMCPMap(item["next"])
-	if next["tool"] != "swarm_get_session" || next["session_id"] != "task-session" || next["message_id"] != "final-report" || next["content_offset"] != len(got) {
+	if next["tool"] != "manage_sessions" || next["action"] != "get" || next["session_id"] != "task-session" || next["message_id"] != "final-report" || next["content_offset"] != len(got) {
 		t.Fatalf("next does not carry the exact continuation: %v", next)
 	}
 

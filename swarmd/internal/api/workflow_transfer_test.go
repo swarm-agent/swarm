@@ -14,8 +14,8 @@ import (
 
 // Requirement: portable files round trip across project folders without runtime
 // fields; invalid files and weaker keys cannot save commands or escape folders.
-// Owners: controlMCPExportWorkflow, controlMCPImportWorkflow, os.Root and the
-// shared handleJobAutomations/SaveWorkflow boundary via MCP dispatch. Handler-level calls
+// Owners: the export and import routes (handleJobAutomations), os.Root and the
+// shared handleJobAutomations/SaveWorkflow boundary, called with an AI key's request. Handler-level calls
 // over the real store are the narrowest proof of both results and no mutation.
 func TestWorkflowTransfer(t *testing.T) {
 	server, store := newRunOwnerServer(t)
@@ -29,10 +29,10 @@ func TestWorkflowTransfer(t *testing.T) {
 		writeJSON(w, 200, map[string]any{"projects": []any{map[string]any{"id": "proj-source", "name": "Source", "workspaces": []any{map[string]any{"path": folder, "workspace_id": "ws-source", "role": "primary_code"}}}, map[string]any{"id": "proj-1", "name": "Site", "workspaces": []any{map[string]any{"path": target, "workspace_id": "ws-1", "role": "primary_code"}}}}})
 	})
 	wireWorkflowRoutes(c)
-	if _, err := controlMCPSetAutomation(c, map[string]any{"name": "review", "scope": map[string]any{"folder": folder}, "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "review"}}}); err != nil {
+	if _, err := routeWorkflowSave(c, map[string]any{"name": "review", "scope": map[string]any{"folder": folder}, "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "review"}}}); err != nil {
 		t.Fatal(err)
 	}
-	exported, err := controlMCPExportWorkflow(c, map[string]any{"name": "review", "path": ""})
+	exported, err := routeWorkflowExport(c, map[string]any{"name": "review", "path": ""})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestWorkflowTransfer(t *testing.T) {
 		t.Fatalf("nonportable: %s", data)
 	}
 	original := storedAutomations(t, store)[0]
-	imported, err := controlMCPImportWorkflow(c, map[string]any{"definition": exported, "project": "Site"})
+	imported, err := routeWorkflowImport(c, map[string]any{"definition": exported, "project": "Site"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestWorkflowTransfer(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(target, "bad.json"), []byte(`{"swarm_workflow":99}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	result, err := controlMCPImportWorkflow(c, map[string]any{"path": ".", "project": "Site"})
+	result, err := routeWorkflowImport(c, map[string]any{"path": ".", "project": "Site"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,13 +84,13 @@ func TestWorkflowTransfer(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(target, "invalid.json"), badData, 0600); err != nil {
 		t.Fatal(err)
 	}
-	value, refusal := controlMCPImportWorkflow(c, map[string]any{"definition": invalid, "project": "Site"})
+	value, refusal := routeWorkflowImport(c, map[string]any{"definition": invalid, "project": "Site"})
 	mcp := controlMCPToolResult(value, refusal)
 	text := mcp["content"].([]map[string]any)[0]["text"].(string)
 	if mcp["isError"] != true || !strings.HasPrefix(text, "name is required") {
 		t.Fatal(mcp)
 	}
-	result, err = controlMCPImportWorkflow(c, map[string]any{"path": ".", "project": "Site"})
+	result, err = routeWorkflowImport(c, map[string]any{"path": ".", "project": "Site"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestWorkflowTransfer(t *testing.T) {
 	for _, bad := range []string{`{"swarm_workflow":1,"unknown":true}`, `{"swarm_workflow":1,"scope":{"unknown":true}}`, `{"swarm_workflow":1,"steps":[{"unknown":true}]}`} {
 		var d any
 		_ = json.Unmarshal([]byte(bad), &d)
-		if _, err := controlMCPImportWorkflow(c, map[string]any{"definition": d}); err == nil {
+		if _, err := routeWorkflowImport(c, map[string]any{"definition": d}); err == nil {
 			t.Fatalf("accepted %s", bad)
 		}
 	}
@@ -134,10 +134,10 @@ func TestWorkflowTransfer(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, path := range []string{"../outside.json", outsideFile, "escape/outside.json"} {
-		if _, err := controlMCPImportWorkflow(c, map[string]any{"path": path, "project": "Site"}); err == nil {
+		if _, err := routeWorkflowImport(c, map[string]any{"path": path, "project": "Site"}); err == nil {
 			t.Fatalf("import escaped: %s (target %s outside %s)", path, target, outside)
 		}
-		if _, err := controlMCPExportWorkflow(c, map[string]any{"name": "review", "path": path, "overwrite": true}); err == nil {
+		if _, err := routeWorkflowExport(c, map[string]any{"name": "review", "path": path, "overwrite": true}); err == nil {
 			t.Fatalf("export escaped: %s", path)
 		}
 	}
@@ -148,13 +148,13 @@ func TestWorkflowTransfer(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(target, "different.json"), []byte("preserve"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := controlMCPExportWorkflow(c, map[string]any{"name": "review", "path": "different.json"}); err == nil {
+	if _, err := routeWorkflowExport(c, map[string]any{"name": "review", "path": "different.json"}); err == nil {
 		t.Fatal("overwrote different file")
 	}
 	if got, _ := os.ReadFile(filepath.Join(target, "different.json")); string(got) != "preserve" {
 		t.Fatal("file changed")
 	}
-	if _, err := controlMCPExportWorkflow(c, map[string]any{"name": "review", "path": "different.json", "overwrite": true}); err != nil {
+	if _, err := routeWorkflowExport(c, map[string]any{"name": "review", "path": "different.json", "overwrite": true}); err != nil {
 		t.Fatal(err)
 	}
 	if len(storedAutomations(t, store)) != 1 {
@@ -163,7 +163,7 @@ func TestWorkflowTransfer(t *testing.T) {
 	if err := store.Delete(testPrincipal().AccountScopeID, rebound.ID); err != nil {
 		t.Fatal(err)
 	}
-	result, err = controlMCPImportWorkflow(c, map[string]any{"path": ".", "project": "Site"})
+	result, err = routeWorkflowImport(c, map[string]any{"path": ".", "project": "Site"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,8 +203,8 @@ func TestWorkflowImportRunOwnerHTTP(t *testing.T) {
 
 // Requirement: export writes belong only to account project folders, not any
 // absolute scope accepted by set. Prevent write keys from creating directories
-// or replacing host files. controlMCPExportWorkflow/workflowExportFolder own
-// this boundary; real-store MCP calls prove rejection and filesystem postconditions.
+// or replacing host files. The export route and workflowExportFolder own
+// this boundary; real-store route calls prove rejection and filesystem postconditions.
 func TestWorkflowExportRequiresProjectFolder(t *testing.T) {
 	server, _ := newRunOwnerServer(t)
 	outside, project := t.TempDir(), t.TempDir()
@@ -216,7 +216,7 @@ func TestWorkflowExportRequiresProjectFolder(t *testing.T) {
 		writeJSON(w, 200, map[string]any{"projects": []any{map[string]any{"id": "proj-1", "workspaces": []any{map[string]any{"path": project}}}}})
 	})
 	wireWorkflowRoutes(c)
-	if _, err := controlMCPSetAutomation(c, map[string]any{"name": "outside", "scope": map[string]any{"folder": outside}, "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "review"}}}); err != nil {
+	if _, err := routeWorkflowSave(c, map[string]any{"name": "outside", "scope": map[string]any{"folder": outside}, "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "review"}}}); err != nil {
 		t.Fatal(err)
 	}
 	existing := filepath.Join(outside, "existing.json")
@@ -224,7 +224,7 @@ func TestWorkflowExportRequiresProjectFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, path := range []string{"", "new/nested/workflow.json", "existing.json"} {
-		if _, err := controlMCPExportWorkflow(c, map[string]any{"name": "outside", "path": path, "overwrite": true}); err == nil || !strings.Contains(err.Error(), "not an account project folder") {
+		if _, err := routeWorkflowExport(c, map[string]any{"name": "outside", "path": path, "overwrite": true}); err == nil || !strings.Contains(err.Error(), "not an account project folder") {
 			t.Fatalf("path %q: %v", path, err)
 		}
 	}
@@ -240,14 +240,14 @@ func TestWorkflowExportRequiresProjectFolder(t *testing.T) {
 		t.Fatalf("export changed existing file: %q, %v", data, err)
 	}
 	// Returning JSON alone does not grant filesystem access and remains allowed.
-	if _, err := controlMCPExportWorkflow(c, map[string]any{"name": "outside"}); err != nil {
+	if _, err := routeWorkflowExport(c, map[string]any{"name": "outside"}); err != nil {
 		t.Fatal(err)
 	}
 }
 
 // Requirement: write-key exports may only target JSON outside Git metadata.
 // Threat: overwrite could corrupt source or repository authority. The real-store
-// controlMCPExportWorkflow boundary is the narrowest layer proving rejection and
+// export route boundary is the narrowest layer proving rejection and
 // byte-for-byte preservation, including .git files and nested .git components.
 func TestWorkflowExportProtectsTargets(t *testing.T) {
 	server, _ := newRunOwnerServer(t)
@@ -257,7 +257,7 @@ func TestWorkflowExportProtectsTargets(t *testing.T) {
 		writeJSON(w, 200, map[string]any{"projects": []any{map[string]any{"id": "proj-1", "workspaces": []any{map[string]any{"path": folder}}}}})
 	})
 	wireWorkflowRoutes(c)
-	if _, err := controlMCPSetAutomation(c, map[string]any{"name": "protected", "scope": map[string]any{"folder": folder}, "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "review"}}}); err != nil {
+	if _, err := routeWorkflowSave(c, map[string]any{"name": "protected", "scope": map[string]any{"folder": folder}, "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "review"}}}); err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range []string{".git/config", ".git/HEAD", ".git/workflow.json", "nested/.git/config.json", "worktree/.git", "source.go"} {
@@ -270,7 +270,7 @@ func TestWorkflowExportProtectsTargets(t *testing.T) {
 			if err := os.WriteFile(full, original, 0600); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := controlMCPExportWorkflow(c, map[string]any{"name": "protected", "path": path, "overwrite": true}); err == nil {
+			if _, err := routeWorkflowExport(c, map[string]any{"name": "protected", "path": path, "overwrite": true}); err == nil {
 				t.Fatal("unsafe target accepted")
 			}
 			got, err := os.ReadFile(full)
@@ -293,7 +293,7 @@ func TestWorkflowExportReadScopeHTTP(t *testing.T) {
 	folder := t.TempDir()
 	owner := &controlMCPCall{server: server, request: requestWithScopedToken(withTestPrincipal(httptest.NewRequest("POST", "/mcp", nil)), &pebblestore.ScopedTokenRecord{Scopes: scopesForLevel(t, "write")})}
 	wireWorkflowRoutes(owner)
-	if _, err := controlMCPSetAutomation(owner, map[string]any{"name": "readable", "scope": map[string]any{"folder": folder}, "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "review"}}}); err != nil {
+	if _, err := routeWorkflowSave(owner, map[string]any{"name": "readable", "scope": map[string]any{"folder": folder}, "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "review"}}}); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
@@ -354,7 +354,7 @@ func TestWorkflowDirectoryImportRefusesOverrides(t *testing.T) {
 		} else {
 			args[field] = map[string]string{"brand": "swarm"}
 		}
-		_, err := controlMCPImportWorkflow(c, args)
+		_, err := routeWorkflowImport(c, args)
 		if err == nil || !strings.Contains(err.Error(), "single-file") {
 			t.Fatalf("expected directory override refusal: %v", err)
 		}
@@ -362,7 +362,7 @@ func TestWorkflowDirectoryImportRefusesOverrides(t *testing.T) {
 			t.Fatal("refused import mutated store")
 		}
 	}
-	if _, err := controlMCPImportWorkflow(c, map[string]any{"path": ".", "project": "Site"}); err != nil {
+	if _, err := routeWorkflowImport(c, map[string]any{"path": ".", "project": "Site"}); err != nil {
 		t.Fatal(err)
 	}
 	saved := storedAutomations(t, store)

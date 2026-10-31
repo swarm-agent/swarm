@@ -145,14 +145,13 @@ func TestVerifyJobHeadAcceptsOnlyDescendants(t *testing.T) {
 	}
 }
 
-// Requirement: swarm_set_workflow (and then) accept if, reopen, from,
-// message and max_rounds in the same shape as the API, validated by the
-// shared NormalizeSteps; swarm_get_job and swarm_list_workflows show each
-// delivery's round, head and blocked reason.
-// Threat: a review loop the MCP tools silently drop fields of, or a blocked
+// Requirement: a job's then steps accept if, reopen, from, message and
+// max_rounds in the same shape as the API, validated by the shared
+// NormalizeSteps; a job's and a workflow's deliveries show each delivery's
+// round, head and blocked reason.
+// Threat: a review loop whose fields are silently dropped, or a blocked
 // delivery an AI cannot see.
-// Owners: controlMCPAutomationSteps, controlMCPAutomationStepsSchema and
-// jobDeliveryView.
+// Owners: controlMCPAutomationSteps and jobDeliveryView.
 func TestAutomationToolsCarryConditionsReopenAndRounds(t *testing.T) {
 	var raw any
 	if err := json.Unmarshal([]byte(`[
@@ -175,12 +174,6 @@ func TestAutomationToolsCarryConditionsReopenAndRounds(t *testing.T) {
 	}
 	if _, err := controlMCPAutomationSteps(raw); err == nil {
 		t.Fatal("a reopen step without an earlier agent step was accepted")
-	}
-	schema, _ := json.Marshal(controlMCPAutomationStepsSchema())
-	for _, want := range []string{`"reopen"`, `"if"`, `"from"`, `"max_rounds"`, `"verdict"`} {
-		if !strings.Contains(string(schema), want) {
-			t.Fatalf("steps schema lacks %s", want)
-		}
 	}
 	view := jobDeliveryView(jobautomation.Delivery{ID: "jdel_1", JobID: "worker/w/r", Round: 2, Head: strings.Repeat("a", 40), State: jobautomation.StateBlocked,
 		BlockedReason: jobautomation.ReasonRoundsExhausted})

@@ -7,9 +7,9 @@ import (
 	"time"
 )
 
-// Purpose: the shared read model and tool schema must expose schedules without
-// requiring event or nonempty steps. These pure adapter boundaries are the
-// narrowest layer proving both MCP/native schema reuse and next-run visibility.
+// Purpose: the shared read model and trigger schema must expose schedules
+// without requiring an event. These pure adapter boundaries are the narrowest
+// layer proving the native schema and next-run visibility.
 func TestWorkflowScheduleViewAndSchema(t *testing.T) {
 	a := jobautomation.Automation{Enabled: true, On: &jobautomation.Trigger{Schedule: &jobautomation.TriggerSchedule{Cron: "* * * * *"}}}
 	view := jobAutomationView(a)
@@ -29,8 +29,5 @@ func TestWorkflowScheduleViewAndSchema(t *testing.T) {
 	props := schema["properties"].(map[string]any)
 	if props["schedule"] == nil || props["event"] == nil || len(schema["oneOf"].([]any)) != 2 {
 		t.Fatal(schema)
-	}
-	if controlMCPAutomationStepsSchema()["minItems"] != 0 {
-		t.Fatal("MCP refuses trigger-only workflows")
 	}
 }

@@ -25,6 +25,7 @@ import (
 	"swarm/packages/swarmd/internal/provider/openrouter"
 	"swarm/packages/swarmd/internal/provider/registry"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 )
 
 // Requirement: when no model provider is connected, Swarm's onboarding offers
@@ -58,6 +59,13 @@ func controlMCPProviderTestCall(t *testing.T, server *Server, scopes ...string) 
 	var next http.Handler = http.NotFoundHandler()
 	if server != nil {
 		next = http.HandlerFunc(server.handleProviders)
+	} else {
+		server = &Server{}
+	}
+	// The catalog declarations decide which actions the caller is shown,
+	// and so which instruction lines and connect steps it gets.
+	if server.toolCatalog == nil {
+		server.SetToolCatalogRuntime(tool.NewRuntime(1))
 	}
 	return &controlMCPCall{request: request, next: next, server: server}
 }
@@ -235,10 +243,11 @@ func TestControlMCPListProvidersReturnsConnectMethodForEveryUnconnectedProvider(
 		keyTool  bool
 		chatTool bool
 	}{
-		// Write may request a human-entered key; levelAllows must keep read clients out.
-		{name: "write key", scopes: []string{"sessions:read", "swarm:read", "swarm:write"}, chatTool: true, keyTool: true},
+		// Write may request a human-entered key; the catalog's level and
+		// scopes (advertisedToolAllowed) keep read clients out.
+		{name: "write key", scopes: []string{"sessions:read", "sessions:write", "swarm:read", "swarm:write"}, chatTool: true, keyTool: true},
 		{name: "read key", scopes: []string{"sessions:read", "swarm:read"}},
-		{name: "full key", scopes: []string{"sessions:read", "swarm:read", "swarm:write", "swarm:approve", "swarm:manage"}, chatTool: true, keyTool: true},
+		{name: "full key", scopes: []string{"sessions:read", "sessions:write", "swarm:read", "swarm:write", "swarm:approve", "swarm:manage"}, chatTool: true, keyTool: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, byID := controlMCPListProvidersForTest(t, server, tc.scopes...)
@@ -269,17 +278,23 @@ func TestControlMCPListProvidersReturnsConnectMethodForEveryUnconnectedProvider(
 				}
 				steps := controlMCPConnectSteps(t, id, connect)
 				tool, _ := connect["tool"].(string)
+				action, _ := connect["action"].(string)
+				// The connect step names the catalog action the key can call,
+				// never one it cannot (and never a removed swarm_* tool).
+				if strings.Contains(steps, "swarm_connect_") || strings.Contains(steps, "swarm_request_provider_key") || strings.HasPrefix(tool, "swarm_") {
+					t.Fatalf("%s connect names a removed swarm_* tool: %v", id, connect)
+				}
 				switch wantMethod[id] {
 				case controlMCPConnectSignIn:
-					if want := map[bool]string{true: "swarm_connect_chatgpt", false: ""}[tc.chatTool]; tool != want {
-						t.Fatalf("codex tool = %q, want %q", tool, want)
+					if want := map[bool]string{true: "manage_setup connect_chatgpt", false: " "}[tc.chatTool]; tool+" "+action != want {
+						t.Fatalf("codex tool = %q %q, want %q", tool, action, want)
 					}
 					if !strings.Contains(steps, "swarmctl setup codex-login") {
 						t.Fatalf("codex steps lack the on-machine sign-in: %s", steps)
 					}
 				case controlMCPConnectClaudeCodeLogin:
-					if want := map[bool]string{true: "swarm_connect_claude_code", false: ""}[tc.chatTool]; tool != want || strings.Contains(steps, "swarm_connect_claude_code") != tc.chatTool {
-						t.Fatalf("claudecode tool = %q, want %q (a key never sees a tool it cannot call): %s", tool, want, steps)
+					if want := map[bool]string{true: "manage_setup connect_claude_code", false: " "}[tc.chatTool]; tool+" "+action != want || strings.Contains(steps, "connect_claude_code") != tc.chatTool {
+						t.Fatalf("claudecode tool = %q %q, want %q (a key never sees an action it cannot call): %s", tool, action, want, steps)
 					}
 					if !strings.Contains(steps, "install.sh claude-code") || !strings.Contains(steps, "claude auth login") || !strings.Contains(steps, "Claude Code CLI login") {
 						t.Fatalf("claudecode connect must be the person's own Claude Code sign-in plus the account opt-in: %v", connect)
@@ -292,8 +307,8 @@ func TestControlMCPListProvidersReturnsConnectMethodForEveryUnconnectedProvider(
 						t.Fatalf("vertex connect = %v", connect)
 					}
 				case controlMCPConnectAPIKey:
-					if want := map[bool]string{true: "swarm_request_provider_key", false: ""}[tc.keyTool]; tool != want {
-						t.Fatalf("%s tool = %q, want %q", id, tool, want)
+					if want := map[bool]string{true: "manage_setup request_provider_key", false: " "}[tc.keyTool]; tool+" "+action != want {
+						t.Fatalf("%s tool = %q %q, want %q", id, tool, action, want)
 					}
 					// The provider-connect boundary must offer both first-run and
 					// additional-key routes, without asking for secrets in chat.

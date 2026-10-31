@@ -12,8 +12,9 @@ import (
 )
 
 // Purpose: custom definitions must share one allowlist and account authority.
-// ManageCustomAgents and handleCustomAgents own the boundary; real route/MCP
-// dispatch with Pebble is the narrowest layer proving persistence and rejection.
+// ManageCustomAgents and handleCustomAgents own the boundary; real route and
+// catalog dispatch with Pebble is the narrowest layer proving persistence and
+// rejection.
 func TestCustomAgentsSharedBoundary(t *testing.T) {
 	c, workers := newMCPPresetTestCall(t)
 	c.request = requestWithScopedToken(c.request, &store.ScopedTokenRecord{Scopes: []string{"swarm:write", "swarm:read", "automations:read", "automations:write"}})
@@ -21,7 +22,6 @@ func TestCustomAgentsSharedBoundary(t *testing.T) {
 	args := map[string]any{"name": "social-maker", "instructions": "Make social media", "tools": []string{"read", "list", "find", "search", "write", "edit", "bash", "media_inspect", "manage_media", "git_status", "git_diff", "git_add", "git_commit", "task_progress"}}
 	calls := []func() error{
 		func() error { _, err := c.dispatch(http.MethodPut, "/v3/agents/social-maker", nil, args); return err },
-		func() error { _, err := controlMCPDefineAgent(c, args); return err },
 		func() error {
 			args["action"] = "define"
 			runtime := tool.NewRuntime(1)

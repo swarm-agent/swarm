@@ -15,20 +15,23 @@ import (
 	"swarm/packages/swarmd/internal/provider/claudecode"
 	"swarm/packages/swarmd/internal/provider/registry"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 )
 
 // Requirement: a person's AI sets up the Claude Code provider through Swarm
-// Control alone. swarm_connect_claude_code status reports whether the CLI is
+// Control alone. manage_setup connect_claude_code (which replaced
+// swarm_connect_claude_code) step status reports whether the CLI is
 // installed for the daemon's user and signed in (with the installer command
 // when it is not), and activate makes the claudecode provider active for the
 // caller's account with the same effect as the setup page's "Save and make
 // active" (POST /v1/auth/credentials, type cli, active), only under the
-// provider-changing authority swarm_connect_chatgpt uses.
+// provider-changing authority connect_chatgpt uses.
 // Threats: a wrong state sending the AI down the wrong path; activation that
 // differs from the setup page (a second authority) or that succeeds while the
 // CLI cannot run; a read key or a token without admin changing the provider.
-// Owners: controlMCPConnectClaudeCode, handleAuthCredentials, the claudecode
-// Adapter/CLI and remote.ToolScope. The real CLI probe, adapter, auth service
+// Owners: controlMCPConnectClaudeCode (run by Server.ManageSetup),
+// handleAuthCredentials, the claudecode Adapter/CLI and the catalog's level
+// and scope gate (controlMCPCall.callCatalogTool). The real CLI probe, adapter, auth service
 // and credential handler run against a temporary store; only the `claude`
 // binary is a stub script, which is the narrowest layer that proves the
 // probe-to-activation path without Anthropic's service.
@@ -57,6 +60,11 @@ func newClaudeCodeFixture(t *testing.T) *claudeCodeFixture {
 	server.SetClaudeCodeUsageClient(cli)
 	// Startup supplies this store for the onboarding defaults write.
 	server.agentModelSettingsStore = pebblestore.NewAgentModelSettingsStore(store)
+	// Swarm Control serves manage_setup through the tool runtime, whose
+	// setup service is this server.
+	runtime := tool.NewRuntime(1)
+	runtime.SetWorkflowLifecycleService(server)
+	server.SetToolCatalogRuntime(runtime)
 	configDir := t.TempDir()
 	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
 	return &claudeCodeFixture{server: server, authStore: authStore, stateDir: t.TempDir(), configDir: configDir}
@@ -89,13 +97,14 @@ func (f *claudeCodeFixture) signIn(t *testing.T) {
 
 func (f *claudeCodeFixture) call(t *testing.T, scopes []string, action string) (map[string]any, string, bool) {
 	t.Helper()
-	return f.callTool(t, scopes, "swarm_connect_claude_code", map[string]any{"action": action})
+	return f.callTool(t, scopes, "manage_setup", map[string]any{"action": "connect_claude_code", "step": action})
 }
 
-// callTool runs one Swarm Control tool as a key holding scopes.
+// callTool runs one Swarm Control catalog tool as a key holding scopes and
+// returns the envelope's data.
 func (f *claudeCodeFixture) callTool(t *testing.T, scopes []string, name string, args map[string]any) (map[string]any, string, bool) {
 	t.Helper()
-	req := requestWithScopedToken(withTestPrincipal(httptest.NewRequest(http.MethodPost, "/mcp", nil)), &pebblestore.ScopedTokenRecord{Scopes: scopes})
+	req := requestWithScopedToken(withTestPrincipal(httptest.NewRequest(http.MethodPost, "/mcp", nil)), &pebblestore.ScopedTokenRecord{ID: "claude-code-key", Scopes: scopes})
 	c := &controlMCPCall{request: req, next: f.server.internalRouteHandler(), server: f.server}
 	raw, _ := json.Marshal(map[string]any{"name": name, "arguments": args})
 	result, rpcErr := c.callTool(raw)
@@ -110,9 +119,13 @@ func (f *claudeCodeFixture) callTool(t *testing.T, scopes []string, name string,
 	isError, _ := result["isError"].(bool)
 	out := map[string]any{}
 	if !isError {
-		if err := json.Unmarshal([]byte(text), &out); err != nil {
+		var envelope struct {
+			Data map[string]any `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(text), &envelope); err != nil || envelope.Data == nil {
 			t.Fatalf("result %q: %v", text, err)
 		}
+		out = envelope.Data
 	}
 	return out, text, isError
 }

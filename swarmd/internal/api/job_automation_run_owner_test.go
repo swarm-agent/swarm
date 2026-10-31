@@ -134,7 +134,7 @@ func TestRunStepNeedsTheOwnerOverMCP(t *testing.T) {
 	}
 	args := map[string]any{"name": "shell", "scope": map[string]any{"folder": "/srv/site"}, "steps": []any{step}}
 	for name, scopes := range map[string][]string{"write AI key": scopesForLevel(t, "write"), "remote write device": remoteWriteDeviceScopes} {
-		if _, err := controlMCPSetAutomation(call(scopes), args); err == nil || !strings.Contains(err.Error(), "only the machine's owner may save one") {
+		if _, err := routeWorkflowSave(call(scopes), args); err == nil || !strings.Contains(err.Error(), "only the machine's owner may save one") {
 			t.Fatalf("%s: swarm_set_workflow with a run step = %v", name, err)
 		}
 		if err := controlMCPValidateThen(call(scopes), map[string]any{"steps": []any{step}}); err == nil || !strings.Contains(err.Error(), "only the machine's owner may save one") {
@@ -151,7 +151,7 @@ func TestRunStepNeedsTheOwnerOverMCP(t *testing.T) {
 	if err := controlMCPValidateThen(full, map[string]any{"steps": []any{step}}); err != nil {
 		t.Fatalf("admin then validation = %v", err)
 	}
-	if _, err := controlMCPSetAutomation(full, args); err != nil {
+	if _, err := routeWorkflowSave(full, args); err != nil {
 		t.Fatalf("admin swarm_set_workflow = %v", err)
 	}
 	if list := storedAutomations(t, store); len(list) != 1 || list[0].Steps[0].Command != "/bin/sh" {

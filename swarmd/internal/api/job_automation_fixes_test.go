@@ -96,7 +96,7 @@ func TestAgentStepFixesIsRefusedForNonReviewerWorkers(t *testing.T) {
 	call := &controlMCPCall{request: writer, next: f.server.internalRouteHandler(), server: f.server}
 	folder := t.TempDir()
 	set := func(worker string) error {
-		_, err := controlMCPSetAutomation(call, map[string]any{"name": "review " + worker, "scope": map[string]any{"folder": folder},
+		_, err := routeWorkflowSave(call, map[string]any{"name": "review " + worker, "scope": map[string]any{"folder": folder},
 			"steps": []any{map[string]any{"id": "review", "type": "agent", "worker": worker, "brief": "Review.", "fixes": "security"}}})
 		return err
 	}

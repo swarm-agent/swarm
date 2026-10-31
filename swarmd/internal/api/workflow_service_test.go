@@ -32,33 +32,11 @@ func wireWorkflowRoutes(c *controlMCPCall) {
 	c.next = routes
 }
 
-// Purpose: all workflow MCP entrypoints must dispatch to their HTTP authority,
-// not touch storage themselves. A recording route with no server/store is the
-// narrowest proof that each tool delegates and preserves route refusals.
-func TestWorkflowToolsDispatch(t *testing.T) {
-	tools := controlMCPAutomationTools()
-	for _, tool := range tools {
-		t.Run(tool.Name, func(t *testing.T) {
-			calls := 0
-			c := &controlMCPCall{request: withTestPrincipal(httptest.NewRequest("POST", "/mcp", nil)), next: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				calls++
-				if !strings.HasPrefix(r.URL.Path, JobAutomationsPath) {
-					t.Errorf("route %s", r.URL.Path)
-				}
-				writeError(w, http.StatusForbidden, errRunStepNeedsOwner)
-			})}
-			_, err := tool.call(c, map[string]any{"id": "workflow", "revision": 1, "stopped": true})
-			if calls != 1 || err == nil || err.Error() != errRunStepNeedsOwner.Error() {
-				t.Fatalf("calls=%d err=%v", calls, err)
-			}
-		})
-	}
-}
-
-// Purpose: SaveWorkflow is the single validation/persistence boundary. HTTP and
-// MCP must store identical definitions, and owner/reviewer refusals must neither
-// mutate the definition nor append history. Real handler/store calls are the
-// narrowest layer proving transport parity and both negative postconditions.
+// Purpose: SaveWorkflow is the single validation/persistence boundary. The
+// owner's route and the same route called with an AI key's request store
+// identical definitions, and owner/reviewer refusals must neither mutate the
+// definition nor append history. Real handler/store calls are the narrowest
+// layer proving both callers' parity and both negative postconditions.
 func TestWorkflowSaveParity(t *testing.T) {
 	s, store := newRunOwnerServer(t)
 	folder := t.TempDir()
@@ -79,7 +57,7 @@ func TestWorkflowSaveParity(t *testing.T) {
 		t.Fatalf("create: %d %s", w.Code, w.Body)
 	}
 	before := storedAutomations(t, store)[0]
-	if _, err := controlMCPSetAutomation(c, args); err != nil {
+	if _, err := routeWorkflowSave(c, args); err != nil {
 		t.Fatal(err)
 	}
 	after := storedAutomations(t, store)[0]
@@ -94,7 +72,7 @@ func TestWorkflowSaveParity(t *testing.T) {
 		w := route()
 		var response map[string]any
 		_ = json.Unmarshal(w.Body.Bytes(), &response)
-		_, err := controlMCPSetAutomation(c, args)
+		_, err := routeWorkflowSave(c, args)
 		if w.Code < 400 || err == nil || err.Error() != response["error"] {
 			t.Fatalf("refusal mismatch: %d %s %v", w.Code, w.Body, err)
 		}
@@ -108,22 +86,23 @@ func TestWorkflowSaveParity(t *testing.T) {
 	}
 }
 
-// Purpose: StopWorkflows owns the machine switch. Real MCP dispatch plus store
-// reads prove both transitions and that a missing boolean never changes state.
+// Purpose: StopWorkflows owns the machine switch. The stop route called with an
+// AI key's request plus store reads prove both transitions and that a missing
+// boolean never changes state.
 func TestWorkflowStopParity(t *testing.T) {
 	s, store := newRunOwnerServer(t)
 	c := &controlMCPCall{server: s, request: requestWithScopedToken(withTestPrincipal(httptest.NewRequest("POST", "/mcp", nil)), &pebblestore.ScopedTokenRecord{Scopes: scopesForLevel(t, "write")})}
 	wireWorkflowRoutes(c)
 	for _, stopped := range []bool{true, false} {
-		out, err := controlMCPStopAutomations(c, map[string]any{"stopped": stopped})
-		if err != nil || out.(map[string]any)["stopped"] != stopped || out.(map[string]any)["next"] == "" {
+		out, err := routeWorkflowStop(c, map[string]any{"stopped": stopped})
+		if err != nil || controlMCPMap(out.(map[string]any)["stop"])["stopped"] != stopped {
 			t.Fatalf("%v %v", out, err)
 		}
 		state, err := store.StopState()
 		if err != nil || state.Stopped != stopped {
 			t.Fatalf("%+v %v", state, err)
 		}
-		if _, err := controlMCPStopAutomations(c, nil); err == nil {
+		if _, err := routeWorkflowStop(c, nil); err == nil {
 			t.Fatal("missing boolean accepted")
 		}
 		after, err := store.StopState()

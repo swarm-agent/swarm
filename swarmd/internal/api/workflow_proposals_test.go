@@ -186,7 +186,7 @@ func TestWorkflowNativeProposals(t *testing.T) {
 	delete(args, "action")
 	delete(args, "replace")
 	args["steps"] = []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "review"}}
-	if _, err := controlMCPSetAutomation(c, args); err != nil {
+	if _, err := routeWorkflowSave(c, args); err != nil {
 		t.Fatal(err)
 	}
 	mcp, err := store.FindByName(p.AccountScopeID, "mcp-active")

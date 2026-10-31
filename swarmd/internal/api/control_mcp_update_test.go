@@ -13,11 +13,13 @@ import (
 	"swarm/packages/swarmd/internal/executioncapacity"
 )
 
-// Requirement: swarm_status advertises the installed updater only when configured.
-// Threat: an AI cannot discover updates, or receives a guessed command on an
-// unmanaged machine. Owners: controlMCPStatus and handleBoxSummary. The real
-// internal route on a temporary store proves the serialized MCP status contract
-// without a daemon, network, sudo or an actual update.
+// Requirement: manage_fleet status (its handler, controlMCPStatus, which
+// catalogSwarmHandlers runs) advertises the installed updater only when
+// configured. Threat: an AI cannot discover updates, or receives a guessed
+// command on an unmanaged machine. Owners: controlMCPStatus and
+// handleBoxSummary. The real internal route on a temporary store proves the
+// serialized status contract without a daemon, network, sudo or an actual
+// update.
 func TestControlMCPStatusUpdateCommand(t *testing.T) {
 	s, _, _, cleanup := setupScopedAuthTestServer(t)
 	defer cleanup()
@@ -40,9 +42,10 @@ func TestControlMCPStatusUpdateCommand(t *testing.T) {
 			t.Setenv("SWARM_INSTALLER", installer)
 			req := requestWithScopedToken(requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodPost, "/mcp", nil), actor.UserID, actor.AccountScopeID), &token)
 			c := &controlMCPCall{request: req, next: s.internalRouteHandler(), server: s}
-			result, rpcErr := c.callTool(json.RawMessage(`{"name":"swarm_status","arguments":{}}`))
-			if rpcErr != nil || result["isError"] == true {
-				t.Fatalf("status: %v %v", result, rpcErr)
+			value, err := controlMCPStatus(c, map[string]any{})
+			result := controlMCPToolResult(value, err)
+			if err != nil || result["isError"] == true {
+				t.Fatalf("status: %v %v", result, err)
 			}
 			content := result["content"].([]map[string]any)
 			var out map[string]any

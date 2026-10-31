@@ -5,25 +5,23 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"sort"
 	"strings"
 	"testing"
 	"time"
-
-	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // Requirement: the AI that runs a box sees and controls every key through
-// Swarm Control: swarm_list_keys lists each key's kind, state, last use and
-// where from, and when it stops on its own, marks the calling key and never
-// lists Swarm's internal keys or key material; swarm_create_key makes app and
-// bot keys (never AI keys) with no lifetime unless a fixed date is asked;
-// swarm_revoke_key stops any key but Swarm's internal ones. Threats: an AI that
-// cannot see or kill a leaked key; key material or hashes leaking into a tool
-// result; the AI revoking Swarm's own transport key. Owners:
-// controlMCPListKeys, controlMCPCreateKey, controlMCPRevokeKey over the real
-// mint handler and security service on a temporary store.
-func TestControlMCPKeysListCreateRevoke(t *testing.T) {
+// manage_setup list_keys and revoke_key (the handlers controlMCPListKeys and
+// controlMCPRevokeKey, which runSetupAction runs): list shows each key's
+// kind, state, last use and where from, and when it stops on its own, marks
+// the calling key and never lists Swarm's internal keys or key material;
+// revoke stops any key but Swarm's internal ones. (manage_setup create_key
+// makes no key by design, so key creation is not part of this contract.)
+// Threats: an AI that cannot see or kill a leaked key; key material or hashes
+// leaking into an answer; the AI revoking Swarm's own transport key. Owners:
+// controlMCPListKeys and controlMCPRevokeKey over the real security service
+// on a temporary store.
+func TestControlMCPKeysListAndRevoke(t *testing.T) {
 	s, _, _, cleanup := setupScopedAuthTestServer(t)
 	defer cleanup()
 	actor, err := s.identitySessions.ActorForCurrentSelection()
@@ -40,15 +38,17 @@ func TestControlMCPKeysListCreateRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	_, app, err := s.security.CreateScopedTokenUnder(nil, "my-ui", []string{"sessions:read"}, account, user, 0, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handlers := map[string]func(*controlMCPCall, map[string]any) (any, error){"list_keys": controlMCPListKeys, "revoke_key": controlMCPRevokeKey}
 	call := func(name string, args map[string]any) (map[string]any, string, bool) {
 		t.Helper()
 		req := requestWithScopedToken(requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodPost, "/mcp", nil), user, account), &caller)
 		c := &controlMCPCall{request: req, next: s.internalRouteHandler(), server: s}
-		raw, _ := json.Marshal(map[string]any{"name": name, "arguments": args})
-		result, rpcErr := c.callTool(raw)
-		if rpcErr != nil {
-			t.Fatalf("%s: %v", name, rpcErr)
-		}
+		value, err := handlers[name](c, args)
+		result := controlMCPToolResult(value, err)
 		content, _ := result["content"].([]map[string]any)
 		text := ""
 		if len(content) > 0 {
@@ -64,47 +64,7 @@ func TestControlMCPKeysListCreateRevoke(t *testing.T) {
 		return out, text, isError
 	}
 
-	// The default tool list shows the key tools the key's level allows: a
-	// full key all three, a write key list and revoke.
-	writeScopes, _ := aiKeyScopes("write")
-	for scopes, want := range map[string]string{strings.Join(fullScopes, " "): "swarm_create_key,swarm_list_keys,swarm_revoke_key", strings.Join(writeScopes, " "): "swarm_list_keys,swarm_revoke_key"} {
-		req := requestWithScopedToken(requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodPost, "/mcp", nil), user, account), &pebblestore.ScopedTokenRecord{Scopes: strings.Fields(scopes)})
-		var listed []string
-		for _, tool := range (&controlMCPCall{request: req, next: s.internalRouteHandler(), server: s}).visibleTools() {
-			if tool.Name == "swarm_list_keys" || tool.Name == "swarm_create_key" || tool.Name == "swarm_revoke_key" {
-				listed = append(listed, tool.Name)
-			}
-		}
-		sort.Strings(listed)
-		if got := strings.Join(listed, ","); got != want {
-			t.Fatalf("key tools listed for %q: %s, want %s", scopes, got, want)
-		}
-	}
-
-	app, text, isErr := call("swarm_create_key", map[string]any{"kind": "app", "name": "my-ui"})
-	if isErr || !strings.HasPrefix(app["key"].(string), "swk_") || !strings.Contains(app["rule"].(string), "90 days unused") {
-		t.Fatalf("app key: %s", text)
-	}
-	appRecord := app["record"].(map[string]any)
-	if appRecord["key_kind"] != "app" || appRecord["lapse_reason"] != "unused" || appRecord["fixed_date"] != nil {
-		t.Fatalf("app key record: %v", appRecord)
-	}
-	monitor, text, isErr := call("swarm_create_key", map[string]any{"kind": "app", "name": "watch", "access": "monitor", "days": 30})
-	if isErr || monitor["record"].(map[string]any)["fixed_date"] != true {
-		t.Fatalf("monitor key with a date: %s", text)
-	}
-	for _, args := range []map[string]any{
-		{"kind": "ai", "name": "x"},
-		{"kind": "bot", "name": "x"},
-		{"kind": "app", "name": "x", "access": "everything"},
-		{"kind": "app", "name": "x", "days": 400},
-	} {
-		if _, text, isErr := call("swarm_create_key", args); !isErr {
-			t.Fatalf("%v was accepted: %s", args, text)
-		}
-	}
-
-	listed, text, isErr := call("swarm_list_keys", nil)
+	listed, text, isErr := call("list_keys", nil)
 	if isErr {
 		t.Fatalf("list: %s", text)
 	}
@@ -126,18 +86,18 @@ func TestControlMCPKeysListCreateRevoke(t *testing.T) {
 	if !strings.Contains(self["stops_because"].(string), "90 days unused") || self["last_used_from"] != nil {
 		t.Fatalf("calling key lapse: %v", self)
 	}
-	appID := appRecord["id"].(string)
-	if byID[appID]["kind"] != "app" || len(byID) != 3 {
+	appID := app.ID
+	if byID[appID]["kind"] != "app" || len(byID) != 2 {
 		t.Fatalf("listed %v", byID)
 	}
 
-	if _, text, isErr := call("swarm_revoke_key", map[string]any{"key_id": internal.ID}); !isErr || !strings.Contains(text, "Swarm's own keys") {
+	if _, text, isErr := call("revoke_key", map[string]any{"key_id": internal.ID}); !isErr || !strings.Contains(text, "Swarm's own keys") {
 		t.Fatalf("revoking the internal key: %s", text)
 	}
-	if _, text, isErr := call("swarm_revoke_key", map[string]any{"key_id": "tok_missing"}); !isErr || !strings.Contains(text, "swarm_list_keys") {
+	if _, text, isErr := call("revoke_key", map[string]any{"key_id": "tok_missing"}); !isErr || !strings.Contains(text, "manage_setup list_keys") {
 		t.Fatalf("revoking an unknown key: %s", text)
 	}
-	revoked, text, isErr := call("swarm_revoke_key", map[string]any{"key_id": appID})
+	revoked, text, isErr := call("revoke_key", map[string]any{"key_id": appID})
 	if isErr || revoked["revoked"] != true || revoked["key"].(map[string]any)["state"] != "revoked" {
 		t.Fatalf("revoke: %s", text)
 	}
@@ -149,14 +109,17 @@ func TestControlMCPKeysListCreateRevoke(t *testing.T) {
 		if r.ID == appID && !r.Revoked {
 			t.Fatal("the key was not revoked in the store")
 		}
+		if r.ID == internal.ID && r.Revoked {
+			t.Fatal("the refused revoke of the internal key revoked it")
+		}
 	}
-	listed, _, _ = call("swarm_list_keys", nil)
+	listed, _, _ = call("list_keys", nil)
 	for _, raw := range listed["keys"].([]any) {
 		if raw.(map[string]any)["id"] == appID {
 			t.Fatal("a revoked key is still listed by default")
 		}
 	}
-	listed, _, _ = call("swarm_list_keys", map[string]any{"include_revoked": true})
+	listed, _, _ = call("list_keys", map[string]any{"include_revoked": true})
 	found := false
 	for _, raw := range listed["keys"].([]any) {
 		found = found || raw.(map[string]any)["id"] == appID

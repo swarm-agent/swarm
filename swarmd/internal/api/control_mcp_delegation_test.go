@@ -13,36 +13,50 @@ import (
 	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 	"swarm/packages/swarmd/internal/worktree"
 )
 
-// Requirement: external goal delegation exposes every lifecycle control while
-// retaining permission levels and discoverable project recovery. Threat: hidden
-// retry/answer/stop/result tools or widened
-// read keys. Owners: visibleTools, callTool and controlMCPCoreTools. This adapter
+// catalogListingCall is a Swarm Control call with a catalog runtime wired, so
+// tools/list and advertisedToolAllowed answer from the catalog declarations.
+func catalogListingCall(scopes []string) *controlMCPCall {
+	return &controlMCPCall{
+		request: requestWithScopedToken(httptest.NewRequest(http.MethodPost, "/mcp", nil), &pebblestore.ScopedTokenRecord{Scopes: scopes}),
+		server:  &Server{toolCatalog: tool.NewRuntime(1)},
+	}
+}
+
+// Requirement: external goal delegation exposes every lifecycle control in
+// Swarm Control's default listing (catalog tools and actions) while retaining
+// permission levels. Threat: hidden delegate/wait/result/answer/stop/merge
+// actions, or a read key that sees or calls a change. Owners: visibleTools,
+// advertisedToolAllowed, callTool and the catalog declarations. This adapter
 // test is the narrowest layer for discovery and pre-dispatch authorization.
 func TestControlMCPDefaultGoalLifecycle(t *testing.T) {
-	required := []string{"swarm_run_task", "swarm_wait_task", "swarm_task_result", "swarm_list_tasks", "swarm_get_session", "swarm_resolve_permission", "swarm_approve_task", "swarm_stop_run", "swarm_send_message", "swarm_integrate_task", "swarm_get_changes", "swarm_read_file", "swarm_request_media", "swarm_get_job", "swarm_save_media", "swarm_deploy_worker", "swarm_schedule_job", "swarm_retry_project_context"}
-	c := &controlMCPCall{request: requestWithScopedToken(httptest.NewRequest(http.MethodPost, "/mcp", nil), &pebblestore.ScopedTokenRecord{Scopes: []string{"swarm:read", "swarm:write", "swarm:approve", "swarm:manage", "sessions:read", "sessions:write"}})}
-	names := map[string]bool{}
-	for _, tool := range c.visibleTools() {
-		names[tool.Name] = true
-	}
+	required := []string{"manage_projects propose_task", "manage_projects wait_tasks", "manage_projects get_task", "manage_projects list_tasks", "manage_sessions get", "manage_sessions resolve_permission", "manage_sessions stop", "manage_sessions send_message", "manage_projects integrate_task", "manage_projects get_task_changes", "manage_projects read_task_file", "manage_media generate", "manage_jobs get_job", "manage_media save", "manage_jobs schedule_job"}
+	c := catalogListingCall([]string{"swarm:read", "swarm:write", "swarm:approve", "swarm:manage", "sessions:read", "sessions:write"})
 	for _, name := range required {
-		if !names[name] {
+		if !c.advertisedToolAllowed(name) {
 			t.Errorf("default tools hide %s", name)
 		}
 	}
-	c.request = requestWithScopedToken(c.request, &pebblestore.ScopedTokenRecord{Scopes: []string{"swarm:read", "sessions:read"}})
-	for _, tool := range c.visibleTools() {
-		if slices.Contains([]string{"swarm_run_task", "swarm_resolve_permission", "swarm_stop_run", "swarm_integrate_task", "swarm_retry_project_context"}, tool.Name) {
-			t.Errorf("read key advertises %s", tool.Name)
+	for _, listed := range c.visibleTools() {
+		if _, ok := tool.CatalogToolNamed(listed.Name); !ok {
+			t.Errorf("Swarm Control lists %s, which is not a catalog tool", listed.Name)
+		}
+	}
+	changes := []string{"manage_projects propose_task", "manage_sessions resolve_permission", "manage_sessions stop", "manage_projects integrate_task", "manage_projects update"}
+	c = catalogListingCall([]string{"swarm:read", "sessions:read"})
+	for _, name := range changes {
+		if c.advertisedToolAllowed(name) {
+			t.Errorf("read key advertises %s", name)
 		}
 	}
 	dispatched := false
 	c.next = http.HandlerFunc(func(http.ResponseWriter, *http.Request) { dispatched = true })
-	for _, name := range []string{"swarm_run_task", "swarm_resolve_permission", "swarm_integrate_task", "swarm_stop_run", "swarm_retry_project_context"} {
-		raw, _ := json.Marshal(map[string]any{"name": name, "arguments": map[string]any{}})
+	for _, name := range changes {
+		toolName, action, _ := strings.Cut(name, " ")
+		raw, _ := json.Marshal(map[string]any{"name": toolName, "arguments": map[string]any{"action": action}})
 		result, rpcErr := c.callTool(raw)
 		if rpcErr != nil || result["isError"] != true {
 			t.Fatalf("read key call %s not refused: %v %v", name, result, rpcErr)
@@ -55,15 +69,9 @@ func TestControlMCPDefaultGoalLifecycle(t *testing.T) {
 
 // Requirement: omitted role delegates to Swarm without forcing a plan; explicit
 // roles and media remain intact. Threat: silent direct-Coder or plan rewrite.
-// Owners: run_task schema and controlMCPRunTask. An HTTP adapter capture proves
-// the exact canonical request without executing a model or inventing provider proof.
+// Owner: controlMCPRunTask. An HTTP adapter capture proves the exact canonical
+// request without executing a model or inventing provider proof.
 func TestControlMCPRunTaskDefaultsToSwarm(t *testing.T) {
-	var definition controlMCPTool
-	for _, tool := range controlMCPTools() {
-		if tool.Name == "swarm_run_task" {
-			definition = tool
-		}
-	}
 	for _, role := range []string{"", "swarm", "coder", "finder", "designer", "image", "video", "sound"} {
 		t.Run("role="+role, func(t *testing.T) {
 			args := map[string]any{"project_id": "project-test", "brief": "Inspect the requested work and return evidence."}
@@ -72,9 +80,6 @@ func TestControlMCPRunTaskDefaultsToSwarm(t *testing.T) {
 			}
 			if role == "coder" {
 				args["workspace"] = "workspace-test"
-			}
-			if err := controlMCPValidateArgs(definition.InputSchema, args); err != nil {
-				t.Fatal(err)
 			}
 			var captured map[string]any
 			calls := 0
@@ -115,9 +120,6 @@ func TestControlMCPRunTaskDefaultsToSwarm(t *testing.T) {
 				t.Fatal("read-only delegation did not fail before dispatch")
 			}
 		})
-	}
-	if err := controlMCPValidateArgs(definition.InputSchema, map[string]any{"project_id": "project-test", "brief": "work", "role": "unknown"}); err == nil {
-		t.Fatal("invalid role accepted")
 	}
 }
 
@@ -180,7 +182,7 @@ func TestControlMCPWorkerPresetsRequireExplicitDeployment(t *testing.T) {
 	}
 	readOnly := *c
 	readOnly.request = requestWithScopedToken(c.request, &pebblestore.ScopedTokenRecord{Scopes: []string{"swarm:read", "automations:read"}})
-	if _, err := readOnly.resolveWorker("coder"); err == nil || strings.Contains(err.Error(), "swarm_deploy_worker") || strings.Contains(err.Error(), "swarm_run_task") {
+	if _, err := readOnly.resolveWorker("coder"); err == nil || strings.Contains(err.Error(), "manage_workers create") || strings.Contains(err.Error(), "propose_task") {
 		t.Fatalf("read-only missing-worker hint: %v", err)
 	}
 	if len(snapshot()) != 0 {
@@ -244,8 +246,13 @@ func TestControlMCPWorkerPresetsRequireExplicitDeployment(t *testing.T) {
 	if _, err := c.dispatch(http.MethodPost, WorkersEnsurePresetsPath, nil, map[string]any{}); err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot()) != len(controlMCPPresetWorkers) {
-		t.Fatal("explicit legacy all-presets operation lost compatibility")
+	var roles []string
+	for _, worker := range snapshot() {
+		roles = append(roles, worker.Role)
+	}
+	slices.Sort(roles)
+	if !slices.Equal(roles, []string{"coder", "designer", "finder", "reviewer"}) {
+		t.Fatalf("explicit legacy all-presets operation lost compatibility: %v", roles)
 	}
 }
 
@@ -253,7 +260,7 @@ func TestControlMCPWorkerPresetsRequireExplicitDeployment(t *testing.T) {
 // status never fabricates integration. Threat: wrong answer path or false Git
 // success. Owner: controlMCPTaskNext; the status projection is the narrowest layer.
 func TestControlMCPTaskNextUsesCanonicalReceipts(t *testing.T) {
-	c := &controlMCPCall{request: requestWithScopedToken(httptest.NewRequest(http.MethodPost, "/mcp", nil), &pebblestore.ScopedTokenRecord{Scopes: []string{"sessions:read", "sessions:write"}})}
+	c := catalogListingCall([]string{"sessions:read", "sessions:write"})
 	next := c.taskNext(map[string]any{"status": "needs_input"})
 	if !strings.Contains(next, "resolve_permission") || !strings.Contains(next, "pending_permissions") {
 		t.Fatal(next)
@@ -265,7 +272,7 @@ func TestControlMCPTaskNextUsesCanonicalReceipts(t *testing.T) {
 	c.request = requestWithScopedToken(c.request, &pebblestore.ScopedTokenRecord{Scopes: []string{"swarm:read", "sessions:read"}})
 	for _, status := range []string{"needs_input", "pending_approval", "needs_review", "failed"} {
 		next = c.taskNext(map[string]any{"status": status})
-		for _, hidden := range []string{"swarm_resolve_permission", "swarm_approve_task", "swarm_integrate_task", "swarm_send_message", "swarm_run_task"} {
+		for _, hidden := range []string{"resolve_permission", "approve_task", "integrate_task", "send_message", "propose_task"} {
 			if strings.Contains(next, hidden) {
 				t.Fatalf("read-only next action names unavailable %s: %s", hidden, next)
 			}

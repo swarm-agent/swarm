@@ -15,6 +15,7 @@ import (
 	"swarm/packages/swarmd/internal/remote"
 	"swarm/packages/swarmd/internal/security"
 	store "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 )
 
 type customRelaySecrets struct {
@@ -56,15 +57,20 @@ func (i customRelayIssuer) Revoke(id string) error {
 	return err
 }
 
-// Purpose: remote.Service must dispatch define through MCP and its real inner
-// route with a minted device credential, including pre-upgrade devices. A local
-// WebSocket relay and real token store prove the scope boundary end to end;
-// read clients must be refused without creating a profile.
+// Purpose: remote.Service must dispatch manage_custom_agents define (which
+// replaced swarm_define_agent) through Swarm Control with a minted device
+// credential, including pre-upgrade devices, holding the call to the relay
+// client's forwarded level. A local WebSocket relay and real token store prove
+// the scope boundary end to end; read clients must be refused without
+// creating a profile.
 func TestCustomAgentRelayDeviceDefinition(t *testing.T) {
 	for _, legacy := range []bool{false, true} {
 		t.Run(fmt.Sprint("legacy=", legacy), func(t *testing.T) {
 			c, _ := newMCPPresetTestCall(t)
 			c.server.security = security.NewService(store.NewClientAuthStore(c.server.sessions.Store().Underlying()), nil)
+			runtime := tool.NewRuntime(1)
+			runtime.SetCustomAgentLifecycleService(c.server)
+			c.server.SetToolCatalogRuntime(runtime)
 			results := make(chan error, 1)
 			relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
@@ -94,7 +100,7 @@ func TestCustomAgentRelayDeviceDefinition(t *testing.T) {
 						name = "social-maker"
 						scopes = append(scopes, "swarm:write")
 					}
-					body := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "swarm_define_agent", "arguments": map[string]any{"name": name, "instructions": "Make media", "tools": []string{"read", "manage_media"}}}}
+					body := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "manage_custom_agents", "arguments": map[string]any{"action": "define", "name": name, "instructions": "Make media", "tools": []string{"read", "manage_media"}}}}
 					if err = conn.WriteJSON(map[string]any{"type": "mcp.request", "id": "call", "client": map[string]any{"client_id": "client", "scopes": scopes}, "body": body}); err != nil {
 						results <- err
 						return

@@ -32,7 +32,7 @@ func TestWorkflowFIFORefused(t *testing.T) {
 	})
 	// Exercise the real workflow route; only project discovery is fixture-backed.
 	wireWorkflowRoutes(c)
-	if _, err := controlMCPSetAutomation(c, map[string]any{"name": "fifo-test", "scope": map[string]any{"folder": folder}, "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "review"}}}); err != nil {
+	if _, err := routeWorkflowSave(c, map[string]any{"name": "fifo-test", "scope": map[string]any{"folder": folder}, "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "review"}}}); err != nil {
 		t.Fatal(err)
 	}
 	before := storedAutomations(t, store)[0]
@@ -48,11 +48,11 @@ func TestWorkflowFIFORefused(t *testing.T) {
 				var err error
 				switch operation {
 				case "directory import":
-					value, err = controlMCPImportWorkflow(c, map[string]any{"project": "Site", "path": "."})
+					value, err = routeWorkflowImport(c, map[string]any{"project": "Site", "path": "."})
 				case "single import":
-					value, err = controlMCPImportWorkflow(c, map[string]any{"project": "Site", "path": "x.json"})
+					value, err = routeWorkflowImport(c, map[string]any{"project": "Site", "path": "x.json"})
 				case "export":
-					value, err = controlMCPExportWorkflow(c, map[string]any{"name": "fifo-test", "path": "x.json", "overwrite": true})
+					value, err = routeWorkflowExport(c, map[string]any{"name": "fifo-test", "path": "x.json", "overwrite": true})
 				}
 				done <- result{value, err}
 			}()

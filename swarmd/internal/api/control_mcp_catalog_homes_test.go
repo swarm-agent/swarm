@@ -16,9 +16,9 @@ import (
 // lives in.
 type swarmToolCatalogHome struct{ tool, action string }
 
-// swarmToolCatalogHomes maps every frozen swarm_* tool to its catalog home.
-// The next stage deletes the swarm_* layer: a swarm_* tool without a home
-// here (or in swarmToolsRetired) would lose its capability.
+// swarmToolCatalogHomes maps every removed swarm_* tool to its catalog home:
+// the catalog tool and action a client of that tool calls instead. It is the
+// record docs/tool-catalog.md and the plugin skills rely on.
 var swarmToolCatalogHomes = map[string]swarmToolCatalogHome{
 	"swarm_activity": {"manage_fleet", "activity"}, "swarm_agents_at_work": {"manage_fleet", "agents_at_work"},
 	"swarm_list_runs": {"manage_fleet", "list_runs"}, "swarm_status": {"manage_fleet", "status"},
@@ -86,16 +86,17 @@ var swarmToolsRetired = map[string]string{
 var swarmToolCatalogLanding = map[string]bool{}
 
 // Purpose:
-//   - Requirement: after stage 6 every swarm_* tool has a catalog home (a
-//     declared catalog tool and action with the same effect) or is listed
-//     as retired with its reason, so deleting the swarm_* layer next stage
-//     loses no capability.
-//   - Threat/regression: a swarm_* tool left without a catalog equivalent,
-//     a home naming an action the catalog does not declare, or a retired
-//     tool quietly mapped.
-//   - Boundary/authority: controlMCPFrozenSwarmTools (the frozen registry,
-//     TestControlMCPSwarmToolNamesFrozen) against tool.Catalog.
-//   - Narrowest layer: the two registries themselves.
+//   - Requirement: every removed swarm_* tool has a catalog home (a declared
+//     catalog tool and action with the same effect) or is listed as retired
+//     with its reason, and the record keeps naming actions the catalog
+//     declares, so the record stays a true guide to what replaced each tool.
+//   - Threat/regression: a catalog change removing or renaming an action a
+//     removed tool's clients were sent to, a home naming an action the
+//     catalog does not declare, or a retired tool quietly mapped.
+//   - Boundary/authority: controlMCPFrozenSwarmTools (the record of the
+//     removed tools; TestControlMCPServesOnlyCatalogTools holds that none
+//     answers) against tool.Catalog.
+//   - Narrowest layer: the record and the declarations themselves.
 func TestEverySwarmToolHasACatalogHome(t *testing.T) {
 	var unmapped []string
 	for _, name := range controlMCPFrozenSwarmTools {

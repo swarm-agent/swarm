@@ -74,10 +74,10 @@ func seedWorkflowListing(t *testing.T, store *jobautomation.Store, workflows, de
 // workflows because every recent delivery embedded every step's findings and
 // outputs; a delivery_id from another account must not be readable.
 // Owners: Server.ListWorkflows, workflowDeliveryLine, workflowDeliveryDetail,
-// workflowListOptions, controlMCPListAutomations, handleJobAutomations and
+// workflowListOptions, handleJobAutomations (the list route) and
 // Server.ManageWorkflows over the real jobautomation store.
-// Layer: the MCP tool dispatched through the real HTTP handler is the
-// narrowest layer that measures what the outside AI actually receives.
+// Layer: the list route called with an AI key's request is the
+// narrowest layer that measures what the route answers a key.
 func TestWorkflowListingIsCompactByDefaultAndBoundedInDetail(t *testing.T) {
 	server, store := newRunOwnerServer(t)
 	ids := seedWorkflowListing(t, store, 4, 10)
@@ -91,7 +91,7 @@ func TestWorkflowListingIsCompactByDefaultAndBoundedInDetail(t *testing.T) {
 		return len(data), string(data)
 	}
 
-	out, err := controlMCPListAutomations(c, nil)
+	out, err := routeWorkflowList(c, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestWorkflowListingIsCompactByDefaultAndBoundedInDetail(t *testing.T) {
 	}
 
 	// One delivery in bounded detail.
-	one, err := controlMCPListAutomations(c, map[string]any{"delivery_id": ids[0]})
+	one, err := routeWorkflowList(c, map[string]any{"delivery_id": ids[0]})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestWorkflowListingIsCompactByDefaultAndBoundedInDetail(t *testing.T) {
 	}
 
 	// Every workflow's last deliveries in bounded detail.
-	all, err := controlMCPListAutomations(c, map[string]any{"detail": "deliveries"})
+	all, err := routeWorkflowList(c, map[string]any{"detail": "deliveries"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestWorkflowListingIsCompactByDefaultAndBoundedInDetail(t *testing.T) {
 	}
 
 	// Refusals: an unknown detail, and another account's delivery.
-	if _, err := controlMCPListAutomations(c, map[string]any{"detail": "everything"}); err == nil || !strings.Contains(err.Error(), "detail must be") {
+	if _, err := routeWorkflowList(c, map[string]any{"detail": "everything"}); err == nil || !strings.Contains(err.Error(), "detail must be") {
 		t.Fatalf("unknown detail: %v", err)
 	}
 	other := &controlMCPCall{server: server, request: requestWithScopedToken(withTestPrincipal(httptest.NewRequest("POST", "/mcp", nil)), &pebblestore.ScopedTokenRecord{ID: "key-other", Scopes: scopesForLevel(t, "read")})}
@@ -172,7 +172,7 @@ func TestWorkflowListingIsCompactByDefaultAndBoundedInDetail(t *testing.T) {
 	principal.AccountScopeID = "other-account"
 	other.request = other.request.WithContext(context.WithValue(other.request.Context(), productPrincipalRequestContextKey, principal))
 	wireWorkflowRoutes(other)
-	if got, err := controlMCPListAutomations(other, map[string]any{"delivery_id": ids[0]}); err == nil || len(got.(map[string]any)) != 0 || !strings.Contains(err.Error(), "no delivery") {
+	if got, err := routeWorkflowList(other, map[string]any{"delivery_id": ids[0]}); err == nil || len(got.(map[string]any)) != 0 || !strings.Contains(err.Error(), "no delivery") {
 		t.Fatalf("cross-account delivery: %v %v", got, err)
 	}
 

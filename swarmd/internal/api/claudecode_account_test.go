@@ -17,8 +17,7 @@ import (
 // Requirement: an AI managing several Swarm machines can tell which Claude
 // account each machine's Claude Code is signed into. GET /v1/claudecode/usage
 // reports the account's email, organization name and their uuids; the
-// providers and plan_usage setup actions (swarm_list_providers,
-// swarm_get_plan_usage, manage_setup) carry them as account_email,
+// providers and plan_usage setup actions (manage_setup) carry them as account_email,
 // account_uuid, organization_name and organization_uuid, and a linked home
 // gets the linked machine's own account back unchanged.
 // Threats: a token, key or other config secret reaching an answer; the home
@@ -31,7 +30,7 @@ import (
 // CLAUDE_CONFIG_DIR (the narrowest layer that runs config to answer); the
 // linked case uses the catalog parity harness's home and linked machine.
 
-// claudeCodeReadKey reads setup: swarm_list_providers and swarm_get_plan_usage.
+// claudeCodeReadKey reads setup: manage_setup providers and plan_usage.
 var claudeCodeReadKey = []string{"swarm:read", "sessions:read"}
 
 const accountFixtureConfig = `{
@@ -100,7 +99,7 @@ func TestClaudeCodeAccountInUsageProvidersAndPlanUsage(t *testing.T) {
 	assertAccountFields(t, "usage route cli", usage.CLI)
 
 	// providers.
-	out, text, isError := f.callTool(t, claudeCodeReadKey, "swarm_list_providers", map[string]any{"provider": claudecode.ProviderID})
+	out, text, isError := f.callTool(t, claudeCodeReadKey, "manage_setup", map[string]any{"action": "providers", "provider": claudecode.ProviderID})
 	if isError {
 		t.Fatalf("list providers = %s", text)
 	}
@@ -116,7 +115,7 @@ func TestClaudeCodeAccountInUsageProvidersAndPlanUsage(t *testing.T) {
 	assertAccountFields(t, "providers claudecode", entry)
 
 	// plan_usage.
-	out, text, isError = f.callTool(t, claudeCodeReadKey, "swarm_get_plan_usage", map[string]any{})
+	out, text, isError = f.callTool(t, claudeCodeReadKey, "manage_setup", map[string]any{"action": "plan_usage"})
 	if isError {
 		t.Fatalf("plan usage = %s", text)
 	}
@@ -134,7 +133,7 @@ func TestClaudeCodeAccountOmittedWhenSignedOut(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.installFakeCLI(t, "2.1.300")
-	out, text, isError := f.callTool(t, claudeCodeReadKey, "swarm_get_plan_usage", map[string]any{})
+	out, text, isError := f.callTool(t, claudeCodeReadKey, "manage_setup", map[string]any{"action": "plan_usage"})
 	if isError {
 		t.Fatalf("plan usage = %s", text)
 	}

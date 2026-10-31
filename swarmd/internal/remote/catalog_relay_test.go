@@ -14,9 +14,10 @@ import (
 // by name (manage_projects would default to write): it forwards the call
 // with the client's effective levels (ClientLevelsHeader, its scopes within
 // the device ceiling) for Swarm Control to check per action, and lists the
-// catalog tool as Swarm Control filtered it. swarm_* tools keep the name
-// gate. Threat: a write client reaching approve or manage actions, or a
-// read client shut out of read actions, through the relay. Boundary:
+// catalog tool as Swarm Control filtered it. Any other name (the removed
+// swarm_* tools) is neither forwarded nor listed. Threat: a write client
+// reaching approve or manage actions, a read client shut out of read
+// actions, or a removed swarm_* tool reached through the relay. Boundary:
 // Service.handle and filterTools with a recording Swarm Control handler.
 func TestRelayForwardsClientLevelsForCatalogTools(t *testing.T) {
 	var got []string
@@ -39,11 +40,13 @@ func TestRelayForwardsClientLevelsForCatalogTools(t *testing.T) {
 	if out := call("manage_projects", ScopeRead, ScopeWrite, ScopeApprove, ScopeManage); strings.Contains(out, "does not allow") || got[1] != ScopeRead+","+ScopeWrite {
 		t.Fatalf("ceiling not applied: %s %v", out, got)
 	}
-	// swarm_* tools keep the name gate.
-	if out := call("swarm_stop_run", ScopeRead); !strings.Contains(out, "does not allow") || len(got) != 2 {
-		t.Fatalf("name gate: %s %v", out, got)
+	// A removed swarm_* tool is refused before Swarm Control, at any level.
+	for _, scopes := range [][]string{{ScopeRead}, {ScopeRead, ScopeWrite, ScopeApprove, ScopeManage}} {
+		if out := call("swarm_stop_run", scopes...); !strings.Contains(out, "does not allow") || len(got) != 2 {
+			t.Fatalf("swarm_* call through the relay: %s %v", out, got)
+		}
 	}
-	listed := string(filterTools([]byte(`{"result":{"tools":[{"name":"manage_projects"},{"name":"swarm_stop_run"}]}}`), []string{ScopeRead}))
+	listed := string(filterTools([]byte(`{"result":{"tools":[{"name":"manage_projects"},{"name":"swarm_stop_run"}]}}`)))
 	if !strings.Contains(listed, "manage_projects") || strings.Contains(listed, "swarm_stop_run") {
 		t.Fatalf("relay listing: %s", listed)
 	}
@@ -52,17 +55,17 @@ func TestRelayForwardsClientLevelsForCatalogTools(t *testing.T) {
 	if out := call("manage_workflows", ScopeRead); strings.Contains(out, "does not allow") || len(got) != 3 || got[2] != ScopeRead {
 		t.Fatalf("manage_workflows read client: %s %v", out, got)
 	}
-	if listed := string(filterTools([]byte(`{"result":{"tools":[{"name":"manage_workflows"}]}}`), []string{ScopeRead})); !strings.Contains(listed, "manage_workflows") {
+	if listed := string(filterTools([]byte(`{"result":{"tools":[{"name":"manage_workflows"}]}}`))); !strings.Contains(listed, "manage_workflows") {
 		t.Fatalf("relay listing: %s", listed)
 	}
 }
 
 // Purpose: each manage_workflows action needs the level of the swarm_* tool
-// with the same effect (ToolScope), so moving workflows into the catalog
+// with the same effect (swarmToolLevels, the record), so moving workflows into the catalog
 // neither widens nor narrows what a key may do; stop_all stays manage. help
 // has no swarm_* tool and only reads. Threat: a write key turning the
 // machine-wide stop switch, or a level silently changed in the move.
-// Boundary: tool.Catalog's manage_workflows declarations against ToolScope.
+// Boundary: tool.Catalog's manage_workflows declarations against the swarmToolLevels record.
 func TestManageWorkflowsLevelsAreTheSwarmToolsLevels(t *testing.T) {
 	swarmTool := map[string]string{
 		"list": "swarm_list_workflows", "get": "swarm_list_workflows", "deliveries": "swarm_list_workflows",
@@ -82,8 +85,8 @@ func TestManageWorkflowsLevelsAreTheSwarmToolsLevels(t *testing.T) {
 			}
 			continue
 		}
-		if action.Level.Scope() != ToolScope(name) {
-			t.Fatalf("manage_workflows %s needs %s; %s needs %s", action.Action, action.Level.Scope(), name, ToolScope(name))
+		if action.Level.Scope() != swarmToolLevel(name) {
+			t.Fatalf("manage_workflows %s needs %s; %s needs %s", action.Action, action.Level.Scope(), name, swarmToolLevel(name))
 		}
 	}
 	if stop, _ := workflows.Action("stop_all"); stop.Level != tool.CatalogLevelManage {
@@ -92,14 +95,14 @@ func TestManageWorkflowsLevelsAreTheSwarmToolsLevels(t *testing.T) {
 }
 
 // Purpose: each manage_jobs action needs the level of the swarm_* job tool
-// with the same effect (ToolScope), so moving jobs into the catalog neither
+// with the same effect (swarmToolLevels, the record), so moving jobs into the catalog neither
 // widens nor narrows what a key may do: reads stay read, and giving,
 // messaging, answering, delivering, stopping, scheduling and re-running a
 // job stay write. retry_now has no swarm_* tool (it was added to the
 // catalog directly) and continues agent work, so it is write. A relay client
 // is forwarded with its levels for manage_jobs as for every catalog tool. Threat: a read key starting or
 // stopping work through the catalog, or a level silently changed in the
-// move. Boundary: tool.Catalog's manage_jobs declarations against ToolScope
+// move. Boundary: tool.Catalog's manage_jobs declarations against the swarmToolLevels record
 // and forwardTool.
 func TestManageJobsLevelsAreTheSwarmToolsLevels(t *testing.T) {
 	swarmTool := map[string]string{
@@ -127,23 +130,23 @@ func TestManageJobsLevelsAreTheSwarmToolsLevels(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s has no swarm_* tool to take its level from (level %s)", action.Action, action.Level)
 		}
-		if action.Level.Scope() != ToolScope(name) {
-			t.Fatalf("manage_jobs %s needs %s; %s needs %s", action.Action, action.Level.Scope(), name, ToolScope(name))
+		if action.Level.Scope() != swarmToolLevel(name) {
+			t.Fatalf("manage_jobs %s needs %s; %s needs %s", action.Action, action.Level.Scope(), name, swarmToolLevel(name))
 		}
 	}
-	if listed := string(filterTools([]byte(`{"result":{"tools":[{"name":"manage_jobs"}]}}`), []string{ScopeRead})); !strings.Contains(listed, "manage_jobs") {
+	if listed := string(filterTools([]byte(`{"result":{"tools":[{"name":"manage_jobs"}]}}`))); !strings.Contains(listed, "manage_jobs") {
 		t.Fatalf("relay listing drops manage_jobs for a read client: %s", listed)
 	}
 }
 
 // Purpose: each manage_workers action needs the level of the swarm_* worker
-// tool with the same effect (ToolScope), so moving workers into the catalog
+// tool with the same effect (swarmToolLevels, the record), so moving workers into the catalog
 // neither widens nor narrows what a key may do: reads stay read; proposing,
 // testing, requesting and assigning a task stay write; creating, changing,
 // pausing, resuming, archiving, deleting and activating stay manage. Threat:
 // a write key creating or deleting workers through the catalog, or a level
 // silently changed in the move. Boundary: tool.Catalog's manage_workers
-// declarations against ToolScope, and the relay listing.
+// declarations against the swarmToolLevels record, and the relay listing.
 func TestManageWorkersLevelsAreTheSwarmToolsLevels(t *testing.T) {
 	swarmTool := map[string]string{
 		"help": "swarm_list_workers", "list": "swarm_list_workers", "inspect": "swarm_get_worker",
@@ -166,22 +169,22 @@ func TestManageWorkersLevelsAreTheSwarmToolsLevels(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s has no swarm_* tool to take its level from (level %s)", action.Action, action.Level)
 		}
-		if action.Level.Scope() != ToolScope(name) {
-			t.Fatalf("manage_workers %s needs %s; %s needs %s", action.Action, action.Level.Scope(), name, ToolScope(name))
+		if action.Level.Scope() != swarmToolLevel(name) {
+			t.Fatalf("manage_workers %s needs %s; %s needs %s", action.Action, action.Level.Scope(), name, swarmToolLevel(name))
 		}
 	}
-	if listed := string(filterTools([]byte(`{"result":{"tools":[{"name":"manage_workers"}]}}`), []string{ScopeRead})); !strings.Contains(listed, "manage_workers") {
+	if listed := string(filterTools([]byte(`{"result":{"tools":[{"name":"manage_workers"}]}}`))); !strings.Contains(listed, "manage_workers") {
 		t.Fatalf("relay listing drops manage_workers for a read client: %s", listed)
 	}
 }
 
 // Purpose: each manage_workspace action Swarm Control serves needs the level
-// of the swarm_* tool with the same effect (ToolScope): the reads are
+// of the swarm_* tool with the same effect (swarmToolLevels, the record): the reads are
 // swarm_list_workspaces' read, registering a folder is swarm_add_workspace's
 // write. The changes with no swarm_* tool are write, and unlinking a
 // workspace from the catalog (delete) is manage. Threat: a read key changing
 // the catalog, or a write key unlinking workspaces. Boundary: tool.Catalog's
-// manage_workspace declarations against ToolScope.
+// manage_workspace declarations against the swarmToolLevels record.
 func TestManageWorkspaceLevelsAreTheSwarmToolsLevels(t *testing.T) {
 	swarmTool := map[string]string{
 		"inspect": "swarm_list_workspaces", "list": "swarm_list_workspaces", "inspect_map": "swarm_list_workspaces", "get_map": "swarm_list_workspaces", "list_source_media_directories": "swarm_list_workspaces",
@@ -208,8 +211,8 @@ func TestManageWorkspaceLevelsAreTheSwarmToolsLevels(t *testing.T) {
 		if !ok {
 			t.Fatalf("manage_workspace %s has no level to check", action.Action)
 		}
-		if action.Level.Scope() != ToolScope(name) {
-			t.Fatalf("manage_workspace %s needs %s; %s needs %s", action.Action, action.Level.Scope(), name, ToolScope(name))
+		if action.Level.Scope() != swarmToolLevel(name) {
+			t.Fatalf("manage_workspace %s needs %s; %s needs %s", action.Action, action.Level.Scope(), name, swarmToolLevel(name))
 		}
 	}
 	if served != len(swarmTool)+len(noSwarmTool) {
@@ -218,13 +221,14 @@ func TestManageWorkspaceLevelsAreTheSwarmToolsLevels(t *testing.T) {
 }
 
 // Purpose: each manage_sessions action Swarm Control serves needs the level
-// of the swarm_* tool with the same effect (ToolScope): reads are read,
+// of the swarm_* tool with the same effect (swarmToolLevels, the record): reads are read,
 // start, message, stop and set_model are write, and answering a pending
 // request stays approve. archive, unarchive and compact have no swarm_*
 // tool and change sessions: write. Threat: a write key approving an
 // agent's tool call through the catalog, or a level silently changed in the
-// move. Boundary: tool.Catalog's manage_sessions declarations against
-// ToolScope; the relay forwards the client's levels for the catalog tool.
+// move. Boundary: tool.Catalog's manage_sessions declarations against the
+// swarmToolLevels record; the relay forwards the client's levels for the
+// catalog tool.
 func TestManageSessionsLevelsAreTheSwarmToolsLevels(t *testing.T) {
 	swarmTool := map[string]string{
 		"inspect": "swarm_list_sessions", "list": "swarm_list_sessions", "list_by_state": "swarm_list_sessions", "search": "swarm_list_sessions",
@@ -251,8 +255,8 @@ func TestManageSessionsLevelsAreTheSwarmToolsLevels(t *testing.T) {
 		if !ok {
 			t.Fatalf("manage_sessions %s has no swarm_* tool to take its level from", action.Action)
 		}
-		if action.Level.Scope() != ToolScope(name) {
-			t.Fatalf("manage_sessions %s needs %s; %s needs %s", action.Action, action.Level.Scope(), name, ToolScope(name))
+		if action.Level.Scope() != swarmToolLevel(name) {
+			t.Fatalf("manage_sessions %s needs %s; %s needs %s", action.Action, action.Level.Scope(), name, swarmToolLevel(name))
 		}
 	}
 	if resolve, _ := sessions.Action(tool.ManageSessionsResolvePermissionAction); resolve.Level != tool.CatalogLevelApprove {
@@ -269,7 +273,7 @@ func TestManageSessionsLevelsAreTheSwarmToolsLevels(t *testing.T) {
 	if out := string(s.handle(Config{AllowWrite: true, Token: "device"}, frame{Client: &frameClient{Scopes: []string{ScopeRead}}, Body: body})); strings.Contains(out, "does not allow") || len(got) != 1 || got[0] != ScopeRead {
 		t.Fatalf("manage_sessions read client: %s %v", out, got)
 	}
-	if listed := string(filterTools([]byte(`{"result":{"tools":[{"name":"manage_sessions"}]}}`), []string{ScopeRead})); !strings.Contains(listed, "manage_sessions") {
+	if listed := string(filterTools([]byte(`{"result":{"tools":[{"name":"manage_sessions"}]}}`))); !strings.Contains(listed, "manage_sessions") {
 		t.Fatalf("relay listing: %s", listed)
 	}
 }

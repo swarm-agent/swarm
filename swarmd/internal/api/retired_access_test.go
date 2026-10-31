@@ -39,7 +39,4 @@ func TestRetiredSessionAccess(t *testing.T) {
 	if err != nil || !store.SessionAccessFromMetadata(got.Metadata).Empty() {
 		t.Fatalf("legacy state changed: %+v %v", got, err)
 	}
-	if _, err := controlMCPSetSessionAccess(nil, nil); err == nil || !strings.Contains(err.Error(), "/v3/permissions") {
-		t.Fatalf("MCP retirement: %v", err)
-	}
 }

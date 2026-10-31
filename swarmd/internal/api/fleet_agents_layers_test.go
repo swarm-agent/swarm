@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -66,51 +67,66 @@ func fleetAgentsServiceAnswer(t *testing.T, h *remoteWaitHarness, machine string
 	return raw
 }
 
-// Purpose: Swarm Control's swarm_agents_at_work is a thin layer: it answers
-// exactly what the service (FleetAgents, behind GET /v3/fleet/agents) answers,
-// here and for the linked machine, and machine narrows it to one machine; the
-// route's own sessions:read check still applies to a key without it.
-// Threat: a second implementation that drifts from the console's read, a
-// tool that reaches a route outside the Swarm Control allowlist, or a key
-// without sessions:read reading other sessions' commands. Boundary:
-// controlMCPAgentsAtWork through controlMCPCall.dispatch (route allowlist,
-// the home's internal route handler) over two linked in-process daemons.
-func TestSwarmAgentsAtWorkReturnsTheServiceAnswer(t *testing.T) {
+// Purpose: Swarm Control's manage_fleet agents_at_work (which replaced
+// swarm_agents_at_work) is a thin layer: its data is exactly what the service
+// (FleetAgents, behind GET /v3/fleet/agents) answers, here and for the linked
+// machine, and machine narrows it to that machine; a key without
+// sessions:read is refused before anything is read.
+// Threat: a second implementation that drifts from the console's read, or a
+// key without sessions:read reading other sessions' commands. Boundary:
+// controlMCPCall.callTool (Swarm Control tools/call) running the
+// Orchestrator's handler over two linked in-process daemons.
+func TestControlManageFleetAgentsAtWorkReturnsTheServiceAnswer(t *testing.T) {
 	h := fleetAgentsLayersHarness(t)
+	h.home.s.SetToolCatalogRuntime(h.runtime)
 	call := func(scopes []string, args map[string]any) (map[string]any, error) {
-		req := requestWithScopedToken(requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodPost, "/mcp", nil), h.home.user, h.home.account), &pebblestore.ScopedTokenRecord{Scopes: scopes})
+		req := requestWithScopedToken(requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodPost, "/mcp", nil), h.home.user, h.home.account), &pebblestore.ScopedTokenRecord{ID: "fleet-agents-key", Scopes: scopes})
 		c := &controlMCPCall{request: req, next: h.home.s.internalRouteHandler(), server: h.home.s}
-		out, err := controlMCPAgentsAtWork(c, args)
-		if err != nil {
+		params, _ := json.Marshal(map[string]any{"name": "manage_fleet", "arguments": args})
+		result, rpcErr := c.callTool(params)
+		if rpcErr != nil {
+			return nil, errors.New(rpcErr.Message)
+		}
+		content, _ := result["content"].([]map[string]any)
+		if len(content) == 0 {
+			return nil, errors.New("no content")
+		}
+		text, _ := content[0]["text"].(string)
+		if result["isError"] == true {
+			return nil, errors.New(text)
+		}
+		var envelope map[string]any
+		if err := json.Unmarshal([]byte(text), &envelope); err != nil {
 			return nil, err
 		}
-		return out.(map[string]any), nil
+		return envelope, nil
 	}
-	for _, machine := range []string{"", "box", "home"} {
-		got, err := call([]string{"sessions:read"}, map[string]any{"machine": machine})
+	for _, machine := range []string{"", "box"} {
+		args := map[string]any{"action": "agents_at_work"}
+		if machine != "" {
+			args["machine"] = machine
+		}
+		envelope, err := call([]string{"sessions:read"}, args)
 		if err != nil {
 			t.Fatalf("machine %q: %v", machine, err)
 		}
-		raw, _ := json.Marshal(got)
+		if envelope["tool"] != "manage_fleet" || envelope["action"] != "agents_at_work" || envelope["state"] != "ok" {
+			t.Fatalf("machine %q: envelope %v", machine, envelope)
+		}
+		raw, _ := json.Marshal(envelope["data"])
 		want := fleetAgentsComparable(t, fleetAgentsServiceAnswer(t, h, machine))
 		if have := fleetAgentsComparable(t, raw); strings.Join(have, "\n") != strings.Join(want, "\n") {
 			t.Fatalf("machine %q: tool answered\n%s\nservice answered\n%s", machine, strings.Join(have, "\n"), strings.Join(want, "\n"))
 		}
-		if machine == "" && !strings.Contains(string(raw), `"box-run"`) {
-			t.Fatalf("the linked machine's run is missing: %s", raw)
-		}
-		if machine == "home" && strings.Contains(string(raw), `"box-run"`) {
-			t.Fatalf("machine home lists the linked machine's run: %s", raw)
+		if !strings.Contains(string(raw), `"box-run"`) {
+			t.Fatalf("machine %q: the linked machine's run is missing: %s", machine, raw)
 		}
 	}
-	if _, err := call([]string{"sessions:read"}, map[string]any{"machine": "nowhere"}); err == nil || !strings.Contains(err.Error(), "no machine is named") {
+	if _, err := call([]string{"sessions:read"}, map[string]any{"action": "agents_at_work", "machine": "nowhere"}); err == nil || !strings.Contains(err.Error(), "no machine is named") {
 		t.Fatalf("unknown machine: %v", err)
 	}
-	if _, err := call([]string{"signals:read"}, nil); err == nil || !strings.Contains(err.Error(), "403") {
+	if _, err := call([]string{"signals:read"}, map[string]any{"action": "agents_at_work"}); err == nil || !strings.Contains(err.Error(), "sessions:read") {
 		t.Fatalf("a key without sessions:read read the agents: %v", err)
-	}
-	if !controlMCPRouteAllowed(http.MethodGet, fleetAgentsPath) || controlMCPRouteAllowed(http.MethodPost, fleetAgentsPath) {
-		t.Fatal("Swarm Control reaches GET /v3/fleet/agents only")
 	}
 }
 

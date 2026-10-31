@@ -11,15 +11,15 @@ import (
 //   - Requirement: each action of the stage 6 catalog tools (manage_fleet,
 //     manage_media, manage_custom_agents, manage_themes, manage_designs, and
 //     manage_projects' get_task_changes and read_task_file) needs the level
-//     of the swarm_* tool with the same effect (ToolScope), never lower, and
+//     of the swarm_* tool with the same effect (swarmToolLevels, the record), never lower, and
 //     none is local-only machine setup a relay client may not reach; the
 //     relay forwards each with the client's levels and lists it for Swarm
 //     Control to filter per action.
 //   - Threat/regression: a read key generating media or designs, or
 //     defining an agent, through a level silently lowered in the move; a
 //     relay gating a new catalog tool by name.
-//   - Boundary/authority: tool.Catalog's declarations against toolScopes
-//     and localOnlyTools; catalogTool and filterTools.
+//   - Boundary/authority: tool.Catalog's declarations against the record
+//     (swarmToolLevels, swarmLocalOnlyTools); catalogTool and filterTools.
 //   - Narrowest layer: the two tables and the relay's catalog gate.
 func TestStage6CatalogLevelsAreTheSwarmToolsLevels(t *testing.T) {
 	swarmTool := map[string]map[string]string{
@@ -45,14 +45,14 @@ func TestStage6CatalogLevelsAreTheSwarmToolsLevels(t *testing.T) {
 			if !ok {
 				t.Fatalf("%s does not declare %s", toolName, action)
 			}
-			if _, known := toolScopes[name]; !known {
-				t.Fatalf("%s has no level of its own in toolScopes", name)
+			if _, known := swarmToolLevels[name]; !known {
+				t.Fatalf("%s has no level of its own in swarmToolLevels", name)
 			}
-			if declared.Level.Scope() != ToolScope(name) {
-				t.Fatalf("%s %s needs %s; %s needs %s", toolName, action, declared.Level.Scope(), name, ToolScope(name))
+			if declared.Level.Scope() != swarmToolLevel(name) {
+				t.Fatalf("%s %s needs %s; %s needs %s", toolName, action, declared.Level.Scope(), name, swarmToolLevel(name))
 			}
-			if declared.LocalOnly || localOnlyTools[name] {
-				t.Fatalf("%s %s: local-only %v / %s local-only %v", toolName, action, declared.LocalOnly, name, localOnlyTools[name])
+			if declared.LocalOnly || swarmLocalOnlyTools[name] {
+				t.Fatalf("%s %s: local-only %v / %s local-only %v", toolName, action, declared.LocalOnly, name, swarmLocalOnlyTools[name])
 			}
 			// A read-level relay client never reaches a write action.
 			if declared.Level != tool.CatalogLevelRead && tool.CatalogLevelsAllow(declared, []string{ScopeRead}, true) {
@@ -62,7 +62,7 @@ func TestStage6CatalogLevelsAreTheSwarmToolsLevels(t *testing.T) {
 		if !catalogTool(toolName) {
 			t.Fatalf("the relay gates %s by name", toolName)
 		}
-		if listed := string(filterTools([]byte(`{"result":{"tools":[{"name":"`+toolName+`"}]}}`), []string{ScopeRead})); !strings.Contains(listed, toolName) {
+		if listed := string(filterTools([]byte(`{"result":{"tools":[{"name":"` + toolName + `"}]}}`))); !strings.Contains(listed, toolName) {
 			t.Fatalf("relay listing drops %s for a read client: %s", toolName, listed)
 		}
 	}

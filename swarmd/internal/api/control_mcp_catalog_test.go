@@ -19,10 +19,10 @@ import (
 	"swarm/packages/swarmd/internal/workspace"
 )
 
-// controlMCPFrozenSwarmTools is every swarm_* Swarm Control tool. The set is
-// frozen: a new tool or action is a catalog entry (tool.Catalog) with its
-// parity case, never a new swarm_* tool. Later stages move these into the
-// catalog and remove them from this list.
+// controlMCPFrozenSwarmTools is the record of every swarm_* Swarm Control
+// tool, all removed in stage 7b: each has a catalog home or is retired
+// (swarmToolCatalogHomes, swarmToolsRetired). A new tool or action is a
+// catalog entry (tool.Catalog) with its parity case, never a swarm_* tool.
 var controlMCPFrozenSwarmTools = []string{
 	"swarm_accept_review", "swarm_activity", "swarm_add_workspace", "swarm_agents_at_work", "swarm_answer_job",
 	"swarm_approve_task", "swarm_assign_worker_task", "swarm_cancel_update", "swarm_connect_chatgpt", "swarm_connect_claude_code",
@@ -44,44 +44,40 @@ var controlMCPFrozenSwarmTools = []string{
 	"swarm_set_workflow", "swarm_stop_workflows", "swarm_workflow_history",
 }
 
-// Purpose: the swarm_* tools are frozen; nothing adds one. Threat: a new
-// capability built as a second hand-written MCP tool beside the catalog,
-// which drifts from the Orchestrator's. Boundary: controlMCPTools, the whole
-// swarm_* registry. Narrowest layer: the registry itself.
-func TestControlMCPSwarmToolNamesFrozen(t *testing.T) {
-	var names []string
-	for _, candidate := range controlMCPTools() {
-		if strings.HasPrefix(candidate.Name, "swarm_") {
-			names = append(names, candidate.Name)
-		} else {
-			t.Fatalf("hand-written Swarm Control tool %q is not a swarm_* tool; catalog tools come from tool.Catalog", candidate.Name)
+// Purpose: Swarm Control serves the tool catalog and nothing else: the
+// swarm_* tools are removed with no alias or compatibility layer. Threat: a
+// swarm_* tool still listed or still answering beside the catalog, or a new
+// hand-written MCP tool that drifts from the Orchestrator's. Boundary:
+// controlMCPCall.visibleTools (tools/list, default and tools=all) and
+// controlMCPCall.callTool (tools/call) with a full key over the parity
+// harness. Narrowest layer: the two Swarm Control entry points.
+func TestControlMCPServesOnlyCatalogTools(t *testing.T) {
+	h := newCatalogParityHarness(t)
+	for _, query := range []string{"", "?tools=all"} {
+		req := h.controlRequest(catalogParityFullKey, "")
+		req.URL, _ = req.URL.Parse("/mcp" + query)
+		c := &controlMCPCall{request: req, next: h.home.s.internalRouteHandler(), server: h.home.s}
+		listed := c.visibleTools()
+		if len(listed) == 0 {
+			t.Fatalf("%q: Swarm Control lists no tools", query)
 		}
-		if _, ok := tool.CatalogToolNamed(candidate.Name); ok {
-			t.Fatalf("%s is both a catalog tool and a hand-written tool", candidate.Name)
-		}
-	}
-	sort.Strings(names)
-	want := append([]string(nil), controlMCPFrozenSwarmTools...)
-	sort.Strings(want)
-	if strings.Join(names, ",") != strings.Join(want, ",") {
-		added, removed := []string{}, []string{}
-		have := map[string]bool{}
-		for _, name := range names {
-			have[name] = true
-		}
-		frozen := map[string]bool{}
-		for _, name := range want {
-			frozen[name] = true
-			if !have[name] {
-				removed = append(removed, name)
+		for _, candidate := range listed {
+			if _, ok := tool.CatalogToolNamed(candidate.Name); !ok || strings.HasPrefix(candidate.Name, "swarm_") {
+				t.Fatalf("%q: Swarm Control lists %s, which is not a catalog tool", query, candidate.Name)
 			}
 		}
-		for _, name := range names {
-			if !frozen[name] {
-				added = append(added, name)
+		dispatched := false
+		c.next = http.HandlerFunc(func(http.ResponseWriter, *http.Request) { dispatched = true })
+		for _, name := range controlMCPFrozenSwarmTools {
+			raw, _ := json.Marshal(map[string]any{"name": name, "arguments": map[string]any{}})
+			result, rpcErr := c.callTool(raw)
+			if result != nil || rpcErr == nil || rpcErr.Code != -32602 || rpcErr.Message != "unknown tool" {
+				t.Fatalf("%q: %s answered %v %+v; it must be an unknown tool", query, name, result, rpcErr)
 			}
 		}
-		t.Fatalf("swarm_* tools changed: added %v, removed %v. A new tool or action is a catalog entry plus its parity case (docs/tool-catalog.md); a tool moved into the catalog leaves this list in the same change", added, removed)
+		if dispatched {
+			t.Fatalf("%q: a swarm_* name reached a route", query)
+		}
 	}
 }
 

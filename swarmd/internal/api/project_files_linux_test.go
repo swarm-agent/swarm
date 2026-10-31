@@ -23,14 +23,14 @@ func projectOutputCall(t *testing.T, folder string) *controlMCPCall {
 		writeJSON(w, 200, map[string]any{"projects": []any{map[string]any{"id": "project", "workspaces": []any{map[string]any{"path": folder}}}}})
 	})
 	wireWorkflowRoutes(c)
-	if _, err := controlMCPSetAutomation(c, map[string]any{"name": "review", "scope": map[string]any{"folder": folder}, "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "review"}}}); err != nil {
+	if _, err := routeWorkflowSave(c, map[string]any{"name": "review", "scope": map[string]any{"folder": folder}, "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "review"}}}); err != nil {
 		t.Fatal(err)
 	}
 	return c
 }
 
 // Requirement: project outputs inherit ACL access or umask, not daemon-imposed
-// masks. controlMCPExportWorkflow (including replacement), saveMediaFiles and
+// masks. The export route (handleJobAutomations, including replacement), saveMediaFiles and
 // installDeliverable own these writes. Real filesystem calls are the narrowest
 // proof of inherited access; no chmod of existing user files is permitted.
 func TestProjectOutputPermissions(t *testing.T) {
@@ -64,7 +64,7 @@ func TestProjectOutputPermissions(t *testing.T) {
 				t.Fatal("current umask unavailable")
 			}
 			c := projectOutputCall(t, folder)
-			if _, err := controlMCPExportWorkflow(c, map[string]any{"name": "review", "path": ""}); err != nil {
+			if _, err := routeWorkflowExport(c, map[string]any{"name": "review", "path": ""}); err != nil {
 				t.Fatal(err)
 			}
 			root, err := os.OpenRoot(folder)
@@ -114,7 +114,7 @@ func TestProjectOutputPermissions(t *testing.T) {
 			if err := os.WriteFile(workflow, []byte("different"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := controlMCPExportWorkflow(c, map[string]any{"name": "review", "path": "", "overwrite": true}); err != nil {
+			if _, err := routeWorkflowExport(c, map[string]any{"name": "review", "path": "", "overwrite": true}); err != nil {
 				t.Fatal(err)
 			}
 			check(workflow, false)
@@ -133,13 +133,13 @@ func TestWorkflowMCPRefusalMessages(t *testing.T) {
 		{"x.txt", "workflow export path must end in .json"},
 		{"../x.json", "workflow path must be relative and inside the project folder"},
 	} {
-		value, err := controlMCPExportWorkflow(c, map[string]any{"name": "review", "path": tc.path})
+		value, err := routeWorkflowExport(c, map[string]any{"name": "review", "path": tc.path})
 		result := controlMCPToolResult(value, err)
 		if result["isError"] != true || result["content"].([]map[string]any)[0]["text"] != tc.want {
 			t.Fatal(result)
 		}
 	}
-	value, err := controlMCPImportWorkflow(c, map[string]any{"definition": map[string]any{}})
+	value, err := routeWorkflowImport(c, map[string]any{"definition": map[string]any{}})
 	result := controlMCPToolResult(value, err)
 	if result["isError"] != true || result["content"].([]map[string]any)[0]["text"] != "swarm_workflow must be version 1" {
 		t.Fatal(result)

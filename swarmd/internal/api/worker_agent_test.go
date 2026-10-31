@@ -14,10 +14,11 @@ import (
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
 
-// Purpose: the public MCP and REST save boundaries must persist explicit tool
-// switches and reject unsafe reviewer profiles without creating a worker.
-// controlMCPDefineAgent, handleWorkerCollection and ValidateWorkerAgent own this
-// contract; real API dispatch and Pebble are the narrowest integration layer.
+// Purpose: the public custom-agent and worker save routes must persist
+// explicit tool switches and reject unsafe reviewer profiles without creating
+// a worker. PUT /v3/agents/{name}, handleWorkerCollection and
+// ValidateWorkerAgent own this contract; real API dispatch with an AI key's
+// request and Pebble are the narrowest integration layer.
 func TestMCPWorkerCustomAgentSave(t *testing.T) {
 	c, ws := newMCPPresetTestCall(t)
 	c.request = requestWithScopedToken(c.request, &store.ScopedTokenRecord{Scopes: []string{"admin"}})
@@ -29,7 +30,7 @@ func TestMCPWorkerCustomAgentSave(t *testing.T) {
 			args["tools_off"] = []any{"bash"}
 			args["tools_on"] = []any{"manage_media"}
 		}
-		if _, err := controlMCPDefineAgent(c, args); err != nil {
+		if _, err := c.dispatch(http.MethodPut, "/v3/agents/custom-tools", nil, args); err != nil {
 			t.Fatal(err)
 		}
 		profile, found, err := c.server.agents.GetProfileForAccount(account, "custom-tools")

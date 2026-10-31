@@ -477,15 +477,12 @@ func TestJobAutomationRoutesEnforceScopesAndAccounts(t *testing.T) {
 	}
 }
 
-// Requirement: the MCP automation tools (and the HTTP API, which decodes the
-// same jobautomation.Step) accept a run step's command as an absolute path,
-// refuse a step that still sends secrets with the reason, and no longer
-// offer secrets in the steps schema.
+// Requirement: a job's then steps (and the HTTP API, which decodes the same
+// jobautomation.Step) accept a run step's command as an absolute path and
+// refuse a step that still sends secrets with the reason.
 // Threat: an owner setting secrets they believe scope a host script that
-// actually runs with the machine's own credentials, or a schema that keeps
-// advertising a removed option.
-// Owners: controlMCPAutomationSteps (over jobautomation.NormalizeSteps) and
-// controlMCPAutomationStepsSchema.
+// actually runs with the machine's own credentials.
+// Owners: controlMCPAutomationSteps (over jobautomation.NormalizeSteps).
 func TestAutomationStepsAcceptAbsoluteCommandsAndRefuseSecrets(t *testing.T) {
 	steps, err := controlMCPAutomationSteps([]any{map[string]any{"type": "run", "command": "/usr/local/libexec/deliver/push.sh"}})
 	if err != nil || len(steps) != 1 || steps[0].Command != "/usr/local/libexec/deliver/push.sh" {
@@ -494,12 +491,5 @@ func TestAutomationStepsAcceptAbsoluteCommandsAndRefuseSecrets(t *testing.T) {
 	_, err = controlMCPAutomationSteps([]any{map[string]any{"type": "run", "command": "deliver/push.sh", "secrets": []any{"FORGE_TOKEN"}}})
 	if err == nil || !strings.Contains(err.Error(), "secrets are no longer a step option") {
 		t.Fatalf("step with secrets: err = %v", err)
-	}
-	props := controlMCPAutomationStepsSchema()["items"].(map[string]any)["properties"].(map[string]any)
-	if _, ok := props["secrets"]; ok {
-		t.Fatal("the steps schema still offers secrets")
-	}
-	if desc, _ := props["command"].(map[string]any)["description"].(string); !strings.Contains(desc, "absolute path") || !strings.Contains(desc, "owned by root") {
-		t.Fatalf("command description = %q", desc)
 	}
 }

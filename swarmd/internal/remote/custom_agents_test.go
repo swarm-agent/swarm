@@ -4,22 +4,34 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"swarm/packages/swarmd/internal/tool"
 )
 
-// Purpose: relay ToolScope and filterTools must expose definitions to write
-// keys, never read keys. The pure scope boundary is the narrowest proof.
+// Purpose: defining a custom agent needs write: manage_custom_agents define
+// and disable are write level and its reads are read level, as
+// swarm_define_agent and swarm_list_agents were (the swarmToolLevels record),
+// and the relay lists manage_custom_agents for Swarm Control to filter per
+// action but never the removed swarm_define_agent. Threat: a read key
+// defining agents. Boundary: the catalog declaration, the record and
+// filterTools; the pure policy boundary is the narrowest proof.
 func TestCustomAgentWriteScope(t *testing.T) {
-	if ToolScope("swarm_define_agent") != ScopeWrite {
-		t.Fatal("not write scoped")
+	catalog, ok := tool.CatalogToolNamed("manage_custom_agents")
+	if !ok {
+		t.Fatal("manage_custom_agents is not a catalog tool")
 	}
-	for _, tc := range []struct {
-		scopes  []string
-		allowed bool
-	}{{[]string{ScopeRead}, false}, {[]string{ScopeRead, ScopeWrite}, true}} {
-		got := filterTools([]byte(`{"result":{"tools":[{"name":"swarm_define_agent"}]}}`), tc.scopes)
-		if strings.Contains(string(got), "swarm_define_agent") != tc.allowed {
-			t.Fatalf("unexpected relay tools: %s", got)
+	for action, swarm := range map[string]string{"define": "swarm_define_agent", "disable": "swarm_define_agent", "list": "swarm_list_agents", "get": "swarm_list_agents"} {
+		declared, ok := catalog.Action(action)
+		if !ok || declared.Level.Scope() != swarmToolLevel(swarm) {
+			t.Fatalf("manage_custom_agents %s: %+v; %s needed %s", action, declared.Level, swarm, swarmToolLevel(swarm))
 		}
+	}
+	if swarmToolLevel("swarm_define_agent") != ScopeWrite {
+		t.Fatal("defining an agent was not write scoped")
+	}
+	got := string(filterTools([]byte(`{"result":{"tools":[{"name":"swarm_define_agent"},{"name":"manage_custom_agents"}]}}`)))
+	if strings.Contains(got, "swarm_define_agent") || !strings.Contains(got, "manage_custom_agents") {
+		t.Fatalf("unexpected relay tools: %s", got)
 	}
 }
 

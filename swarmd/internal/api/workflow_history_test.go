@@ -25,21 +25,21 @@ func TestWorkflowHistoryRestoreAuthorization(t *testing.T) {
 	}
 	full := call("full")
 	args := map[string]any{"name": "history", "scope": map[string]any{"folder": t.TempDir()}, "steps": []any{map[string]any{"type": "run", "command": "deliver/push.sh"}}}
-	if _, err := controlMCPSetAutomation(full, args); err != nil {
+	if _, err := routeWorkflowSave(full, args); err != nil {
 		t.Fatal(err)
 	}
 	args["enabled"] = false
-	if _, err := controlMCPSetAutomation(full, args); err != nil {
+	if _, err := routeWorkflowSave(full, args); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := controlMCPSetAutomation(full, args); err != nil {
+	if _, err := routeWorkflowSave(full, args); err != nil {
 		t.Fatal(err)
 	}
 	a, err := store.FindByName(account, "history")
 	if err != nil || a.Revision != 2 {
 		t.Fatalf("no-op %+v %v", a, err)
 	}
-	if _, err := controlMCPDeleteAutomation(full, map[string]any{"id": a.ID}); err != nil {
+	if _, err := routeWorkflowDelete(full, map[string]any{"id": a.ID}); err != nil {
 		t.Fatal(err)
 	}
 	lookup := map[string]any{"id": a.ID, "revision": 1}
@@ -47,10 +47,10 @@ func TestWorkflowHistoryRestoreAuthorization(t *testing.T) {
 	principal := testPrincipal()
 	principal.AccountScopeID = "other-account"
 	other.request = other.request.WithContext(context.WithValue(other.request.Context(), productPrincipalRequestContextKey, principal))
-	if _, err := controlMCPWorkflowHistory(other, lookup); err == nil || !strings.Contains(err.Error(), "workflow history was not found") {
+	if _, err := routeWorkflowHistory(other, lookup); err == nil || !strings.Contains(err.Error(), "workflow history was not found") {
 		t.Fatalf("cross-account history: %v", err)
 	}
-	out, err := controlMCPWorkflowHistory(call("read"), lookup)
+	out, err := routeWorkflowHistory(call("read"), lookup)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestWorkflowHistoryRestoreAuthorization(t *testing.T) {
 	if err != nil || !strings.Contains(string(data), `"swarm_workflow":1`) || strings.Contains(string(data), a.Scope.Folder) {
 		t.Fatalf("portable: %s %v", data, err)
 	}
-	if _, err := controlMCPRestoreWorkflow(call("write"), lookup); err == nil {
+	if _, err := routeWorkflowRestore(call("write"), lookup); err == nil {
 		t.Fatal("write key restored run step")
 	}
 	r := requestWithScopedToken(withTestPrincipal(httptest.NewRequest("POST", JobAutomationsPath+"/restore", strings.NewReader(`{"name":"history","revision":1}`))), &pebblestore.ScopedTokenRecord{Scopes: scopesForLevel(t, "write")})
@@ -74,7 +74,7 @@ func TestWorkflowHistoryRestoreAuthorization(t *testing.T) {
 	if err != nil || len(h) != 3 {
 		t.Fatal("refused restore changed history", h, err)
 	}
-	if _, err = controlMCPRestoreWorkflow(full, lookup); err != nil {
+	if _, err = routeWorkflowRestore(full, lookup); err != nil {
 		t.Fatal(err)
 	}
 	a, err = store.Get(account, a.ID)
@@ -91,7 +91,7 @@ func TestWorkflowHistoryRestoreAuthorization(t *testing.T) {
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"changed_fields"`) || strings.Contains(w.Body.String(), `"definition"`) {
 		t.Fatalf("HTTP history %d %s", w.Code, w.Body)
 	}
-	out, err = controlMCPListAutomations(full, nil)
+	out, err = routeWorkflowList(full, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,9 +166,9 @@ func TestWorkflowHistoryClientErrors(t *testing.T) {
 			var out any
 			var err error
 			if tc.action == "history" {
-				out, err = controlMCPWorkflowHistory(c, args)
+				out, err = routeWorkflowHistory(c, args)
 			} else {
-				out, err = controlMCPRestoreWorkflow(c, args)
+				out, err = routeWorkflowRestore(c, args)
 			}
 			result := controlMCPToolResult(out, err)
 			text := result["content"].([]map[string]any)[0]["text"].(string)

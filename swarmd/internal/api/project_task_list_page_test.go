@@ -186,62 +186,27 @@ func TestProjectTaskListRouteFiltersAndPagesLargeProject(t *testing.T) {
 	}
 }
 
-// Purpose: swarm_list_tasks (and the other Swarm Control reads of a
-// project's tasks) must work on a project whose whole board exceeds the
-// recorder limit: the status filter is applied by the route and the default
-// answer is current tasks, newest first.
-// Threat: "response too large" for every call on a 1,000+ task project, and a
-// status argument that was only applied after the oversized read.
-// Owners: controlMCPListTasks, controlMCPCall.projectStatus and
-// sessionChildren dispatching to the real internal route handler. The
-// negative control proves the unbounded board read overflows here.
-func TestControlMCPListTasksLargeProject(t *testing.T) {
+// Purpose: the Swarm Control project status read (controlMCPCall.projectStatus,
+// behind manage_projects get) must work on a project whose whole board
+// exceeds the recorder limit: it reads bounded pages and still counts every
+// task. The route's own filtering and paging are held by
+// TestProjectTaskListRouteFiltersAndPagesLargeProject.
+// Threat: "response too large" for every status read of a 1,000+ task
+// project.
+// Owners: controlMCPCall.projectStatus dispatching to the real internal route
+// handler. The negative control proves the unbounded board read overflows
+// here.
+func TestControlMCPProjectStatusLargeProject(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	p := testPrincipal()
-	seed := seedLargeTaskProject(t, server.sessions.Store(), p.AccountScopeID, "proj-large")
+	seedLargeTaskProject(t, server.sessions.Store(), p.AccountScopeID, "proj-large")
 	c := &controlMCPCall{request: requestWithScopedToken(withTestPrincipal(httptest.NewRequest(http.MethodPost, "/mcp", nil)), &pebblestore.ScopedTokenRecord{Scopes: []string{"sessions:read", "projects:read"}}), next: server.internalRouteHandler(), server: server}
 
 	if _, err := c.dispatch(http.MethodGet, "/v3/projects/proj-large/tasks", nil, nil); err == nil || !strings.Contains(err.Error(), "response too large") {
 		t.Fatalf("negative control: the whole board must exceed the tool limit, got %v", err)
 	}
-	ids := func(out any) []string {
-		var got []string
-		for _, task := range out.(map[string]any)["tasks"].([]map[string]any) {
-			got = append(got, task["id"].(string))
-		}
-		return got
-	}
-	out, err := controlMCPListTasks(c, map[string]any{"project_id": "proj-large"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := ids(out); strings.Join(got, ",") != strings.Join(seed.current, ",") || out.(map[string]any)["total"].(float64) != 3 {
-		t.Fatalf("default list = %v total %v", got, out.(map[string]any)["total"])
-	}
-	out, err = controlMCPListTasks(c, map[string]any{"project_id": "proj-large", "status": "needs_review"})
-	if err != nil || strings.Join(ids(out), ",") != "fresh-review" {
-		t.Fatalf("status list = %v %v", out, err)
-	}
-	out, err = controlMCPListTasks(c, map[string]any{"project_id": "proj-large", "status": "failed", "scope": "all", "limit": float64(10)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	page := out.(map[string]any)
-	if len(ids(out)) != 10 || page["total"].(float64) != 500 || page["next_cursor"] != "10" {
-		t.Fatalf("history page: %d rows total %v next %v", len(ids(out)), page["total"], page["next_cursor"])
-	}
-	out, err = controlMCPListTasks(c, map[string]any{"project_id": "proj-large", "status": "failed", "scope": "all", "limit": float64(10), "cursor": "10"})
-	if err != nil || len(ids(out)) != 10 || ids(out)[0] == ids(page)[0] {
-		t.Fatalf("second history page: %v %v", out, err)
-	}
-	if _, err := controlMCPListTasks(c, map[string]any{"project_id": "proj-large", "scope": "everything"}); err == nil || !strings.Contains(err.Error(), "scope must be current or all") {
-		t.Fatalf("invalid scope: %v", err)
-	}
-	if _, err := controlMCPListTasks(c, map[string]any{"project_id": "proj-large", "limit": float64(500)}); err == nil {
-		t.Fatal("oversized limit accepted")
-	}
 
-	// The project status read is bounded the same way and still counts all.
+	// The project status read is bounded and still counts all.
 	status, err := c.projectStatus("proj-large", map[string]any{"id": "proj-large"})
 	if err != nil {
 		t.Fatal(err)
