@@ -1852,6 +1852,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	}
 	planGuardFreshContext := false
 	accumulatedUsage := provideriface.TokenUsage{}
+	// Per-request receipts across the run; compaction does not reset them
+	// because billing continues on the same run record.
+	var usageRequests runUsageRequests
 	var cumulativeTurnCost float64
 	var (
 		cumulativeBilledTokens           int64
@@ -2520,6 +2523,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		priorCost, receiptRunID, receiptStep := cumulativeTurnCost, runID, step
 		receiptProvider, receiptModel, receiptWindow := providerID, resolvedPreference.Preference.Model, resolvedPreference.ContextWindow
 		receiptPrincipal, receiptApply := options.Principal, options.ApplySessionMutation
+		priorRequests := runUsageRequests{requests: append([]pebblestore.SessionUsageRequestReceipt(nil), usageRequests.requests...), incomplete: usageRequests.incomplete}
 		attemptCtx := withLateProviderReceipt(runnerCtx, func(late provideriface.Response) error {
 			usage := late.Usage
 			if !hasConcreteUsageSnapshot(usage) {
@@ -2536,7 +2540,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				baseTokens, baseInput, baseOutput = 0, 0, 0
 				baseRead, baseWrite, baseThinking = 0, 0, 0
 			}
-			_, _, _, receiptErr := s.recordProviderUsageSnapshot(sessionID, receiptRunID, receiptProvider, receiptModel, receiptWindow, receiptStep, usage, receiptPrincipal, receiptApply, baseTokens+usage.TotalTokens, baseInput+usage.InputTokens, baseOutput+usage.OutputTokens, baseRead+usage.CacheReadTokens, baseWrite+usage.CacheWriteTokens, baseThinking+usage.ThinkingTokens)
+			_, _, _, receiptErr := s.recordProviderUsageSnapshot(sessionID, receiptRunID, receiptProvider, receiptModel, receiptWindow, receiptStep, usage, priorRequests.withLate(usage, receiptStep), receiptPrincipal, receiptApply, baseTokens+usage.TotalTokens, baseInput+usage.InputTokens, baseOutput+usage.OutputTokens, baseRead+usage.CacheReadTokens, baseWrite+usage.CacheWriteTokens, baseThinking+usage.ThinkingTokens)
 			if receiptErr != nil {
 				return receiptErr
 			}
@@ -2613,11 +2617,12 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				cumulativeBilledCacheWriteTokens += response.Usage.CacheWriteTokens
 				cumulativeBilledThinkingTokens += response.Usage.ThinkingTokens
 			}
+			usageRequests.observe(response.Usage, step)
 			accumulatedUsage = mergeTokenUsage(accumulatedUsage, response.Usage)
 			accumulatedUsage.BudgetOperationID = response.Usage.BudgetOperationID
 			accumulatedUsage.EstimatedCostUSD = cumulativeTurnCost
 			if shouldPersistProviderUsage(providerID, accumulatedUsage) {
-				turnUsage, usageSummary, usageEvent, usageErr := s.recordProviderUsageSnapshot(sessionID, runID, providerID, resolvedPreference.Preference.Model, resolvedPreference.ContextWindow, stepsCompleted, accumulatedUsage, options.Principal, options.ApplySessionMutation, cumulativeBilledTokens, cumulativeBilledInputTokens, cumulativeBilledOutputTokens, cumulativeBilledCacheReadTokens, cumulativeBilledCacheWriteTokens, cumulativeBilledThinkingTokens)
+				turnUsage, usageSummary, usageEvent, usageErr := s.recordProviderUsageSnapshot(sessionID, runID, providerID, resolvedPreference.Preference.Model, resolvedPreference.ContextWindow, stepsCompleted, accumulatedUsage, usageRequests.receipts(), options.Principal, options.ApplySessionMutation, cumulativeBilledTokens, cumulativeBilledInputTokens, cumulativeBilledOutputTokens, cumulativeBilledCacheReadTokens, cumulativeBilledCacheWriteTokens, cumulativeBilledThinkingTokens)
 				if usageErr != nil {
 					return RunResult{}, usageErr
 				}
@@ -4578,7 +4583,7 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 		persistReceipt := func(response provideriface.Response) error {
 			if hasConcreteUsageSnapshot(response.Usage) {
 				principal, _ := identity.PrincipalFromContext(ctx)
-				_, _, _, err := s.recordProviderUsageSnapshot(sessionID, "compact/operation/"+response.Usage.BudgetOperationID, compactModel.ProviderID, compactModel.Preference.Model, contextWindow, step, response.Usage, principal, nil)
+				_, _, _, err := s.recordProviderUsageSnapshot(sessionID, "compact/operation/"+response.Usage.BudgetOperationID, compactModel.ProviderID, compactModel.Preference.Model, contextWindow, step, response.Usage, pebblestore.UsageRequestReceiptsFromHistory(response.Usage.APIUsageHistory, step), principal, nil)
 				if err != nil {
 					return err
 				}

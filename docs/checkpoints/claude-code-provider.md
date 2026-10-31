@@ -112,8 +112,13 @@ Each Swarm provider request is one non-interactive Claude Code turn: `claude -p`
 - Swarm thinking levels map to `--effort`. `ultra` maps to `max`, and `off` disables extended thinking.
 
 **Usage:**
-- Recorded token usage is from the turn's final model call, the same per-step context-occupancy semantics other providers use.
-- The CLI's aggregate turn usage and its client-side cost estimate are kept only in the raw usage record. That estimate is not billing data.
+- One Claude Code turn makes many model requests. Swarm records a usage receipt for each one it observes in the stream: the `message_start`/`message_delta` pair, or an `assistant` line for a request that had none. The CLI repeats an assistant message once per content block, so one message id counts as one request. Each receipt has that request's own `input_tokens`, `output_tokens`, `cache_read_tokens` and `cache_write_tokens`, its model, and the account slot that served it. A rejected attempt that was then failed over keeps its own slot. The receipts are in the usage record's `requests`, numbered with their `step`.
+- The record's billed totals are the sum of its receipts, not the last request. These billed totals feed the daily accumulator, account rollups (`/v3/usage`, `swarm_get_usage` / `manage_fleet` usage), task, worker and end-user scope totals, and `run.usage.updated`. The record's plain `input_tokens` … `total_tokens` stay the last request, which is the context the session holds now (remaining tokens, plan guard).
+- Counts: `turn_count` is turns (one per usage record). `request_count` (record and session summary) and a scope's `receipt_count` are provider requests. A record without receipts counts as one.
+- Claude Code is a subscription: each receipt's `estimated_cost_usd` is 0. Its `nominal_cost_usd` is the Anthropic catalog price of that request's tokens when the catalog has one, otherwise 0. The record's `nominal_cost_usd` and the scope's `nominal_subscription_cost_usd` are sums of the receipts. Nominal cost never counts against a limit.
+- Context growth: each record has `first_request_input_tokens`, `first_request_cache_read_tokens` and `first_request_context_tokens` (input + cache read of the turn's first request, the context the model re-read). The session usage reads (`GET /v3/sessions/{id}/usage` and `GET /v1/sessions/{id}/usage`) return `context_growth`: one row per turn, oldest first, with that size and the turn's `request_count`. A session that replays its history shows up as a first-request size that keeps growing. Turns without receipts are left out.
+- At most 512 receipts are stored per record; `requests_omitted` counts the rest. `request_count` and the totals still cover every request.
+- If a turn's requests were not observed, Swarm records the CLI's aggregate result usage with no receipts and does not invent any. The CLI's aggregate turn usage and its client-side cost estimate are kept only in the raw usage record. That estimate is not billing data.
 
 ## Validation boundary
 

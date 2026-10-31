@@ -9,6 +9,7 @@ import (
 
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"swarm/packages/swarmd/internal/providerlimit"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 var errNoSignedInAccounts = errors.New("no Claude Code accounts are signed in")
@@ -57,6 +58,7 @@ func (r *Runner) runAccounts(ctx context.Context, req provideriface.Request, onE
 		}
 		single := &Runner{authStore: r.authStore, cli: cli, mcp: r.mcp}
 		response, turnErr := single.runSingle(ctx, turnReq, onEvent)
+		attributeUsageAccount(&response.Usage, slot.ID)
 		if turnErr == nil {
 			response.Usage = mergeAccountUsage(rejectedUsage, response.Usage)
 			return response, nil
@@ -114,6 +116,23 @@ type accountToolTracker struct {
 func (t *accountToolTracker) ExecuteTool(ctx context.Context, invocation provideriface.ToolInvocation) (provideriface.ToolExecutionResult, error) {
 	t.called.Store(true)
 	return t.inner.ExecuteTool(ctx, invocation)
+}
+
+// attributeUsageAccount names the account slot that served each request
+// receipt. Rejected attempts keep their own slot when merged.
+func attributeUsageAccount(usage *provideriface.TokenUsage, slotID string) {
+	if usage == nil || strings.TrimSpace(slotID) == "" {
+		return
+	}
+	for _, sample := range usage.APIUsageHistory {
+		request, ok := sample[pebblestore.UsageRequestHistoryKey].(map[string]any)
+		if !ok {
+			continue
+		}
+		if existing, _ := request["account_id"].(string); strings.TrimSpace(existing) == "" {
+			request["account_id"] = slotID
+		}
+	}
 }
 
 // mergeAccountUsage sums only provider-reported receipts; it never estimates a

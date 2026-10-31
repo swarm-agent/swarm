@@ -247,13 +247,15 @@ func (m *designModel) record(runID string, reported provideriface.TokenUsage, us
 	if !hasConcreteUsageSnapshot(reported) {
 		return nil
 	}
-	committed, _, _, err := m.s.recordProviderUsageSnapshot(m.receiptSessionID, runID, m.runtime.ProviderID, m.runtime.Preference.Model, m.contextWindow, designReceiptStepOnly, reported, m.principal, nil)
+	committed, _, _, err := m.s.recordProviderUsageSnapshot(m.receiptSessionID, runID, m.runtime.ProviderID, m.runtime.Preference.Model, m.contextWindow, designReceiptStepOnly, reported, pebblestore.UsageRequestReceiptsFromHistory(reported.APIUsageHistory, designReceiptStepOnly), m.principal, nil)
 	if err != nil {
 		return err
 	}
 	usage.Reported = true
-	usage.Input, usage.Output, usage.Thinking = committed.InputTokens, committed.OutputTokens, committed.ThinkingTokens
-	usage.CacheRead, usage.CacheWrite, usage.Total = committed.CacheReadTokens, committed.CacheWriteTokens, committed.TotalTokens
+	// The call's usage is what it consumed (the billed sum over its provider
+	// requests), not the context its last request occupied.
+	usage.Input, usage.Output, usage.Thinking = committed.BilledInputTokens, committed.BilledOutputTokens, committed.BilledThinkingTokens
+	usage.CacheRead, usage.CacheWrite, usage.Total = committed.BilledCacheReadTokens, committed.BilledCacheWriteTokens, committed.BilledTokens
 	usage.PriceStatus = committed.PriceStatus
 	switch committed.PriceStatus {
 	case "known", "free", "subscription":

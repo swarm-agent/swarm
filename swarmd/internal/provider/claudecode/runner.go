@@ -657,8 +657,17 @@ type turnState struct {
 	onResult func()
 
 	lastCallUsage map[string]any
-	callUsages    []map[string]any
+	calls         []*callUsage
+	seenMessages  map[string]bool
 	result        *streamResult
+}
+
+// callUsage is one provider request of the turn: its own reported usage, the
+// model that served it and the message it produced.
+type callUsage struct {
+	usage     map[string]any
+	model     string
+	messageID string
 }
 
 type streamLine struct {
@@ -693,6 +702,7 @@ type streamEvent struct {
 	Type    string `json:"type"`
 	Index   int    `json:"index"`
 	Message struct {
+		ID    string         `json:"id"`
 		Model string         `json:"model"`
 		Usage map[string]any `json:"usage"`
 	} `json:"message"`
@@ -709,7 +719,9 @@ type streamEvent struct {
 }
 
 type assistantMessage struct {
-	Model   string `json:"model"`
+	ID      string         `json:"id"`
+	Model   string         `json:"model"`
+	Usage   map[string]any `json:"usage"`
 	Content []struct {
 		Type  string          `json:"type"`
 		Text  string          `json:"text"`
@@ -725,6 +737,7 @@ func newTurnState(model string, correlation *toolUseCorrelator) *turnState {
 		correlation:   correlation,
 		thinkingByKey: make(map[string]string, 4),
 		blockTypes:    make(map[int]string, 4),
+		seenMessages:  make(map[string]bool, 4),
 	}
 }
 
@@ -791,7 +804,11 @@ func (s *turnState) handleStreamEvent(event streamEvent, onEvent func(providerif
 		if s.lastCallUsage == nil {
 			s.lastCallUsage = map[string]any{}
 		}
-		s.callUsages = append(s.callUsages, s.lastCallUsage)
+		messageID := strings.TrimSpace(event.Message.ID)
+		if messageID != "" {
+			s.markMessageSeen(messageID)
+		}
+		s.calls = append(s.calls, &callUsage{usage: s.lastCallUsage, model: s.model, messageID: messageID})
 	case "content_block_start":
 		s.blockTypes[event.Index] = event.ContentBlock.Type
 		if event.ContentBlock.Type == "text" && s.text.Len() > 0 {
@@ -838,9 +855,23 @@ func (s *turnState) emitText(delta string, onEvent func(provideriface.StreamEven
 	}
 }
 
+func (s *turnState) markMessageSeen(id string) {
+	if s.seenMessages == nil {
+		s.seenMessages = make(map[string]bool, 4)
+	}
+	s.seenMessages[id] = true
+}
+
 func (s *turnState) handleAssistantMessage(message assistantMessage) {
 	if model := catalogModelName(message.Model); model != "" {
 		s.model = model
+	}
+	// Partial messages report each request through message_start; an assistant
+	// line for a request that had none still carries that request's usage.
+	// The CLI repeats a message per content block, so one id is one request.
+	if id := strings.TrimSpace(message.ID); id != "" && !s.seenMessages[id] && len(message.Usage) > 0 {
+		s.markMessageSeen(id)
+		s.calls = append(s.calls, &callUsage{usage: cloneJSONMap(message.Usage), model: s.model, messageID: id})
 	}
 	for _, block := range message.Content {
 		switch block.Type {
@@ -906,34 +937,89 @@ func (s *turnState) response() provideriface.Response {
 	}
 }
 
-// usage reports the final model call of the turn, matching the one-call-per-step
-// semantics other providers use for context occupancy. Aggregate turn usage and
-// Claude Code's client-side cost estimate are kept only in the raw record; the
-// estimate is not billing data.
+// usage reports what the turn consumed: the sum of every model request the CLI
+// made, one tagged history sample per request (its own input, cache and output
+// usage and model). Swarm records each sample as a request receipt and keeps
+// the last request as context occupancy. Claude Code's aggregate turn usage
+// and client-side cost estimate stay in the raw record only; the estimate is
+// not billing data. A turn whose requests were not observed falls back to the
+// CLI's aggregate result usage without inventing request receipts.
 func (s *turnState) usage() provideriface.TokenUsage {
-	last := s.lastCallUsage
-	if last == nil && s.result != nil {
-		last = s.result.Usage
+	if len(s.calls) == 0 {
+		return s.aggregateResultUsage()
 	}
-	if last == nil {
-		return provideriface.TokenUsage{}
+	var input, output, cacheRead, cacheWrite int64
+	history := make([]map[string]any, 0, len(s.calls))
+	paths := make([]string, 0, len(s.calls))
+	for _, call := range s.calls {
+		callInput := jsonInt(call.usage["input_tokens"])
+		callOutput := jsonInt(call.usage["output_tokens"])
+		callRead := jsonInt(call.usage["cache_read_input_tokens"])
+		callWrite := jsonInt(call.usage["cache_creation_input_tokens"])
+		input += callInput
+		output += callOutput
+		cacheRead += callRead
+		cacheWrite += callWrite
+		sample := cloneJSONMap(call.usage)
+		if sample == nil {
+			sample = map[string]any{}
+		}
+		request := map[string]any{
+			"input_tokens":       callInput,
+			"output_tokens":      callOutput,
+			"cache_read_tokens":  callRead,
+			"cache_write_tokens": callWrite,
+		}
+		if call.model != "" {
+			request["model"] = call.model
+		}
+		if call.messageID != "" {
+			request["message_id"] = call.messageID
+		}
+		sample[pebblestore.UsageRequestHistoryKey] = request
+		history = append(history, sample)
+		paths = append(paths, usageRawPath)
 	}
-	input := jsonInt(last["input_tokens"])
-	output := jsonInt(last["output_tokens"])
-	cacheRead := jsonInt(last["cache_read_input_tokens"])
-	cacheWrite := jsonInt(last["cache_creation_input_tokens"])
-	raw := cloneJSONMap(last)
+	raw := cloneJSONMap(s.calls[len(s.calls)-1].usage)
+	if raw == nil {
+		raw = map[string]any{}
+	}
 	if s.result != nil {
 		raw["claude_code_turn_usage"] = cloneJSONMap(s.result.Usage)
 		raw["claude_code_num_turns"] = s.result.NumTurns
 		raw["claude_code_total_cost_usd_estimate"] = s.result.TotalCostUSD
 	}
-	history := make([]map[string]any, 0, len(s.callUsages))
-	paths := make([]string, 0, len(s.callUsages))
-	for _, call := range s.callUsages {
-		history = append(history, cloneJSONMap(call))
-		paths = append(paths, usageRawPath)
+	return provideriface.TokenUsage{
+		InputTokens:      input,
+		OutputTokens:     output,
+		CacheReadTokens:  cacheRead,
+		CacheWriteTokens: cacheWrite,
+		TotalTokens:      input + output + cacheRead + cacheWrite,
+		Source:           usageSource,
+		APIUsageRaw:      raw,
+		APIUsageRawPath:  usageRawPath,
+		APIUsageHistory:  history,
+		APIUsagePaths:    paths,
 	}
+}
+
+// aggregateResultUsage reports the CLI's own turn total when no request was
+// observed. It is untagged, so it never becomes a request receipt.
+func (s *turnState) aggregateResultUsage() provideriface.TokenUsage {
+	if s.result == nil || s.result.Usage == nil {
+		return provideriface.TokenUsage{}
+	}
+	last := s.result.Usage
+	input := jsonInt(last["input_tokens"])
+	output := jsonInt(last["output_tokens"])
+	cacheRead := jsonInt(last["cache_read_input_tokens"])
+	cacheWrite := jsonInt(last["cache_creation_input_tokens"])
+	raw := cloneJSONMap(last)
+	raw["claude_code_turn_usage"] = cloneJSONMap(s.result.Usage)
+	raw["claude_code_num_turns"] = s.result.NumTurns
+	raw["claude_code_total_cost_usd_estimate"] = s.result.TotalCostUSD
+	history := []map[string]any{cloneJSONMap(last)}
+	paths := []string{usageRawPath}
 	return provideriface.TokenUsage{
 		InputTokens:      input,
 		OutputTokens:     output,

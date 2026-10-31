@@ -3466,6 +3466,14 @@ func (s *SessionStore) prepareV3UsageForMutation(input V3SessionMutationInput, n
 	if usage.EstimatedCostUSD == 0 && usage.PriceStatus == "" && usage.CostProvenance != "provider" {
 		usage.EstimatedCostUSD, usage.PriceStatus = s.calculateReceiptCost(usage)
 	}
+	s.priceUsageRequests(&usage)
+	summary.RequestCount += usageReceiptWeight(usage)
+	if hadPrevious {
+		summary.RequestCount -= usageReceiptWeight(previous)
+	}
+	if summary.RequestCount < 0 {
+		summary.RequestCount = 0
+	}
 	costDelta := usage.EstimatedCostUSD
 	if hadPrevious {
 		costDelta = usage.EstimatedCostUSD - previous.EstimatedCostUSD

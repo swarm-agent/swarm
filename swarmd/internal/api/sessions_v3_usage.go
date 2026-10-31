@@ -13,6 +13,10 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+// sessionUsageContextGrowthLimit bounds the newest turns a session usage read
+// reports in context_growth.
+const sessionUsageContextGrowthLimit = 200
+
 func sessionV3ProviderUsageRecord(providerID string, modelName string, contextWindow int, runID string, step int, usage provideriface.TokenUsage) (pebblestore.SessionTurnUsageSnapshot, bool) {
 	providerID = strings.ToLower(strings.TrimSpace(providerID))
 	if !sessionV3ShouldTrackProviderUsage(providerID, usage) {
@@ -21,7 +25,7 @@ func sessionV3ProviderUsageRecord(providerID string, modelName string, contextWi
 	if step < 0 {
 		step = 0
 	}
-	return pebblestore.SessionTurnUsageSnapshot{
+	record := pebblestore.SessionTurnUsageSnapshot{
 		BudgetOperationID:    usage.BudgetOperationID,
 		RunID:                sessionV3ProviderReceiptRunID(runID, step, usage),
 		Provider:             providerID,
@@ -45,7 +49,12 @@ func sessionV3ProviderUsageRecord(providerID string, modelName string, contextWi
 		APIUsageRawPath:      strings.TrimSpace(usage.APIUsageRawPath),
 		APIUsageHistory:      cloneSessionV3UsageHistory(usage.APIUsageHistory),
 		APIUsagePaths:        append([]string(nil), usage.APIUsagePaths...),
-	}, true
+	}
+	// A provider that reported each request's usage gets one receipt per
+	// request; the record's billed totals are their sum and its occupancy the
+	// last request.
+	pebblestore.ApplyUsageRequestReceipts(&record, pebblestore.UsageRequestReceiptsFromHistory(usage.APIUsageHistory, step))
+	return record, true
 }
 
 func sessionV3ProviderReceiptRunID(runID string, step int, usage provideriface.TokenUsage) string {

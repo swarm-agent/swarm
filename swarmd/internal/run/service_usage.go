@@ -207,7 +207,46 @@ func shouldPersistProviderUsage(providerID string, usage provideriface.TokenUsag
 	}
 }
 
-func (s *Service) recordProviderUsageSnapshot(sessionID, runID, providerID, modelName string, contextWindow, stepsCompleted int, usage provideriface.TokenUsage, principal identity.Principal, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error), billedTokens ...int64) (pebblestore.SessionTurnUsageSnapshot, pebblestore.SessionUsageSummary, *pebblestore.EventEnvelope, error) {
+// runUsageRequests collects a run's per-request receipts across its steps. It
+// is complete only while every step that reported usage carried receipts; a
+// step without them leaves the record on its reported totals rather than a
+// partial receipt sum.
+type runUsageRequests struct {
+	requests   []pebblestore.SessionUsageRequestReceipt
+	incomplete bool
+}
+
+func (r *runUsageRequests) observe(usage provideriface.TokenUsage, step int) {
+	stepRequests := pebblestore.UsageRequestReceiptsFromHistory(usage.APIUsageHistory, step)
+	if len(stepRequests) == 0 {
+		r.incomplete = true
+		return
+	}
+	r.requests = append(r.requests, stepRequests...)
+}
+
+// receipts returns the run's receipts, or nil when they do not cover it.
+func (r runUsageRequests) receipts() []pebblestore.SessionUsageRequestReceipt {
+	if r.incomplete || len(r.requests) == 0 {
+		return nil
+	}
+	return append([]pebblestore.SessionUsageRequestReceipt(nil), r.requests...)
+}
+
+// withLate returns the receipts including a late attempt's, or nil when the
+// late attempt or an earlier step reported none.
+func (r runUsageRequests) withLate(usage provideriface.TokenUsage, step int) []pebblestore.SessionUsageRequestReceipt {
+	late := pebblestore.UsageRequestReceiptsFromHistory(usage.APIUsageHistory, step)
+	if r.incomplete || len(late) == 0 {
+		return nil
+	}
+	return append(append([]pebblestore.SessionUsageRequestReceipt(nil), r.requests...), late...)
+}
+
+// recordProviderUsageSnapshot persists the run's usage record. requests, when
+// present, are the run's per-request receipts: the record's billed totals are
+// their sum and its context occupancy is the last request.
+func (s *Service) recordProviderUsageSnapshot(sessionID, runID, providerID, modelName string, contextWindow, stepsCompleted int, usage provideriface.TokenUsage, requests []pebblestore.SessionUsageRequestReceipt, principal identity.Principal, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error), billedTokens ...int64) (pebblestore.SessionTurnUsageSnapshot, pebblestore.SessionUsageSummary, *pebblestore.EventEnvelope, error) {
 	if s == nil || s.sessions == nil {
 		return pebblestore.SessionTurnUsageSnapshot{}, pebblestore.SessionUsageSummary{}, nil, errors.New("session service is not configured")
 	}
@@ -269,6 +308,7 @@ func (s *Service) recordProviderUsageSnapshot(sessionID, runID, providerID, mode
 		ServiceTier:            strings.ToLower(strings.TrimSpace(usage.ServiceTier)),
 		EstimatedCostUSD:       usage.EstimatedCostUSD,
 	}
+	pebblestore.ApplyUsageRequestReceipts(&turnUsage, requests)
 	// An explicitly reported estimate is not an invoice. Preserve the recorded
 	// account amount, but keep provenance distinct from provider-reported bills.
 	if providerID == "codex" {

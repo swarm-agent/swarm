@@ -49,13 +49,23 @@ type SessionTurnUsageSnapshot struct {
 	PriceStatus            string            `json:"price_status,omitempty"`
 	EstimatedCostUSD       float64           `json:"estimated_cost_usd,omitempty"`
 	// Conservative cost counted against daily caps while unpriced; set by the store.
-	UnpricedEstimateUSD *float64         `json:"unpriced_estimate_usd,omitempty"`
-	APIUsageRaw         map[string]any   `json:"api_usage_raw,omitempty"`
-	APIUsageRawPath     string           `json:"api_usage_raw_path,omitempty"`
-	APIUsageHistory     []map[string]any `json:"api_usage_history,omitempty"`
-	APIUsagePaths       []string         `json:"api_usage_paths,omitempty"`
-	CreatedAt           int64            `json:"created_at"`
-	UpdatedAt           int64            `json:"updated_at"`
+	UnpricedEstimateUSD *float64 `json:"unpriced_estimate_usd,omitempty"`
+	// One receipt per provider request when the provider reported each
+	// request's usage; billed totals are their sum. RequestCount counts every
+	// request, including any omitted from the bounded stored detail.
+	RequestCount                int64                        `json:"request_count,omitempty"`
+	Requests                    []SessionUsageRequestReceipt `json:"requests,omitempty"`
+	RequestsOmitted             int64                        `json:"requests_omitted,omitempty"`
+	FirstRequestInputTokens     int64                        `json:"first_request_input_tokens,omitempty"`
+	FirstRequestCacheReadTokens int64                        `json:"first_request_cache_read_tokens,omitempty"`
+	FirstRequestContextTokens   int64                        `json:"first_request_context_tokens,omitempty"`
+	NominalCostUSD              float64                      `json:"nominal_cost_usd,omitempty"`
+	APIUsageRaw                 map[string]any               `json:"api_usage_raw,omitempty"`
+	APIUsageRawPath             string                       `json:"api_usage_raw_path,omitempty"`
+	APIUsageHistory             []map[string]any             `json:"api_usage_history,omitempty"`
+	APIUsagePaths               []string                     `json:"api_usage_paths,omitempty"`
+	CreatedAt                   int64                        `json:"created_at"`
+	UpdatedAt                   int64                        `json:"updated_at"`
 }
 
 type SessionUsageSummary struct {
@@ -73,17 +83,20 @@ type SessionUsageSummary struct {
 	LastConnectedViaWS *bool   `json:"last_connected_via_websocket,omitempty"`
 	ContextWindow      int     `json:"context_window"`
 	TurnCount          int     `json:"turn_count"`
-	InputTokens        int64   `json:"input_tokens"`
-	OutputTokens       int64   `json:"output_tokens"`
-	ThinkingTokens     int64   `json:"thinking_tokens"`
-	CacheReadTokens    int64   `json:"cache_read_tokens"`
-	CacheWriteTokens   int64   `json:"cache_write_tokens"`
-	TotalTokens        int64   `json:"total_tokens"`
-	ServiceTier        string  `json:"service_tier,omitempty"`
-	EstimatedCostUSD   float64 `json:"estimated_cost_usd,omitempty"`
-	RemainingTokens    int64   `json:"remaining_tokens"`
-	LastRunID          string  `json:"last_run_id"`
-	UpdatedAt          int64   `json:"updated_at"`
+	// Provider requests across the session's receipts (one per record when a
+	// provider reports no per-request receipts).
+	RequestCount     int64   `json:"request_count"`
+	InputTokens      int64   `json:"input_tokens"`
+	OutputTokens     int64   `json:"output_tokens"`
+	ThinkingTokens   int64   `json:"thinking_tokens"`
+	CacheReadTokens  int64   `json:"cache_read_tokens"`
+	CacheWriteTokens int64   `json:"cache_write_tokens"`
+	TotalTokens      int64   `json:"total_tokens"`
+	ServiceTier      string  `json:"service_tier,omitempty"`
+	EstimatedCostUSD float64 `json:"estimated_cost_usd,omitempty"`
+	RemainingTokens  int64   `json:"remaining_tokens"`
+	LastRunID        string  `json:"last_run_id"`
+	UpdatedAt        int64   `json:"updated_at"`
 }
 
 type SessionMediaUsageRecord struct {
@@ -303,6 +316,7 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 		_, status := s.calculateReceiptCost(record)
 		record.PriceStatus = status
 	}
+	s.priceUsageRequests(&record)
 
 	unlockSession := s.store.sessionMutations.lockSessions(record.SessionID, "account:"+record.AccountScopeID)
 	defer unlockSession()
@@ -638,6 +652,7 @@ func (s *SessionStore) prepareUsageReset(sessionID string, summary SessionUsageS
 			return summary, errors.New("usage summary principal mismatch")
 		}
 		summary.TurnCount = previous.TurnCount
+		summary.RequestCount = previous.RequestCount
 		summary.EstimatedCostUSD = previous.EstimatedCostUSD
 		summary.ImageCount, summary.VideoCount, summary.SoundCount = previous.ImageCount, previous.VideoCount, previous.SoundCount
 		summary.MediaCostUSD = previous.MediaCostUSD
@@ -647,6 +662,7 @@ func (s *SessionStore) prepareUsageReset(sessionID string, summary SessionUsageS
 		summary.ServiceTier = previous.ServiceTier
 	} else {
 		summary.TurnCount = 0
+		summary.RequestCount = 0
 		summary.EstimatedCostUSD = 0
 	}
 	summary.InputTokens = 0

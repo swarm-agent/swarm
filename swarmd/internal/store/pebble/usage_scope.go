@@ -254,7 +254,10 @@ func applyScopeReceipt(total *UsageScopeTotal, receipt SessionTurnUsageSnapshot,
 		total.CacheWriteTokens += sign * clampUsageTokenCount(write)
 		total.ThinkingTokens += sign * clampUsageTokenCount(thinking)
 	}
-	total.ReceiptCount += sign
+	// A record carrying per-request receipts counts each provider request; the
+	// removal of a replaced record subtracts exactly what it added.
+	weight := usageReceiptWeight(receipt)
+	total.ReceiptCount += sign * weight
 	unknown := usageUnknownCount(receipt)
 	if sign < 0 && receipt.ScopeProjectionVersion < 3 {
 		unknown = 0
@@ -269,9 +272,13 @@ func applyScopeReceipt(total *UsageScopeTotal, receipt SessionTurnUsageSnapshot,
 	cost := float64(sign) * receipt.EstimatedCostUSD
 	switch strings.ToLower(receipt.PriceStatus) {
 	case "free":
-		total.FreeReceipts += sign
+		total.FreeReceipts += sign * weight
 	case "subscription":
-		total.SubscriptionReceipts += sign
+		total.SubscriptionReceipts += sign * weight
+		if receipt.NominalCostUSD > 0 && !strings.EqualFold(receipt.Provider, "codex") {
+			// Summed per request receipt by the store; reporting only.
+			total.NominalSubscriptionCostUSD += float64(sign) * receipt.NominalCostUSD
+		}
 		if strings.EqualFold(receipt.Provider, "codex") {
 			nominal := nominalUsageCost(receipt)
 			if sign < 0 && receipt.ScopeProjectionVersion < 2 {

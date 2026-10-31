@@ -70,13 +70,13 @@ func runProviderAttempt(ctx context.Context, runner provideriface.Runner, req pr
 		if !errors.As(err, &wait) {
 			if waited {
 				operationID := response.Usage.BudgetOperationID
-				response.Usage = mergeTokenUsage(waitingUsage, response.Usage)
+				response.Usage = mergeAttemptUsage(waitingUsage, response.Usage)
 				response.Usage.BudgetOperationID = operationID
 			}
 			return response, err
 		}
 		waited = true
-		waitingUsage = mergeTokenUsage(waitingUsage, response.Usage)
+		waitingUsage = mergeAttemptUsage(waitingUsage, response.Usage)
 		until := wait.ProviderRetryAt()
 		if onEvent != nil {
 			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventAccountWaiting, ProviderID: runner.ID(), Metadata: map[string]any{"retry_at": until.UTC().Format(time.RFC3339)}})
@@ -90,6 +90,22 @@ func runProviderAttempt(ctx context.Context, runner provideriface.Runner, req pr
 		case <-timer.C:
 		}
 	}
+}
+
+// mergeAttemptUsage joins the usage of attempts that were all spent on one
+// step. Unlike mergeTokenUsage it keeps every attempt's per-request history,
+// so request receipts still sum to the merged totals.
+func mergeAttemptUsage(previous, next provideriface.TokenUsage) provideriface.TokenUsage {
+	merged := mergeTokenUsage(previous, next)
+	history := append(cloneUsageHistory(previous.APIUsageHistory), cloneUsageHistory(next.APIUsageHistory)...)
+	paths := append(cloneUsagePaths(previous.APIUsagePaths), cloneUsagePaths(next.APIUsagePaths)...)
+	if len(history) > 0 {
+		merged.APIUsageHistory = history
+	}
+	if len(paths) > 0 {
+		merged.APIUsagePaths = paths
+	}
+	return merged
 }
 
 func runProviderAttemptOnce(

@@ -3697,6 +3697,7 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			"has_usage_summary":  hasSummary,
 			"usage_summary":      summaryPayload,
 			"turn_usage_records": turns,
+			"context_growth":     pebblestore.SessionContextGrowth(turns),
 		})
 		return
 	}

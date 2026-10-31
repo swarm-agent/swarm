@@ -3336,11 +3336,16 @@ func (s *Server) sessionsV3PrimaryUsageResponse(principal identity.Principal, se
 	if hasSummary {
 		summaryPayload = summary
 	}
+	turns, err := s.sessions.ListTurnUsage(sessionID, sessionUsageContextGrowthLimit)
+	if err != nil {
+		return nil, false, err
+	}
 	return map[string]any{
 		"ok":                true,
 		"session_id":        session.ID,
 		"has_usage_summary": hasSummary,
 		"usage_summary":     summaryPayload,
+		"context_growth":    pebblestore.SessionContextGrowth(turns),
 	}, true, nil
 }
 
