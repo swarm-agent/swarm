@@ -136,14 +136,17 @@ func TestScopeRoleAndBuiltinAgentSteps(t *testing.T) {
 	if err := valid(Automation{Scope: Scope{Folder: folder, Job: "task/proj-1/task-1"}}); err != nil {
 		t.Fatalf("a task job id as scope.job: %v", err)
 	}
-	coderFlow := Automation{Enabled: true, When: WhenSucceeded, Scope: Scope{Folder: folder, Role: "coder"}}
+	// A job-end workflow always has steps (only a trigger-only workflow,
+	// with on, may have none, and Matches never matches one to a job end).
+	steps := []Step{{ID: "summary", Type: StepAgent, Worker: "swarm", Brief: "Summarize the change."}}
+	coderFlow := Automation{Enabled: true, When: WhenSucceeded, Scope: Scope{Folder: folder, Role: "coder"}, Steps: steps}
 	if !coderFlow.Matches(taskResult(folder, "t1", "coder")) {
 		t.Fatal("role coder did not match the coder's task")
 	}
 	if coderFlow.Matches(taskResult(folder, "t1", "finder")) || coderFlow.Matches(workerResult(folder, "run-1")) {
 		t.Fatal("role coder matched another agent's task or a coder worker's job")
 	}
-	folderFlow := Automation{Enabled: true, When: WhenSucceeded, Scope: Scope{Folder: folder}}
+	folderFlow := Automation{Enabled: true, When: WhenSucceeded, Scope: Scope{Folder: folder}, Steps: steps}
 	if !folderFlow.Matches(taskResult(folder, "t1", "swarm")) || !folderFlow.Matches(workerResult(folder, "run-1")) {
 		t.Fatal("a folder scope must match tasks and worker jobs in the folder")
 	}
