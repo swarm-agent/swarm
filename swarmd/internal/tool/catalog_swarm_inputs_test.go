@@ -3,6 +3,10 @@ package tool
 import (
 	"reflect"
 	"testing"
+
+	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/session"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // Purpose:
@@ -101,5 +105,60 @@ func TestManageProjectsConversationDropsSwarmControlInputs(t *testing.T) {
 	}
 	if checked < 4 {
 		t.Fatalf("only %d manage_projects actions have Swarm Control inputs", checked)
+	}
+}
+
+// Purpose:
+//   - Requirement: propose_task's answer data carries swarm_run_task's
+//     answer fields under the same names and values: status (the task's
+//     status), role (its agent), title and base_branch, besides task_id,
+//     session_id, workspace_path and worktree_branch, in the compact
+//     answer the Orchestrator and Swarm Control share.
+//   - Threat/regression: a Swarm Control client losing swarm_run_task's
+//     status, role, title or base_branch when the swarm_* tool goes.
+//   - Boundary/authority: Runtime.executeManageProjects propose_task with
+//     ProposedTaskSwarmFields, through compactProjectTaskMutation.
+//   - Narrowest layer: the runtime with a real temp store and the recording
+//     lifecycle TestManageProjectsTaskMutationsAnswerCompactRow uses (no
+//     provider, no worktree service).
+func TestProposeTaskAnswersSwarmRunTaskFields(t *testing.T) {
+	db, store := openTaskViewStore(t)
+	const account, project = "acct-propose-fields", "proj-propose-fields"
+	if err := db.PutJSON(pebblestore.KeySession("s"), pebblestore.SessionSnapshot{ID: "s", AccountScopeID: account, UserID: "u"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutProject(account, &pebblestore.ProjectRecord{ID: project, Name: "P"}); err != nil {
+		t.Fatal(err)
+	}
+	rules := pebblestore.DefaultAccountPermissions()
+	rules.Tasks = "auto"
+	if _, err := db.SetAccountPermissions(account, 0, rules); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRuntime(1)
+	defer r.Close()
+	r.SetManageSessionService(session.NewService(store, nil))
+	r.SetManageProjectStore(store)
+	r.SetProjectTaskLifecycleService(&heavyLifecycle{})
+	scope := WorkspaceScope{SessionID: "s", Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u", AccountScopeID: account}}
+	raw, out, err := runManageProjects(t, r, scope, map[string]any{"action": "propose_task", "project_id": project, "title": "Keep comments in the parser", "agent": "image"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, _ := out["task"].(map[string]any)
+	if out["status"] != out["task_status"] || out["status"] == nil || out["role"] != task["agent"] || out["title"] != "Keep comments in the parser" {
+		t.Fatalf("propose_task lacks swarm_run_task's status, role or title: %s", raw)
+	}
+	for _, key := range []string{"task_id", "session_id"} {
+		if out[key] == nil || (key == "session_id" && out[key] != task["session_id"]) {
+			t.Fatalf("propose_task lacks %s: %s", key, raw)
+		}
+	}
+	record := pebblestore.ProjectTaskRecord{Status: "queued", Agent: "coder", Title: "T", BaseBranch: "dev"}
+	if got := ProposedTaskSwarmFields(record); !reflect.DeepEqual(got, map[string]any{"status": "queued", "role": "coder", "title": "T", "base_branch": "dev"}) {
+		t.Fatalf("ProposedTaskSwarmFields: %v", got)
+	}
+	if _, ok := ProposedTaskSwarmFields(pebblestore.ProjectTaskRecord{})["base_branch"]; ok {
+		t.Fatal("an empty base_branch is answered, as swarm_run_task does not")
 	}
 }

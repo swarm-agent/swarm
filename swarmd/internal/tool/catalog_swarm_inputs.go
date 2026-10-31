@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"swarm/packages/swarmd/internal/identity"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // Inputs the swarm_* tools took that their catalog action now takes under the
@@ -377,6 +378,23 @@ func CatalogConversationArgs(declared CatalogAction, control bool, args map[stri
 		if !own[key] {
 			delete(out, key)
 		}
+	}
+	return out
+}
+
+// ProposeTaskSwarmAnswerFields are swarm_run_task's answer fields that
+// propose_task's compact answer keeps under the same names (the wait fields
+// come with Swarm Control's wait_seconds, and next is the envelope's).
+var ProposeTaskSwarmAnswerFields = []string{"task_id", "status", "role", "title", "base_branch", "session_id", "workspace_path", "worktree_branch"}
+
+// ProposedTaskSwarmFields are the fields swarm_run_task answered about the
+// task it made that propose_task's data did not carry under those names:
+// status, role (the task's agent), title and base_branch, with the same
+// values. propose_task's answer adds them.
+func ProposedTaskSwarmFields(task pebblestore.ProjectTaskRecord) map[string]any {
+	out := map[string]any{"status": task.Status, "role": task.Agent, "title": task.Title}
+	if task.BaseBranch != "" {
+		out["base_branch"] = task.BaseBranch
 	}
 	return out
 }

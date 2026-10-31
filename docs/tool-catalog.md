@@ -49,10 +49,14 @@ linked machine, and the Orchestrator keeps its own watch and turn model:
   run) or `schedule_id` with `schedule_enabled`. Through Swarm Control a
   worker is active at once; the Orchestrator proposes it for acceptance.
 
-A folder environment call in the `swarm_*` shape (a `project` or
-`workspace`, no `workspace_path`, `include_log` or `reset`) runs
-`swarm_get_environment`'s or `swarm_set_environment`'s handler; a folder
-named by `workspace_path` runs the folder environment service. `get_task` and
+A folder environment read in the `swarm_*` shape (a `project` or
+`workspace`, no `workspace_path`, or `include_log`) runs
+`swarm_get_environment`'s handler; a folder named by `workspace_path` runs the
+folder environment service. `update_environment` always merges, whichever
+way the folder is named: only the fields given change, through one merge
+(`UpdateSandboxEnvironment`). `replace: true` sets the whole definition
+instead: it needs `base_image`, clears `setup` and `env` not given, and does
+not go with `append_setup`, `unset_env`, `rebuild` or `reset`. `get_task` and
 `inspect` stay the answers the Orchestrator and Swarm Control share, so
 `swarm_task_result`'s and `swarm_get_worker`'s flat fields are read from
 their record there (`data.task`, `data.worker`).
@@ -69,9 +73,12 @@ Those answers are not compared by execution:
 `TestEveryUnprobedSwarmAnswerIsCheckedStatically` checks that the `swarm_*`
 tool runs the named handler and that the catalog code serving the action
 calls that same handler. `swarm_run_task` and `swarm_integrate_task` are
-served by the Orchestrator's own `propose_task` and `integrate_task`, so
-their answer fields are only mapped to where the catalog's data has them,
-read from the source.
+served by the Orchestrator's own `propose_task` and `integrate_task`; the
+test reads the `swarm_*` answer's field names from its handler's source and
+requires each in the catalog answer under the same name
+(`tool.ProposeTaskSwarmAnswerFields`, and the maps `integrateProjectTask`
+returns). `swarmAnswerUnprobed` only says why a pair has no probe; a field
+the catalog does not return is a `swarmCatalogDrops` entry.
 The filter is `tool.CatalogConversationArgs`: a conversation's call drops an
 action's control inputs before it runs here or goes to a linked machine,
 which runs a linked call as a Swarm Control one.

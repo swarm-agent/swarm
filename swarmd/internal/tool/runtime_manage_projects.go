@@ -1077,6 +1077,9 @@ func (r *Runtime) manageProjectsAnswer(ctx context.Context, scope WorkspaceScope
 		response["task_id"] = task.ID
 		response["project_id"] = projectID
 		response["task_status"] = task.Status
+		for key, value := range ProposedTaskSwarmFields(task) {
+			response[key] = value
+		}
 		if task.PlanDocument != nil {
 			response["plan_document"] = task.PlanDocument
 		}

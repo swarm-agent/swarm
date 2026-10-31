@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -217,25 +218,11 @@ var swarmAnswerUnprobed = map[string]swarmUnprobed{
 	"swarm_request_media":        {reason: "a media job runs a media model, and none is configured", handler: "controlMCPRequestMedia", servedBy: "catalogSwarmHandlers"},
 	"swarm_design":               {reason: "a design runs the designer's model provider", handler: "controlMCPDesign", servedBy: "catalogSwarmHandlers"},
 	// propose_task and integrate_task are the Orchestrator's own actions,
-	// not the swarm_* handlers: where each swarm_* answer field is.
-	"swarm_run_task": {reason: "a task needs the worktree service and the router's model provider", answer: map[string]string{
-		"task_id":         "data.task_id",
-		"session_id":      "data.session_id",
-		"status":          "data.task_status (and data.task.status)",
-		"workspace_path":  "data.workspace_path",
-		"worktree_branch": "data.worktree_branch",
-		"base_branch":     "data.task.base_branch",
-		"role":            "data.task.agent (role is the agent, as swarm_task_result.answer.role)",
-		"title":           "data.task.title",
-		"settled":         "with wait_seconds (Swarm Control): swarm_wait_task's answer merged into data",
-		"waited_seconds":  "as settled",
-		"next":            "the envelope's next",
-	}},
-	"swarm_integrate_task": {reason: "integration needs a task with a real worktree branch, which the worktree service makes", answer: map[string]string{
-		"status":      "data.status (IntegrateProjectTask's result, copied into the answer)",
-		"task":        "data.task (the whole task record; swarm_integrate_task answers its summary)",
-		"integration": "data's integration fields from the same IntegrateProjectTask result",
-	}},
+	// not the swarm_* handlers: the swarm_* answer's field names (read from
+	// its handler) are the catalog answer's (read from the code that makes
+	// it).
+	"swarm_run_task":       {reason: "a task needs the worktree service and the router's model provider", swarmAnswer: "controlMCPRunTask", catalogFields: tool.ProposeTaskSwarmAnswerFields},
+	"swarm_integrate_task": {reason: "integration needs a task with a real worktree branch, which the worktree service makes", swarmAnswer: "controlMCPIntegrate", catalogAnswer: "integrateProjectTask"},
 }
 
 // swarmUnprobed is why a pair has no compared answer. refusedByDesign: the
@@ -246,7 +233,13 @@ type swarmUnprobed struct {
 	refusedByDesign bool
 	handler         string
 	servedBy        string
-	answer          map[string]string
+	// swarmAnswer is the api function that builds the swarm_* answer (its
+	// out map); catalogFields, or the keys of the maps catalogAnswer
+	// returns, are the catalog answer's fields. Every swarm_* field but
+	// next (the envelope's) must be one of them.
+	swarmAnswer   string
+	catalogFields []string
+	catalogAnswer string
 }
 
 // Purpose:
@@ -607,14 +600,119 @@ func TestEveryUnprobedSwarmAnswerIsCheckedStatically(t *testing.T) {
 			if !called {
 				t.Errorf("%s: the catalog code %s does not run %s", name, unprobed.servedBy, unprobed.handler)
 			}
-		case len(unprobed.answer) > 0:
-			for field, where := range unprobed.answer {
-				if strings.TrimSpace(field) == "" || strings.TrimSpace(where) == "" {
-					t.Errorf("%s: answer field %q has no place", name, field)
+		case unprobed.swarmAnswer != "":
+			swarmFn, ok := declarations[unprobed.swarmAnswer].(*ast.FuncDecl)
+			if !ok {
+				t.Errorf("%s: %s is not a function in the api package", name, unprobed.swarmAnswer)
+				continue
+			}
+			catalog := map[string]bool{}
+			for _, field := range unprobed.catalogFields {
+				catalog[field] = true
+			}
+			if unprobed.catalogAnswer != "" {
+				catalogFn, ok := declarations[unprobed.catalogAnswer].(*ast.FuncDecl)
+				if !ok {
+					t.Errorf("%s: %s is not a function in the api package", name, unprobed.catalogAnswer)
+					continue
+				}
+				for field := range returnedMapKeys(catalogFn) {
+					catalog[field] = true
+				}
+			}
+			fields := answerMapKeys(swarmFn, "out")
+			if len(fields) == 0 {
+				t.Errorf("%s: no answer fields read from %s", name, unprobed.swarmAnswer)
+			}
+			for field := range fields {
+				if field != "next" && !catalog[field] {
+					t.Errorf("%s answers %s, which the catalog answer lacks", name, field)
 				}
 			}
 		default:
 			t.Errorf("%s is unprobed with neither a shared handler nor a mapped answer", name)
 		}
 	}
+}
+
+// answerMapKeys are the string keys a function puts in its answer map
+// variable: a map literal or controlMCPPick assigned to it, and index
+// assignments on it.
+func answerMapKeys(fn *ast.FuncDecl, variable string) map[string]bool {
+	keys := map[string]bool{}
+	literal := func(expr ast.Expr) (string, bool) {
+		lit, ok := expr.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return "", false
+		}
+		text, err := strconv.Unquote(lit.Value)
+		return text, err == nil
+	}
+	mapKeys := func(expr ast.Expr) {
+		if composite, ok := expr.(*ast.CompositeLit); ok {
+			for _, element := range composite.Elts {
+				if pair, ok := element.(*ast.KeyValueExpr); ok {
+					if key, ok := literal(pair.Key); ok {
+						keys[key] = true
+					}
+				}
+			}
+		}
+		if call, ok := expr.(*ast.CallExpr); ok {
+			if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "controlMCPPick" {
+				for _, arg := range call.Args[1:] {
+					if key, ok := literal(arg); ok {
+						keys[key] = true
+					}
+				}
+			}
+		}
+	}
+	ast.Inspect(fn, func(node ast.Node) bool {
+		assign, ok := node.(*ast.AssignStmt)
+		if !ok || len(assign.Lhs) != len(assign.Rhs) {
+			return true
+		}
+		for i, lhs := range assign.Lhs {
+			switch target := lhs.(type) {
+			case *ast.Ident:
+				if target.Name == variable {
+					mapKeys(assign.Rhs[i])
+				}
+			case *ast.IndexExpr:
+				if ident, ok := target.X.(*ast.Ident); ok && ident.Name == variable {
+					if key, ok := literal(target.Index); ok {
+						keys[key] = true
+					}
+				}
+			}
+		}
+		return true
+	})
+	return keys
+}
+
+// returnedMapKeys are the string keys of the map literals a function
+// returns.
+func returnedMapKeys(fn *ast.FuncDecl) map[string]bool {
+	keys := map[string]bool{}
+	ast.Inspect(fn, func(node ast.Node) bool {
+		ret, ok := node.(*ast.ReturnStmt)
+		if !ok || len(ret.Results) == 0 {
+			return true
+		}
+		if composite, ok := ret.Results[0].(*ast.CompositeLit); ok {
+			for _, element := range composite.Elts {
+				if pair, ok := element.(*ast.KeyValueExpr); ok {
+					if lit, ok := pair.Key.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+						if key, err := strconv.Unquote(lit.Value); err == nil {
+							keys[key] = true
+						}
+					}
+				}
+			}
+		}
+		return true
+	})
+	return keys
 }

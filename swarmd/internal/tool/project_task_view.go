@@ -802,7 +802,7 @@ func compactProjectTaskMutation(response map[string]any) map[string]any {
 		return response
 	}
 	out := map[string]any{}
-	for _, key := range []string{"tool", "action", "status", "project_id", "task_id", "task_status"} {
+	for _, key := range append([]string{"tool", "action", "project_id", "task_status"}, ProposeTaskSwarmAnswerFields...) {
 		if value, ok := response[key]; ok {
 			out[key] = value
 		}
