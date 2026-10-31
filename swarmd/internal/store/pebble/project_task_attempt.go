@@ -324,9 +324,10 @@ func (s *SessionStore) ReserveTaskFollowupWithRepositories(account, project, tas
 		if origin != "" {
 			t.OriginSessionID = origin
 		}
-		a := ProjectTaskAttempt{ID: id, ClientRequestID: key, PayloadHash: hash, RequestRevision: revision, UserID: user, Request: request, SessionID: "task-followup-" + id, RunID: "desktop-v3-run:task-followup-" + id, Role: "swarm", CreatedAt: now, Status: "in_progress", LaunchState: ProjectTaskAttemptLaunchReserved, Recovery: recovery, RepositoryContinuations: append([]ProjectTaskRepositoryContinuation(nil), repositories...)}
+		agent := FollowupTaskAgent(t.Agent)
+		a := ProjectTaskAttempt{ID: id, ClientRequestID: key, PayloadHash: hash, RequestRevision: revision, UserID: user, Request: request, SessionID: "task-followup-" + id, RunID: "desktop-v3-run:task-followup-" + id, Role: agent, CreatedAt: now, Status: "in_progress", LaunchState: ProjectTaskAttemptLaunchReserved, Recovery: recovery, RepositoryContinuations: append([]ProjectTaskRepositoryContinuation(nil), repositories...)}
 		t.Attempts = append(t.Attempts, a)
-		t.ActiveAttemptID, t.SessionID, t.Status, t.Agent = id, a.SessionID, "in_progress", "swarm"
+		t.ActiveAttemptID, t.SessionID, t.Status, t.Agent = id, a.SessionID, "in_progress", agent
 		t.WorkspacePath = t.SourceWorkspace.Path
 		t.WorktreeBranch, t.WorktreeName, t.BaseBranch, t.BaseCommit = "agent/followup-"+id, "followup-"+id, "", ""
 		if recovery != nil {
@@ -341,7 +342,12 @@ func (s *SessionStore) ReserveTaskFollowupWithRepositories(account, project, tas
 		}
 		t.PlanBinding, t.PlanDocument, t.TaskProgram, t.TaskProgramStatus = nil, nil, nil, nil
 		t.TaskProgramID, t.FullPlanMarkdown, t.PlanSummary, t.FeatureSize = "", "", "", "small"
-		t.OutcomeType, t.Tier = "general", "direct"
+		// A kept agent keeps its outcome (a coder still delivers code, a
+		// finder a report); Swarm's continuation is a general task.
+		if agent == "swarm" {
+			t.OutcomeType = "general"
+		}
+		t.Tier = "direct"
 		t.WorkerID, t.WorkerName, t.WorkerRunID, t.AutomationID = "", "", "", ""
 		// Carry only authenticated source identities, not prior execution bindings.
 		t.ProgramSources = sources
@@ -354,6 +360,20 @@ func (s *SessionStore) ReserveTaskFollowupWithRepositories(account, project, tas
 		t.Revision++
 		return nil
 	})
+}
+
+// FollowupTaskAgent is the agent a task keeps through a follow-up. A
+// follow-up is a message to the same task: Swarm's own session agents
+// (swarm, coder, finder, designer) keep their identity, so the task's role,
+// its workflow scope and the workflows that apply to it do not change. Only
+// tasks whose agent cannot run a follow-up session itself (media, reviewer,
+// plan, custom or unset) are continued by Swarm, as before.
+func FollowupTaskAgent(agent string) string {
+	switch agent = strings.TrimSpace(agent); agent {
+	case "swarm", "coder", "finder", "designer":
+		return agent
+	}
+	return "swarm"
 }
 
 // TaskAttemptPage bounds returned history without trimming durable attempts.

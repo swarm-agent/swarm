@@ -142,7 +142,11 @@ func (s *Server) taskJobResult(ctx context.Context, account, projectID, taskID, 
 	head, base := controlMCPString(view, "head"), controlMCPString(view, "base_commit")
 	worktree := strings.TrimSpace(task.WorkspacePath)
 	if !controlMCPCommitID.MatchString(head) || !controlMCPCommitID.MatchString(base) || worktree == "" || (filepath.Clean(worktree) == filepath.Clean(out.Folder) && controlMCPString(view, "delivery_state") != "in_folder") {
-		return out, nil // no commits in a worktree of its own
+		// No commits in a worktree of its own. Only a positively assessed
+		// empty lane says so, so a review step skips it instead of failing
+		// on a missing head; an unread state still reaches the reviewer.
+		out.NoCommits = taskViewAssessedEmpty(view)
+		return out, nil
 	}
 	g, err := taskResultGit(ctx, worktree, base, head)
 	if err != nil {
@@ -151,8 +155,21 @@ func (s *Server) taskJobResult(ctx context.Context, account, projectID, taskID, 
 	g.Branch, g.BaseBranch = task.WorktreeBranch, task.BaseBranch
 	if len(g.Commits) > 0 {
 		out.Git = g
+	} else if head == base || taskViewAssessedEmpty(view) {
+		// Read with Git: its head is its base, so nothing was committed.
+		out.NoCommits = true
 	}
 	return out, nil
+}
+
+// taskViewAssessedEmpty reports a task result whose delivery assessment
+// positively found no commits (empty) or that delivers only a report.
+func taskViewAssessedEmpty(view map[string]any) bool {
+	switch controlMCPString(view, "delivery_state") {
+	case "empty", "report_only":
+		return true
+	}
+	return false
 }
 
 // taskResultGit lists a task's commits (full ids) and changed files from base
