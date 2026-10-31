@@ -345,7 +345,11 @@ Swarm Control caller's own key narrowed to the scopes it holds, a link's
 scopes, or a conversation's route scopes and level, never wider; a task's
 session is refused. With `machine` it runs on the linked machine's own
 service through `POST /v3/catalog-actions/{tool}/{action}`, which serves only
-the actions that reach a linked machine.
+the actions that reach a linked machine. The linked work rule applies: `off` refuses
+every linked action; under `ask` a conversation's change there (a media job
+or a design) is refused with the reason, since these tools have no approval
+prompt for it yet, while reads run and a Swarm Control caller's person
+approves in their own chat (`TestStage6LinkedChangesUnderAskAndOff`).
 
 ## The envelope
 

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"strings"
 	"testing"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
@@ -131,4 +132,47 @@ func (h *catalogParityHarness) seedStage6(t *testing.T) {
 		h.home.s.uiSettings = uisettings.NewService(pebblestore.NewUISettingsStore(db))
 	}
 	h.runtime.SetCustomAgentLifecycleService(h.home.s)
+}
+
+// Purpose:
+//   - Requirement: under linked work ask, a conversation's media generation
+//     or design on the linked machine (work that costs money there) waits
+//     for the person, and these tools have no approval prompt for it yet,
+//     so it is refused at home with the reason and never reaches the
+//     machine; reads still run, a Swarm Control caller (whose person
+//     approves in their own chat) reaches the machine, and off refuses
+//     every linked action on both surfaces.
+//   - Threat/regression: the permission gate's linked rule names only the
+//     older catalog tools, so without this the Orchestrator could start
+//     paid work on an ask machine with no one asked.
+//   - Boundary/authority: Server.ManageCatalogAction (ask) and
+//     CallFleetWork (off), via the Orchestrator's runtime and
+//     controlMCPCall.callTool over the linked parity harness.
+//   - Narrowest layer: the two real entry points over in-process daemons.
+func TestStage6LinkedChangesUnderAskAndOff(t *testing.T) {
+	h := newCatalogParityHarness(t)
+	fleetActivityTestSetWork(t, h.home, "box", pebblestore.RuleAsk)
+	design := map[string]any{"action": "create", "machine": "box", "brief": "A landing page", "project": "no-such-project"}
+	media := map[string]any{"action": "generate", "machine": "box", "kind": "image", "brief": "a red square", "project": "no-such-project"}
+	for name, args := range map[string]map[string]any{"manage_designs": design, "manage_media": media} {
+		if _, err := h.orchestratorTool(t, name, args); err == nil || !strings.Contains(err.Error(), "linked.box.work is ask") {
+			t.Fatalf("Orchestrator %s on an ask machine: %v", name, err)
+		}
+		// Swarm Control reaches the machine, which refuses the unknown
+		// project: the call was not held at home.
+		if _, refused := h.controlTool(t, catalogParityFullKey, name, args); !strings.Contains(refused, "linked machine box refused") || !strings.Contains(refused, "no-such-project") {
+			t.Fatalf("Swarm Control %s on an ask machine did not reach it: %q", name, refused)
+		}
+	}
+	if _, err := h.orchestratorTool(t, "manage_projects", map[string]any{"action": "read_task_file", "machine": "box", "project_id": "remote-project", "task_id": "t1"}); err == nil || strings.Contains(err.Error(), "is ask") {
+		t.Fatalf("a read on an ask machine was held, or answered without its machine's refusal: %v", err)
+	}
+	fleetActivityTestSetWork(t, h.home, "box", pebblestore.RuleOff)
+	read := map[string]any{"action": "models", "machine": "box"}
+	if _, err := h.orchestratorTool(t, "manage_media", read); err == nil || !strings.Contains(err.Error(), "linked.box.work is off") {
+		t.Fatalf("Orchestrator read on an off machine: %v", err)
+	}
+	if _, refused := h.controlTool(t, catalogParityFullKey, "manage_media", read); !strings.Contains(refused, "linked.box.work is off") {
+		t.Fatalf("Swarm Control read on an off machine: %q", refused)
+	}
 }

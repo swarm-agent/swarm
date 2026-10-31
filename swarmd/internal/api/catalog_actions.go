@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"swarm/packages/swarmd/internal/identity"
+	store "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
 
@@ -134,6 +135,20 @@ func (s *Server) ManageCatalogAction(ctx context.Context, p identity.Principal, 
 	if machine := controlMCPString(args, "machine"); machine != "" {
 		if declared.Reach != tool.CatalogReachAny {
 			return nil, fmt.Errorf("%s %s runs on this machine only", toolName, declared.Action)
+		}
+		if !control && declared.Level != tool.CatalogLevelRead {
+			// Under linked work ask, a conversation's change there (media
+			// or a design: work that costs money on that machine) needs
+			// the person's approval, and these tools have no approval
+			// prompt for it: refused with the reason, as manage_jobs does.
+			// A Swarm Control caller's person approves in their own chat.
+			access, err := s.sessions.Store().GetAccountPermissions(p.AccountScopeID)
+			if err != nil {
+				return nil, err
+			}
+			if access.Link(machine).Work == store.RuleAsk {
+				return nil, fmt.Errorf("linked.%s.work is ask: %s %s starts work on %s only with the person's approval, and %s has no approval prompt for it; the person can set the rule to auto on the Permissions page", machine, toolName, declared.Action, machine, toolName)
+			}
 		}
 		return s.CallFleetWork(ctx, p, machine, toolName, declared.Action, clean)
 	}
