@@ -86,6 +86,26 @@ func folderEnvironmentArgs(args map[string]any) (map[string]any, error) {
 	return sent, nil
 }
 
+// folderEnvironmentSwarmShaped reports a get_environment or
+// update_environment call in the shape swarm_get_environment and
+// swarm_set_environment took: a project's folder (project, workspace, or no
+// workspace_path), the build log, or reset. Those run the swarm_* handlers
+// (CatalogActionService); a folder named by workspace_path runs here.
+func folderEnvironmentSwarmShaped(action string, args map[string]any) bool {
+	if action != FolderEnvironmentGet && action != FolderEnvironmentUpdate {
+		return false
+	}
+	if strings.TrimSpace(asString(args["workspace_path"])) == "" {
+		return true
+	}
+	for _, key := range []string{"project", "workspace"} {
+		if strings.TrimSpace(asString(args[key])) != "" {
+			return true
+		}
+	}
+	return asBool(args["include_log"]) || asBool(args["reset"])
+}
+
 func (r *Runtime) executeFolderEnvironments(ctx context.Context, scope WorkspaceScope, action string, args map[string]any) (string, error) {
 	if r == nil || r.sessions == nil || !scope.Principal.Valid() || scope.Principal.Type != identity.PrincipalTypeUser {
 		return "", errors.New("folder environments require an authenticated session")
@@ -125,6 +145,26 @@ func (r *Runtime) executeFolderEnvironments(ctx context.Context, scope Workspace
 	sent, err := folderEnvironmentArgs(args)
 	if err != nil {
 		return "", err
+	}
+	if machine == "" && folderEnvironmentSwarmShaped(action, sent) {
+		// The swarm_get_environment and swarm_set_environment shape (a
+		// project's folder, the log, reset): their own handlers.
+		call := map[string]any{"action": action}
+		for key, value := range sent {
+			call[key] = value
+		}
+		declared, _ := manageProjectsDeclared().Action(action)
+		answer, err := r.catalogServiceAnswer(ctx, scope, manageProjectsDeclared(), declared, call)
+		if err != nil {
+			return "", err
+		}
+		out, err := json.Marshal(map[string]any{"tool": "manage_projects", "action": action, "data": json.RawMessage(answer)})
+		return string(out), err
+	}
+	if action == FolderEnvironmentUpdate && asBool(sent["rebuild"]) {
+		// rebuild on a folder named by workspace_path is rebuild_environment.
+		action = FolderEnvironmentRebuild
+		delete(sent, "rebuild")
 	}
 	raw, err := service.ManageFolderEnvironment(ctx, scope.Principal, machine, action, sent)
 	if err != nil {

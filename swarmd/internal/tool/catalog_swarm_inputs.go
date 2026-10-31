@@ -3,8 +3,11 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
+
+	"swarm/packages/swarmd/internal/identity"
 )
 
 // Inputs the swarm_* tools took that their catalog action now takes under the
@@ -204,4 +207,150 @@ func truncateRunes(text string, limit int) string {
 		return text
 	}
 	return string(runes[:limit])
+}
+
+// ControlSwarmAnswers is implemented by the API server: it runs a swarm_*
+// tool's own handler (swarm_get_project, swarm_wait_task)
+// or its model check for a Swarm Control caller, under that caller's key.
+// A catalog action takes those tools' Swarm Control inputs (held waits, a
+// task's model) and answers their fields through it.
+type ControlSwarmAnswers interface {
+	ControlSwarmAnswer(ctx context.Context, p identity.Principal, who, swarmTool string, args map[string]any) (map[string]any, error)
+	ControlModelPreference(ctx context.Context, p identity.Principal, who string, model map[string]any) (map[string]any, error)
+}
+
+// controlSwarmAnswers is the API server's ControlSwarmAnswers and the Swarm
+// Control caller it runs for.
+func (r *Runtime) controlSwarmAnswers(scope WorkspaceScope) (ControlSwarmAnswers, string, error) {
+	who, err := catalogServiceCaller(scope, "manage_projects")
+	if err != nil {
+		return nil, "", err
+	}
+	service, ok := r.getWorkflowLifecycleService().(ControlSwarmAnswers)
+	if !ok {
+		return nil, "", errors.New("manage_projects: Swarm Control options are unavailable on this machine")
+	}
+	return service, who, nil
+}
+
+// manageProjectsControlBefore applies a Swarm Control caller's inputs that
+// act before the action runs, here (not through a link, whose machine runs
+// the call as a Swarm Control one itself):
+//   - get wait_seconds (swarm_get_project): wait until project.md is written;
+//     the answer's waited is kept for the reply;
+//   - propose_task model (swarm_run_task): checked as that tool checks it and
+//     given to the task as its provider, model, thinking and service tier.
+func (r *Runtime) manageProjectsControlBefore(ctx context.Context, scope WorkspaceScope, action string, args map[string]any) (map[string]any, map[string]any, error) {
+	if !scope.ControlCaller || strings.TrimSpace(asString(args["machine"])) != "" {
+		return args, nil, nil
+	}
+	switch action {
+	case "get":
+		seconds := asInt(args["wait_seconds"], 0)
+		if seconds <= 0 {
+			return args, nil, nil
+		}
+		project := strings.TrimSpace(asString(args["project_id"]))
+		if project == "" {
+			project = strings.TrimSpace(asString(args["id"]))
+		}
+		service, who, err := r.controlSwarmAnswers(scope)
+		if err != nil {
+			return nil, nil, err
+		}
+		waited, err := service.ControlSwarmAnswer(ctx, scope.Principal, who, "swarm_get_project", map[string]any{"project_id": project, "wait_seconds": float64(seconds)})
+		return args, waited, err
+	case "propose_task", "create_task":
+		model, ok := args["model"].(map[string]any)
+		if !ok {
+			return args, nil, nil
+		}
+		service, who, err := r.controlSwarmAnswers(scope)
+		if err != nil {
+			return nil, nil, err
+		}
+		preference, err := service.ControlModelPreference(ctx, scope.Principal, who, model)
+		if err != nil {
+			return nil, nil, err
+		}
+		out := make(map[string]any, len(args)+3)
+		for key, value := range args {
+			if key != "model" {
+				out[key] = value
+			}
+		}
+		for key, value := range preference {
+			out[key] = value
+		}
+		return out, nil, nil
+	}
+	return args, nil, nil
+}
+
+// manageProjectsControlAfter adds to a Swarm Control caller's answer the
+// fields its swarm_* tool answered, from that tool's own handler; the
+// action's own fields win:
+//   - get: what swarm_get_project answered while it waited (waited);
+//   - wait_tasks for one task: swarm_wait_task's answer read at once
+//     (task_id, session_id, settled), after the action's own wait;
+//   - propose_task wait_seconds: swarm_wait_task's wait for the new task.
+func (r *Runtime) manageProjectsControlAfter(ctx context.Context, scope WorkspaceScope, action string, args map[string]any, before map[string]any, answer string) (string, error) {
+	if !scope.ControlCaller || strings.TrimSpace(asString(args["machine"])) != "" {
+		return answer, nil
+	}
+	if _, wired := r.getWorkflowLifecycleService().(ControlSwarmAnswers); !wired && before == nil {
+		// A runtime without the API server (no swarm_* handlers to run)
+		// answers with the action's own fields. Inputs the caller gave
+		// (waits, a model) still fail without it, in the before step.
+		return answer, nil
+	}
+	var object map[string]any
+	if err := json.Unmarshal([]byte(answer), &object); err != nil {
+		return answer, nil
+	}
+	extra := before
+	project := strings.TrimSpace(asString(args["project_id"]))
+	var err error
+	switch action {
+	case "wait_tasks":
+		ids, _ := projectTaskWatchIDs(args)
+		if len(ids) != 1 {
+			return answer, nil
+		}
+		extra, err = r.controlSwarmAnswer(ctx, scope, "swarm_wait_task", map[string]any{"project_id": project, "task_id": ids[0], "wait_seconds": float64(0)})
+	case "propose_task", "create_task":
+		seconds := asInt(args["wait_seconds"], 0)
+		taskID := strings.TrimSpace(asString(object["task_id"]))
+		if seconds <= 0 || taskID == "" {
+			return answer, nil
+		}
+		if project == "" {
+			project = strings.TrimSpace(asString(object["project_id"]))
+		}
+		extra, err = r.controlSwarmAnswer(ctx, scope, "swarm_wait_task", map[string]any{"project_id": project, "task_id": taskID, "wait_seconds": float64(seconds)})
+	}
+	if err != nil {
+		return "", err
+	}
+	if len(extra) == 0 {
+		return answer, nil
+	}
+	for key, value := range extra {
+		if _, own := object[key]; !own {
+			object[key] = value
+		}
+	}
+	raw, err := json.Marshal(object)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+func (r *Runtime) controlSwarmAnswer(ctx context.Context, scope WorkspaceScope, swarmTool string, args map[string]any) (map[string]any, error) {
+	service, who, err := r.controlSwarmAnswers(scope)
+	if err != nil {
+		return nil, err
+	}
+	return service.ControlSwarmAnswer(ctx, scope.Principal, who, swarmTool, args)
 }

@@ -402,11 +402,18 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		args = withAction
 	}
 	args = manageProjectsSwarmArgs(args)
+	args, before, err := r.manageProjectsControlBefore(ctx, scope, action, args)
+	if err != nil {
+		return "", err
+	}
 	answer, err := r.manageProjectsAnswer(ctx, scope, args)
 	if err != nil {
 		return "", err
 	}
 	if answer, err = r.manageProjectsSwarmExtras(ctx, scope, action, args, answer); err != nil {
+		return "", err
+	}
+	if answer, err = r.manageProjectsControlAfter(ctx, scope, action, args, before, answer); err != nil {
 		return "", err
 	}
 	return r.manageProjectsEnvelope(action, args, answer)

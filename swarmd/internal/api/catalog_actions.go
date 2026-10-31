@@ -61,6 +61,11 @@ var catalogSwarmHandlers = map[string]map[string]catalogSwarmHandler{
 		// update with nothing to change only (tool.ProjectContextRetryCall);
 		// every other update is the Orchestrator's own project edit.
 		"update": catalogProjectContextRetry,
+		// The swarm_get_environment and swarm_set_environment shape only
+		// (tool.folderEnvironmentSwarmShaped); a folder named by
+		// workspace_path is the folder environment service's.
+		tool.FolderEnvironmentGet:    catalogSwarmEnvironment(controlMCPGetEnvironment),
+		tool.FolderEnvironmentUpdate: catalogSwarmEnvironment(controlMCPSetEnvironment),
 	},
 }
 
@@ -77,7 +82,11 @@ var catalogConversationScopes = map[string][]string{
 // reads the project before it writes project.md again, as
 // swarm_retry_project_context does.
 var catalogConversationActionScopes = map[string]map[string][]string{
-	"manage_projects": {"update": {"projects:read", "projects:write"}},
+	"manage_projects": {
+		"update":                     {"projects:read", "projects:write"},
+		tool.FolderEnvironmentGet:    {"projects:read"},
+		tool.FolderEnvironmentUpdate: {"projects:read"},
+	},
 }
 
 // catalogServedAction is the declared action ManageCatalogAction serves.
@@ -199,6 +208,26 @@ func (s *Server) ManageCatalogAction(ctx context.Context, p identity.Principal, 
 		return nil, err
 	}
 	return out, nil
+}
+
+// catalogSwarmEnvironment runs swarm_get_environment's or
+// swarm_set_environment's handler: workspace_path, the catalog's folder,
+// is their workspace.
+func catalogSwarmEnvironment(handler catalogSwarmHandler) catalogSwarmHandler {
+	return func(c *controlMCPCall, args map[string]any) (any, error) {
+		call := make(map[string]any, len(args))
+		for key, value := range args {
+			if key != "workspace_path" {
+				call[key] = value
+			}
+		}
+		if controlMCPString(call, "workspace") == "" {
+			if folder := controlMCPString(args, "workspace_path"); folder != "" {
+				call["workspace"] = folder
+			}
+		}
+		return handler(c, call)
+	}
 }
 
 // catalogProjectContextRetry is manage_projects update with nothing to change:

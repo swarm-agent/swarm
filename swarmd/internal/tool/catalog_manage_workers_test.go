@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -16,8 +17,10 @@ import (
 // manageWorkersDefinitionSHA256 is the hash of the Orchestrator's
 // manage_workers definition (json.Marshal, sorted keys). The definition is a
 // prompt contract: it changes only on purpose, with this hash. Stage 7a
-// changed it on purpose: inspect takes swarm_get_worker's run_id.
-const manageWorkersDefinitionSHA256 = "2f94915df46aad231428b5434aa68b7e5f0b1b158d698cb1d28b9c41f0842be0"
+// changed it on purpose: inspect takes swarm_get_worker's run_id and list
+// swarm_list_workers' include_jobs; the swarm_* worker tools' immediate
+// inputs are Swarm Control inputs the definition does not show.
+const manageWorkersDefinitionSHA256 = "1c24b16a934d10afb01e1116600e9670bcc0fb9af0e53f6720b5f63125eae64d"
 
 // Purpose: manage_workers exists once, in the catalog. The Orchestrator's
 // definition (and its manage_automation alias) is generated from the
@@ -76,10 +79,30 @@ func TestManageWorkersCatalogGeneratesTheOrchestratorDefinition(t *testing.T) {
 		if !takesMachine {
 			t.Fatalf("%s does not take machine", action.Action)
 		}
+		// Swarm Control inputs (the swarm_* worker tools' immediate
+		// changes) are declared fields the Orchestrator's definition
+		// never shows.
+		for _, input := range action.ControlInputs {
+			if _, ok := catalog.Field(input); !ok {
+				t.Fatalf("%s: Swarm Control input %q is not a declared field", action.Action, input)
+			}
+			used[input] = true
+		}
 	}
 	for _, field := range catalog.Fields {
 		if !used[field.Name] {
 			t.Fatalf("field %q is declared but no action takes it", field.Name)
+		}
+	}
+	for _, action := range catalog.Actions {
+		for _, input := range action.ControlInputs {
+			taken := false
+			for _, other := range catalog.Actions {
+				taken = taken || slices.Contains(other.Inputs, input)
+			}
+			if !taken && properties[input] != nil {
+				t.Fatalf("%s: Swarm Control input %q is in the Orchestrator's definition", action.Action, input)
+			}
 		}
 	}
 }

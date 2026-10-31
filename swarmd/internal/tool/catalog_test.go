@@ -18,8 +18,10 @@ import (
 // changed it on purpose: get_task_changes and read_task_file (with path,
 // diff_chars, page_offset and page_digest) joined it. Stage 7a changed it on
 // purpose: the swarm_* project tools' inputs joined (session_id, brief,
-// workspace, files, project_md, include_diff and include_linked).
-const manageProjectsDefinitionSHA256 = "e3c5e82a656cebc8c8983112b67c71cb7038caebf1603087a91abaf7b9b9edb0"
+// workspace, files, project_md, include_diff and include_linked, and the
+// folder environments' project, workspace, include_log and flat definition
+// fields); held waits and a task's model are Swarm Control inputs.
+const manageProjectsDefinitionSHA256 = "243e8a5b878397d77ef562a6a58f63d843d90e1d08e1811d7811a930e42f8aef"
 
 // Purpose: the catalog is the only place manage_projects exists. The
 // Orchestrator's definition is generated from the declarations and stays the
