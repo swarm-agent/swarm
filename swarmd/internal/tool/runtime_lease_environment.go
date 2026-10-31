@@ -64,7 +64,7 @@ func executeLeaseEnvironment(ctx context.Context, scope WorkspaceScope, args map
 			out["max_leases"] = info.Max
 			out["in_use"] = info.InUse
 			if info.Max <= 0 {
-				out["reason"] = "this folder has no environment set up for leases (the person's AI sets one up with swarm_set_environment and max_leases); bash runs as usual"
+				out["reason"] = "this folder has no environment set up for leases (the person's AI sets one up with manage_projects update_environment and max_leases); bash runs as usual"
 			}
 		}
 	case "lease":

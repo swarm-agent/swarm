@@ -1006,7 +1006,7 @@ func (s *Service) pendingWorkersForSession(account, sessionID string) ([]store.W
 // ValidateWorkerModelPin is the shared native/API worker pin boundary. Provider
 // readiness is account-scoped through ctx; no HTTP subrequest is involved.
 func ValidateWorkerModelPin(ctx context.Context, providers *registry.Registry, catalog *model.Service, raw any) (*store.SessionModelProfileSnapshot, error) {
-	invalid := errors.New("invalid worker model; choose a connected provider, model and supported options from swarm_list_models")
+	invalid := errors.New("invalid worker model; choose a connected provider, model and supported options from manage_setup models")
 	args, ok := raw.(map[string]any)
 	if !ok || providers == nil || catalog == nil {
 		return nil, invalid

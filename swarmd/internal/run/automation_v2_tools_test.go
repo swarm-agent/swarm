@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -80,6 +81,11 @@ func TestManageWorkersModelPinProposal(t *testing.T) {
 		_, sharedErr := ValidateWorkerModelPin(identity.ContextWithPrincipal(context.Background(), principal), s.providers, s.model, invalid)
 		if err == nil || sharedErr == nil || err.Error() != sharedErr.Error() {
 			t.Fatalf("validation mismatch: %v / %v", err, sharedErr)
+		}
+		// The refusal names the catalog action that lists models; the
+		// removed swarm_* tools are unknown to Swarm Control.
+		if !strings.Contains(err.Error(), "manage_setup models") || strings.Contains(err.Error(), "swarm_") {
+			t.Fatalf("refusal names no callable action: %v", err)
 		}
 		saved, _, getErr := s.sessions.GetWorker("account-a", w.ID)
 		if getErr != nil || saved.Revision != w.Revision || saved.PendingReview != nil || saved.ModelProfile.Action.Model != "specialist" {
