@@ -313,7 +313,9 @@ agent whose tool contract has `manage_jobs`, and Swarm Control. Every action
 runs one service function, `api.Server.ManageJobs`, which runs the same
 handlers as the `swarm_*` job tools (`swarm_list_runs`, `swarm_get_job`,
 `swarm_give_job`, `swarm_message_job`, `swarm_answer_job`,
-`swarm_deliver_job`, `swarm_stop_job`, `swarm_schedule_job`). A caller in a
+`swarm_deliver_job`, `swarm_stop_job`, `swarm_schedule_job`). `retry_now` has
+no `swarm_*` tool: it runs `api.Server.RetryLimitWaitsNow` through
+`POST /v3/provider-limit-waits/retry` (see below). A caller in a
 conversation needs the owner's grant for each change
 (`manage_jobs.<agent>.<action>`, [agent tools](agent-tools.md)) and cannot act
 on its own job or worker; a Swarm Control caller is held to its key's level
@@ -324,11 +326,12 @@ and the API scopes it holds (`tool.WithControlScopes`).
 | `list_runs` | read | `signals:read` | any |
 | `get_job` | read | `sessions:read` | any |
 | `deliveries` | read | `automations:read` or `automations:write` | any |
-| `give_job`, `message_job`, `answer_job`, `deliver_job`, `stop_job`, `schedule_job`, `rerun_failed_steps` | write | `sessions:write` (the routes behind them check their own scopes too) | any |
+| `give_job`, `message_job`, `answer_job`, `deliver_job`, `stop_job`, `schedule_job`, `rerun_failed_steps`, `retry_now` | write | `sessions:write` (the routes behind them check their own scopes too) | any |
 
 Each level is `remote.ToolScope` of the `swarm_*` tool with the same effect
 (`TestManageJobsLevelsAreTheSwarmToolsLevels`; `deliveries` takes
-`swarm_list_workflows`', `rerun_failed_steps` `swarm_deliver_job`'s). Every
+`swarm_list_workflows`', `rerun_failed_steps` `swarm_deliver_job`'s;
+`retry_now`, which has none, is write because it continues agent work). Every
 action is in the Orchestrator's definition and Swarm Control's default
 listing.
 
@@ -338,9 +341,26 @@ With `machine`, an action runs on the linked machine through
 the caller's scopes (a scoped key's, or the job scopes for the link), never
 another route. The linked work rule applies: `off` refuses every action;
 under `ask`, a conversation's `give_job`, `message_job`, `answer_job`,
-`rerun_failed_steps` and `schedule_job` there are refused with the reason,
+`rerun_failed_steps`, `schedule_job` and `retry_now` there are refused with the reason,
 since `manage_jobs` has no approval prompt for them yet (a Swarm Control
 caller's person approves in their own AI's chat).
+
+`retry_now` is for after the person fixed a provider that hit its usage limit
+(signed in to another account, added a key, picked another model): work
+waiting on that limit runs again now instead of at the reset the old provider
+stated. With `job_id` (`worker/<worker>/<run>` or `task/<project>/<task>`) it
+retries that job and the workflow steps waiting on it; without it, every
+limit-waiting worker run, project task and workflow agent step or `for_each`
+item of the caller's account on the machine, optionally only those whose
+session uses `provider`. Each one has its retry time moved to now and goes
+through the path that runs it at the reset (`rerunAfterProviderLimit` for a
+worker run, `continueProjectTaskAfterLimit` for a task, the workflow runner's
+due-step path for a step), so budget admission, the bound on waits and
+idempotency are unchanged; a retry that hits the limit again waits again.
+Nothing waiting answers `retried` 0 with a `note`; an unknown `job_id` is
+not found. Swarm does not do this by itself when credentials change: a
+Claude Code sign-in happens outside Swarm, and a saved key does not show the
+limit is gone.
 
 A job whose status is `needs_input` (a question for `answer_job`),
 `waiting_on_approval` or `pending_approval` answers with state `waiting`. A
@@ -360,7 +380,10 @@ caller must be the Orchestrator; a Swarm Control caller is held to its key's
 level and scopes and has no conversation: `create` and `propose` make a worker
 that waits for the person's acceptance in Swarm (as the Orchestrator's do), and
 `review`, `context` and `progress` need `worker_id`. `activate` is refused for
-every caller: activation is the person's acceptance.
+every caller: activation is the person's acceptance. `test` and `request` take
+`workspace` (an absolute path or a workspace id), resolved like the worker
+request routes' `workspace_path` / `workspace_id`; a worker that works in
+several workspaces needs it and is otherwise refused naming that field.
 
 | Action | Level | API scopes | Reach |
 | --- | --- | --- | --- |

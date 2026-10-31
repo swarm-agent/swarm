@@ -1798,7 +1798,11 @@ func (s *Service) dispatchWorkerTool(current store.SessionSnapshot, args map[str
 	}
 	// Keys are opaque caller identity; leave canonical validation to admission.
 	idempotencyKey, _ := args["idempotency_key"].(string)
-	req := store.WorkerRunAdmission{WorkerID: workerID, AutomationID: strings.TrimSpace(mapString(args, "automation_id")), RequestSource: source, Input: input, IdempotencyKey: idempotencyKey}
+	// workspace_id is the workspace manage_workers' workspace named, resolved
+	// by the worker service (api.Server.ManageWorkers); admission checks it
+	// is an active workspace of this account (activeWorkspace).
+	req := store.WorkerRunAdmission{WorkerID: workerID, AutomationID: strings.TrimSpace(mapString(args, "automation_id")), RequestSource: source, Input: input, IdempotencyKey: idempotencyKey,
+		WorkspaceID: strings.TrimSpace(mapString(args, "workspace_id"))}
 	if strings.TrimSpace(req.IdempotencyKey) == "" {
 		return "", errors.New("idempotency_key required")
 	}

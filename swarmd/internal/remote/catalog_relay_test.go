@@ -95,8 +95,9 @@ func TestManageWorkflowsLevelsAreTheSwarmToolsLevels(t *testing.T) {
 // with the same effect (ToolScope), so moving jobs into the catalog neither
 // widens nor narrows what a key may do: reads stay read, and giving,
 // messaging, answering, delivering, stopping, scheduling and re-running a
-// job stay write. A relay client is forwarded with its levels for
-// manage_jobs as for every catalog tool. Threat: a read key starting or
+// job stay write. retry_now has no swarm_* tool (it was added to the
+// catalog directly) and continues agent work, so it is write. A relay client
+// is forwarded with its levels for manage_jobs as for every catalog tool. Threat: a read key starting or
 // stopping work through the catalog, or a level silently changed in the
 // move. Boundary: tool.Catalog's manage_jobs declarations against ToolScope
 // and forwardTool.
@@ -107,14 +108,21 @@ func TestManageJobsLevelsAreTheSwarmToolsLevels(t *testing.T) {
 		"answer_job": "swarm_answer_job", "deliver_job": "swarm_deliver_job", "stop_job": "swarm_stop_job",
 		"schedule_job": "swarm_schedule_job",
 	}
+	catalogOnly := map[string]tool.CatalogLevel{"retry_now": tool.CatalogLevelWrite}
 	jobs, ok := tool.CatalogToolNamed("manage_jobs")
 	if !ok {
 		t.Fatal("manage_jobs is not a catalog tool")
 	}
-	if len(jobs.Actions) != len(swarmTool) {
-		t.Fatalf("manage_jobs declares %d actions; %d have a swarm_* tool", len(jobs.Actions), len(swarmTool))
+	if len(jobs.Actions) != len(swarmTool)+len(catalogOnly) {
+		t.Fatalf("manage_jobs declares %d actions; %d have a swarm_* tool and %d are catalog-only", len(jobs.Actions), len(swarmTool), len(catalogOnly))
 	}
 	for _, action := range jobs.Actions {
+		if level, ok := catalogOnly[action.Action]; ok {
+			if action.Level != level {
+				t.Fatalf("manage_jobs %s is %s, want %s", action.Action, action.Level, level)
+			}
+			continue
+		}
 		name, ok := swarmTool[action.Action]
 		if !ok {
 			t.Fatalf("%s has no swarm_* tool to take its level from (level %s)", action.Action, action.Level)

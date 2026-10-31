@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -110,6 +111,12 @@ func (s *Server) ManageWorkers(ctx context.Context, p identity.Principal, who, a
 		routed, handled, err := s.workerControlCall(ctx, p, held, declared, args)
 		if handled || err != nil {
 			return routed, err
+		}
+	}
+	if declared.Action == "request" || declared.Action == "test" {
+		var err error
+		if args, err = s.workerCatalogWorkspace(p, args); err != nil {
+			return nil, err
 		}
 	}
 	runner, ok := s.runner.(workerCatalogRunner)
@@ -334,4 +341,35 @@ func manageWorkersAction(name string) (tool.CatalogAction, bool) {
 		return tool.CatalogAction{}, false
 	}
 	return catalog.Action(name)
+}
+
+// workerCatalogWorkspace turns manage_workers' workspace (an absolute path or
+// a workspace id) into the workspace_id the run service's request and test
+// pass to admission, through the same resolution the worker request routes
+// use (resolveWorkerJobWorkspace). Admission then applies the per-job rule
+// (ResolveWorkerRunWorkspace) and requires an active workspace of this
+// account. Without workspace nothing changes: a worker with one bound
+// workspace uses it, and one that works in several is refused with
+// ErrWorkerWorkspaceRequired.
+func (s *Server) workerCatalogWorkspace(p identity.Principal, args map[string]any) (map[string]any, error) {
+	named := controlMCPString(args, "workspace")
+	out := make(map[string]any, len(args))
+	for key, value := range args {
+		if key != "workspace" && key != "workspace_id" {
+			out[key] = value
+		}
+	}
+	if named == "" {
+		return out, nil
+	}
+	id, path := named, ""
+	if filepath.IsAbs(named) {
+		id, path = "", named
+	}
+	workspaceID, err := s.resolveWorkerJobWorkspace(p, id, path)
+	if err != nil {
+		return nil, controlMCPToolFailure("workspace: %v", err)
+	}
+	out["workspace_id"] = workspaceID
+	return out, nil
 }

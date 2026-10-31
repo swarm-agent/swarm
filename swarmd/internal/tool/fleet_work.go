@@ -55,10 +55,11 @@ func FleetWorkActionAllowed(name, action string) bool {
 // the person; everything else, including stop_task, runs.
 func FleetTaskStart(name, action string) bool {
 	if name == manageJobsToolName {
-		// Giving, messaging, answering, re-running and scheduling a job
-		// start or continue agent work on the machine.
+		// Giving, messaging, answering, re-running, retrying after a
+		// provider limit and scheduling a job start or continue agent work
+		// on the machine.
 		switch action {
-		case "give_job", "message_job", "answer_job", "rerun_failed_steps", "schedule_job":
+		case "give_job", "message_job", "answer_job", "rerun_failed_steps", "schedule_job", "retry_now":
 			return true
 		}
 		return false

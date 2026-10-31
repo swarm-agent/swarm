@@ -29,7 +29,7 @@ const (
 
 // ErrWorkerWorkspaceRequired is returned when a job neither names a workspace
 // nor belongs to a worker with an approved primary binding.
-var ErrWorkerWorkspaceRequired = errors.New("this worker works in several workspaces: name the workspace")
+var ErrWorkerWorkspaceRequired = errors.New("this worker works in several workspaces: name the workspace (workspace: its absolute path or workspace id; the HTTP routes take workspace_path or workspace_id)")
 
 // NormalizeWorkerRole trims and lowercases a role and rejects unknown values.
 func NormalizeWorkerRole(role string) (string, error) {

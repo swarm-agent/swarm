@@ -178,6 +178,9 @@ var controlMCPRoutes = []string{
 	"GET v3/box/drain",
 	// Runs across every worker (swarm_list_runs; signals:read).
 	"GET v3/runs",
+	// Work waiting on a provider's usage limit retries now, once the provider
+	// was fixed (manage_jobs retry_now; sessions:write, limit_retry.go).
+	"POST v3/provider-limit-waits/retry",
 	// The agents at work here and on linked machines (swarm_agents_at_work;
 	// sessions:read, the same service as the console's read).
 	"GET v3/fleet/agents",

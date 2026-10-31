@@ -70,6 +70,7 @@ func (s *Server) registerOnboardingRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(JobDeliveriesPath, s.handleJobDeliveries)
 	mux.HandleFunc(JobDeliveriesPath+"/", s.handleJobDeliveries)
 	mux.HandleFunc(JobsPath+"/", s.handleJobs)
+	mux.HandleFunc(LimitRetryPath, s.handleLimitRetry)
 	mux.HandleFunc(WorkerActionsPath+"/", s.handleWorkerActions)
 	mux.HandleFunc(SetupActionsPath+"/", s.handleSetupActions)
 	mux.HandleFunc(CatalogActionsPath+"/", s.handleCatalogActions)

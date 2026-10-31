@@ -3,7 +3,8 @@ package tool
 // manage_jobs in the catalog: the six actions the Orchestrator had, plus
 // answer_job, deliver_job, stop_job and schedule_job, which run the same
 // functions as the swarm_* job tools (swarm_answer_job, swarm_deliver_job,
-// swarm_stop_job, swarm_schedule_job). The Orchestrator's definition
+// swarm_stop_job, swarm_schedule_job), and retry_now, which runs
+// api.Server.RetryLimitWaitsNow through POST /v3/provider-limit-waits/retry. The Orchestrator's definition
 // (manageJobsDefinition) and Swarm Control's manage_jobs tool are generated
 // from this declaration; one handler (Runtime.executeManageJobs) serves both.
 
@@ -17,7 +18,7 @@ const ManageJobsToolName = manageJobsToolName
 // with one of them is in the envelope state waiting.
 var JobsWaitingStatuses = []string{"needs_input", "waiting_on_approval", "pending_approval"}
 
-const manageJobsDescription = "Worker jobs: read runs, jobs and workflow deliveries; give a deployed worker a job, message it, answer its question, deliver (merge) or stop it, and schedule a worker that runs a job on a schedule. Mutations require an explicit owner permission grant for this agent (manage_jobs.<agent>.<action>); self-targeting is forbidden. A job waiting on a question or approval answers with state waiting. Read results over the inline limit return JSON text pages: next names the same read with page_offset and page_digest; concatenate json_page. No host files are created." + FleetWorkDescription
+const manageJobsDescription = "Worker jobs: read runs, jobs and workflow deliveries; give a deployed worker a job, message it, answer its question, deliver (merge) or stop it, retry work waiting on a provider's usage limit now once the provider is fixed, and schedule a worker that runs a job on a schedule. Mutations require an explicit owner permission grant for this agent (manage_jobs.<agent>.<action>); self-targeting is forbidden. A job waiting on a question or approval answers with state waiting. Read results over the inline limit return JSON text pages: next names the same read with page_offset and page_digest; concatenate json_page. No host files are created." + FleetWorkDescription
 
 func manageJobsFields() []CatalogField {
 	str := func(description string) map[string]any {
@@ -36,6 +37,7 @@ func manageJobsFields() []CatalogField {
 		{"answer", str("answer_job: the reply to the worker's question. It answers questions only, never approves a tool call.")},
 		{"question_id", str("answer_job: which question, when there are several (from get_job).")},
 		{"reason", str("stop_job: why it stops.")},
+		{"provider", str("retry_now without job_id: only work whose session uses this provider id.")},
 		{"schedule", map[string]any{"type": "object", "description": "schedule_job: kind interval (interval_seconds, at least 60) or cron (5-field cron and an IANA timezone).", "required": []string{"kind"}, "properties": map[string]any{
 			"kind":             map[string]any{"type": "string", "enum": []string{"interval", "cron"}},
 			"interval_seconds": map[string]any{"type": "integer", "minimum": 60},
@@ -111,6 +113,8 @@ func manageJobsCatalog() CatalogTool {
 			Description: "Cancel a running or stopped job for good; its branch and commits stay for reading."},
 		{Action: "schedule_job", Inputs: []string{"machine", "worker", "brief", "schedule", "project", "folder", "workspace", "name"}, ControlInputs: []string{"then"}, Level: write, Reach: anyM, Profiles: core, Untrusted: true,
 			Description: "Deploy a worker that runs one job on a schedule in one folder of a project, based on a deployed worker's role and instructions."},
+		{Action: "retry_now", Inputs: []string{"machine", "job_id", "provider"}, Level: write, Reach: anyM, Profiles: core, Untrusted: true,
+			Description: "After the provider was fixed (a new sign-in, key or model): work waiting on a provider's usage limit runs again now instead of at the old reset. job_id (worker/<worker>/<run> or task/<project>/<task>) retries one job and the workflow steps waiting on it; without it every limit-waiting job, task and workflow step on the machine, optionally only provider's. A retry that hits the limit again waits again; nothing waiting is a no-op."},
 	}
 	// The API scopes of the route behind each action: /v3/runs reads
 	// signals; a job is read with sessions:read; deliveries are workflow
@@ -128,6 +132,7 @@ func manageJobsCatalog() CatalogTool {
 		"answer_job":   "get_job with the job_id reads it as it continues.",
 		"deliver_job":  "get_job with the job_id reads the merge state.",
 		"schedule_job": "list_runs with the worker lists its runs as the schedule runs them.",
+		"retry_now":    "get_job with a job_id reads it as it runs again.",
 	}
 	for i := range actions {
 		actions[i].Tool = manageJobsToolName

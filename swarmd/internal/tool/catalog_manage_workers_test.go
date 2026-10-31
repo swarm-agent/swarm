@@ -22,7 +22,9 @@ import (
 // inputs are Swarm Control inputs the definition does not show.
 // The parity fixes changed it on purpose: its action field lists each
 // action's required inputs (CatalogAction.Required).
-const manageWorkersDefinitionSHA256 = "a61e4b2c84a4c4a8c170f18fa74c4d9b7d7be7e0cf574e5d632c34e5dd7a44a7"
+// test and request took workspace on purpose: a worker that works in
+// several workspaces is given the one a run works in.
+const manageWorkersDefinitionSHA256 = "e9d128efff6e6759d774a37b9364167874ee54c1d4e8a392ba70b7d4b2e2e3ad"
 
 // Purpose: manage_workers exists once, in the catalog. The Orchestrator's
 // definition (and its manage_automation alias) is generated from the

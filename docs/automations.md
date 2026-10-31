@@ -845,6 +845,11 @@ and `step_id`:
   outside a worker) waits the same way, with the same bound, and continues in
   its own session at the reset; see
   [task progress](task-progress.md#waiting-for-a-providers-usage-limit).
+  Once the person has fixed the provider (a new sign-in, key or model),
+  `manage_jobs` `retry_now` (`POST /v3/provider-limit-waits/retry`, also on a
+  linked machine) makes any of these waits due now; each goes through the
+  same path as at the reset, and one that hits the limit again waits again
+  ([tool catalog](tool-catalog.md#manage_jobs)).
 - `automation.step.succeeded` (attrs: `step`, `output`)
 - `automation.step.failed` (severity warning; attrs: `step`, `reason` and
   `next`, the next allowed action: `rerun` or `fix the script`; while

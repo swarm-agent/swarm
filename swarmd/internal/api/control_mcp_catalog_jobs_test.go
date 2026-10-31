@@ -123,6 +123,7 @@ func manageJobsParityCases() map[string][]catalogParityCase {
 		"answer_job":         everywhere("action", "answer_job", "job_id", "job:parity", "answer", "yes"),
 		"deliver_job":        everywhere("action", "deliver_job", "job_id", "job:parity"),
 		"stop_job":           everywhere("action", "stop_job", "job_id", "job:done"),
+		"retry_now":          everywhere("action", "retry_now", "job_id", "worker/no-such-worker/no-such-run"),
 		"schedule_job":       projectCases("action", "schedule_job", "worker", "no-such-worker", "brief", "Parity", "schedule", map[string]any{"kind": "interval", "interval_seconds": float64(3600)}),
 	}
 }

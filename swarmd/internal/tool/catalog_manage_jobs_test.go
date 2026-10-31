@@ -22,12 +22,14 @@ import (
 // automation); then, model and wait_seconds are Swarm Control inputs only.
 // The parity fixes changed it on purpose: its action field lists each
 // action's required inputs (CatalogAction.Required).
-const manageJobsDefinitionSHA256 = "d362cb1d8ef4842e36130080c6d29484df2b9e1e2365208304d4ff8a745c3bdd"
+// retry_now (job_id, provider) changed it on purpose: work waiting on a
+// provider's limit retries now once the person fixed the provider.
+const manageJobsDefinitionSHA256 = "8b84b2efb61071fd78bf77373d11ddd0e30fa2578e02748b12f72dee586b7e71"
 
 // Purpose: manage_jobs exists once, in the catalog. The Orchestrator's
 // definition is generated from the declarations (held by hash) and names
 // every action the handler serves: the six the Orchestrator had, plus
-// answer_job, deliver_job, stop_job and schedule_job. Every input is a
+// answer_job, deliver_job, stop_job, schedule_job and retry_now. Every input is a
 // declared field, every field is used, every action declares the API scopes
 // of its route, is in the Orchestrator's definition and Swarm Control's
 // default listing, and takes machine. Threat: a second hand-written schema, an
@@ -45,7 +47,7 @@ func TestManageJobsCatalogGeneratesTheOrchestratorDefinition(t *testing.T) {
 	}
 	properties := definition.Parameters["properties"].(map[string]any)
 	enum := properties["action"].(map[string]any)["enum"].([]string)
-	want := "list_runs,get_job,deliveries,rerun_failed_steps,give_job,message_job,answer_job,deliver_job,stop_job,schedule_job"
+	want := "list_runs,get_job,deliveries,rerun_failed_steps,give_job,message_job,answer_job,deliver_job,stop_job,schedule_job,retry_now"
 	if strings.Join(enum, ",") != want {
 		t.Fatalf("Orchestrator actions %v, want %s", enum, want)
 	}
@@ -101,7 +103,7 @@ func TestManageJobsCatalogGeneratesTheOrchestratorDefinition(t *testing.T) {
 // gate refuses, or a linked gate wider than the catalog. Boundary:
 // CatalogAction.Reach against FleetWorkActionAllowed and FleetTaskStart.
 func TestManageJobsCatalogReachMatchesTheHandler(t *testing.T) {
-	starts := map[string]bool{"give_job": true, "message_job": true, "answer_job": true, "rerun_failed_steps": true, "schedule_job": true}
+	starts := map[string]bool{"give_job": true, "message_job": true, "answer_job": true, "rerun_failed_steps": true, "schedule_job": true, "retry_now": true}
 	for _, action := range manageJobsCatalog().Actions {
 		takesMachine := false
 		for _, input := range action.Inputs {
