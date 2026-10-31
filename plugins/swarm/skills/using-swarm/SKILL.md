@@ -30,21 +30,23 @@ For connecting a client, use the `setup` skill. For raw MCP probes, see the
 - `swarm_status` says whether the box is all right (`ok`, `attention`,
   `degraded` with reasons) and what needs attention, and gives an
   `activity_cursor`.
-- `swarm_list_providers` shows which model providers are ready, and each one
-  that is not has a `connect` field with the exact steps. With none ready,
-  ask the person which they have, list every option in one short message
-  with what each needs, and follow their choice: a ChatGPT plan (`codex`:
-  `swarm_connect_chatgpt` on the machine's own MCP, not over a relay; action
-  `start` gives a link and a code for them at once, then action `status`
-  with `login_id` and `wait_seconds` until `success`); a Claude plan through
-  Claude Code (`claudecode`: they sign in with `claude auth login` as the
-  user that runs Swarm and turn it on in Swarm's setup page; Swarm never
-  handles Claude credentials; `swarm_connect_claude_code` action `status`
-  gives the installer command for this, then action `activate` turns it on
+- Machine setup is one tool, `manage_setup` (the same tool the Orchestrator
+  has). Every change waits for the person: make one only when they ask.
+- `manage_setup` action `providers` shows which model providers are ready,
+  and each one that is not has a `connect` field with the exact steps. With
+  none ready, ask the person which they have, list every option in one short
+  message with what each needs, and follow their choice: a ChatGPT plan
+  (`codex`: action `connect_chatgpt` on the machine's own MCP, not over a
+  relay; `step` `start` gives a link and a code for them at once, then `step`
+  `status` with `login_id` and `wait_seconds` until `success`); a Claude plan
+  through Claude Code (`claudecode`: they sign in with `claude auth login` as
+  the user that runs Swarm and turn it on in Swarm's setup page; Swarm never
+  handles Claude credentials; action `connect_claude_code` `step` `status`
+  gives the installer command for this, then `step` `activate` turns it on
   without the setup page); an API key for `anthropic`, `openai`,
   `google`, `openrouter` or `fireworks` (on Swarm's setup page, or by
-  script on the machine with `install.sh key PROVIDER`; with a full key,
-  `swarm_request_provider_key` gives them a one-time link); or Vertex AI
+  script on the machine with `install.sh key PROVIDER`; action
+  `request_provider_key` gives them a one-time link); or Vertex AI
   with the machine's Google identity (`vertex`). Never ask for a key in
   chat.
 - Tell the person in one or two lines what is ready and what is missing.
@@ -57,9 +59,9 @@ advanced tools are listed only when the client connects with all tools.
 
 When a provider is connected, Swarm gives every role its recommended model.
 Swarm and its specialists resolve their account-scoped role models; explicit
-per-task overrides remain supported. Retained workers keep their own execution contracts. `swarm_list_models` shows each role's
+per-task overrides remain supported. Retained workers keep their own execution contracts. `manage_setup` action `models` shows each role's
 model and what the connected providers offer. Only when the person asks,
-`swarm_set_agent_model` changes a role (`system-coder`, `system-designer`,
+action `set_agent_model` changes a role (`system-coder`, `system-designer`,
 `system-finder`); the next job uses it.
 
 ## 3. Create a project
@@ -165,7 +167,8 @@ Publishing, pushing and deploying require the person's specific authorization.
 `swarm_request_media` with `kind` image, video or sound, the `project` and a
 detailed `brief`. It returns a `job_id`; `manage_jobs` `get_job` shows the
 files when done (`swarm_get_job` with `include_media` also shows its
-images). `swarm_list_providers` shows whether a media provider is ready.
+images). `manage_setup` action `providers` shows whether a media provider is
+ready; `media_models` lists the media models and their options.
 
 ## 8. Jobs for a worker, workers and schedules
 
@@ -302,8 +305,10 @@ Set one up only when the person asks for it or agrees to your offer.
 - `swarm_activity` with the last `cursor`: what happened since — jobs
   finished, failed or cancelled (with `job_id`), workers blocked, sandbox
   changes. Keep the returned `cursor` for next time.
-- `swarm_get_usage`: tokens and cost per model. Sign-in (subscription)
-  providers show no metered cost; say so.
+- `manage_setup` action `usage`: tokens and cost per model. Sign-in
+  (subscription) providers show no metered cost; say so. `limits` and
+  `set_usage_limits` read and lower the limits; raising them is the person's,
+  in Swarm.
 
 ## 9b. Keys
 
@@ -312,18 +317,19 @@ monitoring, bot keys for a public chat bot) works while it is used and stops
 after 90 days unused, or at a fixed end date if one was given. Nothing needs
 renewing.
 
-- `swarm_list_keys`: every key, its kind, when and where it was last used,
-  and when it stops on its own.
-- `swarm_revoke_key`: stop a key now (and every key made with it).
-- `swarm_create_key` (full keys): an app key (`access` sessions or monitor)
-  or a bot key (`agent`, `operator`), shown once.
+- `manage_setup` action `list_keys`: every key, its kind, when and where it
+  was last used, and when it stops on its own. Never a key value.
+- Action `revoke_key`: stop a key now (and every key made with it).
+- New app and bot keys: the person makes them in Swarm (`manage_setup`
+  `create_key` makes none: a key's secret goes only to the person).
+  `swarm_create_key` still works until the `swarm_*` tools are removed.
 - `swarm_status` lists keys used from a new place today and keys stopping
   within a week; the signals are `key.new_address` and `key.expiring`. Tell
   the person about a new place and revoke the key if they do not recognize it.
 
 ## 10. Secrets
 
-`swarm_list_secrets` shows which secrets exist, the websites each may be sent
+`manage_setup` action `list_secrets` shows which secrets exist, the websites each may be sent
 to, whether a value is set, and which folders may use it. Inside the sandbox a
 worker sees a stand-in, and Swarm puts the real value in only on the way to an
 allowed website. Have the person run `sudo swarmctl secret set --name NAME --hosts HOST`

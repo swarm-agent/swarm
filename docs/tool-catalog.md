@@ -8,15 +8,17 @@ its own copy of the schema, rules or answer.
 
 The catalog holds `manage_projects` (stage 1), `manage_workflows` (stage 2,
 `catalog_manage_workflows.go`), and `manage_jobs` and `manage_workers` (stage
-3, `catalog_manage_jobs.go` and `catalog_manage_workers.go`). The hand-written
+3, `catalog_manage_jobs.go` and `catalog_manage_workers.go`) and `manage_setup`
+(stage 5, `catalog_manage_setup.go`). The hand-written
 `swarm_*` MCP tools are frozen as they are
-(`TestControlMCPSwarmToolNamesFrozen`); the `swarm_*` workflow, job and worker
-tools still work beside the catalog tools. Later stages move the rest into the
+(`TestControlMCPSwarmToolNamesFrozen`); the `swarm_*` workflow, job, worker
+and setup tools still work beside the catalog tools. Later stages move the rest into the
 catalog and remove them.
 
 A key bound to one worker, one agent or a trigger never calls a catalog tool:
 Swarm Control neither lists nor runs them for it, and the linked routes
-(`POST /v3/jobs/{action}`, `POST /v3/worker-actions/{action}`) answer 403
+(`POST /v3/jobs/{action}`, `POST /v3/worker-actions/{action}`,
+`POST /v3/setup-actions/{action}`) answer 403
 (`catalogBoundKey`). The catalog services run each action on internal requests
 that carry only scopes, so the routes behind them could not hold such a key to
 its binding; the key keeps its own `swarm_*` tools.
@@ -169,6 +171,80 @@ action runs on the linked machine's own `ManageWorkers` through
 stays the bounded summary (no instructions; `inspect` reads them). `off`
 refuses every linked action; under `ask` the Orchestrator's `test`, `request`
 and `assign_task` there wait for the person's approval (`FleetTaskStart`).
+
+## manage_setup
+
+This machine's setup: the actions of the `swarm_*` setup tools, which only
+Swarm Control had before. One handler (`tool.Runtime.executeManageSetup`)
+serves the Orchestrator and Swarm Control; one service function,
+`api.Server.ManageSetup`, runs the `swarm_*` handler with the same effect for
+each action. It runs that handler on an internal request that carries the
+Swarm Control caller's own key, narrowed to the scopes it holds, or, for a
+conversation, only the action's route scopes and level. Only the Orchestrator
+calls it in a conversation; a task's session, another agent or a worker is
+refused.
+
+| Action | Level | API scopes | Reach |
+| --- | --- | --- | --- |
+| `models`, `providers`, `usage`, `plan_usage`, `media_models` | read | `sessions:read` | any |
+| `limits` | read | `usage:read` or `usage:write` | any |
+| `permissions`, `list_keys`, `list_fleet_keys` | read | `sessions:read` | home |
+| `list_secrets` | read | `secrets:read` | home |
+| `set_agent_model`, `set_media_models` | write | `settings:write` | any |
+| `set_limits` | write | `usage:write` | any |
+| `set_usage_limits` | manage | `usage:write` | any |
+| `set_permissions` | approve | `swarm:approve` | home |
+| `revoke_key` | write | `sessions:write` | home |
+| `request_provider_key` | write | `sessions:write` | home, local only |
+| `connect_chatgpt`, `connect_claude_code` | write | `admin` or `swarm:write` | home, local only |
+| `request_fleet_key` | approve | `swarm:approve` | home, local only |
+| `revoke_fleet_key` | approve | `swarm:approve` | home |
+| `create_key`, `create_client_key` | manage | `admin` | home, local only |
+| `request_update`, `cancel_update` | manage | `admin` | any |
+
+Each level is `remote.ToolScope` of the `swarm_*` tool with the same effect,
+and an action is local only exactly when that tool is in remote's
+`localOnlyTools` (`TestManageSetupLevelsAreTheSwarmToolsLevels`). Reads and
+the change actions whose `swarm_*` tool was in the default listing are in
+Swarm Control's default listing; `set_usage_limits`, `set_permissions`,
+`create_client_key`, `request_update` and `cancel_update` are in `tools=all`.
+Keys, secrets, permissions and provider sign-in never cross a link; the other
+actions run with `machine` on the linked machine's own `ManageSetup` through
+`POST /v3/setup-actions/{action}`, which refuses the home-only ones.
+
+Safety is the same on both surfaces:
+
+- **The person decides every change.** In a conversation, the run's gate
+  (`run.Service.gateToolCalls`) turns every `manage_setup` change into a
+  pending request, even with permission bypass, an allow rule or an earlier
+  "always allow"; only an explicit deny rule answers without asking. An
+  approval runs the exact call the person saw, never edited arguments, and the
+  handler refuses a change without that decision
+  (`tool.PersonDecisionFromContext`). Over Swarm Control the person approves in
+  their own AI's chat and the key's level is checked. Model and media-model
+  changes are made only when the person asks.
+- **No caller widens its own access.** `set_permissions` only sets Start tasks
+  to `approve` and lowers a linked machine's work (`auto` > `ask` > `off`);
+  `set_limits` only lowers box limits and never removes a job budget;
+  `set_usage_limits` only lowers a daily limit or turns the limits on.
+  `create_key` and `create_client_key` make no key: a new key's secret may go
+  only to the person, and there is not yet a one-time path that hands it to
+  them alone. The person makes keys, and raises limits and permissions, in
+  Swarm.
+- **No secret in an answer.** Answers hold names, ids, scopes and expiry;
+  `setupScrub` also drops any secret-shaped string field (`key`, `token`,
+  `api_key`, `secret`, `password`, ...). Provider and fleet keys are pasted by
+  the person on Swarm's one-time page (`request_provider_key`,
+  `request_fleet_key`), never in the chat.
+
+Tests: `TestManageSetupFromBothSurfaces`,
+`TestManageSetupNeverWidensTheCallersAccess`,
+`TestManageSetupListingLevelsAndLinkedRoute`,
+`TestManageSetupAnswersHoldNoSecret` and the parity, coverage and envelope
+cases (api); `TestManageSetupChangeAlwaysWaitsForThePerson` and
+`TestManageSetupRunRefusesUndecidedChanges` (run);
+`TestManageSetupCatalogDeclaresEverySetupAction` and
+`TestManageSetupHandlerHoldsChangesToThePersonsDecision` (tool).
 
 ## The envelope
 

@@ -63,21 +63,23 @@ and [remote access](references/remote.md).
 
 ## 4. A model provider
 
-`swarm_list_providers` shows which providers are ready. For each one that is
+Machine setup is one tool, `manage_setup`; every change waits for the person.
+Its action `providers` shows which providers are ready. For each one that is
 not, its `connect` field says exactly how to connect it. If none is ready, ask
 the person which they have, show every option below in one short list with
 what each needs, and follow their choice. No option is the default.
 
-- **ChatGPT plan** (`codex`): `swarm_connect_chatgpt` with action `start`
-  returns a link and a code. Give both to the person at once; they finish
-  sign-in in their own browser. Then call action `status` with the
+- **ChatGPT plan** (`codex`): `manage_setup` action `connect_chatgpt` with
+  `step` `start` returns a link and a code. Give both to the person at once;
+  they finish sign-in in their own browser. Then call `step` `status` with the
   `login_id` and `wait_seconds` until it reports `success`.
 - **Claude plan through Claude Code** (`claudecode`): the person signs in
   themselves; Swarm never sees or handles Claude credentials. See
   [Claude Code](references/local-deployment.md#claude-code) for the three
   steps (install it, `claude auth login` as Swarm's user, turn it on).
-  `swarm_connect_claude_code` does it from here: action `status` gives the
-  installer command the person runs on the machine, then action `activate`.
+  `manage_setup` action `connect_claude_code` does it from here: `step`
+  `status` gives the installer command the person runs on the machine, then
+  `step` `activate`.
 - **API key** for `anthropic`, `openai`, `google`, `openrouter` or
   `fireworks`: the person adds it on the setup page (`http://127.0.0.1:8443`
   on the machine; on a server, the installer printed the `ssh -L` line to open
@@ -87,10 +89,10 @@ what each needs, and follow their choice. No option is the default.
   `sudo swarmctl setup credential --provider vertex --project PROJECT`.
 
 Never ask for a key in chat; if one is pasted, tell them to revoke it.
-Call `swarm_list_providers` again to confirm it is ready. Swarm then gives
-every role its recommended model: `swarm_list_models` shows what the coder,
+Call action `providers` again to confirm it is ready. Swarm then gives
+every role its recommended model: action `models` shows what the coder,
 designer and finder agents will use. Do not change models unless the person
-asks (`swarm_set_agent_model` does it, per role).
+asks (action `set_agent_model` does it, per role).
 
 ## 5. Their project
 
@@ -133,7 +135,7 @@ the person sets it on the machine; you never see it:
 
 Never ask for a secret or key in chat.
 
-`swarm_list_secrets` then shows it granted to that folder; a job in that folder
+`manage_setup` action `list_secrets` then shows it granted to that folder; a job in that folder
 uses it through Swarm's gateway, never seeing the value.
 
 For protocol checks, response parsing or MCP errors, read
