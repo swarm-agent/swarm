@@ -179,10 +179,11 @@ func TestGuidanceNamesOnlyCatalogTools(t *testing.T) {
 
 	// Only tracked files are guidance: docs/ also holds ignored historical
 	// and scratch notes that a local checkout may have.
-	tracked, err := controlMCPGuidanceTrackedFiles(controlMCPGuidanceRoot, "plugins/swarm", "docs")
+	tracked, source, err := controlMCPGuidanceTrackedFiles(controlMCPGuidanceRoot, "plugins/swarm", "docs")
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Logf("guidance read from %s (%d files)", source, len(tracked))
 
 	// The plugin: every tracked file under plugins/swarm.
 	files := 0
@@ -265,15 +266,51 @@ func TestGuidanceCheckCatchesStaleNames(t *testing.T) {
 	}
 }
 
-// controlMCPGuidanceTrackedFiles reads the files Git tracks under dirs of
-// the repository at root, keyed by their slash path relative to root.
-// Ignored and untracked files are not read. A tracked file deleted from the
-// working tree is not guidance and is left out.
-func controlMCPGuidanceTrackedFiles(root string, dirs ...string) (map[string]string, error) {
+const (
+	controlMCPGuidanceFromIndex = "the Git index"
+	controlMCPGuidanceFromDisk  = "the files on disk (the checkout has no Git metadata Git can open)"
+)
+
+// controlMCPGuidanceGitEnv is the environment for reading root's own index:
+// a Git hook exports repository-routing variables (GIT_DIR and others) that
+// would point git -C root at another repository or index.
+func controlMCPGuidanceGitEnv() []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		switch strings.SplitN(kv, "=", 2)[0] {
+		case "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX":
+			continue
+		}
+		env = append(env, kv)
+	}
+	return env
+}
+
+// controlMCPGuidanceTrackedFiles reads the guidance files under dirs of the
+// checkout at root, keyed by their slash path relative to root, and names
+// where the list came from.
+//
+// When Git can open the checkout's repository, the list is the files Git
+// tracks: ignored and untracked files are not read, and a tracked file
+// deleted from the working tree is left out. Ignore rules alone cannot
+// stand in for the index, as tracked docs are force-added past /docs/*.
+//
+// A checkout whose Git metadata cannot be opened (git exits 128: no .git,
+// or a linked checkout whose metadata is not mounted, as in a sandboxed or
+// exported checkout of a commit) has no index to consult; then every file
+// on disk under dirs is read, and the caller logs that mode. Any other
+// failure is an error.
+func controlMCPGuidanceTrackedFiles(root string, dirs ...string) (map[string]string, string, error) {
 	cmd := exec.Command("git", append([]string{"-C", root, "ls-files", "-z", "--"}, dirs...)...)
+	cmd.Env = controlMCPGuidanceGitEnv()
 	out, err := cmd.Output()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 128 {
+		files, err := controlMCPGuidanceDiskFiles(root, dirs...)
+		return files, controlMCPGuidanceFromDisk, err
+	}
 	if err != nil {
-		return nil, fmt.Errorf("list tracked files under %v in %s: %w", dirs, root, err)
+		return nil, "", fmt.Errorf("list tracked files under %v in %s: %w", dirs, root, err)
 	}
 	files := map[string]string{}
 	for _, rel := range strings.Split(string(out), "\x00") {
@@ -285,9 +322,39 @@ func controlMCPGuidanceTrackedFiles(root string, dirs ...string) (map[string]str
 			continue
 		}
 		if err != nil {
-			return nil, fmt.Errorf("read tracked %s: %w", rel, err)
+			return nil, "", fmt.Errorf("read tracked %s: %w", rel, err)
 		}
 		files[rel] = string(raw)
+	}
+	return files, controlMCPGuidanceFromIndex, nil
+}
+
+// controlMCPGuidanceDiskFiles reads every regular file under dirs of root.
+// A missing dir contributes nothing; the caller requires the files it needs.
+func controlMCPGuidanceDiskFiles(root string, dirs ...string) (map[string]string, error) {
+	files := map[string]string{}
+	for _, dir := range dirs {
+		err := filepath.WalkDir(filepath.Join(root, filepath.FromSlash(dir)), func(path string, entry fs.DirEntry, err error) error {
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+			if err != nil || !entry.Type().IsRegular() {
+				return err
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			rel, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+			files[filepath.ToSlash(rel)] = string(raw)
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("read %s in %s: %w", dir, root, err)
+		}
 	}
 	return files, nil
 }
@@ -300,15 +367,21 @@ func controlMCPGuidanceTrackedFiles(root string, dirs ...string) (map[string]str
 //     swarm_* tool fails the guard in one checkout and passes in a clean one
 //     (the test depends on untracked local files); or the listing silently
 //     drops tracked guidance.
-//   - Boundary/authority: controlMCPGuidanceTrackedFiles over git ls-files.
+//     A checkout with no Git metadata Git can open (a sandboxed or exported
+//     checkout, where the gate runs) must still be checked, not fail or
+//     check nothing; a GIT_DIR exported by a hook must not redirect the
+//     listing to another repository.
+//   - Boundary/authority: controlMCPGuidanceTrackedFiles over git ls-files,
+//     and controlMCPGuidanceDiskFiles when there is no index.
 //   - Narrowest layer: a throwaway Git repository with one tracked, one
-//     ignored and one untracked file.
+//     ignored and one untracked file, then the same tree without usable
+//     Git metadata.
 func TestGuidanceTrackedFilesSkipIgnoredFiles(t *testing.T) {
 	root := t.TempDir()
 	git := func(args ...string) {
 		t.Helper()
 		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
+		cmd.Env = append(controlMCPGuidanceGitEnv(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
@@ -333,17 +406,24 @@ func TestGuidanceTrackedFilesSkipIgnoredFiles(t *testing.T) {
 	write("docs/scratch.md", "Call swarm_run_task.\n")
 	write("plugins/swarm/draft.md", "Call swarm_run_task.\n")
 
-	files, err := controlMCPGuidanceTrackedFiles(root, "plugins/swarm", "docs")
-	if err != nil {
-		t.Fatal(err)
+	list := func(root string) ([]string, map[string]string, string) {
+		t.Helper()
+		files, source, err := controlMCPGuidanceTrackedFiles(root, "plugins/swarm", "docs")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for rel := range files {
+			got = append(got, rel)
+		}
+		sort.Strings(got)
+		return got, files, source
 	}
-	var got []string
-	for rel := range files {
-		got = append(got, rel)
-	}
-	sort.Strings(got)
-	if want := []string{"docs/kept.md", "plugins/swarm/skill.md"}; strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("tracked files = %v, want %v (ignored and untracked files must be skipped)", got, want)
+	trackedWant := "docs/kept.md,plugins/swarm/skill.md"
+
+	got, files, source := list(root)
+	if source != controlMCPGuidanceFromIndex || strings.Join(got, ",") != trackedWant {
+		t.Fatalf("files = %v from %s, want %s from the index (ignored and untracked files must be skipped)", got, source, trackedWant)
 	}
 	if files["docs/kept.md"] != "Use `manage_projects` `propose_task`.\n" {
 		t.Fatalf("docs/kept.md content = %q", files["docs/kept.md"])
@@ -358,11 +438,43 @@ func TestGuidanceTrackedFilesSkipIgnoredFiles(t *testing.T) {
 			t.Fatalf("%s would not be flagged; the fixture proves nothing", rel)
 		}
 	}
-	// Outside a Git repository the listing fails clearly instead of reading
-	// nothing.
-	outside := t.TempDir()
-	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(outside))
-	if _, err := controlMCPGuidanceTrackedFiles(outside, "docs"); err == nil {
-		t.Fatal("listing outside a Git repository did not fail")
+
+	// A hook's GIT_DIR naming another repository does not redirect the
+	// listing: root's own index is still read.
+	other := t.TempDir()
+	initOther := exec.Command("git", "init", "-q", other)
+	initOther.Env = controlMCPGuidanceGitEnv()
+	if out, err := initOther.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	t.Setenv("GIT_DIR", filepath.Join(other, ".git"))
+	if got, _, source := list(root); source != controlMCPGuidanceFromIndex || strings.Join(got, ",") != trackedWant {
+		t.Fatalf("with a hook's GIT_DIR: files = %v from %s, want %s from root's index", got, source, trackedWant)
+	}
+	os.Unsetenv("GIT_DIR")
+
+	// Without Git metadata Git can open, every file on disk is read: the
+	// guard still checks the tree instead of failing or checking nothing.
+	// First a linked checkout whose metadata is not there (a .git file
+	// naming a missing gitdir), then no .git at all.
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(root))
+	if err := os.RemoveAll(filepath.Join(root, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	write(".git", "gitdir: "+filepath.Join(other, "missing")+"\n")
+	diskWant := "docs/kept.md,docs/scratch.md,plugins/swarm/draft.md,plugins/swarm/skill.md"
+	for _, layout := range []string{"unmounted linked metadata", "no .git"} {
+		if layout == "no .git" {
+			if err := os.Remove(filepath.Join(root, ".git")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got, files, source := list(root)
+		if source != controlMCPGuidanceFromDisk || strings.Join(got, ",") != diskWant {
+			t.Fatalf("%s: files = %v from %s, want %s from disk", layout, got, source, diskWant)
+		}
+		if files["docs/scratch.md"] != "Call swarm_run_task.\n" {
+			t.Fatalf("%s: docs/scratch.md content = %q", layout, files["docs/scratch.md"])
+		}
 	}
 }
