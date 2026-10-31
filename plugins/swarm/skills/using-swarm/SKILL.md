@@ -222,13 +222,16 @@ Use the `manage_workers` tool for workers, with `action` and optional
 names create no workers), `update` saves a worker's definition at its
 `expected_revision`, `pause`, `resume`, `archive` and `delete` change its
 state (needs a full key), and `assign_task` starts a run of a worker on a
-`task`. `create` and `propose` make a worker that waits for the person to
-accept it in Swarm before it runs; nobody else can activate it.
+`task`. `propose`, and a `create` with only a worker definition (no `role`,
+`preset`, `worker` or folder), make a worker that waits for the person to
+accept it in Swarm before it runs; nobody else can activate it. A `create`
+with a `role`, `preset` or `worker`, or with a folder (and optional
+schedule), makes the worker active at once (below).
 
 - `manage_workers` action `create` with a `role` makes a requested worker
-  ready at once: a `name`, the `role` (coder, designer or finder: what it can
-  do and which role model it uses) and standing `instructions` for every job
-  it gets. For an existing worker, use
+  ready at once, without waiting for acceptance: a `name`, the `role` (coder,
+  designer or finder: what it can do and which role model it uses) and
+  standing `instructions` for every job it gets. For an existing worker, use
   `manage_jobs`: `give_job`, follow with `get_job`, answer with `answer_job`,
   and continue, stop or deliver with `message_job`, `stop_job` and
   `deliver_job`. Missing worker names fail; they are not silently
