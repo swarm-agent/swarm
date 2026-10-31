@@ -2,6 +2,8 @@ package jobautomation
 
 import (
 	"errors"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -18,8 +20,15 @@ func TestWorkflowProposalRunner(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.restart()
+	heads := 0
 	emit := func(id string) {
-		h.results.results[id] = &Result{V: 1, JobID: "worker/coder-1/" + id, Kind: KindWorker, RunID: id, Folder: folder, Status: StatusSucceeded}
+		// Each job end has commits of its own to review: a reviewer step
+		// with no head is refused ("no head to review"), and a second end at
+		// a head a delivery covers creates no delivery.
+		heads++
+		head := strings.Repeat(strconv.Itoa(heads), 40)
+		h.results.results[id] = &Result{V: 1, JobID: "worker/coder-1/" + id, Kind: KindWorker, RunID: id, Folder: folder, Status: StatusSucceeded,
+			Git: &ResultGit{Branch: "agent/" + id, BaseCommit: strings.Repeat("a", 40), Head: head, Commits: []ResultCommit{{SHA: head, Subject: id}}}}
 		h.jobEnd(id, "", StatusSucceeded, "")
 		h.process()
 	}
