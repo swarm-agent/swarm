@@ -172,3 +172,69 @@ func TestFollowupToADesignJobIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// Purpose: a follow-up attempt keeps the task's agent (finder, coder) for its
+// role and workflows, but its session runs as Swarm
+// (projectTaskExecutionAgent), so its model is the account's Swarm model and
+// thinking, at deployment (resolveTaskModelPreference) and in the model
+// preview; the task's initial attempt still resolves the Finder or Coder
+// model. Threat: the review finding where a kept agent made the Swarm
+// follow-up session run on the account's Finder or Coder model. Authority:
+// resolveTaskModelPreference and buildTaskModelPreview over a server with
+// seeded account agent-model settings and a follow-up reserved through
+// SessionStore.ReserveTaskFollowup.
+func TestFollowupAttemptResolvesTheSwarmModel(t *testing.T) {
+	s, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	p := testPrincipal()
+	db := s.sessions.Store()
+	if err := db.PutProject(p.AccountScopeID, &pebblestore.ProjectRecord{ID: "project-m", AccountID: p.AccountScopeID, Name: "Models"}); err != nil {
+		t.Fatal(err)
+	}
+	// Finder and Coder get their own thinking too, so thinking proves which
+	// agent's settings a follow-up resolved.
+	record := testAgentModelSettingsRecord(p.AccountScopeID)
+	record.SystemAgents.Finder.Thinking, record.SystemAgents.Coder.Thinking, record.UpdatedAt = "low", "medium", 2
+	if _, err := pebblestore.NewAgentModelSettingsStore(db.Underlying()).PutForAccount(record); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := s.agentModelSettings.GetForAccount(p.AccountScopeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	swarm := settings.Swarm.Action
+	for _, c := range []struct {
+		agent         string
+		own, thinking string
+	}{{"finder", settings.SystemAgents.Finder.Model, settings.SystemAgents.Finder.Thinking}, {"coder", settings.SystemAgents.Coder.Model, settings.SystemAgents.Coder.Thinking}} {
+		if own := strings.TrimSpace(c.own); own == "" || own == swarm.Model || c.thinking == swarm.Thinking {
+			t.Fatalf("fixture: %s %q/%q is not distinct from Swarm's %q/%q", c.agent, own, c.thinking, swarm.Model, swarm.Thinking)
+		}
+		id := "task-model-" + c.agent
+		if err := db.PutProjectTask(p.AccountScopeID, &pebblestore.ProjectTaskRecord{ID: id, ProjectID: "project-m", AccountID: p.AccountScopeID, Title: "Look", Agent: c.agent, Status: "needs_review"}); err != nil {
+			t.Fatal(err)
+		}
+		initial, _, err := db.GetProjectTask(p.AccountScopeID, "project-m", id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pref, _, err := s.resolveTaskModelPreference(p, initial)
+		if err != nil || pref.Model != c.own || pref.Thinking != c.thinking {
+			t.Fatalf("%s initial attempt resolved %+v %v, want its own %q/%q", c.agent, pref, err, c.own, c.thinking)
+		}
+		followup, err := db.ReserveTaskFollowup(p.AccountScopeID, "project-m", id, p.UserID, "model-"+id, "Which file?", initial.Revision, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if followup.Agent != c.agent {
+			t.Fatalf("%s: follow-up agent %q", c.agent, followup.Agent)
+		}
+		pref, source, err := s.resolveTaskModelPreference(p, followup)
+		if err != nil || pref.Model != swarm.Model || pref.Thinking != swarm.Thinking {
+			t.Fatalf("%s follow-up resolved %+v (%s) %v, want Swarm %s/%s", c.agent, pref, source, err, swarm.Model, swarm.Thinking)
+		}
+		preview := s.buildTaskModelPreview(p, followup)
+		if preview.Agent != c.agent || preview.ResolvedAgent != "swarm" || preview.ResolvedModel == nil || preview.ResolvedModel.Model != swarm.Model || preview.ResolvedModel.Thinking != swarm.Thinking {
+			t.Fatalf("%s follow-up preview %+v", c.agent, preview)
+		}
+	}
+}

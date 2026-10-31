@@ -702,11 +702,23 @@ type TaskModelPreview struct {
 	ResolutionError     string                       `json:"resolution_error,omitempty"`
 }
 
+// projectTaskModelAgent is the agent whose model a task's active attempt runs
+// on. A follow-up attempt keeps the task's agent (finder, coder, designer) for
+// its role and workflows, but its session runs as projectTaskExecutionAgent
+// says (Swarm), so it resolves that agent's model, not the task's.
+func projectTaskModelAgent(task *pebblestore.ProjectTaskRecord) string {
+	if isProjectTaskFollowup(task) {
+		name, _ := projectTaskExecutionAgent(task)
+		return name
+	}
+	return task.Agent
+}
+
 func (s *Server) resolveTaskModelPreference(p identity.Principal, task *pebblestore.ProjectTaskRecord) (pebblestore.ModelPreference, string, error) {
 	if task == nil {
 		return pebblestore.ModelPreference{}, "", errors.New("task is required")
 	}
-	targetAgent := strings.ToLower(strings.TrimSpace(task.Agent))
+	targetAgent := strings.ToLower(strings.TrimSpace(projectTaskModelAgent(task)))
 	if targetAgent == "" {
 		targetAgent = "swarm"
 	}
@@ -839,12 +851,13 @@ func (s *Server) buildTaskModelPreview(p identity.Principal, task *pebblestore.P
 	}
 	preview.TaskID = task.ID
 	preview.Agent = task.Agent
-	preview.ResolvedAgent = task.Agent
+	// The agent that runs the active attempt (Swarm for a follow-up).
+	preview.ResolvedAgent = projectTaskModelAgent(task)
 	preview.FeatureSize = task.FeatureSize
 	preview.TaskModelOverride = strings.TrimSpace(task.Model)
 
 	// Resolve default Swarm model (action or plan depending on feature size/agent)
-	isPlan := strings.ToLower(strings.TrimSpace(task.Agent)) == "plan"
+	isPlan := strings.ToLower(strings.TrimSpace(preview.ResolvedAgent)) == "plan"
 	if s.agentModelSettings != nil && p.AccountScopeID != "" {
 		if settings, err := s.agentModelSettings.GetForAccount(p.AccountScopeID); err == nil {
 			swarmAssignment := settings.Swarm.Action
