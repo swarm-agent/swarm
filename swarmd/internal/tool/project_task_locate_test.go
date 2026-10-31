@@ -187,7 +187,7 @@ func TestCatalogDeclaresRequiredInputs(t *testing.T) {
 		}
 	}
 	for name, want := range map[string][]string{
-		"get_task": {"task_id"}, "wait_tasks": {"task_ids"}, "read_task_session": {"machine", "task_id"}, "message_task": {"task_id", "message"}, "list_tasks": {"project_id"},
+		"get_task": {"task_id"}, "read_task_session": {"machine", "task_id"}, "message_task": {"task_id", "message"}, "list_tasks": {"project_id"},
 	} {
 		action, _ := catalog.Action(name)
 		required, _ := catalog.InputSchema(action)["required"].([]string)

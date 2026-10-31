@@ -22,7 +22,7 @@ import (
 // automation); then, model and wait_seconds are Swarm Control inputs only.
 // The parity fixes changed it on purpose: its action field lists each
 // action's required inputs (CatalogAction.Required).
-const manageJobsDefinitionSHA256 = "b20b764e8ef48f20fdcbe618e9579488466b738240603ed9ca09e08dee0a7a39"
+const manageJobsDefinitionSHA256 = "d362cb1d8ef4842e36130080c6d29484df2b9e1e2365208304d4ff8a745c3bdd"
 
 // Purpose: manage_jobs exists once, in the catalog. The Orchestrator's
 // definition is generated from the declarations (held by hash) and names

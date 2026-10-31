@@ -275,23 +275,26 @@ func manageProjectsCatalog() CatalogTool {
 	// The inputs each action cannot run without, here and on a linked
 	// machine (machine itself for the linked reads). A task action's
 	// project_id is found from its task id when omitted
-	// (TaskProjectFromTaskID), so it is not listed for them.
+	// (TaskProjectFromTaskID), so it is not listed for them; nor is an input
+	// a Swarm Control caller may give another way (wait_tasks' task_id,
+	// update's project_id, a folder environment's project or flat fields,
+	// the task changes and file reads' own swarm_* inputs).
 	task := []string{"task_id"}
 	required := map[string][]string{
-		"wait_tasks": {"task_ids"}, "get_task": task, "list_tasks": {"project_id"},
+		"get_task": task, "list_tasks": {"project_id"},
 		"message_task": {"task_id", "message"}, "stop_task": task,
 		"reopen_task":       {"task_id", "feedback", "expected_revision", "client_request_id"},
 		"read_task_session": {"machine", "task_id"}, FleetTaskSessionAction: {"machine", "task_id"},
 		FleetMachineStatusAction: {"machine"}, FleetMachineActivityAction: {"machine"},
 		ResolveTaskPermissionAction: {"task_id", "permission_id", "decision"},
-		TaskChangesAction:           task, TaskFileAction: {"task_id", "path"},
-		"integrate_task": task, "update_task": {"task_id", "expected_revision"}, "archive_task": {"task_id", "expected_revision"}, "unarchive_task": {"task_id", "expected_revision"}, "delete_task": {"task_id", "expected_revision"},
+		TaskFileAction:              {"path"},
+		"integrate_task":            task, "update_task": {"task_id", "expected_revision"}, "archive_task": {"task_id", "expected_revision"}, "unarchive_task": {"task_id", "expected_revision"}, "delete_task": {"task_id", "expected_revision"},
 		"approve_task": task, "accept_task": task, "deploy_task": task, "refine_task": task, "edit_requirements": task,
 		"propose_task": {"project_id"}, "create_task": {"project_id"}, "reconcile_tasks": {"project_id"},
 		"list_media": {"project_id"}, "get_media": {"project_id", "id"},
-		"create": {"name", "client_request_id"}, "update": {"id"}, "delete": {"id"},
+		"create": {"name", "client_request_id"}, "delete": {"id"},
 		"list_sources": {"project_id"}, "inspect_source": {"project_id"},
-		FolderEnvironmentGet: {"workspace_path"}, FolderEnvironmentUpdate: {"workspace_path", "environment"}, FolderEnvironmentRebuild: {"workspace_path"},
+		FolderEnvironmentRebuild: {"workspace_path"},
 	}
 	for i := range actions {
 		actions[i].Tool = manageProjectsToolName

@@ -86,14 +86,24 @@ func catalogRequiredNamed(reason string) map[string]bool {
 // catalogRequiredConditional are inputs a handler refuses a call without only
 // for some callers or calls, so they are not declared required. Each says why.
 var catalogRequiredConditional = map[string]string{
-	"manage_workers context worker_id":      "needed only by a caller with no conversation holding pending proposals",
-	"manage_workers progress worker_id":     "needed only by a caller with no conversation holding pending proposals",
-	"manage_workers review worker_id":       "needed only by a caller with no conversation holding pending proposals",
-	"manage_workers request prompt":         "the Orchestrator's request needs a prompt; Swarm Control may send input instead",
-	"manage_workflows propose name":         "a new workflow needs a name; a change to an existing one keeps its name",
-	"manage_projects get id":                "the project is named by id or project_id",
-	"manage_projects propose_task title":    "title or prompt here; a linked machine's propose route asks for a title",
-	"manage_sessions create workspace_path": "the Orchestrator's session at home defaults to its own workspace; a Swarm Control caller (or a linked machine) must name one",
+	"manage_workers context worker_id":                  "needed only by a caller with no conversation holding pending proposals",
+	"manage_workers progress worker_id":                 "needed only by a caller with no conversation holding pending proposals",
+	"manage_workers review worker_id":                   "needed only by a caller with no conversation holding pending proposals",
+	"manage_workers request prompt":                     "the Orchestrator's request needs a prompt; Swarm Control may send input instead",
+	"manage_workflows propose name":                     "a new workflow needs a name; a change to an existing one keeps its name",
+	"manage_projects get id":                            "the project is named by id or project_id",
+	"manage_projects propose_task title":                "title or prompt here; a linked machine's propose route asks for a title",
+	"manage_projects wait_tasks task_ids":               "one task may be named by task_id (swarm_wait_task's input)",
+	"manage_projects get_task_changes task_id":          "a Swarm Control caller may name the work by swarm_get_changes' inputs",
+	"manage_projects read_task_file task_id":            "a Swarm Control caller may name the work by swarm_read_file's inputs",
+	"manage_projects update id":                         "the project may be named by project_id (the swarm_* project tools' input)",
+	"manage_projects get_environment workspace_path":    "a Swarm Control caller may name the project instead (swarm_get_environment)",
+	"manage_projects update_environment workspace_path": "a Swarm Control caller may name the project instead (swarm_set_environment)",
+	"manage_projects update_environment environment":    "the definition may be given as flat fields (swarm_set_environment)",
+	"manage_workers update expected_revision":           "a Swarm Control caller's immediate change (swarm_manage_worker) needs none",
+	"manage_sessions send_message prompt":               "the text may be given as message (swarm_send_message)",
+	"manage_workspace create workspace_path":            "the folder may be given as path (swarm_add_workspace, swarm_create_workspace)",
+	"manage_sessions create workspace_path":             "the Orchestrator's session at home defaults to its own workspace; a Swarm Control caller (or a linked machine) must name one",
 }
 
 // catalogRequiredKey is the key a tool's probes call Swarm Control with: one

@@ -26,7 +26,7 @@ import (
 // The parity fixes changed it on purpose: its action field states each
 // action's required inputs and that a task action finds project_id from its
 // task id.
-const manageProjectsDefinitionSHA256 = "0ba5dbf64c05ebd880674c78e6ba9f2e56dbd5ac42d9b6ea84dbaf213ff21af9"
+const manageProjectsDefinitionSHA256 = "7dde1f8314d23e2ea42853a48d4300bef42cfe379e52d08275de445a8a57c8eb"
 
 // Purpose: the catalog is the only place manage_projects exists. The
 // Orchestrator's definition is generated from the declarations and stays the

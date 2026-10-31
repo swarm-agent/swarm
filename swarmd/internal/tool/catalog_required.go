@@ -6,7 +6,10 @@ package tool
 // input that is one of a choice (session_id or session_ids, a workflow's id
 // or name, title or prompt) or that only some callers need (a worker's
 // proposals without a conversation, a new workflow's name) is not listed:
-// its handler says when it is missing. TestCatalogRequiredInputsEveryAction
+// its handler says when it is missing. Inputs a Swarm Control caller may give
+// another way (stage 7a's swarm_* inputs: send_message's message, a worker
+// update's immediate changes without expected_revision, workspace create's
+// path) are not listed either. TestCatalogRequiredInputsEveryAction
 // removes each input from every action's call and fails when a handler
 // refuses the call for an input not declared here.
 var catalogRequired = map[string]map[string][]string{
@@ -26,7 +29,7 @@ var catalogRequired = map[string]map[string][]string{
 	},
 	manageWorkersToolName: {
 		"inspect":            {"worker_id"},
-		"update":             {"worker_id", "expected_revision"},
+		"update":             {"worker_id"},
 		"attach":             {"worker_id", "expected_revision"},
 		"disable_automation": {"worker_id", "automation_id", "expected_revision"},
 		"delete":             {"worker_id", "expected_revision"},
@@ -70,14 +73,13 @@ var catalogRequired = map[string]map[string][]string{
 		"read_messages":                       {"session_id"},
 		"stop":                                {"session_id"},
 		"pause":                               {"session_id"},
-		"send_message":                        {"session_id", "prompt"},
+		"send_message":                        {"session_id"},
 		"compact":                             {"session_id"},
 		ManageSessionsResolvePermissionAction: {"session_id", "permission_id", "decision"},
 		ManageSessionsSetModelAction:          {"session_id", "provider", "model"},
 	},
 	manageWorkspaceToolName: {
 		"update_map":                    {"expected_revision", "content", "intent"},
-		"create":                        {"workspace_path"},
 		"update":                        {"workspace_id", "workspace_generation"},
 		"delete":                        {"workspace_id", "workspace_generation"},
 		"set_default":                   {"workspace_id"},
