@@ -141,10 +141,13 @@ func (h *remoteWaitHarness) intent(t *testing.T, run string) (pebblestore.V3Sess
 	return intent, ok
 }
 
-// finish moves a remote task to status with an attempt summary, then commits
-// one event on its attempt session so the remote activity stream reports it.
+// finish completes the remote run before publishing its task outcome with
+// matching run provenance, then notifies the remote activity stream.
 func (h *remoteWaitHarness) finish(t *testing.T, id, status, summary, action string) {
 	t.Helper()
+	// Complete the run while the task is still running, so a follower cannot
+	// observe a settled task before its run-bound summary is stored.
+	h.touch(t, "rs-"+id, status)
 	if _, err := h.remote.s.sessions.Store().UpdateProjectTask(h.remote.account, "remote-project", id, func(task *pebblestore.ProjectTaskRecord) error {
 		task.Status, task.ActionNeeded = status, action
 		if action != "" {
@@ -153,12 +156,16 @@ func (h *remoteWaitHarness) finish(t *testing.T, id, status, summary, action str
 			// recompute action_needed from Git state when last_error is empty).
 			task.LastError, task.ActionNeeded = action, "Action Needed: Supply required input and resume. "+action
 		}
+		task.Attempts[0].RunID = "child-" + status
+		task.Attempts[0].SummaryRunID = "child-" + status
 		task.Attempts[0].Summary = summary
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	h.touch(t, "rs-"+id, status)
+	if _, err := h.remote.s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{Kind: sessionruntime.SessionMutationAppendMessage, SessionID: "rs-" + id, UserID: h.remote.user, AccountScopeID: h.remote.account, ClientRequestID: id + "-outcome-" + status, PayloadHash: id + "-outcome-" + status, Message: &pebblestore.MessageSnapshot{ID: id + "-outcome-" + status, Role: "assistant", Content: firstNonEmptyString(summary, action, status)}}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (h *remoteWaitHarness) touch(t *testing.T, session, key string) {
@@ -557,7 +564,10 @@ func TestRemoteTaskWaitResumesAfterRestart(t *testing.T) {
 // wait waiting; outcomes come only from the machine. Threat: a home record
 // (or a colliding ID) being reported as the linked machine's result. Boundary:
 // SessionStore.ReconcileProjectTaskWaits via Server.reconcileProjectTaskWaits,
-// the path every local task publication uses.
+// the path every local task publication uses. The linked in-process servers
+// are the narrowest layer that exercises both local reconciliation and remote
+// observation; the summary fixture has matching RunID/SummaryRunID as required
+// by SessionStore.hydrateTaskAttemptOutcome, not an unbound attempt summary.
 func TestRemoteTaskWaitIgnoresLocalTaskUpdates(t *testing.T) {
 	h := newRemoteWaitHarness(t, "t1")
 	h.register(t, "t1")
@@ -574,7 +584,7 @@ func TestRemoteTaskWaitIgnoresLocalTaskUpdates(t *testing.T) {
 	h.home.s.reconcileProjectTaskWaits("", "")
 	h.noWake(t, 300*time.Millisecond, "a local task update woke a linked wait")
 	h.finish(t, "t1", "completed", "Remote result.", "")
-	if row := remoteWaitRow(t, h.awaitWake(t), 0); row["status"] != "completed" || row["summary"] != "Remote result." {
+	if row := remoteWaitRow(t, h.awaitWake(t), 0); row["status"] != "completed" || row["summary"] != "Remote result." || row["machine"] != "box" || row["title"] != "Remote t1" || row["attempt_id"] != "attempt-t1" || row["session_id"] != "rs-t1" {
 		t.Fatalf("outcome must come from the machine: %v", row)
 	}
 }
