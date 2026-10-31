@@ -121,8 +121,18 @@ func (s *Server) SaveWorkflow(caller WorkflowCaller, body WorkflowDefinition, so
 
 const workflowSaveNext = "it runs when a matching job ends; swarm_list_workflows shows it and its deliveries, swarm_get_job a job's steps"
 
+// workflowSaveNextDisabled is the swarm_* tools' answer for a saved workflow
+// that is disabled: it does not run.
+const workflowSaveNextDisabled = "it is disabled and does not run until it is enabled; swarm_list_workflows shows it"
+
+// workflowSaveView is a save's answer on the swarm_* routes; manage_workflows
+// answers in catalog terms (workflowCatalogSaveAnswer).
 func workflowSaveView(a jobautomation.Automation, created bool) map[string]any {
-	return map[string]any{"automation": jobAutomationView(a), "created": created, "next": workflowSaveNext}
+	next := workflowSaveNext
+	if !a.Enabled {
+		next = workflowSaveNextDisabled
+	}
+	return map[string]any{"automation": jobAutomationView(a), "created": created, "next": next}
 }
 
 func (c *controlMCPCall) workflowDispatch(method, path string, query url.Values, body any) (map[string]any, error) {
@@ -176,7 +186,7 @@ func (s *Server) StopWorkflows(caller WorkflowCaller, stopped *bool) (jobautomat
 func workflowStopView(stop jobautomation.StopState) map[string]any {
 	next := "no new workflow step starts on this machine until stop_all with stopped false; running steps finish"
 	if !stop.Stopped {
-		next = "workflows run again; deliveries the switch stopped re-run with swarm_deliver_job (automation: true)"
+		next = "workflows run again; the steps the switch stopped re-run with manage_jobs rerun_failed_steps and the job's id"
 	}
 	return map[string]any{"stop": stop, "next": next}
 }

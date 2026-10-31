@@ -36,7 +36,9 @@ func TestFleetWorkReads(t *testing.T) {
 	if err != nil || !strings.Contains(string(raw), `"automations":[]`) {
 		t.Fatalf("list: %s %v", raw, err)
 	}
-	if _, err := home.s.CallFleetWork(ctx, p, "build-box", "manage_workflows", "get", map[string]any{"id": "missing"}); err == nil || !strings.Contains(err.Error(), "404") {
+	// A workflow is named by id or name; one the machine's list does not
+	// have is refused (resolveWorkflowReference against that list).
+	if _, err := home.s.CallFleetWork(ctx, p, "build-box", "manage_workflows", "get", map[string]any{"id": "missing"}); err == nil || !strings.Contains(err.Error(), `no workflow has the id or name "missing"`) {
 		t.Fatalf("remote missing get: %v", err)
 	}
 	for _, action := range []string{"secrets", "permissions", "rotate_key", "accept"} {

@@ -149,7 +149,10 @@ func TestWorkflowNativeProposals(t *testing.T) {
 	if !active.Matches(result) {
 		t.Fatal("accepted workflow inert")
 	}
+	// Replacing the steps (a different step set) is a full replace: a
+	// change of an existing workflow otherwise merges steps by id.
 	args["steps"] = []any{map[string]any{"type": "run", "command": "deliver/check.sh"}}
+	args["replace"] = true
 	a = propose()
 	if a.BaseID != active.ID || a.BaseRevision != active.Revision || a.ID == active.ID {
 		t.Fatal("replacement proposal lost its active base", a, active)
@@ -181,6 +184,7 @@ func TestWorkflowNativeProposals(t *testing.T) {
 	// MCP keeps its existing immediate activation contract.
 	args["name"] = "mcp-active"
 	delete(args, "action")
+	delete(args, "replace")
 	args["steps"] = []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "review"}}
 	if _, err := controlMCPSetAutomation(c, args); err != nil {
 		t.Fatal(err)

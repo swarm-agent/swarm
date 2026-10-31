@@ -932,7 +932,7 @@ func jobAutomationView(a jobautomation.Automation) map[string]any {
 	}
 	view := map[string]any{
 		"inputs": a.Inputs, "with": a.With,
-		"id": a.ID, "name": a.Name, "scope": a.Scope, "when": a.When, "enabled": a.Enabled, "retries": a.Retries, "result": a.Result,
+		"id": a.ID, "name": a.Name, "description": a.Description, "scope": a.Scope, "when": a.When, "enabled": a.Enabled, "retries": a.Retries, "result": a.Result,
 		"state": state, "steps": a.Steps, "revision": a.Revision, "created_at": a.CreatedAt, "updated_at": a.UpdatedAt,
 	}
 	if a.On != nil {
@@ -1087,13 +1087,18 @@ type jobAutomationBody struct {
 	Project   string                         `json:"project,omitempty"`
 	Workspace string                         `json:"workspace,omitempty"`
 	Name      string                         `json:"name"`
-	Scope     jobautomation.Scope            `json:"scope"`
-	When      string                         `json:"when"`
-	Enabled   *bool                          `json:"enabled"`
-	Retries   int                            `json:"retries"`
-	Steps     []jobautomation.Step           `json:"steps"`
+	// Description says what the workflow is for (optional).
+	Description string               `json:"description,omitempty"`
+	Scope       jobautomation.Scope  `json:"scope"`
+	When        string               `json:"when"`
+	Enabled     *bool                `json:"enabled"`
+	Retries     int                  `json:"retries"`
+	Steps       []jobautomation.Step `json:"steps"`
 	// Result is what the work must hand over (optional).
 	Result *jobautomation.ResultSpec `json:"result"`
+	// baseID names the workflow a proposal replaces when it renames it
+	// (never decoded: set by ManageWorkflows propose from the reference).
+	baseID string
 }
 
 func (b jobAutomationBody) automation() jobautomation.Automation {
@@ -1101,7 +1106,7 @@ func (b jobAutomationBody) automation() jobautomation.Automation {
 	if b.Enabled != nil {
 		enabled = *b.Enabled
 	}
-	return jobautomation.Automation{Inputs: b.Inputs, With: b.With, On: b.On, Name: b.Name, Scope: b.Scope, When: b.When, Enabled: enabled, Retries: b.Retries, Steps: b.Steps, Result: b.Result}
+	return jobautomation.Automation{Inputs: b.Inputs, With: b.With, On: b.On, Name: b.Name, Description: b.Description, Scope: b.Scope, When: b.When, Enabled: enabled, Retries: b.Retries, Steps: b.Steps, Result: b.Result, BaseID: b.baseID}
 }
 
 // errRunStepNeedsOwner refuses a run step from a caller without the machine
@@ -1297,7 +1302,8 @@ func (s *Server) handleJobAutomations(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "stop": stop})
 	case rest != "" && !strings.Contains(rest, "/") && r.Method == http.MethodGet:
-		a, err := s.GetWorkflow(workflowCallerFromRequest(r), rest)
+		// By id or name, as everywhere a workflow is named.
+		a, err := s.resolveWorkflow(workflowCallerFromRequest(r), rest)
 		if err != nil {
 			jobAutomationHTTPError(w, err)
 			return
@@ -1572,17 +1578,13 @@ func (s *Server) DeleteWorkflow(caller WorkflowCaller, args map[string]any) (any
 	if err != nil {
 		return nil, err
 	}
-	id := controlMCPString(args, "id")
-	if id == "" {
-		a, err := store.FindByName(account, controlMCPString(args, "name"))
-		if err != nil {
-			return nil, controlMCPToolFailure("no workflow named %q (swarm_list_workflows lists them)", controlMCPString(args, "name"))
-		}
-		id = a.ID
-	}
-	if a, err := store.Get(account, id); err != nil {
+	// The workflow by its id or name (one rule: resolveWorkflowReference).
+	a, err := s.resolveWorkflow(caller, workflowReference(args))
+	if err != nil {
 		return nil, err
-	} else if a.On != nil && a.On.Event.Source == "webhook" {
+	}
+	id := a.ID
+	if a.On != nil && a.On.Event.Source == "webhook" {
 		values, err := s.triggerSecrets()
 		if err != nil {
 			return nil, err
@@ -1597,7 +1599,7 @@ func (s *Server) DeleteWorkflow(caller WorkflowCaller, args map[string]any) (any
 		}
 		return nil, err
 	}
-	return map[string]any{"deleted": id}, nil
+	return map[string]any{"deleted": id, "name": a.Name}, nil
 }
 
 func controlMCPStopAutomations(c *controlMCPCall, args map[string]any) (any, error) {

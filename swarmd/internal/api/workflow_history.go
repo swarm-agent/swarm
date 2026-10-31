@@ -55,10 +55,7 @@ func (s *Server) WorkflowHistory(caller WorkflowCaller, args map[string]any) (an
 	if err != nil {
 		return nil, err
 	}
-	records, err := store.History(account, controlMCPString(args, "id"), controlMCPString(args, "name"))
-	if errors.Is(err, jobautomation.ErrNotFound) {
-		return nil, workflowHistoryNotFound("workflow history was not found for id %q or name %q", controlMCPString(args, "id"), controlMCPString(args, "name"))
-	}
+	records, id, err := s.workflowHistoryOf(caller, args)
 	if err != nil {
 		return nil, err
 	}
@@ -68,29 +65,69 @@ func (s *Server) WorkflowHistory(caller WorkflowCaller, args map[string]any) (an
 				if record.Deleted {
 					return map[string]any{"revision": revision, "deleted": true}, nil
 				}
-				return portableWorkflow(*record.Definition, record.Definition.Scope.Folder), nil
+				return s.portableWorkflowScope(account, *record.Definition), nil
 			}
 		}
 		return nil, workflowHistoryNotFound("revision %d was not found in retained workflow history", revision)
 	}
+	name := ""
+	for _, record := range records {
+		if record.Definition != nil {
+			name = record.Definition.Name
+			break
+		}
+	}
 	for i := range records {
 		records[i].Definition = nil
 	}
-	return map[string]any{"history": records}, nil
+	pending, err := workflowPendingProposals(store, account, id, name)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"history": records, "pending_proposals": pending}, nil
+}
+
+// workflowPendingProposals lists the proposals waiting on the person for a
+// workflow (by the workflow they replace, or for a workflow not yet
+// accepted, by its name), each with its state "pending": who proposed it,
+// the revision it replaces and the fields it changes.
+func workflowPendingProposals(store *jobautomation.Store, account, id, name string) ([]map[string]any, error) {
+	list, err := store.List(account)
+	if err != nil {
+		return nil, err
+	}
+	var base *jobautomation.Automation
+	for i := range list {
+		if list[i].ID == id && !list[i].Proposed {
+			base = &list[i]
+		}
+	}
+	out := []map[string]any{}
+	for _, p := range list {
+		if !p.Proposed {
+			continue
+		}
+		if !(p.BaseID != "" && p.BaseID == id) && !(p.BaseID == "" && (p.ID == id || (name != "" && p.Name == name))) {
+			continue
+		}
+		proposal := p
+		entry := map[string]any{"id": p.ID, "name": p.Name, "state": "pending", "revision": p.Revision, "proposed_by": p.ProposedBy, "time": p.UpdatedAt, "changed_fields": jobautomation.ChangedFields(base, &proposal)}
+		if p.BaseID != "" {
+			entry["replaces_revision"] = p.BaseRevision
+		}
+		out = append(out, entry)
+	}
+	return out, nil
 }
 func (s *Server) RestoreWorkflow(caller WorkflowCaller, args map[string]any) (any, error) {
-	store, account, err := s.workflowAccount(caller)
-	if err != nil {
+	if _, _, err := s.workflowAccount(caller); err != nil {
 		return nil, err
 	}
 	revision, err := workflowRevision(args, true)
 	if err != nil {
 		return nil, err
 	}
-	records, err := store.History(account, controlMCPString(args, "id"), controlMCPString(args, "name"))
-	if errors.Is(err, jobautomation.ErrNotFound) {
-		return nil, workflowHistoryNotFound("workflow history was not found for id %q or name %q", controlMCPString(args, "id"), controlMCPString(args, "name"))
-	}
+	records, _, err := s.workflowHistoryOf(caller, args)
 	if err != nil {
 		return nil, err
 	}

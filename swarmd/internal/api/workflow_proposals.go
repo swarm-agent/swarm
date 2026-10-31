@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
+
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/jobautomation"
 	"swarm/packages/swarmd/internal/tool"
@@ -57,7 +60,16 @@ func (s *Server) ManageWorkflows(ctx context.Context, p identity.Principal, who 
 		}
 		return s.ListWorkflows(caller, opts)
 	case "history":
-		return s.WorkflowHistory(caller, args)
+		out, err := s.WorkflowHistory(caller, args)
+		if err != nil {
+			return nil, err
+		}
+		if view, ok := out.(map[string]any); ok && view["history"] != nil {
+			if proposals, _ := view["pending_proposals"].([]map[string]any); len(proposals) > 0 {
+				view["next_action"] = "The pending proposals wait for the person to accept or discard them in their Swarm app; an AI cannot accept one. history with a revision reads that definition; restore with it makes it current."
+			}
+		}
+		return out, nil
 	case "get":
 		a, err := s.workflowByReference(caller, args)
 		if err != nil {
@@ -94,26 +106,7 @@ func (s *Server) ManageWorkflows(ctx context.Context, p identity.Principal, who 
 		}
 		return answer, nil
 	case "propose":
-		data, err := json.Marshal(args)
-		if err != nil {
-			return nil, err
-		}
-		var body WorkflowDefinition
-		if err = json.Unmarshal(data, &body); err != nil {
-			return nil, err
-		}
-		if body.Scope.Folder != "" {
-			return nil, errors.New("use project/workspace, not scope.folder")
-		}
-		a, _, _, err := s.SaveWorkflow(caller, body, "propose", false)
-		if err != nil {
-			return nil, err
-		}
-		effect := "Accepting adds a new workflow."
-		if a.BaseID != "" {
-			effect = fmt.Sprintf("Accepting replaces %s (revision %d); it keeps that workflow's id.", a.Name, a.BaseRevision)
-		}
-		return map[string]any{"automation": jobAutomationView(a), "next": effect + " This workflow waits for the person to accept or discard it. Nothing more is needed for this request."}, nil
+		return s.proposeWorkflow(caller, args)
 	case "enable", "disable":
 		a, err := s.workflowByReference(caller, args)
 		if err != nil {
@@ -135,10 +128,24 @@ func (s *Server) ManageWorkflows(ctx context.Context, p identity.Principal, who 
 		return s.DeleteWorkflow(caller, args)
 	case "export":
 		return s.ExportWorkflow(caller, args)
-	case "import":
-		return s.ImportWorkflow(caller, args)
-	case "restore":
-		return s.RestoreWorkflow(caller, args)
+	case "import", "restore":
+		var out any
+		var err error
+		if action == "import" {
+			out, err = s.ImportWorkflow(caller, args)
+		} else {
+			out, err = s.RestoreWorkflow(caller, args)
+		}
+		if errors.Is(err, errRunStepNeedsOwner) {
+			// The run-step rule stays (the owner's routes answer 403); an
+			// agent's import or restore is refused in its answer, with what
+			// to do instead.
+			return workflowRunStepRefusal(action), nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		return workflowCatalogSaveAnswer(out), nil
 	case "stop_all":
 		stopped, ok := args["stopped"].(bool)
 		if !ok {
@@ -154,15 +161,275 @@ func (s *Server) ManageWorkflows(ctx context.Context, p identity.Principal, who 
 	}
 }
 
+// workflowByReference reads the workflow a call names by id or name (in id
+// or name).
 func (s *Server) workflowByReference(caller WorkflowCaller, args map[string]any) (jobautomation.Automation, error) {
-	if id := controlMCPString(args, "id"); id != "" {
-		return s.GetWorkflow(caller, id)
+	return s.resolveWorkflow(caller, workflowReference(args))
+}
+
+// workflowProposeNextAction is what follows a proposal: the person's own
+// acceptance, in their app.
+const workflowProposeNextAction = "The person accepts or discards this proposal in their Swarm app (the workflow's pending proposal); an AI cannot accept it and nothing changes until then. manage_workflows history with the workflow's name lists it as pending."
+
+// workflowProposeControlKeys are propose's inputs that say how to apply the
+// change, never part of the definition.
+var workflowProposeControlKeys = map[string]bool{"action": true, "machine": true, "id": true, "replace": true, "expected_revision": true, "rotate_key": true}
+
+// proposeWorkflow saves a proposal for the person to accept. Naming an
+// existing workflow (id: its id or name, or name: its exact name) makes the
+// call a change merged onto its current revision: only the fields given
+// change (each step given by its id merges into that step), and
+// expected_revision, when given, must be that revision. replace: true makes
+// the given fields the whole definition instead. Any other workflow is new
+// and needs its full definition. Fields propose does not take are refused,
+// naming them, before anything is saved.
+func (s *Server) proposeWorkflow(caller WorkflowCaller, args map[string]any) (any, error) {
+	if unknown, declared := tool.CatalogUndeclaredInputs("manage_workflows", "propose", args); len(unknown) > 0 {
+		return nil, controlMCPToolFailure("propose does not take %s; nothing was proposed. It takes: %s", strings.Join(unknown, ", "), strings.Join(declared, ", "))
+	}
+	if scope, ok := args["scope"].(map[string]any); ok {
+		if _, folder := scope["folder"]; folder {
+			return nil, controlMCPToolFailure("use project/workspace, not scope.folder")
+		}
+	}
+	replace := false
+	if raw, ok := args["replace"]; ok {
+		if replace, ok = raw.(bool); !ok {
+			return nil, controlMCPToolFailure("replace must be true or false")
+		}
+	}
+	expected, err := workflowRevisionField(args, "expected_revision")
+	if err != nil {
+		return nil, err
 	}
 	store, account, err := s.workflowAccount(caller)
 	if err != nil {
-		return jobautomation.Automation{}, err
+		return nil, err
 	}
-	return store.FindByName(account, controlMCPString(args, "name"))
+	var current *jobautomation.Automation
+	if ref := controlMCPString(args, "id"); ref != "" {
+		a, err := s.resolveWorkflow(caller, ref)
+		if err != nil {
+			return nil, err
+		}
+		current = &a
+	} else if name := controlMCPString(args, "name"); name != "" {
+		a, err := store.FindByName(account, name)
+		if err == nil {
+			current = &a
+		} else if !errors.Is(err, jobautomation.ErrNotFound) {
+			return nil, err
+		}
+	}
+	if current != nil && current.Proposed {
+		return nil, controlMCPToolFailure("%s (%s) is a pending proposal, not a workflow: name the workflow it changes, or propose a new workflow under its own name", current.Name, current.ID)
+	}
+	if expected != 0 {
+		if current == nil {
+			return nil, controlMCPToolFailure("expected_revision guards a change of an existing workflow; no workflow is named %q", workflowReference(args))
+		}
+		if current.Revision != expected {
+			return nil, controlMCPToolFailure("%s is at revision %d, not %d: it changed since it was read; read it again (manage_workflows get) and propose on revision %d", current.Name, current.Revision, expected, current.Revision)
+		}
+	}
+	fields := map[string]any{}
+	for key, value := range args {
+		if !workflowProposeControlKeys[key] {
+			fields[key] = value
+		}
+	}
+	definition := fields
+	if current != nil && !replace {
+		if definition, err = mergeWorkflowChange(*current, fields); err != nil {
+			return nil, err
+		}
+	}
+	data, err := json.Marshal(definition)
+	if err != nil {
+		return nil, err
+	}
+	var body WorkflowDefinition
+	if err = json.Unmarshal(data, &body); err != nil {
+		return nil, controlMCPToolFailure("invalid workflow: %s", err)
+	}
+	if current != nil {
+		body.baseID = current.ID
+		if replace {
+			// A full replace keeps the workflow's name and folder unless
+			// it names new ones.
+			if strings.TrimSpace(body.Name) == "" {
+				body.Name = current.Name
+			}
+			if body.Project == "" && body.Workspace == "" {
+				body.Scope.Folder = current.Scope.Folder
+			}
+		}
+	}
+	a, _, _, err := s.SaveWorkflow(caller, body, "propose", false)
+	if err != nil {
+		return nil, err
+	}
+	effect := "Accepting adds a new workflow."
+	answer := map[string]any{"automation": jobAutomationView(a), "next_action": workflowProposeNextAction}
+	if current != nil {
+		effect = fmt.Sprintf("Accepting replaces %s (revision %d); it keeps that workflow's id.", current.Name, current.Revision)
+		answer["changes"] = jobautomation.ChangedFields(current, &a)
+		answer["merged_onto_revision"] = current.Revision
+		if replace {
+			delete(answer, "merged_onto_revision")
+			answer["replaced"] = true
+		}
+	}
+	answer["next"] = effect + " This workflow waits for the person to accept or discard it. Nothing more is needed for this request."
+	return answer, nil
+}
+
+// mergeWorkflowChange merges a change onto a workflow's current definition:
+// each given field replaces the current one (null removes it); scope merges
+// key by key; each given step merges into the current step with its id.
+// project or workspace binds a new folder.
+func mergeWorkflowChange(current jobautomation.Automation, change map[string]any) (map[string]any, error) {
+	data, err := json.Marshal(portableWorkflow(current, ""))
+	if err != nil {
+		return nil, err
+	}
+	var merged map[string]any
+	if err := json.Unmarshal(data, &merged); err != nil {
+		return nil, err
+	}
+	delete(merged, "swarm_workflow")
+	if len(current.With) > 0 {
+		merged["with"] = current.With
+	}
+	scope, _ := merged["scope"].(map[string]any)
+	if scope == nil {
+		scope = map[string]any{}
+	}
+	_, project := change["project"]
+	_, workspace := change["workspace"]
+	if project || workspace {
+		delete(scope, "folder")
+	}
+	merged["scope"] = scope
+	for key, value := range change {
+		switch key {
+		case "scope":
+			given, ok := value.(map[string]any)
+			if !ok {
+				return nil, controlMCPToolFailure("scope must be an object")
+			}
+			for k, v := range given {
+				if v == nil {
+					delete(scope, k)
+				} else {
+					scope[k] = v
+				}
+			}
+		case "steps":
+			if err := mergeWorkflowSteps(current.Name, merged, value); err != nil {
+				return nil, err
+			}
+		default:
+			if value == nil {
+				delete(merged, key)
+			} else {
+				merged[key] = value
+			}
+		}
+	}
+	return merged, nil
+}
+
+// mergeWorkflowSteps merges each given step into the current step with its
+// id. Adding, removing or reordering steps is a full replace.
+func mergeWorkflowSteps(name string, merged map[string]any, value any) error {
+	given, ok := value.([]any)
+	if !ok {
+		return controlMCPToolFailure("steps must be a list")
+	}
+	current, _ := merged["steps"].([]any)
+	index := map[string]int{}
+	ids := []string{}
+	for i, raw := range current {
+		if step, ok := raw.(map[string]any); ok {
+			id, _ := step["id"].(string)
+			index[id] = i
+			ids = append(ids, id)
+		}
+	}
+	for _, raw := range given {
+		step, ok := raw.(map[string]any)
+		if !ok {
+			return controlMCPToolFailure("each step must be an object")
+		}
+		id, _ := step["id"].(string)
+		i, found := index[strings.TrimSpace(id)]
+		if !found {
+			named := fmt.Sprintf("no step %q", id)
+			if strings.TrimSpace(id) == "" {
+				named = "a step without an id"
+			}
+			return controlMCPToolFailure("a change merges each step into the step with its id: %s has steps %s, and the change has %s. To add, remove or reorder steps, send every step with replace: true", name, strings.Join(ids, ", "), named)
+		}
+		target, _ := current[i].(map[string]any)
+		for k, v := range step {
+			if v == nil {
+				delete(target, k)
+			} else {
+				target[k] = v
+			}
+		}
+	}
+	return nil
+}
+
+// workflowRevisionField reads a positive revision field, or 0 when absent.
+func workflowRevisionField(args map[string]any, key string) (uint64, error) {
+	raw, ok := args[key]
+	if !ok || raw == nil {
+		return 0, nil
+	}
+	n, err := strconv.ParseUint(fmt.Sprint(raw), 10, 64)
+	if err != nil || n == 0 {
+		return 0, controlMCPToolFailure("%s must be a positive integer (the revision manage_workflows get shows)", key)
+	}
+	return n, nil
+}
+
+// workflowRunStepRefusal is manage_workflows import's or restore's answer
+// when the definition has a run step: refused (envelope state refused), the
+// reason, and what to do instead.
+func workflowRunStepRefusal(action string) map[string]any {
+	next := "Import it without the run step (remove that step from the definition), or ask this machine's owner to import it: the owner imports run steps in their Swarm app or with the owner's own full key."
+	if action == "restore" {
+		next = "Restore a revision without a run step (history lists them), or ask this machine's owner to restore it: the owner restores run steps in their Swarm app or with the owner's own full key."
+	}
+	return map[string]any{"status": tool.EnvelopeStateRefused, "reason": errRunStepNeedsOwner.Error(), "next_action": next}
+}
+
+// workflowCatalogSaveAnswer is an import's or restore's answer in catalog
+// terms: what the saved workflow does now, by its state, and the catalog
+// actions that read it.
+func workflowCatalogSaveAnswer(out any) any {
+	view, ok := out.(map[string]any)
+	if !ok {
+		return out
+	}
+	automation, ok := view["automation"].(map[string]any)
+	if !ok {
+		return out
+	}
+	view["next"] = workflowCatalogNext(automation["enabled"] == true)
+	return view
+}
+
+// workflowCatalogNext says what a saved workflow does, enabled or not, in
+// catalog tools and actions.
+func workflowCatalogNext(enabled bool) string {
+	if !enabled {
+		return "It is disabled: it does not run until it is enabled (manage_workflows enable with its id or name). manage_workflows get or history reads it."
+	}
+	return "It runs when matching work ends (a task or worker job in its scope, or its trigger). manage_workflows get or history reads it and deliveries lists its runs; manage_jobs get_job reads a job's steps."
 }
 
 func (s *Server) handleWorkflowAccept(w http.ResponseWriter, r *http.Request, id string) {

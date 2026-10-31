@@ -298,9 +298,12 @@ func TestManageWorkflowsForkAndRollBack(t *testing.T) {
 			if _, refused := h.controlTool(t, []string{"swarm:read", "automations:read", "automations:write"}, "manage_workflows", call(map[string]any{"action": "import", "definition": exported, "name": "Refused", "project": project})); !strings.Contains(refused, "needs swarm:write") {
 				t.Fatalf("read key import: %q", refused)
 			}
+			// The run-step refusal is an envelope: state refused, the
+			// reason and what to do instead.
 			runStep := map[string]any{"swarm_workflow": float64(1), "name": "Host", "steps": []any{map[string]any{"type": "run", "command": "deliver/push.sh"}}}
-			if _, refused := h.controlTool(t, catalogParityFullKey, "manage_workflows", call(map[string]any{"action": "import", "definition": runStep, "project": project})); refused == "" {
-				t.Fatal("an AI key imported a run step")
+			out, refused = h.controlTool(t, catalogParityFullKey, "manage_workflows", call(map[string]any{"action": "import", "definition": runStep, "project": project}))
+			if refused != "" || catalogEnvelopeCheck(t, "import", out)["state"] != "refused" {
+				t.Fatalf("an AI key's run-step import: %s %s", out, refused)
 			}
 			for _, name := range []string{"Refused", "Host"} {
 				if _, err := store.FindByName(account, name); err == nil {

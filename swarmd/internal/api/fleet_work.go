@@ -71,6 +71,18 @@ func (s *Server) CallFleetWork(ctx context.Context, p identity.Principal, machin
 	if id == "" {
 		id = controlMCPString(args, "worker_id")
 	}
+	switch action {
+	case "get", "enable", "disable", "delete":
+		if name == "manage_workflows" {
+			// A workflow's id or name, resolved by the one rule against
+			// the machine's own list.
+			resolved, err := s.fleetWorkflowID(ctx, p, machine, workflowReference(args))
+			if err != nil {
+				return nil, err
+			}
+			id = resolved
+		}
+	}
 	query := url.Values{}
 	for _, key := range []string{"limit", "cursor", "lifecycle_state", "delivery_id", "detail"} {
 		if v, ok := args[key]; ok {
@@ -84,7 +96,7 @@ func (s *Server) CallFleetWork(ctx context.Context, p identity.Principal, machin
 	case "propose":
 		path += "/propose"
 		method = http.MethodPost
-		bodyKeys = append(bodyKeys, "id", "name", "project", "workspace", "scope", "when", "enabled", "retries", "revision", "result", "steps", "on", "inputs", "with")
+		bodyKeys = append(bodyKeys, "id", "name", "description", "replace", "project", "workspace", "scope", "when", "enabled", "retries", "result", "steps", "on", "inputs", "with")
 	case "export":
 		path += "/export"
 		method = http.MethodPost
@@ -176,6 +188,43 @@ func (s *Server) CallFleetWork(ctx context.Context, p identity.Principal, machin
 	return result, nil
 }
 
+// fleetWorkflowID resolves a workflow's id or name on a linked machine: the
+// machine's list read through the link, then resolveWorkflowReference (an
+// ambiguous name is refused, naming the matches).
+func (s *Server) fleetWorkflowID(ctx context.Context, p identity.Principal, machine, ref string) (string, error) {
+	if strings.TrimSpace(ref) == "" {
+		return resolveWorkflowReference(nil, ref)
+	}
+	client, linked, _, err := s.fleetMachineClient(p.AccountScopeID, machine)
+	if err != nil {
+		return "", errors.New("linked machine connection unavailable")
+	}
+	var list struct {
+		Automations []struct {
+			ID    string `json:"id"`
+			Name  string `json:"name"`
+			State string `json:"state"`
+		} `json:"automations"`
+	}
+	err = client.JSON(ctx, http.MethodGet, JobAutomationsPath, nil, &list)
+	s.noteFleetContact(linked, err)
+	if err != nil {
+		return "", fmt.Errorf("linked machine %s refused list: %w", machine, err)
+	}
+	candidates := make([]workflowCandidate, 0, len(list.Automations))
+	for _, a := range list.Automations {
+		candidates = append(candidates, workflowCandidate{ID: a.ID, Name: a.Name, State: a.State})
+	}
+	id, err := resolveWorkflowReference(candidates, ref)
+	if err != nil {
+		return "", err
+	}
+	if id == "." || id == ".." || strings.ContainsAny(id, "/\\?#%") {
+		return "", errors.New("a valid remote record id is required")
+	}
+	return id, nil
+}
+
 // Whitelist list fields: definitions, instructions and step outcomes stay in get.
 func compactFleetList(raw json.RawMessage) (json.RawMessage, error) {
 	var data map[string]any
@@ -209,6 +258,13 @@ func compactFleetList(raw json.RawMessage) (json.RawMessage, error) {
 				}
 			}
 			if collection == "automations" {
+				// active, disabled or proposed, as here.
+				if state, ok := record["state"].(string); ok && len(state) <= 32 {
+					item["state"] = state
+				}
+				if description, ok := record["description"].(string); ok && description != "" {
+					item["description"] = controlMCPTruncate(description, 256)
+				}
 				trigger := "when matching work ends"
 				if on, ok := record["on"].(map[string]any); ok {
 					if _, ok := on["schedule"]; ok {

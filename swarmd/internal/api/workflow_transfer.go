@@ -46,7 +46,7 @@ func portableWorkflow(a jobautomation.Automation, folder string) workflowDefinit
 	if filepath.Clean(scope.Folder) == filepath.Clean(folder) {
 		scope.Folder = ""
 	}
-	return workflowDefinition{1, jobAutomationBody{Inputs: a.Inputs, On: a.On, Name: a.Name, Scope: scope, When: a.When, Enabled: &a.Enabled, Retries: a.Retries, Steps: a.Steps, Result: a.Result}}
+	return workflowDefinition{1, jobAutomationBody{Inputs: a.Inputs, On: a.On, Name: a.Name, Description: a.Description, Scope: scope, When: a.When, Enabled: &a.Enabled, Retries: a.Retries, Steps: a.Steps, Result: a.Result}}
 }
 
 func workflowDefinitionsEqual(a, b jobautomation.Automation) bool {
@@ -97,22 +97,50 @@ func (c *controlMCPCall) workflowExportFolder(folder string) (string, error) {
 	return "", controlMCPToolFailure("workflow export folder is not an account project folder")
 }
 
+// portableWorkflowScope is a's portable definition with its folder scope as
+// the project it belongs to (and, in a project with several folders, which
+// one), so an import reproduces the scope: here it binds the same folder;
+// on another machine the project of that name, or the import asks for one.
+// A folder no project has stays out (an import then needs project).
+func (s *Server) portableWorkflowScope(account string, a jobautomation.Automation) workflowDefinition {
+	d := portableWorkflow(a, a.Scope.Folder)
+	if s.sessions == nil || s.sessions.Store() == nil || a.Scope.Folder == "" {
+		return d
+	}
+	projects, err := s.sessions.Store().ListProjects(account, 1000)
+	if err != nil {
+		return d
+	}
+	folder := filepath.Clean(a.Scope.Folder)
+	for _, project := range projects {
+		for _, workspace := range project.Workspaces {
+			if workspace.Path == "" || filepath.Clean(workspace.Path) != folder {
+				continue
+			}
+			d.Project = project.Name
+			if d.Project == "" {
+				d.Project = project.ID
+			}
+			if len(project.Workspaces) > 1 {
+				d.Workspace = folder
+			}
+			return d
+		}
+	}
+	return d
+}
+
 func (s *Server) ExportWorkflow(caller WorkflowCaller, args map[string]any) (any, error) {
 	c := s.workflowContext(caller)
-	store, account, err := s.workflowAccount(caller)
+	_, account, err := s.workflowAccount(caller)
 	if err != nil {
 		return nil, err
 	}
-	var a jobautomation.Automation
-	if id := controlMCPString(args, "id"); id != "" {
-		a, err = store.Get(account, id)
-	} else {
-		a, err = store.FindByName(account, controlMCPString(args, "name"))
-	}
+	a, err := s.resolveWorkflow(caller, workflowReference(args))
 	if err != nil {
 		return nil, err
 	}
-	d := portableWorkflow(a, a.Scope.Folder)
+	d := s.portableWorkflowScope(account, a)
 	path, write := args["path"].(string)
 	if !write {
 		return d, nil
@@ -256,14 +284,27 @@ func readWorkflowFile(root *os.Root, path string) ([]byte, error) {
 	return data, err
 }
 
+// importWorkflowDefinition saves one portable definition. Its folder is the
+// call's (folder: its project or workspace), which maps the workflow onto
+// this machine; else the definition's own scope: its folder, or the folder
+// of its project here. A project this machine does not have is refused,
+// asking for project, never bound wider.
 func (s *Server) importWorkflowDefinition(caller WorkflowCaller, data []byte, folder string, options ...map[string]any) (any, error) {
 	d, err := decodeWorkflow(data)
 	if err != nil {
 		return nil, err
 	}
-	if d.Scope.Folder == "" {
+	switch {
+	case folder != "":
 		d.Scope.Folder = folder
+	case d.Scope.Folder == "" && (d.Project != "" || d.Workspace != ""):
+		place, err := s.workflowContext(caller).place(d.Project, d.Workspace)
+		if err != nil {
+			return nil, controlMCPToolFailure("this workflow applies to project %q%s, which this machine cannot bind (%s); pass project (and workspace) to choose its folder here", d.Project, workflowWorkspaceNote(d.Workspace), workflowRefusalText(err))
+		}
+		d.Scope.Folder = place.path
 	}
+	d.Project, d.Workspace = "", ""
 	encoded, err := json.Marshal(d.jobAutomationBody)
 	if err != nil {
 		return nil, err
@@ -283,6 +324,24 @@ func (s *Server) importWorkflowDefinition(caller WorkflowCaller, data []byte, fo
 		}
 	}
 	return s.saveWorkflowArgs(caller, args, true, "import")
+}
+
+// workflowWorkspaceNote names an exported definition's folder in a project
+// with several.
+func workflowWorkspaceNote(workspace string) string {
+	if workspace == "" {
+		return ""
+	}
+	return fmt.Sprintf(" (folder %s)", workspace)
+}
+
+// workflowRefusalText is a refusal's reason without its transport wrapping.
+func workflowRefusalText(err error) string {
+	var refusal controlMCPToolError
+	if errors.As(err, &refusal) && refusal.message != "" {
+		return refusal.message
+	}
+	return err.Error()
 }
 
 func (s *Server) ImportWorkflow(caller WorkflowCaller, args map[string]any) (any, error) {
