@@ -178,6 +178,8 @@ type Step struct {
 	// agent
 	Worker string `json:"worker,omitempty"`
 	Brief  string `json:"brief,omitempty"`
+	// BriefContext pins template references before input data is inserted.
+	BriefContext *briefContext `json:"brief_context,omitempty"`
 	// Since names the earlier review whose head and findings bound a delta review.
 	Since   string   `json:"since,omitempty"`
 	ForEach *ForEach `json:"for_each,omitempty"`
@@ -369,7 +371,7 @@ func NormalizeSteps(steps []Step) error {
 				return err
 			}
 		case StepAgent:
-			if err := validateStepPlaceholders(step.ID, "brief", step.Brief, types); err != nil {
+			if err := validateStepPlaceholders(step.ID, "brief", step.briefReferences(), types); err != nil {
 				return err
 			}
 			step.Since = strings.TrimSpace(step.Since)

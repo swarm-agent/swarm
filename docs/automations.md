@@ -513,12 +513,12 @@ With `fixes`:
   reopen. With no findings and no `message` the step sends nothing and fails
   with `step <from> recorded no findings to send and the reopen step has no
   message`.
-- `message` may hold `{{steps.<id>.output}}`, replaced by the recorded output
-  line of the earlier step `<id>` (a `run` step's last non-empty output
-  line, at most 500 bytes; an `agent` step's job id), or `(no output)` when
-  it recorded none. It must name an earlier step. Nothing else is
-  substituted: other text, including other `{{...}}`, is sent as written, and
-  substituted output is never expanded again.
+- `message` may hold `{{steps.<id>.output}}`, `.verdict`, `.head`, or
+  `.handoff`, naming an earlier step. Output is a `run` step's last non-empty
+  line, a reviewer agent's findings, or another agent's job ID. Each value
+  is flattened to one line and capped at 500 bytes; missing values become
+  `(no output)`. Other placeholder forms are sent as written, and inserted
+  values are never expanded again.
 - The step succeeds once the follow-up is accepted; it does not wait for the
   follow-up to finish. The follow-up's end is a new job end, so it triggers
   the automation again as a new delivery whose `round` is the previous

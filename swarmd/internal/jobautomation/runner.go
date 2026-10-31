@@ -1293,7 +1293,7 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 			// The job before ended on a provider limit: a new job, once.
 			key += ".limit" + strconv.Itoa(record.LimitWaits)
 		}
-		req := AgentRequest{Account: d.Account, Folder: d.Folder, Worker: step.Worker, Brief: agentBrief(*d, step.Brief), Result: d.Result, Head: head,
+		req := AgentRequest{Account: d.Account, Folder: d.Folder, Worker: step.Worker, Brief: renderAgentBrief(*d, step), Result: d.Result, Head: head,
 			IdempotencyKey: key, Fixes: step.Fixes, Checkout: step.Checkout,
 			ReviewJob: latestWorkJob(*d, step.ID), Deliverables: d.CurrentDeliverables()}
 		if step.Since != "" {

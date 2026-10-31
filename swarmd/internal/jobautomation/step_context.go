@@ -7,6 +7,44 @@ import (
 
 const MaxHandoffBytes = 4000
 
+// briefContext survives delivery persistence so only definition references are
+// interpreted on execution, never placeholder-looking input data.
+type briefContext struct {
+	Template string            `json:"template"`
+	Inputs   map[string]string `json:"inputs"`
+}
+
+func (s Step) briefReferences() string {
+	if s.BriefContext != nil {
+		return s.BriefContext.Template
+	}
+	return s.Brief
+}
+
+func renderAgentBrief(d Delivery, s Step) string {
+	if s.BriefContext == nil {
+		return agentBrief(d, s.Brief)
+	}
+	// Resolve definition step references first, then insert inputs in the
+	// original template's literal segments, not in findings returned by steps.
+	template := s.BriefContext.Template
+	var out strings.Builder
+	end := 0
+	for _, loc := range stepOutputPlaceholder.FindAllStringIndex(template, -1) {
+		out.WriteString(renderBriefInputs(template[end:loc[0]], s.BriefContext.Inputs))
+		out.WriteString(agentBrief(d, template[loc[0]:loc[1]]))
+		end = loc[1]
+	}
+	out.WriteString(renderBriefInputs(template[end:], s.BriefContext.Inputs))
+	return truncate(out.String(), maxBriefRunes)
+}
+
+func renderBriefInputs(text string, values map[string]string) string {
+	return inputPlaceholder.ReplaceAllStringFunc(text, func(m string) string {
+		return values[inputPlaceholder.FindStringSubmatch(m)[1]]
+	})
+}
+
 func validateStepPlaceholders(id, field, text string, earlier map[string]string) error {
 	for _, m := range stepOutputPlaceholder.FindAllStringSubmatch(text, -1) {
 		if _, ok := earlier[m[1]]; !ok {

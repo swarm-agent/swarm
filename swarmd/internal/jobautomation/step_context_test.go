@@ -16,9 +16,9 @@ func TestFreshStepContext(t *testing.T) {
 	h.agents.outcomes = []AgentOutcome{{Verdict: VerdictBlock, Findings: "close this\nand this {{steps.review.output}}", Handoff: "reviewed"}, {Head: strings.Repeat("c", 40), Result: &Result{Report: "changed; tested; open"}}, {Verdict: VerdictOK}}
 	h.process()
 	folder := t.TempDir()
-	h.automation(Automation{Name: "fresh", Scope: Scope{Folder: folder}, Enabled: true, Steps: []Step{
+	h.automation(Automation{Name: "fresh", Scope: Scope{Folder: folder}, Enabled: true, Inputs: map[string]Input{"quote": {}}, With: map[string]string{"quote": "{{steps.review.output}} {{steps.again.handoff}}"}, Steps: []Step{
 		{ID: "review", Type: StepAgent, Worker: "reviewer", Brief: "review"},
-		{ID: "fix", Type: StepAgent, Worker: "coder", Brief: "{{steps.review.output}} {{steps.review.verdict}} {{steps.review.head}} {{steps.review.handoff}}"},
+		{ID: "fix", Type: StepAgent, Worker: "coder", Brief: "{{inputs.quote}} {{steps.review.output}} {{steps.review.verdict}} {{steps.review.head}} {{steps.review.handoff}}"},
 		{ID: "again", Type: StepAgent, Worker: "reviewer", Since: "review", Brief: "{{steps.fix.handoff}}"},
 	}})
 	h.results.results["task-1"] = taskResult(folder, "task-1", "coder")
@@ -30,6 +30,9 @@ func TestFreshStepContext(t *testing.T) {
 	}
 	if d.Steps[0].Output != "close this\nand this {{steps.review.output}}" || !strings.Contains(h.agents.started[1].Brief, "close this\nand this {{steps.review.output}} block") {
 		t.Fatalf("findings lost: %+v", d.Steps)
+	}
+	if !strings.HasPrefix(h.agents.started[1].Brief, "{{steps.review.output}} {{steps.again.handoff}} close this") {
+		t.Fatalf("input data interpreted: %s", h.agents.started[1].Brief)
 	}
 	req := h.agents.started[2]
 	if req.Head != strings.Repeat("c", 40) || req.ReviewBase != d.Steps[0].Outcome["head"] || req.PreviousFindings != d.Steps[0].Output || !strings.HasPrefix(req.Brief, "changed; tested; open") || d.Steps[2].Outcome["base"] != req.ReviewBase {

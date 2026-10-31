@@ -80,7 +80,7 @@ func (s *Step) normalizeForEach() error {
 	if strings.TrimSpace(s.Since) != "" {
 		return invalid("for_each does not accept since")
 	}
-	if stepOutputPlaceholder.MatchString(s.Brief) {
+	if stepOutputPlaceholder.MatchString(s.briefReferences()) {
 		return invalid("for_each does not accept step-result placeholders in brief")
 	}
 	if s.Fixes != "" || s.Produce || s.Checkout != "" {

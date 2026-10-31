@@ -77,6 +77,8 @@ func (a Automation) RenderInputs() (Automation, error) {
 		if s.ForEach != nil {
 			s.ForEach.File = replace(s.ForEach.File)
 		}
+		// Capture references from the definition, never from inserted data.
+		s.BriefContext = &briefContext{Template: s.Brief, Inputs: values}
 		s.Brief, s.Worker, s.Message, s.Path = replace(s.Brief), replace(s.Worker), replace(s.Message), replace(s.Path)
 		for j := range s.Args {
 			s.Args[j] = replace(s.Args[j])
@@ -97,6 +99,10 @@ func (a Automation) RenderInputs() (Automation, error) {
 
 // normalizeInputs validates the executable form but retains the reusable fields.
 func (a *Automation) normalizeInputs() error {
+	// Runtime provenance is derived here, never trusted from an API definition.
+	for i := range a.Steps {
+		a.Steps[i].BriefContext = nil
+	}
 	if err := ValidateBriefPlaceholders(a.Steps); err != nil {
 		return err
 	}
@@ -109,6 +115,7 @@ func (a *Automation) normalizeInputs() error {
 	}
 	for i := range a.Steps {
 		original := a.Steps[i]
+		rendered.Steps[i].BriefContext = nil
 		s := &rendered.Steps[i]
 		if strings.Contains(original.Brief, "{{inputs.") {
 			s.Brief = original.Brief
