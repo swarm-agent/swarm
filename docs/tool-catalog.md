@@ -35,32 +35,47 @@ the same name and with the same meaning, run by the code that tool used
 (stage 7a). It also returns every field that tool's answer carried, in the
 envelope's `data` (or in the record `data` holds, such as `data.task`); a
 `swarm_*` answer's `next` hint is the envelope's `next_action` or `next`.
-Inputs only a Swarm Control caller can use are control inputs: held waits
-(`wait_seconds`), and on `manage_jobs` also `then` and `model`, which a
-conversation never passes to the job handlers, here or on a linked machine.
-The Orchestrator keeps its own watch and turn model.
+Inputs only a Swarm Control caller can use are control inputs, run by the
+`swarm_*` tool's own handler; a conversation never passes them, here or on a
+linked machine, and the Orchestrator keeps its own watch and turn model:
+
+- held waits (`wait_seconds`) on `manage_jobs`, `manage_projects` `get`,
+  `propose_task`, `wait_tasks` and the folder environments;
+- `manage_jobs` `then` and `model`, and `propose_task`'s `model` (checked as
+  `swarm_run_task` checks it);
+- the immediate worker changes on `manage_workers`: `create` with
+  `swarm_create_worker`'s folder and schedule or `swarm_deploy_worker`'s
+  preset, role or worker, and `update` with `agent`, `run_id` (cancel that
+  run) or `schedule_id` with `schedule_enabled`. Through Swarm Control a
+  worker is active at once; the Orchestrator proposes it for acceptance.
+
+A folder environment call in the `swarm_*` shape (a `project` or
+`workspace`, no `workspace_path`, `include_log` or `reset`) runs
+`swarm_get_environment`'s or `swarm_set_environment`'s handler; a folder
+named by `workspace_path` runs the folder environment service. `get_task` and
+`inspect` stay the answers the Orchestrator and Swarm Control share, so
+`swarm_task_result`'s and `swarm_get_worker`'s flat fields are read from
+their record there (`data.task`, `data.worker`).
 
 Two tests hold this for every mapped pair (`swarmToolCatalogHomes`):
 `TestEverySwarmToolInputIsACatalogInput` compares each `swarm_*` input schema
 with the action's inputs and control inputs, and
 `TestEverySwarmAnswerFieldIsInTheCatalogEnvelope` makes a representative call
 of both and compares the answer's top-level fields with the envelope data.
-A deliberate drop is listed once, with its reason, in `swarmCatalogDrops`: an
-input named `action` (the catalog's own field: `connect_chatgpt` and
-`connect_claude_code` take it as `step`; approving a task card is the
-person's step in their app), `create_key`'s `kind` (taken as `key_kind`),
+A pair whose call both surfaces refuse fails unless `swarmAnswerUnprobed`
+names why (the hermetic harness runs no provider, worktree service,
+workspace authority, sandbox environments, secret slots or media models).
+A deliberate drop is listed once, with its reason, in `swarmCatalogDrops`:
+an input named `action` (the catalog's own field: `connect_chatgpt` and
+`connect_claude_code` take it as `step`; `swarm_manage_worker`'s values are
+`manage_workers` actions or `update` inputs; approving a task card is the
+person's step in their app), `create_key`'s `kind` (`key_kind`),
 `swarm_design`'s `edit_path` (`manage_designs` `edit`), `swarm_request_media`'s
 `retry_of` (`manage_media` `retry`), `swarm_get_job`'s `include_media` (images
-are not envelope data; `manage_media` `read` returns a file) and
-`swarm_run_task`'s `role` (`agent`).
-
-Gaps not closed yet are named in `swarmCatalogOpenGaps`, and the test fails
-once one is closed so its entry goes too. They must be closed before the
-`swarm_*` tools are deleted: the `swarm_*` worker inputs of create, deploy,
-update and lifecycle control (`manage_workers`), the folder environments' flat
-inputs, place, log and held waits, `get`'s and `propose_task`'s held waits,
-`propose_task`'s per-task model, and the flat answer fields of
-`swarm_get_worker`, `swarm_task_result` and `swarm_wait_task`.
+are not envelope data; `manage_media` `read` returns a file),
+`swarm_run_task`'s `role` (`agent`), and the `swarm_task_result` and
+`swarm_get_worker` answer fields that `get_task` and `inspect` carry under
+their own names.
 
 A key bound to one worker, one agent or a trigger never calls a catalog tool:
 Swarm Control neither lists nor runs them for it, and the linked routes
