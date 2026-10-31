@@ -1725,6 +1725,16 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectDeliverableContent(w, r, p, projectID, segments[2], segments[4])
 		return
 	}
+	// Flow reports: GET /v3/projects/{id}/tasks/{taskId}/flow and
+	// GET /v3/projects/{id}/flow?period= (project_task_flow.go).
+	if len(segments) == 4 && segments[1] == "tasks" && segments[3] == "flow" {
+		s.handleProjectTaskFlow(w, r, p, projectID, segments[2])
+		return
+	}
+	if len(segments) == 2 && segments[1] == "flow" {
+		s.handleProjectFlow(w, r, p, projectID)
+		return
+	}
 	if len(segments) == 2 && segments[1] == "context:retry" {
 		s.handleProjectContextRetry(w, r, p, projectID)
 		return

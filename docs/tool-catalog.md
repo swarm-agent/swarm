@@ -723,6 +723,7 @@ Data the task views carry for every reader:
 - `get_task` (and each task of Swarm Control's `wait_tasks`) has `review` when a review recorded a verdict: `verdict` (`ok`, `warn` or `block`), `round`, `step`, `delivery_id`, and a `findings` summary with `findings_truncated` and `more` (the call with the full text). `progress.workflow` still shows the loop's state and a blocking review's full findings.
 - A landed task's `result.commits` and `result.files` come from the task's own range even after its checkout was removed: base..its branch in its source repository, or base..the head its integration recorded once the branch is deleted.
 - `list_machines` and `agents_at_work` use one reachability rule (`tool.FleetMachineReachable`): when the answer contacted the machine, it is online exactly when that contact succeeded; otherwise the last recorded contact decides.
+- `get_task` with `detail` `flow` answers the task row plus `flow` (the task's flow report) and `flow_markdown`; `manage_projects` `flow` (`project_id`, `period` today, 7d or 30d) answers a project's roll-up the same way. Both run `api.Server.ProjectTaskFlow` / `ProjectFlowRollup`, the functions behind `GET /v3/projects/{p}/tasks/{t}/flow` and `GET /v3/projects/{p}/flow`. See [flow-report.md](flow-report.md).
 
 ## How MCP serves the catalog
 

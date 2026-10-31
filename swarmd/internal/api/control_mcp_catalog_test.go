@@ -371,6 +371,7 @@ func manageProjectsParityCases() map[string][]catalogParityCase {
 		"update":                      same(parityShape, parityArgs("action", "update", "id", "home-project", "description", "Parity")),
 		"delete":                      twin(parityArgs("action", "delete", "id", "del-a"), parityArgs("action", "delete", "id", "del-b"), map[string]string{"del-b": "del-a"}),
 		"list_sources":                same(parityExact, local("list_sources")),
+		tool.ProjectFlowAction:        same(parityExact, local(tool.ProjectFlowAction, "period", "7d")),
 		"inspect_source":              same(parityExact, local("inspect_source", "workspace_path", "/no-such-folder")),
 		tool.FolderEnvironmentList:    both(parityArgs("action", tool.FolderEnvironmentList), parityArgs("action", tool.FolderEnvironmentList, "machine", "box")),
 		tool.FolderEnvironmentGet:     same(parityExact, parityArgs("action", tool.FolderEnvironmentGet, "workspace_path", "/no-such-folder")),

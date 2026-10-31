@@ -42,6 +42,9 @@ const (
 	ProjectTaskDetailAttempts = "attempts"
 	ProjectTaskDetailFiles    = "files"
 	ProjectTaskDetailFull     = "full"
+	// ProjectTaskDetailFlow (get_task only): the task's flow report, where
+	// its time and tokens went (ProjectTaskFlowService).
+	ProjectTaskDetailFlow = "flow"
 )
 
 // projectTaskCompactActions are the task actions whose answer is compact by
@@ -63,13 +66,18 @@ func ProjectTaskDetail(args map[string]any) (string, error) {
 	}
 	text, ok := raw.(string)
 	if !ok {
-		return "", errors.New("detail must be plan, attempts, files or full")
+		return "", errors.New("detail must be plan, attempts, files, full or flow")
 	}
 	switch value := strings.ToLower(strings.TrimSpace(text)); value {
 	case "", ProjectTaskDetailPlan, ProjectTaskDetailAttempts, ProjectTaskDetailFiles, ProjectTaskDetailFull:
 		return value, nil
+	case ProjectTaskDetailFlow:
+		if action := strings.ToLower(strings.TrimSpace(asString(args["action"]))); action != "" && action != "get_task" {
+			return "", fmt.Errorf("detail flow is read with get_task, not %s", action)
+		}
+		return value, nil
 	}
-	return "", fmt.Errorf("detail %q is not one of plan, attempts, files, full", text)
+	return "", fmt.Errorf("detail %q is not one of plan, attempts, files, full, flow", text)
 }
 
 // projectTaskProgressRead is the progress a task carries when read through

@@ -459,17 +459,8 @@ func fleetAgentStageOf(task pebblestore.ProjectTaskRecord, progress *taskProgres
 
 // fleetAgentToolKind sorts a tool by what it does to the work.
 func fleetAgentToolKind(name string) string {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "read", "search", "find", "list", "grep", "glob", "ls", "webfetch", "websearch", "webdownload":
-		return "read"
-	case "edit", "write", "multiedit", "multi_edit", "apply_patch":
-		return "edit"
-	case "bash", "shell", "exec_command":
-		return "command"
-	case "git_commit":
-		return "commit"
-	}
-	return "other"
+	// One classifier for tool kinds, shared with the flow report.
+	return jobautomation.ToolKind(name)
 }
 
 // fleetAgentToolTarget is a short, one-line target for a tool call: a path,

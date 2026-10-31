@@ -15,6 +15,7 @@ import (
 	"swarm/packages/swarmd/internal/sandbox"
 	"time"
 
+	"swarm/packages/swarmd/internal/jobautomation"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -201,6 +202,21 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 			return "", err
 		}
 		task.EnsureTaskAttempts()
+		if detail == ProjectTaskDetailFlow {
+			// Where the task's time and tokens went: the flow report, from
+			// the same service as GET .../tasks/{task}/flow.
+			service, ok := r.projectTaskLifecycle.(ProjectTaskFlowService)
+			if !ok {
+				return "", errors.New("task flow report service unavailable")
+			}
+			report, err := service.ProjectTaskFlow(ctx, scope.Principal, projectID, taskID)
+			if err != nil {
+				return "", err
+			}
+			setProjectTaskRow(result, *task)
+			result["flow"], result["flow_markdown"] = report, jobautomation.FlowMarkdown(report)
+			break
+		}
 		if detail != ProjectTaskDetailFull && !scope.TaskHistoryOnly {
 			// The default answer is what the Orchestrator needs to decide;
 			// detail adds one section; full is the stored record below.

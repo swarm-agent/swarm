@@ -41,7 +41,8 @@ func manageProjectsFields() []CatalogField {
 		{"source_session_id", str("inspect_files: task session")},
 		{"head_commit", str("inspect_files: expected result HEAD")},
 		{"inspection", map[string]any{"type": "object", "description": "inspect_files: read the source or task result", "properties": map[string]any{"tool": map[string]any{"type": "string", "enum": []string{"read", "list", "search", "find"}}, "arguments": map[string]any{"type": "object"}}, "required": []string{"tool", "arguments"}, "additionalProperties": false}},
-		{"detail", map[string]any{"type": "string", "enum": []string{"context", ProjectTaskDetailPlan, ProjectTaskDetailAttempts, ProjectTaskDetailFiles, ProjectTaskDetailFull}, "description": "Omit for compact answers; context is get's full project.md"}},
+		{"detail", map[string]any{"type": "string", "enum": []string{"context", ProjectTaskDetailPlan, ProjectTaskDetailAttempts, ProjectTaskDetailFiles, ProjectTaskDetailFull, ProjectTaskDetailFlow}, "description": "Omit for compact answers; context is get's full project.md; flow is get_task's flow report (where its time and tokens went)"}},
+		{"period", map[string]any{"type": "string", "enum": []string{"today", "7d", "30d"}, "description": "flow: the period to sum (default 7d)"}},
 		{"project_id", str("")},
 		{"id", str("Project ID for get, update, delete")},
 		{"task_id", str("")},
@@ -143,7 +144,9 @@ func manageProjectsCatalog() CatalogTool {
 		{Action: "cancel_watch", Inputs: []string{"machine", "project_id", "task_ids"}, Level: read, Reach: anyM, Profiles: orchestrator,
 			Description: "Stop watching tasks (omit task_ids: all)."},
 		{Action: "get_task", Inputs: with(projectTask, "machine", "detail", "cursor", "limit", "include_diff", "diff_chars"), Level: read, Reach: anyM, Profiles: core, Untrusted: true,
-			Description: "Read a task's state, result and review findings; detail adds plan, attempts, files or the full record."},
+			Description: "Read a task's state, result and review findings; detail adds plan, attempts, files or the full record; detail flow reads where its time and tokens went."},
+		{Action: ProjectFlowAction, Inputs: []string{"project_id", "period"}, Level: read, Reach: home, Profiles: core, Untrusted: true,
+			Description: "Where a project's work went over a period (today, 7d, 30d): time by phase, tokens and the top waste across its tasks."},
 		{Action: "list_tasks", Inputs: []string{"machine", "detail", "project_id", "status", "scope", "query", "agent", "include_archived", "include_linked", "limit", "cursor"}, Level: read, Reach: anyM, Profiles: core, Untrusted: true,
 			Description: "List a project's current work (scope all: every task)."},
 		{Action: "message_task", Inputs: with(projectTask, "machine", "message", "expected_revision", "client_request_id"), Level: write, Reach: anyM, Profiles: core,
@@ -254,6 +257,7 @@ func manageProjectsCatalog() CatalogTool {
 		"list":                      "get or list_tasks with a project's id reads it.",
 		"get":                       "list_tasks reads the project's work; propose_task sends new work.",
 		"list_tasks":                "get_task with a task's id reads its state and result.",
+		ProjectFlowAction:           "get_task with detail flow reads one task's flow.",
 		"list_machines":             "Pass a machine's name as machine to send or read work there; agents_at_work shows what runs.",
 		"list_linked_tasks":         "get_task with a task's machine and id reads it.",
 		"read_task_session":         "get_task reads the task's state and result.",
@@ -281,7 +285,7 @@ func manageProjectsCatalog() CatalogTool {
 	// the task changes and file reads' own swarm_* inputs).
 	task := []string{"task_id"}
 	required := map[string][]string{
-		"get_task": task, "list_tasks": {"project_id"},
+		"get_task": task, "list_tasks": {"project_id"}, ProjectFlowAction: {"project_id"},
 		"message_task": {"task_id", "message"}, "stop_task": task,
 		"reopen_task":       {"task_id", "feedback", "expected_revision", "client_request_id"},
 		"read_task_session": {"machine", "task_id"}, FleetTaskSessionAction: {"machine", "task_id"},

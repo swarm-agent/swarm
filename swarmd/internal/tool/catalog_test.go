@@ -26,7 +26,9 @@ import (
 // The parity fixes changed it on purpose: its action field states each
 // action's required inputs and that a task action finds project_id from its
 // task id.
-const manageProjectsDefinitionSHA256 = "7dde1f8314d23e2ea42853a48d4300bef42cfe379e52d08275de445a8a57c8eb"
+// The flow report changed it on purpose: get_task takes detail flow, and
+// the flow action (with period) reads a project's roll-up.
+const manageProjectsDefinitionSHA256 = "ed6ef1a43cb0e463460c37025c4c76a2ee3e47c801bd596938f02cfe4dbbed76"
 
 // Purpose: the catalog is the only place manage_projects exists. The
 // Orchestrator's definition is generated from the declarations and stays the

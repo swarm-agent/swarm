@@ -508,6 +508,12 @@ func (r *Runtime) manageProjectsAnswer(ctx context.Context, scope WorkspaceScope
 	}
 
 	actionName := strings.ToLower(strings.TrimSpace(asString(args["action"])))
+	if actionName == ProjectFlowAction {
+		if scope.TaskHistoryOnly {
+			return "", errors.New("a task session cannot read a project's flow")
+		}
+		return r.executeProjectFlow(ctx, scope, args)
+	}
 	if actionName == "" {
 		actionName = "list"
 	}
