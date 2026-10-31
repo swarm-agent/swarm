@@ -59,7 +59,7 @@ func TestControlMCPReadsALongTaskMessageInFull(t *testing.T) {
 	}
 	out := controlMCPMap(result)
 	readFull := controlMCPMap(out["read_full"])
-	if out["result_truncated"] != true || out["result_bytes"] != len(report) || readFull["tool"] != "swarm_get_session" || readFull["session_id"] != "task-session" {
+	if out["result_truncated"] != true || out["result_bytes"] != len(report) || readFull["tool"] != "manage_sessions" || readFull["action"] != "get" || readFull["session_id"] != "task-session" {
 		t.Fatalf("shortened report is not flagged: truncated=%v bytes=%v read_full=%v", out["result_truncated"], out["result_bytes"], readFull)
 	}
 

@@ -37,8 +37,8 @@ func (s *Server) EmitPublishConfigWarnings(emit func(pebblestore.Signal)) {
 	for _, warning := range warnings {
 		emit(pebblestore.Signal{Kind: "publish.config.warning", Severity: pebblestore.SignalSeverityWarning,
 			// Machine-wide signals must not disclose account-owned folder paths.
-			Summary: "Removed publish options ignored: " + strings.Join(warning.Options, ",") + "; use swarm_set_workflow with deliver to: publish for auto. Check swarm_status for affected folders visible to your account.",
-			Attrs:   map[string]string{"removed_options": strings.Join(warning.Options, ","), "replacement": "Use swarm_set_workflow for the folder or worker: deliver to: publish for auto, workflow gates for checks/review/pipeline, forge rules for land."}})
+			Summary: "Removed publish options ignored: " + strings.Join(warning.Options, ",") + "; use manage_workflows propose with deliver to: publish for auto. Check manage_fleet status for affected folders visible to your account.",
+			Attrs:   map[string]string{"removed_options": strings.Join(warning.Options, ","), "replacement": "Use manage_workflows propose for the folder or worker: deliver to: publish for auto, workflow gates for checks/review/pipeline, forge rules for land."}})
 	}
 }
 
@@ -99,7 +99,7 @@ func (c *controlMCPCall) publishJob(kind, a, b string, refs controlMCPJobRefs, r
 	head, _ := result["head"].(string)
 	base, _ := result["base_branch"].(string)
 	if head == "" || branch == "" {
-		return nil, controlMCPToolFailure("job %s has no branch and head commit yet; wait until it is ready for review (swarm_get_job)", jobID)
+		return nil, controlMCPToolFailure("job %s has no branch and head commit yet; wait until it is ready for review (manage_jobs get_job)", jobID)
 	}
 	report, _ := result["report"].(string)
 	title := ""
@@ -133,7 +133,7 @@ func (c *controlMCPCall) publishJob(kind, a, b string, refs controlMCPJobRefs, r
 		"job_id":       jobID,
 		"pull_request": res.URL,
 		"head":         head,
-		"next":         "the folder publishes jobs as pull requests: the result is on the forge, merged by its own rules; a follow-up (swarm_message_job) and another delivery update the same pull request",
+		"next":         "the folder publishes jobs as pull requests: the result is on the forge, merged by its own rules; a follow-up (manage_jobs message_job) and another delivery update the same pull request",
 	}, nil
 }
 

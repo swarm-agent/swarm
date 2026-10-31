@@ -149,7 +149,7 @@ func controlMCPConnectClaudeCode(c *controlMCPCall, args map[string]any) (any, e
 	if action == "status" {
 		out["provider_active"] = active
 		if active {
-			out["next"] = "Claude Code is this account's active provider. swarm_list_models shows its models; swarm_set_agent_model changes a role's model when the person asks."
+			out["next"] = "Claude Code is this account's active provider. manage_setup models shows its models; manage_setup set_agent_model changes a role's model when the person asks."
 		} else {
 			out["next"] = "Claude Code is signed in; call this tool with action activate to make it the active provider."
 		}
@@ -168,6 +168,6 @@ func controlMCPConnectClaudeCode(c *controlMCPCall, args map[string]any) (any, e
 		return nil, controlMCPToolFailure("Claude Code was saved but is not the active provider")
 	}
 	out["provider_active"] = true
-	out["next"] = "Claude Code is now this account's active provider. swarm_list_models shows its models; swarm_set_agent_model changes a role's model when the person asks."
+	out["next"] = "Claude Code is now this account's active provider. manage_setup models shows its models; manage_setup set_agent_model changes a role's model when the person asks."
 	return out, nil
 }

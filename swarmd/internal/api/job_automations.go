@@ -1693,7 +1693,7 @@ func (c *controlMCPCall) rerunJobAutomations(kind, a, b string) (any, error) {
 		return nil, err
 	}
 	if len(list) == 0 {
-		return nil, controlMCPToolFailure("job %s has no workflow deliveries: set one with swarm_set_workflow, or deliver the job by hand (swarm_deliver_job without automation)", jobID)
+		return nil, controlMCPToolFailure("job %s has no workflow deliveries: set one with manage_workflows propose, or deliver the job by hand (manage_jobs deliver_job)", jobID)
 	}
 	head, err := c.jobCurrentHead(kind, a, b)
 	if err != nil {
@@ -1740,9 +1740,9 @@ func (c *controlMCPCall) rerunJobAutomations(kind, a, b string) (any, error) {
 	}
 	switch {
 	case stepsRerun:
-		out["next"] = "the failed or stopped steps of the newest delivery run again; swarm_get_job shows their progress"
+		out["next"] = "the failed or stopped steps of the newest delivery run again; manage_jobs get_job shows their progress"
 	case len(rerun) > 0:
-		out["next"] = "no step ran again: the for_each items in revived_items follow their jobs again, and the items waiting on them start once ready; swarm_get_job shows their progress"
+		out["next"] = "no step ran again: the for_each items in revived_items follow their jobs again, and the items waiting on them start once ready; manage_jobs get_job shows their progress"
 	case stale:
 		out["next"] = "nothing was re-run: the newest delivery is for an older head than the job's current head, and older deliveries are never re-run (POST /v3/job-deliveries/<id>/rerun re-runs one named delivery)"
 	default:

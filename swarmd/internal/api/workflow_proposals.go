@@ -46,16 +46,15 @@ func (s *Server) ManageWorkflows(ctx context.Context, p identity.Principal, who 
 	return out, workflowCatalogError(err)
 }
 
-// workflowCatalogTerms rewrites the swarm_* tool names shared refusals use
-// (place's project and folder refusals above all) into catalog tools and
-// actions. The longer phrases come first; swarm_workflow, the portable
-// format's version key, is not a tool and stays.
+// workflowCatalogTerms adds, to the project refusals shared code words (place
+// above all), that a manage_workflows caller may instead ask the person to
+// create the project in their Swarm app; it also rewrites any swarm_* tool
+// name still in shared text into catalog tools and actions. The longer
+// phrases come first; swarm_workflow, the portable format's version key, is
+// not a tool and stays.
 var workflowCatalogTerms = strings.NewReplacer(
-	"create one with swarm_create_project (a name and those folders)", "create one with manage_projects create (a name and those folders), or ask the person to create it in their Swarm app",
-	"or create it with swarm_create_project", "or create it with manage_projects create (or ask the person to, in their Swarm app)",
-	"pass the project id from swarm_list_projects", "pass the project id from manage_projects list",
-	"add one with swarm_set_project_workspaces", "add one with manage_projects update (workspaces)",
-	"add it with swarm_set_project_workspaces", "add it with manage_projects update (workspaces)",
+	"create one with manage_projects create (a name and those folders)", "create one with manage_projects create (a name and those folders), or ask the person to create it in their Swarm app",
+	"or create it with manage_projects create", "or create it with manage_projects create (or ask the person to, in their Swarm app)",
 	"swarm_create_project", "manage_projects create",
 	"swarm_list_projects", "manage_projects list",
 	"swarm_set_project_workspaces", "manage_projects update",

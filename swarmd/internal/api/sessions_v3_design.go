@@ -220,7 +220,7 @@ func (s *Server) handleSessionV3Designs(w http.ResponseWriter, r *http.Request, 
 		// Design edits were delegated through manage_design, which swarm_design
 		// replaced. swarm_design edits a workspace HTML file in place (edit_path);
 		// a stored design revision is not a workspace file, so nothing is queued.
-		writeError(w, http.StatusGone, errors.New("design edit was removed with manage_design: save the design as an .html file in the workspace and edit it with swarm_design (edit_path)"))
+		writeError(w, http.StatusGone, errors.New("design edit was removed with manage_design: save the design as an .html file in the workspace and edit it with manage_designs edit (edit_path)"))
 	default:
 		designAPIError(w, pebblestore.ErrDesignInvalid)
 	}

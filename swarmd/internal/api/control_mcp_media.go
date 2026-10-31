@@ -10,7 +10,7 @@ import (
 var controlMCPMediaSlots = []struct {
 	arg, section, field, needs string
 }{
-	{"image", "image", "default_model", "image: blank or the Codex image model means ChatGPT sign-in (swarm_connect_chatgpt); any other id is a Google Gemini image model and needs a google key"},
+	{"image", "image", "default_model", "image: blank or the Codex image model means ChatGPT sign-in (manage_setup connect_chatgpt); any other id is a Google Gemini image model and needs a google key"},
 	{"video", "video", "default_model", "video: a google (Veo) or openrouter video model id, or provider:model; needs that provider's key"},
 	{"video_iteration", "video", "iteration_model", "video_iteration: the cheaper model video drafts iterate on; same providers as video"},
 	{"audio", "audio", "default_model", "audio: a Google music/sound model id; needs a google key"},
@@ -88,6 +88,6 @@ func controlMCPSetMediaModels(c *controlMCPCall, args map[string]any) (any, erro
 	}
 	return map[string]any{
 		"media": media,
-		"next":  "Media runs through swarm_run_task with role image, video or sound once the model's provider is ready (swarm_list_providers; add a key with swarm_request_provider_key or sign in with swarm_connect_chatgpt).",
+		"next":  "Media runs through manage_media generate (image, video or sound) once the model's provider is ready (manage_setup providers; add a key with manage_setup request_provider_key or sign in with manage_setup connect_chatgpt).",
 	}, nil
 }

@@ -315,6 +315,6 @@ func controlMCPRequestProviderKey(c *controlMCPCall, args map[string]any) (any, 
 		"expires_in_seconds": int(providerKeyCodeTTL.Seconds()),
 		"tell_the_person": fmt.Sprintf("Open %s in a browser on %s and paste your %s API key there. Do not paste the key into this chat. The link works once and expires in %d minutes.",
 			link, device, provider, minutes),
-		"next": "Call swarm_list_providers with provider and wait_seconds to wait until the person saves the key (or it fails or the link expires).",
+		"next": "Call manage_setup providers with provider and wait_seconds to wait until the person saves the key (or it fails or the link expires).",
 	}, nil
 }

@@ -197,7 +197,7 @@ func taskDeltaConflictMessage(files []string, sourceBranch, targetBranch string)
 	if len(files) > 0 {
 		where = strings.Join(files, ", ")
 	}
-	return fmt.Sprintf("cannot integrate: the task's net change conflicts with %s in %s. Nothing was changed on %s. Send the task's agent a follow-up (swarm_send_message) asking it to rebase its branch %s onto %s (rebase, not merge) and resolve the conflict in %s, then integrate again.", targetBranch, where, targetBranch, sourceBranch, targetBranch, where)
+	return fmt.Sprintf("cannot integrate: the task's net change conflicts with %s in %s. Nothing was changed on %s. Send the task's agent a follow-up (manage_sessions send_message) asking it to rebase its branch %s onto %s (rebase, not merge) and resolve the conflict in %s, then integrate again.", targetBranch, where, targetBranch, sourceBranch, targetBranch, where)
 }
 
 // taskDeltaIntegratedNote says, in words an AI can relay, what integrating a

@@ -249,7 +249,7 @@ func TestDeliverJobWithoutAutomationsIsUnchanged(t *testing.T) {
 	if _, err := controlMCPDeliverJob(c, map[string]any{"job_id": "task/proj-1/task-1", "automation": true}); err == nil || !strings.Contains(err.Error(), "job task/proj-1/task-1 has no workflow deliveries") {
 		t.Fatalf("task workflow re-run without deliveries = %v", err)
 	}
-	if _, err := controlMCPDeliverJob(c, map[string]any{"job_id": "task/proj-1/task-1"}); err == nil || !strings.Contains(err.Error(), "swarm_integrate_task") {
+	if _, err := controlMCPDeliverJob(c, map[string]any{"job_id": "task/proj-1/task-1"}); err == nil || !strings.Contains(err.Error(), "manage_projects integrate_task") {
 		t.Fatalf("task delivery without automation = %v", err)
 	}
 	if len(routes) != 0 {

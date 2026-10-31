@@ -39,7 +39,7 @@ func controlMCPTaskWorkflow(task map[string]any) map[string]any {
 		return nil
 	}
 	if _, cut := out["more"]; cut {
-		out["more"] = "swarm_list_workflows delivery_id=" + controlMCPString(out, "delivery_id")
+		out["more"] = "manage_workflows list delivery_id=" + controlMCPString(out, "delivery_id")
 	}
 	return out
 }
@@ -111,7 +111,7 @@ func controlMCPRandomID() string {
 func (c *controlMCPCall) task(projectID, taskID string) (map[string]any, error) {
 	response, err := c.dispatch(http.MethodGet, "/v3/projects/"+projectID+"/tasks/"+taskID, nil, nil)
 	if err != nil {
-		return nil, controlMCPNotFound(err, "task", taskID, "swarm_list_tasks")
+		return nil, controlMCPNotFound(err, "task", taskID, "manage_projects list_tasks")
 	}
 	task := controlMCPMap(response["task"])
 	if task == nil {
@@ -201,7 +201,7 @@ func controlMCPRunTask(c *controlMCPCall, args map[string]any) (any, error) {
 	}
 	created, err := c.dispatch(http.MethodPost, "/v3/projects/"+projectID+"/tasks", nil, body)
 	if err != nil {
-		return nil, controlMCPNotFound(err, "project", projectID, "swarm_list_projects")
+		return nil, controlMCPNotFound(err, "project", projectID, "manage_projects list")
 	}
 	task := controlMCPMap(created["task"])
 	if task == nil {
@@ -408,7 +408,7 @@ func controlMCPTaskResult(c *controlMCPCall, args map[string]any) (any, error) {
 			if utf8.RuneCountInString(summary) > controlMCPTaskReportChars {
 				out["result_truncated"], out["result_bytes"] = true, len(summary)
 				if sessionID := controlMCPString(task, "session_id"); sessionID != "" {
-					out["read_full"] = map[string]any{"tool": "swarm_get_session", "session_id": sessionID, "messages": 1, "then": "follow the cut message's next until truncated is gone"}
+					out["read_full"] = map[string]any{"tool": "manage_sessions", "action": "get", "session_id": sessionID, "messages": 1, "then": "follow the cut message's next until truncated is gone"}
 				}
 			}
 		}

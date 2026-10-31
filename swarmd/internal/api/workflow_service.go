@@ -117,11 +117,11 @@ func (s *Server) SaveWorkflow(caller WorkflowCaller, body WorkflowDefinition, so
 	return saved, created, false, err
 }
 
-const workflowSaveNext = "it runs when a matching job ends; swarm_list_workflows shows it and its deliveries, swarm_get_job a job's steps"
+const workflowSaveNext = "it runs when a matching job ends; manage_workflows list shows it and its deliveries, manage_jobs get_job a job's steps"
 
 // workflowSaveNextDisabled is the swarm_* tools' answer for a saved workflow
 // that is disabled: it does not run.
-const workflowSaveNextDisabled = "it is disabled and does not run until it is enabled; swarm_list_workflows shows it"
+const workflowSaveNextDisabled = "it is disabled and does not run until it is enabled; manage_workflows list shows it"
 
 // workflowSaveView is a save's answer on the swarm_* routes; manage_workflows
 // answers in catalog terms (workflowCatalogSaveAnswer).

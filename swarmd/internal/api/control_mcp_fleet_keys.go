@@ -75,7 +75,7 @@ func controlMCPRequestFleetKey(c *controlMCPCall, args map[string]any) (any, err
 	if err != nil {
 		return nil, err
 	}
-	response["next"] = "Call swarm_list_fleet_keys with id and wait_seconds to wait until the person saves the key and the home installs it (or the link fails or expires)."
+	response["next"] = "Call manage_setup list_fleet_keys with id and wait_seconds to wait until the person saves the key and the home installs it (or the link fails or expires)."
 	return response, nil
 }
 

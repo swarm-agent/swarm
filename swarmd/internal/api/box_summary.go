@@ -469,10 +469,10 @@ func (s *Server) boxKeys(account string, now time.Time, raise func(level, reason
 		}
 	}
 	if len(stopping) > 0 {
-		raise(BoxStatusAttention, fmt.Sprintf("%d key(s) stop working within 7 days (swarm_list_keys)", len(stopping)))
+		raise(BoxStatusAttention, fmt.Sprintf("%d key(s) stop working within 7 days (manage_setup list_keys)", len(stopping)))
 	}
 	if len(newPlaces) > 0 {
-		raise(BoxStatusAttention, fmt.Sprintf("%d key(s) used from a new place today; revoke any the person does not recognize (swarm_list_keys)", len(newPlaces)))
+		raise(BoxStatusAttention, fmt.Sprintf("%d key(s) used from a new place today; revoke any the person does not recognize (manage_setup list_keys)", len(newPlaces)))
 	}
 	keys["active"], keys["stopping_soon"], keys["new_places"] = active, stopping, newPlaces
 	return keys

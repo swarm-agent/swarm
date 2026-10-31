@@ -22,7 +22,7 @@ func controlMCPJobPermissionWait(record map[string]any) string {
 		fix = "deny this pending approval; host-side tools cannot see sandbox temp paths: use bash inside the sandbox, or use an authorized workspace path"
 	}
 	if name == "ask_user" || requirement == "ask_user" {
-		fix = "answer the question with swarm_answer_job"
+		fix = "answer the question with manage_jobs answer_job"
 	}
 	return fmt.Sprintf("tool %s, path %q, requirement %s: %s", name, path, requirement, fix)
 }

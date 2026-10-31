@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -683,4 +684,76 @@ func returnedMapKeys(fn *ast.FuncDecl) map[string]bool {
 		return true
 	})
 	return keys
+}
+
+// swarmNameAllowedIn are the declarations whose string literals may still
+// name a removed swarm_* tool: the server instruction texts (rewritten by
+// the instruction stage; their gating names catalog actions), the internal
+// handler keys of catalogControlSwarmHandlers (never shown to a caller) and
+// the legacy keys workflowCatalogTerms rewrites into catalog terms.
+var swarmNameAllowedIn = map[string]bool{
+	"controlMCPCoreInstructionLines": true,
+	"controlMCPInstructionLines":     true,
+	"catalogControlSwarmHandlers":    true,
+	"workflowCatalogTerms":           true,
+}
+
+// Purpose:
+//   - Requirement: no answer, hint, next step or refusal the api package
+//     makes names a removed swarm_* tool: Swarm Control answers such a name
+//     with "unknown tool", so a caller that followed it would hit a dead end.
+//     Handlers the catalog still runs name the catalog tool and action.
+//   - Threat/regression: a structured next call (read_full), a retry message
+//     (controlMCPIntegrate's tool names), a job next step or a not-found hint
+//     still pointing at a swarm_* tool after stage 7b.
+//   - Boundary/authority: every string literal in the api package's non-test
+//     source (go/ast) against the record of removed names
+//     (controlMCPFrozenSwarmTools), outside swarmNameAllowedIn.
+//   - Narrowest layer: the source text all those answers are made from;
+//     comments are not answers and are not checked.
+func TestNoAnswerNamesARemovedSwarmTool(t *testing.T) {
+	removed := regexp.MustCompile(`\b(` + strings.Join(controlMCPFrozenSwarmTools, "|") + `)\b`)
+	fset := token.NewFileSet()
+	packages, err := parser.ParseDir(fset, ".", func(info fs.FileInfo) bool { return !strings.HasSuffix(info.Name(), "_test.go") }, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found []string
+	for _, pkg := range packages {
+		for _, file := range pkg.Files {
+			for _, decl := range file.Decls {
+				if gen, ok := decl.(*ast.GenDecl); ok {
+					skip := false
+					for _, spec := range gen.Specs {
+						if value, ok := spec.(*ast.ValueSpec); ok {
+							for _, name := range value.Names {
+								skip = skip || swarmNameAllowedIn[name.Name]
+							}
+						}
+					}
+					if skip {
+						continue
+					}
+				}
+				ast.Inspect(decl, func(n ast.Node) bool {
+					lit, ok := n.(*ast.BasicLit)
+					if !ok || lit.Kind != token.STRING {
+						return true
+					}
+					text, err := strconv.Unquote(lit.Value)
+					if err != nil {
+						text = lit.Value
+					}
+					if name := removed.FindString(text); name != "" {
+						found = append(found, fmt.Sprintf("%s: %s", fset.Position(lit.Pos()), name))
+					}
+					return true
+				})
+			}
+		}
+	}
+	sort.Strings(found)
+	if len(found) > 0 {
+		t.Fatalf("answers name removed swarm_* tools (name the catalog tool and action instead):\n%s", strings.Join(found, "\n"))
+	}
 }

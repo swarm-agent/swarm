@@ -47,7 +47,7 @@ func controlMCPJobID(kind, a, b string) string { return kind + "/" + a + "/" + b
 func controlMCPParseJobID(args map[string]any) (string, string, string, error) {
 	parts := strings.Split(controlMCPString(args, "job_id"), "/")
 	if len(parts) != 3 || (parts[0] != controlMCPJobWorker && parts[0] != controlMCPJobMedia && parts[0] != controlMCPJobDesign) {
-		return "", "", "", controlMCPToolFailure("job_id must be a job id from give_job, request_media, swarm_design or list_workers (worker/<worker>/<run>, media/<project>/<task> or design/<project>/<task>)")
+		return "", "", "", controlMCPToolFailure("job_id must be a job id from give_job, request_media, manage_designs create or list_workers (worker/<worker>/<run>, media/<project>/<task> or design/<project>/<task>)")
 	}
 	for _, part := range parts[1:] {
 		if !controlMCPSafeID.MatchString(part) || part == "." || part == ".." || controlMCPReservedIDs[part] {
@@ -80,7 +80,7 @@ func (c *controlMCPCall) place(projectRef, path string) (controlMCPJobPlace, err
 		}
 	}
 	if len(projects) == 0 {
-		return controlMCPJobPlace{}, controlMCPToolFailure("there is no project yet: ask the person which folders their work is in and create one with swarm_create_project (a name and those folders)")
+		return controlMCPJobPlace{}, controlMCPToolFailure("there is no project yet: ask the person which folders their work is in and create one with manage_projects create (a name and those folders)")
 	}
 	names := []string{}
 	var match map[string]any
@@ -90,7 +90,7 @@ func (c *controlMCPCall) place(projectRef, path string) (controlMCPJobPlace, err
 		names = append(names, name+" ("+id+")")
 		if projectRef != "" && (id == projectRef || strings.EqualFold(name, projectRef)) {
 			if match != nil && id != projectRef {
-				return controlMCPJobPlace{}, controlMCPToolFailure("several projects are named %q: pass the project id from swarm_list_projects", projectRef)
+				return controlMCPJobPlace{}, controlMCPToolFailure("several projects are named %q: pass the project id from manage_projects list", projectRef)
 			}
 			match = project
 		}
@@ -102,7 +102,7 @@ func (c *controlMCPCall) place(projectRef, path string) (controlMCPJobPlace, err
 		match = projects[0]
 	}
 	if match == nil {
-		return controlMCPJobPlace{}, controlMCPToolFailure("no project %q: one of %s, or create it with swarm_create_project", projectRef, strings.Join(names, ", "))
+		return controlMCPJobPlace{}, controlMCPToolFailure("no project %q: one of %s, or create it with manage_projects create", projectRef, strings.Join(names, ", "))
 	}
 	place := controlMCPJobPlace{}
 	place.projectID, _ = match["id"].(string)
@@ -125,7 +125,7 @@ func (c *controlMCPCall) place(projectRef, path string) (controlMCPJobPlace, err
 	if strings.TrimSpace(path) == "" {
 		switch len(folders) {
 		case 0:
-			return controlMCPJobPlace{}, controlMCPToolFailure("project %s has no folder: add one with swarm_set_project_workspaces", place.projectName)
+			return controlMCPJobPlace{}, controlMCPToolFailure("project %s has no folder: add one with manage_projects update (workspaces)", place.projectName)
 		case 1:
 			return pick(folders[0]), nil
 		}
@@ -140,7 +140,7 @@ func (c *controlMCPCall) place(projectRef, path string) (controlMCPJobPlace, err
 			return pick(folder), nil
 		}
 	}
-	return controlMCPJobPlace{}, controlMCPToolFailure("%s is not a folder of project %s (%s): add it with swarm_set_project_workspaces", path, place.projectName, strings.Join(paths, ", "))
+	return controlMCPJobPlace{}, controlMCPToolFailure("%s is not a folder of project %s (%s): add it with manage_projects update (workspaces)", path, place.projectName, strings.Join(paths, ", "))
 }
 
 // ---- workers --------------------------------------------------------------
@@ -185,7 +185,7 @@ func (c *controlMCPCall) deployPreset(preset string) ([]map[string]any, error) {
 func (c *controlMCPCall) resolveWorker(ref string) (map[string]any, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
-		return nil, controlMCPToolFailure("worker is required: a deployed worker's id or name from swarm_list_workers (deploy one with swarm_deploy_worker first)")
+		return nil, controlMCPToolFailure("worker is required: a deployed worker's id or name from manage_workers list (deploy one with manage_workers create first)")
 	}
 	match := func(workers []map[string]any) map[string]any {
 		for _, worker := range workers {
@@ -308,7 +308,7 @@ func controlMCPDeployWorker(c *controlMCPCall, args map[string]any) (any, error)
 		}
 	}
 	if _, hasAgent := args["agent"]; hasAgent && controlMCPString(args, "preset") != "" {
-		return nil, controlMCPToolFailure("agent is for custom worker creation; use swarm_update_worker to change an existing worker's agent")
+		return nil, controlMCPToolFailure("agent is for custom worker creation; use manage_workers update to change an existing worker's agent")
 	}
 	if raw, exists := args["model"]; exists && raw != nil {
 		if _, err := c.workerModel(raw); err != nil {
@@ -509,7 +509,7 @@ func (c *controlMCPCall) jobRefs(kind, a, b string) (controlMCPJobRefs, error) {
 	}
 	response, err := c.dispatch(http.MethodGet, "/v3/workers/"+a+"/runs/"+b, nil, nil)
 	if err != nil {
-		return controlMCPJobRefs{}, controlMCPNotFound(err, "job", controlMCPJobID(kind, a, b), "swarm_list_workers with include_jobs")
+		return controlMCPJobRefs{}, controlMCPNotFound(err, "job", controlMCPJobID(kind, a, b), "manage_workers list with include_jobs")
 	}
 	run := controlMCPMap(response["run"])
 	refs := controlMCPJobRefs{run: run}
@@ -729,23 +729,23 @@ func controlMCPJobNext(status string, committed bool) string {
 	switch status {
 	case "needs_review":
 		if !committed {
-			return "the work is done and committed no changes, so there is nothing to merge: the result is the report (read it here or with swarm_get_job)"
+			return "the work is done and committed no changes, so there is nothing to merge: the result is the report (read it here or with manage_jobs get_job)"
 		}
-		return "the work is done: read it here (include_diff for the patch), then swarm_deliver_job merges it into the folder"
+		return "the work is done: read it here (include_diff for the patch), then manage_jobs deliver_job merges it into the folder"
 	case "completed":
 		return "the job is finished and merged"
 	case "needs_input":
-		return "the worker asked something: reply with swarm_answer_job"
+		return "the worker asked something: reply with manage_jobs answer_job"
 	case "waiting_on_approval":
 		return "see waiting_on for the exact tool and recovery action; deny stale approvals and retry within the job's authorized scope"
 	case "stopped":
-		return "the job's run was stopped and the job is kept open on its branch: swarm_message_job continues it there; swarm_stop_job cancels it"
+		return "the job's run was stopped and the job is kept open on its branch: manage_jobs message_job continues it there; manage_jobs stop_job cancels it"
 	case "failed", "blocked", "cancelled", "superseded", "rejected":
-		return "the job did not finish: see error and the report, then give a corrected job with swarm_give_job"
+		return "the job did not finish: see error and the report, then give a corrected job with manage_jobs give_job"
 	case "pending_approval":
 		return "the job waits for the machine owner's approval (large media batches)"
 	case "in_progress", "queued", "planning":
-		return "the job is running: call swarm_get_job with wait_seconds to wait for it"
+		return "the job is running: call manage_jobs get_job with wait_seconds to wait for it"
 	}
 	return ""
 }
@@ -983,7 +983,7 @@ func (c *controlMCPCall) fillReviewFixResult(out map[string]any, workerID, runID
 // controlMCPUncommittedNext is a reviewable job's next step while its worktree
 // holds changes it did not commit: only commits are merged, so the job is not
 // "nothing to merge" and not ready to deliver either.
-const controlMCPUncommittedNext = "the worker left uncommitted changes in its worktree (result.uncommitted_changes), and only commits are merged: ask it with swarm_message_job to commit them (finishing any unfinished merge or cherry-pick) or to discard what it does not want, then swarm_deliver_job merges the branch"
+const controlMCPUncommittedNext = "the worker left uncommitted changes in its worktree (result.uncommitted_changes), and only commits are merged: ask it with manage_jobs message_job to commit them (finishing any unfinished merge or cherry-pick) or to discard what it does not want, then manage_jobs deliver_job merges the branch"
 
 // controlMCPResultCommitted reports whether a job's result has commits to
 // merge. The delivery assessment is the authority ("empty": no commits or no
@@ -1065,7 +1065,7 @@ func controlMCPMessageJob(c *controlMCPCall, args map[string]any) (any, error) {
 		return nil, err
 	}
 	if kind == controlMCPJobDesign {
-		return nil, controlMCPDesignRefused("swarm_message_job")
+		return nil, controlMCPDesignRefused("manage_jobs message_job")
 	}
 	message, _ := args["message"].(string)
 	if utf8.RuneCountInString(message) > permission.MaxReplyCharacters {
@@ -1079,10 +1079,10 @@ func controlMCPMessageJob(c *controlMCPCall, args map[string]any) (any, error) {
 		return nil, err
 	}
 	if state["status"] == "needs_input" {
-		return nil, controlMCPToolFailure("the worker is waiting on a question: reply with swarm_answer_job")
+		return nil, controlMCPToolFailure("the worker is waiting on a question: reply with manage_jobs answer_job")
 	}
 	if refs.sessionID == "" {
-		return nil, controlMCPToolFailure("the job has not started yet: wait for it with swarm_get_job, then send the message")
+		return nil, controlMCPToolFailure("the job has not started yet: wait for it with manage_jobs get_job, then send the message")
 	}
 	requestID := controlMCPString(args, "client_request_id")
 	if requestID == "" {
@@ -1097,7 +1097,7 @@ func controlMCPMessageJob(c *controlMCPCall, args map[string]any) (any, error) {
 	} else {
 		run["delivery"] = "started: the message starts the job's next run on the same branch"
 	}
-	out := map[string]any{"job_id": controlMCPJobID(kind, a, b), "client_request_id": requestID, "sent": run, "next": "the worker continues in this job: swarm_get_job with wait_seconds waits for it, then swarm_deliver_job merges the branch"}
+	out := map[string]any{"job_id": controlMCPJobID(kind, a, b), "client_request_id": requestID, "sent": run, "next": "the worker continues in this job: manage_jobs get_job with wait_seconds waits for it, then manage_jobs deliver_job merges the branch"}
 	if wait := controlMCPInt(args, "wait_seconds", 0); wait > 0 {
 		view, err := c.jobView(kind, a, b, wait, false, 0)
 		if err != nil {
@@ -1146,7 +1146,7 @@ func controlMCPFollowupRefused(err error) error {
 		if match := controlMCPActiveRunRefusal.FindStringSubmatch(refused.message); len(match) == 2 && controlMCPSafeID.MatchString(match[1]) {
 			named = " (follow-up run " + match[1] + ")"
 		}
-		return controlMCPToolFailure("the follow-up was not sent: %s%s; wait for it with swarm_get_job (wait_seconds), then send the next message", controlMCPFollowupBusy, named)
+		return controlMCPToolFailure("the follow-up was not sent: %s%s; wait for it with manage_jobs get_job (wait_seconds), then send the next message", controlMCPFollowupBusy, named)
 	case refused.status == http.StatusConflict:
 		return controlMCPToolFailure("the follow-up was not sent: %s", refused.message)
 	}
@@ -1164,7 +1164,7 @@ func controlMCPAnswerJob(c *controlMCPCall, args map[string]any) (any, error) {
 		return nil, err
 	}
 	if kind == controlMCPJobDesign {
-		return nil, controlMCPDesignRefused("swarm_answer_job")
+		return nil, controlMCPDesignRefused("manage_jobs answer_job")
 	}
 	answer, _ := args["answer"].(string)
 	if utf8.RuneCountInString(answer) > permission.MaxReplyCharacters {
@@ -1190,13 +1190,13 @@ func controlMCPAnswerJob(c *controlMCPCall, args map[string]any) (any, error) {
 			}
 		}
 		if questionID == "" {
-			return nil, controlMCPToolFailure("question %q is not open on this job (see swarm_get_job)", requested)
+			return nil, controlMCPToolFailure("question %q is not open on this job (see manage_jobs get_job)", requested)
 		}
 	}
 	if _, err := controlMCPResolvePermission(c, map[string]any{"session_id": refs.sessionID, "permission_id": questionID, "action": "allow_once", "answer": answer}); err != nil {
 		return nil, err
 	}
-	return map[string]any{"job_id": controlMCPJobID(kind, a, b), "answered": questionID, "next": "the worker continues: swarm_get_job with wait_seconds waits for it"}, nil
+	return map[string]any{"job_id": controlMCPJobID(kind, a, b), "answered": questionID, "next": "the worker continues: manage_jobs get_job with wait_seconds waits for it"}, nil
 }
 
 func controlMCPDeliverJob(c *controlMCPCall, args map[string]any) (any, error) {
@@ -1208,7 +1208,7 @@ func controlMCPDeliverJob(c *controlMCPCall, args map[string]any) (any, error) {
 	// swarm_integrate_task.
 	if projectID, taskID, ok := parseTaskJobID(controlMCPString(args, "job_id")); ok {
 		if rerun, _ := args["automation"].(bool); !rerun {
-			return nil, controlMCPToolFailure("a task of Swarm's own agents is integrated with swarm_integrate_task; swarm_deliver_job with automation=true re-runs its workflow's failed or stopped steps")
+			return nil, controlMCPToolFailure("a task of Swarm's own agents is integrated with manage_projects integrate_task; manage_jobs rerun_failed_steps re-runs its workflow's failed or stopped steps")
 		}
 		return c.rerunJobAutomations(jobautomation.KindTask, projectID, taskID)
 	}
@@ -1222,14 +1222,14 @@ func controlMCPDeliverJob(c *controlMCPCall, args map[string]any) (any, error) {
 		return c.rerunJobAutomations(kind, a, b)
 	}
 	if kind == controlMCPJobDesign {
-		return nil, controlMCPDesignRefused("swarm_deliver_job")
+		return nil, controlMCPDesignRefused("manage_jobs deliver_job")
 	}
 	refs, err := c.jobRefs(kind, a, b)
 	if err != nil {
 		return nil, err
 	}
 	if refs.projectID == "" {
-		return nil, controlMCPToolFailure("this job has no result to merge yet (see swarm_get_job)")
+		return nil, controlMCPToolFailure("this job has no result to merge yet (see manage_jobs get_job)")
 	}
 	if refs.run["role"] == pebblestore.WorkerRoleReviewer {
 		return nil, controlMCPToolFailure("reviewer jobs are report-only; there is no branch or file delivery to publish or merge (a reviewer's security fixes reach a job only through the automation step that allowed them: see the delivery's head)")
@@ -1250,7 +1250,7 @@ func controlMCPDeliverJob(c *controlMCPCall, args map[string]any) (any, error) {
 			return c.publishJob(kind, a, b, refs, rule, result)
 		}
 	}
-	out, err := controlMCPIntegrate(c, map[string]any{"project_id": refs.projectID, "task_id": refs.taskID}, "swarm_deliver_job", "swarm_get_job")
+	out, err := controlMCPIntegrate(c, map[string]any{"project_id": refs.projectID, "task_id": refs.taskID}, "manage_jobs deliver_job", "manage_jobs get_job")
 	if err != nil {
 		return nil, err
 	}
@@ -1331,7 +1331,7 @@ func controlMCPStopJob(c *controlMCPCall, args map[string]any) (any, error) {
 				return map[string]any{"job_id": controlMCPJobID(kind, a, b), "status": status, "stopped": false, "note": "the job already ended; nothing to stop"}, nil
 			}
 		}
-		return nil, controlMCPNotFound(err, "job", controlMCPJobID(kind, a, b), "swarm_list_workers with include_jobs")
+		return nil, controlMCPNotFound(err, "job", controlMCPJobID(kind, a, b), "manage_workers list with include_jobs")
 	}
 	run := controlMCPMap(response["run"])
 	status, _ := run["status"].(string)
@@ -1430,7 +1430,7 @@ func controlMCPScheduleJob(c *controlMCPCall, args map[string]any) (any, error) 
 		"schedule_id": scheduleID,
 		"project":     map[string]any{"id": place.projectID, "name": place.projectName},
 		"workspace":   path,
-		"next":        "each run is a job: swarm_list_workers with include_jobs lists them, swarm_activity reports them, swarm_manage_worker pauses or switches the schedule",
+		"next":        "each run is a job: manage_workers list with include_jobs lists them, manage_fleet activity reports them, manage_workers update pauses or switches the schedule",
 	}
 	if hasThen && then != nil {
 		thenView, err := c.controlMCPThen(then, "then: schedule "+scheduleID, place.path, jobautomation.Scope{Worker: workerID, Schedule: scheduleID})
@@ -1529,7 +1529,7 @@ func controlMCPRequestMedia(c *controlMCPCall, args map[string]any) (any, error)
 	if err != nil {
 		var toolErr controlMCPToolError
 		if errors.As(err, &toolErr) && strings.Contains(toolErr.message, "HTTP 400") {
-			return nil, controlMCPToolFailure("%s (swarm_media_models lists each model's options)", toolErr.message)
+			return nil, controlMCPToolFailure("%s (manage_media models lists each model's options)", toolErr.message)
 		}
 		return nil, err
 	}
@@ -1618,7 +1618,7 @@ func controlMCPActivity(c *controlMCPCall, args map[string]any) (any, error) {
 	query := url.Values{"limit": {strconv.Itoa(controlMCPInt(args, "limit", 30))}}
 	if after := controlMCPString(args, "after"); after != "" {
 		if _, err := strconv.ParseUint(after, 10, 64); err != nil {
-			return nil, controlMCPToolFailure("after must be the activity_cursor from swarm_status or a previous swarm_activity")
+			return nil, controlMCPToolFailure("after must be the activity_cursor from manage_fleet status or a previous manage_fleet activity")
 		}
 		query.Set("after", after)
 	}

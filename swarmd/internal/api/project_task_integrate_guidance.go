@@ -40,7 +40,7 @@ func taskDeliveryNotActionableMessage(a *pebblestore.TaskDeliveryAssessment) str
 	case state == "history_equivalent" || state == "history_rewritten":
 		// Integration delivers these as one net-change commit; it reaches
 		// this message only when the assessment withheld that action.
-		remedy = fmt.Sprintf("the task branch's net change cannot be integrated as it stands; send the task's agent a follow-up (swarm_send_message) asking it to rebase its branch %q onto %q (rebase, not merge) and commit the result, then integrate again", a.SourceBranch, a.TargetBranch)
+		remedy = fmt.Sprintf("the task branch's net change cannot be integrated as it stands; send the task's agent a follow-up (manage_sessions send_message) asking it to rebase its branch %q onto %q (rebase, not merge) and commit the result, then integrate again", a.SourceBranch, a.TargetBranch)
 	case state == "ambiguous" || state == "unavailable":
 		remedy = "inspect the task worktree and target branch in Git, resolve the reported condition, then re-read the task and integrate again"
 	default:

@@ -125,9 +125,9 @@ func (c *controlMCPCall) designJobView(projectID, taskID string, wait int) (map[
 	case "completed":
 		out["next"] = controlMCPDesignNext
 	case "failed", "cancelled":
-		out["next"] = "the job did not finish: see error and items; " + controlMCPDesignNext + " for what was written; start a new swarm_design for what is missing"
+		out["next"] = "the job did not finish: see error and items; " + controlMCPDesignNext + " for what was written; start a new design with manage_designs create for what is missing"
 	default:
-		out["next"] = "the designs are being made: call swarm_get_job with wait_seconds to wait"
+		out["next"] = "the designs are being made: call manage_jobs get_job with wait_seconds to wait"
 	}
 	return out, nil
 }
@@ -167,13 +167,13 @@ func (c *controlMCPCall) stopDesignJob(projectID, taskID string) (any, error) {
 				}
 			}
 		}
-		return nil, controlMCPNotFound(err, "job", jobID, "swarm_list_tasks")
+		return nil, controlMCPNotFound(err, "job", jobID, "manage_projects list_tasks")
 	}
-	return map[string]any{"job_id": jobID, "status": response["status"], "next": "the job stops after the designs in progress; swarm_get_job with wait_seconds shows what was written"}, nil
+	return map[string]any{"job_id": jobID, "status": response["status"], "next": "the job stops after the designs in progress; manage_jobs get_job with wait_seconds shows what was written"}, nil
 }
 
 // controlMCPDesignRefused is the answer of job tools that do not apply to a
 // design job.
 func controlMCPDesignRefused(tool string) error {
-	return controlMCPToolFailure("%s does not apply to a design job: %s (read it with swarm_get_job, stop it with swarm_stop_job, or start a new swarm_design)", tool, controlMCPDesignNext)
+	return controlMCPToolFailure("%s does not apply to a design job: %s (read it with manage_jobs get_job, stop it with manage_jobs stop_job, or start a new one with manage_designs create)", tool, controlMCPDesignNext)
 }

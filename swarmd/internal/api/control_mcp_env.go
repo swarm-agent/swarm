@@ -48,14 +48,14 @@ func controlMCPEnvironmentView(env map[string]any, place controlMCPJobPlace, inc
 	}
 	switch status {
 	case "building":
-		out["next"] = "Swarm is building it: swarm_get_environment with wait_seconds waits; jobs in this folder start once it is ready"
+		out["next"] = "Swarm is building it: manage_projects get_environment with wait_seconds waits; jobs in this folder start once it is ready"
 	case "ready":
 		out["next"] = "with max_leases set, every agent in this folder runs its bash in a lease of it, up to max_leases at once"
 		if manager := sandbox.Default(); manager != nil && manager.Active() {
 			out["next"] = "jobs in this folder now run in this environment; with max_leases set, every agent also runs its bash in a lease of it, up to max_leases at once"
 		}
 	case "failed":
-		out["next"] = "the build failed (see error and log): fix the definition with swarm_set_environment, or reset to Swarm's default"
+		out["next"] = "the build failed (see error and log): fix the definition with manage_projects update_environment, or reset to Swarm's default"
 	}
 	return out
 }
@@ -169,10 +169,10 @@ func (c *controlMCPCall) environmentBlocksJob(place controlMCPJobPlace) error {
 	}
 	switch env["status"] {
 	case "building":
-		return controlMCPToolFailure("the environment of %s is still building: wait with swarm_get_environment (wait_seconds), then give the job", place.path)
+		return controlMCPToolFailure("the environment of %s is still building: wait with manage_projects get_environment (wait_seconds), then give the job", place.path)
 	case "failed":
 		message, _ := env["error"].(string)
-		return controlMCPToolFailure("the environment of %s failed to build (%s): fix it with swarm_set_environment or reset it, then give the job", place.path, controlMCPTruncate(message, 300))
+		return controlMCPToolFailure("the environment of %s failed to build (%s): fix it with manage_projects update_environment or reset it, then give the job", place.path, controlMCPTruncate(message, 300))
 	}
 	return nil
 }

@@ -172,7 +172,7 @@ func TestProjectTaskIntegrateNativeAndHTTP(t *testing.T) {
 					return original(ctx, task, db)
 				}
 				call.workflowDelivery = false
-				out, err := controlMCPIntegrate(call, map[string]any{"project_id": proj.ID, "task_id": task.ID}, "swarm_integrate_task", "swarm_list_tasks")
+				out, err := controlMCPIntegrate(call, map[string]any{"project_id": proj.ID, "task_id": task.ID}, "manage_projects integrate_task", "manage_projects list_tasks")
 				if err != nil || interactive != 2 {
 					t.Fatalf("interactive retry: assessments %d err %v", interactive, err)
 				}

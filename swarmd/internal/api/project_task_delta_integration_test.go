@@ -222,7 +222,7 @@ func TestIntegrateProjectTaskDeliversMergedUpBranchNetChange(t *testing.T) {
 		}
 		request := requestWithScopedToken(withTestPrincipal(httptest.NewRequest(http.MethodPost, "/mcp", nil)), &pebblestore.ScopedTokenRecord{Scopes: scopes})
 		call := &controlMCPCall{request: request, server: x.f.server, next: x.f.server.internalRouteHandler()}
-		out, err := controlMCPIntegrate(call, map[string]any{"project_id": x.project, "task_id": x.task.ID}, "swarm_integrate_task", "swarm_list_tasks")
+		out, err := controlMCPIntegrate(call, map[string]any{"project_id": x.project, "task_id": x.task.ID}, "manage_projects integrate_task", "manage_projects list_tasks")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -282,7 +282,7 @@ func TestIntegrateProjectTaskRefusesConflictingMergedUpBranch(t *testing.T) {
 		t.Fatal("conflicting net change was integrated")
 	}
 	message := err.Error()
-	for _, want := range []string{"tally.sh", "swarm_send_message", "rebase its branch agent/task onto dev", "not merge", "Nothing was changed on dev"} {
+	for _, want := range []string{"tally.sh", "manage_sessions send_message", "rebase its branch agent/task onto dev", "not merge", "Nothing was changed on dev"} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("refusal lacks %q: %s", want, message)
 		}
@@ -364,7 +364,7 @@ func assertAgentConflictGuidance(t *testing.T, err error) *projectTaskIntegratio
 		t.Fatal("conflicting change was integrated")
 	}
 	message := err.Error()
-	for _, want := range []string{"tally.sh", "swarm_send_message", "rebase its branch agent/task onto dev", "not merge", "Nothing was changed on dev"} {
+	for _, want := range []string{"tally.sh", "manage_sessions send_message", "rebase its branch agent/task onto dev", "not merge", "Nothing was changed on dev"} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("refusal lacks %q: %s", want, message)
 		}
@@ -502,12 +502,12 @@ func TestIntegrateProjectTaskPlainConflictGuidesAgentRebase(t *testing.T) {
 		}
 		request := requestWithScopedToken(withTestPrincipal(httptest.NewRequest(http.MethodPost, "/mcp", nil)), &pebblestore.ScopedTokenRecord{Scopes: scopes})
 		call := &controlMCPCall{request: request, server: x.f.server, next: x.f.server.internalRouteHandler()}
-		_, err = controlMCPIntegrate(call, map[string]any{"project_id": x.project, "task_id": x.task.ID}, "swarm_integrate_task", "swarm_list_tasks")
+		_, err = controlMCPIntegrate(call, map[string]any{"project_id": x.project, "task_id": x.task.ID}, "manage_projects integrate_task", "manage_projects list_tasks")
 		if err == nil {
 			t.Fatal("conflicting branch was integrated through MCP")
 		}
 		message := err.Error()
-		for _, want := range []string{"409", "tally.sh", "swarm_send_message", "rebase its branch agent/task onto dev"} {
+		for _, want := range []string{"409", "tally.sh", "manage_sessions send_message", "rebase its branch agent/task onto dev"} {
 			if !strings.Contains(message, want) {
 				t.Fatalf("MCP refusal lacks %q: %s", want, message)
 			}

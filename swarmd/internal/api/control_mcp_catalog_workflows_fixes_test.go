@@ -40,18 +40,21 @@ func disabledDefinition(name string) map[string]any {
 	return map[string]any{"swarm_workflow": float64(1), "name": name, "enabled": false, "steps": []any{map[string]any{"type": "agent", "worker": "reviewer", "brief": "x"}}}
 }
 
-// Purpose: manage_workflows rewrites shared refusals into catalog terms
-// without changing their type, and the swarm_* tools' shared texts keep
-// their own contract. Threat: an Orchestrator sent to swarm_create_project,
-// which it does not have; or a refusal that stops being a tool refusal (MCP
-// isError) once rewritten. Boundary: workflowCatalogError over place's
-// refusal text; the narrowest layer that owns the mapping.
+// Purpose: manage_workflows words shared refusals in catalog terms without
+// changing their type: place's project refusals (already catalog names) gain
+// that the person may create the project in their Swarm app, and a swarm_*
+// name still in shared text (a linked machine's) becomes its catalog action.
+// Threat: an Orchestrator sent to a removed swarm_* tool; or a refusal that
+// stops being a tool refusal (MCP isError) once rewritten. Boundary:
+// workflowCatalogError over place's refusal text; the narrowest layer that
+// owns the mapping.
 func TestWorkflowCatalogErrorRewritesSharedRefusals(t *testing.T) {
 	for legacy, want := range map[string]string{
-		"there is no project yet: ask the person which folders their work is in and create one with swarm_create_project (a name and those folders)": "manage_projects create",
-		`several projects are named "p": pass the project id from swarm_list_projects`:                                                               "manage_projects list",
-		"project p has no folder: add one with swarm_set_project_workspaces":                                                                         "manage_projects update (workspaces)",
-		"/x is not a folder of project p (/y): add it with swarm_set_project_workspaces":                                                             "manage_projects update (workspaces)",
+		"there is no project yet: ask the person which folders their work is in and create one with manage_projects create (a name and those folders)": "or ask the person to create it in their Swarm app",
+		`no project "p": one of q, or create it with manage_projects create`:                                                                           "(or ask the person to, in their Swarm app)",
+		`several projects are named "p": pass the project id from manage_projects list`:                                                                "manage_projects list",
+		"project p has no folder: add one with manage_projects update (workspaces)":                                                                    "manage_projects update (workspaces)",
+		"/x is not a folder of project p (/y): add it with swarm_set_project_workspaces":                                                               "manage_projects update",
 	} {
 		got := workflowCatalogError(controlMCPToolFailure("%s", legacy))
 		var refusal controlMCPToolError

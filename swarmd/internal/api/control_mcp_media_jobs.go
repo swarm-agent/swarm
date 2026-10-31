@@ -52,10 +52,10 @@ func (c *controlMCPCall) mediaTask(projectID, taskID string) (*pebblestore.Proje
 	}
 	task, found, err := c.server.sessions.Store().GetProjectTask(principal.AccountScopeID, projectID, taskID)
 	if err != nil {
-		return nil, controlMCPToolFailure("job media/%s/%s: %s (see swarm_activity)", projectID, taskID, err)
+		return nil, controlMCPToolFailure("job media/%s/%s: %s (see manage_fleet activity)", projectID, taskID, err)
 	}
 	if !found || task == nil {
-		return nil, controlMCPToolFailure("job media/%s/%s not found (see swarm_activity)", projectID, taskID)
+		return nil, controlMCPToolFailure("job media/%s/%s not found (see manage_fleet activity)", projectID, taskID)
 	}
 	return task, nil
 }
@@ -203,7 +203,7 @@ func mediaJobFileView(out map[string]any, task *pebblestore.ProjectTaskRecord, a
 			continue
 		}
 		if len(file.data) > controlMCPMediaInlineMaxBytes {
-			notes = append(notes, fmt.Sprintf("file %d not shown: larger than %d MB; save it with swarm_save_media", i+1, controlMCPMediaInlineMaxBytes>>20))
+			notes = append(notes, fmt.Sprintf("file %d not shown: larger than %d MB; save it with manage_media save", i+1, controlMCPMediaInlineMaxBytes>>20))
 			continue
 		}
 		images = append(images, controlMCPImage{mediaType: file.mediaType, data: file.data})
@@ -226,9 +226,9 @@ func controlMCPMediaJobGuidance(out map[string]any, files []controlMCPMediaFile)
 				break
 			}
 		}
-		out["next"] = prefix + "swarm_save_media writes the files into a workspace; there is nothing to merge"
+		out["next"] = prefix + "manage_media save writes the files into a workspace; there is nothing to merge"
 	case "failed", "blocked", "cancelled", "rejected":
-		out["next"] = "the media job did not finish: read each file's error, then make a corrected request with swarm_request_media (a new job)"
+		out["next"] = "the media job did not finish: read each file's error, then make a corrected request with manage_media generate (a new job)"
 		if status != "failed" {
 			return
 		}
@@ -239,7 +239,7 @@ func controlMCPMediaJobGuidance(out map[string]any, files []controlMCPMediaFile)
 			message := strings.ToLower(file.record.Description)
 			if strings.Contains(message, "prohibited_content") || strings.Contains(message, "input blocked") {
 				out["hint"] = "the provider refused the brief by its content policy: rephrase it; naming real artists, songs, films, brands or people often triggers this"
-				out["next"] = "the media job did not finish: read each file's error, then rephrase the brief and make a corrected request with swarm_request_media (a new job)"
+				out["next"] = "the media job did not finish: read each file's error, then rephrase the brief and make a corrected request with manage_media generate (a new job)"
 				break
 			}
 		}
@@ -319,8 +319,8 @@ type mediaErrorWording struct {
 
 var mcpMediaErrors = mediaErrorWording{
 	missingBase:      "folder must be an absolute path inside a registered workspace: this job's project has no folder",
-	outsideWorkspace: "folder %s is not inside a registered workspace (see swarm_list_projects)",
-	missingFile:      "input %d: job %s has no ready file %d (swarm_get_job lists its files)",
+	outsideWorkspace: "folder %s is not inside a registered workspace (see manage_projects list)",
+	missingFile:      "input %d: job %s has no ready file %d (manage_jobs get_job lists its files)",
 	invalidPath:      "input %d: %s must be an absolute path inside a registered workspace",
 }
 
@@ -517,10 +517,10 @@ func controlMCPListMediaModels(c *controlMCPCall, args map[string]any) (any, err
 	if !ok || c.server == nil || c.server.imageGen == nil || c.server.model == nil {
 		return nil, controlMCPToolFailure("media models are not available on this machine")
 	}
-	return c.server.mediaModels(c.request.Context(), principal, args, controlMCPMediaModelsGuidance, "%d more need a provider key (include_unready lists them; swarm_list_providers)")
+	return c.server.mediaModels(c.request.Context(), principal, args, controlMCPMediaModelsGuidance, "%d more need a provider key (include_unready lists them; manage_setup providers)")
 }
 
-const controlMCPMediaModelsGuidance = "Pass model and its options to swarm_request_media; a value the model does not take is refused before anything is spent. The default is used when no model is named; swarm_set_media_models changes it when the person asks."
+const controlMCPMediaModelsGuidance = "Pass model and its options to manage_media generate; a value the model does not take is refused before anything is spent. The default is used when no model is named; manage_setup set_media_models changes it when the person asks."
 
 func (s *Server) mediaModels(ctx context.Context, principal identity.Principal, args map[string]any, guidance, unreadyGuidance string) (any, error) {
 	if s.imageGen == nil || s.model == nil {
@@ -628,7 +628,7 @@ func controlMCPSaveMedia(c *controlMCPCall, args map[string]any) (any, error) {
 		return nil, err
 	}
 	if kind != controlMCPJobMedia {
-		return nil, controlMCPToolFailure("%s is not a media job: a worker's files arrive by merging its job (swarm_deliver_job)", controlMCPString(args, "job_id"))
+		return nil, controlMCPToolFailure("%s is not a media job: a worker's files arrive by merging its job (manage_jobs deliver_job)", controlMCPString(args, "job_id"))
 	}
 	task, err := c.mediaTask(projectID, taskID)
 	if err != nil {
@@ -639,7 +639,7 @@ func controlMCPSaveMedia(c *controlMCPCall, args map[string]any) (any, error) {
 		return nil, controlMCPToolFailure("%s", controlMCPTruncate(err.Error(), 300))
 	}
 	if len(saved) == 0 {
-		return nil, controlMCPToolFailure("job %s has no ready files yet (swarm_get_job)", controlMCPString(args, "job_id"))
+		return nil, controlMCPToolFailure("job %s has no ready files yet (manage_jobs get_job)", controlMCPString(args, "job_id"))
 	}
 	return map[string]any{"job_id": controlMCPJobID(kind, projectID, taskID), "saved": saved}, nil
 }

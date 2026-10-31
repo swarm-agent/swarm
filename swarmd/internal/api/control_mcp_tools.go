@@ -683,11 +683,11 @@ func controlMCPGetSession(c *controlMCPCall, args map[string]any) (any, error) {
 	}
 	settled, err := c.waitForSession(sessionID, controlMCPInt(args, "wait_seconds", 0))
 	if err != nil {
-		return nil, controlMCPNotFound(err, "session", sessionID, "swarm_list_sessions")
+		return nil, controlMCPNotFound(err, "session", sessionID, "manage_sessions list")
 	}
 	out, err := c.sessionState(sessionID, controlMCPInt(args, "messages", 5), controlMCPInt(args, "detail_chars", 0))
 	if err != nil {
-		return nil, controlMCPNotFound(err, "session", sessionID, "swarm_list_sessions")
+		return nil, controlMCPNotFound(err, "session", sessionID, "manage_sessions list")
 	}
 	if settled != nil {
 		out["waited"] = settled
@@ -1137,7 +1137,7 @@ func controlMCPStartSession(c *controlMCPCall, args map[string]any) (any, error)
 		if workspacePath, ok := body["workspace_path"].(string); ok {
 			return nil, c.unregisteredWorkspace(err, workspacePath)
 		}
-		return nil, controlMCPNotFound(err, "project", controlMCPString(args, "project_id"), "swarm_list_projects")
+		return nil, controlMCPNotFound(err, "project", controlMCPString(args, "project_id"), "manage_projects list")
 	}
 	session := controlMCPMap(created["session"])
 	sessionID, _ := session["id"].(string)
@@ -1169,7 +1169,7 @@ func (c *controlMCPCall) unregisteredWorkspace(err error, path string) error {
 	if entry, lookupErr := c.registeredWorkspace(path); lookupErr != nil || entry != nil {
 		return err
 	}
-	return controlMCPToolFailure("workspace_path %q is not a registered workspace on this machine; use a path from swarm_list_workspaces, or ask the person which existing folder holds this work and register it with swarm_add_workspace", path)
+	return controlMCPToolFailure("workspace_path %q is not a registered workspace on this machine; use a path from manage_workspace list, or ask the person which existing folder holds this work and register it with manage_workspace create", path)
 }
 
 // currentState returns one coherent view after work was started: the start
@@ -1179,13 +1179,13 @@ func (c *controlMCPCall) currentState(out map[string]any, sessionID string, args
 	settled, err := c.waitForSession(sessionID, controlMCPInt(args, "wait_seconds", 0))
 	if err != nil {
 		out["session_id"] = sessionID
-		out["state_error"] = "work started, but its state could not be read; call swarm_get_session"
+		out["state_error"] = "work started, but its state could not be read; call manage_sessions get"
 		return out, nil
 	}
 	state, err := c.sessionState(sessionID, 3, 0)
 	if err != nil {
 		out["session_id"] = sessionID
-		out["state_error"] = "work started, but its state could not be read; call swarm_get_session"
+		out["state_error"] = "work started, but its state could not be read; call manage_sessions get"
 		return out, nil
 	}
 	for key, value := range state {
@@ -1246,7 +1246,7 @@ func controlMCPSendMessage(c *controlMCPCall, args map[string]any) (any, error) 
 	}
 	run, err := c.sendMessageWithMedia(sessionID, controlMCPString(args, "content"), requestID, media)
 	if err != nil {
-		return nil, controlMCPNotFound(err, "session", sessionID, "swarm_list_sessions")
+		return nil, controlMCPNotFound(err, "session", sessionID, "manage_sessions list")
 	}
 	return c.currentState(map[string]any{"client_request_id": requestID, "started": run}, sessionID, args)
 }
@@ -1370,7 +1370,7 @@ func controlMCPStopRun(c *controlMCPCall, args map[string]any) (any, error) {
 	}
 	detail, err := c.dispatch(http.MethodGet, controlMCPSessionPath(sessionID), url.Values{"message_limit": {"0"}, "event_limit": {"0"}}, nil)
 	if err != nil {
-		return nil, controlMCPNotFound(err, "session", sessionID, "swarm_list_sessions")
+		return nil, controlMCPNotFound(err, "session", sessionID, "manage_sessions list")
 	}
 	session := controlMCPMap(detail["session"])
 	targetSwarmID, _ := controlMCPMap(session["metadata"])["swarm_v3_runtime_swarm_id"].(string)
@@ -1383,7 +1383,7 @@ func controlMCPStopRun(c *controlMCPCall, args map[string]any) (any, error) {
 		if _, err := c.dispatch(http.MethodPost, "/v3/subagents:stop", nil, map[string]any{"session_id": sessionID}); err != nil {
 			return nil, err
 		}
-		return map[string]any{"session_id": sessionID, "run_status": "stop_requested", "summary": "Stop requested for the delegated agent; inspect swarm_get_session for its final state."}, nil
+		return map[string]any{"session_id": sessionID, "run_status": "stop_requested", "summary": "Stop requested for the delegated agent; inspect manage_sessions get for its final state."}, nil
 	}
 	if strings.TrimSpace(targetSwarmID) == "" {
 		return nil, controlMCPToolFailure("session has no runtime identity to stop")
@@ -1393,7 +1393,7 @@ func controlMCPStopRun(c *controlMCPCall, args map[string]any) (any, error) {
 		runID, _ = controlMCPMap(session["lifecycle"])["run_id"].(string)
 	}
 	if strings.TrimSpace(runID) == "" {
-		return nil, controlMCPToolFailure("session %s has no active run to stop (its last run already ended; see swarm_get_session)", sessionID)
+		return nil, controlMCPToolFailure("session %s has no active run to stop (its last run already ended; see manage_sessions get)", sessionID)
 	}
 	body := map[string]any{"run_id": runID, "target_swarm_id": targetSwarmID}
 	if reason := controlMCPString(args, "reason"); reason != "" {
@@ -1405,7 +1405,7 @@ func controlMCPStopRun(c *controlMCPCall, args map[string]any) (any, error) {
 	waited, waitErr := c.waitForSession(sessionID, controlMCPStopWaitSeconds)
 	state, stateErr := c.sessionState(sessionID, 1, 0)
 	if waitErr != nil || stateErr != nil {
-		return map[string]any{"session_id": sessionID, "run_id": runID, "run_status": "stop_requested", "summary": "Stop was requested; the final state could not be read. Check with swarm_get_session."}, nil
+		return map[string]any{"session_id": sessionID, "run_id": runID, "run_status": "stop_requested", "summary": "Stop was requested; the final state could not be read. Check with manage_sessions get."}, nil
 	}
 	return controlMCPStopReport(sessionID, runID, waited, state), nil
 }
@@ -1426,7 +1426,7 @@ func controlMCPStopReport(sessionID, runID string, waited, state map[string]any)
 		parts = append(parts, fmt.Sprintf("Stop was requested for run %s; it still has a pending request, which is no longer acted on.", runID))
 	default:
 		out["run_status"] = "stopping"
-		parts = append(parts, fmt.Sprintf("Stop was requested for run %s and it is still winding down; check with swarm_get_session.", runID))
+		parts = append(parts, fmt.Sprintf("Stop was requested for run %s and it is still winding down; check with manage_sessions get.", runID))
 	}
 	if session := controlMCPMap(state["session"]); session != nil {
 		out["session"] = session
@@ -1488,7 +1488,7 @@ func controlMCPResolvePermission(c *controlMCPCall, args map[string]any) (any, e
 	if err != nil {
 		var toolErr controlMCPToolError
 		if errors.As(err, &toolErr) && toolErr.status == http.StatusNotFound {
-			return nil, controlMCPToolFailure("permission %q is not pending in session %q (HTTP 404); swarm_get_session lists its pending_permissions", permissionID, sessionID)
+			return nil, controlMCPToolFailure("permission %q is not pending in session %q (HTTP 404); manage_sessions get lists its pending_permissions", permissionID, sessionID)
 		}
 		return nil, err
 	}
@@ -1638,7 +1638,7 @@ func controlMCPProjectSummary(project map[string]any) map[string]any {
 func (c *controlMCPCall) project(projectID string) (map[string]any, error) {
 	response, err := c.dispatch(http.MethodGet, "/v3/projects/"+projectID, nil, nil)
 	if err != nil {
-		return nil, controlMCPNotFound(err, "project", projectID, "swarm_list_projects")
+		return nil, controlMCPNotFound(err, "project", projectID, "manage_projects list")
 	}
 	project := controlMCPMap(response["project"])
 	if project == nil {
@@ -1749,7 +1749,7 @@ func controlMCPRetryProjectContext(c *controlMCPCall, args map[string]any) (any,
 	if err != nil {
 		var toolErr controlMCPToolError
 		if errors.As(err, &toolErr) && toolErr.status == http.StatusConflict {
-			return nil, controlMCPToolFailure("project %s: project.md generation is still running or changed meanwhile; check it with swarm_get_project", projectID)
+			return nil, controlMCPToolFailure("project %s: project.md generation is still running or changed meanwhile; check it with manage_projects get", projectID)
 		}
 		return nil, err
 	}
@@ -1798,7 +1798,7 @@ func controlMCPTaskSummary(task map[string]any) map[string]any {
 // captured target branch, so the integrate route's lineage checks decide; it
 // never picks branches itself.
 func controlMCPIntegrateTask(c *controlMCPCall, args map[string]any) (any, error) {
-	return controlMCPIntegrate(c, args, "swarm_integrate_task", "swarm_list_tasks")
+	return controlMCPIntegrate(c, args, "manage_projects integrate_task", "manage_projects list_tasks")
 }
 
 // controlMCPUnobservedDelivery reports a 409 whose delivery assessment could
@@ -1884,7 +1884,7 @@ func controlMCPIntegrate(c *controlMCPCall, args map[string]any, tool, readTool 
 func (c *controlMCPCall) worker(workerID string) (map[string]any, error) {
 	response, err := c.dispatch(http.MethodGet, "/v3/workers/"+workerID, nil, nil)
 	if err != nil {
-		return nil, controlMCPNotFound(err, "worker", workerID, "swarm_list_workers")
+		return nil, controlMCPNotFound(err, "worker", workerID, "manage_workers list")
 	}
 	worker := controlMCPMap(response["worker"])
 	if worker == nil {
@@ -1905,7 +1905,7 @@ func controlMCPGetWorker(c *controlMCPCall, args map[string]any) (any, error) {
 		}
 		response, err := c.dispatch(http.MethodGet, "/v3/workers/"+workerID+"/runs/"+runID, nil, nil)
 		if err != nil {
-			return nil, controlMCPNotFound(err, "worker run", runID, "swarm_get_worker without run_id")
+			return nil, controlMCPNotFound(err, "worker run", runID, "manage_workers inspect without run_id")
 		}
 		return map[string]any{"run": controlMCPWorkerRunSummary(controlMCPMap(response["run"]))}, nil
 	}

@@ -87,7 +87,7 @@ func TestControlMCPTaskToolsShowWhyAReviewSentTheTaskBack(t *testing.T) {
 		if !utf8.ValidString(got) || utf8.RuneCountInString(got) != 4000 || !strings.HasPrefix(findings, got) {
 			t.Fatalf("%s findings: valid %v, %d runes, prefix %v", name, utf8.ValidString(got), utf8.RuneCountInString(got), strings.HasPrefix(findings, got))
 		}
-		if wf["findings_truncated"] != true || wf["more"] != "swarm_list_workflows delivery_id="+d.ID {
+		if wf["findings_truncated"] != true || wf["more"] != "manage_workflows list delivery_id="+d.ID {
 			t.Fatalf("%s truncated %v more %v", name, wf["findings_truncated"], wf["more"])
 		}
 	}

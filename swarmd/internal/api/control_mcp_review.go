@@ -52,7 +52,7 @@ var controlMCPGitRevision = regexp.MustCompile(`^[A-Za-z0-9._/][A-Za-z0-9._/-]{0
 func (c *controlMCPCall) sessionFolder(sessionID string) (string, map[string]any, error) {
 	detail, err := c.dispatch(http.MethodGet, controlMCPSessionPath(sessionID), url.Values{"message_limit": {"0"}, "event_limit": {"0"}}, nil)
 	if err != nil {
-		return "", nil, controlMCPNotFound(err, "session", sessionID, "swarm_list_sessions")
+		return "", nil, controlMCPNotFound(err, "session", sessionID, "manage_sessions list")
 	}
 	session := controlMCPMap(detail["session"])
 	folder, _ := session["workspace_path"].(string)
@@ -87,7 +87,7 @@ func (c *controlMCPCall) readFolder(args map[string]any) (string, error) {
 			return "", err
 		}
 		if entry == nil {
-			return "", controlMCPToolFailure("workspace_path %q is not a registered workspace (see swarm_list_workspaces)", workspacePath)
+			return "", controlMCPToolFailure("workspace_path %q is not a registered workspace (see manage_workspace list)", workspacePath)
 		}
 		return filepath.Clean(workspacePath), nil
 	}
