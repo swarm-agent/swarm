@@ -63,6 +63,9 @@ func TestSessionMCPResolvedSystemAgentInventories(t *testing.T) {
 			req.Header.Set("Authorization", "Bearer "+token)
 			w := httptest.NewRecorder()
 			f.server.LoopbackAPIHandler().ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("tools/list: %d %s", w.Code, w.Body)
+			}
 			var response struct {
 				Result struct {
 					Tools []struct {

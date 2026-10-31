@@ -111,6 +111,10 @@ Each Swarm provider request is one non-interactive Claude Code turn: `claude -p`
 - Recorded token usage is from the turn's final model call, the same per-step context-occupancy semantics other providers use.
 - The CLI's aggregate turn usage and its client-side cost estimate are kept only in the raw usage record. That estimate is not billing data.
 
+## Validation boundary
+
+Deterministic tests use a fixture CLI and real loopback HTTP, credential storage, V3 session mutations, and the canonical tool executor. They check config/token reuse after store reopen, resume and missing-history reseeding, cross-session rejection, resolved Orchestrator/Coder inventories, permission denial without a tool side effect, and one in-flight disconnect followed by a successful retry at the same address. The fixture explicitly requests that retry; this does not establish Anthropic's real CLI reconnect policy. Provider-backed daemon-restart qualification remains a separate live check.
+
 ## Usage limits (`/claude`)
 
 `/claude` in the terminal UI (and `GET /v1/claudecode/usage`) shows the Claude Code version, sign-in and plan, and the latest five-hour and weekly usage Claude Code reported in a turn's stream (its `rate_limit_event`). The usage is known only after a Claude Code turn has run since the daemon started. The Claude login belongs to the daemon's OS user, so the reading covers every Swarm account on that daemon.
