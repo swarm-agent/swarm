@@ -1356,6 +1356,10 @@ func controlMCPSessionStateView(response map[string]any, textLimit, toolLimit in
 		}
 		summary := controlMCPPick(message, "role")
 		content, _ := message["content"].(string)
+		// Provider internals (thought signatures, encrypted reasoning, raw
+		// payloads) never spend the text budget; the chunk route continues
+		// the same readable text (tool.ChunkReadableMessageContent).
+		content = tool.ReadableMessageContent(content)
 		if tool, ok := controlMCPToolMessageDetail(message, content, toolLimit); ok {
 			summary["tool"] = tool
 		} else {

@@ -1057,7 +1057,7 @@ func (r *Runtime) manageSessionsRead(scope WorkspaceScope, args map[string]any) 
 		if remain <= 0 {
 			break
 		}
-		chunk, err := ChunkMessageContent(m.Content, 0, remain)
+		chunk, err := ChunkReadableMessageContent(m.Content, 0, remain)
 		if err != nil {
 			return "", err
 		}
@@ -1192,7 +1192,7 @@ func (r *Runtime) manageSessionsReadMessageChunk(session pebblestore.SessionSnap
 	if len(msgs) == 0 || msgs[0].ID != next.MessageID || msgs[0].GlobalSeq != next.MessageSeq {
 		return "", fmt.Errorf("message %s (message_seq %d) was not found in session %s", next.MessageID, next.MessageSeq, session.ID)
 	}
-	chunk, err := ChunkMessageContent(msgs[0].Content, next.ContentOffset, budget)
+	chunk, err := ChunkReadableMessageContent(msgs[0].Content, next.ContentOffset, budget)
 	if err != nil {
 		return "", err
 	}

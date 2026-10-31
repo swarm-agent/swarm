@@ -16,7 +16,7 @@ import (
 //	GET /v3/sessions/{id}/messages?message_id=&message_seq=&content_offset=[&max_chars=]
 //
 // returns {"message": ...} with the chunk of that exact message from
-// content_offset on, cut by tool.ChunkMessageContent (the rule the native
+// content_offset on, cut by tool.ChunkReadableMessageContent (the rule the native
 // read_task_session and read_messages use). A chunk that does not reach the
 // end says truncated, content_offset (where it ends) and total_bytes; MCP
 // swarm_get_session reads on through this route.
@@ -65,7 +65,7 @@ func (s *Server) readSessionMessageChunk(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusNotFound, errors.New("message "+next.MessageID+" (message_seq "+strconv.FormatUint(next.MessageSeq, 10)+") was not found in session "+sessionID))
 		return
 	}
-	chunk, err := tool.ChunkMessageContent(messages[0].Content, next.ContentOffset, maxChars)
+	chunk, err := tool.ChunkReadableMessageContent(messages[0].Content, next.ContentOffset, maxChars)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return

@@ -256,7 +256,7 @@ func (s *Server) ReadFleetLinkedTaskSession(ctx context.Context, p identity.Prin
 		if len(page.Messages) == 0 || page.Messages[0].ID != next.MessageID || page.Messages[0].GlobalSeq != next.MessageSeq {
 			return nil, linkedTaskFail(http.StatusNotFound, "message %s (message_seq %d) was not found in the session of task %s on %s", next.MessageID, next.MessageSeq, taskID, machine)
 		}
-		chunk, err := tool.ChunkMessageContent(page.Messages[0].Content, next.ContentOffset, read.MaxChars)
+		chunk, err := tool.ChunkReadableMessageContent(page.Messages[0].Content, next.ContentOffset, read.MaxChars)
 		if err != nil {
 			return nil, linkedTaskFail(http.StatusBadRequest, "%v", err)
 		}
@@ -337,7 +337,7 @@ func boundLinkedTaskMessages(page []pebblestore.MessageSnapshot, read tool.Fleet
 			more = true
 			break
 		}
-		chunk, err := tool.ChunkMessageContent(message.Content, 0, remain)
+		chunk, err := tool.ChunkReadableMessageContent(message.Content, 0, remain)
 		if err != nil {
 			// Offset 0 is always inside the content.
 			continue
