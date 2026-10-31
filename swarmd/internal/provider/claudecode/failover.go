@@ -23,7 +23,7 @@ func (r *Runner) runAccounts(ctx context.Context, req provideriface.Request, onE
 	}
 	var earliest time.Time
 	attempted := ""
- var rejectedUsage provideriface.TokenUsage
+	var rejectedUsage provideriface.TokenUsage
 	for _, slot := range slots {
 		if err := ctx.Err(); err != nil {
 			return provideriface.Response{}, err
@@ -51,7 +51,7 @@ func (r *Runner) runAccounts(ctx context.Context, req provideriface.Request, onE
 		single := &Runner{authStore: r.authStore, cli: cli}
 		response, turnErr := single.runSingle(ctx, turnReq, onEvent)
 		if turnErr == nil {
-   response.Usage=mergeAccountUsage(rejectedUsage,response.Usage)
+			response.Usage = mergeAccountUsage(rejectedUsage, response.Usage)
 			return response, nil
 		}
 		lower := strings.ToLower(turnErr.Error())
@@ -75,18 +75,18 @@ func (r *Runner) runAccounts(ctx context.Context, req provideriface.Request, onE
 			earliest = until
 		}
 		if tracker.called.Load() {
-   // The result's text can be the limit notice, not assistant content.
-   response.Text=""
-   response.Usage=mergeAccountUsage(rejectedUsage,response.Usage)
+			// The result's text can be the limit notice, not assistant content.
+			response.Text = ""
+			response.Usage = mergeAccountUsage(rejectedUsage, response.Usage)
 			response.RestartTurn = true
 			return response, nil
 		}
-  rejectedUsage=mergeAccountUsage(rejectedUsage,response.Usage)
+		rejectedUsage = mergeAccountUsage(rejectedUsage, response.Usage)
 		// TODO(task_5e37e037): replace stateless full-history seeding with the sibling
 		// task's durable per-account CLI session id/resume contract once available.
 	}
 	if !earliest.IsZero() {
-		return provideriface.Response{Usage:rejectedUsage}, &AccountLimitWait{Until: earliest}
+		return provideriface.Response{Usage: rejectedUsage}, &AccountLimitWait{Until: earliest}
 	}
 	return provideriface.Response{}, errNoSignedInAccounts
 }
@@ -99,4 +99,27 @@ type accountToolTracker struct {
 func (t *accountToolTracker) ExecuteTool(ctx context.Context, invocation provideriface.ToolInvocation) (provideriface.ToolExecutionResult, error) {
 	t.called.Store(true)
 	return t.inner.ExecuteTool(ctx, invocation)
+}
+
+// mergeAccountUsage sums only provider-reported receipts; it never estimates a
+// rejected attempt's usage. Preserve each raw receipt for downstream accounting.
+func mergeAccountUsage(previous, current provideriface.TokenUsage) provideriface.TokenUsage {
+	current.InputTokens += previous.InputTokens
+	current.OutputTokens += previous.OutputTokens
+	current.ThinkingTokens += previous.ThinkingTokens
+	current.TotalTokens += previous.TotalTokens
+	current.CacheReadTokens += previous.CacheReadTokens
+	current.CacheWriteTokens += previous.CacheWriteTokens
+	current.EstimatedCostUSD += previous.EstimatedCostUSD
+	history := append([]map[string]any(nil), previous.APIUsageHistory...)
+	if previous.APIUsageRaw != nil && len(previous.APIUsageHistory) == 0 {
+		history = append(history, previous.APIUsageRaw)
+	}
+	if len(current.APIUsageHistory) > 0 {
+		history = append(history, current.APIUsageHistory...)
+	} else if current.APIUsageRaw != nil {
+		history = append(history, current.APIUsageRaw)
+	}
+	current.APIUsageHistory = history
+	return current
 }

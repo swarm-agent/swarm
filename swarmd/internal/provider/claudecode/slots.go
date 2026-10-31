@@ -106,13 +106,19 @@ func (c *CLI) AddAccount() (id, loginCommand string, err error) {
 	}
 	id = hex.EncodeToString(random[:])
 	// Each component is daemon-owned, private, and must not be a symlink.
-	root := filepath.Dir(filepath.Dir(filepath.Dir(c.slotsRoot)))
+	base := filepath.Dir(filepath.Dir(filepath.Dir(c.slotsRoot)))
+	confined, err := os.OpenRoot(base)
+	if err != nil {
+		return "", "", err
+	}
+	defer confined.Close()
+	relative := ""
 	for _, part := range []string{"providers", ProviderID, "accounts", id} {
-		root = filepath.Join(root, part)
-		if err = os.Mkdir(root, 0700); err != nil && !errors.Is(err, os.ErrExist) {
+		relative = filepath.Join(relative, part)
+		if err = confined.Mkdir(relative, 0700); err != nil && !errors.Is(err, os.ErrExist) {
 			return "", "", err
 		}
-		info, statErr := os.Lstat(root)
+		info, statErr := confined.Lstat(relative)
 		if statErr != nil {
 			return "", "", statErr
 		}
@@ -124,7 +130,7 @@ func (c *CLI) AddAccount() (id, loginCommand string, err error) {
 		return "", "", err
 	}
 	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
-	return id, "sudo -u " + quote(current.Username) + " -- env CLAUDE_CONFIG_DIR=" + quote(root) + " " + quote(path) + " auth login", nil
+	return id, "sudo -u " + quote(current.Username) + " -- env CLAUDE_CONFIG_DIR=" + quote(filepath.Join(base, relative)) + " " + quote(path) + " auth login", nil
 }
 
 func (c *CLI) OrderAccounts(ids []string) error {

@@ -34,6 +34,49 @@ On a headless box from `install.sh`, the daemon runs as the `swarm` user (home `
 
 Swarm checks readiness with `claude --version` and `claude auth status`. The provider status shows the result.
 
+## Several accounts on one machine
+
+The existing daemon-user login is account `default` (order 1); it is not moved.
+Add another isolated slot on that machine:
+
+```sh
+swarmctl setup add-credential --provider claudecode
+```
+
+Run the exact printed `sudo -u … -- env CLAUDE_CONFIG_DIR=… claude auth login`
+command yourself, then complete Claude's browser sign-in. Each new config
+folder is private (`0700`) under the daemon data root's
+`providers/claudecode/accounts/<id>`. Swarm creates the folder and routing
+metadata only; the Claude CLI owns the login. Enable Claude Code for your
+Swarm account as described above if it is not already enabled.
+
+Provider listings and `plan_usage` include `accounts`: slot ID, order, readiness,
+email, organization, plan, `limit_state` (`ok` or `exhausted`) and the observed
+`limit_until` timestamp. Linked-machine provider listings carry the same data.
+To reorder, supply every slot ID exactly once, including `default`:
+
+```sh
+swarmctl setup credential-order --provider claudecode default,<second-id>,<third-id>
+```
+
+The owner-only setup API is `POST /v1/claudecode/accounts`: `{}` adds a slot
+and returns `id` and `login_command`; `{"order":["default","<id>"]}` changes
+order. Order changes apply to the next dispatched turn.
+
+Each turn starts with the first signed-in account outside a known limit window.
+A session/weekly limit with a parseable reset records that clock for its slot
+and retries the turn on the next account. Unknown reset text is an error, not
+an invented window. After tool execution, the run first rebuilds its request
+from durable history to avoid replaying tool side effects. If all usable
+accounts are limited, it waits cancellably until the earliest recorded reset.
+Account selection and waiting appear as provider events; status attention names
+the number of limited accounts and the next reset (UTC).
+
+This revision still seeds each CLI turn from Swarm's full durable history and
+disables CLI transcript persistence. Per-account CLI resume IDs are deferred to
+the standing-endpoint task `task_5e37e037`; account switching does not rely on a
+transcript from another config directory.
+
 ## How a turn runs
 
 Each Swarm provider request is one non-interactive Claude Code turn: `claude -p` with stream-json input and output.

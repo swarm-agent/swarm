@@ -181,3 +181,47 @@ func TestAccountsAllExhaustedAndUnknownReset(t *testing.T) {
 		t.Fatal("unauthorized dispatch changed B")
 	}
 }
+
+// Purpose: CLI.AddAccount creates only private daemon-state directories and a
+// manual command, never executing auth login. Symlinked state must be rejected
+// without adding a slot or writing through the link. This filesystem/real-store
+// layer is the narrowest owner of those security postconditions.
+func TestAddAccountPrivateDirectoryAndSymlinkRejection(t *testing.T) {
+	r, _, _, _, _ := accountFixture(t)
+	id, command, err := r.cli.AddAccount()
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(r.cli.slotsRoot, id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0700 || !strings.Contains(command, "CLAUDE_CONFIG_DIR=") || !strings.HasSuffix(command, " auth login") {
+		t.Fatalf("mode=%v command=%q", info.Mode(), command)
+	}
+	// A fresh root permits testing a hostile pre-existing providers symlink.
+	base := t.TempDir()
+	outside := t.TempDir()
+	r.cli.slotsRoot = filepath.Join(base, "providers", ProviderID, "accounts")
+	if err := os.Symlink(outside, filepath.Join(base, "providers")); err != nil {
+		t.Fatal(err)
+	}
+	before, err := r.authStore.ClaudeCodeSlots()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.cli.AddAccount(); err == nil {
+		t.Fatal("accepted symlink")
+	}
+	after, err := r.authStore.ClaudeCodeSlots()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) || len(entries) != 0 {
+		t.Fatal("rejected addition changed state")
+	}
+}

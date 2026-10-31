@@ -91,6 +91,17 @@ func (a *Adapter) VerifyCredential(ctx context.Context, credential provideriface
 		return provideriface.AuthVerification{Connected: false, Method: pebblestore.AuthTypeCLI}, errors.New("claude code CLI is not configured")
 	}
 	cliStatus := a.cli.Refresh(ctx)
+	if a.cli.slots != nil {
+		accounts, err := a.cli.AccountStatuses(ctx)
+		if err != nil {
+			return provideriface.AuthVerification{}, err
+		}
+		for _, account := range accounts {
+			if account.Ready {
+				return provideriface.AuthVerification{Connected: true, Method: pebblestore.AuthTypeCLI}, nil
+			}
+		}
+	}
 	if !cliStatus.Ready {
 		return provideriface.AuthVerification{Connected: false, Method: pebblestore.AuthTypeCLI, Message: cliStatus.Reason}, errors.New(cliStatus.Reason)
 	}

@@ -35,6 +35,16 @@ func (s *AuthStore) claudeCodeSlotsLocked() ([]ClaudeCodeSlot, error) {
 	if len(slots) == 0 || len(slots) > 32 {
 		return nil, errors.New("invalid Claude Code account slots")
 	}
+	seen := make(map[string]bool, len(slots))
+	for _, slot := range slots {
+		if seen[slot.ID] || slot.Legacy != (slot.ID == "default") || (!slot.Legacy && !validClaudeCodeSlotID(slot.ID)) {
+			return nil, errors.New("invalid Claude Code account slot identity")
+		}
+		seen[slot.ID] = true
+	}
+	if !seen["default"] {
+		return nil, errors.New("missing migrated Claude Code account slot")
+	}
 	return slots, nil
 }
 

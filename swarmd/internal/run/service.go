@@ -2542,13 +2542,32 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			}
 			return s.sessions.Store().ReleaseWorkerBudgetReservation(acctScope, sessionID, usage.BudgetOperationID)
 		})
+		var accountEventErr error
 		response, err := runProviderAttempt(attemptCtx, providerRunner, stepRequest, providerAttemptActivityTimeout, func(event provideriface.StreamEvent) {
 			if ctx.Err() != nil {
 				return
 			}
 			switch event.Type {
 			case provideriface.StreamEventAccountSelected, provideriface.StreamEventAccountWaiting:
-				emit(StreamEvent{Type: string(event.Type), Step: step, Metadata: event.Metadata})
+				if accountEventErr != nil {
+					return
+				}
+				if options.ApplySessionMutation != nil {
+					eventID := fmt.Sprintf("provider-account:%s:%d", runID, time.Now().UnixNano())
+					payload, marshalErr := json.Marshal(map[string]any{"run_id": runID, "step": step, "provider_id": event.ProviderID, "metadata": event.Metadata})
+					if marshalErr != nil {
+						accountEventErr = marshalErr
+						return
+					}
+					_, accountEventErr = options.ApplySessionMutation(sessionruntime.SessionMutationInput{
+						SessionID: sessionID, UserID: options.Principal.UserID, AccountScopeID: options.Principal.AccountScopeID,
+						ClientRequestID: eventID, IdempotencyKey: eventID, PayloadHash: eventID, RequestHash: eventID,
+						Kind: sessionruntime.SessionMutationRecordDiagnostic, EventType: string(event.Type), EventPayload: payload, NowUnixMs: time.Now().UnixMilli(),
+					})
+				}
+				if accountEventErr == nil {
+					emit(StreamEvent{Type: string(event.Type), Step: step, Metadata: event.Metadata})
+				}
 			case provideriface.StreamEventOutputTextDelta:
 				emit(StreamEvent{Type: StreamEventAssistantDelta, Step: step, Delta: event.Delta})
 			case provideriface.StreamEventAssistantCommentary:
@@ -2565,6 +2584,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				emit(providerToolConstructionStreamEvent(step, event))
 			}
 		})
+		if accountEventErr != nil {
+			return RunResult{}, fmt.Errorf("persist provider account event: %w", accountEventErr)
+		}
 		stepsCompleted = step
 		if hasConcreteUsageSnapshot(response.Usage) {
 			stepCost := 0.0
