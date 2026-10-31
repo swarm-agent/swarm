@@ -392,8 +392,12 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 	if action == "" {
 		action = "list"
 	}
+	args = manageProjectsSwarmArgs(args)
 	answer, err := r.manageProjectsAnswer(ctx, scope, args)
 	if err != nil {
+		return "", err
+	}
+	if answer, err = r.manageProjectsSwarmExtras(ctx, scope, action, args, answer); err != nil {
 		return "", err
 	}
 	return r.manageProjectsEnvelope(action, args, answer)
@@ -413,6 +417,12 @@ func (r *Runtime) manageProjectsAnswer(ctx context.Context, scope WorkspaceScope
 	}
 	if strings.ToLower(strings.TrimSpace(asString(args["action"]))) == FleetAgentsAtWorkAction {
 		return r.executeFleetAgentsAtWork(ctx, scope, args)
+	}
+	if ProjectContextRetryCall(args) {
+		// update with nothing to change: project.md written again from the
+		// project's folders (swarm_retry_project_context's handler).
+		declared, _ := manageProjectsDeclared().Action("update")
+		return r.catalogServiceAnswer(ctx, scope, manageProjectsDeclared(), declared, args)
 	}
 	if strings.TrimSpace(asString(args["machine"])) != "" || asString(args["action"]) == "list_machines" {
 		return r.executeFleetProjects(ctx, scope, args)

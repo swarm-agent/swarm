@@ -25,12 +25,22 @@ func (s *Server) ManageCustomAgents(account string, args map[string]any) (any, e
 			return nil, err
 		}
 		profiles := []publicAgentProfileDTO{}
+		// custom and built_in are swarm_list_agents' answer: the agents a
+		// session can run, each custom one by name, enabled and description.
+		custom := []map[string]any{}
 		for _, p := range state.Profiles {
 			if !p.Protected && !controlMCPIsSystemAgent(p.Name) && !controlMCPReservedIDs[p.Name] && controlMCPAgentName.MatchString(p.Name) && p.Mode == agentruntime.ModeSubagent {
 				profiles = append(profiles, publicAgentProfile(p))
+				if len(custom) < controlMCPMaxListItems {
+					entry := map[string]any{"name": p.Name, "enabled": p.Enabled}
+					if description := strings.TrimSpace(p.Description); description != "" {
+						entry["description"] = controlMCPTruncate(description, 200)
+					}
+					custom = append(custom, entry)
+				}
 			}
 		}
-		return map[string]any{"profiles": profiles}, nil
+		return map[string]any{"profiles": profiles, "built_in": controlMCPSessionAgents, "custom": custom}, nil
 	}
 	if !controlMCPAgentName.MatchString(name) || controlMCPReservedIDs[name] {
 		return nil, errors.New("name must be lowercase letters, digits and dashes, starting with a letter")
@@ -118,7 +128,12 @@ func (s *Server) ManageCustomAgents(account string, args map[string]any) (any, e
 			}
 		}
 		p, _, _, err := s.agents.UpsertForAccount(account, agentruntime.UpsertInput{Name: name, Mode: agentruntime.ModeSubagent, Description: controlMCPString(args, "description"), Prompt: instructions, ProviderSet: true, ModelSet: true, ThinkingSet: true, Enabled: store.BoolPtr(true), ToolContract: &store.AgentToolContract{Preset: "custom", Tools: tools}})
-		return map[string]any{"profile": publicAgentProfile(p)}, err
+		if err != nil {
+			return nil, err
+		}
+		// agent is swarm_define_agent's answer: the name, enabled and the
+		// tools as asked.
+		return map[string]any{"profile": publicAgentProfile(p), "agent": map[string]any{"name": p.Name, "enabled": p.Enabled, "tools": args["tools"]}}, nil
 	default:
 		return nil, errors.New("action must be list, get, define or disable")
 	}

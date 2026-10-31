@@ -440,15 +440,7 @@ func controlMCPGiveJob(c *controlMCPCall, args map[string]any) (any, error) {
 			return nil, err
 		}
 	}
-	files := []string{}
-	for _, raw := range controlMCPList(args["files"]) {
-		if path, _ := raw.(string); strings.TrimSpace(path) != "" {
-			files = append(files, strings.TrimSpace(path))
-		}
-	}
-	if len(files) > 0 {
-		brief += "\n\nScope: only change files under " + strings.Join(files, ", ") + ". Anything else is out of scope; say so instead of touching it."
-	}
+	brief += tool.TaskFilesScope(controlMCPList(args["files"]))
 	key := controlMCPString(args, "idempotency_key")
 	if key == "" {
 		key = controlMCPRequestID()

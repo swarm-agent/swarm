@@ -51,6 +51,7 @@ func manageWorkersFields() []CatalogField {
 		{"include_deleted", described("boolean", "Include soft-deleted/tombstoned workers in list.")},
 		{"document", described("object", "Complete executable Worker V2 document for document-based proposals; omit for flat name/instructions proposals.")},
 		{"worker_review", described("object", "Exact current review for editing a pending proposal; omit on first proposal.")},
+		{"run_id", described("string", "inspect: one run of the worker (its status, session_id, error and deliverables).")},
 	}
 }
 
@@ -77,7 +78,7 @@ func manageWorkersCatalog() CatalogTool {
 			Description: "The Worker V2 authoring syntax and lifecycle workflows."},
 		{Action: "list", Inputs: []string{"machine", "limit", "cursor", "include_deleted"}, Level: read,
 			Description: "Workers with their state; next_cursor pages on."},
-		{Action: "inspect", Inputs: []string{"machine", "worker_id", "cursor"}, Level: read,
+		{Action: "inspect", Inputs: []string{"machine", "worker_id", "cursor", "run_id"}, Level: read,
 			Description: "One worker's definition, revision, schedules and state."},
 		{Action: "create", Inputs: with(definition), Level: manage,
 			Description: "A new worker from name and instructions (or a document); it waits for the person to accept it in Swarm before it runs."},

@@ -91,6 +91,10 @@ func (s *Server) ManageWorkers(ctx context.Context, p identity.Principal, who, a
 	if declared.Action == "assign_task" {
 		return s.assignWorkerTask(ctx, p, held, control, args)
 	}
+	if declared.Action == "inspect" && controlMCPString(args, "run_id") != "" {
+		// One run of the worker: swarm_get_worker's run read.
+		return s.workerRouteCall(ctx, p, held, control, args, []string{"worker_id", "run_id"}, controlMCPGetWorker)
+	}
 	runner, ok := s.runner.(workerCatalogRunner)
 	if !ok {
 		return nil, errors.New("worker service unavailable")
@@ -106,6 +110,13 @@ func (s *Server) ManageWorkers(ctx context.Context, p identity.Principal, who, a
 // /v3/workers/{id}/direct) on an internal request with the worker routes'
 // scopes, narrowed to a Swarm Control caller's.
 func (s *Server) assignWorkerTask(ctx context.Context, p identity.Principal, held []string, control bool, args map[string]any) (any, error) {
+	return s.workerRouteCall(ctx, p, held, control, args, []string{"worker_id", "task", "idempotency_key"}, controlMCPAssignWorkerTask)
+}
+
+// workerRouteCall runs one swarm_* worker handler over the worker routes on
+// an internal request with the worker routes' scopes, narrowed to a Swarm
+// Control caller's, with only the named inputs.
+func (s *Server) workerRouteCall(ctx context.Context, p identity.Principal, held []string, control bool, args map[string]any, inputs []string, handler func(*controlMCPCall, map[string]any) (any, error)) (any, error) {
 	scopes := append([]string(nil), workerCatalogScopes...)
 	if control {
 		scopes = nativeJobScopesHeld(scopes, held)
@@ -117,12 +128,12 @@ func (s *Server) assignWorkerTask(ctx context.Context, p identity.Principal, hel
 	req = requestWithScopedToken(req, &store.ScopedTokenRecord{Scopes: scopes})
 	c := &controlMCPCall{request: req, next: s.internalRouteHandler(), server: s}
 	clean := map[string]any{}
-	for _, key := range []string{"worker_id", "task", "idempotency_key"} {
+	for _, key := range inputs {
 		if value, ok := args[key]; ok {
 			clean[key] = value
 		}
 	}
-	return controlMCPAssignWorkerTask(c, clean)
+	return handler(c, clean)
 }
 
 // manageWorkersAction is the declared manage_workers action.

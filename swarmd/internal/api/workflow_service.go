@@ -188,7 +188,8 @@ func workflowStopView(stop jobautomation.StopState) map[string]any {
 	if !stop.Stopped {
 		next = "workflows run again; the steps the switch stopped re-run with manage_jobs rerun_failed_steps and the job's id"
 	}
-	return map[string]any{"stop": stop, "next": next}
+	// stopped is swarm_stop_workflows' answer: whether the switch is on.
+	return map[string]any{"stop": stop, "stopped": stop.Stopped, "next": next}
 }
 func controlMCPListAutomations(c *controlMCPCall, args map[string]any) (any, error) {
 	opts, err := workflowListOptions(func(key string) string { return controlMCPString(args, key) })

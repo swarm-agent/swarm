@@ -16,8 +16,10 @@ import (
 // manage_projects definition (json.Marshal, sorted keys). The definition is
 // a prompt contract: it changes only on purpose, with this hash. Stage 6
 // changed it on purpose: get_task_changes and read_task_file (with path,
-// diff_chars, page_offset and page_digest) joined it.
-const manageProjectsDefinitionSHA256 = "033871792dc11736adaa6f296f0deeb9ab271f425f87523f39503b5e61ddc665"
+// diff_chars, page_offset and page_digest) joined it. Stage 7a changed it on
+// purpose: the swarm_* project tools' inputs joined (session_id, brief,
+// workspace, files, project_md, include_diff and include_linked).
+const manageProjectsDefinitionSHA256 = "e3c5e82a656cebc8c8983112b67c71cb7038caebf1603087a91abaf7b9b9edb0"
 
 // Purpose: the catalog is the only place manage_projects exists. The
 // Orchestrator's definition is generated from the declarations and stays the

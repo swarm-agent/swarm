@@ -321,12 +321,14 @@ func (s *Server) proposeWorkflow(caller WorkflowCaller, args map[string]any) (an
 			}
 		}
 	}
-	a, _, _, err := s.SaveWorkflow(caller, body, "propose", false)
+	a, created, _, err := s.SaveWorkflow(caller, body, "propose", false)
 	if err != nil {
 		return nil, err
 	}
 	effect := "Accepting adds a new workflow."
-	answer := map[string]any{"automation": jobAutomationView(a), "next_action": workflowProposeNextAction}
+	// created is swarm_set_workflow's answer: whether the save made a new
+	// record rather than changing one.
+	answer := map[string]any{"automation": jobAutomationView(a), "created": created, "next_action": workflowProposeNextAction}
 	if current != nil {
 		effect = fmt.Sprintf("Accepting replaces %s (revision %d); it keeps that workflow's id.", current.Name, current.Revision)
 		answer["changes"] = jobautomation.ChangedFields(current, &a)

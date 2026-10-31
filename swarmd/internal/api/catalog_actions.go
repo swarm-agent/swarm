@@ -58,6 +58,9 @@ var catalogSwarmHandlers = map[string]map[string]catalogSwarmHandler{
 	"manage_projects": {
 		tool.TaskChangesAction: catalogTaskChanges,
 		tool.TaskFileAction:    catalogTaskFile,
+		// update with nothing to change only (tool.ProjectContextRetryCall);
+		// every other update is the Orchestrator's own project edit.
+		"update": catalogProjectContextRetry,
 	},
 }
 
@@ -130,7 +133,13 @@ func (s *Server) ManageCatalogAction(ctx context.Context, p identity.Principal, 
 		}
 	}
 	clean := map[string]any{}
-	for _, key := range declared.Inputs {
+	inputs := declared.Inputs
+	if control {
+		// A Swarm Control caller's own inputs (held waits) reach the
+		// handler for it only.
+		inputs = append(append([]string(nil), inputs...), declared.ControlInputs...)
+	}
+	for _, key := range inputs {
 		if value, ok := args[key]; ok && key != "machine" {
 			clean[key] = value
 		}
@@ -183,9 +192,28 @@ func (s *Server) ManageCatalogAction(ctx context.Context, p identity.Principal, 
 	return out, nil
 }
 
+// catalogProjectContextRetry is manage_projects update with nothing to change:
+// swarm_retry_project_context's handler writes project.md again.
+func catalogProjectContextRetry(c *controlMCPCall, args map[string]any) (any, error) {
+	if !tool.ProjectContextRetryCall(args) {
+		return nil, controlMCPToolFailure("update writes project.md again only when it names the project (id) and changes nothing else")
+	}
+	return controlMCPRetryProjectContext(c, map[string]any{"project_id": controlMCPString(args, "id")})
+}
+
 // catalogTaskSession is a task's session: the one swarm_get_changes and
-// swarm_read_file read.
+// swarm_read_file read. session_id names a session directly, as those tools
+// take it; it is given instead of a task, never with one.
 func catalogTaskSession(c *controlMCPCall, args map[string]any) (string, error) {
+	if session := strings.TrimSpace(controlMCPString(args, "session_id")); session != "" {
+		if strings.TrimSpace(controlMCPString(args, "task_id")) != "" {
+			return "", controlMCPToolFailure("give task_id (with project_id) or session_id, not both")
+		}
+		if !controlMCPSafeID.MatchString(session) {
+			return "", controlMCPToolFailure("session_id is not a valid id")
+		}
+		return session, nil
+	}
 	projectID, err := controlMCPID(args, "project_id")
 	if err != nil {
 		return "", err
@@ -229,6 +257,18 @@ func catalogTaskChanges(c *controlMCPCall, args map[string]any) (any, error) {
 // catalogTaskFile is read_task_file: swarm_read_file in the task's session's
 // working folder.
 func catalogTaskFile(c *controlMCPCall, args map[string]any) (any, error) {
+	if folder := strings.TrimSpace(controlMCPString(args, "workspace_path")); folder != "" {
+		// swarm_read_file's other folder: a registered workspace, given
+		// instead of a task or session.
+		if strings.TrimSpace(controlMCPString(args, "task_id")) != "" || strings.TrimSpace(controlMCPString(args, "session_id")) != "" {
+			return nil, controlMCPToolFailure("give a task, a session_id or a workspace_path, only one")
+		}
+		call := map[string]any{"workspace_path": folder, "path": args["path"]}
+		if strings.TrimSpace(controlMCPString(call, "path")) == "" {
+			call["path"] = "."
+		}
+		return controlMCPReadFile(c, call)
+	}
 	session, err := catalogTaskSession(c, args)
 	if err != nil {
 		return nil, err

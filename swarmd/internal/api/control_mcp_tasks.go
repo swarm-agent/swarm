@@ -163,17 +163,7 @@ func controlMCPRunTask(c *controlMCPCall, args map[string]any) (any, error) {
 			title = role + " task"
 		}
 	}
-	description := brief
-	files := []string{}
-	for _, raw := range controlMCPList(args["files"]) {
-		path, _ := raw.(string)
-		if path = strings.TrimSpace(path); path != "" {
-			files = append(files, path)
-		}
-	}
-	if len(files) > 0 {
-		description += "\n\nScope: only change files under " + strings.Join(files, ", ") + ". Anything else is out of scope; say so instead of touching it."
-	}
+	description := brief + tool.TaskFilesScope(controlMCPList(args["files"]))
 	body := map[string]any{
 		"title":             title,
 		"description":       description,

@@ -32,10 +32,35 @@ var (
 	nativeJobWriteScopes = []string{"sessions:write", "automations:write"}
 )
 
-// nativeJobInputs are the only arguments that reach the job handlers:
-// callers cannot smuggle then, model overrides, integration flags or a
-// different authority through manage_jobs.
-var nativeJobInputs = []string{"job_id", "worker", "brief", "message", "answer", "question_id", "reason", "schedule", "name", "project", "since", "until", "status", "cursor", "client_request_id", "idempotency_key"}
+// nativeJobInputs are the only arguments that reach the job handlers for
+// every caller: a session caller cannot smuggle then, model overrides,
+// held waits or a different authority through manage_jobs. The action's
+// declared ControlInputs (then, model, wait_seconds) reach them only for a
+// Swarm Control caller, as the swarm_* job tools took them
+// (nativeJobCallerArgs).
+var nativeJobInputs = []string{"job_id", "worker", "brief", "message", "answer", "question_id", "reason", "schedule", "name", "project", "since", "until", "status", "cursor", "client_request_id", "idempotency_key",
+	"files", "review_job", "review_checkout", "automation", "include_diff", "diff_chars", "include_transcript", "transcript_messages", "detail_chars"}
+
+// nativeJobCallerArgs drops the action's Swarm Control inputs from a session
+// caller's arguments, so neither this machine's handlers nor a linked
+// machine's (which runs the call as a Swarm Control one) see them.
+func nativeJobCallerArgs(action string, control bool, args map[string]any) map[string]any {
+	if control {
+		return args
+	}
+	declared, _ := manageJobsAction(action)
+	if len(declared.ControlInputs) == 0 {
+		return args
+	}
+	out := make(map[string]any, len(args))
+	for key, value := range args {
+		out[key] = value
+	}
+	for _, key := range declared.ControlInputs {
+		delete(out, key)
+	}
+	return out
+}
 
 // ManageJobs is the one job service behind manage_jobs: the Orchestrator and
 // every agent granted manage_jobs (a session caller), Swarm Control (a caller
@@ -54,9 +79,15 @@ func (s *Server) ManageJobs(ctx context.Context, p identity.Principal, sessionID
 	if _, ok := manageJobsAction(action); !ok {
 		return nil, errors.New("unknown manage_jobs action")
 	}
+	if automation, _ := args["automation"].(bool); action == "deliver_job" && automation {
+		// swarm_deliver_job's automation: the re-run of failed steps, held
+		// to rerun_failed_steps' grant and linked rule.
+		action = "rerun_failed_steps"
+	}
 	mutate := nativeJobMutations[action]
 	machine := controlMCPString(args, "machine")
 	held, control := tool.ControlScopesFromContext(ctx)
+	args = nativeJobCallerArgs(action, control, args)
 	if control {
 		return s.manageJobsAs(ctx, p, held, control, store.SessionSnapshot{}, action, machine, args)
 	}
@@ -128,9 +159,22 @@ func (s *Server) manageJobsAs(ctx context.Context, p identity.Principal, held []
 			clean[key] = v
 		}
 	}
+	if control {
+		declared, _ := manageJobsAction(action)
+		for _, key := range declared.ControlInputs {
+			if v, ok := args[key]; ok {
+				clean[key] = v
+			}
+		}
+	}
 	// manage_jobs' folder is the swarm_* handlers' workspace (the folder
-	// c.place picks in a multi-folder project, give_job and schedule_job).
-	clean["workspace"] = controlMCPString(args, "folder")
+	// c.place picks in a multi-folder project, give_job and schedule_job);
+	// workspace, the swarm_* name, means the same.
+	folder := controlMCPString(args, "folder")
+	if folder == "" {
+		folder = controlMCPString(args, "workspace")
+	}
+	clean["workspace"] = folder
 	limit := controlMCPInt(args, "limit", 50)
 	if limit < 1 || limit > 50 {
 		return nil, errors.New("limit must be between 1 and 50")

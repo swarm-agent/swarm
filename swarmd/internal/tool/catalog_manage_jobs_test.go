@@ -15,8 +15,12 @@ import (
 
 // manageJobsDefinitionSHA256 is the hash of the Orchestrator's manage_jobs
 // definition (json.Marshal, sorted keys). The definition is a prompt
-// contract: it changes only on purpose, with this hash.
-const manageJobsDefinitionSHA256 = "415209f5039af1e016a2fe2aa0929846cab313930423c71acc490c72b246a841"
+// contract: it changes only on purpose, with this hash. Stage 7a changed it on
+// purpose: the swarm_* job tools' inputs joined (get_job's include_diff,
+// diff_chars, include_transcript, transcript_messages and detail_chars;
+// give_job's workspace, files, review_job and review_checkout; deliver_job's
+// automation); then, model and wait_seconds are Swarm Control inputs only.
+const manageJobsDefinitionSHA256 = "b20b764e8ef48f20fdcbe618e9579488466b738240603ed9ca09e08dee0a7a39"
 
 // Purpose: manage_jobs exists once, in the catalog. The Orchestrator's
 // definition is generated from the declarations (held by hash) and names
@@ -47,7 +51,7 @@ func TestManageJobsCatalogGeneratesTheOrchestratorDefinition(t *testing.T) {
 	if named, ok := CatalogToolNamed("manage_jobs"); !ok || len(named.Actions) != len(catalog.Actions) {
 		t.Fatal("manage_jobs is not in the catalog")
 	}
-	used := map[string]bool{}
+	used, controlOnly := map[string]bool{}, map[string]bool{}
 	for _, action := range catalog.Actions {
 		if action.Tool != "manage_jobs" || action.Description == "" || len(action.APIScopes) == 0 || action.LocalOnly {
 			t.Fatalf("bad declaration: %+v", action)
@@ -56,8 +60,8 @@ func TestManageJobsCatalogGeneratesTheOrchestratorDefinition(t *testing.T) {
 			t.Fatalf("%s is not in the Orchestrator's definition and Swarm Control's default listing", action.Action)
 		}
 		schema := catalog.InputSchema(action)["properties"].(map[string]any)
-		if len(schema) != len(action.Inputs)+1 {
-			t.Fatalf("%s: schema has %d properties for %d inputs", action.Action, len(schema), len(action.Inputs))
+		if len(schema) != len(action.Inputs)+len(action.ControlInputs)+1 {
+			t.Fatalf("%s: schema has %d properties for %d inputs", action.Action, len(schema), len(action.Inputs)+len(action.ControlInputs))
 		}
 		for _, input := range action.Inputs {
 			if _, ok := catalog.Field(input); !ok {
@@ -65,8 +69,22 @@ func TestManageJobsCatalogGeneratesTheOrchestratorDefinition(t *testing.T) {
 			}
 			used[input] = true
 		}
+		// Swarm Control inputs (then, model, held waits) are declared
+		// fields that the Orchestrator's definition never shows.
+		for _, input := range action.ControlInputs {
+			if _, ok := catalog.Field(input); !ok {
+				t.Fatalf("%s: Swarm Control input %q is not a declared field", action.Action, input)
+			}
+			if properties[input] != nil {
+				t.Fatalf("%s: Swarm Control input %q is in the Orchestrator's definition", action.Action, input)
+			}
+			controlOnly[input] = true
+		}
 	}
 	for _, field := range catalog.Fields {
+		if controlOnly[field.Name] && !used[field.Name] {
+			continue
+		}
 		if !used[field.Name] || properties[field.Name] == nil {
 			t.Fatalf("field %q is declared but no action takes it, or the definition lacks it", field.Name)
 		}

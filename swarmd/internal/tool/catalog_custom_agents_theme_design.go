@@ -47,6 +47,8 @@ func manageCustomAgentsCatalog() CatalogTool {
 		{"description", map[string]any{"type": "string"}},
 		{"instructions", map[string]any{"type": "string"}},
 		{"tools", map[string]any{"oneOf": []any{map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, map[string]any{"type": "string", "enum": []string{"read_only", "read_write", "build"}}}}},
+		{"tools_on", map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Enable individual tools on top of the preset."}},
+		{"tools_off", map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Disable individual tools on top of the preset; wins over tools_on."}},
 	}
 	full := []CatalogProfile{CatalogProfileFull, CatalogProfileOrchestrator}
 	// Levels are remote.ToolScope of swarm_list_agents (read) and
@@ -56,7 +58,8 @@ func manageCustomAgentsCatalog() CatalogTool {
 	actions := []CatalogAction{
 		{Action: "list", Level: CatalogLevelRead, APIScopes: read, Description: "The account's custom agents (swarm_list_agents).", NextAction: "get with a custom agent's name reads it."},
 		{Action: "get", Inputs: []string{"name"}, Level: CatalogLevelRead, APIScopes: read, Description: "One custom agent's definition."},
-		{Action: "define", Inputs: []string{"name", "description", "instructions", "tools"}, Level: CatalogLevelWrite, APIScopes: write, Untrusted: false, Description: "Create or replace a custom agent: its instructions and which tools it may use (swarm_define_agent)."},
+		{Action: "define", Inputs: []string{"name", "description", "instructions", "tools", "tools_on", "tools_off"}, Level: CatalogLevelWrite, APIScopes: write, Untrusted: false, Description: "Create or replace a custom agent: its instructions and which tools it may use (swarm_define_agent).",
+			NextAction: "Run it as a session's agent, or name it as a worker's agent."},
 		{Action: "disable", Inputs: []string{"name"}, Level: CatalogLevelWrite, APIScopes: write, Description: "Disable a custom agent."},
 	}
 	for i := range actions {

@@ -89,6 +89,13 @@ func manageProjectsFields() []CatalogField {
 		{"diff_chars", map[string]any{"type": "integer", "minimum": 0, "maximum": 200000, "description": "get_task_changes: diff characters to include (default 20000; 0 lists files only)"}},
 		{"page_offset", map[string]any{"type": "integer", "minimum": 0, "description": "get_task_changes: from next"}},
 		{"page_digest", str("get_task_changes: from next")},
+		{"session_id", str("get_task_changes, read_task_file: a session instead of a task")},
+		{"brief", str("propose_task: the same as prompt")},
+		{"workspace", str("propose_task: a registered workspace path (absolute) or id; the same as workspace_path or workspace_id")},
+		{"files", map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "propose_task: path prefixes the task may change; written into the brief as its scope"}},
+		{"project_md", str("update: the same as project_context")},
+		{"include_diff", map[string]any{"type": "boolean", "description": "get_task: also the patch against the base (cut at diff_chars)"}},
+		{"include_linked", map[string]any{"type": "boolean", "description": "list_tasks: also the project's tasks sent to linked machines"}},
 	}
 }
 
@@ -114,18 +121,18 @@ func manageProjectsCatalog() CatalogTool {
 	with := func(base []string, more ...string) []string {
 		return append(append([]string(nil), base...), more...)
 	}
-	proposeInputs := []string{"machine", "detail", "project_id", "task_id", "title", "prompt", "agent", "feature_size", "description", "attached_media", "workspace_path", "workspace_id", "workspace_generation", "client_request_id"}
+	proposeInputs := []string{"machine", "detail", "project_id", "task_id", "title", "prompt", "agent", "feature_size", "description", "attached_media", "workspace_path", "workspace_id", "workspace_generation", "client_request_id", "brief", "workspace", "files"}
 	sourceInputs := []string{"project_id", "workspace_path", "workspace_id", "workspace_generation"}
 	actions := []CatalogAction{
 		{Action: "propose_task", Inputs: proposeInputs, Level: write, Reach: anyM, Profiles: core,
 			Description: "Send a self-contained brief to an agent (coder, finder, designer or swarm); under Start tasks auto it starts at once."},
-		{Action: "wait_tasks", Inputs: []string{"machine", "project_id", "task_ids", "until", "milestones"}, ControlInputs: []string{"wait_seconds"}, Level: read, Reach: anyM, Profiles: core, Untrusted: true,
+		{Action: "wait_tasks", Inputs: []string{"machine", "project_id", "task_ids", "task_id", "until", "milestones"}, ControlInputs: []string{"wait_seconds"}, Level: read, Reach: anyM, Profiles: core, Untrusted: true,
 			Description: "Wait for tasks. The Orchestrator's watch returns at once and a new turn brings their outcomes. A Swarm Control caller has no turn to wake, so the call waits until a listed task reaches its next milestone (started, needs you, review, sent back, landed, done, failed, stopped) or wait_seconds passes, then returns the tasks as get_task reads them; state says milestone, settled or timed_out."},
 		{Action: "cancel_watch", Inputs: []string{"machine", "project_id", "task_ids"}, Level: read, Reach: anyM, Profiles: orchestrator,
 			Description: "Stop watching tasks (omit task_ids: all)."},
-		{Action: "get_task", Inputs: with(projectTask, "machine", "detail", "cursor", "limit"), Level: read, Reach: anyM, Profiles: core, Untrusted: true,
+		{Action: "get_task", Inputs: with(projectTask, "machine", "detail", "cursor", "limit", "include_diff", "diff_chars"), Level: read, Reach: anyM, Profiles: core, Untrusted: true,
 			Description: "Read a task's state, result and review findings; detail adds plan, attempts, files or the full record."},
-		{Action: "list_tasks", Inputs: []string{"machine", "detail", "project_id", "status", "scope", "query", "include_archived", "limit", "cursor"}, Level: read, Reach: anyM, Profiles: core, Untrusted: true,
+		{Action: "list_tasks", Inputs: []string{"machine", "detail", "project_id", "status", "scope", "query", "agent", "include_archived", "include_linked", "limit", "cursor"}, Level: read, Reach: anyM, Profiles: core, Untrusted: true,
 			Description: "List a project's current work (scope all: every task)."},
 		{Action: "message_task", Inputs: with(projectTask, "machine", "message", "expected_revision", "client_request_id"), Level: write, Reach: anyM, Profiles: core,
 			Description: "Tell a running or finished task more: queued into its run, or reopened as its follow-up."},
@@ -149,9 +156,9 @@ func manageProjectsCatalog() CatalogTool {
 			Description: "Deprecated: use manage_fleet activity. A linked machine's activity since since_cursor."},
 		{Action: ResolveTaskPermissionAction, Inputs: with(projectTask, "machine", "permission_id", "decision", "reason"), Level: approve, Reach: anyM, Profiles: core,
 			Description: "Answer one pending permission or question of a task's run, only on the person's word or under a rule."},
-		{Action: TaskChangesAction, Inputs: with(projectTask, "machine", "path", "diff_chars", "page_offset", "page_digest"), Level: read, Reach: anyM, Profiles: core, Untrusted: true,
+		{Action: TaskChangesAction, Inputs: with(projectTask, "machine", "session_id", "path", "diff_chars", "page_offset", "page_digest"), Level: read, Reach: anyM, Profiles: core, Untrusted: true,
 			Description: "What a task's agents changed in its working folder: commits since its base, changed and new files, and the diff (cut at diff_chars); a long answer is paged with next (swarm_get_changes)."},
-		{Action: TaskFileAction, Inputs: with(projectTask, "machine", "path"), Level: read, Reach: anyM, Profiles: core, Untrusted: true,
+		{Action: TaskFileAction, Inputs: with(projectTask, "machine", "session_id", "workspace_path", "path"), Level: read, Reach: anyM, Profiles: core, Untrusted: true,
 			Description: "Read one text file, or list a folder, from a task's working folder: its branch's work as the agent left it (swarm_read_file)."},
 		{Action: "integrate_task", Inputs: projectTask, Level: write, Reach: home, Profiles: core,
 			Description: "Merge a finished task's branch into its target; only when the person asks."},
@@ -169,8 +176,8 @@ func manageProjectsCatalog() CatalogTool {
 			Description: "Read a project; detail context returns its full project.md."},
 		{Action: "create", Inputs: []string{"name", "description", "workspaces", "project_context", "client_request_id"}, Level: write, Reach: home, Profiles: full,
 			Description: "Create a project from a name and the person's folders."},
-		{Action: "update", Inputs: []string{"id", "name", "description", "workspaces", "project_context"}, Level: write, Reach: home, Profiles: full,
-			Description: "Change a project's name, description, folders or project.md."},
+		{Action: "update", Inputs: []string{"id", "project_id", "name", "description", "workspaces", "project_context", "project_md"}, Level: write, Reach: home, Profiles: full,
+			Description: "Change a project's name, description, folders or project.md; with nothing to change, write its project.md again from its folders."},
 		{Action: "delete", Inputs: []string{"id"}, Level: manage, Reach: home, Profiles: full,
 			Description: "Delete a project."},
 		{Action: "list_sources", Inputs: sourceInputs, Level: read, Reach: home, Profiles: full,

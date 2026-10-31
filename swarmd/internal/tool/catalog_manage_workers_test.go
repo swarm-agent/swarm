@@ -15,8 +15,9 @@ import (
 
 // manageWorkersDefinitionSHA256 is the hash of the Orchestrator's
 // manage_workers definition (json.Marshal, sorted keys). The definition is a
-// prompt contract: it changes only on purpose, with this hash.
-const manageWorkersDefinitionSHA256 = "02e36ca1d6cd5b78bbe66bba140411fea00f7f0378bbba6dedc8f5c00abc0a3b"
+// prompt contract: it changes only on purpose, with this hash. Stage 7a
+// changed it on purpose: inspect takes swarm_get_worker's run_id.
+const manageWorkersDefinitionSHA256 = "2f94915df46aad231428b5434aa68b7e5f0b1b158d698cb1d28b9c41f0842be0"
 
 // Purpose: manage_workers exists once, in the catalog. The Orchestrator's
 // definition (and its manage_automation alias) is generated from the
