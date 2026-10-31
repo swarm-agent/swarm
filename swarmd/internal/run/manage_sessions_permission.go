@@ -224,8 +224,11 @@ func (s *Service) buildLinkedManageSessionsPermissionPayload(sessionID, machine,
 		if action == "unarchive" && !archived {
 			return nil, fmt.Errorf("session %s on %s is not archived", id, machine)
 		}
+		// The version is bound as the local approval binds it: a session
+		// that was never updated (0) is approved as the handler treats it
+		// on this machine.
 		version, ok := target["updated_at"].(float64)
-		if !ok || version <= 0 {
+		if !ok || version < 0 {
 			return nil, fmt.Errorf("linked machine %s gave no version for session %s", machine, id)
 		}
 		expectedVersions[id] = int64(version)

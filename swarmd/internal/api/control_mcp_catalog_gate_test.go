@@ -181,7 +181,10 @@ func TestManageSessionsLinkedArchiveThroughTheGate(t *testing.T) {
 		}
 		for _, raw := range payload["sessions"].([]any) {
 			id, _ := raw.(map[string]any)["session_id"].(string)
-			if !catalogSessionKnown(t, h.remote, id) || catalogSessionKnown(t, h.home, id) {
+			// Every listed session is the linked machine's. An id both
+			// machines happen to hold (the job fixtures seed one) is fine:
+			// this machine's sessions are checked unchanged below.
+			if !catalogSessionKnown(t, h.remote, id) {
 				t.Fatalf("the approval of a linked change shows a session %q that is not the linked machine's: %s", id, prompts[0].ToolArguments)
 			}
 		}
