@@ -1577,7 +1577,8 @@ const keyRepositoryHealthPrefix = "job_automation_meta/repository_health/"
 
 // keyObjectStoreRepairPrefix keeps, per folder, the last object store
 // permission repair that changed something or left a problem
-// (ObjectStoreRepair).
+// (ObjectStoreRepair), until the next pass that finds every entry readable
+// deletes it (RecordObjectStoreRepair).
 const keyObjectStoreRepairPrefix = "job_automation_meta/object_store_repair/"
 
 // RepositoryHealth is a folder whose repository had an object a run step's

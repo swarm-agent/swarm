@@ -22,7 +22,8 @@ import (
 // The daemon's object store permission repair (jobautomation.
 // RepairObjectStore: at startup, every ObjectStoreRepairInterval and before each
 // environment step) shows there too, as repository_health.permissions
-// when it made entries readable or left some it could not repair; the
+// when its last pass made entries readable or left some it could not
+// repair (a later pass that finds every entry readable clears it); the
 // latter is also a box summary reason.
 func (s *Server) putRepositoryHealth(view map[string]any, root string) {
 	store, err := s.jobAutomationStore()

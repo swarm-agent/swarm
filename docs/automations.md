@@ -393,8 +393,11 @@ is refused.
   without following links relative to its parent directory and changed
   only through that open descriptor, and a file with more than one hard
   link is left alone. `repository_health.permissions`
-  (`checked`, `repaired`, `unrepaired`, `setgid_refused`, `sample`) shows
-  the last repair that changed something; entries it could not repair
+  (`checked`, `repaired`, `unrepaired`, `setgid_refused`, `sample`,
+  `error`, `at`) shows the last repair that changed something or left a
+  problem, until the next pass that finds every entry readable clears it
+  (a pass runs before each step, so a successful repair is usually gone
+  by the time you look); entries it could not repair
   (another user's) are a machine status reason ("folder repository
   <folder> has N object store entries run steps cannot read that Swarm
   could not repair").
