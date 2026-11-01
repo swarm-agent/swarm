@@ -818,7 +818,7 @@ var mcpHelpTextProse = func() map[string]string {
 	for _, word := range []string{"job_id", "next_cursor", "json_page", "retry_of", "pending_request", "pending_proposals", "waiting_on", "created_at", "steps_result", "workflow_steps_result", "reopen_failure", "summary_source", "result_truncated", "read_full_args", "task_progress", "durable_log", "delivery_attempt_id", "delivery_run", "previous_run"} {
 		out[word] = "an answer field the help tells the caller to read"
 	}
-	for _, word := range []string{"needs_input", "needs_review", "needs_you", "blocked_infra", "workflow_failed", "timed_out", "agent_stall", "long_command", "no_activity", "sleep_polling"} {
+	for _, word := range []string{"needs_input", "needs_review", "needs_you", "blocked_infra", "workflow_failed", "timed_out", "agent_stall", "long_command", "no_activity", "sleep_polling", "up_to_date"} {
 		out[word] = "a status, milestone or progress kind an answer carries"
 	}
 	return out
