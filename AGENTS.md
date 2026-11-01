@@ -186,17 +186,28 @@ Do not diagnose from or silently reuse old home/XDG config locations. `/workspac
 
 ### Validation and release gates
 
-- Do not run tests or validation unless the user explicitly asks, except for required push, PR, build, and publication gates.
-- Never run broad suites by default (`go test ./...`, module-wide/internal-wide Go suites, full npm suites, or equivalents). Use a requirement-first flow: state the invariant and threat, inspect production authority and assertions, add negative/failure cases, then run the narrowest relevant package/function or curated suite.
-- `bash scripts/run-critical-tests.sh fast` is the bounded pre-push/build gate for deterministic security and authority checks. `deep` adds temp-store durability, restart/concurrency, delegated Git, and artifact integrity. `agents` verifies system-agent identity/tool authority, delegation trust, scheduling, capacity, lineage, recovery, and Desktop child state. `all` runs fast, deep, and agents. Do not add network/provider/live-daemon tests to these hermetic tiers; live candidate testing runs in the release pipeline and records its evidence separately.
+#### Testing a change (agents)
+
+This block is the only testing rule for a routine change and commit. It overrides a task brief that says otherwise (for example "the tests of the changed packages pass" or "check-precommit.sh passes").
+
+1. Run only tests by exact name: `go test -count=1 -run '^(TestA|TestB)$' ./internal/<pkg>/`, meaning the tests you added or changed plus any named test that covers the code you touched. Never run a whole package without `-run` (for example `go test ./internal/api/`): that is a broad suite even though it is one package, as are `go test ./...`, module-wide suites and full npm suites.
+2. Always run `go build` and `go vet` on the changed packages (from `swarmd/` for daemon packages). For `console/` changes, run `cargo build --locked --tests` and the named `cargo test <filter>` tests you added or touched.
+3. `./scripts/check-precommit.sh`, `scripts/test-vital.sh` and `scripts/run-critical-tests.sh` are PR/release gates. Do not run them for a routine commit, even when a task brief mentions them. If a brief asks for them, say in your result that this rule overrides it.
+4. Never wait on a long command with repeated `sleep`. If a named test run takes more than a few minutes, stop it and report it as a finding.
+5. The repository's CI and any review gate run the vital tests on the pushed head. Report exactly which commands you ran and their results; never claim a check passed that you did not run.
+
+Beyond this block, run no tests or validation unless the user explicitly asks. Before writing tests, use a requirement-first flow: state the invariant and threat, inspect production authority and assertions, and add negative/failure cases.
+
+#### Test quality and PR/release gates
+
+- `bash scripts/run-critical-tests.sh fast` is the bounded PR/release gate for deterministic security and authority checks. `deep` adds temp-store durability, restart/concurrency, delegated Git, and artifact integrity. `agents` verifies system-agent identity/tool authority, delegation trust, scheduling, capacity, lineage, recovery, and Desktop child state. `all` runs fast, deep, and agents. Do not add network/provider/live-daemon tests to these hermetic tiers; live candidate testing runs in the release pipeline and records its evidence separately.
 - Every new or materially changed test must begin with a written purpose: the current product requirement or invariant, the threat/regression it prevents, the production registration/boundary/service/store symbols that own the behavior, and why the chosen test layer is the narrowest layer that can prove it. A test name, snapshot, source-string check, status-only assertion, or happy path alone is not security evidence.
 - Test the observable contract and postconditions. Security/durability tests require the relevant negative or failure case and, where the threat applies, cross-account/principal, traversal/symlink, stale-reference, idempotency, concurrency, restart, partial-failure, or injected-failure coverage. Assert both the rejection/error and that no unauthorized or partial state change occurred.
 - Keep tests deterministic, hermetic, isolated, and bounded by explicit timeouts. Use temporary stores/directories, fake providers/commands, fixed clocks/IDs, and exact opaque references; never require real credentials, external providers, ambient home state, arbitrary host paths, or order dependence in a deterministic build tier. Live tests belong only in the release pipeline and must state what the deterministic tiers cannot prove.
 - Before a test enters `scripts/run-critical-tests.sh`, inspect the complete fixture and assertions against production authority, run the exact focused test repeatedly, and obtain independent first- and second-pass review. Record the exact command/result in the change's validation handoff; do not write “covered” or “passes” without revision-bound evidence.
 - Re-review materially changed tests before relying on prior verdicts. The curated critical manifest is a build gate, not a replacement for reviewing the wider corpus.
 - If a critical test fails, fix the current production contract or the test/fixture when evidence proves it stale. Never skip, weaken, broaden regexes to hide it, silently remove it from the manifest, or restore a retired contract. Quarantine is allowed only with an owner, exact evidence, an explicitly reported gap, and a bounded remediation condition.
-- Routine local commits do not require `./scripts/check-precommit.sh`.
-- Before opening/updating a PR, run `./scripts/check-precommit.sh` and `bash scripts/run-critical-tests.sh all` on the reviewed head. CI runs all three deterministic tiers for `dev`/`main` integration.
+- PR only (never for a routine commit): before opening/updating a PR, run `./scripts/check-precommit.sh` and `bash scripts/run-critical-tests.sh all` on the reviewed head. CI runs all three deterministic tiers for `dev`/`main` integration.
 - Every PR into `main` must include an updated entry in `CHANGELOG.md` under `## Unreleased` documenting the changes and an explicit `Docs impact: ...` tag (e.g. `Docs impact: none`). The automated GCP qualification gate strictly enforces `require-changelog` and will immediately fail candidate qualification if `CHANGELOG.md` is omitted from the PR diff.
 - Pushes to protected branches must use the checked-in pre-push hook; never bypass it.
 - Release readiness additionally uses `bash scripts/check-launch-readiness.sh --require-clean` and the exact archive/evidence workflows documented in `docs/main-deploy-checklist.md`.
