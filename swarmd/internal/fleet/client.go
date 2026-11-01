@@ -70,8 +70,8 @@ func WithHeldWait(ctx context.Context, wait time.Duration) context.Context {
 }
 
 // WithoutHeaderBound lifts the header bound for a call whose own context
-// bounds it (a forwarded request, whose caller holds its own deadline and
-// may ask the machine for any held wait). Connect and TLS bounds still apply.
+// bounds it. The home's proxy does not use it: forwarded calls keep a bound
+// (see api's fleetForwardHeaderBound). Connect and TLS bounds still apply.
 func WithoutHeaderBound(ctx context.Context) context.Context {
 	return context.WithValue(ctx, headerBoundKey{}, time.Duration(-1))
 }

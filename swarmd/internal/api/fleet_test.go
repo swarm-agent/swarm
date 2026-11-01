@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -302,5 +303,66 @@ func TestFleetGoneMachineFailsFast(t *testing.T) {
 	}
 	if _, found, _ := a.s.fleetTokens.GetFleetLinkToken(a.account, "b"); found {
 		t.Fatal("session kept after unlink")
+	}
+}
+
+// Purpose: an ordinary call through the home's per-machine proxy to a machine
+// that completes the pinned TLS handshake but never answers (or a pooled
+// connection to one that has gone away) fails at the link's header bound with
+// a 502 and a recorded last_error, rather than holding the caller until it
+// gives up. Threat: the proxy lifting the header bound, so only new
+// connections are bounded (dial and TLS) and the console's per-machine reads
+// hang for its own 60 s timeout or forever. Boundary:
+// Server.handleFleetForward, fleetForwardHeaderBound, fleet.Client.Do. A real
+// TLS server holding b's node key, which accepts every request and never
+// answers, is the narrowest hermetic stand-in; the test takes about 30 s.
+func TestFleetProxySilentMachineFailsAtHeaderBound(t *testing.T) {
+	a := newFleetTestSwarm(t, "home-a")
+	defer a.cleanup()
+	b := newFleetTestSwarm(t, "box-b")
+	defer b.cleanup()
+	body, _ := json.Marshal(map[string]string{"code": b.invite(t), "name": "b"})
+	if code, out := a.call(t, http.MethodPost, "/v3/fleet/machines", string(body), false); code != http.StatusCreated {
+		t.Fatalf("link: HTTP %d %v", code, out)
+	}
+
+	cert, _, err := b.s.fleetCertificate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	var reached sync.WaitGroup
+	reached.Add(1)
+	var once sync.Once
+	silent := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(reached.Done) // TLS done, request read: the machine is up
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	silent.TLS = fleet.ServerTLS(cert)
+	silent.StartTLS()
+	defer silent.Close()
+	defer close(release)
+	machine, _, _ := a.s.fleet.GetMachine("b")
+	machine.Address, machine.LastError = strings.TrimPrefix(silent.URL, "https://"), ""
+	if err := a.s.fleet.PutMachine(machine); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	code, out := a.call(t, http.MethodGet, "/v3/fleet/machines/b/api/v3/fleet", "", false)
+	elapsed := time.Since(start)
+	reached.Wait()
+	if code != http.StatusBadGateway || !strings.Contains(fmt.Sprint(out), "could not reach b") || !strings.Contains(fmt.Sprint(out), "no answer within") {
+		t.Fatalf("proxy to a silent machine: HTTP %d %v after %v", code, out, elapsed)
+	}
+	if elapsed < fleet.ResponseHeaderTimeout-time.Second || elapsed > fleet.ResponseHeaderTimeout+3*time.Second {
+		t.Fatalf("proxy bounded at %v, want about %v", elapsed, fleet.ResponseHeaderTimeout)
+	}
+	noted, _, _ := a.s.fleet.GetMachine("b")
+	if !strings.Contains(noted.LastError, "no answer within") {
+		t.Fatalf("last_error not recorded: %q", noted.LastError)
 	}
 }

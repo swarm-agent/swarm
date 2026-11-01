@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -511,10 +512,7 @@ func (s *Server) handleFleetForward(w http.ResponseWriter, r *http.Request, acco
 		s.forwardFleetWebSocket(w, r, client, machine, path, header)
 		return
 	}
-	// A forwarded request may ask the machine for any held wait, and its
-	// caller holds its own deadline: no header bound here. The link's
-	// connect and TLS bounds still make a gone machine fail fast.
-	resp, err := client.Do(fleet.WithoutHeaderBound(r.Context()), r.Method, path, r.Body, header)
+	resp, err := client.Do(fleetForwardHeaderBound(r), r.Method, path, r.Body, header)
 	s.noteFleetContact(machine, err)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, errors.New("could not reach "+name+": "+err.Error()))
@@ -547,6 +545,30 @@ func (s *Server) handleFleetForward(w http.ResponseWriter, r *http.Request, acco
 			return
 		}
 	}
+}
+
+// fleetForwardMaxWait is the largest held wait a forwarded request can ask
+// the machine for (manage_sessions' wait_seconds maximum; environment waits
+// stop at 110).
+const fleetForwardMaxWait = 120 * time.Second
+
+// fleetForwardHeaderBound bounds a forwarded call's wait for the machine's
+// answer, so a pooled connection to a machine that has gone away, or one
+// that never answers, fails and is recorded rather than holding the caller.
+// A wait_seconds in the query lengthens the bound by that wait; a request
+// with a body may name its wait there, which the home does not read, so it
+// gets the largest wait. Anything else keeps the link's 30 s bound.
+func fleetForwardHeaderBound(r *http.Request) context.Context {
+	ctx := r.Context()
+	if raw := r.URL.Query().Get("wait_seconds"); raw != "" {
+		if seconds, err := strconv.Atoi(raw); err == nil && seconds > 0 {
+			return fleet.WithHeldWait(ctx, min(time.Duration(seconds)*time.Second, fleetForwardMaxWait))
+		}
+	}
+	if r.Body != nil && r.Body != http.NoBody && r.ContentLength != 0 && r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return fleet.WithHeldWait(ctx, fleetForwardMaxWait)
+	}
+	return ctx
 }
 
 func short16(fingerprint string) string {
