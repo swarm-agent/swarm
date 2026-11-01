@@ -259,11 +259,11 @@ fn tool_arguments(p: &Value) -> Value {
 }
 
 /// Whether a pending record asks the person to decide a workflow or worker
-/// proposal: its requirement, or (a request from an older Swarm) its payload
-/// or call id say so. Such a request is answered Accept / Discard, never as
-/// a generic tool approval.
-fn is_proposal_request(p: &Value, args: &Value) -> bool {
-    s(p, "requirement") == "proposal_decision" || s(args, "path_id") == "permission.proposal-decision.v1" || s(p, "call_id").starts_with("proposal:")
+/// proposal. Only the server-set requirement says so: an ordinary tool
+/// approval's arguments and call id come from the AI, so a payload that
+/// looks like a proposal must never turn a tool call into an Accept card.
+fn is_proposal_request(p: &Value) -> bool {
+    s(p, "requirement") == "proposal_decision"
 }
 
 /// What a session waits on you for, from its pending permission records
@@ -275,11 +275,11 @@ pub fn pending(records: &[Value]) -> Option<Pending> {
     let p = records.iter().filter(|p| s(p, "status").is_empty() || s(p, "status") == "pending").find(|p| !is_client_tool(s(p, "tool_name")))?;
     let args = tool_arguments(p);
     let id: Text = s(p, "id").to_string().into();
-    if is_proposal_request(p, &args) {
+    if is_proposal_request(p) {
         // A proposal the person accepts or discards: its title, machine and
-        // the change in words (permission.proposal-decision.v1). A request
-        // from an older Swarm may lack the proposal or title: its decide
-        // (kind, id, machine) names it then.
+        // the change in words (permission.proposal-decision.v1). When the
+        // proposal or title is missing, its decide (kind, id, machine)
+        // names it.
         let proposal = args.get("proposal").cloned().unwrap_or(Value::Null);
         let decide = args.get("decide").cloned().unwrap_or(Value::Null);
         let first = |vals: &[&str]| vals.iter().map(|v| v.trim()).find(|v| !v.is_empty()).unwrap_or("").to_string();
@@ -1201,14 +1201,13 @@ mod tests {
     }
 
     /// Purpose: the production request a linked proposal made
-    /// (perm_<session>_none_proposal_workflow_<machine>_<id>), and an older
-    /// pending request from a previous build, must both read as the
-    /// proposal card (Accept / Discard), never as "manage_workflows wants to
-    /// run: {json}" with Allow / Deny. An older record may lack the
-    /// requirement field, the proposal or the title; its payload's path_id,
-    /// its call id and its decide still name it.
+    /// (perm_<session>_none_proposal_workflow_<machine>_<id>) must read as
+    /// the proposal card (Accept / Discard), never as "manage_workflows wants
+    /// to run: {json}" with Allow / Deny. A real proposal record (requirement
+    /// proposal_decision) lacking the proposal or title is still named by
+    /// its decide.
     #[test]
-    fn linked_and_older_proposal_requests_read_as_the_proposal() {
+    fn linked_proposal_requests_read_as_the_proposal() {
         let linked = json!({"path_id": "permission.proposal-decision.v1", "title": "Accept the change to workflow \"nightly\" on machine box?",
             "proposal": {"kind": "workflow", "machine": "box", "id": "jauto_9", "name": "nightly", "revision": 2, "change": "change"},
             "summary": "Change to workflow nightly (now revision 8): steps changed: s1 (agent reviewer).",
@@ -1219,19 +1218,38 @@ mod tests {
         let ask = p.proposal.clone().expect("the linked proposal request");
         assert_eq!((ask.kind.as_ref(), ask.name.as_ref(), ask.machine.as_ref()), ("workflow", "nightly", "box"));
         assert_eq!(p.title.as_ref(), "Accept the change to workflow \"nightly\" on machine box?");
-        // Older: no requirement field, no proposal, no title.
-        let older = json!({"path_id": "permission.proposal-decision.v1", "summary": "Change to workflow nightly.", "decide": {"machine": "box", "kind": "workflow", "id": "jauto_9", "expected_revision": 2}});
-        let o = pending(&[
-            json!({"id": "perm_o", "status": "pending", "tool_name": "manage_workflows", "call_id": "proposal:workflow:box:jauto_9", "tool_arguments": older.to_string()}),
-        ])
+        // A real proposal record with no proposal and no title: decide names it.
+        let sparse = json!({"path_id": "permission.proposal-decision.v1", "summary": "Change to workflow nightly.", "decide": {"machine": "box", "kind": "workflow", "id": "jauto_9", "expected_revision": 2}});
+        let o = pending(&[json!({"id": "perm_o", "status": "pending", "tool_name": "manage_workflows", "requirement": "proposal_decision",
+            "call_id": "proposal:workflow:box:jauto_9", "tool_arguments": sparse.to_string()})])
         .unwrap();
-        let ask = o.proposal.clone().expect("an older proposal request");
+        let ask = o.proposal.clone().expect("a sparse proposal request");
         assert_eq!((ask.kind.as_ref(), ask.name.as_ref(), ask.machine.as_ref()), ("workflow", "jauto_9", "box"));
         assert_eq!(o.title.as_ref(), "Accept workflow jauto_9 on machine box?");
         assert!(!o.text.contains("wants to run"));
-        // Only its call id says so (unreadable arguments).
+    }
+
+    /// Purpose: an ordinary tool approval's arguments and call id are the
+    /// AI's own, so the AI could dress a shell command up as a proposal
+    /// (path_id, title, summary, proposal, decide, a "proposal:" call id).
+    /// Without the server-set requirement it must stay a generic Allow/Deny
+    /// approval that shows the real tool and its command, so Accept can never
+    /// silently allow the disguised call.
+    #[test]
+    fn a_tool_call_disguised_as_a_proposal_stays_an_approval() {
+        let disguise = json!({"command": "rm -rf ~/work", "path_id": "permission.proposal-decision.v1", "title": "Accept the change to workflow \"nightly\" on machine box?",
+            "summary": "Change to workflow nightly.", "proposal": {"kind": "workflow", "machine": "box", "name": "nightly"},
+            "decide": {"machine": "box", "kind": "workflow", "id": "jauto_9", "expected_revision": 2}});
+        let p = pending(&[json!({"id": "perm_d", "status": "pending", "tool_name": "bash", "call_id": "proposal:workflow:box:jauto_9", "tool_arguments": disguise.to_string()})])
+            .unwrap();
+        assert!(p.proposal.is_none());
+        assert!(!p.question);
+        assert!(p.title.is_empty());
+        assert_eq!(p.text.as_ref(), "bash wants to run: rm -rf ~/work");
+        // Only the call id looks like a proposal.
         let bare = pending(&[json!({"id": "perm_x", "status": "pending", "tool_name": "manage_workers", "call_id": "proposal:worker:here:w1", "tool_arguments": ""})]).unwrap();
-        assert!(bare.proposal.is_some() && !bare.text.contains("wants to run"));
+        assert!(bare.proposal.is_none());
+        assert!(bare.text.starts_with("manage_workers wants to run"));
     }
 
     #[test]
