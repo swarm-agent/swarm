@@ -1367,7 +1367,18 @@ func (s *Server) handleJobAutomations(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "automation": view})
 	case !strings.Contains(rest, "/") && r.Method == http.MethodDelete:
-		out, err := s.DeleteWorkflow(workflowCallerFromRequest(r), map[string]any{"id": rest, "name": r.URL.Query().Get("name")})
+		args := map[string]any{"id": rest, "name": r.URL.Query().Get("name")}
+		// ?expected_revision=N deletes only that revision (a proposal the
+		// person discards); a workflow that moved since is refused (409).
+		if raw := strings.TrimSpace(r.URL.Query().Get("expected_revision")); raw != "" {
+			expected, err := strconv.ParseUint(raw, 10, 64)
+			if err != nil || expected == 0 {
+				writeError(w, http.StatusBadRequest, errors.New("expected_revision must be a positive whole number"))
+				return
+			}
+			args["expected_revision"] = expected
+		}
+		out, err := s.DeleteWorkflow(workflowCallerFromRequest(r), args)
 		if err != nil {
 			jobAutomationHTTPError(w, err)
 			return
@@ -1618,20 +1629,25 @@ func (s *Server) DeleteWorkflow(caller WorkflowCaller, args map[string]any) (any
 		return nil, err
 	}
 	id := a.ID
+	// expected_revision (optional): delete only that revision; a workflow
+	// that moved since (re-proposed, accepted, changed) is refused (409).
+	expected := mapUint(args, "expected_revision")
+	// The definition goes first, under the revision guard, then its trigger
+	// key: a refused delete never removes the key of a workflow that stays.
+	if err := store.DeleteChangeAt(account, id, expected, jobautomation.Change{Source: "delete", Who: caller.Who}); err != nil {
+		if errors.Is(err, jobautomation.ErrNotFound) {
+			return nil, workflowHistoryNotFound("no automation %q", id)
+		}
+		return nil, err
+	}
 	if a.On != nil && a.On.Event.Source == "webhook" {
 		values, err := s.triggerSecrets()
 		if err != nil {
 			return nil, err
 		}
 		if err := values.DeleteWorkflowTriggerKey(account, id); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("workflow %s was deleted but its trigger key could not be removed: %w", id, err)
 		}
-	}
-	if err := store.DeleteChange(account, id, jobautomation.Change{Source: "delete", Who: caller.Who}); err != nil {
-		if errors.Is(err, jobautomation.ErrNotFound) {
-			return nil, workflowHistoryNotFound("no automation %q", id)
-		}
-		return nil, err
 	}
 	return map[string]any{"deleted": id, "name": a.Name}, nil
 }

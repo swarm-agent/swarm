@@ -1494,6 +1494,31 @@ impl Console {
     fn render_pending(&self, si: usize, pid: usize, p: &data::Pending, cx: &mut Context<Self>) -> AnyElement {
         let t = &self.theme;
         let frame = div().mx_1().px_3().py_2().flex().flex_col().gap_2().rounded(px(t.radius)).border_1().border_color(alpha(t.warn, 0.5)).bg(alpha(t.warn, 0.06));
+        if let Some(ask) = &p.proposal {
+            // A proposal the person decides here: what, where, the change in
+            // words, and Accept / Discard (the request's allow / deny).
+            let place = if ask.machine.is_empty() { "this machine".to_string() } else { format!("machine {}", ask.machine) };
+            return frame
+                .child(div().text_size(px(11.)).text_color(t.warn).child(format!("{} PROPOSAL WAITS FOR YOU · {}", ask.kind.to_uppercase(), place.to_uppercase())))
+                .child(div().text_color(t.text).child(p.title.clone()))
+                .when(!p.text.is_empty(), |d| d.child(div().text_size(px(11.5)).text_color(t.muted).line_height(px(18.)).child(p.text.clone())))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            self.button(SharedString::from(format!("proposal-accept-{pid}")), "accept", true)
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.act(si, Act::Approve, cx))),
+                        )
+                        .child(
+                            self.button(SharedString::from(format!("proposal-discard-{pid}")), "discard", false)
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.act(si, Act::Reject, cx))),
+                        )
+                        .child(div().flex_1().text_size(px(11.)).text_color(t.faint).child("Only you decide; the AI cannot accept its own proposal.")),
+                )
+                .into_any_element();
+        }
         if !p.question {
             return frame
                 .child(div().text_size(px(11.)).text_color(t.warn).child("WAITING FOR YOUR APPROVAL"))
@@ -1578,6 +1603,7 @@ impl Console {
             self.button(SharedString::from(format!("pane-{label}-{pid}")), label, strong).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.act(si, act, cx)))
         };
         Some(match (&s.pending, s.state) {
+            (Some(p), _) if p.proposal.is_some() => row.child(button("accept", true, Act::Approve)).child(button("discard", false, Act::Reject)),
             (Some(p), _) if !p.question => row.child(button("allow", true, Act::Approve)).child(button("deny", false, Act::Reject)),
             _ => return None,
         })

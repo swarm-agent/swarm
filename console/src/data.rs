@@ -906,6 +906,19 @@ pub struct Pending {
     /// Several questions, answered together as {"answers": {id: value}}.
     pub structured: bool,
     pub questions: Vec<Question>,
+    /// A workflow or worker proposal the person accepts (allow) or discards
+    /// (deny); `title` and `text` then say what and the change in words.
+    pub proposal: Option<ProposalAsk>,
+}
+
+/// The proposal a pending request asks the person to decide.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ProposalAsk {
+    /// workflow or worker.
+    pub kind: Text,
+    pub name: Text,
+    /// The linked machine it is on, or "" for the connected one.
+    pub machine: Text,
 }
 
 #[derive(Clone, PartialEq, Eq)]

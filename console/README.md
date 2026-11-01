@@ -313,7 +313,10 @@ a separate profile and the extension loaded, for trying it out.
   machine's automations show in its own window (open it from its card on Fleet),
   but its workflow and worker proposals wait for you here, under that machine,
   with accept and discard at the revision shown (`GET /v3/proposals?machine=`,
-  `POST /v3/proposals/decide`, through the home).
+  `POST /v3/proposals/decide`, through the home). In a conversation, the
+  Orchestrator's proposal waits as the proposal itself (title, machine and
+  the change in words) with accept and discard. Accepting a webhook workflow
+  shows its trigger key once in the notice: copy it then.
 - **Icons:** line, solid, pixel or glyph. They
   are one-color SVG masks tinted by the theme, so a reskin needs no new art.
   Line by default; Settings or ctrl-4 change it. Pixel icons are ASCII art

@@ -238,9 +238,10 @@ pub fn accept(client: &Client, id: &str, revision: u64) -> Result<Value, String>
     client.post(&format!("/v3/workflows/{id}/accept"), serde_json::json!({"expected_revision": revision})).map_err(|e| e.to_string())
 }
 
-/// Discards a proposed workflow.
-pub fn discard(client: &Client, id: &str) -> Result<Value, String> {
-    client.delete(&format!("/v3/workflows/{id}")).map_err(|e| e.to_string())
+/// Discards a proposed workflow at the revision the person saw: one that
+/// was proposed again or accepted since is refused (409).
+pub fn discard(client: &Client, id: &str, revision: u64) -> Result<Value, String> {
+    client.delete(&format!("/v3/workflows/{id}?expected_revision={revision}")).map_err(|e| e.to_string())
 }
 
 /// The last part of a folder path, for saying where.

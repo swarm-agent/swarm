@@ -6,7 +6,8 @@ use serde_json::Value;
 
 use crate::data::{
     Assignment, Busy, Choice, ClientCall, Credential, Day, Drain, Entry, Found, Health, LiveRef, Machine, ModelUse, Pending, Plan, PlanWindow, Progress, ProgressState, Project,
-    Provider, Question, Role, RunClock, RunState, RunsToday, Session, SessionUse, Task, TaskState, TaskStatus, TaskWait, Text, Tokens, ToolState, UpdateState, Updates, Usage,
+    ProposalAsk, Provider, Question, Role, RunClock, RunState, RunsToday, Session, SessionUse, Task, TaskState, TaskStatus, TaskWait, Text, Tokens, ToolState, UpdateState,
+    Updates, Usage,
 };
 
 pub(crate) fn s<'a>(v: &'a Value, key: &str) -> &'a str {
@@ -266,10 +267,18 @@ pub fn pending(records: &[Value]) -> Option<Pending> {
     let p = records.iter().filter(|p| s(p, "status").is_empty() || s(p, "status") == "pending").find(|p| !is_client_tool(s(p, "tool_name")))?;
     let args = tool_arguments(p);
     let id: Text = s(p, "id").to_string().into();
+    if s(p, "requirement") == "proposal_decision" {
+        // A proposal the person accepts or discards: its title, machine and
+        // the change in words (permission.proposal-decision.v1).
+        let proposal = args.get("proposal").cloned().unwrap_or(Value::Null);
+        let ask = ProposalAsk { kind: s(&proposal, "kind").to_string().into(), name: s(&proposal, "name").to_string().into(), machine: s(&proposal, "machine").to_string().into() };
+        let title = if s(&args, "title").is_empty() { format!("Accept {} {}?", ask.kind, ask.name) } else { s(&args, "title").to_string() };
+        return Some(Pending { id, question: false, text: s(&args, "summary").to_string().into(), title: title.into(), structured: false, questions: vec![], proposal: Some(ask) });
+    }
     if s(p, "tool_name").replace('-', "_") != "ask_user" {
         let what = ["command", "path", "url"].iter().find_map(|k| args.get(k).and_then(Value::as_str)).map(str::to_string);
         let text = format!("{} wants to run: {}", s(p, "tool_name"), what.unwrap_or_else(|| args.to_string()));
-        return Some(Pending { id, question: false, text: text.into(), title: "".into(), structured: false, questions: vec![] });
+        return Some(Pending { id, question: false, text: text.into(), title: "".into(), structured: false, questions: vec![], proposal: None });
     }
     let structured = args.get("questions").is_some();
     let raw: Vec<Value> = if structured { list(&args, "questions").to_vec() } else { vec![args.clone()] };
@@ -284,7 +293,7 @@ pub fn pending(records: &[Value]) -> Option<Pending> {
             options: list(q, "options").iter().filter_map(choice).collect(),
         })
         .collect();
-    Some(Pending { id, question: true, text: "".into(), title: s(&args, "title").to_string().into(), structured, questions })
+    Some(Pending { id, question: true, text: "".into(), title: s(&args, "title").to_string().into(), structured, questions, proposal: None })
 }
 
 /// The calls to your machine waiting on this app.
@@ -1143,6 +1152,31 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].tool.as_ref(), "machine_run");
         assert!(pending(&[]).is_none());
+    }
+
+    /// Purpose: a proposal's pending request (requirement proposal_decision)
+    /// is the person's decision in the chat; it must read as the proposal
+    /// (title, machine, the change in words) for Accept / Discard, never as
+    /// the generic "<tool> wants to run: {json}" approval. map::pending is
+    /// the one place the console turns permission records into what a
+    /// session waits on, so this layer proves it.
+    #[test]
+    fn pending_proposal_reads_as_the_proposal() {
+        let args = json!({"path_id": "permission.proposal-decision.v1", "review_kind": "workflow", "title": "Accept the change to workflow \"review\" on machine box?",
+            "proposal": {"kind": "workflow", "machine": "box", "id": "jauto_2", "name": "review", "revision": 1, "change": "change", "replaces": "jauto_1"},
+            "summary": "Change to workflow review (now revision 3): steps added: lint (run scripts/lint.sh).",
+            "decide": {"machine": "box", "kind": "workflow", "id": "jauto_2", "expected_revision": 1, "decision": ""}});
+        let p = pending(&[json!({"id": "perm_p", "status": "pending", "tool_name": "manage_workflows", "requirement": "proposal_decision", "tool_arguments": args.to_string()})])
+            .unwrap();
+        assert!(!p.question);
+        let ask = p.proposal.clone().expect("a proposal request");
+        assert_eq!((ask.kind.as_ref(), ask.name.as_ref(), ask.machine.as_ref()), ("workflow", "review", "box"));
+        assert_eq!(p.title.as_ref(), "Accept the change to workflow \"review\" on machine box?");
+        assert_eq!(p.text.as_ref(), "Change to workflow review (now revision 3): steps added: lint (run scripts/lint.sh).");
+        assert!(!p.text.contains("wants to run"));
+        // Any other tool approval stays an approval.
+        let other = pending(&[json!({"id": "perm_b", "tool_name": "bash", "tool_arguments": {"command": "ls"}})]).unwrap();
+        assert!(other.proposal.is_none());
     }
 
     #[test]

@@ -388,6 +388,28 @@ export interface ProposalDecision {
   decision: 'accept' | 'discard';
 }
 
+/** The answer of `POST /v3/proposals/decide`. */
+export interface ProposalDecisionAnswer {
+  ok: boolean;
+  kind: 'workflow' | 'worker';
+  machine: string;
+  id: string;
+  revision: number;
+  decision: 'accept' | 'discard';
+  /** The machine's accept or delete answer (untrusted when `machine` is set). */
+  result: Record<string, unknown>;
+  /** Pending chat requests for this proposal answered by the decision. */
+  requests_answered: number;
+  requests_error?: string;
+  untrusted_content?: boolean;
+  /**
+   * A webhook workflow's trigger key, returned once on accept, for the
+   * person only: show it once and let them copy it; it is never shown again.
+   */
+  trigger_key?: string;
+  trigger_key_note?: string;
+}
+
 /** Workflows and their deliveries (`/v3/workflows`, `/v3/job-deliveries`). */
 export class SwarmJobAutomationsNamespace {
   constructor(private readonly transport: SwarmTransport) {}
@@ -436,8 +458,13 @@ export class SwarmJobAutomationsNamespace {
     return (await this.transport.request<{ automation: JobAutomation; created: boolean }>('/v3/workflows/restore', { method: 'POST', body: params })).data;
   }
 
-  async delete(id: string): Promise<void> {
-    await this.transport.request(`/v3/workflows/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  /**
+   * Deletes a workflow (or a pending proposal). With `expectedRevision`, only
+   * that revision is deleted; one that moved since is refused (409).
+   */
+  async delete(id: string, expectedRevision?: number): Promise<void> {
+    const q = expectedRevision ? `?expected_revision=${encodeURIComponent(String(expectedRevision))}` : '';
+    await this.transport.request(`/v3/workflows/${encodeURIComponent(id)}${q}`, { method: 'DELETE' });
   }
 
   /** The machine-wide stop switch. */
@@ -470,8 +497,8 @@ export class SwarmJobAutomationsNamespace {
    * at the revision they saw. Only an owner session (the person's app)
    * decides: an AI key or app key is refused (403).
    */
-  async decideProposal(decision: ProposalDecision): Promise<Record<string, unknown>> {
-    return (await this.transport.request<Record<string, unknown>>('/v3/proposals/decide', { method: 'POST', body: decision })).data;
+  async decideProposal(decision: ProposalDecision): Promise<ProposalDecisionAnswer> {
+    return (await this.transport.request<ProposalDecisionAnswer>('/v3/proposals/decide', { method: 'POST', body: decision })).data;
   }
 
   /** Deliveries, newest first. */

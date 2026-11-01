@@ -1029,12 +1029,14 @@ Design jobs now end with `design.job.completed`, `design.job.failed` or
 - API (`automations:read` to read, `automations:write` to change, and
   `admin` or the local owner to save a host `run` step):
   `GET/POST /v3/workflows`, `GET/DELETE /v3/workflows/{id}` (an id or a
-  name),
+  name; `DELETE ...?expected_revision=N` deletes only that revision and
+  refuses one that moved since with 409),
   `GET/POST /v3/workflows/stop`, `GET /v3/job-deliveries`
   (`job_id`, `automation_id`, `state`, `limit`), `GET
   /v3/job-deliveries/{id}`, `POST /v3/job-deliveries/{id}/rerun`,
   `GET /v3/proposals` and `POST /v3/proposals/decide` (below).
-- SDK: `client.workflows` (`list`, `get`, `set`, `delete`, `stopState`,
+- SDK: `client.workflows` (`list`, `get`, `set`, `delete(id,
+  expectedRevision?)`, `stopState`,
   `setStopped`, `deliveries`, `delivery`, `rerun`, `proposals`,
   `decideProposal`).
 
@@ -1055,7 +1057,9 @@ An AI never accepts its own proposal. A workflow proposed with
   carries no run: nothing waits on it. The propose answer's
   `decision_request` names it (`permission_id`, or `status: "not_requested"`
   for a caller with no Swarm conversation, such as an MCP client), and its
-  `next_action` says to tell the person and wait.
+  `next_action` says to tell the person and wait. The console shows the
+  request in the conversation as the proposal (its title, machine and the
+  change in words) with Accept and Discard.
 - **In the app.** The console's Automations page lists the proposals of the
   machine it is connected to and of each linked machine, with accept and
   discard.
@@ -1068,8 +1072,15 @@ An AI never accepts its own proposal. A workflow proposed with
   proposals (`kind`, `machine`, `id`, `name`, `revision`, `created_at`,
   `waiting_on: "person"`, `change: new|change`, `replaces`), the same shape
   as `pending_proposals` in `manage_workflows` `list`/`get` and
-  `manage_workers` `list`/`review`. A decision answers every pending request
-  for that proposal in the person's conversations.
+  `manage_workers` `list`/`review` (both newest first). A decision answers
+  every pending request for that proposal in the person's conversations.
+  Reading proposals carries the caller's own scoped token (or, for a caller
+  with none, a read-only one), so a key that cannot read automations cannot
+  read them here either.
+- **Trigger key.** Accepting a webhook workflow returns its `trigger_key`
+  once, at the top of the person's decision answer (`trigger_key_note`); the
+  console shows it once with "copy it now". It never enters the pending
+  request, the conversation or an AI's tool result.
 - **Only the person.** The decide route takes only an owner session: any
   scoped token (an AI key at any level, an app key, an agent's internal
   call) is refused with 403. A proposal request is refused to
@@ -1078,7 +1089,9 @@ An AI never accepts its own proposal. A workflow proposed with
 - **Stale.** A decision names the revision the person saw. If the proposal
   moved (the AI proposed again, it was decided elsewhere, or removed), it is
   refused with 409 and the reason, and an answered chat request is cancelled
-  with that reason. Discard removes only a still-pending proposal; a pending
+  with that reason. Discard removes only a still-pending proposal, with the
+  delete guarded by the revision the person saw (a workflow re-proposed or
+  accepted in the meantime is refused 409, not deleted); a pending
   change of an active worker cannot be discarded alone (the worker routes
   would delete the worker), so it is accepted or proposed again.
 

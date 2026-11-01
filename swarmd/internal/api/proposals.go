@@ -106,9 +106,48 @@ func (s *Server) proposalTransportFor(p identity.Principal, machine string) (pro
 	}, nil
 }
 
-// localProposalCall runs this machine's own route in process with the
-// person's principal and no scoped token: the route's own checks decide.
+// proposalReadTransportFor is the transport proposal reads use: here, the
+// machine's own routes with the caller's scoped token (proposalReadToken),
+// never an unscoped internal request; on a linked machine, the link, once
+// the caller's token may read automations.
+func (s *Server) proposalReadTransportFor(ctx context.Context, p identity.Principal, machine string) (proposalTransport, error) {
+	token := proposalReadToken(ctx, p)
+	if machine == "" {
+		return s.localProposalCallAs(p, token), nil
+	}
+	if !token.HasScope("automations:read") && !token.HasScope("automations:write") {
+		return nil, linkedTaskFail(http.StatusForbidden, "reading proposals needs automations:read")
+	}
+	return s.proposalTransportFor(p, machine)
+}
+
+// proposalReadToken is the scoped token a proposal read carries: the
+// caller's own (a key's request, or a Swarm Control call's held scopes), or
+// for a caller with none (the Orchestrator, the person's app) a read-only
+// one that may only read automations.
+func proposalReadToken(ctx context.Context, p identity.Principal) *pebblestore.ScopedTokenRecord {
+	if ctx != nil {
+		if rec, ok := ctx.Value(productScopedTokenRequestContextKey).(*pebblestore.ScopedTokenRecord); ok && rec != nil {
+			return rec
+		}
+	}
+	scopes := []string{"automations:read"}
+	name := "Proposal read (read-only)"
+	if held, ok := tool.ControlScopesFromContext(ctx); ok {
+		scopes, name = held, "Proposal read (the caller's key scopes)"
+	}
+	return &pebblestore.ScopedTokenRecord{ID: "proposal-read", Name: name, Scopes: scopes, AccountScopeID: p.AccountScopeID, UserID: p.UserID}
+}
+
+// localProposalCall runs this machine's own route in process as the person
+// (a decision, already checked to be theirs): the route's own checks decide.
 func (s *Server) localProposalCall(p identity.Principal) proposalTransport {
+	return s.localProposalCallAs(p, nil)
+}
+
+// localProposalCallAs runs this machine's own route in process with the
+// person's principal and, when token is set, that scoped token.
+func (s *Server) localProposalCallAs(p identity.Principal, token *pebblestore.ScopedTokenRecord) proposalTransport {
 	return func(ctx context.Context, method, path string, body, out any) error {
 		var reader io.Reader = http.NoBody
 		if body != nil {
@@ -124,6 +163,9 @@ func (s *Server) localProposalCall(p identity.Principal) proposalTransport {
 		}
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")
+		}
+		if token != nil {
+			req = requestWithScopedToken(req, token)
 		}
 		recorder := &proposalRecorder{header: http.Header{}, status: http.StatusOK}
 		s.internalRouteHandler().ServeHTTP(recorder, req)
@@ -168,7 +210,7 @@ func (s *Server) listProposals(ctx context.Context, p identity.Principal, machin
 		return nil, identity.ErrPrincipalRequired
 	}
 	machine = strings.TrimSpace(machine)
-	call, err := s.proposalTransportFor(p, machine)
+	call, err := s.proposalReadTransportFor(ctx, p, machine)
 	if err != nil {
 		return nil, err
 	}
@@ -329,12 +371,32 @@ func (s *Server) DecideProposal(ctx context.Context, p identity.Principal, in Pr
 	if in.Machine != "" {
 		answer["untrusted_content"] = true
 	}
+	hoistProposalTriggerKey(answer, applied)
 	settled, settleErr := s.settleProposalRequests(p, in, "")
 	answer["requests_answered"] = settled
 	if settleErr != nil {
 		answer["requests_error"] = settleErr.Error()
 	}
 	return answer, nil
+}
+
+// hoistProposalTriggerKey moves a webhook workflow's trigger key from the
+// accept route's result to the top of the person's decision answer, once,
+// with a note to copy it now. The key is a one-time secret for the person
+// only: it never enters a pending request, a conversation or an AI's tool
+// result (the pending request only records the decision and its reason).
+func hoistProposalTriggerKey(answer map[string]any, applied any) {
+	result, ok := applied.(map[string]any)
+	if !ok {
+		return
+	}
+	key, _ := result["trigger_key"].(string)
+	delete(result, "trigger_key")
+	if strings.TrimSpace(key) == "" {
+		return
+	}
+	answer["trigger_key"] = key
+	answer["trigger_key_note"] = "Shown once, to you only: copy it now. Swarm does not show it again; rotate the key to get a new one."
 }
 
 // proposalStatusStale reports whether a machine's refusal means the
@@ -367,7 +429,9 @@ func decideWorkflowProposal(ctx context.Context, call proposalTransport, in Prop
 	if in.Decision == proposalAccept {
 		err = call(ctx, http.MethodPost, base+"/accept", map[string]any{"expected_revision": in.ExpectedRevision}, &out)
 	} else {
-		err = call(ctx, http.MethodDelete, base, nil, &out)
+		// The delete is guarded by the revision the person saw, so a
+		// re-proposed or already-accepted revision is refused (409).
+		err = call(ctx, http.MethodDelete, fmt.Sprintf("%s?expected_revision=%d", base, in.ExpectedRevision), nil, &out)
 	}
 	if err != nil {
 		if proposalStatusStale(err) {
@@ -572,7 +636,7 @@ func (s *Server) proposalRequestFor(ctx context.Context, p identity.Principal, m
 	if answer == nil {
 		return proposalRequestPayload{}, errors.New("the propose answer is unreadable")
 	}
-	call, err := s.proposalTransportFor(p, machine)
+	call, err := s.proposalReadTransportFor(ctx, p, machine)
 	if err != nil {
 		return proposalRequestPayload{}, err
 	}

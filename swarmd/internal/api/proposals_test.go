@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/jobautomation"
 	"swarm/packages/swarmd/internal/permission"
@@ -508,8 +509,9 @@ func TestProposalPendingRequestOnPropose(t *testing.T) {
 
 // Purpose: the proposals route and the AI's views never drift. Requirement:
 // one ProposalView shape: the route's proposals, manage_workflows list's and
-// get's pending_proposals (here and over machine=) carry exactly the same
-// fields with the same values; the decision a pending request carries has
+// get's pending_proposals and manage_workers list's and review's
+// pending_proposals (here and over machine=) carry exactly the same fields
+// with the same values; the decision a pending request carries has
 // exactly the decide route's body fields (ProposalDecision), so the person's
 // answer can always be replayed on the route. Threat: a field added to the
 // route but not to the MCP actions (or the reverse). Boundary: handleProposals,
@@ -517,7 +519,11 @@ func TestProposalPendingRequestOnPropose(t *testing.T) {
 func TestProposalsRouteAndMCPActionsAgree(t *testing.T) {
 	home := newProposalTestSwarm(t, "home")
 	box := newProposalTestSwarm(t, "box")
+	enableProposalWorkers(t, home)
+	enableProposalWorkers(t, box)
 	linkProposalSwarms(t, home, box)
+	homeWorker := home.pendingWorker(t, "agree-worker")
+	boxWorker := box.pendingWorker(t, "agree-box-worker")
 	session := "home-orch"
 	fleetActivityTestSession(t, home.fleetTestSwarm, session)
 	answer := home.propose(t, session, map[string]any{"name": "agree", "project": "Project home", "steps": proposalSteps("Review")})
@@ -575,11 +581,50 @@ func TestProposalsRouteAndMCPActionsAgree(t *testing.T) {
 			}
 			mcpGet = normalize(answerMap(raw)["pending_proposals"])
 		}
-		if len(route) != 1 || !reflect.DeepEqual(route, mcpList) || !reflect.DeepEqual(route, mcpGet) {
-			t.Fatalf("machine %q: route %v, list %v, get %v", machine, route, mcpList, mcpGet)
+		var routeWorkflows, routeWorkers []map[string]any
+		for _, view := range route {
+			if view["kind"] == "worker" {
+				routeWorkers = append(routeWorkers, view)
+			} else {
+				routeWorkflows = append(routeWorkflows, view)
+			}
 		}
-		if got := keys(route[0]); !reflect.DeepEqual(got, viewFields) {
-			t.Fatalf("machine %q: proposal fields %v, ProposalView %v", machine, got, viewFields)
+		if len(routeWorkflows) != 1 || !reflect.DeepEqual(routeWorkflows, mcpList) || !reflect.DeepEqual(routeWorkflows, mcpGet) {
+			t.Fatalf("machine %q: route %v, list %v, get %v", machine, routeWorkflows, mcpList, mcpGet)
+		}
+		// manage_workers list and review (here and over machine=) show the
+		// route's worker proposals, field for field.
+		workerID := homeWorker.ID
+		if machine != "" {
+			workerID = boxWorker.ID
+		}
+		var workerList, workerReview []map[string]any
+		for _, action := range []string{"list", "review"} {
+			args := map[string]any{"action": action}
+			if action == "review" {
+				args["worker_id"] = workerID
+			}
+			if machine != "" {
+				args["machine"] = machine
+			}
+			out, err := home.s.ManageWorkers(ctx, home.principal(), session, agentruntime.SwarmOrchestratorAgentID, args)
+			if err != nil {
+				t.Fatalf("machine %q manage_workers %s: %v", machine, action, err)
+			}
+			pending := normalize(answerData(answerMap(mustJSONRoundTrip(out)))["pending_proposals"])
+			if action == "list" {
+				workerList = pending
+			} else {
+				workerReview = pending
+			}
+		}
+		if len(routeWorkers) != 1 || routeWorkers[0]["id"] != workerID || !reflect.DeepEqual(routeWorkers, workerList) || !reflect.DeepEqual(routeWorkers, workerReview) {
+			t.Fatalf("machine %q: route workers %v, manage_workers list %v, review %v", machine, routeWorkers, workerList, workerReview)
+		}
+		for _, view := range route {
+			if got := keys(view); !reflect.DeepEqual(got, viewFields) {
+				t.Fatalf("machine %q: proposal fields %v, ProposalView %v", machine, got, viewFields)
+			}
 		}
 	}
 	// The pending request's decision is the decide route's body.

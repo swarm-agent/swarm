@@ -667,6 +667,14 @@ func (s *Store) Delete(account, id string) error {
 }
 
 func (s *Store) DeleteChange(account, id string, change Change) error {
+	return s.DeleteChangeAt(account, id, 0, change)
+}
+
+// DeleteChangeAt is DeleteChange guarded by the revision the caller saw:
+// with expectedRevision set, an automation at another revision (re-proposed,
+// accepted or changed since) is refused with ErrProposalConflict under the
+// same lock that deletes, so a discard never races an accept.
+func (s *Store) DeleteChangeAt(account, id string, expectedRevision uint64, change Change) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var a Automation
@@ -676,6 +684,9 @@ func (s *Store) DeleteChange(account, id string, change Change) error {
 	}
 	if !found || a.Account != account {
 		return ErrNotFound
+	}
+	if expectedRevision != 0 && a.Revision != expectedRevision {
+		return ErrProposalConflict
 	}
 	previous := a
 	a.Revision++

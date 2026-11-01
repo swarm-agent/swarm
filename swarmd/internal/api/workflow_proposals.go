@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -127,6 +128,8 @@ func (s *Server) manageWorkflows(ctx context.Context, p identity.Principal, who 
 					}
 				}
 			}
+			// Newest first, as the proposals route orders them.
+			sort.SliceStable(pending, func(i, j int) bool { return pending[i].CreatedAt > pending[j].CreatedAt })
 			view["pending_proposals"] = pending
 			if len(pending) > 0 {
 				view["proposals_note"] = workflowPendingNote

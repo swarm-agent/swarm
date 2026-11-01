@@ -83,6 +83,32 @@ pub fn decide(client: &Client, p: &Proposal, accept: bool) -> Result<Value, Stri
     client.post("/v3/proposals/decide", decide_body(p, accept)).map_err(|e| e.to_string())
 }
 
+/// A webhook workflow's trigger key in a decision answer: a one-time secret
+/// for the person only, shown once and never kept.
+pub fn trigger_key(answer: &Value) -> Option<String> {
+    answer.get("trigger_key").and_then(Value::as_str).map(str::trim).filter(|k| !k.is_empty()).map(str::to_string)
+}
+
+/// The note that shows a trigger key once.
+pub fn trigger_key_note(key: &str) -> String {
+    format!(" Its trigger key, shown only this once (copy it now): {key}")
+}
+
+/// What a decision did, in words, from a POST /v3/proposals/decide answer
+/// (also the `proposal` of a pending request's answer), with the trigger key
+/// when accepting made one.
+pub fn decided_notice(answer: &Value) -> String {
+    let kind = text(answer, "kind");
+    let machine = text(answer, "machine");
+    let place = if machine.is_empty() { "this machine".to_string() } else { format!("machine {machine}") };
+    let verb = if text(answer, "decision") == "accept" { "Accepted" } else { "Discarded" };
+    let mut out = format!("{verb} the {kind} proposal on {place}.");
+    if let Some(key) = trigger_key(answer) {
+        out.push_str(&trigger_key_note(&key));
+    }
+    out
+}
+
 /// The proposal in words: what accepting does.
 pub fn describe(p: &Proposal) -> String {
     match p.change.as_str() {
@@ -125,5 +151,19 @@ mod tests {
         assert_eq!(decide_body(&p, false)["decision"], "discard");
         assert_eq!(query_value("box-1"), "box-1");
         assert_eq!(query_value("a b&c"), "a%20b%26c");
+    }
+
+    /// Purpose: a webhook workflow's trigger key comes back once, in the
+    /// person's decision answer; the console must show it to them right
+    /// then (copy it now) and say nothing of a key when there is none.
+    #[test]
+    fn a_decision_notice_shows_the_trigger_key_once() {
+        let accepted = json!({"ok": true, "kind": "workflow", "machine": "box", "decision": "accept", "trigger_key": "whk_secret", "result": {"automation": {}}});
+        let notice = decided_notice(&accepted);
+        assert!(notice.starts_with("Accepted the workflow proposal on machine box."));
+        assert!(notice.contains("copy it now") && notice.contains("whk_secret"));
+        let discarded = json!({"kind": "worker", "machine": "", "decision": "discard"});
+        assert_eq!(decided_notice(&discarded), "Discarded the worker proposal on this machine.");
+        assert_eq!(trigger_key(&json!({"trigger_key": "  "})), None);
     }
 }

@@ -284,6 +284,7 @@ pub fn permission_item(home: bool, machine: &str, b: &Blocked, records: Option<&
                 let q = if p.title.is_empty() { p.questions.first().map(|q| q.text.to_string()).unwrap_or_default() } else { p.title.to_string() };
                 if q.trim().is_empty() { "asks you a question".to_string() } else { format!("asks: {}", short(&q, 120)) }
             }
+            Some(p) if p.proposal.is_some() => short(&p.title, 120),
             Some(p) => short(&p.text, 120),
             None => match records.iter().find(|r| map::is_client_tool(s(r, "tool_name"))) {
                 Some(r) => format!("{} waits on your computer", s(r, "tool_name")),

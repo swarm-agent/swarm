@@ -318,7 +318,10 @@ impl Console {
             let result = cx.background_executor().spawn(async move { proposals::decide(&client, &sent, accept) }).await;
             this.update(cx, |this, cx| {
                 this.notice = Some(match result {
-                    Ok(_) if accept => (format!("Accepted {} {} on {}.", p.kind, p.name, p.machine).into(), false),
+                    Ok(answer) if accept => {
+                        let key = proposals::trigger_key(&answer).map(|k| proposals::trigger_key_note(&k)).unwrap_or_default();
+                        (format!("Accepted {} {} on {}.{key}", p.kind, p.name, p.machine).into(), false)
+                    }
                     Ok(_) => (format!("Discarded {} {} on {}.", p.kind, p.name, p.machine).into(), false),
                     Err(e) => (format!("Swarm refused: {e}").into(), true),
                 });
@@ -817,10 +820,14 @@ impl Console {
         self.notice = Some((if accept { "Accepting the workflow…" } else { "Discarding the workflow…" }.into(), false));
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = cx.background_executor().spawn(async move { if accept { workflows::accept(&client, &id, revision) } else { workflows::discard(&client, &id) } }).await;
+            let result =
+                cx.background_executor().spawn(async move { if accept { workflows::accept(&client, &id, revision) } else { workflows::discard(&client, &id, revision) } }).await;
             this.update(cx, |this, cx| {
                 this.notice = Some(match result {
-                    Ok(_) if accept => ("Workflow accepted: it runs from now on.".into(), false),
+                    Ok(answer) if accept => {
+                        let key = proposals::trigger_key(&answer).map(|k| proposals::trigger_key_note(&k)).unwrap_or_default();
+                        (format!("Workflow accepted: it runs from now on.{key}").into(), false)
+                    }
                     Ok(_) => ("Workflow discarded.".into(), false),
                     Err(e) => (format!("Swarm refused: {e}").into(), true),
                 });
