@@ -45,6 +45,22 @@ func (s *Server) ManageFolderEnvironment(ctx context.Context, p identity.Princip
 		return nil, err
 	}
 	wait = min(max(wait, 0), sandboxEnvironmentMaxWait)
+	read := folderEnvironmentRead{}
+	if raw, ok := args["include_log"]; ok && raw != nil {
+		if read.includeLog, ok = raw.(bool); !ok {
+			return nil, errors.New("include_log must be true or false")
+		}
+	}
+	if raw, ok := args["log_offset"]; ok && raw != nil {
+		offset, err := environmentArgInt(args, "log_offset")
+		if err != nil || offset < 0 {
+			return nil, errors.New("log_offset must be a byte offset (a whole number, 0 or more) from a log_page's next_offset")
+		}
+		read.logOffset, read.includeLog = &offset, true
+	}
+	if read.logOffset != nil && action != tool.FolderEnvironmentGet {
+		return nil, fmt.Errorf("log_offset pages get_environment's log, not %s's", action)
+	}
 	var change SandboxEnvironmentChange
 	if action == tool.FolderEnvironmentUpdate {
 		if change, err = sandboxEnvironmentChangeFromArgs(args); err != nil {
@@ -56,13 +72,55 @@ func (s *Server) ManageFolderEnvironment(ctx context.Context, p identity.Princip
 		return nil, fmt.Errorf("%s needs workspace_path: the absolute path of the folder (list_environments shows them)", action)
 	}
 	machine = strings.TrimSpace(machine)
+	started := time.Now()
+	var raw json.RawMessage
 	if machine == "" {
-		return s.localFolderEnvironment(ctx, p, action, path, wait, change)
+		raw, err = s.localFolderEnvironment(ctx, p, action, path, wait, change, read)
+	} else {
+		raw, err = s.linkedFolderEnvironment(ctx, p, machine, action, path, wait, change, read)
 	}
-	return s.linkedFolderEnvironment(ctx, p, machine, action, path, wait, change)
+	if err != nil || action == tool.FolderEnvironmentList {
+		return raw, err
+	}
+	return folderEnvironmentAnswer(raw, read, wait, time.Since(started))
 }
 
-func (s *Server) localFolderEnvironment(ctx context.Context, p identity.Principal, action, path string, wait int, change SandboxEnvironmentChange) (json.RawMessage, error) {
+// folderEnvironmentRead is how much of the build log a read returns:
+// include_log returns a log page (the last one, or the one at log_offset);
+// without it the log comes only with a failed build.
+type folderEnvironmentRead struct {
+	includeLog bool
+	logOffset  *int
+}
+
+// folderEnvironmentAnswer finishes an environment answer, here or from a
+// linked machine: the log only when asked for (or the build failed), and,
+// for a call that waited, how long it waited and whether the build ended.
+func folderEnvironmentAnswer(raw json.RawMessage, read folderEnvironmentRead, wait int, waited time.Duration) (json.RawMessage, error) {
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("environment answer: %w", err)
+	}
+	view, _ := out["environment"].(map[string]any)
+	if view == nil {
+		return raw, nil
+	}
+	status, _ := view["status"].(string)
+	if !read.includeLog && status != pebblestore.SandboxEnvironmentFailed {
+		delete(view, "log")
+		delete(view, "log_page")
+	}
+	if wait > 0 {
+		out["wait"] = map[string]any{
+			"requested_seconds": wait,
+			"waited_seconds":    int(waited.Round(time.Second) / time.Second),
+			"build_ended":       status != pebblestore.SandboxEnvironmentBuilding,
+		}
+	}
+	return json.Marshal(out)
+}
+
+func (s *Server) localFolderEnvironment(ctx context.Context, p identity.Principal, action, path string, wait int, change SandboxEnvironmentChange, read folderEnvironmentRead) (json.RawMessage, error) {
 	out := map[string]any{"ok": true}
 	switch action {
 	case tool.FolderEnvironmentList:
@@ -72,7 +130,7 @@ func (s *Server) localFolderEnvironment(ctx context.Context, p identity.Principa
 		}
 		out["environments"], out["count"] = views, len(views)
 	case tool.FolderEnvironmentGet:
-		view, err := s.GetSandboxEnvironment(ctx, p, path, wait)
+		view, err := s.GetSandboxEnvironmentLog(ctx, p, path, wait, read.logOffset)
 		if err != nil {
 			return nil, err
 		}
@@ -97,7 +155,7 @@ func (s *Server) localFolderEnvironment(ctx context.Context, p identity.Principa
 	return json.Marshal(out)
 }
 
-func (s *Server) linkedFolderEnvironment(ctx context.Context, p identity.Principal, machine, action, path string, wait int, change SandboxEnvironmentChange) (json.RawMessage, error) {
+func (s *Server) linkedFolderEnvironment(ctx context.Context, p identity.Principal, machine, action, path string, wait int, change SandboxEnvironmentChange, read folderEnvironmentRead) (json.RawMessage, error) {
 	if s.fleet == nil || s.fleetTokens == nil {
 		return nil, errors.New("fleet service unavailable")
 	}
@@ -124,6 +182,9 @@ func (s *Server) linkedFolderEnvironment(ctx context.Context, p identity.Princip
 		query := url.Values{"workspace_path": {path}}
 		if wait > 0 {
 			query.Set("wait_seconds", strconv.Itoa(wait))
+		}
+		if read.logOffset != nil {
+			query.Set("log_offset", strconv.Itoa(*read.logOffset))
 		}
 		route += "?" + query.Encode()
 	case tool.FolderEnvironmentUpdate:

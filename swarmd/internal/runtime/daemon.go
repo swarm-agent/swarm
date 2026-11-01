@@ -1386,6 +1386,9 @@ func (d *Daemon) Run() error {
 		// Background commands a restart stopped are reported as such, and
 		// wake notes whose run is gone are delivered again.
 		d.toolRuntime.RecoverBackgroundWork()
+		// Environment watches from before the restart follow their builds
+		// again (an interrupted build reports as failed).
+		d.toolRuntime.ResumeEnvironmentWatches()
 	}
 	log.Printf("swarmd listener topology api_listen=%q", d.httpServer.Addr)
 

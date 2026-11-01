@@ -27,11 +27,15 @@ const (
 	SandboxEnvironmentReady    = "ready"
 	SandboxEnvironmentFailed   = "failed"
 
-	MaxSandboxEnvironmentSetup     = 40
-	MaxSandboxEnvironmentSetupLen  = 4000
-	MaxSandboxEnvironmentEnv       = 40
-	MaxSandboxEnvironmentEnvValue  = 4096
-	MaxSandboxEnvironmentLogBytes  = 8000
+	MaxSandboxEnvironmentSetup    = 40
+	MaxSandboxEnvironmentSetupLen = 4000
+	MaxSandboxEnvironmentEnv      = 40
+	MaxSandboxEnvironmentEnvValue = 4096
+	// MaxSandboxEnvironmentLogBytes bounds the stored build log. It holds a
+	// whole build log (the builder keeps at most 64 KiB plus its last
+	// command's output and an end marker); a longer one keeps its tail and
+	// LogDroppedBytes says how much was dropped from its start.
+	MaxSandboxEnvironmentLogBytes  = 96 * 1024
 	SandboxEnvironmentImagePrefix  = "swarm-env:"
 	sandboxEnvironmentHashVersion  = "v3"
 	sandboxEnvironmentMaxImageName = 255
@@ -69,6 +73,13 @@ type SandboxEnvironment struct {
 	Status        string                       `json:"status"`
 	Error         string                       `json:"error,omitempty"`
 	Log           string                       `json:"log,omitempty"`
+	// LogDroppedBytes is how many bytes were dropped from the start of Log
+	// to keep it within MaxSandboxEnvironmentLogBytes (0: Log is whole).
+	LogDroppedBytes int `json:"log_dropped_bytes,omitempty"`
+	// BuildStartedAt is when the current (or last) build started and
+	// FinishedAt when it ended (0 while it runs).
+	BuildStartedAt int64 `json:"build_started_at,omitempty"`
+	FinishedAt     int64 `json:"finished_at,omitempty"`
 	// ReadyImage is the last image this folder's sandbox may run on, and
 	// ReadyHash the definition it was built from; empty until a build succeeds.
 	ReadyImage string `json:"ready_image,omitempty"`
@@ -244,11 +255,12 @@ func (s *SandboxEnvironmentStore) DefineWithMaxLeases(account, workspacePath str
 	}
 	env := current
 	env.WorkspacePath, env.Account, env.Definition, env.Hash = workspacePath, account, def, hash
-	env.Status, env.Error, env.Log = SandboxEnvironmentBuilding, "", ""
+	env.Status, env.Error, env.Log, env.LogDroppedBytes = SandboxEnvironmentBuilding, "", "", 0
 	if maxLeases != nil {
 		env.MaxLeases = *maxLeases
 	}
 	env.UpdatedAt = s.now().UnixMilli()
+	env.BuildStartedAt, env.FinishedAt = env.UpdatedAt, 0
 	if err := s.store.PutJSON(sandboxEnvironmentKey(workspacePath), env); err != nil {
 		return SandboxEnvironment{}, false, err
 	}
@@ -272,11 +284,13 @@ func (s *SandboxEnvironmentStore) Finish(workspacePath, hash, image, imagePath, 
 	if hook := sandboxEnvironmentFinishReadHook; hook != nil {
 		hook()
 	}
+	dropped := 0
 	if len(log) > MaxSandboxEnvironmentLogBytes {
-		log = log[len(log)-MaxSandboxEnvironmentLogBytes:]
+		dropped = len(log) - MaxSandboxEnvironmentLogBytes
+		log = log[dropped:]
 	}
 	now := s.now().UnixMilli()
-	env.Log, env.UpdatedAt = log, now
+	env.Log, env.LogDroppedBytes, env.UpdatedAt, env.FinishedAt = log, dropped, now, now
 	if buildErr != nil {
 		env.Status, env.Error = SandboxEnvironmentFailed, buildErr.Error()
 		if len(env.Error) > 2000 {
@@ -398,8 +412,9 @@ func (s *SandboxEnvironmentStore) Rebuild(account, workspacePath string) (Sandbo
 	if env.Status == SandboxEnvironmentBuilding {
 		return SandboxEnvironment{}, ErrSandboxEnvironmentBuilding
 	}
-	env.Status, env.Error, env.Log = SandboxEnvironmentBuilding, "", ""
+	env.Status, env.Error, env.Log, env.LogDroppedBytes = SandboxEnvironmentBuilding, "", "", 0
 	env.UpdatedAt = s.now().UnixMilli()
+	env.BuildStartedAt, env.FinishedAt = env.UpdatedAt, 0
 	if err := s.store.PutJSON(sandboxEnvironmentKey(env.WorkspacePath), env); err != nil {
 		return SandboxEnvironment{}, err
 	}

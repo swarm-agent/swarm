@@ -448,6 +448,16 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 
 // manageProjectsAnswer is the action's own answer, before the envelope.
 func (r *Runtime) manageProjectsAnswer(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
+	switch action := strings.ToLower(strings.TrimSpace(asString(args["action"]))); {
+	case action == FolderEnvironmentWait:
+		return r.executeEnvironmentWatch(ctx, scope, args)
+	case action == "cancel_watch" && (strings.TrimSpace(asString(args["workspace_path"])) != "" || strings.HasPrefix(strings.TrimSpace(asString(args["watch_id"])), "envwatch-")):
+		// An environment watch: named by its folder (and machine) or id.
+		if _, err := r.homeConversation(scope, "folder environment session ownership mismatch", "folder environments are managed by the Orchestrator, not by tasks"); err != nil {
+			return "", err
+		}
+		return r.cancelEnvironmentWatches(scope, args)
+	}
 	args = normalizeProjectTaskWatchArgs(args)
 	if action := strings.ToLower(strings.TrimSpace(asString(args["action"]))); FolderEnvironmentAction(action) {
 		return r.executeFolderEnvironments(ctx, scope, action, args)

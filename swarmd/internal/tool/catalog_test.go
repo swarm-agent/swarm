@@ -31,7 +31,11 @@ import (
 // The GPUI-vs-MCP parity rerun changed it on purpose: read_task_session and
 // get_task_session take attempt_id or session_id (an earlier attempt's
 // session), and those fields' descriptions say so.
-const manageProjectsDefinitionSHA256 = "1384da24b50331d212f220317648f5417e609a5026300caedd7f42b5148a233f"
+// The environment watch changed it on purpose: wait_environment watches a
+// folder environment build (cancel_watch takes workspace_path to stop it),
+// get_environment pages the build log (log_offset), and the environment
+// fields' descriptions say what the log, progress and held wait report.
+const manageProjectsDefinitionSHA256 = "5d37a25bcacb38fa6918d06c734dd86d9a450a67c5d4ed07af0776eaf4329dbb"
 
 // Purpose: the catalog is the only place manage_projects exists. The
 // Orchestrator's definition is generated from the declarations and stays the
@@ -103,7 +107,7 @@ func TestManageProjectsCatalogGeneratesTheOrchestratorDefinition(t *testing.T) {
 func TestManageProjectsCatalogReachMatchesTheHandler(t *testing.T) {
 	routes := func(action string) bool {
 		switch action {
-		case "wait_tasks", "cancel_watch", FleetReadTaskSessionAction, ResolveTaskPermissionAction, FleetAgentsAtWorkAction:
+		case "wait_tasks", "cancel_watch", FleetReadTaskSessionAction, ResolveTaskPermissionAction, FleetAgentsAtWorkAction, FolderEnvironmentWait:
 			return true
 		}
 		return FleetProjectActionAllowed(action) || fleetLinkedReadAction(action) || FolderEnvironmentAction(action) || taskWorkReadAction(action)

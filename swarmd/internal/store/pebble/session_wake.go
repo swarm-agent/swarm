@@ -52,6 +52,9 @@ type V3SessionWakeMutation struct {
 const (
 	SessionWakeSourceBackgroundCommand = "background_command"
 	SessionWakeSourceTaskWatch         = "task_watch"
+	// SessionWakeSourceEnvironmentWatch is a folder environment build the
+	// conversation watched (manage_projects wait_environment) that ended.
+	SessionWakeSourceEnvironmentWatch = "environment_watch"
 )
 
 // V3SessionWakeNote is a delivered note waiting to be read by its run.
@@ -170,7 +173,7 @@ func (s *SessionStore) prepareSessionWake(input *V3SessionMutationInput) error {
 	if op == nil {
 		return nil
 	}
-	if strings.TrimSpace(op.ID) == "" || (op.Source != SessionWakeSourceBackgroundCommand && op.Source != SessionWakeSourceTaskWatch) {
+	if strings.TrimSpace(op.ID) == "" || (op.Source != SessionWakeSourceBackgroundCommand && op.Source != SessionWakeSourceTaskWatch && op.Source != SessionWakeSourceEnvironmentWatch) {
 		return errors.New("a session wake needs an id and a known source")
 	}
 	if tomb, ok, err := s.GetV3SessionTombstone(input.SessionID); err != nil {
@@ -291,6 +294,16 @@ func (s *SessionStore) setSessionWakeInBatch(batch *pebble.Batch, input V3Sessio
 				return err
 			}
 		}
+		// Its environment watches end with it: nothing is left to wake.
+		watches, err := s.ListV3EnvironmentWatches(input.SessionID)
+		if err != nil {
+			return err
+		}
+		for _, watch := range watches {
+			if err := batch.Delete([]byte(KeyV3EnvironmentWatch(watch.SessionID, watch.ID)), nil); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	if note := input.wakeNoteDelete; note != nil {
@@ -361,6 +374,81 @@ func (s *SessionStore) ListV3BackgroundCommands() ([]V3BackgroundCommandRecord, 
 		out = append(out, record)
 		return true, nil
 	})
+	return out, err
+}
+
+// V3EnvironmentWatchRecord is a conversation's watch on one folder
+// environment build (manage_projects wait_environment): durable, so a watch
+// survives a daemon restart and its outcome is still delivered.
+type V3EnvironmentWatchRecord struct {
+	ID             string `json:"id"`
+	SessionID      string `json:"session_id"`
+	UserID         string `json:"user_id"`
+	AccountScopeID string `json:"account_scope_id"`
+	// Machine is the linked machine whose folder it is ("" here).
+	Machine       string `json:"machine,omitempty"`
+	WorkspacePath string `json:"workspace_path"`
+	// Hash is the definition whose build is watched, when known.
+	Hash      string `json:"hash,omitempty"`
+	RunID     string `json:"run_id,omitempty"`
+	CreatedAt int64  `json:"created_at"`
+}
+
+const v3EnvironmentWatchPrefix = "v3/environment_watch/"
+
+// MaxV3EnvironmentWatchesPerSession bounds one conversation's environment
+// watches.
+const MaxV3EnvironmentWatchesPerSession = 16
+
+func keyV3EnvironmentWatchPrefix(sessionID string) string {
+	return v3EnvironmentWatchPrefix + keyPart(sessionID) + "/"
+}
+
+func KeyV3EnvironmentWatch(sessionID, id string) string {
+	return keyV3EnvironmentWatchPrefix(sessionID) + keyPart(id)
+}
+
+// PutV3EnvironmentWatch records an environment watch.
+func (s *SessionStore) PutV3EnvironmentWatch(record V3EnvironmentWatchRecord) error {
+	if strings.TrimSpace(record.ID) == "" || strings.TrimSpace(record.SessionID) == "" || strings.TrimSpace(record.WorkspacePath) == "" {
+		return errors.New("environment watch record needs an id, a session and a folder")
+	}
+	raw, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	return s.store.db.Set([]byte(KeyV3EnvironmentWatch(record.SessionID, record.ID)), raw, pebble.Sync)
+}
+
+// GetV3EnvironmentWatch reads one environment watch.
+func (s *SessionStore) GetV3EnvironmentWatch(sessionID, id string) (V3EnvironmentWatchRecord, bool, error) {
+	var record V3EnvironmentWatchRecord
+	ok, err := s.store.GetJSON(KeyV3EnvironmentWatch(sessionID, id), &record)
+	return record, ok, err
+}
+
+// DeleteV3EnvironmentWatch ends an environment watch (delivered or cancelled).
+func (s *SessionStore) DeleteV3EnvironmentWatch(sessionID, id string) error {
+	return s.store.db.Delete([]byte(KeyV3EnvironmentWatch(sessionID, id)), pebble.Sync)
+}
+
+// ListV3EnvironmentWatches lists a conversation's environment watches, or
+// every conversation's when sessionID is empty (startup).
+func (s *SessionStore) ListV3EnvironmentWatches(sessionID string) ([]V3EnvironmentWatchRecord, error) {
+	prefix := v3EnvironmentWatchPrefix
+	if strings.TrimSpace(sessionID) != "" {
+		prefix = keyV3EnvironmentWatchPrefix(strings.TrimSpace(sessionID))
+	}
+	var out []V3EnvironmentWatchRecord
+	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, Limit: 4096}, func(_ string, raw []byte) (bool, error) {
+		var record V3EnvironmentWatchRecord
+		if err := json.Unmarshal(raw, &record); err != nil {
+			return false, err
+		}
+		out = append(out, record)
+		return true, nil
+	})
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt < out[j].CreatedAt })
 	return out, err
 }
 

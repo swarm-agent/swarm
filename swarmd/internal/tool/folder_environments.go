@@ -48,7 +48,7 @@ func FolderEnvironmentAction(action string) bool {
 // FleetEnvironmentPermissionAllowed is the permission gate's view of folder
 // environment actions sent to a linked machine.
 func FleetEnvironmentPermissionAllowed(name, action string) bool {
-	return name == "manage_projects" && FolderEnvironmentAction(action)
+	return name == "manage_projects" && (FolderEnvironmentAction(action) || action == FolderEnvironmentWait)
 }
 
 // FleetEnvironmentChange reports whether a linked action changes a machine's
@@ -60,7 +60,7 @@ func FleetEnvironmentChange(name, action string) bool {
 
 // FolderEnvironmentDescription is the manage_projects description of the
 // environment actions (kept short: the Orchestrator's tool budget).
-const FolderEnvironmentDescription = " Folder environments: list_environments, get/update/rebuild_environment (workspace_path; machine ok)."
+const FolderEnvironmentDescription = " Folder environments: list_environments, get/update/rebuild_environment (workspace_path; machine ok); wait_environment watches a build like wait_tasks (a new turn brings its outcome; cancel_watch with workspace_path stops it)."
 
 // FolderEnvironmentUpdateDescription is update_environment's description:
 // it merges whatever names the folder (workspace_path, or project and
@@ -125,8 +125,9 @@ func FolderEnvironmentUpdateConflict(args map[string]any) error {
 // folderEnvironmentSwarmShaped reports a get_environment or
 // update_environment call in the shape swarm_get_environment and
 // swarm_set_environment took: a project's folder (project, workspace, or no
-// workspace_path), the build log, or reset. Those run the swarm_* handlers
-// (CatalogActionService); a folder named by workspace_path runs here.
+// workspace_path), or reset. Those run the swarm_* handlers
+// (CatalogActionService); a folder named by workspace_path runs here, its
+// log (include_log, log_offset) included.
 func folderEnvironmentSwarmShaped(action string, args map[string]any) bool {
 	if action != FolderEnvironmentGet && action != FolderEnvironmentUpdate {
 		return false
@@ -139,7 +140,42 @@ func folderEnvironmentSwarmShaped(action string, args map[string]any) bool {
 			return true
 		}
 	}
-	return asBool(args["include_log"]) || asBool(args["reset"])
+	return asBool(args["reset"])
+}
+
+// folderEnvironmentNextAction names what to do about a build that is still
+// running when the answer is given: the Orchestrator watches it
+// (wait_environment), a Swarm Control caller, which has no turn to wake,
+// waits with get_environment's wait_seconds.
+func folderEnvironmentNextAction(control bool, machine, path string) string {
+	on := ""
+	if machine != "" {
+		on = " and machine " + machine
+	}
+	if control {
+		return "Still building: get_environment with workspace_path " + path + on + " and wait_seconds (at most 110) waits for it to end; include_log reads its log so far."
+	}
+	return "Still building: wait_environment with workspace_path " + path + on + " wakes you with its outcome (ready or failed, duration, image, log tail) when it ends; get_environment include_log reads its log so far."
+}
+
+// withFolderEnvironmentNextAction adds next_action to an answer whose
+// environment is still building.
+func withFolderEnvironmentNextAction(raw json.RawMessage, control bool, machine string) json.RawMessage {
+	var answer map[string]any
+	if json.Unmarshal(raw, &answer) != nil {
+		return raw
+	}
+	view, _ := answer["environment"].(map[string]any)
+	if view == nil || view["status"] != pebblestore.SandboxEnvironmentBuilding {
+		return raw
+	}
+	path, _ := view["workspace_path"].(string)
+	answer["next_action"] = folderEnvironmentNextAction(control, machine, path)
+	out, err := json.Marshal(answer)
+	if err != nil {
+		return raw
+	}
+	return out
 }
 
 func (r *Runtime) executeFolderEnvironments(ctx context.Context, scope WorkspaceScope, action string, args map[string]any) (string, error) {
@@ -210,6 +246,9 @@ func (r *Runtime) executeFolderEnvironments(ctx context.Context, scope Workspace
 	raw, err := service.ManageFolderEnvironment(ctx, scope.Principal, machine, action, sent)
 	if err != nil {
 		return "", err
+	}
+	if action != FolderEnvironmentList {
+		raw = withFolderEnvironmentNextAction(raw, scope.ControlCaller, machine)
 	}
 	result := map[string]any{"tool": "manage_projects", "action": action, "data": raw}
 	if machine != "" {

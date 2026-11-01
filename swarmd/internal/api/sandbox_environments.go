@@ -23,7 +23,7 @@ import (
 // base image plus setup commands and environment variables), defined by the
 // person's AI and built by Swarm under gVisor (sandbox/environment.go).
 //
-//	GET    /v3/sandbox-environments?workspace_path=P[&wait_seconds=N]  (sessions:read)
+//	GET    /v3/sandbox-environments?workspace_path=P[&wait_seconds=N][&log_offset=B]  (sessions:read)
 //	GET    /v3/sandbox-environments/list                               (sessions:read)
 //	PUT    /v3/sandbox-environments  {workspace_path, base_image, setup, env, max_leases}  (sessions:write)
 //	PATCH  /v3/sandbox-environments  {workspace_path, base_image?, setup?, append_setup?, env?, unset_env?, max_leases?, wait_seconds?}  (sessions:write)
@@ -125,7 +125,16 @@ func (s *Server) handleSandboxEnvironments(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		wait, _ := strconv.Atoi(r.URL.Query().Get("wait_seconds"))
-		view, err := s.GetSandboxEnvironment(r.Context(), principal, r.URL.Query().Get("workspace_path"), wait)
+		var logOffset *int
+		if raw := strings.TrimSpace(r.URL.Query().Get("log_offset")); raw != "" {
+			offset, err := strconv.Atoi(raw)
+			if err != nil || offset < 0 {
+				writeError(w, http.StatusBadRequest, errors.New("log_offset must be a byte offset (a whole number, 0 or more)"))
+				return
+			}
+			logOffset = &offset
+		}
+		view, err := s.GetSandboxEnvironmentLog(r.Context(), principal, r.URL.Query().Get("workspace_path"), wait, logOffset)
 		if err != nil {
 			writeError(w, sandboxEnvironmentStatus(err, http.StatusInternalServerError), err)
 			return
@@ -265,8 +274,15 @@ func (s *Server) sandboxEnvironmentStore() error {
 }
 
 // GetSandboxEnvironment is a folder's environment view, waiting up to wait
-// seconds while its build runs in this process.
+// seconds while its build runs in this process; its log page is the last.
 func (s *Server) GetSandboxEnvironment(ctx context.Context, p identity.Principal, path string, wait int) (map[string]any, error) {
+	return s.GetSandboxEnvironmentLog(ctx, p, path, wait, nil)
+}
+
+// GetSandboxEnvironmentLog is GetSandboxEnvironment with the log page that
+// starts at logOffset (nil: the last page): the running build's log so far,
+// else the last build's, with the running build's step.
+func (s *Server) GetSandboxEnvironmentLog(ctx context.Context, p identity.Principal, path string, wait int, logOffset *int) (map[string]any, error) {
 	if err := s.sandboxEnvironmentStore(); err != nil {
 		return nil, err
 	}
@@ -281,7 +297,7 @@ func (s *Server) GetSandboxEnvironment(ctx context.Context, p identity.Principal
 	if found && env.Account != p.AccountScopeID {
 		found = false
 	}
-	view := sandboxEnvironmentView(root, env, found)
+	view := s.sandboxEnvironmentDetail(sandboxEnvironmentView(root, env, found), env, found, logOffset)
 	if manager := environmentManager(); manager != nil {
 		view["leases_in_use"] = manager.LeasesInUse(root)
 	}
@@ -310,9 +326,8 @@ func (s *Server) ListSandboxEnvironments(_ context.Context, p identity.Principal
 		if _, err := s.environmentFolder(p, env.WorkspacePath); err != nil {
 			continue
 		}
-		view := sandboxEnvironmentView(env.WorkspacePath, env, true)
-		delete(view, "log") // list stays short; get returns the log
-		views = append(views, view)
+		// The list stays short: get_environment returns the log.
+		views = append(views, sandboxEnvironmentView(env.WorkspacePath, env, true))
 	}
 	return views, nil // ordered by folder path (SandboxEnvironmentStore.List)
 }
@@ -360,7 +375,7 @@ func (s *Server) DefineSandboxEnvironment(ctx context.Context, p identity.Princi
 	if build {
 		s.startSandboxEnvironmentBuild(env)
 	}
-	return sandboxEnvironmentView(root, env, true), build, nil
+	return s.sandboxEnvironmentDetail(sandboxEnvironmentView(root, env, true), env, true, nil), build, nil
 }
 
 // UpdateSandboxEnvironment merges change into a folder's definition: fields
@@ -418,7 +433,9 @@ func (s *Server) UpdateSandboxEnvironment(ctx context.Context, p identity.Princi
 		return nil, false, envRefusal(http.StatusNotFound, pebblestore.ErrSandboxEnvironmentNotFound)
 	}
 	view, build, err := s.DefineSandboxEnvironment(ctx, p, root, def, change.MaxLeases)
-	if err != nil || !build || change.WaitSeconds <= 0 {
+	// The wait holds while this definition builds, whether this call
+	// started the build or one was already running for it.
+	if err != nil || change.WaitSeconds <= 0 || view["status"] != pebblestore.SandboxEnvironmentBuilding {
 		return view, build, err
 	}
 	view, err = s.GetSandboxEnvironment(ctx, p, root, change.WaitSeconds)
@@ -451,7 +468,7 @@ func (s *Server) RebuildSandboxEnvironment(ctx context.Context, p identity.Princ
 	if wait > 0 {
 		return s.GetSandboxEnvironment(ctx, p, root, wait)
 	}
-	return sandboxEnvironmentView(root, env, true), nil
+	return s.sandboxEnvironmentDetail(sandboxEnvironmentView(root, env, true), env, true, nil), nil
 }
 
 // ResetSandboxEnvironment removes a folder's environment: it runs on Swarm's
@@ -517,8 +534,12 @@ func (s *Server) environmentFolder(p identity.Principal, path string) (string, e
 func (s *Server) startSandboxEnvironmentBuild(env pebblestore.SandboxEnvironment) {
 	builder := s.environmentBuilder()
 	done := s.sandboxEnvironmentWaiter(env.WorkspacePath)
+	progress := s.startSandboxEnvironmentProgress(env)
 	go func() {
 		defer s.finishSandboxEnvironmentWaiter(env.WorkspacePath, done)
+		// The outcome is stored before the progress goes, so a read always
+		// finds the log: the running build's, then the stored one.
+		defer s.endSandboxEnvironmentProgress(env.WorkspacePath, progress)
 		if builder == nil {
 			_, _ = s.sandboxEnvironments.Finish(env.WorkspacePath, env.Hash, "", "", "", errors.New(sandbox.EnvironmentsOffMessage))
 			return
@@ -531,6 +552,8 @@ func (s *Server) startSandboxEnvironmentBuild(env pebblestore.SandboxEnvironment
 			BaseImage: env.Definition.BaseImage,
 			Setup:     env.Definition.Setup,
 			Env:       env.Definition.Env,
+			OnLog:     progress.appendLog,
+			OnStep:    progress.setStep,
 		})
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) && err != nil {
 			err = errors.New("the build took longer than 30 minutes and was stopped: " + err.Error())
@@ -581,8 +604,9 @@ func (s *Server) waitSandboxEnvironment(ctx context.Context, root string, second
 	return s.sandboxEnvironments.Get(root)
 }
 
-// sandboxEnvironmentView is the API shape: the definition, its build state,
-// what the folder's sandbox runs on now, and the build log tail.
+// sandboxEnvironmentView is the API shape: the definition, its build state
+// and what the folder's sandbox runs on now. sandboxEnvironmentDetail adds
+// the build's progress, last outcome and log.
 func sandboxEnvironmentView(root string, env pebblestore.SandboxEnvironment, found bool) map[string]any {
 	if !found {
 		return map[string]any{"workspace_path": root, "defined": false, "runs_on": "Swarm's default environment"}
@@ -597,9 +621,6 @@ func sandboxEnvironmentView(root string, env pebblestore.SandboxEnvironment, fou
 	}
 	if env.Error != "" {
 		view["error"] = env.Error
-	}
-	if env.Log != "" {
-		view["log"] = env.Log
 	}
 	switch {
 	case env.ReadyImage != "" && env.ReadyHash == env.Hash:

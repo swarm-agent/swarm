@@ -180,6 +180,7 @@ type Runtime struct {
 	publishSessionOutbox func(pebblestore.V3RealtimeOutboxRecord) error
 	// backgroundWork is the durable state of background work (session_wake.go).
 	backgroundWork       backgroundWorkStore
+	envWatches           environmentWatches // environment watches followed here (folder_environment_watch.go)
 	workspace            manageWorktreeWorkspaceService
 	worktrees            manageWorktreeConfigService
 	agents               manageAgentService
@@ -3103,6 +3104,10 @@ func (r *Runtime) executeFind(parent context.Context, scope WorkspaceScope, args
 func (r *Runtime) Close() error {
 	if r != nil && r.background != nil {
 		r.background.stopAll()
+	}
+	if r != nil {
+		// Followers stop; their durable watches resume at the next start.
+		r.stopEnvironmentWatches()
 	}
 	if r == nil || r.searchCoordinator == nil {
 		return nil

@@ -67,6 +67,15 @@ type EnvironmentBuild struct {
 	BaseImage string
 	Setup     []string
 	Env       map[string]string
+	// OnLog, when set, receives each piece of the build log as it is
+	// written (the same text the result's Log holds), so a caller can show
+	// the log while the build runs.
+	OnLog func(text string)
+	// OnStep, when set, is told each step as it starts: phase is pull,
+	// start, setup, path, check, commit or verify; step and steps number
+	// the setup commands (1-based; 0 outside setup) and command is the one
+	// running.
+	OnStep func(phase string, step, steps int, command string)
 }
 
 // EnvironmentBuildResult is the built image, its PATH and the build log.
@@ -104,11 +113,36 @@ const envBuildRuntime = "runsc-build"
 // registers envBuildRuntime.
 var ErrEnvironmentBuildRuntimeMissing = errors.New("this machine has no runsc-build runtime, so an environment build could not save what its setup commands write; update Swarm with its installer (install.sh), which registers it")
 
-type envLog struct{ b strings.Builder }
+type envLog struct {
+	b strings.Builder
+	// emit receives what is kept, as it is kept (EnvironmentBuild.OnLog).
+	emit func(string)
+	// full is set once the limit was reached and the marker written.
+	full bool
+}
+
+// envBuildLogFullMarker ends a build log that reached envBuildLogMax, so a
+// reader sees the cut instead of a log that silently stops.
+const envBuildLogFullMarker = "[build log limit reached: later output of this build is not kept]\n"
 
 func (l *envLog) add(format string, args ...any) {
-	if l.b.Len() < envBuildLogMax {
-		fmt.Fprintf(&l.b, format, args...)
+	if l.full {
+		return
+	}
+	text := fmt.Sprintf(format, args...)
+	if l.b.Len() >= envBuildLogMax {
+		l.full = true
+		text = envBuildLogFullMarker
+	}
+	l.b.WriteString(text)
+	if l.emit != nil {
+		l.emit(text)
+	}
+}
+
+func (b EnvironmentBuild) step(phase string, step, steps int, command string) {
+	if b.OnStep != nil {
+		b.OnStep(phase, step, steps, command)
 	}
 }
 
@@ -132,7 +166,7 @@ func (m *Manager) BuildEnvironment(ctx context.Context, b EnvironmentBuild) (Env
 	if m.Local() {
 		return EnvironmentBuildResult{}, fmt.Errorf("container image builds are unavailable with bubblewrap")
 	}
-	log := &envLog{}
+	log := &envLog{emit: b.OnLog}
 	result := func(err error) (EnvironmentBuildResult, error) {
 		return EnvironmentBuildResult{Log: log.b.String()}, err
 	}
@@ -166,6 +200,7 @@ func (m *Manager) BuildEnvironment(ctx context.Context, b EnvironmentBuild) (Env
 	}
 
 	if _, err := m.runner.Run(ctx, engine, "image", "inspect", "--format", "{{.Id}}", b.BaseImage); err != nil {
+		b.step("pull", 0, len(b.Setup), "pull "+b.BaseImage)
 		log.add("$ pull %s\n", b.BaseImage)
 		out, err := m.runner.RunCombined(ctx, engine, "pull", b.BaseImage)
 		log.output(out)
@@ -215,12 +250,14 @@ func (m *Manager) BuildEnvironment(ctx context.Context, b EnvironmentBuild) (Env
 		args = append(args, "--env", key+"="+b.Env[key])
 	}
 	args = append(args, "--entrypoint", "sleep", b.BaseImage, "infinity")
+	b.step("start", 0, len(b.Setup), "start the build container from "+b.BaseImage)
 	if out, err := m.runner.RunCombined(ctx, engine, args...); err != nil {
 		log.output(out)
 		return result(fmt.Errorf("could not start the build container from %s (it needs a sleep command): %w", b.BaseImage, err))
 	}
 
 	for i, command := range b.Setup {
+		b.step("setup", i+1, len(b.Setup), command)
 		log.add("$ %s\n", command)
 		out, err := m.runner.RunCombined(ctx, engine, append([]string{"exec", "-u", "0", "-w", "/", name}, withImageBuildUmask("/bin/sh", "-c", command)...)...)
 		log.output(out)
@@ -232,6 +269,7 @@ func (m *Manager) BuildEnvironment(ctx context.Context, b EnvironmentBuild) (Env
 	// Agents' commands run in a login shell (bash -lc), and a distribution's
 	// login profile resets PATH (Debian drops Go's bin folder, for one).
 	// Put the image's own PATH back for login shells.
+	b.step("path", 0, len(b.Setup), "keep the image's PATH for login shells")
 	log.add("$ keep the image's PATH for login shells\n")
 	out, err := m.runner.RunCombined(ctx, engine, append([]string{"exec", "-u", "0", "-w", "/", name}, withImageBuildUmask("/bin/sh", "-c", envProfileScript)...)...)
 	log.output(out)
@@ -243,6 +281,7 @@ func (m *Manager) BuildEnvironment(ctx context.Context, b EnvironmentBuild) (Env
 	// image; Swarm's own Git and the agents' commands (a login shell) need
 	// bash and git.
 	check := "git --version && bash --version | head -n 1"
+	b.step("check", 0, len(b.Setup), check)
 	log.add("$ %s (as an unprivileged user, in a login shell)\n", check)
 	out, err = m.runner.RunCombined(ctx, engine, append([]string{"exec", "-u", strconv.Itoa(m.cfg.UID) + ":" + strconv.Itoa(m.cfg.GID), "-e", "HOME=/tmp", "-w", "/tmp", name}, withSandboxUmask("bash", "-lc", check)...)...)
 	log.output(out)
@@ -250,6 +289,7 @@ func (m *Manager) BuildEnvironment(ctx context.Context, b EnvironmentBuild) (Env
 		return result(fmt.Errorf("the environment must provide bash and git for an unprivileged user (add them in setup, for example apt-get install -y bash git): %w", err))
 	}
 
+	b.step("commit", 0, len(b.Setup), "commit "+b.Image)
 	log.add("$ commit %s\n", b.Image)
 	out, err = m.runner.RunCombined(ctx, engine, "commit",
 		"--change", "ENTRYPOINT []",
@@ -263,6 +303,7 @@ func (m *Manager) BuildEnvironment(ctx context.Context, b EnvironmentBuild) (Env
 	}
 	// Prove the saved image holds what the build wrote: a fresh container
 	// from it must see the PATH script written above.
+	b.step("verify", 0, len(b.Setup), "check the saved image in a new container")
 	log.add("$ check the saved image in a new container\n")
 	if err := m.savedImageComplete(ctx, runtime, b.Image); err != nil {
 		_, _ = m.runner.Run(context.WithoutCancel(ctx), engine, "image", "rm", b.Image)

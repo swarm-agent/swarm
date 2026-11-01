@@ -158,7 +158,8 @@ type Server struct {
 	sandboxEnvironments     *pebblestore.SandboxEnvironmentStore
 	envBuildMu              sync.Mutex
 	envBuildDone            map[string]chan struct{}
-	envBuilder              sandboxEnvironmentBuilder // nil: the machine's Docker manager (environmentManager)
+	envBuildLive            map[string]*sandboxEnvironmentProgress // builds running in this process (sandbox_environment_progress.go)
+	envBuilder              sandboxEnvironmentBuilder              // nil: the machine's Docker manager (environmentManager)
 	signalSinks             *pebblestore.SignalSinkStore
 	outboxStatus            func() outbox.Status
 	jobAutomations          *jobautomation.Runner

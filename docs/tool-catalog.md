@@ -723,8 +723,8 @@ and on a linked machine:
 | State | Meaning |
 | --- | --- |
 | `ok` | The call did what it was asked. |
-| `watching` | The Orchestrator's `wait_tasks` recorded a watch; a new turn brings the outcomes. Its `data.notice` says what to tell the person, and its `next_action` says a new turn comes when a watched task reaches a milestone and that `cancel_watch` stops it. |
-| `cancelled` | `cancel_watch` (or `wait_tasks` with `cancel`) ended watches. |
+| `watching` | The Orchestrator's `wait_tasks` or `wait_environment` recorded a watch; a new turn brings the outcomes. Its `data.notice` says what to tell the person, and its `next_action` says a new turn comes when a watched task reaches a milestone (or the watched environment build ends) and that `cancel_watch` stops it. |
+| `cancelled` | `cancel_watch` (or `wait_tasks` with `cancel`) ended watches; with `workspace_path`, an environment watch. |
 | `milestone`, `settled`, `timed_out` | Swarm Control's `wait_tasks` (below). |
 | `partial` | The call ran but part of its answer is missing: the home could not keep its record of a send (`linked_record_error`) or could not read the machine's answer (`data_error`). |
 | `waiting` | The record the call read or changed waits on someone: a job waiting on its question or an approval (`CatalogAction.WaitingStatuses`). Its own status stays in `data`. |

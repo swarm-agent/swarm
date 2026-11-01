@@ -84,8 +84,8 @@ func manageProjectsFields() []CatalogField {
 		{"client_request_id", str("Stable retry key; required for reopen_task")},
 		{"workspaces", map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "create/update: [{path, role, label}]"}},
 		{"project_context", str("project.md text")},
-		{"wait_seconds", map[string]any{"type": "integer", "minimum": 0, "maximum": ControlTaskWaitMaxSeconds, "description": "Swarm Control: how long to hold the call (at most 110): wait_tasks until a milestone (default 60); get until project.md is written, propose_task until the task settles, get_environment and update_environment while it builds (default 0)"}},
-		{"environment", map[string]any{"type": "object", "description": "update_environment merge: base_image, append_setup, setup (replaces), env, unset_env, max_leases; wait_seconds"}},
+		{"wait_seconds", map[string]any{"type": "integer", "minimum": 0, "maximum": ControlTaskWaitMaxSeconds, "description": "Swarm Control: how long to hold the call (at most 110): wait_tasks until a milestone (default 60); get until project.md is written, propose_task until the task settles, get_environment, update_environment and rebuild_environment until the build ends (default 0; the answer's wait says whether it ended)"}},
+		{"environment", map[string]any{"type": "object", "description": "update_environment merge: base_image, append_setup, setup (replaces), env, unset_env, max_leases; wait_seconds holds until the build ends (at most 110; wait says whether it did)"}},
 		{"path", str("get_task_changes: only this file or folder; read_task_file: the file or folder (relative to the task's working folder)")},
 		{"diff_chars", map[string]any{"type": "integer", "minimum": 0, "maximum": 200000, "description": "get_task_changes: diff characters to include (default 20000; 0 lists files only)"}},
 		{"page_offset", map[string]any{"type": "integer", "minimum": 0, "description": "get_task_changes: from next"}},
@@ -95,7 +95,8 @@ func manageProjectsFields() []CatalogField {
 		{"workspace", str("propose_task: a registered workspace path (absolute) or id, the same as workspace_path or workspace_id; get_environment, update_environment: which of the project's folders")},
 		{"project", str("get_environment, update_environment: the project (id or name) whose folder; the only project when omitted")},
 		{"model", map[string]any{"type": "object", "required": []string{"provider", "model", "thinking"}, "description": "propose_task, Swarm Control: the task's model (provider, model, thinking, optional fast) instead of its agent's", "properties": map[string]any{"provider": map[string]any{"type": "string"}, "model": map[string]any{"type": "string"}, "thinking": map[string]any{"type": "string"}, "fast": map[string]any{"type": "boolean"}}}},
-		{"include_log", map[string]any{"type": "boolean", "description": "get_environment: the build log (always when it failed)"}},
+		{"include_log", map[string]any{"type": "boolean", "description": "get_environment: a page of the build log (the running build's so far, else the last build's; always when it failed), with log_page (offset, next_offset, total_bytes, more) and progress (setup step and command) while building"}},
+		{"log_offset", map[string]any{"type": "integer", "minimum": 0, "description": "get_environment: read the build log from this byte offset (a log_page's next_offset); omit for the last page"}},
 		{"base_image", str("update_environment: the image to start from")},
 		{"setup", map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "update_environment: setup commands (replaces)"}},
 		{"append_setup", map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "update_environment: commands added after the current setup"}},
@@ -141,8 +142,8 @@ func manageProjectsCatalog() CatalogTool {
 			Description: "Send a self-contained brief to an agent (coder, finder, designer or swarm); under Start tasks auto it starts at once."},
 		{Action: "wait_tasks", Inputs: []string{"machine", "project_id", "task_ids", "task_id", "until", "milestones"}, ControlInputs: []string{"wait_seconds"}, Level: read, Reach: anyM, Profiles: core, Untrusted: true,
 			Description: "Wait for tasks. The Orchestrator's watch returns at once and a new turn brings their outcomes. A Swarm Control caller has no turn to wake, so the call waits until a listed task reaches its next milestone (started, needs you, review, sent back, landed, done, failed, stopped) or wait_seconds passes, then returns the tasks as get_task reads them; state says milestone, settled or timed_out."},
-		{Action: "cancel_watch", Inputs: []string{"machine", "project_id", "task_ids"}, Level: read, Reach: anyM, Profiles: orchestrator,
-			Description: "Stop watching tasks (omit task_ids: all)."},
+		{Action: "cancel_watch", Inputs: []string{"machine", "project_id", "task_ids", "workspace_path"}, Level: read, Reach: anyM, Profiles: orchestrator,
+			Description: "Stop watching tasks (omit task_ids: all), or with workspace_path (and machine) an environment build."},
 		{Action: "get_task", Inputs: with(projectTask, "machine", "detail", "cursor", "limit", "include_diff", "diff_chars"), Level: read, Reach: anyM, Profiles: core, Untrusted: true,
 			Description: "Read a task's state, result and review findings; detail adds plan, attempts, files or the full record; detail flow reads where its time and tokens went."},
 		{Action: ProjectFlowAction, Inputs: []string{"project_id", "period"}, Level: read, Reach: home, Profiles: core, Untrusted: true,
@@ -203,11 +204,13 @@ func manageProjectsCatalog() CatalogTool {
 			Description: "Read a source folder or a task result's files (read, list, search, find)."},
 		{Action: FolderEnvironmentList, Inputs: []string{"machine"}, Level: read, Reach: anyM, Profiles: full,
 			Description: "List folder environments."},
-		{Action: FolderEnvironmentGet, Inputs: []string{"machine", "workspace_path", "project", "workspace", "include_log"}, ControlInputs: []string{"wait_seconds"}, Level: read, Reach: anyM, Profiles: full,
-			Description: "Read a folder's environment: status, build log and leases."},
+		{Action: FolderEnvironmentGet, Inputs: []string{"machine", "workspace_path", "project", "workspace", "include_log", "log_offset"}, ControlInputs: []string{"wait_seconds"}, Level: read, Reach: anyM, Profiles: full,
+			Description: "Read a folder's environment: status, the running build's step, the last build's outcome, the build log (include_log; log_offset pages it) and leases."},
+		{Action: FolderEnvironmentWait, Inputs: []string{"machine", "workspace_path"}, Level: read, Reach: anyM, Profiles: orchestrator,
+			Description: "Watch a folder's environment build. Returns at once: tell the person, end your turn; a new turn brings the outcome when the build ends (ready or failed, duration, image, last log lines). No build running: the last outcome now. cancel_watch with workspace_path stops it."},
 		{Action: FolderEnvironmentUpdate, Inputs: []string{"machine", "workspace_path", "environment", "project", "workspace", "base_image", "setup", "append_setup", "env", "unset_env", "max_leases", "rebuild", "reset", "replace"}, ControlInputs: []string{"wait_seconds"}, Level: write, Reach: anyM, Profiles: full,
 			Description: FolderEnvironmentUpdateDescription},
-		{Action: FolderEnvironmentRebuild, Inputs: []string{"machine", "workspace_path"}, Level: write, Reach: anyM, Profiles: full,
+		{Action: FolderEnvironmentRebuild, Inputs: []string{"machine", "workspace_path"}, ControlInputs: []string{"wait_seconds"}, Level: write, Reach: anyM, Profiles: full,
 			Description: "Rebuild a folder's environment."},
 		{Action: "create_task", Inputs: proposeInputs, Level: write, Reach: anyM, Profiles: unlisted,
 			Description: "Alias of propose_task."},
@@ -241,15 +244,16 @@ func manageProjectsCatalog() CatalogTool {
 	routeScopes := map[string][]string{
 		"list_machines": sessionRead, FleetAgentsAtWorkAction: sessionRead, FleetMachineStatusAction: sessionRead,
 		FleetTaskSessionAction: sessionRead, FleetMachineActivityAction: sessionRead, "read_task_session": sessionRead,
-		FolderEnvironmentList: sessionRead, FolderEnvironmentGet: sessionRead,
+		FolderEnvironmentList: sessionRead, FolderEnvironmentGet: sessionRead, FolderEnvironmentWait: sessionRead,
 		FolderEnvironmentUpdate: sessionWrite, FolderEnvironmentRebuild: sessionWrite,
 		ResolveTaskPermissionAction: sessionWrite, TaskChangesAction: sessionRead, TaskFileAction: sessionRead,
 	}
 	// Outcome states an answer can carry besides ok and partial
 	// (EnvelopeStates): a watch, a held wait, a cancelled watch.
 	states := map[string][]string{
-		"wait_tasks":   {EnvelopeStateWatching, EnvelopeStateCancelled, ControlTaskWaitMilestone, ControlTaskWaitSettled, ControlTaskWaitTimedOut},
-		"cancel_watch": {EnvelopeStateCancelled},
+		"wait_tasks":          {EnvelopeStateWatching, EnvelopeStateCancelled, ControlTaskWaitMilestone, ControlTaskWaitSettled, ControlTaskWaitTimedOut},
+		"cancel_watch":        {EnvelopeStateCancelled},
+		FolderEnvironmentWait: {EnvelopeStateWatching},
 	}
 	// The next step of each action whose answer names none. An action with
 	// nothing to do next has none.
@@ -269,8 +273,9 @@ func manageProjectsCatalog() CatalogTool {
 		"create":                    "propose_task sends work to the new project.",
 		"list_sources":              "propose_task with a ready source's workspace_path sends work there.",
 		FolderEnvironmentList:       "get_environment with a folder's workspace_path reads one.",
-		FolderEnvironmentUpdate:     "get_environment reads its build status.",
-		FolderEnvironmentRebuild:    "get_environment reads its build status.",
+		FolderEnvironmentUpdate:     "get_environment reads its build status; wait_environment watches a build.",
+		FolderEnvironmentRebuild:    "get_environment reads its build status; wait_environment watches a build.",
+		FolderEnvironmentWait:       EnvironmentWatchNextAction,
 		"message_task":              "wait_tasks follows the task.",
 		"stop_task":                 "message_task resumes it.",
 		"reopen_task":               "wait_tasks follows the task.",
@@ -298,7 +303,7 @@ func manageProjectsCatalog() CatalogTool {
 		"list_media": {"project_id"}, "get_media": {"project_id", "id"},
 		"create": {"name", "client_request_id"}, "delete": {"id"},
 		"list_sources": {"project_id"}, "inspect_source": {"project_id"},
-		FolderEnvironmentRebuild: {"workspace_path"},
+		FolderEnvironmentRebuild: {"workspace_path"}, FolderEnvironmentWait: {"workspace_path"},
 	}
 	for i := range actions {
 		actions[i].Tool = manageProjectsToolName
