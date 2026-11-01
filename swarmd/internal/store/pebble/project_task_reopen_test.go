@@ -104,6 +104,7 @@ func TestProjectTaskStateReasonNamesReopenCause(t *testing.T) {
 		{"sent_back (round 1)", "sent_back (round 1); the agent addresses the findings"},
 		{"sent_back (round 2) rebase: push failed: exited with code 1", "rebase (round 2): review passed; push failed: exited with code 1"},
 		{"sent_back (round 1) fix: check failed: exited with code 2", "sent_back (round 1): check failed: exited with code 2"},
+		{"sent_back (round 1) error: gate could not run (script_missing)", "sent_back (round 1): gate could not run (script_missing)"},
 	} {
 		state, reason := ProjectTaskState(task, tc.outcome, false, false)
 		if state != ProjectTaskStateRunning || reason != tc.reason || ProjectTaskBucket(task, tc.outcome, false, false) != ProjectTaskCountInProgress {
@@ -113,6 +114,19 @@ func TestProjectTaskStateReasonNamesReopenCause(t *testing.T) {
 		if !ok || reopen.Outcome() != tc.outcome {
 			t.Fatalf("outcome %q does not round-trip: %+v %v", tc.outcome, reopen, ok)
 		}
+	}
+	// A reopen an `if status: error` condition sent is step_error end to end:
+	// kept by Normalized, its own outcome word, and a milestone that does not
+	// read as a review block.
+	stepErr := ProjectTaskReopen{Round: 1, Cause: ProjectTaskReopenStepError, Failure: "gate could not run (script_missing)"}
+	if got := stepErr.Normalized(); got.Cause != ProjectTaskReopenStepError || got.Failure == "" {
+		t.Fatalf("step_error normalized away: %+v", got)
+	}
+	if parsed, ok := ParseProjectTaskReopenOutcome(stepErr.Outcome()); !ok || parsed.Cause != ProjectTaskReopenStepError {
+		t.Fatalf("step_error outcome %q parsed as %+v %v", stepErr.Outcome(), parsed, ok)
+	}
+	if got := stepErr.Milestone(); got != "sent back (round 1): gate could not run (script_missing)" {
+		t.Fatalf("step_error milestone = %q", got)
 	}
 	if _, ok := ParseProjectTaskReopenOutcome("pushed abcdef123456"); ok {
 		t.Fatal("a pushed outcome parsed as a reopen")

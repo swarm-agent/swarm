@@ -136,7 +136,8 @@ type V3ProjectTaskWaitProgress struct {
 	WorkflowRound    int    `json:"workflow_round,omitempty"`
 	// ReopenCause and ReopenFailure say why the shown delivery's reopen step
 	// sends (or sent) the work back (ProjectTaskReopen): review_block,
-	// push_failed (review passed, the push failed: rebase) or check_failed,
+	// push_failed (review passed, the push failed: rebase), check_failed or
+	// step_error (a run step could not run),
 	// with the failed step's short reason. WorkflowRound is then the
 	// follow-up's round.
 	ReopenCause   string `json:"reopen_cause,omitempty"`

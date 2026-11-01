@@ -402,8 +402,10 @@ without reading it; with the conversation idle, it starts a new turn.
 A watch also wakes on milestones (`milestones`, default on; `wait_tasks
 milestones=false` turns them off): review started, sent back (round N) by
 a review block, rebase needed (round N): <failure> when the review passed and
-the push failed (rows carry `reopen_cause`: `review_block`, `push_failed` or
-`check_failed`, the full `reopen_failure`, and `workflow_steps_result`),
+the push failed (rows carry `reopen_cause`: `review_block`, `push_failed`,
+`check_failed`, or `step_error` when an `if status: error` reopen sent it back
+because a run step could not run; the full `reopen_failure`, and
+`workflow_steps_result`),
 landed (pushed with its commit, delivered or merged), blocked or failed. A
 milestone wake keeps the watch. At most one milestone wake per watch per
 minute: stages reached within the minute are coalesced into the next wake,

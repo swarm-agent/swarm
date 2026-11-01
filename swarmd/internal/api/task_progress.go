@@ -107,7 +107,8 @@ type taskProgressDelivery struct {
 	// ReopenCause, ReopenFailure and ReopenRound describe the reopen step
 	// the delivery stands at (sent_back, or a reopen step running):
 	// review_block (findings to address), push_failed (the review passed,
-	// the push failed: rebase) or check_failed, the failed step's short
+	// the push failed: rebase), check_failed or step_error (a run step
+	// could not run: its `if status: error` condition), the failed step's short
 	// reason and the follow-up's round (deliveryReopen).
 	ReopenCause   string `json:"reopen_cause,omitempty"`
 	ReopenFailure string `json:"reopen_failure,omitempty"`

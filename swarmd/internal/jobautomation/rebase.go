@@ -279,8 +279,9 @@ func (r *Runner) syncTaskBranch(ctx context.Context, d *Delivery, stepID, from s
 
 // HandoverRerunStep is the failed run step a same-head hand-over of the job
 // re-runs the delivery from: the delivery failed on a run step, or a reopen
-// step sent the work back because a run step failed (ReopenCause
-// check_failed or push_failed). ok is false for any other delivery (a
+// step sent the work back because a run step failed or could not run
+// (ReopenCause check_failed, push_failed or step_error: its `if status:
+// failed` or `if status: error` conditions). ok is false for any other delivery (a
 // review block, a failed agent step, one still running).
 func HandoverRerunStep(d Delivery) (stepID string, ok bool) {
 	at := handoverRerunIndex(d)
@@ -314,15 +315,17 @@ func handoverRerunIndex(d Delivery) int {
 			return -1
 		}
 		cause, _ := ReopenCause(d, d.SentBack.Step)
-		if cause != pebblestore.ProjectTaskReopenCheckFailed && cause != pebblestore.ProjectTaskReopenPushFailed {
+		switch cause {
+		case pebblestore.ProjectTaskReopenCheckFailed, pebblestore.ProjectTaskReopenPushFailed, pebblestore.ProjectTaskReopenStepError:
+		default:
 			return -1
 		}
 		step, _ := d.step(d.SentBack.Step)
 		for _, c := range step.If {
-			if c.Status != StateFailed {
+			if c.Status != StateFailed && c.Status != StateError {
 				continue
 			}
-			if at := index(c.Step); at >= 0 && d.Steps[at].Type == StepRun && d.Steps[at].State == StateFailed {
+			if at := index(c.Step); at >= 0 && d.Steps[at].Type == StepRun && d.Steps[at].State == c.Status {
 				return at
 			}
 		}

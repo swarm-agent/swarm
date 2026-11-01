@@ -21,6 +21,11 @@ const (
 	// ProjectTaskReopenCheckFailed: a step that is not a handover after a
 	// passed review (a check) failed; the agent fixes the failure.
 	ProjectTaskReopenCheckFailed = "check_failed"
+	// ProjectTaskReopenStepError: a run step could not run at all (status
+	// error: a missing or unusable script, a checkout that failed), so the
+	// reopen came from an `if status: error` condition. Nothing in the work
+	// failed; a same-head hand-over re-runs the step.
+	ProjectTaskReopenStepError = "step_error"
 )
 
 // maxProjectTaskReopenFailure bounds the failed step's reason in the one-line
@@ -47,7 +52,7 @@ type ProjectTaskReopen struct {
 func (r ProjectTaskReopen) Normalized() ProjectTaskReopen {
 	r.Round = max(r.Round, 0)
 	switch r.Cause {
-	case ProjectTaskReopenPushFailed, ProjectTaskReopenCheckFailed:
+	case ProjectTaskReopenPushFailed, ProjectTaskReopenCheckFailed, ProjectTaskReopenStepError:
 	default:
 		r.Cause = ProjectTaskReopenReviewBlock
 	}
@@ -72,7 +77,7 @@ func (r ProjectTaskReopen) labelFailure(fallback string) string {
 // Outcome is the task progress outcome for the reopen. It always starts with
 // "sent_back (round N)", the word count buckets (and older readers) keep in
 // progress; a push failure adds " rebase: <failure>", a check failure
-// " fix: <failure>".
+// " fix: <failure>", a step that could not run " error: <failure>".
 func (r ProjectTaskReopen) Outcome() string {
 	r = r.Normalized()
 	out := projectTaskSentBackOutcomePrefix + strconv.Itoa(r.Round) + ")"
@@ -81,6 +86,8 @@ func (r ProjectTaskReopen) Outcome() string {
 		out += " rebase: " + r.labelFailure("push failed")
 	case ProjectTaskReopenCheckFailed:
 		out += " fix: " + r.labelFailure("a step failed")
+	case ProjectTaskReopenStepError:
+		out += " error: " + r.labelFailure("a step could not run")
 	}
 	return out
 }
@@ -108,6 +115,8 @@ func ParseProjectTaskReopenOutcome(outcome string) (ProjectTaskReopen, bool) {
 		out.Cause, out.Failure = ProjectTaskReopenPushFailed, strings.TrimSpace(failure)
 	} else if failure, ok := strings.CutPrefix(rest, "fix:"); ok {
 		out.Cause, out.Failure = ProjectTaskReopenCheckFailed, strings.TrimSpace(failure)
+	} else if failure, ok := strings.CutPrefix(rest, "error:"); ok {
+		out.Cause, out.Failure = ProjectTaskReopenStepError, strings.TrimSpace(failure)
 	}
 	return out.Normalized(), true
 }
@@ -122,6 +131,8 @@ func (r ProjectTaskReopen) StateReason() string {
 		return "rebase (round " + round + "): review passed; " + r.labelFailure("push failed")
 	case ProjectTaskReopenCheckFailed:
 		return "sent_back (round " + round + "): " + r.labelFailure("a step failed")
+	case ProjectTaskReopenStepError:
+		return "sent_back (round " + round + "): " + r.labelFailure("a step could not run")
 	}
 	return r.Outcome() + "; the agent addresses the findings"
 }
@@ -137,6 +148,8 @@ func (r ProjectTaskReopen) Milestone() string {
 		return "rebase needed (round " + round + "): " + r.labelFailure("push failed")
 	case ProjectTaskReopenCheckFailed:
 		return "sent back (round " + round + "): " + r.labelFailure("a step failed")
+	case ProjectTaskReopenStepError:
+		return "sent back (round " + round + "): " + r.labelFailure("a step could not run")
 	}
 	return "sent back (round " + round + ")"
 }

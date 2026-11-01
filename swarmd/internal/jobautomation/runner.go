@@ -914,8 +914,10 @@ func sentBackReason(d Delivery, step Step) string {
 // ReopenCause is why the delivery's reopen step stepID sends (or sent) the
 // work back, from the conditions it runs on: push_failed when one is a failed
 // step after an agent step that passed (the review passed, the push failed:
-// rebase and retry), check_failed when it is any other failed step, else
-// review_block (a review verdict, or no failed-step condition). failure is
+// rebase and retry), step_error when the step could not run at all (state
+// error, the `if status: error` conditions: nothing in the work failed),
+// check_failed when it is any other failed step, else review_block (a
+// review verdict, or no failed-step condition). failure is
 // the failed step and its reason ("push failed: exited with code 1: …"),
 // uncapped; "" for a review block. It is the one classification every task
 // progress surface reads (pebblestore.ProjectTaskReopen names it).
@@ -947,6 +949,9 @@ func ReopenCause(d Delivery, stepID string) (cause, failure string) {
 		}
 		if reason := strings.TrimSpace(rec.Reason); reason != "" {
 			failure += ": " + reason
+		}
+		if rec.State == StateError {
+			return pebblestore.ProjectTaskReopenStepError, failure
 		}
 		for i := at - 1; i >= 0; i-- {
 			prior := d.Steps[i]

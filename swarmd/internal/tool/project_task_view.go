@@ -108,7 +108,8 @@ type projectTaskProgressRead struct {
 				Round  int    `json:"round"`
 				Reason string `json:"reason"`
 			} `json:"sent_back"`
-			// ReopenCause: review_block, push_failed or check_failed
+			// ReopenCause: review_block, push_failed, check_failed or
+			// step_error
 			// (pebblestore.ProjectTaskReopen).
 			ReopenCause string `json:"reopen_cause"`
 			// ReopenFailure is the failed step's reason (head and tail
@@ -248,7 +249,7 @@ type projectTaskWorkflow struct {
 	Reason   string `json:"reason,omitempty"`
 	// ReopenCause says why a reopen sent the work back: review_block
 	// (findings to address) or push_failed (review passed; rebase and
-	// retry), or check_failed.
+	// retry), check_failed, or step_error (a step could not run).
 	ReopenCause string `json:"reopen_cause,omitempty"`
 	// ReopenFailure is the failed step's full reason (head and tail kept
 	// past pebblestore.ProjectTaskWakeReasonRunes: ReopenFailureTruncated,
@@ -413,6 +414,8 @@ func projectTaskNext(t *pebblestore.ProjectTaskRecord, progress *projectTaskProg
 					return "wait_tasks", "review passed; agent rebases after the failed push, then the workflow retries"
 				case pebblestore.ProjectTaskReopenCheckFailed:
 					return "wait_tasks", "agent fixes the failed step"
+				case pebblestore.ProjectTaskReopenStepError:
+					return "wait_tasks", "a step could not run; the workflow re-runs it when the agent hands the work over"
 				}
 			}
 			return "wait_tasks", "agent addresses the sent-back findings"

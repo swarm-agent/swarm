@@ -139,6 +139,91 @@ func TestBackgroundBashWaitRespectsTheServerCap(t *testing.T) {
 	}
 }
 
+// Purpose: a provider that sends null for every unset optional field (a
+// status or kill call with wait_seconds: null) is served as if wait_seconds
+// were omitted, as backgroundWaitSeconds already reads null; a real
+// wait_seconds on status or kill is still refused.
+// Threat (review note): `_, hasWait := args["wait_seconds"]` counted null as
+// present, so such a provider could never read or stop its background
+// command ("wait_seconds goes with command=wait").
+// Owner: Runtime.backgroundCommandAction. Layer: the bash tool boundary over
+// the real background registry (newBGFixture), the narrowest layer that
+// parses the call's arguments.
+func TestBackgroundBashNullWaitSecondsIsOmitted(t *testing.T) {
+	f := newBGFixture(t, "s-null")
+	payload, err := f.bash(t, "s-null", map[string]any{"command": "sleep 30", "background": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := payload["background_id"].(string)
+	// A real value on status is refused and changes nothing.
+	if _, err := f.bash(t, "s-null", map[string]any{"background_id": id, "command": "status", "wait_seconds": 5}); err == nil || !strings.Contains(err.Error(), "wait_seconds goes with command=wait") {
+		t.Fatalf("status with wait_seconds 5: %v", err)
+	}
+	out, err := f.bash(t, "s-null", map[string]any{"background_id": id, "command": "status", "wait_seconds": nil})
+	if err != nil {
+		t.Fatalf("status with null wait_seconds refused: %v", err)
+	}
+	if out["status"] != backgroundStateRunning || out["still_running"] == false {
+		t.Fatalf("status answer: %#v", out)
+	}
+	if f.command(t, "s-null", id).finished() {
+		t.Fatal("a status read ended the command")
+	}
+	// No command and a null wait_seconds is a status read, not a wait.
+	if out, err := f.bash(t, "s-null", map[string]any{"background_id": id, "wait_seconds": nil}); err != nil || out["status"] != backgroundStateRunning {
+		t.Fatalf("implicit status with null wait_seconds: %v %#v", err, out)
+	} else if _, waited := out["waited_ms"]; waited {
+		t.Fatalf("null wait_seconds was taken as a wait: %#v", out)
+	}
+	if _, err := f.bash(t, "s-null", map[string]any{"background_id": id, "command": "kill", "wait_seconds": nil, "category": "update"}); err != nil {
+		t.Fatalf("kill with null wait_seconds refused: %v", err)
+	}
+	c := f.command(t, "s-null", id)
+	c.mu.Lock()
+	killed := c.killed
+	c.mu.Unlock()
+	if !killed {
+		t.Fatal("kill with null wait_seconds did not stop the command")
+	}
+}
+
+// Purpose: the bash schema leaves the wait cap to the server: wait_seconds
+// keeps minimum 1 but has no maximum, and its description states that a
+// larger value is accepted and waits the cap (maxBackgroundWaitSeconds),
+// which backgroundWaitSeconds applies (TestBackgroundBashWaitRespectsTheServerCap
+// runs a 1_000_000 wait through the tool).
+// Threat (review note): a schema maximum of 600 contradicts "a larger value
+// uses the cap", so a strict provider rejects a call the server would serve.
+// Owner: Runtime.Definitions (bash parameters). Layer: the definition the
+// provider receives.
+func TestBackgroundBashWaitSchemaLeavesTheCapToTheServer(t *testing.T) {
+	var waitField map[string]any
+	for _, d := range NewRuntime(1).Definitions() {
+		if d.Name != "bash" {
+			continue
+		}
+		props, _ := d.Parameters["properties"].(map[string]any)
+		waitField, _ = props["wait_seconds"].(map[string]any)
+	}
+	if waitField == nil {
+		t.Fatal("bash has no wait_seconds field")
+	}
+	if _, ok := waitField["maximum"]; ok {
+		t.Fatalf("wait_seconds schema sets a maximum: %#v", waitField)
+	}
+	if waitField["minimum"] != 1 {
+		t.Fatalf("wait_seconds minimum = %#v, want 1", waitField["minimum"])
+	}
+	desc, _ := waitField["description"].(string)
+	if !strings.Contains(desc, "caps it at 600") || !strings.Contains(desc, "larger value is accepted") || maxBackgroundWaitSeconds != 600 {
+		t.Fatalf("wait_seconds description does not state the cap %d: %q", maxBackgroundWaitSeconds, desc)
+	}
+	if got, err := backgroundWaitSeconds(map[string]any{"wait_seconds": float64(601)}); err != nil || got != maxBackgroundWaitSeconds {
+		t.Fatalf("601 = %d, %v; want the cap", got, err)
+	}
+}
+
 // Purpose: stopping the background registry (Runtime.Close) drains every
 // command goroutine, including its end report, before it returns, so no
 // report reaches the session store after the daemon (or a test) closes it.

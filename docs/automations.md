@@ -876,7 +876,8 @@ rerun of the task's newest delivery, found by the task (the service is
 **A same-head hand-over re-runs a failed gate.** A gate (`run` step) can fail
 for a reason outside the code: the gate script itself, a flaky test, a
 provider outage. When a task's newest delivery failed on a `run` step, or was
-sent back by a reopen step because a `run` step failed, and the task hands
+sent back by a reopen step because a `run` step failed (`if status: failed`)
+or could not run (`if status: error`, reopen cause `step_error`), and the task hands
 its work over again with no new commit (a `message_task` or `reopen_task`
 follow-up ending at the head that delivery covers, including the head an
 agent step moved it to), that hand-over creates no delivery

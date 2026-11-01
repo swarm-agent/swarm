@@ -81,7 +81,7 @@ Each workflow delivery has:
 |---|---|
 | `dev_moved` | The push needed a rebase after a passing review: the reopen was a rebase reopen (`IsRebaseReopen`), a failed step said "rebase needed", or the rebase rounds ran out. |
 | `code` | A review blocked (`review_block`), or the review rounds ran out. |
-| `gate` | A run or deliver step failed for another reason (`check_failed`, `push_failed` without a rebase). |
+| `gate` | A run or deliver step failed for another reason (`check_failed`, `step_error`, `push_failed` without a rebase). |
 | `provider` | A provider limit ended a step. |
 
 A delivery that landed or still runs has no cause.

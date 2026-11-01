@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // gitRebaseChecker is the RebaseChecker contract read with real Git in the
@@ -388,6 +390,51 @@ func TestSameHeadHandoverRerunsTheDeliveryFromTheFailedGate(t *testing.T) {
 		if len(list) != 1 || list[0].State != StateSucceeded || list[0].Steps[0].State != StateSucceeded || list[0].Steps[1].State != StateSkipped ||
 			list[0].Steps[2].State != StateSucceeded || list[0].SentBack != nil {
 			t.Fatalf("after the hand-over = %+v", list)
+		}
+	})
+
+	// Requirement: a reopen sent by an `if status: error` condition (the
+	// gate's script could not run at all) is labelled step_error, not
+	// check_failed or push_failed, and a same-head hand-over re-runs the
+	// delivery from that gate just like a failed one.
+	// Threat (review note): handoverRerunIndex looked only at `status:
+	// failed` conditions, so the gate that never ran stayed stuck until a
+	// person re-ran it by hand; ReopenCause called it a failed check.
+	t.Run("sent back because the gate could not run", func(t *testing.T) {
+		h, folder := setup(t, []Step{
+			{ID: "gate", Type: StepRun, Command: "absent-gate.sh", ContinueOnFailure: true},
+			{ID: "back", Type: StepReopen, Message: "The gate could not run.", If: []Condition{{Step: "gate", Status: StateError}}},
+			{ID: "push", Type: StepRun, Command: "push.sh", If: []Condition{{Step: "gate", Status: StateSucceeded}}},
+		})
+		h.results.results["task-1"] = taskResult(folder, "task-1", "coder")
+		h.taskEnd("task-1", "", "succeeded", "task")
+		h.process()
+		first := h.deliveries(jobID)[0]
+		if first.State != StateSentBack || first.Steps[0].State != StateError || first.Steps[1].Outcome["followup"] != "followup-1" {
+			t.Fatalf("first delivery = %s %+v", first.State, first.Steps)
+		}
+		cause, failure := ReopenCause(first, "back")
+		if cause != pebblestore.ProjectTaskReopenStepError || !strings.HasPrefix(failure, "gate could not run (") {
+			t.Fatalf("reopen cause = %q %q, want step_error", cause, failure)
+		}
+		if step, ok := HandoverRerunStep(first); !ok || step != "gate" {
+			t.Fatalf("HandoverRerunStep = %q %v, want gate", step, ok)
+		}
+		// The gate script now exists: the hand-over re-runs it, no new delivery.
+		writeScript(t, folder, "absent-gate.sh", "echo gate passed\n")
+		h.taskEnd("task-1", "followup-1", "succeeded", "task")
+		h.process()
+		list := h.deliveries(jobID)
+		if len(list) != 1 || list[0].ID != first.ID || list[0].State != StateSucceeded || list[0].Reruns != 1 || list[0].HandoverRerun != "followup-1" ||
+			list[0].Steps[0].State != StateSucceeded || list[0].Steps[1].State != StateSkipped || list[0].Steps[2].State != StateSucceeded || list[0].SentBack != nil {
+			t.Fatalf("after the hand-over = %+v", list)
+		}
+		reruns := h.signalsOf("automation.delivery.rerun")
+		if len(reruns) != 1 || reruns[0].Attrs["step"] != "gate" || reruns[0].Attrs["reason"] != "handover_same_head" {
+			t.Fatalf("rerun signals = %+v", reruns)
+		}
+		if got := readFile(t, filepath.Join(folder, "pushes")); strings.Count(got, "pushed") != 1 {
+			t.Fatalf("pushes = %q", got)
 		}
 	})
 

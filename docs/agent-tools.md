@@ -98,8 +98,10 @@ call's time limit. This applies to every Swarm agent in a conversation.
   conversation is never restarted outside its task lifecycle: there the update
   is recorded without waking it.
 - **Wait by id.** Call `bash` with `background_id`, `command: "wait"` and
-  optional `wait_seconds` (default 300, at most 600; a larger value uses the
-  cap) to block until the command ends. It returns at once when the command
+  optional `wait_seconds` (default 300; the server caps it at 600, so a larger
+  value is accepted and waits 600; the schema sets no maximum) to block until
+  the command ends. A `null` `wait_seconds` counts as omitted, so `status` and
+  `kill` calls that send it are not refused. It returns at once when the command
   ends, with its state, exit code and the bounded tail of its output
   (`still_running: false`), or, when the bound passes first,
   `still_running: true` with `elapsed_ms` and `waited_ms`; call it again to

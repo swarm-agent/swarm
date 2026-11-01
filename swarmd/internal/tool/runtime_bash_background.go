@@ -643,7 +643,10 @@ func (r *Runtime) backgroundCommandAction(ctx context.Context, scope WorkspaceSc
 		return "", errors.New("background commands are unavailable here")
 	}
 	action := strings.ToLower(strings.TrimSpace(asString(args["command"])))
-	_, hasWait := args["wait_seconds"]
+	// A null wait_seconds (providers send null for unset optional fields)
+	// is absent, as backgroundWaitSeconds reads it.
+	rawWait, hasWait := args["wait_seconds"]
+	hasWait = hasWait && rawWait != nil
 	if action == "" {
 		action = "status"
 		if hasWait {
