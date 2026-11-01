@@ -50,8 +50,9 @@ func orchestratorBashProperties() map[string]map[string]any {
 		"workspace_path": {"type": "string", "description": "Authorized repository root to run in"},
 		"environment":    {"type": "string", "description": "lease_environment lease id"},
 		"timeout_ms":     {"type": "integer", "description": "Default 120000, max 1800000"},
-		"background":     {"type": "boolean", "description": "Run in background; its end is reported here"},
-		"background_id":  {"type": "string", "description": "With command status or kill"},
+		"background":     {"type": "boolean", "description": "Run in background; its end is reported here; wait with command=wait, never sleep"},
+		"background_id":  {"type": "string", "description": "With command wait (blocks until it ends), status or kill"},
+		"wait_seconds":   {"type": "integer", "description": "command=wait: at most this long (default 300, max 600)"},
 	}
 }
 

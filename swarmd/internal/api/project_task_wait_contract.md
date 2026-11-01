@@ -110,6 +110,11 @@ changing the run.
     the same list as `progress.workflow.steps_result` and the task route as
     `progress.workflow.deliveries[].steps_result` (`taskWaitProgressFor`).
   - Milestone rows are the same rows plus `milestone`.
+  - `agent_stall` (from the task progress, `pebblestore.ProjectTaskAgentStall`)
+    names how a task's running run stalls: `kind` (`sleep_polling`,
+    `long_command` or `no_activity`), `command` (the sleep or long command,
+    or the last call), `background_id` and `calls` for a poll loop, `since`
+    (RFC 3339) and `since_ms`, `for_ms` and `for`, and a one-line `reason`.
 - A ready watch fires in one canonical mutation (`session.run.tasks_ready`)
   through the session wake (`session_wake.go`, the path background command
   reports take too): it deletes the watch and appends the bounded
@@ -129,6 +134,28 @@ changing the run.
   watch per `ProjectTaskWatchMilestoneInterval` (a minute): a held milestone
   answers `*ProjectTaskWatchMilestoneDue` and the daemon checks again at its
   due time, coalescing what changed. Settling is never held.
+- Agent stalls (same switch, `milestones=false` off): a watched task whose
+  running run (a) has run nothing but `sleep` commands and status reads of one
+  background command for `agent_poll_stall_minutes` (default 10; a bash
+  `command=wait` is a real wait, not a poll), (b) has one tool call running
+  for `agent_command_stall_minutes` (default 20), or (c) has had no tool call
+  or message for `agent_idle_stall_minutes` (default 15) wakes the
+  conversation with milestone `stalled` and the row's `agent_stall`. The
+  thresholds are the account's limits (`/v3/limits`). Detection reads only the
+  run's own session events (`Server.taskAgentStall`, at most 400 events);
+  it is part of the task progress (`taskWaitProgressFor`), so `get_task` and
+  a linked machine's `get_task` carry it too. One wake per stall episode: the
+  watch keeps each task's episode (`last_stalls`: kind and start) and a
+  longer read of the same episode is not reported again; when the agent moves
+  again the episode ends without a wake and is cleared at the next wake, and
+  a later stall has a new start, so it is reported again. A stage reached in
+  the same wake shows its own milestone, its row still carrying
+  `agent_stall`. Since a stall changes no task record, the once-a-minute
+  stall check (`task_stall.go`, `noteTaskAgentStall`) publishes
+  `project.updated` for the task once per new episode: local watches
+  reconcile and a linked home's follower reads the task again. Swarm
+  Control's `wait_tasks` returns `stalled` as the milestone too
+  (`pebblestore.ProjectTaskMilestone`).
 - A watch is not ready while a succeeded delivery has a step without its
   result (the progress keeps the workflow running) or while the derived
   `task_state` is running; rows carry `task_state`/`task_state_reason`. A "Tasks settled: titles." end line
@@ -190,13 +217,16 @@ remote tasks.
   reconnect. Every
   row names `machine`, `task_id`, `attempt_id` and `session_id` and carries the
   same result fields as a local row (`summary`/`summary_source`, `failure`,
-  `reopen_failure`, `delivery_id`, `workflow_steps_result`, read from the
-  machine's `get_task` record and progress and bounded again here); only
+  `reopen_failure`, `delivery_id`, `workflow_steps_result`, `agent_stall`,
+  read from the machine's `get_task` record and progress and bounded again
+  here; an `agent_stall` of unknown kind is dropped); only
   `progress` is local and `machine` linked. The message is
   marked `untrusted_content` and says the outcomes came from that machine. Wake
   through the session wake (a note for an active run, re-delivered as a new
   turn if unread; a new turn when idle) and the ways a watch ends are the same
-  as a local watch. The follower checks the machine again on its activity
+  as a local watch, and so are milestones, the `stalled` milestone included:
+  the machine's stall check publishes `project.updated` for a new stall
+  episode, which reaches the follower through the machine's activity feed. The follower checks the machine again on its activity
   stream, its rule timer, and when `scheduleTaskWatchCheck` kicks it at a held
   milestone's due time.
 - If the machine has had no successful contact for a grace period while the

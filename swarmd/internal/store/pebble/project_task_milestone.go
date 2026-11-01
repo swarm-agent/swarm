@@ -21,9 +21,14 @@ const (
 // milestone first (projectTaskWatchMilestone: review started, sent back,
 // rebase needed, landed, blocked, failed), then the run's: needs you (a
 // pending permission or question, or a run that waits on the person),
-// done, failed, stopped or started. Empty when the task is at no
-// milestone yet (proposed, queued).
+// done, failed, stopped or started. A run whose agent stalls
+// (progress.AgentStall: sleep polling, one long command, no activity) is
+// `stalled` first, at any stage. Empty when the task is at no milestone yet
+// (proposed, queued).
 func ProjectTaskMilestone(status string, progress *V3ProjectTaskWaitProgress) string {
+	if progress != nil && progress.AgentStall != nil {
+		return ProjectTaskMilestoneStalled
+	}
 	row := projectTaskWaitProgressRow(progress)
 	row["status"] = status
 	if milestone := projectTaskWatchMilestone(row); milestone != "" {

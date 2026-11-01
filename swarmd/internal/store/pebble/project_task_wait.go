@@ -159,6 +159,9 @@ type V3ProjectTaskWaitProgress struct {
 	// (ProjectTaskState, as get_task shows it: landed, not_integrated, ...).
 	TaskState       string `json:"task_state,omitempty"`
 	TaskStateReason string `json:"task_state_reason,omitempty"`
+	// AgentStall is how the task's active run stalls (sleep polling, one
+	// long command, no activity), when it does: ProjectTaskAgentStall.
+	AgentStall *ProjectTaskAgentStall `json:"agent_stall,omitempty"`
 }
 
 // Workflow states of a task's progress (workflow.state).
@@ -206,14 +209,15 @@ func ProjectTaskWaitProgressFrom(progress any) *V3ProjectTaskWaitProgress {
 		Integration *struct {
 			State string `json:"state"`
 		} `json:"integration"`
-		TaskState       string `json:"task_state"`
-		TaskStateReason string `json:"task_state_reason"`
+		TaskState       string                 `json:"task_state"`
+		TaskStateReason string                 `json:"task_state_reason"`
+		AgentStall      *ProjectTaskAgentStall `json:"agent_stall"`
 	}
 	live := ProjectTaskProgressLive(raw)
-	if json.Unmarshal(raw, &view) != nil || (view.Workflow == nil && view.Integration == nil && view.TaskState == "" && live == nil) {
+	if json.Unmarshal(raw, &view) != nil || (view.Workflow == nil && view.Integration == nil && view.TaskState == "" && live == nil && view.AgentStall == nil) {
 		return nil
 	}
-	out := &V3ProjectTaskWaitProgress{Live: clipProjectTaskLive(live), TaskState: clipProjectTaskWaitField(view.TaskState)}
+	out := &V3ProjectTaskWaitProgress{Live: clipProjectTaskLive(live), TaskState: clipProjectTaskWaitField(view.TaskState), AgentStall: ClipProjectTaskAgentStall(view.AgentStall)}
 	// A state reason may name a failure: kept to the reason bound.
 	out.TaskStateReason, _ = ClipProjectTaskReason(view.TaskStateReason, ProjectTaskWakeReasonRunes)
 	if w := view.Workflow; w != nil {
@@ -331,6 +335,9 @@ func projectTaskWaitProgressRow(p *V3ProjectTaskWaitProgress) map[string]any {
 		if p.Live.Request != nil {
 			row["pending_request"] = p.Live.Request
 		}
+	}
+	if p.AgentStall != nil {
+		row["agent_stall"] = projectTaskAgentStallRow(p.AgentStall)
 	}
 	return row
 }

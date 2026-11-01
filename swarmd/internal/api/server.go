@@ -172,6 +172,9 @@ type Server struct {
 	taskStallGitFn    func(context.Context, pebblestore.ProjectTaskRecord) (taskStallGit, bool)
 	taskStallGitMu    sync.Mutex
 	taskStallGitCache map[string]taskStallGitEntry
+	// taskAgentStallNoted is, per task, the agent stall episode the check
+	// last announced (task_agent_stall.go); under taskStallGitMu.
+	taskAgentStallNoted map[string]string
 	// taskStallSummarized is set once this process sent (or had nothing
 	// for) the one summary of old work the check leaves alone.
 	taskStallSummarized bool

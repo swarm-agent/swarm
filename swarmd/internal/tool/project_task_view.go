@@ -90,8 +90,10 @@ type projectTaskProgressRead struct {
 	Stale   bool   `json:"stale"`
 	Idle    bool   `json:"idle"`
 	// Live is the working run's live state (pebblestore.ProjectTaskLive).
-	Live     *pebblestore.ProjectTaskLive `json:"live"`
-	Workflow *struct {
+	Live *pebblestore.ProjectTaskLive `json:"live"`
+	// AgentStall is how the running run stalls (pebblestore.ProjectTaskAgentStall).
+	AgentStall *pebblestore.ProjectTaskAgentStall `json:"agent_stall"`
+	Workflow   *struct {
 		State      string `json:"state"`
 		Deliveries []struct {
 			ID       string `json:"id"`
@@ -227,6 +229,10 @@ type projectTaskProgress struct {
 	Now      string               `json:"now,omitempty"`
 	Next     string               `json:"next,omitempty"`
 	Workflow *projectTaskWorkflow `json:"workflow,omitempty"`
+	// AgentStall is how the task's running run stalls (sleep polling, one
+	// long command, no activity): the same field a watch's `stalled`
+	// milestone row carries.
+	AgentStall *pebblestore.ProjectTaskAgentStall `json:"agent_stall,omitempty"`
 }
 
 // projectTaskWorkflow is the workflow/review loop around the task: whether it
@@ -469,6 +475,9 @@ func compactProjectTask(read projectTaskRead, remote bool) ProjectTaskView {
 	}
 	p := read.Progress
 	view.Progress.Now = t.Status
+	if p != nil {
+		view.Progress.AgentStall = pebblestore.ClipProjectTaskAgentStall(p.AgentStall)
+	}
 	if p != nil && strings.TrimSpace(p.Summary) != "" {
 		view.Progress.Now = clipBytes(p.Summary, projectTaskTextBytes)
 	}

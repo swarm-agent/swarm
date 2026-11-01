@@ -338,7 +338,7 @@ var ProjectTaskWakeRowKeys = []string{
 	"delivery_id", "workflow_steps_result",
 	"reopen_cause", "reopen_failure", "reopen_failure_truncated", "reopen_failure_more",
 	"integration_state", "task_state", "task_state_reason", "pending_request",
-	"milestone",
+	"agent_stall", "milestone",
 	// Local rows only: the task's whole progress. Linked rows only: machine.
 	"progress", "machine",
 }

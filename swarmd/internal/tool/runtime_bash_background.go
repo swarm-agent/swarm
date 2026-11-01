@@ -42,7 +42,16 @@ const (
 	// backgroundKillWait bounds how long a kill request waits for the command
 	// to end before answering.
 	backgroundKillWait = 5 * time.Second
+	// maxBackgroundWaitSeconds caps one command=wait call; a longer
+	// wait_seconds uses the cap. defaultBackgroundWaitSeconds is used when
+	// wait_seconds is omitted.
+	maxBackgroundWaitSeconds     = 600
+	defaultBackgroundWaitSeconds = 300
 )
+
+// backgroundWaitUnit is one wait_seconds unit. Tests shorten it so a capped
+// wait stays fast; production uses a second.
+var backgroundWaitUnit = time.Second
 
 // backgroundCommandBudget is the hard bound applied to a command that may run
 // in the background. Tests shorten it; production uses the named constant.
@@ -448,7 +457,7 @@ func (r *Runtime) backgroundEligible(scope WorkspaceScope) error {
 // background commands, and commands moved to the background at their limit.
 func (r *Runtime) executeBashTool(parent context.Context, scope WorkspaceScope, args map[string]any, onDelta func(string)) (string, error) {
 	if id := strings.TrimSpace(asString(args["background_id"])); id != "" {
-		return r.backgroundCommandAction(scope, id, args)
+		return r.backgroundCommandAction(parent, scope, id, args)
 	}
 	command, err := validateBashArguments(args)
 	if err != nil {
@@ -545,7 +554,7 @@ func backgroundStartedResponse(c *backgroundCommand, capture *cappedBuffer, auto
 		truncated = capture.Truncated() || capped.Capped
 	}
 	summary := fmt.Sprintf("bash %s: running in the background as %s", truncateBackgroundText(c.command, 80), c.id)
-	note := "Runs in the background. When it ends, its exit code and the end of its output are added to this conversation. Read its status and output with bash background_id=" + c.id + " command=status; stop it with command=kill."
+	note := "Runs in the background. When it ends, its exit code and the end of its output are added to this conversation. To wait for it, call bash background_id=" + c.id + " command=wait (blocks until it ends, up to wait_seconds; never sleep in a loop). Read its status with command=status; stop it with command=kill."
 	if auto {
 		summary = fmt.Sprintf("bash %s: reached its %s limit and moved to the background as %s", truncateBackgroundText(c.command, 80), limit.Round(time.Millisecond), c.id)
 	}
@@ -585,22 +594,36 @@ func truncateBackgroundText(text string, limit int) string {
 	return string(runes[:limit]) + "…"
 }
 
-// backgroundCommandAction reads (command=status) or stops (command=kill) a
-// background command of this conversation.
-func (r *Runtime) backgroundCommandAction(scope WorkspaceScope, id string, args map[string]any) (string, error) {
+// backgroundCommandAction reads (command=status), waits for (command=wait)
+// or stops (command=kill) a background command of this conversation.
+func (r *Runtime) backgroundCommandAction(ctx context.Context, scope WorkspaceScope, id string, args map[string]any) (string, error) {
 	if r == nil || r.background == nil {
 		return "", errors.New("background commands are unavailable here")
 	}
 	action := strings.ToLower(strings.TrimSpace(asString(args["command"])))
+	_, hasWait := args["wait_seconds"]
 	if action == "" {
 		action = "status"
+		if hasWait {
+			action = "wait"
+		}
 	}
-	if action != "status" && action != "kill" {
-		return "", errors.New("with background_id, command must be status or kill")
+	if action != "status" && action != "kill" && action != "wait" {
+		return "", errors.New("with background_id, command must be status, wait or kill")
+	}
+	if hasWait && action != "wait" {
+		return "", errors.New("wait_seconds goes with command=wait")
 	}
 	c, err := r.background.get(scope.SessionID, id)
 	if err != nil {
 		return "", err
+	}
+	if action == "wait" {
+		seconds, err := backgroundWaitSeconds(args)
+		if err != nil {
+			return "", err
+		}
+		return waitBackgroundCommand(ctx, c, seconds)
 	}
 	if action == "kill" {
 		c.mu.Lock()
@@ -616,6 +639,76 @@ func (r *Runtime) backgroundCommandAction(scope WorkspaceScope, id string, args 
 		}
 	}
 	return backgroundStatusResponse(c)
+}
+
+// backgroundWaitSeconds reads wait_seconds: omitted is the default, more
+// than the cap is the cap, below 1 is refused.
+func backgroundWaitSeconds(args map[string]any) (int, error) {
+	raw, ok := args["wait_seconds"]
+	if !ok || raw == nil {
+		return defaultBackgroundWaitSeconds, nil
+	}
+	var seconds int
+	switch v := raw.(type) {
+	case float64:
+		seconds = int(v)
+	case int:
+		seconds = v
+	case int64:
+		seconds = int(v)
+	case json.Number:
+		n, err := v.Int64()
+		if err != nil {
+			return 0, errors.New("wait_seconds must be a whole number of seconds")
+		}
+		seconds = int(n)
+	default:
+		return 0, errors.New("wait_seconds must be a whole number of seconds")
+	}
+	if seconds < 1 {
+		return 0, fmt.Errorf("wait_seconds must be 1..%d", maxBackgroundWaitSeconds)
+	}
+	return min(seconds, maxBackgroundWaitSeconds), nil
+}
+
+// waitBackgroundCommand blocks until the command ends or seconds pass (or
+// the call is cancelled), then answers its status: when it ended, its exit
+// code and output tail; when not, still_running with how long it has run and
+// how long this call waited.
+func waitBackgroundCommand(ctx context.Context, c *backgroundCommand, seconds int) (string, error) {
+	started := time.Now()
+	timer := time.NewTimer(time.Duration(seconds) * backgroundWaitUnit)
+	defer timer.Stop()
+	select {
+	case <-c.done:
+	case <-timer.C:
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	out, err := backgroundStatusResponse(c)
+	if err != nil {
+		return "", err
+	}
+	var response map[string]any
+	if json.Unmarshal([]byte(out), &response) != nil {
+		return out, nil
+	}
+	waited := time.Since(started)
+	response["waited_ms"] = waited.Milliseconds()
+	response["wait_seconds"] = seconds
+	if !c.finished() {
+		elapsed := time.Since(c.startedAt)
+		response["still_running"] = true
+		response["elapsed_ms"] = elapsed.Milliseconds()
+		response["summary"] = fmt.Sprintf("bash %s: still running after %s (waited %s); call command=wait again to keep waiting", truncateBackgroundText(c.command, 80), elapsed.Round(time.Second), waited.Round(time.Second))
+	} else {
+		response["still_running"] = false
+	}
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
 }
 
 func backgroundStatusResponse(c *backgroundCommand) (string, error) {

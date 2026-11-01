@@ -20,9 +20,17 @@ MCP exposes `manage_setup` actions `limits` and `set_limits`. The SDK exposes
 | swarm_children | 5 | 1–256 |
 | stall_after_minutes | 20 | 1–1440 (0 = default) |
 | run_silent_minutes | 30 | 1–1440 (0 = default) |
+| agent_poll_stall_minutes | 10 | 1–1440 (0 = default) |
+| agent_command_stall_minutes | 20 | 1–1440 (0 = default) |
+| agent_idle_stall_minutes | 15 | 1–1440 (0 = default) |
 
 `stall_after_minutes` and `run_silent_minutes` set when an unfinished task
 counts as stalled (docs/task-progress.md, "Stalled tasks").
+`agent_poll_stall_minutes`, `agent_command_stall_minutes` and
+`agent_idle_stall_minutes` set when a task's running agent counts as stalled
+for a task watch's `stalled` milestone: only sleeping and polling one
+background command, one command running, or no tool call or message
+(docs/task-progress.md, "The Orchestrator").
 
 Worker concurrency counts admitted and running jobs across this account's workers.
 An excess admission is refused, not queued; retry after capacity is released.

@@ -35,7 +35,10 @@ import (
 // folder environment build (cancel_watch takes workspace_path to stop it),
 // get_environment pages the build log (log_offset), and the environment
 // fields' descriptions say what the log, progress and held wait report.
-const manageProjectsDefinitionSHA256 = "5d37a25bcacb38fa6918d06c734dd86d9a450a67c5d4ed07af0776eaf4329dbb"
+// The agent stall milestone changed it on purpose: wait_tasks names the
+// `stalled` milestone and its agent_stall row, and milestones says it covers
+// agent stalls.
+const manageProjectsDefinitionSHA256 = "bc17d2149bcf9f0e377695e8d006f360d4da2054758e80895c88a7ed2c7f6fab"
 
 // Purpose: the catalog is the only place manage_projects exists. The
 // Orchestrator's definition is generated from the declarations and stays the

@@ -3,6 +3,7 @@ package pebblestore
 import (
 	"encoding/json"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -159,7 +160,8 @@ func TestProjectTaskWakeRowCarriesWorkflowStepResults(t *testing.T) {
 // local one from the same task data (only progress is local and machine
 // linked), and every key either row has is a declared wake row key. Threat:
 // the remote path dropping the final message, the full failure or the step
-// results, or a new field added to one builder only. Boundary:
+// results, the agent stall (agent_stall, the `stalled` milestone's detail),
+// or a new field added to one builder only. Boundary:
 // projectTaskWatchLocalOutcome and projectTaskWatchRemoteOutcome over a
 // temporary real store, both through prepareProjectTaskWatchWake.
 func TestProjectTaskWakeRowLocalAndLinkedShapesMatch(t *testing.T) {
@@ -167,6 +169,7 @@ func TestProjectTaskWakeRowLocalAndLinkedShapesMatch(t *testing.T) {
 	stored, _ := ClipProjectTaskResultTail(final, ProjectTaskWakeResultBytes)
 	long := "HEAD-REASON " + strings.Repeat("middle detail ", 600) + " TAIL-REASON"
 	progress := wakeStepResultsProgress("push failed: " + long)
+	progress["agent_stall"] = map[string]any{"kind": ProjectTaskAgentStallSleepPolling, "command": "sleep 290", "background_id": "bg_1", "calls": 4, "since": 1790000000000, "for_ms": 660000}
 
 	f, stub := newSettledWaitFixture(t, filepath.Join(t.TempDir(), "store"), "task")
 	f.register("", "task")
@@ -206,7 +209,10 @@ func TestProjectTaskWakeRowLocalAndLinkedShapesMatch(t *testing.T) {
 			t.Fatalf("wake row key %q is not in ProjectTaskWakeRowKeys", k)
 		}
 	}
-	for _, key := range []string{"summary", "summary_source", "result_truncated", "result_bytes", "failure", "failure_truncated", "reopen_failure", "reopen_failure_truncated", "workflow_steps_result", "delivery_id"} {
+	if !reflect.DeepEqual(local["agent_stall"], remote["agent_stall"]) || local["agent_stall"] == nil {
+		t.Fatalf("agent_stall differs: local %v linked %v", local["agent_stall"], remote["agent_stall"])
+	}
+	for _, key := range []string{"summary", "summary_source", "result_truncated", "result_bytes", "failure", "failure_truncated", "reopen_failure", "reopen_failure_truncated", "workflow_steps_result", "delivery_id", "agent_stall"} {
 		if _, ok := remote[key]; !ok {
 			t.Fatalf("linked wake row lacks %s: %v", key, remote)
 		}

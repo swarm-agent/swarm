@@ -114,7 +114,7 @@ func TestTaskWakeStepResultsMatchAcrossAPIWakeAndMCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"summary_source", "`handoff`", "read_full_args", "result_bytes", "failure_truncated", "reopen_failure_truncated", "reopen_failure_more", "delivery_id", "workflow_steps_result", "steps_result", "output_tail", "blocking", "ProjectTaskWakeRowKeys"} {
+	for _, key := range []string{"summary_source", "`handoff`", "read_full_args", "result_bytes", "failure_truncated", "reopen_failure_truncated", "reopen_failure_more", "delivery_id", "workflow_steps_result", "steps_result", "output_tail", "blocking", "ProjectTaskWakeRowKeys", "agent_stall", "`stalled`", "sleep_polling", "long_command", "no_activity", "agent_poll_stall_minutes"} {
 		if !strings.Contains(string(contract), key) {
 			t.Fatalf("wait contract does not name %s", key)
 		}
@@ -128,7 +128,7 @@ func TestTaskWakeStepResultsMatchAcrossAPIWakeAndMCP(t *testing.T) {
 			descriptions[a.Action] = a.Description
 		}
 	}
-	for action, keys := range map[string][]string{"wait_tasks": {"handoff", "final result message", "read_full_args", "reopen_failure", "workflow_steps_result"}, "get_task": {"reopen_failure", "steps_result", "BLOCKING"}} {
+	for action, keys := range map[string][]string{"wait_tasks": {"handoff", "final result message", "read_full_args", "reopen_failure", "workflow_steps_result", "stalled", "agent_stall", "sleep_polling", "long_command", "no_activity"}, "get_task": {"reopen_failure", "steps_result", "BLOCKING"}} {
 		for _, key := range keys {
 			if !strings.Contains(descriptions[action], key) {
 				t.Fatalf("%s description does not name %s: %q", action, key, descriptions[action])

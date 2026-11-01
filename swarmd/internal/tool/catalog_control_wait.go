@@ -16,7 +16,8 @@ import (
 // recorded it; a Swarm Control caller (the person's own AI) has none. So its
 // wait_tasks holds the call instead: until any listed task reaches its next
 // milestone (pebblestore.ProjectTaskMilestone: started, needs you, review
-// started, sent back, landed, done, blocked, failed, stopped) or wait_seconds
+// started, sent back, landed, done, blocked, failed, stopped, or stalled when
+// the task's agent stalls: progress agent_stall) or wait_seconds
 // passes. It wakes on the same sources a watch does (committed realtime
 // outbox records here; the linked machine's activity feed there), re-reads
 // the tasks only when woken, and returns them as get_task reads them.

@@ -33,6 +33,14 @@ type Limits struct {
 	// a task whose records last changed longer ago is old work, neither
 	// recovered nor alerted. Zero selects the default.
 	StallHorizonHours int `json:"stall_horizon_hours"`
+	// Agent stalls (ProjectTaskAgentStall, the task watch's `stalled`
+	// milestone): how long an active task run may only sleep and poll one
+	// background command (AgentPollStallMinutes), run one command
+	// (AgentCommandStallMinutes) or go without a tool call or message
+	// (AgentIdleStallMinutes). Zero selects the default.
+	AgentPollStallMinutes    int `json:"agent_poll_stall_minutes"`
+	AgentCommandStallMinutes int `json:"agent_command_stall_minutes"`
+	AgentIdleStallMinutes    int `json:"agent_idle_stall_minutes"`
 }
 
 // Stall detection defaults and bounds (minutes).
@@ -40,8 +48,13 @@ const (
 	DefaultStallAfterMinutes = 20
 	DefaultRunSilentMinutes  = 30
 	DefaultStallHorizonHours = 24
-	maxStallMinutes          = 24 * 60
-	maxStallHorizonHours     = 30 * 24
+	// Agent stall defaults: a poll loop is reported sooner than a long
+	// command (a build or test suite can run that long) or a quiet run.
+	DefaultAgentPollStallMinutes    = 10
+	DefaultAgentCommandStallMinutes = 20
+	DefaultAgentIdleStallMinutes    = 15
+	maxStallMinutes                 = 24 * 60
+	maxStallHorizonHours            = 30 * 24
 )
 
 // fillStallDefaults gives a record written before the stall limits existed
@@ -56,12 +69,22 @@ func (l *Limits) fillStallDefaults() {
 	if l.StallHorizonHours == 0 {
 		l.StallHorizonHours = DefaultStallHorizonHours
 	}
+	if l.AgentPollStallMinutes == 0 {
+		l.AgentPollStallMinutes = DefaultAgentPollStallMinutes
+	}
+	if l.AgentCommandStallMinutes == 0 {
+		l.AgentCommandStallMinutes = DefaultAgentCommandStallMinutes
+	}
+	if l.AgentIdleStallMinutes == 0 {
+		l.AgentIdleStallMinutes = DefaultAgentIdleStallMinutes
+	}
 }
 
 func DefaultLimits() Limits {
 	return Limits{ProjectCacheBytes: 10 << 30, WorkerJobConcurrency: 100, DelegationWaves: 5, ActiveChildren: 5, SwarmChildren: 5,
 		HelperConcurrency: 4, HelpersPerJob: 20, HelperTimeoutSeconds: 300, HelperTokens: 32000,
-		StallAfterMinutes: DefaultStallAfterMinutes, RunSilentMinutes: DefaultRunSilentMinutes, StallHorizonHours: DefaultStallHorizonHours}
+		StallAfterMinutes: DefaultStallAfterMinutes, RunSilentMinutes: DefaultRunSilentMinutes, StallHorizonHours: DefaultStallHorizonHours,
+		AgentPollStallMinutes: DefaultAgentPollStallMinutes, AgentCommandStallMinutes: DefaultAgentCommandStallMinutes, AgentIdleStallMinutes: DefaultAgentIdleStallMinutes}
 }
 
 var ErrLimitsConflict = errors.New("limits revision conflict")
@@ -89,6 +112,11 @@ func (l Limits) Validate() error {
 	}
 	if l.StallAfterMinutes < 0 || l.StallAfterMinutes > maxStallMinutes || l.RunSilentMinutes < 0 || l.RunSilentMinutes > maxStallMinutes {
 		return errors.New("stall_after_minutes and run_silent_minutes must be 1..1440 (0 selects the default)")
+	}
+	for _, m := range []int{l.AgentPollStallMinutes, l.AgentCommandStallMinutes, l.AgentIdleStallMinutes} {
+		if m < 0 || m > maxStallMinutes {
+			return errors.New("agent_poll_stall_minutes, agent_command_stall_minutes and agent_idle_stall_minutes must be 1..1440 (0 selects the default)")
+		}
 	}
 	if l.StallHorizonHours < 0 || l.StallHorizonHours > maxStallHorizonHours {
 		return errors.New("stall_horizon_hours must be 1..720 (0 selects the default)")

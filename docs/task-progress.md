@@ -406,6 +406,22 @@ milestone wake keeps the watch. At most one milestone wake per watch per
 minute: stages reached within the minute are coalesced into the next wake,
 which names the stage reached then. Settling is never delayed by that limit.
 
+A watch also says when a watched task's agent stalls: milestone `stalled`,
+once per stall episode, with the row's `agent_stall` naming which (`kind`),
+what command and for how long. The task's running run stalls when it (a)
+runs nothing but `sleep` commands and status reads of one background command
+for `agent_poll_stall_minutes` (default 10; `bash command=wait` is a real
+wait), (b) has one tool call running for `agent_command_stall_minutes`
+(default 20), or (c) has no tool call or message for
+`agent_idle_stall_minutes` (default 15). Kinds: `sleep_polling`,
+`long_command`, `no_activity`. Thresholds are box limits
+(docs/box-limits.md). The task's `progress.agent_stall` (task route and
+`get_task`) shows the same; a linked machine's watch reads it from that
+machine's `get_task`. When the agent moves again the episode ends quietly;
+a later stall is a new episode and wakes again. The stall check publishes
+`project.updated` once per new episode, so watches hear it without a timer
+of their own.
+
 A watch settles only when the workflow's last step (the push or deliver) has
 recorded its result: a delivery marked succeeded with a step still running
 counts as running. Its outcome rows carry `task_state` and

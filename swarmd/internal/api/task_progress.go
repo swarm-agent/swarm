@@ -78,11 +78,15 @@ type taskProgress struct {
 	// cannot say (task_progress_live.go): waiting on a pending permission
 	// or question (with the request), or held by an update drain or
 	// execution admission. TaskState reads it (ProjectTaskStateLive).
-	Live        *pebblestore.ProjectTaskLive `json:"live,omitempty"`
-	Workflow    *taskProgressWorkflow        `json:"workflow,omitempty"`
-	Integration *taskProgressIntegration     `json:"integration,omitempty"`
-	History     []taskProgressEvent          `json:"history"`
-	UpdatedAt   int64                        `json:"updated_at"`
+	Live *pebblestore.ProjectTaskLive `json:"live,omitempty"`
+	// AgentStall is how the task's running run stalls, when it does
+	// (task_agent_stall.go): sleep polling, one long command, no activity.
+	// Set by taskWaitProgressFor; a task watch reports it as `stalled`.
+	AgentStall  *pebblestore.ProjectTaskAgentStall `json:"agent_stall,omitempty"`
+	Workflow    *taskProgressWorkflow              `json:"workflow,omitempty"`
+	Integration *taskProgressIntegration           `json:"integration,omitempty"`
+	History     []taskProgressEvent                `json:"history"`
+	UpdatedAt   int64                              `json:"updated_at"`
 }
 
 type taskProgressWorkflow struct {

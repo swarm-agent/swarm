@@ -275,6 +275,11 @@ func (s *Server) checkTaskStall(ctx context.Context, account string, brief pebbl
 	}
 	task := *full
 	brief = pebblestore.ProjectTaskBriefOf(task)
+	// A running run's agent stall reaches the task's watchers once per
+	// episode (task_agent_stall.go); it is not a task stall by itself.
+	if in.stateFound && in.state.Active {
+		s.noteTaskAgentStall(account, task, now)
+	}
 	v, ok := s.taskStallVerdict(ctx, account, task, in, now, limits, gitBudget)
 	if !ok {
 		return false // a record could not be read: claim nothing

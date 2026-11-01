@@ -97,10 +97,20 @@ call's time limit. This applies to every Swarm agent in a conversation.
   wakes the conversation again, also after a daemon restart. A task's
   conversation is never restarted outside its task lifecycle: there the update
   is recorded without waking it.
+- **Wait by id.** Call `bash` with `background_id`, `command: "wait"` and
+  optional `wait_seconds` (default 300, at most 600; a larger value uses the
+  cap) to block until the command ends. It returns at once when the command
+  ends, with its state, exit code and the bounded tail of its output
+  (`still_running: false`), or, when the bound passes first,
+  `still_running: true` with `elapsed_ms` and `waited_ms`; call it again to
+  keep waiting. This is the way to wait in any run, task runs included (a
+  task's conversation records the end report without being woken): never
+  wait with `sleep` loops or repeated status calls. A task watch reports an
+  agent doing that as `stalled` (docs/task-progress.md).
 - **Read or stop by id.** Call `bash` with `background_id` and
   `command: "status"` to read its state (`running`, `exited`, `timed_out`,
-  `killed`, `failed`), exit code and retained output, or `command: "kill"` to
-  stop it. A killed command does not report back.
+  `killed`, `failed`), exit code and retained output now, or
+  `command: "kill"` to stop it. A killed command does not report back.
 
 Limits:
 
