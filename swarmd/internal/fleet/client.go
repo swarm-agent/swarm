@@ -22,12 +22,18 @@ type Client struct {
 	address string
 	token   string
 	http    *http.Client
+	// headerTimeout is the default bound on an answer's headers
+	// (ResponseHeaderTimeout); a call's context can lengthen or lift it.
+	headerTimeout time.Duration
 }
 
 // A machine that has gone away (its address now drops packets) must fail
 // fast rather than hold the caller for the kernel's SYN retries (minutes).
 // The header timeout bounds only the wait for the answer's headers, so
 // streamed answers and upgraded WebSockets stay open once they have begun.
+// It is applied per call (see WithHeldWait and WithoutHeaderBound), not on
+// the shared transport, because some calls ask the machine to hold its
+// answer for longer.
 const (
 	DialTimeout           = 5 * time.Second
 	TLSHandshakeTimeout   = 5 * time.Second
@@ -39,16 +45,65 @@ const (
 func NewClient(cert tls.Certificate, address, fingerprint, token string) *Client {
 	dialer := &net.Dialer{Timeout: DialTimeout, KeepAlive: 30 * time.Second}
 	return &Client{
-		address: address,
-		token:   token,
+		address:       address,
+		token:         token,
+		headerTimeout: ResponseHeaderTimeout,
 		http: &http.Client{Transport: &http.Transport{
-			DialContext:           dialer.DialContext,
-			TLSClientConfig:       ClientTLS(cert, fingerprint),
-			TLSHandshakeTimeout:   TLSHandshakeTimeout,
-			ResponseHeaderTimeout: ResponseHeaderTimeout,
-			ForceAttemptHTTP2:     false,
+			DialContext:         dialer.DialContext,
+			TLSClientConfig:     ClientTLS(cert, fingerprint),
+			TLSHandshakeTimeout: TLSHandshakeTimeout,
+			ForceAttemptHTTP2:   false,
 		}},
 	}
+}
+
+type headerBoundKey struct{}
+
+// WithHeldWait marks a call in which the machine may hold its answer for up
+// to wait (a wait_seconds the caller forwards): the header bound becomes
+// wait plus ResponseHeaderTimeout as a margin.
+func WithHeldWait(ctx context.Context, wait time.Duration) context.Context {
+	if wait <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, headerBoundKey{}, wait+ResponseHeaderTimeout)
+}
+
+// WithoutHeaderBound lifts the header bound for a call whose own context
+// bounds it (a forwarded request, whose caller holds its own deadline and
+// may ask the machine for any held wait). Connect and TLS bounds still apply.
+func WithoutHeaderBound(ctx context.Context) context.Context {
+	return context.WithValue(ctx, headerBoundKey{}, time.Duration(-1))
+}
+
+// headerBound is the call's bound on the answer's headers; zero or less
+// means none.
+func (c *Client) headerBound(ctx context.Context) time.Duration {
+	if bound, ok := ctx.Value(headerBoundKey{}).(time.Duration); ok {
+		return bound
+	}
+	return c.headerTimeout
+}
+
+// headerTimeoutError says the machine sent no answer in time.
+type headerTimeoutError struct {
+	bound time.Duration
+}
+
+func (e *headerTimeoutError) Error() string {
+	return fmt.Sprintf("timeout awaiting response headers: the machine sent no answer within %s", e.bound)
+}
+
+// cancelOnClose ends a call's header deadline context with its body.
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *cancelOnClose) Close() error {
+	err := b.ReadCloser.Close()
+	b.cancel()
+	return err
 }
 
 // Error is a Swarm's refusal.
@@ -67,8 +122,11 @@ func (e *Error) Error() string {
 // Do sends one request to path (with its query) on the Swarm and returns the
 // answer as it comes; the caller closes its body.
 func (c *Client) Do(ctx context.Context, method, path string, body io.Reader, header http.Header) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, method, "https://"+c.address+path, body)
+	bound := c.headerBound(ctx)
+	callCtx, cancel := context.WithCancel(ctx)
+	req, err := http.NewRequestWithContext(callCtx, method, "https://"+c.address+path, body)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	for k, v := range header {
@@ -77,7 +135,35 @@ func (c *Client) Do(ctx context.Context, method, path string, body io.Reader, he
 	if c.token != "" {
 		req.Header.Set(TokenHeader, c.token)
 	}
-	return c.http.Do(req)
+	if bound <= 0 {
+		resp, err := c.http.Do(req)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
+		return resp, nil
+	}
+	// The deadline covers only the wait for headers: it is stopped once
+	// they arrive, so a streamed body stays open until the caller closes it.
+	timer := time.AfterFunc(bound, cancel)
+	resp, err := c.http.Do(req)
+	stopped := timer.Stop()
+	if err != nil {
+		cancel()
+		if !stopped && ctx.Err() == nil {
+			return nil, &headerTimeoutError{bound: bound}
+		}
+		return nil, err
+	}
+	if !stopped {
+		// The deadline fired as the headers arrived; the body is cut.
+		resp.Body.Close()
+		cancel()
+		return nil, &headerTimeoutError{bound: bound}
+	}
+	resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
+	return resp, nil
 }
 
 // Upgrade opens a WebSocket using the same pinned TLS transport and link

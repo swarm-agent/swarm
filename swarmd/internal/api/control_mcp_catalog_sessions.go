@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"swarm/packages/swarmd/internal/fleet"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -279,13 +281,21 @@ func (s *Server) CallFleetCatalog(ctx context.Context, p identity.Principal, mac
 		return nil, errors.New("linked machine connection unavailable")
 	}
 	var result json.RawMessage
-	err = client.JSON(ctx, http.MethodPost, CatalogLinkedPath+"/"+name, args, &result)
+	// The machine holds its answer for the call's wait_seconds (a launched
+	// or settling run); the link's header bound must outlast that wait.
+	wait, _ := environmentArgInt(args, "wait_seconds")
+	callCtx := fleet.WithHeldWait(ctx, time.Duration(min(max(wait, 0), catalogLinkedMaxWait))*time.Second)
+	err = client.JSON(callCtx, http.MethodPost, CatalogLinkedPath+"/"+name, args, &result)
 	s.noteFleetContact(linked, err)
 	if err != nil {
 		return nil, fmt.Errorf("linked machine %s refused %s %s: %w", machine, name, controlMCPString(args, "action"), err)
 	}
 	return result, nil
 }
+
+// catalogLinkedMaxWait is the largest wait_seconds a catalog action takes
+// (manage_sessions' schema maximum).
+const catalogLinkedMaxWait = 120
 
 // catalogLinkedStartsRun reports whether a linked call starts agent work on
 // the machine.

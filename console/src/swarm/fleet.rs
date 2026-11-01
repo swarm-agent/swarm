@@ -125,18 +125,21 @@ pub struct Reading {
     pub needs: Vec<needs::Reading>,
 }
 
-/// A machine home lists whose read this tick has not returned: what the last
-/// tick read of it while it answered; else, when home's last call to it
-/// failed, offline with home's reason; else not read yet, which is not
-/// offline (it counts as offline only once a read fails).
+/// A machine home lists whose read this tick has not returned. When home's
+/// last call to it failed: offline with home's reason. Else what the last
+/// tick read of it while it answered, with home's current last contact and
+/// address; else not read yet, which is not offline (it counts as offline
+/// only once a read fails).
 fn pending(found: &Found, last: Option<&Reading>) -> (Machine, needs::Reading) {
-    let carried = last.and_then(|last| {
+    let carried = last.filter(|_| found.last_error.is_empty()).and_then(|last| {
         let m = last.machines.as_ref()?.iter().find(|m| m.name.as_ref() == found.name.as_str() && m.health != Health::Offline)?;
         let n = last.needs.iter().find(|n| !n.home && n.machine == found.name)?;
         Some((m.clone(), n.clone()))
     });
-    if let Some(carried) = carried {
-        return carried;
+    if let Some((mut m, n)) = carried {
+        m.gateway = found.address.clone().into();
+        m.last_contact = (found.last_contact_at > 0).then_some(found.last_contact_at);
+        return (m, n);
     }
     let mut m = machine(found, Err(""), None);
     let why = if found.last_error.is_empty() {
@@ -436,6 +439,43 @@ mod tests {
         assert_eq!(health(&first, 1), Health::Unknown, "a failed machine is read again, not carried");
         drop(release);
         worker.join().unwrap();
+    }
+
+    /// Purpose: while a machine is read again, home's current list decides
+    /// what is shown: a machine that answered last tick but that home now
+    /// lists with a last error shows offline with home's reason, and a
+    /// carried reading takes home's current last contact and address.
+    /// Threat: the console ignoring a failure home saw after its last read
+    /// (counting the machine online with its old summary) and showing a stale
+    /// contact. Boundary: fleet::pending, the function that builds what is
+    /// shown before a machine's read returns; no network is needed.
+    #[test]
+    fn home_last_error_overrides_the_last_reading() {
+        let last = Reading {
+            machines: Some(vec![machine(&found("forge", 1, ""), Ok(&summary()), None), machine(&found("social", 1, ""), Ok(&summary()), None)]),
+            needs: vec![
+                needs::Reading { home: true, ..Default::default() },
+                needs::Reading { machine: "forge".into(), ..Default::default() },
+                needs::Reading { machine: "social".into(), ..Default::default() },
+            ],
+        };
+
+        // Home's call to forge failed after the console's last read.
+        let failed = found("forge", 5, "dial tcp: connect: connection timed out");
+        let (m, n) = pending(&failed, Some(&last));
+        assert_eq!(m.health, Health::Offline, "home's last error, not last tick's summary");
+        assert_eq!(m.reasons.iter().map(|r| r.to_string()).collect::<Vec<_>>(), vec!["dial tcp: connect: connection timed out"]);
+        assert_eq!(m.last_contact, Some(5));
+        assert_eq!(n.unread, vec!["dial tcp: connect: connection timed out".to_string()]);
+
+        // Social still answers home: its last reading stands, with home's
+        // current last contact and address.
+        let moved = Found { name: "social".into(), address: "10.0.0.9:7792".into(), last_contact_at: 7, last_error: "".into() };
+        let (m, n) = pending(&moved, Some(&last));
+        assert_eq!(m.health, Health::Attention);
+        assert_eq!(m.gateway.as_ref(), "10.0.0.9:7792");
+        assert_eq!(m.last_contact, Some(7));
+        assert!(n.unread.is_empty());
     }
 
     #[test]

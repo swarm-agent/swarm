@@ -138,7 +138,9 @@ func (s *Server) linkedFolderEnvironment(ctx context.Context, p identity.Princip
 		body = map[string]any{"workspace_path": path, "wait_seconds": wait}
 	}
 	var result json.RawMessage
-	callErr := client.JSON(ctx, method, route, body, &result)
+	// get, rebuild and a merge update hold the answer for wait seconds on
+	// the machine; the link's header bound must outlast that wait.
+	callErr := client.JSON(fleet.WithHeldWait(ctx, time.Duration(wait)*time.Second), method, route, body, &result)
 	s.noteFleetContact(linked, callErr)
 	if callErr != nil {
 		var refused *fleet.Error

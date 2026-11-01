@@ -511,7 +511,10 @@ func (s *Server) handleFleetForward(w http.ResponseWriter, r *http.Request, acco
 		s.forwardFleetWebSocket(w, r, client, machine, path, header)
 		return
 	}
-	resp, err := client.Do(r.Context(), r.Method, path, r.Body, header)
+	// A forwarded request may ask the machine for any held wait, and its
+	// caller holds its own deadline: no header bound here. The link's
+	// connect and TLS bounds still make a gone machine fail fast.
+	resp, err := client.Do(fleet.WithoutHeaderBound(r.Context()), r.Method, path, r.Body, header)
 	s.noteFleetContact(machine, err)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, errors.New("could not reach "+name+": "+err.Error()))
