@@ -41,7 +41,10 @@ import (
 // The machine update watch changed it on purpose: wait_machine (with
 // stuck_minutes) watches a machine's update, cancel_watch takes watch_id, and
 // machine_status says it shows the runs a drain waits on.
-const manageProjectsDefinitionSHA256 = "3c7d5148f41a251a9238b1af93da089fa7e4ea4ff2c337f50f33bb4abb96acd7"
+// The MCP route parity guard changed it on purpose: list_tasks declares
+// include_workflow_tasks, which its handler, its linked call and the task
+// list route already read and its answers' workflow_tasks_hint names.
+const manageProjectsDefinitionSHA256 = "281070b07f2d3a8b3e464b9083833bd5e12804506130fd01b9125014a86e5af4"
 
 // Purpose: the catalog is the only place manage_projects exists. The
 // Orchestrator's definition is generated from the declarations and stays the

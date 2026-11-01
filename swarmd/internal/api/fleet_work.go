@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -139,30 +140,34 @@ func (s *Server) callFleetWork(ctx context.Context, p identity.Principal, machin
 			id = resolved
 		}
 	}
+	// The query a workflow read takes: list's delivery_id and detail, and
+	// deliveries' delivery_id (the listing route reads them).
 	query := url.Values{}
-	for _, key := range []string{"limit", "cursor", "lifecycle_state", "delivery_id", "detail"} {
+	for _, key := range fleetWorkflowInputs(action, "delivery_id", "detail") {
 		if v, ok := args[key]; ok {
 			query.Set(key, fmt.Sprint(v))
 		}
 	}
-	// The body each POST route takes: the routes decode strictly.
-	bodyKeys := []string{"expected_revision", "client_request_id"}
+	// The body each POST route takes: the action's own declared inputs, as
+	// on this machine (the routes decode strictly; propose refuses a field
+	// it does not take). enable and disable name the workflow in the path.
+	var bodyKeys []string
 	switch action {
 	case "list":
 	case "propose":
 		path += "/propose"
 		method = http.MethodPost
-		bodyKeys = append(bodyKeys, "id", "name", "description", "replace", "project", "workspace", "scope", "when", "enabled", "retries", "rebase", "rebase_rounds", "result", "steps", "on", "inputs", "with")
+		bodyKeys = fleetWorkflowInputs(action)
 	case "export":
 		path += "/export"
 		method = http.MethodPost
-		bodyKeys = []string{"id", "name", "path", "overwrite"}
+		bodyKeys = fleetWorkflowInputs(action)
 	case "import", "restore":
 		// The machine's agent route (ManageWorkflows), never its owner's
 		// import or restore route: run steps stay the machine owner's.
 		path += "/" + WorkflowLinkedChangeRoute + "/" + action
 		method = http.MethodPost
-		bodyKeys = []string{"id", "name", "revision", "definition", "path", "project", "workspace", "with"}
+		bodyKeys = fleetWorkflowInputs(action)
 	case "stop_all":
 		path += "/stop"
 		method = http.MethodPost
@@ -242,6 +247,25 @@ func (s *Server) callFleetWork(ctx context.Context, p identity.Principal, machin
 		return compactFleetList(result)
 	}
 	return result, nil
+}
+
+// fleetWorkflowInputs are the manage_workflows action's declared inputs a
+// linked call sends (only those named in only, when given): never machine,
+// which names the link, or rotate_key, refused before the call.
+func fleetWorkflowInputs(action string, only ...string) []string {
+	catalog, _ := tool.CatalogToolNamed("manage_workflows")
+	declared, ok := catalog.Action(action)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for _, key := range declared.Inputs {
+		if key == "machine" || key == "rotate_key" || (len(only) > 0 && !slices.Contains(only, key)) {
+			continue
+		}
+		out = append(out, key)
+	}
+	return out
 }
 
 // fleetWorkflowID resolves a workflow's id or name on a linked machine: the

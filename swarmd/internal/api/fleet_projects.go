@@ -74,7 +74,11 @@ func (s *Server) CallFleetProject(ctx context.Context, p identity.Principal, mac
 	if action != "list" {
 		id := str("project_id")
 		if action == "get" {
-			id = str("id")
+			// get names its project by id, or by project_id as on this
+			// machine (the tool's own get reads id, then project_id).
+			if named := str("id"); named != "" {
+				id = named
+			}
 		}
 		id, err := segment(id)
 		if err != nil {

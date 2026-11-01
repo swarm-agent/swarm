@@ -98,6 +98,11 @@ func manageFleetDefinition() Definition {
 // action was (a deprecated alias for one stage), when it has one.
 var manageFleetProjectsAlias = map[string]string{"list_machines": "list_machines", "list_linked_tasks": "list_linked_tasks", FleetAgentsAtWorkAction: FleetAgentsAtWorkAction, "status": FleetMachineStatusAction, "activity": FleetMachineActivityAction}
 
+// manageFleetLinkedReadInputs are the inputs a linked status or activity read
+// carries to the linked read (TestMCPRouteParityManageFleetLinkedReads holds
+// them against the declared inputs).
+var manageFleetLinkedReadInputs = []string{"since_cursor", "after", "limit"}
+
 // executeManageFleet runs one manage_fleet action and returns its answer in
 // the catalog envelope, for the Orchestrator and Swarm Control alike.
 func (r *Runtime) executeManageFleet(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
@@ -141,7 +146,7 @@ func (r *Runtime) executeManageFleet(ctx context.Context, scope WorkspaceScope, 
 			// The linked read manage_projects machine_status and activity
 			// run, with the linked work rule checked there.
 			linked := map[string]any{"action": manageFleetProjectsAlias[declared.Action], "machine": machine}
-			for _, key := range []string{"since_cursor", "after", "limit"} {
+			for _, key := range manageFleetLinkedReadInputs {
 				if value, ok := call[key]; ok {
 					linked[key] = value
 				}
