@@ -79,27 +79,31 @@ impl Console {
             self.linked_proposals.insert(machine, Err("the home has not reached this machine".into()));
         }
         for machine in read {
-            if self.linked_proposals_busy.contains(&machine) {
-                self.linked_proposals_again.insert(machine);
-                continue;
-            }
-            self.linked_proposals_busy.insert(machine.clone());
-            let client = client.clone();
-            cx.spawn(async move |this, cx| {
-                let asked = machine.clone();
-                let result: Result<Vec<Proposal>, String> = cx.background_executor().spawn(async move { proposals::list(&client, &asked) }).await;
-                this.update(cx, |this, cx| {
-                    this.linked_proposals_busy.remove(&machine);
-                    this.linked_proposals.insert(machine.clone(), result);
-                    if this.linked_proposals_again.remove(&machine) {
-                        this.load_linked_proposals(cx);
-                    }
-                    cx.notify();
-                })
-                .ok();
-            })
-            .detach();
+            self.read_linked_machine(client.clone(), machine, cx);
         }
+    }
+
+    /// Reads one linked machine's proposals. When its read ends and another
+    /// was asked for meanwhile, only this machine is read again, so machines
+    /// whose reads overlap never keep queueing each other.
+    fn read_linked_machine(&mut self, client: crate::swarm::client::Client, machine: String, cx: &mut Context<Self>) {
+        if !ask_read(&mut self.linked_proposals_busy, &mut self.linked_proposals_again, &machine) {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let asked = machine.clone();
+            let reader = client.clone();
+            let result: Result<Vec<Proposal>, String> = cx.background_executor().spawn(async move { proposals::list(&reader, &asked) }).await;
+            this.update(cx, |this, cx| {
+                this.linked_proposals.insert(machine.clone(), result);
+                if finish_read(&mut this.linked_proposals_busy, &mut this.linked_proposals_again, &machine) && linked_to_read(&this.machines).0.contains(&machine) {
+                    this.read_linked_machine(client, machine, cx);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// A run that failed since the last read is said in the status bar,
@@ -985,6 +989,24 @@ fn linked_to_read(machines: &[crate::data::Machine]) -> (Vec<String>, Vec<String
     (read, unreachable)
 }
 
+/// A read of `machine` was asked for: true when it starts now (marked busy),
+/// false when one is under way (marked to be read again after it).
+fn ask_read(busy: &mut HashSet<String>, again: &mut HashSet<String>, machine: &str) -> bool {
+    if busy.contains(machine) {
+        again.insert(machine.to_string());
+        return false;
+    }
+    busy.insert(machine.to_string());
+    true
+}
+
+/// The read of `machine` ended: it is no longer busy; true when another was
+/// asked for meanwhile, which is then taken (only this machine is read again).
+fn finish_read(busy: &mut HashSet<String>, again: &mut HashSet<String>, machine: &str) -> bool {
+    busy.remove(machine);
+    again.remove(machine)
+}
+
 fn pill(c: &Console, label: &str, color: gpui::Hsla) -> Div {
     let t = &c.theme;
     div().px(px(5.)).rounded(px(t.radius)).bg(alpha(color, 0.14)).text_color(color).text_size(px(10.5)).child(label.to_string())
@@ -1050,5 +1072,37 @@ mod tests {
         assert_eq!(read, vec!["lab".to_string(), "build".to_string()]);
         assert_eq!(unreachable, vec!["edge".to_string()]);
         assert_eq!(linked_to_read(&machines[..1]), (vec![], vec![]));
+    }
+
+    /// Purpose: a re-read queued for one linked machine must read only that
+    /// machine again. Reading every machine again re-queued the others still
+    /// busy, so two machines with overlapping reads kept starting each other
+    /// forever with no new event (recurring polling of /v3/proposals).
+    /// Replays that schedule on the busy/queued sets: after one refresh during
+    /// both reads, each machine is read exactly once more, then all is idle.
+    #[test]
+    fn linked_reread_reads_only_its_machine_and_settles() {
+        let (mut busy, mut again) = (HashSet::new(), HashSet::new());
+        let set = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<HashSet<String>>();
+        // Both reads start.
+        assert!(ask_read(&mut busy, &mut again, "a"));
+        assert!(ask_read(&mut busy, &mut again, "b"));
+        // A refresh while both are busy queues both, starts neither.
+        assert!(!ask_read(&mut busy, &mut again, "a"));
+        assert!(!ask_read(&mut busy, &mut again, "b"));
+        assert_eq!((busy.clone(), again.clone()), (set(&["a", "b"]), set(&["a", "b"])));
+        // A ends: its queued re-read is taken and A alone starts again; B's
+        // queue is untouched (not re-queued, not consumed).
+        assert!(finish_read(&mut busy, &mut again, "a"));
+        assert!(ask_read(&mut busy, &mut again, "a"));
+        assert_eq!((busy.clone(), again.clone()), (set(&["a", "b"]), set(&["b"])));
+        // B ends: B alone starts again; A is not queued again.
+        assert!(finish_read(&mut busy, &mut again, "b"));
+        assert!(ask_read(&mut busy, &mut again, "b"));
+        assert_eq!((busy.clone(), again.clone()), (set(&["a", "b"]), set(&[])));
+        // Both re-reads end with nothing queued: no further read starts.
+        assert!(!finish_read(&mut busy, &mut again, "a"));
+        assert!(!finish_read(&mut busy, &mut again, "b"));
+        assert!(busy.is_empty() && again.is_empty());
     }
 }
