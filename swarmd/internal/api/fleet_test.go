@@ -366,3 +366,66 @@ func TestFleetProxySilentMachineFailsAtHeaderBound(t *testing.T) {
 		t.Fatalf("last_error not recorded: %q", noted.LastError)
 	}
 }
+
+// Purpose: a long-poll forwarded through the home's per-machine proxy that
+// names its wait as `wait` (/v3/signals, /v3/sessions:agent-events; 30 s
+// maximum) gets the held-wait bound, so a 30 s poll with nothing new answers
+// through the link and leaves the machine's last_error empty. Threat: the
+// proxy reading only wait_seconds, so such a poll gets the plain 30 s header
+// bound, which starts before the dial while the machine's wait starts after
+// parsing; every idle poll then fails with 502 "no answer within 30s" and
+// noteFleetContact marks a healthy machine as failing (the console shows it
+// offline). Boundary: Server.handleFleetForward, fleetForwardHeaderBound,
+// fleet.Client.Do. A real TLS server holding b's node key that answers just
+// after 30 s, as a machine whose wait started late does, is the narrowest
+// hermetic stand-in; the test takes about 31 s.
+func TestFleetProxyWaitLongPollOutlastsHeaderBound(t *testing.T) {
+	a := newFleetTestSwarm(t, "home-a")
+	defer a.cleanup()
+	b := newFleetTestSwarm(t, "box-b")
+	defer b.cleanup()
+	body, _ := json.Marshal(map[string]string{"code": b.invite(t), "name": "b"})
+	if code, out := a.call(t, http.MethodPost, "/v3/fleet/machines", string(body), false); code != http.StatusCreated {
+		t.Fatalf("link: HTTP %d %v", code, out)
+	}
+
+	cert, _, err := b.s.fleetCertificate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hold := fleet.ResponseHeaderTimeout + 500*time.Millisecond
+	polling := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("wait") != "30" {
+			http.Error(w, "wait not forwarded", http.StatusBadRequest)
+			return
+		}
+		select {
+		case <-time.After(hold):
+		case <-r.Context().Done():
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"signals":[]}`))
+	}))
+	polling.TLS = fleet.ServerTLS(cert)
+	polling.StartTLS()
+	defer polling.Close()
+	machine, _, _ := a.s.fleet.GetMachine("b")
+	machine.Address, machine.LastError = strings.TrimPrefix(polling.URL, "https://"), ""
+	if err := a.s.fleet.PutMachine(machine); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	code, out := a.call(t, http.MethodGet, "/v3/fleet/machines/b/api/v3/signals?wait=30", "", false)
+	elapsed := time.Since(start)
+	if code != http.StatusOK || out["signals"] == nil {
+		t.Fatalf("proxied wait long-poll: HTTP %d %v after %v", code, out, elapsed)
+	}
+	if elapsed < hold {
+		t.Fatalf("answered after %v, before the machine's %v hold", elapsed, hold)
+	}
+	if noted, _, _ := a.s.fleet.GetMachine("b"); noted.LastError != "" {
+		t.Fatalf("healthy machine recorded last_error %q", noted.LastError)
+	}
+}

@@ -60,7 +60,7 @@ func NewClient(cert tls.Certificate, address, fingerprint, token string) *Client
 type headerBoundKey struct{}
 
 // WithHeldWait marks a call in which the machine may hold its answer for up
-// to wait (a wait_seconds the caller forwards): the header bound becomes
+// to wait (a wait_seconds or wait the caller forwards): the header bound becomes
 // wait plus ResponseHeaderTimeout as a margin.
 func WithHeldWait(ctx context.Context, wait time.Duration) context.Context {
 	if wait <= 0 {

@@ -555,13 +555,16 @@ const fleetForwardMaxWait = 120 * time.Second
 // fleetForwardHeaderBound bounds a forwarded call's wait for the machine's
 // answer, so a pooled connection to a machine that has gone away, or one
 // that never answers, fails and is recorded rather than holding the caller.
-// A wait_seconds in the query lengthens the bound by that wait; a request
-// with a body may name its wait there, which the home does not read, so it
-// gets the largest wait. Anything else keeps the link's 30 s bound.
+// A wait_seconds or wait in the query (the catalog's waits use wait_seconds;
+// the /v3/signals and /v3/sessions:agent-events long-polls use wait) lengthens
+// the bound by that wait; a request with a body may name its wait there, which
+// the home does not read, so it gets the largest wait. Anything else keeps the
+// link's 30 s bound.
 func fleetForwardHeaderBound(r *http.Request) context.Context {
 	ctx := r.Context()
-	if raw := r.URL.Query().Get("wait_seconds"); raw != "" {
-		if seconds, err := strconv.Atoi(raw); err == nil && seconds > 0 {
+	query := r.URL.Query()
+	for _, name := range []string{"wait_seconds", "wait"} {
+		if seconds, err := strconv.Atoi(strings.TrimSpace(query.Get(name))); err == nil && seconds > 0 {
 			return fleet.WithHeldWait(ctx, min(time.Duration(seconds)*time.Second, fleetForwardMaxWait))
 		}
 	}
