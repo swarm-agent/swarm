@@ -128,11 +128,14 @@ func (r *Runtime) readControlTask(ctx context.Context, scope WorkspaceScope, mac
 		task := record.Task.ProjectTaskRecord
 		task.EnsureTaskAttempts()
 		out := controlTaskReading{view: view, status: task.Status}
-		if len(record.Task.Progress) > 0 {
-			out.progress = pebblestore.ProjectTaskWaitProgressFrom(record.Task.Progress)
-		}
+		attemptID := ""
 		if a := task.ActiveAttempt(); a != nil {
-			out.sessionID = a.SessionID
+			out.sessionID, attemptID = a.SessionID, a.ID
+		}
+		if len(record.Task.Progress) > 0 {
+			// The active attempt's only: a delivery of an earlier attempt
+			// names no milestone and settles nothing for it.
+			out.progress = pebblestore.ProjectTaskWaitProgressFrom(record.Task.Progress).ForAttempt(attemptID)
 		}
 		return out, nil
 	}
@@ -154,10 +157,11 @@ func (r *Runtime) readControlTask(ctx context.Context, scope WorkspaceScope, mac
 		if found && task != nil {
 			task.EnsureTaskAttempts()
 			out.status = task.Status
-			out.progress = pebblestore.ProjectTaskWaitProgressFrom(r.projectTaskProgress(account, *task))
+			attemptID := ""
 			if a := task.ActiveAttempt(); a != nil {
-				out.sessionID = a.SessionID
+				out.sessionID, attemptID = a.SessionID, a.ID
 			}
+			out.progress = pebblestore.ProjectTaskWaitProgressFrom(r.projectTaskProgress(account, *task)).ForAttempt(attemptID)
 			if out.sessionID == "" {
 				out.sessionID = task.SessionID
 			}

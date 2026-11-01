@@ -153,6 +153,10 @@ type Delivery struct {
 	FinishedAt int64        `json:"finished_at,omitempty"`
 	// Reruns counts explicit re-runs (swarm_deliver_job automation: true).
 	Reruns int `json:"reruns,omitempty"`
+	// RerunAt is when the newest re-run (Reruns) started (Unix ms): steps
+	// that finished before it are the earlier run's, kept by the re-run.
+	// 0 for a delivery never re-run (and re-runs recorded before it existed).
+	RerunAt int64 `json:"rerun_at,omitempty"`
 	// Head is the commit the delivery delivers: the triggering job's head,
 	// moved forward by an agent step whose job committed on top of it.
 	// HeadWorktree is the checkout that commit can be fetched from.
@@ -1371,6 +1375,7 @@ func (s *Store) rerunLocked(d Delivery) (RerunOutcome, error) {
 		reopenForItems(&d)
 	}
 	d.Reruns++
+	d.RerunAt = s.now().UnixMilli()
 	if err := s.putDeliveryLocked(d); err != nil {
 		return RerunOutcome{}, err
 	}
@@ -1413,6 +1418,7 @@ func (s *Store) RerunAfterHandover(account, id, followup string) (RerunOutcome, 
 	}
 	d.State, d.FinishedAt, d.SentBack, d.HandoverRerun = StatePending, 0, nil, followup
 	d.Reruns++
+	d.RerunAt = s.now().UnixMilli()
 	if err := s.putDeliveryLocked(d); err != nil {
 		return RerunOutcome{}, err
 	}

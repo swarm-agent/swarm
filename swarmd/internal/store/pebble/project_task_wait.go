@@ -148,6 +148,13 @@ type V3ProjectTaskWaitProgress struct {
 	// DeliveryID is the shown delivery; manage_workflows action=deliveries
 	// delivery_id=<it> reads its steps in full.
 	DeliveryID string `json:"delivery_id,omitempty"`
+	// DeliveryAttemptID is the task attempt the shown delivery's current run
+	// belongs to, and DeliveryRun that run (1 is the first; a re-run counts
+	// up). A delivery of an earlier attempt is never shown for a newer one
+	// (ForAttempt), so a row's workflow fields are always the followed
+	// attempt's.
+	DeliveryAttemptID string `json:"delivery_attempt_id,omitempty"`
+	DeliveryRun       int    `json:"delivery_run,omitempty"`
 	// StepsResult is each finished step of the shown delivery: id, type,
 	// status, verdict, duration and a bounded tail of its output (a run
 	// step's last lines, a review's BLOCKING findings).
@@ -193,11 +200,16 @@ func ProjectTaskWaitProgressFrom(progress any) *V3ProjectTaskWaitProgress {
 			Deliveries []struct {
 				ID       string `json:"id"`
 				Workflow string `json:"workflow"`
-				State    string `json:"state"`
-				Step     int    `json:"step"`
-				Steps    int    `json:"steps"`
-				StepType string `json:"step_type"`
-				Round    int    `json:"round"`
+				// The attempt and run the delivery belongs to, and whether
+				// that attempt is an earlier one (task progress).
+				AttemptID       string `json:"attempt_id"`
+				Run             int    `json:"run"`
+				PreviousAttempt bool   `json:"previous_attempt"`
+				State           string `json:"state"`
+				Step            int    `json:"step"`
+				Steps           int    `json:"steps"`
+				StepType        string `json:"step_type"`
+				Round           int    `json:"round"`
 				// The reopen this delivery stands at (task progress).
 				ReopenCause            string `json:"reopen_cause"`
 				ReopenFailure          string `json:"reopen_failure"`
@@ -223,22 +235,26 @@ func ProjectTaskWaitProgressFrom(progress any) *V3ProjectTaskWaitProgress {
 	out.TaskStateReason, _ = ClipProjectTaskReason(view.TaskStateReason, ProjectTaskWakeReasonRunes)
 	if w := view.Workflow; w != nil {
 		out.WorkflowState = clipProjectTaskWaitField(w.State)
-		// The delivery shown is the running one, else the newest.
+		// The delivery shown is the running one, else the newest; a
+		// delivery of an earlier attempt of the task is never shown.
 		pick := -1
 		for i, d := range w.Deliveries {
-			if d.State == projectTaskWorkflowRunning {
+			if d.State == projectTaskWorkflowRunning && !d.PreviousAttempt {
 				pick = i
 				break
 			}
 		}
-		if pick < 0 && len(w.Deliveries) > 0 {
-			pick = 0
+		for i := 0; pick < 0 && i < len(w.Deliveries); i++ {
+			if !w.Deliveries[i].PreviousAttempt {
+				pick = i
+			}
 		}
 		if pick >= 0 {
 			d := w.Deliveries[pick]
 			out.Workflow, out.WorkflowStepType = clipProjectTaskWaitField(d.Workflow), clipProjectTaskWaitField(d.StepType)
 			out.WorkflowStep, out.WorkflowSteps, out.WorkflowRound = max(d.Step, 0), max(d.Steps, 0), max(d.Round, 0)
 			out.DeliveryID = clipProjectTaskWaitField(d.ID)
+			out.DeliveryAttemptID, out.DeliveryRun = clipProjectTaskWaitField(d.AttemptID), max(d.Run, 0)
 			out.StepsResult = ClipProjectTaskStepResults(d.StepsResult)
 			if d.ReopenCause != "" {
 				reopen := ProjectTaskReopen{Round: d.ReopenRound, Cause: d.ReopenCause, Failure: d.ReopenFailure}.Normalized()
@@ -255,6 +271,27 @@ func ProjectTaskWaitProgressFrom(progress any) *V3ProjectTaskWaitProgress {
 		out.IntegrationState = clipProjectTaskWaitField(in.State)
 	}
 	return out
+}
+
+// ForAttempt keeps the progress to the attempt a wake row follows: a shown
+// delivery whose run belongs to another attempt (an earlier one, from a
+// machine that names it) is dropped with its workflow fields, and a
+// failed, blocked or sent-back workflow state it alone could have set is
+// not reported. A delivery that names no attempt is kept (its machine
+// already shows only the current attempt's deliveries, or does not say).
+func (p *V3ProjectTaskWaitProgress) ForAttempt(attemptID string) *V3ProjectTaskWaitProgress {
+	if p == nil || attemptID == "" || p.DeliveryAttemptID == "" || p.DeliveryAttemptID == attemptID {
+		return p
+	}
+	out := *p
+	out.Workflow, out.WorkflowStep, out.WorkflowSteps, out.WorkflowStepType, out.WorkflowRound = "", 0, 0, "", 0
+	out.ReopenCause, out.ReopenFailure, out.ReopenFailureTruncated = "", "", false
+	out.DeliveryID, out.DeliveryAttemptID, out.DeliveryRun, out.StepsResult = "", "", 0, nil
+	switch out.WorkflowState {
+	case projectTaskWorkflowFailed, projectTaskWorkflowBlocked, "sent_back":
+		out.WorkflowState = ""
+	}
+	return &out
 }
 
 // clipProjectTaskLive bounds a live state (it may come from a linked
@@ -305,6 +342,12 @@ func projectTaskWaitProgressRow(p *V3ProjectTaskWaitProgress) map[string]any {
 	}
 	if p.DeliveryID != "" {
 		row["delivery_id"] = p.DeliveryID
+	}
+	if p.DeliveryAttemptID != "" {
+		row["delivery_attempt_id"] = p.DeliveryAttemptID
+	}
+	if p.DeliveryRun > 0 {
+		row["delivery_run"] = p.DeliveryRun
 	}
 	if len(p.StepsResult) > 0 {
 		row["workflow_steps_result"] = p.StepsResult
@@ -635,6 +678,9 @@ func (s *SessionStore) projectTaskWatchLocalOutcome(input *V3SessionMutationInpu
 				failure = projectTaskWakeFailure(status, task.LastError, task.ActionNeeded)
 			}
 		}
+		// The row is the followed attempt's: a delivery of another attempt
+		// neither settles it nor names its milestone.
+		waitProgress = waitProgress.ForAttempt(attemptID)
 		ready, needsAction := projectTaskWaitReadiness(status, owner.TaskWait, waitProgress)
 		if progressPending && ready && !needsAction {
 			ready = false
@@ -829,7 +875,7 @@ func projectTaskWatchRemoteOutcome(op *V3ProjectTaskWaitMutation, waitValue V3Pr
 			case !current:
 				status, summary = "superseded", "Selected attempt was superseded; explicitly select the replacement if needed."
 			default:
-				progress = o.Progress
+				progress = o.Progress.ForAttempt(attemptID)
 				status = o.Status
 				summary, source = projectTaskWakeSummary(status, o.AttemptHandoff, o.AttemptSummary, o.LastError, o.ActionNeeded)
 				failure = projectTaskWakeFailure(status, o.LastError, o.ActionNeeded)

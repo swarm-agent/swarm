@@ -119,6 +119,26 @@ changing the run.
     "non-blocking" or "BLOCKING: none"), with `more` when anything was cut. `get_task` shows
     the same list as `progress.workflow.steps_result` and the task route as
     `progress.workflow.deliveries[].steps_result` (`taskWaitProgressFor`).
+  - Rows are the followed attempt's only. `delivery_attempt_id` is the task
+    attempt the shown delivery's current run belongs to and `delivery_run`
+    that run (1 the first; a re-run counts up). A delivery belongs to the
+    newest attempt started at or before its current run (creation, or its
+    newest re-run, `jobautomation.Delivery.RerunAt`), or to the attempt whose
+    evaluated job end the runner matched to it (`deliveryAttempt`); a
+    workflow send-back keeps the attempt, `message_task`/reopen starts a new
+    one. Task progress lists a delivery of an earlier attempt with
+    `previous_attempt: true` (and its `attempt_id`, `run`); it decides
+    nothing for the active attempt: not the workflow state, outcome or
+    summary, not a milestone, not a settled row. A wake row never shows it
+    (`V3ProjectTaskWaitProgress.ForAttempt` drops a shown delivery that names
+    another attempt, local and linked alike, with a failed, blocked or
+    sent-back workflow state it alone set). After a re-run, a step kept from
+    the earlier run (finished before `RerunAt`) carries `previous_run: true`;
+    a step the re-run reset has no result until it runs again.
+  - A settled row and `get_task` read the same progress
+    (`taskWaitProgressFor`) from the same records, so at one instant they
+    agree on `workflow_state`, `delivery_id`, `delivery_attempt_id`,
+    `delivery_run`, the step results and `task_state`.
   - Milestone rows are the same rows plus `milestone`.
   - `agent_stall` (from the task progress, `pebblestore.ProjectTaskAgentStall`)
     names how a task's running run stalls: `kind` (`sleep_polling`,
@@ -233,7 +253,8 @@ remote tasks.
   reconnect. Every
   row names `machine`, `task_id`, `attempt_id` and `session_id` and carries the
   same result fields as a local row (`summary`/`summary_source`, `failure`,
-  `reopen_failure`, `delivery_id`, `workflow_steps_result`, `agent_stall`,
+  `reopen_failure`, `delivery_id`, `delivery_attempt_id`, `delivery_run`,
+  `workflow_steps_result`, `agent_stall`,
   read from the machine's `get_task` record and progress and bounded again
   here; an `agent_stall` of unknown kind is dropped); only
   `progress` is local and `machine` linked. The message is

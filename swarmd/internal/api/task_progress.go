@@ -97,11 +97,20 @@ type taskProgressWorkflow struct {
 type taskProgressDelivery struct {
 	ID       string `json:"id"`
 	Workflow string `json:"workflow"`
-	State    string `json:"state"`
-	Step     int    `json:"step"`
-	Steps    int    `json:"steps"`
-	StepType string `json:"step_type"`
-	Round    int    `json:"round"`
+	// AttemptID is the task attempt the delivery's current run belongs to
+	// (deliveryAttempt) and Run that run (1 the first, a re-run counts up).
+	// PreviousAttempt marks a delivery of an earlier attempt than the
+	// active one: shown for the record, it decides nothing about the
+	// active attempt (the workflow state, outcome and summary, a wait's
+	// milestone and settled row).
+	AttemptID       string `json:"attempt_id,omitempty"`
+	Run             int    `json:"run,omitempty"`
+	PreviousAttempt bool   `json:"previous_attempt,omitempty"`
+	State           string `json:"state"`
+	Step            int    `json:"step"`
+	Steps           int    `json:"steps"`
+	StepType        string `json:"step_type"`
+	Round           int    `json:"round"`
 	// SentBack is the reopen step, round and reason of a sent_back delivery.
 	SentBack *jobautomation.SentBack `json:"sent_back,omitempty"`
 	// ReopenCause, ReopenFailure and ReopenRound describe the reopen step
@@ -204,6 +213,45 @@ func deliveryReopenCut(d jobautomation.Delivery, step int) (pebblestore.ProjectT
 	return reopen, reopen.Failure != "" && cut, true
 }
 
+// deliveryRunAt is when the delivery's current run started: its newest
+// re-run, else its creation (the job end it was made for).
+func deliveryRunAt(d jobautomation.Delivery) int64 {
+	return max(d.CreatedAt, d.RerunAt)
+}
+
+// deliveryAttempt is the task attempt d's current run belongs to: the newest
+// attempt that started at or before that run (a workflow send-back keeps the
+// attempt; message_task and reopen start a new one), or the attempt whose job
+// end the runner matched to d (an end at a head d already covers). current
+// says whether that is the task's active attempt. A task with one attempt
+// (or none recorded) owns every delivery.
+func deliveryAttempt(task pebblestore.ProjectTaskRecord, d jobautomation.Delivery, eval *jobautomation.JobEvaluation) (string, bool) {
+	active := task.ActiveAttempt()
+	if active == nil || len(task.Attempts) < 2 {
+		if active != nil {
+			return active.ID, true
+		}
+		return "", true
+	}
+	if eval != nil && eval.Evaluated() && eval.EndedAt >= active.CreatedAt {
+		for _, id := range eval.Deliveries {
+			if id == d.ID {
+				return active.ID, true
+			}
+		}
+	}
+	at, owner, ownerAt := deliveryRunAt(d), "", int64(-1)
+	for _, a := range task.Attempts {
+		if a.CreatedAt <= at && a.CreatedAt >= ownerAt {
+			owner, ownerAt = a.ID, a.CreatedAt
+		}
+	}
+	if owner == "" {
+		owner = task.Attempts[0].ID
+	}
+	return owner, owner == active.ID
+}
+
 // deliveryStepsResult is each finished step of d as task progress shows it
 // (steps_result): status, an agent step's verdict, its duration, its failure
 // (head and tail kept), the tail of its output (a run step's log tail when
@@ -242,6 +290,9 @@ func deliveryStepsResult(d jobautomation.Delivery) []pebblestore.ProjectTaskStep
 		if r.ErrorTruncated || r.OutputTruncated {
 			r.More = deliveryFindingsMore(d.ID)
 		}
+		// A re-run keeps steps that succeeded: their result is the earlier
+		// run's, said so, never shown as this run's.
+		r.PreviousRun = d.RerunAt > 0 && step.FinishedAt > 0 && step.FinishedAt < d.RerunAt
 		out = append(out, r)
 	}
 	return pebblestore.ClipProjectTaskStepResults(out)
@@ -523,14 +574,35 @@ func oneLineProgress(s string, limit int) string {
 func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobautomation.Delivery, eval *jobautomation.JobEvaluation, now int64) taskProgress {
 	class := taskStatusClass(task.Status)
 	ended := class == "finished" || class == progressFailed || class == progressStopped
-	latest := latestDeliveries(deliveries)
+	task.EnsureTaskAttempts()
+	// The deliveries that decide the active attempt's workflow are its own
+	// (latest): a delivery of an earlier attempt (sent back with message_task
+	// after it failed) is listed as previous_attempt and decides nothing.
+	shown := latestDeliveries(deliveries)
+	latest := make([]jobautomation.Delivery, 0, len(shown))
+	var previous []taskProgressDelivery
+	owners := map[string]string{}
+	for _, d := range shown {
+		attemptID, current := deliveryAttempt(task, d, eval)
+		owners[d.ID] = attemptID
+		if current {
+			latest = append(latest, d)
+			continue
+		}
+		view := taskProgressDelivery{ID: d.ID, Workflow: d.AutomationName, AttemptID: attemptID, Run: d.Reruns + 1, PreviousAttempt: true, State: deliveryProgressState(d.State), Steps: len(d.Steps), Round: d.Round}
+		if len(d.Steps) > 0 {
+			step := currentStep(d)
+			view.Step, view.StepType = step+1, d.Steps[step].Type
+		}
+		previous = append(previous, view)
+	}
 
 	// Workflow: the deliveries that applied (latest round per workflow),
 	// or none / pending from the evaluation of the job end.
 	var workflow *taskProgressWorkflow
 	running := []jobautomation.Delivery{}
 	var failedDelivery, sentBackDelivery *jobautomation.Delivery
-	if len(latest) > 0 || (ended && eval != nil) {
+	if len(shown) > 0 || (ended && eval != nil) {
 		workflow = &taskProgressWorkflow{Deliveries: []taskProgressDelivery{}}
 		anyFailed, anyBlocked, anySentBack := false, false, false
 		for i, d := range latest {
@@ -542,7 +614,7 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 				// yet: the work is not handed over until it has.
 				state = workflowRunning
 			}
-			view := taskProgressDelivery{ID: d.ID, Workflow: d.AutomationName, State: state, Steps: len(d.Steps), Round: d.Round, SentBack: d.SentBack}
+			view := taskProgressDelivery{ID: d.ID, Workflow: d.AutomationName, AttemptID: owners[d.ID], Run: d.Reruns + 1, State: state, Steps: len(d.Steps), Round: d.Round, SentBack: d.SentBack}
 			if len(d.Steps) > 0 {
 				view.Step, view.StepType = step+1, d.Steps[step].Type
 			}
@@ -588,6 +660,7 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 		default:
 			workflow.State = workflowNone
 		}
+		workflow.Deliveries = append(workflow.Deliveries, previous...)
 	}
 
 	// Integration: the task's record, then what its workflows merged,
@@ -623,7 +696,8 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 	if task.Integration != nil && task.Integration.State == "pull_request" && task.Integration.PullRequestURL != "" {
 		deliveredWhere = "pull request " + task.Integration.PullRequestURL
 	}
-	for _, d := range latest {
+	// What any attempt's delivery handed over stays handed over.
+	for _, d := range shown {
 		// A host run step after the delivery's last agent step (its review)
 		// is the owner's script handing the work over (push, deploy); one
 		// before it, or one in the folder's environment, is a check.
@@ -663,10 +737,10 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 			}
 		}
 	}
-	if !integrated && commits == 0 && len(latest) > 0 && latest[0].Result.Git != nil {
-		commits = len(latest[0].Result.Git.Commits)
-		branch = firstNonEmptyString(branch, latest[0].Result.Git.Branch)
-		target = firstNonEmptyString(target, latest[0].Result.Git.BaseBranch)
+	if !integrated && commits == 0 && len(shown) > 0 && shown[0].Result.Git != nil {
+		commits = len(shown[0].Result.Git.Commits)
+		branch = firstNonEmptyString(branch, shown[0].Result.Git.Branch)
+		target = firstNonEmptyString(target, shown[0].Result.Git.BaseBranch)
 	}
 	if integrated {
 		commits = 0

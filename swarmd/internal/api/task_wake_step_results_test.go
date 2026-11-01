@@ -104,7 +104,7 @@ func TestTaskWakeStepResultsMatchAcrossAPIWakeAndMCP(t *testing.T) {
 
 	// The wake row's view, as the local hook and a linked get_task feed it.
 	wake := pebblestore.ProjectTaskWaitProgressFrom(json.RawMessage(raw))
-	if wake == nil || !reflect.DeepEqual(wake.StepsResult, steps) || wake.ReopenFailure != view.ReopenFailure || !wake.ReopenFailureTruncated || wake.DeliveryID != "jdel-wake" {
+	if wake == nil || !reflect.DeepEqual(wake.StepsResult, steps) || wake.ReopenFailure != view.ReopenFailure || !wake.ReopenFailureTruncated || wake.DeliveryID != "jdel-wake" || wake.DeliveryRun != 1 || wake.DeliveryRun != view.Run {
 		t.Fatalf("wake progress drifted from the route: %+v", wake)
 	}
 	// The bounded wake row (ClipProjectTaskStepResults, also a linked
@@ -123,12 +123,13 @@ func TestTaskWakeStepResultsMatchAcrossAPIWakeAndMCP(t *testing.T) {
 	// MCP get_task's progress.workflow.
 	wfRaw, _ := json.Marshal(tool.ProjectTaskWorkflow(json.RawMessage(raw)))
 	var wf struct {
+		DeliveryRun            int                                 `json:"delivery_run"`
 		ReopenFailure          string                              `json:"reopen_failure"`
 		ReopenFailureTruncated bool                                `json:"reopen_failure_truncated"`
 		StepsResult            []pebblestore.ProjectTaskStepResult `json:"steps_result"`
 		More                   string                              `json:"more"`
 	}
-	if err := json.Unmarshal(wfRaw, &wf); err != nil || !reflect.DeepEqual(wf.StepsResult, steps) || wf.ReopenFailure != view.ReopenFailure || !wf.ReopenFailureTruncated || !strings.Contains(wf.More, "jdel-wake") {
+	if err := json.Unmarshal(wfRaw, &wf); err != nil || !reflect.DeepEqual(wf.StepsResult, steps) || wf.DeliveryRun != wake.DeliveryRun || wf.ReopenFailure != view.ReopenFailure || !wf.ReopenFailureTruncated || !strings.Contains(wf.More, "jdel-wake") {
 		t.Fatalf("get_task workflow drifted from the route: %s", wfRaw)
 	}
 
@@ -137,7 +138,7 @@ func TestTaskWakeStepResultsMatchAcrossAPIWakeAndMCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"summary_source", "`handoff`", "read_full_args", "result_bytes", "failure_truncated", "reopen_failure_truncated", "reopen_failure_more", "delivery_id", "workflow_steps_result", "steps_result", "output_tail", "blocking", "error_kind", "ProjectTaskWakeRowKeys", "agent_stall", "`stalled`", "sleep_polling", "long_command", "no_activity", "agent_poll_stall_minutes"} {
+	for _, key := range []string{"summary_source", "`handoff`", "read_full_args", "result_bytes", "failure_truncated", "reopen_failure_truncated", "reopen_failure_more", "delivery_id", "delivery_attempt_id", "delivery_run", "previous_attempt", "previous_run", "workflow_steps_result", "steps_result", "output_tail", "blocking", "error_kind", "ProjectTaskWakeRowKeys", "agent_stall", "`stalled`", "sleep_polling", "long_command", "no_activity", "agent_poll_stall_minutes"} {
 		if !strings.Contains(string(contract), key) {
 			t.Fatalf("wait contract does not name %s", key)
 		}
@@ -151,7 +152,7 @@ func TestTaskWakeStepResultsMatchAcrossAPIWakeAndMCP(t *testing.T) {
 			descriptions[a.Action] = a.Description
 		}
 	}
-	for action, keys := range map[string][]string{"wait_tasks": {"handoff", "final result message", "read_full_args", "reopen_failure", "workflow_steps_result", "stalled", "agent_stall", "sleep_polling", "long_command", "no_activity"}, "get_task": {"reopen_failure", "steps_result", "BLOCKING"}} {
+	for action, keys := range map[string][]string{"wait_tasks": {"handoff", "final result message", "read_full_args", "reopen_failure", "workflow_steps_result", "delivery_attempt_id", "delivery_run", "previous_run", "stalled", "agent_stall", "sleep_polling", "long_command", "no_activity"}, "get_task": {"reopen_failure", "steps_result", "delivery_attempt_id", "delivery_run", "previous_run", "BLOCKING"}} {
 		for _, key := range keys {
 			if !strings.Contains(descriptions[action], key) {
 				t.Fatalf("%s description does not name %s: %q", action, key, descriptions[action])

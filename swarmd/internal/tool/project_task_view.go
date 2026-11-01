@@ -98,12 +98,18 @@ type projectTaskProgressRead struct {
 		Deliveries []struct {
 			ID       string `json:"id"`
 			Workflow string `json:"workflow"`
-			State    string `json:"state"`
-			Step     int    `json:"step"`
-			Steps    int    `json:"steps"`
-			StepType string `json:"step_type"`
-			Round    int    `json:"round"`
-			SentBack *struct {
+			// AttemptID and Run are the attempt and run the delivery belongs
+			// to; PreviousAttempt marks one of an earlier attempt, never
+			// shown as the active attempt's workflow.
+			AttemptID       string `json:"attempt_id"`
+			Run             int    `json:"run"`
+			PreviousAttempt bool   `json:"previous_attempt"`
+			State           string `json:"state"`
+			Step            int    `json:"step"`
+			Steps           int    `json:"steps"`
+			StepType        string `json:"step_type"`
+			Round           int    `json:"round"`
+			SentBack        *struct {
 				Step   string `json:"step"`
 				Round  int    `json:"round"`
 				Reason string `json:"reason"`
@@ -266,6 +272,11 @@ type projectTaskWorkflow struct {
 	// DeliveryID is the shown delivery; manage_workflows action=deliveries
 	// delivery_id=<it> reads its steps in full.
 	DeliveryID string `json:"delivery_id,omitempty"`
+	// DeliveryAttemptID and DeliveryRun are the attempt and run the shown
+	// delivery belongs to (the wake rows' delivery_attempt_id and
+	// delivery_run); a delivery of an earlier attempt is never shown.
+	DeliveryAttemptID string `json:"delivery_attempt_id,omitempty"`
+	DeliveryRun       int    `json:"delivery_run,omitempty"`
 	// StepsResult is each finished step of the shown delivery: id, type,
 	// status, verdict, duration, a bounded output tail and a review's
 	// BLOCKING findings (the wake rows' workflow_steps_result).
@@ -493,17 +504,25 @@ func compactProjectTask(read projectTaskRead, remote bool) ProjectTaskView {
 	}
 	if p != nil && p.Workflow != nil && p.Workflow.State != "" && p.Workflow.State != "none" {
 		wf := &projectTaskWorkflow{State: p.Workflow.State, Running: p.Workflow.State == "running" || p.Workflow.State == "pending"}
-		if len(p.Workflow.Deliveries) > 0 {
+		// The active attempt's deliveries only: one of an earlier attempt
+		// is history (progress lists it as previous_attempt).
+		current := p.Workflow.Deliveries[:0:0]
+		for _, candidate := range p.Workflow.Deliveries {
+			if !candidate.PreviousAttempt {
+				current = append(current, candidate)
+			}
+		}
+		if len(current) > 0 {
 			// The running delivery, else the one that decides the workflow's
 			// state (the one sent back, failed or blocked), else the newest.
-			d, picked := p.Workflow.Deliveries[0], false
-			for _, candidate := range p.Workflow.Deliveries {
+			d, picked := current[0], false
+			for _, candidate := range current {
 				if candidate.State == "running" {
 					d, picked = candidate, true
 					break
 				}
 			}
-			for _, candidate := range p.Workflow.Deliveries {
+			for _, candidate := range current {
 				if !picked && candidate.State == p.Workflow.State {
 					d, picked = candidate, true
 				}
@@ -528,6 +547,7 @@ func compactProjectTask(read projectTaskRead, remote bool) ProjectTaskView {
 				wf.ReopenFailureTruncated = reopen.Failure != "" && (d.ReopenFailureTruncated || cut)
 			}
 			wf.DeliveryID = clipBytes(d.ID, 160)
+			wf.DeliveryAttemptID, wf.DeliveryRun = clipBytes(d.AttemptID, 160), max(d.Run, 0)
 			wf.StepsResult = pebblestore.ClipProjectTaskStepResults(d.StepsResult)
 			if wf.ReopenFailureTruncated && wf.More == "" && wf.DeliveryID != "" {
 				wf.More = projectTaskFindingsMore(wf.DeliveryID, remote)

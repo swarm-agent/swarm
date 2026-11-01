@@ -267,6 +267,18 @@ record keeps its placeholder.
   issues", "not blocking", "BLOCKING: none" and the like are left out) and
   `more` when anything was cut. `get_task` shows the shown delivery's list as
   `progress.workflow.steps_result`; wake rows as `workflow_steps_result`.
+  After a re-run, a step kept from the earlier run carries `previous_run:
+  true`; a step the re-run reset has no result until it runs again.
+- Each delivery names the task attempt its current run belongs to
+  (`attempt_id`) and that run (`run`: 1, then one more per re-run). A
+  delivery made before the active attempt started (the task was sent back
+  with `message_task` after it, or reopened) is listed with
+  `previous_attempt: true` and decides nothing for the active attempt: not
+  `workflow.state`, the outcome or the summary, not a watch's milestone or
+  settled row. A workflow send-back keeps the attempt. `get_task` and wake
+  rows show the active attempt's delivery with `delivery_attempt_id` and
+  `delivery_run`; a settled wake row and `get_task` read the same progress,
+  so they agree.
 - absent while the task has not ended.
 
 ### `history`

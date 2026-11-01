@@ -29,7 +29,7 @@ func wakeStepResultsProgress(failure string) map[string]any {
 		{ID: "review", Type: "agent", Status: "succeeded", Verdict: "block", Blocking: []string{"BLOCKING: summary is the first lines"}},
 	}
 	return map[string]any{"state": "workflow", "summary": "review loop", "workflow": map[string]any{"state": "sent_back", "deliveries": []any{
-		map[string]any{"id": "jdel-1", "workflow": "review loop", "state": "sent_back", "step": 4, "steps": 4, "step_type": "reopen", "round": 1,
+		map[string]any{"id": "jdel-1", "workflow": "review loop", "attempt_id": "a1", "run": 2, "state": "sent_back", "step": 4, "steps": 4, "step_type": "reopen", "round": 1,
 			"reopen_cause": "push_failed", "reopen_failure": failure, "reopen_round": 2, "steps_result": steps},
 	}}}
 }
@@ -212,11 +212,11 @@ func TestProjectTaskWakeRowLocalAndLinkedShapesMatch(t *testing.T) {
 	if !reflect.DeepEqual(local["agent_stall"], remote["agent_stall"]) || local["agent_stall"] == nil {
 		t.Fatalf("agent_stall differs: local %v linked %v", local["agent_stall"], remote["agent_stall"])
 	}
-	for _, key := range []string{"summary", "summary_source", "result_truncated", "result_bytes", "failure", "failure_truncated", "reopen_failure", "reopen_failure_truncated", "workflow_steps_result", "delivery_id", "agent_stall"} {
+	for _, key := range []string{"summary", "summary_source", "result_truncated", "result_bytes", "failure", "failure_truncated", "reopen_failure", "reopen_failure_truncated", "workflow_steps_result", "delivery_id", "delivery_attempt_id", "delivery_run", "agent_stall"} {
 		if _, ok := remote[key]; !ok {
 			t.Fatalf("linked wake row lacks %s: %v", key, remote)
 		}
-		if key == "summary" || key == "failure" || key == "reopen_failure" || key == "result_bytes" {
+		if key == "summary" || key == "failure" || key == "reopen_failure" || key == "result_bytes" || key == "delivery_attempt_id" || key == "delivery_run" {
 			if local[key] != remote[key] {
 				t.Fatalf("%s differs: local %v linked %v", key, local[key], remote[key])
 			}

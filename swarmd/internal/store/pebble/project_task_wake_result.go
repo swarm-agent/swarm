@@ -72,6 +72,10 @@ type ProjectTaskStepResult struct {
 	Blocking []string `json:"blocking,omitempty"`
 	// More is the call that reads the step in full when anything was cut.
 	More string `json:"more,omitempty"`
+	// PreviousRun marks a step the delivery's current run kept from an
+	// earlier run of the same delivery (a re-run keeps succeeded steps):
+	// its result is that run's, not this one's.
+	PreviousRun bool `json:"previous_run,omitempty"`
 }
 
 // ClipProjectTaskReason bounds a failure reason to limit runes: a longer one
@@ -199,7 +203,7 @@ func ClipProjectTaskStepResults(in []ProjectTaskStepResult) []ProjectTaskStepRes
 	}
 	out := make([]ProjectTaskStepResult, 0, len(in))
 	for _, r := range in {
-		step := ProjectTaskStepResult{ID: clipProjectTaskWaitField(r.ID), Type: clipProjectTaskWaitField(r.Type), Status: clipProjectTaskWaitField(r.Status), ErrorKind: clipProjectTaskWaitField(r.ErrorKind), Verdict: clipProjectTaskWaitField(r.Verdict), DurationMs: max(r.DurationMs, 0), More: clipProjectTaskWaitField(r.More)}
+		step := ProjectTaskStepResult{ID: clipProjectTaskWaitField(r.ID), Type: clipProjectTaskWaitField(r.Type), Status: clipProjectTaskWaitField(r.Status), ErrorKind: clipProjectTaskWaitField(r.ErrorKind), Verdict: clipProjectTaskWaitField(r.Verdict), DurationMs: max(r.DurationMs, 0), More: clipProjectTaskWaitField(r.More), PreviousRun: r.PreviousRun}
 		if r.ExitCode != nil {
 			code := *r.ExitCode
 			step.ExitCode = &code
@@ -340,7 +344,7 @@ var ProjectTaskWakeRowKeys = []string{
 	"summary", "summary_source", "result_truncated", "result_bytes", "read_full", "read_full_args",
 	"failure", "failure_truncated", "failure_bytes",
 	"workflow_state", "workflow", "workflow_step", "workflow_steps", "workflow_step_type", "workflow_round",
-	"delivery_id", "workflow_steps_result",
+	"delivery_id", "delivery_attempt_id", "delivery_run", "workflow_steps_result",
 	"reopen_cause", "reopen_failure", "reopen_failure_truncated", "reopen_failure_more",
 	"integration_state", "task_state", "task_state_reason", "pending_request",
 	"agent_stall", "milestone",
