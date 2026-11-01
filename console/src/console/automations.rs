@@ -44,29 +44,16 @@ impl Console {
         }
         self.automations_busy = true;
         cx.notify();
-        // Linked machines' proposals are read through the home.
-        let linked: Vec<String> = self.machines.iter().skip(1).map(|m| m.name.to_string()).filter(|n| !n.is_empty()).collect();
+        // Linked machines' proposals are read on their own tasks, so a slow
+        // or unreachable link never holds up this machine's board.
+        self.load_linked_proposals(cx);
         cx.spawn(async move |this, cx| {
-            let (result, linked) = cx
-                .background_executor()
-                .spawn(async move {
-                    let board = automations::read(&client);
-                    let linked: Vec<(String, Result<Vec<Proposal>, String>)> = linked
-                        .into_iter()
-                        .map(|machine| {
-                            let read = proposals::list(&client, &machine);
-                            (machine, read)
-                        })
-                        .collect();
-                    (board, linked)
-                })
-                .await;
+            let result = cx.background_executor().spawn(async move { automations::read(&client) }).await;
             this.update(cx, |this, cx| {
                 this.automations_busy = false;
                 if let Ok(board) = &result {
                     this.announce_failures(board);
                 }
-                this.linked_proposals = linked.into_iter().collect();
                 this.automations = Some(result);
                 this.automations_at = now_ms();
                 if std::mem::take(&mut this.automations_again) {
@@ -77,6 +64,42 @@ impl Console {
             .ok();
         })
         .detach();
+    }
+
+    /// Reads each linked machine's proposals through the home, one task per
+    /// machine, apart from the board. A machine the home has not reached is
+    /// not asked (its link would only wait out its timeout); a machine whose
+    /// read is under way is read again after it.
+    fn load_linked_proposals(&mut self, cx: &mut Context<Self>) {
+        let Some(client) = self.live.as_ref().map(|l| l.client()) else { return };
+        let (read, unreachable) = linked_to_read(&self.machines);
+        let known: HashSet<&String> = read.iter().chain(unreachable.iter()).collect();
+        self.linked_proposals.retain(|m, _| known.contains(m));
+        for machine in unreachable {
+            self.linked_proposals.insert(machine, Err("the home has not reached this machine".into()));
+        }
+        for machine in read {
+            if self.linked_proposals_busy.contains(&machine) {
+                self.linked_proposals_again.insert(machine);
+                continue;
+            }
+            self.linked_proposals_busy.insert(machine.clone());
+            let client = client.clone();
+            cx.spawn(async move |this, cx| {
+                let asked = machine.clone();
+                let result: Result<Vec<Proposal>, String> = cx.background_executor().spawn(async move { proposals::list(&client, &asked) }).await;
+                this.update(cx, |this, cx| {
+                    this.linked_proposals_busy.remove(&machine);
+                    this.linked_proposals.insert(machine.clone(), result);
+                    if this.linked_proposals_again.remove(&machine) {
+                        this.load_linked_proposals(cx);
+                    }
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+        }
     }
 
     /// A run that failed since the last read is said in the status bar,
@@ -943,6 +966,25 @@ fn status_of(c: &Console, r: &Run) -> (&'static str, gpui::Hsla) {
     }
 }
 
+/// The linked machines (every machine after the connected one) whose
+/// proposals to read, and those the home has not reached, which are not asked.
+fn linked_to_read(machines: &[crate::data::Machine]) -> (Vec<String>, Vec<String>) {
+    let mut read = Vec::new();
+    let mut unreachable = Vec::new();
+    for m in machines.iter().skip(1) {
+        let name = m.name.to_string();
+        if name.is_empty() {
+            continue;
+        }
+        if m.health == crate::data::Health::Offline {
+            unreachable.push(name);
+        } else {
+            read.push(name);
+        }
+    }
+    (read, unreachable)
+}
+
 fn pill(c: &Console, label: &str, color: gpui::Hsla) -> Div {
     let t = &c.theme;
     div().px(px(5.)).rounded(px(t.radius)).bg(alpha(color, 0.14)).text_color(color).text_size(px(10.5)).child(label.to_string())
@@ -991,5 +1033,22 @@ mod tests {
         };
         let ids: Vec<&str> = Console::failing(&board).iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids, vec!["a2"]);
+    }
+
+    /// Purpose: the board must not wait on linked machines, and a machine
+    /// the home has not reached must not be asked at all (each ask through
+    /// an offline link waits out the link's dial timeout on every refresh).
+    /// The connected machine (first) and unnamed entries are never linked
+    /// reads; reached linked machines are read, offline ones are reported.
+    #[test]
+    fn linked_proposals_skip_the_connected_and_unreached_machines() {
+        use crate::data::{Health, Machine};
+        let machine = |name: &str, health: Health| Machine { health, ..Machine::unread(name.to_string().into(), "paired".into(), "owner".into()) };
+        let machines =
+            vec![machine("home", Health::Ok), machine("lab", Health::Ok), machine("edge", Health::Offline), machine("", Health::Ok), machine("build", Health::Attention)];
+        let (read, unreachable) = linked_to_read(&machines);
+        assert_eq!(read, vec!["lab".to_string(), "build".to_string()]);
+        assert_eq!(unreachable, vec!["edge".to_string()]);
+        assert_eq!(linked_to_read(&machines[..1]), (vec![], vec![]));
     }
 }
