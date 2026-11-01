@@ -120,6 +120,16 @@ const (
 // error as swarm-step-clone-error lines), so the checkout reads only what
 // the head needs and the origin fallback covers an object it cannot read.
 // The git command that failed is named on exit (swarm-step-git).
+//
+// The folder usually belongs to another user than the lease's (the person,
+// while the lease runs as its own uid), so Git's safe.directory check would
+// refuse it ("detected dubious ownership"). Every Git command here that
+// reads the folder trusts exactly the folder and its .git directory: the
+// script appends both to the GIT_CONFIG_COUNT safe.directory entries the
+// lease already sets, and git clone, which drops those variables for the
+// upload-pack it starts on a local path (so the clone failed with "Could
+// not read from remote repository ... and the repository exists", exit
+// 10), runs upload-pack with the same two entries on its command line.
 const prepareScript = `set -u
 src=$1 head=$2 script=$3
 dir="` + stepCheckoutDir + `"
@@ -127,10 +137,17 @@ base=$(dirname -- "$dir")
 err="$base/prepare.err"
 gitcmd=""
 trap 'st=$?; if [ "$st" -ne 0 ] && [ -n "$gitcmd" ]; then printf "swarm-step-git %s\n" "$gitcmd" >&2; fi' EXIT
+n=${GIT_CONFIG_COUNT:-0}
+case "$n" in ''|*[!0-9]*) n=0 ;; esac
+for trusted in "$src" "$src/.git"; do
+	export "GIT_CONFIG_KEY_$n=safe.directory" "GIT_CONFIG_VALUE_$n=$trusted"
+	n=$((n + 1))
+done
+export GIT_CONFIG_COUNT=$n SWARM_STEP_FOLDER="$src"
 rm -rf -- "$dir" "$base/origin" || exit 10
 mkdir -p -- "$base" || exit 10
 gitcmd="git clone --no-checkout --shared $src"
-if ! git clone --quiet --no-checkout --shared -- "$src" "$dir" 2>"$err"; then
+if ! git clone --quiet --no-checkout --shared --upload-pack='git -c safe.directory="$SWARM_STEP_FOLDER" -c safe.directory="$SWARM_STEP_FOLDER/.git" upload-pack' -- "$src" "$dir" 2>"$err"; then
 	sed 's/^/swarm-step-clone-error /' "$err" >&2
 	rm -rf -- "$dir"
 	gitcmd="git init with $src's objects as alternates and its branches as origin/*"

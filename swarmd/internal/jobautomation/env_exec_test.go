@@ -91,6 +91,8 @@ type fakeLeases struct {
 	releaseCtxErr []error
 	// started is closed when the step's script (not the prepare) starts.
 	started chan struct{}
+	// env, when set, adds variables to every command, given the lease's home.
+	env func(home string) []string
 }
 
 func newFakeLeases(t *testing.T) *fakeLeases {
@@ -133,6 +135,9 @@ func (f *fakeLeases) ExecLease(ctx context.Context, lease, owner string, cmd Lea
 	c := exec.CommandContext(runCtx, cmd.Argv[0], cmd.Argv[1:]...)
 	c.Dir = cmd.Dir
 	c.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "GIT_CONFIG_NOSYSTEM=1"}
+	if f.env != nil {
+		c.Env = append(c.Env, f.env(home)...)
+	}
 	for name, value := range cmd.Env {
 		c.Env = append(c.Env, name+"="+value)
 	}

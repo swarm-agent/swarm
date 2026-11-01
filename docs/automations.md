@@ -354,7 +354,11 @@ is refused.
   whole history, so `git merge-base origin/dev HEAD` finds the files the job
   changed. The clone shares the folder's objects (nothing is copied; only
   the objects the head needs are read). Nothing the script does reaches the
-  folder's repository or the job's worktree.
+  folder's repository or the job's worktree. The folder usually belongs to
+  another user than the lease's, so every Git command of the checkout that
+  reads the folder trusts exactly the folder and its `.git` directory
+  (`safe.directory`), including the upload-pack `git clone` starts for it;
+  no other directory is trusted and no wildcard is used.
 - When the checkout cannot read an object from the folder's repository (Git
   calls a loose object it cannot open "corrupt", whether its bytes are bad
   or the lease's user may not read it), the step says which object and
