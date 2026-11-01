@@ -94,9 +94,10 @@ func (HostExecutor) Run(ctx context.Context, req RunRequest) (RunOutcome, error)
 	defer cleanup()
 	out := &stepOutput{tail: tailBuffer{max: MaxLogTailBytes}, onOutput: req.OnOutput}
 	var timedOut bool
+	var state *os.ProcessState
 	var runErr error
 	for attempt := 0; ; attempt++ {
-		timedOut, runErr = publish.RunScript(ctx, publish.Script{
+		timedOut, state, runErr = publish.RunScript(ctx, publish.Script{
 			Path: run, Args: req.Args, Dir: folder, Env: env, Scratch: scratch,
 			Stdin: bytes.NewReader(req.Stdin), Stdout: out, Stderr: out,
 			Timeout: timeout, WaitDelay: stepWaitDelay,
@@ -125,10 +126,18 @@ func (HostExecutor) Run(ctx context.Context, req RunRequest) (RunOutcome, error)
 		}
 		return RunOutcome{ExitCode: code, Output: out.tail.bytes()}, nil
 	}
+	if runErr != nil && state != nil {
+		// The script ran and exited, but Run still reported an error: a
+		// process it left running held its output past the wait delay
+		// (exec.ErrWaitDelay), or copying its output failed. Its exit code is
+		// the outcome; it is not a script that could not start.
+		out.Write([]byte(fmt.Sprintf("\nswarm: the script exited with code %d, but: %v\n", state.ExitCode(), runErr)))
+		return RunOutcome{ExitCode: state.ExitCode(), Output: out.tail.bytes()}, nil
+	}
 	if runErr != nil {
-		// The process never started: the script cannot be executed (no
-		// interpreter, an exec format error, permission denied) or the
-		// machine could not start it.
+		// The process never started (no process state): the script cannot
+		// be executed (no interpreter, an exec format error, permission
+		// denied) or the machine could not start it.
 		kind := ErrorKindEnvironment
 		if errors.Is(runErr, fs.ErrNotExist) || errors.Is(runErr, syscall.ENOEXEC) || errors.Is(runErr, fs.ErrPermission) {
 			kind = ErrorKindScriptUnusable

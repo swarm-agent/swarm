@@ -230,7 +230,7 @@ func Update(ctx context.Context, rule Rule, current string) (Base, error) {
 // and returns what it printed.
 func command(ctx context.Context, rule Rule, scratch string, limit time.Duration, action string, env ...string) (string, error) {
 	var stdout, stderr bytes.Buffer
-	_, runErr := RunScript(ctx, Script{
+	_, _, runErr := RunScript(ctx, Script{
 		Path: rule.Command, Dir: rule.Folder, Scratch: scratch, Timeout: limit,
 		Env:    append([]string{"SWARM_PUBLISH_ACTION=" + action, "SWARM_PUBLISH_FOLDER=" + rule.Folder}, env...),
 		Stdout: &limited{buf: &stdout, max: 64 << 10}, Stderr: &limited{buf: &stderr, max: 64 << 10},

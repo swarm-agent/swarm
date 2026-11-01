@@ -36,9 +36,12 @@ type Script struct {
 }
 
 // RunScript runs s and returns what exec.Cmd.Run returned. timedOut is true
-// when s's own time limit (not ctx) killed it. Callers check the script with
-// OwnedByRoot first: RunScript runs whatever path it is given.
-func RunScript(ctx context.Context, s Script) (timedOut bool, err error) {
+// when s's own time limit (not ctx) killed it. state is the exited process's
+// state, nil when the process never started: an error with a state (such as
+// exec.ErrWaitDelay, when a child it left still held its output) is from a
+// script that ran and exited. Callers check the script with OwnedByRoot
+// first: RunScript runs whatever path it is given.
+func RunScript(ctx context.Context, s Script) (timedOut bool, state *os.ProcessState, err error) {
 	limited, cancel := context.WithTimeout(ctx, s.Timeout)
 	defer cancel()
 	cmd := exec.CommandContext(limited, s.Path, s.Args...)
@@ -55,7 +58,7 @@ func RunScript(ctx context.Context, s Script) (timedOut bool, err error) {
 	cmd.Stdout, cmd.Stderr = s.Stdout, s.Stderr
 	err = cmd.Run()
 	timedOut = err != nil && ctx.Err() == nil && errors.Is(limited.Err(), context.DeadlineExceeded)
-	return timedOut, err
+	return timedOut, cmd.ProcessState, err
 }
 
 // The reasons OwnedByRoot refuses a file.

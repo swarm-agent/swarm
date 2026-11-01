@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -279,6 +280,56 @@ func TestRunnerHostStepThatCannotStartIsError(t *testing.T) {
 		t.Fatalf("not executable step = %+v", d.Steps[1])
 	}
 	if d.State != StateError {
+		t.Fatalf("delivery = %s", d.State)
+	}
+}
+
+// Requirement: `error` means a run step's script never started. A host
+// script that ran and exited, but left a background child holding its
+// stdout (publish.RunScript then returns exec.ErrWaitDelay with a process
+// state), is an exit-code outcome: exit 0 succeeds and does not trigger an
+// `if status error` step; it is never "could not start".
+// Threat: a check that actually ran reported as an infrastructure error, so
+// `if status failed` steps are skipped and `if status error` steps fire.
+// Owners: publish.RunScript (process state) and HostExecutor.Run (only a
+// run with no process state is a StartError), through the real runner and
+// a real script.
+func TestRunnerHostStepWithLeftoverChildIsNotError(t *testing.T) {
+	folder := t.TempDir()
+	h := newHarness(t)
+	h.process()
+	writeScript(t, folder, "check.sh", "sleep 30 &\necho $! > \"$PWD/child.pid\"\necho checked\nexit 0\n")
+	writeScript(t, folder, "infra.sh", "echo infrastructure\n")
+	t.Cleanup(func() {
+		if data, err := os.ReadFile(filepath.Join(folder, "child.pid")); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
+				if p, err := os.FindProcess(pid); err == nil {
+					_ = p.Kill()
+				}
+			}
+		}
+	})
+	h.automation(Automation{Name: "host", Scope: Scope{Folder: folder}, Enabled: true,
+		Steps: []Step{
+			{ID: "check", Type: StepRun, Command: "check.sh", ContinueOnFailure: true},
+			{ID: "infra", Type: StepRun, Command: "infra.sh", If: []Condition{{Step: "check", Status: StateError}}},
+		}})
+	h.results.results["run-1"] = workerResult(folder, "run-1")
+	h.jobEnd("run-1", "", "succeeded", "direct")
+	h.process()
+	d := h.deliveries("worker/coder-1/run-1")[0]
+	check, infra := d.Steps[0], d.Steps[1]
+	if check.State != StateSucceeded || check.ErrorKind != "" || check.ExitCode == nil || *check.ExitCode != 0 {
+		t.Fatalf("check step = %+v", check)
+	}
+	logTail := h.store.WithLogs(d).Steps[0].LogTail
+	if !strings.Contains(logTail, "checked") || !strings.Contains(logTail, "exited with code 0, but") {
+		t.Fatalf("check log = %q", logTail)
+	}
+	if infra.State != StateSkipped {
+		t.Fatalf("infra step ran for a script that ran: %+v", infra)
+	}
+	if d.State != StateSucceeded {
 		t.Fatalf("delivery = %s", d.State)
 	}
 }

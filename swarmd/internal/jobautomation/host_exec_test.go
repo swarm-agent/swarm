@@ -393,7 +393,7 @@ func TestRunStepRunsTheCheckedFileWhenThePathIsSwapped(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out strings.Builder
-	if _, err := publish.RunScript(context.Background(), publish.Script{Path: run, Dir: folder, Scratch: t.TempDir(), Stdout: &out, Stderr: &out, Timeout: 10 * time.Second}); err != nil {
+	if _, _, err := publish.RunScript(context.Background(), publish.Script{Path: run, Dir: folder, Scratch: t.TempDir(), Stdout: &out, Stderr: &out, Timeout: 10 * time.Second}); err != nil {
 		t.Fatalf("run: %v: %s", err, out.String())
 	}
 	if strings.TrimSpace(out.String()) != "checked" {
