@@ -772,7 +772,7 @@ func (r *Runner) runDelivery(ctx context.Context, account, id string) {
 			r.finish(&d, StateFailed)
 			return
 		}
-		if held, why := conditionsHold(d, step.If); !held {
+		if held, why := conditionsHold(d, step.If, func(id string) string { return r.store.StepLog(d.ID, id) }); !held {
 			record.State, record.Reason, record.FinishedAt = StateSkipped, why, r.now().UnixMilli()
 			if err := r.store.SaveDelivery(d); err != nil {
 				log.Printf("swarmd job automations: save delivery %s: %v", d.ID, err)
@@ -889,6 +889,9 @@ func sentBackReason(d Delivery, step Step) string {
 			if rec.Reason != "" {
 				why += ": " + rec.Reason
 			}
+			if c.OutputContains != "" && !strings.Contains(rec.Reason, c.OutputContains) {
+				why += " (output contains " + strconv.Quote(c.OutputContains) + ")"
+			}
 			parts = append(parts, why)
 		case c.Status == StateError:
 			why := c.Step + " could not run"
@@ -914,10 +917,12 @@ func sentBackReason(d Delivery, step Step) string {
 // ReopenCause is why the delivery's reopen step stepID sends (or sent) the
 // work back, from the conditions it runs on: push_failed when one is a failed
 // step after an agent step that passed (the review passed, the push failed:
-// rebase and retry), step_error when the step could not run at all (state
-// error, the `if status: error` conditions: nothing in the work failed),
-// check_failed when it is any other failed step, else review_block (a
-// review verdict, or no failed-step condition). failure is
+// rebase and retry) or a failed step whose output_contains names a rebase
+// (RebaseCondition: the step said so, whatever came before it), step_error
+// when the step could not run at all (state error, the `if status: error`
+// conditions: nothing in the work failed), check_failed when it is any
+// other failed step, else review_block (a review verdict, or no
+// failed-step condition). failure is
 // the failed step and its reason ("push failed: exited with code 1: …"),
 // uncapped; "" for a review block. It is the one classification every task
 // progress surface reads (pebblestore.ProjectTaskReopen names it).
@@ -947,11 +952,20 @@ func ReopenCause(d Delivery, stepID string) (cause, failure string) {
 		if rec.State == StateError {
 			failure = c.Step + " could not run (" + rec.ErrorKind + ")"
 		}
-		if reason := strings.TrimSpace(rec.Reason); reason != "" {
+		reason := strings.TrimSpace(rec.Reason)
+		if reason != "" {
 			failure += ": " + reason
+		}
+		if c.OutputContains != "" && !strings.Contains(reason, c.OutputContains) {
+			// The match may be in the log tail only: name it, so the
+			// failure says what the reopen ran on.
+			failure += " (output contains " + strconv.Quote(c.OutputContains) + ")"
 		}
 		if rec.State == StateError {
 			return pebblestore.ProjectTaskReopenStepError, failure
+		}
+		if RebaseCondition(c) {
+			return pebblestore.ProjectTaskReopenPushFailed, failure
 		}
 		for i := at - 1; i >= 0; i-- {
 			prior := d.Steps[i]
@@ -1001,10 +1015,26 @@ func (r *Runner) skipEmptyReview(ctx context.Context, d Delivery, step Step, rec
 	return false // unresolved roles retain the normal dispatch/error path
 }
 
+// RebaseCondition reports whether a condition runs its step on a failed
+// step's output naming a rebase (status failed, output_contains holding
+// "rebase", in any case, for example "rebase needed"): a reopen on it is a
+// rebase reopen (ReopenCause push_failed, IsRebaseReopen), not a code
+// failure. A step that could not run (status error) stays step_error.
+func RebaseCondition(c Condition) bool {
+	return c.Status == StateFailed && strings.Contains(strings.ToLower(c.OutputContains), "rebase")
+}
+
+// StepEvidence is the text an output_contains condition matches: the step's
+// reason, its output and its saved log tail (at most MaxLogTailBytes).
+func StepEvidence(rec StepRecord, logTail string) string {
+	return rec.Reason + "\n" + rec.Output + "\n" + logTail
+}
+
 // conditionsHold reports whether all of a step's conditions hold, and if not,
 // why it is skipped. A step that did not run (skipped, stopped) matches no
-// status; a missing verdict never matches a verdict condition.
-func conditionsHold(d Delivery, conds []Condition) (bool, string) {
+// status; a missing verdict never matches a verdict condition. logTail reads
+// a step's saved log tail, for output_contains (nil: none).
+func conditionsHold(d Delivery, conds []Condition, logTail func(stepID string) string) (bool, string) {
 	for _, c := range conds {
 		var rec *StepRecord
 		for i := range d.Steps {
@@ -1017,6 +1047,15 @@ func conditionsHold(d Delivery, conds []Condition) (bool, string) {
 		}
 		if c.Status != "" && rec.State != c.Status {
 			return false, "condition not met: step " + c.Step + " is " + rec.State + ", not " + c.Status
+		}
+		if c.OutputContains != "" {
+			tail := ""
+			if logTail != nil {
+				tail = logTail(c.Step)
+			}
+			if !strings.Contains(StepEvidence(*rec, tail), c.OutputContains) {
+				return false, "condition not met: step " + c.Step + "'s reason and output do not contain " + strconv.Quote(c.OutputContains)
+			}
 		}
 		if c.Verdict != "" {
 			got, _ := rec.Outcome["verdict"].(string)
@@ -1783,7 +1822,21 @@ func ReopenText(d Delivery, stepID string) (string, bool) {
 // counts against RebaseMaxRounds, never against the review rounds.
 func IsRebaseReopen(d Delivery, stepID string) bool {
 	cause, failure := ReopenCause(d, stepID)
-	return cause == pebblestore.ProjectTaskReopenPushFailed && strings.Contains(strings.ToLower(failure), "rebase needed")
+	if cause != pebblestore.ProjectTaskReopenPushFailed {
+		return false
+	}
+	if strings.Contains(strings.ToLower(failure), "rebase needed") {
+		return true
+	}
+	// A reopen whose condition matched a rebase in the failed step's output
+	// (RebaseCondition) is one too, whatever the failure's wording.
+	step, _ := d.step(stepID)
+	for _, c := range step.If {
+		if RebaseCondition(c) {
+			return true
+		}
+	}
+	return false
 }
 
 // roundsExhausted reads the reopens the automation sent into the job and

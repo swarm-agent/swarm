@@ -39,7 +39,7 @@ func manageWorkflowsFields() []CatalogField {
 		{"retries", map[string]any{"type": "integer"}},
 		{"revision", map[string]any{"type": "integer"}},
 		{"result", map[string]any{"type": "object"}},
-		{"steps", map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"for_each": WorkflowForEachSchema()}}, "description": "Ordered agent/reopen/run/deliver steps; for_each queues one independent worker job per committed JSON item."}},
+		{"steps", WorkflowStepsSchema()},
 		{"path", str("export: relative destination in the workflow's folder (empty: .swarm/workflows/<name>.json); import: relative file or directory in the project folder")},
 		{"overwrite", map[string]any{"type": "boolean", "description": "export: replace a different file at path"}},
 		{"definition", map[string]any{"type": "object", "description": "import: portable JSON object with swarm_workflow: 1 (from export or history with revision); mutually exclusive with path"}},

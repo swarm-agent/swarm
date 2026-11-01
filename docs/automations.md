@@ -157,7 +157,7 @@ An automation belongs to an account and has:
 | `enabled` | Default true. |
 | `retries` | 0 to 3 (default 0): automatic retries of a failed step, with backoff. |
 | `result` | Optional: what the work must hand over (`kind`, `path`, `describe`); see [What the work hands over](#what-the-work-hands-over-and-where). |
-| `steps` | Ordered steps, at most 20. |
+| `steps` | Ordered steps, at most 40 (`jobautomation.MaxSteps`). |
 
 Every update raises the automation's `revision`. An automation applies only to
 task and job ends after it was created. Tasks and jobs started by a workflow
@@ -201,6 +201,27 @@ to run:
 - `{"step": "<id>", "verdict": "ok|block"}`: for an `agent` step, the verdict
   of the review the job it started recorded. A job that recorded no review has
   no verdict, and a missing verdict never matches.
+- `output_contains` (only with `status`): literal, case-sensitive text, one
+  line, at most 200 bytes, that the step's reason, output or saved log tail
+  (its last 64 KiB) must contain. It is checked when the workflow is saved and
+  matched as a plain substring, with no patterns.
+
+A gate that fails because the target branch moved says so in its output
+(for example `GATE FAILED: rebase needed: ...`). Send only that failure back
+for a rebase, and let a code failure take another path:
+
+```json
+{ "id": "gate-fix", "type": "run", "command": "deliver/gate.sh", "continue_on_failure": true },
+{ "id": "rebase-after-fix", "type": "reopen", "max_rounds": 2,
+  "message": "The gate needs a rebase onto the target branch: {{steps.gate-fix.output}}",
+  "if": [{ "step": "gate-fix", "status": "failed", "output_contains": "rebase needed" }] }
+```
+
+A reopen step on a failed step whose `output_contains` names a rebase (holds
+`rebase` in any case) is a rebase reopen: its `reopen_cause` is `push_failed`
+("rebase needed (round N)"), its failure names the matched text, and it
+counts against the rebase rounds (`RebaseMaxRounds`), not the review rounds.
+A step that could not run (`status: error`) stays `step_error`.
 
 A step whose conditions do not hold is recorded `skipped` with the reason (not
 failed), and the steps after it still run. There is no expression language.
@@ -415,7 +436,7 @@ at most five starts per (account, automation, triggering job), across delivery
 retries and revisions. A retry of the same delivery/step uses its existing
 reservation, even after restart. Reservations precede dispatch (a failed start
 still consumes one); they are independent of reopen rounds. Workflows also
-have at most 20 steps, and agent-step jobs never trigger workflows themselves.
+have at most 40 steps, and agent-step jobs never trigger workflows themselves.
 Existing reopen behavior and its per-step/rebase round accounting are unchanged.
 
 A reviewer step (`worker: reviewer` or a worker whose role is reviewer) is

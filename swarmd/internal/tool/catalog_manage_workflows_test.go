@@ -23,7 +23,9 @@ import (
 // import and restore answer state refused for a run step.)
 // The parity fixes changed it on purpose: its action field lists each
 // action's required inputs (CatalogAction.Required).
-const manageWorkflowsDefinitionSHA256 = "5f31c213f949ceb20c85724a67a255c8d1bfc6eb596234c7f52c3b6534375be5"
+// Steps changed it on purpose: steps declares maxItems (MaxSteps, 40) and
+// each step's if, with output_contains (WorkflowStepsSchema).
+const manageWorkflowsDefinitionSHA256 = "de75d13bd125ecbd9cbcc57f959a56e645300a8a9eb2290bd9ec919afe204a11"
 
 // Purpose: manage_workflows exists once, in the catalog. The Orchestrator's
 // definition is generated from the declarations (held by hash) and names

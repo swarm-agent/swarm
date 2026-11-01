@@ -101,17 +101,21 @@ const (
 	DefaultStepTimeoutSeconds = 600
 	MaxStepTimeoutSeconds     = 3600
 	MaxRetries                = 3
-	MaxSteps                  = 20
-	MaxStepArgs               = 32
-	maxNameRunes              = 200
+	// MaxSteps bounds a workflow's steps: room for a review loop with its
+	// gates, fix, rebase and push steps (every surface reads it).
+	MaxSteps     = 40
+	MaxStepArgs  = 32
+	maxNameRunes = 200
 	// MaxDescriptionRunes bounds a workflow's optional description.
 	MaxDescriptionRunes = 2000
 	maxBriefRunes       = 20000
 	maxArgBytes         = 4096
 	maxCommandBytes     = 1024
 	MaxStepConditions   = 8
-	DefaultMaxRounds    = 2
-	MaxRounds           = 5
+	// MaxOutputContainsBytes bounds a condition's output_contains text.
+	MaxOutputContainsBytes = 200
+	DefaultMaxRounds       = 2
+	MaxRounds              = 5
 	// RebaseMaxRounds bounds the reopens a job gets only because its push
 	// needs a rebase (IsRebaseReopen: the review passed, dev moved). They
 	// have this bound of their own and use none of the review rounds, so
@@ -150,11 +154,14 @@ type Scope struct {
 // (succeeded, failed, or for a run step error: its script never started) or,
 // for an agent step, the verdict of the review the job it started recorded
 // (ok or block). Exactly one of Status and Verdict. failed never matches a
-// step that ended error.
+// step that ended error. OutputContains (with Status only) also requires
+// the step's reason or output (StepEvidence) to hold that literal,
+// case-sensitive text, for example "rebase needed".
 type Condition struct {
-	Step    string `json:"step"`
-	Status  string `json:"status,omitempty"`
-	Verdict string `json:"verdict,omitempty"`
+	Step           string `json:"step"`
+	Status         string `json:"status,omitempty"`
+	Verdict        string `json:"verdict,omitempty"`
+	OutputContains string `json:"output_contains,omitempty"`
 }
 
 // Where a run step's script runs (Step.In).
@@ -469,6 +476,14 @@ func (s *Step) normalizeConditions(earlier map[string]string) error {
 		}
 		if c.Status == StateError && typ != StepRun {
 			return invalid("step %s: a status error condition needs a run step (only a run step's script can fail to start); %s is a %s step", s.ID, c.Step, typ)
+		}
+		if c.OutputContains != "" {
+			if c.Status == "" {
+				return invalid("step %s: output_contains on %s goes with a status (succeeded|failed|error), not a verdict", s.ID, c.Step)
+			}
+			if len(c.OutputContains) > MaxOutputContainsBytes || !utf8.ValidString(c.OutputContains) || strings.ContainsAny(c.OutputContains, "\x00\r\n") || strings.TrimSpace(c.OutputContains) == "" {
+				return invalid("step %s: output_contains on %s is one line of literal text, at most %d bytes (for example \"rebase needed\")", s.ID, c.Step, MaxOutputContainsBytes)
+			}
 		}
 		if c.Verdict != "" {
 			if c.Verdict != VerdictOK && c.Verdict != VerdictBlock {

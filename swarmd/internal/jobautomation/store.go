@@ -971,6 +971,16 @@ func (s *Store) WithLogs(d Delivery) Delivery {
 	return d
 }
 
+// StepLog reads one step's saved log tail (at most MaxLogTailBytes); "" when
+// none was saved or it cannot be read.
+func (s *Store) StepLog(deliveryID, stepID string) string {
+	var tail string
+	if found, err := s.db.GetJSON(stepLogKey(deliveryID, stepID), &tail); err != nil || !found {
+		return ""
+	}
+	return tail
+}
+
 // PutStepLog keeps the last MaxLogTailBytes of a step's output.
 func (s *Store) PutStepLog(deliveryID, stepID string, tail []byte) error {
 	if len(tail) > MaxLogTailBytes {

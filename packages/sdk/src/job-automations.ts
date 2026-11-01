@@ -76,11 +76,21 @@ export const JOB_REVIEWER_FIX_MAX_LINES = 80;
  * One condition of a step's `if`, on an earlier step: its status, or (an
  * agent step) the verdict of the review its job recorded. A missing verdict
  * never matches. `failed` never matches a step that ended `error` (a run
- * step whose script never started); `error` (run steps only) does.
+ * step whose script never started); `error` (run steps only) does. A status
+ * condition may add `output_contains`: literal, case-sensitive text (one
+ * line, at most `JOB_CONDITION_OUTPUT_CONTAINS_MAX_BYTES` bytes) the step's
+ * reason or output tail must contain, e.g. `{ step: 'gate', status: 'failed',
+ * output_contains: 'rebase needed' }`. A reopen step on a condition whose
+ * `output_contains` names a rebase is a rebase reopen (`push_failed`).
  */
 export type JobAutomationCondition =
-  | { step: string; status: 'succeeded' | 'failed' | 'error'; verdict?: never }
-  | { step: string; verdict: JobReviewVerdict; status?: never };
+  | { step: string; status: 'succeeded' | 'failed' | 'error'; output_contains?: string; verdict?: never }
+  | { step: string; verdict: JobReviewVerdict; status?: never; output_contains?: never };
+
+/** The most steps a workflow has (the daemon refuses more). */
+export const JOB_AUTOMATION_MAX_STEPS = 40;
+/** The longest `output_contains` text of a condition, in bytes. */
+export const JOB_CONDITION_OUTPUT_CONTAINS_MAX_BYTES = 200;
 
 /** Which task and job ends a workflow applies to. */
 export interface JobAutomationScope {
@@ -240,6 +250,7 @@ export interface SetJobAutomationParams {
   when?: JobAutomationWhen;
   enabled?: boolean;
   retries?: number;
+  /** 1 to {@link JOB_AUTOMATION_MAX_STEPS} ordered steps. */
   steps: JobAutomationStep[];
   result?: JobResultSpec;
 }
