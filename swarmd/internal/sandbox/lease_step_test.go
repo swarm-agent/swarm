@@ -103,3 +103,41 @@ func TestStepLeaseReaping(t *testing.T) {
 		t.Fatal("a recovered step lease was not released")
 	}
 }
+
+// Purpose: a step lease whose release fails (the engine's `rm -f` errors or
+// times out) must not keep one of the folder's max_leases slots until the
+// daemon restarts. The step has ended whatever the removal's result, so the
+// reaper must retry the release on its next pass. Regression: dropLease
+// returned before clearing the step from liveSteps, so the reaper, which
+// releases only step leases whose step no longer runs, never retried.
+// Owners: dropLease (liveSteps) and reapLeases. The fake engine is the
+// narrowest deterministic layer that can fail one removal.
+func TestStepLeaseFailedReleaseIsRetriedByTheReaper(t *testing.T) {
+	m, runner, project := newLeaseTestManager(t, 1, nil)
+	ctx := context.Background()
+	step, err := m.TakeStepLease(ctx, project, "workflow-step/dlv-1/console/1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.mu.Lock()
+	runner.fail = map[string]error{"rm -f": errors.New("engine timed out")}
+	runner.mu.Unlock()
+	if err := m.ReleaseLease(ctx, step.ID, step.Owner); err == nil {
+		t.Fatal("a failed removal reported the lease released")
+	}
+	if m.LeasesInUse(project) != 1 {
+		t.Fatal("a lease whose container was not removed left the table")
+	}
+	runner.mu.Lock()
+	runner.fail = nil
+	runner.mu.Unlock()
+	before := runner.count()
+	m.reapLeases(ctx)
+	if !runner.ranSince(before, "rm -f "+step.Container) || m.LeasesInUse(project) != 0 {
+		t.Fatal("the reaper did not retry the failed release of a finished step's lease")
+	}
+	// The folder's only slot is free again.
+	if _, err := m.TakeStepLease(ctx, project, "workflow-step/dlv-2/console/1"); err != nil {
+		t.Fatalf("slot still held after the retried release: %v", err)
+	}
+}

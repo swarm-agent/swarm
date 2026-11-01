@@ -395,11 +395,17 @@ func (m *Manager) ReleaseOwner(ctx context.Context, owner string) error {
 }
 
 // dropLease removes the lease's container and its home volume. The folder's
-// shared project cache stays.
+// shared project cache stays. A step lease's step has ended once its lease
+// is dropped, whatever the removal's result: its owner leaves liveSteps
+// first, so if the removal fails the reaper retries it instead of keeping
+// the lease (and one of the folder's slots) until a restart.
 func (m *Manager) dropLease(ctx context.Context, id string) error {
 	t := m.leaseTable()
 	t.mu.Lock()
 	l := t.byID[id]
+	if l != nil && l.step {
+		delete(t.liveSteps, l.Owner)
+	}
 	t.mu.Unlock()
 	if l == nil {
 		return nil
@@ -415,9 +421,6 @@ func (m *Manager) dropLease(ctx context.Context, id string) error {
 	m.mu.Unlock()
 	t.mu.Lock()
 	delete(t.byID, id)
-	if l.step {
-		delete(t.liveSteps, l.Owner)
-	}
 	t.mu.Unlock()
 	return nil
 }
