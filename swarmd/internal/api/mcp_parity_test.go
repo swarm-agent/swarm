@@ -57,6 +57,16 @@ const (
 	// mcpParityAnswerDrops: the route's answer field does not reach the
 	// home's answer (the envelope's data for a linked call).
 	mcpParityAnswerDrops mcpParityKind = "answer_drops"
+	// mcpParityRouteUnmapped: the action reaches a route shape that
+	// mcpRouteSpecs does not bind to a handler branch (field "*").
+	mcpParityRouteUnmapped mcpParityKind = "route_unmapped"
+	// mcpParityRouteIgnores: the forwarder sends a key the route's handler
+	// never reads (derived from its source).
+	mcpParityRouteIgnores mcpParityKind = "route_ignores"
+	// mcpParityRouteUndeclared: the route reads a field (query parameter or
+	// body field, derived from its source) that no declared input of the
+	// action is sent as: a route field the MCP schema lacks.
+	mcpParityRouteUndeclared mcpParityKind = "route_undeclared"
 )
 
 // mcpRouteParityAllow are the known differences, by "tool action field kind"
@@ -88,6 +98,26 @@ var mcpRouteParityAllow = map[string]string{
 	"manage_projects list_tasks parity_probe answer_drops": "bounded linked task page (compactFleetTaskList): page facts and list-row fields only",
 	"manage_workflows list parity_probe answer_drops":      "bounded linked list (compactFleetList): whitelisted fields only",
 	"manage_workers list parity_probe answer_drops":        "bounded linked worker summary (compactFleetWorkers); inspect reads one worker",
+	// Home-side inputs the projects forwarder passes in the body (it sends
+	// every input but the ids) and the task routes never read
+	// (route_ignores, derived from the handler source).
+	"manage_projects accept_task detail route_ignores":        "home-side: detail shapes the home's answer; the task route ignores it",
+	"manage_projects approve_task detail route_ignores":       "home-side: detail shapes the home's answer; the task route ignores it",
+	"manage_projects archive_task detail route_ignores":       "home-side: detail shapes the home's answer; the task route ignores it",
+	"manage_projects refine_task detail route_ignores":        "home-side: detail shapes the home's answer; the task route ignores it",
+	"manage_projects reopen_task detail route_ignores":        "home-side: detail shapes the home's answer; the task route ignores it",
+	"manage_projects create_task detail route_ignores":        "home-side: detail shapes the home's answer; the task route ignores it",
+	"manage_projects propose_task detail route_ignores":       "home-side: detail shapes the home's answer; the task route ignores it",
+	"manage_projects propose_task wait_seconds route_ignores": "home-side: Swarm Control's held wait; the task route answers at once",
+	// Large drift: the task create route reads title, description, prompt
+	// and workspace_path; the MCP create inputs below reach it and are
+	// dropped. A fix maps them as this machine's handler does.
+	"manage_projects create_task brief route_ignores":      "TODO: a linked create_task's brief is not read by the task create route (it reads description/prompt); map it in CallFleetProject as the local handler does",
+	"manage_projects create_task files route_ignores":      "TODO: a linked create_task's files are not read by the task create route; map them in CallFleetProject as the local handler does",
+	"manage_projects create_task workspace route_ignores":  "TODO: a linked create_task's workspace is not read by the task create route (it reads workspace_path); map it in CallFleetProject",
+	"manage_projects propose_task brief route_ignores":     "TODO: a linked propose_task's brief is not read by the task create route (it reads description/prompt); map it in CallFleetProject as the local handler does",
+	"manage_projects propose_task files route_ignores":     "TODO: a linked propose_task's files are not read by the task create route; map them in CallFleetProject as the local handler does",
+	"manage_projects propose_task workspace route_ignores": "TODO: a linked propose_task's workspace is not read by the task create route (it reads workspace_path); map it in CallFleetProject",
 	// Drift found by this test and not fixed in the change that added it.
 	"manage_projects propose_task task_id not_forwarded":        "TODO: declared (proposeInputs) but read neither by this machine's propose_task nor by the task route; remove it with a manage_projects definition hash change",
 	"manage_projects create_task task_id not_forwarded":         "TODO: declared (proposeInputs) but read neither by this machine's create_task nor by the task route; remove it with a manage_projects definition hash change",
@@ -488,6 +518,7 @@ func TestMCPRouteParityLinkedForwarding(t *testing.T) {
 		drift = append(drift, fmt.Sprintf("%q: %s", key, detail))
 	}
 	elsewhere := map[string]bool{}
+	routeOnlyUsed, shapeSeen := map[string]bool{}, map[string]bool{}
 	for _, entry := range mcpParityLinkedActions() {
 		catalog, action := entry.catalog, entry.action
 		id := catalog.Name + " " + action.Action
@@ -573,6 +604,62 @@ func TestMCPRouteParityLinkedForwarding(t *testing.T) {
 		for _, key := range mcpParitySortedKeys(sentExtra) {
 			note(catalog.Name, action.Action, key, mcpParityNotDeclared, "sent as "+sentExtra[key]+" but the action does not declare it")
 		}
+		// What the route accepts (derived from its source,
+		// mcp_route_accepts_test.go): every input the forwarder sends is a
+		// field the route reads, and every field the route reads is sent
+		// from a declared input, unless recorded as route-only.
+		shapes := map[string]map[string]bool{}
+		for _, request := range requests {
+			if mcpIsCatalogRoute(request.Path) {
+				continue
+			}
+			shape := mcpRouteShape(request.Method, request.Path)
+			shapeSeen[shape] = true
+			if shapes[shape] == nil {
+				shapes[shape] = map[string]bool{}
+			}
+			for key := range request.Body {
+				shapes[shape][key] = true
+			}
+			for key := range request.Query {
+				shapes[shape][key] = true
+			}
+		}
+		for _, shape := range mcpParitySortedKeys(shapes) {
+			spec, fields, ok, err := mcpRouteAccepts(shape)
+			switch {
+			case !ok:
+				note(catalog.Name, action.Action, "*", mcpParityRouteUnmapped, shape+" has no mcpRouteSpecs entry naming the handler branch that serves it")
+				continue
+			case err != nil:
+				drift = append(drift, fmt.Sprintf("%s: deriving %s: %v", id, shape, err))
+				continue
+			case spec.Catalog != "":
+				continue
+			}
+			accepted := map[string]bool{}
+			for key := range fields.Query {
+				accepted[key] = true
+			}
+			for key := range fields.Body {
+				accepted[key] = true
+			}
+			for _, key := range mcpParitySortedKeys(shapes[shape]) {
+				if !accepted[key] {
+					note(catalog.Name, action.Action, key, mcpParityRouteIgnores, shape+" is sent "+key+" but its handler never reads it")
+				}
+			}
+			for _, key := range mcpParitySortedKeys(accepted) {
+				if declared[key] {
+					continue
+				}
+				if reason := mcpRouteOnlyField(shape, key); reason != "" {
+					routeOnlyUsed[shape+" "+key] = true
+					continue
+				}
+				note(catalog.Name, action.Action, key, mcpParityRouteUndeclared, shape+" reads "+key+" but the action declares no input sent as it")
+			}
+		}
 		// A key only the forwarder knows: the call also carries every other
 		// catalog field (canaries). A forwarder that passes all of them on
 		// passes the whole call (the route's service keeps its declared
@@ -622,6 +709,20 @@ func TestMCPRouteParityLinkedForwarding(t *testing.T) {
 	for id := range mcpParityLinkedElsewhere {
 		if !elsewhere[id] {
 			drift = append(drift, fmt.Sprintf("mcpParityLinkedElsewhere lists %s, which is not a catalog action that reaches a linked machine outside the two forwarders: remove it", id))
+		}
+	}
+	for _, shape := range mcpParitySortedKeys(mcpRouteParityRouteOnly) {
+		for _, group := range mcpRouteParityRouteOnly[shape] {
+			for _, field := range strings.Fields(group.Fields) {
+				if !routeOnlyUsed[shape+" "+field] {
+					drift = append(drift, fmt.Sprintf("mcpRouteParityRouteOnly %s lists %s, which no action reaching it meets as an undeclared route field: remove it", shape, field))
+				}
+			}
+		}
+	}
+	for shape := range mcpRouteSpecs {
+		if !shapeSeen[shape] {
+			drift = append(drift, fmt.Sprintf("mcpRouteSpecs entry %q is reached by no linked action: remove it", shape))
 		}
 	}
 	for key := range mcpRouteParityAllow {
@@ -716,7 +817,7 @@ var mcpHelpTextProse = func() map[string]string {
 	for _, word := range []string{"job_id", "next_cursor", "json_page", "retry_of", "pending_request", "pending_proposals", "waiting_on", "created_at", "steps_result", "workflow_steps_result", "reopen_failure", "summary_source", "result_truncated", "read_full_args", "task_progress", "durable_log"} {
 		out[word] = "an answer field the help tells the caller to read"
 	}
-	for _, word := range []string{"needs_input", "needs_review", "needs_you", "timed_out", "agent_stall", "long_command", "no_activity", "sleep_polling"} {
+	for _, word := range []string{"needs_input", "needs_review", "needs_you", "blocked_infra", "workflow_failed", "timed_out", "agent_stall", "long_command", "no_activity", "sleep_polling"} {
 		out[word] = "a status, milestone or progress kind an answer carries"
 	}
 	return out

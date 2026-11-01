@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -142,8 +141,15 @@ func (s *Server) callFleetWork(ctx context.Context, p identity.Principal, machin
 	}
 	// The query a workflow read takes: list's delivery_id and detail, and
 	// deliveries' delivery_id (the listing route reads them).
+	declaredInputs, err := fleetWorkflowInputs(action)
+	if err != nil {
+		return nil, err
+	}
 	query := url.Values{}
-	for _, key := range fleetWorkflowInputs(action, "delivery_id", "detail") {
+	for _, key := range declaredInputs {
+		if key != "delivery_id" && key != "detail" {
+			continue
+		}
 		if v, ok := args[key]; ok {
 			query.Set(key, fmt.Sprint(v))
 		}
@@ -157,17 +163,17 @@ func (s *Server) callFleetWork(ctx context.Context, p identity.Principal, machin
 	case "propose":
 		path += "/propose"
 		method = http.MethodPost
-		bodyKeys = fleetWorkflowInputs(action)
+		bodyKeys = declaredInputs
 	case "export":
 		path += "/export"
 		method = http.MethodPost
-		bodyKeys = fleetWorkflowInputs(action)
+		bodyKeys = declaredInputs
 	case "import", "restore":
 		// The machine's agent route (ManageWorkflows), never its owner's
 		// import or restore route: run steps stay the machine owner's.
 		path += "/" + WorkflowLinkedChangeRoute + "/" + action
 		method = http.MethodPost
-		bodyKeys = fleetWorkflowInputs(action)
+		bodyKeys = declaredInputs
 	case "stop_all":
 		path += "/stop"
 		method = http.MethodPost
@@ -250,22 +256,26 @@ func (s *Server) callFleetWork(ctx context.Context, p identity.Principal, machin
 }
 
 // fleetWorkflowInputs are the manage_workflows action's declared inputs a
-// linked call sends (only those named in only, when given): never machine,
-// which names the link, or rotate_key, refused before the call.
-func fleetWorkflowInputs(action string, only ...string) []string {
-	catalog, _ := tool.CatalogToolNamed("manage_workflows")
+// linked call sends: never machine, which names the link, or rotate_key,
+// refused before the call. An action the catalog does not declare is an
+// error, never a call with no inputs.
+func fleetWorkflowInputs(action string) ([]string, error) {
+	catalog, found := tool.CatalogToolNamed("manage_workflows")
+	if !found {
+		return nil, errors.New("the catalog declares no manage_workflows tool")
+	}
 	declared, ok := catalog.Action(action)
 	if !ok {
-		return nil
+		return nil, fmt.Errorf("manage_workflows declares no action %q", action)
 	}
 	var out []string
 	for _, key := range declared.Inputs {
-		if key == "machine" || key == "rotate_key" || (len(only) > 0 && !slices.Contains(only, key)) {
+		if key == "machine" || key == "rotate_key" {
 			continue
 		}
 		out = append(out, key)
 	}
-	return out
+	return out, nil
 }
 
 // fleetWorkflowID resolves a workflow's id or name on a linked machine: the

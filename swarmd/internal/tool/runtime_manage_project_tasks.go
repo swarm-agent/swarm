@@ -444,8 +444,10 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 				return "", err
 			}
 			filter := pebblestore.ProjectTaskListFilter{
-				Statuses: pebblestore.ParseProjectTaskStatuses(asString(args["status"])),
-				Query:    asString(args["query"]), Agent: strings.TrimSpace(asString(args["agent"])), Group: strings.TrimSpace(asString(args["group"])),
+				Statuses:        pebblestore.ParseProjectTaskStatuses(asString(args["status"])),
+				ExcludeStatuses: pebblestore.ParseProjectTaskStatuses(asString(args["exclude_status"])),
+				WorkerID:        strings.TrimSpace(asString(args["worker_id"])),
+				Query:           asString(args["query"]), Agent: strings.TrimSpace(asString(args["agent"])), Group: strings.TrimSpace(asString(args["group"])),
 				Scope: scopeName, IncludeArchived: asBool(args["include_archived"]), Limit: limit, Cursor: cursor,
 				// The person's work: tasks a workflow started (its reviewer
 				// runs) are counted on their task unless asked for.

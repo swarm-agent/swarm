@@ -12,8 +12,8 @@ import (
 // right ones, so the Orchestrator's next call can be correct.
 
 // WorkflowTasksHint tells the reader of a list_tasks page that left workflow
-// tasks out how to list them. include_workflow_tasks is not in the tool schema
-// (the Orchestrator's tool budget); the page names it when it applies.
+// tasks out how to list them: list_tasks declares include_workflow_tasks, and
+// the page names it when it left workflow tasks out.
 const WorkflowTasksHint = "include_workflow_tasks: true lists the workflow tasks (reviewer runs) counted here"
 
 func projectNotFoundError(projectID string) error {

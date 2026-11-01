@@ -43,8 +43,10 @@ import (
 // machine_status says it shows the runs a drain waits on.
 // The MCP route parity guard changed it on purpose: list_tasks declares
 // include_workflow_tasks, which its handler, its linked call and the task
-// list route already read and its answers' workflow_tasks_hint names.
-const manageProjectsDefinitionSHA256 = "281070b07f2d3a8b3e464b9083833bd5e12804506130fd01b9125014a86e5af4"
+// list route already read and its answers' workflow_tasks_hint names, and
+// exclude_status and worker_id, which the task list route reads (derived
+// from its source by the route-accepts parity check).
+const manageProjectsDefinitionSHA256 = "dcb0e9c49e2b399b8391dcbbec35b51972925c388226cbdb41edf30ca7afb564"
 
 // Purpose: the catalog is the only place manage_projects exists. The
 // Orchestrator's definition is generated from the declarations and stays the

@@ -237,7 +237,7 @@ func fleetTaskListQuery(args map[string]any) (url.Values, error) {
 		case json.Number:
 			return v.String(), nil
 		case []any:
-			if key != "status" {
+			if key != "status" && key != "exclude_status" {
 				return "", fmt.Errorf("%s must be a single value", key)
 			}
 			parts := make([]string, 0, len(v))
@@ -252,7 +252,7 @@ func fleetTaskListQuery(args map[string]any) (url.Values, error) {
 		}
 		return "", fmt.Errorf("%s has an unsupported type", key)
 	}
-	for _, key := range []string{"status", "query", "agent", "limit", "cursor", "scope"} {
+	for _, key := range []string{"status", "exclude_status", "worker_id", "query", "agent", "limit", "cursor", "scope"} {
 		value, err := text(key)
 		if err != nil {
 			return nil, err
