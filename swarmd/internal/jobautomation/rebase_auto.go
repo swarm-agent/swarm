@@ -440,11 +440,17 @@ const ConflictNext = "resolve the conflict in the job (message it to rebase onto
 // run (or, after it failed, keeps its failure), the rest are skipped.
 func (r *Runner) stopOnConflict(d *Delivery, i int) {
 	rec := &d.Steps[i]
-	reason := "not run: " + ConflictReason(*d)
-	if rec.State == StateFailed || rec.State == StatePending || rec.State == StateWaiting {
-		reason = rec.Reason + "; " + ConflictReason(*d)
-		if strings.Contains(rec.Reason, ConflictReason(*d)) {
-			reason = rec.Reason // a rebase step's own failure already says it
+	// A step that never ran (the automatic rebase before it conflicted)
+	// says "not run"; one that ran and failed (a gate or push failing on a
+	// moved target, a rebase step) keeps its own reason and adds the
+	// conflict, unless it already says it.
+	why := ConflictReason(*d)
+	reason := "not run: " + why
+	ran := rec.StartedAt > 0 || rec.Attempts > 0 || len(rec.Failures) > 0
+	if ran && strings.TrimSpace(rec.Reason) != "" {
+		reason = rec.Reason + "; " + why
+		if strings.Contains(rec.Reason, why) {
+			reason = rec.Reason
 		}
 	}
 	rec.State, rec.Reason, rec.Next, rec.NextAttemptAt, rec.FinishedAt = StateFailed, stepReason(reason), ConflictNext, 0, r.now().UnixMilli()

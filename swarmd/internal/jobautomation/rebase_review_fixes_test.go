@@ -163,3 +163,40 @@ func TestRerunIsRefusedWhileARequestedRebaseHoldsTheDelivery(t *testing.T) {
 		t.Fatalf("release: %+v %v", released, err)
 	}
 }
+
+// Requirement: a delivery that ends conflict says on the step it stopped at
+// whether that step ran: "not run: <conflict>" for a step the rebase before
+// it stopped (pending, never started), "<its failure>; <conflict>" for a
+// step that ran and failed (a gate failing on a moved target), and the
+// failure alone when it already names the conflict (a rebase step).
+// Threat: a reason that starts "; the rebase ..." (an empty reason joined)
+// or a step that never ran reported as failing.
+// Owners: Runner.stopOnConflict. Layer: the function itself; the runner
+// paths that reach it are covered by
+// TestUnresolvedRebaseConflictEndsTheDeliveryConflict.
+func TestStopOnConflictSaysWhetherTheStepRan(t *testing.T) {
+	h := newHarness(t)
+	conflict := &RebaseConflict{Commit: strings.Repeat("a", 40), Files: []string{"f.txt"}, Outcome: ConflictUnresolved}
+	delivery := func(step StepRecord) Delivery {
+		return Delivery{ID: "jdel-x", Account: testAccount, AutomationName: "land", JobID: "task/p/t", State: StateRunning, Conflict: conflict,
+			Rebases: []RebaseRecord{{N: 1, Target: "main", Outcome: RebaseConflicted, Conflict: conflict}},
+			Steps:   []StepRecord{step, {ID: "after", Type: StepRun, State: StatePending}}}
+	}
+	why := ConflictReason(delivery(StepRecord{}))
+	for _, tc := range []struct {
+		name string
+		step StepRecord
+		want string
+	}{
+		{"never ran", StepRecord{ID: "push", Type: StepRun, State: StatePending}, "not run: " + why},
+		{"failed and waits for a retry", StepRecord{ID: "push", Type: StepRun, State: StatePending, Attempts: 1, StartedAt: 5, NextAttemptAt: 9,
+			Reason: "rebase needed: main moved", Failures: []AttemptFailure{{Attempt: 1, Reason: "rebase needed: main moved"}}}, "rebase needed: main moved; " + why},
+		{"a rebase step's own failure", StepRecord{ID: "rebase", Type: StepRebase, State: StateFailed, Attempts: 1, StartedAt: 5, Reason: why}, why},
+	} {
+		d := delivery(tc.step)
+		h.runner.stopOnConflict(&d, 0)
+		if d.Steps[0].Reason != tc.want || d.Steps[0].State != StateFailed || d.Steps[0].NextAttemptAt != 0 || d.State != StateConflict || d.Steps[1].State != StateSkipped {
+			t.Fatalf("%s: step %+v delivery %s next step %s", tc.name, d.Steps[0], d.State, d.Steps[1].State)
+		}
+	}
+}

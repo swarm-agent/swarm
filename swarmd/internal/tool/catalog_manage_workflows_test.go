@@ -26,8 +26,11 @@ import (
 // Steps changed it on purpose: steps declares maxItems (MaxSteps, 40) and
 // each step's if, with output_contains (WorkflowStepsSchema).
 // Built-in rebase changed it on purpose: propose takes rebase (auto|off)
-// and rebase_rounds, and steps name the rebase step.
-const manageWorkflowsDefinitionSHA256 = "77f099f2cf95870eca8f45cf130602d751cfe6f59c791d09ab238376a7654adf"
+// and rebase_rounds, and steps name the rebase step. rebase declares no enum
+// and rebase_rounds no minimum/maximum:
+// the service (Automation.Normalize) refuses other values with one reason
+// on every surface (TestManageWorkflowsRebaseSettingAndStepParity).
+const manageWorkflowsDefinitionSHA256 = "f3b5ea1ff4b381bbfe67538f859738e43864132c5548c2a043a72aee3f55399c"
 
 // Purpose: manage_workflows exists once, in the catalog. The Orchestrator's
 // definition is generated from the declarations (held by hash) and names

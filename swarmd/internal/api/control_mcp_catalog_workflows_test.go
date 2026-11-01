@@ -173,6 +173,14 @@ func manageWorkflowsParityCases() map[string][]catalogParityCase {
 			orchestrator: at(machine, "action", "propose", "name", "Proposed", "project", project[machine], "scope", map[string]any{"role": "coder"}, "steps", steps),
 			control:      at(machine, "action", "propose", "name", "Proposed", "project", project[machine], "scope", map[string]any{"role": "coder"}, "steps", steps),
 			compare:      parityShape,
+		}, catalogParityCase{
+			// The rebase setting and the rebase step (see also
+			// TestManageWorkflowsRebaseSettingAndStepParity).
+			orchestrator: at(machine, "action", "propose", "name", "Proposed rebase", "project", project[machine], "scope", map[string]any{"role": "coder"},
+				"rebase", "off", "rebase_rounds", float64(3), "steps", rebaseWorkflowSteps()),
+			control: at(machine, "action", "propose", "name", "Proposed rebase", "project", project[machine], "scope", map[string]any{"role": "coder"},
+				"rebase", "off", "rebase_rounds", float64(3), "steps", rebaseWorkflowSteps()),
+			compare: parityShape,
 		})
 	}
 	return map[string][]catalogParityCase{

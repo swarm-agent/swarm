@@ -459,7 +459,7 @@ func TestUnresolvedRebaseConflictEndsTheDeliveryConflict(t *testing.T) {
 		d.Conflict.Files[0] != "f.txt" || d.Conflict.Commit != repo.one || len(d.Conflict.TargetCommits) != 1 {
 		t.Fatalf("delivery: state %s head %s conflict %+v", d.State, d.Head, d.Conflict)
 	}
-	if d.Steps[0].State != StateFailed || !strings.Contains(d.Steps[0].Reason, "conflicted in f.txt") || d.Steps[0].Next != ConflictNext {
+	if d.Steps[0].State != StateFailed || !strings.HasPrefix(d.Steps[0].Reason, "not run: the rebase onto main conflicted in f.txt") || d.Steps[0].Next != ConflictNext {
 		t.Fatalf("push record = %+v", d.Steps[0])
 	}
 	if _, err := os.Stat(filepath.Join(folder, "pushed")); !os.IsNotExist(err) {
