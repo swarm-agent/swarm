@@ -277,9 +277,10 @@ func (d jobAutomationDeliverer) toBranch(ctx context.Context, req jobautomation.
 	if g == nil || g.Head == "" {
 		return jobautomation.DeliverOutcome{}, &jobautomation.RefusedError{Reason: "the work has no commits to " + req.To}
 	}
-	if req.Head != "" && req.Head != g.Head {
-		return jobautomation.DeliverOutcome{}, &jobautomation.RefusedError{Reason: "an earlier step moved the delivery head to " + req.Head + "; " + req.To + " delivers the work's own branch at " + g.Head +
-			": deliver the moved head with a run step, or put this step before the step that commits"}
+	// A moved delivery head (Swarm's rebase, a fix) lands only when the
+	// work's branch, which merge and publish land, names it.
+	if err := jobautomation.BranchCarriesHead(ctx, jobautomation.GitRebaser{Git: JobAutomationRebaseGit}, req); err != nil {
+		return jobautomation.DeliverOutcome{}, err
 	}
 	rule := false
 	if d.s.publishConfig != "" {

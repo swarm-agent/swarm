@@ -464,6 +464,24 @@ func (r *Runner) stopOnConflict(d *Delivery, i int) {
 	r.finish(d, StateConflict)
 }
 
+// headMovedOnlyByRebase reports whether the delivery head is the job's own
+// head, or that head carried forward only by Swarm's own rebases (automatic,
+// a rebase step, on request): each rebase record's from is the head before it
+// and its to the head after. A head an agent step moved (its commits, or its
+// own rebase: trigger agent_step) breaks the chain.
+func headMovedOnlyByRebase(d Delivery) bool {
+	if d.Result.Git == nil || d.Head == "" || d.Result.Git.Head == "" {
+		return false
+	}
+	cur := d.Result.Git.Head
+	for _, rec := range d.Rebases {
+		if rec.Outcome == RebaseRebased && rec.Trigger != RebaseTriggerAgent && rec.From == cur && isCommitID(rec.To) {
+			cur = rec.To
+		}
+	}
+	return cur == d.Head
+}
+
 // rerunAfterRebase makes the steps before at whose result depended on the
 // head run again on the rebased head (rebase n): run steps that ran, review
 // steps that recorded a verdict (not a reviewer that fixed: its fixes are

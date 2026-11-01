@@ -14,7 +14,8 @@ import (
 // conflicted and was not resolved puts the task in progress state
 // conflict (not failed), workflow state conflict, outcome "conflict
 // <files> (rebase onto dev)" with the files and resolver jobs on the
-// delivery, a needs_you task state that names the conflict, and a
+// delivery, a rebase_conflict task state (count bucket workflow_failed, not
+// needs_you: nothing waits on the person) that names the conflict, and a
 // "conflict on dev" history line.
 // Threat: an unresolved conflict reported as a failed check (the
 // Orchestrator "fixes" a passing check), or a rebase nobody can see.
@@ -68,8 +69,19 @@ func TestTaskProgressShowsRebasedAndConflict(t *testing.T) {
 		t.Fatalf("history = %+v", p.History)
 	}
 	state, reason := pebblestore.ProjectTaskState(task, p.Outcome, false, false)
-	if state != pebblestore.ProjectTaskStateNeedsYou || !strings.Contains(reason, "conflict a.go") {
+	// Nothing waits on the person: its own state, counted with the
+	// workflows that ended unsuccessfully, never needs_you.
+	if state != pebblestore.ProjectTaskStateRebaseConflict || !strings.Contains(reason, "conflict a.go") || !strings.Contains(reason, "nothing waits on the person") {
 		t.Fatalf("task state %s: %s", state, reason)
+	}
+	if bucket := pebblestore.ProjectTaskBucket(task, p.Outcome, false, false); bucket != pebblestore.ProjectTaskCountWorkflowFailed {
+		t.Fatalf("count bucket %s", bucket)
+	}
+	if state, _ := pebblestore.ProjectTaskState(task, p.Outcome, false, true); state != pebblestore.ProjectTaskStateNotIntegrated {
+		t.Fatalf("idle conflict state %s", state)
+	}
+	if got := pebblestore.ProjectTaskDeliverableStatus(pebblestore.ProjectTaskDeliverable{Status: "pending"}, pebblestore.ProjectTaskStateRebaseConflict); got != "rebase conflict" {
+		t.Fatalf("deliverable status %q", got)
 	}
 }
 

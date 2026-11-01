@@ -82,7 +82,9 @@ for approval or an answer; or finished within the last 7 days with work still
 to hand over: ready to integrate), `blocked_infra` (within the last 7 days, a
 workflow delivery ended because a step could not run: outcome `error …`),
 `workflow_failed` (within the last 7 days, a check or review ended the
-workflow delivery: outcome `blocked …` or `failed …`), `idle` (the same work
+workflow delivery: outcome `blocked …` or `failed …`; or Swarm's rebase
+conflicted and its resolver did not resolve it: outcome `conflict …`, state
+`rebase_conflict`), `idle` (the same work
 to hand over, but finished more than 7 days ago: nobody is waiting on it) and
 `stopped` (stopped or stale). A pushed, delivered,
 integrated, finished (nothing to integrate) or stopped task never needs
@@ -130,8 +132,9 @@ and `idle`, using the same bucket as the list counts):
 |---|---|---|---|
 | `running` | an agent or workflow still works on it | run status planning/in_progress/running/…; or outcome `running <step>`, `sent_back (round n)`, `workflow pending` | `in_progress` |
 | `waiting` | queued for capacity, or waiting for the provider's usage limit to reset | run status `queued`/`pending`, or `limit_waiting` (reason: "waiting for the provider's limit to reset (until …): provider …; continues by itself"; linked-machine `list_tasks` rows add it as `state_reason`, in the machine's own words when it gives them, unless a live or stall reason is already there) | `waiting` |
-| `needs_you` | the person must act | run status `pending_approval`, `needs_input` (a pending request), `failed`, `blocked` (and other run failures); an unknown outcome after the run ended; outcome `conflict …` (a rebase conflict Swarm's resolver could not resolve, see [Rebasing](automations.md#rebasing); the reason says the job or the person resolves it, then the delivery is re-run, which rebases again) | `needs_attention` |
+| `needs_you` | the person must act | run status `pending_approval`, `needs_input` (a pending request), `failed`, `blocked` (and other run failures); an unknown outcome after the run ended | `needs_attention` |
 | `blocked_infra` | a workflow step could not run (its checkout, the environment, the lease, a missing or unusable script): an infrastructure problem, not the work; nothing waits on the person | outcome `error <step> (infrastructure: <kind>)`; reason ends "next: fix the machine or folder, then rerun the failed steps"; `get_task` `next_action: rerun_failed_steps` (`manage_jobs` with `job_id` `task/<project>/<task>`) | `blocked_infra` |
+| `rebase_conflict` | Swarm's rebase of the work onto its target conflicted and its resolver agents did not resolve it (see [Rebasing](automations.md#rebasing)); the work is intact on its branch; nothing waits on the person | outcome `conflict …`; reason ends "next: send the task back to rebase onto the target, then rerun the delivery (it rebases again)"; `get_task` `next_action: reopen_task` | `workflow_failed` |
 | `workflow_failed` | a check or review ended the workflow delivery; nothing waits on the person | outcome `blocked …` (including sent back until its rounds ran out) or `failed …`; reason ends "next: send the task back with the findings, or archive it"; `get_task` `next_action: reopen_task` (`read_task_session` on a linked machine) | `workflow_failed` |
 | `landed` | the work was handed over | outcome `pushed <sha>`, `delivered <target>`, `integrated` (reason names the SHA or target) | `done` |
 | `done` | finished with nothing to hand over | outcome `finished`; run status `completed`, `rejected`, `superseded`; an archived task or a workflow step's own task | `done` |
@@ -197,7 +200,8 @@ Reviewer tasks and worker jobs keep their own limit handling (see
 `get_task`'s `progress.stage` follows the state, never an implementation step
 once the work is finished: `landed` is `Landed`, `done` is `Done`,
 `not_integrated` is `Finished, not handed over`, `blocked_infra` is
-`Blocked: infrastructure`, `workflow_failed` is `Workflow failed`, and
+`Blocked: infrastructure`, `workflow_failed` is `Workflow failed`,
+`rebase_conflict` is `Rebase conflict`, and
 `needs_you` after the workflow finished or the work was delivered is
 `Needs you`. A stage reads
 `Landed` only when the state is `landed`; a workflow that is `done` without a
@@ -220,6 +224,7 @@ a deliverable still carrying `pending` (or no status) from the state:
 | `needs_you` | `needs you` |
 | `blocked_infra` | `blocked (infrastructure)` |
 | `workflow_failed` | `workflow failed` |
+| `rebase_conflict` | `rebase conflict` |
 | `stopped` | `stopped` |
 
 Media deliverables (kind `image`, `video`, `audio`/`sound`, or any deliverable

@@ -168,9 +168,50 @@ type DeliverRequest struct {
 	To         string
 	Path       string
 	// Head is the delivery head (merge and publish deliver it).
-	Head         string
+	Head string
+	// RebasedFrom is the head Swarm's newest rebase replaced, when the
+	// delivery head was rebased (BranchCarriesHead names it).
+	RebasedFrom  string
 	Result       Result
 	Deliverables []Deliverable
+}
+
+// BranchCarriesHead decides whether a merge or publish step may land
+// req.Head, the delivery head. Both land the work's own branch, so a head that
+// is not the work's own head (Swarm rebased it onto the target, or an earlier
+// step moved it) is landed only when the work's branch in the folder now
+// names it: the rebase moves the branch by compare-and-swap, a task's branch
+// through its branch advancer. Otherwise the step is refused, saying where the
+// branch is, so a head the checks never saw is never landed. tips reads a
+// branch's tip (GitRebaser.TargetTip).
+func BranchCarriesHead(ctx context.Context, tips interface {
+	TargetTip(ctx context.Context, folder, branch string) (string, error)
+}, req DeliverRequest) error {
+	g := req.Result.Git
+	if g == nil || req.Head == "" || req.Head == g.Head {
+		return nil
+	}
+	moved := "an earlier step moved the delivery head to " + req.Head
+	if req.RebasedFrom != "" {
+		moved = "Swarm rebased the delivery head onto the target: it is now " + req.Head
+	}
+	if strings.TrimSpace(g.Branch) == "" || tips == nil {
+		return &RefusedError{Reason: moved + ", and the work has no branch that carries it: " + req.To + " lands the work's own branch at " + g.Head + ", so nothing is delivered"}
+	}
+	tip, err := tips.TargetTip(ctx, req.Folder, g.Branch)
+	if err != nil {
+		return &RefusedError{Reason: moved + ", and the work's branch " + g.Branch + " cannot be read (" + truncate(err.Error(), 200) + "): nothing is delivered"}
+	}
+	if tip != req.Head {
+		why := moved + ", but the work's branch " + g.Branch + " is at " + tip + ": " + req.To + " lands that branch, so nothing is delivered"
+		if req.RebasedFrom != "" {
+			why += " (the rebase could not move the branch: see the delivery's rebases[].branch; rerun once the task is idle and its worktree clean)"
+		} else {
+			why += "; deliver the moved head with a run step, or put this step before the step that commits"
+		}
+		return &RefusedError{Reason: why}
+	}
+	return nil
 }
 
 // DeliverOutcome is what a deliver step handed over and where it went.
@@ -317,7 +358,7 @@ func (r *Runner) runDeliver(ctx context.Context, d *Delivery, record *StepRecord
 		return stepFailure{reason: stepReason(why), next: "fix the workflow or rerun once the work produced it", refused: true}
 	}
 	out, err := r.deliver.Deliver(ctx, DeliverRequest{Account: d.Account, DeliveryID: d.ID, StepID: step.ID, Folder: d.Folder, To: step.To, Path: step.Path,
-		Head: head, Result: d.Result, Deliverables: items})
+		Head: head, RebasedFrom: d.RebasedFrom, Result: d.Result, Deliverables: items})
 	if err != nil {
 		var transient *TransientInspectionError
 		if errors.As(err, &transient) {

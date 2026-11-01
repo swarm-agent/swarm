@@ -971,7 +971,12 @@ request). It is Git in the folder, run by the daemon with hooks off:
    is moved only for a project task, by its branch advancer, with `git reset
    --keep` while the task is idle and its worktree clean; otherwise the
    record says why it was not moved. The record keeps the old -> new commit
-   mapping and a `git range-diff`.
+   mapping and a `git range-diff`. A `deliver` step to `merge` or `publish`
+   lands the work's branch, so it lands a rebased head once the branch names
+   it (the usual case); while the branch could not be moved it is refused
+   with that reason and nothing lands. A reviewer allowed to fix (`fixes`)
+   runs on the rebased head as on the job's own: only a head an agent step
+   moved keeps it from starting.
 4. Steps after a rebase run on the rebased head. Steps that already passed on
    the old head and whose result depended on it run again: `run` steps that
    ran and review steps that recorded a verdict (not a reviewer whose fixes

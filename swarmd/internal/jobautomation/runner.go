@@ -1619,10 +1619,12 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 		}
 	}
 	if jobID == "" && step.Fixes != "" {
-		// A reviewer allowed to fix branches at the reviewed job's own head;
-		// once an earlier agent step moved the delivery head its fixes could
-		// never descend from it, so it is not started.
-		if d.Result.Git == nil || d.Head == "" || d.Head != d.Result.Git.Head {
+		// A reviewer allowed to fix branches at the reviewed job's own head,
+		// or at that head as Swarm rebased it onto the target (its own
+		// rebases, not an agent's); once an earlier agent step moved the
+		// delivery head its fixes could never descend from it, so it is not
+		// started.
+		if !headMovedOnlyByRebase(*d) {
 			return stepFailure{reason: "fixes need the delivery head to be the reviewed job's own head; an earlier agent step moved it",
 				next: "put the fixing review step before any agent step that commits", refused: true}
 		}
