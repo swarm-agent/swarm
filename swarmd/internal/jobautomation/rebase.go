@@ -31,6 +31,10 @@ type TaskBranchAdvance struct {
 	// From is the delivery head before the move, To the head it moved to.
 	From string
 	To   HeadRef
+	// Rebased is a move to a rebased head (To does not descend from From):
+	// the branch moves only while it is at From, with a clean, idle
+	// worktree (git reset --keep), never by a merge.
+	Rebased bool
 }
 
 // TaskBranchSync is what became of a TaskBranchAdvance: Advanced when the
@@ -261,7 +265,7 @@ func (r *Runner) syncTaskBranch(ctx context.Context, d *Delivery, stepID, from s
 		return
 	}
 	sync := r.branch.AdvanceTaskBranch(ctx, TaskBranchAdvance{Account: d.Account, JobID: d.JobID, DeliveryID: d.ID, Step: stepID, Branch: d.Result.Git.Branch,
-		From: from, To: HeadRef{Commit: d.Head, Worktree: d.HeadWorktree}})
+		From: from, To: HeadRef{Commit: d.Head, Worktree: d.HeadWorktree}, Rebased: from != "" && d.RebasedFrom == from})
 	sync.Step, sync.From, sync.At = stepID, from, r.now().UnixMilli()
 	if sync.Head == "" {
 		sync.Head = d.Head

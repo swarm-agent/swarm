@@ -65,6 +65,11 @@ const (
 	// nothing after it handed the work over, and the follow-up's end starts
 	// a fresh delivery. Delivery.SentBack says which step, round and why.
 	StateSentBack = "sent_back"
+	// StateConflict ends a delivery whose rebase onto its target branch
+	// conflicted and the resolver agents did not resolve it: nothing after
+	// it ran, the head was not moved. Delivery.Conflict says which files,
+	// which commit, which resolver jobs. It is not the work failing a check.
+	StateConflict = "conflict"
 )
 
 // ReasonRoundsExhausted starts a reopen step's failure when another reopen
@@ -178,6 +183,21 @@ type Delivery struct {
 	// the delivery's changed files are measured from since.
 	RebasedFrom string `json:"rebased_from,omitempty"`
 	RebasedOnto string `json:"rebased_onto,omitempty"`
+	// RebaseMode is the workflow's rebase setting as the delivery started
+	// ("" automatic, RebaseOff), RebaseRounds its resolver bound (0: the
+	// default).
+	RebaseMode   string `json:"rebase_mode,omitempty"`
+	RebaseRounds int    `json:"rebase_rounds,omitempty"`
+	// TargetChecked is the target branch tip the delivery head was last
+	// found up to date with (or rebased onto): the target moved when its
+	// tip is another commit.
+	TargetChecked string `json:"target_checked,omitempty"`
+	// Rebases records each rebase of the delivery head (newest last, at
+	// most maxRebaseRecords); an up-to-date check records none.
+	Rebases []RebaseRecord `json:"rebases,omitempty"`
+	// Conflict is the rebase conflict a delivery that ended conflict
+	// stopped on.
+	Conflict *RebaseConflict `json:"conflict,omitempty"`
 	// TaskBranch is the newest attempt to bring the triggering task's own
 	// branch and worktree to a head an agent step moved the delivery to.
 	TaskBranch *TaskBranchSync `json:"task_branch,omitempty"`
@@ -269,8 +289,13 @@ type StepRecord struct {
 	Outcome   map[string]any `json:"outcome,omitempty"`
 	LogTail   string         `json:"log_tail,omitempty"`
 	// Note says how the step ran differently from its stored definition
-	// (LegacyCheckoutMigration), so the owner knows to resave it.
+	// (LegacyCheckoutMigration), so the owner knows to resave it, or that
+	// it re-runs on a rebased head.
 	Note string `json:"note,omitempty"`
+	// RebaseRerun is the rebase (RebaseRecord.N) that made the step run
+	// again on the rebased head: it had passed on the old head and its
+	// result depended on the head.
+	RebaseRerun int `json:"rebase_rerun,omitempty"`
 	// Failures keeps each failed attempt's reason, newest last (at most
 	// maxStepFailures). A rerun keeps them, so an attempt that failed
 	// before the rerun still says why.
@@ -307,7 +332,7 @@ func resetStep(step *StepRecord) {
 // Terminal reports whether a delivery or step state is final.
 func Terminal(state string) bool {
 	switch state {
-	case StateSucceeded, StateFailed, StateError, StateSkipped, StateStopped, StateBlocked, StateSentBack:
+	case StateSucceeded, StateFailed, StateError, StateSkipped, StateStopped, StateBlocked, StateSentBack, StateConflict:
 		return true
 	}
 	return false
@@ -832,6 +857,7 @@ func (s *Store) CreateDelivery(a Automation, result Result) (Delivery, bool, err
 		ID: id, Account: a.Account, AutomationID: a.ID, AutomationName: a.Name, AutomationRevision: a.Revision,
 		JobID: result.JobID, Followup: result.Followup, State: StatePending, Retries: a.Retries, Folder: a.Scope.Folder,
 		Definition: append([]Step(nil), a.Steps...), Result: result, CreatedAt: createdAt, Spec: a.Result,
+		RebaseMode: a.Rebase, RebaseRounds: a.RebaseRounds,
 	}
 	if result.Git != nil {
 		d.Head, d.HeadWorktree = result.Git.Head, result.Git.Worktree
@@ -1370,7 +1396,8 @@ func (s *Store) rerunLocked(d Delivery) (RerunOutcome, error) {
 		return RerunOutcome{Delivery: d, Reason: ReasonNothingToRerun}, nil
 	}
 	if reset {
-		d.State, d.FinishedAt, d.SentBack = StatePending, 0, nil
+		// The rerun checks the target again (a conflict is rebased anew).
+		d.State, d.FinishedAt, d.SentBack, d.Conflict, d.TargetChecked = StatePending, 0, nil, nil, ""
 	} else {
 		reopenForItems(&d)
 	}
@@ -1417,6 +1444,7 @@ func (s *Store) RerunAfterHandover(account, id, followup string) (RerunOutcome, 
 		resetStep(&d.Steps[i])
 	}
 	d.State, d.FinishedAt, d.SentBack, d.HandoverRerun = StatePending, 0, nil, followup
+	d.Conflict, d.TargetChecked = nil, ""
 	d.Reruns++
 	d.RerunAt = s.now().UnixMilli()
 	if err := s.putDeliveryLocked(d); err != nil {

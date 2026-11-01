@@ -23,6 +23,24 @@ const (
 	StepRun    = "run"
 	StepAgent  = "agent"
 	StepReopen = "reopen"
+	// StepRebase rebases the delivery head onto a branch (Step.Onto, else
+	// the job's target branch) with the daemon's own rebase, at that point
+	// of the workflow (see Runner.rebaseDelivery).
+	StepRebase = "rebase"
+)
+
+// A workflow's rebase setting (Automation.Rebase): RebaseAuto (the
+// default, stored as "") rebases every delivery whose job has a target
+// branch before its first step and again whenever the target moved before
+// a step that depends on the head; RebaseOff never does (an explicit
+// rebase step still runs).
+const (
+	RebaseAuto = "auto"
+	RebaseOff  = "off"
+	// DefaultRebaseRounds bounds the resolver agents one rebase starts for
+	// its conflicts (Automation.RebaseRounds), MaxRebaseRounds the setting.
+	DefaultRebaseRounds = 2
+	MaxRebaseRounds     = 5
 )
 
 // Review verdicts an agent step's outcome may carry.
@@ -234,6 +252,9 @@ type Step struct {
 	From      string `json:"from,omitempty"`
 	Message   string `json:"message,omitempty"`
 	MaxRounds int    `json:"max_rounds,omitempty"`
+	// rebase: Onto is the branch to rebase onto ("" is the job's target
+	// branch, the one merge, publish and a push use).
+	Onto string `json:"onto,omitempty"`
 }
 
 // Automation is a durable, account-owned definition. Revision changes on
@@ -260,7 +281,12 @@ type Automation struct {
 	When        string `json:"when"`
 	Enabled     bool   `json:"enabled"`
 	Retries     int    `json:"retries"`
-	Steps       []Step `json:"steps"`
+	// Rebase is the workflow's rebase setting: "" or RebaseAuto (rebase
+	// automatically) or RebaseOff. RebaseRounds bounds the resolver agents
+	// one rebase starts for a conflict (0: DefaultRebaseRounds).
+	Rebase       string `json:"rebase,omitempty"`
+	RebaseRounds int    `json:"rebase_rounds,omitempty"`
+	Steps        []Step `json:"steps"`
 	// Result is what the work must hand over (optional): see ResultSpec.
 	Result    *ResultSpec `json:"result,omitempty"`
 	Revision  uint64      `json:"revision"`
@@ -313,6 +339,9 @@ func (a *Automation) normalize() error {
 	}
 	if a.Retries < 0 || a.Retries > MaxRetries {
 		return invalid("retries must be 0 to %d", MaxRetries)
+	}
+	if err := a.normalizeRebase(); err != nil {
+		return err
 	}
 	if a.On == nil || len(a.Steps) != 0 {
 		if err := NormalizeSteps(a.Steps); err != nil {
@@ -427,8 +456,15 @@ func NormalizeSteps(steps []Step) error {
 			if err := step.normalizeDeliver(); err != nil {
 				return err
 			}
+		case StepRebase:
+			if err := step.normalizeRebaseStep(); err != nil {
+				return err
+			}
 		default:
-			return invalid("step %s: type must be run, agent, reopen or deliver", step.ID)
+			return invalid("step %s: type must be run, agent, reopen, deliver or rebase", step.ID)
+		}
+		if step.Type != StepRebase && strings.TrimSpace(step.Onto) != "" {
+			return invalid("step %s: onto is for a rebase step", step.ID)
 		}
 		if step.Type != StepDeliver {
 			if err := step.noDeliverFields(); err != nil {
@@ -620,6 +656,37 @@ func (s *Step) validateRebase() error {
 	}
 	if s.Fixes != "" || s.Produce || s.Since != "" || s.ForEach != nil {
 		return invalid("step %s: a rebase step has no fixes, produce, since or for_each", s.ID)
+	}
+	return nil
+}
+
+// normalizeRebase checks the workflow's rebase setting: "" or auto (stored
+// as ""), or off; rebase_rounds 0 (the default) to MaxRebaseRounds.
+func (a *Automation) normalizeRebase() error {
+	a.Rebase = strings.ToLower(strings.TrimSpace(a.Rebase))
+	switch a.Rebase {
+	case "", RebaseAuto:
+		a.Rebase = ""
+	case RebaseOff:
+	default:
+		return invalid("rebase must be auto (the default: Swarm rebases each delivery onto its target branch when the target moved) or off")
+	}
+	if a.RebaseRounds < 0 || a.RebaseRounds > MaxRebaseRounds {
+		return invalid("rebase_rounds must be 1 to %d (the resolver agents one rebase may start for a conflict; 0 is the default %d)", MaxRebaseRounds, DefaultRebaseRounds)
+	}
+	return nil
+}
+
+// normalizeRebaseStep checks a rebase step: onto (optional) is a branch
+// name; it has nothing else.
+func (s *Step) normalizeRebaseStep() error {
+	if s.Command != "" || len(s.Args) > 0 || s.Worker != "" || s.Brief != "" || s.Fixes != "" || s.Checkout != "" || s.Produce ||
+		s.From != "" || s.Message != "" || s.MaxRounds != 0 || s.Since != "" || s.ForEach != nil || s.Rebase {
+		return invalid("step %s: a rebase step has onto (a branch; default the job's target branch), not command, args, worker, brief, fixes, checkout, produce, from, message, max_rounds, since, for_each or rebase", s.ID)
+	}
+	s.Onto = strings.TrimSpace(s.Onto)
+	if s.Onto != "" && !ValidBranchName(s.Onto) {
+		return invalid("step %s: onto must be a branch name (for example dev)", s.ID)
 	}
 	return nil
 }

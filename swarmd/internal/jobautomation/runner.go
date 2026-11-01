@@ -192,6 +192,9 @@ type AgentOutcome struct {
 	// status waiting); Error is what it waits for. The step waits for the
 	// same job until then instead of holding its timeout.
 	LimitUntil int64
+	// Worktree is the job's own checkout when it has one, whether or not
+	// it committed (a rebase resolver's edits are read there).
+	Worktree string
 }
 
 // AgentRunner starts a job for an agent step and waits for it to end.
@@ -304,8 +307,11 @@ type Runner struct {
 	deliver Deliverer
 	// rebase reads what a rebase step's checks need; branch fast-forwards a
 	// task's own branch to a moved delivery head. Either may be nil.
-	rebase  RebaseChecker
-	branch  TaskBranchAdvancer
+	rebase RebaseChecker
+	branch TaskBranchAdvancer
+	// rebaser is the daemon's own rebase of a delivery head (nil: no
+	// automatic rebase, rebase steps refused).
+	rebaser Rebaser
 	emit    func(pebblestore.Signal)
 	now     func() time.Time
 	backoff func(attempt int) time.Duration
@@ -347,13 +353,17 @@ type Options struct {
 	// daemon's agent runner does).
 	Rebase     RebaseChecker
 	TaskBranch TaskBranchAdvancer
+	// Rebaser is the daemon's own rebase (GitRebaser): every delivery whose
+	// job has a target branch is rebased onto it when it moved, and rebase
+	// steps run. nil turns both off.
+	Rebaser Rebaser
 }
 
 func NewRunner(opts Options) *Runner {
 	r := &Runner{
 		store: opts.Store, feed: opts.Feed, account: opts.Account, results: opts.Results, run: opts.Run, env: opts.Environment, agent: opts.Agent, reopen: opts.Reopen,
 		head: opts.Head, verify: opts.Verify, lines: opts.Lines, deliver: opts.Deliver, emit: opts.Emit, now: time.Now, backoff: defaultBackoff, recheck: reopenRecheck,
-		rebase: opts.Rebase, branch: opts.TaskBranch,
+		rebase: opts.Rebase, branch: opts.TaskBranch, rebaser: opts.Rebaser,
 		active: map[string]bool{}, attempts: map[uint64]int{}, wake: make(chan struct{}, 1),
 	}
 	if checker, ok := opts.Agent.(RebaseChecker); ok && r.rebase == nil {
@@ -744,7 +754,7 @@ func (r *Runner) runDelivery(ctx context.Context, account, id string) {
 			return
 		}
 	}
-	for i := range d.Steps {
+	for i := 0; i < len(d.Steps); i++ {
 		if ctx.Err() != nil {
 			return
 		}
@@ -787,11 +797,69 @@ func (r *Runner) runDelivery(ctx context.Context, account, id string) {
 			}
 			continue
 		}
+		// Before the first step, and before a step that depends on the head
+		// whenever the target moved since the last check, the head is
+		// rebased onto the target (rebaseDelivery).
+		if r.autoRebasing(d) && step.Type != StepRebase && (headDependent(step) || d.TargetChecked == "") {
+			trigger := RebaseTriggerStep
+			if d.TargetChecked == "" && len(d.Rebases) == 0 {
+				trigger = RebaseTriggerStart
+			}
+			out := r.rebaseDelivery(ctx, &d, trigger, step.ID, "", false)
+			if ctx.Err() != nil {
+				return
+			}
+			if out.conflict {
+				r.stopOnConflict(&d, i)
+				return
+			}
+			if out.moved {
+				if first := rerunAfterRebase(&d, i, out.n, false); first >= 0 {
+					r.save(d)
+					i = first - 1
+					continue
+				}
+			}
+		}
 		ok = r.runStep(ctx, &d, i, step)
 		if ctx.Err() != nil {
 			return
 		}
 		record = &d.Steps[i]
+		if ok {
+			// A rebase step, or an agent step whose own rebased head was
+			// accepted, moved the head: what passed on the old head runs
+			// again on the new one.
+			if n := outcomeInt(record.Outcome["rebase"]); n > 0 {
+				if _, moved := record.Outcome["moved_head"]; moved {
+					if first := rerunAfterRebase(&d, i, n, false); first >= 0 {
+						r.save(d)
+						i = first - 1
+						continue
+					}
+				}
+			}
+		} else if step.Type == StepRebase && d.Conflict != nil {
+			r.stopOnConflict(&d, i)
+			return
+		} else if r.autoRebasing(d) && pushLike(step) && (record.State == StateFailed || (record.State == StatePending && record.NextAttemptAt > 0)) {
+			// A gate or push that failed while the target moved: rebase
+			// and run it again (bounded by MaxDeliveryRebases).
+			out := r.rebaseDelivery(ctx, &d, RebaseTriggerFailed, step.ID, "", false)
+			if ctx.Err() != nil {
+				return
+			}
+			if out.conflict {
+				r.stopOnConflict(&d, i)
+				return
+			}
+			if out.moved {
+				first := rerunAfterRebase(&d, i+1, out.n, true)
+				r.save(d)
+				i = first - 1
+				continue
+			}
+		}
 		if record.State == StatePending || (record.State == StateWaiting && record.NextAttemptAt > 0) {
 			return // waits for its retry or the provider's limit to reset
 		}
@@ -1162,7 +1230,23 @@ func (r *Runner) finish(d *Delivery, state string) {
 			attrs["reason"] = why
 		}
 	}
+	if state == StateConflict {
+		if why := ConflictReason(*d); why != "" {
+			attrs["reason"] = truncate(why, 500)
+		}
+		if c := d.Conflict; c != nil {
+			attrs["files"] = strings.Join(limitFiles(c.Files), ", ")
+			attrs["commit"] = c.Commit
+			if len(c.ResolverJobs) > 0 {
+				attrs["resolver_jobs"] = strings.Join(c.ResolverJobs, ", ")
+			}
+		}
+		attrs["next"] = ConflictNext
+	}
 	summary := fmt.Sprintf("Automation %s %s for job %s", d.AutomationName, state, d.JobID)
+	if state == StateConflict {
+		summary = fmt.Sprintf("Automation %s: job %s %s", d.AutomationName, d.JobID, ConflictReason(*d))
+	}
 	if state == StateSentBack && d.SentBack != nil {
 		summary = fmt.Sprintf("Automation %s sent job %s back (step %s, round %d)", d.AutomationName, d.JobID, d.SentBack.Step, d.SentBack.Round)
 		attrs["sent_back_step"], attrs["round"] = d.SentBack.Step, strconv.Itoa(d.SentBack.Round)
@@ -1184,7 +1268,12 @@ func (r *Runner) runStep(ctx context.Context, d *Delivery, i int, step Step) boo
 	record.ExitCode, record.Output, record.Reason, record.Next, record.ErrorKind = nil, "", "", "", ""
 	// A stored revision saved before swarm agents moved to their own
 	// worktree runs migrated (fresh delivery or rerun of a pinned one).
-	step, record.Note = LegacyCheckoutMigration(step)
+	var note string
+	step, note = LegacyCheckoutMigration(step)
+	if note != "" || record.RebaseRerun == 0 {
+		// A step re-run on a rebased head keeps the note saying so.
+		record.Note = note
+	}
 	if err := r.store.SaveDelivery(*d); err != nil {
 		log.Printf("swarmd job automations: save delivery %s: %v", d.ID, err)
 	}
@@ -1205,6 +1294,8 @@ func (r *Runner) runStep(ctx context.Context, d *Delivery, i int, step Step) boo
 		failure = r.runReopen(stepCtx, d, record, step)
 	case StepDeliver:
 		failure = r.runDeliver(stepCtx, d, record, step)
+	case StepRebase:
+		failure = r.runRebaseStep(stepCtx, d, record, step)
 	default:
 		failure = stepFailure{reason: "unknown step type " + step.Type, next: "fix the script"}
 	}
@@ -1311,6 +1402,9 @@ type stepFailure struct {
 	// limitUntil (unix ms) is set when the agent's job ended on a provider's
 	// usage, rate or session limit: the step waits until then and reruns.
 	limitUntil int64
+	// notDescendant is a job head refused because it does not descend
+	// from the delivery head.
+	notDescendant bool
 }
 
 // maxProviderLimitWaits bounds how many times one agent step waits for a
@@ -1545,6 +1639,10 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 			}
 		}
 		key := agentIdempotencyKey(*d, step.ID)
+		if record.RebaseRerun > 0 {
+			// It runs again on a rebased head: a new job.
+			key += ".rebase" + strconv.Itoa(record.RebaseRerun)
+		}
 		if record.LimitWaits > 0 {
 			// The job before ended on a provider limit: a new job, once.
 			key += ".limit" + strconv.Itoa(record.LimitWaits)
@@ -2011,7 +2109,29 @@ func (r *Runner) moveHead(ctx context.Context, d *Delivery, outcome AgentOutcome
 		return stepFailure{} // the job's own failure is reported below
 	}
 	worktree, failure := r.verifyDescends(ctx, d, outcome)
-	if failure.reason != "" || ctx.Err() != nil {
+	if ctx.Err() != nil {
+		return failure
+	}
+	if failure.notDescendant {
+		// The job rebased its own copy of the work: its head moves the
+		// delivery head when it descends from the target tip and carries
+		// the delivery head's commits (acceptRebasedHead).
+		if outcome.Result != nil && outcome.Result.Git != nil {
+			worktree = outcome.Result.Git.Worktree
+		}
+		accepted, why := r.acceptRebasedHead(ctx, d, outcome, worktree, out)
+		if accepted {
+			return stepFailure{}
+		}
+		if ctx.Err() != nil {
+			return stepFailure{}
+		}
+		if why != "" {
+			failure.reason = stepReason(failure.reason + "; not accepted as a rebase either: " + why)
+		}
+		return failure
+	}
+	if failure.reason != "" {
 		return failure
 	}
 	out["moved_head"] = map[string]any{"from": d.Head, "to": outcome.Head}
@@ -2038,7 +2158,7 @@ func (r *Runner) verifyDescends(ctx context.Context, d *Delivery, outcome AgentO
 	}
 	if !descends {
 		return "", stepFailure{reason: "the job " + outcome.JobID + " head " + outcome.Head + " does not descend from the delivery head " + d.Head + ": the delivery head is not moved",
-			next: "fix the automation", refused: true}
+			next: "fix the automation", refused: true, notDescendant: true}
 	}
 	return worktree, stepFailure{}
 }
