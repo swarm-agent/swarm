@@ -904,6 +904,10 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 		// Run steps with in: environment run a script of the job's head in
 		// a lease of the folder's environment, never on the host.
 		Environment: jobautomation.EnvironmentExecutor{Leases: stepLeases{}},
+		// Every delivery whose job has a target branch is rebased onto it by
+		// the daemon (routed Git, hooks off, a scratch index in Swarm's
+		// storage) when the target moved; conflicts go to a resolver agent.
+		Rebaser: jobautomation.GitRebaser{Git: api.JobAutomationRebaseGit, Scratch: filepath.Join(cfg.DataDir, "workflow-rebase")},
 	})
 	apiServer.SetJobAutomations(jobAutomationRunner)
 	// Jobs in folders whose owner set a publish command (swarmctl workspace

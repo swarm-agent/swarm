@@ -152,7 +152,7 @@ func (s *Server) callFleetWork(ctx context.Context, p identity.Principal, machin
 	case "propose":
 		path += "/propose"
 		method = http.MethodPost
-		bodyKeys = append(bodyKeys, "id", "name", "description", "replace", "project", "workspace", "scope", "when", "enabled", "retries", "result", "steps", "on", "inputs", "with")
+		bodyKeys = append(bodyKeys, "id", "name", "description", "replace", "project", "workspace", "scope", "when", "enabled", "retries", "rebase", "rebase_rounds", "result", "steps", "on", "inputs", "with")
 	case "export":
 		path += "/export"
 		method = http.MethodPost

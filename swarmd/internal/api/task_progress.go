@@ -28,6 +28,10 @@ const (
 	progressDelivered     = "delivered"
 	progressDone          = "done"
 	progressFailed        = "failed"
+	// progressConflict: Swarm's rebase of the work onto its target
+	// conflicted and the resolver agents did not resolve it (the work is
+	// intact on its branch). Not the work failing a check.
+	progressConflict = "conflict"
 	// progressStopped: the person stopped the task's run; a message resumes
 	// it. Not a failure.
 	progressStopped = "stopped"
@@ -44,6 +48,9 @@ const (
 	// workflowSentBack: a reopen step sent the work back (review findings,
 	// a failed push to rebase); nothing was handed over.
 	workflowSentBack = "sent_back"
+	// workflowConflict: a delivery's rebase onto the target conflicted and
+	// was not resolved.
+	workflowConflict = pebblestore.ProjectTaskWorkflowConflict
 )
 
 const (
@@ -125,6 +132,10 @@ type taskProgressDelivery struct {
 	// (pebblestore.ProjectTaskWakeReasonRunes); the delivery has it all.
 	ReopenFailureTruncated bool `json:"reopen_failure_truncated,omitempty"`
 	ReopenRound            int  `json:"reopen_round,omitempty"`
+	// Rebase is the delivery's newest rebase onto its target branch
+	// (deliveryRebase): rebased (old -> new head, onto), a conflict being
+	// resolved, or one not resolved (files, resolver jobs).
+	Rebase *pebblestore.ProjectTaskRebase `json:"rebase,omitempty"`
 	// StepsResult is each finished step of the delivery (id, type, status,
 	// verdict, duration, a bounded output tail, a review's BLOCKING
 	// findings). Set by taskWaitProgressFor (the task route, get_task and
@@ -177,6 +188,25 @@ func deliveryReview(d jobautomation.Delivery) *taskProgressReview {
 		return review
 	}
 	return nil
+}
+
+// deliveryRebase is d's newest rebase as task progress shows it; nil when
+// it was never rebased.
+func deliveryRebase(d jobautomation.Delivery) *pebblestore.ProjectTaskRebase {
+	last := d.LastRebase()
+	if last == nil {
+		return nil
+	}
+	out := &pebblestore.ProjectTaskRebase{Outcome: last.Outcome, Target: last.Target, Onto: last.Onto, From: last.From, To: last.To, Reason: last.Reason}
+	if c := last.Conflict; c != nil {
+		out.Files, out.ResolverJobs, out.Resolved = c.Files, c.ResolverJobs, c.Outcome == jobautomation.ConflictResolved
+	}
+	for _, rec := range d.Rebases {
+		if rec.Outcome == jobautomation.RebaseRebased {
+			out.Rebases++
+		}
+	}
+	return pebblestore.ClipProjectTaskRebase(out)
 }
 
 // deliveryReopen is the reopen the delivery stands at, if any: the reopen
@@ -474,6 +504,8 @@ func deliveryProgressState(state string) string {
 		return workflowBlocked
 	case jobautomation.StateSentBack:
 		return workflowSentBack
+	case jobautomation.StateConflict:
+		return workflowConflict
 	}
 	return workflowRunning
 }
@@ -634,10 +666,10 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 	// or none / pending from the evaluation of the job end.
 	var workflow *taskProgressWorkflow
 	running := []jobautomation.Delivery{}
-	var failedDelivery, sentBackDelivery *jobautomation.Delivery
+	var failedDelivery, sentBackDelivery, conflictDelivery *jobautomation.Delivery
 	if len(shown) > 0 || (ended && eval != nil) {
 		workflow = &taskProgressWorkflow{Deliveries: []taskProgressDelivery{}}
-		anyFailed, anyBlocked, anySentBack := false, false, false
+		anyFailed, anyBlocked, anySentBack, anyConflict := false, false, false, false
 		for i, d := range latest {
 			step := currentStep(d)
 			state := deliveryProgressState(d.State)
@@ -656,6 +688,7 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 			}
 			deliveryFindings(d, &view)
 			view.Review = deliveryReview(d)
+			view.Rebase = deliveryRebase(d)
 			workflow.Deliveries = append(workflow.Deliveries, view)
 			switch state {
 			case workflowRunning:
@@ -675,6 +708,11 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 				if sentBackDelivery == nil {
 					sentBackDelivery = &latest[i]
 				}
+			case workflowConflict:
+				anyConflict = true
+				if conflictDelivery == nil {
+					conflictDelivery = &latest[i]
+				}
 			}
 		}
 		switch {
@@ -686,6 +724,8 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 			workflow.State = workflowFailed
 		case anyBlocked:
 			workflow.State = workflowBlocked
+		case anyConflict:
+			workflow.State = workflowConflict
 		case anySentBack:
 			workflow.State = workflowSentBack
 		case len(latest) > 0:
@@ -868,6 +908,12 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 		if reason != "" {
 			out.Summary += ": " + reason
 		}
+	case conflictDelivery != nil && workflow != nil && workflow.State == workflowConflict:
+		// Swarm's rebase conflicted and its resolver agents did not
+		// resolve it; nothing was handed over, the work is intact.
+		out.State = progressConflict
+		d := *conflictDelivery
+		out.Summary = "workflow " + d.AutomationName + " conflict: " + jobautomation.ConflictReason(d)
 	case sentBackDelivery != nil && workflow != nil && workflow.State == workflowSentBack:
 		// The work went back to its agent; the follow-up's end starts a
 		// fresh delivery. Nothing was handed over.
@@ -1005,6 +1051,18 @@ func taskProgressHistory(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 	merged := false
 	for _, d := range sorted {
 		add(d.CreatedAt, "workflow "+d.AutomationName+" started")
+		// Each rebase of the delivery head onto its target (Swarm's own).
+		for _, rec := range d.Rebases {
+			view := deliveryRebase(jobautomation.Delivery{Rebases: []jobautomation.RebaseRecord{rec}})
+			if view == nil {
+				continue
+			}
+			at := rec.FinishedAt
+			if at == 0 {
+				at = rec.At
+			}
+			add(at, firstNonEmptyString(view.Milestone(), "rebase "+rec.Outcome))
+		}
 		for i, step := range d.Steps {
 			label := stepLabel(d, i)
 			if step.StartedAt > 0 && step.State != jobautomation.StateSkipped {
@@ -1050,6 +1108,9 @@ func taskProgressHistory(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 			what := "workflow " + d.AutomationName + " " + d.State
 			if d.State == jobautomation.StateSentBack {
 				what = sentBackSummary(d)
+			}
+			if d.State == jobautomation.StateConflict {
+				what += ": " + jobautomation.ConflictReason(d)
 			}
 			if d.BlockedReason != "" {
 				what += ": " + d.BlockedReason

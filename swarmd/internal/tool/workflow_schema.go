@@ -24,7 +24,7 @@ func WorkflowForEachSchema() map[string]any {
 // WorkflowStepsSchema is shared by native and MCP workflow steps: at most
 // jobautomation.MaxSteps, each with its for_each and if.
 func WorkflowStepsSchema() map[string]any {
-	return map[string]any{"type": "array", "maxItems": jobautomation.MaxSteps, "items": map[string]any{"type": "object", "properties": map[string]any{"for_each": WorkflowForEachSchema(), "if": WorkflowConditionsSchema()}}, "description": fmt.Sprintf("Ordered agent/reopen/run/deliver steps (at most %d); for_each queues one independent worker job per committed JSON item.", jobautomation.MaxSteps)}
+	return map[string]any{"type": "array", "maxItems": jobautomation.MaxSteps, "items": map[string]any{"type": "object", "properties": map[string]any{"for_each": WorkflowForEachSchema(), "if": WorkflowConditionsSchema()}}, "description": fmt.Sprintf("Ordered agent/reopen/run/deliver/rebase steps (at most %d); for_each queues one independent worker job per committed JSON item; {type: rebase, onto} rebases the head at that point.", jobautomation.MaxSteps)}
 }
 
 // WorkflowConditionsSchema is a step's if: conditions on earlier steps.

@@ -45,7 +45,7 @@ func portableWorkflow(a jobautomation.Automation, folder string) workflowDefinit
 	if filepath.Clean(scope.Folder) == filepath.Clean(folder) {
 		scope.Folder = ""
 	}
-	return workflowDefinition{1, jobAutomationBody{Inputs: a.Inputs, On: a.On, Name: a.Name, Description: a.Description, Scope: scope, When: a.When, Enabled: &a.Enabled, Retries: a.Retries, Steps: a.Steps, Result: a.Result}}
+	return workflowDefinition{1, jobAutomationBody{Inputs: a.Inputs, On: a.On, Name: a.Name, Description: a.Description, Scope: scope, When: a.When, Enabled: &a.Enabled, Retries: a.Retries, Rebase: a.Rebase, RebaseRounds: a.RebaseRounds, Steps: a.Steps, Result: a.Result}}
 }
 
 func workflowDefinitionsEqual(a, b jobautomation.Automation) bool {

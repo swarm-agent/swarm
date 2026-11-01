@@ -98,8 +98,9 @@ func TestManageWorkflowsLevelsAreTheSwarmToolsLevels(t *testing.T) {
 // with the same effect (swarmToolLevels, the record), so moving jobs into the catalog neither
 // widens nor narrows what a key may do: reads stay read, and giving,
 // messaging, answering, delivering, stopping, scheduling and re-running a
-// job stay write. retry_now has no swarm_* tool (it was added to the
-// catalog directly) and continues agent work, so it is write. A relay client
+// job stay write. retry_now and rebase have no swarm_* tool (they were added to the
+// catalog directly); retry_now continues agent work and rebase moves a
+// delivery head and a job's branch, so both are write. A relay client
 // is forwarded with its levels for manage_jobs as for every catalog tool. Threat: a read key starting or
 // stopping work through the catalog, or a level silently changed in the
 // move. Boundary: tool.Catalog's manage_jobs declarations against the swarmToolLevels record
@@ -111,7 +112,7 @@ func TestManageJobsLevelsAreTheSwarmToolsLevels(t *testing.T) {
 		"answer_job": "swarm_answer_job", "deliver_job": "swarm_deliver_job", "stop_job": "swarm_stop_job",
 		"schedule_job": "swarm_schedule_job",
 	}
-	catalogOnly := map[string]tool.CatalogLevel{"retry_now": tool.CatalogLevelWrite}
+	catalogOnly := map[string]tool.CatalogLevel{"retry_now": tool.CatalogLevelWrite, "rebase": tool.CatalogLevelWrite}
 	jobs, ok := tool.CatalogToolNamed("manage_jobs")
 	if !ok {
 		t.Fatal("manage_jobs is not a catalog tool")

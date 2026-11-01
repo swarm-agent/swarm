@@ -825,7 +825,7 @@ func workflowChangeSummary(base, proposal map[string]any) (string, map[string]an
 		}
 	}
 	var fields []string
-	for _, key := range []string{"name", "description", "scope", "when", "enabled", "retries", "result", "on", "inputs", "with"} {
+	for _, key := range []string{"name", "description", "scope", "when", "enabled", "retries", "rebase", "rebase_rounds", "result", "on", "inputs", "with"} {
 		if !reflect.DeepEqual(base[key], proposal[key]) {
 			fields = append(fields, key)
 		}

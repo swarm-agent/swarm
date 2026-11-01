@@ -24,12 +24,14 @@ import (
 // action's required inputs (CatalogAction.Required).
 // retry_now (job_id, provider) changed it on purpose: work waiting on a
 // provider's limit retries now once the person fixed the provider.
-const manageJobsDefinitionSHA256 = "8b84b2efb61071fd78bf77373d11ddd0e30fa2578e02748b12f72dee586b7e71"
+// rebase (job_id, onto) changed it on purpose: a job's delivery is rebased
+// onto its moved target on demand, with the daemon's own rebase.
+const manageJobsDefinitionSHA256 = "c2936e678eb2302a5ed1d09e7f9a17da5186729270aadf42dcc636d8c35efc48"
 
 // Purpose: manage_jobs exists once, in the catalog. The Orchestrator's
 // definition is generated from the declarations (held by hash) and names
 // every action the handler serves: the six the Orchestrator had, plus
-// answer_job, deliver_job, stop_job, schedule_job and retry_now. Every input is a
+// answer_job, deliver_job, stop_job, schedule_job, rebase and retry_now. Every input is a
 // declared field, every field is used, every action declares the API scopes
 // of its route, is in the Orchestrator's definition and Swarm Control's
 // default listing, and takes machine. Threat: a second hand-written schema, an
@@ -47,7 +49,7 @@ func TestManageJobsCatalogGeneratesTheOrchestratorDefinition(t *testing.T) {
 	}
 	properties := definition.Parameters["properties"].(map[string]any)
 	enum := properties["action"].(map[string]any)["enum"].([]string)
-	want := "list_runs,get_job,deliveries,rerun_failed_steps,give_job,message_job,answer_job,deliver_job,stop_job,schedule_job,retry_now"
+	want := "list_runs,get_job,deliveries,rerun_failed_steps,give_job,message_job,answer_job,deliver_job,stop_job,schedule_job,rebase,retry_now"
 	if strings.Join(enum, ",") != want {
 		t.Fatalf("Orchestrator actions %v, want %s", enum, want)
 	}

@@ -67,6 +67,17 @@ func taskProgressOutcome(class, state string, latest []jobautomation.Delivery, w
 			if out := deliveryHandover(d); out != "" {
 				return clipOutcome(out)
 			}
+		case jobautomation.StateConflict:
+			// "conflict <files> (rebase onto <target>)": Swarm's rebase
+			// conflicted and its resolver agents did not resolve it.
+			files, target := "", "the target"
+			if d.Conflict != nil {
+				files = strings.Join(d.Conflict.Files, ", ")
+			}
+			if last := d.LastRebase(); last != nil && last.Target != "" {
+				target = last.Target
+			}
+			return clipOutcome(strings.TrimSpace("conflict " + files + " (rebase onto " + target + ")"))
 		case jobautomation.StateSentBack:
 			// "sent_back (round n)" for a review block; a passed review
 			// whose push failed adds " rebase: <failure>".

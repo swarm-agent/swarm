@@ -21,7 +21,7 @@ import (
 // agent work: each needs the owner's grant for a session caller.
 var nativeJobMutations = map[string]bool{
 	"give_job": true, "message_job": true, "rerun_failed_steps": true,
-	"answer_job": true, "deliver_job": true, "stop_job": true, "schedule_job": true, "retry_now": true,
+	"answer_job": true, "deliver_job": true, "stop_job": true, "schedule_job": true, "retry_now": true, "rebase": true,
 }
 
 // nativeJobReadScopes and nativeJobWriteScopes are the API scopes a job
@@ -38,7 +38,7 @@ var (
 // declared ControlInputs (then, model, wait_seconds) reach them only for a
 // Swarm Control caller, as the swarm_* job tools took them
 // (nativeJobCallerArgs).
-var nativeJobInputs = []string{"job_id", "worker", "brief", "message", "answer", "question_id", "reason", "provider", "schedule", "name", "project", "since", "until", "status", "cursor", "client_request_id", "idempotency_key",
+var nativeJobInputs = []string{"job_id", "worker", "brief", "message", "answer", "question_id", "reason", "provider", "onto", "schedule", "name", "project", "since", "until", "status", "cursor", "client_request_id", "idempotency_key",
 	"files", "review_job", "review_checkout", "automation", "include_diff", "diff_chars", "include_transcript", "transcript_messages", "detail_chars"}
 
 // nativeJobCallerArgs drops the action's Swarm Control inputs from a session
@@ -205,6 +205,8 @@ func (s *Server) manageJobsAs(ctx context.Context, p identity.Principal, held []
 		out, err = controlMCPScheduleJob(c, clean)
 	case "retry_now":
 		out, err = controlMCPRetryNow(c, clean)
+	case "rebase":
+		out, err = controlMCPRebaseJob(c, clean)
 	case "rerun_failed_steps":
 		clean["automation"] = true
 		out, err = controlMCPDeliverJob(c, clean)

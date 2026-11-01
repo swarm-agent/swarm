@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -967,6 +968,7 @@ func jobAutomationView(a jobautomation.Automation) map[string]any {
 		"inputs": a.Inputs, "with": a.With,
 		"id": a.ID, "name": a.Name, "description": a.Description, "scope": a.Scope, "when": a.When, "enabled": a.Enabled, "retries": a.Retries, "result": a.Result,
 		"state": state, "steps": a.Steps, "revision": a.Revision, "created_at": a.CreatedAt, "updated_at": a.UpdatedAt,
+		"rebase": workflowRebaseMode(a.Rebase), "rebase_rounds": workflowRebaseRounds(a.RebaseRounds),
 	}
 	if a.On != nil {
 		view["on"] = a.On
@@ -985,6 +987,104 @@ func jobAutomationView(a jobautomation.Automation) map[string]any {
 		view["replaces"] = map[string]any{"id": a.BaseID, "revision": a.BaseRevision, "name": a.Name}
 	}
 	return view
+}
+
+// workflowRebaseMode is a workflow's rebase setting as shown: auto (stored
+// as "") or off.
+func workflowRebaseMode(mode string) string {
+	if mode == "" {
+		return jobautomation.RebaseAuto
+	}
+	return mode
+}
+
+// workflowRebaseRounds is a workflow's resolver bound as it applies.
+func workflowRebaseRounds(rounds int) int {
+	if rounds <= 0 {
+		return jobautomation.DefaultRebaseRounds
+	}
+	return rounds
+}
+
+// deliveryRebaseView is one rebase record as the API shows it: the range
+// diff and the conflict's diffs are left to the full delivery read.
+func deliveryRebaseView(rec jobautomation.RebaseRecord, full bool) map[string]any {
+	view := map[string]any{"n": rec.N, "trigger": rec.Trigger, "target": rec.Target, "onto": rec.Onto, "from": rec.From, "outcome": rec.Outcome, "at": rec.At}
+	for key, value := range map[string]string{"step": rec.Step, "job": rec.Job, "to": rec.To, "reason": rec.Reason} {
+		if value != "" {
+			view[key] = value
+		}
+	}
+	if rec.FinishedAt > 0 {
+		view["finished_at"] = rec.FinishedAt
+	}
+	if len(rec.Commits) > 0 {
+		view["commits"] = rec.Commits
+	}
+	if len(rec.Added) > 0 {
+		view["added"] = rec.Added
+	}
+	if len(rec.Rerun) > 0 {
+		view["rerun"] = rec.Rerun
+	}
+	if rec.Branch != nil {
+		view["branch"] = rec.Branch
+	}
+	if c := rec.Conflict; c != nil {
+		view["conflict"] = deliveryConflictView(*c, full)
+	}
+	if full && rec.RangeDiff != "" {
+		view["range_diff"] = rec.RangeDiff
+	}
+	return view
+}
+
+// deliveryConflictView is a rebase conflict as the API shows it; full adds
+// both sides' diffs.
+func deliveryConflictView(c jobautomation.RebaseConflict, full bool) map[string]any {
+	view := map[string]any{"commit": c.Commit, "files": c.Files, "checkout": c.Checkout, "rounds": c.Rounds}
+	for key, value := range map[string]string{"subject": c.Subject, "outcome": c.Outcome, "reason": c.Reason, "pending": c.Pending} {
+		if value != "" {
+			view[key] = value
+		}
+	}
+	if len(c.ResolverJobs) > 0 {
+		view["resolver_jobs"] = c.ResolverJobs
+	}
+	if len(c.TargetCommits) > 0 {
+		view["target_commits"] = c.TargetCommits
+	}
+	if full {
+		if c.TargetDiff != "" {
+			view["target_diff"] = c.TargetDiff
+		}
+		if c.JobDiff != "" {
+			view["job_diff"] = c.JobDiff
+		}
+	}
+	return view
+}
+
+// putDeliveryRebases adds a delivery's rebase fields to its view: its
+// setting, the target tip last checked, its rebases (newest last) and the
+// conflict it ended on.
+func putDeliveryRebases(view map[string]any, d jobautomation.Delivery, full bool) {
+	view["rebase"] = workflowRebaseMode(d.RebaseMode)
+	if d.TargetChecked != "" {
+		view["target_checked"] = d.TargetChecked
+	}
+	if len(d.Rebases) > 0 {
+		rebases := make([]map[string]any, 0, len(d.Rebases))
+		for _, rec := range d.Rebases {
+			rebases = append(rebases, deliveryRebaseView(rec, full))
+		}
+		view["rebases"] = rebases
+	}
+	if d.Conflict != nil {
+		view["conflict"] = deliveryConflictView(*d.Conflict, full)
+		view["conflict_reason"] = jobautomation.ConflictReason(d)
+		view["next"] = jobautomation.ConflictNext
+	}
 }
 
 // jobAutomationStepMigrations lists the stored steps that run differently
@@ -1089,6 +1189,7 @@ func jobDeliveryView(d jobautomation.Delivery) map[string]any {
 	if d.RebasedFrom != "" {
 		out["rebased_from"], out["rebased_onto"] = d.RebasedFrom, d.RebasedOnto
 	}
+	putDeliveryRebases(out, d, false)
 	if tb := d.TaskBranch; tb != nil {
 		branch := map[string]any{"step": tb.Step, "head": tb.Head, "advanced": tb.Advanced}
 		if tb.Reason != "" {
@@ -1139,12 +1240,16 @@ type jobAutomationBody struct {
 	Workspace string                         `json:"workspace,omitempty"`
 	Name      string                         `json:"name"`
 	// Description says what the workflow is for (optional).
-	Description string               `json:"description,omitempty"`
-	Scope       jobautomation.Scope  `json:"scope"`
-	When        string               `json:"when"`
-	Enabled     *bool                `json:"enabled"`
-	Retries     int                  `json:"retries"`
-	Steps       []jobautomation.Step `json:"steps"`
+	Description string              `json:"description,omitempty"`
+	Scope       jobautomation.Scope `json:"scope"`
+	When        string              `json:"when"`
+	Enabled     *bool               `json:"enabled"`
+	Retries     int                 `json:"retries"`
+	// Rebase is auto (the default) or off; RebaseRounds bounds the resolver
+	// agents one rebase starts.
+	Rebase       string               `json:"rebase,omitempty"`
+	RebaseRounds int                  `json:"rebase_rounds,omitempty"`
+	Steps        []jobautomation.Step `json:"steps"`
 	// Result is what the work must hand over (optional).
 	Result *jobautomation.ResultSpec `json:"result"`
 	// baseID names the workflow a proposal replaces when it renames it
@@ -1157,7 +1262,7 @@ func (b jobAutomationBody) automation() jobautomation.Automation {
 	if b.Enabled != nil {
 		enabled = *b.Enabled
 	}
-	return jobautomation.Automation{Inputs: b.Inputs, With: b.With, On: b.On, Name: b.Name, Description: b.Description, Scope: b.Scope, When: b.When, Enabled: enabled, Retries: b.Retries, Steps: b.Steps, Result: b.Result, BaseID: b.baseID}
+	return jobautomation.Automation{Inputs: b.Inputs, With: b.With, On: b.On, Name: b.Name, Description: b.Description, Scope: b.Scope, When: b.When, Enabled: enabled, Retries: b.Retries, Rebase: b.Rebase, RebaseRounds: b.RebaseRounds, Steps: b.Steps, Result: b.Result, BaseID: b.baseID}
 }
 
 // errRunStepNeedsOwner refuses a run step from a caller without the machine
@@ -1190,7 +1295,14 @@ func jobAutomationHTTPError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, err)
 	case errors.Is(err, jobautomation.ErrNotFound):
 		writeError(w, http.StatusNotFound, err)
+	case errors.Is(err, jobautomation.ErrDeliveryRunning):
+		writeError(w, http.StatusConflict, err)
 	default:
+		var refused *jobautomation.RefusedError
+		if errors.As(err, &refused) {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 		var refusal controlMCPToolError
 		if errors.As(err, &refusal) {
 			status := refusal.status
@@ -1456,8 +1568,25 @@ func (s *Server) handleJobDeliveries(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		view := jobDeliveryView(store.WithLogs(d))
+		putDeliveryRebases(view, d, true)
 		view["result"] = d.Result
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "delivery": view})
+	case len(parts) == 2 && parts[1] == "rebase" && r.Method == http.MethodPost:
+		var body struct {
+			Onto string `json:"onto"`
+		}
+		if r.Body != nil && r.ContentLength != 0 {
+			if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+				writeError(w, http.StatusBadRequest, errors.New("body must be {\"onto\": \"<branch>\"} (onto optional: the job's target branch)"))
+				return
+			}
+		}
+		out, err := s.rebaseJobDelivery(r.Context(), account, parts[0], body.Onto)
+		if err != nil {
+			jobAutomationHTTPError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
 	case len(parts) == 2 && parts[1] == "rerun" && r.Method == http.MethodPost:
 		outcome, err := s.rerunJobDelivery(account, parts[0])
 		if err != nil {
@@ -1472,6 +1601,71 @@ func (s *Server) handleJobDeliveries(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusNotFound, errors.New("unknown job delivery route"))
 	}
+}
+
+// rebaseJobDelivery is POST /v3/job-deliveries/{id}/rebase and manage_jobs
+// rebase: the daemon's rebase of a finished delivery's head onto onto ("":
+// the job's target branch), the same function every delivery runs
+// (jobautomation.Runner.RebaseDelivery). A conflict is reported, not
+// resolved: rerun the delivery to rebase with a resolver.
+func (s *Server) rebaseJobDelivery(ctx context.Context, account, id, onto string) (map[string]any, error) {
+	if s.jobAutomations == nil || !s.jobAutomations.RebaseEnabled() {
+		return nil, &jobautomation.RefusedError{Reason: "this daemon cannot rebase workflow deliveries"}
+	}
+	outcome, err := s.jobAutomations.RebaseDelivery(ctx, account, id, onto)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]any{"ok": true, "outcome": outcome.Outcome, "target": outcome.Target, "onto": outcome.Onto, "delivery": jobDeliveryView(outcome.Delivery)}
+	if outcome.Reason != "" {
+		out["reason"] = outcome.Reason
+	}
+	if outcome.Record != nil {
+		out["rebase"] = deliveryRebaseView(*outcome.Record, true)
+	}
+	switch outcome.Outcome {
+	case jobautomation.RebaseRebased:
+		out["next"] = "the delivery head and the job's branch are the rebased head; rerun the delivery's failed steps (manage_jobs rerun_failed_steps) to check and land it"
+	case jobautomation.RebaseConflicted:
+		out["next"] = "nothing moved: rerun the delivery (manage_jobs rerun_failed_steps) to rebase with a resolver agent, or have the job rebase itself"
+	case jobautomation.RebaseUpToDate:
+		out["next"] = "nothing to do: the head already descends from the target's tip"
+	}
+	return out, nil
+}
+
+// controlMCPRebaseJob is manage_jobs rebase: the job's newest delivery is
+// rebased onto onto (default its target branch), by the same service
+// function as POST /v3/job-deliveries/{id}/rebase (as rerun_failed_steps
+// runs the rerun route's store function), under automations:write.
+func controlMCPRebaseJob(c *controlMCPCall, args map[string]any) (any, error) {
+	store, account, err := c.jobAutomationAccount("automations:write")
+	if err != nil {
+		return nil, err
+	}
+	jobID := controlMCPString(args, "job_id")
+	if jobID == "" {
+		return nil, controlMCPToolFailure("job_id is required (task/<project>/<task> or worker/<worker>/<run>)")
+	}
+	newest, err := store.NewestJobDelivery(account, jobID)
+	if errors.Is(err, jobautomation.ErrNotFound) {
+		return nil, controlMCPToolFailure("job %s has no workflow delivery to rebase", jobID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	out, err := c.server.rebaseJobDelivery(c.request.Context(), account, newest.ID, controlMCPString(args, "onto"))
+	if err != nil {
+		var refused *jobautomation.RefusedError
+		switch {
+		case errors.As(err, &refused):
+			return nil, controlMCPToolFailure("%s", refused.Reason)
+		case errors.Is(err, jobautomation.ErrDeliveryRunning):
+			return nil, controlMCPToolFailure("job %s: %s", jobID, err.Error())
+		}
+		return nil, err
+	}
+	return out, nil
 }
 
 func (s *Server) rerunJobDelivery(account, id string) (jobautomation.RerunOutcome, error) {
@@ -1512,7 +1706,7 @@ func controlMCPAutomationSteps(raw any) ([]jobautomation.Step, error) {
 	}
 	var steps []jobautomation.Step
 	if err := json.Unmarshal(encoded, &steps); err != nil {
-		return nil, controlMCPToolFailure("steps must be a list of {id, type: run|agent|reopen|deliver, if, command, args, in: host|environment (run), worker, brief, fixes, checkout, produce, rebase, from, message, max_rounds, to, path, what, timeout_seconds, continue_on_failure}: %s", err.Error())
+		return nil, controlMCPToolFailure("steps must be a list of {id, type: run|agent|reopen|deliver|rebase, if, command, args, in: host|environment (run), worker, brief, fixes, checkout, produce, rebase, from, message, max_rounds, to, path, what, onto, timeout_seconds, continue_on_failure}: %s", err.Error())
 	}
 	if err := jobautomation.NormalizeSteps(steps); err != nil {
 		return nil, controlMCPToolFailure("%s", err.Error())

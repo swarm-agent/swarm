@@ -30,7 +30,8 @@ func wakeStepResultsProgress(failure string) map[string]any {
 	}
 	return map[string]any{"state": "workflow", "summary": "review loop", "workflow": map[string]any{"state": "sent_back", "deliveries": []any{
 		map[string]any{"id": "jdel-1", "workflow": "review loop", "attempt_id": "a1", "run": 2, "state": "sent_back", "step": 4, "steps": 4, "step_type": "reopen", "round": 1,
-			"reopen_cause": "push_failed", "reopen_failure": failure, "reopen_round": 2, "steps_result": steps},
+			"reopen_cause": "push_failed", "reopen_failure": failure, "reopen_round": 2, "steps_result": steps,
+			"rebase": map[string]any{"outcome": "rebased", "target": "main", "onto": strings.Repeat("c", 40), "from": strings.Repeat("a", 40), "to": strings.Repeat("b", 40), "rebases": 1}},
 	}}}
 }
 
@@ -212,7 +213,10 @@ func TestProjectTaskWakeRowLocalAndLinkedShapesMatch(t *testing.T) {
 	if !reflect.DeepEqual(local["agent_stall"], remote["agent_stall"]) || local["agent_stall"] == nil {
 		t.Fatalf("agent_stall differs: local %v linked %v", local["agent_stall"], remote["agent_stall"])
 	}
-	for _, key := range []string{"summary", "summary_source", "result_truncated", "result_bytes", "failure", "failure_truncated", "reopen_failure", "reopen_failure_truncated", "workflow_steps_result", "delivery_id", "delivery_attempt_id", "delivery_run", "agent_stall"} {
+	if !reflect.DeepEqual(local["rebase"], remote["rebase"]) || local["rebase"] == nil {
+		t.Fatalf("rebase differs: local %v linked %v", local["rebase"], remote["rebase"])
+	}
+	for _, key := range []string{"summary", "summary_source", "result_truncated", "result_bytes", "failure", "failure_truncated", "reopen_failure", "reopen_failure_truncated", "workflow_steps_result", "delivery_id", "delivery_attempt_id", "delivery_run", "agent_stall", "rebase"} {
 		if _, ok := remote[key]; !ok {
 			t.Fatalf("linked wake row lacks %s: %v", key, remote)
 		}

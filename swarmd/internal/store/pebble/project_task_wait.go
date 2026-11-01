@@ -170,6 +170,9 @@ type V3ProjectTaskWaitProgress struct {
 	// AgentStall is how the task's active run stalls (sleep polling, one
 	// long command, no activity), when it does: ProjectTaskAgentStall.
 	AgentStall *ProjectTaskAgentStall `json:"agent_stall,omitempty"`
+	// Rebase is the shown delivery's newest rebase onto its target branch
+	// (ProjectTaskRebase): rebased, a conflict being resolved or not.
+	Rebase *ProjectTaskRebase `json:"rebase,omitempty"`
 }
 
 // Workflow states of a task's progress (workflow.state).
@@ -217,6 +220,8 @@ func ProjectTaskWaitProgressFrom(progress any) *V3ProjectTaskWaitProgress {
 				ReopenRound            int    `json:"reopen_round"`
 				// The delivery's finished steps (task progress).
 				StepsResult []ProjectTaskStepResult `json:"steps_result"`
+				// The delivery's newest rebase (task progress).
+				Rebase *ProjectTaskRebase `json:"rebase"`
 			} `json:"deliveries"`
 		} `json:"workflow"`
 		Integration *struct {
@@ -256,6 +261,7 @@ func ProjectTaskWaitProgressFrom(progress any) *V3ProjectTaskWaitProgress {
 			out.DeliveryID = clipProjectTaskWaitField(d.ID)
 			out.DeliveryAttemptID, out.DeliveryRun = clipProjectTaskWaitField(d.AttemptID), max(d.Run, 0)
 			out.StepsResult = ClipProjectTaskStepResults(d.StepsResult)
+			out.Rebase = ClipProjectTaskRebase(d.Rebase)
 			if d.ReopenCause != "" {
 				reopen := ProjectTaskReopen{Round: d.ReopenRound, Cause: d.ReopenCause, Failure: d.ReopenFailure}.Normalized()
 				out.ReopenCause, out.ReopenFailure = reopen.Cause, reopen.Failure
@@ -351,6 +357,9 @@ func projectTaskWaitProgressRow(p *V3ProjectTaskWaitProgress) map[string]any {
 	}
 	if len(p.StepsResult) > 0 {
 		row["workflow_steps_result"] = p.StepsResult
+	}
+	if p.Rebase != nil {
+		row["rebase"] = p.Rebase
 	}
 	if p.ReopenCause != "" {
 		reopen := ProjectTaskReopen{Cause: p.ReopenCause, Failure: p.ReopenFailure}.Normalized()

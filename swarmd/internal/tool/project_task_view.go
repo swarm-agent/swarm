@@ -442,6 +442,10 @@ func projectTaskNext(t *pebblestore.ProjectTaskRecord, progress *projectTaskProg
 				return "read_task_session", "workflow stopped; read why, then reopen_task"
 			}
 			return "reopen_task", "workflow stopped; fix the reason, then reopen_task"
+		case pebblestore.ProjectTaskWorkflowConflict:
+			// Swarm's rebase onto the target conflicted and its resolver
+			// agents did not resolve it; the work is intact on its branch.
+			return "reopen_task", "rebase conflict Swarm's resolver could not resolve; send it back to rebase onto the target (its workflow rebases again on the next hand-over), or manage_jobs rerun_failed_steps once the target settles"
 		}
 	}
 	switch {

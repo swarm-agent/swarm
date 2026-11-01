@@ -299,6 +299,14 @@ func projectTaskState(task ProjectTaskRecord, outcome string, stale, idle bool) 
 		// Only idle reaches here (blocked_infra above otherwise): not
 		// attention any more; its work was never handed over.
 		return ProjectTaskStateNotIntegrated, "workflow " + outcome + ": an infrastructure problem, not the work; idle over 7 days"
+	case "conflict":
+		// Swarm's rebase onto the target conflicted and its resolver
+		// agents did not resolve it: the work is intact on its branch.
+		reason := "workflow " + outcome + "; the job (or the person) resolves it, then the delivery is re-run"
+		if idle {
+			return ProjectTaskStateNotIntegrated, reason + "; idle over 7 days"
+		}
+		return ProjectTaskStateNeedsYou, reason
 	case "blocked", "failed":
 		// Only idle reaches here (workflow_failed above otherwise).
 		return ProjectTaskStateNotIntegrated, "workflow " + outcome + "; idle over 7 days"

@@ -18,7 +18,7 @@ const ManageJobsToolName = manageJobsToolName
 // with one of them is in the envelope state waiting.
 var JobsWaitingStatuses = []string{"needs_input", "waiting_on_approval", "pending_approval"}
 
-const manageJobsDescription = "Worker jobs: read runs, jobs and workflow deliveries; give a deployed worker a job, message it, answer its question, deliver (merge) or stop it, retry work waiting on a provider's usage limit now once the provider is fixed, and schedule a worker that runs a job on a schedule. Mutations require an explicit owner permission grant for this agent (manage_jobs.<agent>.<action>); self-targeting is forbidden. A job waiting on a question or approval answers with state waiting. Read results over the inline limit return JSON text pages: next names the same read with page_offset and page_digest; concatenate json_page. No host files are created." + FleetWorkDescription
+const manageJobsDescription = "Worker jobs: read runs, jobs and workflow deliveries; give a deployed worker a job, message it, answer its question, deliver (merge) or stop it, rebase its delivery onto its moved target branch, retry work waiting on a provider's usage limit now once the provider is fixed, and schedule a worker that runs a job on a schedule. Mutations require an explicit owner permission grant for this agent (manage_jobs.<agent>.<action>); self-targeting is forbidden. A job waiting on a question or approval answers with state waiting. Read results over the inline limit return JSON text pages: next names the same read with page_offset and page_digest; concatenate json_page. No host files are created." + FleetWorkDescription
 
 func manageJobsFields() []CatalogField {
 	str := func(description string) map[string]any {
@@ -37,6 +37,7 @@ func manageJobsFields() []CatalogField {
 		{"answer", str("answer_job: the reply to the worker's question. It answers questions only, never approves a tool call.")},
 		{"question_id", str("answer_job: which question, when there are several (from get_job).")},
 		{"reason", str("stop_job: why it stops.")},
+		{"onto", str("rebase: the branch to rebase onto (default: the job's target branch, the one merge, publish and a push use).")},
 		{"provider", str("retry_now without job_id: only work whose session uses this provider id.")},
 		{"schedule", map[string]any{"type": "object", "description": "schedule_job: kind interval (interval_seconds, at least 60) or cron (5-field cron and an IANA timezone).", "required": []string{"kind"}, "properties": map[string]any{
 			"kind":             map[string]any{"type": "string", "enum": []string{"interval", "cron"}},
@@ -113,6 +114,8 @@ func manageJobsCatalog() CatalogTool {
 			Description: "Cancel a running or stopped job for good; its branch and commits stay for reading."},
 		{Action: "schedule_job", Inputs: []string{"machine", "worker", "brief", "schedule", "project", "folder", "workspace", "name"}, ControlInputs: []string{"then"}, Level: write, Reach: anyM, Profiles: core, Untrusted: true,
 			Description: "Deploy a worker that runs one job on a schedule in one folder of a project, based on a deployed worker's role and instructions."},
+		{Action: "rebase", Inputs: []string{"machine", "job_id", "onto"}, Level: write, Reach: anyM, Profiles: core, Untrusted: true,
+			Description: "Rebase the job's newest workflow delivery onto its target branch (or onto) now, with the daemon's own rebase: Git replays the job's commits onto the branch's tip (message and author kept, each patch checked), the delivery head and the job's branch move by compare-and-swap, the target is never written. Every delivery already does this by itself before its steps and whenever the target moved; this is for one that finished. Answers outcome up_to_date, rebased, conflict (files, the stopped commit, the target's commits; nothing moved: rerun_failed_steps rebases again with a resolver agent) or error. Refused while the delivery runs. Example: {action:\"rebase\", job_id:\"task/proj/task-1\"}."},
 		{Action: "retry_now", Inputs: []string{"machine", "job_id", "provider"}, Level: write, Reach: anyM, Profiles: core, Untrusted: true,
 			Description: "After the provider was fixed (a new sign-in, key or model): work waiting on a provider's usage limit runs again now instead of at the old reset. job_id (worker/<worker>/<run> or task/<project>/<task>) retries one job and the workflow steps waiting on it; without it every limit-waiting job, task and workflow step on the machine, optionally only provider's. A retry that hits the limit again waits again; nothing waiting is a no-op."},
 	}
@@ -124,6 +127,9 @@ func manageJobsCatalog() CatalogTool {
 		"list_runs":  {"signals:read"},
 		"get_job":    {"sessions:read"},
 		"deliveries": {"automations:read", "automations:write"},
+		// The rebase route (POST /v3/job-deliveries/{id}/rebase) changes a
+		// workflow record.
+		"rebase": {"automations:write"},
 	}
 	nextActions := map[string]string{
 		"list_runs":    "get_job with a run's job_id reads it.",
@@ -133,6 +139,7 @@ func manageJobsCatalog() CatalogTool {
 		"deliver_job":  "get_job with the job_id reads the merge state.",
 		"schedule_job": "list_runs with the worker lists its runs as the schedule runs them.",
 		"retry_now":    "get_job with a job_id reads it as it runs again.",
+		"rebase":       "rerun_failed_steps with the job_id runs the delivery's failed steps on the rebased head; deliveries reads its rebases.",
 	}
 	for i := range actions {
 		actions[i].Tool = manageJobsToolName

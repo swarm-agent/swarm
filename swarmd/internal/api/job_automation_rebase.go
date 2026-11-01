@@ -28,6 +28,20 @@ func jobAutomationGit(ctx context.Context, dir string, args ...string) (string, 
 	return strings.TrimSpace(string(out)), err
 }
 
+// JobAutomationRebaseGit is the daemon's rebase's Git (jobautomation.GitRebaser):
+// routed Git in dir like all daemon Git on a folder, its hooks off (the
+// rebaser adds core.hooksPath), env added to the daemon's own environment.
+// It returns standard output; a non-zero exit is an *exec.ExitError
+// carrying standard error.
+func JobAutomationRebaseGit(ctx context.Context, dir string, env []string, args ...string) ([]byte, error) {
+	gitCtx := sandbox.WithGitCommandTimeout(ctx, 2*time.Minute)
+	var full []string
+	if len(env) > 0 {
+		full = append(os.Environ(), env...)
+	}
+	return sandbox.TimedGitOutput(gitCtx, dir, full, append([]string{"-c", "safe.directory=" + dir}, args...)...)
+}
+
 // validWorkflowBranch refuses a branch name that is not a plain branch:
 // empty, an option, or one Git would not accept under refs/heads.
 func validWorkflowBranch(branch string) bool {
@@ -149,6 +163,21 @@ func (a jobAutomationAgents) advanceTaskWorktree(ctx context.Context, task *pebb
 	}
 	if _, err := jobAutomationGit(ctx, worktree, "cat-file", "-e", to+"^{commit}"); err != nil {
 		return false, "the delivery head " + to + " is not in the task's repository"
+	}
+	if req.Rebased {
+		// A rebased head does not descend from the branch: it moves only
+		// from the head that was rebased (compare-and-swap), its clean
+		// worktree with it (reset --keep refuses to lose anything).
+		if head != req.From {
+			return false, fmt.Sprintf("the task's branch is at %s, not at the head that was rebased (%s): it is not moved", head, req.From)
+		}
+		if _, err := jobAutomationGit(ctx, worktree, "reset", "--keep", "--quiet", to); err != nil {
+			return false, "git reset --keep failed: " + controlMCPTruncate(err.Error(), 200)
+		}
+		if moved, err := jobAutomationGit(ctx, worktree, "rev-parse", "--verify", "HEAD^{commit}"); err != nil || moved != to {
+			return false, "the task's worktree did not reach the rebased head"
+		}
+		return true, ""
 	}
 	if _, err := jobAutomationGit(ctx, worktree, "merge-base", "--is-ancestor", head, to); err != nil {
 		var exit *exec.ExitError

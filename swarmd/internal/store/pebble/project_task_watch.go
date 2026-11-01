@@ -381,6 +381,14 @@ func projectTaskWatchMilestone(row map[string]any) string {
 	switch {
 	case str("task_state") == ProjectTaskStateLanded:
 		return "landed: " + firstNonEmptyTrimmed(str("task_state_reason"), "handed over")
+	case str("workflow_state") == ProjectTaskWorkflowConflict:
+		// The rebase onto the target conflicted and was not resolved.
+		if r := projectTaskRowRebase(row["rebase"]); r != nil && r.Outcome == ProjectTaskRebaseConflict {
+			return r.Milestone()
+		}
+		return "conflict"
+	case str("workflow_state") == projectTaskWorkflowRunning && projectTaskRowRebaseIs(row, ProjectTaskRebaseResolving):
+		return projectTaskRowRebase(row["rebase"]).Milestone()
 	case str("workflow_state") == projectTaskWorkflowBlocked || str("status") == "blocked":
 		return "blocked"
 	case str("workflow_state") == projectTaskWorkflowFailed || str("status") == "failed":
@@ -389,8 +397,18 @@ func projectTaskWatchMilestone(row map[string]any) string {
 		return ProjectTaskReopen{Round: round, Cause: str("reopen_cause"), Failure: str("reopen_failure")}.Milestone()
 	case str("workflow_state") == projectTaskWorkflowRunning && str("workflow_step_type") == "agent":
 		return fmt.Sprintf("review started (round %d)", round)
+	case str("workflow_state") == projectTaskWorkflowRunning && projectTaskRowRebaseIs(row, ProjectTaskRebaseRebased):
+		// Swarm rebased the work onto its moved target; its checks run on
+		// the rebased head.
+		return projectTaskRowRebase(row["rebase"]).Milestone()
 	}
 	return ""
+}
+
+// projectTaskRowRebaseIs reports whether a wake row's rebase has outcome.
+func projectTaskRowRebaseIs(row map[string]any, outcome string) bool {
+	r := projectTaskRowRebase(row["rebase"])
+	return r != nil && r.Outcome == outcome
 }
 
 func firstNonEmptyTrimmed(values ...string) string {

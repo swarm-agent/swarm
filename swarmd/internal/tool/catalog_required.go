@@ -20,6 +20,7 @@ var catalogRequired = map[string]map[string][]string{
 	manageJobsToolName: {
 		"get_job":            {"job_id"},
 		"rerun_failed_steps": {"job_id"},
+		"rebase":             {"job_id"},
 		"give_job":           {"worker", "brief"},
 		"message_job":        {"job_id", "message"},
 		"answer_job":         {"job_id", "answer"},

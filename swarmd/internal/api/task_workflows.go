@@ -301,6 +301,12 @@ func (s *Server) waitTaskJob(ctx context.Context, account, jobID string) (jobaut
 		}
 		if controlMCPTaskSettled[task.Status] && !active {
 			out := jobautomation.AgentOutcome{JobID: jobID, Status: jobautomation.NormalizeStatus(task.Status), Error: task.LastError, Handoff: s.automationHandoff(task.SessionID)}
+			// The task's own worktree, committed or not: a rebase resolver's
+			// edits are read there.
+			if worktree := strings.TrimSpace(task.WorkspacePath); worktree != "" && filepath.IsAbs(worktree) &&
+				filepath.Clean(worktree) != filepath.Clean(firstNonEmptyString(task.SourceWorkspace.Path, "")) {
+				out.Worktree = worktree
+			}
 			switch task.Status {
 			case "failed", "blocked", "rejected", "needs_input", "pending_approval":
 				out.Status = jobautomation.StatusFailed
