@@ -2,6 +2,8 @@ package jobautomation
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -94,6 +96,8 @@ type rebaseOutcome struct {
 	n                         int
 	branch, onto              string
 	moved, conflict, upToDate bool
+	// inTarget: up to date because the target already contains the work.
+	inTarget bool
 	// err is why the rebase could not run.
 	err string
 }
@@ -207,7 +211,7 @@ func (r *Runner) rebaseDelivery(ctx context.Context, d *Delivery, trigger, stepI
 		if branch == target {
 			d.TargetChecked = tip
 		}
-		out.upToDate = true
+		out.upToDate, out.inTarget = true, res.InTarget
 		return out
 	}
 	idx := d.nextRebase(RebaseRecord{Trigger: trigger, Step: stepID, Target: branch, Onto: tip, From: d.Head, At: r.now().UnixMilli()})
@@ -385,7 +389,10 @@ func (r *Runner) unresolved(ctx context.Context, d *Delivery, idx int, why strin
 	}
 	rec.Conflict.Outcome, rec.Conflict.Pending = ConflictUnresolved, ""
 	c := *rec.Conflict
-	d.Conflict = &c
+	if rec.Trigger != RebaseTriggerRequest {
+		// A requested rebase leaves the delivery's own outcome alone.
+		d.Conflict = &c
+	}
 	r.save(*d)
 	attrs := map[string]string{"automation": d.AutomationName, "target": rec.Target, "onto": rec.Onto, "head": rec.From, "files": strings.Join(limitFiles(c.Files), ", "),
 		"commit": c.Commit, "reason": why, "rebase": strconv.Itoa(rec.N)}
@@ -511,6 +518,10 @@ func (r *Runner) runRebaseStep(ctx context.Context, d *Delivery, record *StepRec
 	case out.upToDate:
 		record.Output = "up to date with " + out.branch + " at " + short(out.onto)
 		record.Outcome = map[string]any{"up_to_date": true, "onto": out.onto, "target": out.branch}
+		if out.inTarget {
+			record.Output = out.branch + " at " + short(out.onto) + " already contains the work: nothing to rebase"
+			record.Outcome["in_target"] = true
+		}
 	case out.moved:
 		last := d.LastRebase()
 		record.Output = fmt.Sprintf("rebased onto %s at %s: head %s is now %s", out.branch, short(out.onto), short(last.From), short(last.To))
@@ -630,7 +641,11 @@ func resolverBrief(d Delivery, rec RebaseRecord) string {
 }
 
 func (r *Runner) save(d Delivery) {
-	if err := r.store.SaveDelivery(d); err != nil {
+	save := r.store.SaveDelivery
+	if d.RebaseHold != nil {
+		save = r.store.SaveHeldDelivery // an on-demand rebase's own writes
+	}
+	if err := save(d); err != nil {
 		log.Printf("swarmd job automations: save delivery %s: %v", d.ID, err)
 	}
 }
@@ -680,25 +695,25 @@ func (r *Runner) RebaseDelivery(ctx context.Context, account, id, branch string)
 		delete(r.active, id)
 		r.mu.Unlock()
 	}()
-	d, err := r.store.GetDelivery(account, id)
+	// The store holds the delivery for this rebase: a rerun is refused
+	// until it is released, and every save of it is checked against the
+	// hold, so neither overwrites the other.
+	d, err := r.store.HoldForRebase(account, id, randomToken(), r.now().UnixMilli())
 	if err != nil {
-		return RebaseRequestOutcome{}, err
-	}
-	if !Terminal(d.State) || d.ItemsReopened != "" {
-		return RebaseRequestOutcome{Delivery: d}, ErrDeliveryRunning
+		return RebaseRequestOutcome{Delivery: d}, err
 	}
 	// No resolver on request: a conflict is recorded as it stands, and the
 	// delivery's own state is left alone.
 	out := r.rebaseDelivery(ctx, &d, RebaseTriggerRequest, "", branch, true)
-	if out.conflict {
-		d.Conflict = nil
-	}
-	result := RebaseRequestOutcome{Delivery: d, Target: out.branch, Onto: out.onto, Reason: out.err}
+	result := RebaseRequestOutcome{Target: out.branch, Onto: out.onto, Reason: out.err}
 	switch {
 	case out.err != "":
 		result.Outcome = RebaseError
 	case out.upToDate:
 		result.Outcome = RebaseUpToDate
+		if out.inTarget {
+			result.Reason = out.branch + " already contains the work: nothing was moved"
+		}
 	case out.conflict:
 		result.Outcome = RebaseConflicted
 	case out.moved:
@@ -709,8 +724,18 @@ func (r *Runner) RebaseDelivery(ctx context.Context, account, id, branch string)
 	if out.n > 0 {
 		result.Record = d.LastRebase()
 	}
-	r.save(d)
+	released, err := r.store.ReleaseRebaseHold(d)
+	if err != nil {
+		return RebaseRequestOutcome{Delivery: d}, err
+	}
+	result.Delivery = released
 	return result, nil
+}
+
+func randomToken() string {
+	var b [12]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 // RebaseEnabled reports whether this daemon can rebase deliveries.

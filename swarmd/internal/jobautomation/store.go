@@ -198,6 +198,10 @@ type Delivery struct {
 	// Conflict is the rebase conflict a delivery that ended conflict
 	// stopped on.
 	Conflict *RebaseConflict `json:"conflict,omitempty"`
+	// RebaseHold is set while an on-demand rebase (Runner.RebaseDelivery)
+	// works on the finished delivery: reruns are refused and only that
+	// rebase may save it (Store.HoldForRebase).
+	RebaseHold *RebaseHold `json:"rebase_hold,omitempty"`
 	// TaskBranch is the newest attempt to bring the triggering task's own
 	// branch and worktree to a head an agent step moved the delivery to.
 	TaskBranch *TaskBranchSync `json:"task_branch,omitempty"`
@@ -957,6 +961,85 @@ func (d Delivery) ProjectID() string {
 	return ""
 }
 
+// RebaseHold is an on-demand rebase's claim on a finished delivery.
+type RebaseHold struct {
+	Token string `json:"token"`
+	At    int64  `json:"at"`
+}
+
+// rebaseHoldTTL bounds a hold a daemon that stopped mid-rebase left behind.
+const rebaseHoldTTL = time.Hour
+
+// ReasonRebasing is a rerun refused while an on-demand rebase holds the
+// delivery.
+const ReasonRebasing = "the delivery is being rebased on request: rerun it once that finishes"
+
+// ErrRebaseHoldLost refuses a save by an on-demand rebase whose hold is gone
+// (it expired and the delivery moved on): nothing is written.
+var ErrRebaseHoldLost = errors.New("the delivery changed while it was rebased on request: the rebase's record was not saved")
+
+func (h *RebaseHold) live(now int64) bool {
+	return h != nil && now-h.At < rebaseHoldTTL.Milliseconds()
+}
+
+// HoldForRebase claims a finished delivery for an on-demand rebase, under the
+// store's lock: refused (ErrDeliveryRunning) while it runs, is pending, has
+// reopened items or another live hold. It returns the delivery with the hold.
+func (s *Store) HoldForRebase(account, id, token string, now int64) (Delivery, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, err := s.GetDelivery(account, id)
+	if err != nil {
+		return Delivery{}, err
+	}
+	if !Terminal(d.State) || d.ItemsReopened != "" || d.RebaseHold.live(now) {
+		return d, ErrDeliveryRunning
+	}
+	d.RebaseHold = &RebaseHold{Token: token, At: now}
+	if err := s.putDeliveryLocked(d); err != nil {
+		return Delivery{}, err
+	}
+	return d, nil
+}
+
+// SaveHeldDelivery writes a delivery an on-demand rebase holds, only while
+// the stored delivery still carries the same hold.
+func (s *Store) SaveHeldDelivery(d Delivery) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveHeldLocked(d)
+}
+
+func (s *Store) saveHeldLocked(d Delivery) error {
+	cur, err := s.GetDelivery(d.Account, d.ID)
+	if err != nil {
+		return err
+	}
+	if d.RebaseHold == nil || cur.RebaseHold == nil || cur.RebaseHold.Token != d.RebaseHold.Token {
+		return ErrRebaseHoldLost
+	}
+	return s.putDeliveryLocked(d)
+}
+
+// ReleaseRebaseHold writes the held delivery's final state without the hold
+// (checked like SaveHeldDelivery) and returns it.
+func (s *Store) ReleaseRebaseHold(d Delivery) (Delivery, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur, err := s.GetDelivery(d.Account, d.ID)
+	if err != nil {
+		return Delivery{}, err
+	}
+	if d.RebaseHold == nil || cur.RebaseHold == nil || cur.RebaseHold.Token != d.RebaseHold.Token {
+		return cur, ErrRebaseHoldLost
+	}
+	d.RebaseHold = nil
+	if err := s.putDeliveryLocked(d); err != nil {
+		return Delivery{}, err
+	}
+	return d, nil
+}
+
 // SaveDelivery writes a delivery's new state.
 func (s *Store) SaveDelivery(d Delivery) error {
 	s.mu.Lock()
@@ -1349,6 +1432,10 @@ func (s *Store) rerunLocked(d Delivery) (RerunOutcome, error) {
 	if !Terminal(d.State) {
 		return RerunOutcome{Delivery: d, Reason: ReasonNothingToRerun}, nil
 	}
+	if d.RebaseHold.live(time.Now().UnixMilli()) {
+		return RerunOutcome{Delivery: d, Reason: ReasonRebasing}, nil
+	}
+	d.RebaseHold = nil // an expired hold
 	// Item queues outlive their successful make step. Recover items whose
 	// job's newest end succeeded and was delivered, and items that never
 	// dispatched and failed specifically on a recovered or now-ready
@@ -1440,6 +1527,10 @@ func (s *Store) RerunAfterHandover(account, id, followup string) (RerunOutcome, 
 	if !Terminal(d.State) || d.ItemsReopened != "" || at < 0 || followup == "" || d.HandoverRerun == followup {
 		return RerunOutcome{Delivery: d, Reason: ReasonNothingToRerun}, nil
 	}
+	if d.RebaseHold.live(time.Now().UnixMilli()) {
+		return RerunOutcome{Delivery: d, Reason: ReasonRebasing}, nil
+	}
+	d.RebaseHold = nil
 	for i := at; i < len(d.Steps); i++ {
 		resetStep(&d.Steps[i])
 	}

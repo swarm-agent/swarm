@@ -1,7 +1,9 @@
 package jobautomation
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,13 +17,49 @@ import (
 // provider) are stubbed; a resolver's work is a directory the test writes,
 // standing for the resolver task's worktree.
 
-// testGit is the GitFunc the daemon routes, run directly: Git in dir with a
-// minimal environment plus env.
-func testGit(ctx context.Context, dir string, env []string, args ...string) ([]byte, error) {
+// testGit is the GitFunc the daemon routes, held to what a sandboxed
+// project's Git can reach (swarmd/internal/sandbox: only the folder, its Git
+// directory, the system runtime and /dev are mounted, and a path-valued GIT_*
+// variable outside them is refused): any path-valued GIT_* variable and any
+// absolute path in an argument outside dir fail the call, and TMPDIR points
+// nowhere. Every rebase test runs through it, so a rebase that needs a file
+// outside the folder (a scratch message, blob or index) fails them.
+func testGit(ctx context.Context, dir string, env []string, stdin []byte, args ...string) ([]byte, error) {
+	if err := sandboxReach(dir, env, args); err != nil {
+		return nil, err
+	}
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = append([]string{"PATH=/usr/bin:/bin", "HOME=" + dir, "GIT_CONFIG_NOSYSTEM=1"}, env...)
+	cmd.Env = append([]string{"PATH=/usr/bin:/bin", "HOME=" + dir, "GIT_CONFIG_NOSYSTEM=1", "TMPDIR=" + filepath.Join(dir, ".no-such-tmp")}, env...)
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
+	}
 	return cmd.Output()
+}
+
+// sandboxReach refuses what routed Git in a project's sandbox cannot reach.
+func sandboxReach(dir string, env, args []string) error {
+	inside := func(p string) bool {
+		p = filepath.Clean(p)
+		return p == os.DevNull || p == dir || strings.HasPrefix(p, dir+string(filepath.Separator))
+	}
+	for _, kv := range env {
+		key, value, _ := strings.Cut(kv, "=")
+		switch key {
+		case "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES":
+			if !inside(value) {
+				return fmt.Errorf("sandbox: %s points outside the project: %s", key, value)
+			}
+		}
+	}
+	for _, arg := range args {
+		for _, part := range []string{arg, arg[strings.Index(arg, "=")+1:]} {
+			if strings.HasPrefix(part, "/") && !inside(part) {
+				return fmt.Errorf("sandbox: argument %q names a path outside the project", arg)
+			}
+		}
+	}
+	return nil
 }
 
 // conflictRepo is a folder where main moved after the task branched. base
@@ -69,7 +107,7 @@ func (r *conflictRepo) moveMain(file, body string) string {
 func (h *harness) withRebaser(t *testing.T) {
 	t.Helper()
 	h.runner.verify = gitVerifier
-	h.runner.rebaser = GitRebaser{Git: testGit, Scratch: t.TempDir()}
+	h.runner.rebaser = GitRebaser{Git: testGit}
 }
 
 func (h *harness) startTask(folder string, repo *conflictRepo) {
@@ -186,7 +224,7 @@ func TestDaemonRebaseReplaysCleanlyAndMovesTheBranch(t *testing.T) {
 	}
 
 	// A branch that moved meanwhile is never overwritten.
-	g := GitRebaser{Git: testGit, Scratch: t.TempDir()}
+	g := GitRebaser{Git: testGit}
 	update := g.UpdateBranch(context.Background(), folder, "agent/task-1", repo.two, repo.tip)
 	if update.Updated || repo.git("rev-parse", "agent/task-1") != d.Head || !strings.Contains(update.Reason, "not moved") {
 		t.Fatalf("stale compare-and-swap: %+v", update)
@@ -384,7 +422,7 @@ func TestRebaseConflictGoesToTheResolverAndContinues(t *testing.T) {
 	if got := repo.git("show", d.Head+":j.txt"); got != "job 2" {
 		t.Fatalf("j.txt = %q", got)
 	}
-	if out, err := testGit(context.Background(), folder, nil, "cat-file", "-e", d.Head+":other.txt"); err == nil {
+	if out, err := testGit(context.Background(), folder, nil, nil, "cat-file", "-e", d.Head+":other.txt"); err == nil {
 		t.Fatalf("a file the resolver changed outside the conflict was taken: %s", out)
 	}
 	if repo.git("rev-parse", "main") != repo.tip || repo.git("rev-parse", "agent/task-1") != d.Head {
@@ -435,7 +473,7 @@ func TestUnresolvedRebaseConflictEndsTheDeliveryConflict(t *testing.T) {
 		t.Fatalf("finished signal = %+v", finished)
 	}
 	// The conflicted state stays reachable for whoever resolves it.
-	if out, err := testGit(context.Background(), folder, nil, "cat-file", "-e", d.Conflict.Checkout+"^{commit}"); err != nil {
+	if out, err := testGit(context.Background(), folder, nil, nil, "cat-file", "-e", d.Conflict.Checkout+"^{commit}"); err != nil {
 		t.Fatalf("the conflicted state is gone: %s %v", out, err)
 	}
 

@@ -943,14 +943,22 @@ step still runs.
 **How.** One daemon function does every rebase (automatic, explicit step, on
 request). It is Git in the folder, run by the daemon with hooks off:
 
-1. Up to date (the head descends from the tip): nothing happens, no record.
+1. Up to date: nothing happens, no record, nothing moves. That is when the
+   head descends from the tip, when the tip already contains the head (the
+   work landed), and when every one of the job's commits is already in the
+   target as another commit (the same patch id) or changes nothing on it.
 2. Otherwise each of the job's commits (from the merge base of the head and
    the tip; merge commits are refused) is replayed onto the tip with `git
    merge-tree` (a three-way merge whose base is the commit's parent) and `git
    commit-tree`, keeping its message and author. Nothing is checked out: no
    worktree of the folder or of the job is touched, and the target branch is
-   never written or pushed. A scratch index for a resolution lives in Swarm's
-   storage (`<data dir>/workflow-rebase`) and is removed after use.
+   never written or pushed. A commit whose change the target already has
+   (same patch id) is skipped, as `git rebase` skips it, and listed
+   `in_target`. Commit messages and resolved files go to Git on standard
+   input and no index file is used, so nothing outside the folder's own
+   repository is read or written: the rebase runs the same when daemon Git
+   runs in the project's sandbox, which mounts only the folder and its Git
+   directory.
 3. A clean replay is verified: each new commit carries the same patch as the
    job's commit it replays (patch ids: the lines each file's diff adds and
    removes, its mode changes and a binary file's new content, ignoring line
@@ -985,8 +993,9 @@ both diffs. It edits only those files and runs no Git. Swarm takes exactly
 the conflicted files from its worktree (a file it removed is removed; a
 symbolic link, a file outside the worktree or one larger than 8 MiB is
 refused), refuses any file that still has a conflict marker (`<<<<<<<`,
-`>>>>>>>` or `|||||||` at the start of a line), stages them in the scratch
-index, commits them with the stopped commit's message and author, and
+`>>>>>>>` or `|||||||` at the start of a line), writes them into the
+conflicted state's tree (`git hash-object --stdin`, `git ls-tree`, `git
+mktree`), commits them with the stopped commit's message and author, and
 continues the replay; a later commit that conflicts goes to the next round.
 The resolved commit is listed `resolved: true` in the mapping (its patch
 differs by design).
@@ -1021,7 +1030,11 @@ conflict nobody resolved fails it and ends the delivery `conflict`. Give it a
 `rebase` (`job_id`, optional `onto`), `POST /v3/job-deliveries/{id}/rebase`
 (`{"onto": "dev"}`) and SDK `client.workflows.rebase(id, onto)` rebase a
 **finished** delivery's head now (a running one is refused with HTTP 409: it
-rebases itself). They answer `outcome` (`up_to_date`, `rebased`, `conflict`
+rebases itself). While such a rebase works, the store holds the delivery: a
+rerun (`rerun_failed_steps`, the rerun route, a hand-over rerun) is refused
+with the reason that it is being rebased, and only that rebase may save the
+delivery, so neither overwrites the other (a hold a stopped daemon left
+lapses after an hour). They answer `outcome` (`up_to_date`, `rebased`, `conflict`
 or `error`), the record and the delivery; a conflict on request starts no
 resolver and moves nothing (a rerun rebases with one). No step re-runs.
 

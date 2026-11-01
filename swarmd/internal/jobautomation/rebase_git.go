@@ -3,7 +3,6 @@ package jobautomation
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -12,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -27,15 +27,22 @@ import (
 //   - a conflict keeps the conflicted state as a commit (the files with
 //     their conflict markers, on top of what was replayed so far) for a
 //     resolver to check out, and stops;
-//   - a resolution is staged in a scratch index in Swarm's storage
-//     (GitRebaser.Scratch) for exactly the conflicted files, refused while
-//     a conflict marker is left, and the replay continues;
+//   - a resolution takes exactly the conflicted files: each is written as a
+//     blob (git hash-object --stdin) and put in the conflicted state's tree
+//     (git ls-tree / git mktree), refused while a conflict marker is left,
+//     and the replay continues;
+//   - nothing is written outside the folder's own repository: commit
+//     messages and blobs go on standard input and no index file is used, so
+//     it runs unchanged when daemon Git runs in the project's sandbox (which
+//     mounts only the folder and its Git directory);
 //   - refs move only by compare-and-swap (git update-ref <ref> <new> <old>).
 
 // GitFunc runs Git in dir with extra environment variables (added to the
-// daemon's own) and returns its standard output; err is an *exec.ExitError
-// when Git exited non-zero (the output is still returned).
-type GitFunc func(ctx context.Context, dir string, env []string, args ...string) ([]byte, error)
+// daemon's own) and stdin (nil: none) as its standard input, and returns its
+// standard output; err is an *exec.ExitError when Git exited non-zero (the
+// output is still returned). The rebaser never names a path outside dir in
+// its arguments or environment.
+type GitFunc func(ctx context.Context, dir string, env []string, stdin []byte, args ...string) ([]byte, error)
 
 // Outcomes of a rebase (RebaseRecord.Outcome, ReplayResult.Status).
 const (
@@ -131,6 +138,10 @@ type ReplayResult struct {
 	// Conflict and State are set when it stopped at a conflict.
 	Conflict *RebaseConflict
 	State    *ReplayState
+	// InTarget is an up_to_date replay whose head the target already
+	// contains (the head is an ancestor of the tip, or every one of the
+	// job's commits changes nothing on it): nothing is moved.
+	InTarget bool
 }
 
 // BranchUpdate is what became of the job's own branch after a rebase.
@@ -178,17 +189,19 @@ type Rebaser interface {
 // GitRebaser is the Rebaser over Git in the folder.
 type GitRebaser struct {
 	Git GitFunc
-	// Scratch is a directory in Swarm's storage for the replay's
-	// temporary index and message files (removed after each use).
-	Scratch string
 }
 
 func (g GitRebaser) git(ctx context.Context, folder string, env []string, args ...string) (string, error) {
+	return g.gitIn(ctx, folder, env, nil, args...)
+}
+
+// gitIn is git with stdin as Git's standard input.
+func (g GitRebaser) gitIn(ctx context.Context, folder string, env []string, stdin []byte, args ...string) (string, error) {
 	if g.Git == nil {
 		return "", errors.New("this daemon cannot run Git for a rebase")
 	}
 	base := []string{"-c", "core.hooksPath=" + os.DevNull, "-c", "commit.gpgSign=false", "-c", "core.quotePath=false"}
-	out, err := g.Git(ctx, folder, env, append(base, args...)...)
+	out, err := g.Git(ctx, folder, env, stdin, append(base, args...)...)
 	return string(out), err
 }
 
@@ -306,7 +319,74 @@ func (g GitRebaser) Replay(ctx context.Context, folder, head, onto string) (Repl
 	if err != nil {
 		return res, err
 	}
-	return g.replay(ctx, folder, ReplayState{Base: base, Onto: onto, From: head, Remaining: list}, onto)
+	// A commit whose change the target already has (the same patch id
+	// among the target's commits since the base: it landed as another
+	// commit) is not replayed, as git rebase skips it.
+	var skipped []RebasedCommit
+	if len(list) > 0 {
+		if inTarget, err := g.targetPatchIDs(ctx, folder, base, onto); err == nil && len(inTarget) > 0 {
+			if ids, err := g.patchIDs(ctx, folder, base+".."+head); err == nil {
+				keep := list[:0:0]
+				for _, c := range list {
+					if id := ids[c]; id != "" && inTarget[id] {
+						skipped = append(skipped, RebasedCommit{From: c, InTarget: true})
+						continue
+					}
+					keep = append(keep, c)
+				}
+				list = keep
+			}
+		}
+	}
+	if len(list) == 0 {
+		// The target already contains the head, or every one of its
+		// changes: nothing to replay, and the head must not move to the
+		// target's tip.
+		res.Status, res.To, res.InTarget, res.Commits = RebaseUpToDate, head, true, skipped
+		return res, nil
+	}
+	out, err := g.replay(ctx, folder, ReplayState{Base: base, Onto: onto, From: head, Remaining: list, Done: skipped}, onto)
+	if err == nil && out.Status == RebaseRebased && allEmpty(out.Commits) {
+		// Every change is in the target already (it landed by another
+		// route): the head is not moved onto a string of empty commits.
+		return ReplayResult{Status: RebaseUpToDate, Base: base, Onto: onto, From: head, To: head, InTarget: true}, nil
+	}
+	return out, err
+}
+
+// allEmpty reports whether every replayed commit changes nothing (or was
+// skipped because the target has its change).
+func allEmpty(commits []RebasedCommit) bool {
+	for _, c := range commits {
+		if !c.Empty && !c.InTarget {
+			return false
+		}
+	}
+	return true
+}
+
+// targetPatchIDs is the set of patch ids of the target's commits since base
+// (at most maxRebaseScanCommits of them).
+// Merge commits on the target are ignored (they carry no patch of their own).
+func (g GitRebaser) targetPatchIDs(ctx context.Context, folder, base, onto string) (map[string]bool, error) {
+	count, err := g.gitLine(ctx, folder, "rev-list", "--count", "--no-merges", base+".."+onto)
+	if err != nil {
+		return nil, err
+	}
+	if n, err := strconv.Atoi(count); err != nil || n > maxRebaseScanCommits {
+		return nil, fmt.Errorf("more than %d target commits to scan", maxRebaseScanCommits)
+	}
+	ids, err := g.patchIDs(ctx, folder, base+".."+onto)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for _, id := range ids {
+		if id != "" {
+			out[id] = true
+		}
+	}
+	return out, nil
 }
 
 // replay replays state.Remaining on top of cur.
@@ -428,14 +508,10 @@ func (g GitRebaser) commitTree(ctx context.Context, folder, tree, parent string,
 	if message == "" {
 		message = meta.message
 	}
-	file, cleanup, err := g.scratchFile("message", []byte(message))
-	if err != nil {
-		return "", err
-	}
-	defer cleanup()
 	env := []string{"GIT_AUTHOR_NAME=" + meta.authorName, "GIT_AUTHOR_EMAIL=" + meta.authorEmail, "GIT_AUTHOR_DATE=" + meta.authorDate,
 		"GIT_COMMITTER_NAME=" + meta.committerName, "GIT_COMMITTER_EMAIL=" + meta.committerEmail}
-	out, err := g.git(ctx, folder, env, "commit-tree", "--no-gpg-sign", tree, "-p", parent, "-F", file)
+	// The message goes on standard input (commit-tree reads it there).
+	out, err := g.gitIn(ctx, folder, env, []byte(message), "commit-tree", "--no-gpg-sign", tree, "-p", parent)
 	if err != nil {
 		return "", gitError([]string{"commit-tree"}, out, err)
 	}
@@ -444,36 +520,6 @@ func (g GitRebaser) commitTree(ctx context.Context, folder, tree, parent string,
 		return "", errors.New("git commit-tree wrote no commit")
 	}
 	return commit, nil
-}
-
-// scratchFile writes data to a new file in Scratch.
-func (g GitRebaser) scratchFile(kind string, data []byte) (string, func(), error) {
-	dir, err := g.scratchDir()
-	if err != nil {
-		return "", nil, err
-	}
-	name := filepath.Join(dir, kind+"-"+randomID())
-	if err := os.WriteFile(name, data, 0o600); err != nil {
-		return "", nil, fmt.Errorf("write the rebase's scratch file: %w", err)
-	}
-	return name, func() { _ = os.Remove(name) }, nil
-}
-
-func (g GitRebaser) scratchDir() (string, error) {
-	dir := strings.TrimSpace(g.Scratch)
-	if dir == "" || !filepath.IsAbs(dir) {
-		return "", errors.New("the daemon's rebase has no scratch directory in Swarm's storage")
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("make the rebase's scratch directory: %w", err)
-	}
-	return dir, nil
-}
-
-func randomID() string {
-	var b [12]byte
-	_, _ = rand.Read(b[:])
-	return hex.EncodeToString(b[:])
 }
 
 // describeConflict adds the target commits that changed the conflicted
@@ -510,55 +556,44 @@ func (g GitRebaser) Resume(ctx context.Context, folder string, state ReplayState
 	if err != nil {
 		return ReplayResult{}, err
 	}
-	dir, err := g.scratchDir()
-	if err != nil {
-		return ReplayResult{}, err
-	}
-	index := filepath.Join(dir, "index-"+randomID())
-	defer os.Remove(index)
-	env := []string{"GIT_INDEX_FILE=" + index}
-	if out, err := g.git(ctx, folder, env, "read-tree", conflict.Checkout+"^{tree}"); err != nil {
-		return ReplayResult{}, gitError([]string{"read-tree"}, out, err)
-	}
+	changes := map[string]*treeEntry{}
 	for _, name := range conflict.Files {
 		data, mode, present, err := readResolvedFile(root, name)
 		if err != nil {
 			return ReplayResult{}, err
 		}
 		if !present {
-			if out, err := g.git(ctx, folder, env, "update-index", "--force-remove", "--", name); err != nil {
-				return ReplayResult{}, gitError([]string{"update-index"}, out, err)
-			}
+			changes[name] = nil
 			continue
 		}
 		if marker := conflictMarkerLine(data); marker > 0 {
 			return ReplayResult{}, &ResolveRefusedError{Reason: fmt.Sprintf("%s still has a conflict marker on line %d", name, marker)}
 		}
-		file, cleanup, err := g.scratchFile("blob", data)
+		out, err := g.gitIn(ctx, folder, nil, data, "hash-object", "-w", "--no-filters", "--stdin")
 		if err != nil {
-			return ReplayResult{}, err
+			return ReplayResult{}, gitError([]string{"hash-object"}, out, err)
 		}
-		blob, err := g.gitLine(ctx, folder, "hash-object", "-w", "--no-filters", "--", file)
-		cleanup()
-		if err != nil {
-			return ReplayResult{}, err
-		}
+		blob := strings.TrimSpace(out)
 		if !isCommitID(blob) {
 			return ReplayResult{}, fmt.Errorf("git hash-object wrote no blob for %s", name)
 		}
-		if out, err := g.git(ctx, folder, env, "update-index", "--add", "--cacheinfo", mode+","+blob+","+name); err != nil {
-			return ReplayResult{}, gitError([]string{"update-index"}, out, err)
-		}
+		changes[name] = &treeEntry{mode: mode, kind: "blob", oid: blob}
 	}
-	tree, err := func() (string, error) {
-		out, err := g.git(ctx, folder, env, "write-tree")
-		if err != nil {
-			return "", gitError([]string{"write-tree"}, out, err)
-		}
-		return strings.TrimSpace(out), nil
-	}()
+	base, err := g.gitLine(ctx, folder, "rev-parse", conflict.Checkout+"^{tree}")
 	if err != nil {
 		return ReplayResult{}, err
+	}
+	tree, err := g.setPaths(ctx, folder, base, changes)
+	if err != nil {
+		return ReplayResult{}, err
+	}
+	if tree == "" {
+		// Every file was removed: the empty tree.
+		out, err := g.gitIn(ctx, folder, nil, []byte{}, "mktree", "-z")
+		if err != nil {
+			return ReplayResult{}, gitError([]string{"mktree"}, out, err)
+		}
+		tree = strings.TrimSpace(out)
 	}
 	// Only the conflicted files may differ from the conflicted state.
 	changed, err := g.gitLine(ctx, folder, "diff-tree", "-r", "--name-only", "--no-renames", conflict.Checkout+"^{tree}", tree)
@@ -584,6 +619,87 @@ func (g GitRebaser) Resume(ctx context.Context, folder string, state ReplayState
 	}
 	state.Done = append(state.Done, RebasedCommit{From: conflict.Commit, To: next, Subject: meta.subject, Resolved: true})
 	return g.replay(ctx, folder, state, next)
+}
+
+// treeEntry is one entry of a Git tree.
+type treeEntry struct{ mode, kind, oid string }
+
+// setPaths writes a tree: tree with each path of changes set to its entry
+// (nil: removed), building the changed subtrees with git ls-tree and git
+// mktree (nothing but the repository's own objects is written). A
+// directory left empty is dropped.
+func (g GitRebaser) setPaths(ctx context.Context, folder, tree string, changes map[string]*treeEntry) (string, error) {
+	entries := map[string]treeEntry{}
+	if tree != "" {
+		out, err := g.git(ctx, folder, nil, "ls-tree", "-z", tree)
+		if err != nil {
+			return "", gitError([]string{"ls-tree"}, out, err)
+		}
+		for _, rec := range strings.Split(out, "\x00") {
+			if rec == "" {
+				continue
+			}
+			meta, name, ok := strings.Cut(rec, "\t")
+			fields := strings.Fields(meta)
+			if !ok || len(fields) != 3 {
+				return "", fmt.Errorf("git ls-tree: unexpected entry %q", truncate(rec, 120))
+			}
+			entries[name] = treeEntry{mode: fields[0], kind: fields[1], oid: fields[2]}
+		}
+	}
+	nested := map[string]map[string]*treeEntry{}
+	for path, entry := range changes {
+		dir, rest, deeper := strings.Cut(path, "/")
+		if dir == "" || dir == "." || dir == ".." || (deeper && rest == "") {
+			return "", fmt.Errorf("%q is not a path in the tree", path)
+		}
+		if !deeper {
+			if entry == nil {
+				delete(entries, dir)
+			} else {
+				entries[dir] = *entry
+			}
+			continue
+		}
+		if nested[dir] == nil {
+			nested[dir] = map[string]*treeEntry{}
+		}
+		nested[dir][rest] = entry
+	}
+	for dir, sub := range nested {
+		base := ""
+		if cur, ok := entries[dir]; ok && cur.kind == "tree" {
+			base = cur.oid
+		}
+		oid, err := g.setPaths(ctx, folder, base, sub)
+		if err != nil {
+			return "", err
+		}
+		if oid == "" {
+			delete(entries, dir)
+		} else {
+			entries[dir] = treeEntry{mode: "040000", kind: "tree", oid: oid}
+		}
+	}
+	if len(entries) == 0 && tree != "" {
+		return "", nil
+	}
+	var in strings.Builder
+	for name, e := range entries {
+		fmt.Fprintf(&in, "%s %s %s\t%s\x00", e.mode, e.kind, e.oid, name)
+	}
+	out, err := g.gitIn(ctx, folder, nil, []byte(in.String()), "mktree", "-z")
+	if err != nil {
+		return "", gitError([]string{"mktree"}, out, err)
+	}
+	oid := strings.TrimSpace(out)
+	if !isCommitID(oid) {
+		return "", errors.New("git mktree wrote no tree")
+	}
+	if len(entries) == 0 {
+		return "", nil
+	}
+	return oid, nil
 }
 
 // resolvedRoot is the resolver's checkout, resolved through symbolic links.
@@ -669,7 +785,7 @@ func (g GitRebaser) verifyReplay(ctx context.Context, folder string, done []Reba
 		return nil
 	}
 	for _, c := range done {
-		if c.Resolved || c.Empty {
+		if c.Resolved || c.Empty || c.InTarget {
 			continue
 		}
 		from, err := g.patchIDs(ctx, folder, c.From+"^!")
@@ -831,12 +947,8 @@ func (g GitRebaser) MapCommits(ctx context.Context, folder, oldHead, onto, newHe
 		if mapped.To == "" && id != "" {
 			if targetIDs == nil {
 				targetIDs = map[string]bool{}
-				if list, err := g.commits(ctx, folder, base, onto, maxRebaseScanCommits); err == nil && len(list) > 0 {
-					if ids, err := g.patchIDs(ctx, folder, base+".."+onto); err == nil {
-						for _, v := range ids {
-							targetIDs[v] = true
-						}
-					}
+				if ids, err := g.targetPatchIDs(ctx, folder, base, onto); err == nil {
+					targetIDs = ids
 				}
 			}
 			mapped.InTarget = targetIDs[id]

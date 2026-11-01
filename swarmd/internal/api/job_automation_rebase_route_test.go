@@ -80,7 +80,7 @@ func TestRebaseDeliveryRouteAndManageJobsRebaseShareOneFunction(t *testing.T) {
 	store := jobautomation.NewStore(db)
 	server := &Server{}
 	server.SetJobAutomations(jobautomation.NewRunner(jobautomation.Options{Store: store,
-		Rebaser: jobautomation.GitRebaser{Git: JobAutomationRebaseGit, Scratch: filepath.Join(t.TempDir(), "workflow-rebase")}}))
+		Rebaser: jobautomation.GitRebaser{Git: JobAutomationRebaseGit}}))
 	account := testPrincipal().AccountScopeID
 	folder, base, head, tip := rebaseRouteRepo(t)
 	auto, _, err := store.Put(account, jobautomation.Automation{Name: "land", Scope: jobautomation.Scope{Folder: folder}, Enabled: true, Rebase: jobautomation.RebaseOff,
@@ -146,11 +146,11 @@ func TestRebaseDeliveryRouteAndManageJobsRebaseShareOneFunction(t *testing.T) {
 	if rebases, _ := answer.Delivery["rebases"].([]any); len(rebases) != 1 || answer.Delivery["target_checked"] != tip {
 		t.Fatalf("delivery view = %v", answer.Delivery)
 	}
-	branch, err := JobAutomationRebaseGit(context.Background(), folder, nil, "rev-parse", "refs/heads/agent/run-1")
+	branch, err := JobAutomationRebaseGit(context.Background(), folder, nil, nil, "rev-parse", "refs/heads/agent/run-1")
 	if err != nil || strings.TrimSpace(string(branch)) != stored.Head {
 		t.Fatalf("the job's branch is at %s (%v), want %s", branch, err, stored.Head)
 	}
-	if main, _ := JobAutomationRebaseGit(context.Background(), folder, nil, "rev-parse", "refs/heads/main"); strings.TrimSpace(string(main)) != tip {
+	if main, _ := JobAutomationRebaseGit(context.Background(), folder, nil, nil, "rev-parse", "refs/heads/main"); strings.TrimSpace(string(main)) != tip {
 		t.Fatalf("the target moved to %s", main)
 	}
 

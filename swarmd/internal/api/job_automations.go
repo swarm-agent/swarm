@@ -1295,7 +1295,7 @@ func jobAutomationHTTPError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, err)
 	case errors.Is(err, jobautomation.ErrNotFound):
 		writeError(w, http.StatusNotFound, err)
-	case errors.Is(err, jobautomation.ErrDeliveryRunning):
+	case errors.Is(err, jobautomation.ErrDeliveryRunning), errors.Is(err, jobautomation.ErrRebaseHoldLost):
 		writeError(w, http.StatusConflict, err)
 	default:
 		var refused *jobautomation.RefusedError
@@ -1660,7 +1660,7 @@ func controlMCPRebaseJob(c *controlMCPCall, args map[string]any) (any, error) {
 		switch {
 		case errors.As(err, &refused):
 			return nil, controlMCPToolFailure("%s", refused.Reason)
-		case errors.Is(err, jobautomation.ErrDeliveryRunning):
+		case errors.Is(err, jobautomation.ErrDeliveryRunning), errors.Is(err, jobautomation.ErrRebaseHoldLost):
 			return nil, controlMCPToolFailure("job %s: %s", jobID, err.Error())
 		}
 		return nil, err

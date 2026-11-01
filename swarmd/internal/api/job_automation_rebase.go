@@ -30,16 +30,19 @@ func jobAutomationGit(ctx context.Context, dir string, args ...string) (string, 
 
 // JobAutomationRebaseGit is the daemon's rebase's Git (jobautomation.GitRebaser):
 // routed Git in dir like all daemon Git on a folder, its hooks off (the
-// rebaser adds core.hooksPath), env added to the daemon's own environment.
-// It returns standard output; a non-zero exit is an *exec.ExitError
-// carrying standard error.
-func JobAutomationRebaseGit(ctx context.Context, dir string, env []string, args ...string) ([]byte, error) {
+// rebaser adds core.hooksPath), env added to the daemon's own environment,
+// stdin (nil: none) its standard input: the rebaser passes commit messages
+// and blobs there and uses no file outside the folder, because a sandboxed
+// project's Git sees only the folder and its Git directory. It returns
+// standard output; a non-zero exit is an *exec.ExitError carrying standard
+// error.
+func JobAutomationRebaseGit(ctx context.Context, dir string, env []string, stdin []byte, args ...string) ([]byte, error) {
 	gitCtx := sandbox.WithGitCommandTimeout(ctx, 2*time.Minute)
 	var full []string
 	if len(env) > 0 {
 		full = append(os.Environ(), env...)
 	}
-	return sandbox.TimedGitOutput(gitCtx, dir, full, append([]string{"-c", "safe.directory=" + dir}, args...)...)
+	return sandbox.TimedGitOutputInput(gitCtx, dir, full, stdin, append([]string{"-c", "safe.directory=" + dir}, args...)...)
 }
 
 // validWorkflowBranch refuses a branch name that is not a plain branch:
