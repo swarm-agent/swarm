@@ -258,6 +258,14 @@ fn tool_arguments(p: &Value) -> Value {
     }
 }
 
+/// Whether a pending record asks the person to decide a workflow or worker
+/// proposal: its requirement, or (a request from an older Swarm) its payload
+/// or call id say so. Such a request is answered Accept / Discard, never as
+/// a generic tool approval.
+fn is_proposal_request(p: &Value, args: &Value) -> bool {
+    s(p, "requirement") == "proposal_decision" || s(args, "path_id") == "permission.proposal-decision.v1" || s(p, "call_id").starts_with("proposal:")
+}
+
 /// What a session waits on you for, from its pending permission records
 /// (PermissionRecord), read the way Swarm's SDK reads it: one question
 /// {title, context, question, options} or several {questions: [{id, header,
@@ -267,12 +275,25 @@ pub fn pending(records: &[Value]) -> Option<Pending> {
     let p = records.iter().filter(|p| s(p, "status").is_empty() || s(p, "status") == "pending").find(|p| !is_client_tool(s(p, "tool_name")))?;
     let args = tool_arguments(p);
     let id: Text = s(p, "id").to_string().into();
-    if s(p, "requirement") == "proposal_decision" {
+    if is_proposal_request(p, &args) {
         // A proposal the person accepts or discards: its title, machine and
-        // the change in words (permission.proposal-decision.v1).
+        // the change in words (permission.proposal-decision.v1). A request
+        // from an older Swarm may lack the proposal or title: its decide
+        // (kind, id, machine) names it then.
         let proposal = args.get("proposal").cloned().unwrap_or(Value::Null);
-        let ask = ProposalAsk { kind: s(&proposal, "kind").to_string().into(), name: s(&proposal, "name").to_string().into(), machine: s(&proposal, "machine").to_string().into() };
-        let title = if s(&args, "title").is_empty() { format!("Accept {} {}?", ask.kind, ask.name) } else { s(&args, "title").to_string() };
+        let decide = args.get("decide").cloned().unwrap_or(Value::Null);
+        let first = |vals: &[&str]| vals.iter().map(|v| v.trim()).find(|v| !v.is_empty()).unwrap_or("").to_string();
+        let kind = first(&[s(&proposal, "kind"), s(&decide, "kind"), s(&args, "review_kind"), "proposal"]);
+        let name = first(&[s(&proposal, "name"), s(&proposal, "id"), s(&decide, "id")]);
+        let machine = first(&[s(&proposal, "machine"), s(&decide, "machine")]);
+        let ask = ProposalAsk { kind: kind.into(), name: name.into(), machine: machine.into() };
+        let title = if !s(&args, "title").is_empty() {
+            s(&args, "title").to_string()
+        } else if ask.machine.is_empty() {
+            format!("Accept {} {}?", ask.kind, ask.name)
+        } else {
+            format!("Accept {} {} on machine {}?", ask.kind, ask.name, ask.machine)
+        };
         return Some(Pending { id, question: false, text: s(&args, "summary").to_string().into(), title: title.into(), structured: false, questions: vec![], proposal: Some(ask) });
     }
     if s(p, "tool_name").replace('-', "_") != "ask_user" {
@@ -1177,6 +1198,40 @@ mod tests {
         // Any other tool approval stays an approval.
         let other = pending(&[json!({"id": "perm_b", "tool_name": "bash", "tool_arguments": {"command": "ls"}})]).unwrap();
         assert!(other.proposal.is_none());
+    }
+
+    /// Purpose: the production request a linked proposal made
+    /// (perm_<session>_none_proposal_workflow_<machine>_<id>), and an older
+    /// pending request from a previous build, must both read as the
+    /// proposal card (Accept / Discard), never as "manage_workflows wants to
+    /// run: {json}" with Allow / Deny. An older record may lack the
+    /// requirement field, the proposal or the title; its payload's path_id,
+    /// its call id and its decide still name it.
+    #[test]
+    fn linked_and_older_proposal_requests_read_as_the_proposal() {
+        let linked = json!({"path_id": "permission.proposal-decision.v1", "title": "Accept the change to workflow \"nightly\" on machine box?",
+            "proposal": {"kind": "workflow", "machine": "box", "id": "jauto_9", "name": "nightly", "revision": 2, "change": "change"},
+            "summary": "Change to workflow nightly (now revision 8): steps changed: s1 (agent reviewer).",
+            "decide": {"machine": "box", "kind": "workflow", "id": "jauto_9", "expected_revision": 2}});
+        let p = pending(&[json!({"id": "perm_s_none_proposal_workflow_box_jauto_9", "status": "pending", "tool_name": "manage_workflows", "requirement": "proposal_decision",
+            "call_id": "proposal:workflow:box:jauto_9", "tool_arguments": linked.to_string()})])
+        .unwrap();
+        let ask = p.proposal.clone().expect("the linked proposal request");
+        assert_eq!((ask.kind.as_ref(), ask.name.as_ref(), ask.machine.as_ref()), ("workflow", "nightly", "box"));
+        assert_eq!(p.title.as_ref(), "Accept the change to workflow \"nightly\" on machine box?");
+        // Older: no requirement field, no proposal, no title.
+        let older = json!({"path_id": "permission.proposal-decision.v1", "summary": "Change to workflow nightly.", "decide": {"machine": "box", "kind": "workflow", "id": "jauto_9", "expected_revision": 2}});
+        let o = pending(&[
+            json!({"id": "perm_o", "status": "pending", "tool_name": "manage_workflows", "call_id": "proposal:workflow:box:jauto_9", "tool_arguments": older.to_string()}),
+        ])
+        .unwrap();
+        let ask = o.proposal.clone().expect("an older proposal request");
+        assert_eq!((ask.kind.as_ref(), ask.name.as_ref(), ask.machine.as_ref()), ("workflow", "jauto_9", "box"));
+        assert_eq!(o.title.as_ref(), "Accept workflow jauto_9 on machine box?");
+        assert!(!o.text.contains("wants to run"));
+        // Only its call id says so (unreadable arguments).
+        let bare = pending(&[json!({"id": "perm_x", "status": "pending", "tool_name": "manage_workers", "call_id": "proposal:worker:here:w1", "tool_arguments": ""})]).unwrap();
+        assert!(bare.proposal.is_some() && !bare.text.contains("wants to run"));
     }
 
     #[test]

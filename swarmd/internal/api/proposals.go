@@ -76,8 +76,13 @@ type ProposalDecision struct {
 }
 
 // proposalStaleError is a decision refused because the proposal moved: a
-// newer revision, already decided, or gone.
-type proposalStaleError struct{ reason string }
+// newer revision, already decided, or gone. outcome is what became of it,
+// when it was read, and answered the pending requests settled with it.
+type proposalStaleError struct {
+	reason   string
+	outcome  proposalOutcome
+	answered int
+}
 
 func (e proposalStaleError) Error() string { return e.reason }
 
@@ -335,25 +340,79 @@ func proposalCallError(machine, what string, err error) error {
 // DecideProposal applies the person's decision on one proposal: accept runs
 // the machine's accept route at the expected revision; discard removes the
 // proposal only while it is still that pending revision. A moved proposal is
-// refused with a proposalStaleError. Then every pending request for it in the
-// person's conversations is answered with the decision.
+// refused with a proposalStaleError naming what became of it, and the pending
+// requests for it are settled with that outcome (proposal_settle.go). Then
+// every pending request for it in the person's conversations is answered
+// with the decision. Decisions on one proposal run one at a time
+// (proposalLock), so it is decided once.
 func (s *Server) DecideProposal(ctx context.Context, p identity.Principal, in ProposalDecision) (map[string]any, error) {
 	if s == nil || !p.Valid() {
 		return nil, identity.ErrPrincipalRequired
 	}
 	in.Machine, in.Kind, in.ID, in.Decision = strings.TrimSpace(in.Machine), strings.TrimSpace(in.Kind), strings.TrimSpace(in.ID), strings.TrimSpace(in.Decision)
+	if err := validProposalDecision(in); err != nil {
+		return nil, err
+	}
+	lock := s.proposalLock(p.AccountScopeID, proposalRequestKey(in.Kind, in.Machine, in.ID))
+	lock.Lock()
+	defer lock.Unlock()
+	out, err := s.decideProposalLocked(ctx, p, in)
+	var stale proposalStaleError
+	if err == nil || !errors.As(err, &stale) {
+		return out, err
+	}
+	payload := s.pendingProposalPayload(p, in)
+	settled, settleErr := s.settleProposalRequestsFromState(ctx, p, payload)
+	if settleErr != nil || settled.Outcome.Text == "" {
+		return nil, err
+	}
+	return nil, proposalStaleError{reason: stale.reason + "; now: " + settled.Outcome.Text, outcome: settled.Outcome, answered: settled.Answered}
+}
+
+// pendingProposalPayload is the request payload for the proposal in names:
+// a pending request's own (it knows the workflow a change replaces and its
+// base revision), else one made from the decision alone.
+func (s *Server) pendingProposalPayload(p identity.Principal, in ProposalDecision) proposalRequestPayload {
+	key := proposalRequestKey(in.Kind, in.Machine, in.ID)
+	if s.perm != nil {
+		if summaries, err := s.perm.ListPendingSummaries(p.AccountScopeID, p.UserID, 500); err == nil {
+			for _, summary := range summaries {
+				pending, _ := s.perm.ListPending(summary.SessionID, 1000)
+				for _, record := range pending {
+					if permission.IsProposalDecision(record) && record.CallID == key {
+						if payload, ok := proposalRequestPayloadOf(record); ok {
+							return payload
+						}
+					}
+				}
+			}
+		}
+	}
+	decide := in
+	decide.Decision = ""
+	return proposalRequestPayload{Decide: decide, Proposal: ProposalView{Kind: in.Kind, Machine: in.Machine, ID: in.ID, Revision: in.ExpectedRevision}}
+}
+
+// validProposalDecision refuses a malformed decision before anything is read.
+func validProposalDecision(in ProposalDecision) error {
 	if in.Kind != proposalKindWorkflow && in.Kind != proposalKindWorker {
-		return nil, linkedTaskFail(http.StatusBadRequest, "kind must be workflow or worker")
+		return linkedTaskFail(http.StatusBadRequest, "kind must be workflow or worker")
 	}
 	if in.Decision != proposalAccept && in.Decision != proposalDiscard {
-		return nil, linkedTaskFail(http.StatusBadRequest, "decision must be accept or discard")
+		return linkedTaskFail(http.StatusBadRequest, "decision must be accept or discard")
 	}
 	if !proposalSafeID(in.ID) {
-		return nil, linkedTaskFail(http.StatusBadRequest, "a valid proposal id is required")
+		return linkedTaskFail(http.StatusBadRequest, "a valid proposal id is required")
 	}
 	if in.ExpectedRevision == 0 {
-		return nil, linkedTaskFail(http.StatusBadRequest, "expected_revision is required (the revision the person saw)")
+		return linkedTaskFail(http.StatusBadRequest, "expected_revision is required (the revision the person saw)")
 	}
+	return nil
+}
+
+// decideProposalLocked is DecideProposal under the proposal's lock: it
+// applies the decision once and answers the pending requests for it.
+func (s *Server) decideProposalLocked(ctx context.Context, p identity.Principal, in ProposalDecision) (map[string]any, error) {
 	call, err := s.proposalTransportFor(p, in.Machine)
 	if err != nil {
 		return nil, err
@@ -381,7 +440,7 @@ func (s *Server) DecideProposal(ctx context.Context, p identity.Principal, in Pr
 		delete(result, "requests_answered")
 		delete(result, "requests_error")
 	}
-	settled, settleErr := s.settleProposalRequests(p, in, "")
+	settled, settleErr := s.settleProposalRequests(p, in)
 	if in.Machine == "" {
 		settled += int(routeSettled)
 		if routeErr != "" {
@@ -504,13 +563,13 @@ func proposalRequestKey(kind, machine, id string) string {
 
 // settleProposalRequests answers every pending request for the decided
 // proposal in the person's conversations, so a decision in the app also
-// clears the chat. skip names a request the caller answers itself.
-func (s *Server) settleProposalRequests(p identity.Principal, in ProposalDecision, skip string) (int, error) {
+// clears the chat.
+func (s *Server) settleProposalRequests(p identity.Principal, in ProposalDecision) (int, error) {
 	action, reason := permission.ActionAllowOnce, "accepted by the person"
 	if in.Decision == proposalDiscard {
 		action, reason = permission.ActionDenyOnce, "discarded by the person"
 	}
-	return s.settleProposalRequestsAs(p, proposalRequestKey(in.Kind, in.Machine, in.ID), action, reason, skip)
+	return s.settleProposalRequestsAs(p, proposalRequestKey(in.Kind, in.Machine, in.ID), action, reason)
 }
 
 // settleProposalRequestsAfter answers this machine's pending requests for a
@@ -519,11 +578,13 @@ func (s *Server) settleProposalRequests(p identity.Principal, in ProposalDecisio
 // delete), so no decision path leaves the chat waiting. It adds the count to
 // the route's answer (requests_answered, requests_error).
 func (s *Server) settleProposalRequestsAfter(p identity.Principal, kind, id, decision string, answer map[string]any) {
-	action, reason := permission.ActionAllowOnce, "accepted"
+	// The accept routes take only a person (an owner session), so their
+	// answer reads as every path's accept does.
+	action, reason := permission.ActionAllowOnce, "accepted by the person"
 	if decision == proposalDiscard {
 		action, reason = permission.ActionDenyOnce, "discarded: the proposal was deleted"
 	}
-	settled, err := s.settleProposalRequestsAs(p, proposalRequestKey(kind, "", id), action, reason, "")
+	settled, err := s.settleProposalRequestsAs(p, proposalRequestKey(kind, "", id), action, reason)
 	if answer == nil {
 		return
 	}
@@ -533,34 +594,9 @@ func (s *Server) settleProposalRequestsAfter(p identity.Principal, kind, id, dec
 	}
 }
 
-func (s *Server) settleProposalRequestsAs(p identity.Principal, key, action, reason, skip string) (int, error) {
-	if s.perm == nil || !p.Valid() {
-		return 0, nil
-	}
-	summaries, err := s.perm.ListPendingSummaries(p.AccountScopeID, p.UserID, 500)
-	if err != nil {
-		return 0, err
-	}
-	answered := 0
-	var firstErr error
-	for _, summary := range summaries {
-		pending, err := s.perm.ListPending(summary.SessionID, 1000)
-		if err != nil {
-			firstErr = errors.Join(firstErr, err)
-			continue
-		}
-		for _, record := range pending {
-			if !permission.IsProposalDecision(record) || record.CallID != key || record.ID == skip {
-				continue
-			}
-			if _, err := s.perm.ResolveProposalDecision(record.SessionID, record.ID, action, reason); err != nil {
-				firstErr = errors.Join(firstErr, err)
-				continue
-			}
-			answered++
-		}
-	}
-	return answered, firstErr
+func (s *Server) settleProposalRequestsAs(p identity.Principal, key, action, reason string) (int, error) {
+	sessions, err := s.settleProposalRequestsIn(p, key, action, reason)
+	return len(sessions), err
 }
 
 // proposalPersonRequest reports whether r is the person: a user principal on
@@ -611,7 +647,13 @@ func (s *Server) handleProposals(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			var stale proposalStaleError
 			if errors.As(err, &stale) {
-				writeError(w, http.StatusConflict, err)
+				// The proposal moved: what became of it, and the chat
+				// requests settled with that outcome.
+				body := map[string]any{"ok": false, "error": stale.Error(), "requests_answered": stale.answered}
+				if stale.outcome.State != "" {
+					body["outcome"], body["outcome_text"] = stale.outcome.State, stale.outcome.Text
+				}
+				writeJSON(w, http.StatusConflict, body)
 				return
 			}
 			writeError(w, linkedTaskStatus(err), err)
@@ -845,61 +887,6 @@ func nonNilStrings(list []string) []string {
 		return []string{}
 	}
 	return list
-}
-
-// answerProposalRequest handles an answer to a session's pending request
-// when it is a proposal request; handled is false for any other request. The
-// answer must be the person's (proposalPersonRequest): allow accepts, deny
-// discards, through DecideProposal. A proposal that moved is refused and its
-// request cancelled with the reason.
-func (s *Server) answerProposalRequest(w http.ResponseWriter, r *http.Request, sessionID, permissionID, action, reason string) bool {
-	if s.perm == nil {
-		return false
-	}
-	record, ok, err := s.perm.GetPermission(sessionID, permissionID)
-	if err != nil || !ok || !permission.IsProposalDecision(record) || record.Status != pebblestore.PermissionStatusPending {
-		return false
-	}
-	person, isPerson := proposalPersonRequest(r)
-	if !isPerson {
-		writeError(w, http.StatusForbidden, permission.ErrProposalDecisionPersonOnly)
-		return true
-	}
-	var decision string
-	switch strings.ToLower(strings.TrimSpace(action)) {
-	case permission.ActionAllowOnce, "allow", "approve", "accept", "yes":
-		decision = proposalAccept
-	case permission.ActionDenyOnce, "deny", "reject", "discard", "no":
-		decision = proposalDiscard
-	default:
-		writeError(w, http.StatusBadRequest, errors.New("a proposal is answered with allow_once (Accept) or deny_once (Discard); a lasting rule cannot decide proposals"))
-		return true
-	}
-	var payload proposalRequestPayload
-	if err := json.Unmarshal([]byte(record.ToolArguments), &payload); err != nil || proposalRequestKey(payload.Decide.Kind, payload.Decide.Machine, payload.Decide.ID) != record.CallID {
-		writeError(w, http.StatusConflict, errors.New("this pending request's proposal reference is unreadable; decide the proposal in the app's Automations page"))
-		return true
-	}
-	in := payload.Decide
-	in.Decision = decision
-	out, err := s.DecideProposal(r.Context(), person, in)
-	if err != nil {
-		var stale proposalStaleError
-		if errors.As(err, &stale) {
-			cancelled, cancelErr := s.perm.ResolveProposalDecision(sessionID, permissionID, permission.ActionCancel, controlMCPTruncate(stale.Error(), 900))
-			body := map[string]any{"ok": false, "error": stale.Error(), "session_id": sessionID}
-			if cancelErr == nil {
-				body["permission"] = cancelled
-			}
-			writeJSON(w, http.StatusConflict, body)
-			return true
-		}
-		writeError(w, linkedTaskStatus(err), err)
-		return true
-	}
-	updated, _, _ := s.perm.GetPermission(sessionID, permissionID)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "permission": updated, "proposal": out})
-	return true
 }
 
 // proposalsAnswerWith adds pending_proposals to a list answer: the proposals

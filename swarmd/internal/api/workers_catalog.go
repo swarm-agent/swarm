@@ -58,7 +58,7 @@ func (s *Server) ManageWorkers(ctx context.Context, p identity.Principal, who, a
 }
 
 // workerPendingNote explains pending_proposals in a worker answer.
-const workerPendingNote = "pending_proposals wait on the person: they accept or discard each in the proposing conversation's pending request or their Swarm app's Automations page; an AI cannot."
+const workerPendingNote = "pending_proposals wait on the person: they accept or discard each in the proposing conversation's pending request or their Swarm app's Automations page; an AI cannot. A decision made anywhere (also on a linked machine) settles that request with its outcome."
 
 func (s *Server) manageWorkers(ctx context.Context, p identity.Principal, who, agent string, args map[string]any) (any, error) {
 	if !p.Valid() || s.sessions == nil {

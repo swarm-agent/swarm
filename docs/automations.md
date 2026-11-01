@@ -1090,10 +1090,33 @@ An AI never accepts its own proposal. A workflow proposed with
   call) is refused with 403. A proposal request is refused to
   `resolve_permission`, `resolve_task_permission`, resolve-all and lasting
   rules.
-- **Stale.** A decision names the revision the person saw. If the proposal
-  moved (the AI proposed again, it was decided elsewhere, or removed), it is
-  refused with 409 and the reason, and an answered chat request is cancelled
-  with that reason. Discard removes only a still-pending proposal, with the
+- **Decided once, settled everywhere.** Answering a request decides the
+  proposal exactly once: decisions on one proposal run one at a time, and a
+  second answer (a double click) returns the recorded outcome
+  (`already_answered`) without deciding again. A proposal can be decided
+  without the request: in the app, or on the linked machine that holds it
+  (its own app or routes, which cannot reach the home's conversations).
+  The home then reads the proposal's current state and settles the request
+  with that outcome instead of answering with an error: when the person
+  answers it (200, `already_decided`, `outcome`, `outcome_text` such as
+  "already accepted: now revision 9"), and whenever it lists pending
+  requests (`GET /v3/sessions/{id}/permissions`, the session view and the
+  sync bootstrap), so a leftover request clears itself on the next read. A
+  change proposal that is gone counts as accepted when the workflow it
+  changes moved past the revision the request was made against, else as
+  discarded; a request from an older build without that revision is
+  cancelled with what is known. A listed request's proposal is read at most
+  every 30 seconds, and one whose machine cannot be reached stays pending.
+  `manage_sessions get` shows such a request as `kind: "proposal"`,
+  `answered_by: "person"`.
+- **Stale.** A decision names the revision the person saw. If a newer
+  revision of the proposal waits (the AI proposed again without that
+  conversation), the decision is refused with 409 and the reason, nothing
+  changes, the old revision's request is cancelled with that reason, and the
+  conversation's request now asks about the new revision. The decide route
+  answers a moved proposal with 409, `outcome` and `outcome_text` (what
+  became of it) and `requests_answered` (the chat requests it settled).
+  Discard removes only a still-pending proposal, with the
   delete guarded by the revision the person saw (a workflow re-proposed or
   accepted in the meantime is refused 409, not deleted); a pending
   change of an active worker cannot be discarded alone (the worker routes

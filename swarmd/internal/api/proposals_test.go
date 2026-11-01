@@ -409,11 +409,13 @@ func TestProposalsAIKeyCannotDecide(t *testing.T) {
 // added, removed and changed against the current revision); a re-proposal
 // refreshes the same request to the new revision; the person's allow accepts
 // and deny discards through DecideProposal; an answer to a request whose
-// proposal moved since it was shown is refused 409 with the reason and the
-// request cancelled, the proposal unchanged. Threat: a decision on a revision
-// the person did not see; requests piling up per revision. Boundary:
-// withProposalRequest, requestProposalDecision, workflowChangeSummary,
-// answerProposalRequest, permission.Service.RequestProposalDecision.
+// proposal moved to a newer revision since it was shown is refused 409 with
+// the reason, the proposal unchanged, and the request (cancelled for the old
+// revision) now names the new revision. Threat: a decision on a revision the
+// person did not see; requests piling up per revision; a stale request that
+// can never be cleared. Boundary: withProposalRequest,
+// requestProposalDecision, workflowChangeSummary, answerProposalRequest,
+// settleProposalRequestsFromState, permission.Service.RequestProposalDecision.
 func TestProposalPendingRequestOnPropose(t *testing.T) {
 	home := newProposalTestSwarm(t, "home")
 	session := "home-orch"
@@ -461,18 +463,20 @@ func TestProposalPendingRequestOnPropose(t *testing.T) {
 		t.Fatalf("the refreshed request: %+v", payload)
 	}
 	// The proposal moves behind the request (saved past the hook): the
-	// person's answer is refused as stale and the request cancelled.
+	// person's answer is refused as stale, and the request now names the
+	// new revision.
 	moved, _ := home.workflow(t, changeID)
 	moved.BaseID = baseID
 	if _, err := home.workflows.Propose(home.account, session, moved); err != nil {
 		t.Fatal(err)
 	}
 	code, out := home.answer(t, session, permissionID, "allow_once", nil)
-	if code != http.StatusConflict || !strings.Contains(fmt.Sprint(out["error"]), "no longer pending at revision 2") {
+	if code != http.StatusConflict || out["outcome"] != proposalOutcomeStale || !strings.Contains(fmt.Sprint(out["error"]), "revision 2 of this workflow proposal is no longer pending") || !strings.Contains(fmt.Sprint(out["error"]), "revision 3") {
 		t.Fatalf("stale answer: %d %v", code, out)
 	}
-	if record, _, _ := home.perms.GetPermission(session, permissionID); record.Status != pebblestore.PermissionStatusCancelled {
-		t.Fatalf("the stale request: %+v", record)
+	record, _, _ = home.perms.GetPermission(session, permissionID)
+	if stalePayload, ok := proposalRequestPayloadOf(record); record.Status != pebblestore.PermissionStatusPending || !ok || stalePayload.Decide.ExpectedRevision != 3 {
+		t.Fatalf("the request after a stale answer: %+v", record)
 	}
 	if a, _ := home.workflow(t, changeID); !a.Proposed || a.Revision != 3 {
 		t.Fatalf("a stale answer changed the proposal: %+v", a)
@@ -642,6 +646,16 @@ func TestProposalsRouteAndMCPActionsAgree(t *testing.T) {
 	}
 	if got := keys(stored["proposal"].(map[string]any)); !reflect.DeepEqual(got, viewFields) {
 		t.Fatalf("the request's proposal %v, ProposalView %v", got, viewFields)
+	}
+	// manage_sessions get (Swarm Control) shows the request as a proposal
+	// only the person answers, not as a tool approval.
+	if summary := controlMCPPermissionSummary(answerMap(mustJSONRoundTrip(record))); summary["kind"] != "proposal" || summary["answered_by"] != "person" || summary["requirement"] != permission.RequirementProposalDecision {
+		t.Fatalf("manage_sessions pending request: %v", summary)
+	}
+	// The session answer and the decide route name the same outcome words.
+	code, out := home.answer(t, session, permissionID, "allow_once", nil)
+	if code != http.StatusOK || out["outcome"] != proposalOutcomeAccepted || out["outcome_text"] != "accepted by the person" {
+		t.Fatalf("the session answer: %d %v", code, out)
 	}
 	// The route refuses a field it does not take (strict body).
 	r := requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodPost, ProposalsPath+"/decide", strings.NewReader(`{"kind":"workflow","id":"`+id+`","expected_revision":1,"decision":"accept","approved":true}`)), home.user, home.account)

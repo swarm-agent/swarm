@@ -54,6 +54,23 @@ export interface ResolvePermissionResult {
   session_id: string;
   permission: PendingPermissionRecord;
   saved_rule?: PermissionRule | null;
+  /**
+   * A proposal request (`requirement: "proposal_decision"`) only: what the
+   * answer settled. `accepted` and `discarded` are the person's decision, or
+   * the outcome Swarm read when the proposal was already decided elsewhere
+   * (`already_decided`) or the request was already answered
+   * (`already_answered`); `cancelled` is a request settled without a
+   * decision (decided elsewhere, which way unknown). `outcome_text` is the
+   * reason the request records, for example "already accepted: now revision 9".
+   */
+  outcome?: 'accepted' | 'discarded' | 'cancelled' | 'pending' | 'stale';
+  outcome_text?: string;
+  already_decided?: boolean;
+  already_answered?: boolean;
+  /** The decision's answer (`ProposalDecisionAnswer`) when this answer decided it. */
+  proposal?: Record<string, unknown>;
+  /** Pending requests for the proposal settled with this outcome. */
+  requests_answered?: number;
 }
 
 export interface ResolveAllPermissionsResult {

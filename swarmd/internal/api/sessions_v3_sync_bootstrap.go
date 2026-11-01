@@ -879,6 +879,7 @@ func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options ses
 				if err != nil {
 					return sessionsV3SyncSnapshotResponseBody{}, err
 				}
+				pending = pendingOnly(s.reconcilePendingProposalRequests(options.Principal, pending))
 			}
 			if pending == nil {
 				pending = []pebblestore.PermissionRecord{}

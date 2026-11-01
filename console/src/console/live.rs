@@ -491,6 +491,11 @@ impl Console {
             (None, Ok(answer)) if (what == "answer" || what == "deny") && answer.get("proposal").and_then(|p| p.get("decision")).is_some() => {
                 self.notice = Some((crate::swarm::proposals::decided_notice(&answer["proposal"]).into(), false));
             }
+            // Decided before this click (elsewhere, or a second click):
+            // Swarm settled the request with that outcome.
+            (None, Ok(answer)) if (what == "answer" || what == "deny") && crate::swarm::proposals::settled_notice(&answer).is_some() => {
+                self.notice = crate::swarm::proposals::settled_notice(&answer).map(|text| (text.into(), false));
+            }
             (None, Ok(answer)) if what == "link" || what == "unlink" => {
                 let name = answer.get("machine").and_then(|m| m.get("name")).and_then(|v| v.as_str()).unwrap_or("the machine");
                 let text = if what == "link" { format!("Linked {name}: home controls it now.") } else { format!("Unlinked {name}.") };

@@ -27,7 +27,12 @@ on a linked machine, are decided by the person through `proposals.go`:
 `GET /v3/proposals` and `POST /v3/proposals/decide` (owner session only), and
 the proposing conversation's `proposal_decision` pending request
 (`permission.RequirementProposalDecision`), which only the person's answer
-resolves. See docs/automations.md, "Proposals: the person decides".
+resolves. An answer decides the proposal once (`proposalLock`); a proposal
+decided elsewhere (the app, the linked machine's own app or routes) settles
+its requests from its current state on the next answer or listing
+(`proposal_settle.go`, `settleProposalRequestsFromState`,
+`reconcilePendingProposalRequests`). See docs/automations.md, "Proposals: the
+person decides".
 
 Parent integration still needs tool/run and Desktop consumption. All new tests
 are authored only: not run; parent validation required. Format changed Go files

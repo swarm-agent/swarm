@@ -109,6 +109,25 @@ pub fn decided_notice(answer: &Value) -> String {
     out
 }
 
+/// What an answer to a proposal's pending request found when the proposal
+/// was already decided (another answer, the app, the linked machine):
+/// Swarm settled the request with that outcome, so it is a notice, never a
+/// failure. None for any other answer.
+pub fn settled_notice(answer: &Value) -> Option<String> {
+    let flag = |key: &str| answer.get(key).and_then(Value::as_bool) == Some(true);
+    if !flag("already_decided") && !flag("already_answered") {
+        return None;
+    }
+    let why = text(answer, "outcome_text");
+    let outcome = text(answer, "outcome");
+    Some(match why.strip_prefix("already ") {
+        Some(rest) => format!("Already {rest}."),
+        None if !why.is_empty() => format!("Already answered: {why}."),
+        None if !outcome.is_empty() => format!("Already answered: {outcome}."),
+        None => "Already answered.".to_string(),
+    })
+}
+
 /// The proposal in words: what accepting does.
 pub fn describe(p: &Proposal) -> String {
     match p.change.as_str() {
@@ -165,5 +184,20 @@ mod tests {
         let discarded = json!({"kind": "worker", "machine": "", "decision": "discard"});
         assert_eq!(decided_notice(&discarded), "Discarded the worker proposal on this machine.");
         assert_eq!(trigger_key(&json!({"trigger_key": "  "})), None);
+    }
+
+    /// Purpose: a proposal decided before the person's click (on a linked
+    /// machine, in the app, or by a double click) is settled by Swarm with
+    /// what became of it; the console must say that outcome as a notice,
+    /// not "Could not answer", and say nothing for a fresh decision (that
+    /// is decided_notice).
+    #[test]
+    fn an_already_decided_proposal_reads_as_its_outcome() {
+        let elsewhere = json!({"ok": true, "already_decided": true, "outcome": "accepted", "outcome_text": "already accepted: now revision 9"});
+        assert_eq!(settled_notice(&elsewhere).as_deref(), Some("Already accepted: now revision 9."));
+        let twice = json!({"ok": true, "already_answered": true, "outcome": "accepted", "outcome_text": "accepted by the person"});
+        assert_eq!(settled_notice(&twice).as_deref(), Some("Already answered: accepted by the person."));
+        let fresh = json!({"ok": true, "outcome": "accepted", "proposal": {"decision": "accept"}});
+        assert_eq!(settled_notice(&fresh), None);
     }
 }

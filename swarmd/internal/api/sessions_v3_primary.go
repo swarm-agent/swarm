@@ -1231,7 +1231,7 @@ func (s *Server) handleSessionsV3PrimaryList(w http.ResponseWriter, r *http.Requ
 					writeError(w, http.StatusInternalServerError, err)
 					return
 				}
-				for _, permission := range pending {
+				for _, permission := range pendingOnly(s.reconcilePendingProposalRequests(principal, pending)) {
 					if permission.SessionID == item.ID {
 						view.PendingPermissions = append(view.PendingPermissions, permission)
 					}
@@ -3033,6 +3033,12 @@ func (s *Server) handleSessionV3PrimaryPermissions(w http.ResponseWriter, r *htt
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
+	}
+	// A proposal decided elsewhere (a linked machine, the app) is settled
+	// with what became of it before the list shows it.
+	records = s.reconcilePendingProposalRequests(principal, records)
+	if status == "pending" {
+		records = pendingOnly(records)
 	}
 	response := map[string]any{"ok": true, "session_id": sessionID, "count": len(records), "permissions": records}
 	// A gateway answering these calls gets the session's end user with them,

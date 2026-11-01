@@ -64,7 +64,8 @@ func (s *Server) buildSessionsV3SessionView(principal identity.Principal, sessio
 			return sessionsV3SessionView{}, err
 		}
 		if permissions != nil {
-			pendingPermissions = permissions
+			// A proposal decided elsewhere is settled before it shows.
+			pendingPermissions = pendingOnly(s.reconcilePendingProposalRequests(principal, permissions))
 		}
 	}
 	var usageSummary *pebblestore.SessionUsageSummary

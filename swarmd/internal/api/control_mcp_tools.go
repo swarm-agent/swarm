@@ -367,6 +367,11 @@ func controlMCPPermissionSummary(record map[string]any) map[string]any {
 		// A call the client runs (answered with result): it needs every
 		// argument exactly, within the client tool argument limit.
 		summary["kind"] = "client"
+	case summary["requirement"] == permission.RequirementProposalDecision:
+		// A workflow or worker proposal: only the person decides it, and a
+		// decision anywhere settles the request with its outcome.
+		summary["kind"] = "proposal"
+		summary["answered_by"] = "person"
 	default:
 		summary["kind"] = "approval"
 	}
