@@ -545,6 +545,17 @@ func (src *mcpRouteSource) carriesBody(e ast.Expr, roles mcpRouteRoles, raw map[
 	if src.role(e, roles) == "request" {
 		return true
 	}
+	// A size-limited body (http.MaxBytesReader(w, r.Body, n),
+	// io.LimitReader(r.Body, n)) is still the body.
+	if call, ok := e.(*ast.CallExpr); ok {
+		if fn, ok := call.Fun.(*ast.SelectorExpr); ok && (fn.Sel.Name == "MaxBytesReader" || fn.Sel.Name == "LimitReader") {
+			for _, arg := range call.Args {
+				if src.carriesBody(arg, roles, raw) {
+					return true
+				}
+			}
+		}
+	}
 	sel, ok := e.(*ast.SelectorExpr)
 	return ok && sel.Sel.Name == "Body" && src.role(sel.X, roles) == "request"
 }
@@ -674,6 +685,9 @@ func mcpRouteAccepts(shape string) (mcpRouteSpec, mcpRouteFields, bool, error) {
 		spec, ok = mcpHomeRouteSpecs[shape]
 	}
 	if !ok {
+		spec, ok = mcpControlRouteSpecs[shape]
+	}
+	if !ok {
 		return spec, mcpRouteFields{}, false, nil
 	}
 	if spec.Catalog != "" {
@@ -716,6 +730,7 @@ func mcpIsCatalogRoute(path string) bool {
 func TestMCPRouteParityRouteAcceptsDerivation(t *testing.T) {
 	var problems []string
 	shapes := append(mcpParitySortedKeys(mcpRouteSpecs), mcpParitySortedKeys(mcpHomeRouteSpecs)...)
+	shapes = append(shapes, mcpParitySortedKeys(mcpControlRouteSpecs)...)
 	for _, shape := range shapes {
 		spec, fields, _, err := mcpRouteAccepts(shape)
 		if err != nil {
