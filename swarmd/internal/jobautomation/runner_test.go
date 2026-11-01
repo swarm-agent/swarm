@@ -105,8 +105,10 @@ type harness struct {
 	store   *Store
 	results *staticResults
 	host    *recordingHost
-	agents  *recordingAgents
-	runner  *Runner
+	// env runs run steps with in: environment (nil refuses them).
+	env    RunExecutor
+	agents *recordingAgents
+	runner *Runner
 	// head imports the job's head into the folder; nil names the ref only.
 	head func(context.Context, string, Result) (string, error)
 }
@@ -140,7 +142,7 @@ func (h *harness) build() {
 		head = func(_ context.Context, _ string, r Result) (string, error) { return "refs/swarm/jobs/" + r.RunID, nil }
 	}
 	h.runner = NewRunner(Options{Store: h.store, Feed: h.feed, Account: func() string { return testAccount }, Results: h.results,
-		Run: h.host, Agent: h.agents, Emit: signals.NewEmitter(h.feed).Emit, Head: head})
+		Run: h.host, Environment: h.env, Agent: h.agents, Emit: signals.NewEmitter(h.feed).Emit, Head: head})
 	h.runner.backoff = func(int) time.Duration { return 0 }
 }
 

@@ -77,6 +77,10 @@ func (m *Manager) leaseGroupArgs(name, root string) []string {
 // arguments change. Owner credentials are already hashed by specHashImage; keep
 // their existing spec unchanged to avoid disrupting running owner containers.
 func (m *Manager) leaseSpec(name, root, spec string) string {
+	if m.leaseContainerStep(name) {
+		// Read-only project mounts: never the spec of a writable lease.
+		spec += "-step"
+	}
 	if !m.leaseContainerAsDaemon(name) {
 		return spec
 	}

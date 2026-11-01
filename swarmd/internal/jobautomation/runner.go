@@ -40,7 +40,9 @@ type ResultSource interface {
 	Result(ctx context.Context, sig pebblestore.Signal, lastAttempt bool) (*Result, error)
 }
 
-// RunRequest is a run step: the owner's script, run on the host in Folder.
+// RunRequest is a run step: the owner's script, run on the host in Folder,
+// or (in: environment) a script of the job's head, run in a lease of
+// Folder's environment.
 type RunRequest struct {
 	Folder   string
 	Command  string
@@ -49,6 +51,9 @@ type RunRequest struct {
 	Stdin    []byte
 	Timeout  time.Duration
 	OnOutput func([]byte)
+	// Owner names the step's run (delivery and step): an environment step's
+	// lease is held under it.
+	Owner string
 }
 
 // RunOutcome is how a run step's script exited and what it printed (stdout
@@ -230,6 +235,8 @@ type Runner struct {
 	account func() string
 	results ResultSource
 	run     RunExecutor
+	// env runs run steps with in: environment (EnvironmentExecutor).
+	env     RunExecutor
 	agent   AgentRunner
 	reopen  Reopener
 	head    HeadImporter
@@ -264,11 +271,15 @@ type Options struct {
 	Account func() string
 	Results ResultSource
 	Run     RunExecutor
-	Agent   AgentRunner
-	Reopen  Reopener
-	Head    HeadImporter
-	Verify  HeadVerifier
-	Lines   LineCounter
+	// Environment runs run steps with in: environment: a script of the
+	// job's head in a lease of the folder's environment, never on the host.
+	// nil refuses those steps.
+	Environment RunExecutor
+	Agent       AgentRunner
+	Reopen      Reopener
+	Head        HeadImporter
+	Verify      HeadVerifier
+	Lines       LineCounter
 	// Deliver hands deliverables over (deliver steps) and finds what
 	// produce steps wrote.
 	Deliver Deliverer
@@ -281,7 +292,7 @@ type Options struct {
 
 func NewRunner(opts Options) *Runner {
 	r := &Runner{
-		store: opts.Store, feed: opts.Feed, account: opts.Account, results: opts.Results, run: opts.Run, agent: opts.Agent, reopen: opts.Reopen,
+		store: opts.Store, feed: opts.Feed, account: opts.Account, results: opts.Results, run: opts.Run, env: opts.Environment, agent: opts.Agent, reopen: opts.Reopen,
 		head: opts.Head, verify: opts.Verify, lines: opts.Lines, deliver: opts.Deliver, emit: opts.Emit, now: time.Now, backoff: defaultBackoff, recheck: reopenRecheck,
 		rebase: opts.Rebase, branch: opts.TaskBranch,
 		active: map[string]bool{}, attempts: map[uint64]int{}, wake: make(chan struct{}, 1),
@@ -936,6 +947,15 @@ func (d Delivery) step(id string) (Step, bool) {
 	return Step{}, false
 }
 
+// EnvironmentRunStep reports whether the delivery's step id is a run step
+// with in: environment: a check in a lease of the folder's environment that
+// cannot hand the work over (it never writes the folder), unlike a host run
+// step after the review (a push).
+func (d Delivery) EnvironmentRunStep(id string) bool {
+	step, ok := d.step(id)
+	return ok && step.Type == StepRun && step.In == RunInEnvironment
+}
+
 func (r *Runner) skipRest(d *Delivery, from int, reason string) {
 	for j := from + 1; j < len(d.Steps); j++ {
 		if !Terminal(d.Steps[j].State) {
@@ -1183,6 +1203,16 @@ func stepEnv(d Delivery, ref string) map[string]string {
 	return env
 }
 
+// stepOwner names one attempt of a run step (an environment step's lease
+// owner): the delivery, the step and the attempt.
+func stepOwner(d Delivery, stepID string, attempt int) string {
+	owner := "workflow-step/" + d.ID + "/" + stepID + "/" + strconv.Itoa(attempt)
+	if d.Reruns > 0 {
+		owner += "/rerun" + strconv.Itoa(d.Reruns)
+	}
+	return owner
+}
+
 // headResult is the delivery's result with its git head moved to the
 // delivery head, for importing it into the folder.
 func headResult(d Delivery) Result {
@@ -1199,7 +1229,15 @@ func headResult(d Delivery) Result {
 }
 
 func (r *Runner) runScript(ctx context.Context, d *Delivery, record *StepRecord, step Step) stepFailure {
-	if r.run == nil {
+	executor := r.run
+	inEnvironment := step.In == RunInEnvironment
+	if inEnvironment {
+		executor = r.env
+		if executor == nil {
+			return stepFailure{reason: "run steps in the folder's environment are not available on this daemon", next: "rerun", refused: true}
+		}
+	}
+	if executor == nil {
 		return stepFailure{reason: "run steps are not available on this daemon", next: "rerun", refused: true}
 	}
 	if step.Secrets != nil {
@@ -1221,10 +1259,15 @@ func (r *Runner) runScript(ctx context.Context, d *Delivery, record *StepRecord,
 	if err != nil {
 		return stepFailure{reason: "encode the result: " + err.Error(), next: "rerun"}
 	}
+	env := stepEnv(*d, ref)
+	if inEnvironment && env["SWARM_HEAD"] == "" {
+		return stepFailure{reason: "the job has no head commit: a run step in the environment runs a script of the job's head", next: "use a host run step, or scope the workflow to jobs that commit", refused: true}
+	}
 	tail := &tailBuffer{max: MaxLogTailBytes}
-	outcome, err := r.run.Run(ctx, RunRequest{
-		Folder: d.Folder, Command: step.Command, Args: append([]string(nil), step.Args...), Env: stepEnv(*d, ref), Stdin: stdin,
+	outcome, err := executor.Run(ctx, RunRequest{
+		Folder: d.Folder, Command: step.Command, Args: append([]string(nil), step.Args...), Env: env, Stdin: stdin,
 		Timeout: time.Duration(step.TimeoutSeconds) * time.Second, OnOutput: tail.write,
+		Owner: stepOwner(*d, step.ID, record.Attempts),
 	})
 	if tail.len() == 0 && len(outcome.Output) > 0 {
 		tail.write(outcome.Output)

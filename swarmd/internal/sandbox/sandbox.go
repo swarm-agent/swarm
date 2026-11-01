@@ -672,8 +672,14 @@ func (m *Manager) runArgsImage(name, root, spec string, mounts []string, secret 
 		// A mount on /etc/resolv.conf replaces Docker's generated one.
 		args = append(args, "--mount", "type=bind,src="+m.resolvConf+",dst=/etc/resolv.conf,readonly")
 	}
+	// A workflow run step's lease (TakeStepLease) reads the folder and its
+	// worktrees but never writes them: it works in a checkout of its own.
+	mountOptions := ""
+	if m.leaseContainerStep(name) {
+		mountOptions = ",readonly"
+	}
 	for i, mount := range mounts {
-		args = append(args, "--mount", "type=bind,src="+mount+",dst="+mount)
+		args = append(args, "--mount", "type=bind,src="+mount+",dst="+mount+mountOptions)
 		if runtime == gvisorRuntime {
 			// The daemon and other leases write these folders concurrently.
 			// Explicit shared access prevents exclusive gofer caching without

@@ -1157,7 +1157,7 @@ func (b jobAutomationBody) automation() jobautomation.Automation {
 
 // errRunStepNeedsOwner refuses a run step from a caller without the machine
 // owner's authority.
-var errRunStepNeedsOwner = errors.New("a run step runs its command on the host as the daemon's user, outside the sandbox and without tool approvals, so only the machine's owner may save one: the local owner, or a key with the admin scope (a full AI key). This key may save agent and reopen steps")
+var errRunStepNeedsOwner = errors.New("a run step runs its command on the host as the daemon's user, outside the sandbox and without tool approvals, so only the machine's owner may save one: the local owner, or a key with the admin scope (a full AI key). This key may save agent and reopen steps, and run steps with in: environment (they run sandboxed in a lease of the folder's environment)")
 
 // runStepOwnerError refuses steps containing a run step unless the caller
 // is the machine's owner: a request without a scoped token (the local owner,
@@ -1496,7 +1496,7 @@ func controlMCPAutomationSteps(raw any) ([]jobautomation.Step, error) {
 	}
 	var steps []jobautomation.Step
 	if err := json.Unmarshal(encoded, &steps); err != nil {
-		return nil, controlMCPToolFailure("steps must be a list of {id, type: run|agent|reopen|deliver, if, command, args, worker, brief, fixes, checkout, produce, rebase, from, message, max_rounds, to, path, what, timeout_seconds, continue_on_failure}: %s", err.Error())
+		return nil, controlMCPToolFailure("steps must be a list of {id, type: run|agent|reopen|deliver, if, command, args, in: host|environment (run), worker, brief, fixes, checkout, produce, rebase, from, message, max_rounds, to, path, what, timeout_seconds, continue_on_failure}: %s", err.Error())
 	}
 	if err := jobautomation.NormalizeSteps(steps); err != nil {
 		return nil, controlMCPToolFailure("%s", err.Error())

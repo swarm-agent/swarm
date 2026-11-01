@@ -553,9 +553,9 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 		deliveredWhere = "pull request " + task.Integration.PullRequestURL
 	}
 	for _, d := range latest {
-		// A run step after the delivery's last agent step (its review) is the
-		// owner's script handing the work over (push, deploy); one before it
-		// is a check.
+		// A host run step after the delivery's last agent step (its review)
+		// is the owner's script handing the work over (push, deploy); one
+		// before it, or one in the folder's environment, is a check.
 		lastAgent := -1
 		for i, step := range d.Steps {
 			if step.Type == jobautomation.StepAgent && step.State == jobautomation.StateSucceeded {
@@ -563,7 +563,7 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 			}
 		}
 		for i, step := range d.Steps {
-			if step.Type == jobautomation.StepRun && step.State == jobautomation.StateSucceeded && d.State == jobautomation.StateSucceeded && i > lastAgent && lastAgent >= 0 && deliveredWhere == "" {
+			if step.Type == jobautomation.StepRun && !d.EnvironmentRunStep(step.ID) && step.State == jobautomation.StateSucceeded && d.State == jobautomation.StateSucceeded && i > lastAgent && lastAgent >= 0 && deliveredWhere == "" {
 				deliveredWhere = step.ID
 				if out := strings.TrimSpace(step.Output); out != "" {
 					deliveredWhere += ": " + out

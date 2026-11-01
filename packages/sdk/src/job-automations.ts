@@ -108,9 +108,25 @@ export interface JobAutomationStep {
    * write. A run step has no `secrets`: a step that sends them is refused.
    * Only the machine's owner may save a run step: the local owner or a key
    * with the `admin` scope; any other key gets 403 and nothing is stored.
+   *
+   * With `in: 'environment'`, `command` is instead the path of a script in
+   * the job's head commit, relative to the repository root (e.g.
+   * `scripts/check-console.sh`; no absolute path, `..` or `.git`), run in a
+   * lease of the folder's environment (see {@link JobAutomationStep.in}).
    */
   command?: string;
   args?: string[];
+  /**
+   * run: where the script runs. `host` (the default, omitted when stored) is
+   * the owner's root-owned script above. `environment` runs `command` from a
+   * fresh checkout of exactly the job's head, sandboxed in a lease of the
+   * folder's environment (the lease agents' bash uses, with the folder
+   * mounted read-only and the folder's branches as `origin/*`), with the
+   * same `SWARM_*` variables, time limit, output and exit-code status as a
+   * host step. It needs the folder's environment set up for leases, never
+   * runs on the host and needs no `admin` key. Refused on other step types.
+   */
+  in?: 'host' | 'environment';
   /**
    * agent: one of Swarm's own agents (`swarm`, `coder`, `finder`, `designer`),
    * run as a task in the folder (a coder starts at the work's head); `reviewer`;

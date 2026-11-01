@@ -220,7 +220,9 @@ owner configured, and nothing when there are none.
   key without `admin` are refused when they save an automation, or a `then`
   on `manage_jobs` `give_job` or `manage_jobs` `schedule_job`, that contains a `run` step
   (HTTP 403, or a tool error), and nothing is stored or started. They may
-  still save `agent` and `reopen` steps. The root-owned check below does not
+  still save `agent` and `reopen` steps, and `run` steps with
+  `"in": "environment"` (below), which run sandboxed and never on the host.
+  The root-owned check below does not
   limit what a step can do on its own: every system interpreter is root-owned,
   and `args` are free-form, so `{"command": "/bin/sh", "args": ["-c", "..."]}`
   passes it. Saving a `run` step is running a command as the daemon's user,
@@ -286,6 +288,55 @@ owner configured, and nothing when there are none.
   log tail and the **last non-empty line** is the step's `output` (for
   example a pull request URL). The exit code is the outcome: a non-zero exit
   fails the step.
+
+#### Checks in the folder's environment (`"in": "environment"`)
+
+```json
+{ "id": "console", "type": "run", "in": "environment", "command": "scripts/check-console.sh", "continue_on_failure": true }
+```
+
+With `"in": "environment"` a `run` step runs a script **from the job's head
+commit**, sandboxed in a lease of the folder's environment (the image and
+setup the person's AI defined with `manage_projects` `update_environment`,
+for example with Go, Node and Rust). Nothing is installed on the host, so an
+AI owner can add a check (say, building `console/` before review) without
+sudo. `in` defaults to `host` (the step above); `in` on any other step type
+is refused.
+
+- `command` is the script's path **relative to the repository root** in the
+  job's head (`scripts/check-console.sh`), with optional `args`. An absolute
+  path, `..`, `./` or a path under `.git` is refused when the workflow is
+  saved. When the step runs, a script missing from the head, one that is a
+  directory, link or submodule, and one committed without its executable bit
+  (`git update-index --chmod=+x`) are refused with the reason; nothing runs.
+- The step takes a lease of the folder's environment, the same lease agents'
+  bash uses: the same image, isolation (gVisor where the machine runs it),
+  lease user, network policy and
+  granted secret stand-ins, and no other host credential. In it the folder
+  and its worktrees are mounted **read-only**. The step works in a fresh,
+  writable clone of the folder's repository in the lease's own home, checked
+  out detached at exactly the delivery's head (`SWARM_HEAD`), never the job's
+  live worktree. The folder's branches are the clone's `origin/*` with their
+  whole history, so `git merge-base origin/dev HEAD` finds the files the job
+  changed. Nothing the script does reaches the folder's repository or the
+  job's worktree.
+- The script runs with the checkout as its working directory, the result
+  JSON on stdin and the same `SWARM_*` variables a host step gets; nothing
+  else of the daemon's environment is passed in.
+- `timeout_seconds` covers waiting for a lease, making the checkout and the
+  script. When every lease of the folder is in use the step waits for one,
+  as agents' bash does, and says so in its output; a step still waiting, or
+  still running, at its limit fails with exit code 124. Output, `output`,
+  the exit code, `continue_on_failure` and `if` work as for a host step.
+- The lease, with its home and the checkout, is released when the step
+  ends, also on timeout and when the daemon stops; a lease left by a stopped
+  daemon is released on its next start, and the step runs again with a new
+  one.
+- A folder with no environment set up for leases, one whose environment is
+  not ready (still building, or its build failed), and a daemon whose
+  environments are off fail the step at once with the reason.
+- A check in the environment never hands the work over: a successful one
+  after the review is not reported as a push.
 
 ### `agent` steps
 
@@ -945,7 +996,8 @@ Design jobs now end with `design.job.completed`, `design.job.failed` or
   `deliveries`, `history`, `propose` (the person accepts or discards it),
   `enable`, `disable`, `delete`, `export`, `import`, `restore`, `stop_all`
   and `help`. Its caller is never the machine owner: `import` and `restore`
-  refuse `run` steps (the answer's state is `refused`, with the reason and
+  refuse host `run` steps (`run` steps with `"in": "environment"` are
+  allowed; the answer's state is `refused`, with the reason and
   what to do instead: import without the run step, or ask the machine's
   owner), and a proposal with one needs the owner to accept it.
   Every action names a workflow by its id or its name; a name several
@@ -974,7 +1026,7 @@ Design jobs now end with `design.job.completed`, `design.job.failed` or
   `deliveries`, `rerun_failed_steps`, which is `deliver_job` with
   `automation: true`).
 - API (`automations:read` to read, `automations:write` to change, and
-  `admin` or the local owner to save a `run` step):
+  `admin` or the local owner to save a host `run` step):
   `GET/POST /v3/workflows`, `GET/DELETE /v3/workflows/{id}` (an id or a
   name),
   `GET/POST /v3/workflows/stop`, `GET /v3/job-deliveries`

@@ -155,9 +155,21 @@ type Condition struct {
 	Verdict string `json:"verdict,omitempty"`
 }
 
+// Where a run step's script runs (Step.In).
+const (
+	// RunInHost (the default, stored as "") runs the owner's root-owned
+	// script on the host, as the daemon's user, in the folder (HostExecutor).
+	RunInHost = "host"
+	// RunInEnvironment runs a script of the job's head commit in a lease of
+	// the folder's environment, in a fresh checkout of that head
+	// (EnvironmentExecutor): never on the host.
+	RunInEnvironment = "environment"
+)
+
 // Step is one thing an automation does. A run step runs the owner's
-// root-owned script on the host, as the daemon's user, in the folder; an
-// agent step gives a worker a job; a
+// root-owned script on the host, as the daemon's user, in the folder, or,
+// with in: environment, a script of the job's head in a lease of the
+// folder's environment; an agent step gives a worker a job; a
 // reopen step sends its message and/or an earlier agent step's findings into
 // the triggering job's own session as a follow-up.
 type Step struct {
@@ -171,6 +183,9 @@ type Step struct {
 	// run
 	Command string   `json:"command,omitempty"`
 	Args    []string `json:"args,omitempty"`
+	// In is where a run step's script runs: "" (the host, RunInHost) or
+	// RunInEnvironment (Command is then a path in the job's head commit).
+	In string `json:"in,omitempty"`
 	// Secrets was removed: a run step runs on the host and uses the
 	// machine's own credentials, like the publish command. It is read only
 	// so a step that still sends it is refused, never silently ignored.
@@ -326,12 +341,14 @@ func (s *Scope) normalize() error {
 	return nil
 }
 
-// HasRunStep reports whether steps contain a run step: a command the daemon
-// runs on the host as its own user. The API lets only the machine's owner
-// save one (see the api package's runStepOwnerError).
+// HasRunStep reports whether steps contain a host run step: a command the
+// daemon runs on the host as its own user. The API lets only the machine's
+// owner save one (see the api package's runStepOwnerError). A run step with
+// in: environment runs sandboxed in a lease of the folder's environment,
+// like an agent's bash, so it is not one.
 func HasRunStep(steps []Step) bool {
 	for _, step := range steps {
-		if step.Type == StepRun {
+		if step.Type == StepRun && strings.ToLower(strings.TrimSpace(step.In)) != RunInEnvironment {
 			return true
 		}
 	}
@@ -367,6 +384,10 @@ func NormalizeSteps(steps []Step) error {
 			return invalid("step %s: timeout_seconds must be 1 to %d", step.ID, MaxStepTimeoutSeconds)
 		}
 		step.Type = strings.ToLower(strings.TrimSpace(step.Type))
+		step.In = strings.ToLower(strings.TrimSpace(step.In))
+		if step.In != "" && step.Type != StepRun {
+			return invalid("step %s: in is only for a run step (where its script runs: host or environment)", step.ID)
+		}
 		if err := step.normalizeForEach(); err != nil {
 			return err
 		}
@@ -490,8 +511,20 @@ func (s *Step) normalizeRun() error {
 		return invalid("step %s: a run step has command and args, not worker, brief, fixes, checkout, from, message or max_rounds", s.ID)
 	}
 	s.Command = strings.TrimSpace(s.Command)
-	if err := ValidCommandPath(s.Command); err != nil {
-		return invalid("step %s: %v", s.ID, err)
+	switch s.In {
+	case "", RunInHost:
+		// The host is the default; it is stored as "" so host steps keep
+		// their shape.
+		s.In = ""
+		if err := ValidCommandPath(s.Command); err != nil {
+			return invalid("step %s: %v", s.ID, err)
+		}
+	case RunInEnvironment:
+		if err := ValidEnvironmentCommand(s.Command); err != nil {
+			return invalid("step %s: %v", s.ID, err)
+		}
+	default:
+		return invalid("step %s: in must be host (the default: the owner's root-owned script on the host) or environment (a script of the job's head, run in a lease of the folder's environment)", s.ID)
 	}
 	if len(s.Args) > MaxStepArgs {
 		return invalid("step %s: at most %d args", s.ID, MaxStepArgs)
@@ -631,6 +664,32 @@ func ValidCommandPath(command string) error {
 		return fmt.Errorf("command %q must be a clean absolute path or a clean path inside the folder (no .., not under .git)", command)
 	}
 	for _, part := range strings.Split(command, "/") {
+		if part == ".git" {
+			return fmt.Errorf("command %q is under .git: a run step's script is never under .git", command)
+		}
+	}
+	return nil
+}
+
+// ValidEnvironmentCommand checks the command of a run step with in:
+// environment: the path of a script in the job's head commit, relative to
+// the repository root (for example scripts/check-console.sh). It is clean,
+// never absolute, never leaves the repository (no ..) and is never under
+// .git. Whether the file exists in the head is checked when the step runs.
+func ValidEnvironmentCommand(command string) error {
+	if command == "" || len(command) > maxCommandBytes {
+		return errors.New("command is required: the path of a script in the job's head commit, relative to the repository root, for example scripts/check-console.sh")
+	}
+	if strings.HasPrefix(command, "/") {
+		return fmt.Errorf("command %q is absolute: with in: environment the command is a script of the job's head commit, relative to the repository root (for example scripts/check-console.sh)", command)
+	}
+	if strings.ContainsAny(command, "\\\x00") || path.Clean(command) != command || command == "." {
+		return fmt.Errorf("command %q must be a clean path relative to the repository root (no .., no ./, no trailing /)", command)
+	}
+	for _, part := range strings.Split(command, "/") {
+		if part == ".." {
+			return fmt.Errorf("command %q leaves the repository: with in: environment the command is a script inside the job's head commit (no ..)", command)
+		}
 		if part == ".git" {
 			return fmt.Errorf("command %q is under .git: a run step's script is never under .git", command)
 		}

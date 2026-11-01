@@ -130,7 +130,7 @@ func deliveryHandover(d jobautomation.Delivery) string {
 			default:
 				out = "delivered " + firstNonEmptyString(to, "result")
 			}
-		case step.Type == jobautomation.StepRun && lastAgent >= 0 && i > lastAgent:
+		case step.Type == jobautomation.StepRun && !d.EnvironmentRunStep(step.ID) && lastAgent >= 0 && i > lastAgent:
 			if isProgressCommit(d.Head) {
 				out = "pushed " + shortCommit(d.Head)
 			} else {

@@ -31,6 +31,8 @@ const (
 	labelLeaseOwner  = "swarm.lease.owner"
 	labelLeaseUser   = "swarm.lease.user"
 	labelLeaseReview = "swarm.lease.review"
+	// labelLeaseStep marks a workflow run step's lease (TakeStepLease).
+	labelLeaseStep = "swarm.lease.step"
 	// LeaseReapInterval is how often leases whose agent no longer runs are released.
 	LeaseReapInterval = 15 * time.Second
 )
@@ -47,6 +49,10 @@ type Lease struct {
 	// directory Swarm's user owns (its worktree) in a folder that belongs to
 	// someone else, so the folder owner could not open it.
 	asDaemon bool
+	// step is a workflow run step's lease (TakeStepLease): every project
+	// and worktree mount is read-only, and it is held only while the step
+	// runs in this process.
+	step bool
 }
 
 // LeaseLimit reports how many leases a folder allows. A folder without an
@@ -73,6 +79,9 @@ type leaseState struct {
 	limit   LeaseLimit
 	running LeaseOwnerRunning
 	started bool
+	// liveSteps are the owners of step leases whose step runs now; the
+	// reaper releases any other step lease (one left by an earlier process).
+	liveSteps map[string]bool
 }
 
 var (
@@ -141,6 +150,9 @@ func (m *Manager) leaseLabelsLocked(name string) []string {
 			if l.asDaemon {
 				labels = append(labels, "--label", labelLeaseUser+"=daemon")
 			}
+			if l.step {
+				labels = append(labels, "--label", labelLeaseStep+"=1")
+			}
 			return labels
 		}
 	}
@@ -149,6 +161,23 @@ func (m *Manager) leaseLabelsLocked(name string) []string {
 
 // TakeLease starts a new lease of path's folder environment for owner.
 func (m *Manager) TakeLease(ctx context.Context, path, owner string) (Lease, error) {
+	return m.takeLease(ctx, path, owner, false)
+}
+
+// TakeStepLease starts a lease of folder's environment for a workflow run
+// step (owner names the step's run, not an agent session). It is the lease
+// agents' bash runs in (the folder's environment image, isolation, lease
+// user, network policy and granted secret stand-ins), except that the folder
+// and its worktree bucket are mounted read-only: the step works in a
+// checkout of its own in the lease's home, and nothing it does reaches the
+// folder's repository or a job's worktree. The reaper keeps it while the
+// step runs in this process and releases it otherwise (after a restart).
+// A full folder returns *LeasesFullError, like TakeLease.
+func (m *Manager) TakeStepLease(ctx context.Context, folder, owner string) (Lease, error) {
+	return m.takeLease(ctx, folder, owner, true)
+}
+
+func (m *Manager) takeLease(ctx context.Context, path, owner string, step bool) (Lease, error) {
 	if m == nil {
 		return Lease{}, errors.New("leases need Docker on this machine")
 	}
@@ -164,7 +193,7 @@ func (m *Manager) TakeLease(ctx context.Context, path, owner string) (Lease, err
 		return Lease{}, err
 	}
 	scope.JobCheckout, scope.ReviewCheckout = "", ""
-	if checkout := ReviewSessionCheckout(owner); checkout != "" {
+	if checkout := ReviewSessionCheckout(owner); checkout != "" && !step {
 		if !BorrowedReviewSession(owner) {
 			return Lease{}, errors.New("a disposable review cannot lease an environment")
 		}
@@ -196,10 +225,18 @@ func (m *Manager) TakeLease(ctx context.Context, path, owner string) (Lease, err
 	if err != nil {
 		return Lease{}, err
 	}
-	lease := &Lease{ID: id, Root: root, Owner: owner, Container: leaseContainerName(root, id), CreatedAt: time.Now(), scope: scope}
+	lease := &Lease{ID: id, Root: root, Owner: owner, Container: leaseContainerName(root, id), CreatedAt: time.Now(), scope: scope, step: step}
 	lease.asDaemon = m.leaseRunsAsDaemon(root, path)
 	lease.scope.Lease = id
 	t.mu.Lock()
+	if step {
+		for _, l := range t.byID {
+			if l.Owner == owner {
+				t.mu.Unlock()
+				return Lease{}, fmt.Errorf("the step %s already holds a lease", owner)
+			}
+		}
+	}
 	inUse := 0
 	for _, l := range t.byID {
 		if l.Root == root {
@@ -211,6 +248,12 @@ func (m *Manager) TakeLease(ctx context.Context, path, owner string) (Lease, err
 		return Lease{}, &LeasesFullError{Root: root, Max: max, InUse: inUse}
 	}
 	t.byID[id] = lease
+	if step {
+		if t.liveSteps == nil {
+			t.liveSteps = map[string]bool{}
+		}
+		t.liveSteps[owner] = true
+	}
 	t.mu.Unlock()
 	b, err := m.acquire(ctx, lease.scope, "lease")
 	if err != nil {
@@ -372,6 +415,9 @@ func (m *Manager) dropLease(ctx context.Context, id string) error {
 	m.mu.Unlock()
 	t.mu.Lock()
 	delete(t.byID, id)
+	if l.step {
+		delete(t.liveSteps, l.Owner)
+	}
 	t.mu.Unlock()
 	return nil
 }
@@ -383,7 +429,7 @@ func (m *Manager) recoverLeases(ctx context.Context) error {
 	out, err := m.runner.Run(ctx, m.cfg.Engine, "ps", "-a",
 		"--filter", "label="+labelLease,
 		"--filter", "label="+labelInstance+"="+instanceIdentity(m.cfg.StateDir),
-		"--format", "{{.Names}}\t{{.Label \""+labelLease+"\"}}\t{{.Label \""+labelLeaseOwner+"\"}}\t{{.Label \""+labelRoot+"\"}}\t{{.Label \""+labelLeaseUser+"\"}}\t{{.Label \""+labelLeaseReview+"\"}}")
+		"--format", "{{.Names}}\t{{.Label \""+labelLease+"\"}}\t{{.Label \""+labelLeaseOwner+"\"}}\t{{.Label \""+labelRoot+"\"}}\t{{.Label \""+labelLeaseUser+"\"}}\t{{.Label \""+labelLeaseReview+"\"}}\t{{.Label \""+labelLeaseStep+"\"}}")
 	if err != nil {
 		return err
 	}
@@ -394,7 +440,7 @@ func (m *Manager) recoverLeases(ctx context.Context) error {
 		if len(f) < 4 || f[1] == "" || f[3] == "" {
 			continue
 		}
-		l := &Lease{ID: f[1], Owner: f[2], Root: filepath.Clean(f[3]), Container: f[0], asDaemon: len(f) > 4 && f[4] == "daemon"}
+		l := &Lease{ID: f[1], Owner: f[2], Root: filepath.Clean(f[3]), Container: f[0], asDaemon: len(f) > 4 && f[4] == "daemon", step: len(f) > 6 && f[6] == "1"}
 		if scope, err := m.CommandScope(l.Root); err == nil {
 			scope.JobCheckout, scope.ReviewCheckout, scope.Lease = "", "", l.ID
 			l.scope = scope
@@ -435,10 +481,24 @@ func (m *Manager) reapLeases(ctx context.Context) {
 	t.mu.Lock()
 	running := t.running
 	owners := map[string]bool{}
+	var deadSteps []string
 	for _, l := range t.byID {
+		if l.step {
+			// A step lease is held only by its step running in this
+			// process; its owner is no agent session.
+			if !t.liveSteps[l.Owner] {
+				deadSteps = append(deadSteps, l.ID)
+			}
+			continue
+		}
 		owners[l.Owner] = true
 	}
 	t.mu.Unlock()
+	for _, id := range deadSteps {
+		if err := m.dropLease(ctx, id); err != nil {
+			log.Printf("swarmd release a finished workflow step's lease: %v", err)
+		}
+	}
 	if running == nil {
 		return
 	}
@@ -501,6 +561,20 @@ func (m *Manager) leaseRunsAsDaemon(root, path string) bool {
 	}
 	uid, ok := owner(filepath.Clean(path))
 	return ok && uid == m.cfg.UID
+}
+
+// leaseContainerStep reports whether a container is a step lease's, whose
+// project and worktree mounts are read-only (TakeStepLease).
+func (m *Manager) leaseContainerStep(name string) bool {
+	t := m.leaseTable()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, l := range t.byID {
+		if l.Container == name {
+			return l.step
+		}
+	}
+	return false
 }
 
 // containerUser is the uid:gid a container runs as and its project cache
