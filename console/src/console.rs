@@ -296,6 +296,9 @@ pub struct Console {
     automations_at: u64,
     /// A read was asked for while one ran: read again after it.
     automations_again: bool,
+    /// Each linked machine's proposals waiting for the person, by machine
+    /// name, read through the home (GET /v3/proposals?machine=).
+    linked_proposals: HashMap<String, Result<Vec<crate::swarm::proposals::Proposal>, String>>,
     /// Failed runs already known (None before the first read), so only a new
     /// failure is announced.
     runs_failed_seen: Option<HashSet<String>>,
@@ -479,6 +482,7 @@ impl Console {
             automations_busy: false,
             automations_at: 0,
             automations_again: false,
+            linked_proposals: HashMap::new(),
             runs_failed_seen: None,
             run_open: None,
             run_entries: None,

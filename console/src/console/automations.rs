@@ -10,6 +10,10 @@
 //! `worker.updated` and `automation.updated`); a run's view follows its
 //! session over the same stream. Making and changing them is the
 //! Orchestrator's (manage_workers, manage_automation).
+//!
+//! A linked machine's proposals (workflows and workers an AI proposed there)
+//! are read and decided through the home: GET /v3/proposals?machine= and
+//! POST /v3/proposals/decide, the person's own accept or discard.
 
 use std::collections::HashSet;
 
@@ -18,6 +22,7 @@ use gpui::{AnyElement, ClickEvent, Context, Div, IntoElement, SharedString, div,
 use super::{Console, alpha, now_ms};
 use crate::data::Entry;
 use crate::swarm::automations::{self, Automation, Board, Run, Worker};
+use crate::swarm::proposals::{self, Proposal};
 use crate::swarm::workflows::{self, Workflow};
 
 /// The run whose own view is open.
@@ -39,13 +44,29 @@ impl Console {
         }
         self.automations_busy = true;
         cx.notify();
+        // Linked machines' proposals are read through the home.
+        let linked: Vec<String> = self.machines.iter().skip(1).map(|m| m.name.to_string()).filter(|n| !n.is_empty()).collect();
         cx.spawn(async move |this, cx| {
-            let result = cx.background_executor().spawn(async move { automations::read(&client) }).await;
+            let (result, linked) = cx
+                .background_executor()
+                .spawn(async move {
+                    let board = automations::read(&client);
+                    let linked: Vec<(String, Result<Vec<Proposal>, String>)> = linked
+                        .into_iter()
+                        .map(|machine| {
+                            let read = proposals::list(&client, &machine);
+                            (machine, read)
+                        })
+                        .collect();
+                    (board, linked)
+                })
+                .await;
             this.update(cx, |this, cx| {
                 this.automations_busy = false;
                 if let Ok(board) = &result {
                     this.announce_failures(board);
                 }
+                this.linked_proposals = linked.into_iter().collect();
                 this.automations = Some(result);
                 this.automations_at = now_ms();
                 if std::mem::take(&mut this.automations_again) {
@@ -175,7 +196,7 @@ impl Console {
                         Some(Ok(board)) => self.render_board(board, cx),
                     }
                 } else {
-                    self.note_line("This machine's workers show in its own window: open it from its card on the Agents page.")
+                    self.render_linked_proposals(m.name.as_ref(), cx)
                 };
                 div()
                     .flex()
@@ -207,6 +228,78 @@ impl Console {
             )
             .child(self.note_line("What your workers run on their own: what is running now, what failed, what they handed back, and their schedules. Open a run to see every action its agent takes. Ask the Orchestrator to make or change one."))
             .children(sections)
+    }
+
+    /// A linked machine on the overview: its proposals waiting for the
+    /// person, each accepted or discarded here through the home; its workers
+    /// and runs show in its own window.
+    fn render_linked_proposals(&self, machine: &str, cx: &mut Context<Self>) -> Div {
+        let t = &self.theme;
+        let note = self.note_line("This machine's workers and runs show in its own window: open it from its card on the Agents page. Its proposals wait for you here.");
+        let body = div().flex().flex_col().gap_2();
+        match self.linked_proposals.get(machine) {
+            Some(Err(e)) => body.child(div().text_size(px(12.)).text_color(t.err).child(format!("Swarm did not answer for this machine's proposals: {e}"))).child(note),
+            Some(Ok(list)) if !list.is_empty() => {
+                body.child(self.heading(format!("WAITS FOR YOU · {}", list.len()), t.warn)).children(list.iter().map(|p| self.linked_proposal_card(p, cx))).child(note)
+            }
+            _ => body.child(note),
+        }
+    }
+
+    /// One proposal on a linked machine: what accepting does, and accept or
+    /// discard at the revision shown.
+    fn linked_proposal_card(&self, p: &Proposal, cx: &mut Context<Self>) -> Div {
+        let t = &self.theme;
+        let (accept, discard) = (p.clone(), p.clone());
+        // The worker routes cannot discard a change of an active worker alone.
+        let can_discard = !(p.kind == "worker" && p.change == "change");
+        self.run_card().child(
+            div()
+                .px_3()
+                .py_2()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(div().text_color(t.text).child(p.name.clone()))
+                .child(pill(self, "waits for you", t.warn))
+                .child(div().text_size(px(11.)).text_color(t.muted).child(proposals::describe(p)))
+                .child(div().flex_1())
+                .child(
+                    self.button(SharedString::from(format!("proposal-accept-{}-{}", p.machine, p.id)), if p.kind == "worker" { "accept worker" } else { "accept workflow" }, true)
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.decide_proposal(accept.clone(), true, cx);
+                        })),
+                )
+                .when(can_discard, |d| {
+                    d.child(self.button(SharedString::from(format!("proposal-discard-{}-{}", p.machine, p.id)), "discard", false).on_click(cx.listener(
+                        move |this, _: &ClickEvent, _, cx| {
+                            this.decide_proposal(discard.clone(), false, cx);
+                        },
+                    )))
+                }),
+        )
+    }
+
+    /// Accepts or discards a proposal (on a linked machine) at the revision
+    /// shown, through the home's proposals route.
+    fn decide_proposal(&mut self, p: Proposal, accept: bool, cx: &mut Context<Self>) {
+        let Some(client) = self.live.as_ref().map(|l| l.client()) else { return };
+        self.notice = Some((if accept { "Accepting…" } else { "Discarding…" }.into(), false));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let sent = p.clone();
+            let result = cx.background_executor().spawn(async move { proposals::decide(&client, &sent, accept) }).await;
+            this.update(cx, |this, cx| {
+                this.notice = Some(match result {
+                    Ok(_) if accept => (format!("Accepted {} {} on {}.", p.kind, p.name, p.machine).into(), false),
+                    Ok(_) => (format!("Discarded {} {} on {}.", p.kind, p.name, p.machine).into(), false),
+                    Err(e) => (format!("Swarm refused: {e}").into(), true),
+                });
+                this.load_automations(cx);
+            })
+            .ok();
+        })
+        .detach();
     }
 
     pub(super) fn note_line(&self, text: impl Into<SharedString>) -> Div {

@@ -50,6 +50,11 @@ func (r *Runtime) executeManageWorkers(ctx context.Context, scope WorkspaceScope
 	if who == "" {
 		return "", errors.New("manage_workers requires a session or an AI key")
 	}
+	if !scope.ControlCaller {
+		// A proposal (here or on a linked machine) asks the person in this
+		// conversation.
+		ctx = WithProposingSession(ctx, who)
+	}
 	call := make(map[string]any, len(args))
 	for key, value := range args {
 		call[key] = value

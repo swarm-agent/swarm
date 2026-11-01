@@ -310,7 +310,10 @@ a separate profile and the extension loaded, for trying it out.
   a new failure also shows in the status bar, and the nav says how many
   run or failed. Routes: `/v3/workers`, `/v3/workers/{id}/runs` and
   `…/cancel`, `/v3/automations/v2`, `/v3/sessions/{id}`. A linked
-  machine's automations show in its own window (open it from its card on Fleet).
+  machine's automations show in its own window (open it from its card on Fleet),
+  but its workflow and worker proposals wait for you here, under that machine,
+  with accept and discard at the revision shown (`GET /v3/proposals?machine=`,
+  `POST /v3/proposals/decide`, through the home).
 - **Icons:** line, solid, pixel or glyph. They
   are one-color SVG masks tinted by the theme, so a reskin needs no new art.
   Line by default; Settings or ctrl-4 change it. Pixel icons are ASCII art

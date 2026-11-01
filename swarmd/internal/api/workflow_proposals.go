@@ -14,7 +14,7 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 )
 
-const workflowHelp = `Workflows run when tasks or worker jobs end. Scope by role (coder, swarm, finder, designer) or worker ID, with project/workspace selecting the folder. Steps: agent {worker, brief}; reopen {from, message, max_rounds}; run {command, args, timeout_seconds} (owner-authorized script on the host) or run {in:"environment", command, args, timeout_seconds} (a script of the job's head commit, path relative to the repository root, run sandboxed in a lease of the folder's environment in a fresh checkout of that head with the folder's branches as origin/*; needs the folder's environment set up for leases; never touches the folder or the job's worktree); deliver {to: folder|merge|publish|outbox, path, what}. Conditions use if:[{step, verdict: ok|block}] or {step, status: succeeded|failed}. Optional fields: when: succeeded|failed|always, retries, enabled, result:{kind,path,describe}; agent supports checkout, fixes:security and produce. Example native reviewer with send-back: scope:{role:"coder"}, steps:[{id:"review",type:"agent",worker:"reviewer",brief:"Review the changes"},{type:"reopen",from:"review",if:[{step:"review",verdict:"block"}],max_rounds:2}]. Check in the folder's environment before review: steps:[{id:"console",type:"run",in:"environment",command:"scripts/check-console.sh",continue_on_failure:true},{id:"review",type:"agent",worker:"reviewer",brief:"Review the changes; the console check output: {{steps.console.output}}"}]. Custom reviewer: replace worker:"reviewer" with the reviewer worker's ID. Worker job reviewed natively: use scope:{worker:"worker-id"} with that same native reviewer and send-back. Propose saves a pending proposal; only the person accepts or discards it. Enable/disable immediately toggle an existing workflow. Fork or reuse: export {name} returns portable JSON (path also writes .swarm/workflows/<name>.json into its folder); import {definition, name:"copy"} adds it under a new name, or import {path, project} reads a committed file or directory. Roll back: history {name} lists revisions, history {name, revision} reads one, restore {name, revision} makes it current as a new revision (also after delete). Import and restore refuse host run steps; the machine owner sets those (run steps with in:"environment" are allowed). stop_all {stopped:true} stops every new workflow step on the machine; stopped:false resumes.`
+const workflowHelp = `Workflows run when tasks or worker jobs end. Scope by role (coder, swarm, finder, designer) or worker ID, with project/workspace selecting the folder. Steps: agent {worker, brief}; reopen {from, message, max_rounds}; run {command, args, timeout_seconds} (owner-authorized script on the host) or run {in:"environment", command, args, timeout_seconds} (a script of the job's head commit, path relative to the repository root, run sandboxed in a lease of the folder's environment in a fresh checkout of that head with the folder's branches as origin/*; needs the folder's environment set up for leases; never touches the folder or the job's worktree); deliver {to: folder|merge|publish|outbox, path, what}. Conditions use if:[{step, verdict: ok|block}] or {step, status: succeeded|failed}. Optional fields: when: succeeded|failed|always, retries, enabled, result:{kind,path,describe}; agent supports checkout, fixes:security and produce. Example native reviewer with send-back: scope:{role:"coder"}, steps:[{id:"review",type:"agent",worker:"reviewer",brief:"Review the changes"},{type:"reopen",from:"review",if:[{step:"review",verdict:"block"}],max_rounds:2}]. Check in the folder's environment before review: steps:[{id:"console",type:"run",in:"environment",command:"scripts/check-console.sh",continue_on_failure:true},{id:"review",type:"agent",worker:"reviewer",brief:"Review the changes; the console check output: {{steps.console.output}}"}]. Custom reviewer: replace worker:"reviewer" with the reviewer worker's ID. Worker job reviewed natively: use scope:{worker:"worker-id"} with that same native reviewer and send-back. Propose saves a pending proposal (here, or with machine on that linked machine); only the person accepts or discards it: the proposing conversation gets a pending request they answer (Accept or Discard, with a summary of the steps added, removed and changed), and their Swarm app's Automations page shows it too. Tell the person and wait; list and get show it under pending_proposals (id, machine, created_at, waiting_on). Enable/disable immediately toggle an existing workflow. Fork or reuse: export {name} returns portable JSON (path also writes .swarm/workflows/<name>.json into its folder); import {definition, name:"copy"} adds it under a new name, or import {path, project} reads a committed file or directory. Roll back: history {name} lists revisions, history {name, revision} reads one, restore {name, revision} makes it current as a new revision (also after delete). Import and restore refuse host run steps; the machine owner sets those (run steps with in:"environment" are allowed). stop_all {stopped:true} stops every new workflow step on the machine; stopped:false resumes.`
 
 // workflowScopesHeld keeps the scopes of want that held contains.
 func workflowScopesHeld(want, held []string) []string {
@@ -113,7 +113,26 @@ func (s *Server) manageWorkflows(ctx context.Context, p identity.Principal, who 
 		if err != nil {
 			return nil, err
 		}
-		return s.ListWorkflows(caller, opts)
+		out, err := s.ListWorkflows(caller, opts)
+		if err != nil {
+			return nil, err
+		}
+		if view, ok := out.(map[string]any); ok && opts.DeliveryID == "" {
+			// The pending proposals, as the proposals route lists them.
+			pending := []ProposalView{}
+			if rows, ok := view["automations"].([]map[string]any); ok {
+				for _, row := range rows {
+					if proposal, ok := workflowProposalView("", row); ok {
+						pending = append(pending, proposal)
+					}
+				}
+			}
+			view["pending_proposals"] = pending
+			if len(pending) > 0 {
+				view["proposals_note"] = workflowPendingNote
+			}
+		}
+		return out, nil
 	case "history":
 		out, err := s.WorkflowHistory(caller, args)
 		if err != nil {
@@ -121,7 +140,7 @@ func (s *Server) manageWorkflows(ctx context.Context, p identity.Principal, who 
 		}
 		if view, ok := out.(map[string]any); ok && view["history"] != nil {
 			if proposals, _ := view["pending_proposals"].([]map[string]any); len(proposals) > 0 {
-				view["next_action"] = "The pending proposals wait for the person to accept or discard them in their Swarm app; an AI cannot accept one. history with a revision reads that definition; restore with it makes it current."
+				view["next_action"] = "The pending proposals wait for the person to accept or discard them (the pending request in the proposing conversation, or their Swarm app's Automations page); an AI cannot accept one. history with a revision reads that definition; restore with it makes it current."
 			}
 		}
 		return out, nil
@@ -130,7 +149,16 @@ func (s *Server) manageWorkflows(ctx context.Context, p identity.Principal, who 
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"automation": jobAutomationView(a)}, nil
+		answer := map[string]any{"automation": jobAutomationView(a)}
+		pending, err := s.workflowPendingProposals(ctx, p, "", a.ID)
+		if err != nil {
+			return nil, err
+		}
+		answer["pending_proposals"] = pending
+		if len(pending) > 0 {
+			answer["proposals_note"] = workflowPendingNote
+		}
+		return answer, nil
 	case "deliveries":
 		// One line per delivery; delivery_id reads one in bounded detail.
 		opts, err := workflowListOptions(func(key string) string { return controlMCPString(args, key) })
@@ -161,7 +189,11 @@ func (s *Server) manageWorkflows(ctx context.Context, p identity.Principal, who 
 		}
 		return answer, nil
 	case "propose":
-		return s.proposeWorkflow(caller, args)
+		out, err := s.proposeWorkflow(caller, args)
+		if err != nil {
+			return nil, err
+		}
+		return s.withProposalRequest(ctx, p, "", proposalKindWorkflow, out)
 	case "enable", "disable":
 		a, err := s.workflowByReference(caller, args)
 		if err != nil {
@@ -223,8 +255,19 @@ func (s *Server) workflowByReference(caller WorkflowCaller, args map[string]any)
 }
 
 // workflowProposeNextAction is what follows a proposal: the person's own
-// acceptance, in their app.
-const workflowProposeNextAction = "The person accepts or discards this proposal in their Swarm app (the workflow's pending proposal); an AI cannot accept it and nothing changes until then. manage_workflows history with the workflow's name lists it as pending."
+// acceptance, in their chat's pending request or their app.
+const workflowProposeNextAction = "Tell the person this proposal waits for them: they Accept or Discard it in the pending request of the proposing conversation, or in their Swarm app's Automations page (also for a linked machine). An AI cannot accept it and nothing changes until then; wait. manage_workflows list or get shows it under pending_proposals."
+
+// workflowPendingNote explains pending_proposals in a workflow answer.
+const workflowPendingNote = "pending_proposals wait on the person: they accept or discard each in the proposing conversation's pending request or their Swarm app's Automations page; an AI cannot."
+
+// workflowPendingProposals are the pending workflow proposals on machine
+// that are the workflow id or change it.
+func (s *Server) workflowPendingProposals(ctx context.Context, p identity.Principal, machine, id string) ([]ProposalView, error) {
+	return s.proposalsAnswerWith(ctx, p, machine, proposalKindWorkflow, func(view ProposalView) bool {
+		return view.ID == id || view.Replaces == id
+	})
+}
 
 // workflowProposeControlKeys are propose's inputs that say how to apply the
 // change, never part of the definition.

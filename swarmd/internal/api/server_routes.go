@@ -66,6 +66,10 @@ func (s *Server) registerOnboardingRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v3/outbox", s.handleOutbox)
 	mux.HandleFunc(JobAutomationsPath, s.handleJobAutomations)
 	mux.HandleFunc(JobAutomationsPath+"/", s.handleJobAutomations)
+	// Workflow and worker proposals, here and on linked machines: listed for
+	// anyone who reads automations, decided only by the person (proposals.go).
+	mux.HandleFunc(ProposalsPath, s.handleProposals)
+	mux.HandleFunc(ProposalsPath+"/", s.handleProposals)
 	mux.HandleFunc(CatalogLinkedPath+"/", s.handleCatalogLinked)
 	mux.HandleFunc(JobDeliveriesPath, s.handleJobDeliveries)
 	mux.HandleFunc(JobDeliveriesPath+"/", s.handleJobDeliveries)

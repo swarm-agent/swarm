@@ -37,6 +37,30 @@ type workerCatalogRunner interface {
 // manage_workers). With machine in args the action runs on that linked
 // machine's own ManageWorkers and its answer comes back as it came.
 func (s *Server) ManageWorkers(ctx context.Context, p identity.Principal, who, agent string, args map[string]any) (any, error) {
+	out, err := s.manageWorkers(ctx, p, who, agent, args)
+	if err != nil {
+		return nil, err
+	}
+	// A proposal asks the person in the proposing conversation; list and
+	// review show the pending proposals, as the proposals route lists them.
+	machine := controlMCPString(args, "machine")
+	switch controlMCPString(args, "action") {
+	case "propose", "create":
+		return s.withProposalRequest(ctx, p, machine, proposalKindWorker, out)
+	case "list", "review":
+		pending, err := s.listProposals(ctx, p, machine, proposalKindWorker)
+		if err != nil {
+			return nil, err
+		}
+		return withPendingProposals(out, pending, workerPendingNote), nil
+	}
+	return out, nil
+}
+
+// workerPendingNote explains pending_proposals in a worker answer.
+const workerPendingNote = "pending_proposals wait on the person: they accept or discard each in the proposing conversation's pending request or their Swarm app's Automations page; an AI cannot."
+
+func (s *Server) manageWorkers(ctx context.Context, p identity.Principal, who, agent string, args map[string]any) (any, error) {
 	if !p.Valid() || s.sessions == nil {
 		return nil, errors.New("manage_workers requires a session principal")
 	}

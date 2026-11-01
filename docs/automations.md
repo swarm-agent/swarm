@@ -1009,8 +1009,9 @@ Design jobs now end with `design.job.completed`, `design.job.failed` or
   change if the workflow moved on; a new `name` with `id` renames it);
   `replace: true` sends the whole definition, as adding, removing or
   reordering steps needs. Fields `propose` does not take are refused by
-  name. The person accepts or discards a proposal in their Swarm app;
-  `history` lists pending proposals with their state. `export` carries
+  name. The person accepts or discards a proposal (see "Proposals: the
+  person decides" below); `history` lists pending proposals with their
+  state, and `list` and `get` show them as `pending_proposals`. `export` carries
   the workflow's project as its scope; `import` binds the project the call
   names, else that project on this machine, and refuses one the machine
   does not have rather than binding a wider folder. A disabled workflow
@@ -1031,9 +1032,55 @@ Design jobs now end with `design.job.completed`, `design.job.failed` or
   name),
   `GET/POST /v3/workflows/stop`, `GET /v3/job-deliveries`
   (`job_id`, `automation_id`, `state`, `limit`), `GET
-  /v3/job-deliveries/{id}`, `POST /v3/job-deliveries/{id}/rerun`.
+  /v3/job-deliveries/{id}`, `POST /v3/job-deliveries/{id}/rerun`,
+  `GET /v3/proposals` and `POST /v3/proposals/decide` (below).
 - SDK: `client.workflows` (`list`, `get`, `set`, `delete`, `stopState`,
-  `setStopped`, `deliveries`, `delivery`, `rerun`).
+  `setStopped`, `deliveries`, `delivery`, `rerun`, `proposals`,
+  `decideProposal`).
+
+## Proposals: the person decides
+
+An AI never accepts its own proposal. A workflow proposed with
+`manage_workflows` `propose`, or a worker with `manage_workers` `propose` (or
+`create`), waits for the person, here or with `machine` on a linked machine
+(the proposal is stored there).
+
+- **In the chat.** When the Orchestrator proposes, its conversation gets a
+  pending request, the same kind the person answers for a tool's permission:
+  `requirement: "proposal_decision"`, with the workflow's or worker's name,
+  its machine and a readable summary of what accepting does (for a workflow
+  change, the steps added, removed and changed against the current revision,
+  and the other fields it changes). Allow accepts it, deny discards it. A
+  re-proposal refreshes the same request to the new revision. The request
+  carries no run: nothing waits on it. The propose answer's
+  `decision_request` names it (`permission_id`, or `status: "not_requested"`
+  for a caller with no Swarm conversation, such as an MCP client), and its
+  `next_action` says to tell the person and wait.
+- **In the app.** The console's Automations page lists the proposals of the
+  machine it is connected to and of each linked machine, with accept and
+  discard.
+- **One route.** Both run `POST /v3/proposals/decide`
+  (`{machine, kind, id, expected_revision, decision}`; `machine` is "" here,
+  `kind` is `workflow` or `worker`, `decision` is `accept` or `discard`).
+  It runs the machine's own routes: here in process, on a linked machine over
+  the link as its home, so the accept routes keep their revision checks and
+  the run-step owner rule. `GET /v3/proposals?machine=` lists the pending
+  proposals (`kind`, `machine`, `id`, `name`, `revision`, `created_at`,
+  `waiting_on: "person"`, `change: new|change`, `replaces`), the same shape
+  as `pending_proposals` in `manage_workflows` `list`/`get` and
+  `manage_workers` `list`/`review`. A decision answers every pending request
+  for that proposal in the person's conversations.
+- **Only the person.** The decide route takes only an owner session: any
+  scoped token (an AI key at any level, an app key, an agent's internal
+  call) is refused with 403. A proposal request is refused to
+  `resolve_permission`, `resolve_task_permission`, resolve-all and lasting
+  rules.
+- **Stale.** A decision names the revision the person saw. If the proposal
+  moved (the AI proposed again, it was decided elsewhere, or removed), it is
+  refused with 409 and the reason, and an answered chat request is cancelled
+  with that reason. Discard removes only a still-pending proposal; a pending
+  change of an active worker cannot be discarded alone (the worker routes
+  would delete the worker), so it is accepted or proposed again.
 
 ## Example: merge the job into a local branch
 

@@ -101,6 +101,9 @@ func (s *Server) resolveLocalTaskPermission(p identity.Principal, projectID, tas
 	if record.Requirement == permission.RequirementClientTool {
 		return nil, linkedTaskFail(http.StatusConflict, "permission %s waits on an app's client tool, not a person", permissionID)
 	}
+	if permission.IsProposalDecision(record) {
+		return nil, linkedTaskFail(http.StatusForbidden, "%v", permission.ErrProposalDecisionPersonOnly)
+	}
 	if err := s.validateProjectPermissionReply(p, sessionID, decision); err != nil {
 		return nil, linkedTaskFail(http.StatusConflict, "%v", err)
 	}
@@ -167,6 +170,10 @@ func (s *Server) resolveLinkedTaskPermission(ctx context.Context, p identity.Pri
 	}
 	if target.Requirement == permission.RequirementClientTool {
 		return nil, linkedTaskFail(http.StatusConflict, "permission %s waits on an app's client tool, not a person", permissionID)
+	}
+	if permission.IsProposalDecision(*target) {
+		// The linked machine would see the home's owner session: refuse here.
+		return nil, linkedTaskFail(http.StatusForbidden, "%v", permission.ErrProposalDecisionPersonOnly)
 	}
 	var answer struct {
 		Permission pebblestore.PermissionRecord `json:"permission"`

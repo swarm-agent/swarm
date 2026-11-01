@@ -67,15 +67,15 @@ func manageWorkflowsCatalog() CatalogTool {
 	// swarm_stop_workflows); help has no swarm_* tool and only reads.
 	actions := []CatalogAction{
 		{Action: "list", Inputs: []string{"machine", "detail", "delivery_id"}, Level: read, Reach: anyM, Profiles: core, Untrusted: true,
-			Description: "List workflows, each as it runs, with its last deliveries one line each and the stop switch."},
+			Description: "List workflows, each as it runs, with its last deliveries one line each and the stop switch; pending_proposals lists the proposals waiting on the person (id, machine, created_at, waiting_on)."},
 		{Action: "get", Inputs: ref, Level: read, Reach: anyM, Profiles: core, Untrusted: true,
-			Description: "Read one workflow by id or name."},
+			Description: "Read one workflow by id or name; pending_proposals lists the proposals of it (or changing it) that wait on the person."},
 		{Action: "deliveries", Inputs: with(ref[:2], "job_id", "delivery_id"), Level: read, Reach: anyM, Profiles: core, Untrusted: true,
 			Description: "A workflow's or job's deliveries one line each; delivery_id reads one delivery's steps with full findings."},
 		{Action: "history", Inputs: with(ref, "revision"), Level: write, Reach: anyM, Profiles: core, Untrusted: true,
 			Description: "A workflow's last 100 changes, newest first, even after delete, and its pending proposals; revision reads that revision's portable definition."},
 		{Action: "propose", Inputs: []string{"machine", "id", "name", "description", "expected_revision", "replace", "project", "workspace", "scope", "when", "enabled", "retries", "result", "steps", "on", "inputs", "with", "rotate_key"}, Level: write, Reach: anyM, Profiles: core,
-			Description: "Propose a new workflow (its full definition) or a change of one (id or name: only the changed fields, merged onto its current revision, expected_revision as the guard; replace: true for a whole definition) for the person to accept or discard; never self-accept. Unknown fields are refused."},
+			Description: "Propose a new workflow (its full definition) or a change of one (id or name: only the changed fields, merged onto its current revision, expected_revision as the guard; replace: true for a whole definition) for the person to accept or discard; never self-accept. The proposing conversation gets a pending request the person answers (Accept or Discard), also for a linked machine; tell the person and wait. Unknown fields are refused."},
 		{Action: "disable", Inputs: ref, Level: write, Reach: anyM, Profiles: core,
 			Description: "Disable an existing workflow now."},
 		{Action: "enable", Inputs: ref, Level: write, Reach: anyM, Profiles: core,
@@ -107,7 +107,7 @@ func manageWorkflowsCatalog() CatalogTool {
 		"export":     "import with this definition (and a new name for a copy) adds it here or on another machine.",
 		"import":     "get or history reads it; propose changes it; enable runs it if it is disabled.",
 		"restore":    "history lists its revisions.",
-		"propose":    "The person accepts or discards the proposal in their Swarm app; an AI cannot accept it. history lists it as pending.",
+		"propose":    "Tell the person the proposal waits for them: they Accept or Discard it in this conversation's pending request or their Swarm app; an AI cannot. Then wait; list or get shows it under pending_proposals.",
 		"delete":     "restore with a revision from history recreates it.",
 	}
 	for i := range actions {

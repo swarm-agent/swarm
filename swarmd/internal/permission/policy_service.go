@@ -373,6 +373,10 @@ func (s *Service) ResolveWithPolicyAndArguments(sessionID, permissionID, action,
 	if lookupErr != nil {
 		return pebblestore.PermissionRecord{}, nil, lookupErr
 	}
+	if IsProposalDecision(pendingDevice) && pendingDevice.Status == pebblestore.PermissionStatusPending {
+		// Before any rule is saved: a proposal is never decided here.
+		return pebblestore.PermissionRecord{}, nil, ErrProposalDecisionPersonOnly
+	}
 	if pendingDevice.TargetDevice != "" {
 		record, err := s.ResolveWithArguments(sessionID, permissionID, action, reason, approvedArguments)
 		return record, nil, err

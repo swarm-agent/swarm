@@ -3079,6 +3079,10 @@ func (s *Server) handleSessionV3PrimaryPermissionResolve(w http.ResponseWriter, 
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	// A proposal request is decided by the person's answer only (proposals.go).
+	if s.answerProposalRequest(w, r, sessionID, permissionID, req.Action, req.Reason) {
+		return
+	}
 	if rejectScopedPersistentResolve(w, r, req.Action) {
 		return
 	}

@@ -22,6 +22,13 @@ parent identity or repin executable instructions. It forces paused/fresh approva
 and preserves old occurrence pins. It is a domain capability, not a public HTTP
 route and not permission to relax existing sidechat tool allowlists.
 
+Workflow (`manage_workflows`) and worker (`manage_workers`) proposals, here or
+on a linked machine, are decided by the person through `proposals.go`:
+`GET /v3/proposals` and `POST /v3/proposals/decide` (owner session only), and
+the proposing conversation's `proposal_decision` pending request
+(`permission.RequirementProposalDecision`), which only the person's answer
+resolves. See docs/automations.md, "Proposals: the person decides".
+
 Parent integration still needs tool/run and Desktop consumption. All new tests
 are authored only: not run; parent validation required. Format changed Go files
 and run focused tests before integrating consumers.

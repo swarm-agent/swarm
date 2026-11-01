@@ -331,6 +331,8 @@ type permissionService interface {
 	ResolveWithPolicy(sessionID, permissionID, action, reason string) (pebblestore.PermissionRecord, *permission.PolicyRule, error)
 	ResolveWithPolicyAndArguments(sessionID, permissionID, action, reason, approvedArguments string) (pebblestore.PermissionRecord, *permission.PolicyRule, error)
 	ResolveFromClient(sessionID, permissionID, action, reason, arguments, clientSessionID string) (pebblestore.PermissionRecord, *permission.PolicyRule, error)
+	RequestProposalDecision(sessionID, key, toolName, arguments string) (pebblestore.PermissionRecord, error)
+	ResolveProposalDecision(sessionID, permissionID, action, reason string) (pebblestore.PermissionRecord, error)
 	MarkToolStarted(sessionID, runID, callID string, step int, startedAt int64) (pebblestore.PermissionRecord, bool, error)
 	MarkToolCompleted(sessionID, runID, callID string, step int, result tool.Result, completedAt int64) (pebblestore.PermissionRecord, bool, error)
 	SetBypassPermissions(enabled bool)
@@ -3583,6 +3585,10 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		// A proposal request is decided by the person's answer only (proposals.go).
+		if s.answerProposalRequest(w, r, sessionID, permissionID, req.Action, req.Reason) {
 			return
 		}
 		if rejectScopedPersistentResolve(w, r, req.Action) {

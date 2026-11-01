@@ -358,6 +358,36 @@ export interface WorkflowHistoryRecord {
   deleted?: boolean;
 }
 
+/**
+ * One workflow or worker proposal waiting for the person, on this machine
+ * (`machine` "") or a linked one (`GET /v3/proposals`). The same shape as
+ * `pending_proposals` in `manage_workflows` list/get and `manage_workers`
+ * list/review.
+ */
+export interface PendingProposal {
+  kind: 'workflow' | 'worker';
+  machine: string;
+  id: string;
+  name: string;
+  revision: number;
+  created_at: number;
+  waiting_on: 'person';
+  /** `new`: accepting adds it; `change`: accepting replaces `replaces`. */
+  change: 'new' | 'change';
+  replaces: string;
+}
+
+/** The body of `POST /v3/proposals/decide`. */
+export interface ProposalDecision {
+  /** The linked machine the proposal is on; "" for this one. */
+  machine: string;
+  kind: 'workflow' | 'worker';
+  id: string;
+  /** The revision the person saw; a moved proposal is refused (409). */
+  expected_revision: number;
+  decision: 'accept' | 'discard';
+}
+
 /** Workflows and their deliveries (`/v3/workflows`, `/v3/job-deliveries`). */
 export class SwarmJobAutomationsNamespace {
   constructor(private readonly transport: SwarmTransport) {}
@@ -423,6 +453,25 @@ export class SwarmJobAutomationsNamespace {
       body: { stopped },
     });
     return res.data.stop;
+  }
+
+  /**
+   * Workflow and worker proposals waiting for the person, on this machine or
+   * (`machine`) a linked one, newest first. Needs `automations:read`.
+   */
+  async proposals(machine = ''): Promise<PendingProposal[]> {
+    const path = machine ? `/v3/proposals?machine=${encodeURIComponent(machine)}` : '/v3/proposals';
+    const res = await this.transport.request<{ ok: boolean; proposals: PendingProposal[] }>(path, { method: 'GET' });
+    return res.data.proposals ?? [];
+  }
+
+  /**
+   * The person accepts or discards one proposal, here or on a linked machine,
+   * at the revision they saw. Only an owner session (the person's app)
+   * decides: an AI key or app key is refused (403).
+   */
+  async decideProposal(decision: ProposalDecision): Promise<Record<string, unknown>> {
+    return (await this.transport.request<Record<string, unknown>>('/v3/proposals/decide', { method: 'POST', body: decision })).data;
   }
 
   /** Deliveries, newest first. */

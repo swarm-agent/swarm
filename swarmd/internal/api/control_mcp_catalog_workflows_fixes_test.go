@@ -187,7 +187,7 @@ func TestManageWorkflowsParityFixes(t *testing.T) {
 			envelope, refused := orchestrator(map[string]any{"action": "propose", "id": "Desc", "description": "Reviews every change", "expected_revision": float64(base.Revision)})
 			data := must("propose description", envelope, refused)
 			proposal := data["automation"].(map[string]any)
-			if envelope["state"] != "ok" || !strings.HasPrefix(fmt.Sprint(envelope["next_action"]), "The person accepts or discards this proposal in their Swarm app") {
+			if envelope["state"] != "ok" || !strings.HasPrefix(fmt.Sprint(envelope["next_action"]), "Tell the person this workflow proposal waits for them") {
 				t.Fatalf("propose envelope: %v", envelope)
 			}
 			if proposal["description"] != "Reviews every change" || !strings.Contains(mustJSON(t, proposal["steps"]), "Review v1") || !strings.Contains(mustJSON(t, data["changes"]), "description") || strings.Contains(mustJSON(t, data["changes"]), "steps") {

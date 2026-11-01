@@ -65,8 +65,12 @@ type Service struct {
 	permissionStateCache map[string]permissionStateCacheEntry
 	counter              atomic.Uint64
 	reconciled           bool
-	policyLocked         atomic.Bool
-	bypassGate           atomic.Pointer[BypassGate]
+	// proposalDecisionUnlocked is set, under mu, only by
+	// ResolveProposalDecision: every other resolve refuses a proposal
+	// decision (ErrProposalDecisionPersonOnly).
+	proposalDecisionUnlocked bool
+	policyLocked             atomic.Bool
+	bypassGate               atomic.Pointer[BypassGate]
 }
 
 // BypassGate reports whether permission bypass may take effect right now and,
@@ -1126,6 +1130,10 @@ func (s *Service) ResolveAll(sessionID, action, reason string, limit int) ([]peb
 
 	resolved := make([]pebblestore.PermissionRecord, 0, len(pending))
 	for _, current := range pending {
+		if IsProposalDecision(current) {
+			// The person decides each proposal on its own.
+			continue
+		}
 		record, changed, err := s.resolveLocked(sessionID, current.ID, action, reason, "", now)
 		if err != nil {
 			return nil, err
@@ -1273,6 +1281,9 @@ func (s *Service) resolveForDeviceLocked(sessionID, permissionID, action, reason
 	}
 	if !strings.EqualFold(strings.TrimSpace(record.Status), pebblestore.PermissionStatusPending) {
 		return record, false, nil
+	}
+	if IsProposalDecision(record) && !s.proposalDecisionUnlocked {
+		return pebblestore.PermissionRecord{}, false, ErrProposalDecisionPersonOnly
 	}
 
 	if record.TargetDevice != "" {

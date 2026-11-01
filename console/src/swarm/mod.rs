@@ -18,6 +18,7 @@ pub mod models;
 pub mod needs;
 pub mod permissions;
 pub mod progress;
+pub mod proposals;
 pub mod realtime;
 pub mod repository;
 pub mod root;

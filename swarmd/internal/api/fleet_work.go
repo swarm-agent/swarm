@@ -22,7 +22,53 @@ func (s *Server) CallFleetWork(ctx context.Context, p identity.Principal, machin
 		// manage_workflows answers in catalog terms.
 		err = workflowCatalogError(err)
 	}
-	return out, err
+	if err != nil || name != "manage_workflows" {
+		return out, err
+	}
+	return s.fleetWorkflowProposals(ctx, p, machine, action, args, out)
+}
+
+// fleetWorkflowProposals finishes a linked manage_workflows answer: a
+// proposal asks the person in the proposing conversation, and list and get
+// show the machine's pending proposals, as the proposals route lists them.
+func (s *Server) fleetWorkflowProposals(ctx context.Context, p identity.Principal, machine, action string, args map[string]any, out json.RawMessage) (json.RawMessage, error) {
+	var finished any
+	switch action {
+	case "propose":
+		answer, err := s.withProposalRequest(ctx, p, machine, proposalKindWorkflow, out)
+		if err != nil {
+			return nil, err
+		}
+		finished = answer
+	case "list":
+		if controlMCPString(args, "delivery_id") != "" {
+			return out, nil
+		}
+		pending, err := s.listProposals(ctx, p, machine, proposalKindWorkflow)
+		if err != nil {
+			return nil, err
+		}
+		finished = withPendingProposals(out, pending, workflowPendingNote)
+	case "get":
+		answer := answerMap(out)
+		automation, _ := answerData(answer)["automation"].(map[string]any)
+		id := mapText(automation, "id")
+		if id == "" {
+			return out, nil
+		}
+		pending, err := s.workflowPendingProposals(ctx, p, machine, id)
+		if err != nil {
+			return nil, err
+		}
+		finished = withPendingProposals(answer, pending, workflowPendingNote)
+	default:
+		return out, nil
+	}
+	raw, err := json.Marshal(finished)
+	if err != nil {
+		return nil, err
+	}
+	return raw, nil
 }
 
 func (s *Server) callFleetWork(ctx context.Context, p identity.Principal, machine, name, action string, args map[string]any) (json.RawMessage, error) {

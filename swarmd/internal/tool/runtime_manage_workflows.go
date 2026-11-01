@@ -34,6 +34,25 @@ func ControlScopesFromContext(ctx context.Context) ([]string, bool) {
 	return append([]string{}, value.scopes...), true
 }
 
+type proposingSessionContextKey struct{}
+
+// WithProposingSession marks ctx as a call made by the Orchestrator's
+// conversation sessionID: a proposal it makes (here or on a linked machine)
+// asks the person in that conversation (a pending request).
+func WithProposingSession(ctx context.Context, sessionID string) context.Context {
+	return context.WithValue(ctx, proposingSessionContextKey{}, strings.TrimSpace(sessionID))
+}
+
+// ProposingSessionFromContext is the conversation WithProposingSession named,
+// or "".
+func ProposingSessionFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	session, _ := ctx.Value(proposingSessionContextKey{}).(string)
+	return session
+}
+
 // controlScopeHeld reports whether a Swarm Control caller's key holds scope.
 func controlScopeHeld(scope WorkspaceScope, want string) bool {
 	for _, held := range scope.ControlScopes {
@@ -105,6 +124,11 @@ func (r *Runtime) executeManageWorkflows(ctx context.Context, scope WorkspaceSco
 	}
 	if who == "" {
 		return "", errors.New("manage_workflows requires a session or an AI key")
+	}
+	if !scope.ControlCaller {
+		// A proposal (here or on a linked machine) asks the person in this
+		// conversation.
+		ctx = WithProposingSession(ctx, who)
 	}
 	call := make(map[string]any, len(args))
 	for key, value := range args {
