@@ -47,6 +47,7 @@ pub enum Node {
 
 impl Node {
     /// Puts `new` after `target` along `axis`. Returns false if `target` is absent.
+    #[cfg(test)]
     pub fn split(&mut self, target: PaneId, axis: Axis, new: PaneId) -> bool {
         self.split_at(target, axis, new, false)
     }
@@ -85,7 +86,8 @@ impl Node {
     }
 
     /// Removes `target` and collapses splits left with one child.
-    /// The last pane is never removed.
+    /// A tree is never empty, so a lone leaf is not removed here; `Layout`
+    /// closes the last pane.
     pub fn close(&mut self, target: PaneId) -> bool {
         if matches!(self, Node::Leaf(_)) {
             return false;
@@ -172,6 +174,132 @@ impl Node {
     }
 }
 
+/// The panes of one window: the split tree (none when every pane is closed),
+/// the focused pane, and the next pane id to hand out.
+#[derive(Clone, Debug, Default)]
+pub struct Layout {
+    root: Option<Node>,
+    active: Option<PaneId>,
+    next: usize,
+}
+
+impl Layout {
+    /// One pane, focused.
+    pub fn single() -> Self {
+        let mut layout = Layout::default();
+        let id = layout.alloc();
+        layout.place(id, None, Axis::Row, false);
+        layout
+    }
+
+    /// A new pane id, never handed out before.
+    pub fn alloc(&mut self) -> PaneId {
+        let id = PaneId(self.next);
+        self.next += 1;
+        id
+    }
+
+    pub fn root(&self) -> Option<&Node> {
+        self.root.as_ref()
+    }
+
+    pub fn active(&self) -> Option<PaneId> {
+        self.active
+    }
+
+    pub fn contains(&self, id: PaneId) -> bool {
+        self.root.as_ref().is_some_and(|r| r.contains(id))
+    }
+
+    pub fn leaves(&self) -> Vec<PaneId> {
+        let mut out = Vec::new();
+        if let Some(root) = &self.root {
+            root.leaves(&mut out);
+        }
+        out
+    }
+
+    /// Focuses `id` if it is one of the panes.
+    pub fn focus(&mut self, id: PaneId) -> bool {
+        if self.contains(id) {
+            self.active = Some(id);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Places pane `id` beside `target` (the focused pane when None) along
+    /// `axis`, before or after it, and focuses it. With no pane open it
+    /// becomes the only one. False if `id` is already placed or the target
+    /// is not a pane here.
+    pub fn place(&mut self, id: PaneId, target: Option<PaneId>, axis: Axis, before: bool) -> bool {
+        if self.contains(id) {
+            return false;
+        }
+        match self.root.as_mut() {
+            None => self.root = Some(Node::Leaf(id)),
+            Some(root) => {
+                let Some(target) = target.or(self.active) else { return false };
+                if !root.split_at(target, axis, id, before) {
+                    return false;
+                }
+            }
+        }
+        self.next = self.next.max(id.0 + 1);
+        self.active = Some(id);
+        true
+    }
+
+    /// Removes pane `id`; the last pane leaves the layout empty. The focus
+    /// moves to the first pane left, if any.
+    pub fn close(&mut self, id: PaneId) -> bool {
+        let removed = match self.root.as_mut() {
+            None => false,
+            Some(Node::Leaf(own)) if *own == id => {
+                self.root = None;
+                true
+            }
+            Some(root) => root.close(id),
+        };
+        if removed && self.active.is_none_or(|a| a == id || !self.contains(a)) {
+            self.active = self.leaves().first().copied();
+        }
+        removed
+    }
+
+    /// Focuses the pane after the focused one, wrapping; None with no panes.
+    pub fn cycle(&mut self) -> Option<PaneId> {
+        let leaves = self.leaves();
+        if leaves.is_empty() {
+            self.active = None;
+            return None;
+        }
+        let next = match self.active.and_then(|a| leaves.iter().position(|p| *p == a)) {
+            Some(i) => leaves[(i + 1) % leaves.len()],
+            None => leaves[0],
+        };
+        self.active = Some(next);
+        Some(next)
+    }
+
+    /// See `Node::move_pane`.
+    pub fn move_pane(&mut self, moved: PaneId, target: PaneId, zone: Zone) -> bool {
+        let moved_ok = self.root.as_mut().is_some_and(|r| r.move_pane(moved, target, zone));
+        if moved_ok {
+            self.active = Some(moved);
+        }
+        moved_ok
+    }
+
+    /// See `Node::resize`.
+    pub fn resize(&mut self, path: &[usize], index: usize, at: f32) {
+        if let Some(root) = self.root.as_mut() {
+            root.resize(path, index, at);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,16 +349,126 @@ mod tests {
         assert_eq!(ids(&root), vec![1, 2, 0]);
     }
 
+    // Purpose of the `Layout` tests below. Requirement: the console's main
+    // window can have no pane at all (the last pane closes), and every pane
+    // action works from there. Regression they prevent: the X / ctrl-w doing
+    // nothing on the last pane, and the old `leaves[0]` / `% leaves.len()`
+    // indexing panicking once zero panes is possible. Owner: `Layout` (used
+    // by `Console::open`, `close`, `next_pane`, `new_pane`, `pop_out`). The
+    // narrowest layer: the state is plain data, so these run without GPUI.
     #[test]
-    fn close_collapses_and_keeps_last() {
+    fn close_collapses_and_the_last_close_empties() {
+        let mut layout = Layout::single();
+        let (a, b, c) = (PaneId(0), layout.alloc(), layout.alloc());
+        assert!(layout.place(b, Some(a), Axis::Row, false));
+        assert!(layout.place(c, Some(b), Axis::Column, false));
+        assert!(layout.close(c));
+        assert_eq!(layout.leaves(), vec![a, b]);
+        assert!(layout.close(b));
+        assert!(matches!(layout.root(), Some(Node::Leaf(PaneId(0)))));
+        assert_eq!(layout.active(), Some(a), "focus falls back to the pane left");
+        // The last pane closes too: nothing open, nothing focused.
+        assert!(layout.close(a));
+        assert!(layout.root().is_none());
+        assert_eq!(layout.active(), None);
+        assert!(layout.leaves().is_empty());
+        // Closing again, or a pane that never was, changes nothing.
+        assert!(!layout.close(a));
+        assert!(!layout.close(PaneId(42)));
+        assert!(layout.root().is_none());
+    }
+
+    #[test]
+    fn the_tree_alone_keeps_its_last_leaf() {
+        // `Node` cannot be empty; `Layout` is what closes the last pane.
         let mut root = Node::Leaf(PaneId(0));
-        root.split(PaneId(0), Axis::Row, PaneId(1));
-        root.split(PaneId(1), Axis::Column, PaneId(2));
-        assert!(root.close(PaneId(2)));
-        assert_eq!(ids(&root), vec![0, 1]);
-        assert!(root.close(PaneId(1)));
-        assert!(matches!(root, Node::Leaf(PaneId(0))));
         assert!(!root.close(PaneId(0)));
+        assert!(matches!(root, Node::Leaf(PaneId(0))));
+    }
+
+    #[test]
+    fn closing_another_pane_keeps_the_focus() {
+        let mut layout = Layout::single();
+        let b = layout.alloc();
+        layout.place(b, None, Axis::Row, false);
+        layout.focus(PaneId(0));
+        assert!(layout.close(b));
+        assert_eq!(layout.active(), Some(PaneId(0)));
+    }
+
+    #[test]
+    fn opening_or_splitting_from_empty_makes_the_first_pane() {
+        for axis in [Axis::Row, Axis::Column] {
+            for before in [false, true] {
+                let mut layout = Layout::single();
+                assert!(layout.close(PaneId(0)));
+                let id = layout.alloc();
+                assert_ne!(id, PaneId(0), "ids are not reused");
+                // No target: the first pane takes the whole space.
+                assert!(layout.place(id, None, axis, before));
+                assert!(matches!(layout.root(), Some(Node::Leaf(p)) if *p == id));
+                assert_eq!(layout.active(), Some(id));
+                // A split after that splits the new pane as usual.
+                let next = layout.alloc();
+                assert!(layout.place(next, None, axis, before));
+                assert_eq!(layout.leaves().len(), 2);
+                assert_eq!(layout.active(), Some(next));
+            }
+        }
+    }
+
+    #[test]
+    fn place_refuses_a_missing_target_or_a_placed_pane() {
+        let mut layout = Layout::single();
+        let id = layout.alloc();
+        assert!(!layout.place(id, Some(PaneId(9)), Axis::Row, false));
+        assert_eq!(layout.leaves(), vec![PaneId(0)]);
+        assert_eq!(layout.active(), Some(PaneId(0)));
+        assert!(!layout.place(PaneId(0), None, Axis::Row, false));
+        assert_eq!(layout.leaves(), vec![PaneId(0)]);
+    }
+
+    #[test]
+    fn focus_only_takes_a_pane_in_the_layout() {
+        let mut layout = Layout::single();
+        assert!(!layout.focus(PaneId(7)));
+        assert_eq!(layout.active(), Some(PaneId(0)));
+        layout.close(PaneId(0));
+        assert!(!layout.focus(PaneId(0)));
+        assert_eq!(layout.active(), None);
+    }
+
+    #[test]
+    fn cycle_with_zero_one_and_many_panes() {
+        let mut layout = Layout::single();
+        // One pane: cycling stays on it.
+        assert_eq!(layout.cycle(), Some(PaneId(0)));
+        assert_eq!(layout.cycle(), Some(PaneId(0)));
+        // Many: in order, wrapping.
+        let b = layout.alloc();
+        let c = layout.alloc();
+        layout.place(b, None, Axis::Row, false);
+        layout.place(c, None, Axis::Column, false);
+        layout.focus(PaneId(0));
+        assert_eq!(layout.cycle(), Some(b));
+        assert_eq!(layout.cycle(), Some(c));
+        assert_eq!(layout.cycle(), Some(PaneId(0)));
+        // Zero: nothing to focus, no panic.
+        for id in layout.leaves() {
+            layout.close(id);
+        }
+        assert!(layout.root().is_none());
+        assert_eq!(layout.cycle(), None);
+        assert_eq!(layout.active(), None);
+    }
+
+    #[test]
+    fn empty_layout_ignores_moves_and_resizes() {
+        let mut layout = Layout::single();
+        layout.close(PaneId(0));
+        assert!(!layout.move_pane(PaneId(0), PaneId(1), Zone::Left));
+        layout.resize(&[], 0, 0.5);
+        assert!(layout.root().is_none());
     }
 
     #[test]

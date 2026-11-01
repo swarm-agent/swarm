@@ -199,6 +199,12 @@ a separate profile and the extension loaded, for trying it out.
   machines. Click opens a session in the focused pane, shift-click opens it to the
   right, alt-click opens it below.
 - **Center:** split panes, side by side or stacked, each a live session.
+  A pane's header has split right, split down, open in new window and close.
+  Closing the last pane leaves "No session open" with a new-session button;
+  a session clicked in the sidebar opens a pane again. Open in new window
+  moves the pane into a window of its own, showing the same live session
+  from the same records and connection (no second copy). Closing that
+  window closes the pane and leaves the main window as it is.
 - **Tasks, in a bar above the composer:** no status sidebar and no cards in
   the conversation. The bar says how many tasks run, need you, are queued or
   done; closed, it still shows each task waiting on a decision with its
@@ -312,9 +318,9 @@ a separate profile and the extension loaded, for trying it out.
 
 | Key | Action |
 | --- | --- |
-| ctrl-d | new session in a pane to the right (the pane header's first button) |
+| ctrl-d | new session in a pane to the right (the pane header's first button; with no pane open, the first pane) |
 | ctrl-shift-d | new session in a pane below |
-| ctrl-w | close pane |
+| ctrl-w | close pane (the last one too); in a popped-out window, close it |
 | ctrl-] | next pane |
 | ctrl-b | collapse or expand the sidebar |
 | ctrl-4 | next icon style |

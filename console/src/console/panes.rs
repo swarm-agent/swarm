@@ -161,25 +161,23 @@ impl Console {
                     self.panes[a].session = sb;
                     self.panes[b].session = sa;
                 }
-                self.active = target;
+                self.layout.focus(target);
             }
             (Some(from), Some(_)) => {
-                if self.layout.move_pane(PaneId(from), target, zone) {
-                    self.active = PaneId(from);
-                }
+                // Focuses the moved pane when it moves.
+                self.layout.move_pane(PaneId(from), target, zone);
             }
             (None, None) => {
                 if let Some(p) = self.panes.iter_mut().find(|p| p.id == target) {
                     p.session = d.session;
                 }
-                self.active = target;
+                self.layout.focus(target);
             }
             (None, Some((axis, before))) => {
-                let id = PaneId(self.next_pane);
-                self.next_pane += 1;
-                if self.layout.split_at(target, axis, id, before) {
+                let id = self.layout.alloc();
+                // Only beside a pane of this layout (place focuses it).
+                if self.layout.contains(target) && self.layout.place(id, Some(target), axis, before) {
                     self.panes.push(Pane { id, session: d.session, tray: false, tab: super::background::BarTab::Tasks, scroll: gpui::ScrollHandle::new() });
-                    self.active = id;
                 }
             }
         }

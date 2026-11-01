@@ -8,7 +8,7 @@ use gpui::{
 use crate::data::{
     self, Entry, Health, Machine, Media, Project, Role, RunState, Session, TaskStatus, ToolState, Usage,
 };
-use crate::layout::{Axis, Node, PaneId};
+use crate::layout::{Axis, Layout, PaneId};
 use crate::icons::{Icon, IconStyle};
 use crate::onboarding::{Onboarding, OnboardingEvent};
 use crate::password_prompt::PasswordPrompt;
@@ -36,6 +36,7 @@ mod nav;
 mod panes;
 mod projects;
 mod permissions;
+mod popout;
 mod providers;
 mod settings;
 mod sidebar;
@@ -174,10 +175,11 @@ pub struct Console {
     /// The project the left sidebar lists.
     project: usize,
     project_menu: bool,
+    /// Every open pane: the main window's (those in `layout`) and those
+    /// popped out into their own window (see popout.rs).
     panes: Vec<Pane>,
-    layout: Node,
-    active: PaneId,
-    next_pane: usize,
+    /// The main window's split panes and focus; empty when none is open.
+    layout: Layout,
     /// Collapsed: the left sidebar shrinks to an icon rail.
     left_collapsed: bool,
     /// The status bar's fleet list is open.
@@ -433,9 +435,7 @@ impl Console {
             project: 0,
             project_menu: false,
             panes: vec![Pane { id: PaneId(0), session: 0, tray: false, tab: background::BarTab::Tasks, scroll: gpui::ScrollHandle::new() }],
-            layout: Node::Leaf(PaneId(0)),
-            active: PaneId(0),
-            next_pane: 1,
+            layout: Layout::single(),
             left_collapsed: false,
             fleet_open: false,
             search_input: None,
@@ -539,7 +539,7 @@ impl Console {
             // Three panes: one beside a stack of two, to show both split directions.
             console.open(1, Open::Right);
             console.open(2, Open::Down);
-            console.active = PaneId(0);
+            console.layout.focus(PaneId(0));
         }
         // Screenshot and demo overrides.
         if let Ok(page) = std::env::var("SWARM_CONSOLE_PAGE") {
@@ -577,7 +577,9 @@ impl Console {
             console.agents_focus = AgentsFocus::Cell(2, 1);
         }
         if std::env::var("SWARM_CONSOLE_TRAY").is_ok() {
-            console.panes[0].tray = true;
+            if let Some(p) = console.panes.first_mut() {
+                p.tray = true;
+            }
             console.expanded.insert((0, 0));
         }
         console
@@ -610,9 +612,9 @@ impl Console {
     }
 
     fn active_session(&self) -> usize {
-        self.panes
-            .iter()
-            .find(|p| p.id == self.active)
+        self.layout
+            .active()
+            .and_then(|a| self.panes.iter().find(|p| p.id == a))
             .map(|p| p.session)
             .unwrap_or(0)
     }
@@ -621,33 +623,31 @@ impl Console {
         self.panes.iter().any(|p| p.session == session)
     }
 
+    /// Shows `session` in the main window: in the focused pane (Here) or a
+    /// new pane beside or below it. With no pane open, any of them opens
+    /// the first pane.
     fn open(&mut self, session: usize, how: Open) {
-        match how {
-            Open::Here => {
-                if let Some(pane) = self.panes.iter_mut().find(|p| p.id == self.active) {
+        if how == Open::Here {
+            if let Some(active) = self.layout.active() {
+                if let Some(pane) = self.panes.iter_mut().find(|p| p.id == active) {
                     pane.session = session;
                 }
+                return;
             }
-            Open::Right | Open::Down => {
-                let axis = if matches!(how, Open::Right) { Axis::Row } else { Axis::Column };
-                let id = PaneId(self.next_pane);
-                self.next_pane += 1;
-                if self.layout.split(self.active, axis, id) {
-                    self.panes.push(Pane { id, session, tray: false, tab: background::BarTab::Tasks, scroll: gpui::ScrollHandle::new() });
-                    self.active = id;
-                }
-            }
+        }
+        let axis = if how == Open::Down { Axis::Column } else { Axis::Row };
+        let id = self.layout.alloc();
+        if self.layout.place(id, None, axis, false) {
+            self.panes.push(Pane { id, session, tray: false, tab: background::BarTab::Tasks, scroll: gpui::ScrollHandle::new() });
         }
     }
 
+    /// Closes a pane of the main window; the last one leaves it empty.
     fn close(&mut self, id: PaneId) {
         if self.layout.close(id) {
             self.panes.retain(|p| p.id != id);
-            if self.active == id {
-                let mut leaves = Vec::new();
-                self.layout.leaves(&mut leaves);
-                self.active = leaves[0];
-            }
+            // The keyboard goes to the pane focused now, or the console.
+            self.pending_focus = true;
         }
     }
 
@@ -660,21 +660,21 @@ impl Console {
     // Actions
 
     fn split_right(&mut self, _: &SplitRight, _: &mut Window, cx: &mut Context<Self>) {
-        self.new_pane(self.active.0, Open::Right, cx);
+        self.new_pane(self.layout.active().map(|a| a.0), Open::Right, cx);
     }
     fn split_down(&mut self, _: &SplitDown, _: &mut Window, cx: &mut Context<Self>) {
-        self.new_pane(self.active.0, Open::Down, cx);
+        self.new_pane(self.layout.active().map(|a| a.0), Open::Down, cx);
     }
     fn close_pane(&mut self, _: &ClosePane, _: &mut Window, cx: &mut Context<Self>) {
-        self.close(self.active);
-        cx.notify();
+        if let Some(active) = self.layout.active() {
+            self.close(active);
+            cx.notify();
+        }
     }
     fn next_pane(&mut self, _: &NextPane, _: &mut Window, cx: &mut Context<Self>) {
-        let mut leaves = Vec::new();
-        self.layout.leaves(&mut leaves);
-        let i = leaves.iter().position(|p| *p == self.active).unwrap_or(0);
-        self.active = leaves[(i + 1) % leaves.len()];
-        cx.notify();
+        if self.layout.cycle().is_some() {
+            cx.notify();
+        }
     }
     fn toggle_left(&mut self, _: &ToggleLeft, _: &mut Window, cx: &mut Context<Self>) {
         self.left_collapsed = !self.left_collapsed;
@@ -836,6 +836,12 @@ impl Console {
         self.icon_in(self.icon_style(), icon, size, color)
     }
 
+    /// An icon button with its name on hover.
+    fn icon_button_tip(&self, id: impl Into<SharedString>, icon: Icon, tip: &'static str) -> Stateful<Div> {
+        let (bg, fg, border) = (self.theme.surface, self.theme.text, self.theme.border);
+        self.icon_button(id, icon).tooltip(move |_, cx| cx.new(|_| TextTooltip { text: tip.into(), bg, fg, border }).into())
+    }
+
     fn icon_button(&self, id: impl Into<SharedString>, icon: Icon) -> Stateful<Div> {
         let t = &self.theme;
         let hover = t.hover;
@@ -968,6 +974,42 @@ impl Console {
 
     // Session panes
 
+    /// The main window with every pane closed: a line saying so and the
+    /// sidebar's new-session button. A session clicked in the sidebar, or
+    /// dropped here, opens the first pane again.
+    fn render_no_pane(&self, cx: &mut Context<Self>) -> AnyElement {
+        let t = &self.theme;
+        let tint = alpha(t.accent, 0.12);
+        div()
+            .id("no-pane")
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .rounded(px(t.radius + 2.))
+            .drag_over::<panes::Dragged>(move |s, _, _, _| s.bg(tint))
+            .on_drop(cx.listener(|this, d: &panes::Dragged, _, cx| {
+                this.open(d.session, Open::Here);
+                this.page = Page::Sessions;
+                cx.notify();
+            }))
+            .child(div().text_color(t.faint).child("No session open"))
+            .child(
+                self.button("no-pane-new-session", "", false)
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.new_session(window, cx)))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .py(px(4.))
+                    .child(self.icon(Icon::Plus, 12., t.muted))
+                    .child("new session"),
+            )
+            .into_any_element()
+    }
+
     fn render_pane(&self, id: PaneId, cx: &mut Context<Self>) -> AnyElement {
         let _timed = Timed::new("render_pane");
         let t = &self.theme;
@@ -985,7 +1027,10 @@ impl Console {
                 pane.scroll.scroll_to_bottom();
             }
         }
-        let active = id == self.active;
+        // A pane in its own window (popout.rs): the main window's layout
+        // does not hold it, so it has no splits and no focus there.
+        let popped = !self.layout.contains(id);
+        let active = popped || self.layout.active() == Some(id);
         let (glyph, color) = self.state_glyph(s.state);
         let machine = self.machines[s.machine].name.clone();
         let pid = id.0;
@@ -993,8 +1038,7 @@ impl Console {
         let ghost = self.ghost(s.title.clone());
         let header = div()
             .id(SharedString::from(format!("pane-head-{pid}")))
-            .on_drag(panes::Dragged { session: si, pane: Some(pid) }, move |_, _, _, cx| cx.new(|_| ghost.clone()))
-            .cursor_grab()
+            .when(!popped, |d| d.on_drag(panes::Dragged { session: si, pane: Some(pid) }, move |_, _, _, cx| cx.new(|_| ghost.clone())).cursor_grab())
             .flex_none()
             .h(px(32.))
             .flex()
@@ -1050,23 +1094,36 @@ impl Console {
             )
             .children(self.context_meter(si, pid, cx))
             .children(self.session_actions(si, pid, cx))
+            .when(!popped, |d| {
+                d.child(
+                    self.icon_button_tip(SharedString::from(format!("pane-right-{pid}")), Icon::SplitRight, "Split right")
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.new_pane(Some(pid), Open::Right, cx);
+                        })),
+                )
+                .child(
+                    self.icon_button_tip(SharedString::from(format!("pane-down-{pid}")), Icon::SplitDown, "Split down")
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.new_pane(Some(pid), Open::Down, cx);
+                        })),
+                )
+                .child(
+                    self.icon_button_tip(SharedString::from(format!("pane-window-{pid}")), Icon::PopOut, "Open in new window")
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.pop_out(PaneId(pid), cx);
+                        })),
+                )
+            })
             .child(
-                self.icon_button(SharedString::from(format!("pane-right-{pid}")), Icon::SplitRight)
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.new_pane(pid, Open::Right, cx);
-                    })),
-            )
-            .child(
-                self.icon_button(SharedString::from(format!("pane-down-{pid}")), Icon::SplitDown)
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.new_pane(pid, Open::Down, cx);
-                    })),
-            )
-            .child(
-                self.icon_button(SharedString::from(format!("pane-close-{pid}")), Icon::Close)
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.close(PaneId(pid));
-                        cx.notify();
+                self.icon_button_tip(SharedString::from(format!("pane-close-{pid}")), Icon::Close, if popped { "Close window" } else { "Close" })
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        if popped {
+                            // Its window goes; the pane goes with it (popout.rs).
+                            window.remove_window();
+                        } else {
+                            this.close(PaneId(pid));
+                            cx.notify();
+                        }
                     })),
             );
 
@@ -1345,8 +1402,7 @@ impl Console {
             .bg(t.surface)
             .overflow_hidden()
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                if this.active != PaneId(pid) {
-                    this.active = PaneId(pid);
+                if this.layout.active() != Some(PaneId(pid)) && this.layout.focus(PaneId(pid)) {
                     cx.notify();
                 }
             }))
@@ -1391,7 +1447,7 @@ impl Console {
                     )
             }))
             .child(composer)
-            .when(cx.has_active_drag(), |d| d.child(self.drop_zones(pid, cx)))
+            .when(!popped && cx.has_active_drag(), |d| d.child(self.drop_zones(pid, cx)))
             .into_any_element()
     }
 
@@ -1701,7 +1757,7 @@ impl Render for Console {
         }
         if self.pending_focus {
             self.pending_focus = false;
-            match self.composers.get(&self.active.0) {
+            match self.layout.active().and_then(|a| self.composers.get(&a.0)) {
                 Some(input) if self.link != Link::Demo => window.focus(&input.focus_handle(cx)),
                 _ => window.focus(&self.focus),
             }
@@ -1760,7 +1816,10 @@ impl Render for Console {
                             .min_w_0()
                             .flex()
                             .p(px(6.))
-                            .child(self.render_node(&layout, vec![], cx)),
+                            .child(match layout.root() {
+                                Some(root) => self.render_node(root, vec![], cx),
+                                None => self.render_no_pane(cx),
+                            }),
                         Page::Media => div().flex_1().min_w_0().child(self.render_media(cx)),
                         Page::Usage => div().flex_1().min_w_0().child(self.render_usage(cx)),
                         Page::Fleet => div().flex_1().min_w_0().child(self.render_fleet(cx)),

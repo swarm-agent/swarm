@@ -114,7 +114,8 @@ impl Console {
 
     /// The title of the conversation in the focused pane.
     fn active_session_title(&self) -> Option<SharedString> {
-        let pane = self.panes.iter().find(|p| p.id == self.active)?;
+        let active = self.layout.active()?;
+        let pane = self.panes.iter().find(|p| p.id == active)?;
         let s = self.sessions.get(pane.session)?;
         Some(s.title.clone())
     }

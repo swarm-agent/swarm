@@ -432,7 +432,8 @@ impl Console {
         // On connecting, the first pane shows the newest session of the project.
         if first {
             let newest = self.ordered(self.project).into_iter().find(|i| self.sessions[*i].live.is_some());
-            if let (Some(i), Some(pane)) = (newest, self.panes.first_mut()) {
+            let lead = self.layout.leaves().first().copied();
+            if let (Some(i), Some(pane)) = (newest, self.panes.iter_mut().find(|p| Some(p.id) == lead)) {
                 if self.sessions[pane.session].live.is_none() && self.sessions[pane.session].entries.is_empty() {
                     pane.session = i;
                 }
@@ -563,8 +564,10 @@ impl Console {
         });
         self.open(si, Open::Here);
         self.page = super::Page::Sessions;
-        if let Some(input) = self.composers.get(&self.active.0) {
-            window.focus(&input.focus_handle(cx));
+        match self.layout.active().and_then(|a| self.composers.get(&a.0)) {
+            Some(input) => window.focus(&input.focus_handle(cx)),
+            // A pane just opened (none was): its box exists after the next render.
+            None => self.pending_focus = true,
         }
         cx.notify();
     }

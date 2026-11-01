@@ -136,10 +136,14 @@ pub(super) fn matching(text: &str) -> Vec<(&'static str, &'static str)> {
 }
 
 impl Console {
-    /// Opens a new, empty session in a pane beside or below `pid`.
-    pub(super) fn new_pane(&mut self, pid: usize, how: Open, cx: &mut Context<Self>) {
-        self.active = PaneId(pid);
-        let project = self.panes.iter().find(|p| p.id.0 == pid).map(|p| self.sessions[p.session].project).unwrap_or(self.project);
+    /// Opens a new, empty session in a pane beside or below `pid` (the
+    /// focused pane when `pid` is not in the main window; the first pane
+    /// when none is open).
+    pub(super) fn new_pane(&mut self, pid: Option<usize>, how: Open, cx: &mut Context<Self>) {
+        if let Some(pid) = pid {
+            self.layout.focus(PaneId(pid));
+        }
+        let project = pid.and_then(|pid| self.panes.iter().find(|p| p.id.0 == pid)).map(|p| self.sessions[p.session].project).unwrap_or(self.project);
         let unused = (0..self.sessions.len()).find(|i| {
             let s = &self.sessions[*i];
             s.live.is_none() && s.entries.is_empty() && s.project == project && !self.is_open(*i)
@@ -158,7 +162,7 @@ impl Console {
     pub(super) fn slash(&mut self, pid: usize, text: &str, cx: &mut Context<Self>) {
         let Some(si) = self.panes.iter().find(|p| p.id.0 == pid).map(|p| p.session) else { return };
         match parse(text) {
-            Slash::New(how) => self.new_pane(pid, how, cx),
+            Slash::New(how) => self.new_pane(Some(pid), how, cx),
             Slash::Stop => {
                 if self.sessions[si].live.is_some() {
                     self.act(si, Act::Stop, cx);
