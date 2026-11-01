@@ -123,10 +123,15 @@ func hostBashExec(scope WorkspaceScope, command string) bashExec {
 		cmd.Stdout = out
 		cmd.Stderr = out
 
-		stopWatchingCancel := watchCommandCancellation(ctx, cmd)
-		defer stopWatchingCancel()
-
-		err = cmd.Run()
+		// The watcher reads cmd.Process, which Start writes: start it only
+		// once Start has returned (a context ended in between is seen at
+		// once by the watcher).
+		err = cmd.Start()
+		if err == nil {
+			stopWatchingCancel := watchCommandCancellation(ctx, cmd)
+			err = cmd.Wait()
+			stopWatchingCancel()
+		}
 
 		timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 		exitCode := 0

@@ -138,3 +138,44 @@ func TestBackgroundBashWaitRespectsTheServerCap(t *testing.T) {
 		t.Fatal("a refused call changed the command")
 	}
 }
+
+// Purpose: stopping the background registry (Runtime.Close) drains every
+// command goroutine, including its end report, before it returns, so no
+// report reaches the session store after the daemon (or a test) closes it.
+// Threat (gate finding): a wait returns when its command's done channel
+// closes, but the report runs after that on the command goroutine; the test
+// returned, its cleanup closed the Pebble store, and the late report
+// panicked in deliverBackgroundReport. Negative: a command launched after
+// shutdown began is stopped and never reports. Authority:
+// backgroundCommands.launch (active), backgroundCommands.stopAll. Layer:
+// the background registry over the real fixture store.
+func TestBackgroundBashWaitThenStopDrainsTheReport(t *testing.T) {
+	f := newBGFixture(t, "s-drain")
+	payload, err := f.bash(t, "s-drain", map[string]any{"command": "echo drained", "background": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := payload["background_id"].(string)
+	if _, err := f.bash(t, "s-drain", map[string]any{"background_id": id, "command": "wait", "wait_seconds": 10}); err != nil {
+		t.Fatal(err)
+	}
+	f.runtime.background.stopAll()
+	select {
+	case got := <-f.reported:
+		if got != id {
+			t.Fatalf("reported %s, want %s", got, id)
+		}
+	default:
+		t.Fatal("stopAll returned before the command's report finished")
+	}
+	// After shutdown began, a new command is stopped and does not report.
+	if _, err := f.bash(t, "s-drain", map[string]any{"command": "echo late", "background": true}); err == nil {
+		t.Fatal("a command was adopted after shutdown began")
+	}
+	f.runtime.background.stopAll()
+	select {
+	case got := <-f.reported:
+		t.Fatalf("a command reported after shutdown: %s", got)
+	default:
+	}
+}

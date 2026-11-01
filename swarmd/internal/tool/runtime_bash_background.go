@@ -196,7 +196,15 @@ type backgroundCommands struct {
 	// by the restart, never as a bare exit code.
 	closing     chan struct{}
 	closingOnce sync.Once
+	// active counts command goroutines, including their end report:
+	// stopAll drains them (bounded by backgroundStopDrain) so no report
+	// reaches the session store after the runtime is closed.
+	active sync.WaitGroup
 }
+
+// backgroundStopDrain bounds how long stopAll waits for command goroutines
+// and their reports to finish after cancelling the commands.
+const backgroundStopDrain = 10 * time.Second
 
 func newBackgroundCommands() *backgroundCommands {
 	return &backgroundCommands{byID: map[string]*backgroundCommand{}, bySession: map[string][]*backgroundCommand{}, closing: make(chan struct{})}
@@ -233,6 +241,11 @@ func (b *backgroundCommands) runningCountsLocked(sessionID, accountID string) (i
 func (b *backgroundCommands) adopt(c *backgroundCommand) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	select {
+	case <-b.closing:
+		return errors.New("background commands are stopping: the daemon is shutting down")
+	default:
+	}
 	session, account := b.runningCountsLocked(c.sessionID, c.principal.AccountScopeID)
 	if session >= maxBackgroundCommandsPerSession {
 		return fmt.Errorf("this conversation already has %d background commands running (limit %d): wait for one to end or kill one with background_id and command=kill", session, maxBackgroundCommandsPerSession)
@@ -355,6 +368,16 @@ func (b *backgroundCommands) stopAll() {
 		}
 		c.cancel()
 	}
+	drained := make(chan struct{})
+	go func() {
+		b.active.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(backgroundStopDrain):
+		log.Printf("swarmd background commands: still ending after %s at shutdown", backgroundStopDrain)
+	}
 }
 
 func (b *backgroundCommands) running(sessionID string) bool {
@@ -393,7 +416,26 @@ func (b *backgroundCommands) start(parent context.Context, scope WorkspaceScope,
 // launch starts the command goroutine. Completion reports only adopted,
 // not-stopped, not-killed commands.
 func (b *backgroundCommands) launch(c *backgroundCommand, exec bashExec) {
+	// Counted under b.mu so stopAll (which closes b.closing before taking
+	// b.mu) never waits while a new goroutine is being added. A command
+	// launched after shutdown began is stopped at once and never reports.
+	b.mu.Lock()
+	tracked := false
+	select {
+	case <-b.closing:
+		c.mu.Lock()
+		c.stopped, c.stoppedByShutdown = true, true
+		c.mu.Unlock()
+		c.cancel()
+	default:
+		b.active.Add(1)
+		tracked = true
+	}
+	b.mu.Unlock()
 	go func() {
+		if tracked {
+			defer b.active.Done()
+		}
 		outcome := exec.run(c.ctx, backgroundCommandBudget, c.sink.write)
 		c.mu.Lock()
 		c.outcome = outcome
