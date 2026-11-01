@@ -35,13 +35,23 @@ const (
 	ProjectTaskCountInProgress = "in_progress"
 	// ProjectTaskCountWaiting: queued for capacity; nobody has to act.
 	ProjectTaskCountWaiting = "waiting"
-	// ProjectTaskCountNeedsAttention: the person must act. The task is
+	// ProjectTaskCountNeedsAttention: the person must act. The task's run is
 	// blocked, failed (not stopped), waiting for approval or a question, or
-	// finished within the last 7 days with work to hand over (ready to
-	// integrate, a workflow that blocked or failed) and no workflow handing
-	// it over. Never a pushed, delivered, integrated, finished (nothing to
-	// integrate) or stopped task, an archived one, or a workflow's own task.
+	// it finished within the last 7 days with work to hand over (ready to
+	// integrate) and no workflow handing it over. Never a pushed, delivered,
+	// integrated, finished (nothing to integrate) or stopped task, an
+	// archived one, a workflow's own task, or a workflow delivery that ended
+	// unsuccessfully (blocked_infra, workflow_failed).
 	ProjectTaskCountNeedsAttention = "needs_attention"
+	// ProjectTaskCountBlockedInfra: its workflow delivery ended because a
+	// step could not run (outcome "error …": checkout, environment, lease,
+	// script missing or unusable), within the last 7 days. An infrastructure
+	// problem, not the work's; nothing waits on the person.
+	ProjectTaskCountBlockedInfra = "blocked_infra"
+	// ProjectTaskCountWorkflowFailed: its workflow delivery ended blocked or
+	// failed (a check or review ended it, including sent back until its
+	// rounds ran out), within the last 7 days. Nothing waits on the person.
+	ProjectTaskCountWorkflowFailed = "workflow_failed"
 	// ProjectTaskCountIdle: finished over 7 days ago (progress idle) with
 	// work never handed over: nobody is waiting on it, so it is not called
 	// attention.
@@ -54,7 +64,20 @@ const (
 // NewProjectTaskOutcomeCounts is a zero count for every bucket, so a reader
 // sees every bucket and never infers one from a missing key.
 func NewProjectTaskOutcomeCounts() map[string]int {
-	return map[string]int{ProjectTaskCountDone: 0, ProjectTaskCountInProgress: 0, ProjectTaskCountWaiting: 0, ProjectTaskCountNeedsAttention: 0, ProjectTaskCountIdle: 0, ProjectTaskCountStopped: 0}
+	return map[string]int{ProjectTaskCountDone: 0, ProjectTaskCountInProgress: 0, ProjectTaskCountWaiting: 0, ProjectTaskCountNeedsAttention: 0, ProjectTaskCountBlockedInfra: 0, ProjectTaskCountWorkflowFailed: 0, ProjectTaskCountIdle: 0, ProjectTaskCountStopped: 0}
+}
+
+// ProjectTaskBucketNeedsAttention reports whether a task in bucket needs
+// someone to act before its work moves again: needs_attention (the person
+// must act), blocked_infra (fix the machine, then rerun the failed steps) and
+// workflow_failed (send the task back or archive it). Only needs_attention's
+// needs_you state waits on the person.
+func ProjectTaskBucketNeedsAttention(bucket string) bool {
+	switch bucket {
+	case ProjectTaskCountNeedsAttention, ProjectTaskCountBlockedInfra, ProjectTaskCountWorkflowFailed:
+		return true
+	}
+	return false
 }
 
 // ProjectTaskCountBucket is the bucket of one task from its status and its
@@ -95,6 +118,14 @@ func ProjectTaskCountBucket(status, outcome string, stale, idle bool) string {
 	if idle {
 		return ProjectTaskCountIdle
 	}
+	switch word {
+	case "error":
+		// "error <step> (infrastructure: <kind>)": a step could not run.
+		return ProjectTaskCountBlockedInfra
+	case "blocked", "failed":
+		// A check or review ended the delivery.
+		return ProjectTaskCountWorkflowFailed
+	}
 	return ProjectTaskCountNeedsAttention
 }
 
@@ -102,21 +133,25 @@ func ProjectTaskCountBucket(status, outcome string, stale, idle bool) string {
 // stale and idle flags: ProjectTaskCountBucket, except that an archived task
 // (the person put it away) and a task a workflow step started (a reviewer
 // run, whose work and outcome belong to the task it serves) never wait on
-// the person: what would be needs_attention or idle counts as done. List
-// counts use it on this machine and on linked machines.
+// the person: what would be needs_attention, blocked_infra, workflow_failed
+// or idle counts as done. List counts use it on this machine and on linked
+// machines.
 func ProjectTaskBucket(task ProjectTaskRecord, outcome string, stale, idle bool) string {
 	bucket := ProjectTaskCountBucket(task.Status, outcome, stale, idle)
-	if (bucket == ProjectTaskCountNeedsAttention || bucket == ProjectTaskCountIdle) && (task.Archived || ProjectTaskWorkflowSpawned(task)) {
+	if (ProjectTaskBucketNeedsAttention(bucket) || bucket == ProjectTaskCountIdle) && (task.Archived || ProjectTaskWorkflowSpawned(task)) {
 		return ProjectTaskCountDone
 	}
 	return bucket
 }
 
-// ProjectTaskNeedsAttention is the one decision whether the person must act
-// on task: its list row's needs_attention, get_task's needs_attention and
-// the needs_attention count all read it, here and on linked machines.
+// ProjectTaskNeedsAttention is the one decision whether someone must act on
+// task before its work moves again: its list row's needs_attention and
+// get_task's needs_attention read it, here and on linked machines. It is true
+// for the needs_attention, blocked_infra and workflow_failed count buckets
+// (ProjectTaskBucketNeedsAttention); only the needs_you state waits on the
+// person.
 func ProjectTaskNeedsAttention(task ProjectTaskRecord, outcome string, stale, idle bool) bool {
-	return ProjectTaskBucket(task, outcome, stale, idle) == ProjectTaskCountNeedsAttention
+	return ProjectTaskBucketNeedsAttention(ProjectTaskBucket(task, outcome, stale, idle))
 }
 
 // Task states: where a task's work is, in one word. A task record's Status
@@ -133,10 +168,24 @@ const (
 	// provider's usage limit to reset (it continues by itself at the reset).
 	// Count bucket waiting.
 	ProjectTaskStateWaiting = "waiting"
-	// ProjectTaskStateNeedsYou: the person must act: approval, a question,
-	// a blocked or failed run or workflow (including sent back until its
-	// rounds ran out). Count bucket needs_attention.
+	// ProjectTaskStateNeedsYou: the person must act: a pending approval or
+	// question, or a blocked or failed agent run. Never a workflow delivery
+	// that ended unsuccessfully (blocked_infra, workflow_failed). Count
+	// bucket needs_attention.
 	ProjectTaskStateNeedsYou = "needs_you"
+	// ProjectTaskStateBlockedInfra: the workflow delivery ended because a
+	// step could not run (its checkout, the environment, the lease, a
+	// missing or unusable script): an infrastructure problem, not the work.
+	// Nothing waits on the person; fix the machine or folder, then rerun the
+	// failed steps. Count bucket blocked_infra (idle once 7 days old, as
+	// not_integrated).
+	ProjectTaskStateBlockedInfra = "blocked_infra"
+	// ProjectTaskStateWorkflowFailed: the workflow delivery ended blocked or
+	// failed: a check or review ended it (including sent back until its
+	// rounds ran out). Nothing waits on the person; send the task back with
+	// the findings, or archive it. Count bucket workflow_failed (idle once 7
+	// days old, as not_integrated).
+	ProjectTaskStateWorkflowFailed = "workflow_failed"
 	// ProjectTaskStateLanded: the work was handed over: pushed, delivered or
 	// integrated. Count bucket done.
 	ProjectTaskStateLanded = "landed"
@@ -153,10 +202,19 @@ const (
 	ProjectTaskStateStopped = "stopped"
 )
 
+// What a blocked_infra or workflow_failed task's state reason says comes
+// next. get_task also names the call (next_action); wake rows carry it in
+// task_state_reason.
+const (
+	ProjectTaskBlockedInfraNext   = "an infrastructure problem, not the work; nothing for a coder to fix and nothing waits on the person; next: fix the machine or folder, then rerun the failed steps"
+	ProjectTaskWorkflowFailedNext = "a check or review ended it; nothing waits on the person; next: send the task back with the findings, or archive it"
+)
+
 // ProjectTaskState is the task's state and a one-line reason, from the same
 // inputs and the same bucket as ProjectTaskBucket (the list counts), so a
 // state never disagrees with its count: landed and done count done, running
-// in_progress, waiting waiting, needs_you needs_attention, stopped stopped,
+// in_progress, waiting waiting, needs_you needs_attention, blocked_infra
+// blocked_infra, workflow_failed workflow_failed, stopped stopped,
 // not_integrated needs_attention (or idle once 7 days old).
 func ProjectTaskState(task ProjectTaskRecord, outcome string, stale, idle bool) (string, string) {
 	state, reason := projectTaskState(task, outcome, stale, idle)
@@ -216,6 +274,12 @@ func projectTaskState(task ProjectTaskRecord, outcome string, stale, idle bool) 
 			return ProjectTaskStateDone, "finished; nothing to integrate"
 		}
 		return ProjectTaskStateDone, task.Status
+	case ProjectTaskCountBlockedInfra:
+		// A workflow step's script never ran (its checkout, the
+		// environment, the lease): an infrastructure problem.
+		return ProjectTaskStateBlockedInfra, "workflow " + outcome + ": " + ProjectTaskBlockedInfraNext
+	case ProjectTaskCountWorkflowFailed:
+		return ProjectTaskStateWorkflowFailed, "workflow " + outcome + "; " + ProjectTaskWorkflowFailedNext
 	}
 	// needs_attention or idle.
 	switch task.Status {
@@ -232,20 +296,12 @@ func projectTaskState(task ProjectTaskRecord, outcome string, stale, idle bool) 
 	}
 	switch word {
 	case "error":
-		// A workflow step's script never ran (its checkout, the
-		// environment, the lease): an infrastructure problem.
-		reason := "workflow " + outcome + ": an infrastructure problem, not the work; nothing for a coder to fix, rerun the workflow once the machine or folder is fixed"
-		if idle {
-			return ProjectTaskStateNotIntegrated, reason + "; idle over 7 days"
-		}
-		return ProjectTaskStateNeedsYou, reason
+		// Only idle reaches here (blocked_infra above otherwise): not
+		// attention any more; its work was never handed over.
+		return ProjectTaskStateNotIntegrated, "workflow " + outcome + ": an infrastructure problem, not the work; idle over 7 days"
 	case "blocked", "failed":
-		reason := "workflow " + outcome
-		if idle {
-			// Not attention any more; its work was never handed over.
-			return ProjectTaskStateNotIntegrated, reason + "; idle over 7 days"
-		}
-		return ProjectTaskStateNeedsYou, reason
+		// Only idle reaches here (workflow_failed above otherwise).
+		return ProjectTaskStateNotIntegrated, "workflow " + outcome + "; idle over 7 days"
 	case "ready":
 		reason := "work not handed over"
 		if branch := strings.TrimSpace(task.WorktreeBranch); branch != "" {
@@ -324,7 +380,7 @@ func ProjectTaskBucketLive(task ProjectTaskRecord, outcome string, stale, idle b
 // ProjectTaskNeedsAttentionLive is ProjectTaskNeedsAttention with the run's
 // live state.
 func ProjectTaskNeedsAttentionLive(task ProjectTaskRecord, outcome string, stale, idle bool, live *ProjectTaskLive) bool {
-	return ProjectTaskBucketLive(task, outcome, stale, idle, live) == ProjectTaskCountNeedsAttention
+	return ProjectTaskBucketNeedsAttention(ProjectTaskBucketLive(task, outcome, stale, idle, live))
 }
 
 // ProjectTaskStateLive is ProjectTaskState with the run's live state, in the
@@ -407,7 +463,8 @@ func ProjectTaskMediaDeliverable(d ProjectTaskDeliverable) bool {
 // created with the placeholder "pending" that nothing keeps in step with the
 // work, so while it carries that placeholder it reads from the task state:
 // running: in progress; waiting: not started; landed: delivered; done: ready;
-// not_integrated: on branch; needs_you: needs you; stopped: stopped. A media
+// not_integrated: on branch; needs_you: needs you; blocked_infra: blocked
+// (infrastructure); workflow_failed: workflow failed; stopped: stopped. A media
 // deliverable, or one whose stored status was set explicitly (ready,
 // accepted, …), keeps its stored status. This is the one rule every surface
 // (get_task, the task routes, the Orchestrator's prompt block) uses.
@@ -427,6 +484,10 @@ func ProjectTaskDeliverableStatus(d ProjectTaskDeliverable, state string) string
 		return "not started"
 	case ProjectTaskStateNeedsYou:
 		return "needs you"
+	case ProjectTaskStateBlockedInfra:
+		return "blocked (infrastructure)"
+	case ProjectTaskStateWorkflowFailed:
+		return "workflow failed"
 	case ProjectTaskStateDone:
 		return "ready"
 	case ProjectTaskStateStopped:

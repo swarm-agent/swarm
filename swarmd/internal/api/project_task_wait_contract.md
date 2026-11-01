@@ -100,6 +100,14 @@ changing the run.
     labels is in the same row: `failure` (a failed run's last error),
     `reopen_failure` (a reopen) or the failed step's `error`. The milestone
     label stays one line too.
+  - `task_state` is the state `get_task` shows (`pebblestore.ProjectTaskState`).
+    Only `needs_you` waits on the person (a pending request, with
+    `pending_request`, or a blocked/failed agent run). A delivery a step
+    could not run (`error` with `error_kind`) reads `blocked_infra`, its
+    reason ending "next: fix the machine or folder, then rerun the failed
+    steps"; one a check or review ended (`blocked`/`failed`, including out
+    of rounds) reads `workflow_failed`, "next: send the task back with the
+    findings, or archive it". Local and linked rows carry the same word.
   - `delivery_id` and `workflow_steps_result` describe the shown delivery:
     per finished step `id`, `type`, `status` (`error` with `error_kind` for a
     run step whose script never started: an infrastructure problem, never

@@ -10,13 +10,16 @@ import (
 // person's stop only when cancelled with stop_task's or the session stop's
 // reason; quota, shutdown or other cancellations and failed runs are not. A
 // task counts by its outcome once its run ended: pushed/delivered/integrated
-// are done, running/sent_back/workflow pending in progress, blocked, failed
-// and ready to integrate need attention; finished (nothing to integrate) is
+// are done, running/sent_back/workflow pending in progress, ready to
+// integrate needs attention, a workflow error (a step could not run) is
+// blocked_infra and a blocked or failed workflow is workflow_failed (both
+// within 7 days; nothing waits on the person); finished (nothing to integrate) is
 // done; a finished task idle for over 7 days with work never handed over is
 // idle, not attention, while idle never hides a failed/blocked status or a
 // stop; a stopped or stale task is stopped whatever its outcome; a failed
 // status needs attention even after an earlier push. Threat: needs_review
-// counted as waiting for review, hundreds of long-finished tasks called
+// counted as waiting for review, an infrastructure error or a failed check
+// counted as waiting on the person, hundreds of long-finished tasks called
 // "needing attention", a stop counted as a failure, or a quota cancellation
 // hidden as a stop. Owners:
 // ProjectTaskRunStoppedByPerson and ProjectTaskCountBucket (pure; the api
@@ -56,8 +59,14 @@ func TestProjectTaskStoppedAndCountRules(t *testing.T) {
 		{"needs_input", "", false, false, ProjectTaskCountNeedsAttention},
 		{"needs_review", "stopped", false, false, ProjectTaskCountStopped},
 		{"needs_review", "delivered files ready", false, false, ProjectTaskCountDone},
-		{"needs_review", "blocked rounds_exhausted: step send-back", false, false, ProjectTaskCountNeedsAttention},
-		{"needs_review", "failed push", false, false, ProjectTaskCountNeedsAttention},
+		// A workflow delivery that ended unsuccessfully waits on nobody: its
+		// own buckets, not needs_attention.
+		{"needs_review", "blocked rounds_exhausted: step send-back", false, false, ProjectTaskCountWorkflowFailed},
+		{"needs_review", "failed push", false, false, ProjectTaskCountWorkflowFailed},
+		{"needs_review", "error console (infrastructure: checkout)", false, false, ProjectTaskCountBlockedInfra},
+		{"needs_review", "error console (infrastructure: checkout)", false, true, ProjectTaskCountIdle},
+		// A failed run status still needs the person, whatever the workflow.
+		{"failed", "error console (infrastructure: checkout)", false, false, ProjectTaskCountNeedsAttention},
 		{"needs_review", "ready to integrate", false, false, ProjectTaskCountNeedsAttention},
 		{"needs_review", "", false, false, ProjectTaskCountNeedsAttention},
 		{"failed", "pushed 0123456789ab", false, false, ProjectTaskCountNeedsAttention},
@@ -86,12 +95,12 @@ func TestProjectTaskStoppedAndCountRules(t *testing.T) {
 		}
 	}
 	counts := NewProjectTaskOutcomeCounts()
-	for _, bucket := range []string{ProjectTaskCountDone, ProjectTaskCountInProgress, ProjectTaskCountWaiting, ProjectTaskCountNeedsAttention, ProjectTaskCountIdle, ProjectTaskCountStopped} {
+	for _, bucket := range []string{ProjectTaskCountDone, ProjectTaskCountInProgress, ProjectTaskCountWaiting, ProjectTaskCountNeedsAttention, ProjectTaskCountBlockedInfra, ProjectTaskCountWorkflowFailed, ProjectTaskCountIdle, ProjectTaskCountStopped} {
 		if n, ok := counts[bucket]; !ok || n != 0 {
 			t.Fatalf("zero counts miss %s: %v", bucket, counts)
 		}
 	}
-	if len(counts) != 6 {
+	if len(counts) != 8 {
 		t.Fatalf("zero counts = %v", counts)
 	}
 }
@@ -135,12 +144,19 @@ func TestProjectTaskNeedsAttentionIsTheCountsRule(t *testing.T) {
 		{"archived failure", ProjectTaskRecord{ID: "t", Status: "failed", Archived: true}, "", false, false, ProjectTaskCountDone},
 		{"archived commits", ProjectTaskRecord{ID: "t", Status: "needs_review", Archived: true}, "ready to integrate", false, false, ProjectTaskCountDone},
 		{"archived queued", ProjectTaskRecord{ID: "t", Status: "queued", Archived: true}, "", false, false, ProjectTaskCountWaiting},
+		// A workflow that ended unsuccessfully needs someone to act (the
+		// row's needs_attention) without waiting on the person.
+		{"workflow error", ProjectTaskRecord{ID: "t", Status: "needs_review"}, "error console (infrastructure: lease)", false, false, ProjectTaskCountBlockedInfra},
+		{"workflow failed", ProjectTaskRecord{ID: "t", Status: "needs_review"}, "failed gate", false, false, ProjectTaskCountWorkflowFailed},
+		{"archived workflow error", ProjectTaskRecord{ID: "t", Status: "needs_review", Archived: true}, "error console (infrastructure: lease)", false, false, ProjectTaskCountDone},
+		{"workflow task workflow failed", withStatus(workflowTask, "needs_review"), "failed gate", false, false, ProjectTaskCountDone},
 	} {
 		got := ProjectTaskBucket(c.task, c.outcome, c.stale, c.idle)
 		if got != c.want {
 			t.Fatalf("%s: bucket = %q, want %q", c.name, got, c.want)
 		}
-		if attention := ProjectTaskNeedsAttention(c.task, c.outcome, c.stale, c.idle); attention != (c.want == ProjectTaskCountNeedsAttention) {
+		wantAttention := c.want == ProjectTaskCountNeedsAttention || c.want == ProjectTaskCountBlockedInfra || c.want == ProjectTaskCountWorkflowFailed
+		if attention := ProjectTaskNeedsAttention(c.task, c.outcome, c.stale, c.idle); attention != wantAttention {
 			t.Fatalf("%s: needs attention = %v disagrees with bucket %q", c.name, attention, got)
 		}
 	}
@@ -210,7 +226,11 @@ func TestProjectTaskMessagesAreTheNewestThreeCut(t *testing.T) {
 // with a pushed outcome is landed with its SHA, a running or sent-back
 // workflow is running, a branch never handed over is not_integrated (needs
 // attention within 7 days, idle after), finished with nothing to integrate is
-// done, a stop is stopped and a failed run needs the person. Threat: the run
+// done, a stop is stopped and a failed run needs the person, while a
+// workflow delivery a step could not run is blocked_infra and one a check or
+// review ended is workflow_failed, each with a reason naming what to do next
+// (needs_you only when the person must act). Threat: an AI reporting "needs
+// you" for an infrastructure error the person has no prompt for; the run
 // status needs_review shown as the task's status, so pushed work reads as
 // waiting for review, or a state that disagrees with its count bucket (a
 // landed task counted needs_attention). Owners: ProjectTaskState over
@@ -218,13 +238,15 @@ func TestProjectTaskMessagesAreTheNewestThreeCut(t *testing.T) {
 // prove the surfaces use it).
 func TestProjectTaskStateIsTheBucketsWord(t *testing.T) {
 	agreeing := map[string][]string{
-		ProjectTaskStateRunning:       {ProjectTaskCountInProgress},
-		ProjectTaskStateWaiting:       {ProjectTaskCountWaiting},
-		ProjectTaskStateNeedsYou:      {ProjectTaskCountNeedsAttention},
-		ProjectTaskStateLanded:        {ProjectTaskCountDone},
-		ProjectTaskStateDone:          {ProjectTaskCountDone},
-		ProjectTaskStateNotIntegrated: {ProjectTaskCountNeedsAttention, ProjectTaskCountIdle},
-		ProjectTaskStateStopped:       {ProjectTaskCountStopped},
+		ProjectTaskStateRunning:        {ProjectTaskCountInProgress},
+		ProjectTaskStateWaiting:        {ProjectTaskCountWaiting},
+		ProjectTaskStateNeedsYou:       {ProjectTaskCountNeedsAttention},
+		ProjectTaskStateBlockedInfra:   {ProjectTaskCountBlockedInfra},
+		ProjectTaskStateWorkflowFailed: {ProjectTaskCountWorkflowFailed},
+		ProjectTaskStateLanded:         {ProjectTaskCountDone},
+		ProjectTaskStateDone:           {ProjectTaskCountDone},
+		ProjectTaskStateNotIntegrated:  {ProjectTaskCountNeedsAttention, ProjectTaskCountIdle},
+		ProjectTaskStateStopped:        {ProjectTaskCountStopped},
 	}
 	branchTask := ProjectTaskRecord{ID: "t", Status: "needs_review", WorktreeBranch: "agent/fix-parser"}
 	for _, c := range []struct {
@@ -252,7 +274,9 @@ func TestProjectTaskStateIsTheBucketsWord(t *testing.T) {
 		{"stale", ProjectTaskRecord{ID: "t", Status: "in_progress"}, "", true, false, ProjectTaskStateStopped, "no active run", false},
 		{"failed", ProjectTaskRecord{ID: "t", Status: "failed", LastError: "provider error"}, "", false, false, ProjectTaskStateNeedsYou, "provider error", true},
 		{"failed after a push", ProjectTaskRecord{ID: "t", Status: "failed"}, "pushed 5711ae410abc", false, false, ProjectTaskStateNeedsYou, "run failed", true},
-		{"sent back until exhausted", ProjectTaskRecord{ID: "t", Status: "needs_review"}, "blocked rounds_exhausted: step send-back", false, false, ProjectTaskStateNeedsYou, "rounds_exhausted", true},
+		{"sent back until exhausted", ProjectTaskRecord{ID: "t", Status: "needs_review"}, "blocked rounds_exhausted: step send-back", false, false, ProjectTaskStateWorkflowFailed, "rounds_exhausted", true},
+		{"workflow error", ProjectTaskRecord{ID: "t", Status: "needs_review"}, "error console (infrastructure: checkout)", false, false, ProjectTaskStateBlockedInfra, "rerun the failed steps", true},
+		{"workflow error, old", ProjectTaskRecord{ID: "t", Status: "needs_review"}, "error console (infrastructure: checkout)", false, true, ProjectTaskStateNotIntegrated, "idle over 7 days", false},
 		{"approval", ProjectTaskRecord{ID: "t", Status: "pending_approval"}, "", false, false, ProjectTaskStateNeedsYou, "approval", true},
 		{"question", ProjectTaskRecord{ID: "t", Status: "needs_input"}, "", false, false, ProjectTaskStateNeedsYou, "answer", true},
 		{"archived failure", ProjectTaskRecord{ID: "t", Status: "failed", Archived: true}, "", false, false, ProjectTaskStateDone, "archived", false},
@@ -318,13 +342,15 @@ func TestProjectTaskCodeDeliverableStatusFollowsTheState(t *testing.T) {
 func TestProjectTaskDeliverableStatusFollowsTheStateForEveryNonMediaKind(t *testing.T) {
 	report := ProjectTaskDeliverable{ID: "deliv_audit", Title: "Comprehensive Audit Report", Kind: "report", Status: "pending"}
 	want := map[string]string{
-		ProjectTaskStateRunning:       "in progress",
-		ProjectTaskStateWaiting:       "not started",
-		ProjectTaskStateDone:          "ready",
-		ProjectTaskStateLanded:        "delivered",
-		ProjectTaskStateNotIntegrated: "on branch",
-		ProjectTaskStateNeedsYou:      "needs you",
-		ProjectTaskStateStopped:       "stopped",
+		ProjectTaskStateRunning:        "in progress",
+		ProjectTaskStateWaiting:        "not started",
+		ProjectTaskStateDone:           "ready",
+		ProjectTaskStateLanded:         "delivered",
+		ProjectTaskStateNotIntegrated:  "on branch",
+		ProjectTaskStateNeedsYou:       "needs you",
+		ProjectTaskStateBlockedInfra:   "blocked (infrastructure)",
+		ProjectTaskStateWorkflowFailed: "workflow failed",
+		ProjectTaskStateStopped:        "stopped",
 	}
 	for state, w := range want {
 		for _, d := range []ProjectTaskDeliverable{

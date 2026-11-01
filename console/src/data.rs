@@ -576,7 +576,13 @@ pub struct Progress {
 pub enum TaskState {
     Running,
     Waiting,
+    /// Waits on the person: a pending approval or question, or a failed run.
     NeedsYou,
+    /// A workflow step could not run (infrastructure); nothing waits on the
+    /// person: fix the machine, then rerun the failed steps.
+    BlockedInfra,
+    /// A check or review ended the workflow; nothing waits on the person.
+    WorkflowFailed,
     Landed,
     Done,
     NotIntegrated,
@@ -592,6 +598,8 @@ impl TaskState {
             "running" => TaskState::Running,
             "waiting" => TaskState::Waiting,
             "needs_you" => TaskState::NeedsYou,
+            "blocked_infra" => TaskState::BlockedInfra,
+            "workflow_failed" => TaskState::WorkflowFailed,
             "landed" => TaskState::Landed,
             "done" => TaskState::Done,
             "not_integrated" => TaskState::NotIntegrated,
@@ -605,6 +613,8 @@ impl TaskState {
             TaskState::Running => "running",
             TaskState::Waiting => "waiting",
             TaskState::NeedsYou => "needs you",
+            TaskState::BlockedInfra => "blocked: infrastructure",
+            TaskState::WorkflowFailed => "workflow failed",
             TaskState::Landed => "landed",
             TaskState::Done => "done",
             TaskState::NotIntegrated => "not integrated",

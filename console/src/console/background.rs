@@ -70,6 +70,7 @@ impl Console {
         let t = &self.theme;
         match task.progress.task_state {
             TaskState::NeedsYou | TaskState::NotIntegrated => return t.warn,
+            TaskState::BlockedInfra | TaskState::WorkflowFailed => return t.err,
             TaskState::Running => return t.ok,
             TaskState::Waiting | TaskState::Stopped => return t.faint,
             TaskState::Landed | TaskState::Done => return t.muted,

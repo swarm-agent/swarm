@@ -185,15 +185,17 @@ func TestStopTaskLeavesTheTaskStoppedNotFailed(t *testing.T) {
 
 // outcomeCountsWant is seedOutcomeProject's default listing plus one stopped
 // task, by outcome: pushed and finder (finished, nothing to integrate) are
-// done; sent-back and busy are in progress; blocked and plain (ready to
-// integrate, no workflow) need attention; abandoned (stale) and the stopped
-// task are stopped. Raw status counts say needs_review 5 for the same tasks.
-var outcomeCountsWant = map[string]float64{"done": 2, "in_progress": 2, "waiting": 0, "needs_attention": 2, "idle": 0, "stopped": 2}
+// done; sent-back and busy are in progress; plain (ready to integrate, no
+// workflow) needs attention; blocked (its review ran out of rounds) is
+// workflow_failed, not needs_attention: nothing waits on the person;
+// abandoned (stale) and the stopped task are stopped. Raw status counts say
+// needs_review 5 for the same tasks.
+var outcomeCountsWant = map[string]float64{"done": 2, "in_progress": 2, "waiting": 0, "needs_attention": 1, "blocked_infra": 0, "workflow_failed": 1, "idle": 0, "stopped": 2}
 
 // outcomeCountsIdleWant is the same listing read 8 days later: blocked and
 // plain still hold work never handed over but finished over 7 days ago, so
 // they are idle, not attention; finder stays done.
-var outcomeCountsIdleWant = map[string]float64{"done": 2, "in_progress": 2, "waiting": 0, "needs_attention": 0, "idle": 2, "stopped": 2}
+var outcomeCountsIdleWant = map[string]float64{"done": 2, "in_progress": 2, "waiting": 0, "needs_attention": 0, "blocked_infra": 0, "workflow_failed": 0, "idle": 2, "stopped": 2}
 
 func checkOutcomeCounts(t *testing.T, where string, answer map[string]any) {
 	t.Helper()

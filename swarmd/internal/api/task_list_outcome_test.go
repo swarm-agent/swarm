@@ -162,7 +162,7 @@ func checkOutcomeListing(t *testing.T, where string, rows map[string]map[string]
 	wantState := map[string]string{
 		"pushed":    pebblestore.ProjectTaskStateLanded,
 		"sent-back": pebblestore.ProjectTaskStateRunning,
-		"blocked":   pebblestore.ProjectTaskStateNeedsYou,
+		"blocked":   pebblestore.ProjectTaskStateWorkflowFailed,
 		"plain":     pebblestore.ProjectTaskStateNotIntegrated,
 		"finder":    pebblestore.ProjectTaskStateDone,
 		"abandoned": pebblestore.ProjectTaskStateStopped,
@@ -349,7 +349,7 @@ func TestOrchestratorListTasksSaysWhatHappenedOnLinkedMachine(t *testing.T) {
 // progress.task_state_reason, next to the unchanged run status.
 // Requirement: a pushed task whose run status stays needs_review reads
 // landed; one with commits never handed over reads not_integrated; a
-// workflow that ran out of rounds reads needs_you.
+// workflow that ran out of rounds reads workflow_failed.
 // Threat: a client that only has the run status lists landed work as
 // waiting on the person.
 // Owners: the project task list route (Server.handleProjects;
@@ -372,7 +372,7 @@ func TestProjectTaskBoardRouteCarriesDerivedState(t *testing.T) {
 	for id, want := range map[string]string{
 		"pushed":  pebblestore.ProjectTaskStateLanded,
 		"plain":   pebblestore.ProjectTaskStateNotIntegrated,
-		"blocked": pebblestore.ProjectTaskStateNeedsYou,
+		"blocked": pebblestore.ProjectTaskStateWorkflowFailed,
 		"finder":  pebblestore.ProjectTaskStateDone,
 	} {
 		row := rows[id]

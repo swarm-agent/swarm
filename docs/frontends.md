@@ -257,7 +257,8 @@ UTC day for both); each takes an optional `machine`:
   `offline` (`reason` says why) or `not_shown` (`reason`: its work rule is
   off), `agents`, `landed_today` and `failed_today`.
 - `recent`: the latest finished tasks (at most 8, newest first) with their
-  derived `state` (`landed`, `done`, `needs_you`, …) and `reason`.
+  derived `state` (`landed`, `done`, `needs_you`, `blocked_infra`,
+  `workflow_failed`, …) and `reason`. Only `needs_you` waits on the person.
 - `totals`: `agents`, `tool_calls_last_minute`, `landed_today`,
   `failed_today`.
 

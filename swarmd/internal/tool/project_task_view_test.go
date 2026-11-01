@@ -675,6 +675,51 @@ func TestCompactProjectTaskAnswerLinked(t *testing.T) {
 	}
 }
 
+// Purpose: get_task never calls a workflow delivery that ended unsuccessfully
+// needs_you: a step that could not run reads blocked_infra with next_action
+// rerun_failed_steps (manage_jobs, job_id task/<project>/<task>), and a failed
+// check reads workflow_failed with the existing send-back action; both keep
+// the row's needs_attention. Threat (observed): an infrastructure error read
+// needs_you, so the AI sent the person looking for a prompt that did not
+// exist, or sent a coder to fix a check that never ran. Owners:
+// CompactProjectTaskAnswer -> compactProjectTask over the task route's JSON
+// (the linked path; the local one builds the same view).
+func TestGetTaskWorkflowEndedUnsuccessfullyIsNotNeedsYou(t *testing.T) {
+	for _, c := range []struct {
+		outcome, wantState, wantNext string
+	}{
+		{"error console (infrastructure: checkout)", pebblestore.ProjectTaskStateBlockedInfra, ProjectTaskRerunFailedStepsAction},
+		{"failed gate", pebblestore.ProjectTaskStateWorkflowFailed, "read_task_session"},
+	} {
+		task := heavyFinishedTask("remote-account", "remote-project", "remote-task")
+		var read map[string]any
+		recordJSON, _ := json.Marshal(task)
+		if err := json.Unmarshal(recordJSON, &read); err != nil {
+			t.Fatal(err)
+		}
+		read["progress"] = map[string]any{"state": "workflow", "outcome": c.outcome,
+			"workflow": map[string]any{"state": "failed", "deliveries": []any{map[string]any{"id": "dl-1", "workflow": "deliver", "state": "failed", "step": 1, "steps": 2, "step_type": "run"}}}}
+		answer, _ := json.Marshal(map[string]any{"task": read})
+		compact, err := CompactProjectTaskAnswer("get_task", "", answer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var view struct {
+			Task ProjectTaskView `json:"task"`
+		}
+		if err := json.Unmarshal(compact, &view); err != nil {
+			t.Fatal(err)
+		}
+		v := view.Task
+		if v.State != c.wantState || v.State == pebblestore.ProjectTaskStateNeedsYou || v.NextAction != c.wantNext || !v.NeedsAttention || !strings.Contains(v.StateReason, "nothing waits on the person") {
+			t.Fatalf("%s: state %q next %q attention %v reason %q", c.outcome, v.State, v.NextAction, v.NeedsAttention, v.StateReason)
+		}
+		if c.wantState == pebblestore.ProjectTaskStateBlockedInfra && !strings.Contains(v.Progress.Next, "job_id=task/remote-project/remote-task") {
+			t.Fatalf("blocked_infra next does not name the rerun: %q", v.Progress.Next)
+		}
+	}
+}
+
 // Purpose: a task follow-up session (history-only manage_projects, whose
 // schema offers only cursor/limit and no detail) keeps reading its associated
 // task's stored record with a page of attempt history; cursor and limit page

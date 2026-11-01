@@ -1525,6 +1525,9 @@ mod project_context_tests {
         let state = |word: &str| super::task(&json!({"id": "t", "status": "needs_review", "progress": {"task_state": word}})).progress.task_state;
         assert_eq!(state("needs_you"), TaskState::NeedsYou);
         assert_eq!(state("not_integrated"), TaskState::NotIntegrated);
+        assert_eq!(state("blocked_infra"), TaskState::BlockedInfra);
+        assert_eq!(state("workflow_failed"), TaskState::WorkflowFailed);
+        assert_eq!(state("blocked_infra").label(), "blocked: infrastructure");
         assert_eq!(state("something_new"), TaskState::Unknown);
         assert_eq!(super::task(&json!({"id": "t", "status": "needs_review"})).progress.task_state, TaskState::Unknown);
     }

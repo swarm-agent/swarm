@@ -76,9 +76,12 @@ integrated, finished, completed), `in_progress` (working, running, sent back,
 workflow pending), `waiting` (queued for capacity),
 `needs_attention` (the person must act: a blocked or failed status, waiting
 for approval or an answer; or finished within the last 7 days with work still
-to hand over: ready to integrate, or a workflow that blocked or failed),
-`idle` (the same work to hand over, but finished more than 7 days ago: nobody
-is waiting on it) and `stopped` (stopped or stale). A pushed, delivered,
+to hand over: ready to integrate), `blocked_infra` (within the last 7 days, a
+workflow delivery ended because a step could not run: outcome `error …`),
+`workflow_failed` (within the last 7 days, a check or review ended the
+workflow delivery: outcome `blocked …` or `failed …`), `idle` (the same work
+to hand over, but finished more than 7 days ago: nobody is waiting on it) and
+`stopped` (stopped or stale). A pushed, delivered,
 integrated, finished (nothing to integrate) or stopped task never needs
 attention, nor does an archived task or a task a workflow step started (a
 reviewer run: its work and outcome are counted on the task it serves). The
@@ -87,7 +90,9 @@ route keeps its raw `status_counts`; agent lists do not carry them.
 The same rule (`pebblestore.ProjectTaskNeedsAttention`) answers per task:
 `progress.needs_attention` on the task routes, `needs_attention: true` on a
 `list_tasks` row (here and on linked machines) and `needs_attention` in
-`get_task`. A media or design task whose files are ready has outcome
+`get_task`. It is true in the `needs_attention`, `blocked_infra` and
+`workflow_failed` buckets: someone must act before the work moves again.
+Only the `needs_you` state waits on the person. A media or design task whose files are ready has outcome
 `delivered files ready`.
 
 `get_task` also shows the last 3 messages sent to the task (`message_task`
@@ -122,10 +127,12 @@ and `idle`, using the same bucket as the list counts):
 |---|---|---|---|
 | `running` | an agent or workflow still works on it | run status planning/in_progress/running/…; or outcome `running <step>`, `sent_back (round n)`, `workflow pending` | `in_progress` |
 | `waiting` | queued for capacity, or waiting for the provider's usage limit to reset | run status `queued`/`pending`, or `limit_waiting` (reason: "waiting for the provider's limit to reset (until …): provider …; continues by itself"; linked-machine `list_tasks` rows add it as `state_reason`, in the machine's own words when it gives them, unless a live or stall reason is already there) | `waiting` |
-| `needs_you` | the person must act | run status `pending_approval`, `needs_input`, `failed`, `blocked` (and other failures); outcome `blocked …` (including sent back until its rounds ran out) or `failed …` | `needs_attention` |
+| `needs_you` | the person must act | run status `pending_approval`, `needs_input` (a pending request), `failed`, `blocked` (and other run failures); an unknown outcome after the run ended | `needs_attention` |
+| `blocked_infra` | a workflow step could not run (its checkout, the environment, the lease, a missing or unusable script): an infrastructure problem, not the work; nothing waits on the person | outcome `error <step> (infrastructure: <kind>)`; reason ends "next: fix the machine or folder, then rerun the failed steps"; `get_task` `next_action: rerun_failed_steps` (`manage_jobs` with `job_id` `task/<project>/<task>`) | `blocked_infra` |
+| `workflow_failed` | a check or review ended the workflow delivery; nothing waits on the person | outcome `blocked …` (including sent back until its rounds ran out) or `failed …`; reason ends "next: send the task back with the findings, or archive it"; `get_task` `next_action: reopen_task` (`read_task_session` on a linked machine) | `workflow_failed` |
 | `landed` | the work was handed over | outcome `pushed <sha>`, `delivered <target>`, `integrated` (reason names the SHA or target) | `done` |
 | `done` | finished with nothing to hand over | outcome `finished`; run status `completed`, `rejected`, `superseded`; an archived task or a workflow step's own task | `done` |
-| `not_integrated` | finished with commits never handed over | outcome `ready to integrate` (reason names the branch); a blocked/failed workflow or unknown outcome once idle | `needs_attention` within 7 days, `idle` after |
+| `not_integrated` | finished with commits never handed over | outcome `ready to integrate` (reason names the branch); a blocked, failed or errored workflow or unknown outcome once idle | `needs_attention` within 7 days, `idle` after |
 | `stopped` | stopped by the person, or no active run for a day | run status `stopped`, outcome `stopped`, or `stale` | `stopped` |
 
 **A working run that is not moving.** A run status of `running` does not say
@@ -186,8 +193,10 @@ Reviewer tasks and worker jobs keep their own limit handling (see
 
 `get_task`'s `progress.stage` follows the state, never an implementation step
 once the work is finished: `landed` is `Landed`, `done` is `Done`,
-`not_integrated` is `Finished, not handed over`, and `needs_you` after the
-workflow finished or the work was delivered is `Needs you`. A stage reads
+`not_integrated` is `Finished, not handed over`, `blocked_infra` is
+`Blocked: infrastructure`, `workflow_failed` is `Workflow failed`, and
+`needs_you` after the workflow finished or the work was delivered is
+`Needs you`. A stage reads
 `Landed` only when the state is `landed`; a workflow that is `done` without a
 handover is not landed.
 
@@ -206,6 +215,8 @@ a deliverable still carrying `pending` (or no status) from the state:
 | `landed` | `delivered` |
 | `not_integrated` | `on branch` |
 | `needs_you` | `needs you` |
+| `blocked_infra` | `blocked (infrastructure)` |
+| `workflow_failed` | `workflow failed` |
 | `stopped` | `stopped` |
 
 Media deliverables (kind `image`, `video`, `audio`/`sound`, or any deliverable

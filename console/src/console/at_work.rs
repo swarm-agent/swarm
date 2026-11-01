@@ -226,6 +226,7 @@ impl Console {
         let color = match f.state.as_str() {
             "landed" | "done" => t.ok,
             "needs_you" => t.warn,
+            "blocked_infra" | "workflow_failed" => t.err,
             "stopped" => t.faint,
             _ => t.muted,
         };

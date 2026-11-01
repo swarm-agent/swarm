@@ -47,8 +47,10 @@ func seedAttentionProject(t *testing.T, db *pebblestore.SessionStore, autos *job
 var attentionWant = map[string]bool{"blocked": true, "plain": true, "approval": true}
 
 // attentionCountsWant is the same listing by bucket: 13 tasks, 3 of them
-// needing attention.
-var attentionCountsWant = map[string]float64{"done": 7, "in_progress": 2, "waiting": 0, "needs_attention": 3, "idle": 0, "stopped": 1}
+// needing attention (the row flag): plain and approval in needs_attention,
+// blocked (its review ran out of rounds) in workflow_failed, since nothing
+// there waits on the person.
+var attentionCountsWant = map[string]float64{"done": 7, "in_progress": 2, "waiting": 0, "needs_attention": 2, "blocked_infra": 0, "workflow_failed": 1, "idle": 0, "stopped": 1}
 
 // checkAttentionRows asserts every row's needs_attention flag and outcome
 // against the rule, by task id.

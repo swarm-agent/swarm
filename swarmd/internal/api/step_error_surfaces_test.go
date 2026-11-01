@@ -15,8 +15,10 @@ import (
 
 // Purpose: a delivery stopped by a run step whose script never started
 // reads as an infrastructure error on every task surface: the outcome is
-// "error <step> (infrastructure: <kind>)", the task state reason says it is
-// an infrastructure problem and not the work's, the summary carries the
+// "error <step> (infrastructure: <kind>)", the task state is blocked_infra
+// (never needs_you: nothing waits on the person) and its reason says it is
+// an infrastructure problem and not the work's and what to do next; a
+// failed check is workflow_failed, never named infrastructure; the summary carries the
 // delivery's error reason, and steps_result carries status error with
 // error_kind. Threat: a checkout failure shown as a failed check the person
 // or a coder must fix (the production review loop). Owners:
@@ -41,8 +43,11 @@ func TestTaskProgressNamesAnInfrastructureError(t *testing.T) {
 		t.Fatalf("progress state %q summary %q", p.State, p.Summary)
 	}
 	state, reason := pebblestore.ProjectTaskState(task, p.Outcome, false, false)
-	if state != pebblestore.ProjectTaskStateNeedsYou || !strings.Contains(reason, "an infrastructure problem, not the work") || !strings.Contains(reason, "nothing for a coder to fix") {
+	if state != pebblestore.ProjectTaskStateBlockedInfra || !strings.Contains(reason, "an infrastructure problem, not the work") || !strings.Contains(reason, "nothing for a coder to fix") || !strings.Contains(reason, "rerun the failed steps") {
 		t.Fatalf("task state %q reason %q", state, reason)
+	}
+	if !pebblestore.ProjectTaskNeedsAttention(task, p.Outcome, false, false) || pebblestore.ProjectTaskBucket(task, p.Outcome, false, false) != pebblestore.ProjectTaskCountBlockedInfra {
+		t.Fatalf("infrastructure error bucket %q", pebblestore.ProjectTaskBucket(task, p.Outcome, false, false))
 	}
 	steps := deliveryStepsResult(d)
 	if len(steps) != 2 || steps[0].Status != jobautomation.StateError || steps[0].ErrorKind != jobautomation.ErrorKindCheckout || steps[1].ErrorKind != "" {
@@ -56,8 +61,8 @@ func TestTaskProgressNamesAnInfrastructureError(t *testing.T) {
 	if !strings.HasPrefix(fp.Outcome, "failed ") {
 		t.Fatalf("failed outcome = %q", fp.Outcome)
 	}
-	if _, reason := pebblestore.ProjectTaskState(task, fp.Outcome, false, false); strings.Contains(reason, "infrastructure") {
-		t.Fatalf("a failed check is named an infrastructure problem: %q", reason)
+	if state, reason := pebblestore.ProjectTaskState(task, fp.Outcome, false, false); state != pebblestore.ProjectTaskStateWorkflowFailed || strings.Contains(reason, "infrastructure") || !strings.Contains(reason, "send the task back") {
+		t.Fatalf("a failed check reads %q: %q", state, reason)
 	}
 }
 

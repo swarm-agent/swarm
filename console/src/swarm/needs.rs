@@ -174,7 +174,8 @@ pub struct TaskRef {
     /// The run's status (`status`): only a fallback when `state` is empty.
     pub status: String,
     /// The task's state as Swarm derives it (`progress.task_state`: running,
-    /// waiting, needs_you, landed, done, not_integrated, stopped); empty from
+    /// waiting, needs_you, blocked_infra, workflow_failed, landed, done,
+    /// not_integrated, stopped); empty from
     /// a Swarm that does not derive one.
     pub state: String,
     /// Swarm's one-line reason for `state`.
@@ -208,8 +209,10 @@ pub fn tasks(project_id: &str, project: &str, board: &Value) -> Vec<TaskRef> {
 }
 
 /// A task waits on you when Swarm's derived state says so (needs_you:
-/// approval, a question, a blocked or failed run or workflow). A landed,
-/// done, not_integrated or stopped task does not, whatever its run status.
+/// approval, a question, a blocked or failed run). A landed, done,
+/// not_integrated, stopped, blocked_infra (a workflow step could not run) or
+/// workflow_failed (a check or review ended it) task does not, whatever its
+/// run status: nothing there waits on the person.
 fn waits_on_you(t: &TaskRef) -> bool {
     if !t.state.is_empty() {
         return t.state == "needs_you";
@@ -587,7 +590,7 @@ mod tests {
             {"id": "done", "title": "Read-only look", "status": "needs_review", "origin_session_id": "orch-1", "created_at": 200,
              "progress": {"task_state": "done", "task_state_reason": "finished; nothing to integrate"}},
             {"id": "blocked", "title": "Blocked review", "status": "needs_review", "origin_session_id": "orch-1", "created_at": 300,
-             "progress": {"task_state": "needs_you", "task_state_reason": "workflow blocked rounds_exhausted: step send-back"}},
+             "progress": {"task_state": "needs_you", "task_state_reason": "run blocked: needs a decision"}},
             {"id": "branch", "title": "Unmerged branch", "status": "needs_review", "origin_session_id": "orch-1", "created_at": 400,
              "progress": {"task_state": "not_integrated", "task_state_reason": "commits on branch agent/x not handed over"}},
             {"id": "approve", "title": "Approve me", "status": "pending_approval", "origin_session_id": "orch-1", "created_at": 500,
@@ -612,7 +615,21 @@ mod tests {
         assert_eq!(items.iter().map(|i| i.what.as_str()).collect::<Vec<_>>(), vec!["Old daemon review", "Approve me", "Blocked review"]);
         assert_eq!(items[0].detail, "review · web", "no state: as before");
         assert_eq!(items[1].detail, "approve? · web");
-        assert_eq!(items[2].detail, "workflow blocked rounds_exhausted: step send-back · web", "the state's reason");
+        assert_eq!(items[2].detail, "run blocked: needs a decision · web", "the state's reason");
+
+        // A workflow that ended unsuccessfully waits on nobody: a step that
+        // could not run (blocked_infra) or a check or review that ended it
+        // (workflow_failed) is never in the "needs you" list or count.
+        let ended = json!({"tasks": [
+            {"id": "infra", "title": "Checkout broke", "status": "needs_review", "origin_session_id": "orch-1", "created_at": 100,
+             "progress": {"task_state": "blocked_infra", "task_state_reason": "workflow error console (infrastructure: checkout)"}},
+            {"id": "gate", "title": "Gate failed", "status": "needs_review", "origin_session_id": "orch-1", "created_at": 200,
+             "progress": {"task_state": "workflow_failed", "task_state_reason": "workflow blocked rounds_exhausted: step send-back"}}
+        ]});
+        let ended = tasks("p1", "web", &ended);
+        assert!(!waits_on_you(&ended[0]), "blocked_infra is not needs you");
+        assert!(!waits_on_you(&ended[1]), "workflow_failed is not needs you");
+        assert_eq!(task_items(true, "", &ended).0, 0);
     }
 
     #[test]

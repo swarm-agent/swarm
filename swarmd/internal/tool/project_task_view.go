@@ -168,11 +168,17 @@ type projectTaskWorktree struct {
 	Files   []string
 }
 
+// ProjectTaskRerunFailedStepsAction is get_task's next_action for a task in
+// state blocked_infra: manage_jobs rerun_failed_steps with job_id
+// task/<project>/<task>, once the machine or folder is fixed.
+const ProjectTaskRerunFailedStepsAction = "rerun_failed_steps"
+
 // ProjectTaskView is the default get_task answer.
 type ProjectTaskView struct {
 	// State is where the task's work is (pebblestore.ProjectTaskState):
-	// running, waiting, needs_you, landed, done, not_integrated or stopped,
-	// with StateReason its one-line why. It is what a reader reports.
+	// running, waiting, needs_you, blocked_infra, workflow_failed, landed,
+	// done, not_integrated or stopped, with StateReason its one-line why. It
+	// is what a reader reports; only needs_you waits on the person.
 	State       string `json:"state"`
 	StateReason string `json:"state_reason,omitempty"`
 	ID          string `json:"id"`
@@ -194,8 +200,9 @@ type ProjectTaskView struct {
 	// follow-up), each with its delivery: queued, delivered (with the run
 	// that received it) or reopened.
 	Messages []pebblestore.ProjectTaskMessage `json:"messages,omitempty"`
-	// NeedsAttention says the person must act on the task, with the same
-	// decision as its list row and the needs_attention count
+	// NeedsAttention says someone must act before the task's work moves
+	// again (needs_you, not_integrated within 7 days, blocked_infra,
+	// workflow_failed), with the same decision as its list row
 	// (pebblestore.ProjectTaskNeedsAttention).
 	NeedsAttention bool `json:"needs_attention"`
 	// PendingRequest is the permission or question the task's run waits on
@@ -651,6 +658,14 @@ func compactProjectTask(read projectTaskRead, remote bool) ProjectTaskView {
 		view.NextAction, view.Progress.Next = ResolveTaskPermissionAction, "tell the person what is asked; answer only on their word or under a rule that allows it"
 	} else if pebblestore.ProjectTaskLiveApplies(*t, live) && live.State == pebblestore.ProjectTaskStateWaiting {
 		view.Progress.Next = "its run starts when the hold ends"
+	} else if view.State == pebblestore.ProjectTaskStateBlockedInfra {
+		// A step could not run: nothing for a coder to fix, so not
+		// reopen_task; rerun the failed steps once the machine is fixed.
+		view.NextAction = ProjectTaskRerunFailedStepsAction
+		view.Progress.Next = "fix the machine or folder, then rerun the failed steps: manage_jobs action=rerun_failed_steps job_id=task/" + t.ProjectID + "/" + t.ID
+		if remote {
+			view.Progress.Next += " with the task's machine"
+		}
 	}
 	// The stage stops at the work's end, and it is read from the state
 	// only: "Landed" only for a landed task. A finished task is past its
@@ -667,6 +682,10 @@ func compactProjectTask(read projectTaskRead, remote bool) ProjectTaskView {
 		if pastImplementation {
 			view.Progress.Stage = "Needs you"
 		}
+	case pebblestore.ProjectTaskStateBlockedInfra:
+		view.Progress.Stage = "Blocked: infrastructure"
+	case pebblestore.ProjectTaskStateWorkflowFailed:
+		view.Progress.Stage = "Workflow failed"
 	}
 	view.Review = projectTaskLatestReview(p, remote)
 	cut := projectTaskReportCut{report: report, attempt: reportAttempt, projectID: t.ProjectID, taskID: t.ID, remote: remote}

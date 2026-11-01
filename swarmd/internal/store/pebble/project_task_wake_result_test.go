@@ -226,3 +226,84 @@ func TestProjectTaskWakeRowLocalAndLinkedShapesMatch(t *testing.T) {
 		t.Fatalf("linked read_full_args: %v", remote["read_full_args"])
 	}
 }
+
+// Purpose: task_state needs_you means the person must act, and a local and a
+// linked wake row say the same state. A workflow delivery a step could not
+// run (outcome "error …", error_kind checkout) reads blocked_infra with a
+// reason naming the next step (fix the machine, rerun the failed steps); one
+// a failed check ended reads workflow_failed ("send the task back"); only a
+// run waiting on a pending request reads needs_you, with pending_request.
+// Threat (observed): an infrastructure error and an ordinary failed gate both
+// read needs_you, so the woken AI told the person to answer a prompt that did
+// not exist. Boundary: ProjectTaskStateLive (as task progress derives
+// task_state), ProjectTaskWaitProgressFrom and projectTaskWaitProgressRow, and
+// the local and linked outcome rows over a temporary real store.
+func TestProjectTaskWakeRowStateNeedsYouOnlyWhenThePersonMustAct(t *testing.T) {
+	stepsProgress := func(task ProjectTaskRecord, outcome, deliveryState string, step ProjectTaskStepResult) map[string]any {
+		state, reason := ProjectTaskStateLive(task, outcome, false, false, nil)
+		return map[string]any{"state": "workflow", "summary": "deliver", "task_state": state, "task_state_reason": reason,
+			"workflow": map[string]any{"state": deliveryState, "deliveries": []any{
+				map[string]any{"id": "jdel-1", "workflow": "deliver", "state": deliveryState, "step": 1, "steps": 2, "step_type": "run", "steps_result": []ProjectTaskStepResult{step}},
+			}}}
+	}
+	finished := ProjectTaskRecord{ID: "task", Status: "needs_review"}
+	code := 1
+	for _, c := range []struct {
+		name, outcome, delivery, want, reasonHas string
+		step                                     ProjectTaskStepResult
+	}{
+		{"infrastructure error", "error console (infrastructure: checkout)", "failed", ProjectTaskStateBlockedInfra, "rerun the failed steps",
+			ProjectTaskStepResult{ID: "console", Type: "run", Status: "error", ErrorKind: "checkout", Error: "checkout failed"}},
+		{"failed check", "failed gate", "failed", ProjectTaskStateWorkflowFailed, "send the task back",
+			ProjectTaskStepResult{ID: "gate", Type: "run", Status: "failed", ExitCode: &code, Error: "exited with code 1"}},
+	} {
+		progress := stepsProgress(finished, c.outcome, c.delivery, c.step)
+		f, stub := newSettledWaitFixture(t, filepath.Join(t.TempDir(), "store"), "task")
+		f.register("", "task")
+		stub.set("task", progress)
+		f.setTask("task", func(t *ProjectTaskRecord) { t.Status = "needs_review" })
+		local := outcomeRow(t, f.reconcile(), 0)
+
+		r := newTaskWaitFixture(t, "home", map[string]any{})
+		in := remoteTaskWaitRegistration(V3ProjectTaskWaitTarget{TaskID: "t1", AttemptID: "a1", SessionID: "rs1"})
+		off := false
+		in.TaskWait.Milestones = &off
+		r.apply(in)
+		r.endRun("home", "run-1")
+		observed := []V3ProjectTaskRemoteObservation{{TaskID: "t1", Title: "One", Status: "needs_review", AttemptID: "a1", SessionID: "rs1", Progress: ProjectTaskWaitProgressFrom(progress)}}
+		remote := outcomeRow(t, taskWaitOutcome(t, r.apply(r.remoteWake(observed, nil)).Message), 0)
+
+		for name, row := range map[string]map[string]any{"local": local, "linked": remote} {
+			reason, _ := row["task_state_reason"].(string)
+			if row["task_state"] != c.want || !strings.Contains(reason, c.reasonHas) || !strings.Contains(reason, "nothing waits on the person") {
+				t.Fatalf("%s: %s row task_state %v reason %q, want %s", c.name, name, row["task_state"], reason, c.want)
+			}
+			if row["task_state"] == ProjectTaskStateNeedsYou || row["pending_request"] != nil {
+				t.Fatalf("%s: %s row waits on the person: %v", c.name, name, row)
+			}
+		}
+		if local["task_state_reason"] != remote["task_state_reason"] {
+			t.Fatalf("%s: reasons differ: local %v linked %v", c.name, local["task_state_reason"], remote["task_state_reason"])
+		}
+	}
+
+	// A run waiting on a pending permission is the one needs_you, on both
+	// rows' builder, with what is asked.
+	running := ProjectTaskRecord{ID: "task", Status: "running"}
+	live := &ProjectTaskLive{State: ProjectTaskStateNeedsYou, Reason: "waiting for approval: bash", Request: &ProjectTaskPendingRequest{PermissionID: "perm-1", SessionID: "child", Kind: "permission", Tool: "bash", Summary: "go test"}}
+	if state, _ := ProjectTaskStateLive(running, "", false, false, live); state != ProjectTaskStateNeedsYou {
+		t.Fatalf("pending request state %q", state)
+	}
+	if bucket := ProjectTaskBucketLive(running, "", false, false, live); bucket != ProjectTaskCountNeedsAttention {
+		t.Fatalf("pending request bucket %q", bucket)
+	}
+	row := projectTaskWaitProgressRow(ProjectTaskWaitProgressFrom(map[string]any{"state": "running", "live": live}))
+	req, _ := row["pending_request"].(*ProjectTaskPendingRequest)
+	if row["task_state"] != ProjectTaskStateNeedsYou || req == nil || req.PermissionID != "perm-1" {
+		t.Fatalf("pending request row: %v", row)
+	}
+	// Without the live request the same running task is not needs_you.
+	if state, _ := ProjectTaskStateLive(running, "", false, false, nil); state == ProjectTaskStateNeedsYou {
+		t.Fatalf("running task without a request reads needs_you")
+	}
+}
