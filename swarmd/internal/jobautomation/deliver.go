@@ -314,23 +314,23 @@ func (r *Runner) runDeliver(ctx context.Context, d *Delivery, record *StepRecord
 		}
 	}
 	if why != "" {
-		return stepFailure{reason: truncate(why, 300), next: "fix the workflow or rerun once the work produced it", refused: true}
+		return stepFailure{reason: stepReason(why), next: "fix the workflow or rerun once the work produced it", refused: true}
 	}
 	out, err := r.deliver.Deliver(ctx, DeliverRequest{Account: d.Account, DeliveryID: d.ID, StepID: step.ID, Folder: d.Folder, To: step.To, Path: step.Path,
 		Head: head, Result: d.Result, Deliverables: items})
 	if err != nil {
 		var transient *TransientInspectionError
 		if errors.As(err, &transient) {
-			return stepFailure{reason: truncate("could not deliver "+step.To+": "+err.Error(), 300), next: "rerun", inspectionTransient: true}
+			return stepFailure{reason: stepReason("could not deliver " + step.To + ": " + err.Error()), next: "rerun", inspectionTransient: true}
 		}
 		if ctx.Err() != nil {
 			return stepFailure{}
 		}
 		var refused *RefusedError
 		if errors.As(err, &refused) {
-			return stepFailure{reason: truncate(refused.Reason, 300), next: "fix the workflow or the folder", refused: true}
+			return stepFailure{reason: stepReason(refused.Reason), next: "fix the workflow or the folder", refused: true}
 		}
-		return stepFailure{reason: truncate("could not deliver "+step.To+": "+err.Error(), 300), next: "rerun"}
+		return stepFailure{reason: stepReason("could not deliver " + step.To + ": " + err.Error()), next: "rerun"}
 	}
 	record.Output = truncate(out.Where, 1000)
 	record.Outcome = map[string]any{"to": step.To, "where": out.Where, "delivered": out.Delivered}
@@ -389,7 +389,7 @@ func (r *Runner) recordProduced(ctx context.Context, d *Delivery, step Step, out
 	}
 	found, err := r.deliver.Locate(ctx, d.Folder, *d.Spec, outcome)
 	if err != nil {
-		return stepFailure{reason: truncate("the step's job did not produce "+d.Spec.Path+": "+err.Error(), 300), next: "rerun"}
+		return stepFailure{reason: stepReason("the step's job did not produce " + d.Spec.Path + ": " + err.Error()), next: "rerun"}
 	}
 	found.Name, found.From = d.Spec.Path, step.ID
 	replaced := false

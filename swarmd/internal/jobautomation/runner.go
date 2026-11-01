@@ -1160,7 +1160,7 @@ func (r *Runner) providerLimitWait(record *StepRecord, jobID string, outcome Age
 		if !strings.HasPrefix(reason, "waiting for the provider's limit to reset") {
 			reason = providerlimit.Waiting(time.UnixMilli(outcome.LimitUntil), true, detail)
 		}
-		return stepFailure{reason: truncate(reason, 300), next: "none: the job runs again after the reset", limitUntil: outcome.LimitUntil}, true
+		return stepFailure{reason: stepReason(reason), next: "none: the job runs again after the reset", limitUntil: outcome.LimitUntil}, true
 	}
 	status := NormalizeStatus(outcome.Status)
 	if status == StatusSucceeded || status == StatusCancelled || !providerlimit.Is(outcome.Error) {
@@ -1169,7 +1169,7 @@ func (r *Runner) providerLimitWait(record *StepRecord, jobID string, outcome Age
 	detail := truncate(strings.TrimSpace(outcome.Error), 200)
 	record.Outcome = map[string]any{"limited_job_id": jobID, "status": outcome.Status, "provider_limit": detail}
 	if record.LimitWaits >= maxProviderLimitWaits {
-		return stepFailure{reason: truncate(providerlimit.Exhausted(record.LimitWaits, detail), 300),
+		return stepFailure{reason: stepReason(providerlimit.Exhausted(record.LimitWaits, detail)),
 			next: "rerun once the provider's limit has reset", refused: true}, true
 	}
 	record.LimitWaits++
@@ -1178,7 +1178,7 @@ func (r *Runner) providerLimitWait(record *StepRecord, jobID string, outcome Age
 	if !stated {
 		until = now.Add(providerlimit.Backoff(record.LimitWaits))
 	}
-	return stepFailure{reason: truncate(providerlimit.Waiting(until, stated, detail), 300),
+	return stepFailure{reason: stepReason(providerlimit.Waiting(until, stated, detail)),
 		next: "none: the step runs again after the reset", limitUntil: until.UnixMilli()}, true
 }
 
@@ -1247,7 +1247,7 @@ func (r *Runner) runScript(ctx context.Context, d *Delivery, record *StepRecord,
 	if d.Result.Git != nil && d.Result.Git.Head != "" && r.head != nil {
 		imported, err := r.head(ctx, d.Folder, headResult(*d))
 		if err != nil {
-			return stepFailure{reason: truncate("could not bring the job's head into the folder: "+err.Error(), 300), next: "rerun"}
+			return stepFailure{reason: stepReason("could not bring the job's head into the folder: " + err.Error()), next: "rerun"}
 		}
 		ref = imported
 	}
@@ -1279,13 +1279,13 @@ func (r *Runner) runScript(ctx context.Context, d *Delivery, record *StepRecord,
 	record.Output = lastLine(logTail)
 	var refused *RefusedError
 	if errors.As(err, &refused) {
-		return stepFailure{reason: truncate(refused.Reason, 300), next: "rerun", refused: true}
+		return stepFailure{reason: stepReason(refused.Reason), next: "rerun", refused: true}
 	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return stepFailure{}
 		}
-		return stepFailure{reason: truncate("the script could not run: "+err.Error(), 300), next: "rerun"}
+		return stepFailure{reason: stepReason("the script could not run: " + err.Error()), next: "rerun"}
 	}
 	code := outcome.ExitCode
 	record.ExitCode = &code
@@ -1294,9 +1294,7 @@ func (r *Runner) runScript(ctx context.Context, d *Delivery, record *StepRecord,
 		if record.Output != "" {
 			reason += ": " + record.Output
 		}
-		// The reason is what a reopen, task progress and a task wake carry
-		// as the failure: kept to the wake's reason bound, not cut short.
-		return stepFailure{reason: truncate(reason, pebblestore.ProjectTaskWakeReasonRunes), next: "fix the script"}
+		return stepFailure{reason: stepReason(reason), next: "fix the script"}
 	}
 	return stepFailure{}
 }
@@ -1388,9 +1386,9 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 		if err != nil {
 			var refused *RefusedError
 			if errors.As(err, &refused) {
-				return stepFailure{reason: truncate(refused.Reason, 300), next: "rerun", refused: true}
+				return stepFailure{reason: stepReason(refused.Reason), next: "rerun", refused: true}
 			}
-			return stepFailure{reason: truncate("could not start the job: "+err.Error(), 300), next: "rerun"}
+			return stepFailure{reason: stepReason("could not start the job: " + err.Error()), next: "rerun"}
 		}
 		jobID = started
 		base := req.ReviewBase
@@ -1410,7 +1408,7 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 		if ctx.Err() != nil {
 			return stepFailure{}
 		}
-		return stepFailure{reason: truncate("waiting for job "+jobID+": "+err.Error(), 300), next: "rerun"}
+		return stepFailure{reason: stepReason("waiting for job " + jobID + ": " + err.Error()), next: "rerun"}
 	}
 	// A job that ended on a provider limit recorded no review and moves no
 	// head: whatever verdict its review record holds is not a reviewer's.
@@ -1572,7 +1570,7 @@ func (r *Runner) runReopen(ctx context.Context, d *Delivery, record *StepRecord,
 		case <-ctx.Done():
 			recheck.Stop()
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				return stepFailure{reason: truncate(fmt.Sprintf("timed out after %d seconds waiting for job %s to settle (%s); nothing was sent", step.TimeoutSeconds, d.JobID, busy), 300),
+				return stepFailure{reason: stepReason(fmt.Sprintf("timed out after %d seconds waiting for job %s to settle (%s); nothing was sent", step.TimeoutSeconds, d.JobID, busy)),
 					next: "swarm_message_job by hand once the job settles, or rerun"}
 			}
 			return stepFailure{} // the daemon is stopping
@@ -1641,15 +1639,15 @@ func IsRebaseReopen(d Delivery, stepID string) bool {
 func (r *Runner) roundsExhausted(d *Delivery, record *StepRecord, step Step) stepFailure {
 	rounds, err := r.store.ReopenRounds(d.Account, d.JobID, d.AutomationID)
 	if err != nil {
-		return stepFailure{reason: truncate("read the round count: "+err.Error(), 300), next: "rerun"}
+		return stepFailure{reason: stepReason("read the round count: " + err.Error()), next: "rerun"}
 	}
 	d.Round = max(d.Round, rounds.Total)
 	if IsRebaseReopen(*d, step.ID) {
 		used := max(rounds.Rebase-d.RebaseBase, 0)
 		if used >= RebaseMaxRounds {
 			_, failure := ReopenCause(*d, step.ID)
-			reason := truncate(fmt.Sprintf("%s: step %s: round %d not started: %d of %d rebase reopens used and the push still needs a rebase (%s)",
-				ReasonRebaseRoundsExhausted, step.ID, d.Round+1, used, RebaseMaxRounds, failure), 300)
+			reason := stepReason(fmt.Sprintf("%s: step %s: round %d not started: %d of %d rebase reopens used and the push still needs a rebase (%s)",
+				ReasonRebaseRoundsExhausted, step.ID, d.Round+1, used, RebaseMaxRounds, failure))
 			d.BlockedReason = reason
 			record.Output = fmt.Sprintf("%d of %d rebase reopens used; nothing was sent", used, RebaseMaxRounds)
 			return stepFailure{reason: reason, next: "rebase onto the target by hand (swarm_message_job), or swarm_deliver_job automation=true once the target settles", refused: true}
@@ -1748,11 +1746,11 @@ func (r *Runner) sendReopen(ctx context.Context, d *Delivery, record *StepRecord
 				if ctx.Err() != nil {
 					return false, stepFailure{}, ""
 				}
-				return false, stepFailure{reason: truncate("confirm the follow-up's run: "+checkErr.Error(), 300), next: "rerun"}, ""
+				return false, stepFailure{reason: stepReason("confirm the follow-up's run: " + checkErr.Error()), next: "rerun"}, ""
 			}
 			if !started {
-				reason := truncate(fmt.Sprintf("%s: step %s: round %d not started: %s accepted follow-up %q but no run started on its session",
-					ReasonReopenNotStarted, step.ID, d.Round+1, d.JobID, followup), 300)
+				reason := stepReason(fmt.Sprintf("%s: step %s: round %d not started: %s accepted follow-up %q but no run started on its session",
+					ReasonReopenNotStarted, step.ID, d.Round+1, d.JobID, followup))
 				d.BlockedReason = reason
 				record.Output = "the follow-up was accepted but no run started; no round was used"
 				return false, stepFailure{reason: reason, next: "swarm_message_job by hand, or swarm_deliver_job automation=true", refused: true}, ""
@@ -1762,7 +1760,7 @@ func (r *Runner) sendReopen(ctx context.Context, d *Delivery, record *StepRecord
 	if err != nil {
 		var refused *RefusedError
 		if errors.As(err, &refused) {
-			return false, stepFailure{reason: truncate(refused.Reason, 300), next: "swarm_message_job by hand", refused: true}, ""
+			return false, stepFailure{reason: stepReason(refused.Reason), next: "swarm_message_job by hand", refused: true}, ""
 		}
 		if ctx.Err() != nil {
 			return false, stepFailure{}, ""
@@ -1771,11 +1769,11 @@ func (r *Runner) sendReopen(ctx context.Context, d *Delivery, record *StepRecord
 		if errors.As(err, &busy) && busy.Busy() {
 			return false, stepFailure{}, truncate(err.Error(), 240)
 		}
-		return false, stepFailure{reason: truncate("could not send the follow-up: "+err.Error(), 300), next: "rerun"}, ""
+		return false, stepFailure{reason: stepReason("could not send the follow-up: " + err.Error()), next: "rerun"}, ""
 	}
 	if err := r.store.PutReopen(d.Account, d.JobID, followup, ReopenRecord{DeliveryID: d.ID, AutomationID: d.AutomationID, Step: step.ID, Round: d.Round, RoundBase: d.RoundBase,
 		Rebase: IsRebaseReopen(*d, step.ID)}); err != nil {
-		return false, stepFailure{reason: truncate("record the reopen: "+err.Error(), 300), next: "rerun"}, ""
+		return false, stepFailure{reason: stepReason("record the reopen: " + err.Error()), next: "rerun"}, ""
 	}
 	record.Reason = ""
 	record.Outcome = map[string]any{"followup": followup, "round": d.Round + 1}
@@ -1825,7 +1823,7 @@ func (r *Runner) verifyDescends(ctx context.Context, d *Delivery, outcome AgentO
 		if ctx.Err() != nil {
 			return "", stepFailure{}
 		}
-		return "", stepFailure{reason: truncate("could not verify the job's head against the delivery head: "+err.Error(), 300), next: "rerun"}
+		return "", stepFailure{reason: stepReason("could not verify the job's head against the delivery head: " + err.Error()), next: "rerun"}
 	}
 	if !descends {
 		return "", stepFailure{reason: "the job " + outcome.JobID + " head " + outcome.Head + " does not descend from the delivery head " + d.Head + ": the delivery head is not moved",
@@ -1909,7 +1907,7 @@ func (r *Runner) applyReviewerFixes(ctx context.Context, d *Delivery, record *St
 		if ctx.Err() != nil {
 			return stepFailure{}
 		}
-		return stepFailure{reason: truncate("could not measure the reviewer's fixes: "+err.Error(), 300), next: "rerun"}
+		return stepFailure{reason: stepReason("could not measure the reviewer's fixes: " + err.Error()), next: "rerun"}
 	}
 	out["fix_lines"] = changed
 	if changed > MaxReviewerFixLines {
@@ -1987,6 +1985,21 @@ func lastLine(out []byte) string {
 		}
 	}
 	return ""
+}
+
+// MaxStepReasonRunes bounds the reason a step records (StepRecord.Reason, a
+// delivery's BlockedReason). It is the full text the delivery read (what a
+// step result's more names) returns: a task wake and task progress show it
+// to pebblestore.ProjectTaskWakeReasonRunes, head and tail kept.
+const MaxStepReasonRunes = 4 * pebblestore.ProjectTaskWakeReasonRunes
+
+// stepReason bounds a step's failure reason: whole up to MaxStepReasonRunes,
+// past that its head and tail with a marker saying how much was cut. A
+// reason is never cut at its head alone, so the end of an error (often
+// what failed) stays.
+func stepReason(reason string) string {
+	out, _ := pebblestore.ClipProjectTaskReason(reason, MaxStepReasonRunes)
+	return out
 }
 
 func truncate(s string, limit int) string {

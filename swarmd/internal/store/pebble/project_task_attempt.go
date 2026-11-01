@@ -12,21 +12,25 @@ import (
 // ProjectTaskAttempt records a coordinator reservation, not a copy of its transcript.
 // Zero legacy timestamps mean unknown; migration never dates old feedback.
 type ProjectTaskAttempt struct {
-	ID                      string                              `json:"id"`
-	ClientRequestID         string                              `json:"client_request_id,omitempty"`
-	PayloadHash             string                              `json:"payload_hash,omitempty"`
-	RequestRevision         int                                 `json:"request_revision,omitempty"`
-	UserID                  string                              `json:"user_id,omitempty"`
-	Request                 string                              `json:"request,omitempty"`
-	SessionID               string                              `json:"session_id"`
-	RunID                   string                              `json:"run_id,omitempty"`
-	Role                    string                              `json:"role"`
-	CreatedAt               int64                               `json:"created_at,omitempty"`
-	Status                  string                              `json:"status"`
-	LaunchState             string                              `json:"launch_state,omitempty"`
-	LastError               string                              `json:"last_error,omitempty"`
-	Summary                 string                              `json:"summary,omitempty"`
-	SummaryRunID            string                              `json:"summary_run_id,omitempty"`
+	ID              string `json:"id"`
+	ClientRequestID string `json:"client_request_id,omitempty"`
+	PayloadHash     string `json:"payload_hash,omitempty"`
+	RequestRevision int    `json:"request_revision,omitempty"`
+	UserID          string `json:"user_id,omitempty"`
+	Request         string `json:"request,omitempty"`
+	SessionID       string `json:"session_id"`
+	RunID           string `json:"run_id,omitempty"`
+	Role            string `json:"role"`
+	CreatedAt       int64  `json:"created_at,omitempty"`
+	Status          string `json:"status"`
+	LaunchState     string `json:"launch_state,omitempty"`
+	LastError       string `json:"last_error,omitempty"`
+	Summary         string `json:"summary,omitempty"`
+	SummaryRunID    string `json:"summary_run_id,omitempty"`
+	// Handoff is the agent's own handoff for the run SummaryRunID names: the
+	// summary its task_progress done call recorded (projectTaskRunHandoff).
+	// Summary stays the run's final message.
+	Handoff                 string                              `json:"handoff,omitempty"`
 	Recovery                *ProjectTaskRecoverySource          `json:"recovery,omitempty"`
 	RepositoryContinuations []ProjectTaskRepositoryContinuation `json:"repository_continuations,omitempty"`
 	PlanBinding             *ProjectTaskPlanBinding             `json:"plan_binding,omitempty"`
@@ -427,25 +431,26 @@ func (s *SessionStore) hydrateTaskAttemptOutcome(task *ProjectTaskRecord) {
 		return
 	}
 	if a.SummaryRunID != a.RunID {
-		a.Summary, a.SummaryRunID = "", ""
+		a.Summary, a.SummaryRunID, a.Handoff = "", "", ""
 	}
 	state, found, err := s.GetV3SessionRunState(a.SessionID)
 	if err != nil || !found || state.AccountScopeID != task.AccountID {
 		return
 	}
 	if a.RunID != "" && a.RunID != state.RunID {
-		a.Summary, a.SummaryRunID = "", ""
+		a.Summary, a.SummaryRunID, a.Handoff = "", "", ""
 		return
 	}
 	a.RunID = state.RunID
 	if state.Active {
-		a.Summary, a.SummaryRunID = "", ""
+		a.Summary, a.SummaryRunID, a.Handoff = "", "", ""
 		return
 	}
 	owned, found, err := s.GetSession(a.SessionID)
 	if err != nil || !found || owned.AccountScopeID != task.AccountID {
 		return
 	}
+	a.Handoff = projectTaskRunHandoff(owned.Metadata, state)
 	if task.PlanBinding != nil && task.PlanBinding.SessionID == a.SessionID {
 		plan, found, err := s.GetPlan(a.SessionID, task.PlanBinding.PlanID)
 		if err == nil && found && plan.AccountScopeID == task.AccountID && plan.Document != nil {

@@ -103,7 +103,7 @@ func (r *Runner) rebaseTarget(ctx context.Context, d *Delivery) (branch, onto st
 		if ctx.Err() != nil {
 			return "", "", stepFailure{}
 		}
-		return "", "", stepFailure{reason: truncate("read the tip of "+g.BaseBranch+": "+err.Error(), 300), next: "rerun"}
+		return "", "", stepFailure{reason: stepReason("read the tip of " + g.BaseBranch + ": " + err.Error()), next: "rerun"}
 	}
 	if !isCommitID(tip) {
 		return "", "", stepFailure{reason: "the tip of " + g.BaseBranch + " is not a commit id", next: "rerun", refused: true}
@@ -144,14 +144,14 @@ func (r *Runner) rebaseHead(ctx context.Context, d *Delivery, outcome AgentOutco
 		if ctx.Err() != nil {
 			return stepFailure{}
 		}
-		return stepFailure{reason: truncate("could not verify the job's head against the delivery head: "+err.Error(), 300), next: "rerun"}
+		return stepFailure{reason: stepReason("could not verify the job's head against the delivery head: " + err.Error()), next: "rerun"}
 	}
 	if descends {
 		return r.moveHead(ctx, d, outcome, out)
 	}
 	refuse := func(why string) stepFailure {
 		out["rebase_refused"] = truncate(why, 1000)
-		return stepFailure{reason: truncate("rebase not accepted: "+why+"; the delivery head is not moved", 300),
+		return stepFailure{reason: stepReason("rebase not accepted: " + why + "; the delivery head is not moved"),
 			next: "rebase by hand (message the task), then rerun", refused: true}
 	}
 	onto, _ := out["rebase_onto"].(string)
@@ -166,7 +166,7 @@ func (r *Runner) rebaseHead(ctx context.Context, d *Delivery, outcome AgentOutco
 		if ctx.Err() != nil {
 			return stepFailure{}
 		}
-		return stepFailure{reason: truncate("could not verify the rebased head against the target tip: "+err.Error(), 300), next: "rerun"}
+		return stepFailure{reason: stepReason("could not verify the rebased head against the target tip: " + err.Error()), next: "rerun"}
 	}
 	if !ok {
 		return refuse("head " + outcome.Head + " does not descend from the target branch tip " + onto)
@@ -191,14 +191,14 @@ func (r *Runner) rebaseHead(ctx context.Context, d *Delivery, outcome AgentOutco
 		if ctx.Err() != nil {
 			return stepFailure{}
 		}
-		return stepFailure{reason: truncate("list the files the delivery head changes: "+err.Error(), 300), next: "rerun"}
+		return stepFailure{reason: stepReason("list the files the delivery head changes: " + err.Error()), next: "rerun"}
 	}
 	newFiles, err := r.rebase.ChangedFiles(ctx, d.Folder, HeadRef{Commit: onto}, newHead)
 	if err != nil {
 		if ctx.Err() != nil {
 			return stepFailure{}
 		}
-		return stepFailure{reason: truncate("list the files the rebased head changes: "+err.Error(), 300), next: "rerun"}
+		return stepFailure{reason: stepReason("list the files the rebased head changes: " + err.Error()), next: "rerun"}
 	}
 	handoff, _ := out["handoff"].(string)
 	if strings.TrimSpace(outcome.Handoff) != "" {
@@ -266,7 +266,7 @@ func (r *Runner) syncTaskBranch(ctx context.Context, d *Delivery, stepID, from s
 	if sync.Head == "" {
 		sync.Head = d.Head
 	}
-	sync.Reason = truncate(sync.Reason, 300)
+	sync.Reason = stepReason(sync.Reason)
 	d.TaskBranch = &sync
 	out["task_branch"] = map[string]any{"head": sync.Head, "advanced": sync.Advanced, "reason": sync.Reason}
 	if sync.Advanced {

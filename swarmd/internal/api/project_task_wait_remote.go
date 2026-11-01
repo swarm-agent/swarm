@@ -251,7 +251,7 @@ func (s *Server) followRemoteTaskWait(parent context.Context, owner pebblestore.
 				o.Progress = pebblestore.ProjectTaskWaitProgressFrom(progress.Task.Progress)
 			}
 			if a := task.ActiveAttempt(); a != nil {
-				o.AttemptID, o.SessionID, o.AttemptSummary = a.ID, a.SessionID, a.Summary
+				o.AttemptID, o.SessionID, o.AttemptSummary, o.AttemptHandoff = a.ID, a.SessionID, a.Summary, a.Handoff
 				// A reopen of the task (followed under until=settled) runs
 				// in this session: its activity concerns the wait too.
 				if a.SessionID != "" && len(pinned) < 4*len(wait.Tasks) {

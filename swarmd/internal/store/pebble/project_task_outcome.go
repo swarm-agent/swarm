@@ -37,6 +37,27 @@ func completedTaskEventSummary(state V3SessionRunState, event V3SessionEvent) (s
 	return summary, true
 }
 
+// projectTaskRunHandoff is the agent's own handoff for a settled run: the
+// summary its task_progress done call recorded in the session's metadata
+// (lifecycle_summary), only when that call was bound to this run
+// (lifecycle_summary_run_id) and left it needing review. It is what the agent
+// says it did, without the progress lines its final message may open with.
+// A handoff over ProjectTaskWakeResultBytes keeps its end, marked.
+func projectTaskRunHandoff(metadata map[string]any, state V3SessionRunState) string {
+	if state.Active || state.RunID == "" || len(metadata) == 0 {
+		return ""
+	}
+	if runID, _ := metadata["lifecycle_summary_run_id"].(string); runID != state.RunID {
+		return ""
+	}
+	if signal, _ := metadata["lifecycle_signal"].(string); signal != "needs_review" {
+		return ""
+	}
+	handoff, _ := metadata["lifecycle_summary"].(string)
+	handoff, _ = ClipProjectTaskResultTail(handoff, ProjectTaskWakeResultBytes)
+	return handoff
+}
+
 // ProjectTaskRunMessage is the exact final assistant message of a completed
 // task run: what read_messages pages (message_id, message_seq) and its size.
 type ProjectTaskRunMessage struct {

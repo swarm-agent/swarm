@@ -275,6 +275,9 @@ const maxStepFailures = 20
 
 // recordFailure appends one failed attempt's reason, keeping the newest.
 func (r *StepRecord) recordFailure(rerun int, at int64, reason string) {
+	// The history keeps each earlier reason to the wake's bound (head and
+	// tail); the step's current Reason keeps up to MaxStepReasonRunes.
+	reason, _ = pebblestore.ClipProjectTaskReason(reason, pebblestore.ProjectTaskWakeReasonRunes)
 	r.Failures = append(r.Failures, AttemptFailure{Attempt: r.Attempts, Rerun: rerun, At: at, Reason: reason})
 	if extra := len(r.Failures) - maxStepFailures; extra > 0 {
 		r.Failures = append([]AttemptFailure(nil), r.Failures[extra:]...)

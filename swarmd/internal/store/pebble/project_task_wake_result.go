@@ -1,6 +1,7 @@
 package pebblestore
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -34,6 +35,9 @@ const (
 
 // Summary sources of a wake row (summary_source).
 const (
+	// ProjectTaskSummaryHandoff: the agent's own handoff, the summary of its
+	// task_progress done call for the followed run (attempt handoff).
+	ProjectTaskSummaryHandoff      = "handoff"
 	ProjectTaskSummaryFinalMessage = "final_message"
 	ProjectTaskSummaryLastError    = "last_error"
 	ProjectTaskSummaryActionNeeded = "action_needed"
@@ -126,17 +130,41 @@ func ClipProjectTaskOutputTail(output string, maxLines, maxBytes int) (string, b
 	return output, cut
 }
 
-// ProjectTaskBlockingFindings lists the lines of a review's findings that
-// name a BLOCKING finding (bounded). With verdict block and no such line,
-// the findings' first line stands for the block.
+// Negated forms of "blocking" in a review's findings, which name no
+// blocking finding: "non-blocking", "no / not / none … blocking" (at most two
+// words between) and "blocking …: none" ending the line. Matched on the
+// upper-cased line.
+var (
+	projectTaskBlockingWord       = regexp.MustCompile(`\bBLOCKING\b`)
+	projectTaskBlockingNonPrefix  = regexp.MustCompile(`\bNON[- ]?BLOCKING\b`)
+	projectTaskBlockingNegBefore  = regexp.MustCompile(`\b(NO|NOT|NONE|NOTHING|NEVER|NOR|WITHOUT|ZERO|ISN'?T|AREN'?T|WASN'?T|WEREN'?T)\s+([A-Z0-9'-]+\s+){0,2}BLOCKING\b`)
+	projectTaskBlockingNegNothing = regexp.MustCompile(`\bBLOCKING\b[^:=]*[:=]\s*[(\[]?\s*(NONE|NOTHING|N/?A|NO|0|-)\s*[)\]]?\s*[.!]?\s*$`)
+)
+
+// projectTaskNamesBlocking reports whether a findings line names a
+// blocking finding: it says BLOCKING (a word) other than in a negated form.
+func projectTaskNamesBlocking(line string) bool {
+	upper := strings.ToUpper(line)
+	for _, negated := range []*regexp.Regexp{projectTaskBlockingNegNothing, projectTaskBlockingNonPrefix, projectTaskBlockingNegBefore} {
+		upper = negated.ReplaceAllString(upper, " ")
+	}
+	return projectTaskBlockingWord.MatchString(upper)
+}
+
+// ProjectTaskBlockingFindings lists the lines of a block review's findings
+// that name a BLOCKING finding (bounded); negated forms ("No blocking
+// issues", "BLOCKING: none", "non-blocking") are not findings. A review
+// with any other verdict (ok, warn) has no blocking findings, whatever its
+// text says. With verdict block and no such line, the findings' first line
+// stands for the block.
 func ProjectTaskBlockingFindings(findings, verdict string) []string {
+	if strings.TrimSpace(verdict) != "block" {
+		return nil
+	}
 	var out []string
 	for _, line := range strings.Split(findings, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || !strings.Contains(strings.ToUpper(line), "BLOCKING") {
-			continue
-		}
-		if strings.Contains(strings.ToUpper(line), "NON-BLOCKING") || strings.Contains(strings.ToUpper(line), "NON BLOCKING") {
+		if line == "" || !projectTaskNamesBlocking(line) {
 			continue
 		}
 		if len(out) == ProjectTaskStepBlockingMax {
@@ -145,7 +173,7 @@ func ProjectTaskBlockingFindings(findings, verdict string) []string {
 		clipped, _ := ClipProjectTaskReason(line, ProjectTaskStepBlockingRunes)
 		out = append(out, clipped)
 	}
-	if len(out) == 0 && verdict == "block" {
+	if len(out) == 0 {
 		if first, _, _ := strings.Cut(strings.TrimSpace(findings), "\n"); strings.TrimSpace(first) != "" {
 			clipped, _ := ClipProjectTaskReason(first, ProjectTaskStepBlockingRunes)
 			out = append(out, clipped)
@@ -211,7 +239,7 @@ type ProjectTaskWakeResult struct {
 // kept: failure_truncated).
 func setProjectTaskWakeResult(row map[string]any, r ProjectTaskWakeResult) {
 	summary, cut := r.Summary, false
-	if r.Source == ProjectTaskSummaryFinalMessage {
+	if r.Source == ProjectTaskSummaryFinalMessage || r.Source == ProjectTaskSummaryHandoff {
 		summary, cut = ClipProjectTaskResultTail(summary, ProjectTaskWakeResultBytes)
 	} else {
 		summary, cut = ClipProjectTaskReason(summary, ProjectTaskWakeReasonRunes)
@@ -272,10 +300,13 @@ func projectTaskResultCutBytes(summary string) int {
 }
 
 // projectTaskWakeSummary picks a wake row's summary from a task's result:
-// the agent's final result message, else its last error, else the action it
-// needs, else its status.
-func projectTaskWakeSummary(status, final, lastError, actionNeeded string) (string, string) {
+// the agent's own handoff (its task_progress done summary for the run), else
+// its final result message, else its last error, else the action it needs,
+// else its status.
+func projectTaskWakeSummary(status, handoff, final, lastError, actionNeeded string) (string, string) {
 	switch {
+	case strings.TrimSpace(handoff) != "":
+		return handoff, ProjectTaskSummaryHandoff
 	case strings.TrimSpace(final) != "":
 		return final, ProjectTaskSummaryFinalMessage
 	case strings.TrimSpace(lastError) != "":

@@ -406,6 +406,9 @@ type V3ProjectTaskRemoteObservation struct {
 	AttemptID      string
 	SessionID      string
 	AttemptSummary string
+	// AttemptHandoff is the attempt's handoff (its agent's task_progress
+	// done summary); empty from a machine that does not report one.
+	AttemptHandoff string
 	LastError      string
 	ActionNeeded   string
 	// Progress is the task's workflow and integration as the machine
@@ -620,7 +623,7 @@ func (s *SessionStore) projectTaskWatchLocalOutcome(input *V3SessionMutationInpu
 				status, summary = "superseded", "Selected attempt was superseded; explicitly select the replacement if needed."
 			} else {
 				status = task.Status
-				summary, source = projectTaskWakeSummary(status, a.Summary, task.LastError, task.ActionNeeded)
+				summary, source = projectTaskWakeSummary(status, a.Handoff, a.Summary, task.LastError, task.ActionNeeded)
 				failure = projectTaskWakeFailure(status, task.LastError, task.ActionNeeded)
 			}
 		}
@@ -820,7 +823,7 @@ func projectTaskWatchRemoteOutcome(op *V3ProjectTaskWaitMutation, waitValue V3Pr
 			default:
 				progress = o.Progress
 				status = o.Status
-				summary, source = projectTaskWakeSummary(status, o.AttemptSummary, o.LastError, o.ActionNeeded)
+				summary, source = projectTaskWakeSummary(status, o.AttemptHandoff, o.AttemptSummary, o.LastError, o.ActionNeeded)
 				failure = projectTaskWakeFailure(status, o.LastError, o.ActionNeeded)
 			}
 		}

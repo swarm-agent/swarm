@@ -228,6 +228,9 @@ func (r *ProjectTaskBoardReader) hydrateAttempt(task *ProjectTaskRecord) {
 	if a == nil || a.SessionID != task.SessionID {
 		return
 	}
+	// The board is compact: the agent's handoff is a detail read
+	// (hydrateTaskAttemptOutcome).
+	a.Handoff = ""
 	if a.SummaryRunID != a.RunID {
 		a.Summary, a.SummaryRunID = "", ""
 	}

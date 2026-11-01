@@ -71,26 +71,42 @@ changing the run.
   has them.
 - Wake row result fields (`setProjectTaskWakeResult`, one builder for local
   and linked rows; keys listed in `pebblestore.ProjectTaskWakeRowKeys`):
-  - `summary` is the agent's final result message: the assistant message of
-    the followed attempt's completed run (`completedTaskRunSummary`), never
-    its first lines. Over `ProjectTaskWakeResultBytes` (4000) it keeps its
-    end, starts with a `[…first N bytes cut…]` marker and the row says
-    `result_truncated`, `result_bytes` (the whole message), `read_full` and
-    `read_full_args` (local: `manage-sessions read_messages` at the exact
-    `message_id`/`message_seq`, `content_offset` 0; linked:
-    `read_task_session` at `attempt_id`). `summary_source` says where it came
-    from: `final_message`, `last_error`, `action_needed` or `status`.
+  - `summary` is the agent's own handoff when it recorded one: the summary
+    of its `task_progress done` call bound to the followed attempt's run
+    (attempt `handoff`, `projectTaskRunHandoff`; `summary_source`
+    `handoff`), without the progress lines a final message can open with.
+    Else it is the agent's final result message: the assistant message of
+    that completed run (`completedTaskRunSummary`, `final_message`), never
+    its first lines. Over `ProjectTaskWakeResultBytes` (4000) either keeps
+    its end, starts with a `[…first N bytes cut…]` marker and the row says
+    `result_truncated`, `result_bytes` (the whole text), `read_full` and
+    `read_full_args` (local: `manage-sessions read_messages`, for a final
+    message at its exact `message_id`/`message_seq`, `content_offset` 0;
+    linked: `read_task_session` at `attempt_id`). Other sources:
+    `last_error`, `action_needed`, `status` (a fixed sentence: removed,
+    superseded, launching, unreachable, work off). A linked machine without
+    attempt handoffs gives `final_message`.
   - `failure` is a failed, blocked, cancelled or needs-input run's full
-    reason; `reopen_failure`, `task_state_reason` and each step's `error`
-    keep up to `ProjectTaskWakeReasonRunes` (2000) and, past that, their head
-    and tail with a `[…N chars cut…]` marker (`failure_truncated`,
-    `reopen_failure_truncated` with `reopen_failure_more`, the delivery
-    read). The milestone label alone stays one line.
+    reason; `failure`, `reopen_failure` and each step's `error` keep up to
+    `ProjectTaskWakeReasonRunes` (2000) and, past that, their head and tail
+    with a `[…N chars cut…]` marker (`failure_truncated`,
+    `reopen_failure_truncated` with `reopen_failure_more`, a step's
+    `error_truncated` with `more`, the delivery read). A step records its
+    reason whole up to `jobautomation.MaxStepReasonRunes` (8000, past that
+    head and tail, `stepReason`), so `more` returns more than the row shows.
+  - `task_state_reason` is the one-line label `get_task`, `list_tasks` and
+    the prompt share (a reopen's failure to 80 runes, a run's last error to
+    160, cut marked `…`); it is not the full reason. The full reason it
+    labels is in the same row: `failure` (a failed run's last error),
+    `reopen_failure` (a reopen) or the failed step's `error`. The milestone
+    label stays one line too.
   - `delivery_id` and `workflow_steps_result` describe the shown delivery:
     per finished step `id`, `type`, `status`, `verdict` (agent steps),
     `duration_ms`, `exit_code`, `error`, `output_tail` (a run step's last 30
     lines of its saved log, at most 4000 bytes) and `blocking` (a review's
-    BLOCKING findings), with `more` when anything was cut. `get_task` shows
+    BLOCKING findings: only for verdict `block`, lines naming BLOCKING
+    outside negated forms such as "no blocking issues", "not blocking",
+    "non-blocking" or "BLOCKING: none"), with `more` when anything was cut. `get_task` shows
     the same list as `progress.workflow.steps_result` and the task route as
     `progress.workflow.deliveries[].steps_result` (`taskWaitProgressFor`).
   - Milestone rows are the same rows plus `milestone`.

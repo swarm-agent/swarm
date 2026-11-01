@@ -242,13 +242,16 @@ record keeps its placeholder.
 - A delivery standing at a reopen carries `reopen_failure`: the failed step's
   whole reason up to 2000 characters, past that its head and tail with a
   `[…N chars cut…]` marker and `reopen_failure_truncated`. Outcome words,
-  state reasons and milestone labels keep a one-line form of it.
+  `task_state_reason` and milestone labels keep a one-line form of it (80
+  runes, cut marked `…`); `reopen_failure` is the full reason.
 - `steps_result` (task route and `get_task`, not the board): each finished
   step of the delivery with `id`, `type`, `status`, `verdict` (agent steps),
   `duration_ms`, `exit_code`, `error` (head and tail kept past 2000
-  characters), `output_tail` (a run step's last 30 lines of its saved log,
-  at most 4000 bytes), `blocking` (a review's BLOCKING findings) and `more`
-  when anything was cut. `get_task` shows the shown delivery's list as
+  characters; the step records it whole up to 8000, which `more` reads),
+  `output_tail` (a run step's last 30 lines of its saved log, at most 4000
+  bytes), `blocking` (a `block` review's BLOCKING findings; "no blocking
+  issues", "not blocking", "BLOCKING: none" and the like are left out) and
+  `more` when anything was cut. `get_task` shows the shown delivery's list as
   `progress.workflow.steps_result`; wake rows as `workflow_steps_result`.
 - absent while the task has not ended.
 

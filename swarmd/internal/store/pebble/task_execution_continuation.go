@@ -62,7 +62,7 @@ func (s *SessionStore) prepareTaskExecutionContinuation(input V3SessionMutationI
 		return nil, errors.New("task continuation requires a settled owning run")
 	}
 	attempt.RunID = intent.RunID
-	attempt.Summary, attempt.SummaryRunID = "", ""
+	attempt.Summary, attempt.SummaryRunID, attempt.Handoff = "", "", ""
 	task.Status, task.LastError, task.ActionNeeded = "in_progress", "", ""
 	// A continuation ends a provider-limit wait (the wait's own continuation,
 	// or the person's message) in the same commit as its run intent.
