@@ -169,7 +169,8 @@ func TestRunStepRefusesScriptsThatAreNotRootOwnedOrAreWritable(t *testing.T) {
 		})
 	}
 
-	// Through the runner: the step is recorded as refused and nothing ran.
+	// Through the runner: the step is recorded as one that could not run
+	// (error, script_unusable, not failed) and nothing ran.
 	h := newHarness(t)
 	folder := t.TempDir()
 	writeScript(t, folder, "push.sh", "touch \"$PWD/ran\"\n")
@@ -182,7 +183,7 @@ func TestRunStepRefusesScriptsThatAreNotRootOwnedOrAreWritable(t *testing.T) {
 	h.jobEnd("run-1", "", "succeeded", "direct")
 	h.process()
 	d := h.deliveries("worker/coder-1/run-1")[0]
-	if d.State != StateFailed || d.Steps[0].ExitCode != nil || !strings.Contains(d.Steps[0].Reason, "must be owned by root and not writable by group or others") {
+	if d.State != StateError || d.Steps[0].State != StateError || d.Steps[0].ErrorKind != ErrorKindScriptUnusable || d.Steps[0].ExitCode != nil || !strings.Contains(d.Steps[0].Reason, "must be owned by root and not writable by group or others") {
 		t.Fatalf("refused step = %+v", d.Steps[0])
 	}
 	if _, err := os.Stat(filepath.Join(folder, "ran")); !os.IsNotExist(err) {

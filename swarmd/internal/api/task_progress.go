@@ -216,6 +216,9 @@ func deliveryStepsResult(d jobautomation.Delivery) []pebblestore.ProjectTaskStep
 			continue
 		}
 		r := pebblestore.ProjectTaskStepResult{ID: step.ID, Type: step.Type, Status: step.State, ExitCode: step.ExitCode}
+		if step.State == jobautomation.StateError {
+			r.ErrorKind = step.ErrorKind
+		}
 		if step.StartedAt > 0 && step.FinishedAt >= step.StartedAt {
 			r.DurationMs = step.FinishedAt - step.StartedAt
 		}
@@ -226,7 +229,7 @@ func deliveryStepsResult(d jobautomation.Delivery) []pebblestore.ProjectTaskStep
 			r.Blocking = pebblestore.ProjectTaskBlockingFindings(findings, r.Verdict)
 		}
 		reason := step.Reason
-		if reason == "" && len(step.Failures) > 0 && (step.State == jobautomation.StateFailed || step.State == jobautomation.StateStopped) {
+		if reason == "" && len(step.Failures) > 0 && (step.State == jobautomation.StateFailed || step.State == jobautomation.StateError || step.State == jobautomation.StateStopped) {
 			reason = step.Failures[len(step.Failures)-1].Reason
 		}
 		r.Error, r.ErrorTruncated = pebblestore.ClipProjectTaskReason(reason, pebblestore.ProjectTaskWakeReasonRunes)
@@ -377,6 +380,11 @@ func deliveryProgressState(state string) string {
 		return workflowDone
 	case jobautomation.StateFailed, jobautomation.StateStopped:
 		return workflowFailed
+	case jobautomation.StateError:
+		// A step's script never ran: the workflow did not hand the work
+		// over (failed, for waits and counts); the task's outcome and
+		// state reason name it an infrastructure error.
+		return workflowFailed
 	case jobautomation.StateBlocked:
 		return workflowBlocked
 	case jobautomation.StateSentBack:
@@ -418,7 +426,7 @@ func currentStep(d jobautomation.Delivery) int {
 		switch step.State {
 		case jobautomation.StateRunning, jobautomation.StateWaiting:
 			return i
-		case jobautomation.StateFailed, jobautomation.StateStopped:
+		case jobautomation.StateFailed, jobautomation.StateError, jobautomation.StateStopped:
 			// A step allowed to fail (continue_on_failure) is not what
 			// the delivery stands at.
 			if d.State != jobautomation.StateSucceeded && d.State != jobautomation.StateSentBack {
@@ -741,6 +749,9 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 		d := *failedDelivery
 		out.Summary = "workflow " + d.AutomationName + " " + d.State
 		reason := d.BlockedReason
+		if reason == "" && d.State == jobautomation.StateError {
+			reason = jobautomation.DeliveryErrorReason(d)
+		}
 		if reason == "" {
 			if step := currentStep(d); step < len(d.Steps) {
 				reason = firstNonEmptyString(d.Steps[step].Reason, stepLabel(d, step)+" "+d.Steps[step].State)
@@ -923,6 +934,8 @@ func taskProgressHistory(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 				}
 			case jobautomation.StateFailed, jobautomation.StateStopped:
 				add(step.FinishedAt, label+" "+step.State+": "+step.Reason)
+			case jobautomation.StateError:
+				add(step.FinishedAt, label+" could not run ("+step.ErrorKind+", infrastructure): "+step.Reason)
 			}
 		}
 		if d.FinishedAt > 0 {

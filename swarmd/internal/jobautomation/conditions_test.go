@@ -87,20 +87,23 @@ func TestVerdictConditionRunsOrSkipsAStepAndSkipsDoNotStopLaterSteps(t *testing.
 
 // Requirement: conditions stay small and are validated when the automation
 // is set: each names an earlier step and has exactly one of status
-// (succeeded|failed) or verdict (ok|block); a verdict needs an agent step.
-// Threat: a condition on a later or unknown step that silently never holds.
+// (succeeded|failed|error) or verdict (ok|block); a verdict needs an agent
+// step, and status error (a script that never started) a run step.
+// Threat: a condition on a later or unknown step that silently never holds,
+// or a status error condition on a step that can never end error.
 // Owner: NormalizeSteps.
 func TestConditionsAreValidated(t *testing.T) {
 	agent := Step{ID: "review", Type: StepAgent, Worker: "reviewer", Brief: "b"}
 	run := Step{ID: "check", Type: StepRun, Command: "check.sh"}
 	bad := map[string][]Step{
-		"unknown step":          {agent, {ID: "x", Type: StepRun, Command: "x.sh", If: []Condition{{Step: "nope", Status: "succeeded"}}}},
-		"later step":            {{ID: "x", Type: StepRun, Command: "x.sh", If: []Condition{{Step: "review", Verdict: "ok"}}}, agent},
-		"both status, verdict":  {agent, {ID: "x", Type: StepRun, Command: "x.sh", If: []Condition{{Step: "review", Status: "failed", Verdict: "ok"}}}},
-		"neither":               {agent, {ID: "x", Type: StepRun, Command: "x.sh", If: []Condition{{Step: "review"}}}},
-		"bad status":            {agent, {ID: "x", Type: StepRun, Command: "x.sh", If: []Condition{{Step: "review", Status: "skipped"}}}},
-		"bad verdict":           {agent, {ID: "x", Type: StepRun, Command: "x.sh", If: []Condition{{Step: "review", Verdict: "approve"}}}},
-		"verdict of a run step": {run, {ID: "x", Type: StepRun, Command: "x.sh", If: []Condition{{Step: "check", Verdict: "ok"}}}},
+		"unknown step":           {agent, {ID: "x", Type: StepRun, Command: "x.sh", If: []Condition{{Step: "nope", Status: "succeeded"}}}},
+		"later step":             {{ID: "x", Type: StepRun, Command: "x.sh", If: []Condition{{Step: "review", Verdict: "ok"}}}, agent},
+		"both status, verdict":   {agent, {ID: "x", Type: StepRun, Command: "x.sh", If: []Condition{{Step: "review", Status: "failed", Verdict: "ok"}}}},
+		"neither":                {agent, {ID: "x", Type: StepRun, Command: "x.sh", If: []Condition{{Step: "review"}}}},
+		"bad status":             {agent, {ID: "x", Type: StepRun, Command: "x.sh", If: []Condition{{Step: "review", Status: "skipped"}}}},
+		"bad verdict":            {agent, {ID: "x", Type: StepRun, Command: "x.sh", If: []Condition{{Step: "review", Verdict: "approve"}}}},
+		"verdict of a run step":  {run, {ID: "x", Type: StepRun, Command: "x.sh", If: []Condition{{Step: "check", Verdict: "ok"}}}},
+		"error of an agent step": {agent, {ID: "x", Type: StepRun, Command: "x.sh", If: []Condition{{Step: "review", Status: "error"}}}},
 	}
 	for name, steps := range bad {
 		if err := NormalizeSteps(steps); err == nil || !IsValidationError(err) {
@@ -113,6 +116,10 @@ func TestConditionsAreValidated(t *testing.T) {
 	}
 	if c := good[2].If; c[0].Status != StateFailed || c[1].Verdict != VerdictBlock {
 		t.Fatalf("normalized = %+v", c)
+	}
+	onError := []Step{run, {ID: "y", Type: StepRun, Command: "y.sh", If: []Condition{{Step: "check", Status: " Error "}}}}
+	if err := NormalizeSteps(onError); err != nil || onError[1].If[0].Status != StateError {
+		t.Fatalf("status error on a run step: %v %+v", err, onError[1].If)
 	}
 }
 

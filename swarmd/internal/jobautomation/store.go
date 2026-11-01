@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -40,8 +41,15 @@ const (
 	StateRunning   = "running"
 	StateSucceeded = "succeeded"
 	StateFailed    = "failed"
-	StateSkipped   = "skipped"
-	StateStopped   = "stopped"
+	// StateError is a run step whose script never started (StepRecord's
+	// ErrorKind says why: its checkout, the environment, the lease, a
+	// missing or unusable script, its time ending before it started), and a
+	// delivery such a step stopped. It is an infrastructure problem, never
+	// the script's result: a condition on status failed does not match it,
+	// one on status error does.
+	StateError   = "error"
+	StateSkipped = "skipped"
+	StateStopped = "stopped"
 	// StateWaiting is a reopen step waiting, within its timeout_seconds, for
 	// its job's run or follow-up to settle before it sends; its reason says
 	// what it waits for. It is also an agent step whose job ended on a
@@ -246,13 +254,16 @@ type StepRecord struct {
 	// LimitWaits counts the agent step's jobs that ended on a provider's
 	// usage, rate or session limit; each wait for the reset starts a new job
 	// and uses none of the step's retries.
-	LimitWaits int            `json:"limit_waits,omitempty"`
-	ExitCode   *int           `json:"exit_code,omitempty"`
-	Output     string         `json:"output,omitempty"`
-	Reason     string         `json:"reason,omitempty"`
-	Next       string         `json:"next,omitempty"`
-	Outcome    map[string]any `json:"outcome,omitempty"`
-	LogTail    string         `json:"log_tail,omitempty"`
+	LimitWaits int  `json:"limit_waits,omitempty"`
+	ExitCode   *int `json:"exit_code,omitempty"`
+	// ErrorKind is why a step in StateError never started its script (an
+	// ErrorKind*).
+	ErrorKind string         `json:"error_kind,omitempty"`
+	Output    string         `json:"output,omitempty"`
+	Reason    string         `json:"reason,omitempty"`
+	Next      string         `json:"next,omitempty"`
+	Outcome   map[string]any `json:"outcome,omitempty"`
+	LogTail   string         `json:"log_tail,omitempty"`
 	// Note says how the step ran differently from its stored definition
 	// (LegacyCheckoutMigration), so the owner knows to resave it.
 	Note string `json:"note,omitempty"`
@@ -292,7 +303,7 @@ func resetStep(step *StepRecord) {
 // Terminal reports whether a delivery or step state is final.
 func Terminal(state string) bool {
 	switch state {
-	case StateSucceeded, StateFailed, StateSkipped, StateStopped, StateBlocked, StateSentBack:
+	case StateSucceeded, StateFailed, StateError, StateSkipped, StateStopped, StateBlocked, StateSentBack:
 		return true
 	}
 	return false
@@ -1330,7 +1341,7 @@ func (s *Store) rerunLocked(d Delivery) (RerunOutcome, error) {
 	for i := range d.Steps {
 		step := &d.Steps[i]
 		switch step.State {
-		case StateFailed, StateStopped:
+		case StateFailed, StateError, StateStopped:
 			reset = true
 		case StateSkipped, StatePending:
 			if !reset {
@@ -1422,6 +1433,81 @@ func (s *Store) StopState() (StopState, error) {
 func (s *Store) SetStopped(stopped bool, by string) (StopState, error) {
 	st := StopState{Stopped: stopped, At: s.now().UnixMilli(), By: by}
 	return st, s.db.PutJSON(keyStop, st)
+}
+
+// keyRepositoryHealthPrefix keeps, per folder, the last object of its
+// repository a run step's checkout could not read (machine-wide, like the
+// stop switch: the folder's repository is the machine's).
+const keyRepositoryHealthPrefix = "job_automation_meta/repository_health/"
+
+// RepositoryHealth is a folder whose repository had an object a run step's
+// checkout could not read: Problem is RepositoryObjectCorrupt or
+// RepositoryObjectUnreadable, Detail git's underlying cause. It stays until
+// a later checkout of that folder reads every object from it.
+type RepositoryHealth struct {
+	Folder  string `json:"folder"`
+	Object  string `json:"object"`
+	Problem string `json:"problem"`
+	Detail  string `json:"detail,omitempty"`
+	At      int64  `json:"at"`
+}
+
+// Message is the health line every surface shows: "folder repository
+// <folder> has a corrupt object <id>" (or an object the step cannot read).
+func (h RepositoryHealth) Message() string {
+	what := "has a corrupt object " + h.Object
+	if h.Problem == RepositoryObjectUnreadable {
+		what = "has an object run steps cannot read " + h.Object
+	}
+	msg := "folder repository " + h.Folder + " " + what
+	if h.Detail != "" {
+		msg += " (" + h.Detail + ")"
+	}
+	return msg
+}
+
+func repositoryHealthKey(folder string) string {
+	return keyRepositoryHealthPrefix + hexKey(filepath.Clean(folder))
+}
+
+// RecordRepositoryCheck records what a run step's checkout of folder found:
+// an object it could not read sets the folder's health problem; a checkout
+// that read every object from the folder clears it. nil does nothing.
+func (s *Store) RecordRepositoryCheck(folder string, check *RepositoryCheck) error {
+	folder = strings.TrimSpace(folder)
+	if check == nil || folder == "" {
+		return nil
+	}
+	if check.Clean {
+		return s.db.Delete(repositoryHealthKey(folder))
+	}
+	if check.Object == "" {
+		return nil
+	}
+	return s.db.PutJSON(repositoryHealthKey(folder), RepositoryHealth{
+		Folder: filepath.Clean(folder), Object: check.Object, Problem: check.Problem, Detail: check.Detail, At: s.now().UnixMilli()})
+}
+
+// RepositoryHealthOf is folder's recorded repository problem, if any.
+func (s *Store) RepositoryHealthOf(folder string) (RepositoryHealth, bool, error) {
+	var h RepositoryHealth
+	found, err := s.db.GetJSON(repositoryHealthKey(folder), &h)
+	return h, found, err
+}
+
+// RepositoryHealthProblems lists every folder with a recorded repository
+// problem, oldest first.
+func (s *Store) RepositoryHealthProblems() ([]RepositoryHealth, error) {
+	var out []RepositoryHealth
+	err := s.db.IteratePrefix(keyRepositoryHealthPrefix, 0, func(_ string, value []byte) error {
+		var h RepositoryHealth
+		if json.Unmarshal(value, &h) == nil && h.Folder != "" {
+			out = append(out, h)
+		}
+		return nil
+	})
+	sort.Slice(out, func(i, j int) bool { return out[i].At < out[j].At })
+	return out, err
 }
 
 // Cursor is the last signal sequence the consumer handled; ok is false

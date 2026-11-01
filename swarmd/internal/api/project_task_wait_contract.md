@@ -101,7 +101,9 @@ changing the run.
     `reopen_failure` (a reopen) or the failed step's `error`. The milestone
     label stays one line too.
   - `delivery_id` and `workflow_steps_result` describe the shown delivery:
-    per finished step `id`, `type`, `status`, `verdict` (agent steps),
+    per finished step `id`, `type`, `status` (`error` with `error_kind` for a
+    run step whose script never started: an infrastructure problem, never
+    `failed`), `verdict` (agent steps),
     `duration_ms`, `exit_code`, `error`, `output_tail` (a run step's last 30
     lines of its saved log, at most 4000 bytes) and `blocking` (a review's
     BLOCKING findings: only for verdict `block`, lines naming BLOCKING

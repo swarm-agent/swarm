@@ -56,6 +56,11 @@ type ProjectTaskStepResult struct {
 	Verdict    string `json:"verdict,omitempty"`
 	DurationMs int64  `json:"duration_ms,omitempty"`
 	ExitCode   *int   `json:"exit_code,omitempty"`
+	// ErrorKind is why a run step whose status is error never started its
+	// script (checkout, environment, lease, script_missing,
+	// script_unusable, start_timeout): an infrastructure problem, not the
+	// script's result (status failed is).
+	ErrorKind string `json:"error_kind,omitempty"`
 	// Error is the step's failure reason, head and tail kept when long.
 	Error          string `json:"error,omitempty"`
 	ErrorTruncated bool   `json:"error_truncated,omitempty"`
@@ -194,7 +199,7 @@ func ClipProjectTaskStepResults(in []ProjectTaskStepResult) []ProjectTaskStepRes
 	}
 	out := make([]ProjectTaskStepResult, 0, len(in))
 	for _, r := range in {
-		step := ProjectTaskStepResult{ID: clipProjectTaskWaitField(r.ID), Type: clipProjectTaskWaitField(r.Type), Status: clipProjectTaskWaitField(r.Status), Verdict: clipProjectTaskWaitField(r.Verdict), DurationMs: max(r.DurationMs, 0), More: clipProjectTaskWaitField(r.More)}
+		step := ProjectTaskStepResult{ID: clipProjectTaskWaitField(r.ID), Type: clipProjectTaskWaitField(r.Type), Status: clipProjectTaskWaitField(r.Status), ErrorKind: clipProjectTaskWaitField(r.ErrorKind), Verdict: clipProjectTaskWaitField(r.Verdict), DurationMs: max(r.DurationMs, 0), More: clipProjectTaskWaitField(r.More)}
 		if r.ExitCode != nil {
 			code := *r.ExitCode
 			step.ExitCode = &code

@@ -109,6 +109,14 @@ func (s *Server) handleBoxSummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// A folder repository with an object run steps could not read
+	// (RepositoryHealth), for the folders this principal can see.
+	if problems := s.visibleRepositoryHealth(principal); len(problems) > 0 {
+		for _, h := range problems {
+			raise(BoxStatusAttention, h.Message())
+		}
+	}
+
 	machine := map[string]any{"uptime_ms": now.Sub(s.startedAt).Milliseconds(), "version": strings.TrimSpace(buildinfo.Version), "commit": strings.TrimSpace(buildinfo.Commit)}
 	if cfg, err := s.loadStartupConfig(); err == nil && strings.TrimSpace(cfg.SwarmName) != "" {
 		machine["name"] = strings.TrimSpace(cfg.SwarmName)

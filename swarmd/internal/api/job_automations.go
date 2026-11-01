@@ -1038,7 +1038,7 @@ func jobDeliveryView(d jobautomation.Delivery) map[string]any {
 		if step.ExitCode != nil {
 			view["exit_code"] = *step.ExitCode
 		}
-		for key, value := range map[string]string{"output": step.Output, "reason": step.Reason, "next": step.Next, "log_tail": step.LogTail, "note": step.Note} {
+		for key, value := range map[string]string{"output": step.Output, "reason": step.Reason, "next": step.Next, "log_tail": step.LogTail, "note": step.Note, "error_kind": step.ErrorKind} {
 			if value != "" {
 				view[key] = value
 			}
@@ -1080,6 +1080,11 @@ func jobDeliveryView(d jobautomation.Delivery) map[string]any {
 	}
 	if d.BlockedReason != "" {
 		out["blocked_reason"] = d.BlockedReason
+	}
+	if d.State == jobautomation.StateError {
+		// error_reason: the step whose script never ran, named an
+		// infrastructure problem (not the work's).
+		out["error_reason"] = jobautomation.DeliveryErrorReason(d)
 	}
 	if d.RebasedFrom != "" {
 		out["rebased_from"], out["rebased_onto"] = d.RebasedFrom, d.RebasedOnto

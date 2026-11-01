@@ -190,8 +190,14 @@ to run:
 "if": [{ "step": "review", "verdict": "block" }, { "step": "check", "status": "succeeded" }]
 ```
 
-- `{"step": "<id>", "status": "succeeded|failed"}`: that step's state. A step
-  that did not run (skipped or stopped) matches neither.
+- `{"step": "<id>", "status": "succeeded|failed|error"}`: that step's state. A
+  step that did not run (skipped or stopped) matches none. `failed` is a
+  script that ran and exited non-zero (or an agent step that failed);
+  `error` is a `run` step whose script **never started** (its `error_kind`:
+  `checkout`, `environment`, `lease`, `script_missing`, `script_unusable`,
+  `start_timeout`), an infrastructure problem that `failed` never matches,
+  so a step that fixes a failed check is not sent when the check could not
+  run. `status: error` is only for a `run` step.
 - `{"step": "<id>", "verdict": "ok|block"}`: for an `agent` step, the verdict
   of the review the job it started recorded. A job that recorded no review has
   no verdict, and a missing verdict never matches.
@@ -306,35 +312,78 @@ is refused.
 - `command` is the script's path **relative to the repository root** in the
   job's head (`scripts/check-console.sh`), with optional `args`. An absolute
   path, `..`, `./` or a path under `.git` is refused when the workflow is
-  saved. When the step runs, a script missing from the head, one that is a
-  directory, link or submodule, and one committed without its executable bit
-  (`git update-index --chmod=+x`) are refused with the reason; nothing runs.
+  saved. When the step runs, a script missing from the head
+  (`error_kind` `script_missing`), one that is a directory, link or
+  submodule, and one committed without its executable bit
+  (`git update-index --chmod=+x`; both `script_unusable`) end the step
+  `error` with the reason; nothing runs.
 - The step takes a lease of the folder's environment, the same lease agents'
   bash uses: the same image, isolation (gVisor where the machine runs it),
-  lease user, network policy and
+  lease user and groups as an agent working in one of the folder's
+  worktrees (so it reads every object those agents wrote into the folder's
+  repository), network policy and
   granted secret stand-ins, and no other host credential. In it the folder
   and its worktrees are mounted **read-only**. The step works in a fresh,
   writable clone of the folder's repository in the lease's own home, checked
   out detached at exactly the delivery's head (`SWARM_HEAD`), never the job's
   live worktree. The folder's branches are the clone's `origin/*` with their
   whole history, so `git merge-base origin/dev HEAD` finds the files the job
-  changed. Nothing the script does reaches the folder's repository or the
-  job's worktree.
+  changed. The clone shares the folder's objects (nothing is copied; only
+  the objects the head needs are read). Nothing the script does reaches the
+  folder's repository or the job's worktree.
+- When the checkout cannot read an object from the folder's repository (Git
+  calls a loose object it cannot open "corrupt", whether its bytes are bad
+  or the lease's user may not read it), the step says which object and
+  git's underlying cause (permission denied with the file's mode and owner
+  and the lease user, or corrupt bytes), then fetches from the folder's
+  `origin` remote into the lease's home: the head commit alone when origin
+  has it (`origin-head`), else origin's branches (`origin-branches`), and
+  tries the checkout again. Its output names the fallback used. The
+  folder's own repository is never modified or repaired. If no fallback
+  works the step ends `error` with `error_kind` `checkout`. Until a later
+  checkout of that folder reads every object from it, `manage_projects`
+  `get_environment` shows `repository_health` ("folder repository <folder>
+  has a corrupt object <id>", or an object run steps cannot read) and the
+  machine's status (`swarm_status`, a linked machine's `machine_status`)
+  lists it among its reasons.
 - The script runs with the checkout as its working directory, the result
   JSON on stdin and the same `SWARM_*` variables a host step gets; nothing
   else of the daemon's environment is passed in.
 - `timeout_seconds` covers waiting for a lease, making the checkout and the
   script. When every lease of the folder is in use the step waits for one,
-  as agents' bash does, and says so in its output; a step still waiting, or
-  still running, at its limit fails with exit code 124. Output, `output`,
-  the exit code, `continue_on_failure` and `if` work as for a host step.
+  as agents' bash does, and says so in its output; a step whose script is
+  still running at its limit fails with exit code 124, and one whose limit
+  ended before its script started (waiting for a lease, making the
+  checkout) ends `error` with `error_kind` `start_timeout`. Output,
+  `output`, the exit code, `continue_on_failure` and `if` work as for a host
+  step.
 - The lease, with its home and the checkout, is released when the step
   ends, also on timeout and when the daemon stops; a lease left by a stopped
   daemon is released on its next start, and the step runs again with a new
   one.
 - A folder with no environment set up for leases, one whose environment is
   not ready (still building, or its build failed), and a daemon whose
-  environments are off fail the step at once with the reason.
+  environments are off end the step `error` at once with the reason
+  (`error_kind` `lease` or `environment`).
+
+#### Steps that could not run (`error`)
+
+A `run` step (host or environment) whose script never started ends
+`error`, not `failed`, with `error_kind`: `checkout` (the step's checkout of
+the head could not be made, the head is not in the folder, or the job has
+no head), `environment` (the machine could not run it: no run steps on the
+daemon, its scratch, the executable could not be started), `lease` (the
+folder's environment could not be leased, or the lease failed under it),
+`script_missing`, `script_unusable` (not executable, not a regular file,
+not owned by root on the host) or `start_timeout`. Its `next` says there is
+nothing to fix in the work. A step on `if: [{step, status: failed}]` is not
+sent for it; one on `status: error` is. Without `continue_on_failure` the
+delivery stops and ends `error` (`error_reason` on the delivery, the
+`automation.step.error` signal); with it the workflow continues, and the
+delivery ends `error` unless another step `failed`. The task's outcome is
+`error <step> (infrastructure: <kind>)` and its state reason says it is an
+infrastructure problem, not the work's. Retries apply as for a failure,
+except for `script_missing`, `script_unusable` and a refused lease.
 - A check in the environment never hands the work over: a successful one
   after the review is not reported as a push.
 
@@ -961,7 +1010,10 @@ and `step_id`:
 - `automation.step.failed` (severity warning; attrs: `step`, `reason` and
   `next`, the next allowed action: `rerun` or `fix the script`; while
   automatic retries remain, also `will_retry` and `retry_at`)
-- `automation.delivery.finished` (attrs: `state`, step counts; for
+- `automation.step.error` (severity warning; a `run` step whose script never
+  started; attrs as `automation.step.failed` plus `error_kind`)
+- `automation.delivery.finished` (attrs: `state`, step counts, `steps_error`
+  when a step could not run; for `error` also `reason`; for
   `sent_back` also `sent_back_step`, `round` and `reason`, severity info)
 - `automation.delivery.skipped` (a job end created no delivery; attrs:
   `reason` `duplicate_head`, `head`, `followup`, `status`, and

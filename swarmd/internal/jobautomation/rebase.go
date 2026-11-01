@@ -300,9 +300,9 @@ func handoverRerunIndex(d Delivery) int {
 		return -1
 	}
 	switch d.State {
-	case StateFailed:
+	case StateFailed, StateError:
 		for i, step := range d.Steps {
-			if step.State == StateFailed {
+			if step.State == StateFailed || step.State == StateError {
 				if step.Type == StepRun {
 					return i
 				}

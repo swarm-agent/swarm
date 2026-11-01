@@ -49,7 +49,14 @@ export interface JobDeliverable {
   /** "job" for the work's own output, or the id of the step that produced it. */
   from?: string;
 }
-export type JobDeliveryState = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'stopped' | 'blocked' | 'sent_back';
+/**
+ * A delivery's or step's state. `error` is a run step whose script never
+ * started (see {@link JobStepErrorKind}), and a delivery such a step stopped:
+ * an infrastructure problem, never the script's result (`failed` is).
+ */
+export type JobDeliveryState = 'pending' | 'running' | 'succeeded' | 'failed' | 'error' | 'skipped' | 'stopped' | 'blocked' | 'sent_back';
+/** Why a run step in state `error` never started its script. */
+export type JobStepErrorKind = 'checkout' | 'environment' | 'lease' | 'script_missing' | 'script_unusable' | 'start_timeout';
 export type JobReviewVerdict = 'ok' | 'block';
 /**
  * An agent step's `fixes` option (reviewer workers only; the only value).
@@ -68,10 +75,11 @@ export const JOB_REVIEWER_FIX_MAX_LINES = 80;
 /**
  * One condition of a step's `if`, on an earlier step: its status, or (an
  * agent step) the verdict of the review its job recorded. A missing verdict
- * never matches.
+ * never matches. `failed` never matches a step that ended `error` (a run
+ * step whose script never started); `error` (run steps only) does.
  */
 export type JobAutomationCondition =
-  | { step: string; status: 'succeeded' | 'failed'; verdict?: never }
+  | { step: string; status: 'succeeded' | 'failed' | 'error'; verdict?: never }
   | { step: string; verdict: JobReviewVerdict; status?: never };
 
 /** Which task and job ends a workflow applies to. */
@@ -245,6 +253,8 @@ export interface JobDeliveryStep {
   finished_at?: number;
   next_attempt_at?: number;
   exit_code?: number;
+  /** Why a run step in state `error` never started its script. */
+  error_kind?: JobStepErrorKind;
   /** The last non-empty line the step printed (a run step), or the job id (an agent step). */
   output?: string;
   reason?: string;
@@ -278,6 +288,8 @@ export interface JobDelivery {
   head?: string;
   /** Why the delivery ended `blocked`, e.g. `rounds_exhausted`. */
   blocked_reason?: string;
+  /** Set when the delivery ended `error`: the run step that could not run, its kind and reason (an infrastructure problem, not the work's). */
+  error_reason?: string;
   /** Set when the delivery ended `sent_back`: a reopen step sent the work back (nothing was handed over); the follow-up's end starts a fresh delivery. */
   sent_back?: { step: string; round: number; reason?: string };
   /** The reviewer fix commits the delivery head was moved to (agent steps with `fixes`). */

@@ -61,6 +61,21 @@ type RunRequest struct {
 type RunOutcome struct {
 	ExitCode int
 	Output   []byte
+	// Repository is what an environment step's checkout found in the
+	// folder's repository: an object it could not read, or that every
+	// object read (nil: it did not get that far, or a host step).
+	Repository *RepositoryCheck
+}
+
+// RepositoryCheck is what one checkout found in the folder's repository.
+type RepositoryCheck struct {
+	// Clean is a checkout that read every object from the folder.
+	Clean bool
+	// Object is the first object it could not read, Problem why
+	// (RepositoryObjectCorrupt or RepositoryObjectUnreadable) and Detail
+	// git's underlying cause; Fallback is the origin fetch that made the
+	// checkout anyway ("" when none did).
+	Object, Problem, Detail, Fallback string
 }
 
 // RunExecutor runs a run step's script (HostExecutor in the daemon).
@@ -69,10 +84,54 @@ type RunExecutor interface {
 }
 
 // RefusedError is a step Swarm refused to run (a script that is not owned
-// by root, or that group or others can write): nothing ran.
-type RefusedError struct{ Reason string }
+// by root, or that group or others can write): nothing ran, and it is not
+// retried. A run executor sets Kind (an ErrorKind*) when the refusal is the
+// script being unable to start: the step ends error, not failed.
+type RefusedError struct {
+	Reason string
+	Kind   string
+}
 
 func (e *RefusedError) Error() string { return e.Reason }
+
+// StartError is a run step whose script could not start (its checkout, the
+// environment or the lease failed, or its time ran out before it started):
+// the step ends error with Kind, and is retried like any failed attempt.
+type StartError struct {
+	Kind   string
+	Reason string
+}
+
+func (e *StartError) Error() string { return e.Reason }
+
+// Why a run step's script could not start (StepRecord.ErrorKind of a step
+// in StateError). None of them is the script's own result or something the
+// work can fix: they are the machine's, the folder's or the definition's.
+const (
+	// ErrorKindCheckout: the step's checkout of the job's head could not be
+	// made (an object of the folder's repository could not be read, the
+	// head is not in it, or the job has no head).
+	ErrorKindCheckout = "checkout"
+	// ErrorKindEnvironment: the machine could not run the script (no
+	// environment for run steps, its scratch could not be made, the
+	// executable could not be started).
+	ErrorKindEnvironment = "environment"
+	// ErrorKindLease: the folder's environment could not be leased (no
+	// environment set up, not ready) or the lease failed under the step.
+	ErrorKindLease = "lease"
+	// ErrorKindScriptMissing: the step's script does not exist (in the
+	// job's head, or on the host).
+	ErrorKindScriptMissing = "script_missing"
+	// ErrorKindScriptUnusable: the script exists but cannot be run (not
+	// executable, not a regular file, not owned by root on the host).
+	ErrorKindScriptUnusable = "script_unusable"
+	// ErrorKindStartTimeout: the step's time limit ended before its script
+	// started (waiting for a lease, making the checkout).
+	ErrorKindStartTimeout = "start_timeout"
+)
+
+// ErrorKinds lists every ErrorKind*, for the surfaces that name them.
+var ErrorKinds = []string{ErrorKindCheckout, ErrorKindEnvironment, ErrorKindLease, ErrorKindScriptMissing, ErrorKindScriptUnusable, ErrorKindStartTimeout}
 
 // AgentRequest is an agent step's job.
 type AgentRequest struct {
@@ -742,15 +801,32 @@ func (r *Runner) runDelivery(ctx context.Context, account, id string) {
 			return
 		}
 		if !ok && !step.ContinueOnFailure {
+			if record.State == StateError {
+				// The script never ran: the delivery stops on an
+				// infrastructure error, not on the work.
+				r.skipRest(&d, i, "not run: an earlier step could not run (an infrastructure error)")
+				r.finish(&d, StateError)
+				return
+			}
 			r.skipRest(&d, i, "not run: an earlier step failed")
 			r.finish(&d, StateFailed)
 			return
 		}
 	}
+	// A step that failed is the work's to fix and wins; else a step whose
+	// script could not run (allowed to, continue_on_failure) ends the
+	// delivery error: its check never ran.
 	state := StateSucceeded
 	for _, step := range d.Steps {
 		if step.State == StateFailed {
 			state = StateFailed
+		}
+	}
+	if state == StateSucceeded {
+		for _, step := range d.Steps {
+			if step.State == StateError {
+				state = StateError
+			}
 		}
 	}
 	// A reopen step that sent the work back means nothing was handed over:
@@ -814,6 +890,15 @@ func sentBackReason(d Delivery, step Step) string {
 				why += ": " + rec.Reason
 			}
 			parts = append(parts, why)
+		case c.Status == StateError:
+			why := c.Step + " could not run"
+			if rec.ErrorKind != "" {
+				why += " (" + rec.ErrorKind + ")"
+			}
+			if rec.Reason != "" {
+				why += ": " + rec.Reason
+			}
+			parts = append(parts, why)
 		}
 	}
 	if len(parts) == 0 && step.From != "" {
@@ -848,15 +933,18 @@ func ReopenCause(d Delivery, stepID string) (cause, failure string) {
 		return -1
 	}
 	for _, c := range step.If {
-		if c.Status != StateFailed {
+		if c.Status != StateFailed && c.Status != StateError {
 			continue
 		}
 		at := index(c.Step)
-		if at < 0 || (d.Steps[at].State != StateFailed && d.Steps[at].State != StateStopped) {
+		if at < 0 || (d.Steps[at].State != StateFailed && d.Steps[at].State != StateError && d.Steps[at].State != StateStopped) {
 			continue
 		}
 		rec := d.Steps[at]
 		failure = c.Step + " failed"
+		if rec.State == StateError {
+			failure = c.Step + " could not run (" + rec.ErrorKind + ")"
+		}
 		if reason := strings.TrimSpace(rec.Reason); reason != "" {
 			failure += ": " + reason
 		}
@@ -956,6 +1044,27 @@ func (d Delivery) EnvironmentRunStep(id string) bool {
 	return ok && step.Type == StepRun && step.In == RunInEnvironment
 }
 
+// DeliveryErrorReason says why a delivery ended error: its first run step
+// whose script could not run, its kind and reason, named an infrastructure
+// problem (nothing the person or a coder fixes in the work). "" when no
+// step ended error.
+func DeliveryErrorReason(d Delivery) string {
+	for _, rec := range d.Steps {
+		if rec.State != StateError {
+			continue
+		}
+		why := "infrastructure error, not the work: step " + rec.ID + " could not run"
+		if rec.ErrorKind != "" {
+			why += " (" + rec.ErrorKind + ")"
+		}
+		if reason := strings.TrimSpace(rec.Reason); reason != "" {
+			why += ": " + reason
+		}
+		return why
+	}
+	return ""
+}
+
 func (r *Runner) skipRest(d *Delivery, from int, reason string) {
 	for j := from + 1; j < len(d.Steps); j++ {
 		if !Terminal(d.Steps[j].State) {
@@ -1001,6 +1110,14 @@ func (r *Runner) finish(d *Delivery, state string) {
 	attrs := map[string]string{
 		"automation": d.AutomationName, "state": state, "steps_succeeded": strconv.Itoa(counts[StateSucceeded]), "steps_failed": strconv.Itoa(counts[StateFailed]),
 	}
+	if counts[StateError] > 0 {
+		attrs["steps_error"] = strconv.Itoa(counts[StateError])
+	}
+	if state == StateError {
+		if why := DeliveryErrorReason(*d); why != "" {
+			attrs["reason"] = why
+		}
+	}
 	summary := fmt.Sprintf("Automation %s %s for job %s", d.AutomationName, state, d.JobID)
 	if state == StateSentBack && d.SentBack != nil {
 		summary = fmt.Sprintf("Automation %s sent job %s back (step %s, round %d)", d.AutomationName, d.JobID, d.SentBack.Step, d.SentBack.Round)
@@ -1020,7 +1137,7 @@ func (r *Runner) runStep(ctx context.Context, d *Delivery, i int, step Step) boo
 	record := &d.Steps[i]
 	record.State, record.StartedAt, record.FinishedAt, record.NextAttemptAt = StateRunning, r.now().UnixMilli(), 0, 0
 	record.Attempts++
-	record.ExitCode, record.Output, record.Reason, record.Next = nil, "", "", ""
+	record.ExitCode, record.Output, record.Reason, record.Next, record.ErrorKind = nil, "", "", "", ""
 	// A stored revision saved before swarm agents moved to their own
 	// worktree runs migrated (fresh delivery or rerun of a pinned one).
 	step, record.Note = LegacyCheckoutMigration(step)
@@ -1085,6 +1202,9 @@ func (r *Runner) runStep(ctx context.Context, d *Delivery, i int, step Step) boo
 		return false
 	}
 	record.State, record.Reason, record.Next = StateFailed, failure.reason, failure.next
+	if failure.errorKind != "" {
+		record.State, record.ErrorKind = StateError, failure.errorKind
+	}
 	record.recordFailure(d.Reruns, record.FinishedAt, failure.reason)
 	retry := !failure.refused && record.Attempts-record.LimitWaits <= d.Retries
 	if failure.inspectionTransient {
@@ -1108,6 +1228,12 @@ func (r *Runner) runStep(ctx context.Context, d *Delivery, i int, step Step) boo
 	if retry {
 		attrs["will_retry"] = "true"
 		attrs["retry_at"] = strconv.FormatInt(record.NextAttemptAt, 10)
+	}
+	if failure.errorKind != "" {
+		attrs["error_kind"] = failure.errorKind
+		r.signal(*d, "automation.step.error", pebblestore.SignalSeverityWarning, fmt.Sprintf("Automation %s step %s could not run (%s, an infrastructure problem): %s", d.AutomationName, step.ID, failure.errorKind, failure.reason), step.ID, attrs,
+			strconv.Itoa(record.Attempts))
+		return false
 	}
 	r.signal(*d, "automation.step.failed", pebblestore.SignalSeverityWarning, fmt.Sprintf("Automation %s step %s failed: %s", d.AutomationName, step.ID, failure.reason), step.ID, attrs,
 		strconv.Itoa(record.Attempts))
@@ -1135,6 +1261,9 @@ type stepFailure struct {
 	reason, next        string
 	refused             bool
 	inspectionTransient bool
+	// errorKind is set when a run step's script never started: the step
+	// ends StateError with this ErrorKind*, not StateFailed.
+	errorKind string
 	// limitUntil (unix ms) is set when the agent's job ended on a provider's
 	// usage, rate or session limit: the step waits until then and reruns.
 	limitUntil int64
@@ -1228,17 +1357,27 @@ func headResult(d Delivery) Result {
 	return out
 }
 
+// startErrorNext is a step's next action when its script could not start:
+// nothing for the work or its coder to fix.
+const startErrorNext = "nothing to fix in the work: an infrastructure problem (the script never ran); fix the machine, folder or step, then rerun"
+
+// couldNotStart is a run step whose script never started: the step ends
+// error with kind, not failed.
+func couldNotStart(kind, reason string, final bool) stepFailure {
+	return stepFailure{reason: stepReason(reason), next: startErrorNext, refused: final, errorKind: kind}
+}
+
 func (r *Runner) runScript(ctx context.Context, d *Delivery, record *StepRecord, step Step) stepFailure {
 	executor := r.run
 	inEnvironment := step.In == RunInEnvironment
 	if inEnvironment {
 		executor = r.env
 		if executor == nil {
-			return stepFailure{reason: "run steps in the folder's environment are not available on this daemon", next: "rerun", refused: true}
+			return couldNotStart(ErrorKindEnvironment, "run steps in the folder's environment are not available on this daemon", true)
 		}
 	}
 	if executor == nil {
-		return stepFailure{reason: "run steps are not available on this daemon", next: "rerun", refused: true}
+		return couldNotStart(ErrorKindEnvironment, "run steps are not available on this daemon", true)
 	}
 	if step.Secrets != nil {
 		return stepFailure{reason: secretsRemoved, next: "remove secrets from the step", refused: true}
@@ -1247,7 +1386,7 @@ func (r *Runner) runScript(ctx context.Context, d *Delivery, record *StepRecord,
 	if d.Result.Git != nil && d.Result.Git.Head != "" && r.head != nil {
 		imported, err := r.head(ctx, d.Folder, headResult(*d))
 		if err != nil {
-			return stepFailure{reason: stepReason("could not bring the job's head into the folder: " + err.Error()), next: "rerun"}
+			return couldNotStart(ErrorKindCheckout, "could not bring the job's head into the folder: "+err.Error(), false)
 		}
 		ref = imported
 	}
@@ -1261,7 +1400,9 @@ func (r *Runner) runScript(ctx context.Context, d *Delivery, record *StepRecord,
 	}
 	env := stepEnv(*d, ref)
 	if inEnvironment && env["SWARM_HEAD"] == "" {
-		return stepFailure{reason: "the job has no head commit: a run step in the environment runs a script of the job's head", next: "use a host run step, or scope the workflow to jobs that commit", refused: true}
+		failure := couldNotStart(ErrorKindCheckout, "the job has no head commit: a run step in the environment runs a script of the job's head", true)
+		failure.next = "use a host run step, or scope the workflow to jobs that commit"
+		return failure
 	}
 	tail := &tailBuffer{max: MaxLogTailBytes}
 	outcome, err := executor.Run(ctx, RunRequest{
@@ -1277,15 +1418,27 @@ func (r *Runner) runScript(ctx context.Context, d *Delivery, record *StepRecord,
 		log.Printf("swarmd job automations: save step log: %v", err)
 	}
 	record.Output = lastLine(logTail)
+	// What the checkout found in the folder's repository is its health
+	// signal (machine_status, get_environment), set or cleared here.
+	if err := r.store.RecordRepositoryCheck(d.Folder, outcome.Repository); err != nil {
+		log.Printf("swarmd job automations: record the folder repository's health: %v", err)
+	}
 	var refused *RefusedError
 	if errors.As(err, &refused) {
+		if refused.Kind != "" {
+			return couldNotStart(refused.Kind, refused.Reason, true)
+		}
 		return stepFailure{reason: stepReason(refused.Reason), next: "rerun", refused: true}
+	}
+	var start *StartError
+	if errors.As(err, &start) {
+		return couldNotStart(start.Kind, "the script could not run: "+start.Reason, false)
 	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return stepFailure{}
 		}
-		return stepFailure{reason: stepReason("the script could not run: " + err.Error()), next: "rerun"}
+		return couldNotStart(ErrorKindEnvironment, "the script could not run: "+err.Error(), false)
 	}
 	code := outcome.ExitCode
 	record.ExitCode = &code

@@ -38,7 +38,8 @@ var taskProgressNow = time.Now
 
 // taskProgressOutcome is the task's outcome: from its latest delivery
 // (running <step>, sent_back (round n), pushed <head12>, delivered <target>,
-// blocked <reason>, failed <step>); else integrated, delivered, or once its
+// blocked <reason>, failed <step>, error <step> (infrastructure: <kind>));
+// else integrated, delivered, or once its
 // agent finished: finished when its progress state is done (nothing to
 // integrate, the same decision get_task's summary reads), else ready to
 // integrate. "" while the task has not finished and no workflow ran for it.
@@ -79,6 +80,13 @@ func taskProgressOutcome(class, state string, latest []jobautomation.Delivery, w
 			return clipOutcome("blocked " + reason)
 		case jobautomation.StateFailed, jobautomation.StateStopped:
 			return clipOutcome("failed " + firstNonEmptyString(stepLabel(d, step), "workflow"))
+		case jobautomation.StateError:
+			// "error <step> (infrastructure: <kind>)": its script never ran.
+			kind := ""
+			if step < len(d.Steps) {
+				kind = d.Steps[step].ErrorKind
+			}
+			return clipOutcome("error " + firstNonEmptyString(stepLabel(d, step), "workflow") + " (infrastructure: " + firstNonEmptyString(kind, "could not run") + ")")
 		default:
 			return clipOutcome("running " + firstNonEmptyString(stepLabel(d, step), "workflow"))
 		}

@@ -245,7 +245,10 @@ record keeps its placeholder.
   `task_state_reason` and milestone labels keep a one-line form of it (80
   runes, cut marked `…`); `reopen_failure` is the full reason.
 - `steps_result` (task route and `get_task`, not the board): each finished
-  step of the delivery with `id`, `type`, `status`, `verdict` (agent steps),
+  step of the delivery with `id`, `type`, `status` (`error` for a run step
+  whose script never started, with `error_kind`: `checkout`, `environment`,
+  `lease`, `script_missing`, `script_unusable` or `start_timeout`; `failed`
+  only for a script that ran), `verdict` (agent steps),
   `duration_ms`, `exit_code`, `error` (head and tail kept past 2000
   characters; the step records it whole up to 8000, which `more` reads),
   `output_tail` (a run step's last 30 lines of its saved log, at most 4000

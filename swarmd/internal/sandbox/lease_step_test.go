@@ -3,7 +3,11 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -53,6 +57,57 @@ func TestStepLeaseMountsTheFolderReadOnly(t *testing.T) {
 	var full *LeasesFullError
 	if _, err := m.TakeStepLease(ctx, project, "workflow-step/dlv-2/console/1"); !errors.As(err, &full) || full.InUse != 2 {
 		t.Fatalf("third lease: %v", err)
+	}
+}
+
+// Purpose: a workflow run step's lease runs as the user and groups of the
+// agents that write the folder's repository from their worktrees (Swarm's
+// own user, plus the folder's Git directory group), not as the folder's
+// owner: agents' objects are 0440 under the sandbox umask, owned by Swarm's
+// user and grouped to the Git directory, so a step lease as the folder's
+// owner without that group could not read them and Git reported them as
+// "corrupt" (the production console step). An agent's ordinary lease of the
+// folder itself keeps running as the folder's owner. Owners:
+// Manager.takeLease (stepLeaseRunsAsDaemon), containerUser,
+// leaseGroupArgs and runArgsImage; the fake engine is the narrowest
+// deterministic layer that shows the container's user and groups.
+func TestStepLeaseRunsAsTheAgentWorktreeUser(t *testing.T) {
+	m, runner, project := newLeaseTestManager(t, 2, nil)
+	if err := os.Mkdir(filepath.Join(project, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Lstat(filepath.Join(project, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitGroup := strconv.FormatUint(uint64(st.Sys().(*syscall.Stat_t).Gid), 10)
+	if gitGroup == strconv.Itoa(m.cfg.GID) {
+		t.Skip("the test folder's group is the daemon's group: no group to add")
+	}
+	if uid, _ := m.sandboxUser(project); uid == m.cfg.UID {
+		t.Fatal("fixture: the folder must belong to another user than Swarm's")
+	}
+	ctx := context.Background()
+	step, err := m.TakeStepLease(ctx, project, "workflow-step/dlv-1/console/1")
+	if err != nil {
+		t.Fatalf("step lease: %v", err)
+	}
+	args := strings.Join(runner.runArgs(step.Container), " ")
+	daemonUser := "--user " + strconv.Itoa(m.cfg.UID) + ":" + strconv.Itoa(m.cfg.GID)
+	if !strings.Contains(args, daemonUser) || !strings.Contains(args, "--group-add "+gitGroup) || !strings.Contains(args, "--label swarm.lease.user=daemon") {
+		t.Fatalf("step lease does not run as the agent worktree user (%s, group %s): %s", daemonUser, gitGroup, args)
+	}
+	if !strings.Contains(args, "dst="+project+",readonly") {
+		t.Fatalf("step lease lost its read-only mount: %s", args)
+	}
+	agent, err := m.TakeLease(ctx, project, "session-a")
+	if err != nil {
+		t.Fatalf("agent lease: %v", err)
+	}
+	agentArgs := strings.Join(runner.runArgs(agent.Container), " ")
+	ownerUID, _ := m.sandboxUser(project)
+	if !strings.Contains(agentArgs, "--user "+strconv.Itoa(ownerUID)+":"+strconv.Itoa(m.cfg.GID)) || strings.Contains(agentArgs, "--group-add") {
+		t.Fatalf("an agent's lease of the folder itself changed user: %s", agentArgs)
 	}
 }
 

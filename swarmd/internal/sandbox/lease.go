@@ -227,6 +227,9 @@ func (m *Manager) takeLease(ctx context.Context, path, owner string, step bool) 
 	}
 	lease := &Lease{ID: id, Root: root, Owner: owner, Container: leaseContainerName(root, id), CreatedAt: time.Now(), scope: scope, step: step}
 	lease.asDaemon = m.leaseRunsAsDaemon(root, path)
+	if step {
+		lease.asDaemon = m.stepLeaseRunsAsDaemon(root)
+	}
 	lease.scope.Lease = id
 	t.mu.Lock()
 	if step {
@@ -564,6 +567,20 @@ func (m *Manager) leaseRunsAsDaemon(root, path string) bool {
 	}
 	uid, ok := owner(filepath.Clean(path))
 	return ok && uid == m.cfg.UID
+}
+
+// stepLeaseRunsAsDaemon reports whether a workflow run step's lease of root
+// runs as Swarm's own user. A step reads objects every agent wrote into the
+// folder's repository, and agents working in their worktrees (owned by
+// Swarm's user) write them as Swarm's user with the folder's Git group
+// (leaseGroupArgs), mode 0440 under the sandbox umask. So the step lease
+// runs as the user and groups of those agent leases (asDaemon whenever the
+// folder's own sandbox runs as its owner): as the folder's owner, with
+// neither that uid nor that group, it could not read them, and Git reports
+// an unreadable loose object as corrupt.
+func (m *Manager) stepLeaseRunsAsDaemon(root string) bool {
+	folderUID, _ := m.sandboxUser(root)
+	return folderUID != m.cfg.UID
 }
 
 // leaseContainerStep reports whether a container is a step lease's, whose

@@ -42,6 +42,9 @@ const (
 	FlowCauseDevMoved = "dev_moved" // the push needed a rebase: dev moved
 	FlowCauseGate     = "gate"      // a gate (run step) failed
 	FlowCauseProvider = "provider"  // a provider limit or failure ended a step
+	// FlowCauseInfrastructure: a run step's script never started (its
+	// checkout, the environment, the lease): not the work's problem.
+	FlowCauseInfrastructure = "infrastructure"
 )
 
 // Bounds that keep one report cheap.
@@ -780,6 +783,9 @@ func FlowDeliveryCause(d Delivery) (cause, detail string) {
 		return FlowCauseDevMoved, clipFlow(d.BlockedReason, 200)
 	}
 	for _, rec := range d.Steps {
+		if rec.State == StateError && d.State == StateError {
+			return FlowCauseInfrastructure, clipFlow(rec.ID+" could not run ("+rec.ErrorKind+"): "+strings.TrimSpace(rec.Reason), 200)
+		}
 		if rec.State != StateFailed && rec.State != StateStopped {
 			continue
 		}

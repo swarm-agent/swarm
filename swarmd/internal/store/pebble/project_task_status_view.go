@@ -231,6 +231,14 @@ func projectTaskState(task ProjectTaskRecord, outcome string, stale, idle bool) 
 		return ProjectTaskStateNeedsYou, reason
 	}
 	switch word {
+	case "error":
+		// A workflow step's script never ran (its checkout, the
+		// environment, the lease): an infrastructure problem.
+		reason := "workflow " + outcome + ": an infrastructure problem, not the work; nothing for a coder to fix, rerun the workflow once the machine or folder is fixed"
+		if idle {
+			return ProjectTaskStateNotIntegrated, reason + "; idle over 7 days"
+		}
+		return ProjectTaskStateNeedsYou, reason
 	case "blocked", "failed":
 		reason := "workflow " + outcome
 		if idle {

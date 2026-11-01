@@ -147,8 +147,10 @@ type Scope struct {
 }
 
 // Condition is one test on an earlier step's outcome: its status
-// (succeeded or failed) or, for an agent step, the verdict of the review the
-// job it started recorded (ok or block). Exactly one of Status and Verdict.
+// (succeeded, failed, or for a run step error: its script never started) or,
+// for an agent step, the verdict of the review the job it started recorded
+// (ok or block). Exactly one of Status and Verdict. failed never matches a
+// step that ended error.
 type Condition struct {
 	Step    string `json:"step"`
 	Status  string `json:"status,omitempty"`
@@ -460,10 +462,13 @@ func (s *Step) normalizeConditions(earlier map[string]string) error {
 			return invalid("step %s: a condition names %q, which is not an earlier step", s.ID, c.Step)
 		}
 		if (c.Status == "") == (c.Verdict == "") {
-			return invalid("step %s: a condition on %s has either status (succeeded|failed) or verdict (ok|block)", s.ID, c.Step)
+			return invalid("step %s: a condition on %s has either status (succeeded|failed|error) or verdict (ok|block)", s.ID, c.Step)
 		}
-		if c.Status != "" && c.Status != StateSucceeded && c.Status != StateFailed {
-			return invalid("step %s: a condition's status must be succeeded or failed", s.ID)
+		if c.Status != "" && c.Status != StateSucceeded && c.Status != StateFailed && c.Status != StateError {
+			return invalid("step %s: a condition's status must be succeeded, failed or error", s.ID)
+		}
+		if c.Status == StateError && typ != StepRun {
+			return invalid("step %s: a status error condition needs a run step (only a run step's script can fail to start); %s is a %s step", s.ID, c.Step, typ)
 		}
 		if c.Verdict != "" {
 			if c.Verdict != VerdictOK && c.Verdict != VerdictBlock {

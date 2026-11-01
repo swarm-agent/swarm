@@ -301,6 +301,7 @@ func (s *Server) GetSandboxEnvironmentLog(ctx context.Context, p identity.Princi
 	if manager := environmentManager(); manager != nil {
 		view["leases_in_use"] = manager.LeasesInUse(root)
 	}
+	s.putRepositoryHealth(view, root)
 	if manager := sandbox.Default(); manager != nil && manager.Active() {
 		usage, cacheErr := manager.ProjectCacheUsage(ctx, root)
 		view["cache"] = usage

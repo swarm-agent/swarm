@@ -43,7 +43,11 @@ func (HostExecutor) Run(ctx context.Context, req RunRequest) (RunOutcome, error)
 	folder := filepath.Clean(req.Folder)
 	script, err := ResolveScript(folder, req.Command)
 	if err != nil {
-		return RunOutcome{}, &RefusedError{Reason: err.Error()}
+		kind := ErrorKindScriptUnusable
+		if errors.Is(err, fs.ErrNotExist) {
+			kind = ErrorKindScriptMissing
+		}
+		return RunOutcome{}, &RefusedError{Reason: err.Error(), Kind: kind}
 	}
 	timeout := req.Timeout
 	if timeout <= 0 {
@@ -62,26 +66,30 @@ func (HostExecutor) Run(ctx context.Context, req RunRequest) (RunOutcome, error)
 	sort.Strings(env)
 	scratch, err := os.MkdirTemp("", "swarm-step-*")
 	if err != nil {
-		return RunOutcome{}, fmt.Errorf("create the step's scratch folder: %w", err)
+		return RunOutcome{}, &StartError{Kind: ErrorKindEnvironment, Reason: "create the step's scratch folder: " + err.Error()}
 	}
 	defer os.RemoveAll(scratch)
 	// Check the resolved file again immediately before running it, on the
 	// open file whose contents run.
 	checked, info, err := publish.OpenOwnedByRoot(script, true)
 	if err != nil {
-		return RunOutcome{}, &RefusedError{Reason: scriptRefusal(req.Command, "", script, err)}
+		kind := ErrorKindScriptUnusable
+		if errors.Is(err, fs.ErrNotExist) {
+			kind = ErrorKindScriptMissing
+		}
+		return RunOutcome{}, &RefusedError{Reason: scriptRefusal(req.Command, "", script, err), Kind: kind}
 	}
 	defer checked.Close()
 	if !filepath.IsAbs(filepath.FromSlash(req.Command)) {
 		// A hard link is the one way to put a root-owned file (a shell, say)
 		// in a folder without root: a script in the folder has no other link.
 		if stat, ok := info.Sys().(*syscall.Stat_t); !ok || stat.Nlink != 1 {
-			return RunOutcome{}, &RefusedError{Reason: fmt.Sprintf("%s has other hard links, so it may be a file from outside the folder: a script in the folder must have exactly one link; install it with sudo install -o root -m 755 SCRIPT %s", req.Command, script)}
+			return RunOutcome{}, &RefusedError{Kind: ErrorKindScriptUnusable, Reason: fmt.Sprintf("%s has other hard links, so it may be a file from outside the folder: a script in the folder must have exactly one link; install it with sudo install -o root -m 755 SCRIPT %s", req.Command, script)}
 		}
 	}
 	run, cleanup, err := copyChecked(checked, filepath.Base(script))
 	if err != nil {
-		return RunOutcome{}, err
+		return RunOutcome{}, &StartError{Kind: ErrorKindEnvironment, Reason: err.Error()}
 	}
 	defer cleanup()
 	out := &stepOutput{tail: tailBuffer{max: MaxLogTailBytes}, onOutput: req.OnOutput}
@@ -117,7 +125,17 @@ func (HostExecutor) Run(ctx context.Context, req RunRequest) (RunOutcome, error)
 		}
 		return RunOutcome{ExitCode: code, Output: out.tail.bytes()}, nil
 	}
-	return RunOutcome{Output: out.tail.bytes()}, runErr
+	if runErr != nil {
+		// The process never started: the script cannot be executed (no
+		// interpreter, an exec format error, permission denied) or the
+		// machine could not start it.
+		kind := ErrorKindEnvironment
+		if errors.Is(runErr, fs.ErrNotExist) || errors.Is(runErr, syscall.ENOEXEC) || errors.Is(runErr, fs.ErrPermission) {
+			kind = ErrorKindScriptUnusable
+		}
+		return RunOutcome{Output: out.tail.bytes()}, &StartError{Kind: kind, Reason: "could not start " + req.Command + ": " + runErr.Error()}
+	}
+	return RunOutcome{Output: out.tail.bytes()}, nil
 }
 
 // copyChecked copies the checked script (an open file) into a new private
@@ -167,7 +185,7 @@ func ResolveScript(folder, command string) (string, error) {
 	resolved, err := filepath.EvalSymlinks(full)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return "", fmt.Errorf("%s does not exist: install the script with sudo install -o root -m 755 SCRIPT %s", command, full)
+			return "", missingScriptError{fmt.Sprintf("%s does not exist: install the script with sudo install -o root -m 755 SCRIPT %s", command, full)}
 		}
 		return "", fmt.Errorf("%s cannot be read: %v", command, err)
 	}
@@ -197,6 +215,13 @@ func ResolveScript(folder, command string) (string, error) {
 	}
 	return resolved, nil
 }
+
+// missingScriptError is a host run step's script that does not exist (it
+// is fs.ErrNotExist, so the step ends error with kind script_missing).
+type missingScriptError struct{ msg string }
+
+func (e missingScriptError) Error() string        { return e.msg }
+func (e missingScriptError) Is(target error) bool { return target == fs.ErrNotExist }
 
 // scriptRefusal is why a script failed the root-owner check, and the fix.
 // link is the file the command's own symlink resolves to, if it is one.

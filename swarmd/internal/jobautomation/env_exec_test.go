@@ -415,11 +415,12 @@ func TestEnvironmentExecutorTimeoutAndShutdownReleaseTheLease(t *testing.T) {
 
 // Requirement: while every lease of the folder's environment is in use, an
 // environment step waits for one within its time limit (saying so in its
-// output), and fails with exit 124 if none frees up; a folder with no
-// environment, or one that is not ready, fails at once with the reason
-// (refused: nothing ran); a script missing from the head or committed
-// without its executable bit is refused with the fix, and its lease is
-// released.
+// output), and if none frees up ends as a start timeout (its script never
+// started: StartError start_timeout, exit 124); a folder with no
+// environment, or one that is not ready, is refused at once with the reason
+// (kind lease: nothing ran); a script missing from the head or committed
+// without its executable bit is refused with the fix (kinds script_missing,
+// script_unusable), and its lease is released.
 // Threat: a step hanging on a folder without an environment, a busy folder
 // failing a check at once, or a confusing failure for a missing script.
 // Owners: EnvironmentExecutor.takeLease and prepareFailure.
@@ -436,7 +437,8 @@ func TestEnvironmentExecutorLeaseWaitAndRefusals(t *testing.T) {
 	leases = newFakeLeases(t)
 	leases.busy = -1
 	out, err = EnvironmentExecutor{Leases: leases, Poll: 10 * time.Millisecond}.Run(context.Background(), envRequest(r, "scripts/ok.sh", time.Second))
-	if err != nil || out.ExitCode != timeoutExitCode || !strings.Contains(string(out.Output), "waiting for a free lease") || len(leases.commands) != 0 || len(leases.released) != 0 {
+	var start *StartError
+	if !errors.As(err, &start) || start.Kind != ErrorKindStartTimeout || out.ExitCode != timeoutExitCode || !strings.Contains(string(out.Output), "waiting for a free lease") || !strings.Contains(string(out.Output), "never started") || len(leases.commands) != 0 || len(leases.released) != 0 {
 		t.Fatalf("busy forever: %v, exit %d, commands %d, released %v\n%s", err, out.ExitCode, len(leases.commands), leases.released, out.Output)
 	}
 
@@ -444,18 +446,18 @@ func TestEnvironmentExecutorLeaseWaitAndRefusals(t *testing.T) {
 	leases.takeErr = errors.New("the environment of the folder is failed, not ready: build failed")
 	_, err = EnvironmentExecutor{Leases: leases}.Run(context.Background(), envRequest(r, "scripts/ok.sh", 30*time.Second))
 	var refused *RefusedError
-	if !errors.As(err, &refused) || !strings.Contains(refused.Reason, "cannot be leased") || !strings.Contains(refused.Reason, "build failed") || len(leases.commands) != 0 {
+	if !errors.As(err, &refused) || refused.Kind != ErrorKindLease || !strings.Contains(refused.Reason, "cannot be leased") || !strings.Contains(refused.Reason, "build failed") || len(leases.commands) != 0 {
 		t.Fatalf("no environment: %v, commands %d", err, len(leases.commands))
 	}
 
-	for _, c := range []struct{ command, want string }{
-		{"scripts/missing.sh", "does not exist in the job's head"},
-		{"scripts/plain.sh", "is not executable in the job's head"},
-		{"scripts", "is not a regular file"},
+	for _, c := range []struct{ command, want, kind string }{
+		{"scripts/missing.sh", "does not exist in the job's head", ErrorKindScriptMissing},
+		{"scripts/plain.sh", "is not executable in the job's head", ErrorKindScriptUnusable},
+		{"scripts", "is not a regular file", ErrorKindScriptUnusable},
 	} {
 		leases = newFakeLeases(t)
 		_, err = EnvironmentExecutor{Leases: leases}.Run(context.Background(), envRequest(r, c.command, 30*time.Second))
-		if !errors.As(err, &refused) || !strings.Contains(refused.Reason, c.want) {
+		if !errors.As(err, &refused) || refused.Kind != c.kind || !strings.Contains(refused.Reason, c.want) {
 			t.Fatalf("%s: err = %v, want refusal %q", c.command, err, c.want)
 		}
 		if len(leases.commands) != 1 || len(leases.released) != 1 {
@@ -481,7 +483,9 @@ func TestEnvironmentExecutorLeaseWaitAndRefusals(t *testing.T) {
 // Requirement: in a workflow, a failing environment step with
 // continue_on_failure records failed (its exit code and last output line as
 // the step's output), and a later step with if: {step, status: failed}
-// runs; a host run step in the same workflow still runs on the host.
+// runs while one with if: {step, status: error} is skipped (the script ran:
+// it is not an infrastructure error); a host run step in the same workflow
+// still runs on the host.
 // Threat: an environment check whose failure stops the workflow, or whose
 // result conditions cannot see.
 // Owners: Runner.runScript (dispatch by Step.In, stepOwner) and
@@ -498,6 +502,7 @@ func TestRunnerEnvironmentStepFailureContinuesToConditionalStep(t *testing.T) {
 		Steps: []Step{
 			{ID: "console", Type: StepRun, In: RunInEnvironment, Command: "scripts/check.sh", ContinueOnFailure: true},
 			{ID: "notify", Type: StepRun, Command: "notify.sh", If: []Condition{{Step: "console", Status: StateFailed}}},
+			{ID: "infra", Type: StepRun, Command: "notify.sh", If: []Condition{{Step: "console", Status: StateError}}},
 		}})
 	result := workerResult(r.Folder, "run-1")
 	result.Git.Head, result.Git.BaseCommit, result.Git.Worktree = r.Head, r.Dev, r.Worktree
@@ -506,8 +511,14 @@ func TestRunnerEnvironmentStepFailureContinuesToConditionalStep(t *testing.T) {
 	h.process()
 	d := h.deliveries("worker/coder-1/run-1")[0]
 	console, notify := d.Steps[0], d.Steps[1]
-	if console.State != StateFailed || console.ExitCode == nil || *console.ExitCode != 3 || console.Output != "last line" {
+	if console.State != StateFailed || console.ErrorKind != "" || console.ExitCode == nil || *console.ExitCode != 3 || console.Output != "last line" {
 		t.Fatalf("console step = %+v", console)
+	}
+	if infra := d.Steps[2]; infra.State != StateSkipped {
+		t.Fatalf("a status error step ran on a script that ran and failed: %+v", infra)
+	}
+	if d.State != StateFailed {
+		t.Fatalf("delivery = %s, want failed", d.State)
 	}
 	if notify.State != StateSucceeded || notify.Output != "notified" {
 		t.Fatalf("notify step = %+v", notify)

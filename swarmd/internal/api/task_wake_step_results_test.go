@@ -15,8 +15,9 @@ import (
 
 // wakeStepsDelivery is a sent-back delivery of a review loop: a run step
 // that passed, a gate run step that failed with a long log, a review that
-// blocked with BLOCKING findings, a push that failed with a long reason and
-// the reopen that sent the work back on the push's failure.
+// blocked with BLOCKING findings, a push that failed with a long reason, the
+// reopen that sent the work back on the push's failure, and a console check
+// whose script never started (status error, error_kind checkout).
 func wakeStepsDelivery() jobautomation.Delivery {
 	code := 1
 	var log strings.Builder
@@ -34,9 +35,11 @@ func wakeStepsDelivery() jobautomation.Delivery {
 				Outcome: map[string]any{"verdict": "block", "findings": "BLOCKING: summary is the first lines\nNon-blocking: rename a helper\nBLOCKING: failure cut mid-sentence"}},
 			{ID: "push", Type: jobautomation.StepRun, State: jobautomation.StateFailed, StartedAt: 20000, FinishedAt: 21000, ExitCode: &code, Reason: pushReason},
 			{ID: "rebase", Type: jobautomation.StepReopen, State: jobautomation.StateSucceeded, StartedAt: 21000, FinishedAt: 21500},
+			{ID: "console", Type: jobautomation.StepRun, State: jobautomation.StateError, ErrorKind: jobautomation.ErrorKindCheckout, StartedAt: 21500, FinishedAt: 22000,
+				Reason: "the script could not run: could not make the step's checkout in the environment: object d1d5 of the folder's repository could not be read: permission denied"},
 			{ID: "after", Type: jobautomation.StepAgent, State: jobautomation.StatePending},
 		},
-		Definition: []jobautomation.Step{{ID: "lint"}, {ID: "gate"}, {ID: "review"}, {ID: "push"}, {ID: "rebase", Type: jobautomation.StepReopen, If: []jobautomation.Condition{{Step: "push", Status: jobautomation.StateFailed}}}, {ID: "after"}},
+		Definition: []jobautomation.Step{{ID: "lint"}, {ID: "gate"}, {ID: "review"}, {ID: "push"}, {ID: "rebase", Type: jobautomation.StepReopen, If: []jobautomation.Condition{{Step: "push", Status: jobautomation.StateFailed}}}, {ID: "console", Type: jobautomation.StepRun}, {ID: "after"}},
 	}
 }
 
@@ -44,7 +47,9 @@ func wakeStepsDelivery() jobautomation.Delivery {
 // get_task the same: a run step (status, duration, output tail), a failing
 // run step (exit code, error, last 30 lines of its log), a review step
 // (verdict and its BLOCKING findings only), with the push's failure kept
-// head and tail; steps not run yet have no result. Then (parity) the task
+// head and tail, a run step that never started (status error with its
+// error_kind, never failed); steps not run yet have no result. Then
+// (parity) the task
 // route's progress, the wake row's view of it (ProjectTaskWaitProgressFrom,
 // which the local hook and a linked machine's get_task both feed) and MCP
 // get_task's progress.workflow (tool.ProjectTaskWorkflow) carry identical
@@ -58,10 +63,16 @@ func wakeStepsDelivery() jobautomation.Delivery {
 func TestTaskWakeStepResultsMatchAcrossAPIWakeAndMCP(t *testing.T) {
 	d := wakeStepsDelivery()
 	steps := deliveryStepsResult(d)
-	if len(steps) != 5 {
+	if len(steps) != 6 {
 		t.Fatalf("finished steps: %d %+v", len(steps), steps)
 	}
-	lint, gate, review, push := steps[0], steps[1], steps[2], steps[3]
+	lint, gate, review, push, console := steps[0], steps[1], steps[2], steps[3], steps[5]
+	if console.Status != jobautomation.StateError || console.ErrorKind != jobautomation.ErrorKindCheckout || console.ExitCode != nil || !strings.Contains(console.Error, "permission denied") {
+		t.Fatalf("step that never started: %+v", console)
+	}
+	if gate.ErrorKind != "" || push.ErrorKind != "" {
+		t.Fatalf("a failed step carries an error_kind: %+v %+v", gate, push)
+	}
 	if lint.Status != jobautomation.StateSucceeded || lint.DurationMs != 1500 || lint.OutputTail != "lint ok" {
 		t.Fatalf("run step: %+v", lint)
 	}
@@ -96,6 +107,18 @@ func TestTaskWakeStepResultsMatchAcrossAPIWakeAndMCP(t *testing.T) {
 	if wake == nil || !reflect.DeepEqual(wake.StepsResult, steps) || wake.ReopenFailure != view.ReopenFailure || !wake.ReopenFailureTruncated || wake.DeliveryID != "jdel-wake" {
 		t.Fatalf("wake progress drifted from the route: %+v", wake)
 	}
+	// The bounded wake row (ClipProjectTaskStepResults, also a linked
+	// machine's) keeps status error and error_kind.
+	rowJSON, _ := json.Marshal(pebblestore.ClipProjectTaskStepResults(wake.StepsResult))
+	var rows []map[string]any
+	if err := json.Unmarshal(rowJSON, &rows); err != nil || len(rows) != 6 || rows[5]["id"] != "console" || rows[5]["status"] != "error" || rows[5]["error_kind"] != "checkout" {
+		t.Fatalf("wake row lost status error or error_kind: %s", rowJSON)
+	}
+	for _, row := range rows[:5] {
+		if _, ok := row["error_kind"]; ok {
+			t.Fatalf("a step that ran carries error_kind: %v", row)
+		}
+	}
 
 	// MCP get_task's progress.workflow.
 	wfRaw, _ := json.Marshal(tool.ProjectTaskWorkflow(json.RawMessage(raw)))
@@ -114,7 +137,7 @@ func TestTaskWakeStepResultsMatchAcrossAPIWakeAndMCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"summary_source", "`handoff`", "read_full_args", "result_bytes", "failure_truncated", "reopen_failure_truncated", "reopen_failure_more", "delivery_id", "workflow_steps_result", "steps_result", "output_tail", "blocking", "ProjectTaskWakeRowKeys", "agent_stall", "`stalled`", "sleep_polling", "long_command", "no_activity", "agent_poll_stall_minutes"} {
+	for _, key := range []string{"summary_source", "`handoff`", "read_full_args", "result_bytes", "failure_truncated", "reopen_failure_truncated", "reopen_failure_more", "delivery_id", "workflow_steps_result", "steps_result", "output_tail", "blocking", "error_kind", "ProjectTaskWakeRowKeys", "agent_stall", "`stalled`", "sleep_polling", "long_command", "no_activity", "agent_poll_stall_minutes"} {
 		if !strings.Contains(string(contract), key) {
 			t.Fatalf("wait contract does not name %s", key)
 		}

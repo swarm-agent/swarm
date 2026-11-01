@@ -267,7 +267,7 @@ func (r *TriggerRunner) itemJobReady(account, job string) (bool, string) {
 				reason = "workflow " + d.AutomationName + " " + d.State
 			}
 			for _, step := range d.Steps {
-				if d.BlockedReason == "" && step.State == StateFailed && step.Reason != "" {
+				if d.BlockedReason == "" && (step.State == StateFailed || step.State == StateError) && step.Reason != "" {
 					reason = step.Reason
 					break
 				}
