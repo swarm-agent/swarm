@@ -1294,7 +1294,9 @@ func (r *Runner) runScript(ctx context.Context, d *Delivery, record *StepRecord,
 		if record.Output != "" {
 			reason += ": " + record.Output
 		}
-		return stepFailure{reason: truncate(reason, 300), next: "fix the script"}
+		// The reason is what a reopen, task progress and a task wake carry
+		// as the failure: kept to the wake's reason bound, not cut short.
+		return stepFailure{reason: truncate(reason, pebblestore.ProjectTaskWakeReasonRunes), next: "fix the script"}
 	}
 	return stepFailure{}
 }

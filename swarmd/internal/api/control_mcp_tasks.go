@@ -10,7 +10,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -401,11 +400,14 @@ func controlMCPTaskResult(c *controlMCPCall, args map[string]any) (any, error) {
 	}
 	if attempts := controlMCPList(task["attempts"]); len(attempts) > 0 {
 		if summary, _ := controlMCPMap(attempts[len(attempts)-1])["summary"].(string); strings.TrimSpace(summary) != "" {
-			out["report"] = controlMCPTruncate(summary, controlMCPTaskReportChars)
+			// The handoff is at the end of the agent's final message: a long
+			// report keeps its end (as a task wake's summary does).
+			report, cut := pebblestore.ClipProjectTaskResultTail(summary, controlMCPTaskReportChars)
+			out["report"] = report
 			// A shortened report says so, with its full size and the read
 			// that returns all of it: the task session's latest messages,
 			// each cut one continued by its next.
-			if utf8.RuneCountInString(summary) > controlMCPTaskReportChars {
+			if cut {
 				out["result_truncated"], out["result_bytes"] = true, len(summary)
 				if sessionID := controlMCPString(task, "session_id"); sessionID != "" {
 					out["read_full"] = map[string]any{"tool": "manage_sessions", "action": "get", "session_id": sessionID, "messages": 1, "then": "follow the cut message's next until truncated is gone"}

@@ -23,8 +23,10 @@ const (
 	ProjectTaskReopenCheckFailed = "check_failed"
 )
 
-// maxProjectTaskReopenFailure bounds the failed step's reason carried in an
-// outcome, a state reason and a milestone (runes).
+// maxProjectTaskReopenFailure bounds the failed step's reason in the one-line
+// labels: an outcome, a state reason and a milestone label (runes). The
+// reason itself (Failure, reopen_failure) keeps up to
+// ProjectTaskWakeReasonRunes, head and tail (ClipProjectTaskReason).
 const maxProjectTaskReopenFailure = 80
 
 const projectTaskSentBackOutcomePrefix = "sent_back (round "
@@ -40,7 +42,8 @@ type ProjectTaskReopen struct {
 
 // Normalized is r with a known cause (unknown or empty: review_block, the
 // meaning sent back always had), a non-negative round and the failure on one
-// line, capped rune-safely; a review block carries no failure.
+// line, bounded rune-safely to ProjectTaskWakeReasonRunes with its head and
+// tail kept; a review block carries no failure.
 func (r ProjectTaskReopen) Normalized() ProjectTaskReopen {
 	r.Round = max(r.Round, 0)
 	switch r.Cause {
@@ -52,12 +55,18 @@ func (r ProjectTaskReopen) Normalized() ProjectTaskReopen {
 		r.Failure = ""
 		return r
 	}
-	failure := strings.Join(strings.Fields(r.Failure), " ")
+	r.Failure, _ = ClipProjectTaskReason(strings.Join(strings.Fields(r.Failure), " "), ProjectTaskWakeReasonRunes)
+	return r
+}
+
+// labelFailure is the failure as a one-line label carries it: capped to
+// maxProjectTaskReopenFailure runes. The full reason is Failure.
+func (r ProjectTaskReopen) labelFailure(fallback string) string {
+	failure := firstNonEmptyTrimmed(r.Failure, fallback)
 	if runes := []rune(failure); len(runes) > maxProjectTaskReopenFailure {
 		failure = string(runes[:maxProjectTaskReopenFailure]) + "…"
 	}
-	r.Failure = failure
-	return r
+	return failure
 }
 
 // Outcome is the task progress outcome for the reopen. It always starts with
@@ -69,9 +78,9 @@ func (r ProjectTaskReopen) Outcome() string {
 	out := projectTaskSentBackOutcomePrefix + strconv.Itoa(r.Round) + ")"
 	switch r.Cause {
 	case ProjectTaskReopenPushFailed:
-		out += " rebase: " + firstNonEmptyTrimmed(r.Failure, "push failed")
+		out += " rebase: " + r.labelFailure("push failed")
 	case ProjectTaskReopenCheckFailed:
-		out += " fix: " + firstNonEmptyTrimmed(r.Failure, "a step failed")
+		out += " fix: " + r.labelFailure("a step failed")
 	}
 	return out
 }
@@ -110,9 +119,9 @@ func (r ProjectTaskReopen) StateReason() string {
 	round := strconv.Itoa(r.Round)
 	switch r.Cause {
 	case ProjectTaskReopenPushFailed:
-		return "rebase (round " + round + "): review passed; " + firstNonEmptyTrimmed(r.Failure, "push failed")
+		return "rebase (round " + round + "): review passed; " + r.labelFailure("push failed")
 	case ProjectTaskReopenCheckFailed:
-		return "sent_back (round " + round + "): " + firstNonEmptyTrimmed(r.Failure, "a step failed")
+		return "sent_back (round " + round + "): " + r.labelFailure("a step failed")
 	}
 	return r.Outcome() + "; the agent addresses the findings"
 }
@@ -125,9 +134,9 @@ func (r ProjectTaskReopen) Milestone() string {
 	round := strconv.Itoa(r.Round)
 	switch r.Cause {
 	case ProjectTaskReopenPushFailed:
-		return "rebase needed (round " + round + "): " + firstNonEmptyTrimmed(r.Failure, "push failed")
+		return "rebase needed (round " + round + "): " + r.labelFailure("push failed")
 	case ProjectTaskReopenCheckFailed:
-		return "sent back (round " + round + "): " + firstNonEmptyTrimmed(r.Failure, "a step failed")
+		return "sent back (round " + round + "): " + r.labelFailure("a step failed")
 	}
 	return "sent back (round " + round + ")"
 }

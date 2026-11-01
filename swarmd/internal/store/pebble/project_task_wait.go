@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -138,9 +139,19 @@ type V3ProjectTaskWaitProgress struct {
 	// push_failed (review passed, the push failed: rebase) or check_failed,
 	// with the failed step's short reason. WorkflowRound is then the
 	// follow-up's round.
-	ReopenCause      string `json:"reopen_cause,omitempty"`
-	ReopenFailure    string `json:"reopen_failure,omitempty"`
-	IntegrationState string `json:"integration_state,omitempty"`
+	ReopenCause   string `json:"reopen_cause,omitempty"`
+	ReopenFailure string `json:"reopen_failure,omitempty"`
+	// ReopenFailureTruncated says ReopenFailure kept only its head and tail
+	// (ProjectTaskWakeReasonRunes); the delivery (DeliveryID) has it all.
+	ReopenFailureTruncated bool `json:"reopen_failure_truncated,omitempty"`
+	// DeliveryID is the shown delivery; manage_workflows action=deliveries
+	// delivery_id=<it> reads its steps in full.
+	DeliveryID string `json:"delivery_id,omitempty"`
+	// StepsResult is each finished step of the shown delivery: id, type,
+	// status, verdict, duration and a bounded tail of its output (a run
+	// step's last lines, a review's BLOCKING findings).
+	StepsResult      []ProjectTaskStepResult `json:"workflow_steps_result,omitempty"`
+	IntegrationState string                  `json:"integration_state,omitempty"`
 	// Live is the run's live state (ProjectTaskLive): waiting on a pending
 	// permission or question, or held by an update drain or admission.
 	Live *ProjectTaskLive `json:"live,omitempty"`
@@ -176,6 +187,7 @@ func ProjectTaskWaitProgressFrom(progress any) *V3ProjectTaskWaitProgress {
 		Workflow *struct {
 			State      string `json:"state"`
 			Deliveries []struct {
+				ID       string `json:"id"`
 				Workflow string `json:"workflow"`
 				State    string `json:"state"`
 				Step     int    `json:"step"`
@@ -183,9 +195,12 @@ func ProjectTaskWaitProgressFrom(progress any) *V3ProjectTaskWaitProgress {
 				StepType string `json:"step_type"`
 				Round    int    `json:"round"`
 				// The reopen this delivery stands at (task progress).
-				ReopenCause   string `json:"reopen_cause"`
-				ReopenFailure string `json:"reopen_failure"`
-				ReopenRound   int    `json:"reopen_round"`
+				ReopenCause            string `json:"reopen_cause"`
+				ReopenFailure          string `json:"reopen_failure"`
+				ReopenFailureTruncated bool   `json:"reopen_failure_truncated"`
+				ReopenRound            int    `json:"reopen_round"`
+				// The delivery's finished steps (task progress).
+				StepsResult []ProjectTaskStepResult `json:"steps_result"`
 			} `json:"deliveries"`
 		} `json:"workflow"`
 		Integration *struct {
@@ -198,7 +213,9 @@ func ProjectTaskWaitProgressFrom(progress any) *V3ProjectTaskWaitProgress {
 	if json.Unmarshal(raw, &view) != nil || (view.Workflow == nil && view.Integration == nil && view.TaskState == "" && live == nil) {
 		return nil
 	}
-	out := &V3ProjectTaskWaitProgress{Live: clipProjectTaskLive(live), TaskState: clipProjectTaskWaitField(view.TaskState), TaskStateReason: clipProjectTaskWaitField(view.TaskStateReason)}
+	out := &V3ProjectTaskWaitProgress{Live: clipProjectTaskLive(live), TaskState: clipProjectTaskWaitField(view.TaskState)}
+	// A state reason may name a failure: kept to the reason bound.
+	out.TaskStateReason, _ = ClipProjectTaskReason(view.TaskStateReason, ProjectTaskWakeReasonRunes)
 	if w := view.Workflow; w != nil {
 		out.WorkflowState = clipProjectTaskWaitField(w.State)
 		// The delivery shown is the running one, else the newest.
@@ -216,9 +233,13 @@ func ProjectTaskWaitProgressFrom(progress any) *V3ProjectTaskWaitProgress {
 			d := w.Deliveries[pick]
 			out.Workflow, out.WorkflowStepType = clipProjectTaskWaitField(d.Workflow), clipProjectTaskWaitField(d.StepType)
 			out.WorkflowStep, out.WorkflowSteps, out.WorkflowRound = max(d.Step, 0), max(d.Steps, 0), max(d.Round, 0)
+			out.DeliveryID = clipProjectTaskWaitField(d.ID)
+			out.StepsResult = ClipProjectTaskStepResults(d.StepsResult)
 			if d.ReopenCause != "" {
 				reopen := ProjectTaskReopen{Round: d.ReopenRound, Cause: d.ReopenCause, Failure: d.ReopenFailure}.Normalized()
 				out.ReopenCause, out.ReopenFailure = reopen.Cause, reopen.Failure
+				_, cut := ClipProjectTaskReason(strings.Join(strings.Fields(d.ReopenFailure), " "), ProjectTaskWakeReasonRunes)
+				out.ReopenFailureTruncated = reopen.Failure != "" && (d.ReopenFailureTruncated || cut)
 				if reopen.Round > 0 {
 					out.WorkflowRound = reopen.Round
 				}
@@ -277,11 +298,23 @@ func projectTaskWaitProgressRow(p *V3ProjectTaskWaitProgress) map[string]any {
 	if p.WorkflowRound > 0 {
 		row["workflow_round"] = p.WorkflowRound
 	}
+	if p.DeliveryID != "" {
+		row["delivery_id"] = p.DeliveryID
+	}
+	if len(p.StepsResult) > 0 {
+		row["workflow_steps_result"] = p.StepsResult
+	}
 	if p.ReopenCause != "" {
 		reopen := ProjectTaskReopen{Cause: p.ReopenCause, Failure: p.ReopenFailure}.Normalized()
 		row["reopen_cause"] = reopen.Cause
 		if reopen.Failure != "" {
 			row["reopen_failure"] = reopen.Failure
+			if p.ReopenFailureTruncated {
+				row["reopen_failure_truncated"] = true
+				if p.DeliveryID != "" {
+					row["reopen_failure_more"] = "manage_workflows action=deliveries delivery_id=" + p.DeliveryID
+				}
+			}
 		}
 	}
 	if p.IntegrationState != "" {
@@ -540,6 +573,7 @@ func (s *SessionStore) projectTaskWatchLocalOutcome(input *V3SessionMutationInpu
 			return nil, nil, false, err
 		}
 		status, summary := "cancelled", "Selected task was removed or archived."
+		source, failure := ProjectTaskSummaryStatus, ""
 		title := "Task"
 		attemptID, sessionID := target.AttemptID, target.SessionID
 		var progress any
@@ -585,13 +619,9 @@ func (s *SessionStore) projectTaskWatchLocalOutcome(input *V3SessionMutationInpu
 			} else if !current {
 				status, summary = "superseded", "Selected attempt was superseded; explicitly select the replacement if needed."
 			} else {
-				status, summary = task.Status, a.Summary
-				if summary == "" {
-					summary = task.LastError
-				}
-				if summary == "" {
-					summary = task.ActionNeeded
-				}
+				status = task.Status
+				summary, source = projectTaskWakeSummary(status, a.Summary, task.LastError, task.ActionNeeded)
+				failure = projectTaskWakeFailure(status, task.LastError, task.ActionNeeded)
 			}
 		}
 		ready, needsAction := projectTaskWaitReadiness(status, owner.TaskWait, waitProgress)
@@ -604,7 +634,19 @@ func (s *SessionStore) projectTaskWatchLocalOutcome(input *V3SessionMutationInpu
 		}
 		row := projectTaskWaitProgressRow(waitProgress)
 		row["task_id"], row["attempt_id"], row["session_id"], row["title"], row["status"] = target.TaskID, attemptID, sessionID, title, status
-		setProjectTaskWaitSummary(row, summary, "manage-sessions read_messages session_id="+sessionID+" role=assistant; follow each cut message's next")
+		result := ProjectTaskWakeResult{Summary: summary, Source: source, Failure: failure, ReadFull: "manage-sessions read_messages session_id=" + sessionID + " role=assistant; follow each cut message's next",
+			ReadFullArgs: map[string]any{"tool": "manage-sessions", "action": "read_messages", "session_id": sessionID}}
+		if source == ProjectTaskSummaryFinalMessage {
+			// The exact final message: read_full_args pages it from its start.
+			if state, found, err := s.GetV3SessionRunState(sessionID); err == nil && found && state.AccountScopeID == input.AccountScopeID {
+				if m, ok := s.completedTaskRunMessage(state); ok {
+					result.ReadFull = "manage-sessions read_messages session_id=" + sessionID + " message_id=" + m.MessageID + " message_seq=" + strconv.FormatUint(m.Seq, 10) + " content_offset=0; follow each cut message's next"
+					result.ReadFullArgs = projectTaskWakeReadMessageArgs(m)
+					result.ReadFullBytes = m.Bytes
+				}
+			}
+		}
+		setProjectTaskWakeResult(row, result)
 		if attemptID != target.AttemptID {
 			row["pinned_attempt_id"] = target.AttemptID
 		}
@@ -694,23 +736,10 @@ func projectTaskWaitNoticeTitle(title, taskID string) string {
 	return title
 }
 
-func clipProjectTaskWaitSummary(summary string) string {
-	if len(summary) > 2000 {
-		summary = string([]rune(summary)[:min(len([]rune(summary)), 500)])
-	}
-	return summary
-}
-
-// setProjectTaskWaitSummary puts an outcome row's summary in row. A
-// shortened summary says so (result_truncated), with the full size
-// (result_bytes) and how to read all of it (read_full), so a long result is
-// never silently taken for the whole.
-func setProjectTaskWaitSummary(row map[string]any, summary, readFull string) {
-	clipped := clipProjectTaskWaitSummary(summary)
-	row["summary"] = clipped
-	if clipped != summary {
-		row["result_truncated"], row["result_bytes"], row["read_full"] = true, len(summary), readFull
-	}
+// projectTaskWakeReadMessageArgs is the exact manage-sessions read_messages
+// call that pages a task's final result message from its start.
+func projectTaskWakeReadMessageArgs(m ProjectTaskRunMessage) map[string]any {
+	return map[string]any{"tool": "manage-sessions", "action": "read_messages", "session_id": m.SessionID, "message_id": m.MessageID, "message_seq": m.Seq, "content_offset": 0}
 }
 
 // prepareRemoteProjectTaskWait records a wait on attempts the trusted runtime
@@ -768,6 +797,7 @@ func projectTaskWatchRemoteOutcome(op *V3ProjectTaskWaitMutation, waitValue V3Pr
 	follow := !projectTaskWaitFinished(wait)
 	for _, target := range wait.Tasks {
 		status, summary, title := "", "", "Task"
+		source, failure := ProjectTaskSummaryStatus, ""
 		attemptID, sessionID := target.AttemptID, target.SessionID
 		var progress *V3ProjectTaskWaitProgress
 		if o, ok := observed[target.TaskID]; ok {
@@ -789,13 +819,9 @@ func projectTaskWatchRemoteOutcome(op *V3ProjectTaskWaitMutation, waitValue V3Pr
 				status, summary = "superseded", "Selected attempt was superseded; explicitly select the replacement if needed."
 			default:
 				progress = o.Progress
-				status, summary = o.Status, o.AttemptSummary
-				if summary == "" {
-					summary = o.LastError
-				}
-				if summary == "" {
-					summary = o.ActionNeeded
-				}
+				status = o.Status
+				summary, source = projectTaskWakeSummary(status, o.AttemptSummary, o.LastError, o.ActionNeeded)
+				failure = projectTaskWakeFailure(status, o.LastError, o.ActionNeeded)
 			}
 		}
 		if ready, _ := projectTaskWaitReadiness(status, wait, progress); !ready && resolution != nil {
@@ -810,7 +836,7 @@ func projectTaskWatchRemoteOutcome(op *V3ProjectTaskWaitMutation, waitValue V3Pr
 			case V3ProjectTaskRemoteWorkOff:
 				summary = "The linked work rule for machine " + wait.Machine + " is off or the machine was unlinked; outcome unknown."
 			}
-			status = resolution.Reason
+			status, source, failure = resolution.Reason, ProjectTaskSummaryStatus, ""
 		}
 		ready, needsAction := projectTaskWaitReadiness(status, wait, progress)
 		actionable = actionable || needsAction
@@ -819,7 +845,11 @@ func projectTaskWatchRemoteOutcome(op *V3ProjectTaskWaitMutation, waitValue V3Pr
 		}
 		row := projectTaskWaitProgressRow(progress)
 		row["machine"], row["task_id"], row["attempt_id"], row["session_id"], row["title"], row["status"] = wait.Machine, target.TaskID, attemptID, sessionID, title, status
-		setProjectTaskWaitSummary(row, summary, "manage_projects read_task_session machine="+wait.Machine+" project_id="+wait.ProjectID+" task_id="+target.TaskID+"; follow each cut message's next")
+		// The final message is on the machine: read_task_session of the
+		// attempt followed pages it.
+		setProjectTaskWakeResult(row, ProjectTaskWakeResult{Summary: summary, Source: source, Failure: failure,
+			ReadFull:     "manage_projects read_task_session machine=" + wait.Machine + " project_id=" + wait.ProjectID + " task_id=" + target.TaskID + " attempt_id=" + attemptID + "; follow each cut message's next",
+			ReadFullArgs: map[string]any{"tool": "manage_projects", "action": "read_task_session", "machine": wait.Machine, "project_id": wait.ProjectID, "task_id": target.TaskID, "attempt_id": attemptID}})
 		if attemptID != target.AttemptID {
 			row["pinned_attempt_id"] = target.AttemptID
 		}

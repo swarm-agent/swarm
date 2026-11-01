@@ -3,6 +3,7 @@ package pebblestore
 import (
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -437,7 +438,7 @@ func TestProjectTaskWaitProgressFrom(t *testing.T) {
 		map[string]any{"workflow": "lint", "state": "done", "step": 1, "steps": 1, "step_type": "run", "round": 0},
 		map[string]any{"workflow": "review loop", "state": "running", "step": 2, "steps": 4, "step_type": "reopen", "round": 1},
 	}}, "integration": map[string]any{"state": "not_integrated"}})
-	if p == nil || *p != (V3ProjectTaskWaitProgress{WorkflowState: "running", Workflow: "review loop", WorkflowStep: 2, WorkflowSteps: 4, WorkflowStepType: "reopen", WorkflowRound: 1, IntegrationState: "not_integrated"}) {
+	if p == nil || !reflect.DeepEqual(*p, V3ProjectTaskWaitProgress{WorkflowState: "running", Workflow: "review loop", WorkflowStep: 2, WorkflowSteps: 4, WorkflowStepType: "reopen", WorkflowRound: 1, IntegrationState: "not_integrated"}) {
 		t.Fatalf("progress: %+v", p)
 	}
 	if got := ProjectTaskWaitProgressFrom(map[string]any{"state": "done", "summary": "finished"}); got != nil {

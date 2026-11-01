@@ -239,6 +239,17 @@ record keeps its placeholder.
   them on `progress.workflow` with the delivery's `delivery_id` and `round`.
   `manage_workflows action=deliveries job_id=` takes a bare task id as well as
   a job id; when nothing matches, its answer carries a `note` saying so.
+- A delivery standing at a reopen carries `reopen_failure`: the failed step's
+  whole reason up to 2000 characters, past that its head and tail with a
+  `[…N chars cut…]` marker and `reopen_failure_truncated`. Outcome words,
+  state reasons and milestone labels keep a one-line form of it.
+- `steps_result` (task route and `get_task`, not the board): each finished
+  step of the delivery with `id`, `type`, `status`, `verdict` (agent steps),
+  `duration_ms`, `exit_code`, `error` (head and tail kept past 2000
+  characters), `output_tail` (a run step's last 30 lines of its saved log,
+  at most 4000 bytes), `blocking` (a review's BLOCKING findings) and `more`
+  when anything was cut. `get_task` shows the shown delivery's list as
+  `progress.workflow.steps_result`; wake rows as `workflow_steps_result`.
 - absent while the task has not ended.
 
 ### `history`
@@ -386,7 +397,7 @@ A watch also wakes on milestones (`milestones`, default on; `wait_tasks
 milestones=false` turns them off): review started, sent back (round N) by
 a review block, rebase needed (round N): <failure> when the review passed and
 the push failed (rows carry `reopen_cause`: `review_block`, `push_failed` or
-`check_failed`, and `reopen_failure`),
+`check_failed`, the full `reopen_failure`, and `workflow_steps_result`),
 landed (pushed with its commit, delivered or merged), blocked or failed. A
 milestone wake keeps the watch. At most one milestone wake per watch per
 minute: stages reached within the minute are coalesced into the next wake,

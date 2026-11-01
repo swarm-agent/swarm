@@ -108,12 +108,19 @@ type projectTaskProgressRead struct {
 			} `json:"sent_back"`
 			// ReopenCause: review_block, push_failed or check_failed
 			// (pebblestore.ProjectTaskReopen).
-			ReopenCause       string `json:"reopen_cause"`
-			FindingsStep      string `json:"findings_step"`
-			Verdict           string `json:"verdict"`
-			Findings          string `json:"findings"`
-			FindingsTruncated bool   `json:"findings_truncated"`
-			More              string `json:"more"`
+			ReopenCause string `json:"reopen_cause"`
+			// ReopenFailure is the failed step's reason (head and tail
+			// kept, pebblestore.ProjectTaskWakeReasonRunes).
+			ReopenFailure          string `json:"reopen_failure"`
+			ReopenFailureTruncated bool   `json:"reopen_failure_truncated"`
+			// StepsResult is each finished step (task progress
+			// deliveryStepsResult).
+			StepsResult       []pebblestore.ProjectTaskStepResult `json:"steps_result"`
+			FindingsStep      string                              `json:"findings_step"`
+			Verdict           string                              `json:"verdict"`
+			Findings          string                              `json:"findings"`
+			FindingsTruncated bool                                `json:"findings_truncated"`
+			More              string                              `json:"more"`
 			// Review is the delivery's latest review step with a verdict
 			// (task progress deliveryReview).
 			Review *struct {
@@ -237,9 +244,18 @@ type projectTaskWorkflow struct {
 	// (findings to address) or push_failed (review passed; rebase and
 	// retry), or check_failed.
 	ReopenCause string `json:"reopen_cause,omitempty"`
+	// ReopenFailure is the failed step's full reason (head and tail kept
+	// past pebblestore.ProjectTaskWakeReasonRunes: ReopenFailureTruncated,
+	// More reads the delivery).
+	ReopenFailure          string `json:"reopen_failure,omitempty"`
+	ReopenFailureTruncated bool   `json:"reopen_failure_truncated,omitempty"`
 	// DeliveryID is the shown delivery; manage_workflows action=deliveries
 	// delivery_id=<it> reads its steps in full.
 	DeliveryID string `json:"delivery_id,omitempty"`
+	// StepsResult is each finished step of the shown delivery: id, type,
+	// status, verdict, duration, a bounded output tail and a review's
+	// BLOCKING findings (the wake rows' workflow_steps_result).
+	StepsResult []pebblestore.ProjectTaskStepResult `json:"steps_result,omitempty"`
 	// FindingsStep, Verdict and Findings say why a review blocked or sent
 	// the work back (task progress deliveryFindings), the findings capped to
 	// projectTaskFindingsRunes; FindingsTruncated and More (the call with
@@ -487,9 +503,16 @@ func compactProjectTask(read projectTaskRead, remote bool) ProjectTaskView {
 				wf.Reason = clipBytes(d.SentBack.Reason, projectTaskTextBytes)
 			}
 			if d.ReopenCause != "" {
-				wf.ReopenCause = pebblestore.ProjectTaskReopen{Cause: d.ReopenCause}.Normalized().Cause
+				reopen := pebblestore.ProjectTaskReopen{Cause: d.ReopenCause, Failure: d.ReopenFailure}.Normalized()
+				wf.ReopenCause, wf.ReopenFailure = reopen.Cause, reopen.Failure
+				_, cut := pebblestore.ClipProjectTaskReason(strings.Join(strings.Fields(d.ReopenFailure), " "), pebblestore.ProjectTaskWakeReasonRunes)
+				wf.ReopenFailureTruncated = reopen.Failure != "" && (d.ReopenFailureTruncated || cut)
 			}
 			wf.DeliveryID = clipBytes(d.ID, 160)
+			wf.StepsResult = pebblestore.ClipProjectTaskStepResults(d.StepsResult)
+			if wf.ReopenFailureTruncated && wf.More == "" && wf.DeliveryID != "" {
+				wf.More = projectTaskFindingsMore(wf.DeliveryID, remote)
+			}
 			wf.FindingsStep, wf.Verdict = clipBytes(d.FindingsStep, 80), clipBytes(d.Verdict, 16)
 			if findings := strings.ToValidUTF8(strings.TrimSpace(d.Findings), string(utf8.RuneError)); findings != "" {
 				cut := clipRunes(findings, projectTaskFindingsRunes)

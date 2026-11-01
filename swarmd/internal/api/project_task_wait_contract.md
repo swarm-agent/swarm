@@ -69,6 +69,31 @@ changing the run.
 - Rows carry `workflow_state`, `workflow`, `workflow_step`/`workflow_steps`,
   `workflow_step_type`, `workflow_round` and `integration_state` when the task
   has them.
+- Wake row result fields (`setProjectTaskWakeResult`, one builder for local
+  and linked rows; keys listed in `pebblestore.ProjectTaskWakeRowKeys`):
+  - `summary` is the agent's final result message: the assistant message of
+    the followed attempt's completed run (`completedTaskRunSummary`), never
+    its first lines. Over `ProjectTaskWakeResultBytes` (4000) it keeps its
+    end, starts with a `[…first N bytes cut…]` marker and the row says
+    `result_truncated`, `result_bytes` (the whole message), `read_full` and
+    `read_full_args` (local: `manage-sessions read_messages` at the exact
+    `message_id`/`message_seq`, `content_offset` 0; linked:
+    `read_task_session` at `attempt_id`). `summary_source` says where it came
+    from: `final_message`, `last_error`, `action_needed` or `status`.
+  - `failure` is a failed, blocked, cancelled or needs-input run's full
+    reason; `reopen_failure`, `task_state_reason` and each step's `error`
+    keep up to `ProjectTaskWakeReasonRunes` (2000) and, past that, their head
+    and tail with a `[…N chars cut…]` marker (`failure_truncated`,
+    `reopen_failure_truncated` with `reopen_failure_more`, the delivery
+    read). The milestone label alone stays one line.
+  - `delivery_id` and `workflow_steps_result` describe the shown delivery:
+    per finished step `id`, `type`, `status`, `verdict` (agent steps),
+    `duration_ms`, `exit_code`, `error`, `output_tail` (a run step's last 30
+    lines of its saved log, at most 4000 bytes) and `blocking` (a review's
+    BLOCKING findings), with `more` when anything was cut. `get_task` shows
+    the same list as `progress.workflow.steps_result` and the task route as
+    `progress.workflow.deliveries[].steps_result` (`taskWaitProgressFor`).
+  - Milestone rows are the same rows plus `milestone`.
 - A ready watch fires in one canonical mutation (`session.run.tasks_ready`)
   through the session wake (`session_wake.go`, the path background command
   reports take too): it deletes the watch and appends the bounded
@@ -147,7 +172,11 @@ remote tasks.
   older than this feed sends no `project.updated` activity: there a workflow
   end with no session activity is read only on the next activity, gap or
   reconnect. Every
-  row names `machine`, `task_id`, `attempt_id` and `session_id`; the message is
+  row names `machine`, `task_id`, `attempt_id` and `session_id` and carries the
+  same result fields as a local row (`summary`/`summary_source`, `failure`,
+  `reopen_failure`, `delivery_id`, `workflow_steps_result`, read from the
+  machine's `get_task` record and progress and bounded again here); only
+  `progress` is local and `machine` linked. The message is
   marked `untrusted_content` and says the outcomes came from that machine. Wake
   through the session wake (a note for an active run, re-delivered as a new
   turn if unread; a new turn when idle) and the ways a watch ends are the same

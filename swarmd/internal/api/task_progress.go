@@ -107,7 +107,16 @@ type taskProgressDelivery struct {
 	// reason and the follow-up's round (deliveryReopen).
 	ReopenCause   string `json:"reopen_cause,omitempty"`
 	ReopenFailure string `json:"reopen_failure,omitempty"`
-	ReopenRound   int    `json:"reopen_round,omitempty"`
+	// ReopenFailureTruncated: ReopenFailure kept its head and tail only
+	// (pebblestore.ProjectTaskWakeReasonRunes); the delivery has it all.
+	ReopenFailureTruncated bool `json:"reopen_failure_truncated,omitempty"`
+	ReopenRound            int  `json:"reopen_round,omitempty"`
+	// StepsResult is each finished step of the delivery (id, type, status,
+	// verdict, duration, a bounded output tail, a review's BLOCKING
+	// findings). Set by taskWaitProgressFor (the task route, get_task and
+	// the store's progress hook wait_tasks reads), not by taskProgressFor
+	// (the board and fleet views).
+	StepsResult []pebblestore.ProjectTaskStepResult `json:"steps_result,omitempty"`
 	// Why a review stopped the work (deliveryFindings): set when a step's
 	// verdict is block, or the delivery ended sent_back, failed or blocked
 	// with a step's findings. Findings are capped to
@@ -160,6 +169,13 @@ func deliveryReview(d jobautomation.Delivery) *taskProgressReview {
 // step that sent it back (sent_back), or the reopen step running now (its
 // follow-up is the next round). ok is false when it stands at no reopen.
 func deliveryReopen(d jobautomation.Delivery, step int) (pebblestore.ProjectTaskReopen, bool) {
+	reopen, _, ok := deliveryReopenCut(d, step)
+	return reopen, ok
+}
+
+// deliveryReopenCut is deliveryReopen, also reporting whether the failure
+// was cut to its head and tail.
+func deliveryReopenCut(d jobautomation.Delivery, step int) (pebblestore.ProjectTaskReopen, bool, bool) {
 	stepID, round := "", 0
 	switch {
 	case d.State == jobautomation.StateSentBack && d.SentBack != nil:
@@ -175,10 +191,52 @@ func deliveryReopen(d jobautomation.Delivery, step int) (pebblestore.ProjectTask
 	case !jobautomation.Terminal(d.State) && step >= 0 && step < len(d.Steps) && d.Steps[step].Type == jobautomation.StepReopen:
 		stepID, round = d.Steps[step].ID, d.Round+1
 	default:
-		return pebblestore.ProjectTaskReopen{}, false
+		return pebblestore.ProjectTaskReopen{}, false, false
 	}
 	cause, failure := jobautomation.ReopenCause(d, stepID)
-	return pebblestore.ProjectTaskReopen{Round: round, Cause: cause, Failure: failure}.Normalized(), true
+	reopen := pebblestore.ProjectTaskReopen{Round: round, Cause: cause, Failure: failure}.Normalized()
+	_, cut := pebblestore.ClipProjectTaskReason(strings.Join(strings.Fields(failure), " "), pebblestore.ProjectTaskWakeReasonRunes)
+	return reopen, reopen.Failure != "" && cut, true
+}
+
+// deliveryStepsResult is each finished step of d as task progress shows it
+// (steps_result): status, an agent step's verdict, its duration, its failure
+// (head and tail kept), the tail of its output (a run step's log tail when
+// d carries it, else its recorded output) and a review's BLOCKING findings.
+// Steps still pending, waiting or running have no result yet.
+func deliveryStepsResult(d jobautomation.Delivery) []pebblestore.ProjectTaskStepResult {
+	var out []pebblestore.ProjectTaskStepResult
+	for _, step := range d.Steps {
+		switch step.State {
+		case jobautomation.StatePending, jobautomation.StateWaiting, jobautomation.StateRunning, "":
+			continue
+		}
+		r := pebblestore.ProjectTaskStepResult{ID: step.ID, Type: step.Type, Status: step.State, ExitCode: step.ExitCode}
+		if step.StartedAt > 0 && step.FinishedAt >= step.StartedAt {
+			r.DurationMs = step.FinishedAt - step.StartedAt
+		}
+		if step.Type == jobautomation.StepAgent {
+			r.Verdict, _ = step.Outcome["verdict"].(string)
+			r.Verdict = strings.TrimSpace(r.Verdict)
+			findings, _ := step.Outcome["findings"].(string)
+			r.Blocking = pebblestore.ProjectTaskBlockingFindings(findings, r.Verdict)
+		}
+		reason := step.Reason
+		if reason == "" && len(step.Failures) > 0 && (step.State == jobautomation.StateFailed || step.State == jobautomation.StateStopped) {
+			reason = step.Failures[len(step.Failures)-1].Reason
+		}
+		r.Error, r.ErrorTruncated = pebblestore.ClipProjectTaskReason(reason, pebblestore.ProjectTaskWakeReasonRunes)
+		output := step.LogTail
+		if strings.TrimSpace(output) == "" {
+			output = step.Output
+		}
+		r.OutputTail, r.OutputTruncated = pebblestore.ClipProjectTaskOutputTail(output, pebblestore.ProjectTaskStepOutputLines, pebblestore.ProjectTaskStepOutputBytes)
+		if r.ErrorTruncated || r.OutputTruncated {
+			r.More = deliveryFindingsMore(d.ID)
+		}
+		out = append(out, r)
+	}
+	return pebblestore.ClipProjectTaskStepResults(out)
 }
 
 // maxProgressFindingsRunes bounds a delivery's findings in task progress; the
@@ -475,8 +533,8 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 			if len(d.Steps) > 0 {
 				view.Step, view.StepType = step+1, d.Steps[step].Type
 			}
-			if reopen, ok := deliveryReopen(d, step); ok {
-				view.ReopenCause, view.ReopenFailure, view.ReopenRound = reopen.Cause, reopen.Failure, reopen.Round
+			if reopen, cut, ok := deliveryReopenCut(d, step); ok {
+				view.ReopenCause, view.ReopenFailure, view.ReopenRound, view.ReopenFailureTruncated = reopen.Cause, reopen.Failure, reopen.Round, cut
 			}
 			deliveryFindings(d, &view)
 			view.Review = deliveryReview(d)

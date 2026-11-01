@@ -28,6 +28,7 @@ import (
 func (s *Server) taskWaitProgressFor(account string, task pebblestore.ProjectTaskRecord, now int64) *taskProgress {
 	deliveries, eval := s.taskProgressRecords(account, task)
 	p := computeTaskProgress(task, deliveries, eval, now)
+	s.fillTaskProgressStepResults(&p, deliveries)
 	if s.taskEndAwaitsWorkflows(account, task, deliveries, eval) {
 		if p.Workflow == nil {
 			p.Workflow = &taskProgressWorkflow{Deliveries: []taskProgressDelivery{}}
@@ -44,6 +45,31 @@ func (s *Server) taskWaitProgressFor(account string, task pebblestore.ProjectTas
 	s.markTaskProgressLive(&p, account, task)
 	markTaskProgressAttention(&p, task)
 	return &p
+}
+
+// fillTaskProgressStepResults sets each shown delivery's steps_result from
+// its finished steps, with the run steps' saved log tails: one bounded log
+// read per step of the task's latest deliveries. taskProgressFor (the board
+// and fleet views) does not carry them.
+func (s *Server) fillTaskProgressStepResults(p *taskProgress, deliveries []jobautomation.Delivery) {
+	if p == nil || p.Workflow == nil || len(p.Workflow.Deliveries) == 0 {
+		return
+	}
+	store, _ := s.jobAutomationStore()
+	byID := map[string]jobautomation.Delivery{}
+	for _, d := range latestDeliveries(deliveries) {
+		byID[d.ID] = d
+	}
+	for i := range p.Workflow.Deliveries {
+		d, ok := byID[p.Workflow.Deliveries[i].ID]
+		if !ok {
+			continue
+		}
+		if store != nil {
+			d = store.WithLogs(d)
+		}
+		p.Workflow.Deliveries[i].StepsResult = deliveryStepsResult(d)
+	}
 }
 
 // taskEndAwaitsWorkflows reports whether the task ended (its agent finished

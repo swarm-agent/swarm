@@ -79,11 +79,16 @@ func TestProjectTaskWatchMilestoneNamesReopenCause(t *testing.T) {
 	if _, has := row["reopen_failure"]; has {
 		t.Fatalf("unknown cause row carries a failure: %+v", row)
 	}
-	long := strings.Repeat("é", 500)
+	// The failure field keeps up to ProjectTaskWakeReasonRunes, past that its
+	// head and tail; the label keeps a one-line form.
+	long := strings.Repeat("é", 3000) + " end"
 	label, row = milestone(`{"workflow":{"state":"sent_back","deliveries":[{"state":"sent_back","step_type":"reopen","reopen_cause":"push_failed","reopen_failure":"push failed: ` + long + `","reopen_round":1}]}}`)
 	failure, _ := row["reopen_failure"].(string)
-	if !utf8.ValidString(failure) || !utf8.ValidString(label) || utf8.RuneCountInString(failure) > maxProjectTaskReopenFailure+1 || !strings.HasSuffix(failure, "…") || !strings.HasPrefix(label, "rebase needed (round 1): push failed: é") {
-		t.Fatalf("capped failure = %q (%d runes) label %q", failure, utf8.RuneCountInString(failure), label)
+	if !utf8.ValidString(failure) || !utf8.ValidString(label) || utf8.RuneCountInString(failure) > ProjectTaskWakeReasonRunes || !strings.HasPrefix(failure, "push failed: é") || !strings.HasSuffix(failure, " end") || row["reopen_failure_truncated"] != true {
+		t.Fatalf("bounded failure = %d runes, truncated %v", utf8.RuneCountInString(failure), row["reopen_failure_truncated"])
+	}
+	if !strings.HasPrefix(label, "rebase needed (round 1): push failed: é") || utf8.RuneCountInString(label) > len("rebase needed (round 1): ")+maxProjectTaskReopenFailure+1 || !strings.HasSuffix(label, "…") {
+		t.Fatalf("milestone label not one line: %q", label)
 	}
 }
 
