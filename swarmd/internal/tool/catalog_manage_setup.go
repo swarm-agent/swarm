@@ -83,7 +83,8 @@ func manageSetupFields() []CatalogField {
 		{"label", text("request_provider_key and request_fleet_key: a name for the stored key.", 64)},
 		{"step", map[string]any{"type": "string", "enum": []string{"start", "status", "activate"}, "description": "connect_chatgpt: start or status; connect_claude_code: status or activate."}},
 		{"login_id", text("connect_chatgpt status: the login_id from start.", 200)},
-		{"max_seconds", map[string]any{"type": "integer", "minimum": 0, "maximum": 86400, "description": "request_update: how long to hold new work at most."}},
+		{"max_seconds", map[string]any{"type": "integer", "minimum": 0, "maximum": 86400, "description": "request_update: how long to wait at most for running agent runs to finish (default 7200)."}},
+		{"force", described("boolean", "request_update: at max_seconds, restart anyway and interrupt the agent runs still running (they do not resume). Without it the update is refused there and nothing is interrupted. Only when the person asks.")},
 	}
 }
 
@@ -145,8 +146,8 @@ func manageSetupCatalog() CatalogTool {
 			Description: "Connect the person's ChatGPT plan: step start returns a link and a code for the person; step status with login_id follows it (swarm_connect_chatgpt). Waits for the person's decision."},
 		{Action: "connect_claude_code", Inputs: []string{"step"}, Level: write, APIScopes: []string{"admin", "swarm:write"},
 			Description: "Set up Claude Code as the provider: step status says what is missing and the command the person runs; step activate turns it on once signed in (swarm_connect_claude_code). Waits for the person's decision."},
-		{Action: "request_update", Inputs: []string{"machine", "max_seconds"}, Level: manage, APIScopes: []string{"admin"},
-			Description: "Hold new work while running work finishes, for an installer update; never changes the host (swarm_request_update). Waits for the person's decision."},
+		{Action: "request_update", Inputs: []string{"machine", "max_seconds", "force"}, Level: manage, APIScopes: []string{"admin"},
+			Description: "Update without waiting for an idle machine: hold new work now, wait up to max_seconds for running agent runs to finish, and the installer's next automatic update restarts into the new build (queued runs, worker runs, follow-ups and reviews resume after it). Runs still running then are never interrupted unless force; machine_status shows the drain and its blocking runs (swarm_request_update). Waits for the person's decision."},
 		{Action: "cancel_update", Inputs: []string{"machine"}, Level: manage, APIScopes: []string{"admin"},
 			Description: "Reopen held admissions without interrupting running jobs (swarm_cancel_update). Waits for the person's decision."},
 	}

@@ -1389,6 +1389,9 @@ func (d *Daemon) Run() error {
 		// Environment watches from before the restart follow their builds
 		// again (an interrupted build reports as failed).
 		d.toolRuntime.ResumeEnvironmentWatches()
+		// Machine update watches too: a watch on this machine whose restart
+		// was its update sees the new commit on its first read.
+		d.toolRuntime.ResumeMachineWatches()
 	}
 	log.Printf("swarmd listener topology api_listen=%q", d.httpServer.Addr)
 

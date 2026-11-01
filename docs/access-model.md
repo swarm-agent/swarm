@@ -91,7 +91,7 @@ before a task is sent or started there: `manage_projects` with `machine` and
 `refine_task`, and before a folder environment there is changed or rebuilt
 (`update_environment`, `rebuild_environment`), which runs its setup commands
 on the machine. Every other linked action runs without asking: reads
-(including `list_environments`, `get_environment` and `wait_environment`), task archive, workflow
+(including `list_environments`, `get_environment`, `wait_environment` and `wait_machine`), task archive, workflow
 propose/enable/disable/delete and worker pause/resume/archive/delete. `auto` runs everything. A task sent to a linked
 machine under `ask` (once approved) or `auto` starts there at once; it does not
 wait on the machine as a card. Watching a linked machine's tasks

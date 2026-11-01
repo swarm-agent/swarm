@@ -130,7 +130,7 @@ func (s *Server) handleBoxSummary(w http.ResponseWriter, r *http.Request) {
 	if manager := s.ExecutionCapacity(); manager != nil {
 		drain := manager.DrainStatus()
 		// Machine summaries expose no cross-account run identifiers.
-		machine["drain"] = boxDrainSummary(drain)
+		machine["drain"] = boxDrainSummary(drain, account)
 		if drain.Draining {
 			raise(BoxStatusAttention, "draining for update")
 		}
@@ -525,9 +525,35 @@ func boxFolderEnvironment(root string, max int, view map[string]any) map[string]
 }
 
 // boxDrainSummary is a machine's drain for its summary: times also in Unix ms,
-// like the summary's other times, and only a count of the runs it waits for.
-func boxDrainSummary(drain executioncapacity.DrainStatus) map[string]any {
-	return map[string]any{"draining": drain.Draining, "since": drain.Since, "deadline": drain.Deadline, "since_ms": unixMillisOrZero(drain.Since), "deadline_ms": unixMillisOrZero(drain.Deadline), "timed_out": drain.TimedOut, "blocking_runs": len(drain.Blockers)}
+// like the summary's other times, how many runs it waits for, and its
+// progress: the blocking runs of the reader's own account by session and run
+// id (blocking), with only a count of other accounts' (blocking_other), so
+// no cross-account run identifier leaves the machine. requested, force and
+// forced say what request_update asked and whether the deadline forced it;
+// reason says in one line what it waits on or why it ended.
+func boxDrainSummary(drain executioncapacity.DrainStatus, account string) map[string]any {
+	blocking := []map[string]string{}
+	other := 0
+	for _, b := range drain.Blockers {
+		if b.Account != account || len(blocking) >= boxSummaryMaxListed {
+			other++
+			continue
+		}
+		blocking = append(blocking, map[string]string{"session_id": b.Session, "run_id": b.Run})
+	}
+	reason := ""
+	switch {
+	case drain.EndReason == "expired":
+		reason = fmt.Sprintf("update refused: %d agent run(s) still ran at the deadline and would not resume after a restart; none was interrupted", len(drain.Blockers))
+	case drain.Draining && drain.Forced:
+		reason = fmt.Sprintf("forced: the restart interrupts %d agent run(s)", len(drain.Blockers))
+	case drain.Draining && drain.Ready:
+		reason = "ready: no agent run is running; waiting for the installer to restart"
+	case drain.Draining:
+		reason = fmt.Sprintf("new runs held; waiting for %d agent run(s) to finish", len(drain.Blockers))
+	}
+	return map[string]any{"draining": drain.Draining, "since": drain.Since, "deadline": drain.Deadline, "since_ms": unixMillisOrZero(drain.Since), "deadline_ms": unixMillisOrZero(drain.Deadline), "timed_out": drain.TimedOut, "blocking_runs": len(drain.Blockers),
+		"blocking": blocking, "blocking_other": other, "ready": drain.Ready, "requested": drain.Requested, "force": drain.Force, "forced": drain.Forced, "end_reason": drain.EndReason, "reason": reason}
 }
 
 // runningNow is how many runs run on this machine now: the runs holding an

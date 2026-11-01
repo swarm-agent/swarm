@@ -88,6 +88,14 @@ func (s *Server) handleBoxDrain(w http.ResponseWriter, r *http.Request) {
 			// /v3/box/busy would say not busy, checked under the admission
 			// lock; otherwise 409 with the busy counts and no drain.
 			IfIdle bool `json:"if_idle"`
+			// Requested (request_update) marks an update someone asked for:
+			// the installer's automatic update takes this drain on its next
+			// run instead of waiting for an idle machine.
+			Requested bool `json:"requested"`
+			// Force restarts over agent runs still running at the deadline;
+			// they do not resume after a restart (recoverDurableRuns records
+			// them interrupted). Without it the update is refused there.
+			Force bool `json:"force"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -115,7 +123,7 @@ func (s *Server) handleBoxDrain(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		s.envBuildMu.Lock()
-		status, err := manager.BeginDrainIf(time.Duration(body.MaxSeconds)*time.Second, allow)
+		status, err := manager.BeginDrainWith(executioncapacity.DrainOptions{Timeout: time.Duration(body.MaxSeconds) * time.Second, Requested: body.Requested, Force: body.Force}, allow)
 		s.envBuildMu.Unlock()
 		var notIdle boxNotIdleError
 		if errors.As(err, &notIdle) {
@@ -155,8 +163,33 @@ type boxNotIdleError struct{ busy boxBusy }
 
 func (boxNotIdleError) Error() string { return "busy: an if_idle drain was not started" }
 
+// controlMCPRequestUpdate is request_update: a bounded drain someone asked
+// for. New runs are held at once; the installer's next automatic update
+// takes the drain and restarts as soon as no agent run is running (queued
+// runs, worker runs, follow-ups and reviews resume after the restart, so
+// they do not hold it). An agent run in progress does not resume after a
+// restart, so at max_seconds the update is refused and admission reopens,
+// unless force: then the restart interrupts the runs still running.
 func controlMCPRequestUpdate(c *controlMCPCall, args map[string]any) (any, error) {
-	return c.dispatch(http.MethodPost, "/v3/box/drain", nil, args)
+	body := map[string]any{"requested": true}
+	for _, key := range []string{"max_seconds", "force"} {
+		if value, ok := args[key]; ok {
+			body[key] = value
+		}
+	}
+	out, err := c.dispatch(http.MethodPost, "/v3/box/drain", nil, body)
+	if err != nil {
+		return nil, err
+	}
+	force, _ := body["force"].(bool)
+	if force {
+		out["at_deadline"] = "restart: agent runs still running are interrupted (recorded interrupted, not resumed)"
+	} else {
+		out["at_deadline"] = "refuse: agent runs still running are never interrupted; the drain ends and new runs start again"
+	}
+	out["resumes_after_restart"] = "queued runs, worker runs, follow-ups and reviews; agent runs in progress do not"
+	out["next_action"] = "manage_projects wait_machine wakes you when this machine runs the new commit or its update is stuck; machine_status shows the drain (blocking runs) meanwhile."
+	return out, nil
 }
 
 func (s *Server) addDrainBuildBlockers(w http.ResponseWriter, status *executioncapacity.DrainStatus) bool {

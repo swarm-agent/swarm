@@ -91,16 +91,31 @@ func TestControlMCPInitializeUpdateInstructions(t *testing.T) {
 }
 
 // Requirement: a client reads a machine's drain from its summary with times
-// in Unix ms, like the summary's other times, and no run identifiers.
-// Owner: boxDrainSummary.
+// in Unix ms, like the summary's other times, and its progress: the blocking
+// runs of the reader's own account by session and run id, other accounts'
+// only as a count, with what request_update asked (requested, force) and a
+// one-line reason. Threat: a drain that says nothing about what holds it, or
+// one account's run identifiers shown to another. Owner: boxDrainSummary.
 func TestBoxDrainSummaryTimes(t *testing.T) {
-	idle := boxDrainSummary(executioncapacity.DrainStatus{})
-	if idle["draining"] != false || idle["since_ms"] != int64(0) || idle["deadline_ms"] != int64(0) {
+	idle := boxDrainSummary(executioncapacity.DrainStatus{}, "acct-a")
+	if idle["draining"] != false || idle["since_ms"] != int64(0) || idle["deadline_ms"] != int64(0) || idle["reason"] != "" {
 		t.Fatalf("idle drain: %v", idle)
 	}
 	since := time.UnixMilli(1_793_000_000_000)
-	d := boxDrainSummary(executioncapacity.DrainStatus{Draining: true, Since: since, Deadline: since.Add(time.Hour), Blockers: make([]executioncapacity.DrainBlocker, 2)})
-	if d["draining"] != true || d["since_ms"] != since.UnixMilli() || d["deadline_ms"] != since.Add(time.Hour).UnixMilli() || d["blocking_runs"] != 2 {
+	blockers := []executioncapacity.DrainBlocker{{Account: "acct-a", Session: "s-own", Run: "r-own"}, {Account: "acct-b", Session: "s-other", Run: "r-other"}}
+	d := boxDrainSummary(executioncapacity.DrainStatus{Draining: true, Since: since, Deadline: since.Add(time.Hour), Blockers: blockers, Requested: true}, "acct-a")
+	if d["draining"] != true || d["since_ms"] != since.UnixMilli() || d["deadline_ms"] != since.Add(time.Hour).UnixMilli() || d["blocking_runs"] != 2 || d["requested"] != true || d["force"] != false {
 		t.Fatalf("draining: %v", d)
+	}
+	own := d["blocking"].([]map[string]string)
+	if len(own) != 1 || own[0]["session_id"] != "s-own" || own[0]["run_id"] != "r-own" || d["blocking_other"] != 1 {
+		t.Fatalf("blocking runs: %v other %v", own, d["blocking_other"])
+	}
+	raw, _ := json.Marshal(d)
+	if strings.Contains(string(raw), "s-other") || strings.Contains(string(raw), "r-other") || strings.Contains(string(raw), "acct-b") {
+		t.Fatalf("another account's run is named: %s", raw)
+	}
+	if reason, _ := d["reason"].(string); !strings.Contains(reason, "waiting for 2 agent run") {
+		t.Fatalf("reason: %q", reason)
 	}
 }

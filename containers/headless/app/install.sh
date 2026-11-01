@@ -1010,6 +1010,29 @@ swarm_busy() {
   return 0
 }
 
+# Whether someone asked for this update (request_update): the daemon holds a
+# drain marked requested. An automatic update then takes that drain instead of
+# waiting for an idle machine; the drain itself waits only for agent runs in
+# progress (queued runs, worker runs, follow-ups and reviews resume after the
+# restart) and, unless it was forced, is refused at its deadline without
+# interrupting any.
+update_requested() {
+  local out
+  out=$(local_api /v3/box/summary 2>/dev/null) || return 1
+  [[ $(json_get machine.drain.draining <<<"$out") == true && $(json_get machine.drain.requested <<<"$out") == true ]]
+}
+
+# Reopen admission held by a requested drain when there is nothing this
+# update can install (already current, the candidate failed a check or was
+# rolled back), so a request never holds work for nothing. A drain the
+# installer reserved for its restart is never cancelled this way.
+release_requested_drain() {
+  update_requested || return 0
+  local_api /v3/box/drain -X DELETE >/dev/null 2>&1 &&
+    echo "swarm: $1; the requested update drain was released and new runs start again"
+  return 0
+}
+
 # Restart Swarm for a setting change only when nothing runs: a restart ends
 # agent runs in progress. Waits up to RESTART_WAIT_SECONDS (15 min); still busy
 # then, the change stays saved and takes effect at Swarm's next restart.
@@ -1149,7 +1172,10 @@ update() {
     fi
     why=$(checks_passed "$new") || {
       case $? in
-        1) update_state blocked "$why" "$new" ;;
+        1)
+          update_state blocked "$why" "$new"
+          release_requested_drain "${new:0:9} is blocked by a failed check"
+          ;;
         *) update_state waiting_review "$why" "$new" ;;
       esac
       return 0
@@ -1234,10 +1260,12 @@ finish_update() (
     else
       update_state current "running ${commit:0:9}, the newest of $SWARM_REF that passed its checks"
     fi
+    release_requested_drain "already running ${commit:0:9}; nothing to install"
     return 0
   fi
   if [[ -f $UPDATE_BAD && $(cat "$UPDATE_BAD") == "$commit" ]]; then
     update_state rolled_back "${commit:0:9} did not come up and was rolled back; waiting for a newer commit" "$commit"
+    release_requested_drain "${commit:0:9} was rolled back before"
     return 0
   fi
   update_state building "building ${commit:0:9}" "$commit"
@@ -1249,8 +1277,15 @@ finish_update() (
   # An automatic update drains only an idle machine: draining a busy machine
   # holds the new runs its running work needs (child tasks, a workflow's next
   # step, a review), however long it has been busy.
-  local if_idle=''
-  if [[ $automatic == --automatic ]]; then
+  local if_idle='' requested=''
+  if [[ $automatic == --automatic ]] && update_requested; then
+    # Someone asked for this update (request_update): take its drain as a
+    # person's update would, instead of waiting for an idle machine. A drain
+    # that then ends without a switch still records waiting (drain_ended).
+    requested=true
+    update_state draining "update requested; taking the requested drain" "$commit"
+  fi
+  if [[ $automatic == --automatic && -z $requested ]]; then
     if why=$(automatic_update_deferred); then
       update_state waiting "$why" "$commit"
       return 0

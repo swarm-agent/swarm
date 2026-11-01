@@ -379,6 +379,7 @@ func manageProjectsParityCases() map[string][]catalogParityCase {
 		tool.FolderEnvironmentRebuild: same(parityExact, parityArgs("action", tool.FolderEnvironmentRebuild, "workspace_path", "/no-such-folder")),
 		"cancel_watch":                notServed("cancel_watch"),
 		tool.FolderEnvironmentWait:    notServed(tool.FolderEnvironmentWait),
+		tool.FleetMachineWait:         notServed(tool.FleetMachineWait),
 		"inspect_files":               notServed("inspect_files"),
 		"create_task":                 notServed("create_task"),
 		"approve_task":                notServed("approve_task"),

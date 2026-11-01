@@ -187,6 +187,40 @@ grep -q '^drain /v3/box/drain -X POST' "$log" || fail "a manual update on a busy
 )
 ln -sfn "$OPT/releases/$c1" "$OPT/current"
 
+# 3d. Purpose: an update someone asked for (request_update: the daemon holds a
+# drain marked requested) does not wait for an idle machine. The timer's
+# automatic update takes that drain (no busy check, no if_idle) and switches
+# once it is ready; with nothing to install it releases the drain instead of
+# holding new runs to its deadline. Threat (seen on a factory): a busy machine
+# stayed on old code for hours because the timer updates only an idle one.
+# finish_update owns the busy check -> drain order; local_api is the daemon
+# stand-in that records every request.
+requested_api() {
+  case $1 in
+    /v3/box/busy) echo busy >>"$log"; printf '{"busy":true,"sessions":1,"worker_runs":0,"environment_builds":0}' ;;
+    /v3/box/drain*)
+      echo "drain $*" >>"$log"
+      printf '{"generation":"test-boot","draining":true,"ready":true,"timed_out":false,"requested":true,"blockers":[]}'
+      [[ " $* " != *' -w '* ]] || printf '\n200'
+      ;;
+    /v3/box/summary) printf '{"machine":{"commit":"%s","drain":{"draining":true,"requested":true}},"sandbox":{"active":true}}' "$(running_commit)" ;;
+  esac
+}
+(
+  : >"$log"
+  local_api() { requested_api "$@"; }
+  finish_update --automatic >/dev/null 2>&1 || fail 'a requested automatic update failed'
+  [[ $(state state) == installed && $(running_commit) == "$c3" ]] || fail "a requested update did not switch on a busy machine: $(cat "$UPDATE_STATE")"
+  ! grep -qx busy "$log" || fail "a requested update waited for an idle machine: $(cat "$log")"
+  grep -q '^drain /v3/box/drain -X POST' "$log" && ! grep -q if_idle "$log" || fail "a requested update did not take the drain: $(cat "$log")"
+  # Already on the target: nothing to install, so the drain is released.
+  : >"$log"
+  finish_update --automatic >/dev/null 2>&1 || fail 'a current requested update failed'
+  [[ $(state state) == current ]] && grep -q '^drain /v3/box/drain -X DELETE' "$log" || fail "a requested drain was held with nothing to install: $(cat "$log")"
+  ! grep -q '^activate' "$log" || fail 'a current update switched'
+)
+ln -sfn "$OPT/releases/$c1" "$OPT/current"
+
 # 3c. Purpose: an automatic update never starts a drain while GET /v3/box/busy
 # says busy, however long the machine stays busy, and a drain that ends
 # without a switch ends the run cleanly (state waiting, exit 0). Threat (seen

@@ -451,6 +451,14 @@ func (r *Runtime) manageProjectsAnswer(ctx context.Context, scope WorkspaceScope
 	switch action := strings.ToLower(strings.TrimSpace(asString(args["action"]))); {
 	case action == FolderEnvironmentWait:
 		return r.executeEnvironmentWatch(ctx, scope, args)
+	case action == FleetMachineWait:
+		return r.executeMachineWatch(ctx, scope, args)
+	case action == "cancel_watch" && strings.HasPrefix(strings.TrimSpace(asString(args["watch_id"])), MachineWatchIDPrefix):
+		// A machine update watch, named by its id.
+		if _, err := r.homeConversation(scope, "machine watch session ownership mismatch", "machine updates are watched by the Orchestrator, not by tasks"); err != nil {
+			return "", err
+		}
+		return r.cancelMachineWatches(scope, args)
 	case action == "cancel_watch" && (strings.TrimSpace(asString(args["workspace_path"])) != "" || strings.HasPrefix(strings.TrimSpace(asString(args["watch_id"])), "envwatch-")):
 		// An environment watch: named by its folder (and machine) or id.
 		if _, err := r.homeConversation(scope, "folder environment session ownership mismatch", "folder environments are managed by the Orchestrator, not by tasks"); err != nil {

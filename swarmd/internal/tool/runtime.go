@@ -181,6 +181,7 @@ type Runtime struct {
 	// backgroundWork is the durable state of background work (session_wake.go).
 	backgroundWork       backgroundWorkStore
 	envWatches           environmentWatches // environment watches followed here (folder_environment_watch.go)
+	machineWatches       machineWatches     // machine update watches followed here (machine_update_watch.go)
 	workspace            manageWorktreeWorkspaceService
 	worktrees            manageWorktreeConfigService
 	agents               manageAgentService
@@ -3109,6 +3110,7 @@ func (r *Runtime) Close() error {
 	if r != nil {
 		// Followers stop; their durable watches resume at the next start.
 		r.stopEnvironmentWatches()
+		r.stopMachineWatches()
 	}
 	if r == nil || r.searchCoordinator == nil {
 		return nil

@@ -723,7 +723,7 @@ and on a linked machine:
 | State | Meaning |
 | --- | --- |
 | `ok` | The call did what it was asked. |
-| `watching` | The Orchestrator's `wait_tasks` or `wait_environment` recorded a watch; a new turn brings the outcomes. Its `data.notice` says what to tell the person, and its `next_action` says a new turn comes when a watched task reaches a milestone (or the watched environment build ends) and that `cancel_watch` stops it. |
+| `watching` | The Orchestrator's `wait_tasks`, `wait_environment` or `wait_machine` recorded a watch; a new turn brings the outcomes. Its `data.notice` says what to tell the person, and its `next_action` says a new turn comes when a watched task reaches a milestone (or the watched environment build ends, or the watched machine runs a new commit or its update fails or is stuck) and that `cancel_watch` stops it (`wait_machine`: with its `watch_id`). |
 | `cancelled` | `cancel_watch` (or `wait_tasks` with `cancel`) ended watches; with `workspace_path`, an environment watch. |
 | `milestone`, `settled`, `timed_out` | Swarm Control's `wait_tasks` (below). |
 | `partial` | The call ran but part of its answer is missing: the home could not keep its record of a send (`linked_record_error`) or could not read the machine's answer (`data_error`). |

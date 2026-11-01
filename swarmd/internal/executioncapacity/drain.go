@@ -4,7 +4,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -28,6 +30,30 @@ type DrainStatus struct {
 	TimedOut          bool           `json:"timed_out"`
 	Ready             bool           `json:"ready"`
 	Blockers          []DrainBlocker `json:"blockers"`
+	// Requested: someone asked for this update (request_update), so the
+	// installer's automatic update takes this drain on its next run instead
+	// of waiting for an idle machine.
+	Requested bool `json:"requested"`
+	// Force: at the deadline, runs still running are interrupted by the
+	// restart (Forced) instead of the update being refused.
+	Force bool `json:"force"`
+	// Forced: the deadline passed with Force set; the drain is ready over
+	// the Blockers, which the restart records interrupted.
+	Forced bool `json:"forced"`
+	// Reason says, in one line, what the drain waits on or why it ended.
+	Reason string `json:"reason,omitempty"`
+}
+
+// DrainOptions are what a drain request asks for.
+type DrainOptions struct {
+	// Timeout is the most the drain waits for running runs (default
+	// DefaultDrainTimeout).
+	Timeout time.Duration
+	// Requested marks an update someone asked for (DrainStatus.Requested).
+	Requested bool
+	// Force restarts over runs still running at the deadline
+	// (DrainStatus.Force).
+	Force bool
 }
 
 // BeginDrain fences new admissions under the very lock that grants leases.
@@ -44,38 +70,67 @@ func (m *Manager) BeginDrain(timeout time.Duration) (DrainStatus, error) {
 // check and the fence; it must not call the manager. A drain already in
 // progress is returned as is, without calling allow.
 func (m *Manager) BeginDrainIf(timeout time.Duration, allow func(held, queued []string) error) (DrainStatus, error) {
+	return m.BeginDrainWith(DrainOptions{Timeout: timeout}, allow)
+}
+
+// BeginDrainWith is BeginDrainIf with the request's options. A drain already
+// in progress is returned as is, except that a request marks it Requested
+// and a forced request makes it Force (never the other way): a later
+// request can widen what an earlier one asked, never undo it.
+func (m *Manager) BeginDrainWith(opts DrainOptions, allow func(held, queued []string) error) (DrainStatus, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
 		return DrainStatus{}, ErrClosed
 	}
-	if !m.drain.Draining && allow != nil {
+	if m.drain.Draining {
+		if opts.Requested && !m.drain.Requested {
+			m.drain.Requested = true
+			m.signalChangedLocked()
+		}
+		if opts.Force && !m.drain.Force {
+			m.drain.Force = true
+			if !m.drain.Reserved && !time.Now().Before(m.drain.Deadline) {
+				m.drain.Forced = true
+			}
+			m.signalChangedLocked()
+		}
+		return m.drainStatusLocked(), nil
+	}
+	if allow != nil {
 		if err := allow(m.heldSessionsLocked(), m.queuedSessionsLocked()); err != nil {
 			return DrainStatus{}, err
 		}
 	}
-	if !m.drain.Draining {
-		if timeout <= 0 {
-			timeout = DefaultDrainTimeout
-		}
-		now := time.Now().UTC()
-		if m.generation == "" {
-			var id [16]byte
-			if _, err := rand.Read(id[:]); err != nil {
-				return DrainStatus{}, err
-			}
-			m.generation = hex.EncodeToString(id[:])
-		}
-		m.drain = DrainStatus{Generation: m.generation, Draining: true, Since: now, Deadline: now.Add(timeout)}
-		m.drainTimer = time.AfterFunc(timeout, func() {
-			m.mu.Lock()
-			defer m.mu.Unlock()
-			if m.drain.Since == now && m.drain.Draining && !m.drain.Reserved {
-				m.endDrainLocked("expired")
-			}
-		})
-		m.signalChangedLocked()
+	timeout := opts.Timeout
+	if timeout <= 0 {
+		timeout = DefaultDrainTimeout
 	}
+	now := time.Now().UTC()
+	if m.generation == "" {
+		var id [16]byte
+		if _, err := rand.Read(id[:]); err != nil {
+			return DrainStatus{}, err
+		}
+		m.generation = hex.EncodeToString(id[:])
+	}
+	m.drain = DrainStatus{Generation: m.generation, Draining: true, Since: now, Deadline: now.Add(timeout), Requested: opts.Requested, Force: opts.Force}
+	m.drainTimer = time.AfterFunc(timeout, func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if m.drain.Since != now || !m.drain.Draining || m.drain.Reserved {
+			return
+		}
+		if m.drain.Force {
+			// Forced: ready over the runs still running, which the
+			// restart records interrupted. New runs stay held.
+			m.drain.Forced = true
+			m.signalChangedLocked()
+			return
+		}
+		m.endDrainLocked("expired")
+	})
+	m.signalChangedLocked()
 	return m.drainStatusLocked(), nil
 }
 
@@ -154,6 +209,7 @@ func (m *Manager) drainStatusLocked() DrainStatus {
 		out.Blockers = append([]DrainBlocker{}, out.Blockers...)
 		out.Ready = false
 		out.TimedOut = true
+		out.Reason = drainReason(out)
 		return out
 	}
 	out.Blockers = []DrainBlocker{}
@@ -172,9 +228,45 @@ func (m *Manager) drainStatusLocked() DrainStatus {
 		}
 		return a.Run < b.Run
 	})
-	out.TimedOut = out.EndReason == "expired" || (out.Draining && !out.Reserved && !time.Now().Before(out.Deadline))
-	out.Ready = out.Draining && !out.TimedOut && !m.closed && len(out.Blockers) == 0
+	if out.Draining && out.Force && !out.Reserved && !time.Now().Before(out.Deadline) {
+		// The timer may not have fired yet; the deadline decides.
+		out.Forced = true
+	}
+	out.TimedOut = out.EndReason == "expired" || (out.Draining && !out.Reserved && !out.Forced && !time.Now().Before(out.Deadline))
+	out.Ready = out.Draining && !out.TimedOut && !m.closed && (len(out.Blockers) == 0 || out.Forced)
+	out.Reason = drainReason(out)
 	return out
+}
+
+// drainReason is the drain's state in one line, naming the runs it waits on.
+func drainReason(s DrainStatus) string {
+	runs := func() string {
+		if len(s.Blockers) == 0 {
+			return "no agent run"
+		}
+		parts := make([]string, 0, len(s.Blockers))
+		for i, b := range s.Blockers {
+			if i == 5 {
+				parts = append(parts, fmt.Sprintf("and %d more", len(s.Blockers)-5))
+				break
+			}
+			parts = append(parts, b.Session+"/"+b.Run)
+		}
+		return fmt.Sprintf("%d agent run(s) (%s)", len(s.Blockers), strings.Join(parts, ", "))
+	}
+	switch {
+	case s.EndReason == "expired":
+		return "the update was refused: " + runs() + " still running at the deadline would not resume after a restart, so none was interrupted and new runs start again; request_update with force restarts over them"
+	case s.EndReason == "cancelled" && !s.Draining:
+		return "the drain was cancelled; new runs start again"
+	case !s.Draining:
+		return ""
+	case s.Forced:
+		return "forced: the deadline passed; the restart interrupts " + runs()
+	case s.Ready:
+		return "ready: no agent run is running; new runs are held until the restart"
+	}
+	return "new runs are held; waiting for " + runs() + " to finish"
 }
 
 // SetDrainEndObserver installs a lifecycle sink. It must not call the manager.
@@ -212,9 +304,13 @@ func (m *Manager) endDrainLocked(reason string) {
 func (m *Manager) ClaimRestart(generation, claim string) (DrainStatus, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if generation != m.generation || len(claim) < 32 || !m.drainStatusLocked().Ready || m.drain.Reserved {
+	current := m.drainStatusLocked()
+	if generation != m.generation || len(claim) < 32 || !current.Ready || m.drain.Reserved {
 		return DrainStatus{}, errors.New("drain not ready for restart reservation")
 	}
+	// A forced drain stays forced once reserved: the deadline no longer
+	// decides after the installer owns the restart.
+	m.drain.Forced = current.Forced
 	m.drain.Reserved = true
 	m.drain.claim = claim
 	m.drainTimer.Stop()

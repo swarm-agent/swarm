@@ -38,7 +38,10 @@ import (
 // The agent stall milestone changed it on purpose: wait_tasks names the
 // `stalled` milestone and its agent_stall row, and milestones says it covers
 // agent stalls.
-const manageProjectsDefinitionSHA256 = "940a19421ab598f2b453ae7716f27b950c6f1ab2bba9d2dc93010a540afe78db"
+// The machine update watch changed it on purpose: wait_machine (with
+// stuck_minutes) watches a machine's update, cancel_watch takes watch_id, and
+// machine_status says it shows the runs a drain waits on.
+const manageProjectsDefinitionSHA256 = "3c7d5148f41a251a9238b1af93da089fa7e4ea4ff2c337f50f33bb4abb96acd7"
 
 // Purpose: the catalog is the only place manage_projects exists. The
 // Orchestrator's definition is generated from the declarations and stays the
@@ -110,7 +113,7 @@ func TestManageProjectsCatalogGeneratesTheOrchestratorDefinition(t *testing.T) {
 func TestManageProjectsCatalogReachMatchesTheHandler(t *testing.T) {
 	routes := func(action string) bool {
 		switch action {
-		case "wait_tasks", "cancel_watch", FleetReadTaskSessionAction, ResolveTaskPermissionAction, FleetAgentsAtWorkAction, FolderEnvironmentWait:
+		case "wait_tasks", "cancel_watch", FleetReadTaskSessionAction, ResolveTaskPermissionAction, FleetAgentsAtWorkAction, FolderEnvironmentWait, FleetMachineWait:
 			return true
 		}
 		return FleetProjectActionAllowed(action) || fleetLinkedReadAction(action) || FolderEnvironmentAction(action) || taskWorkReadAction(action)

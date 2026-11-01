@@ -25,6 +25,32 @@ export interface BoxSummary {
       candidate?: string;
       at?: number;
     };
+    /** The update drain (request_update / the installer): new runs held while running agent runs finish. */
+    drain?: {
+      draining: boolean;
+      since: string;
+      deadline: string;
+      since_ms: number;
+      deadline_ms: number;
+      timed_out: boolean;
+      /** How many agent runs the drain waits on, across the machine. */
+      blocking_runs: number;
+      /** The reader's own account's blocking runs (at most a few). */
+      blocking: { session_id: string; run_id: string }[];
+      /** Blocking runs not listed (other accounts', or past the list). */
+      blocking_other: number;
+      ready: boolean;
+      /** Someone asked for this update (request_update). */
+      requested: boolean;
+      /** At the deadline, restart over runs still running. */
+      force: boolean;
+      /** The deadline passed with force: the restart interrupts the blocking runs. */
+      forced: boolean;
+      /** `expired` (refused at the deadline) or `cancelled`, once ended. */
+      end_reason?: string;
+      /** What the drain waits on or why it ended, in one line. */
+      reason: string;
+    };
   };
   /** What a restart of Swarm would interrupt now, across the machine. */
   busy: { busy: boolean; sessions: number; worker_runs: number; environment_builds: number };

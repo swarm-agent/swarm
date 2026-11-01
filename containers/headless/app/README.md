@@ -429,12 +429,28 @@ race; avoid starting new work during the upgrade. No drain cleanup or reservatio
 is attempted when no generation was established.
 
 Owner/admin clients can request the same fence with `swarm_request_update`
-(MCP, optional `max_seconds`) or `POST /v3/box/drain` with JSON
-`{"max_seconds":7200}`. This does not execute the installer: automatic updates
-must be enabled or the operator must run it. `GET /v3/box/drain` reports readiness,
-start/deadline times, timeout and blocking runs/builds; the machine summary exposes
-redacted drain counts. New environment definitions are rejected during drain and
-must be retried after restart. Existing builds remain blockers.
+(MCP `manage_setup request_update`, optional `max_seconds` and `force`) or
+`POST /v3/box/drain` with JSON `{"max_seconds":7200,"requested":true}`. This does
+not execute the installer: automatic updates must be enabled or the operator must
+run it. A requested drain does not wait for an idle machine: new runs are held at
+once, and the next automatic update takes the drain (no idle check) and restarts
+as soon as no agent run is running. Queued runs, worker runs, follow-ups and
+reviews resume after the restart, so they do not hold it. An agent run in progress
+does not resume after a restart (startup records it interrupted), so at
+`max_seconds` the update is refused, nothing is interrupted and admission reopens,
+unless `force` was set: then the drain is ready over those runs and the restart
+interrupts them. With nothing to install (already current, blocked by a check or
+rolled back) the installer releases a requested drain. `GET /v3/box/drain` reports
+readiness, start/deadline times, timeout and blocking runs/builds; the machine
+summary (`machine_status`, `manage_fleet status`) shows the drain with
+`requested`, `force`, `forced`, `reason`, the reader's own account's blocking runs
+by session and run id and only a count of other accounts' (`blocking_other`).
+`manage_projects wait_machine` (optional `machine`, `stuck_minutes`) wakes the
+Orchestrator's conversation when the machine runs a new commit, its update fails,
+or an update waits longer than `stuck_minutes` (default 30) or its drain times
+out; `cancel_watch` with the `watch_id` stops it. New environment definitions are
+rejected during drain and must be retried after restart. Existing builds remain
+blockers.
 
 Before changing activation files, the installer atomically reserves a ready drain
 using `PUT /v3/box/drain` with its generation and a private claim. A reservation

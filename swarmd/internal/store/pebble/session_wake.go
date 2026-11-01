@@ -55,6 +55,10 @@ const (
 	// SessionWakeSourceEnvironmentWatch is a folder environment build the
 	// conversation watched (manage_projects wait_environment) that ended.
 	SessionWakeSourceEnvironmentWatch = "environment_watch"
+	// SessionWakeSourceMachineWatch is a machine the conversation watched
+	// (manage_projects wait_machine) that updated, or whose update failed
+	// or is stuck.
+	SessionWakeSourceMachineWatch = "machine_watch"
 )
 
 // V3SessionWakeNote is a delivered note waiting to be read by its run.
@@ -173,7 +177,7 @@ func (s *SessionStore) prepareSessionWake(input *V3SessionMutationInput) error {
 	if op == nil {
 		return nil
 	}
-	if strings.TrimSpace(op.ID) == "" || (op.Source != SessionWakeSourceBackgroundCommand && op.Source != SessionWakeSourceTaskWatch && op.Source != SessionWakeSourceEnvironmentWatch) {
+	if strings.TrimSpace(op.ID) == "" || (op.Source != SessionWakeSourceBackgroundCommand && op.Source != SessionWakeSourceTaskWatch && op.Source != SessionWakeSourceEnvironmentWatch && op.Source != SessionWakeSourceMachineWatch) {
 		return errors.New("a session wake needs an id and a known source")
 	}
 	if tomb, ok, err := s.GetV3SessionTombstone(input.SessionID); err != nil {
@@ -301,6 +305,15 @@ func (s *SessionStore) setSessionWakeInBatch(batch *pebble.Batch, input V3Sessio
 		}
 		for _, watch := range watches {
 			if err := batch.Delete([]byte(KeyV3EnvironmentWatch(watch.SessionID, watch.ID)), nil); err != nil {
+				return err
+			}
+		}
+		machineWatches, err := s.ListV3MachineWatches(input.SessionID)
+		if err != nil {
+			return err
+		}
+		for _, watch := range machineWatches {
+			if err := batch.Delete([]byte(KeyV3MachineWatch(watch.SessionID, watch.ID)), nil); err != nil {
 				return err
 			}
 		}
@@ -442,6 +455,86 @@ func (s *SessionStore) ListV3EnvironmentWatches(sessionID string) ([]V3Environme
 	var out []V3EnvironmentWatchRecord
 	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, Limit: 4096}, func(_ string, raw []byte) (bool, error) {
 		var record V3EnvironmentWatchRecord
+		if err := json.Unmarshal(raw, &record); err != nil {
+			return false, err
+		}
+		out = append(out, record)
+		return true, nil
+	})
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt < out[j].CreatedAt })
+	return out, err
+}
+
+// V3MachineWatchRecord is a conversation's watch on one machine's update
+// (manage_projects wait_machine): durable, so it survives a restart, which is
+// how this machine's own update is seen (the new daemon finds the record and
+// a running commit that differs).
+type V3MachineWatchRecord struct {
+	ID             string `json:"id"`
+	SessionID      string `json:"session_id"`
+	UserID         string `json:"user_id"`
+	AccountScopeID string `json:"account_scope_id"`
+	// Machine is the linked machine watched ("" this one).
+	Machine string `json:"machine,omitempty"`
+	// Running is the commit the machine ran when the watch began.
+	Running string `json:"running,omitempty"`
+	// Candidate is the update waiting to be installed as last seen, and
+	// CandidateSince when the watch first saw it waiting (Unix ms).
+	Candidate      string `json:"candidate,omitempty"`
+	CandidateSince int64  `json:"candidate_since,omitempty"`
+	// StuckAfterMinutes: a candidate waiting this long wakes the watch.
+	StuckAfterMinutes int    `json:"stuck_after_minutes"`
+	RunID             string `json:"run_id,omitempty"`
+	CreatedAt         int64  `json:"created_at"`
+}
+
+const v3MachineWatchPrefix = "v3/machine_watch/"
+
+// MaxV3MachineWatchesPerSession bounds one conversation's machine watches.
+const MaxV3MachineWatchesPerSession = 16
+
+func keyV3MachineWatchPrefix(sessionID string) string {
+	return v3MachineWatchPrefix + keyPart(sessionID) + "/"
+}
+
+func KeyV3MachineWatch(sessionID, id string) string {
+	return keyV3MachineWatchPrefix(sessionID) + keyPart(id)
+}
+
+// PutV3MachineWatch records (or updates) a machine watch.
+func (s *SessionStore) PutV3MachineWatch(record V3MachineWatchRecord) error {
+	if strings.TrimSpace(record.ID) == "" || strings.TrimSpace(record.SessionID) == "" {
+		return errors.New("machine watch record needs an id and a session")
+	}
+	raw, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	return s.store.db.Set([]byte(KeyV3MachineWatch(record.SessionID, record.ID)), raw, pebble.Sync)
+}
+
+// GetV3MachineWatch reads one machine watch.
+func (s *SessionStore) GetV3MachineWatch(sessionID, id string) (V3MachineWatchRecord, bool, error) {
+	var record V3MachineWatchRecord
+	ok, err := s.store.GetJSON(KeyV3MachineWatch(sessionID, id), &record)
+	return record, ok, err
+}
+
+// DeleteV3MachineWatch ends a machine watch (delivered or cancelled).
+func (s *SessionStore) DeleteV3MachineWatch(sessionID, id string) error {
+	return s.store.db.Delete([]byte(KeyV3MachineWatch(sessionID, id)), pebble.Sync)
+}
+
+// ListV3MachineWatches lists a conversation's machine watches, or every
+// conversation's when sessionID is empty (startup).
+func (s *SessionStore) ListV3MachineWatches(sessionID string) ([]V3MachineWatchRecord, error) {
+	prefix := v3MachineWatchPrefix
+	if strings.TrimSpace(sessionID) != "" {
+		prefix = keyV3MachineWatchPrefix(strings.TrimSpace(sessionID))
+	}
+	var out []V3MachineWatchRecord
+	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, Limit: 4096}, func(_ string, raw []byte) (bool, error) {
+		var record V3MachineWatchRecord
 		if err := json.Unmarshal(raw, &record); err != nil {
 			return false, err
 		}
