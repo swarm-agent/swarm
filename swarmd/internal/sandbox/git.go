@@ -237,7 +237,11 @@ func (m *Manager) RouteGit(ctx context.Context, cmd *exec.Cmd) error {
 		if scope.ReviewCheckout != "" || m.Enforced() || m.WasSandboxed(scope.Root) {
 			return fmt.Errorf("%w (%s): %s", ErrSandboxRequired, scope.Root, m.Status().Reason)
 		}
-		return nil
+		// Not routed (--sandbox=off, or no sandbox and none required), but
+		// still a registered folder or its worktrees: Git writes into the
+		// folder's object store, so it runs under the same mask as routed
+		// Git rather than the service's own (UMask=0007).
+		return hostGitUmask(cmd)
 	}
 	// Preserve reviewer lifecycle ownership; ordinary daemon Git gets its own
 	// sandbox rather than the agent's throttled command container.

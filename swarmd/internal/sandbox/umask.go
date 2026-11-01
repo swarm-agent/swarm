@@ -1,5 +1,11 @@
 package sandbox
 
+import (
+	"fmt"
+	"os/exec"
+	"runtime"
+)
+
 // sandboxUmaskScript keeps new files writable by the shared daemon group and
 // inaccessible to others. Shells and their descendants inherit this mask.
 const sandboxUmaskScript = `umask 0007 && exec "$@"`
@@ -10,7 +16,8 @@ func withSandboxUmask(command ...string) []string {
 	return append([]string{"sh", "-c", sandboxUmaskScript, "swarm-exec"}, command...)
 }
 
-// gitUmaskScript is the mask of the daemon's routed Git (RouteGit). Git
+// gitUmaskScript is the mask of the daemon's Git on registered folders,
+// routed by RouteGit or left on the host (hostGitUmask). Git
 // writes into a person's folder object store, which leases read as other
 // users: under 0007 its loose objects landed mode 0440 and its new fan-out
 // directories 0770, so a step lease running as another user could not read
@@ -23,6 +30,23 @@ const gitUmaskScript = `umask 0002 && exec "$@"`
 
 func withGitUmask(command ...string) []string {
 	return append([]string{"sh", "-c", gitUmaskScript, "swarm-git"}, command...)
+}
+
+// hostGitUmask makes cmd, daemon Git on a registered folder that RouteGit
+// runs on the host (not routed), run under gitUmaskScript too: sh execs the
+// same git binary with the same arguments, Dir, Env and Stdin. A git that
+// could not be resolved is left for the caller's Run to report (cmd.Err).
+func hostGitUmask(cmd *exec.Cmd) error {
+	if cmd.Err != nil || runtime.GOOS == "windows" {
+		return nil
+	}
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		return fmt.Errorf("run git under umask 0002: %w", err)
+	}
+	cmd.Args = withGitUmask(append([]string{cmd.Path}, cmd.Args[1:]...)...)
+	cmd.Path = sh
+	return nil
 }
 
 // Image builds install root-owned files for users outside root's group. Unlike

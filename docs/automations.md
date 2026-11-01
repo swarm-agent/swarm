@@ -383,11 +383,16 @@ is refused.
 - Swarm's own Git writes into the folder's object store (commits, rebases,
   worktrees) under a restrictive umask and without setgid, which can leave
   loose objects mode 0440 or fan-out directories in Swarm's group. The
-  daemon's routed Git runs with umask 0002, and the daemon repairs every
+  daemon's Git on a registered folder runs with umask 0002, routed into the
+  sandbox or not (`--sandbox=off`), and the daemon repairs every
   registered folder's object store at startup, every 15 minutes and before
   each environment step: entries it owns get the read bits the folder's
   `.git/objects` grants its group and others, and that directory's group
-  (setgid too where the service allows it). `repository_health.permissions`
+  (setgid too where the service allows it). The repair never follows a
+  symbolic link, even one swapped in while it runs: each entry is opened
+  without following links relative to its parent directory and changed
+  only through that open descriptor, and a file with more than one hard
+  link is left alone. `repository_health.permissions`
   (`checked`, `repaired`, `unrepaired`, `setgid_refused`, `sample`) shows
   the last repair that changed something; entries it could not repair
   (another user's) are a machine status reason ("folder repository

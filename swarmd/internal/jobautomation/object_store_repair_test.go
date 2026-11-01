@@ -135,6 +135,112 @@ func TestObjectStoreRepairMakesAgentObjectsReadable(t *testing.T) {
 	}
 }
 
+// Purpose: a writer of the store (the folder's owner, its group, an agent
+// committing as the daemon) that swaps a fan-out directory, or one object,
+// for a symbolic link after the repair listed it and before it changes it
+// cannot make the daemon change the link's target: the walk opens every
+// entry with O_NOFOLLOW relative to its parent's descriptor and changes
+// only the opened inode, so the private directory and file the link points
+// at keep their modes and the walk goes on.
+// Threat: the reviewed race: os.ReadDir and os.Chmod followed a link
+// swapped in after the Lstat check, so the daemon added read bits (and the
+// folder's group) to its own private files, or any file when it is root.
+// Owners: RepairObjectStore, repairPolicy.repairDir, repairFile and fix; the
+// swap runs at objectStoreRepairSwap, the exact window between listing and
+// opening, which makes the race deterministic.
+func TestObjectStoreRepairNeverFollowsALinkSwappedInMidPass(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is required")
+	}
+	t.Cleanup(func() { objectStoreRepairSwap = nil })
+	setup := func(t *testing.T) (folder, object, privateDir, privateFile string) {
+		t.Helper()
+		folder = t.TempDir()
+		runGit(t, folder, "init", "-q", "-b", "dev")
+		if err := os.Chmod(filepath.Join(folder, ".git", "objects"), 0o775); err != nil {
+			t.Fatal(err)
+		}
+		writeRepoFile(t, folder, "agent.txt", "written by an agent\n", 0o644)
+		id := gitUnderUmask(t, "0077", folder, "hash-object", "-w", "agent.txt")
+		object = filepath.Join(folder, ".git", "objects", id[:2], id[2:])
+		if mode, _ := statOf(t, object); mode.Perm()&0o044 != 0 {
+			t.Fatalf("fixture: the object is already readable (%v), so it proves nothing", mode.Perm())
+		}
+		privateDir = filepath.Join(t.TempDir(), "daemon-state")
+		if err := os.Mkdir(privateDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		privateFile = filepath.Join(privateDir, "credentials")
+		if err := os.WriteFile(privateFile, []byte("secret"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return folder, object, privateDir, privateFile
+	}
+	unchanged := func(t *testing.T, privateDir, privateFile string) {
+		t.Helper()
+		if mode, _ := statOf(t, privateDir); mode.Perm() != 0o700 {
+			t.Fatalf("the repair followed a swapped-in link: the private directory is now %v", mode.Perm())
+		}
+		if mode, _ := statOf(t, privateFile); mode.Perm() != 0o600 {
+			t.Fatalf("the repair followed a swapped-in link: the private file is now %v", mode.Perm())
+		}
+	}
+
+	t.Run("fan-out directory swapped for a link", func(t *testing.T) {
+		folder, object, privateDir, privateFile := setup(t)
+		fanOut := filepath.Dir(object)
+		swapped := false
+		objectStoreRepairSwap = func(path string) {
+			if path != fanOut || swapped {
+				return
+			}
+			swapped = true
+			if err := os.Rename(fanOut, fanOut+".moved"); err != nil {
+				t.Error(err)
+			}
+			if err := os.Symlink(privateDir, fanOut); err != nil {
+				t.Error(err)
+			}
+		}
+		result, ok := RepairObjectStore(folder)
+		objectStoreRepairSwap = nil
+		if !swapped || !ok || result.Error != "" {
+			t.Fatalf("repair = %+v ok %v swapped %v", result, ok, swapped)
+		}
+		unchanged(t, privateDir, privateFile)
+		if info, err := os.Lstat(fanOut); err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("the link in the store was replaced or removed: %v %v", info, err)
+		}
+	})
+
+	t.Run("object swapped for a link", func(t *testing.T) {
+		folder, object, privateDir, privateFile := setup(t)
+		swapped := false
+		objectStoreRepairSwap = func(path string) {
+			if path != object || swapped {
+				return
+			}
+			swapped = true
+			if err := os.Rename(object, object+".moved"); err != nil {
+				t.Error(err)
+			}
+			if err := os.Symlink(privateFile, object); err != nil {
+				t.Error(err)
+			}
+		}
+		result, ok := RepairObjectStore(folder)
+		objectStoreRepairSwap = nil
+		if !swapped || !ok || result.Error != "" {
+			t.Fatalf("repair = %+v ok %v swapped %v", result, ok, swapped)
+		}
+		unchanged(t, privateDir, privateFile)
+		// The walk went on: the fan-out directory itself was repaired.
+		if mode, _ := statOf(t, filepath.Dir(object)); mode.Perm()&0o055 != 0o055 {
+			t.Fatalf("fan-out directory %v after repair, want g+rx o+rx", mode.Perm())
+		}
+	})
+}
+
 // Purpose: the repair is recorded in the folder's repository health: one
 // that made entries readable is kept (get_environment shows it), one that
 // left entries it could not repair is a problem the box summary lists, and

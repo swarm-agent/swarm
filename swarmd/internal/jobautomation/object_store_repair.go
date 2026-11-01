@@ -11,8 +11,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // ObjectStoreRepair is what one pass of RepairObjectStore found in a
@@ -193,59 +194,129 @@ func repairNote(r ObjectStoreRepair) string {
 // fan-out directory also gets setgid when the objects directory has it;
 // where that is refused (the daemon's RestrictSUIDSGID) the group and mode
 // are still fixed. Only entries this process owns can be changed: others
-// that need it are counted Unrepaired. Symbolic links are never followed
-// or changed. ok is false when folder has no object store of its own.
+// that need it are counted Unrepaired. ok is false when folder has no
+// object store of its own.
+//
+// Anyone who can write the store (the folder's owner, its group, agents
+// committing as the daemon) can swap an entry for a symbolic link while a
+// pass runs. So the walk never resolves a path inside the store: .git,
+// objects and each directory below are checked without following links and
+// opened with O_NOFOLLOW relative to their parent's descriptor, each file
+// the same way, the opened descriptor must be the inode that was checked,
+// and its owner, type and link count are checked on that descriptor before
+// Fchown/Fchmod change exactly that inode. A link in place of any of them,
+// swapped in before or after the check, is left alone; a regular file with
+// more than one hard link is never changed (it may be someone else's file
+// linked in).
 func RepairObjectStore(folder string) (ObjectStoreRepair, bool) {
 	store := folderObjectStore(folder)
 	result := ObjectStoreRepair{Folder: filepath.Clean(strings.TrimSpace(folder)), Store: store}
 	if store == "" {
 		return result, false
 	}
-	gitDir, err := os.Lstat(filepath.Dir(store))
-	if err != nil || !gitDir.IsDir() {
+	folderFD, err := unix.Open(filepath.Dir(filepath.Dir(store)), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
 		return result, false
 	}
-	root, err := os.Lstat(store)
-	if err != nil || !root.IsDir() {
+	defer unix.Close(folderFD)
+	gitFD, err := openDirAt(folderFD, ".git", "")
+	if err != nil {
 		return result, false
 	}
-	rootStat, ok := root.Sys().(*syscall.Stat_t)
-	if !ok {
-		return result, false
+	defer unix.Close(gitFD)
+	storeFD, err := openDirAt(gitFD, "objects", "")
+	if err != nil {
+		if missingOrLink(err) {
+			return result, false
+		}
+		result.Error = "open " + store + ": " + err.Error()
+		return result, true
 	}
+	storeDir := os.NewFile(uintptr(storeFD), store)
+	defer storeDir.Close()
+	var root unix.Stat_t
+	if err := unix.Fstat(storeFD, &root); err != nil {
+		result.Error = "stat " + store + ": " + err.Error()
+		return result, true
+	}
+	rootMode := fs.FileMode(root.Mode & 0o777)
 	p := repairPolicy{
-		gid:     int(rootStat.Gid),
-		dirBits: root.Mode().Perm() & 0o055,
-		setgid:  root.Mode()&os.ModeSetgid != 0,
+		gid:     int(root.Gid),
+		dirBits: rootMode & 0o055,
+		setgid:  root.Mode&unix.S_ISGID != 0,
 		uid:     os.Geteuid(),
 	}
 	p.fileBits = p.dirBits & 0o044
-	entries, err := os.ReadDir(store)
+	names, err := storeDir.Readdirnames(-1)
 	if err != nil {
 		result.Error = "read " + store + ": " + err.Error()
 		return result, true
 	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if !entry.IsDir() || !(isFanOut(name) || name == "pack" || name == "info") {
+	sort.Strings(names)
+	for _, name := range names {
+		if !(isFanOut(name) || name == "pack" || name == "info") {
 			continue
 		}
-		dir := filepath.Join(store, name)
-		p.fix(&result, dir, true)
-		files, err := os.ReadDir(dir)
-		if err != nil {
-			result.Unrepaired++
-			p.sample(&result, dir, err)
-			continue
-		}
-		for _, file := range files {
-			if file.Type()&fs.ModeType != 0 {
-				continue // only regular files: no links, no nested directories
-			}
-			p.fix(&result, filepath.Join(dir, file.Name()), false)
-		}
+		p.repairDir(&result, storeFD, filepath.Join(store, name), name)
 	}
 	return result, true
+}
+
+// objectStoreRepairSwap, when set (tests only), runs right before the walk
+// opens a store directory or file it has listed: the window a writer of the
+// store can use to swap the entry for a symbolic link.
+var objectStoreRepairSwap func(path string)
+
+// openDirAt opens the directory name inside dirFD (path names it for
+// objectStoreRepairSwap) without following a symbolic link in its place:
+// the entry must be a directory when checked without following links, the
+// open uses O_NOFOLLOW, and the opened descriptor must be that same inode.
+// The inode check is what holds where O_NOFOLLOW with O_DIRECTORY still
+// follows a link (gVisor does).
+func openDirAt(dirFD int, name, path string) (int, error) {
+	var pre unix.Stat_t
+	if err := unix.Fstatat(dirFD, name, &pre, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return -1, err
+	}
+	switch pre.Mode & unix.S_IFMT {
+	case unix.S_IFDIR:
+	case unix.S_IFLNK:
+		return -1, unix.ELOOP
+	default:
+		return -1, unix.ENOTDIR
+	}
+	if objectStoreRepairSwap != nil && path != "" {
+		objectStoreRepairSwap(path)
+	}
+	fd, err := unix.Openat(dirFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return -1, err
+	}
+	if err := sameInode(fd, pre); err != nil {
+		unix.Close(fd)
+		return -1, err
+	}
+	return fd, nil
+}
+
+// sameInode reports ELOOP when fd is not the inode pre described: the entry
+// was replaced (by a link, or anything else) between the check and the
+// open.
+func sameInode(fd int, pre unix.Stat_t) error {
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return err
+	}
+	if st.Dev != pre.Dev || st.Ino != pre.Ino {
+		return unix.ELOOP
+	}
+	return nil
+}
+
+// missingOrLink reports an open that found nothing to repair: the entry is
+// gone (git gc), a symbolic link (O_NOFOLLOW) or not a directory.
+func missingOrLink(err error) bool {
+	return errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR)
 }
 
 type repairPolicy struct {
@@ -282,21 +353,84 @@ func (p repairPolicy) sample(result *ObjectStoreRepair, path string, err error) 
 	}
 }
 
-func (p repairPolicy) fix(result *ObjectStoreRepair, path string, dir bool) {
-	info, err := os.Lstat(path)
+func (p repairPolicy) unrepaired(result *ObjectStoreRepair, path string, err error) {
+	result.Checked++
+	result.Unrepaired++
+	p.sample(result, path, err)
+}
+
+// repairDir repairs the directory name of the store (descriptor parentFD)
+// and the regular files in it, all through descriptors opened without
+// following links.
+func (p repairPolicy) repairDir(result *ObjectStoreRepair, parentFD int, path, name string) {
+	fd, err := openDirAt(parentFD, name, path)
 	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) { // gone meanwhile (git gc): nothing to repair
-			result.Checked++
-			result.Unrepaired++
-			p.sample(result, path, err)
+		if !missingOrLink(err) {
+			p.unrepaired(result, path, err)
 		}
 		return
 	}
-	if info.Mode()&fs.ModeSymlink != 0 || info.IsDir() != dir {
+	dir := os.NewFile(uintptr(fd), path)
+	defer dir.Close()
+	p.fix(result, fd, path, true)
+	names, err := dir.Readdirnames(-1)
+	if err != nil {
+		result.Unrepaired++
+		p.sample(result, path, err)
 		return
 	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
+	sort.Strings(names)
+	for _, file := range names {
+		p.repairFile(result, fd, filepath.Join(path, file), file)
+	}
+}
+
+// repairFile repairs the regular file name in dirFD. Anything else (a link,
+// a nested directory, a device or FIFO) is skipped without being opened; a
+// file swapped for something else between the check and the open is caught
+// by comparing the opened descriptor with the checked entry.
+func (p repairPolicy) repairFile(result *ObjectStoreRepair, dirFD int, path, name string) {
+	var pre unix.Stat_t
+	if err := unix.Fstatat(dirFD, name, &pre, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		if !errors.Is(err, unix.ENOENT) {
+			p.unrepaired(result, path, err)
+		}
+		return
+	}
+	if pre.Mode&unix.S_IFMT != unix.S_IFREG {
+		return // only regular files: no links, no nested directories
+	}
+	if objectStoreRepairSwap != nil {
+		objectStoreRepairSwap(path)
+	}
+	fd, err := unix.Openat(dirFD, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		if !missingOrLink(err) {
+			p.unrepaired(result, path, err)
+		}
+		return
+	}
+	defer unix.Close(fd)
+	if err := sameInode(fd, pre); err != nil {
+		if !errors.Is(err, unix.ELOOP) {
+			p.unrepaired(result, path, err)
+		}
+		return // replaced meanwhile: the next pass sees what is there now
+	}
+	p.fix(result, fd, path, false)
+}
+
+// fix gives the entry open on fd (a directory when dir) the policy's read
+// bits and group. Every check and change is on fd itself, never on path,
+// which only names the entry in the result.
+func (p repairPolicy) fix(result *ObjectStoreRepair, fd int, path string, dir bool) {
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		p.unrepaired(result, path, err)
+		return
+	}
+	kind := st.Mode & unix.S_IFMT
+	if dir && kind != unix.S_IFDIR || !dir && kind != unix.S_IFREG {
 		return
 	}
 	result.Checked++
@@ -304,61 +438,69 @@ func (p repairPolicy) fix(result *ObjectStoreRepair, path string, dir bool) {
 	if dir {
 		bits = p.dirBits
 	}
+	perm := fs.FileMode(st.Mode & 0o777)
+	hasSetgid := st.Mode&unix.S_ISGID != 0
 	gid := int(st.Gid)
-	wantSetgid := dir && p.setgid && isFanOut(filepath.Base(path)) && info.Mode()&os.ModeSetgid == 0
-	if p.readable(info.Mode(), gid, bits) && gid == p.gid && !wantSetgid {
+	wantSetgid := dir && p.setgid && isFanOut(filepath.Base(path)) && !hasSetgid
+	if p.readable(perm, gid, bits) && gid == p.gid && !wantSetgid {
 		return
 	}
 	if int(st.Uid) != p.uid && p.uid != 0 {
-		if !p.readable(info.Mode(), gid, bits) {
+		if !p.readable(perm, gid, bits) {
 			result.Unrepaired++
-			p.sample(result, path, fmt.Errorf("mode %v owner %d:%d, not Swarm's to change", info.Mode().Perm(), st.Uid, st.Gid))
+			p.sample(result, path, fmt.Errorf("mode %v owner %d:%d, not Swarm's to change", perm, st.Uid, st.Gid))
+		}
+		return
+	}
+	if !dir && uint64(st.Nlink) > 1 {
+		if !p.readable(perm, gid, bits) {
+			result.Unrepaired++
+			p.sample(result, path, fmt.Errorf("mode %v with %d hard links, not changed", perm, st.Nlink))
 		}
 		return
 	}
 	changed := false
 	var failure error
 	if gid != p.gid {
-		if err := os.Lchown(path, -1, p.gid); err != nil {
+		if err := unix.Fchown(fd, -1, p.gid); err != nil {
 			failure = fmt.Errorf("set group %d: %w", p.gid, err)
 		} else {
 			gid, changed = p.gid, true
 		}
 	}
-	mode := info.Mode().Perm() | bits
-	if mode != info.Mode().Perm() || wantSetgid {
+	mode := uint32(perm | bits)
+	if mode != uint32(perm) || wantSetgid {
 		target := mode
-		if dir && (info.Mode()&os.ModeSetgid != 0 || wantSetgid) {
-			target |= os.ModeSetgid
+		if dir && (hasSetgid || wantSetgid) {
+			target |= unix.S_ISGID
 		}
-		if err := os.Chmod(path, target); err != nil && target&os.ModeSetgid != 0 && info.Mode()&os.ModeSetgid == 0 {
+		if err := unix.Fchmod(fd, target); err != nil && target&unix.S_ISGID != 0 && !hasSetgid {
 			// RestrictSUIDSGID refuses setgid: keep the group and mode.
 			result.SetgidRefused++
-			if mode != info.Mode().Perm() {
-				err = os.Chmod(path, mode)
+			if mode != uint32(perm) {
+				err = unix.Fchmod(fd, mode)
 			} else {
 				err = nil
 			}
 			if err != nil && failure == nil {
-				failure = fmt.Errorf("chmod %v: %w", mode, err)
-			} else if err == nil && mode != info.Mode().Perm() {
+				failure = fmt.Errorf("chmod %v: %w", fs.FileMode(mode), err)
+			} else if err == nil && mode != uint32(perm) {
 				changed = true
 			}
 		} else if err != nil {
 			if failure == nil {
-				failure = fmt.Errorf("chmod %v: %w", target, err)
+				failure = fmt.Errorf("chmod %v: %w", fs.FileMode(target&0o777), err)
 			}
 		} else {
 			changed = true
 		}
 	}
-	after, err := os.Lstat(path)
+	var after unix.Stat_t
+	err := unix.Fstat(fd, &after)
 	if err == nil {
-		if st2, ok := after.Sys().(*syscall.Stat_t); ok {
-			gid = int(st2.Gid)
-		}
+		gid = int(after.Gid)
 	}
-	if err != nil || !p.readable(after.Mode(), gid, bits) {
+	if err != nil || !p.readable(fs.FileMode(after.Mode&0o777), gid, bits) {
 		result.Unrepaired++
 		if failure == nil {
 			failure = errors.New("still not readable")
