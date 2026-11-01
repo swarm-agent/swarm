@@ -305,10 +305,16 @@ func TestEnvironmentWaitSecondsEndsWithTheBuildOrSaysStillBuilding(t *testing.T)
 	builder := newGatedEnvironmentBuilder(3)
 	f.remote.s.envBuilder = builder
 
-	for _, machine := range []string{"", "box"} {
-		image := "debian:12"
-		if machine != "" {
-			image = "debian:13"
+	// A merge and a replace (replace: true is a PUT on a linked machine,
+	// which answers at once there; the home must still hold the wait).
+	for _, c := range []struct {
+		machine, image string
+		replace        bool
+	}{{"", "debian:12", false}, {"box", "debian:13", false}, {"", "debian:11", true}, {"box", "debian:10", true}} {
+		machine := c.machine
+		args := map[string]any{"workspace_path": f.folder, "base_image": c.image, "wait_seconds": float64(15)}
+		if c.replace {
+			args["replace"] = true
 		}
 		type answer struct {
 			out map[string]any
@@ -317,7 +323,7 @@ func TestEnvironmentWaitSecondsEndsWithTheBuildOrSaysStillBuilding(t *testing.T)
 		got := make(chan answer, 1)
 		started := time.Now()
 		go func() {
-			out, err := f.call(t, machine, tool.FolderEnvironmentUpdate, map[string]any{"workspace_path": f.folder, "base_image": image, "wait_seconds": float64(15)})
+			out, err := f.call(t, machine, tool.FolderEnvironmentUpdate, args)
 			got <- answer{out, err}
 		}()
 		builder.awaitStarted(t)
@@ -332,8 +338,8 @@ func TestEnvironmentWaitSecondsEndsWithTheBuildOrSaysStillBuilding(t *testing.T)
 			t.Fatal(a.err)
 		}
 		wait, _ := a.out["wait"].(map[string]any)
-		if a.out["environment"].(map[string]any)["status"] != pebblestore.SandboxEnvironmentReady || wait["build_ended"] != true || wait["requested_seconds"] != float64(15) || time.Since(started) > 10*time.Second {
-			t.Fatalf("machine %q update that the build ended: %v after %s", machine, a.out, time.Since(started))
+		if a.out["environment"].(map[string]any)["status"] != pebblestore.SandboxEnvironmentReady || wait["build_ended"] != true || wait["requested_seconds"] != float64(15) || a.out["build_started"] != true || time.Since(started) > 10*time.Second {
+			t.Fatalf("machine %q update (replace %v) that the build ended: %v after %s", machine, c.replace, a.out, time.Since(started))
 		}
 	}
 

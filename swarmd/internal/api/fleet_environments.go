@@ -190,8 +190,8 @@ func (s *Server) linkedFolderEnvironment(ctx context.Context, p identity.Princip
 	case tool.FolderEnvironmentUpdate:
 		method, body = http.MethodPatch, change
 		if change.Replace {
-			// The machine's held wait runs on the merge only; a replace
-			// answers at once there.
+			// The machine's PUT answers at once; the held wait follows it
+			// below as a held get, as the local replace does.
 			method, body = http.MethodPut, replaceSandboxEnvironmentBody(change)
 		}
 	case tool.FolderEnvironmentRebuild:
@@ -210,7 +210,41 @@ func (s *Server) linkedFolderEnvironment(ctx context.Context, p identity.Princip
 		}
 		return nil, fleetUnreachableError(machine, linked)
 	}
+	if action == tool.FolderEnvironmentUpdate && change.Replace && wait > 0 {
+		return s.linkedReplaceWait(ctx, client, linked, machine, path, wait, result)
+	}
 	return result, nil
+}
+
+// linkedReplaceWait holds a replace sent to a linked machine until its build
+// ends or wait seconds pass, with the machine's held get, and keeps the
+// replace's answer (build_started) with the environment after the wait.
+func (s *Server) linkedReplaceWait(ctx context.Context, client *fleet.Client, linked pebblestore.FleetMachine, machine, path string, wait int, replaced json.RawMessage) (json.RawMessage, error) {
+	var out map[string]any
+	if err := json.Unmarshal(replaced, &out); err != nil {
+		return nil, fmt.Errorf("environment answer: %w", err)
+	}
+	view, _ := out["environment"].(map[string]any)
+	if status, _ := view["status"].(string); status != pebblestore.SandboxEnvironmentBuilding {
+		return replaced, nil
+	}
+	query := url.Values{"workspace_path": {path}, "wait_seconds": {strconv.Itoa(wait)}}
+	var held struct {
+		Environment map[string]any `json:"environment"`
+	}
+	callErr := client.JSON(fleet.WithHeldWait(ctx, time.Duration(wait)*time.Second), http.MethodGet, SandboxEnvironmentsPath+"?"+query.Encode(), nil, &held)
+	s.noteFleetContact(linked, callErr)
+	if callErr != nil {
+		var refused *fleet.Error
+		if errors.As(callErr, &refused) {
+			return nil, fmt.Errorf("%s refused the wait after %s: %w", machine, tool.FolderEnvironmentUpdate, refused)
+		}
+		return nil, fleetUnreachableError(machine, linked)
+	}
+	if held.Environment != nil {
+		out["environment"] = held.Environment
+	}
+	return json.Marshal(out)
 }
 
 // fleetUnreachableError says a linked machine did not answer, when, and when
