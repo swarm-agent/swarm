@@ -412,7 +412,9 @@ what command and for how long. The task's running run stalls when it (a)
 runs nothing but `sleep` commands and status reads of one background command
 for `agent_poll_stall_minutes` (default 10; `bash command=wait` is a real
 wait), (b) has one tool call running for `agent_command_stall_minutes`
-(default 20), or (c) has no tool call or message for
+(default 20; waits on one background command count from that command's
+start, so waiting on a hung command again and again is one long command), or
+(c) has no tool call or message for
 `agent_idle_stall_minutes` (default 15). Kinds: `sleep_polling`,
 `long_command`, `no_activity`. Thresholds are box limits
 (docs/box-limits.md). The task's `progress.agent_stall` (task route and

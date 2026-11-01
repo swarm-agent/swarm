@@ -86,10 +86,12 @@ func TestAgentStallSleepPollingDetectedOncePerEpisode(t *testing.T) {
 	if later == nil || later.Episode() != stall.Episode() || later.ForMs != 19*m {
 		t.Fatalf("one episode changed identity: %+v vs %+v", later, stall)
 	}
-	// A proper wait ends the poll streak: no stall from polling.
+	// A proper wait ends the poll streak: no stall from polling. The
+	// background command it waits on has run 23 min since its start (t0),
+	// which is a long command.
 	e.call("w", "bash", map[string]any{"background_id": "bg_1", "command": "wait", "wait_seconds": 600}, t0+21*m, t0+22*m)
-	if got := agentStallDetect(t, e, t0, t0+23*m); got != nil {
-		t.Fatalf("a bash wait counted as polling: %+v", got)
+	if got := agentStallDetect(t, e, t0, t0+23*m); got == nil || got.Kind != pebblestore.ProjectTaskAgentStallLongCommand || got.Since != t0 || got.BackgroundID != "bg_1" {
+		t.Fatalf("a bash wait counted as polling, or its command not timed: %+v", got)
 	}
 	// Status reads of two different background commands are not one poll loop.
 	f := &agentStallEvents{t: t, runID: "run-1"}
@@ -165,10 +167,11 @@ func TestAgentStallLongCommandAndNoActivity(t *testing.T) {
 	if long == nil || long.Kind != pebblestore.ProjectTaskAgentStallLongCommand || long.Command != "go test -count=1 ./..." || long.Since != t0+m || long.ForMs != 24*m {
 		t.Fatalf("long command not named: %+v", long)
 	}
-	// A bash wait in flight is bounded by its own cap: never a long command.
+	// One bash wait in flight (capped at 10 min) under the threshold is no
+	// stall, and not an idle run either.
 	w := &agentStallEvents{t: t, runID: "run-1"}
 	w.call("w", "bash", map[string]any{"background_id": "bg_1", "command": "wait", "wait_seconds": 600}, t0, 0)
-	if got := agentStallDetect(t, w, t0, t0+40*m); got != nil {
+	if got := agentStallDetect(t, w, t0, t0+16*m); got != nil {
 		t.Fatalf("a bash wait flagged: %+v", got)
 	}
 
@@ -198,5 +201,151 @@ func TestAgentStallLongCommandAndNoActivity(t *testing.T) {
 	calls, last := agentStallCallsFromEvents(q.events, "run-1", t0)
 	if got := detectAgentStall(calls, last, t0+40*m, agentStallThresholdsFrom(limits)); got != nil {
 		t.Fatalf("configured idle threshold ignored: %+v", got)
+	}
+}
+
+// agentStallList pages e's events newest first as ListSessionEventsBefore
+// does (before 0: from the newest), counting the events it hands out.
+func agentStallList(e *agentStallEvents, read *int) func(uint64, int) ([]pebblestore.V3SessionEvent, error) {
+	return func(before uint64, limit int) ([]pebblestore.V3SessionEvent, error) {
+		var page []pebblestore.V3SessionEvent
+		for _, ev := range e.events {
+			if before != 0 && ev.Seq >= before {
+				continue
+			}
+			if len(page) == limit {
+				break
+			}
+			page = append(page, ev)
+		}
+		*read += len(page)
+		return page, nil
+	}
+}
+
+// Purpose: a long command that streams a lot of output keeps its start in
+// the stall read, so it is reported as long_command past
+// agent_command_stall_minutes and never as no_activity while it runs.
+// Threat (review finding): each streamed chunk is one durable
+// session.tool.delta; with deltas counted against the 400-event read, a
+// build printing more than ~400 chunks pushed its own session.tool.started
+// out of the read, so the run looked idle since its start (a false
+// no_activity) and the real long command was never named. Authority:
+// agentStallReadEvents (the read taskAgentStall does through
+// ListSessionEventsBefore), agentStallCallsFromEvents and detectAgentStall.
+// Layer: the read and decision over a paged fake of the session event list,
+// the narrowest layer that holds the paging budget.
+func TestAgentStallStreamedOutputKeepsTheLongCommandStart(t *testing.T) {
+	t0 := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
+	m := time.Minute.Milliseconds()
+	stream := func(chunks int) *agentStallEvents {
+		e := &agentStallEvents{t: t, runID: "run-1"}
+		e.call("r", "read", map[string]any{"path": "main.go"}, t0, t0+500)
+		e.call("b", "bash", map[string]any{"command": "go test -v -count=1 ./..."}, t0+m, 0)
+		for i := 0; i < chunks; i++ {
+			// Over 24 min after the start, oldest first.
+			e.add("session.tool.delta", t0+m+int64(i+1)*24*m/int64(chunks), map[string]any{"call_id": "b", "tool_name": "bash", "output": "=== RUN TestX\n"})
+		}
+		return e
+	}
+	detect := func(e *agentStallEvents, now int64) (*pebblestore.ProjectTaskAgentStall, int) {
+		t.Helper()
+		read := 0
+		events, err := agentStallReadEvents(agentStallList(e, &read), t0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		calls, last := agentStallCallsFromEvents(events, "run-1", t0)
+		return detectAgentStall(calls, last, now, agentStallThresholdsFrom(pebblestore.DefaultLimits())), read
+	}
+
+	e := stream(1200)
+	// 17 min after its start, still under the 20 min command threshold and
+	// past the 15 min idle one: busy, not idle.
+	if got, _ := detect(e, t0+18*m); got != nil {
+		t.Fatalf("a streaming command flagged before its threshold: %+v", got)
+	}
+	long, read := detect(e, t0+25*m)
+	if long == nil || long.Kind != pebblestore.ProjectTaskAgentStallLongCommand || long.Since != t0+m || long.Command != "go test -v -count=1 ./..." || long.ForMs != 24*m {
+		t.Fatalf("streaming long command not named from its start: %+v", long)
+	}
+	if read > taskAgentStallEventRawScan || read < 1200 {
+		t.Fatalf("read %d events for 1200 deltas (raw cap %d)", read, taskAgentStallEventRawScan)
+	}
+
+	// More output than the raw read cap: the start is out of reach, so the
+	// call is in flight with an unknown start: neither timed nor idle.
+	huge := stream(taskAgentStallEventRawScan + 500)
+	got, read := detect(huge, t0+25*m)
+	if got != nil {
+		t.Fatalf("a call seen only through its deltas flagged: %+v", got)
+	}
+	if read > taskAgentStallEventRawScan {
+		t.Fatalf("read %d events past the raw cap %d", read, taskAgentStallEventRawScan)
+	}
+}
+
+// Purpose: an agent that waits on one background command again and again
+// (bash background_id command=wait, each bounded by its own cap) is one
+// long command, timed from that command's start, and reported past
+// agent_command_stall_minutes. Threat (review finding): waits were exempt
+// from long_command, poll streaks stop at a wait, and every wait reset the
+// idle timer, so a hung background command waited on in a loop went
+// unreported for up to the 4 h background limit. The time must never be
+// longer than real (a different command's waits are not joined) and stay
+// stable while the waiting goes on (one episode). Authority:
+// agentStallWaitStart and detectAgentStall. Layer: the pure decision over
+// recorded event shapes.
+func TestAgentStallRepeatedWaitsOnOneBackgroundCommandAreOneLongCommand(t *testing.T) {
+	t0 := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
+	m := time.Minute.Milliseconds()
+	wait := map[string]any{"background_id": "bg_1", "command": "wait", "wait_seconds": 600}
+	e := &agentStallEvents{t: t, runID: "run-1"}
+	e.call("start", "bash", map[string]any{"command": "make e2e", "background": true}, t0, t0+1000)
+	e.call("w1", "bash", wait, t0+2000, t0+10*m+2000)
+	e.call("w2", "mcp__swarm__bash", wait, t0+10*m+5000, 0)
+	if got := agentStallDetect(t, e, t0, t0+16*m); got != nil {
+		t.Fatalf("16 min of waiting flagged: %+v", got)
+	}
+	stall := agentStallDetect(t, e, t0, t0+21*m)
+	if stall == nil || stall.Kind != pebblestore.ProjectTaskAgentStallLongCommand || stall.Since != t0 || stall.Command != "make e2e" || stall.BackgroundID != "bg_1" || stall.ForMs != 21*m {
+		t.Fatalf("hung background command not named from its start: %+v", stall)
+	}
+	// Between two waits (the newest one ended) and on the next wait it is the
+	// same episode.
+	e.add("session.tool.completed", t0+20*m+5000, map[string]any{"call_id": "w2", "tool_name": "bash"})
+	if gap := agentStallDetect(t, e, t0, t0+21*m); gap == nil || gap.Episode() != stall.Episode() {
+		t.Fatalf("the gap between waits changed the episode: %+v", gap)
+	}
+	e.call("w3", "bash", map[string]any{"background_id": "bg_1", "wait_seconds": 600}, t0+21*m, 0)
+	if later := agentStallDetect(t, e, t0, t0+30*m); later == nil || later.Episode() != stall.Episode() || later.ForMs != 30*m {
+		t.Fatalf("a later wait changed the episode: %+v", later)
+	}
+	// Moving on ends it.
+	e.add("session.tool.completed", t0+31*m, map[string]any{"call_id": "w3", "tool_name": "bash"})
+	e.call("edit", "edit", map[string]any{"path": "a.go"}, t0+31*m+1000, t0+31*m+2000)
+	if got := agentStallDetect(t, e, t0, t0+32*m); got != nil {
+		t.Fatalf("a run that moved on still flagged: %+v", got)
+	}
+
+	// Waits on another background command are not joined: a wait on bg_2
+	// after waits on bg_1 counts from its own start only.
+	f := &agentStallEvents{t: t, runID: "run-1"}
+	f.call("r", "read", map[string]any{"path": "a.go"}, t0, t0+500)
+	f.call("a1", "bash", wait, t0+m, t0+11*m)
+	f.call("a2", "bash", wait, t0+11*m, t0+21*m)
+	f.call("b1", "bash", map[string]any{"background_id": "bg_2", "command": "wait"}, t0+21*m, 0)
+	if got := agentStallDetect(t, f, t0, t0+30*m); got != nil {
+		t.Fatalf("waits on two background commands joined: %+v", got)
+	}
+	// With no starting call in the read, the waits on bg_1 count from the
+	// first of them (never longer than real).
+	g := &agentStallEvents{t: t, runID: "run-1"}
+	g.call("r", "read", map[string]any{"path": "a.go"}, t0, t0+500)
+	g.call("a1", "bash", map[string]any{"background_id": "bg_1", "command": "status"}, t0+m, t0+m+500)
+	g.call("a2", "bash", wait, t0+2*m, t0+12*m)
+	g.call("a3", "bash", wait, t0+12*m, 0)
+	if got := agentStallDetect(t, g, t0, t0+22*m); got == nil || got.Kind != pebblestore.ProjectTaskAgentStallLongCommand || got.Since != t0+m || got.BackgroundID != "bg_1" {
+		t.Fatalf("waits without their start not timed from the first: %+v", got)
 	}
 }

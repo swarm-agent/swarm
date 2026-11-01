@@ -20,7 +20,9 @@ import (
 //     commands and status reads of one background command, for longer than
 //     agent_poll_stall_minutes (bash command=wait is a real wait, not a poll);
 //   - long_command: one tool call has run longer than
-//     agent_command_stall_minutes;
+//     agent_command_stall_minutes; a bash wait on a background command
+//     counts from that command's start (agentStallWaitStart), so waiting on a
+//     hung background command over and over is one long command;
 //   - no_activity: no tool call or message (and none in flight) for
 //     agent_idle_stall_minutes.
 //
@@ -30,9 +32,15 @@ import (
 // home's follower through the activity feed.
 
 const (
-	// taskAgentStallEventScan bounds the session events read per check.
-	taskAgentStallEventScan = 400
-	taskAgentStallEventPage = 100
+	// taskAgentStallEventScan bounds the session events read per check,
+	// not counting session.tool.delta: each chunk of a command's streamed
+	// output is one delta, and a build that prints a lot must not push its
+	// own start out of the read. taskAgentStallEventRawScan bounds every
+	// event read, deltas included; a call seen only through its deltas
+	// (its start further back) is in flight with an unknown start.
+	taskAgentStallEventScan    = 400
+	taskAgentStallEventRawScan = 5000
+	taskAgentStallEventPage    = 100
 	// taskAgentStallMinPolls is the fewest poll calls a sleep_polling
 	// stall has (one long sleep is a long_command).
 	taskAgentStallMinPolls = 2
@@ -105,7 +113,10 @@ func agentStallThresholdsFrom(l pebblestore.Limits) agentStallThresholds {
 // agentStallCallsFromEvents reads a run's tool calls (newest first) and its
 // last activity (a tool call starting or ending, a message, reasoning) from
 // its session's events, newest first. Events of an earlier run, or from
-// before startedAt, end the read.
+// before startedAt, end the read. A call whose output deltas are read but
+// whose start is not (the read ended first) is still in flight: it comes
+// first, with start 0 (unknown), so it is neither timed nor taken for
+// inactivity.
 func agentStallCallsFromEvents(events []pebblestore.V3SessionEvent, runID string, startedAt int64) ([]agentStallCall, int64) {
 	type payload struct {
 		RunID     string `json:"run_id"`
@@ -115,6 +126,8 @@ func agentStallCallsFromEvents(events []pebblestore.V3SessionEvent, runID string
 		Instance  string `json:"tool_instance_id"`
 	}
 	ended := map[string]bool{}
+	// streaming is the in-flight calls seen only through deltas so far.
+	streaming := map[string]string{}
 	var calls []agentStallCall
 	lastActivity := startedAt
 	for _, ev := range events {
@@ -133,8 +146,12 @@ func agentStallCallsFromEvents(events []pebblestore.V3SessionEvent, runID string
 			call := firstNonEmptyString(p.Instance, p.CallID)
 			switch ev.EventType {
 			case "session.tool.delta":
+				if call != "" && !ended[call] {
+					streaming[call] = p.ToolName
+				}
 			case "session.tool.started":
 				activity = true
+				delete(streaming, call)
 				calls = append(calls, agentStallCallOf(p.ToolName, p.Arguments, ev.TsUnixMs, ended[call]))
 			default:
 				activity = true
@@ -145,7 +162,40 @@ func agentStallCallsFromEvents(events []pebblestore.V3SessionEvent, runID string
 			lastActivity = ev.TsUnixMs
 		}
 	}
+	for _, name := range streaming {
+		calls = append([]agentStallCall{agentStallCallOf(name, "", 0, false)}, calls...)
+		break
+	}
 	return calls, lastActivity
+}
+
+// agentStallReadEvents reads a run's session events newest first through
+// list (ListSessionEventsBefore): up to taskAgentStallEventScan events
+// besides tool output deltas, and at most taskAgentStallEventRawScan in all.
+// The read stops at the run's start.
+func agentStallReadEvents(list func(beforeSeq uint64, limit int) ([]pebblestore.V3SessionEvent, error), startedAt int64) ([]pebblestore.V3SessionEvent, error) {
+	var events []pebblestore.V3SessionEvent
+	before, counted := uint64(0), 0
+	for counted < taskAgentStallEventScan && len(events) < taskAgentStallEventRawScan {
+		page, err := list(before, taskAgentStallEventPage)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, page...)
+		for _, ev := range page {
+			if ev.EventType != "session.tool.delta" {
+				counted++
+			}
+		}
+		if len(page) < taskAgentStallEventPage {
+			break
+		}
+		before = page[len(page)-1].Seq
+		if startedAt > 0 && page[len(page)-1].TsUnixMs < startedAt {
+			break
+		}
+	}
+	return events, nil
 }
 
 // agentStallCallOf reads a tool call's name and arguments.
@@ -161,6 +211,9 @@ func agentStallCallOf(name, arguments string, start int64, ended bool) agentStal
 		c.backgroundID = str("background_id")
 		if c.backgroundID != "" {
 			c.action = strings.ToLower(str("command"))
+			if c.action == "" && args["wait_seconds"] != nil {
+				c.action = "wait" // as the bash tool reads it
+			}
 		} else {
 			line, _, _ := strings.Cut(str("command"), "\n")
 			c.command = fleetAgentsClip(strings.Join(strings.Fields(line), " "), 200)
@@ -192,13 +245,24 @@ func detectAgentStall(calls []agentStallCall, lastActivity, now int64, th agentS
 	if polls >= taskAgentStallMinPolls && oldest > 0 && now-oldest >= th.poll.Milliseconds() {
 		return &pebblestore.ProjectTaskAgentStall{Kind: pebblestore.ProjectTaskAgentStallSleepPolling, Command: sleep, BackgroundID: bg, Calls: polls, Since: oldest, ForMs: now - oldest}
 	}
-	// (b) One call running too long. A bash wait is bounded by its own cap.
-	if len(calls) > 0 && !calls[0].ended {
+	// (b) One call running too long. A bash wait counts from its background
+	// command's start: one hung command waited on again and again is one
+	// long command.
+	if len(calls) > 0 {
 		c := calls[0]
-		if c.action != "wait" && c.start > 0 && now-c.start >= th.command.Milliseconds() {
-			return &pebblestore.ProjectTaskAgentStall{Kind: pebblestore.ProjectTaskAgentStallLongCommand, Command: c.target(), BackgroundID: c.backgroundID, Since: c.start, ForMs: now - c.start}
+		if since, command, ok := agentStallWaitStart(calls); ok {
+			if now-since >= th.command.Milliseconds() {
+				return &pebblestore.ProjectTaskAgentStall{Kind: pebblestore.ProjectTaskAgentStallLongCommand, Command: firstNonEmptyString(command, c.target()), BackgroundID: c.backgroundID, Since: since, ForMs: now - since}
+			}
+			if !c.ended {
+				return nil
+			}
+		} else if !c.ended {
+			if c.start > 0 && now-c.start >= th.command.Milliseconds() {
+				return &pebblestore.ProjectTaskAgentStall{Kind: pebblestore.ProjectTaskAgentStallLongCommand, Command: c.target(), BackgroundID: c.backgroundID, Since: c.start, ForMs: now - c.start}
+			}
+			return nil
 		}
-		return nil
 	}
 	// (c) Nothing at all.
 	if lastActivity > 0 && now-lastActivity >= th.idle.Milliseconds() {
@@ -209,6 +273,35 @@ func detectAgentStall(calls []agentStallCall, lastActivity, now int64, th agentS
 		return stall
 	}
 	return nil
+}
+
+// agentStallWaitStart reads, when the run's newest call is a bash wait on a
+// background command, since when that command has been waited on: back over
+// the unbroken run of calls on the same background_id (waits, status reads)
+// and sleeps, to the bash call before them that started it (its start, and
+// its command), else to the first call of that run. The command started at
+// or before that point, so the time is never longer than it really is, and
+// it stays the same while the waiting goes on (one episode).
+func agentStallWaitStart(calls []agentStallCall) (int64, string, bool) {
+	c := calls[0]
+	if c.tool != "bash" || c.backgroundID == "" || c.action != "wait" || c.start <= 0 {
+		return 0, "", false
+	}
+	since := c.start
+	for _, p := range calls[1:] {
+		if p.tool != "bash" || p.start <= 0 {
+			break
+		}
+		if p.backgroundID == c.backgroundID || (p.backgroundID == "" && agentStallSleepCommand(p.command)) {
+			since = p.start
+			continue
+		}
+		if p.backgroundID == "" {
+			return p.start, p.command, true
+		}
+		break
+	}
+	return since, "", true
 }
 
 // taskAgentStall reads how the task's running run stalls at now (nil when
@@ -232,22 +325,12 @@ func (s *Server) taskAgentStall(account string, task pebblestore.ProjectTaskReco
 		log.Printf("swarmd agent stall: read limits: %v", err)
 		return nil
 	}
-	var events []pebblestore.V3SessionEvent
-	before := uint64(0)
-	for len(events) < taskAgentStallEventScan {
-		page, err := s.sessions.ListSessionEventsBefore(sessionID, before, taskAgentStallEventPage)
-		if err != nil {
-			log.Printf("swarmd agent stall: read events of %s: %v", sessionID, err)
-			return nil
-		}
-		events = append(events, page...)
-		if len(page) < taskAgentStallEventPage {
-			break
-		}
-		before = page[len(page)-1].Seq
-		if state.StartedAt > 0 && page[len(page)-1].TsUnixMs < state.StartedAt {
-			break
-		}
+	events, err := agentStallReadEvents(func(before uint64, limit int) ([]pebblestore.V3SessionEvent, error) {
+		return s.sessions.ListSessionEventsBefore(sessionID, before, limit)
+	}, state.StartedAt)
+	if err != nil {
+		log.Printf("swarmd agent stall: read events of %s: %v", sessionID, err)
+		return nil
 	}
 	calls, lastActivity := agentStallCallsFromEvents(events, state.RunID, state.StartedAt)
 	return detectAgentStall(calls, lastActivity, now, agentStallThresholdsFrom(limits))

@@ -138,11 +138,15 @@ changing the run.
   running run (a) has run nothing but `sleep` commands and status reads of one
   background command for `agent_poll_stall_minutes` (default 10; a bash
   `command=wait` is a real wait, not a poll), (b) has one tool call running
-  for `agent_command_stall_minutes` (default 20), or (c) has had no tool call
+  for `agent_command_stall_minutes` (default 20; bash waits on one background
+  command count from that command's start, `agentStallWaitStart`), or (c) has
+  had no tool call
   or message for `agent_idle_stall_minutes` (default 15) wakes the
   conversation with milestone `stalled` and the row's `agent_stall`. The
   thresholds are the account's limits (`/v3/limits`). Detection reads only the
-  run's own session events (`Server.taskAgentStall`, at most 400 events);
+  run's own session events (`Server.taskAgentStall`, at most 400 events
+  besides tool output deltas and 5000 in all; a call seen only through its
+  deltas is in flight, never idle);
   it is part of the task progress (`taskWaitProgressFor`), so `get_task` and
   a linked machine's `get_task` carry it too. One wake per stall episode: the
   watch keeps each task's episode (`last_stalls`: kind and start) and a

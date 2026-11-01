@@ -772,10 +772,15 @@ that are deliberate and tested:
 - `wait_tasks` waits in the call instead of setting up a watch that wakes a
   later turn. It returns when a listed task reaches its next milestone
   (started, needs you, review started, sent back, landed, done, blocked,
-  failed, stopped: `pebblestore.ProjectTaskMilestone`, the watch's own rules)
-  or when `wait_seconds` passes (default 60, at most 110). `state` is
-  `milestone` (the row's `reached` names it), `settled` (every task had
+  failed, stopped, stalled: `pebblestore.ProjectTaskMilestone`, the watch's
+  own rules) or when `wait_seconds` passes (default 60, at most 110). `state`
+  is `milestone` (the row's `reached` names it), `settled` (every task had
   already settled) or `timed_out`, and the tasks are as `get_task` reads them.
+  `stalled` means the task's running agent stalls, at any stage; the task's
+  `progress.agent_stall` (in `get_task` too, local or on a linked machine)
+  says how: `kind` (`sleep_polling`, `long_command` or `no_activity`),
+  `command`, `background_id` and `calls` for a poll loop, `since` and
+  `for_ms` (docs/task-progress.md).
   It wakes on the sources a watch uses (committed realtime records here, the
   machine's activity feed for a linked machine) and records nothing.
   `cancel_watch` and `inspect_files` are Orchestrator-only.

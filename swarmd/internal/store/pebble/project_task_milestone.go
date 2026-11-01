@@ -7,7 +7,8 @@ package pebblestore
 // milestone is.
 
 // Run milestones a conversation-less wait returns at, besides the watch's
-// own (review started, sent back, rebase needed, landed, blocked, failed).
+// own (review started, sent back, rebase needed, landed, blocked, failed)
+// and an agent stall's (ProjectTaskMilestoneStalled, `stalled`).
 const (
 	ProjectTaskMilestoneStarted  = "started"
 	ProjectTaskMilestoneNeedsYou = "needs you"
