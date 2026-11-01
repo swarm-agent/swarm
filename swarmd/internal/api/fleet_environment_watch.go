@@ -25,7 +25,10 @@ import (
 // startSandboxEnvironmentBuild closes): nothing is read on a timer. On a
 // linked machine it asks the machine's get_environment with the longest
 // held wait: the machine answers as soon as its build ends, and the next
-// hold starts only after the previous one returned still building.
+// hold starts only after the previous one returned still building. A
+// machine that answers still building at once (no build of it runs in its
+// daemon, so it cannot hold) is asked again only after a pause, a bounded
+// number of times in a row, as the local path does.
 func (s *Server) AwaitFolderEnvironmentBuild(ctx context.Context, p identity.Principal, machine, path string) (json.RawMessage, error) {
 	machine, path = strings.TrimSpace(machine), strings.TrimSpace(path)
 	if path == "" {
@@ -33,11 +36,12 @@ func (s *Server) AwaitFolderEnvironmentBuild(ctx context.Context, p identity.Pri
 	}
 	args := map[string]any{"workspace_path": path, "include_log": true, "wait_seconds": float64(sandboxEnvironmentMaxWait)}
 	var unreachableSince time.Time
-	notHere := 0
+	notHere, instant := 0, 0
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		asked := time.Now()
 		raw, err := s.ManageFolderEnvironment(ctx, p, machine, tool.FolderEnvironmentGet, args)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -67,7 +71,23 @@ func (s *Server) AwaitFolderEnvironmentBuild(ctx context.Context, p identity.Pri
 		if status != pebblestore.SandboxEnvironmentBuilding {
 			return raw, nil
 		}
-		if machine == "" && !s.sandboxEnvironmentBuildRunsHere(path) {
+		if machine != "" {
+			if time.Since(asked) >= environmentWatchHeldAnswer {
+				instant = 0
+				continue
+			}
+			// Still building, answered well before the hold: no build of
+			// it runs in the machine's daemon. Pause, a bounded number of
+			// times in a row.
+			if instant++; instant > environmentWatchInstantReads {
+				return nil, fmt.Errorf("%s on %s says building, but no build of it runs there; rebuild it with rebuild_environment", path, machine)
+			}
+			if err := sleepContext(ctx, environmentWatchInstantPause); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if !s.sandboxEnvironmentBuildRunsHere(path) {
 			// Building, but no build of it runs in this process: the
 			// waiter is registered right after the definition is stored,
 			// so read again shortly, a bounded number of times.
@@ -85,6 +105,17 @@ const (
 	environmentWatchRetry            = 30 * time.Second
 	environmentWatchUnreachableGrace = 10 * time.Minute
 	environmentWatchNotHereReads     = 30
+	// environmentWatchHeldAnswer: a linked still-building answer that took
+	// at least this long was held by the machine (its build runs there).
+	environmentWatchHeldAnswer = sandboxEnvironmentMaxWait * time.Second / 2
+)
+
+// A linked machine's instant still-building answers: the pause before asking
+// again and how many in a row end the watch. Variables so a test can shorten
+// the pause.
+var (
+	environmentWatchInstantPause = 5 * time.Second
+	environmentWatchInstantReads = 30
 )
 
 // sandboxEnvironmentBuildRunsHere reports whether a build of the folder runs

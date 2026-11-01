@@ -547,3 +547,53 @@ func TestEnvironmentWatchResumesAfterRestart(t *testing.T) {
 	}
 	once.Do(func() { builder.finish(t) })
 }
+
+// Purpose: a home following a linked machine's build never asks the machine
+// back to back. When the machine says building but no build of it runs in
+// its daemon (InterruptBuilds failed at startup, or the moment between the
+// store's Define and the build's waiter), it answers at once instead of
+// holding; the home then pauses between those answers and ends the watch
+// with a reason after a bounded number of them in a row. A build that ends
+// meanwhile is still reported. Threat: an endless burst of GETs over the
+// link with no delay and no end. Boundary: Server.AwaitFolderEnvironmentBuild
+// (linked path) over the real link to the machine's waitSandboxEnvironment;
+// the stuck state is the machine's real store record with no waiter, as a
+// failed InterruptBuilds leaves it. The pause is shortened, not stubbed.
+func TestEnvironmentWatchPausesAndEndsOnAMachineThatCannotHold(t *testing.T) {
+	pause, reads := environmentWatchInstantPause, environmentWatchInstantReads
+	t.Cleanup(func() { environmentWatchInstantPause, environmentWatchInstantReads = pause, reads })
+	environmentWatchInstantPause, environmentWatchInstantReads = 100*time.Millisecond, 4
+
+	f := newLinkedEnvironmentFixture(t)
+	env, _, err := f.envs.Define(f.remote.account, f.folder, pebblestore.SandboxEnvironmentDefinition{BaseImage: "debian:12"})
+	if err != nil || env.Status != pebblestore.SandboxEnvironmentBuilding || f.remote.s.sandboxEnvironmentBuildRunsHere(f.folder) {
+		t.Fatalf("stuck building state: %+v %v", env, err)
+	}
+
+	// Stuck: paused answers, then the watch ends with a reason.
+	ctx, cancel := context.WithTimeout(context.Background(), envWatchTestWait)
+	defer cancel()
+	started := time.Now()
+	raw, err := f.home.s.AwaitFolderEnvironmentBuild(ctx, f.homeP, "box", f.folder)
+	elapsed := time.Since(started)
+	if err == nil || !strings.Contains(err.Error(), "no build of it runs there") || !strings.Contains(err.Error(), "rebuild_environment") || raw != nil {
+		t.Fatalf("stuck linked build: %s %v", raw, err)
+	}
+	if min := time.Duration(environmentWatchInstantReads) * environmentWatchInstantPause; elapsed < min {
+		t.Fatalf("the home did not pause between instant answers: %v for %d answers, want at least %v", elapsed, environmentWatchInstantReads+1, min)
+	}
+	if ctx.Err() != nil {
+		t.Fatal("the watch only ended on its deadline")
+	}
+
+	// The build ends while the home pauses: the watch reports it.
+	environmentWatchInstantReads = 1000
+	go func() {
+		time.Sleep(3 * environmentWatchInstantPause)
+		_, _ = f.envs.Finish(f.folder, env.Hash, pebblestore.SandboxEnvironmentImagePrefix+"test", "/usr/bin:/bin", "warm-build OK\n", nil)
+	}()
+	raw, err = f.home.s.AwaitFolderEnvironmentBuild(ctx, f.homeP, "box", f.folder)
+	if status, _ := folderEnvironmentStatus(raw); err != nil || status != pebblestore.SandboxEnvironmentReady {
+		t.Fatalf("ended build after instant answers: %s %v", raw, err)
+	}
+}
