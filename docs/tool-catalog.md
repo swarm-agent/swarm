@@ -337,12 +337,16 @@ and the API scopes it holds (`tool.WithControlScopes`).
 | `get_job` | read | `sessions:read` | any |
 | `deliveries` | read | `automations:read` or `automations:write` | any |
 | `give_job`, `message_job`, `answer_job`, `deliver_job`, `stop_job`, `schedule_job`, `rerun_failed_steps`, `retry_now` | write | `sessions:write` (the routes behind them check their own scopes too) | any |
+| `rebase` | write | `automations:write` | any |
 
 Each level is the level the removed `swarm_*` tool with the same effect
 needed (`swarmToolLevels`, `TestManageJobsLevelsAreTheSwarmToolsLevels`;
 `deliveries` takes
 `swarm_list_workflows`', `rerun_failed_steps` `swarm_deliver_job`'s;
-`retry_now`, which has none, is write because it continues agent work). Every
+`retry_now`, which has none, is write because it continues agent work;
+`rebase`, which has none either, is write because it moves a delivery head
+and a job's branch: it runs `api.Server.rebaseJobDelivery`, the service
+behind `POST /v3/job-deliveries/{id}/rebase`). Every
 action is in the Orchestrator's definition and Swarm Control's default
 listing.
 

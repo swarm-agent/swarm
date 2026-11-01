@@ -13,6 +13,7 @@ session's principal and account; arguments cannot select another identity.
 | `get_job` | `job_id` | The handler Swarm Control's `get_job` runs, including workflow steps and blocked reasons. A job waiting on a question or an approval answers with state `waiting`. |
 | `deliveries` | `id` (workflow ID), optional `job_id`, `limit` | Latest deliveries, using the same delivery views as Control, including states, reasons and attempts. |
 | `rerun_failed_steps` | `job_id` | The `deliver_job` handler with `automation=true`; not Git integration. |
+| `rebase` | `job_id`, optional `onto` | Rebases the job's newest finished workflow delivery onto its target branch (or `onto`) with Swarm's own rebase, the function every delivery runs by itself (`POST /v3/job-deliveries/{id}/rebase`): the delivery head and the job's branch move by compare-and-swap; a conflict is reported, not resolved. Never pushes or writes the target. |
 | `give_job` | `worker`, `brief`, `project`, optional `folder`, `idempotency_key` | The handler Swarm Control's `give_job` runs; starts an existing worker. |
 | `message_job` | `job_id`, `message`, optional `client_request_id` | The handler Swarm Control's `message_job` runs; follow up or reopen a finished job. |
 | `answer_job` | `job_id`, `answer`, optional `question_id` | The handler Swarm Control's `answer_job` runs; answers the worker's question, never a tool approval. |

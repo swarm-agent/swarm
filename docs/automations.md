@@ -5,8 +5,11 @@ person (or their AI) configured** for that end. Work is a task of Swarm's own
 agents (`manage_projects` `propose_task`: swarm, coder, finder, designer; its first run and each
 follow-up sent into its session) or a worker job (a worker run or follow-up, a
 media job, a design job). Swarm only provides
-primitives and reports what happened; it has no built-in merge, rebase,
-check, review chain or push.
+primitives and reports what happened; it has no built-in merge, check,
+review chain or push. The one thing it does by itself is keep a delivery's
+work on top of its target branch: when the target moved, Swarm rebases the
+work and resolves conflicts with an agent (see [Rebasing](#rebasing)); a
+workflow may turn that off with `rebase: "off"`.
 
 With no workflow nothing changes: a task or job ends with its branch and
 worktree, and the person integrates it by hand (`manage_projects` `integrate_task`,
@@ -840,9 +843,9 @@ A reopen step with no rounds left sends nothing and still ends the delivery
 Every delivery and step is recorded durably with its state (`pending`,
 `running`, `waiting` (a reopen step waiting for its job, a step waiting for a
 provider's limit to reset, or a delivery parked on such a step; see below),
-`succeeded`, `failed`, `skipped`, `stopped` or, for a delivery, `blocked` or
-`sent_back`), attempts, start and finish times, exit code, output line, log
-tail and outcome.
+`succeeded`, `failed`, `skipped`, `stopped` or, for a delivery, `blocked`,
+`sent_back` or `conflict` (see [Rebasing](#rebasing))), attempts, start and
+finish times, exit code, output line, log tail and outcome.
 
 A delivery is shown as `waiting` while its only unfinished work is steps
 waiting for a provider's usage, rate or session limit to reset and no step
@@ -910,6 +913,151 @@ delivery records the follow-up as `handover_rerun` (one rerun per
 follow-up), and the signal `automation.delivery.rerun` (`reason`
 `handover_same_head`, `step`) says so. A delivery that failed on an agent
 step, a review block and a worker job's hand-over are not re-run this way.
+
+## Rebasing
+
+Rebasing is Swarm's job, not the workflow author's or the coder's. When
+several jobs land on one target branch (`dev`), each landing moves the target
+under the others; Swarm keeps every delivery's work on top of it by itself,
+with no step to configure.
+
+**When.** For every delivery whose job has a target branch (the result's
+`git.base_branch`, the branch `merge`, `publish` and a push use), with the
+workflow's `rebase` setting `auto` (the default), the runner checks the
+target's tip:
+
+- before the delivery's first step;
+- before any step that depends on the head (a `run` step, an `agent` step, a
+  `deliver` step to `merge` or `publish`) whenever the tip moved since the
+  last check (`target_checked`);
+- after such a `run` or `deliver` step **failed** while the tip moved (a gate
+  that said "rebase needed", a push refused because the target moved): the
+  head is rebased and the step runs again, with no reopen step.
+
+A delivery rebases automatically at most 5 times (a target that keeps
+moving); past that its steps run on the head as it is and the signal
+`automation.delivery.rebase_limit` says so. `rebase: "off"` turns all of this
+off for a workflow (the delivery records `rebase: "off"`); an explicit rebase
+step still runs.
+
+**How.** One daemon function does every rebase (automatic, explicit step, on
+request). It is Git in the folder, run by the daemon with hooks off:
+
+1. Up to date (the head descends from the tip): nothing happens, no record.
+2. Otherwise each of the job's commits (from the merge base of the head and
+   the tip; merge commits are refused) is replayed onto the tip with `git
+   merge-tree` (a three-way merge whose base is the commit's parent) and `git
+   commit-tree`, keeping its message and author. Nothing is checked out: no
+   worktree of the folder or of the job is touched, and the target branch is
+   never written or pushed. A scratch index for a resolution lives in Swarm's
+   storage (`<data dir>/workflow-rebase`) and is removed after use.
+3. A clean replay is verified: each new commit carries the same patch as the
+   job's commit it replays (patch ids: the lines each file's diff adds and
+   removes, its mode changes and a binary file's new content, ignoring line
+   numbers and context), except a commit whose change the target already had
+   (`empty`). Then the delivery head moves to the new head (the old one is
+   kept as `rebased_from`, the tip as `rebased_onto`), the new head is named
+   `refs/swarm/rebased/...` so it stays reachable, and the job's own branch is
+   moved by compare-and-swap (`git update-ref <branch> <new> <old>`: only
+   while it still points at the old head). A branch checked out in a worktree
+   is moved only for a project task, by its branch advancer, with `git reset
+   --keep` while the task is idle and its worktree clean; otherwise the
+   record says why it was not moved. The record keeps the old -> new commit
+   mapping and a `git range-diff`.
+4. Steps after a rebase run on the rebased head. Steps that already passed on
+   the old head and whose result depended on it run again: `run` steps that
+   ran and review steps that recorded a verdict (not a reviewer whose fixes
+   are in the head), and, after the first of them, steps that were skipped
+   (their conditions are read again). Each says `rebase_rerun` and a `note`
+   ("runs again on the rebased head ..."), and the record lists them under
+   `rerun`. An agent step that ran again starts a new job.
+
+**Conflicts are resolved by Swarm.** A replay that conflicts stops at that
+commit and keeps the conflicted state as a commit on no branch (the files
+with their conflict markers, on top of what was replayed so far, named
+`refs/swarm/rebase-conflicts/...`). The record names the conflicted files,
+the job's commit that stopped, the target's commits since the job's base that
+changed those files, and both sides' diffs of them. Swarm then starts a
+**resolver**: the coder that comes with Swarm (its model is the account's
+coder setting), in its own worktree checked out at that conflicted state,
+with a brief listing the files, the stopped commit, the target's commits and
+both diffs. It edits only those files and runs no Git. Swarm takes exactly
+the conflicted files from its worktree (a file it removed is removed; a
+symbolic link, a file outside the worktree or one larger than 8 MiB is
+refused), refuses any file that still has a conflict marker (`<<<<<<<`,
+`>>>>>>>` or `|||||||` at the start of a line), stages them in the scratch
+index, commits them with the stopped commit's message and author, and
+continues the replay; a later commit that conflicts goes to the next round.
+The resolved commit is listed `resolved: true` in the mapping (its patch
+differs by design).
+
+The resolver rounds are bounded by the workflow's `rebase_rounds` (1 to 5,
+default 2) per rebase; a round whose work is refused or whose job fails uses
+one, and the next resolver is told why. When the rounds are used up the
+delivery ends **`conflict`**: not `failed` (no check failed) and not a
+review's block. Nothing after it runs, the head and the job's branch stay,
+the step it stopped before records the reason (`next` says what to do), and
+the delivery's `conflict` keeps the files, the stopped commit, the target's
+commits, the resolver jobs and the kept conflicted state. A rerun of the
+delivery (`manage_jobs` `rerun_failed_steps`) checks the target anew and
+rebases again, with the resolver.
+
+**Rebased heads from agents are accepted.** An agent step (a fix step, a
+coder told to rebase) whose head does not descend from the delivery head is
+no longer thrown away when it rebased its own copy: its head moves the
+delivery head when it descends from the target's tip (the one last checked,
+the newest rebase's, or the tip now) and every commit of the delivery head
+maps by patch id to a distinct commit of it, or is already in the target.
+Its other commits are the agent's own (`added`). The old head is kept as
+`rebased_from`. A head that drops one of the delivery head's changes is
+still refused. (`rebase: true` on a coder or swarm agent step keeps its own
+checks, described under `agent` steps.)
+
+**Explicit forms.** A step `{"type": "rebase", "onto": "dev"}` rebases at
+that point of the workflow, onto `onto` (default the job's target branch),
+even with `rebase: "off"`; it succeeds `up to date` or rebased, and a
+conflict nobody resolved fails it and ends the delivery `conflict`. Give it a
+`timeout_seconds` long enough for a resolver. On demand, `manage_jobs`
+`rebase` (`job_id`, optional `onto`), `POST /v3/job-deliveries/{id}/rebase`
+(`{"onto": "dev"}`) and SDK `client.workflows.rebase(id, onto)` rebase a
+**finished** delivery's head now (a running one is refused with HTTP 409: it
+rebases itself). They answer `outcome` (`up_to_date`, `rebased`, `conflict`
+or `error`), the record and the delivery; a conflict on request starts no
+resolver and moves nothing (a rerun rebases with one). No step re-runs.
+
+```json
+{ "name": "land", "scope": { "role": "coder" }, "rebase_rounds": 2,
+  "steps": [
+    { "id": "gate", "type": "run", "command": "/usr/local/libexec/swarm-deliver/gate.sh" },
+    { "id": "review", "type": "agent", "worker": "reviewer", "brief": "Review the change." },
+    { "id": "push", "type": "deliver", "to": "merge", "if": [{ "step": "review", "verdict": "ok" }] }
+  ] }
+```
+
+Two coder tasks that touch the same files and land through this workflow
+both reach the target: each delivery is rebased before its gate, again
+before the merge when the other landed meanwhile (the gate and the review run
+again on the rebased head), and a conflict goes to the resolver.
+
+**Visibility.** A delivery shows `rebase` (its setting), `target_checked`,
+`rebases` (each: `n`, `trigger` (`start`, `before_step`, `step_failed`,
+`rebase_step`, `agent_step`, `request`), `target`, `onto`, `from`, `to`,
+`outcome` (`rebased`, `resolving`, `conflict`, `error`), `commits`,
+`added`, `rerun`, `branch`, `conflict`; a single-delivery read adds
+`range_diff` and the conflict's `target_diff` and `job_diff`), and, when it
+ended `conflict`, `conflict`, `conflict_reason` and `next`. Task progress
+(`get_task`) gives each delivery its newest `rebase` (outcome, target, onto,
+from, to, files, resolver jobs, whether resolved, how many rebases moved the
+head), the workflow state and progress state `conflict`, the outcome
+`conflict <files> (rebase onto <target>)`, and history lines ("rebased onto
+dev (old → new)", "conflict on dev: a.go (not resolved)"); wake rows on this
+machine and from linked machines carry the same `rebase`, and their
+milestones name it. Signals: `automation.delivery.rebased`,
+`automation.delivery.rebase_conflict` (a resolver starts),
+`automation.delivery.resolver_started`,
+`automation.delivery.rebase_unresolved`, `automation.delivery.rebase_error`,
+`automation.delivery.rebase_limit`, and `automation.delivery.finished` with
+state `conflict` (its `files`, `commit`, `resolver_jobs` and `next`).
 
 ## The result JSON
 
@@ -1300,9 +1448,12 @@ of the first findings. A remaining block never pushes.
 Any step can be another of Swarm's own agents instead, for example
 `{ "type": "agent", "worker": "finder", "brief": "Write release notes for this change." }`.
 
-When the target branch moved and the push refuses with "rebase needed", the
-same shape rebases without a person: let the push fail into a rebase step,
-review the rebased head, then push again. The review after a rebase has no
+Swarm already rebases this delivery by itself when the target moved, before
+the push and after a push that failed on a moved target (see
+[Rebasing](#rebasing)), so no step is needed for that. The hand-built shape
+below (an agent that rebases, then a review of its rebase) still works for a
+workflow that wants an agent to rebase instead: let the push fail into a
+rebase step, review the rebased head, then push again. The review after a rebase has no
 `since`: `since` needs the earlier review's head to be an ancestor of the
 delivery head, which a rebase rewrites, so that step is refused there.
 

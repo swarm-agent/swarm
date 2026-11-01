@@ -156,3 +156,51 @@ test('workflow history and restore preserve selectors', async () => {
     ['/v3/workflows/restore', { method: 'POST', body: { id: 'jauto_1', revision: 1 } }],
   ]);
 });
+
+// Purpose: Swarm's own rebase reaches the SDK as the daemon serves it: a
+// workflow's rebase setting (auto|off) and rebase_rounds and a rebase step
+// with onto are typed and sent as given, and rebase() posts to the
+// delivery's rebase route (onto optional) and returns the daemon's answer
+// (outcome, onto, the record) without the envelope's ok. Threat: an SDK
+// that cannot opt out, cannot reach the on-demand rebase, or types a
+// misspelt setting. Boundary: SwarmJobAutomationsNamespace over a transport
+// fixture; the rebase itself is covered by the Go tests.
+test('the rebase setting, the rebase step and rebase() are typed and sent as given', async () => {
+  const calls: Array<[string, string, unknown]> = [];
+  const transport = {
+    request: async (path: string, options: { method?: string; body?: unknown } = {}) => {
+      calls.push([options.method ?? 'GET', path, options.body]);
+      if (path.endsWith('/rebase')) {
+        return { data: { ok: true, outcome: 'rebased', target: 'dev', onto: 'c'.repeat(40), delivery: { delivery_id: 'jdel_1', state: 'conflict' },
+          rebase: { n: 1, trigger: 'request', target: 'dev', onto: 'c'.repeat(40), from: 'a'.repeat(40), to: 'b'.repeat(40), outcome: 'rebased', at: 1 } } };
+      }
+      return { data: { ok: true, automation: { id: 'jauto_9' }, created: true } };
+    },
+  } as unknown as SwarmTransport;
+  const ns = new SwarmJobAutomationsNamespace(transport);
+  const workflow = {
+    name: 'land',
+    scope: { folder: '/srv/site', role: 'coder' as const },
+    rebase: 'off' as const,
+    rebase_rounds: 3,
+    steps: [
+      { id: 'rebase', type: 'rebase' as const, onto: 'dev' },
+      { id: 'push', type: 'deliver' as const, to: 'merge' as const },
+    ],
+  };
+  // @ts-expect-error the rebase setting is auto or off
+  const typo: Parameters<typeof ns.set>[0] = { name: 'x', scope: { folder: '/srv/site' }, rebase: 'manual', steps: [] };
+  assert.equal(typo.rebase, 'manual');
+  await ns.set(workflow);
+  const answer = await ns.rebase('jdel/1', 'dev');
+  await ns.rebase('jdel_2');
+  assert.equal(answer.outcome, 'rebased');
+  assert.equal(answer.rebase?.to, 'b'.repeat(40));
+  assert.equal(answer.delivery.state, 'conflict');
+  assert.ok(!('ok' in answer));
+  assert.deepEqual(calls, [
+    ['POST', '/v3/workflows', workflow],
+    ['POST', '/v3/job-deliveries/jdel%2F1/rebase', { onto: 'dev' }],
+    ['POST', '/v3/job-deliveries/jdel_2/rebase', {}],
+  ]);
+});

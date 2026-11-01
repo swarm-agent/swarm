@@ -9,7 +9,7 @@ import type { SwarmTransport } from './transport.js';
  */
 
 export type JobAutomationWhen = 'succeeded' | 'failed' | 'always';
-export type JobAutomationStepType = 'run' | 'agent' | 'reopen' | 'deliver';
+export type JobAutomationStepType = 'run' | 'agent' | 'reopen' | 'deliver' | 'rebase';
 /**
  * Where a deliver step hands deliverables over. `folder`: copied into `path`,
  * a directory inside the folder (a different existing file is never
@@ -54,7 +54,86 @@ export interface JobDeliverable {
  * started (see {@link JobStepErrorKind}), and a delivery such a step stopped:
  * an infrastructure problem, never the script's result (`failed` is).
  */
-export type JobDeliveryState = 'pending' | 'running' | 'succeeded' | 'failed' | 'error' | 'skipped' | 'stopped' | 'blocked' | 'sent_back';
+export type JobDeliveryState = 'pending' | 'running' | 'succeeded' | 'failed' | 'error' | 'skipped' | 'stopped' | 'blocked' | 'sent_back' | 'conflict';
+/**
+ * A workflow's rebase setting. `auto` (the default): Swarm rebases every
+ * delivery whose job has a target branch onto that branch before its first
+ * step and again whenever the target moved, before a step that depends on
+ * the head (and after a push or gate that failed on a moved target),
+ * resolving conflicts with a coder agent. `off`: never automatically (a
+ * `rebase` step still runs).
+ */
+export type JobRebaseMode = 'auto' | 'off';
+/** How one rebase of a delivery head ended. */
+export type JobRebaseOutcome = 'rebased' | 'resolving' | 'conflict' | 'error';
+/** Why a rebase ran. */
+export type JobRebaseTrigger = 'start' | 'before_step' | 'step_failed' | 'rebase_step' | 'agent_step' | 'request';
+
+/** One of the job's commits and its replay. */
+export interface JobRebasedCommit {
+  from: string;
+  to?: string;
+  subject?: string;
+  /** Its replay conflicted: the resolver's edits are in it. */
+  resolved?: boolean;
+  /** The target already had its change: its replay changes nothing. */
+  empty?: boolean;
+  /** An agent's own rebase dropped it because the target already has the same change. */
+  in_target?: boolean;
+}
+
+/** Where a rebase's replay stopped on a conflict. */
+export interface JobRebaseConflict {
+  /** The job's commit whose replay conflicted, and its subject. */
+  commit: string;
+  subject?: string;
+  files: string[];
+  /** The kept conflicted state: a commit (on no branch) of the files with conflict markers. */
+  checkout: string;
+  /** Resolver agent rounds used (at most the workflow's `rebase_rounds`). */
+  rounds: number;
+  resolver_jobs?: string[];
+  /** The resolver job running now. */
+  pending?: string;
+  /** Why the last round's work was not taken (a conflict marker left, ...). */
+  reason?: string;
+  outcome?: 'resolved' | 'unresolved';
+  /** The target's commits since the job's base that changed those files. */
+  target_commits?: Array<{ sha: string; subject?: string }>;
+  /** Both sides' changes of the files (single-delivery reads only). */
+  target_diff?: string;
+  job_diff?: string;
+}
+
+/** One rebase of a delivery head onto its target branch. */
+export interface JobDeliveryRebase {
+  n: number;
+  trigger: JobRebaseTrigger;
+  step?: string;
+  /** The agent step's job whose own rebased head was accepted. */
+  job?: string;
+  /** The branch and the tip it was rebased onto. */
+  target: string;
+  onto: string;
+  /** The head before (kept as `rebased_from`) and after. */
+  from: string;
+  to?: string;
+  outcome: JobRebaseOutcome;
+  /** Old -> new commit mapping (patch ids checked). */
+  commits?: JobRebasedCommit[];
+  /** New commits that map to none of the old head's (an agent's own commits). */
+  added?: string[];
+  /** The steps that run again on the rebased head. */
+  rerun?: string[];
+  /** What became of the job's own branch (compare-and-swap). */
+  branch?: { branch: string; from?: string; to?: string; updated: boolean; reason?: string; checked_out?: string };
+  conflict?: JobRebaseConflict;
+  reason?: string;
+  /** `git range-diff` of the old and new commits (single-delivery reads only). */
+  range_diff?: string;
+  at: number;
+  finished_at?: number;
+}
 /** Why a run step in state `error` never started its script. */
 export type JobStepErrorKind = 'checkout' | 'environment' | 'lease' | 'script_missing' | 'script_unusable' | 'start_timeout';
 export type JobReviewVerdict = 'ok' | 'block';
@@ -204,6 +283,18 @@ export interface JobAutomationStep {
   path?: string;
   /** deliver: deliverables by name; default the workflow's result, else what fits the target. */
   what?: string[];
+  /**
+   * rebase: the branch to rebase the delivery head onto at this point
+   * (Swarm's own rebase: replay, patch check, compare-and-swap; a conflict
+   * goes to a resolver agent). Default the job's target branch.
+   */
+  onto?: string;
+  /**
+   * agent (coder or swarm): the agent rebases the delivery head itself and
+   * its head may move the delivery head without descending from it. Rarely
+   * needed: Swarm rebases by itself ({@link JobRebaseMode}).
+   */
+  rebase?: boolean;
 }
 
 export interface JobAutomation {
@@ -214,6 +305,10 @@ export interface JobAutomation {
   enabled: boolean;
   /** Automatic retries of a failed step, 0 to 3. */
   retries: number;
+  /** The rebase setting (default `auto`). */
+  rebase: JobRebaseMode;
+  /** Resolver agents one rebase may start for its conflicts (1 to 5, default 2). */
+  rebase_rounds: number;
   /** Ordered steps, with their defaults applied (id, timeout_seconds). */
   steps: JobAutomationStep[];
   /** What the work must hand over, when the workflow names it. */
@@ -250,6 +345,10 @@ export interface SetJobAutomationParams {
   when?: JobAutomationWhen;
   enabled?: boolean;
   retries?: number;
+  /** Default `auto`: Swarm rebases each delivery onto its moved target itself. */
+  rebase?: JobRebaseMode;
+  /** 1 to 5; default 2. */
+  rebase_rounds?: number;
   /** 1 to {@link JOB_AUTOMATION_MAX_STEPS} ordered steps. */
   steps: JobAutomationStep[];
   result?: JobResultSpec;
@@ -305,6 +404,20 @@ export interface JobDelivery {
   sent_back?: { step: string; round: number; reason?: string };
   /** The reviewer fix commits the delivery head was moved to (agent steps with `fixes`). */
   fix_commits?: Array<{ sha: string; subject: string }>;
+  /** The head a rebase replaced (the newest) and the target tip it was rebased onto. */
+  rebased_from?: string;
+  rebased_onto?: string;
+  /** The workflow's rebase setting as the delivery started. */
+  rebase?: JobRebaseMode;
+  /** The target tip the head was last found up to date with (or rebased onto). */
+  target_checked?: string;
+  /** Each rebase of the head, newest last (an up-to-date check records none). */
+  rebases?: JobDeliveryRebase[];
+  /** Set when the delivery ended `conflict`: the rebase conflict no resolver resolved. */
+  conflict?: JobRebaseConflict;
+  conflict_reason?: string;
+  /** What to do next (a delivery that ended `conflict`). */
+  next?: string;
   steps: JobDeliveryStep[];
   created_at: number;
   started_at?: number;
@@ -554,4 +667,37 @@ export class SwarmJobAutomationsNamespace {
     });
     return { rerun: Boolean(res.data.rerun), delivery: res.data.delivery };
   }
+
+  /**
+   * Rebases a finished delivery's head onto `onto` (default the job's target
+   * branch) now, with the rebase every delivery runs by itself: the job's
+   * commits replayed onto the branch tip (message and author kept, patches
+   * checked), the delivery head and the job's branch moved by
+   * compare-and-swap, the target never written. A conflict is reported
+   * (`outcome: 'conflict'`, nothing moved; {@link rerun} rebases again with a
+   * resolver agent). A running delivery is refused (HTTP 409). Same function
+   * as `manage_jobs action=rebase`.
+   */
+  async rebase(id: string, onto?: string): Promise<JobRebaseAnswer> {
+    const res = await this.transport.request<JobRebaseAnswer & { ok: boolean }>(`/v3/job-deliveries/${encodeURIComponent(id)}/rebase`, {
+      method: 'POST',
+      body: onto ? { onto } : {},
+    });
+    const answer: JobRebaseAnswer & { ok?: boolean } = { ...res.data };
+    delete answer.ok;
+    return answer;
+  }
+}
+
+/** What an on-demand rebase did. */
+export interface JobRebaseAnswer {
+  outcome: 'up_to_date' | 'rebased' | 'conflict' | 'error';
+  /** The branch and the tip it was rebased onto. */
+  target: string;
+  onto: string;
+  delivery: JobDelivery;
+  /** The rebase's record (absent when up to date). */
+  rebase?: JobDeliveryRebase;
+  reason?: string;
+  next?: string;
 }

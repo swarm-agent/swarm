@@ -319,6 +319,13 @@ for every workflow step: its `action` says what it does, and `machine` (from
   `manage_jobs` `get_job` shows a job's deliveries and steps. A failed step
   says why and what to do next; `manage_jobs` `rerun_failed_steps` re-runs
   only the failed or stopped steps of a job's delivery.
+- Rebasing is Swarm's: every delivery is rebased onto its target branch when
+  the target moved (before its steps, and after a push that failed on a moved
+  target), and conflicts go to a resolver agent; do not add reopen steps
+  that ask a coder to rebase. A delivery that ends `conflict` was not
+  resolved: `rerun_failed_steps` rebases again. `rebase: "off"` opts a
+  workflow out; `{type: "rebase", onto}` rebases at a chosen point;
+  `manage_jobs` `rebase` rebases a finished delivery now.
 - `enable` and `disable` switch a workflow at once; `delete` removes it (its
   history stays).
 - Reuse and fork: `export` returns a workflow's portable JSON (`path` also

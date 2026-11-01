@@ -436,6 +436,9 @@ func (r *Runner) stopOnConflict(d *Delivery, i int) {
 	reason := "not run: " + ConflictReason(*d)
 	if rec.State == StateFailed || rec.State == StatePending || rec.State == StateWaiting {
 		reason = rec.Reason + "; " + ConflictReason(*d)
+		if strings.Contains(rec.Reason, ConflictReason(*d)) {
+			reason = rec.Reason // a rebase step's own failure already says it
+		}
 	}
 	rec.State, rec.Reason, rec.Next, rec.NextAttemptAt, rec.FinishedAt = StateFailed, stepReason(reason), ConflictNext, 0, r.now().UnixMilli()
 	if rec.Outcome == nil {

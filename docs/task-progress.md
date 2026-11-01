@@ -63,7 +63,10 @@ delivery: `running <step>`, `sent_back (round n)` (a review block),
 `sent_back (round n) rebase: <failure>` (the review passed, the push after it
 failed: the agent rebases), `pushed <head12>` (a run
 step after the review, such as the owner's push script), `delivered <target>`,
-`blocked <reason>` or `failed <step>`; `workflow pending` while the task's end
+`blocked <reason>`, `failed <step>` or `conflict <files> (rebase onto
+<target>)` (Swarm's rebase of the work onto its moved target conflicted and
+its resolver agents did not resolve it; see
+[Rebasing](automations.md#rebasing)); `workflow pending` while the task's end
 is not evaluated yet. With no workflow it is `integrated`, `delivered <where>`
 or, once the agent finished, `finished` when its state is `done` (nothing to
 integrate, the same answer as `get_task`) and `ready to integrate` otherwise;
@@ -127,7 +130,7 @@ and `idle`, using the same bucket as the list counts):
 |---|---|---|---|
 | `running` | an agent or workflow still works on it | run status planning/in_progress/running/…; or outcome `running <step>`, `sent_back (round n)`, `workflow pending` | `in_progress` |
 | `waiting` | queued for capacity, or waiting for the provider's usage limit to reset | run status `queued`/`pending`, or `limit_waiting` (reason: "waiting for the provider's limit to reset (until …): provider …; continues by itself"; linked-machine `list_tasks` rows add it as `state_reason`, in the machine's own words when it gives them, unless a live or stall reason is already there) | `waiting` |
-| `needs_you` | the person must act | run status `pending_approval`, `needs_input` (a pending request), `failed`, `blocked` (and other run failures); an unknown outcome after the run ended | `needs_attention` |
+| `needs_you` | the person must act | run status `pending_approval`, `needs_input` (a pending request), `failed`, `blocked` (and other run failures); an unknown outcome after the run ended; outcome `conflict …` (a rebase conflict Swarm's resolver could not resolve, see [Rebasing](automations.md#rebasing); the reason says the job or the person resolves it, then the delivery is re-run, which rebases again) | `needs_attention` |
 | `blocked_infra` | a workflow step could not run (its checkout, the environment, the lease, a missing or unusable script): an infrastructure problem, not the work; nothing waits on the person | outcome `error <step> (infrastructure: <kind>)`; reason ends "next: fix the machine or folder, then rerun the failed steps"; `get_task` `next_action: rerun_failed_steps` (`manage_jobs` with `job_id` `task/<project>/<task>`) | `blocked_infra` |
 | `workflow_failed` | a check or review ended the workflow delivery; nothing waits on the person | outcome `blocked …` (including sent back until its rounds ran out) or `failed …`; reason ends "next: send the task back with the findings, or archive it"; `get_task` `next_action: reopen_task` (`read_task_session` on a linked machine) | `workflow_failed` |
 | `landed` | the work was handed over | outcome `pushed <sha>`, `delivered <target>`, `integrated` (reason names the SHA or target) | `done` |
@@ -236,11 +239,22 @@ record keeps its placeholder.
 - `pending`: the task ended and its job end has not been evaluated yet. A
   run that leaves the task working (a Swarm task waiting on the tasks it
   delegated) is not a job end and marks nothing.
-- `running`, `done`, `failed`, `blocked`, `sent_back`: the state of the
-  deliveries that applied (the latest round per workflow). `sent_back`: a
-  reopen step sent the work back (review findings, a failed push to rebase)
+- `running`, `done`, `failed`, `blocked`, `conflict`, `sent_back`: the state
+  of the deliveries that applied (the latest round per workflow). `sent_back`:
+  a reopen step sent the work back (review findings, a failed push to rebase)
   and nothing was handed over; each such delivery carries `sent_back`
-  (`step`, `round`, `reason`).
+  (`step`, `round`, `reason`). `conflict`: Swarm's rebase onto the target
+  conflicted and its resolver agents did not resolve it (progress `state`
+  `conflict` too, not `failed`).
+- Each delivery Swarm rebased carries `rebase`, its newest rebase
+  ([Rebasing](automations.md#rebasing)): `outcome` (`rebased`, `resolving`,
+  `conflict`, `error`), `target`, `onto`, `from` and `to` (the head before
+  and after), and for a conflict `files`, `resolver_jobs` and `resolved`;
+  `rebases` counts the rebases that moved the head. History lists each one
+  ("rebased onto dev (old → new)", "conflict on dev: a.go (not resolved)").
+  A wake row (local, and from a linked machine) carries the shown delivery's
+  `rebase`, and its milestone names a rebase, a conflict being resolved, or
+  one that was not.
 - Why a review stopped the work: a delivery with a step whose verdict is
   `block` (or that ended `sent_back`, `failed` or `blocked` with a step's
   findings) carries `findings_step`, `verdict` and `findings`, capped to 4000
