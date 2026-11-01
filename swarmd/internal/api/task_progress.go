@@ -213,18 +213,56 @@ func deliveryReopenCut(d jobautomation.Delivery, step int) (pebblestore.ProjectT
 	return reopen, reopen.Failure != "" && cut, true
 }
 
-// deliveryRunAt is when the delivery's current run started: its newest
-// re-run, else its creation (the job end it was made for).
-func deliveryRunAt(d jobautomation.Delivery) int64 {
-	return max(d.CreatedAt, d.RerunAt)
+// deliveryEndAttempt is the attempt whose job end d was made for. The end
+// names its run exactly: no follow-up is the task's first run (the first
+// attempt), a follow-up is the run id of the attempt that ran it. An end
+// naming no recorded attempt is placed by when the job ended
+// (Result.FinishedAt), never by when the runner created d: the runner makes
+// a delivery when it scans the job end, which can be after a send-back
+// started the next attempt. at is the time the owner was placed by.
+func deliveryEndAttempt(task pebblestore.ProjectTaskRecord, d jobautomation.Delivery) (string, int64) {
+	followup := d.Followup
+	if followup == "" {
+		followup = d.Result.Followup
+	}
+	if followup == "" {
+		return task.Attempts[0].ID, task.Attempts[0].CreatedAt
+	}
+	for _, a := range task.Attempts {
+		if a.RunID == followup {
+			return a.ID, a.CreatedAt
+		}
+	}
+	endedAt := d.Result.FinishedAt
+	if endedAt <= 0 {
+		endedAt = d.CreatedAt
+	}
+	return attemptAt(task, endedAt), endedAt
 }
 
-// deliveryAttempt is the task attempt d's current run belongs to: the newest
-// attempt that started at or before that run (a workflow send-back keeps the
-// attempt; message_task and reopen start a new one), or the attempt whose job
-// end the runner matched to d (an end at a head d already covers). current
-// says whether that is the task's active attempt. A task with one attempt
-// (or none recorded) owns every delivery.
+// attemptAt is the newest attempt that started at or before at (the first
+// attempt when none did).
+func attemptAt(task pebblestore.ProjectTaskRecord, at int64) string {
+	owner, ownerAt := "", int64(-1)
+	for _, a := range task.Attempts {
+		if a.CreatedAt <= at && a.CreatedAt >= ownerAt {
+			owner, ownerAt = a.ID, a.CreatedAt
+		}
+	}
+	if owner == "" {
+		owner = task.Attempts[0].ID
+	}
+	return owner
+}
+
+// deliveryAttempt is the task attempt d's current run belongs to: the
+// attempt whose job end d was made for (deliveryEndAttempt), moved to the
+// newest attempt started at or before d's newest re-run when a re-run came
+// later (a workflow send-back keeps the attempt; message_task and reopen
+// start a new one), or the attempt whose job end the runner matched to d
+// (an end at a head d already covers). current says whether that is the
+// task's active attempt. A task with one attempt (or none recorded) owns
+// every delivery.
 func deliveryAttempt(task pebblestore.ProjectTaskRecord, d jobautomation.Delivery, eval *jobautomation.JobEvaluation) (string, bool) {
 	active := task.ActiveAttempt()
 	if active == nil || len(task.Attempts) < 2 {
@@ -240,14 +278,9 @@ func deliveryAttempt(task pebblestore.ProjectTaskRecord, d jobautomation.Deliver
 			}
 		}
 	}
-	at, owner, ownerAt := deliveryRunAt(d), "", int64(-1)
-	for _, a := range task.Attempts {
-		if a.CreatedAt <= at && a.CreatedAt >= ownerAt {
-			owner, ownerAt = a.ID, a.CreatedAt
-		}
-	}
-	if owner == "" {
-		owner = task.Attempts[0].ID
+	owner, at := deliveryEndAttempt(task, d)
+	if d.RerunAt > at {
+		owner = attemptAt(task, d.RerunAt)
 	}
 	return owner, owner == active.ID
 }

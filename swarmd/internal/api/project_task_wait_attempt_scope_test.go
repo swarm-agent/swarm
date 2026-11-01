@@ -349,3 +349,117 @@ func TestTaskWakeRerunShowsOnlyCurrentRunSteps(t *testing.T) {
 		t.Fatalf("step finished in the current run: %+v", again)
 	}
 }
+
+// Purpose: a delivery belongs to the attempt whose job end it was made for,
+// not to the attempt active when the runner happened to create it.
+// Requirement: attempt "initial" ends, the task is sent back (a2 starts),
+// and only then does the runner create the delivery for initial's end (the
+// store stamps CreatedAt after a2 started) and that delivery fails. The
+// delivery is still initial's: task progress lists it previous_attempt with
+// attempt_id initial and no failed workflow state, and a watch (milestones
+// on) on the task neither wakes with a `failed` milestone nor settles.
+// Negative control: the same late delivery made for a2's own end (its
+// result's follow-up is a2's run id) is a2's and its failure does wake the
+// watch with workflow_state failed. An end whose follow-up names no recorded
+// attempt is placed by when the job ended (Result.FinishedAt), not by
+// CreatedAt. Threat (review finding): deliveryAttempt picked the attempt by
+// the delivery's CreatedAt, so a send-back before the runner scanned the
+// old end attributed the old failure to the new attempt and woke it
+// `failed`. Boundary: Server.taskWaitProgressFor (computeTaskProgress /
+// deliveryAttempt) feeding the store's real wake over real session, task
+// and job automation stores; the existing fixtures all create the delivery
+// before the send-back, so they cannot cover this order.
+func TestTaskWatchSendBackBeforeOldEndsDeliveryIsCreated(t *testing.T) {
+	const a2Run = "desktop-v3-run:task-followup-a2"
+	setup := func(t *testing.T, followup string) (*attemptScopeFixture, jobautomation.Delivery) {
+		t.Helper()
+		w := newWaitWorkflowFixture(t)
+		auto := w.workflow(t)
+		db := w.f.s.sessions.Store()
+		if err := db.PutProject(w.f.account, &pebblestore.ProjectRecord{ID: "proj-1", Name: "Project"}); err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now().UnixMilli()
+		endedAt, sentBackAt := now-20_000, now-10_000
+		task := w.task(now)
+		task.SourceWorkspace = pebblestore.ProjectTaskSource{}
+		// initial ended at endedAt; message_task started a2 at sentBackAt,
+		// before the runner scanned initial's end.
+		task.Attempts = append(task.Attempts, pebblestore.ProjectTaskAttempt{ID: "a2", SessionID: "task-session", Role: "coder", RunID: a2Run, CreatedAt: sentBackAt, Status: "in_progress"})
+		task.ActiveAttemptID, task.Status = "a2", "in_progress"
+		if err := db.PutProjectTask(w.f.account, &task); err != nil {
+			t.Fatal(err)
+		}
+		jobID := taskRunJobID("proj-1", "task-1")
+		resultEnd := endedAt
+		if followup == a2Run {
+			resultEnd = now - 1_000
+		}
+		d, _, err := w.store.CreateDelivery(auto, jobautomation.Result{JobID: jobID, Followup: followup, Kind: jobautomation.KindTask, ProjectID: "proj-1", RunID: "task-1", Folder: w.folder, Status: jobautomation.StatusSucceeded, FinishedAt: resultEnd})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.CreatedAt <= sentBackAt {
+			t.Fatalf("fixture: delivery created at %d, not after the send-back at %d", d.CreatedAt, sentBackAt)
+		}
+		d.State, d.FinishedAt = jobautomation.StateFailed, d.CreatedAt+500
+		d.Steps[0].State, d.Steps[0].StartedAt, d.Steps[0].FinishedAt, d.Steps[0].Reason = jobautomation.StateFailed, d.CreatedAt+100, d.CreatedAt+400, "console: exited with code 1: OLD-DELIVERY-FAILURE"
+		d.Steps[1].State = jobautomation.StateSkipped
+		if err := w.store.SaveDelivery(d); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.store.RecordEvaluation(w.f.account, "proj-1", jobID, followup, 1, resultEnd, []string{d.ID}); err != nil {
+			t.Fatal(err)
+		}
+		return &attemptScopeFixture{w: w, auto: auto, jobID: jobID, failed: d}, d
+	}
+	t.Run("earlier_end_stays_earlier_attempts", func(t *testing.T) {
+		a, d := setup(t, "")
+		a.watch(t)
+		a.w.f.s.reconcileProjectTaskWaits(a.w.f.account, "proj-1")
+		a.w.f.s.reconcileProjectTaskWaits("", "")
+		if got := a.goalBodies(t, attemptScopeMilestones); len(got) != 0 {
+			t.Fatalf("the earlier end's delivery woke the new attempt's watch: %v", got)
+		}
+		if got := a.goalBodies(t, attemptScopeOutcomes); len(got) != 0 {
+			t.Fatalf("the earlier end's delivery settled the new attempt's watch: %v", got)
+		}
+		task := a.w.currentTask(t)
+		p := a.w.f.s.taskWaitProgressFor(a.w.f.account, task, time.Now().UnixMilli())
+		if p.Workflow == nil || p.Workflow.State == workflowFailed || len(p.Workflow.Deliveries) != 1 {
+			t.Fatalf("progress workflow: %+v", p.Workflow)
+		}
+		if v := p.Workflow.Deliveries[0]; v.ID != d.ID || !v.PreviousAttempt || v.AttemptID != "initial" {
+			t.Fatalf("late delivery of the earlier end not marked previous_attempt: %+v", v)
+		}
+		wake := pebblestore.ProjectTaskWaitProgressFrom(p).ForAttempt("a2")
+		if got := pebblestore.ProjectTaskMilestone(task.Status, wake); got == pebblestore.ProjectTaskMilestoneFailed {
+			t.Fatalf("Swarm Control milestone failed for a2: %+v", wake)
+		}
+		// An end naming no recorded attempt is placed by its job end.
+		unknown := d
+		unknown.Followup, unknown.Result.Followup = "desktop-v3-run:task-followup-gone", "desktop-v3-run:task-followup-gone"
+		if owner, current := deliveryAttempt(task, unknown, nil); owner != "initial" || current {
+			t.Fatalf("unrecorded follow-up placed at %q (current %v), want initial by its job end", owner, current)
+		}
+	})
+	t.Run("own_end_late_delivery_still_wakes", func(t *testing.T) {
+		a, d := setup(t, a2Run)
+		a.watch(t)
+		if _, err := a.w.f.s.sessions.Store().UpdateProjectTask(a.w.f.account, "proj-1", "task-1", func(task *pebblestore.ProjectTaskRecord) error {
+			task.Status, task.Attempts[1].Status = "needs_review", "needs_review"
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		a.w.f.s.reconcileProjectTaskWaits(a.w.f.account, "proj-1")
+		outcomes := a.goalBodies(t, attemptScopeOutcomes)
+		if len(outcomes) != 1 {
+			t.Fatalf("a2's own failed delivery did not settle the watch: %v", outcomes)
+		}
+		row := remoteWaitRow(t, outcomes[0], 0)
+		if row["workflow_state"] != workflowFailed || row["delivery_id"] != d.ID || row["delivery_attempt_id"] != "a2" {
+			t.Fatalf("a2's own failed delivery row: %v", row)
+		}
+	})
+}

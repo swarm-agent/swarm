@@ -122,9 +122,13 @@ changing the run.
   - Rows are the followed attempt's only. `delivery_attempt_id` is the task
     attempt the shown delivery's current run belongs to and `delivery_run`
     that run (1 the first; a re-run counts up). A delivery belongs to the
-    newest attempt started at or before its current run (creation, or its
-    newest re-run, `jobautomation.Delivery.RerunAt`), or to the attempt whose
-    evaluated job end the runner matched to it (`deliveryAttempt`); a
+    attempt whose job end it was made for: no follow-up is the first
+    attempt, a follow-up is the attempt with that `run_id`, and an end naming
+    no recorded attempt is placed by its `Result.FinishedAt` (never by when
+    the runner created the delivery, which can be after a send-back). A
+    later re-run (`jobautomation.Delivery.RerunAt`) moves it to the newest
+    attempt started at or before the re-run, and an evaluated job end the
+    runner matched to it moves it to that end's attempt (`deliveryAttempt`); a
     workflow send-back keeps the attempt, `message_task`/reopen starts a new
     one. Task progress lists a delivery of an earlier attempt with
     `previous_attempt: true` (and its `attempt_id`, `run`); it decides
