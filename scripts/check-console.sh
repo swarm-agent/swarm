@@ -12,32 +12,32 @@
 # failure the last lines of that command's output are printed to stdout, so a
 # workflow can pass {{steps.<id>.output}} back to a coder, and the script
 # exits with the command's status. Ends with "CONSOLE CHECK OK" on success.
+# A setup error (no checkout, no base, no console/Cargo.toml) is also printed
+# to stdout, as "CONSOLE CHECK FAILED: setup: ...", and exits 2.
 set -euo pipefail
 
 tail_lines=150
 
-root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
-  echo "check-console: not inside a Git checkout" >&2
+setup_fail() {
+  echo "check-console: $*" >&2
+  echo "CONSOLE CHECK FAILED: setup: $*"
   exit 2
 }
+
+root="$(git rev-parse --show-toplevel 2>/dev/null)" || setup_fail "not inside a Git checkout"
 cd "$root"
 
 if git rev-parse --verify --quiet 'refs/remotes/origin/dev^{commit}' >/dev/null; then
-  base="$(git merge-base origin/dev HEAD)" || {
-    echo "check-console: origin/dev and HEAD share no history" >&2
-    exit 2
-  }
+  base="$(git merge-base origin/dev HEAD)" || setup_fail "origin/dev and HEAD share no history"
   base_from="merge-base origin/dev HEAD"
 elif [ -n "${SWARM_BASE:-}" ]; then
   if ! git rev-parse --verify --quiet "${SWARM_BASE}^{commit}" >/dev/null; then
-    echo "check-console: SWARM_BASE ${SWARM_BASE} is not a commit in this checkout" >&2
-    exit 2
+    setup_fail "SWARM_BASE ${SWARM_BASE} is not a commit in this checkout"
   fi
   base="$SWARM_BASE"
   base_from="SWARM_BASE"
 else
-  echo "check-console: no base to diff against: refs/remotes/origin/dev is missing and SWARM_BASE is not set" >&2
-  exit 2
+  setup_fail "no base to diff against: refs/remotes/origin/dev is missing and SWARM_BASE is not set"
 fi
 
 changed="$(git diff --name-only "$base" HEAD)"
@@ -52,8 +52,7 @@ sed -n '1,20p' <<<"$console_changed"
 echo "CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-<unset: console/target>}"
 
 if [ ! -f console/Cargo.toml ]; then
-  echo "check-console: console/Cargo.toml is missing" >&2
-  exit 2
+  setup_fail "console/Cargo.toml is missing"
 fi
 cd console
 
