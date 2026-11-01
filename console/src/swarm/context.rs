@@ -111,15 +111,11 @@ fn threshold(v: &Value) -> Option<f64> {
 /// The newest compaction checkpoint in `messages` (Swarm's system message
 /// that starts with its marker).
 fn checkpoint(messages: &[Value]) -> Option<Checkpoint> {
-    messages
-        .iter()
-        .filter(|m| s(m, "role") == "system" && s(m, "content").starts_with(MARKER))
-        .max_by_key(|m| u(m, "created_at"))
-        .map(|m| {
-            let head = s(m, "content").lines().next().unwrap_or("");
-            let field = |k: &str| head.split_whitespace().find_map(|w| w.strip_prefix(k)).unwrap_or("").to_string();
-            Checkpoint { at: u(m, "created_at"), origin: field("origin="), index: field("index=").parse().unwrap_or(0) }
-        })
+    messages.iter().filter(|m| s(m, "role") == "system" && s(m, "content").starts_with(MARKER)).max_by_key(|m| u(m, "created_at")).map(|m| {
+        let head = s(m, "content").lines().next().unwrap_or("");
+        let field = |k: &str| head.split_whitespace().find_map(|w| w.strip_prefix(k)).unwrap_or("").to_string();
+        Checkpoint { at: u(m, "created_at"), origin: field("origin="), index: field("index=").parse().unwrap_or(0) }
+    })
 }
 
 /// A session detail (`GET /v3/sessions/{id}`) as a reading.
@@ -188,7 +184,9 @@ pub fn compact(client: &Client, session_id: &str, note: &str, threshold: Option<
     let answer = match client.post(&format!("/v3/sessions/{session_id}/compact"), body) {
         Ok(a) => a,
         // The request outlived the client's wait: Swarm may still be compacting.
-        Err(Refusal::Unreachable) => return fail("Swarm did not answer the compact request in time; it may still be compacting. The context is read again when the conversation changes.".into()),
+        Err(Refusal::Unreachable) => {
+            return fail("Swarm did not answer the compact request in time; it may still be compacting. The context is read again when the conversation changes.".into());
+        }
         Err(e) => return fail(e.to_string()),
     };
     if answer.get("ok").and_then(Value::as_bool) == Some(false) || !matches!(s(&answer, "status"), "" | "completed") {

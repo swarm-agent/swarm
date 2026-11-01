@@ -9,7 +9,7 @@
 //!   `POST /v1/workspace/repository/baseline` commits the ones the person
 //!   picked as the first commit.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::client::Client;
 
@@ -55,13 +55,7 @@ fn s(v: &Value, key: &str) -> String {
 }
 
 fn state_of(v: &Value) -> State {
-    State {
-        state: s(v, "state"),
-        path: s(v, "path"),
-        head: s(v, "head_commit"),
-        can_setup: v.get("can_setup").and_then(Value::as_bool).unwrap_or(false),
-        message: s(v, "message"),
-    }
+    State { state: s(v, "state"), path: s(v, "path"), head: s(v, "head_commit"), can_setup: v.get("can_setup").and_then(Value::as_bool).unwrap_or(false), message: s(v, "message") }
 }
 
 fn query(path: &str) -> String {
@@ -103,7 +97,11 @@ pub fn review(client: &Client, path: &str) -> Result<Review, String> {
         .and_then(Value::as_array)
         .map(|a| {
             a.iter()
-                .map(|f| File { path: s(f, "path"), size: f.get("size").and_then(Value::as_u64).unwrap_or(0), selectable: f.get("selectable").and_then(Value::as_bool).unwrap_or(false) })
+                .map(|f| File {
+                    path: s(f, "path"),
+                    size: f.get("size").and_then(Value::as_u64).unwrap_or(0),
+                    selectable: f.get("selectable").and_then(Value::as_bool).unwrap_or(false),
+                })
                 .collect()
         })
         .unwrap_or_default();

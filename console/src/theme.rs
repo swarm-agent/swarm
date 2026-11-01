@@ -2,7 +2,6 @@
 
 use gpui::{Hsla, rgb};
 
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Concept {
     Graphite,

@@ -22,7 +22,10 @@ pub enum Kind {
     Heading(u8),
     /// A list item's text: its nesting depth and its marker ("•", "1.");
     /// later paragraphs of the same item have an empty marker.
-    Item { depth: usize, marker: String },
+    Item {
+        depth: usize,
+        marker: String,
+    },
     Quote,
     Code,
     Rule,
@@ -46,7 +49,13 @@ fn bare_links(text: &str, marked: &[(Range<usize>, String)]) -> Vec<(Range<usize
     let mut from = 0;
     while let Some(i) = text[from..].find("http").map(|i| i + from) {
         let rest = &text[i..];
-        let scheme = if rest.starts_with("https://") { 8 } else if rest.starts_with("http://") { 7 } else { 0 };
+        let scheme = if rest.starts_with("https://") {
+            8
+        } else if rest.starts_with("http://") {
+            7
+        } else {
+            0
+        };
         if scheme == 0 {
             from = i + 4;
             continue;
@@ -102,14 +111,8 @@ pub fn parse(src: &str) -> Vec<Block> {
         }
         text.truncate(trimmed_end);
         let len = text.len();
-        let mut marks: Vec<(Range<usize>, u8)> = std::mem::take(marks)
-            .into_iter()
-            .filter_map(|(r, m)| (r.start < len).then(|| (r.start..r.end.min(len), m)))
-            .collect();
-        let mut links: Vec<(Range<usize>, String)> = std::mem::take(links)
-            .into_iter()
-            .filter_map(|(r, u)| (r.start < len).then(|| (r.start..r.end.min(len), u)))
-            .collect();
+        let mut marks: Vec<(Range<usize>, u8)> = std::mem::take(marks).into_iter().filter_map(|(r, m)| (r.start < len).then(|| (r.start..r.end.min(len), m))).collect();
+        let mut links: Vec<(Range<usize>, String)> = std::mem::take(links).into_iter().filter_map(|(r, u)| (r.start < len).then(|| (r.start..r.end.min(len), u))).collect();
         for (range, url) in bare_links(text, &links) {
             marks.push((range.clone(), LINK));
             links.push((range, url));

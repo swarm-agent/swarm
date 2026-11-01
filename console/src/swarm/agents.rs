@@ -176,7 +176,14 @@ pub fn parse(v: &Value) -> AgentsNow {
                 started_at: n(a, "started_at"),
                 now: a.get("now").filter(|t| t.is_object()).map(tool),
                 timeline: list(a, "timeline").map(tool).collect(),
-                counts: Counts { reads: n(&c, "reads"), edits: n(&c, "edits"), commands: n(&c, "commands"), commits: n(&c, "commits"), other: n(&c, "other"), last_minute: n(&c, "last_minute") },
+                counts: Counts {
+                    reads: n(&c, "reads"),
+                    edits: n(&c, "edits"),
+                    commands: n(&c, "commands"),
+                    commits: n(&c, "commits"),
+                    other: n(&c, "other"),
+                    last_minute: n(&c, "last_minute"),
+                },
                 files: list(a, "files").filter_map(Value::as_str).map(str::to_string).collect(),
                 files_total: n(a, "files_total"),
                 stage: a.get("stage").and_then(|st| Some(Stage { step: Step::parse(st.get("step")?.as_str()?)?, round: n(st, "round"), workflow: s(st, "workflow") })),
@@ -190,10 +197,26 @@ pub fn parse(v: &Value) -> AgentsNow {
         at: n(v, "at"),
         agents,
         machines: list(v, "machines")
-            .map(|m| Machine { name: s(m, "name"), state: s(m, "state"), reason: s(m, "reason"), agents: n(m, "agents"), landed_today: n(m, "landed_today"), failed_today: n(m, "failed_today") })
+            .map(|m| Machine {
+                name: s(m, "name"),
+                state: s(m, "state"),
+                reason: s(m, "reason"),
+                agents: n(m, "agents"),
+                landed_today: n(m, "landed_today"),
+                failed_today: n(m, "failed_today"),
+            })
             .collect(),
         recent: list(v, "recent")
-            .map(|f| Finished { machine: s(f, "machine"), project_id: s(f, "project_id"), task_id: s(f, "task_id"), session_id: s(f, "session_id"), title: s(f, "title"), state: s(f, "state"), reason: s(f, "reason"), at: n(f, "at") })
+            .map(|f| Finished {
+                machine: s(f, "machine"),
+                project_id: s(f, "project_id"),
+                task_id: s(f, "task_id"),
+                session_id: s(f, "session_id"),
+                title: s(f, "title"),
+                state: s(f, "state"),
+                reason: s(f, "reason"),
+                at: n(f, "at"),
+            })
             .collect(),
         totals: Totals { agents: n(&t, "agents"), last_minute: n(&t, "tool_calls_last_minute"), landed_today: n(&t, "landed_today"), failed_today: n(&t, "failed_today") },
     }
@@ -233,7 +256,16 @@ pub fn moves_runs(kind: &str) -> bool {
     kind.starts_with("session.run.")
         || kind.starts_with("job.")
         || kind.starts_with("session.task.")
-        || matches!(kind, "session.created" | "session.assistant.started" | "session.assistant.completed" | "session.lifecycle.updated" | "session.delivery.updated" | "project.updated" | "review.recorded")
+        || matches!(
+            kind,
+            "session.created"
+                | "session.assistant.started"
+                | "session.assistant.completed"
+                | "session.lifecycle.updated"
+                | "session.delivery.updated"
+                | "project.updated"
+                | "review.recorded"
+        )
 }
 
 /// Whether a home realtime frame (`kind`, and `event_type` for events)
@@ -426,9 +458,15 @@ pub struct Header {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Panel {
-    Working { header: Header, cards: Vec<Card> },
+    Working {
+        header: Header,
+        cards: Vec<Card>,
+    },
     /// Nothing runs: the last finished jobs with Swarm's derived state.
-    Quiet { header: Header, recent: Vec<Finished> },
+    Quiet {
+        header: Header,
+        recent: Vec<Finished>,
+    },
 }
 
 pub fn header(now: &AgentsNow) -> Header {
@@ -567,7 +605,10 @@ mod tests {
 
         // Two machines with one each: the order is by name.
         let even = AgentsNow {
-            machines: vec![Machine { name: "zeta".into(), state: "online".into(), agents: 1, ..Default::default() }, Machine { name: "alpha".into(), state: "online".into(), agents: 1, ..Default::default() }],
+            machines: vec![
+                Machine { name: "zeta".into(), state: "online".into(), agents: 1, ..Default::default() },
+                Machine { name: "alpha".into(), state: "online".into(), agents: 1, ..Default::default() },
+            ],
             totals: Totals { agents: 2, ..Default::default() },
             ..Default::default()
         };
@@ -645,7 +686,15 @@ mod tests {
     #[test]
     fn stream_patches_cards_and_asks_for_reads() {
         let mut now = fixture(1_000_000);
-        let started = Activity { machine: "forge".into(), kind: "session.tool.started".into(), session_id: "s1".into(), tool_name: "write".into(), file_path: "console/README.md".into(), at: 1_000_500, ..Default::default() };
+        let started = Activity {
+            machine: "forge".into(),
+            kind: "session.tool.started".into(),
+            session_id: "s1".into(),
+            tool_name: "write".into(),
+            file_path: "console/README.md".into(),
+            at: 1_000_500,
+            ..Default::default()
+        };
         assert!(!now.apply(&started));
         let c = &now.agents[0];
         assert_eq!(c.now.as_ref().map(doing), Some("write console/README.md".to_string()));

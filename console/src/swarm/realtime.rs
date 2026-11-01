@@ -167,7 +167,10 @@ mod tests {
         let (_ctx, crx) = std::sync::mpsc::channel();
         std::thread::spawn(move || stream.pump(tx, crx));
         client
-            .post(&format!("/v3/sessions/{session}/messages"), serde_json::json!({"client_request_id": format!("test:{}", std::process::id()), "role": "user", "content": "Reply with the single word: pong"}))
+            .post(
+                &format!("/v3/sessions/{session}/messages"),
+                serde_json::json!({"client_request_id": format!("test:{}", std::process::id()), "role": "user", "content": "Reply with the single word: pong"}),
+            )
             .unwrap();
         let until = std::time::Instant::now() + std::time::Duration::from_secs(12);
         while let Ok(frame) = rx.recv_timeout(until.saturating_duration_since(std::time::Instant::now())) {

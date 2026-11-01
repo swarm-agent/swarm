@@ -230,11 +230,8 @@ impl Console {
         }
         for p in &self.providers {
             let id = p.id.to_string();
-            let detail = if p.ready {
-                if p.default_model.is_empty() { "connected".to_string() } else { format!("connected · {}", p.default_model) }
-            } else {
-                p.reason.to_string()
-            };
+            let detail =
+                if p.ready { if p.default_model.is_empty() { "connected".to_string() } else { format!("connected · {}", p.default_model) } } else { p.reason.to_string() };
             let mut controls = div().flex().gap_1();
             if p.oauth {
                 let pid = id.clone();
@@ -251,14 +248,12 @@ impl Console {
             }
             if p.accepts_key {
                 let pid = id.clone();
-                controls = controls.child(self.button(SharedString::from(format!("provider-{pid}-add")), "add key", !p.ready && !p.oauth).on_click(cx.listener(
-                    move |this, _: &ClickEvent, window, cx| this.open_key_form(pid.clone(), window, cx),
-                )));
+                controls = controls.child(
+                    self.button(SharedString::from(format!("provider-{pid}-add")), "add key", !p.ready && !p.oauth)
+                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_key_form(pid.clone(), window, cx))),
+                );
             }
-            rows.push(
-                self.setting_row(id.clone(), detail, controls)
-                    .child(div().text_color(if p.ready { t.ok } else { t.faint }).child(if p.ready { "●" } else { "○" })),
-            );
+            rows.push(self.setting_row(id.clone(), detail, controls).child(div().text_color(if p.ready { t.ok } else { t.faint }).child(if p.ready { "●" } else { "○" })));
             for k in &p.keys {
                 rows.push(self.render_key(&id, k, cx));
             }
@@ -308,9 +303,10 @@ impl Console {
         }
         let (vp, vid, vlabel) = (provider.clone(), id.clone(), k.label.to_string());
         controls = controls
-            .child(self.button(SharedString::from(format!("{key}-verify")), "verify", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                this.verify_key(vp.clone(), vid.clone(), vlabel.clone(), cx)
-            })))
+            .child(
+                self.button(SharedString::from(format!("{key}-verify")), "verify", false)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.verify_key(vp.clone(), vid.clone(), vlabel.clone(), cx))),
+            )
             .child(action("remove", false, "/v1/auth/credentials/delete", "Removing the key…"));
         div()
             .w_full()
@@ -325,7 +321,13 @@ impl Console {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .child(div().flex().gap_2().child(div().truncate().text_color(t.text).child(k.label.clone())).when(k.active, |d| d.child(div().text_size(px(11.)).text_color(t.accent).child("active"))))
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .child(div().truncate().text_color(t.text).child(k.label.clone()))
+                            .when(k.active, |d| d.child(div().text_size(px(11.)).text_color(t.accent).child("active"))),
+                    )
                     .child(div().text_size(px(11.)).text_color(t.faint).child(meta.join(" · "))),
             )
             .child(controls)
@@ -392,7 +394,14 @@ impl Console {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .child(div().flex().items_center().gap_2().child(div().text_size(px(15.)).text_color(t.text).child(code)).child(div().text_size(px(11.)).text_color(t.faint).child("enter this code on the page, signed in to your ChatGPT plan")))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().text_size(px(15.)).text_color(t.text).child(code))
+                            .child(div().text_size(px(11.)).text_color(t.faint).child("enter this code on the page, signed in to your ChatGPT plan")),
+                    )
                     .child(div().truncate().text_size(px(11.)).text_color(t.accent).child(url)),
             )
             .child(self.button("chatgpt-copy-code", "copy code", true).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.copy(copy_code.clone(), cx))))

@@ -84,6 +84,9 @@ The console is released on its own schedule, separately from Swarm.
 - Testing a change: follow "Testing a change (agents)" in the root
   `AGENTS.md` (`cargo build --locked --tests` plus named `cargo test <filter>`
   tests only; no precommit or vital scripts for a routine commit).
+- Review gate: `scripts/check-console.sh` runs `cargo fmt --check`,
+  `cargo build --locked --tests` and the whole `cargo test --locked` suite
+  when a change touches `console/` (skipped otherwise).
 - Rust, GPUI. `cargo run`; `cargo test <filter>`. Screens, panes, theme, icons,
   markdown and scripts (`scripts/`) are kept; everything that talks to Swarm
   is rewritten under the rules above. `src/swarm/control.rs` (MCP) is

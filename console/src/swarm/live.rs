@@ -67,10 +67,17 @@ pub enum Update {
     /// Swarm did not answer; the text says why.
     Lost(String),
     /// A command finished. `draft` names the new session it started.
-    Done { draft: Option<u64>, what: &'static str, result: Result<Value, String> },
+    Done {
+        draft: Option<u64>,
+        what: &'static str,
+        result: Result<Value, String>,
+    },
     /// A folder the Orchestrator asked to ready has files: the person picks
     /// its first commit (the request stays open until then).
-    Review { permission_id: String, review: repository::Review },
+    Review {
+        permission_id: String,
+        review: repository::Review,
+    },
     /// Workers or automations changed in Swarm: read them again.
     AutomationsChanged,
     /// The account's permissions changed in Swarm (permissions.updated).
@@ -83,72 +90,169 @@ pub enum Update {
     AgentsChanged,
     /// An action in your browser the extension found critical: it waits for
     /// you (the request stays open until you do it or deny it).
-    Hold { permission_id: String, why: String },
+    Hold {
+        permission_id: String,
+        why: String,
+    },
 }
 
 #[derive(Clone)]
 pub enum Command {
     /// Start an Orchestrator conversation in a project with the person's first message.
-    Start { draft: u64, project_id: String, workspace_path: String, text: String, model: Option<Choice>, files: Vec<Attachment> },
+    Start {
+        draft: u64,
+        project_id: String,
+        workspace_path: String,
+        text: String,
+        model: Option<Choice>,
+        files: Vec<Attachment>,
+    },
     /// The model for one conversation only.
-    SetModel { session_id: String, choice: Choice },
+    SetModel {
+        session_id: String,
+        choice: Choice,
+    },
     /// A role's default model for every conversation (plan, action, system-coder, …).
-    SetDefault { role: String, model: Assignment },
+    SetDefault {
+        role: String,
+        model: Assignment,
+    },
     /// Save a favorite (a named model, thinking and priority), or remove one.
-    SaveFavorite { name: String, model: Assignment },
-    RemoveFavorite { id: String },
+    SaveFavorite {
+        name: String,
+        model: Assignment,
+    },
+    RemoveFavorite {
+        id: String,
+    },
     /// Read the account's permissions (GET /v3/permissions).
     ReadPermissions,
     /// Change one rule (PATCH /v3/permissions with the revision it was read
     /// at), then read the record again.
-    SetPermission { rule: Rule, value: String, revision: u64 },
+    SetPermission {
+        rule: Rule,
+        value: String,
+        revision: u64,
+    },
     /// Carry out a call to your machine here and answer it with the result.
-    Client { session_id: String, permission_id: String, tool: String, args: serde_json::Value },
+    Client {
+        session_id: String,
+        permission_id: String,
+        tool: String,
+        args: serde_json::Value,
+    },
     /// Ready a project folder for agents on the Orchestrator's request: Swarm's
     /// empty first commit, or the review (then Commit) for a folder with files.
-    Ready { session_id: String, permission_id: String, path: String },
+    Ready {
+        session_id: String,
+        permission_id: String,
+        path: String,
+    },
     /// The picked files become the folder's first commit; the request is answered.
-    Commit { session_id: String, permission_id: String, review: repository::Review, selected: Vec<String> },
+    Commit {
+        session_id: String,
+        permission_id: String,
+        review: repository::Review,
+        selected: Vec<String>,
+    },
     /// Refuse a call to your machine, or a request for access.
-    Refuse { session_id: String, permission_id: String, reason: String },
+    Refuse {
+        session_id: String,
+        permission_id: String,
+        reason: String,
+    },
     /// Home redeems a machine's link code (made on the machine with
     /// `sudo swarmctl fleet invite ADDRESS`) and becomes its home.
-    LinkMachine { code: String },
+    LinkMachine {
+        code: String,
+    },
     /// Home lets a linked machine go (the machine is told and ends home's session there).
-    UnlinkMachine { name: String },
+    UnlinkMachine {
+        name: String,
+    },
     /// Carry out a manage_browser call in your Chrome and answer it; with
     /// `confirmed` false an action the extension finds critical is held.
-    Browser { session_id: String, permission_id: String, args: serde_json::Value, confirmed: bool },
-    Send { session_id: String, text: String, files: Vec<Attachment> },
+    Browser {
+        session_id: String,
+        permission_id: String,
+        args: serde_json::Value,
+        confirmed: bool,
+    },
+    Send {
+        session_id: String,
+        text: String,
+        files: Vec<Attachment>,
+    },
     /// Answer the session's pending question, or allow or deny its pending tool call.
-    Resolve { session_id: String, permission_id: String, allow: bool, answer: Option<String> },
-    Approve { project_id: String, task_id: String, approve: bool },
+    Resolve {
+        session_id: String,
+        permission_id: String,
+        allow: bool,
+        answer: Option<String>,
+    },
+    Approve {
+        project_id: String,
+        task_id: String,
+        approve: bool,
+    },
     /// Archive sessions (Swarm's batch route); each then leaves the list by
     /// its session.archived event.
-    Archive { session_ids: Vec<String> },
+    Archive {
+        session_ids: Vec<String>,
+    },
     /// Rename a session: Swarm keeps the title and stops titling it itself.
-    Rename { session_id: String, title: String },
+    Rename {
+        session_id: String,
+        title: String,
+    },
     /// Pin or unpin a session: Swarm metadata `pinned`.
-    Pin { session_id: String, pinned: bool },
+    Pin {
+        session_id: String,
+        pinned: bool,
+    },
     /// Bring an archived session back (Swarm wants its tombstone's version,
     /// read from the project's archive first).
-    Unarchive { session_id: String, project_id: String },
+    Unarchive {
+        session_id: String,
+        project_id: String,
+    },
     /// Read one session into the list (a search result older than the
     /// recent list) so it can open.
-    Reveal { session_id: String },
+    Reveal {
+        session_id: String,
+    },
     /// Change a project's record (name, project.md): PATCH /v3/projects/{id}.
-    PatchProject { project_id: String, body: Value },
-    OrderProjects { project_ids: Vec<String> },
-    DeleteProject { project_id: String },
-    RefreshProjectContext { project_id: String, expected_attempt: u64 },
+    PatchProject {
+        project_id: String,
+        body: Value,
+    },
+    OrderProjects {
+        project_ids: Vec<String>,
+    },
+    DeleteProject {
+        project_id: String,
+    },
+    RefreshProjectContext {
+        project_id: String,
+        expected_attempt: u64,
+    },
     /// `waiting_run_id`: the run asleep on tasks ("" for none). Swarm's
     /// session detail lists only an active run, so a wait is stopped by this id.
-    Stop { session_id: String, waiting_run_id: String },
+    Stop {
+        session_id: String,
+        waiting_run_id: String,
+    },
     /// Read a conversation's context (see `context::read`).
-    ReadContext { session_id: String },
+    ReadContext {
+        session_id: String,
+    },
     /// Compact a conversation now, setting its auto-compact threshold first
     /// when one is given (see `context::compact`).
-    Compact { session_id: String, note: String, threshold: Option<f64> },
+    Compact {
+        session_id: String,
+        note: String,
+        threshold: Option<f64>,
+    },
 }
 
 pub struct Live {
@@ -374,9 +478,7 @@ fn perform(client: &Client, command: Command) -> (Option<u64>, &'static str, Res
             });
             (Some(draft), "start", result)
         }
-        Command::Send { session_id, text, files } => {
-            (None, "send", send_message(client, &session_id, &text, &files))
-        }
+        Command::Send { session_id, text, files } => (None, "send", send_message(client, &session_id, &text, &files)),
         Command::Resolve { session_id, permission_id, allow, answer } => {
             let mut body = json!({"action": if allow { "allow_once" } else { "deny_once" }});
             if let Some(answer) = answer {
@@ -399,9 +501,7 @@ fn perform(client: &Client, command: Command) -> (Option<u64>, &'static str, Res
             (None, "commit", result)
         }
         Command::Ready { .. } => (None, "ready", Err("handled before perform".into())),
-        Command::Refuse { session_id, permission_id, reason } => {
-            (None, "refuse", resolve(client, &session_id, &permission_id, json!({"action": "deny_once", "reason": reason})))
-        }
+        Command::Refuse { session_id, permission_id, reason } => (None, "refuse", resolve(client, &session_id, &permission_id, json!({"action": "deny_once", "reason": reason}))),
         Command::Browser { .. } => (None, "browser", Err("handled before perform".into())),
         Command::ReadPermissions => (None, "permissions", client.get("/v3/permissions").map_err(err)),
         // Swarm's answer is the stored record; the page shows a fresh read of
@@ -429,13 +529,23 @@ fn perform(client: &Client, command: Command) -> (Option<u64>, &'static str, Res
         Command::ReadContext { session_id } => (None, "context", Ok(super::context::read(client, &session_id))),
         Command::Compact { session_id, note, threshold } => (None, "compact", Ok(super::context::compact(client, &session_id, &note, threshold))),
         Command::Archive { session_ids } => (None, "archive", client.post("/v3/sessions:archive", json!({"session_ids": session_ids})).map_err(err)),
-        Command::Rename { session_id, title } => (None, "rename", client.post(&format!("/v3/sessions/{session_id}/title"), json!({"title": title, "client_request_id": request_id("title")})).map_err(err)),
-        Command::Pin { session_id, pinned } => (None, if pinned { "pin" } else { "unpin" }, client.post(&format!("/v3/sessions/{session_id}/metadata"), json!({"metadata": {"pinned": pinned}, "client_request_id": request_id("pin")})).map_err(err)),
+        Command::Rename { session_id, title } => {
+            (None, "rename", client.post(&format!("/v3/sessions/{session_id}/title"), json!({"title": title, "client_request_id": request_id("title")})).map_err(err))
+        }
+        Command::Pin { session_id, pinned } => (
+            None,
+            if pinned { "pin" } else { "unpin" },
+            client.post(&format!("/v3/sessions/{session_id}/metadata"), json!({"metadata": {"pinned": pinned}, "client_request_id": request_id("pin")})).map_err(err),
+        ),
         Command::Unarchive { session_id, project_id } => (None, "unarchive", unarchive(client, &session_id, &project_id)),
         Command::Reveal { .. } => (None, "reveal", Ok(json!({}))),
-        Command::RefreshProjectContext { project_id, expected_attempt } => (None, "project", client.post(&format!("/v3/projects/{project_id}/context:retry"), json!({"expected_attempt": expected_attempt})).map_err(err)),
+        Command::RefreshProjectContext { project_id, expected_attempt } => {
+            (None, "project", client.post(&format!("/v3/projects/{project_id}/context:retry"), json!({"expected_attempt": expected_attempt})).map_err(err))
+        }
         Command::DeleteProject { project_id } => (None, "delete project", client.delete(&format!("/v3/projects/{project_id}")).map_err(err)),
-        Command::OrderProjects { project_ids } => (None, "project", client.put("/v3/projects:order", json!({"project_ids": project_ids, "client_request_id": request_id("project-order")})).map_err(err)),
+        Command::OrderProjects { project_ids } => {
+            (None, "project", client.put("/v3/projects:order", json!({"project_ids": project_ids, "client_request_id": request_id("project-order")})).map_err(err))
+        }
         Command::PatchProject { project_id, body } => (None, "project", client.patch(&format!("/v3/projects/{project_id}"), body).map_err(err)),
         Command::SetModel { session_id, choice } => (None, "model", models::set_session_model(client, &session_id, &choice, &request_id("model")).map_err(err)),
         Command::SetDefault { role, model } => (None, "default", models::set_default(client, &role, &model).map_err(err)),
@@ -459,8 +569,52 @@ const TEXT_TOTAL_MAX: usize = 4 << 20;
 
 /// Text and code files the web UI puts into the message instead of uploading.
 const TEXT_FILE_TYPES: &[&str] = &[
-    "bash", "c", "cc", "cfg", "conf", "cpp", "cs", "css", "csv", "cxx", "diff", "go", "graphql", "h", "hpp", "html", "ini", "java", "js", "json", "jsx", "kt", "kts",
-    "log", "lua", "md", "mdx", "mjs", "php", "properties", "py", "rb", "rs", "sh", "sql", "svelte", "swift", "toml", "ts", "tsx", "txt", "vue", "xml", "yaml", "yml", "zsh",
+    "bash",
+    "c",
+    "cc",
+    "cfg",
+    "conf",
+    "cpp",
+    "cs",
+    "css",
+    "csv",
+    "cxx",
+    "diff",
+    "go",
+    "graphql",
+    "h",
+    "hpp",
+    "html",
+    "ini",
+    "java",
+    "js",
+    "json",
+    "jsx",
+    "kt",
+    "kts",
+    "log",
+    "lua",
+    "md",
+    "mdx",
+    "mjs",
+    "php",
+    "properties",
+    "py",
+    "rb",
+    "rs",
+    "sh",
+    "sql",
+    "svelte",
+    "swift",
+    "toml",
+    "ts",
+    "tsx",
+    "txt",
+    "vue",
+    "xml",
+    "yaml",
+    "yml",
+    "zsh",
 ];
 
 /// A text or code file's type ("md", "rs"), or None for a file to upload.
@@ -517,23 +671,24 @@ fn attach(client: &Client, session_id: &str, text: &str, files: &[Attachment]) -
 // card nor another device's pending call grants local execution authority.
 fn require_ready_device_call(client: &Client, session_id: &str, permission_id: &str) -> Result<(), String> {
     let permissions = client.get("/v3/permissions").map_err(err)?;
-    let device = list(&permissions, "devices").iter()
+    let device = list(&permissions, "devices")
+        .iter()
         .find(|d| d.get("this_device").and_then(Value::as_bool) == Some(true))
         .map(|d| s(d, "id").to_string())
         .filter(|id| !id.is_empty())
         .ok_or("Swarm has not identified this client as a device")?;
     let pending = client.get(&format!("/v3/sessions/{session_id}/permissions")).map_err(err)?;
-    let ready = list(&pending, "permissions").iter().any(|p|
-        s(p, "id") == permission_id && s(p, "status") == "pending"
-        && s(p, "execution") == "ready" && s(p, "target_device") == device);
-    if !ready { return Err("Swarm has not approved this call for execution on this device".into()); }
+    let ready =
+        list(&pending, "permissions").iter().any(|p| s(p, "id") == permission_id && s(p, "status") == "pending" && s(p, "execution") == "ready" && s(p, "target_device") == device);
+    if !ready {
+        return Err("Swarm has not approved this call for execution on this device".into());
+    }
     Ok(())
 }
 
 fn resolve(client: &Client, session_id: &str, permission_id: &str, body: Value) -> Result<Value, String> {
     client.post(&format!("/v3/sessions/{session_id}/permissions/{permission_id}/resolve"), body).map_err(err)
 }
-
 
 /// Brings an archived session back. Swarm checks the tombstone's version,
 /// which the project's archive lists.
@@ -544,9 +699,7 @@ fn unarchive(client: &Client, session_id: &str, project_id: &str) -> Result<Valu
         .find(|t| s(t, "session_id") == session_id)
         .and_then(|t| t.get("updated_at").and_then(Value::as_i64))
         .ok_or_else(|| "Swarm's archive of the project does not list this conversation".to_string())?;
-    client
-        .post("/v3/sessions:unarchive", json!({"session_ids": [session_id], "expected_updated_at_by_id": {session_id: version}}))
-        .map_err(err)
+    client.post("/v3/sessions:unarchive", json!({"session_ids": [session_id], "expected_updated_at_by_id": {session_id: version}})).map_err(err)
 }
 
 /// Stops a session's run: Swarm wants the run and the Swarm it runs on.
@@ -607,7 +760,16 @@ struct Model<'a> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn follow(client: &Client, watched: &Mutex<HashSet<String>>, tx: &Sender<Update>, frames: &Receiver<Value>, frames_tx: &Sender<Value>, kind: &'static str, facts_kick: &Sender<()>, run_watch: &Mutex<Option<String>>) -> Result<(), String> {
+fn follow(
+    client: &Client,
+    watched: &Mutex<HashSet<String>>,
+    tx: &Sender<Update>,
+    frames: &Receiver<Value>,
+    frames_tx: &Sender<Value>,
+    kind: &'static str,
+    facts_kick: &Sender<()>,
+    run_watch: &Mutex<Option<String>>,
+) -> Result<(), String> {
     // The run session subscribed to on this connection.
     let mut run_sub: Option<String> = None;
     // Media files download on their own thread; each one wakes the model,
@@ -908,7 +1070,6 @@ impl Model<'_> {
         }
     }
 
-
     /// Reads the open conversations that are not read yet, and subscribes to
     /// them. True when something was read.
     fn hydrate_watched(&mut self, watched: &Mutex<HashSet<String>>, subscribed: &mut HashSet<String>, commands: &Sender<Value>) -> Result<bool, String> {
@@ -1019,9 +1180,7 @@ impl Model<'_> {
         let answer = self.client.get(&format!("/v3/sessions/{id}/permissions?status=pending&limit=50")).map_err(err)?;
         let permissions = list(&answer, "permissions").to_vec();
         let account = self.client.get("/v3/permissions").map_err(err)?;
-        let device = list(&account, "devices").iter()
-            .find(|d| d.get("this_device").and_then(Value::as_bool) == Some(true))
-            .map(|d| s(d, "id").to_string()).unwrap_or_default();
+        let device = list(&account, "devices").iter().find(|d| d.get("this_device").and_then(Value::as_bool) == Some(true)).map(|d| s(d, "id").to_string()).unwrap_or_default();
         let d = self.details.entry(id.to_string()).or_default();
         d.pending = map::pending(&permissions);
         d.calls = map::client_calls(&permissions);
@@ -1319,16 +1478,7 @@ impl Model<'_> {
 
     fn snapshot(&self) -> Snapshot {
         let sessions: Vec<Session> = self.order.iter().filter_map(|id| self.session_of(id)).collect();
-        Snapshot {
-            projects: self.projects.clone(),
-            sessions,
-            machine: None,
-            roles: None,
-            usage: None,
-            themes: None,
-            media: self.media.clone(),
-            catalog: None,
-        }
+        Snapshot { projects: self.projects.clone(), sessions, machine: None, roles: None, usage: None, themes: None, media: self.media.clone(), catalog: None }
     }
 }
 
@@ -1343,7 +1493,10 @@ fn name_waited_tasks(wait: &mut crate::data::TaskWait, own: &[Task], project: &[
         let id: &str = id.as_ref();
         let found = own
             .iter()
-            .find(|t| { let key: &str = t.key.as_ref(); key == id })
+            .find(|t| {
+                let key: &str = t.key.as_ref();
+                key == id
+            })
             .map(|t| t.title.to_string())
             .or_else(|| project.iter().find(|t| s(t, "id") == id).map(|t| s(t, "title").to_string()))
             .unwrap_or_default();
@@ -1376,7 +1529,11 @@ fn call_detail(payload: &Value) -> String {
 fn running_call(entries: &[Entry], id: &str, tool: &str) -> Option<usize> {
     entries.iter().rposition(|e| match e {
         Entry::Tool { call_id, name, state: ToolState::Running, .. } => {
-            if id.is_empty() { call_id.is_empty() && name.as_ref() == tool } else { call_id.as_ref() == id }
+            if id.is_empty() {
+                call_id.is_empty() && name.as_ref() == tool
+            } else {
+                call_id.as_ref() == id
+            }
         }
         _ => false,
     })

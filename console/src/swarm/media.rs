@@ -38,10 +38,8 @@ pub struct Read {
 
 /// Where downloaded files live.
 fn cache_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
-        .unwrap_or_else(std::env::temp_dir);
+    let base =
+        std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache"))).unwrap_or_else(std::env::temp_dir);
     base.join("swarm-console").join("media")
 }
 
@@ -90,7 +88,6 @@ fn store(path: &PathBuf, data: &[u8]) -> Result<(), String> {
     std::fs::write(&part, data).map_err(|e| e.to_string())?;
     std::fs::rename(&part, path).map_err(|e| e.to_string())
 }
-
 
 /// How long ago, shortly: "now", "4m", "3h", "2d".
 fn age(created_at: u64) -> String {
@@ -195,7 +192,9 @@ pub fn collect(reads: &mut HashMap<String, Read>, tasks: &[(String, String, Medi
                 let key = if sha.is_empty() { s(d, "id") } else { &sha[..sha.len().min(12)] };
                 let cached = std::fs::read_dir(cache_dir()).ok().and_then(|dir| {
                     let prefix = format!("{}-{}-{key}.", task.task_id, n + 1);
-                    dir.filter_map(Result::ok).map(|e| e.path()).find(|p| p.file_name().and_then(|f| f.to_str()).is_some_and(|f| f.starts_with(&prefix) && !f.ends_with(".part") && !f.ends_with(THUMB)))
+                    dir.filter_map(Result::ok)
+                        .map(|e| e.path())
+                        .find(|p| p.file_name().and_then(|f| f.to_str()).is_some_and(|f| f.starts_with(&prefix) && !f.ends_with(".part") && !f.ends_with(THUMB)))
                 });
                 let (file, media_type) = match cached {
                     Some(path) => (Some(path), String::new()),
@@ -381,10 +380,8 @@ mod tests {
                 serde_json::json!({"status": "failed", "media_url": "", "kind": "image"}),
             ],
         };
-        let tasks = vec![
-            ("s".to_string(), "p".to_string(), task("task_test-not-cached", "completed")),
-            ("s".to_string(), "p".to_string(), task("task_test-running", "in_progress")),
-        ];
+        let tasks =
+            vec![("s".to_string(), "p".to_string(), task("task_test-not-cached", "completed")), ("s".to_string(), "p".to_string(), task("task_test-running", "in_progress"))];
         let (mut reads, mut wanted) = (HashMap::new(), Vec::new());
         let media = collect(&mut reads, &tasks, &mut wanted);
         assert_eq!(media.len(), 2);

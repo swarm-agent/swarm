@@ -105,11 +105,24 @@ pub struct Activity {
 pub enum Frame {
     Activity(Activity),
     /// Where a machine's feed stands; reconnect with it.
-    Cursor { machine: String, cursor: String },
+    Cursor {
+        machine: String,
+        cursor: String,
+    },
     /// Records the machine could not send; its feed resumes from `cursor`.
-    Gap { machine: String, from: u64, to: u64, cursor: String },
+    Gap {
+        machine: String,
+        from: u64,
+        to: u64,
+        cursor: String,
+    },
     /// `online`, `offline` (with `error`) or `not_shown` (with `reason`).
-    Machine { machine: String, state: String, error: String, reason: String },
+    Machine {
+        machine: String,
+        state: String,
+        error: String,
+        reason: String,
+    },
 }
 
 fn field(v: &Value, key: &str) -> String {
@@ -390,16 +403,7 @@ pub fn activity_line(a: &Activity, now: u64) -> Line {
     let state = if a.state.is_empty() || a.state == default_state(&a.kind) { String::new() } else { state_words(&a.state) };
     // Said once: "worker run deploy-bot failed", not "failed · failed".
     let state = if state == what { String::new() } else { state };
-    Line {
-        at,
-        machine: a.machine.clone(),
-        category,
-        problem,
-        word,
-        tool: false,
-        text: tool_summary::line(&a.worker_name, &what, &state, ""),
-        open: open_of(a),
-    }
+    Line { at, machine: a.machine.clone(), category, problem, word, tool: false, text: tool_summary::line(&a.worker_name, &what, &state, ""), open: open_of(a) }
 }
 
 pub fn gap_line(machine: &str, from: u64, to: u64, now: u64) -> Line {
@@ -411,16 +415,7 @@ pub fn gap_line(machine: &str, from: u64, to: u64, now: u64) -> Line {
     } else {
         "events not shown".to_string()
     };
-    Line {
-        at: now,
-        machine: machine.to_string(),
-        category: Category::Fleet,
-        problem: true,
-        word: "gap",
-        tool: false,
-        text: tool_summary::line("", &what, "gap", ""),
-        open: None,
-    }
+    Line { at: now, machine: machine.to_string(), category: Category::Fleet, problem: true, word: "gap", tool: false, text: tool_summary::line("", &what, "gap", ""), open: None }
 }
 
 /// A machine's new state as a line; None when nothing changed.
@@ -437,16 +432,7 @@ pub fn machine_line(machine: &str, state: &str, error: &str, reason: &str, was: 
         "not_shown" => (format!("not shown: {reason}"), false),
         other => (state_words(other), false),
     };
-    Some(Line {
-        at: now,
-        machine: machine.to_string(),
-        category: Category::Fleet,
-        problem,
-        word: "machine",
-        tool: false,
-        text: tool_summary::line("", &what, "", ""),
-        open: None,
-    })
+    Some(Line { at: now, machine: machine.to_string(), category: Category::Fleet, problem, word: "machine", tool: false, text: tool_summary::line("", &what, "", ""), open: None })
 }
 
 // The feed
@@ -474,7 +460,16 @@ impl Default for Feed {
 
 impl Feed {
     pub fn new(cap: usize) -> Feed {
-        Feed { lines: VecDeque::new(), cap: cap.max(1), cursors: Cursors::default(), home: None, awaiting_home: false, states: HashMap::new(), machines: Vec::new(), hues: HashMap::new() }
+        Feed {
+            lines: VecDeque::new(),
+            cap: cap.max(1),
+            cursors: Cursors::default(),
+            home: None,
+            awaiting_home: false,
+            states: HashMap::new(),
+            machines: Vec::new(),
+            hues: HashMap::new(),
+        }
     }
 
     pub fn lines(&self) -> &VecDeque<Line> {
@@ -591,11 +586,7 @@ impl Filter {
             return false;
         }
         let own = line.category.kind().map(|k| self.kind_on(k));
-        if line.problem {
-            own.unwrap_or(false) || self.kind_on(Kind::Problems)
-        } else {
-            own.unwrap_or(true)
-        }
+        if line.problem { own.unwrap_or(false) || self.kind_on(Kind::Problems) } else { own.unwrap_or(true) }
     }
 }
 
@@ -664,7 +655,10 @@ pub enum Event {
     Connected,
     Frame(Frame),
     /// The stream dropped; it reconnects after `retry_in`.
-    Dropped { reason: String, retry_in: Duration },
+    Dropped {
+        reason: String,
+        retry_in: Duration,
+    },
     /// Swarm refused the stream; it is not tried again.
     Refused(String),
 }
@@ -949,11 +943,17 @@ mod tests {
 
     #[test]
     fn frames_parse_and_reject_what_is_missing() {
-        let a = frame("activity", r#"{"machine":"box","seq":41,"at":1793000000000,"kind":"session.tool.started","session_id":"s1","job_id":"","worker_id":"","worker_name":"","project_id":"p1","state":"started","summary":"session.tool.started","tool_name":"read","file_path":"main.go"}"#);
+        let a = frame(
+            "activity",
+            r#"{"machine":"box","seq":41,"at":1793000000000,"kind":"session.tool.started","session_id":"s1","job_id":"","worker_id":"","worker_name":"","project_id":"p1","state":"started","summary":"session.tool.started","tool_name":"read","file_path":"main.go"}"#,
+        );
         let Some(Frame::Activity(a)) = a else { panic!("{a:?}") };
         assert_eq!((a.machine.as_str(), a.seq, a.at, a.tool_name.as_str(), a.file_path.as_str()), ("box", 41, 1793000000000, "read", "main.go"));
         assert_eq!(frame("cursor", r#"{"kind":"cursor","machine":"box","cursor":"41"}"#), Some(Frame::Cursor { machine: "box".into(), cursor: "41".into() }));
-        assert_eq!(frame("gap", r#"{"kind":"gap","machine":"box","from":12,"to":40,"cursor":"40"}"#), Some(Frame::Gap { machine: "box".into(), from: 12, to: 40, cursor: "40".into() }));
+        assert_eq!(
+            frame("gap", r#"{"kind":"gap","machine":"box","from":12,"to":40,"cursor":"40"}"#),
+            Some(Frame::Gap { machine: "box".into(), from: 12, to: 40, cursor: "40".into() })
+        );
         assert_eq!(
             frame("machine", r#"{"kind":"machine","machine":"forge","state":"offline","error":"HTTP 429"}"#),
             Some(Frame::Machine { machine: "forge".into(), state: "offline".into(), error: "HTTP 429".into(), reason: "".into() })

@@ -1,15 +1,13 @@
 //! The console window: sidebars, split session panes and the status bar.
 
 use gpui::{
-    AnyElement, ClickEvent, Context, Div, Entity, FocusHandle, Focusable, Hsla, SharedString,
-    Animation, AnimationExt, Stateful, Subscription, Window, actions, div, prelude::*, pulsating_between, px, svg,
+    Animation, AnimationExt, AnyElement, ClickEvent, Context, Div, Entity, FocusHandle, Focusable, Hsla, SharedString, Stateful, Subscription, Window, actions, div, prelude::*,
+    pulsating_between, px, svg,
 };
 
-use crate::data::{
-    self, Entry, Health, Machine, Media, Project, Role, RunState, Session, TaskStatus, ToolState, Usage,
-};
-use crate::layout::{Axis, Layout, PaneId};
+use crate::data::{self, Entry, Health, Machine, Media, Project, Role, RunState, Session, TaskStatus, ToolState, Usage};
 use crate::icons::{Icon, IconStyle};
+use crate::layout::{Axis, Layout, PaneId};
 use crate::onboarding::{Onboarding, OnboardingEvent};
 use crate::password_prompt::PasswordPrompt;
 use crate::swarm::target::Target;
@@ -26,30 +24,30 @@ mod commands;
 mod context;
 mod fleet;
 mod fleet_keys;
-mod folders;
 mod fleet_live;
+mod folders;
 mod live;
+mod machine_calls;
 mod markdown;
 mod media;
 mod models;
 mod nav;
 mod panes;
-mod projects;
 mod permissions;
 mod popout;
+mod projects;
 mod providers;
-mod settings;
-mod sidebar;
-mod machine_calls;
 mod search;
 mod select;
+mod settings;
 mod shield;
+mod sidebar;
 mod usage;
 
-use live::Act;
 use crate::swarm::client::Client;
 use crate::swarm::live::Live;
 use crate::text_input::TextInput;
+use live::Act;
 use std::collections::HashMap;
 
 /// Where the console's data comes from.
@@ -391,17 +389,7 @@ struct TextTooltip {
 
 impl Render for TextTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .px_2()
-            .py_1()
-            .rounded(px(4.))
-            .border_1()
-            .border_color(self.border)
-            .bg(self.bg)
-            .text_color(self.fg)
-            .text_size(px(11.))
-            .whitespace_nowrap()
-            .child(self.text.clone())
+        div().px_2().py_1().rounded(px(4.)).border_1().border_color(self.border).bg(self.bg).text_color(self.fg).text_size(px(11.)).whitespace_nowrap().child(self.text.clone())
     }
 }
 
@@ -419,10 +407,7 @@ impl Console {
     }
 
     fn build(via: Option<String>, cx: &mut Context<Self>) -> Self {
-        let concept = std::env::var("SWARM_CONSOLE_CONCEPT")
-            .ok()
-            .and_then(|v| Concept::ALL.into_iter().find(|c| c.label() == v))
-            .unwrap_or(Concept::Graphite);
+        let concept = std::env::var("SWARM_CONSOLE_CONCEPT").ok().and_then(|v| Concept::ALL.into_iter().find(|c| c.label() == v)).unwrap_or(Concept::Graphite);
         let demo = std::env::var("SWARM_CONSOLE_DEMO").is_ok();
         let target = Target::from_env().unwrap_or(Target::Local);
         let mut console = Console {
@@ -457,9 +442,7 @@ impl Console {
             picked: std::collections::HashSet::new(),
             renaming: None,
             rename_input: None,
-            icon_override: std::env::var("SWARM_CONSOLE_ICONS")
-                .ok()
-                .and_then(|v| IconStyle::ALL.into_iter().find(|s| s.label() == v)),
+            icon_override: std::env::var("SWARM_CONSOLE_ICONS").ok().and_then(|v| IconStyle::ALL.into_iter().find(|s| s.label() == v)),
             expanded: HashSet::new(),
             tray_all: HashSet::new(),
             tray_done: HashSet::new(),
@@ -612,11 +595,7 @@ impl Console {
     }
 
     fn active_session(&self) -> usize {
-        self.layout
-            .active()
-            .and_then(|a| self.panes.iter().find(|p| p.id == a))
-            .map(|p| p.session)
-            .unwrap_or(0)
+        self.layout.active().and_then(|a| self.panes.iter().find(|p| p.id == a)).map(|p| p.session).unwrap_or(0)
     }
 
     fn is_open(&self, session: usize) -> bool {
@@ -766,41 +745,18 @@ impl Console {
 
     fn section(&self, label: &'static str, count: Option<usize>) -> Div {
         let t = &self.theme;
-        div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .px_3()
-            .pt_4()
-            .pb_1()
-            .text_color(t.faint)
-            .text_size(px(10.5))
-            .child(label)
-            .children(count.map(|n| div().child(n.to_string())))
+        div().flex().items_center().justify_between().px_3().pt_4().pb_1().text_color(t.faint).text_size(px(10.5)).child(label).children(count.map(|n| div().child(n.to_string())))
     }
 
     fn button(&self, id: impl Into<SharedString>, label: impl Into<SharedString>, strong: bool) -> Stateful<Div> {
         let t = &self.theme;
         let hover = t.hover;
-        let base = div()
-            .id(id.into())
-            .px_2()
-            .py(px(1.))
-            .rounded(px(t.radius))
-            .border_1()
-            .cursor_pointer()
-            .text_size(px(11.))
-            .child(label.into());
+        let base = div().id(id.into()).px_2().py(px(1.)).rounded(px(t.radius)).border_1().cursor_pointer().text_size(px(11.)).child(label.into());
         if strong {
             let accent = t.accent;
-            base.bg(t.accent)
-                .border_color(t.accent)
-                .text_color(t.accent_text)
-                .hover(move |s| s.bg(alpha(accent, 0.85)))
+            base.bg(t.accent).border_color(t.accent).text_color(t.accent_text).hover(move |s| s.bg(alpha(accent, 0.85)))
         } else {
-            base.border_color(t.border_strong)
-                .text_color(t.muted)
-                .hover(move |s| s.bg(hover))
+            base.border_color(t.border_strong).text_color(t.muted).hover(move |s| s.bg(hover))
         }
     }
 
@@ -812,22 +768,10 @@ impl Console {
     /// An icon in a given style, tinted with `color`.
     pub(super) fn icon_in(&self, style: IconStyle, icon: Icon, size: f32, color: Hsla) -> AnyElement {
         match style {
-            IconStyle::Glyph => div()
-                .flex_none()
-                .w(px(size))
-                .flex()
-                .justify_center()
-                .text_size(px(size))
-                .line_height(px(size))
-                .text_color(color)
-                .child(icon.glyph())
-                .into_any_element(),
-            _ => svg()
-                .path(icon.path(style))
-                .flex_none()
-                .size(px(size))
-                .text_color(color)
-                .into_any_element(),
+            IconStyle::Glyph => {
+                div().flex_none().w(px(size)).flex().justify_center().text_size(px(size)).line_height(px(size)).text_color(color).child(icon.glyph()).into_any_element()
+            }
+            _ => svg().path(icon.path(style)).flex_none().size(px(size)).text_color(color).into_any_element(),
         }
     }
 
@@ -865,7 +809,11 @@ impl Console {
         let needs: usize = self
             .sessions
             .iter()
-            .map(|s| s.tasks.iter().filter(|x| x.status.needs_you()).count() + usize::from(s.status.is_some_and(|x| x.needs_you())) + s.calls.iter().filter(|c| c.tool.starts_with("request_")).count())
+            .map(|s| {
+                s.tasks.iter().filter(|x| x.status.needs_you()).count()
+                    + usize::from(s.status.is_some_and(|x| x.needs_you()))
+                    + s.calls.iter().filter(|c| c.tool.starts_with("request_")).count()
+            })
             .sum::<usize>()
             + self.waiting_workers().len()
             + self.proposed_workflows();
@@ -899,16 +847,11 @@ impl Console {
                     .child(format!("${cost:.2}{} today", if unknown { " + ?" } else { "" })),
             )
             .when_some(self.notice.clone(), |d, (text, bad)| {
-                d.child(div().flex_1().min_w_0().pl_4().overflow_hidden().whitespace_nowrap().text_ellipsis().text_right().text_color(if bad { t.err } else { t.muted }).child(text))
+                d.child(
+                    div().flex_1().min_w_0().pl_4().overflow_hidden().whitespace_nowrap().text_ellipsis().text_right().text_color(if bad { t.err } else { t.muted }).child(text),
+                )
             })
-            .when(hints && self.notice.is_none(), |d| d.child(
-                div()
-                    .flex()
-                    .gap_3()
-                    .child("ctrl-d split right")
-                    .child("ctrl-shift-d split down")
-                    .child("ctrl-w close")
-            ))
+            .when(hints && self.notice.is_none(), |d| d.child(div().flex().gap_3().child("ctrl-d split right").child("ctrl-shift-d split down").child("ctrl-w close")))
     }
 
     // Left sidebar: project switcher, then that project's sessions.
@@ -930,20 +873,12 @@ impl Console {
             .bg(t.panel)
             .border_r_1()
             .border_color(t.border)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .px_2()
-                    .pt_2()
-                    .child(self.icon_button("collapse-left", Icon::Collapse).on_click(cx.listener(
-                        |this, _: &ClickEvent, _, cx| {
-                            this.left_collapsed = true;
-                            cx.notify();
-                        },
-                    ))),
-            )
+            .child(div().flex().items_center().justify_end().px_2().pt_2().child(self.icon_button("collapse-left", Icon::Collapse).on_click(cx.listener(
+                |this, _: &ClickEvent, _, cx| {
+                    this.left_collapsed = true;
+                    cx.notify();
+                },
+            ))))
             .child(self.render_nav(cx))
             .child(
                 div().px_2().pt_2().child(
@@ -1049,83 +984,64 @@ impl Console {
             .border_color(t.border)
             .bg(t.panel)
             .child(div().text_color(color).child(glyph))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(72.))
-                    .truncate()
-                    .text_color(if active { t.text } else { t.muted })
-                    .child(s.title.clone()),
-            )
-            .child(
-                div()
-                    .flex_shrink()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(px(11.))
-                    .text_color(t.faint)
-                    .child({
-                        let mut parts: Vec<String> = Vec::new();
-                        if s.project != self.project {
-                            parts.push(self.projects[s.project].name.to_string());
-                        }
-                        parts.push(machine.to_string());
-                        if let Some(wait) = s.waiting_on.as_ref().filter(|_| s.state == RunState::Waiting) {
-                            parts.push(wait.line());
-                        }
-                        if let Some(run) = s.run {
-                            let (this_run, all) = run.times(now_ms());
-                            if run.active {
-                                parts.push(format!("this run {} · total {}", data::clock(this_run), data::clock(all)));
-                            } else if all > 0 {
-                                parts.push(format!("total {}", data::clock(all)));
-                            }
-                        } else if !s.elapsed.is_empty() {
-                            parts.push(s.elapsed.to_string());
-                        }
-                        if !s.tokens.is_empty() {
-                            parts.push(format!("{} tok", s.tokens));
-                        }
-                        if let Some(status) = s.status {
-                            parts.push(status.label().to_string());
-                        }
-                        parts.join(" · ")
-                    }),
-            )
+            .child(div().flex_1().min_w(px(72.)).truncate().text_color(if active { t.text } else { t.muted }).child(s.title.clone()))
+            .child(div().flex_shrink().min_w_0().truncate().text_size(px(11.)).text_color(t.faint).child({
+                let mut parts: Vec<String> = Vec::new();
+                if s.project != self.project {
+                    parts.push(self.projects[s.project].name.to_string());
+                }
+                parts.push(machine.to_string());
+                if let Some(wait) = s.waiting_on.as_ref().filter(|_| s.state == RunState::Waiting) {
+                    parts.push(wait.line());
+                }
+                if let Some(run) = s.run {
+                    let (this_run, all) = run.times(now_ms());
+                    if run.active {
+                        parts.push(format!("this run {} · total {}", data::clock(this_run), data::clock(all)));
+                    } else if all > 0 {
+                        parts.push(format!("total {}", data::clock(all)));
+                    }
+                } else if !s.elapsed.is_empty() {
+                    parts.push(s.elapsed.to_string());
+                }
+                if !s.tokens.is_empty() {
+                    parts.push(format!("{} tok", s.tokens));
+                }
+                if let Some(status) = s.status {
+                    parts.push(status.label().to_string());
+                }
+                parts.join(" · ")
+            }))
             .children(self.context_meter(si, pid, cx))
             .children(self.session_actions(si, pid, cx))
             .when(!popped, |d| {
-                d.child(
-                    self.icon_button_tip(SharedString::from(format!("pane-right-{pid}")), Icon::SplitRight, "Split right")
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.new_pane(Some(pid), Open::Right, cx);
-                        })),
-                )
-                .child(
-                    self.icon_button_tip(SharedString::from(format!("pane-down-{pid}")), Icon::SplitDown, "Split down")
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.new_pane(Some(pid), Open::Down, cx);
-                        })),
-                )
-                .child(
-                    self.icon_button_tip(SharedString::from(format!("pane-window-{pid}")), Icon::PopOut, "Open in new window")
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.pop_out(PaneId(pid), cx);
-                        })),
-                )
+                d.child(self.icon_button_tip(SharedString::from(format!("pane-right-{pid}")), Icon::SplitRight, "Split right").on_click(cx.listener(
+                    move |this, _: &ClickEvent, _, cx| {
+                        this.new_pane(Some(pid), Open::Right, cx);
+                    },
+                )))
+                .child(self.icon_button_tip(SharedString::from(format!("pane-down-{pid}")), Icon::SplitDown, "Split down").on_click(cx.listener(
+                    move |this, _: &ClickEvent, _, cx| {
+                        this.new_pane(Some(pid), Open::Down, cx);
+                    },
+                )))
+                .child(self.icon_button_tip(SharedString::from(format!("pane-window-{pid}")), Icon::PopOut, "Open in new window").on_click(cx.listener(
+                    move |this, _: &ClickEvent, _, cx| {
+                        this.pop_out(PaneId(pid), cx);
+                    },
+                )))
             })
-            .child(
-                self.icon_button_tip(SharedString::from(format!("pane-close-{pid}")), Icon::Close, if popped { "Close window" } else { "Close" })
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        if popped {
-                            // Its window goes; the pane goes with it (popout.rs).
-                            window.remove_window();
-                        } else {
-                            this.close(PaneId(pid));
-                            cx.notify();
-                        }
-                    })),
-            );
+            .child(self.icon_button_tip(SharedString::from(format!("pane-close-{pid}")), Icon::Close, if popped { "Close window" } else { "Close" }).on_click(cx.listener(
+                move |this, _: &ClickEvent, window, cx| {
+                    if popped {
+                        // Its window goes; the pane goes with it (popout.rs).
+                        window.remove_window();
+                    } else {
+                        this.close(PaneId(pid));
+                        cx.notify();
+                    }
+                },
+            )));
 
         // Consecutive tool calls read as one tight stack, not separate blocks.
         let mut entries: Vec<AnyElement> = Vec::new();
@@ -1154,7 +1070,10 @@ impl Console {
                 (None, Link::Live) => {
                     let p = &self.projects[s.project];
                     let folders = p.workspaces.iter().map(|w| w.rsplit('/').next().unwrap_or("").to_string()).collect::<Vec<_>>().join(", ");
-                    format!("A new conversation with the Orchestrator of {} ({folders}). Say what you want done: it proposes tasks as cards here, they run in the background, and it reports back.", p.name)
+                    format!(
+                        "A new conversation with the Orchestrator of {} ({folders}). Say what you want done: it proposes tasks as cards here, they run in the background, and it reports back.",
+                        p.name
+                    )
                 }
                 (None, Link::Lost(e)) => format!("Swarm is not answering: {e}"),
                 (None, _) => "Connecting to Swarm…".to_string(),
@@ -1167,14 +1086,7 @@ impl Console {
         entries.extend(self.render_calls(si, pid, cx));
         entries.extend(self.render_worker_reviews(si, cx));
         if let Some((_, text)) = s.activity.first().filter(|_| self.link != Link::Demo) {
-            entries.push(
-                div()
-                    .px_3()
-                    .text_size(px(11.5))
-                    .text_color(if s.state == RunState::NeedsYou { t.warn } else { t.faint })
-                    .child(text.clone())
-                    .into_any_element(),
-            );
+            entries.push(div().px_3().text_size(px(11.5)).text_color(if s.state == RunState::NeedsYou { t.warn } else { t.faint }).child(text.clone()).into_any_element());
         }
 
         let input = self.composers.get(&pid).cloned();
@@ -1241,7 +1153,13 @@ impl Console {
             // Text plus a button's padding and border.
             const PAD: f32 = 18.;
             let w = |text: &str| data::text_width(text, FONT);
-            let model = if !s.model.is_empty() { s.model.to_string() } else if s.live.is_none() { "default model".to_string() } else { String::new() };
+            let model = if !s.model.is_empty() {
+                s.model.to_string()
+            } else if s.live.is_none() {
+                "default model".to_string()
+            } else {
+                String::new()
+            };
             let actions = |stop: &str, send: &str| {
                 if running {
                     w(stop) + PAD
@@ -1339,18 +1257,15 @@ impl Console {
                     .border_color(if active { alpha(t.accent, 0.55) } else { t.border })
                     .bg(t.surface)
                     .children(self.render_attachments(pid, cx))
-                    .child(
-                        div()
-                            .flex()
-                            .items_start()
-                            .gap_2()
-                            .child(div().h(px(20.)).flex().items_center().text_color(t.accent).child("›"))
-                            .child(match input {
-                                // Grows with the text, up to twelve rows, then scrolls.
-                                Some(input) => div().id(SharedString::from(format!("composer-text-{pid}"))).flex_1().min_w_0().max_h(px(240.)).overflow_y_scroll().text_color(t.text).child(input),
-                                None => div().id(SharedString::from(format!("composer-text-{pid}"))).flex_1().min_w_0().truncate().text_color(t.faint).child("Tell Swarm what you want done…"),
-                            }),
-                    )
+                    .child(div().flex().items_start().gap_2().child(div().h(px(20.)).flex().items_center().text_color(t.accent).child("›")).child(match input {
+                        // Grows with the text, up to twelve rows, then scrolls.
+                        Some(input) => {
+                            div().id(SharedString::from(format!("composer-text-{pid}"))).flex_1().min_w_0().max_h(px(240.)).overflow_y_scroll().text_color(t.text).child(input)
+                        }
+                        None => {
+                            div().id(SharedString::from(format!("composer-text-{pid}"))).flex_1().min_w_0().truncate().text_color(t.faint).child("Tell Swarm what you want done…")
+                        }
+                    }))
                     .child(
                         // Never wider than the pane: what does not fit is
                         // dropped (`fit`) and the model label truncates last.
@@ -1437,27 +1352,18 @@ impl Console {
                     .border_color(alpha(t.err, 0.5))
                     .bg(alpha(t.err, 0.08))
                     .child(div().flex_1().min_w_0().text_size(px(11.5)).line_height(px(17.)).text_color(t.text).child(text.clone()))
-                    .child(
-                        self.icon_button(SharedString::from(format!("failure-close-{pid}")), Icon::Close)
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.failure = None;
-                                this.notice = None;
-                                cx.notify();
-                            })),
-                    )
+                    .child(self.icon_button(SharedString::from(format!("failure-close-{pid}")), Icon::Close).on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.failure = None;
+                        this.notice = None;
+                        cx.notify();
+                    })))
             }))
             .child(composer)
             .when(!popped && cx.has_active_drag(), |d| d.child(self.drop_zones(pid, cx)))
             .into_any_element()
     }
 
-    fn render_entry(
-        &self,
-        pid: usize,
-        ei: usize,
-        entry: &Entry,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn render_entry(&self, pid: usize, ei: usize, entry: &Entry, cx: &mut Context<Self>) -> AnyElement {
         let t = &self.theme;
         match entry {
             Entry::User(text) => div()
@@ -1522,16 +1428,27 @@ impl Console {
                 let head = div()
                     .flex()
                     .gap_2()
-                    .child(div().flex_1().min_w_0().truncate().child(self.selectable(pid, ei, 0, rows.name.clone().into(), vec![self.plain_run(rows.name.len(), color)], vec![], cx)))
+                    .child(div().flex_1().min_w_0().truncate().child(self.selectable(
+                        pid,
+                        ei,
+                        0,
+                        rows.name.clone().into(),
+                        vec![self.plain_run(rows.name.len(), color)],
+                        vec![],
+                        cx,
+                    )))
                     .when(!rows.tail.is_empty(), |d| d.child(div().flex_none().child(self.selectable(pid, ei, 1, rows.tail.clone().into(), tail_runs, vec![], cx))));
                 // Row two, under the name: the detail, wrapped to two lines.
                 let detail = (!rows.detail.is_empty()).then(|| {
-                    div()
-                        .min_w_0()
-                        .text_color(t.muted)
-                        .line_clamp(2)
-                        .text_ellipsis()
-                        .child(self.selectable(pid, ei, 2, rows.detail.clone().into(), vec![self.plain_run(rows.detail.len(), t.muted)], vec![], cx))
+                    div().min_w_0().text_color(t.muted).line_clamp(2).text_ellipsis().child(self.selectable(
+                        pid,
+                        ei,
+                        2,
+                        rows.detail.clone().into(),
+                        vec![self.plain_run(rows.detail.len(), t.muted)],
+                        vec![],
+                        cx,
+                    ))
                 });
                 // A running call pulses; a finished one hangs off the text above.
                 let mark = if *state == ToolState::Running {
@@ -1566,17 +1483,7 @@ impl Console {
     /// options, or a tool call to allow or deny (buttons in the header).
     fn render_pending(&self, si: usize, pid: usize, p: &data::Pending, cx: &mut Context<Self>) -> AnyElement {
         let t = &self.theme;
-        let frame = div()
-            .mx_1()
-            .px_3()
-            .py_2()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .rounded(px(t.radius))
-            .border_1()
-            .border_color(alpha(t.warn, 0.5))
-            .bg(alpha(t.warn, 0.06));
+        let frame = div().mx_1().px_3().py_2().flex().flex_col().gap_2().rounded(px(t.radius)).border_1().border_color(alpha(t.warn, 0.5)).bg(alpha(t.warn, 0.06));
         if !p.question {
             return frame
                 .child(div().text_size(px(11.)).text_color(t.warn).child("WAITING FOR YOUR APPROVAL"))
@@ -1617,9 +1524,7 @@ impl Console {
                         }
                     }))
                     .child(div().text_color(t.text).child(o.label.clone()))
-                    .when(!o.description.is_empty(), |d| {
-                        d.child(div().text_size(px(11.)).text_color(t.faint).line_height(px(16.)).child(o.description.clone()))
-                    })
+                    .when(!o.description.is_empty(), |d| d.child(div().text_size(px(11.)).text_color(t.faint).line_height(px(16.)).child(o.description.clone())))
             });
             div()
                 .flex()
@@ -1628,18 +1533,11 @@ impl Console {
                 .when(!q.header.is_empty(), |d| d.child(div().text_size(px(11.)).text_color(t.muted).child(q.header.clone())))
                 .child(div().text_color(t.text).line_height(px(19.)).child(q.text.clone()))
                 .child(div().flex().flex_col().gap_1().children(options))
-                .when_some(picked.filter(|_| p.structured), |d, a| {
-                    d.child(div().text_size(px(11.)).text_color(t.accent).child(format!("answer: {a}")))
-                })
+                .when_some(picked.filter(|_| p.structured), |d, a| d.child(div().text_size(px(11.)).text_color(t.accent).child(format!("answer: {a}"))))
         });
         let custom_waiting = self.custom_for.as_ref().is_some_and(|(perm, _)| *perm == p.id);
         frame
-            .child(
-                div()
-                    .text_size(px(11.))
-                    .text_color(t.warn)
-                    .child(if p.title.is_empty() { "THE ORCHESTRATOR ASKS".to_string() } else { p.title.to_uppercase() }),
-            )
+            .child(div().text_size(px(11.)).text_color(t.warn).child(if p.title.is_empty() { "THE ORCHESTRATOR ASKS".to_string() } else { p.title.to_uppercase() }))
             .children(questions)
             .child(
                 div()
@@ -1667,13 +1565,10 @@ impl Console {
         s.live.as_ref()?;
         let row = div().flex().gap_1();
         let button = |label: &'static str, strong: bool, act: Act| {
-            self.button(SharedString::from(format!("pane-{label}-{pid}")), label, strong)
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.act(si, act, cx)))
+            self.button(SharedString::from(format!("pane-{label}-{pid}")), label, strong).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.act(si, act, cx)))
         };
         Some(match (&s.pending, s.state) {
-            (Some(p), _) if !p.question => {
-                row.child(button("allow", true, Act::Approve)).child(button("deny", false, Act::Reject))
-            }
+            (Some(p), _) if !p.question => row.child(button("allow", true, Act::Approve)).child(button("deny", false, Act::Reject)),
             _ => return None,
         })
     }
@@ -1709,28 +1604,22 @@ impl Console {
     fn task_actions(&self, si: usize, ti: usize, status: TaskStatus, key: &str, cx: &mut Context<Self>) -> Div {
         let live = self.sessions[si].live.is_some();
         let button = |label: &'static str, strong: bool, act: Act, demo: TaskStatus| {
-            self.button(SharedString::from(format!("{key}-{label}")), label, strong)
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    if live {
-                        this.card_act(si, ti, act, cx);
-                    } else {
-                        this.set_task(si, ti, demo);
-                        cx.notify();
-                    }
-                }))
+            self.button(SharedString::from(format!("{key}-{label}")), label, strong).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                if live {
+                    this.card_act(si, ti, act, cx);
+                } else {
+                    this.set_task(si, ti, demo);
+                    cx.notify();
+                }
+            }))
         };
         let row = div().flex().flex_none().gap_1();
         match status {
-            TaskStatus::PendingApproval => row
-                .child(button("approve", true, Act::Approve, TaskStatus::Running))
-                .child(button("reject", false, Act::Reject, TaskStatus::Rejected)),
-            TaskStatus::Running if live && !self.sessions[si].tasks[ti].session.is_empty() => {
-                row.child(button("stop", false, Act::Stop, TaskStatus::Failed))
-            }
+            TaskStatus::PendingApproval => row.child(button("approve", true, Act::Approve, TaskStatus::Running)).child(button("reject", false, Act::Reject, TaskStatus::Rejected)),
+            TaskStatus::Running if live && !self.sessions[si].tasks[ti].session.is_empty() => row.child(button("stop", false, Act::Stop, TaskStatus::Failed)),
             _ => row,
         }
     }
-
 }
 
 impl Focusable for Console {
@@ -1763,10 +1652,7 @@ impl Render for Console {
             }
         }
         if let Some(onboarding) = self.onboarding.clone() {
-            return div()
-                .size_full()
-                .key_context("Console")
-                .child(onboarding);
+            return div().size_full().key_context("Console").child(onboarding);
         }
         let t = self.theme.clone();
         // Narrow windows (tiling managers, half screens) drop sidebars before panes.
@@ -1811,15 +1697,10 @@ impl Render for Console {
                     .flex()
                     .child(if rail { self.render_rail(cx) } else { self.render_left(cx) })
                     .child(match self.page {
-                        Page::Sessions => div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .p(px(6.))
-                            .child(match layout.root() {
-                                Some(root) => self.render_node(root, vec![], cx),
-                                None => self.render_no_pane(cx),
-                            }),
+                        Page::Sessions => div().flex_1().min_w_0().flex().p(px(6.)).child(match layout.root() {
+                            Some(root) => self.render_node(root, vec![], cx),
+                            None => self.render_no_pane(cx),
+                        }),
                         Page::Media => div().flex_1().min_w_0().child(self.render_media(cx)),
                         Page::Usage => div().flex_1().min_w_0().child(self.render_usage(cx)),
                         Page::Fleet => div().flex_1().min_w_0().child(self.render_fleet(cx)),

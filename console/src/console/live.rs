@@ -55,7 +55,16 @@ pub(super) fn placeholder_machine(target: &Target) -> Machine {
 }
 
 pub(super) fn placeholder_project() -> Project {
-    Project { name: "connecting…".into(), machines: vec![0], id: "".into(), workspaces: vec![], roles: vec![], context: "".into(), context_generation: Default::default(), theme_id: "".into() }
+    Project {
+        name: "connecting…".into(),
+        machines: vec![0],
+        id: "".into(),
+        workspaces: vec![],
+        roles: vec![],
+        context: "".into(),
+        context_generation: Default::default(),
+        theme_id: "".into(),
+    }
 }
 
 impl Console {
@@ -165,8 +174,7 @@ impl Console {
             let running = self.at_work_ticking()
                 || self.panes.iter().any(|p| {
                     let s = &self.sessions[p.session];
-                    s.run.is_some_and(|r| r.active)
-                        || s.entries.iter().rev().take(64).any(|e| matches!(e, Entry::Tool { state: crate::data::ToolState::Running, .. }))
+                    s.run.is_some_and(|r| r.active) || s.entries.iter().rev().take(64).any(|e| matches!(e, Entry::Tool { state: crate::data::ToolState::Running, .. }))
                 });
             if running && self.ticked.elapsed() >= Duration::from_secs(1) {
                 self.ticked = std::time::Instant::now();
@@ -175,7 +183,22 @@ impl Console {
             return;
         }
         if std::env::var_os("SWARM_CONSOLE_TRACE").is_some() {
-            let kinds: Vec<&str> = updates.iter().map(|u| match u { Update::Snapshot(_) => "snapshot", Update::Session(_) => "session", Update::Facts(_) => "facts", Update::Lost(_) => "lost", Update::Done { .. } => "done", Update::Review { .. } => "review", Update::Hold { .. } => "hold", Update::AutomationsChanged => "automations", Update::PermissionsChanged => "permissions", Update::RunActivity(_) => "run", Update::AgentsChanged => "agents" }).collect();
+            let kinds: Vec<&str> = updates
+                .iter()
+                .map(|u| match u {
+                    Update::Snapshot(_) => "snapshot",
+                    Update::Session(_) => "session",
+                    Update::Facts(_) => "facts",
+                    Update::Lost(_) => "lost",
+                    Update::Done { .. } => "done",
+                    Update::Review { .. } => "review",
+                    Update::Hold { .. } => "hold",
+                    Update::AutomationsChanged => "automations",
+                    Update::PermissionsChanged => "permissions",
+                    Update::RunActivity(_) => "run",
+                    Update::AgentsChanged => "agents",
+                })
+                .collect();
             eprintln!("pump {:?} {}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0), kinds.join(","));
         }
         for update in updates {
@@ -330,10 +353,7 @@ impl Console {
             let ids: Vec<Text> = self.projects.iter().map(|p| p.id.clone()).collect();
             let current = ids.get(self.project).cloned();
             for s in self.sessions.iter_mut() {
-                s.project = ids
-                    .get(s.project)
-                    .and_then(|id| snap.projects.iter().position(|p| &p.id == id))
-                    .unwrap_or(0);
+                s.project = ids.get(s.project).and_then(|id| snap.projects.iter().position(|p| &p.id == id)).unwrap_or(0);
             }
             self.projects = snap.projects;
             self.project = current.and_then(|id| self.projects.iter().position(|p| p.id == id)).unwrap_or(0);
@@ -409,7 +429,13 @@ impl Console {
                 }
             }
             if let Some(a) = self.acting {
-                self.acting = Some(if a == dup { first } else if a > dup { a - 1 } else { a });
+                self.acting = Some(if a == dup {
+                    first
+                } else if a > dup {
+                    a - 1
+                } else {
+                    a
+                });
             }
             for si in self.drafts.values_mut() {
                 if *si == dup {
@@ -475,9 +501,7 @@ impl Console {
             (None, Ok(answer)) if what == "context" || what == "compact" => self.context_done(what, answer),
             (None, Ok(_)) if what == "model" => self.notice = Some(("This chat uses that model now.".into(), false)),
             (None, Ok(answer)) if what == "delete project" => {
-                self.deleted_project = answer.get("id").and_then(|v| v.as_str())
-                    .filter(|id| self.projects.iter().any(|p| p.id.as_ref() == *id))
-                    .map(str::to_string);
+                self.deleted_project = answer.get("id").and_then(|v| v.as_str()).filter(|id| self.projects.iter().any(|p| p.id.as_ref() == *id)).map(str::to_string);
                 self.project = 0;
                 self.projects_tab = None;
                 self.page = Page::Projects;
@@ -556,8 +580,7 @@ impl Console {
     /// Opens an empty session in the project, in the active pane.
     pub(super) fn new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let project = self.project;
-        let existing = (0..self.sessions.len())
-            .find(|i| self.sessions[*i].live.is_none() && self.sessions[*i].entries.is_empty() && self.sessions[*i].project == project);
+        let existing = (0..self.sessions.len()).find(|i| self.sessions[*i].live.is_none() && self.sessions[*i].entries.is_empty() && self.sessions[*i].project == project);
         let si = existing.unwrap_or_else(|| {
             self.sessions.push(draft(project));
             self.sessions.len() - 1
@@ -743,12 +766,7 @@ impl Console {
         self.acting = Some(si);
         self.failure = None;
         if let Some(live) = &self.live {
-            live.run(Command::Resolve {
-                session_id: l.session_id.to_string(),
-                permission_id: p.id.to_string(),
-                allow: true,
-                answer: Some(reason),
-            });
+            live.run(Command::Resolve { session_id: l.session_id.to_string(), permission_id: p.id.to_string(), allow: true, answer: Some(reason) });
         }
         self.notice = Some(("Answer sent.".into(), false));
         cx.notify();

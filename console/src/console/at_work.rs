@@ -247,7 +247,10 @@ impl Console {
         }
         let target = Target::Task { project_id: f.project_id.clone(), task_id: f.task_id.clone(), session_id: f.session_id.clone(), origin: String::new() };
         let machine = f.machine.clone();
-        row.cursor_pointer().hover(move |s| s.bg(hover)).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_at_work(machine.clone(), target.clone(), cx))).into_any_element()
+        row.cursor_pointer()
+            .hover(move |s| s.bg(hover))
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_at_work(machine.clone(), target.clone(), cx)))
+            .into_any_element()
     }
 
     /// The panel above the Live page's stream: the header's counts, each

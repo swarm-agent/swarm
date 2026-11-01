@@ -9,24 +9,16 @@ use crate::icons::{Icon, IconStyle};
 impl Console {
     pub(super) fn settings_group(&self, title: impl Into<SharedString>, note: impl Into<SharedString>, rows: Vec<Div>) -> Div {
         let t = &self.theme;
-        div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(div().text_color(t.text).child(title.into()))
-            .child(div().pb_1().text_size(px(11.)).text_color(t.faint).child(note.into()))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .rounded(px(t.radius + 2.))
-                    .border_1()
-                    .border_color(t.border)
-                    .bg(t.surface)
-                    .children(rows.into_iter().enumerate().map(|(i, r)| {
-                        r.when(i > 0, |d| d.border_t_1().border_color(alpha(t.border, 0.7)))
-                    })),
-            )
+        div().flex().flex_col().gap_1().child(div().text_color(t.text).child(title.into())).child(div().pb_1().text_size(px(11.)).text_color(t.faint).child(note.into())).child(
+            div()
+                .flex()
+                .flex_col()
+                .rounded(px(t.radius + 2.))
+                .border_1()
+                .border_color(t.border)
+                .bg(t.surface)
+                .children(rows.into_iter().enumerate().map(|(i, r)| r.when(i > 0, |d| d.border_t_1().border_color(alpha(t.border, 0.7))))),
+        )
     }
 
     pub(super) fn setting_row(&self, label: impl Into<SharedString>, detail: impl Into<SharedString>, control: impl IntoElement) -> Div {
@@ -38,13 +30,7 @@ impl Console {
             .gap_3()
             .px_3()
             .py_2()
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(div().truncate().text_color(t.text).child(label.into()))
-                    .child(div().text_size(px(11.)).text_color(t.faint).child(detail.into())),
-            )
+            .child(div().flex_1().min_w_0().child(div().truncate().text_color(t.text).child(label.into())).child(div().text_size(px(11.)).text_color(t.faint).child(detail.into())))
             .child(control)
     }
 
@@ -52,8 +38,7 @@ impl Console {
         let t = &self.theme;
 
         let current = self.icon_style();
-        let icon_choices = div().flex().gap_1()
-        .children(IconStyle::ALL.into_iter().map(|style| {
+        let icon_choices = div().flex().gap_1().children(IconStyle::ALL.into_iter().map(|style| {
             self.button(SharedString::from(format!("settings-icons-{}", style.label())), style.label(), current == style)
                 .flex()
                 .items_center()
@@ -83,18 +68,12 @@ impl Console {
                     .px_3()
                     .py_2()
                     .child(div().text_color(self.health_color(m.health)).child("●"))
-                    .child(
-                        div()
-                            .flex_1()
-                            .child(div().text_color(t.text).child(m.name.clone()))
-                            .child(div().text_size(px(11.)).text_color(t.faint).child(detail)),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(if m.health == Health::Offline { t.err } else { t.faint })
-                            .child(if m.health == Health::Offline { "unreachable" } else { "connected" }),
-                    )
+                    .child(div().flex_1().child(div().text_color(t.text).child(m.name.clone())).child(div().text_size(px(11.)).text_color(t.faint).child(detail)))
+                    .child(div().text_size(px(11.)).text_color(if m.health == Health::Offline { t.err } else { t.faint }).child(if m.health == Health::Offline {
+                        "unreachable"
+                    } else {
+                        "connected"
+                    }))
             })
             .collect();
 
@@ -106,7 +85,11 @@ impl Console {
         };
         let extension_dir = crate::browser::extension_dir().display().to_string();
         let browser_rows: Vec<Div> = vec![
-            self.setting_row("Chrome", chrome_detail, self.button("browser-connect", "connect Chrome", !status.connected).on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.connect_chrome(cx)))),
+            self.setting_row(
+                "Chrome",
+                chrome_detail,
+                self.button("browser-connect", "connect Chrome", !status.connected).on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.connect_chrome(cx))),
+            ),
             self.setting_row(
                 "Extension",
                 format!("chrome://extensions → Developer mode → Load unpacked → {extension_dir} (id {})", crate::browser::EXTENSION_ID),
@@ -159,7 +142,14 @@ impl Console {
     /// the extension can reach this app.
     fn connect_chrome(&mut self, cx: &mut Context<Self>) {
         self.notice = Some(match crate::browser::connect_chrome() {
-            Ok(written) => (format!("Wrote {}. Now load the extension in chrome://extensions and open its popup once.", written.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")).into(), false),
+            Ok(written) => (
+                format!(
+                    "Wrote {}. Now load the extension in chrome://extensions and open its popup once.",
+                    written.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
+                )
+                .into(),
+                false,
+            ),
             Err(e) => (e.into(), true),
         });
         cx.notify();

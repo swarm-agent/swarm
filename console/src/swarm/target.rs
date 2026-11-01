@@ -35,9 +35,7 @@ pub fn channel() -> Option<String> {
 
 fn installer_url() -> String {
     match channel() {
-        Some(branch) => format!(
-            "https://raw.githubusercontent.com/swarm-agent/swarm/{branch}/containers/headless/app/install.sh"
-        ),
+        Some(branch) => format!("https://raw.githubusercontent.com/swarm-agent/swarm/{branch}/containers/headless/app/install.sh"),
         None => INSTALLER_URL.to_string(),
     }
 }
@@ -54,12 +52,7 @@ pub fn installed_installer(rest: &[&str]) -> Vec<String> {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Target {
     Local,
-    Ssh {
-        user: String,
-        host: String,
-        port: u16,
-        identity: Option<PathBuf>,
-    },
+    Ssh { user: String, host: String, port: u16, identity: Option<PathBuf> },
 }
 
 fn home() -> PathBuf {
@@ -149,14 +142,9 @@ impl Target {
     pub fn hostname(&self) -> String {
         let found = match self {
             Target::Local => this_computer(),
-            Target::Ssh { host, .. } => self
-                .ssh()
-                .arg("hostname")
-                .output()
-                .ok()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .filter(|h| !h.is_empty())
-                .unwrap_or_else(|| host.clone()),
+            Target::Ssh { host, .. } => {
+                self.ssh().arg("hostname").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|h| !h.is_empty()).unwrap_or_else(|| host.clone())
+            }
         };
         found.split('.').next().unwrap_or("").to_string()
     }
@@ -244,11 +232,7 @@ impl Target {
                 let dir = home().join(".cache/swarm-console");
                 std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
                 let path = dir.join("install.sh");
-                let body = ureq::get(&installer_url())
-                    .call()
-                    .map_err(|e| format!("could not download the installer: {e}"))?
-                    .into_string()
-                    .map_err(|e| e.to_string())?;
+                let body = ureq::get(&installer_url()).call().map_err(|e| format!("could not download the installer: {e}"))?.into_string().map_err(|e| e.to_string())?;
                 std::fs::write(&path, body).map_err(|e| e.to_string())?;
                 path
             }
@@ -261,13 +245,8 @@ impl Target {
             Target::Local => Ok(local.display().to_string()),
             Target::Ssh { user, .. } => {
                 let remote = format!("/home/{user}/.cache/swarm-install.sh");
-                let mut child = self
-                    .ssh()
-                    .arg(format!("mkdir -p ~/.cache && cat > {}", quote(&remote)))
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::null())
-                    .spawn()
-                    .map_err(|e| e.to_string())?;
+                let mut child =
+                    self.ssh().arg(format!("mkdir -p ~/.cache && cat > {}", quote(&remote))).stdin(Stdio::piped()).stdout(Stdio::null()).spawn().map_err(|e| e.to_string())?;
                 child.stdin.take().ok_or("ssh stdin")?.write_all(&script).map_err(|e| e.to_string())?;
                 if !child.wait().map_err(|e| e.to_string())?.success() {
                     return Err("could not copy the installer to the server".into());
@@ -315,7 +294,8 @@ impl Target {
                     if token.is_empty() && line.trim().len() > 20 && !line.contains(' ') {
                         token = line.trim().to_string();
                     }
-                }).map_err(|e| older(usage, e))?;
+                })
+                .map_err(|e| older(usage, e))?;
                 if token.is_empty() {
                     return Err("Swarm printed no session for this app".into());
                 }
@@ -323,13 +303,7 @@ impl Target {
                 let dir = path.parent().ok_or("token folder")?;
                 std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
                 std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
-                let mut f = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .mode(0o600)
-                    .open(&path)
-                    .map_err(|e| e.to_string())?;
+                let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&path).map_err(|e| e.to_string())?;
                 f.write_all(token.as_bytes()).map_err(|e| e.to_string())?;
             }
         }
@@ -392,10 +366,7 @@ impl Target {
                 Ok(true)
             }
             Target::Ssh { .. } => {
-                let script = format!(
-                    "p={}; if [ -d \"$p\" ]; then echo exists; elif [ -e \"$p\" ]; then echo file; else mkdir -p \"$p\" && echo made; fi",
-                    quote(path)
-                );
+                let script = format!("p={}; if [ -d \"$p\" ]; then echo exists; elif [ -e \"$p\" ]; then echo file; else mkdir -p \"$p\" && echo made; fi", quote(path));
                 let out = self.ssh().arg(script).output().map_err(|e| format!("ssh: {e}"))?;
                 match String::from_utf8_lossy(&out.stdout).trim() {
                     "exists" => Ok(false),

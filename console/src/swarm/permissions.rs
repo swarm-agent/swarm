@@ -141,13 +141,8 @@ fn device_rows(d: &Value, read_only: bool, now: u64) -> Vec<Row> {
     let files = s(d, "files").to_string();
     let browser = s(d, "browser").to_string();
     let (files_now, files_away) = device_now(&files, name, connected, "its files or terminal", &format!("commands and file changes run on {name} as you"));
-    let (browser_now, browser_away) = device_now(
-        &browser,
-        name,
-        connected,
-        "its browser",
-        &format!("calls go to {name}'s browser; Swarm cannot tell whether the extension is attached"),
-    );
+    let (browser_now, browser_away) =
+        device_now(&browser, name, connected, "its browser", &format!("calls go to {name}'s browser; Swarm cannot tell whether the extension is attached"));
     vec![
         Row {
             rule: Rule::Files(id.clone()),
@@ -241,11 +236,7 @@ fn linked_row(m: &Value, now: u64) -> Row {
 }
 
 fn unknown(value: &str) -> String {
-    if value.is_empty() {
-        "Right now: Swarm returned no value for this rule.".into()
-    } else {
-        format!("Right now: Swarm stores \"{value}\", which this app does not know.")
-    }
+    if value.is_empty() { "Right now: Swarm returned no value for this rule.".into() } else { format!("Right now: Swarm stores \"{value}\", which this app does not know.") }
 }
 
 /// "changed by laptop 12 min ago · last used 3 min ago".
@@ -379,7 +370,10 @@ mod tests {
     #[test]
     fn patches_name_one_rule() {
         assert_eq!(Rule::Tasks.patch("auto", 7, "r1"), json!({"tasks": "auto", "expected_revision": 7, "client_request_id": "r1"}));
-        assert_eq!(Rule::Files("csess_a".into()).patch("allowed", 7, "r2"), json!({"devices": {"csess_a": {"files": "allowed"}}, "expected_revision": 7, "client_request_id": "r2"}));
+        assert_eq!(
+            Rule::Files("csess_a".into()).patch("allowed", 7, "r2"),
+            json!({"devices": {"csess_a": {"files": "allowed"}}, "expected_revision": 7, "client_request_id": "r2"})
+        );
         assert_eq!(Rule::Browser("csess_a".into()).patch("off", 8, "r3"), json!({"devices": {"csess_a": {"browser": "off"}}, "expected_revision": 8, "client_request_id": "r3"}));
         assert_eq!(Rule::Work("social".into()).patch("auto", 9, "r4"), json!({"linked": {"social": {"work": "auto"}}, "expected_revision": 9, "client_request_id": "r4"}));
     }

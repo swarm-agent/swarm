@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 
 use gpui::{ClickEvent, Context, Div, Entity, Hsla, SharedString, Stateful, div, prelude::*, px};
 
-use super::{Console, Link, Page, alpha, ago, now_ms};
+use super::{Console, Link, Page, ago, alpha, now_ms};
 use crate::onboarding::input_colors;
 use crate::swarm::client::Client;
 use crate::swarm::fleet_keys::{self, Key, List, Requested, State, Target};
@@ -196,11 +196,8 @@ impl Console {
         self.keys_page.install = None;
         self.keys_page.error = None;
         let targets = key.revocable();
-        self.keys_page.revoke = Some(Pick {
-            id: key.id.clone(),
-            home: targets.iter().any(|t| t.home),
-            machines: targets.iter().filter(|t| !t.home).map(|t| t.machine.clone()).collect(),
-        });
+        self.keys_page.revoke =
+            Some(Pick { id: key.id.clone(), home: targets.iter().any(|t| t.home), machines: targets.iter().filter(|t| !t.home).map(|t| t.machine.clone()).collect() });
         cx.notify();
     }
 
@@ -271,11 +268,9 @@ impl Console {
         let t = &self.theme;
         let when = |at: u64| if at > 0 { format!(" · {} ago", ago(now.saturating_sub(at))) } else { String::new() };
         match &target.state {
-            State::Installed => (
-                "●",
-                t.ok,
-                format!("installed{}{}", if target.verified { " · verified" } else { " · not verified" }, when(target.installed_at.max(target.updated_at))),
-            ),
+            State::Installed => {
+                ("●", t.ok, format!("installed{}{}", if target.verified { " · verified" } else { " · not verified" }, when(target.installed_at.max(target.updated_at))))
+            }
             State::Pending => ("○", t.info, format!("pending{}", when(target.updated_at))),
             State::Failed => ("✕", t.err, if target.error.is_empty() { format!("failed{}", when(target.updated_at)) } else { format!("failed: {}", target.error) }),
             State::Removed => ("–", t.faint, format!("removed{}", when(target.removed_at.max(target.updated_at)))),
@@ -341,10 +336,13 @@ impl Console {
             .when(key.targets.is_empty(), |d| d.child(div().pl_3().text_size(px(11.)).text_color(t.faint).child("Sent to no machine yet.")));
 
         if key.revoked_at != 0 {
-            return card.child(div().pl_3().text_size(px(11.)).text_color(t.faint).child(format!(
-                "Revoked everywhere {} ago; the home deleted the value it kept. Ask for a new key to use it again.",
-                ago(now.saturating_sub(key.revoked_at))
-            )));
+            return card.child(
+                div()
+                    .pl_3()
+                    .text_size(px(11.))
+                    .text_color(t.faint)
+                    .child(format!("Revoked everywhere {} ago; the home deleted the value it kept. Ask for a new key to use it again.", ago(now.saturating_sub(key.revoked_at)))),
+            );
         }
 
         // Actions, or what runs on this key now.
@@ -357,11 +355,21 @@ impl Console {
                     .gap_1()
                     .pl_3()
                     .pt_1()
-                    .child(if busy { self.off_button("install on…") } else { div().child(self.button(SharedString::from(format!("key-install-{ki}")), "install on…", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_install(&a, cx)))) })
+                    .child(if busy {
+                        self.off_button("install on…")
+                    } else {
+                        div().child(
+                            self.button(SharedString::from(format!("key-install-{ki}")), "install on…", false)
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_install(&a, cx))),
+                        )
+                    })
                     .child(if busy || key.revocable().is_empty() {
                         self.off_button("revoke…")
                     } else {
-                        div().child(self.button(SharedString::from(format!("key-revoke-{ki}")), "revoke…", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_revoke(&b, cx))))
+                        div().child(
+                            self.button(SharedString::from(format!("key-revoke-{ki}")), "revoke…", false)
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_revoke(&b, cx))),
+                        )
                     })
             }
         });
@@ -370,23 +378,27 @@ impl Console {
         if let Some(pick) = self.keys_page.install.as_ref().filter(|p| p.id == id) {
             let mut boxes: Vec<Stateful<Div>> = Vec::new();
             if home_open {
-                boxes.push(self.tick(SharedString::from(format!("key-install-home-{ki}")), format!("{home} (home)"), pick.home).on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    if let Some(p) = &mut this.keys_page.install {
-                        p.home = !p.home;
-                    }
-                    cx.notify();
-                })));
+                boxes.push(self.tick(SharedString::from(format!("key-install-home-{ki}")), format!("{home} (home)"), pick.home).on_click(cx.listener(
+                    |this, _: &ClickEvent, _, cx| {
+                        if let Some(p) = &mut this.keys_page.install {
+                            p.home = !p.home;
+                        }
+                        cx.notify();
+                    },
+                )));
             }
             for (mi, name) in machines_open.iter().enumerate() {
                 let n = name.clone();
-                boxes.push(self.tick(SharedString::from(format!("key-install-m-{ki}-{mi}")), name.clone(), pick.machines.contains(name)).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    if let Some(p) = &mut this.keys_page.install {
-                        if !p.machines.remove(&n) {
-                            p.machines.insert(n.clone());
+                boxes.push(self.tick(SharedString::from(format!("key-install-m-{ki}-{mi}")), name.clone(), pick.machines.contains(name)).on_click(cx.listener(
+                    move |this, _: &ClickEvent, _, cx| {
+                        if let Some(p) = &mut this.keys_page.install {
+                            if !p.machines.remove(&n) {
+                                p.machines.insert(n.clone());
+                            }
                         }
-                    }
-                    cx.notify();
-                })));
+                        cx.notify();
+                    },
+                )));
             }
             let chosen = pick.home || !pick.machines.is_empty();
             let empty = boxes.is_empty();
@@ -413,7 +425,10 @@ impl Console {
                             .flex()
                             .gap_1()
                             .child(if chosen {
-                                div().child(self.button(SharedString::from(format!("key-install-go-{ki}")), "install", true).on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.run_pick(false, cx))))
+                                div().child(
+                                    self.button(SharedString::from(format!("key-install-go-{ki}")), "install", true)
+                                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.run_pick(false, cx))),
+                                )
                             } else {
                                 self.off_button("install")
                             })
@@ -430,22 +445,26 @@ impl Console {
             let mut boxes: Vec<Stateful<Div>> = Vec::new();
             for (ti, target) in key.revocable().into_iter().enumerate() {
                 if target.home {
-                    boxes.push(self.tick(SharedString::from(format!("key-revoke-home-{ki}")), format!("{home} (home)"), pick.home).on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        if let Some(p) = &mut this.keys_page.revoke {
-                            p.home = !p.home;
-                        }
-                        cx.notify();
-                    })));
+                    boxes.push(self.tick(SharedString::from(format!("key-revoke-home-{ki}")), format!("{home} (home)"), pick.home).on_click(cx.listener(
+                        |this, _: &ClickEvent, _, cx| {
+                            if let Some(p) = &mut this.keys_page.revoke {
+                                p.home = !p.home;
+                            }
+                            cx.notify();
+                        },
+                    )));
                 } else {
                     let n = target.machine.clone();
-                    boxes.push(self.tick(SharedString::from(format!("key-revoke-m-{ki}-{ti}")), n.clone(), pick.machines.contains(&n)).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        if let Some(p) = &mut this.keys_page.revoke {
-                            if !p.machines.remove(&n) {
-                                p.machines.insert(n.clone());
+                    boxes.push(self.tick(SharedString::from(format!("key-revoke-m-{ki}-{ti}")), n.clone(), pick.machines.contains(&n)).on_click(cx.listener(
+                        move |this, _: &ClickEvent, _, cx| {
+                            if let Some(p) = &mut this.keys_page.revoke {
+                                if !p.machines.remove(&n) {
+                                    p.machines.insert(n.clone());
+                                }
                             }
-                        }
-                        cx.notify();
-                    })));
+                            cx.notify();
+                        },
+                    )));
                 }
             }
             let count = pick.machines.len() + usize::from(pick.home);
@@ -543,9 +562,12 @@ impl Console {
             .child(div().text_color(t.text).child("Add a key"))
             .child(div().flex().items_start().gap_2().child(label("provider")).child(div().flex_1().child(providers)))
             .child(
-                div().flex().items_center().gap_2().child(label("name")).child(
-                    div().flex_1().px_2().py_1().rounded(px(t.radius)).border_1().border_color(t.border).bg(t.surface).children(self.keys_page.label.clone()),
-                ),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(label("name"))
+                    .child(div().flex_1().px_2().py_1().rounded(px(t.radius)).border_1().border_color(t.border).bg(t.surface).children(self.keys_page.label.clone())),
             )
             .child(div().flex().items_start().gap_2().child(label("install on")).child(div().flex_1().flex().flex_wrap().gap_2().children(boxes)))
             .child(self.note_line("Swarm opens its own key page in your browser. Enter the key on that page; it never passes through this app."))
@@ -583,7 +605,11 @@ impl Console {
             .border_1()
             .border_color(alpha(t.accent, 0.5))
             .bg(t.panel)
-            .child(div().text_color(t.text).child(format!("Swarm's key page for {} opened in your browser.", if r.provider.is_empty() { "the provider" } else { r.provider.as_str() })))
+            .child(
+                div()
+                    .text_color(t.text)
+                    .child(format!("Swarm's key page for {} opened in your browser.", if r.provider.is_empty() { "the provider" } else { r.provider.as_str() })),
+            )
             .child(div().text_size(px(11.)).text_color(t.text).child("Enter the key on that page; it never passes through this app."))
             .when(minutes > 0, |d| d.child(self.note_line(format!("The link works once and expires in {minutes} minutes."))))
             .child(div().text_size(px(10.5)).text_color(t.faint).truncate().child(r.url.clone()))
@@ -643,9 +669,14 @@ impl Console {
                     .py_2()
                     .border_b_1()
                     .border_color(t.border)
-                    .child(div().flex_1().min_w_0().text_size(px(11.)).text_color(t.faint).child(
-                        "Provider API keys the home keeps sealed and installs on its machines, as the home reports them. Never a key value.",
-                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(px(11.))
+                            .text_color(t.faint)
+                            .child("Provider API keys the home keeps sealed and installs on its machines, as the home reports them. Never a key value."),
+                    )
                     .child(div().text_size(px(10.5)).text_color(t.faint).child(status))
                     .child(self.button("keys-refresh", "refresh", false).on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.load_fleet_keys(cx))))
                     .child(if p.form.is_some() {

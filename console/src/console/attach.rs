@@ -106,39 +106,39 @@ impl Console {
                 // They are copied to the Swarm with the message; agents never read your disk.
                 .child(div().text_size(px(11.)).text_color(t.faint).child(format!("→ {}", self.machines.first().map_or("Swarm".into(), |m| m.name.to_string()))))
                 .children(files.iter().enumerate().map(|(i, f)| {
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .pl_2()
-                    .pr_1()
-                    .py(px(1.))
-                    .rounded(px(t.radius))
-                    .border_1()
-                    .border_color(alpha(t.accent, 0.4))
-                    .bg(t.raised)
-                    .text_size(px(11.))
-                    .child(div().max_w(px(220.)).truncate().text_color(t.text).child(f.name.clone()))
-                    .child(div().text_color(t.faint).child(size(f.data.len())))
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("unattach-{pid}-{i}")))
-                            .px_1()
-                            .rounded(px(t.radius))
-                            .cursor_pointer()
-                            .hover(move |s| s.bg(hover))
-                            .text_color(t.faint)
-                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                if let Some(files) = this.attachments.get_mut(&pid) {
-                                    if i < files.len() {
-                                        files.remove(i);
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .pl_2()
+                        .pr_1()
+                        .py(px(1.))
+                        .rounded(px(t.radius))
+                        .border_1()
+                        .border_color(alpha(t.accent, 0.4))
+                        .bg(t.raised)
+                        .text_size(px(11.))
+                        .child(div().max_w(px(220.)).truncate().text_color(t.text).child(f.name.clone()))
+                        .child(div().text_color(t.faint).child(size(f.data.len())))
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("unattach-{pid}-{i}")))
+                                .px_1()
+                                .rounded(px(t.radius))
+                                .cursor_pointer()
+                                .hover(move |s| s.bg(hover))
+                                .text_color(t.faint)
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                    if let Some(files) = this.attachments.get_mut(&pid) {
+                                        if i < files.len() {
+                                            files.remove(i);
+                                        }
                                     }
-                                }
-                                cx.notify();
-                            }))
-                            .child(self.icon(Icon::Close, 10., t.faint)),
-                    )
-            })),
+                                    cx.notify();
+                                }))
+                                .child(self.icon(Icon::Close, 10., t.faint)),
+                        )
+                })),
         )
     }
 }

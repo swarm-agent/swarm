@@ -90,12 +90,7 @@ impl Client {
 
     /// GET that returns the raw bytes and content type (media files).
     pub fn get_bytes(&self, path: &str) -> Result<(Vec<u8>, String), Refusal> {
-        let resp = self
-            .agent
-            .get(&format!("{}{path}", self.base))
-            .set("X-Swarm-Token", &self.token)
-            .call()
-            .map_err(refusal)?;
+        let resp = self.agent.get(&format!("{}{path}", self.base)).set("X-Swarm-Token", &self.token).call().map_err(refusal)?;
         let mime = resp.content_type().to_string();
         let mut data = Vec::new();
         std::io::Read::read_to_end(&mut resp.into_reader(), &mut data).map_err(|_| Refusal::Unreachable)?;

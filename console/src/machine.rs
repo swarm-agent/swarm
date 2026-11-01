@@ -58,14 +58,7 @@ fn run(command: &str, cwd: &str) -> Value {
     }
     let dir = if cwd.trim().is_empty() { home() } else { expand(cwd) };
     let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/sh".into());
-    let child = Command::new(&shell)
-        .arg("-c")
-        .arg(command)
-        .current_dir(&dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn();
+    let child = Command::new(&shell).arg("-c").arg(command).current_dir(&dir).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
     let mut child = match child {
         Ok(child) => child,
         Err(e) => return json!({"error": format!("could not start {shell} in {}: {e}", dir.display())}),

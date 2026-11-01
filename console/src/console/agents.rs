@@ -48,12 +48,7 @@ impl Console {
 
     pub(super) fn bar(&self, frac: f32, color: Hsla, width: f32) -> Div {
         let t = &self.theme;
-        div()
-            .w(px(width))
-            .h(px(4.))
-            .rounded(px(2.))
-            .bg(t.border)
-            .child(div().h_full().w(relative(frac.clamp(0., 1.))).rounded(px(2.)).bg(color))
+        div().w(px(width)).h(px(4.)).rounded(px(2.)).bg(t.border).child(div().h_full().w(relative(frac.clamp(0., 1.))).rounded(px(2.)).bg(color))
     }
 
     /// The status word and its color; "offline" with when home last reached it.
@@ -65,11 +60,7 @@ impl Console {
             _ => t.muted,
         };
         let contact = m.contact_line(super::now_ms());
-        let word = if m.health == Health::Offline && !contact.is_empty() {
-            format!("offline · {contact}")
-        } else {
-            m.health.label().to_string()
-        };
+        let word = if m.health == Health::Offline && !contact.is_empty() { format!("offline · {contact}") } else { m.health.label().to_string() };
         (word, color)
     }
 
@@ -122,11 +113,7 @@ impl Console {
             .child(row("status", text(status, status_color)))
             .children(m.reasons.first().map(|r| {
                 let more = m.reasons.len() - 1;
-                div()
-                    .text_size(px(10.5))
-                    .text_color(status_color)
-                    .truncate()
-                    .child(if more > 0 { format!("{r} (+{more})") } else { r.to_string() })
+                div().text_size(px(10.5)).text_color(status_color).truncate().child(if more > 0 { format!("{r} (+{more})") } else { r.to_string() })
             }))
             .child(row("build", text(m.build_line(), if m.update.warns() { t.warn } else { t.muted })))
             .child(row("now", text(m.now_line(), t.muted)))
@@ -146,12 +133,7 @@ impl Console {
                     .child(div().text_color(t.muted).child(format!("{} today", m.cost_line()))),
             )
             .when(differs > 0, |d| {
-                d.child(
-                    div()
-                        .text_size(px(10.5))
-                        .text_color(t.accent)
-                        .child(format!("◆ {differs} role{} on another model", if differs == 1 { "" } else { "s" })),
-                )
+                d.child(div().text_size(px(10.5)).text_color(t.accent).child(format!("◆ {differs} role{} on another model", if differs == 1 { "" } else { "s" })))
             })
             .into_any_element()
     }
@@ -161,120 +143,111 @@ impl Console {
         let hover = t.hover;
 
         // Grid header: role, the default here, one column per machine.
-        let header = div()
-            .flex()
-            .items_center()
-            .h(px(30.))
-            .px_3()
-            .border_b_1()
-            .border_color(t.border)
-            .text_size(px(10.5))
-            .text_color(t.faint)
-            .child(div().w(px(ROLE_COL)).flex_none().child("ROLE"))
-            .child(div().w(px(DEFAULT_COL)).flex_none().child("DEFAULT"))
-            .children(self.machines.iter().map(|m| {
-                div()
-                    .w(px(COL))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .child(div().text_color(self.health_color(m.health)).child("●"))
-                    .child(m.name.to_uppercase())
-            }));
-
-        let rows = self.roles.iter().enumerate().map(|(ri, role)| {
-            let role_selected = self.agents_focus == AgentsFocus::Role(ri);
-            let cells = (0..self.machines.len()).map(|mi| {
-                let cell = self.cell(ri, mi);
-                let (glyph, color, text) = self.apply_cell_text(ri, mi).unwrap_or_else(|| self.cell_look(cell.clone()));
-                let selected = self.agents_focus == AgentsFocus::Cell(ri, mi);
-                div()
-                    .id(SharedString::from(format!("cell-{ri}-{mi}")))
-                    .w(px(COL))
-                    .flex_none()
-                    .h(px(26.))
-                    .px_1()
-                    .mr_1()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .rounded(px(t.radius))
-                    .cursor_pointer()
-                    .border_1()
-                    .border_color(if selected { alpha(t.accent, 0.7) } else { alpha(t.accent, 0.0) })
-                    .when(selected, |d| d.bg(t.raised))
-                    .hover(move |s| s.bg(hover))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.agents_focus = AgentsFocus::Cell(ri, mi);
-                        cx.notify();
-                    }))
-                    .child(div().text_color(color).text_size(px(11.)).child(glyph))
-                    .child(div().min_w_0().truncate().text_size(px(11.)).text_color(t.muted).child(text))
-            });
+        let header =
             div()
                 .flex()
                 .items_center()
+                .h(px(30.))
                 .px_3()
-                .py(px(3.))
                 .border_b_1()
-                .border_color(alpha(t.border, 0.6))
-                .when(role_selected, |d| d.bg(alpha(t.accent, 0.05)))
-                .child(
+                .border_color(t.border)
+                .text_size(px(10.5))
+                .text_color(t.faint)
+                .child(div().w(px(ROLE_COL)).flex_none().child("ROLE"))
+                .child(div().w(px(DEFAULT_COL)).flex_none().child("DEFAULT"))
+                .children(self.machines.iter().map(|m| {
+                    div().w(px(COL)).flex_none().flex().items_center().gap_1().child(div().text_color(self.health_color(m.health)).child("●")).child(m.name.to_uppercase())
+                }));
+
+        let rows = self
+            .roles
+            .iter()
+            .enumerate()
+            .map(|(ri, role)| {
+                let role_selected = self.agents_focus == AgentsFocus::Role(ri);
+                let cells = (0..self.machines.len()).map(|mi| {
+                    let cell = self.cell(ri, mi);
+                    let (glyph, color, text) = self.apply_cell_text(ri, mi).unwrap_or_else(|| self.cell_look(cell.clone()));
+                    let selected = self.agents_focus == AgentsFocus::Cell(ri, mi);
                     div()
-                        .id(SharedString::from(format!("role-{ri}")))
-                        .w(px(ROLE_COL))
+                        .id(SharedString::from(format!("cell-{ri}-{mi}")))
+                        .w(px(COL))
                         .flex_none()
-                        .min_w_0()
-                        .pr_3()
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.agents_focus = AgentsFocus::Role(ri);
-                            cx.notify();
-                        }))
-                        .child(div().truncate().text_color(t.text).child(role.label.clone()))
-                        .child(div().truncate().text_size(px(10.5)).text_color(t.faint).child(role.purpose.clone())),
-                )
-                .child(
-                    div()
-                        .id(SharedString::from(format!("default-{ri}")))
-                        .w(px(DEFAULT_COL))
-                        .flex_none()
-                        .min_w_0()
-                        .pr_3()
+                        .h(px(26.))
+                        .px_1()
+                        .mr_1()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
                         .rounded(px(t.radius))
                         .cursor_pointer()
+                        .border_1()
+                        .border_color(if selected { alpha(t.accent, 0.7) } else { alpha(t.accent, 0.0) })
+                        .when(selected, |d| d.bg(t.raised))
                         .hover(move |s| s.bg(hover))
-                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                            this.agents_focus = AgentsFocus::Role(ri);
-                            this.open_picker(super::models::PickerScope::Role(ri), window, cx);
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.agents_focus = AgentsFocus::Cell(ri, mi);
+                            cx.notify();
                         }))
-                        .child(div().truncate().text_color(t.muted).child(role.default.short()))
-                        .child(div().truncate().text_size(px(10.5)).text_color(t.faint).child(role.default.provider.clone())),
-                )
-                .children(cells)
-        })
-        .collect::<Vec<_>>();
+                        .child(div().text_color(color).text_size(px(11.)).child(glyph))
+                        .child(div().min_w_0().truncate().text_size(px(11.)).text_color(t.muted).child(text))
+                });
+                div()
+                    .flex()
+                    .items_center()
+                    .px_3()
+                    .py(px(3.))
+                    .border_b_1()
+                    .border_color(alpha(t.border, 0.6))
+                    .when(role_selected, |d| d.bg(alpha(t.accent, 0.05)))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("role-{ri}")))
+                            .w(px(ROLE_COL))
+                            .flex_none()
+                            .min_w_0()
+                            .pr_3()
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.agents_focus = AgentsFocus::Role(ri);
+                                cx.notify();
+                            }))
+                            .child(div().truncate().text_color(t.text).child(role.label.clone()))
+                            .child(div().truncate().text_size(px(10.5)).text_color(t.faint).child(role.purpose.clone())),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("default-{ri}")))
+                            .w(px(DEFAULT_COL))
+                            .flex_none()
+                            .min_w_0()
+                            .pr_3()
+                            .rounded(px(t.radius))
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(hover))
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                this.agents_focus = AgentsFocus::Role(ri);
+                                this.open_picker(super::models::PickerScope::Role(ri), window, cx);
+                            }))
+                            .child(div().truncate().text_color(t.muted).child(role.default.short()))
+                            .child(div().truncate().text_size(px(10.5)).text_color(t.faint).child(role.default.provider.clone())),
+                    )
+                    .children(cells)
+            })
+            .collect::<Vec<_>>();
 
-        let legend = div()
-            .flex()
-            .gap_4()
-            .px_3()
-            .py_2()
-            .text_size(px(10.5))
-            .text_color(t.faint)
-            .children(
-                [
-                    (Cell::InSync, "same as default"),
-                    (Cell::Custom(Assignment { provider: "".into(), model: "".into(), thinking: "".into(), tier: "".into() }), "another model"),
-                    (Cell::Unknown, "not read"),
-                ]
-                .into_iter()
-                .map(|(cell, label)| {
-                    let (glyph, color, _) = self.cell_look(cell.clone());
-                    div().flex().gap_1().child(div().text_color(color).child(glyph)).child(label)
-                }),
-            );
+        let legend = div().flex().gap_4().px_3().py_2().text_size(px(10.5)).text_color(t.faint).children(
+            [
+                (Cell::InSync, "same as default"),
+                (Cell::Custom(Assignment { provider: "".into(), model: "".into(), thinking: "".into(), tier: "".into() }), "another model"),
+                (Cell::Unknown, "not read"),
+            ]
+            .into_iter()
+            .map(|(cell, label)| {
+                let (glyph, color, _) = self.cell_look(cell.clone());
+                div().flex().gap_1().child(div().text_color(color).child(glyph)).child(label)
+            }),
+        );
 
         div()
             .id("agents-page")
@@ -311,13 +284,7 @@ impl Console {
 
     fn kv_row(&self, k: &'static str, v: impl IntoElement) -> Div {
         let t = &self.theme;
-        div()
-            .flex()
-            .gap_2()
-            .px_3()
-            .py(px(2.))
-            .child(div().w(px(72.)).flex_none().text_color(t.faint).child(k))
-            .child(div().flex_1().min_w_0().text_color(t.muted).child(v))
+        div().flex().gap_2().px_3().py(px(2.)).child(div().w(px(72.)).flex_none().text_color(t.faint).child(k)).child(div().flex_1().min_w_0().text_color(t.muted).child(v))
     }
 
     fn inspector_title(&self, kicker: &'static str, title: String) -> Div {
@@ -359,13 +326,7 @@ impl Console {
                     )
                     .when(self.via.is_none() && self.link != super::Link::Demo, |d| d.child(self.link_section(cx)))
                     .child(self.section("TIP", None))
-                    .child(
-                        div()
-                            .px_3()
-                            .text_size(px(11.))
-                            .text_color(t.faint)
-                            .child(tip),
-                    )
+                    .child(div().px_3().text_size(px(11.)).text_color(t.faint).child(tip))
             }
             AgentsFocus::Machine(mi) => {
                 let m = &self.machines[mi];
@@ -464,10 +425,7 @@ impl Console {
                             .child(self.kv_row("setting", format!("{} slot", role.key)))
                             .child(self.kv_row("provider", role.default.provider.clone()))
                             .child(self.kv_row("model", role.default.model.clone()))
-                            .child(self.kv_row(
-                                "thinking",
-                                if role.default.thinking.is_empty() { "default".into() } else { role.default.thinking.clone() },
-                            )),
+                            .child(self.kv_row("thinking", if role.default.thinking.is_empty() { "default".into() } else { role.default.thinking.clone() })),
                     )
                     .child(self.section("ON EACH MACHINE", None))
                     .children(
@@ -493,10 +451,12 @@ impl Console {
                             .collect::<Vec<_>>(),
                     )
                     .children(self.apply_all_control(ri, cx).map(|c| div().px_3().pt_2().child(c)))
-                    .child(div().px_3().pt_3().child(
-                        self.button("role-change", "change default…", true)
-                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_picker(super::models::PickerScope::Role(ri), window, cx))),
-                    ))
+                    .child(
+                        div().px_3().pt_3().child(
+                            self.button("role-change", "change default…", true)
+                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_picker(super::models::PickerScope::Role(ri), window, cx))),
+                        ),
+                    )
                     .children(self.render_model_picker_for_role(ri, cx).map(|p| div().px_2().pt_2().child(p)))
             }
             AgentsFocus::Cell(ri, mi) => {
@@ -515,10 +475,7 @@ impl Console {
                     .child(
                         div()
                             .pt_2()
-                            .child(self.kv_row(
-                                "state",
-                                div().flex().gap_1().child(div().text_color(color).child(glyph)).child(state),
-                            ))
+                            .child(self.kv_row("state", div().flex().gap_1().child(div().text_color(color).child(glyph)).child(state)))
                             .child(self.kv_row("default", role.default.short()))
                             .child(self.kv_row("here", have.map(|a| a.short()).unwrap_or_else(|| "—".into()))),
                     )
@@ -527,10 +484,12 @@ impl Console {
                     .children(self.apply_control(ri, mi, cx).map(|c| div().px_3().pt_3().child(c)))
                     // Only the connected Swarm's own setting is changed here.
                     .when(mi == 0, |d| {
-                        d.child(div().px_3().pt_3().child(
-                            self.button("cell-change", "change the default…", false)
-                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_picker(super::models::PickerScope::Role(ri), window, cx))),
-                        ))
+                        d.child(
+                            div().px_3().pt_3().child(
+                                self.button("cell-change", "change the default…", false)
+                                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_picker(super::models::PickerScope::Role(ri), window, cx))),
+                            ),
+                        )
                         .children(self.render_model_picker_for_role(ri, cx).map(|p| div().px_2().pt_2().child(p)))
                     })
             }
@@ -689,10 +648,7 @@ impl Console {
         if differing.is_empty() {
             return None;
         }
-        let ready = differing
-            .iter()
-            .filter(|mi| self.apply_allowed(**mi).is_ok() && self.apply_key(ri, **mi).is_some_and(|k| !self.model_apply.saving.contains(&k)))
-            .count();
+        let ready = differing.iter().filter(|mi| self.apply_allowed(**mi).is_ok() && self.apply_key(ri, **mi).is_some_and(|k| !self.model_apply.saving.contains(&k))).count();
         let t = &self.theme;
         Some(
             div()

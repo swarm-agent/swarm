@@ -30,7 +30,10 @@ pub(super) enum Slash {
     Theme(Option<String>),
     /// Compact the context now; with a threshold, Swarm's auto-compact
     /// threshold (percent of the context left) is set first.
-    Compact { threshold: Option<f64>, note: String },
+    Compact {
+        threshold: Option<f64>,
+        note: String,
+    },
     /// Open or close the conversation's context panel.
     Context,
     Go(Page),
@@ -102,7 +105,13 @@ pub(super) fn parse(text: &str) -> Slash {
     let (word, rest) = text.split_once(char::is_whitespace).map(|(w, r)| (w, r.trim())).unwrap_or((text, ""));
     let names = ["/new", "/stop", "/compact", "/context", "/theme", "/usage", "/settings", "/media", "/agents", "/fleet", "/live"];
     let hits: Vec<&str> = names.iter().copied().filter(|n| n.starts_with(word) && word.len() > 1).collect();
-    let name = if names.contains(&word) { word } else if hits.len() == 1 { hits[0] } else { return Slash::Unknown };
+    let name = if names.contains(&word) {
+        word
+    } else if hits.len() == 1 {
+        hits[0]
+    } else {
+        return Slash::Unknown;
+    };
     match (name, rest) {
         ("/new", "" | "side" | "right") => Slash::New(Open::Right),
         ("/new", "bottom" | "below" | "down") => Slash::New(Open::Down),
@@ -213,32 +222,23 @@ impl Console {
         }
         let t = &self.theme;
         let hover = t.hover;
-        Some(
-            div()
-                .flex()
-                .flex_col()
-                .py_1()
-                .mb_1()
-                .rounded(px(t.radius))
-                .border_1()
-                .border_color(t.border)
-                .bg(t.panel)
-                .children(hits.into_iter().enumerate().map(|(i, (name, help))| -> AnyElement {
-                    div()
-                        .id(SharedString::from(format!("cmd-{pid}-{i}")))
-                        .flex()
-                        .gap_3()
-                        .px_2()
-                        .py(px(2.))
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(hover))
-                        .when(i == 0, |d| d.bg(alpha(t.accent, 0.12)))
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.slash(pid, name, cx)))
-                        .child(div().w(px(96.)).flex_none().text_color(t.accent).child(name))
-                        .child(div().flex_1().min_w_0().truncate().text_size(px(11.)).text_color(t.faint).child(help))
-                        .into_any_element()
-                })),
-        )
+        Some(div().flex().flex_col().py_1().mb_1().rounded(px(t.radius)).border_1().border_color(t.border).bg(t.panel).children(hits.into_iter().enumerate().map(
+            |(i, (name, help))| -> AnyElement {
+                div()
+                    .id(SharedString::from(format!("cmd-{pid}-{i}")))
+                    .flex()
+                    .gap_3()
+                    .px_2()
+                    .py(px(2.))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover))
+                    .when(i == 0, |d| d.bg(alpha(t.accent, 0.12)))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.slash(pid, name, cx)))
+                    .child(div().w(px(96.)).flex_none().text_color(t.accent).child(name))
+                    .child(div().flex_1().min_w_0().truncate().text_size(px(11.)).text_color(t.faint).child(help))
+                    .into_any_element()
+            },
+        )))
     }
 }
 

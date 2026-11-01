@@ -55,9 +55,21 @@ impl Kind {
 pub enum Target {
     /// A session waiting on a permission; `origin` is the conversation that
     /// started its task, when the session is a task's.
-    Session { session_id: String, origin: String },
-    Task { project_id: String, task_id: String, session_id: String, origin: String },
-    Run { worker_id: String, run_id: String, session_id: String },
+    Session {
+        session_id: String,
+        origin: String,
+    },
+    Task {
+        project_id: String,
+        task_id: String,
+        session_id: String,
+        origin: String,
+    },
+    Run {
+        worker_id: String,
+        run_id: String,
+        session_id: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -417,11 +429,8 @@ pub fn read(client: &Client, home: bool, machine: &str, summary: Result<&Value, 
     let mut all = Vec::new();
     match client.get("/v3/projects") {
         Ok(projects) => {
-            let projects: Vec<(String, String)> = list(&projects, "projects")
-                .iter()
-                .filter(|p| !s(p, "id").is_empty())
-                .map(|p| (s(p, "id").to_string(), s(p, "name").to_string()))
-                .collect();
+            let projects: Vec<(String, String)> =
+                list(&projects, "projects").iter().filter(|p| !s(p, "id").is_empty()).map(|p| (s(p, "id").to_string(), s(p, "name").to_string())).collect();
             let boards: Vec<Result<Vec<TaskRef>, String>> = std::thread::scope(|scope| {
                 let reads: Vec<_> = projects
                     .iter()
@@ -642,7 +651,15 @@ mod tests {
     }
 
     fn item(machine: &str, at: u64) -> Item {
-        Item { home: false, machine: machine.into(), kind: Kind::Task, at, what: format!("{machine}-{at}"), detail: "".into(), target: Target::Session { session_id: "".into(), origin: "".into() } }
+        Item {
+            home: false,
+            machine: machine.into(),
+            kind: Kind::Task,
+            at,
+            what: format!("{machine}-{at}"),
+            detail: "".into(),
+            target: Target::Session { session_id: "".into(), origin: "".into() },
+        }
     }
 
     #[test]
@@ -698,7 +715,12 @@ mod tests {
     fn recall_keeps_one_tick() {
         let mut recall = Recall::default();
         let mut reads = 0;
-        let mut get = |recall: &Recall, key: &str| recall.get_or(key.into(), || { reads += 1; Some(json!(reads)) });
+        let mut get = |recall: &Recall, key: &str| {
+            recall.get_or(key.into(), || {
+                reads += 1;
+                Some(json!(reads))
+            })
+        };
         assert_eq!(get(&recall, "a"), Some(json!(1)));
         recall.turn();
         assert_eq!(get(&recall, "a"), Some(json!(1)), "unchanged: not read again");

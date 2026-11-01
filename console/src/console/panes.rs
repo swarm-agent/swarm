@@ -2,12 +2,9 @@
 //! header, onto a pane's edge to split there or onto its middle to show it
 //! there; drag the divider between panes to resize them.
 
-use gpui::{
-    AnyElement, Context, DragMoveEvent, Hsla, IntoElement, Render, SharedString, Window, div, prelude::*, px,
-    relative,
-};
+use gpui::{AnyElement, Context, DragMoveEvent, Hsla, IntoElement, Render, SharedString, Window, div, prelude::*, px, relative};
 
-use super::{Console, Pane, Page, alpha};
+use super::{Console, Page, Pane, alpha};
 use crate::layout::{Axis, Node, PaneId, Zone};
 
 /// A session being dragged: from the sidebar, or a pane by its header.
@@ -68,11 +65,8 @@ impl Console {
         };
         let axis = *axis;
         let own = path.clone();
-        let mut row = div()
-            .flex()
-            .size_full()
-            .map(|d| if axis == Axis::Row { d.flex_row() } else { d.flex_col() })
-            .on_drag_move(cx.listener(move |this, e: &DragMoveEvent<Resizing>, _, cx| {
+        let mut row = div().flex().size_full().map(|d| if axis == Axis::Row { d.flex_row() } else { d.flex_col() }).on_drag_move(cx.listener(
+            move |this, e: &DragMoveEvent<Resizing>, _, cx| {
                 let drag = e.drag(cx);
                 if drag.path != own {
                     return;
@@ -85,7 +79,8 @@ impl Console {
                 let index = drag.index;
                 this.layout.resize(&own, index, at);
                 cx.notify();
-            }));
+            },
+        ));
         for (i, child) in children.iter().enumerate() {
             if i > 0 {
                 row = row.child(self.divider(axis, path.clone(), i - 1));
@@ -139,14 +134,7 @@ impl Console {
                 })
                 .on_drop(cx.listener(move |this, d: &Dragged, _, cx| this.drop_on(pid, zone, d.clone(), cx)))
         };
-        div()
-            .absolute()
-            .inset_0()
-            .child(zone(Zone::Left))
-            .child(zone(Zone::Right))
-            .child(zone(Zone::Top))
-            .child(zone(Zone::Bottom))
-            .child(zone(Zone::Center))
+        div().absolute().inset_0().child(zone(Zone::Left)).child(zone(Zone::Right)).child(zone(Zone::Top)).child(zone(Zone::Bottom)).child(zone(Zone::Center))
     }
 
     fn drop_on(&mut self, pid: usize, zone: Zone, d: Dragged, cx: &mut Context<Self>) {

@@ -11,8 +11,7 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, ClickEvent, Context, Div, Hsla, ScrollStrategy, SharedString, Stateful, StyledText, UniformListScrollHandle, Window, div,
-    point, prelude::*, px, uniform_list,
+    AnyElement, ClickEvent, Context, Div, Hsla, ScrollStrategy, SharedString, Stateful, StyledText, UniformListScrollHandle, Window, div, point, prelude::*, px, uniform_list,
 };
 
 use super::{Console, Link, Page, alpha};
@@ -28,7 +27,10 @@ pub(super) enum Stream {
     Closed,
     Connecting,
     Streaming,
-    Retrying { reason: String, secs: u64 },
+    Retrying {
+        reason: String,
+        secs: u64,
+    },
     /// Swarm refused the stream; tried again on "retry" or the next visit.
     Stopped(String),
 }
@@ -259,25 +261,25 @@ impl Console {
                 _ => name.clone(),
             };
             let toggle = name.clone();
-            self.live_chip(SharedString::from(format!("live-machine-{name}")), label, on, Some(self.machine_color(&name)))
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+            self.live_chip(SharedString::from(format!("live-machine-{name}")), label, on, Some(self.machine_color(&name))).on_click(cx.listener(
+                move |this, _: &ClickEvent, _, cx| {
                     this.live_page.filter.toggle_machine(&toggle);
                     cx.notify();
-                }))
+                },
+            ))
         });
         let kinds = Kind::ALL.into_iter().map(|kind| {
-            self.live_chip(SharedString::from(format!("live-kind-{}", kind.label())), kind.label().to_string(), p.filter.kind_on(kind), None)
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+            self.live_chip(SharedString::from(format!("live-kind-{}", kind.label())), kind.label().to_string(), p.filter.kind_on(kind), None).on_click(cx.listener(
+                move |this, _: &ClickEvent, _, cx| {
                     this.live_page.filter.toggle_kind(kind);
                     cx.notify();
-                }))
+                },
+            ))
         });
-        let only = self
-            .live_chip("live-only-problems".into(), "only problems".into(), p.filter.only_problems, Some(t.err))
-            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                this.live_page.filter.only_problems = !this.live_page.filter.only_problems;
-                cx.notify();
-            }));
+        let only = self.live_chip("live-only-problems".into(), "only problems".into(), p.filter.only_problems, Some(t.err)).on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+            this.live_page.filter.only_problems = !this.live_page.filter.only_problems;
+            cx.notify();
+        }));
         let label = |text: &'static str| div().flex_none().text_size(px(10.5)).text_color(t.faint).child(text);
         div()
             .flex()
@@ -299,18 +301,20 @@ impl Console {
         let t = &self.theme;
         let Some(line) = self.live_page.feed.lines().get(i) else { return div().h(px(ROW)).into_any_element() };
         let hover = t.hover;
-        let name_color = if line.problem { t.err } else if line.tool { t.info } else { t.accent };
+        let name_color = if line.problem {
+            t.err
+        } else if line.tool {
+            t.info
+        } else {
+            t.accent
+        };
         let detail_color = if line.tool { t.muted } else { t.text };
-        let runs: Vec<_> = [
-            (line.text.name, name_color),
-            (line.text.detail, detail_color),
-            (line.text.summary, if line.problem { t.err } else { t.faint }),
-            (line.text.time, t.faint),
-        ]
-        .into_iter()
-        .filter(|(len, _)| *len > 0)
-        .map(|(len, color)| self.plain_run(len, color))
-        .collect();
+        let runs: Vec<_> =
+            [(line.text.name, name_color), (line.text.detail, detail_color), (line.text.summary, if line.problem { t.err } else { t.faint }), (line.text.time, t.faint)]
+                .into_iter()
+                .filter(|(len, _)| *len > 0)
+                .map(|(len, color)| self.plain_run(len, color))
+                .collect();
         let text = StyledText::new(line.text.text.clone()).with_runs(runs);
         // Clickable only when the stream said which machine is the home.
         let open = line.open.clone().filter(|_| self.live_page.feed.home().is_some()).map(|o| (line.machine.clone(), o));
@@ -385,11 +389,7 @@ impl Console {
             })
             .child(div().flex_none().text_size(px(11.)).text_color(t.faint).child(count));
         let body: AnyElement = if visible.is_empty() {
-            let empty = if total == 0 {
-                "Nothing yet. What any machine does shows here as it happens."
-            } else {
-                "No line matches these filters."
-            };
+            let empty = if total == 0 { "Nothing yet. What any machine does shows here as it happens." } else { "No line matches these filters." };
             div().px_3().py_2().text_color(t.faint).child(empty).into_any_element()
         } else {
             let rows = visible.clone();
@@ -430,19 +430,7 @@ impl Console {
         page.child(self.render_at_work(cx))
             .child(header)
             .child(self.live_filters(cx))
-            .child(
-                div()
-                    .relative()
-                    .flex_1()
-                    .min_h_0()
-                    .rounded(px(t.radius + 2.))
-                    .border_1()
-                    .border_color(t.border)
-                    .bg(t.surface)
-                    .text_size(px(11.5))
-                    .child(body)
-                    .children(jump),
-            )
+            .child(div().relative().flex_1().min_h_0().rounded(px(t.radius + 2.)).border_1().border_color(t.border).bg(t.surface).text_size(px(11.5)).child(body).children(jump))
             .into_any_element()
     }
 }
@@ -457,8 +445,14 @@ fn demo(feed: &mut Feed, now: u64) {
         ("machine", r#"{"kind":"machine","machine":"social","state":"online"}"#),
         ("activity", r#"{"machine":"pc","kind":"session.created","session_id":"s1","state":"started"}"#),
         ("activity", r#"{"machine":"pc","kind":"session.assistant.started","session_id":"s1","state":"running"}"#),
-        ("activity", r#"{"machine":"forge","kind":"session.tool.started","session_id":"s2","state":"started","tool_name":"read","file_path":"swarmd/internal/api/fleet_activity.go"}"#),
-        ("activity", r#"{"machine":"forge","kind":"session.tool.completed","session_id":"s2","state":"finished","tool_name":"read","file_path":"swarmd/internal/api/fleet_activity.go"}"#),
+        (
+            "activity",
+            r#"{"machine":"forge","kind":"session.tool.started","session_id":"s2","state":"started","tool_name":"read","file_path":"swarmd/internal/api/fleet_activity.go"}"#,
+        ),
+        (
+            "activity",
+            r#"{"machine":"forge","kind":"session.tool.completed","session_id":"s2","state":"finished","tool_name":"read","file_path":"swarmd/internal/api/fleet_activity.go"}"#,
+        ),
         ("activity", r#"{"machine":"forge","kind":"session.tool.started","session_id":"s2","state":"started","tool_name":"bash"}"#),
         ("activity", r#"{"machine":"social","kind":"job.started","job_id":"worker/w1/r1","worker_id":"w1","worker_name":"daily-reel","session_id":"s3","state":"running"}"#),
         ("activity", r#"{"machine":"forge","kind":"session.tool.failed","session_id":"s2","state":"failed","tool_name":"bash"}"#),

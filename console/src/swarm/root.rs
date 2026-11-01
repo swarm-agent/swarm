@@ -154,7 +154,9 @@ pub fn summary(args: &[String]) -> String {
     let base = |p: &str| p.rsplit('/').next().unwrap_or(p).to_string();
     let rest: &[String] = match args {
         // `bash -c SCRIPT install.sh ARGS…`: the installed installer.
-        [bash, c, _, name, rest @ ..] if base(bash) == "bash" && c == "-c" => return std::iter::once(name.clone()).chain(rest.iter().map(|a| shell_quote(a))).collect::<Vec<_>>().join(" "),
+        [bash, c, _, name, rest @ ..] if base(bash) == "bash" && c == "-c" => {
+            return std::iter::once(name.clone()).chain(rest.iter().map(|a| shell_quote(a))).collect::<Vec<_>>().join(" ");
+        }
         // `bash PATH/install.sh ARGS…`: a downloaded installer.
         [bash, script, rest @ ..] if base(bash) == "bash" => return std::iter::once(base(script)).chain(rest.iter().map(|a| shell_quote(a))).collect::<Vec<_>>().join(" "),
         [_, rest @ ..] => rest,

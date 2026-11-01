@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use gpui::{AnyElement, ClickEvent, Context, SharedString, div, prelude::*, px};
 use serde_json::Value;
 
-use super::{Console, alpha, ago, now_ms};
+use super::{Console, ago, alpha, now_ms};
 use crate::data::RunState;
 use crate::swarm::context::{self as swarm_context, Reading};
 use crate::swarm::live::Command;
@@ -263,16 +263,10 @@ impl Console {
                 .bg(t.panel)
                 .text_size(px(11.5))
                 .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(div().flex_1().text_color(t.text).child("Context"))
-                        .child(compact)
-                        .child(
-                            self.button(SharedString::from(format!("ctx-close-{pid}")), "close", false)
-                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_context(pid, cx))),
-                        ),
+                    div().flex().items_center().gap_2().child(div().flex_1().text_color(t.text).child("Context")).child(compact).child(
+                        self.button(SharedString::from(format!("ctx-close-{pid}")), "close", false)
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_context(pid, cx))),
+                    ),
                 )
                 .children(body)
         });

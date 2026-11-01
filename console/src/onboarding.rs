@@ -7,20 +7,19 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, ClickEvent, ClipboardItem, Context, Div, Entity,
-    EventEmitter, FocusHandle, Focusable, Hsla, PathPromptOptions, SharedString, Stateful, Task,
-    Window, actions, div, ease_in_out, prelude::*, px,
+    Animation, AnimationExt, AnyElement, App, ClickEvent, ClipboardItem, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, Hsla, PathPromptOptions, SharedString,
+    Stateful, Task, Window, actions, div, ease_in_out, prelude::*, px,
 };
 use serde_json::{Value, json};
 
-use crate::icons::{Icon, IconStyle};
 use crate::fleet_config::{FleetConfig, THIS_PC};
+use crate::icons::{Icon, IconStyle};
 use crate::password_prompt::PasswordPrompt;
 use crate::swarm::client::{self, Client};
 use crate::swarm::fleet;
 use crate::swarm::progress::{self, Event as Progress};
 use crate::swarm::repository::{self, Prepared};
-use crate::swarm::target::{channel, Target, INSTALLED_INSTALLER};
+use crate::swarm::target::{INSTALLED_INSTALLER, Target, channel};
 use crate::text_input::{InputColors, TextInput};
 use crate::theme::Theme;
 
@@ -79,27 +78,56 @@ enum Stage {
     Checking,
     Found,
     OldBuild,
-    Missing { choice: usize },
+    Missing {
+        choice: usize,
+    },
     Server,
     /// The name of the machine Swarm runs on, asked before installing (then
     /// `install` is true) or of an installed Swarm still called by the
     /// installer's default.
-    Name { install: bool },
-    Installing { steps: Vec<StepState>, current: String },
+    Name {
+        install: bool,
+    },
+    Installing {
+        steps: Vec<StepState>,
+        current: String,
+    },
     Connecting,
     /// Which machine your conversations live on (only with a fleet).
-    Home { choice: usize },
+    Home {
+        choice: usize,
+    },
     /// Where what agents may use is set: the Permissions page (Swarm's rules).
     Access,
-    Provider { rows: Vec<ProviderRow>, loaded: bool, connected: Option<String> },
-    ChatGpt { url: String, code: String },
-    ApiKey { provider: String },
-    Project { suggestions_loaded: bool },
+    Provider {
+        rows: Vec<ProviderRow>,
+        loaded: bool,
+        connected: Option<String>,
+    },
+    ChatGpt {
+        url: String,
+        code: String,
+    },
+    ApiKey {
+        provider: String,
+    },
+    Project {
+        suggestions_loaded: bool,
+    },
     /// A chosen folder has files but no Git history: the person picks the
     /// files of its first commit (Swarm's repository review).
-    Review { review: repository::Review, picked: Vec<bool> },
-    SettingUp { project: String, phase: usize, context: Option<String> },
-    Ready { project: String },
+    Review {
+        review: repository::Review,
+        picked: Vec<bool>,
+    },
+    SettingUp {
+        project: String,
+        phase: usize,
+        context: Option<String>,
+    },
+    Ready {
+        project: String,
+    },
 }
 
 impl Stage {
@@ -209,10 +237,7 @@ fn hello(api: &str) -> Hello {
         .and_then(|r| r.into_json::<Value>().ok())
         .unwrap_or(Value::Null);
     let identity = v.get("identity").cloned().unwrap_or(Value::Null);
-    Hello {
-        name: text(v.get("config").unwrap_or(&Value::Null), "swarm_name"),
-        owner: identity.get("bootstrapped").and_then(Value::as_bool).unwrap_or(false),
-    }
+    Hello { name: text(v.get("config").unwrap_or(&Value::Null), "swarm_name"), owner: identity.get("bootstrapped").and_then(Value::as_bool).unwrap_or(false) }
 }
 
 impl Onboarding {
@@ -294,12 +319,7 @@ impl Onboarding {
 
     /// Runs blocking work in the background, then `done` on this view. The
     /// result is held back until MIN_SHOWN has passed, so nothing flashes.
-    fn run<R: Send + 'static>(
-        &mut self,
-        cx: &mut Context<Self>,
-        work: impl FnOnce() -> R + Send + 'static,
-        done: impl FnOnce(&mut Self, R, &mut Context<Self>) + 'static,
-    ) {
+    fn run<R: Send + 'static>(&mut self, cx: &mut Context<Self>, work: impl FnOnce() -> R + Send + 'static, done: impl FnOnce(&mut Self, R, &mut Context<Self>) + 'static) {
         self.busy = true;
         self.error = None;
         cx.notify();
@@ -605,10 +625,7 @@ impl Onboarding {
                                 .map(|p| ProviderRow {
                                     id: text(p, "id"),
                                     ready: p.get("ready").and_then(|r| r.as_bool()).unwrap_or(false),
-                                    accepts_key: p
-                                        .get("auth_methods")
-                                        .and_then(Value::as_array)
-                                        .is_some_and(|m| m.iter().any(|a| text(a, "credential_type") == "api")),
+                                    accepts_key: p.get("auth_methods").and_then(Value::as_array).is_some_and(|m| m.iter().any(|a| text(a, "credential_type") == "api")),
                                 })
                                 .collect()
                         })
@@ -706,11 +723,7 @@ impl Onboarding {
         self.key.update(cx, |k, cx| k.set_text("", cx));
         self.run(
             cx,
-            move || {
-                client
-                    .post("/v1/auth/credentials", json!({"provider": provider, "type": "api", "api_key": key, "label": "Swarm Console"}))
-                    .map_err(|e| e.to_string())
-            },
+            move || client.post("/v1/auth/credentials", json!({"provider": provider, "type": "api", "api_key": key, "label": "Swarm Console"})).map_err(|e| e.to_string()),
             |this, result, cx| match result {
                 Ok(_) => this.providers(cx),
                 Err(e) => this.fail(format!("The key was not accepted: {e}"), cx),
@@ -852,11 +865,7 @@ impl Onboarding {
                 // A project's folders are registered workspaces: register the
                 // ones Swarm does not know yet, in place (nothing in them changes).
                 let known = client.get("/v1/workspace/list?limit=500").map_err(|e| e.to_string())?;
-                let registered: Vec<String> = known
-                    .get("workspaces")
-                    .and_then(Value::as_array)
-                    .map(|a| a.iter().map(|w| text(w, "path")).collect())
-                    .unwrap_or_default();
+                let registered: Vec<String> = known.get("workspaces").and_then(Value::as_array).map(|a| a.iter().map(|w| text(w, "path")).collect()).unwrap_or_default();
                 // Agents work only in a Git repository with a first commit.
                 // Swarm makes one in an empty folder by itself (before the
                 // folder is registered); a folder with files needs the person
@@ -910,7 +919,13 @@ impl Onboarding {
                 }
                 // Swarm's user cannot see the folder yet: make it visible, then create again.
                 Ok(Created::Invisible) => this.make_visible(paths.clone(), cx),
-                Err(e) if e.contains("workspace_not_visible") || e.contains("cannot see") || e.contains("not visible") || e.contains("permission denied") || e.contains("no such file") => {
+                Err(e)
+                    if e.contains("workspace_not_visible")
+                        || e.contains("cannot see")
+                        || e.contains("not visible")
+                        || e.contains("permission denied")
+                        || e.contains("no such file") =>
+                {
                     this.make_visible(paths.clone(), cx);
                 }
                 Err(e) => this.fail(e, cx),
@@ -1010,10 +1025,7 @@ impl Onboarding {
                         return false;
                     };
                     let project = v.get("project").cloned().unwrap_or(Value::Null);
-                    let status = project
-                        .get("context_generation")
-                        .map(|g| text(g, "status"))
-                        .unwrap_or_default();
+                    let status = project.get("context_generation").map(|g| text(g, "status")).unwrap_or_default();
                     let Stage::SettingUp { phase, context, .. } = &mut this.stage else { return false };
                     match status.as_str() {
                         "ready" => {
@@ -1105,10 +1117,14 @@ impl Onboarding {
                 match Target::parse_server(&input, None) {
                     Ok(target) => {
                         self.target = target.clone();
-                        self.run(cx, move || target.check_server(), |this, r, cx| match r {
-                            Ok(()) => this.detect(cx),
-                            Err(e) => this.fail(e, cx),
-                        });
+                        self.run(
+                            cx,
+                            move || target.check_server(),
+                            |this, r, cx| match r {
+                                Ok(()) => this.detect(cx),
+                                Err(e) => this.fail(e, cx),
+                            },
+                        );
                     }
                     Err(e) => self.fail(e, cx),
                 }
@@ -1211,23 +1227,13 @@ impl Onboarding {
                     }
                     None => base[i],
                 };
-                div()
-                    .absolute()
-                    .top(px(inset))
-                    .left(px(inset))
-                    .size(px(side))
-                    .rounded(px(side * 0.24))
-                    .bg(alpha(accent, a))
+                div().absolute().top(px(inset)).left(px(inset)).size(px(side)).rounded(px(side * 0.24)).bg(alpha(accent, a))
             }))
         };
         if breathing {
             div()
                 .size(px(size))
-                .with_animation(
-                    SharedString::from(format!("mark-{size}")),
-                    Animation::new(Duration::from_millis(2400)).repeat(),
-                    move |el, t| el.child(squares(Some(t))),
-                )
+                .with_animation(SharedString::from(format!("mark-{size}")), Animation::new(Duration::from_millis(2400)).repeat(), move |el, t| el.child(squares(Some(t))))
                 .into_any_element()
         } else {
             squares(None).into_any_element()
@@ -1304,24 +1310,15 @@ impl Onboarding {
             .items_center()
             .gap_3()
             .h(px(26.))
-            .child(
-                div()
-                    .w(px(14.))
-                    .flex()
-                    .justify_center()
-                    .text_color(color)
-                    .map(|d| {
-                        if state == StepState::Running {
-                            d.child(div().child(glyph).with_animation(
-                                "running-dot",
-                                Animation::new(Duration::from_millis(1400)).repeat().with_easing(ease_in_out),
-                                |el, t| el.opacity(0.35 + 0.65 * (1. - (t * 2. - 1.).abs())),
-                            ))
-                        } else {
-                            d.child(glyph)
-                        }
-                    }),
-            )
+            .child(div().w(px(14.)).flex().justify_center().text_color(color).map(|d| {
+                if state == StepState::Running {
+                    d.child(div().child(glyph).with_animation("running-dot", Animation::new(Duration::from_millis(1400)).repeat().with_easing(ease_in_out), |el, t| {
+                        el.opacity(0.35 + 0.65 * (1. - (t * 2. - 1.).abs()))
+                    }))
+                } else {
+                    d.child(glyph)
+                }
+            }))
             .child(
                 div()
                     .flex_1()
@@ -1338,24 +1335,19 @@ impl Onboarding {
 
     fn field(&self, label: &str, input: &Entity<TextInput>, focused: bool) -> Div {
         let t = &self.theme;
-        div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(div().text_size(px(11.)).text_color(t.faint).child(label.to_string()))
-            .child(
-                div()
-                    .h(px(36.))
-                    .px_3()
-                    .flex()
-                    .items_center()
-                    .rounded(px(t.radius + 1.))
-                    .border_1()
-                    .border_color(if focused { alpha(t.accent, 0.7) } else { t.border_strong })
-                    .bg(t.surface)
-                    .text_color(t.text)
-                    .child(input.clone()),
-            )
+        div().flex().flex_col().gap_1().child(div().text_size(px(11.)).text_color(t.faint).child(label.to_string())).child(
+            div()
+                .h(px(36.))
+                .px_3()
+                .flex()
+                .items_center()
+                .rounded(px(t.radius + 1.))
+                .border_1()
+                .border_color(if focused { alpha(t.accent, 0.7) } else { t.border_strong })
+                .bg(t.surface)
+                .text_color(t.text)
+                .child(input.clone()),
+        )
     }
 
     /// Title, subtitle, body and footer for the current stage.
@@ -1365,13 +1357,7 @@ impl Onboarding {
         let label = self.place();
         let busy = self.busy;
         let footer = |left: Option<AnyElement>, right: AnyElement| -> AnyElement {
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(left.unwrap_or_else(|| div().into_any_element()))
-                .child(right)
-                .into_any_element()
+            div().flex().items_center().justify_between().child(left.unwrap_or_else(|| div().into_any_element())).child(right).into_any_element()
         };
         let primary = |this: &Self, id: &'static str, text: &str, enabled: bool, cx: &mut Context<Self>| -> AnyElement {
             this.button(id, text.to_string(), true, enabled && !busy)
@@ -1379,13 +1365,7 @@ impl Onboarding {
                 .into_any_element()
         };
         let waiting = |this: &Self, line: &str| -> AnyElement {
-            div()
-                .flex()
-                .items_center()
-                .gap_3()
-                .child(this.mark(22., true))
-                .child(div().text_color(t.muted).child(line.to_string()))
-                .into_any_element()
+            div().flex().items_center().gap_3().child(this.mark(22., true)).child(div().text_color(t.muted).child(line.to_string())).into_any_element()
         };
 
         match self.stage.clone() {
@@ -1464,11 +1444,12 @@ impl Onboarding {
                         .gap_2()
                         .pt_2()
                         .children(options.into_iter().enumerate().map(|(i, (title, detail))| {
-                            self.option_card(format!("home-{i}"), choice == i, &title, &detail, if i == 0 { Icon::Machine } else { Icon::Agents })
-                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            self.option_card(format!("home-{i}"), choice == i, &title, &detail, if i == 0 { Icon::Machine } else { Icon::Agents }).on_click(cx.listener(
+                                move |this, _: &ClickEvent, _, cx| {
                                     this.stage = Stage::Home { choice: i };
                                     cx.notify();
-                                }))
+                                },
+                            ))
                         }))
                         .into_any_element(),
                     footer(None, primary(self, "home-continue", "Continue", true, cx)),
@@ -1521,18 +1502,30 @@ impl Onboarding {
                         .gap_2()
                         .pt_2()
                         .child(
-                            self.option_card("opt-install", choice == 0, &install_title, "Ubuntu 24.04. About 10 minutes the first time. Your password is asked once.", Icon::Machine)
-                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                    this.stage = Stage::Missing { choice: 0 };
-                                    cx.notify();
-                                })),
+                            self.option_card(
+                                "opt-install",
+                                choice == 0,
+                                &install_title,
+                                "Ubuntu 24.04. About 10 minutes the first time. Your password is asked once.",
+                                Icon::Machine,
+                            )
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.stage = Stage::Missing { choice: 0 };
+                                cx.notify();
+                            })),
                         )
                         .child(
-                            self.option_card("opt-server", choice == 1, "Use a server", "Over SSH. Swarm installs there if it isn't yet; your computer only runs this app.", Icon::Agents)
-                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                    this.stage = Stage::Missing { choice: 1 };
-                                    cx.notify();
-                                })),
+                            self.option_card(
+                                "opt-server",
+                                choice == 1,
+                                "Use a server",
+                                "Over SSH. Swarm installs there if it isn't yet; your computer only runs this app.",
+                                Icon::Agents,
+                            )
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.stage = Stage::Missing { choice: 1 };
+                                cx.notify();
+                            })),
                         )
                         .into_any_element(),
                     footer(None, primary(self, "missing-continue", if choice == 0 { "Install" } else { "Continue" }, true, cx)),
@@ -1571,18 +1564,16 @@ impl Onboarding {
                         .child(div().text_size(px(11.5)).text_color(t.faint).child("For example the machine's own name, or what it is for: office-server, roy-desktop"))
                         .into_any_element(),
                     footer(
-                        install.then(|| self.button("name-back", "Back", false, !busy).on_click(cx.listener(|this, _: &ClickEvent, w, cx| this.back(&Back, w, cx))).into_any_element()),
+                        install.then(|| {
+                            self.button("name-back", "Back", false, !busy).on_click(cx.listener(|this, _: &ClickEvent, w, cx| this.back(&Back, w, cx))).into_any_element()
+                        }),
                         primary(self, "name-continue", if install { "Install" } else { "Continue" }, true, cx),
                     ),
                 )
             }
             Stage::Installing { steps, current } => {
                 let failed = self.error.is_some();
-                let rows = progress::STEPS
-                    .iter()
-                    .zip(steps.iter())
-                    .map(|((_, label), state)| self.checklist_row(*state, label, None).into_any_element())
-                    .collect::<Vec<_>>();
+                let rows = progress::STEPS.iter().zip(steps.iter()).map(|((_, label), state)| self.checklist_row(*state, label, None).into_any_element()).collect::<Vec<_>>();
                 (
                     format!("Installing Swarm on {label}"),
                     "The first build takes a few minutes. Swarm listens on this machine only.".into(),
@@ -1647,8 +1638,14 @@ impl Onboarding {
                             .gap_2()
                             .pt_2()
                             .child(
-                                self.option_card("opt-chatgpt", true, "Sign in with your ChatGPT plan", "Recommended. No API key: you confirm a short code on OpenAI's page.", Icon::Sessions)
-                                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.chatgpt(cx))),
+                                self.option_card(
+                                    "opt-chatgpt",
+                                    true,
+                                    "Sign in with your ChatGPT plan",
+                                    "Recommended. No API key: you confirm a short code on OpenAI's page.",
+                                    Icon::Sessions,
+                                )
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.chatgpt(cx))),
                             )
                             .child(
                                 div()
@@ -1806,27 +1803,22 @@ impl Onboarding {
                         // Folders for an existing project: its name is not up for change here.
                         .when(self.existing.is_none(), |d| d.child(self.field("PROJECT NAME", &self.name, name_focused)))
                         .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap_1()
-                                .child(div().text_size(px(11.)).text_color(t.faint).child("FOLDERS"))
-                                .child(
-                                    div()
-                                        .id("folder-list")
-                                        .h(px(104.))
-                                        .overflow_y_scroll()
-                                        .p_1()
-                                        .rounded(px(t.radius + 1.))
-                                        .border_1()
-                                        .border_color(t.border)
-                                        .bg(t.surface)
-                                        .when(!suggestions_loaded, |d| d.child(div().p_2().child(waiting(self, "Looking at your home folder…"))))
-                                        .when(suggestions_loaded && self.folders.is_empty(), |d| {
-                                            d.child(div().p_2().text_color(t.faint).child("Your home folder is empty. Type a name below to make a folder."))
-                                        })
-                                        .children(rows),
-                                ),
+                            div().flex().flex_col().gap_1().child(div().text_size(px(11.)).text_color(t.faint).child("FOLDERS")).child(
+                                div()
+                                    .id("folder-list")
+                                    .h(px(104.))
+                                    .overflow_y_scroll()
+                                    .p_1()
+                                    .rounded(px(t.radius + 1.))
+                                    .border_1()
+                                    .border_color(t.border)
+                                    .bg(t.surface)
+                                    .when(!suggestions_loaded, |d| d.child(div().p_2().child(waiting(self, "Looking at your home folder…"))))
+                                    .when(suggestions_loaded && self.folders.is_empty(), |d| {
+                                        d.child(div().p_2().text_color(t.faint).child("Your home folder is empty. Type a name below to make a folder."))
+                                    })
+                                    .children(rows),
+                            ),
                         )
                         .child(
                             div()
@@ -1921,7 +1913,15 @@ impl Onboarding {
                 )
             }
             Stage::SettingUp { project, phase, context } => {
-                let state = |n: usize| if phase > n { StepState::Done } else if phase == n { StepState::Running } else { StepState::Waiting };
+                let state = |n: usize| {
+                    if phase > n {
+                        StepState::Done
+                    } else if phase == n {
+                        StepState::Running
+                    } else {
+                        StepState::Waiting
+                    }
+                };
                 let mut body = div()
                     .flex()
                     .flex_col()
@@ -1988,11 +1988,13 @@ impl Render for Onboarding {
         let segments = (0..4).map(|i| {
             let done = step.is_some_and(|s| s > i);
             let current = step == Some(i);
-            div()
-                .flex_1()
-                .h(px(3.))
-                .rounded(px(2.))
-                .bg(if done { t.accent } else if current { alpha(t.accent, 0.45) } else { t.border })
+            div().flex_1().h(px(3.)).rounded(px(2.)).bg(if done {
+                t.accent
+            } else if current {
+                alpha(t.accent, 0.45)
+            } else {
+                t.border
+            })
         });
         let step_label = match step {
             None => String::new(),
@@ -2002,34 +2004,27 @@ impl Render for Onboarding {
 
         // The error line has a reserved height, so a short one moves nothing;
         // a long message (Git's, a refusal of Swarm's) wraps so all of it is read.
-        let error_line = div().min_h(px(40.)).flex().items_center().children(self.error.clone().map(|e| {
-            div()
-                .w_full()
-                .px_3()
-                .py_2()
-                .rounded(px(t.radius + 1.))
-                .border_1()
-                .border_color(alpha(t.err, 0.45))
-                .bg(alpha(t.err, 0.08))
-                .text_size(px(11.5))
-                .line_height(px(16.))
-                .text_color(t.err)
-                .child(e.split_whitespace().collect::<Vec<_>>().join(" "))
-        }))
-        .children(self.note.clone().filter(|_| self.error.is_none()).map(|n| {
-            div()
-                .w_full()
-                .px_3()
-                .py_2()
-                .rounded(px(t.radius + 1.))
-                .border_1()
-                .border_color(t.border)
-                .bg(t.surface)
-                .text_size(px(11.5))
-                .text_color(t.muted)
-                .truncate()
-                .child(n)
-        }));
+        let error_line = div()
+            .min_h(px(40.))
+            .flex()
+            .items_center()
+            .children(self.error.clone().map(|e| {
+                div()
+                    .w_full()
+                    .px_3()
+                    .py_2()
+                    .rounded(px(t.radius + 1.))
+                    .border_1()
+                    .border_color(alpha(t.err, 0.45))
+                    .bg(alpha(t.err, 0.08))
+                    .text_size(px(11.5))
+                    .line_height(px(16.))
+                    .text_color(t.err)
+                    .child(e.split_whitespace().collect::<Vec<_>>().join(" "))
+            }))
+            .children(self.note.clone().filter(|_| self.error.is_none()).map(|n| {
+                div().w_full().px_3().py_2().rounded(px(t.radius + 1.)).border_1().border_color(t.border).bg(t.surface).text_size(px(11.5)).text_color(t.muted).truncate().child(n)
+            }));
 
         let seq = self.seq;
         let card = div()
@@ -2064,11 +2059,7 @@ impl Render for Onboarding {
                     .child(div().text_size(px(20.)).text_color(t.text).child(title))
                     .child(div().pt_2().text_color(t.muted).line_height(px(19.)).child(subtitle))
                     .child(div().flex_1().min_h_0().pt_3().child(body))
-                    .with_animation(
-                        SharedString::from(format!("stage-{seq}")),
-                        Animation::new(Duration::from_millis(200)).with_easing(ease_in_out),
-                        |el, t| el.opacity(t),
-                    ),
+                    .with_animation(SharedString::from(format!("stage-{seq}")), Animation::new(Duration::from_millis(200)).with_easing(ease_in_out), |el, t| el.opacity(t)),
             )
             .child(error_line)
             .child(footer);
@@ -2100,7 +2091,6 @@ impl Render for Onboarding {
             .child(self.password.clone())
     }
 }
-
 
 /// Moves the install checklist on by one progress event. Steps before the
 /// current one that never reported were skipped (an existing Docker, no AI to

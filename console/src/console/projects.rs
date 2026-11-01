@@ -15,7 +15,9 @@ use crate::swarm::live::Command;
 use crate::swarm::target::Target;
 
 #[derive(Clone)]
-struct DraggedProject { id: String }
+struct DraggedProject {
+    id: String,
+}
 
 impl Console {
     pub(super) fn select_project(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -353,8 +355,9 @@ impl Console {
                 .on_click(cx.listener({
                     let id = p.id.to_string();
                     move |this, _: &ClickEvent, _, cx| {
-                    this.select_project(&id, cx);
-                }}))
+                        this.select_project(&id, cx);
+                    }
+                }))
                 .child(self.icon(Icon::Project, 12., if open { t.accent } else { t.faint }))
                 .child(div().text_color(if on { t.text } else { t.muted }).child(p.name.clone()))
                 .when(needs > 0, |d| d.child(self.needs_badge(needs)))
@@ -377,8 +380,18 @@ impl Console {
                     .child(div().flex_1().text_size(px(16.)).text_color(t.text).child("Projects"))
                     .child(self.button("projects-new", "new project", true).on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.new_project(cx)))),
             )
-            .child(div().text_size(px(11.)).text_color(t.faint).child("A project is a name and folders on a machine; project.md is what Swarm wrote about them, and every agent reads it. Swarm keeps all of it."))
-            .child(div().text_size(px(11.)).text_color(t.faint).child("The first project is the one the app opens with. Move projects to set Swarm's saved order. New projects appear first; edits never change the order."))
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(t.faint)
+                    .child("A project is a name and folders on a machine; project.md is what Swarm wrote about them, and every agent reads it. Swarm keeps all of it."),
+            )
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(t.faint)
+                    .child("The first project is the one the app opens with. Move projects to set Swarm's saved order. New projects appear first; edits never change the order."),
+            )
             .child(tabs)
             .children(cards)
     }
@@ -390,17 +403,7 @@ impl Console {
         let renaming = self.project_rename.as_deref() == Some(p.id.as_ref());
         let editing = self.context_edit.as_deref() == Some(p.id.as_ref());
         let field = |input: Option<gpui::Entity<crate::text_input::TextInput>>| {
-            div()
-                .flex_1()
-                .min_w_0()
-                .px_2()
-                .py(px(4.))
-                .rounded(px(t.radius))
-                .border_1()
-                .border_color(alpha(t.accent, 0.6))
-                .bg(t.surface)
-                .text_color(t.text)
-                .children(input)
+            div().flex_1().min_w_0().px_2().py(px(4.)).rounded(px(t.radius)).border_1().border_color(alpha(t.accent, 0.6)).bg(t.surface).text_color(t.text).children(input)
         };
         let name: AnyElement = if renaming {
             div()
@@ -426,16 +429,33 @@ impl Console {
                 .flex_col()
                 .gap_2()
                 // A set width: the field measures itself against a definite one.
-                .child(div().w(px(800.)).px_2().py(px(4.)).rounded(px(t.radius)).border_1().border_color(alpha(t.accent, 0.6)).bg(t.surface).text_color(t.text).text_size(px(11.5)).children(self.context_input.clone()))
+                .child(
+                    div()
+                        .w(px(800.))
+                        .px_2()
+                        .py(px(4.))
+                        .rounded(px(t.radius))
+                        .border_1()
+                        .border_color(alpha(t.accent, 0.6))
+                        .bg(t.surface)
+                        .text_color(t.text)
+                        .text_size(px(11.5))
+                        .children(self.context_input.clone()),
+                )
                 .child(
                     div()
                         .flex()
                         .gap_1()
-                        .child(self.button(SharedString::from(format!("project-{}-save-context", p.id)), "save project.md", true).on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.save_context(cx))))
-                        .child(self.button(SharedString::from(format!("project-{}-cancel-context", p.id)), "cancel", false).on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.context_edit = None;
-                            cx.notify();
-                        }))),
+                        .child(
+                            self.button(SharedString::from(format!("project-{}-save-context", p.id)), "save project.md", true)
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.save_context(cx))),
+                        )
+                        .child(self.button(SharedString::from(format!("project-{}-cancel-context", p.id)), "cancel", false).on_click(cx.listener(
+                            |this, _: &ClickEvent, _, cx| {
+                                this.context_edit = None;
+                                cx.notify();
+                            },
+                        ))),
                 )
                 .into_any_element()
         } else if p.context_generation.updating() {
@@ -486,16 +506,25 @@ impl Console {
                     })
                     .when(pi != 0 && !p.id.is_empty(), |d| {
                         let id = p.id.to_string();
-                        d.child(self.button(SharedString::from(format!("project-{}-front", p.id)), "move to front", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.move_project(&id, isize::MIN, cx))))
+                        d.child(
+                            self.button(SharedString::from(format!("project-{}-front", p.id)), "move to front", false)
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.move_project(&id, isize::MIN, cx))),
+                        )
                     })
                     .when(pi == 0, |d| d.child(div().text_size(px(10.5)).text_color(t.faint).child("default")))
                     .when(!renaming, |d| {
                         let id = p.id.to_string();
-                        d.child(self.button(SharedString::from(format!("project-{}-rename", p.id)), "rename", false).on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.start_project_rename(&id, window, cx))))
+                        d.child(
+                            self.button(SharedString::from(format!("project-{}-rename", p.id)), "rename", false)
+                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.start_project_rename(&id, window, cx))),
+                        )
                     })
                     .when(!editing && !p.id.is_empty(), |d| {
                         let id = p.id.to_string();
-                        d.child(self.button(SharedString::from(format!("project-{}-edit-context", p.id)), "edit project.md", false).on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.start_context_edit(&id, window, cx))))
+                        d.child(
+                            self.button(SharedString::from(format!("project-{}-edit-context", p.id)), "edit project.md", false)
+                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.start_context_edit(&id, window, cx))),
+                        )
                     }),
             )
             .child(div().flex().gap_2().px_3().py_2().children([(-1, "move left"), (1, "move right")].into_iter().map(|(offset, label)| {
@@ -506,17 +535,26 @@ impl Console {
             .when(!p.id.is_empty(), |d| {
                 let id = p.id.to_string();
                 if self.delete_project_confirm.as_deref() == Some(id.as_str()) {
-                    d.child(div().flex().flex_wrap().gap_2().px_3().py_2()
-                        .child(format!("delete {}? Its folders and files stay on disk.", p.name))
-                        .child(self.button("confirm-delete-project", "confirm", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            if let Some(live) = &this.live { live.run(Command::DeleteProject { project_id: id.clone() }); }
-                            this.delete_project_confirm = None;
-                            cx.notify();
-                        })))
-                        .child(self.button("cancel-delete-project", "cancel", false).on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.delete_project_confirm = None;
-                            cx.notify();
-                        }))))
+                    d.child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_2()
+                            .px_3()
+                            .py_2()
+                            .child(format!("delete {}? Its folders and files stay on disk.", p.name))
+                            .child(self.button("confirm-delete-project", "confirm", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                if let Some(live) = &this.live {
+                                    live.run(Command::DeleteProject { project_id: id.clone() });
+                                }
+                                this.delete_project_confirm = None;
+                                cx.notify();
+                            })))
+                            .child(self.button("cancel-delete-project", "cancel", false).on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.delete_project_confirm = None;
+                                cx.notify();
+                            }))),
+                    )
                 } else {
                     d.child(div().flex().px_3().py_2().child(self.button("delete-project", "delete project", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.delete_project_confirm = Some(id.clone());
@@ -530,9 +568,20 @@ impl Console {
             .when(matches!(p.context_generation.status.as_ref(), "ready" | "failed"), |d| {
                 let id = p.id.to_string();
                 let attempt = p.context_generation.attempt;
-                d.child(div().flex().px_3().child(self.button(SharedString::from(format!("refresh-context-{}", p.id)), if p.context_generation.status.as_ref() == "failed" { "retry" } else { "refresh project.md" }, false).on_click(cx.listener(move |this, _: &ClickEvent, _, _| {
-                    if let Some(live) = &this.live { live.run(Command::RefreshProjectContext { project_id: id.clone(), expected_attempt: attempt }); }
-                }))))
+                d.child(
+                    div().flex().px_3().child(
+                        self.button(
+                            SharedString::from(format!("refresh-context-{}", p.id)),
+                            if p.context_generation.status.as_ref() == "failed" { "retry" } else { "refresh project.md" },
+                            false,
+                        )
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, _| {
+                            if let Some(live) = &this.live {
+                                live.run(Command::RefreshProjectContext { project_id: id.clone(), expected_attempt: attempt });
+                            }
+                        })),
+                    ),
+                )
             })
             .child(context)
             .into_any_element()

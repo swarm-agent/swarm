@@ -7,7 +7,7 @@
 
 use gpui::{AnyElement, Context, Div, SharedString, div, prelude::*, px};
 
-use super::{Console, alpha, ago, now_ms};
+use super::{Console, ago, alpha, now_ms};
 use crate::data::{Plan, Tokens};
 use crate::swarm::map::tokens;
 
@@ -35,18 +35,7 @@ fn split(t: &Tokens) -> String {
 impl Console {
     fn card(&self) -> Div {
         let t = &self.theme;
-        div()
-            .min_w_0()
-            .flex_shrink_0()
-            .p_3()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .rounded(px(t.radius + 2.))
-            .border_1()
-            .border_color(t.border)
-            .bg(t.surface)
-            .overflow_hidden()
+        div().min_w_0().flex_shrink_0().p_3().flex().flex_col().gap_1().rounded(px(t.radius + 2.)).border_1().border_color(t.border).bg(t.surface).overflow_hidden()
     }
 
     fn caption(&self, text: impl Into<SharedString>) -> Div {
@@ -96,9 +85,13 @@ impl Console {
                 .text_size(px(11.5))
                 .child(div().w(px(56.)).flex_none().text_color(t.muted).child(w.label.clone()))
                 .child(
-                    div().flex_1().min_w(px(40.)).h(px(6.)).rounded(px(3.)).bg(t.border).child(
-                        div().h_full().w(gpui::relative((w.used / 100.).clamp(0.01, 1.))).rounded(px(3.)).bg(color),
-                    ),
+                    div()
+                        .flex_1()
+                        .min_w(px(40.))
+                        .h(px(6.))
+                        .rounded(px(3.))
+                        .bg(t.border)
+                        .child(div().h_full().w(gpui::relative((w.used / 100.).clamp(0.01, 1.))).rounded(px(3.)).bg(color)),
                 )
                 .child(div().w(px(64.)).flex_none().text_right().text_color(t.text).child(format!("{:.0}% used", w.used)))
                 .child(div().w(px(124.)).flex_none().text_right().text_color(t.faint).child(if w.resets_at > now {
@@ -237,7 +230,11 @@ impl Console {
                     .child(div().w(px(130.)).flex_none().truncate().text_color(t.faint).child(s.model.clone()))
                     .child(div().w(px(56.)).flex_none().text_right().text_color(t.text).child(tokens(s.tokens)))
                     .child(div().w(px(64.)).flex_none().text_right().text_color(t.faint).child(format!("{} turns", s.turns)))
-                    .child(div().w(px(40.)).flex_none().text_right().text_color(t.faint).child(if s.last_active > 0 { ago(now.saturating_sub(s.last_active)) } else { String::new() }))
+                    .child(div().w(px(40.)).flex_none().text_right().text_color(t.faint).child(if s.last_active > 0 {
+                        ago(now.saturating_sub(s.last_active))
+                    } else {
+                        String::new()
+                    }))
                     .into_any_element()
             })
             .collect();
@@ -287,9 +284,11 @@ impl Console {
             .when(!models.is_empty(), |d| d.child(self.card().child(self.caption("MODELS · 30 DAYS")).children(models)))
             .when(!sessions.is_empty(), |d| d.child(self.card().child(self.caption("RECENT SESSIONS")).children(sessions)))
             .when(images + videos + sounds > 0, |d| {
-                d.child(self.card().child(self.caption("MEDIA · 30 DAYS")).child(div().text_color(t.text).child(format!(
-                    "{images} images · {videos} videos · {sounds} sounds · ${media_cost:.2}"
-                ))))
+                d.child(
+                    self.card()
+                        .child(self.caption("MEDIA · 30 DAYS"))
+                        .child(div().text_color(t.text).child(format!("{images} images · {videos} videos · {sounds} sounds · ${media_cost:.2}"))),
+                )
             })
     }
 }

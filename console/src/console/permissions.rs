@@ -74,16 +74,11 @@ impl Console {
             .flex_col()
             .gap_5()
             .max_w(px(760.))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(div().text_size(px(16.)).text_color(t.text).child("Permissions"))
-                    .child(div().text_size(px(11.)).text_color(t.faint).child(
-                        "What agents may use, for every conversation, task and AI key on this Swarm. Swarm stores these rules and enforces them; this page shows what it returns.",
-                    )),
-            )
+            .child(div().flex().flex_col().gap_1().child(div().text_size(px(16.)).text_color(t.text).child("Permissions")).child(
+                div().text_size(px(11.)).text_color(t.faint).child(
+                    "What agents may use, for every conversation, task and AI key on this Swarm. Swarm stores these rules and enforces them; this page shows what it returns.",
+                ),
+            ))
             .children(self.permissions_error.clone().map(|(_, e)| div().text_size(px(11.5)).text_color(t.err).child(e)));
         // A linked machine's own rules never cross the link: they are set on
         // that machine. Its work rule from home is on home's page.
@@ -150,14 +145,7 @@ impl Console {
             .gap(px(3.))
             .px_3()
             .py_2()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .child(div().flex_1().min_w_0().truncate().text_color(t.text).child(row.title))
-                    .child(choices),
-            )
+            .child(div().flex().items_center().gap_3().child(div().flex_1().min_w_0().truncate().text_color(t.text).child(row.title)).child(choices))
             .child(div().text_size(px(11.)).text_color(t.faint).child(row.protects))
             .child(div().text_size(px(11.5)).text_color(if row.unavailable { t.warn } else { t.muted }).child(row.now))
             .child(div().text_size(px(10.5)).text_color(t.faint).child(row.changed))

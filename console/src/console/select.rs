@@ -5,8 +5,7 @@
 //! from where you pressed to where you are.
 
 use gpui::{
-    Context, Hsla, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
-    SharedString, Styled, StyledText, TextRun, div,
+    Context, Hsla, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, SharedString, Styled, StyledText, TextRun, div,
 };
 
 use super::{Console, markdown};
@@ -198,11 +197,7 @@ mod tests {
 
     #[test]
     fn a_selection_across_entries() {
-        let entries = vec![
-            Entry::User("Fix the README".into()),
-            Entry::Assistant("Done.\n\n- added a line\n- ran tests".into()),
-            Entry::tool("read", "README.md"),
-        ];
+        let entries = vec![Entry::User("Fix the README".into()), Entry::Assistant("Done.\n\n- added a line\n- ran tests".into()), Entry::tool("read", "README.md")];
         // From "the" in the first message to "added" in the second's list.
         let selection = Selection { pane: 0, anchor: (1, 1, 5), head: (0, 0, 4) };
         assert_eq!(selected_text(&selection, &entries), "the README\n\nDone.\n\nadded");

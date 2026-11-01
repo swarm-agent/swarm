@@ -15,8 +15,8 @@
 //! the main window.
 
 use gpui::{
-    App, AppContext, Bounds, Context, Entity, Focusable, IntoElement, Render, SharedString, Subscription,
-    TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
+    App, AppContext, Bounds, Context, Entity, Focusable, IntoElement, Render, SharedString, Subscription, TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*,
+    px, size,
 };
 
 use super::{ClosePane, Console, CopySelection};

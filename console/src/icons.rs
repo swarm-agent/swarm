@@ -132,9 +132,27 @@ macro_rules! icon_table {
 }
 
 static ICONS: &[(&str, &[u8])] = icon_table!(
-    "sessions", "media", "usage", "agents", "settings", "search", "plus", "split-right",
-    "split-down", "close", "collapse", "expand", "project", "machine", "tasks",
-    "chevron-down", "chevron-right", "copy", "shield", "live", "pop-out",
+    "sessions",
+    "media",
+    "usage",
+    "agents",
+    "settings",
+    "search",
+    "plus",
+    "split-right",
+    "split-down",
+    "close",
+    "collapse",
+    "expand",
+    "project",
+    "machine",
+    "tasks",
+    "chevron-down",
+    "chevron-right",
+    "copy",
+    "shield",
+    "live",
+    "pop-out",
 );
 
 /// Swarm's mark, the brand SVG as it is (its nested squares and their
@@ -153,11 +171,7 @@ impl AssetSource for Assets {
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        Ok(ICONS
-            .iter()
-            .filter(|(p, _)| p.starts_with(path))
-            .map(|(p, _)| SharedString::from(*p))
-            .collect())
+        Ok(ICONS.iter().filter(|(p, _)| p.starts_with(path)).map(|(p, _)| SharedString::from(*p)).collect())
     }
 }
 
@@ -168,10 +182,27 @@ mod tests {
     #[test]
     fn every_icon_has_every_style() {
         let all = [
-            Icon::Sessions, Icon::Media, Icon::Usage, Icon::Agents, Icon::Settings, Icon::Search,
-            Icon::Plus, Icon::SplitRight, Icon::SplitDown, Icon::Close, Icon::Collapse,
-            Icon::Expand, Icon::Project, Icon::Machine, Icon::Tasks, Icon::ChevronDown,
-            Icon::ChevronRight, Icon::Copy, Icon::Shield, Icon::Live, Icon::PopOut,
+            Icon::Sessions,
+            Icon::Media,
+            Icon::Usage,
+            Icon::Agents,
+            Icon::Settings,
+            Icon::Search,
+            Icon::Plus,
+            Icon::SplitRight,
+            Icon::SplitDown,
+            Icon::Close,
+            Icon::Collapse,
+            Icon::Expand,
+            Icon::Project,
+            Icon::Machine,
+            Icon::Tasks,
+            Icon::ChevronDown,
+            Icon::ChevronRight,
+            Icon::Copy,
+            Icon::Shield,
+            Icon::Live,
+            Icon::PopOut,
         ];
         for icon in all {
             for style in [IconStyle::Line, IconStyle::Solid, IconStyle::Pixel] {

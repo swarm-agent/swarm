@@ -13,15 +13,7 @@ impl Console {
     pub(super) fn session_rows(&self, active_session: usize, cx: &mut Context<Self>) -> Vec<Stateful<Div>> {
         let t = &self.theme;
         let hover = t.hover;
-        let badge = |n: usize| {
-            div()
-                .px(px(5.))
-                .rounded(px(t.radius))
-                .bg(alpha(t.warn, 0.16))
-                .text_color(t.warn)
-                .text_size(px(10.5))
-                .child(n.to_string())
-        };
+        let badge = |n: usize| div().px(px(5.)).rounded(px(t.radius)).bg(alpha(t.warn, 0.16)).text_color(t.warn).text_size(px(10.5)).child(n.to_string());
         let sessions: Vec<_> = self
             .ordered(self.project)
             .into_iter()
@@ -122,13 +114,7 @@ impl Console {
                         .children(self.rename_input.clone())
                         .into_any_element()
                 } else {
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_color(if selected { t.text } else { t.muted })
-                        .child(s.title.clone())
-                        .into_any_element()
+                    div().flex_1().min_w_0().truncate().text_color(if selected { t.text } else { t.muted }).child(s.title.clone()).into_any_element()
                 };
                 div()
                     .id(SharedString::from(format!("session-{i}")))

@@ -139,10 +139,7 @@ pub fn with_added(current: &[(String, String)], adding: &[String]) -> Vec<Value>
 pub fn without(current: &[(String, String)], removing: &[String]) -> Vec<Value> {
     let kept: Vec<&(String, String)> = current.iter().filter(|(p, _)| !removing.contains(p)).collect();
     let has_primary = kept.iter().any(|(_, r)| r == "primary_code");
-    kept.iter()
-        .enumerate()
-        .map(|(i, (p, r))| json!({"path": p, "role": if !has_primary && i == 0 { "primary_code" } else { r.as_str() }}))
-        .collect()
+    kept.iter().enumerate().map(|(i, (p, r))| json!({"path": p, "role": if !has_primary && i == 0 { "primary_code" } else { r.as_str() }})).collect()
 }
 
 /// Readies, registers and adds `paths` to the project.
@@ -221,7 +218,10 @@ mod tests {
         std::fs::write(root.join("guided/AGENTS.md"), "x").unwrap();
         std::fs::write(root.join("file.txt"), "x").unwrap();
         let l = read_local(&root).unwrap();
-        assert_eq!(l.entries.iter().map(|e| (e.name.as_str(), e.git, e.guide)).collect::<Vec<_>>(), [("guided", true, Some("AGENTS.md")), ("repo", true, None), ("plain", false, None)]);
+        assert_eq!(
+            l.entries.iter().map(|e| (e.name.as_str(), e.git, e.guide)).collect::<Vec<_>>(),
+            [("guided", true, Some("AGENTS.md")), ("repo", true, None), ("plain", false, None)]
+        );
         assert_eq!(l.parent.as_deref(), root.parent().map(|p| p.display().to_string()).as_deref());
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -243,7 +243,10 @@ mod tests {
     #[test]
     fn folder_lists_for_adding_and_removing() {
         let cur = vec![("/a".to_string(), "primary_code".to_string()), ("/b".to_string(), "auxiliary".to_string())];
-        assert_eq!(with_added(&cur, &["/b".into(), "/c".into()]), vec![json!({"path": "/a", "role": "primary_code"}), json!({"path": "/b", "role": "auxiliary"}), json!({"path": "/c", "role": "auxiliary"})]);
+        assert_eq!(
+            with_added(&cur, &["/b".into(), "/c".into()]),
+            vec![json!({"path": "/a", "role": "primary_code"}), json!({"path": "/b", "role": "auxiliary"}), json!({"path": "/c", "role": "auxiliary"})]
+        );
         assert_eq!(with_added(&[], &["/x".into(), "/y".into()]), vec![json!({"path": "/x", "role": "primary_code"}), json!({"path": "/y", "role": "auxiliary"})]);
         assert_eq!(without(&cur, &["/b".into()]), vec![json!({"path": "/a", "role": "primary_code"})]);
         // The primary goes: the first one left takes its role.

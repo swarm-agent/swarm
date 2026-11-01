@@ -141,13 +141,7 @@ impl Console {
     /// Workers whose latest finished run failed: what needs the person.
     pub(super) fn failing(board: &Board) -> Vec<&Run> {
         let mut seen = HashSet::new();
-        board
-            .runs
-            .iter()
-            .filter(|r| !r.active())
-            .filter(|r| seen.insert(r.worker_id.clone()))
-            .filter(|r| r.status == "failed")
-            .collect()
+        board.runs.iter().filter(|r| !r.active()).filter(|r| seen.insert(r.worker_id.clone())).filter(|r| r.status == "failed").collect()
     }
 
     pub(super) fn render_automations(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -377,12 +371,16 @@ impl Console {
                             .when(w.state == "proposed", |d| {
                                 let (id, rev) = (w.id.clone(), w.revision);
                                 let id2 = w.id.clone();
-                                d.child(self.button(SharedString::from(format!("workflow-accept-{}", w.id)), "accept workflow", true).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                    this.decide_workflow(id.clone(), rev, true, cx);
-                                })))
-                                .child(self.button(SharedString::from(format!("workflow-discard-{}", w.id)), "discard", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                    this.decide_workflow(id2.clone(), rev, false, cx);
-                                })))
+                                d.child(self.button(SharedString::from(format!("workflow-accept-{}", w.id)), "accept workflow", true).on_click(cx.listener(
+                                    move |this, _: &ClickEvent, _, cx| {
+                                        this.decide_workflow(id.clone(), rev, true, cx);
+                                    },
+                                )))
+                                .child(self.button(SharedString::from(format!("workflow-discard-{}", w.id)), "discard", false).on_click(
+                                    cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                        this.decide_workflow(id2.clone(), rev, false, cx);
+                                    }),
+                                ))
                             }),
                     )
                     .child(div().text_size(px(11.)).text_color(t.muted).child(workflows::trigger(w, names)))
@@ -531,7 +529,9 @@ impl Console {
                     .child(pill(self, label, color))
                     .child(div().flex_1())
                     .when(r.active() && !r.cancel_requested, |d| {
-                        d.child(self.button("run-view-stop", "stop", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.stop_run(stop.0.clone(), stop.1.clone(), cx))))
+                        d.child(
+                            self.button("run-view-stop", "stop", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.stop_run(stop.0.clone(), stop.1.clone(), cx))),
+                        )
                     }),
             )
             .child(self.note_line(format!("{} · {}", r.source, Self::run_times(r))))
@@ -559,8 +559,16 @@ impl Console {
         let t = &self.theme;
         match e {
             Entry::User(text) | Entry::Queued { text, .. } => div().px_3().py_2().rounded(px(t.radius)).bg(t.raised).text_color(t.text).line_height(px(19.)).child(text.clone()),
-            Entry::Assistant(text) => div().flex().gap_2().px_3().child(div().text_color(t.faint).child("◆")).child(div().flex_1().min_w_0().text_color(t.text).line_height(px(19.)).child(text.clone())),
-            Entry::Notice(text) => div().flex().gap_2().px_3().text_size(px(11.5)).child(div().text_color(t.accent).child("⏳")).child(div().flex_1().min_w_0().text_color(t.muted).child(text.clone())),
+            Entry::Assistant(text) => {
+                div().flex().gap_2().px_3().child(div().text_color(t.faint).child("◆")).child(div().flex_1().min_w_0().text_color(t.text).line_height(px(19.)).child(text.clone()))
+            }
+            Entry::Notice(text) => div()
+                .flex()
+                .gap_2()
+                .px_3()
+                .text_size(px(11.5))
+                .child(div().text_color(t.accent).child("⏳"))
+                .child(div().flex_1().min_w_0().text_color(t.muted).child(text.clone())),
             Entry::Tool { name, state, .. } => {
                 let failed = *state == crate::data::ToolState::Failed || name.as_ref() == "error";
                 let line = e.tool_line(crate::data::now_ms()).map(|l| l.text).unwrap_or_default();
@@ -619,14 +627,20 @@ impl Console {
                     .child(pill(self, state, if good { t.ok } else { t.faint }))
                     .child(div().flex_1())
                     .when(can, |d| {
-                        d.child(self.button(SharedString::from(format!("worker-pause-{}", w.id)), if pause { "pause" } else { "resume" }, false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.pause_worker(id.clone(), rev, pause, cx);
-                        })))
+                        d.child(self.button(SharedString::from(format!("worker-pause-{}", w.id)), if pause { "pause" } else { "resume" }, false).on_click(cx.listener(
+                            move |this, _: &ClickEvent, _, cx| {
+                                this.pause_worker(id.clone(), rev, pause, cx);
+                            },
+                        )))
                     })
             })
             .when_some(w.pending.as_ref(), |d, p| {
                 let names: Vec<String> = p.iter().map(|a| format!("{} ({})", a.name, a.when)).collect();
-                d.child(div().text_size(px(11.)).text_color(t.warn).child(if names.is_empty() { "A change waits for your review in Swarm.".to_string() } else { format!("A change waits for your review in Swarm: {}", names.join(", ")) }))
+                d.child(div().text_size(px(11.)).text_color(t.warn).child(if names.is_empty() {
+                    "A change waits for your review in Swarm.".to_string()
+                } else {
+                    format!("A change waits for your review in Swarm: {}", names.join(", "))
+                }))
             })
             .when(!detail.is_empty(), |d| d.child(div().text_size(px(11.)).text_color(t.faint).child(detail.join(" · "))))
             .when(!w.description.is_empty(), |d| d.child(div().text_size(px(11.)).text_color(t.muted).child(w.description.clone())))
@@ -764,24 +778,36 @@ impl Console {
             .bg(alpha(t.warn, 0.06))
             .child(div().text_size(px(11.)).text_color(t.warn).child(if change { "A CHANGE TO A WORKER WAITS FOR YOU" } else { "A NEW WORKER WAITS FOR YOU" }))
             .child(div().text_color(t.text).child(w.name.clone()))
-            .when(!w.description.is_empty() && w.description.trim() != w.instructions.trim(), |d| d.child(div().text_size(px(12.)).text_color(t.muted).child(w.description.clone())))
+            .when(!w.description.is_empty() && w.description.trim() != w.instructions.trim(), |d| {
+                d.child(div().text_size(px(12.)).text_color(t.muted).child(w.description.clone()))
+            })
             .when(!w.instructions.is_empty(), |d| d.child(div().text_size(px(12.)).text_color(t.text).line_height(px(18.)).child(format!("It is told: {}", w.instructions))))
-            .child(div().text_size(px(12.)).text_color(t.muted).child(if schedules.is_empty() { "No schedule: it runs only when asked.".to_string() } else { format!("Runs: {}", schedules.join("; ")) }))
+            .child(div().text_size(px(12.)).text_color(t.muted).child(if schedules.is_empty() {
+                "No schedule: it runs only when asked.".to_string()
+            } else {
+                format!("Runs: {}", schedules.join("; "))
+            }))
             .when(!w.folders.is_empty(), |d| d.child(div().text_size(px(11.)).text_color(t.faint).child(format!("In: {}", w.folders.join(", ")))))
-            .child(div().text_size(px(11.)).text_color(t.faint).child("Nothing runs until you accept. Accepting starts its schedules; it runs as Swarm's agents do, in its folders."))
+            .child(
+                div().text_size(px(11.)).text_color(t.faint).child("Nothing runs until you accept. Accepting starts its schedules; it runs as Swarm's agents do, in its folders."),
+            )
             .child(
                 div()
                     .flex()
                     .gap_1()
-                    .child(self.button(SharedString::from(format!("worker-accept-{place}-{}", w.id)), if change { "accept the change" } else { "accept worker" }, true).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        cx.stop_propagation();
-                        this.decide_worker(id.clone(), rev, true, cx);
-                    })))
-                    .when(!change, |d| {
-                        d.child(self.button(SharedString::from(format!("worker-discard-{place}-{}", w.id)), "discard", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    .child(self.button(SharedString::from(format!("worker-accept-{place}-{}", w.id)), if change { "accept the change" } else { "accept worker" }, true).on_click(
+                        cx.listener(move |this, _: &ClickEvent, _, cx| {
                             cx.stop_propagation();
-                            this.decide_worker(id2.clone(), rev2, false, cx);
-                        })))
+                            this.decide_worker(id.clone(), rev, true, cx);
+                        }),
+                    ))
+                    .when(!change, |d| {
+                        d.child(self.button(SharedString::from(format!("worker-discard-{place}-{}", w.id)), "discard", false).on_click(cx.listener(
+                            move |this, _: &ClickEvent, _, cx| {
+                                cx.stop_propagation();
+                                this.decide_worker(id2.clone(), rev2, false, cx);
+                            },
+                        )))
                     }),
             )
             .into_any_element()
@@ -844,7 +870,20 @@ mod tests {
     use super::*;
 
     fn run(id: &str, worker: &str, status: &str, at: u64) -> Run {
-        Run { id: id.into(), worker_id: worker.into(), worker: worker.into(), status: status.into(), error: String::new(), source: String::new(), session_id: String::new(), started_at: at, completed_at: at, cancel_requested: false, deliverables: vec![], latest: String::new() }
+        Run {
+            id: id.into(),
+            worker_id: worker.into(),
+            worker: worker.into(),
+            status: status.into(),
+            error: String::new(),
+            source: String::new(),
+            session_id: String::new(),
+            started_at: at,
+            completed_at: at,
+            cancel_requested: false,
+            deliverables: vec![],
+            latest: String::new(),
+        }
     }
 
     /// A worker needs the person while its latest finished run failed; a

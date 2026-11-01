@@ -11,7 +11,7 @@
 //! A tick publishes home's list as soon as it is read, then each machine as
 //! its read returns, so a machine that has gone away does not hold the rest.
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
@@ -237,18 +237,12 @@ impl Fleet {
             let mut last: Option<Reading> = None;
             loop {
                 let (mut newest, mut gone) = (None, false);
-                tick(
-                    || read_home(&home, &recall),
-                    || read(&home),
-                    |f| read_machine(&home, f, &recall),
-                    last.as_ref(),
-                    &mut |reading| {
-                        if reading.machines.is_some() {
-                            newest = Some(reading.clone());
-                        }
-                        gone |= tx.send(reading).is_err();
-                    },
-                );
+                tick(|| read_home(&home, &recall), || read(&home), |f| read_machine(&home, f, &recall), last.as_ref(), &mut |reading| {
+                    if reading.machines.is_some() {
+                        newest = Some(reading.clone());
+                    }
+                    gone |= tx.send(reading).is_err();
+                });
                 if gone {
                     return; // the console is gone
                 }

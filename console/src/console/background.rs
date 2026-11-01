@@ -20,7 +20,6 @@ impl Console {
         }
     }
 
-
     /// What a task delivered, in the agent's words, then the background
     /// sessions behind it, newest first.
     pub(super) fn render_runs(&self, si: usize, ti: usize, task: &Task) -> Option<Div> {
@@ -38,9 +37,7 @@ impl Console {
                 .flex()
                 .flex_col()
                 .gap(px(3.))
-                .when(!task.report.is_empty(), |d| {
-                    d.child(div().pb_1().text_size(px(11.5)).line_height(px(17.)).text_color(t.muted).child(task.report.clone()))
-                })
+                .when(!task.report.is_empty(), |d| d.child(div().pb_1().text_size(px(11.5)).line_height(px(17.)).text_color(t.muted).child(task.report.clone())))
                 .children(task.runs.iter().map(|r| {
                     let (glyph, color) = self.state_glyph(r.state);
                     let state = match r.state {
@@ -63,9 +60,7 @@ impl Console {
                         .child(div().w(px(36.)).flex_none().text_right().text_color(t.faint).child(r.age.clone()))
                         .child(div().w(px(40.)).flex_none().text_right().text_color(t.faint).child(format!("${:.2}", r.cost)))
                 }))
-                .when(!task.runs.is_empty(), |d| {
-                    d.child(div().pt(px(2.)).text_size(px(10.5)).text_color(t.faint).child("open a session to read its transcript"))
-                }),
+                .when(!task.runs.is_empty(), |d| d.child(div().pt(px(2.)).text_size(px(10.5)).text_color(t.faint).child("open a session to read its transcript"))),
         )
     }
 
@@ -161,16 +156,16 @@ impl Console {
                     .child(self.task_actions(si, ti, task.status, &key, cx)),
             )
             .when(open && !task.progress.history.is_empty(), |d| {
-                d.child(div().ml(px(18.)).pl_2().border_l_1().border_color(t.border_strong).flex().flex_col().gap(px(2.)).children(
-                    task.progress.history.iter().map(|(at, what)| {
+                d.child(div().ml(px(18.)).pl_2().border_l_1().border_color(t.border_strong).flex().flex_col().gap(px(2.)).children(task.progress.history.iter().map(
+                    |(at, what)| {
                         div()
                             .flex()
                             .gap_2()
                             .text_size(px(11.))
                             .child(div().w(px(40.)).flex_none().text_color(t.faint).child(if *at > 0 { super::ago(now.saturating_sub(*at)) } else { "—".into() }))
                             .child(div().flex_1().min_w_0().text_color(t.muted).child(what.clone()))
-                    }),
-                ))
+                    },
+                )))
             })
             .when(detail && open && (!task.activity.is_empty() || !task.runs.is_empty() || !task.report.is_empty()), |d| {
                 d.child(
@@ -223,9 +218,7 @@ impl Console {
         let tasks_open = open && tab == BarTab::Tasks;
         let media_open = open && tab == BarTab::Media;
 
-        let part = |show: bool, glyph: &'static str, color, label: String| {
-            show.then(|| div().flex().gap_1().child(div().text_color(color).child(glyph)).child(label))
-        };
+        let part = |show: bool, glyph: &'static str, color, label: String| show.then(|| div().flex().gap_1().child(div().text_color(color).child(glyph)).child(label));
         let tab_button = |which: BarTab, on: bool| {
             div()
                 .id(SharedString::from(format!("bar-{pid}-{which:?}")))
@@ -352,35 +345,11 @@ impl Console {
             }
         }
         if media_open {
-            rows.push(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap_2()
-                    .py_2()
-                    .children(media.iter().rev().map(|i| self.media_thumb(*i, 120., 84., format!("bar-{pid}"), cx)))
-                    .into_any_element(),
-            );
+            rows.push(div().flex().flex_wrap().gap_2().py_2().children(media.iter().rev().map(|i| self.media_thumb(*i, 120., 84., format!("bar-{pid}"), cx))).into_any_element());
         }
-        let body = (!rows.is_empty()).then(|| {
-            div()
-                .id(SharedString::from(format!("bg-tray-{pid}")))
-                .max_h(px(260.))
-                .overflow_y_scroll()
-                .px_3()
-                .pb_1()
-                .children(rows)
-        });
+        let body = (!rows.is_empty()).then(|| div().id(SharedString::from(format!("bg-tray-{pid}"))).max_h(px(260.)).overflow_y_scroll().px_3().pb_1().children(rows));
 
-        Some(
-            div()
-                .flex_none()
-                .border_t_1()
-                .border_color(if needs > 0 { alpha(t.warn, 0.45) } else { t.border })
-                .bg(t.panel)
-                .child(strip)
-                .children(body),
-        )
+        Some(div().flex_none().border_t_1().border_color(if needs > 0 { alpha(t.warn, 0.45) } else { t.border }).bg(t.panel).child(strip).children(body))
     }
 }
 

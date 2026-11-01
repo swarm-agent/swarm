@@ -11,143 +11,117 @@ impl Console {
         let hover = t.hover;
         let dark = t.bg.l < 0.5;
 
-        let filters = [None, Some(MediaKind::Image), Some(MediaKind::Video), Some(MediaKind::Sound), Some(MediaKind::Design)]
-            .into_iter()
-            .map(|kind| {
-                let on = self.media_filter == kind;
-                let count = self.media.iter().filter(|m| !m.failed && kind.is_none_or(|k| m.kind == k)).count();
-                div()
-                    .id(SharedString::from(format!("media-filter-{}", kind.map_or("all", |k| k.label()))))
-                    .px_2()
-                    .py(px(2.))
-                    .rounded(px(t.radius))
-                    .border_1()
-                    .border_color(if on { alpha(t.accent, 0.6) } else { t.border })
-                    .when(on, |d| d.bg(t.raised))
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(hover))
-                    .text_color(if on { t.text } else { t.muted })
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.media_filter = kind;
-                        cx.notify();
-                    }))
-                    .child(format!("{} {count}", kind.map_or("all", |k| k.label())))
-            });
+        let filters = [None, Some(MediaKind::Image), Some(MediaKind::Video), Some(MediaKind::Sound), Some(MediaKind::Design)].into_iter().map(|kind| {
+            let on = self.media_filter == kind;
+            let count = self.media.iter().filter(|m| !m.failed && kind.is_none_or(|k| m.kind == k)).count();
+            div()
+                .id(SharedString::from(format!("media-filter-{}", kind.map_or("all", |k| k.label()))))
+                .px_2()
+                .py(px(2.))
+                .rounded(px(t.radius))
+                .border_1()
+                .border_color(if on { alpha(t.accent, 0.6) } else { t.border })
+                .when(on, |d| d.bg(t.raised))
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .text_color(if on { t.text } else { t.muted })
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.media_filter = kind;
+                    cx.notify();
+                }))
+                .child(format!("{} {count}", kind.map_or("all", |k| k.label())))
+        });
 
-        let tiles = self
-            .media
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| !m.failed && self.media_filter.is_none_or(|k| m.kind == k))
-            .map(|(i, m)| {
-                let glyph = match m.kind {
-                    MediaKind::Image => "▨",
-                    MediaKind::Video => "▶",
-                    MediaKind::Sound => "♪",
-                    MediaKind::Design => "◰",
-                };
-                let (l1, l2) = if dark { (0.20, 0.30) } else { (0.82, 0.72) };
-                let border = t.border_strong;
-                div()
-                    .id(SharedString::from(format!("media-{i}")))
-                    .w(px(228.))
-                    .flex_none()
-                    .rounded(px(t.radius + 2.))
-                    .border_1()
-                    .border_color(t.border)
-                    .bg(t.surface)
-                    .overflow_hidden()
-                    .cursor_pointer()
-                    .hover(move |s| s.border_color(border))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.preview = Some(i);
-                        cx.notify();
-                    }))
-                    .child(
-                        div()
-                            .h(px(132.))
-                            .relative()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .bg(hsla(m.hue, 0.35, l1, 1.0))
-                            .when_some(m.thumb.clone().filter(|_| m.kind == MediaKind::Image), |d, path| {
-                                d.child(gpui::img(path).absolute().top_0().left_0().size_full().object_fit(gpui::ObjectFit::Cover))
-                            })
-                            .child(
+        let tiles = self.media.iter().enumerate().filter(|(_, m)| !m.failed && self.media_filter.is_none_or(|k| m.kind == k)).map(|(i, m)| {
+            let glyph = match m.kind {
+                MediaKind::Image => "▨",
+                MediaKind::Video => "▶",
+                MediaKind::Sound => "♪",
+                MediaKind::Design => "◰",
+            };
+            let (l1, l2) = if dark { (0.20, 0.30) } else { (0.82, 0.72) };
+            let border = t.border_strong;
+            div()
+                .id(SharedString::from(format!("media-{i}")))
+                .w(px(228.))
+                .flex_none()
+                .rounded(px(t.radius + 2.))
+                .border_1()
+                .border_color(t.border)
+                .bg(t.surface)
+                .overflow_hidden()
+                .cursor_pointer()
+                .hover(move |s| s.border_color(border))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.preview = Some(i);
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .h(px(132.))
+                        .relative()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(hsla(m.hue, 0.35, l1, 1.0))
+                        .when_some(m.thumb.clone().filter(|_| m.kind == MediaKind::Image), |d, path| {
+                            d.child(gpui::img(path).absolute().top_0().left_0().size_full().object_fit(gpui::ObjectFit::Cover))
+                        })
+                        .child(div().absolute().top_0().left_0().right_0().h(px(66.)).bg(hsla(m.hue, 0.40, l2, 0.6)))
+                        .child(div().text_size(px(26.)).text_color(hsla(m.hue, 0.25, if dark { 0.75 } else { 0.30 }, 0.9)).child(glyph))
+                        .child(
+                            div()
+                                .absolute()
+                                .top(px(8.))
+                                .left(px(8.))
+                                .px(px(5.))
+                                .rounded(px(t.radius))
+                                .bg(alpha(t.bg, 0.7))
+                                .text_size(px(10.5))
+                                .text_color(t.muted)
+                                .child(m.kind.label()),
+                        )
+                        .when(m.pending, |d| {
+                            d.child(
                                 div()
                                     .absolute()
-                                    .top_0()
-                                    .left_0()
-                                    .right_0()
-                                    .h(px(66.))
-                                    .bg(hsla(m.hue, 0.40, l2, 0.6)),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(26.))
-                                    .text_color(hsla(m.hue, 0.25, if dark { 0.75 } else { 0.30 }, 0.9))
-                                    .child(glyph),
-                            )
-                            .child(
-                                div()
-                                    .absolute()
-                                    .top(px(8.))
+                                    .bottom(px(8.))
                                     .left(px(8.))
-                                    .px(px(5.))
-                                    .rounded(px(t.radius))
-                                    .bg(alpha(t.bg, 0.7))
-                                    .text_size(px(10.5))
-                                    .text_color(t.muted)
-                                    .child(m.kind.label()),
-                            )
-                            .when(m.pending, |d| {
-                                d.child(
-                                    div()
-                                        .absolute()
-                                        .bottom(px(8.))
-                                        .left(px(8.))
-                                        .right(px(8.))
-                                        .flex()
-                                        .items_center()
-                                        .gap_2()
-                                        .text_size(px(10.5))
-                                        .text_color(t.text)
-                                        .child("rendering")
-                                        .child(self.bar(0.6, t.accent, 120.)),
-                                )
-                            }),
-                    )
-                    .child(
-                        div()
-                            .p_2()
-                            .flex()
-                            .flex_col()
-                            .gap(px(3.))
-                            .child(div().truncate().text_color(t.text).child(m.title.clone()))
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(10.5))
-                                    .text_color(t.faint)
-                                    .child(m.meta.clone()),
-                            )
-                            .child(
-                                div()
+                                    .right(px(8.))
                                     .flex()
-                                    .gap_1()
+                                    .items_center()
+                                    .gap_2()
                                     .text_size(px(10.5))
-                                    .text_color(t.faint)
-                                    .child(self.projects[m.project].name.clone())
-                                    .child("·")
-                                    .child(self.machines[m.machine].name.clone())
-                                    .child("·")
-                                    .child(m.model.clone())
-                                    .child(div().flex_1())
-                                    .child(m.age.clone()),
-                            ),
-                    )
-            });
+                                    .text_color(t.text)
+                                    .child("rendering")
+                                    .child(self.bar(0.6, t.accent, 120.)),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .p_2()
+                        .flex()
+                        .flex_col()
+                        .gap(px(3.))
+                        .child(div().truncate().text_color(t.text).child(m.title.clone()))
+                        .child(div().truncate().text_size(px(10.5)).text_color(t.faint).child(m.meta.clone()))
+                        .child(
+                            div()
+                                .flex()
+                                .gap_1()
+                                .text_size(px(10.5))
+                                .text_color(t.faint)
+                                .child(self.projects[m.project].name.clone())
+                                .child("·")
+                                .child(self.machines[m.machine].name.clone())
+                                .child("·")
+                                .child(m.model.clone())
+                                .child(div().flex_1())
+                                .child(m.age.clone()),
+                        ),
+                )
+        });
 
         div()
             .id("media-page")
@@ -192,7 +166,9 @@ impl Console {
             MediaKind::Design => "◰",
         };
         let picture = match (&m.file, m.kind) {
-            (Some(_), MediaKind::Image) if m.thumb.is_some() => gpui::img(m.thumb.clone().unwrap_or_default()).w(px(w)).h(px(h)).object_fit(gpui::ObjectFit::Cover).into_any_element(),
+            (Some(_), MediaKind::Image) if m.thumb.is_some() => {
+                gpui::img(m.thumb.clone().unwrap_or_default()).w(px(w)).h(px(h)).object_fit(gpui::ObjectFit::Cover).into_any_element()
+            }
             _ => div()
                 .size_full()
                 .flex()
@@ -302,8 +278,9 @@ impl Console {
                                 .flex()
                                 .gap_2()
                                 .when(ready, |d| {
-                                    d.child(self.button("preview-open", "open", true).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_media(i, cx))))
-                                        .child(self.button("preview-save", "save to Downloads", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.save_media(i, cx))))
+                                    d.child(self.button("preview-open", "open", true).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_media(i, cx)))).child(
+                                        self.button("preview-save", "save to Downloads", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.save_media(i, cx))),
+                                    )
                                 })
                                 .child(self.button("preview-close", "close", false).on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                     this.preview = None;
@@ -371,12 +348,9 @@ impl Console {
                         .child(div().flex_none().text_size(px(10.5)).text_color(t.faint).child(m.meta.clone()))
                 }))
                 .into_any_element(),
-            MediaCardState::Ready => div()
-                .flex()
-                .flex_wrap()
-                .gap_2()
-                .children(card.items.iter().map(|i| self.media_thumb(*i, 200., 132., format!("card-{pid}-{ei}"), cx)))
-                .into_any_element(),
+            MediaCardState::Ready => {
+                div().flex().flex_wrap().gap_2().children(card.items.iter().map(|i| self.media_thumb(*i, 200., 132., format!("card-{pid}-{ei}"), cx))).into_any_element()
+            }
             MediaCardState::Generating => div()
                 .id(SharedString::from(format!("media-card-{pid}-{ei}-0")))
                 .w(px(200.))
@@ -421,16 +395,7 @@ impl Console {
                     .text_size(px(11.5))
                     .child(div().flex_none().text_color(t.info).child(format!("{glyph} {}", kind.label())))
                     .child(div().flex_1().min_w_0().truncate().text_color(t.text).child(title))
-                    .child(
-                        div()
-                            .flex_none()
-                            .px(px(6.))
-                            .rounded(px(t.radius))
-                            .bg(alpha(color, 0.14))
-                            .text_size(px(10.5))
-                            .text_color(color)
-                            .child(status),
-                    ),
+                    .child(div().flex_none().px(px(6.)).rounded(px(t.radius)).bg(alpha(color, 0.14)).text_size(px(10.5)).text_color(color).child(status)),
             )
             .child(body)
             .into_any_element()

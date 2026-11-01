@@ -817,7 +817,9 @@ impl ContextGeneration {
     }
 
     pub fn label(&self) -> String {
-        if self.updating() { return "Swarm is updating project.md…".into(); }
+        if self.updating() {
+            return "Swarm is updating project.md…".into();
+        }
         match self.status.as_ref() {
             "failed" => format!("Could not update project.md: {}", self.error),
             "ready" => "project.md is ready.".into(),
@@ -946,7 +948,18 @@ pub fn machines() -> Vec<Machine> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn demo_machine(name: &str, kind: &str, health: Health, busy: Busy, cost: f64, build: &str, update: UpdateState, sandbox: &str, uptime: &str, differs: Option<(&str, Assignment)>) -> Machine {
+fn demo_machine(
+    name: &str,
+    kind: &str,
+    health: Health,
+    busy: Busy,
+    cost: f64,
+    build: &str,
+    update: UpdateState,
+    sandbox: &str,
+    uptime: &str,
+    differs: Option<(&str, Assignment)>,
+) -> Machine {
     let models = roles()
         .into_iter()
         .map(|r| match &differs {
@@ -972,9 +985,36 @@ fn demo_machine(name: &str, kind: &str, health: Health, busy: Busy, cost: f64, b
 
 pub fn projects() -> Vec<Project> {
     vec![
-        Project { name: "swarm-go".into(), machines: vec![0, 1], id: "".into(), workspaces: vec![], roles: vec![], context: "".into(), context_generation: ContextGeneration::default(), theme_id: "".into() },
-        Project { name: "site".into(), machines: vec![1, 2], id: "".into(), workspaces: vec![], roles: vec![], context: "".into(), context_generation: ContextGeneration::default(), theme_id: "".into() },
-        Project { name: "console".into(), machines: vec![2], id: "".into(), workspaces: vec![], roles: vec![], context: "".into(), context_generation: ContextGeneration::default(), theme_id: "".into() },
+        Project {
+            name: "swarm-go".into(),
+            machines: vec![0, 1],
+            id: "".into(),
+            workspaces: vec![],
+            roles: vec![],
+            context: "".into(),
+            context_generation: ContextGeneration::default(),
+            theme_id: "".into(),
+        },
+        Project {
+            name: "site".into(),
+            machines: vec![1, 2],
+            id: "".into(),
+            workspaces: vec![],
+            roles: vec![],
+            context: "".into(),
+            context_generation: ContextGeneration::default(),
+            theme_id: "".into(),
+        },
+        Project {
+            name: "console".into(),
+            machines: vec![2],
+            id: "".into(),
+            workspaces: vec![],
+            roles: vec![],
+            context: "".into(),
+            context_generation: ContextGeneration::default(),
+            theme_id: "".into(),
+        },
     ]
 }
 
@@ -1003,18 +1043,81 @@ pub fn sessions() -> Vec<Session> {
             tokens: "412k".into(),
             entries: vec![
                 Entry::User("Finish the automation rounds work and get a reviewer on it. Use forge for the heavy test run.".into()),
-                Entry::Assistant("Read project.md and the open branch. Three pieces left: the reopen step, round limits, and docs. I'll split them so they can land independently.".into()),
+                Entry::Assistant(
+                    "Read project.md and the open branch. Three pieces left: the reopen step, round limits, and docs. I'll split them so they can land independently.".into(),
+                ),
                 Entry::tool("finder", "search · automation reopen semantics · 6 files"),
                 Entry::tool("manage_projects", "propose_task × 3 · swarm-go"),
                 Entry::Assistant("The reopen step and docs are running. Round limits needs your approval because it changes a stored schema.".into()),
                 Entry::tool("fleet", "forge · run_task coder · integration tests"),
             ],
             tasks: vec![
-                Task { key: "".into(), session: "".into(), title: "Reopen step for blocked deliveries".into(), role: "coder".into(), machine: 0, status: TaskStatus::Running, activity: "editing automation/reopen.go · step 3 of 5".into(), report: "".into(), progress: Default::default(), runs: vec![run("coder".into(), 0, RunState::Running, "attempt 2".into(), "now".into(), 0.41), run("coder".into(), 0, RunState::Failed, "attempt 1 · tests failed".into(), "9m".into(), 0.21)] },
-                Task { key: "".into(), session: "".into(), title: "Round limits on automation steps".into(), role: "coder".into(), machine: 0, status: TaskStatus::PendingApproval, activity: "waiting for your approval · changes a stored schema".into(), report: "".into(), progress: Default::default(), runs: vec![] },
-                Task { key: "".into(), session: "".into(), title: "Document conditions and rounds".into(), role: "swarm".into(), machine: 0, status: TaskStatus::NeedsReview, activity: "ready to merge · 2 commits".into(), report: "".into(), progress: Default::default(), runs: vec![run("swarm".into(), 0, RunState::Idle, "docs pass".into(), "4m".into(), 0.22), run("finder".into(), 0, RunState::Idle, "link check".into(), "3m".into(), 0.09)] },
-                Task { key: "".into(), session: "".into(), title: "Integration test sweep".into(), role: "coder".into(), machine: 1, status: TaskStatus::Running, activity: "go test ./... · 212 of 640 packages".into(), report: "".into(), progress: Default::default(), runs: vec![run("coder".into(), 1, RunState::Running, "test sweep".into(), "now".into(), 0.48)] },
-                Task { key: "".into(), session: "".into(), title: "Independent review of T-418".into(), role: "reviewer".into(), machine: 1, status: TaskStatus::Queued, activity: "starts when T-418 lands".into(), report: "".into(), progress: Default::default(), runs: vec![] },
+                Task {
+                    key: "".into(),
+                    session: "".into(),
+                    title: "Reopen step for blocked deliveries".into(),
+                    role: "coder".into(),
+                    machine: 0,
+                    status: TaskStatus::Running,
+                    activity: "editing automation/reopen.go · step 3 of 5".into(),
+                    report: "".into(),
+                    progress: Default::default(),
+                    runs: vec![
+                        run("coder".into(), 0, RunState::Running, "attempt 2".into(), "now".into(), 0.41),
+                        run("coder".into(), 0, RunState::Failed, "attempt 1 · tests failed".into(), "9m".into(), 0.21),
+                    ],
+                },
+                Task {
+                    key: "".into(),
+                    session: "".into(),
+                    title: "Round limits on automation steps".into(),
+                    role: "coder".into(),
+                    machine: 0,
+                    status: TaskStatus::PendingApproval,
+                    activity: "waiting for your approval · changes a stored schema".into(),
+                    report: "".into(),
+                    progress: Default::default(),
+                    runs: vec![],
+                },
+                Task {
+                    key: "".into(),
+                    session: "".into(),
+                    title: "Document conditions and rounds".into(),
+                    role: "swarm".into(),
+                    machine: 0,
+                    status: TaskStatus::NeedsReview,
+                    activity: "ready to merge · 2 commits".into(),
+                    report: "".into(),
+                    progress: Default::default(),
+                    runs: vec![
+                        run("swarm".into(), 0, RunState::Idle, "docs pass".into(), "4m".into(), 0.22),
+                        run("finder".into(), 0, RunState::Idle, "link check".into(), "3m".into(), 0.09),
+                    ],
+                },
+                Task {
+                    key: "".into(),
+                    session: "".into(),
+                    title: "Integration test sweep".into(),
+                    role: "coder".into(),
+                    machine: 1,
+                    status: TaskStatus::Running,
+                    activity: "go test ./... · 212 of 640 packages".into(),
+                    report: "".into(),
+                    progress: Default::default(),
+                    runs: vec![run("coder".into(), 1, RunState::Running, "test sweep".into(), "now".into(), 0.48)],
+                },
+                Task {
+                    key: "".into(),
+                    session: "".into(),
+                    title: "Independent review of T-418".into(),
+                    role: "reviewer".into(),
+                    machine: 1,
+                    status: TaskStatus::Queued,
+                    activity: "starts when T-418 lands".into(),
+                    report: "".into(),
+                    progress: Default::default(),
+                    runs: vec![],
+                },
             ],
             activity: vec![
                 ("14:02".into(), "coder T-418 committed 2 files".into()),
@@ -1047,9 +1150,21 @@ pub fn sessions() -> Vec<Session> {
                 Entry::tool("finder", "reproduce · go test -run Scratch -count 20 · 3 failures"),
                 Entry::Assistant("The cleanup races the scratch unmount. Small, contained fix, so it goes straight to a coder on studio.".into()),
             ],
-            tasks: vec![
-                Task { key: "".into(), session: "".into(), title: "Wait on the mount table before cleanup".into(), role: "coder".into(), machine: 0, status: TaskStatus::Running, activity: "go test -run Scratch -count 50 · 31 passed".into(), report: "".into(), progress: Default::default(), runs: vec![run("finder".into(), 0, RunState::Idle, "reproduce".into(), "5m".into(), 0.05), run("coder".into(), 0, RunState::Running, "fix".into(), "now".into(), 0.16)] },
-            ],
+            tasks: vec![Task {
+                key: "".into(),
+                session: "".into(),
+                title: "Wait on the mount table before cleanup".into(),
+                role: "coder".into(),
+                machine: 0,
+                status: TaskStatus::Running,
+                activity: "go test -run Scratch -count 50 · 31 passed".into(),
+                report: "".into(),
+                progress: Default::default(),
+                runs: vec![
+                    run("finder".into(), 0, RunState::Idle, "reproduce".into(), "5m".into(), 0.05),
+                    run("coder".into(), 0, RunState::Running, "fix".into(), "now".into(), 0.16),
+                ],
+            }],
             activity: vec![("14:01".into(), "coder T-430 edited sandbox/scratch.go".into())],
         },
         Session {
@@ -1104,8 +1219,30 @@ pub fn sessions() -> Vec<Session> {
                 Entry::tool("swarm_design", "count 3 · hero.html"),
             ],
             tasks: vec![
-                Task { key: "".into(), session: "".into(), title: "Hero directions ×3".into(), role: "designer".into(), machine: 1, status: TaskStatus::Running, activity: "rendering direction 3 of 3".into(), report: "".into(), progress: Default::default(), runs: vec![run("designer".into(), 1, RunState::Running, "directions".into(), "now".into(), 0.55)] },
-                Task { key: "".into(), session: "".into(), title: "Lighthouse pass".into(), role: "finder".into(), machine: 2, status: TaskStatus::NeedsInput, activity: "asks: which pages should it audit?".into(), report: "".into(), progress: Default::default(), runs: vec![run("finder".into(), 2, RunState::NeedsYou, "lighthouse".into(), "2m".into(), 0.0)] },
+                Task {
+                    key: "".into(),
+                    session: "".into(),
+                    title: "Hero directions ×3".into(),
+                    role: "designer".into(),
+                    machine: 1,
+                    status: TaskStatus::Running,
+                    activity: "rendering direction 3 of 3".into(),
+                    report: "".into(),
+                    progress: Default::default(),
+                    runs: vec![run("designer".into(), 1, RunState::Running, "directions".into(), "now".into(), 0.55)],
+                },
+                Task {
+                    key: "".into(),
+                    session: "".into(),
+                    title: "Lighthouse pass".into(),
+                    role: "finder".into(),
+                    machine: 2,
+                    status: TaskStatus::NeedsInput,
+                    activity: "asks: which pages should it audit?".into(),
+                    report: "".into(),
+                    progress: Default::default(),
+                    runs: vec![run("finder".into(), 2, RunState::NeedsYou, "lighthouse".into(), "2m".into(), 0.0)],
+                },
             ],
             activity: vec![("13:40".into(), "designer rendered direction 2".into()), ("13:31".into(), "designer rendered direction 1".into())],
         },
@@ -1128,10 +1265,7 @@ pub fn sessions() -> Vec<Session> {
             age: "1d".into(),
             elapsed: "0m 40s".into(),
             tokens: "4k".into(),
-            entries: vec![
-                Entry::User("Draft release notes from this week's merges.".into()),
-                Entry::tool("error", "lab is offline · last seen 1d ago"),
-            ],
+            entries: vec![Entry::User("Draft release notes from this week's merges.".into()), Entry::tool("error", "lab is offline · last seen 1d ago")],
             tasks: vec![],
             activity: vec![],
         },
@@ -1160,8 +1294,30 @@ pub fn sessions() -> Vec<Session> {
                 Entry::tool("manage_automation", "create · nightly-audit · 02:00"),
             ],
             tasks: vec![
-                Task { key: "".into(), session: "".into(), title: "Bump ws to 8.21.3".into(), role: "coder".into(), machine: 2, status: TaskStatus::Completed, activity: "merged · 1 commit".into(), report: "".into(), progress: Default::default(), runs: vec![run("coder".into(), 2, RunState::Idle, "bump".into(), "2h".into(), 0.09)] },
-                Task { key: "".into(), session: "".into(), title: "Advisory feed check".into(), role: "finder".into(), machine: 2, status: TaskStatus::Failed, activity: "advisory feed timed out".into(), report: "".into(), progress: Default::default(), runs: vec![run("finder".into(), 2, RunState::Failed, "check".into(), "2h".into(), 0.01)] },
+                Task {
+                    key: "".into(),
+                    session: "".into(),
+                    title: "Bump ws to 8.21.3".into(),
+                    role: "coder".into(),
+                    machine: 2,
+                    status: TaskStatus::Completed,
+                    activity: "merged · 1 commit".into(),
+                    report: "".into(),
+                    progress: Default::default(),
+                    runs: vec![run("coder".into(), 2, RunState::Idle, "bump".into(), "2h".into(), 0.09)],
+                },
+                Task {
+                    key: "".into(),
+                    session: "".into(),
+                    title: "Advisory feed check".into(),
+                    role: "finder".into(),
+                    machine: 2,
+                    status: TaskStatus::Failed,
+                    activity: "advisory feed timed out".into(),
+                    report: "".into(),
+                    progress: Default::default(),
+                    runs: vec![run("finder".into(), 2, RunState::Failed, "check".into(), "2h".into(), 0.01)],
+                },
             ],
             activity: vec![("02:00".into(), "automation nightly-audit ran".into()), ("02:04".into(), "T-12 completed".into())],
         },
@@ -1232,7 +1388,12 @@ fn a(provider: Text, model: Text, thinking: Text) -> Assignment {
 
 pub fn roles() -> Vec<Role> {
     vec![
-        Role { key: "plan".into(), label: "Orchestrator".into(), purpose: "runs your sessions, delegates".into(), default: a("anthropic".into(), "opus-5.5".into(), "high".into()) },
+        Role {
+            key: "plan".into(),
+            label: "Orchestrator".into(),
+            purpose: "runs your sessions, delegates".into(),
+            default: a("anthropic".into(), "opus-5.5".into(), "high".into()),
+        },
         Role { key: "action".into(), label: "Swarm".into(), purpose: "big tasks, coordinates children".into(), default: a("anthropic".into(), "opus-5.5".into(), "medium".into()) },
         Role { key: "coder".into(), label: "Coder".into(), purpose: "edits code in a worktree".into(), default: a("openai".into(), "gpt-5.5".into(), "high".into()) },
         Role { key: "finder".into(), label: "Finder".into(), purpose: "searches, reads, reports".into(), default: a("anthropic".into(), "sonnet-5.5".into(), "".into()) },
@@ -1350,14 +1511,150 @@ pub fn media_card(media: &[Media], task_id: &str) -> MediaCard {
 
 pub fn media() -> Vec<Media> {
     vec![
-        Media { id: "".into(), session_id: "".into(), thumb: None, session: None, file: None, dims: None, title: "Hero direction 1 · eclipse".into(), kind: MediaKind::Design, project: 1, machine: 1, model: "gemini-3.5-pro".into(), meta: "hero.html · 1440×900".into(), age: "31m".into(), hue: 0.72, pending: false, failed: false },
-        Media { id: "".into(), session_id: "".into(), thumb: None, session: None, file: None, dims: None, title: "Hero direction 2 · swarm field".into(), kind: MediaKind::Design, project: 1, machine: 1, model: "gemini-3.5-pro".into(), meta: "hero.html · 1440×900".into(), age: "22m".into(), hue: 0.58, pending: false, failed: false },
-        Media { id: "".into(), session_id: "".into(), thumb: None, session: None, file: None, dims: None, title: "Hero direction 3".into(), kind: MediaKind::Design, project: 1, machine: 1, model: "gemini-3.5-pro".into(), meta: "rendering".into(), age: "now".into(), hue: 0.66, pending: true, failed: false },
-        Media { id: "".into(), session_id: "".into(), thumb: None, session: Some(0), file: None, dims: None, title: "Launch teaser".into(), kind: MediaKind::Video, project: 1, machine: 0, model: "veo-4".into(), meta: "12s · 1080p · sound".into(), age: "2h".into(), hue: 0.04, pending: false, failed: false },
-        Media { id: "".into(), session_id: "".into(), thumb: None, session: Some(0), file: None, dims: None, title: "Logo mark, dark".into(), kind: MediaKind::Image, project: 1, machine: 0, model: "imagen-5".into(), meta: "2048² · png".into(), age: "1d".into(), hue: 0.0, pending: false, failed: false },
-        Media { id: "".into(), session_id: "".into(), thumb: None, session: None, file: None, dims: None, title: "Notification chime".into(), kind: MediaKind::Sound, project: 2, machine: 2, model: "lyria-3".into(), meta: "1.4s · wav".into(), age: "2d".into(), hue: 0.36, pending: false, failed: false },
-        Media { id: "".into(), session_id: "".into(), thumb: None, session: None, file: None, dims: None, title: "Fleet diagram".into(), kind: MediaKind::Image, project: 0, machine: 0, model: "imagen-5".into(), meta: "1600×900 · png".into(), age: "3d".into(), hue: 0.52, pending: false, failed: false },
-        Media { id: "".into(), session_id: "".into(), thumb: None, session: None, file: None, dims: None, title: "Onboarding walkthrough".into(), kind: MediaKind::Video, project: 2, machine: 1, model: "veo-4".into(), meta: "48s · 1080p".into(), age: "4d".into(), hue: 0.12, pending: false, failed: false },
+        Media {
+            id: "".into(),
+            session_id: "".into(),
+            thumb: None,
+            session: None,
+            file: None,
+            dims: None,
+            title: "Hero direction 1 · eclipse".into(),
+            kind: MediaKind::Design,
+            project: 1,
+            machine: 1,
+            model: "gemini-3.5-pro".into(),
+            meta: "hero.html · 1440×900".into(),
+            age: "31m".into(),
+            hue: 0.72,
+            pending: false,
+            failed: false,
+        },
+        Media {
+            id: "".into(),
+            session_id: "".into(),
+            thumb: None,
+            session: None,
+            file: None,
+            dims: None,
+            title: "Hero direction 2 · swarm field".into(),
+            kind: MediaKind::Design,
+            project: 1,
+            machine: 1,
+            model: "gemini-3.5-pro".into(),
+            meta: "hero.html · 1440×900".into(),
+            age: "22m".into(),
+            hue: 0.58,
+            pending: false,
+            failed: false,
+        },
+        Media {
+            id: "".into(),
+            session_id: "".into(),
+            thumb: None,
+            session: None,
+            file: None,
+            dims: None,
+            title: "Hero direction 3".into(),
+            kind: MediaKind::Design,
+            project: 1,
+            machine: 1,
+            model: "gemini-3.5-pro".into(),
+            meta: "rendering".into(),
+            age: "now".into(),
+            hue: 0.66,
+            pending: true,
+            failed: false,
+        },
+        Media {
+            id: "".into(),
+            session_id: "".into(),
+            thumb: None,
+            session: Some(0),
+            file: None,
+            dims: None,
+            title: "Launch teaser".into(),
+            kind: MediaKind::Video,
+            project: 1,
+            machine: 0,
+            model: "veo-4".into(),
+            meta: "12s · 1080p · sound".into(),
+            age: "2h".into(),
+            hue: 0.04,
+            pending: false,
+            failed: false,
+        },
+        Media {
+            id: "".into(),
+            session_id: "".into(),
+            thumb: None,
+            session: Some(0),
+            file: None,
+            dims: None,
+            title: "Logo mark, dark".into(),
+            kind: MediaKind::Image,
+            project: 1,
+            machine: 0,
+            model: "imagen-5".into(),
+            meta: "2048² · png".into(),
+            age: "1d".into(),
+            hue: 0.0,
+            pending: false,
+            failed: false,
+        },
+        Media {
+            id: "".into(),
+            session_id: "".into(),
+            thumb: None,
+            session: None,
+            file: None,
+            dims: None,
+            title: "Notification chime".into(),
+            kind: MediaKind::Sound,
+            project: 2,
+            machine: 2,
+            model: "lyria-3".into(),
+            meta: "1.4s · wav".into(),
+            age: "2d".into(),
+            hue: 0.36,
+            pending: false,
+            failed: false,
+        },
+        Media {
+            id: "".into(),
+            session_id: "".into(),
+            thumb: None,
+            session: None,
+            file: None,
+            dims: None,
+            title: "Fleet diagram".into(),
+            kind: MediaKind::Image,
+            project: 0,
+            machine: 0,
+            model: "imagen-5".into(),
+            meta: "1600×900 · png".into(),
+            age: "3d".into(),
+            hue: 0.52,
+            pending: false,
+            failed: false,
+        },
+        Media {
+            id: "".into(),
+            session_id: "".into(),
+            thumb: None,
+            session: None,
+            file: None,
+            dims: None,
+            title: "Onboarding walkthrough".into(),
+            kind: MediaKind::Video,
+            project: 2,
+            machine: 1,
+            model: "veo-4".into(),
+            meta: "48s · 1080p".into(),
+            age: "4d".into(),
+            hue: 0.12,
+            pending: false,
+            failed: false,
+        },
     ]
 }
 
@@ -1481,7 +1778,14 @@ pub fn usage() -> Usage {
                     PlanWindow { label: "week".into(), used: 18., resets_at: now + 4 * 86400 },
                 ],
             },
-            Plan { name: "Claude".into(), kind: "max".into(), connected: true, note: "".into(), limit_reached: false, windows: vec![PlanWindow { label: "5 hours".into(), used: 63., resets_at: now + 3600 }] },
+            Plan {
+                name: "Claude".into(),
+                kind: "max".into(),
+                connected: true,
+                note: "".into(),
+                limit_reached: false,
+                windows: vec![PlanWindow { label: "5 hours".into(), used: 63., resets_at: now + 3600 }],
+            },
         ],
         month: tokens(48_200_000.),
         today: tokens(2_100_000.),
@@ -1614,7 +1918,19 @@ mod tests {
     // the row renders from, the narrowest layer that decides it.
     #[test]
     fn composer_fit_drops_commands_then_hint_then_shortens_badge() {
-        let row = ComposerRow { model: 80., permissions: 90., hint: 150., commands: 60., badge: 120., badge_short: 30., agents: 0., agents_short: 0., actions: 140., actions_compact: 40., gap: 10. };
+        let row = ComposerRow {
+            model: 80.,
+            permissions: 90.,
+            hint: 150.,
+            commands: 60.,
+            badge: 120.,
+            badge_short: 30.,
+            agents: 0.,
+            agents_short: 0.,
+            actions: 140.,
+            actions_compact: 40.,
+            gap: 10.,
+        };
         let all = ComposerFit::ALL;
         let no_commands = ComposerFit { commands: false, ..all };
         // No agents count yet (Swarm has not answered): its step changes nothing.
@@ -1679,7 +1995,19 @@ mod tests {
     // Boundary: composer_fit, the pure rule the row renders from.
     #[test]
     fn composer_fit_shortens_the_agents_count_before_dropping_the_hint() {
-        let row = ComposerRow { model: 80., permissions: 90., hint: 150., commands: 60., badge: 0., badge_short: 0., agents: 200., agents_short: 40., actions: 100., actions_compact: 40., gap: 10. };
+        let row = ComposerRow {
+            model: 80.,
+            permissions: 90.,
+            hint: 150.,
+            commands: 60.,
+            badge: 0.,
+            badge_short: 0.,
+            agents: 200.,
+            agents_short: 40.,
+            actions: 100.,
+            actions_compact: 40.,
+            gap: 10.,
+        };
         let all = ComposerFit::ALL;
         let no_commands = ComposerFit { commands: false, ..all };
         let agents_short = ComposerFit { agents_short: true, ..no_commands };

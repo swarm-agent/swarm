@@ -3,15 +3,12 @@
 use gpui::{ClickEvent, Context, Div, Hsla, SharedString, div, prelude::*, px};
 
 use super::{AgentsFocus, Console, Open, Page, alpha};
-use crate::icons::Icon;
 use crate::data::Health;
+use crate::icons::Icon;
 
 impl Console {
     pub(super) fn needs_you_total(&self) -> usize {
-        self.sessions
-            .iter()
-            .map(|s| s.tasks.iter().filter(|x| x.status.needs_you()).count())
-            .sum()
+        self.sessions.iter().map(|s| s.tasks.iter().filter(|x| x.status.needs_you()).count()).sum()
     }
 
     /// The small figure beside a page: warnings in the status color, counts quiet.
@@ -24,11 +21,7 @@ impl Console {
             }
             Page::Media => {
                 let pending = self.media.iter().filter(|m| m.pending).count();
-                Some(if pending > 0 {
-                    (format!("{pending} new"), t.info, false)
-                } else {
-                    (self.media.iter().filter(|m| !m.failed).count().to_string(), t.faint, false)
-                })
+                Some(if pending > 0 { (format!("{pending} new"), t.info, false) } else { (self.media.iter().filter(|m| !m.failed).count().to_string(), t.faint, false) })
             }
             Page::Usage => {
                 let (today, unknown) = crate::data::spend_today(&self.machines);
@@ -81,13 +74,7 @@ impl Console {
                 .child(self.icon(page.icon(), 14., if on { t.accent } else { t.faint }))
                 .child(div().flex_1().text_color(if on { t.text } else { t.muted }).child(page.label()))
                 .children(self.nav_badge(page).map(|(label, color, strong)| {
-                    div()
-                        .px(px(5.))
-                        .rounded(px(t.radius))
-                        .when(strong, |d| d.bg(alpha(color, 0.16)))
-                        .text_size(px(10.5))
-                        .text_color(color)
-                        .child(label)
+                    div().px(px(5.)).rounded(px(t.radius)).when(strong, |d| d.bg(alpha(color, 0.16))).text_size(px(10.5)).text_color(color).child(label)
                 }))
         }))
     }
@@ -95,18 +82,8 @@ impl Console {
     pub(super) fn render_rail(&self, cx: &mut Context<Self>) -> Div {
         let t = &self.theme;
         let hover = t.hover;
-        let square = |id: SharedString| {
-            div()
-                .id(id)
-                .w(px(32.))
-                .h(px(30.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(t.radius))
-                .cursor_pointer()
-                .hover(move |s| s.bg(hover))
-        };
+        let square =
+            |id: SharedString| div().id(id).w(px(32.)).h(px(30.)).flex().items_center().justify_center().rounded(px(t.radius)).cursor_pointer().hover(move |s| s.bg(hover));
 
         let nav = Page::ALL.into_iter().map(|page| {
             let on = page == self.page;
@@ -116,41 +93,26 @@ impl Console {
                 .when(on, |d| d.bg(t.raised))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.go(page, cx)))
                 .child(self.icon(page.icon(), 15., if on { t.accent } else { t.muted }))
-                .when(flagged, |d| {
-                    d.child(
-                        div()
-                            .absolute()
-                            .top(px(5.))
-                            .right(px(5.))
-                            .size(px(5.))
-                            .rounded(px(3.))
-                            .bg(t.warn),
-                    )
-                })
+                .when(flagged, |d| d.child(div().absolute().top(px(5.)).right(px(5.)).size(px(5.)).rounded(px(3.)).bg(t.warn)))
         });
 
         let project = &self.projects[self.project];
         let initial = project.name.chars().next().unwrap_or('?').to_ascii_uppercase().to_string();
-        let sessions = self
-            .sessions
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| s.project == self.project)
-            .map(|(i, s)| {
-                let (glyph, color) = self.state_glyph(s.state);
-                let selected = i == self.active_session() && self.page == Page::Sessions;
-                square(SharedString::from(format!("rail-session-{i}")))
-                    .h(px(24.))
-                    .when(selected, |d| d.bg(t.raised))
-                    .text_color(color)
-                    .text_size(px(11.))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.open(i, Open::Here);
-                        this.page = Page::Sessions;
-                        cx.notify();
-                    }))
-                    .child(glyph)
-            });
+        let sessions = self.sessions.iter().enumerate().filter(|(_, s)| s.project == self.project).map(|(i, s)| {
+            let (glyph, color) = self.state_glyph(s.state);
+            let selected = i == self.active_session() && self.page == Page::Sessions;
+            square(SharedString::from(format!("rail-session-{i}")))
+                .h(px(24.))
+                .when(selected, |d| d.bg(t.raised))
+                .text_color(color)
+                .text_size(px(11.))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.open(i, Open::Here);
+                    this.page = Page::Sessions;
+                    cx.notify();
+                }))
+                .child(glyph)
+        });
 
         let fleet = self.machines.iter().enumerate().map(|(mi, m)| {
             square(SharedString::from(format!("rail-fleet-{mi}")))

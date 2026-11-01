@@ -231,22 +231,30 @@ impl Console {
                 let (a, b) = (pid.clone(), pid.clone());
                 head = head
                     .child(div().text_size(px(11.)).text_color(t.text).child(format!("remove {n} folder{} from this project? They stay on disk.", if n == 1 { "" } else { "s" })))
-                    .child(self.button(SharedString::from(format!("folders-remove-yes-{pid}")), "remove", true).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.remove_marked(&a, cx))))
+                    .child(
+                        self.button(SharedString::from(format!("folders-remove-yes-{pid}")), "remove", true)
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.remove_marked(&a, cx))),
+                    )
                     .child(self.button(SharedString::from(format!("folders-remove-no-{pid}")), "cancel", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.folders.confirm = None;
                         this.folders.marks.remove(&b);
                         cx.notify();
                     })));
             } else {
-                head = head.child(self.button(SharedString::from(format!("folders-remove-{pid}")), format!("remove {n} folder{}", if n == 1 { "" } else { "s" }), false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.folders.confirm = Some(pid.clone());
-                    cx.notify();
-                })));
+                head = head.child(self.button(SharedString::from(format!("folders-remove-{pid}")), format!("remove {n} folder{}", if n == 1 { "" } else { "s" }), false).on_click(
+                    cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.folders.confirm = Some(pid.clone());
+                        cx.notify();
+                    }),
+                ));
             }
         }
         if !picking {
             let pid = id.to_string();
-            head = head.child(self.button(SharedString::from(format!("folders-add-{pid}")), "add folders", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_folder_pick(&pid, cx))));
+            head = head.child(
+                self.button(SharedString::from(format!("folders-add-{pid}")), "add folders", false)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_folder_pick(&pid, cx))),
+            );
         }
         let rows = current.iter().enumerate().map(|(i, (path, role))| {
             let (pid, p) = (id.to_string(), path.clone());
@@ -256,14 +264,16 @@ impl Console {
                 .gap_2()
                 .px_3()
                 .py(px(3.))
-                .child(self.tick(SharedString::from(format!("folder-mark-{id}-{i}")), path.clone(), marked.contains(path)).flex_1().min_w_0().on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    let m = this.folders.marks.entry(pid.clone()).or_default();
-                    if !m.remove(&p) {
-                        m.insert(p.clone());
-                    }
-                    this.folders.confirm = None;
-                    cx.notify();
-                })))
+                .child(self.tick(SharedString::from(format!("folder-mark-{id}-{i}")), path.clone(), marked.contains(path)).flex_1().min_w_0().on_click(cx.listener(
+                    move |this, _: &ClickEvent, _, cx| {
+                        let m = this.folders.marks.entry(pid.clone()).or_default();
+                        if !m.remove(&p) {
+                            m.insert(p.clone());
+                        }
+                        this.folders.confirm = None;
+                        cx.notify();
+                    },
+                )))
                 .child(div().text_size(px(10.5)).text_color(t.faint).child(role.replace('_', " ")))
         });
         div().flex().flex_col().child(head).child(div().flex().flex_col().pb_1().children(rows)).when(picking, |d| d.child(self.render_folder_pick(&current, cx)))
@@ -278,7 +288,11 @@ impl Console {
         let parent = listing.and_then(|l| l.parent.clone());
         let local = self.folders_local();
 
-        let mut nav = div().flex().items_center().gap_1().child(div().flex_1().min_w_0().truncate().text_size(px(11.)).text_color(t.text).child(if here.is_empty() { "…".to_string() } else { here.clone() }));
+        let mut nav = div().flex().items_center().gap_1().child(div().flex_1().min_w_0().truncate().text_size(px(11.)).text_color(t.text).child(if here.is_empty() {
+            "…".to_string()
+        } else {
+            here.clone()
+        }));
         if let Some(up) = parent {
             nav = nav.child(self.button("folders-up", "up", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.folder_go(up.clone(), cx))));
         }
@@ -290,7 +304,9 @@ impl Console {
         let body: Div = match &pick.listing {
             None => div().text_size(px(11.)).text_color(t.faint).child("Reading…"),
             Some(Err(e)) => div().text_size(px(11.)).text_color(t.err).child(e.clone()),
-            Some(Ok(l)) if l.entries.is_empty() => div().text_size(px(11.)).text_color(t.faint).child(if local { "No folders here." } else { "No folders here that Swarm can see." }),
+            Some(Ok(l)) if l.entries.is_empty() => {
+                div().text_size(px(11.)).text_color(t.faint).child(if local { "No folders here." } else { "No folders here that Swarm can see." })
+            }
             Some(Ok(l)) => div().flex().flex_col().children(l.entries.iter().enumerate().map(|(i, e)| {
                 let inside = current.iter().any(|(p, _)| *p == e.path);
                 let on = pick.selected.contains(&e.path);
@@ -343,11 +359,18 @@ impl Console {
         };
 
         let n = pick.selected.len();
-        let mut foot = div().flex().items_center().gap_1().pt_1().child(div().flex_1().text_size(px(11.)).text_color(t.muted).child(if n == 0 { "Tick folders to add; open one to look inside.".to_string() } else { format!("{n} selected") }));
+        let mut foot = div().flex().items_center().gap_1().pt_1().child(div().flex_1().text_size(px(11.)).text_color(t.muted).child(if n == 0 {
+            "Tick folders to add; open one to look inside.".to_string()
+        } else {
+            format!("{n} selected")
+        }));
         foot = if pick.adding {
             foot.child(div().text_size(px(11.)).text_color(t.info).child("adding…"))
         } else if n > 0 {
-            foot.child(self.button("folders-add-go", format!("add {n} folder{}", if n == 1 { "" } else { "s" }), true).on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.add_picked(cx))))
+            foot.child(
+                self.button("folders-add-go", format!("add {n} folder{}", if n == 1 { "" } else { "s" }), true)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.add_picked(cx))),
+            )
         } else {
             foot.child(self.off_button("add"))
         };
@@ -372,11 +395,23 @@ impl Console {
                     let mut line = div().flex().items_center().gap_2();
                     if pick.granted {
                         // Access was given and Swarm still cannot read them.
-                        line = line.child(div().flex_1().text_size(px(11.)).text_color(t.warn).child(format!("Swarm still can't read {} after access was given.", o.invisible.join(", "))));
+                        line = line.child(
+                            div().flex_1().text_size(px(11.)).text_color(t.warn).child(format!("Swarm still can't read {} after access was given.", o.invisible.join(", "))),
+                        );
                     } else if !local {
-                        line = line.child(div().flex_1().text_size(px(11.)).text_color(t.warn).child(format!("Swarm can't read {n} of these folders yet; run the command below on that machine, then add them again.")));
+                        line = line.child(
+                            div()
+                                .flex_1()
+                                .text_size(px(11.))
+                                .text_color(t.warn)
+                                .child(format!("Swarm can't read {n} of these folders yet; run the command below on that machine, then add them again.")),
+                        );
                     } else {
-                        line = line.child(div().flex_1().text_size(px(11.)).text_color(t.warn).child(if n == 1 && o.added.is_empty() && o.need_first_commit.is_empty() { "Swarm can't read this folder yet.".to_string() } else { format!("Swarm can't read {n} of these folders yet.") }));
+                        line = line.child(div().flex_1().text_size(px(11.)).text_color(t.warn).child(if n == 1 && o.added.is_empty() && o.need_first_commit.is_empty() {
+                            "Swarm can't read this folder yet.".to_string()
+                        } else {
+                            format!("Swarm can't read {n} of these folders yet.")
+                        }));
                         line = if pick.granting {
                             line.child(div().text_size(px(11.)).text_color(t.info).child("giving access…"))
                         } else {
@@ -384,18 +419,22 @@ impl Console {
                         };
                     }
                     let shown = pick.show_command;
-                    line = line.child(self.button("folders-show-command", if shown { "hide command" } else { "command" }, false).on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        if let Some(p) = &mut this.folders.pick {
-                            p.show_command = !p.show_command;
-                        }
-                        cx.notify();
-                    })));
+                    line = line.child(self.button("folders-show-command", if shown { "hide command" } else { "command" }, false).on_click(cx.listener(
+                        |this, _: &ClickEvent, _, cx| {
+                            if let Some(p) = &mut this.folders.pick {
+                                p.show_command = !p.show_command;
+                            }
+                            cx.notify();
+                        },
+                    )));
                     result.push(line);
                     if let Some(e) = &pick.grant_error {
                         result.push(div().text_size(px(11.)).text_color(t.err).child(format!("Not done: {e}")));
                     }
                     if shown {
-                        result.push(div().px_2().py_1().rounded(px(t.radius)).bg(t.surface).text_size(px(11.)).text_color(t.text).child(folders::visible_command(&o.invisible, &person)));
+                        result.push(
+                            div().px_2().py_1().rounded(px(t.radius)).bg(t.surface).text_size(px(11.)).text_color(t.text).child(folders::visible_command(&o.invisible, &person)),
+                        );
                     }
                 }
                 if !o.need_first_commit.is_empty() {

@@ -114,11 +114,7 @@ pub fn key(v: &Value, home: &str) -> Key {
     if let Some(h) = v.get("home").filter(|h| h.is_object()) {
         targets.push(target(home, true, h));
     }
-    let mut machines: Vec<Target> = v
-        .get("machines")
-        .and_then(Value::as_object)
-        .map(|m| m.iter().map(|(name, t)| target(name, false, t)).collect())
-        .unwrap_or_default();
+    let mut machines: Vec<Target> = v.get("machines").and_then(Value::as_object).map(|m| m.iter().map(|(name, t)| target(name, false, t)).collect()).unwrap_or_default();
     machines.sort_by(|a, b| a.machine.cmp(&b.machine));
     targets.extend(machines);
     Key {
@@ -138,11 +134,7 @@ pub fn key(v: &Value, home: &str) -> Key {
 /// are left out.
 pub fn list_of(v: &Value) -> List {
     let home = s(v, "home").to_string();
-    List {
-        revision: ms(v, "revision"),
-        keys: list(v, "keys").iter().map(|k| key(k, &home)).filter(|k| !k.id.is_empty()).collect(),
-        home,
-    }
+    List { revision: ms(v, "revision"), keys: list(v, "keys").iter().map(|k| key(k, &home)).filter(|k| !k.id.is_empty()).collect(), home }
 }
 
 impl Key {
@@ -328,10 +320,7 @@ mod tests {
     #[test]
     fn requests_carry_exactly_what_was_chosen() {
         let machines = vec!["build-box".to_string()];
-        assert_eq!(
-            request_body("openai", " team ", &machines, true),
-            json!({"provider": "openai", "label": "team", "machines": ["build-box"], "include_home": true})
-        );
+        assert_eq!(request_body("openai", " team ", &machines, true), json!({"provider": "openai", "label": "team", "machines": ["build-box"], "include_home": true}));
         assert_eq!(request_body("openai", "  ", &[], true), json!({"provider": "openai", "machines": [], "include_home": true}), "no label when none was typed");
         assert_eq!(targets_body(&machines, false), json!({"machines": ["build-box"], "include_home": false}));
     }

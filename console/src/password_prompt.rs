@@ -184,16 +184,7 @@ impl Render for PasswordPrompt {
             .on_click(|_, _, cx| cx.stop_propagation())
             .child(div().text_size(px(14.)).text_color(t.text).child("Swarm needs your computer password to run:"))
             .child(div().text_size(px(12.5)).text_color(t.accent).child(open.summary.clone()))
-            .child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .rounded(px(t.radius))
-                    .bg(t.surface)
-                    .text_size(px(11.))
-                    .text_color(t.faint)
-                    .child(SharedString::from(open.command.clone())),
-            )
+            .child(div().px_2().py_1().rounded(px(t.radius)).bg(t.surface).text_size(px(11.)).text_color(t.faint).child(SharedString::from(open.command.clone())))
             .children(open.retry.clone().map(|r| div().text_size(px(11.5)).text_color(t.err).child(r)))
             .child(
                 div()

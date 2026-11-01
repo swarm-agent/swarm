@@ -42,10 +42,7 @@ mod tests {
     #[test]
     fn reads_progress_lines() {
         assert_eq!(parse_line("==> Building"), None);
-        assert_eq!(
-            parse_line(r#"{"swarm_progress":{"step":"build","text":"Building \"x\""}}"#),
-            Some(Event::Step { id: "build".into(), text: "Building \"x\"".into() })
-        );
+        assert_eq!(parse_line(r#"{"swarm_progress":{"step":"build","text":"Building \"x\""}}"#), Some(Event::Step { id: "build".into(), text: "Building \"x\"".into() }));
         assert_eq!(parse_line(r#"{"swarm_progress":{"step":"done","text":"ok"}}"#), Some(Event::Done("ok".into())));
         assert_eq!(parse_line(r#"{"swarm_progress":{"error":"no disk"}}"#), Some(Event::Error("no disk".into())));
     }

@@ -5,8 +5,8 @@
 use serde_json::Value;
 
 use crate::data::{
-    Assignment, Busy, Choice, ClientCall, Day, Entry, Health, LiveRef, Machine, ModelUse, Pending, Plan,
-    Credential, Drain, Found, PlanWindow, Progress, ProgressState, Project, Provider, Question, Role, RunClock, RunState, RunsToday, Session, SessionUse, Task, TaskState, TaskStatus, TaskWait, Text, Tokens, ToolState, UpdateState, Updates, Usage,
+    Assignment, Busy, Choice, ClientCall, Credential, Day, Drain, Entry, Found, Health, LiveRef, Machine, ModelUse, Pending, Plan, PlanWindow, Progress, ProgressState, Project,
+    Provider, Question, Role, RunClock, RunState, RunsToday, Session, SessionUse, Task, TaskState, TaskStatus, TaskWait, Text, Tokens, ToolState, UpdateState, Updates, Usage,
 };
 
 pub(crate) fn s<'a>(v: &'a Value, key: &str) -> &'a str {
@@ -119,13 +119,7 @@ pub fn tool_detail(args: &Value) -> String {
     let pick = ["command", "path", "pattern", "query", "url", "title", "brief", "prompt"]
         .iter()
         .find_map(|k| args.get(k).and_then(Value::as_str).filter(|v| !v.is_empty()).map(str::to_string));
-    let detail = pick
-        .or_else(|| {
-            args.get("queries")
-                .and_then(Value::as_array)
-                .map(|q| q.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
-        })
-        .unwrap_or_default();
+    let detail = pick.or_else(|| args.get("queries").and_then(Value::as_array).map(|q| q.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))).unwrap_or_default();
     // A management call says what it did by its action, and where when it
     // reaches a linked machine ("list · forge").
     let detail = if detail.is_empty() {
@@ -158,8 +152,7 @@ pub fn run_clock(run: &Value, last_message_at: u64) -> RunClock {
     let ms = |k: &str| run.get(k).and_then(Value::as_f64).unwrap_or(0.) as u64;
     // A run asleep on wait_tasks is not active: Swarm reports it so, and a
     // run intent (which has no `active`) says so by its status.
-    let active = run.get("active").and_then(Value::as_bool).unwrap_or(false)
-        || matches!(s(run, "status"), "pending_executor" | "running" | "dispatch_blocked");
+    let active = run.get("active").and_then(Value::as_bool).unwrap_or(false) || matches!(s(run, "status"), "pending_executor" | "running" | "dispatch_blocked");
     RunClock { active, started_at: ms("started_at"), cumulative_ms: ms("cumulative_duration_ms"), last_ms: ms("duration_ms"), last_message_at }
 }
 
@@ -214,8 +207,9 @@ pub fn session(shell: &Value, run: &Value, pending: bool, projects: &[Project]) 
             RunState::Running
         } else if pending {
             RunState::NeedsYou
-        } else if waiting_on.as_ref().is_some_and(|w| !w.run_id.is_empty()) {
-            // Only a retired pending wait; a task watch keeps the session idle.
+        } else if waiting_on.is_some() && s(run, "status") == "waiting_tasks" {
+            // Only a retired pending wait (its run status, with or without a
+            // run id); a task watch keeps the session idle.
             RunState::Waiting
         } else if failed {
             RunState::Failed
@@ -244,7 +238,14 @@ pub fn session(shell: &Value, run: &Value, pending: bool, projects: &[Project]) 
 pub fn is_client_tool(tool: &str) -> bool {
     matches!(
         tool,
-        "request_machine_access" | "machine_run" | "machine_read" | "machine_write" | "request_fleet_access" | "request_workspace_setup" | "request_browser_access" | "manage_browser"
+        "request_machine_access"
+            | "machine_run"
+            | "machine_read"
+            | "machine_write"
+            | "request_fleet_access"
+            | "request_workspace_setup"
+            | "request_browser_access"
+            | "manage_browser"
     )
 }
 
@@ -291,7 +292,14 @@ pub fn client_calls(records: &[Value]) -> Vec<ClientCall> {
     records
         .iter()
         .filter(|p| (s(p, "status").is_empty() || s(p, "status") == "pending") && is_client_tool(s(p, "tool_name")))
-        .map(|p| ClientCall { id: s(p, "id").to_string().into(), tool: s(p, "tool_name").to_string().into(), target_device: s(p, "target_device").to_string().into(), this_device: false, execution: s(p, "execution").to_string().into(), args: tool_arguments(p) })
+        .map(|p| ClientCall {
+            id: s(p, "id").to_string().into(),
+            tool: s(p, "tool_name").to_string().into(),
+            target_device: s(p, "target_device").to_string().into(),
+            this_device: false,
+            execution: s(p, "execution").to_string().into(),
+            args: tool_arguments(p),
+        })
         .collect()
 }
 
@@ -352,10 +360,8 @@ pub fn entry(m: &Value, first: bool) -> Vec<Entry> {
                     out.push(Entry::User(text.into()));
                 }
             }
-            let files: Vec<String> = list(m, "media")
-                .iter()
-                .map(|f| if s(f, "file_name").is_empty() { s(f, "modality").to_string() } else { s(f, "file_name").to_string() })
-                .collect();
+            let files: Vec<String> =
+                list(m, "media").iter().map(|f| if s(f, "file_name").is_empty() { s(f, "modality").to_string() } else { s(f, "file_name").to_string() }).collect();
             if !files.is_empty() {
                 out.push(Entry::tool("attached", files.join(", ")));
             }
@@ -534,14 +540,7 @@ pub fn apply(entries: &mut Vec<Entry>, m: &Value, first: bool) {
 /// A project task (ProjectTaskRecord) as a card.
 pub fn task(t: &Value) -> Task {
     let role = if s(t, "agent").is_empty() { "swarm" } else { s(t, "agent") };
-    let activity = [s(t, "last_error"), s(t, "action_needed"), s(t, "what_did_do")]
-        .into_iter()
-        .find(|x| !x.is_empty())
-        .unwrap_or("")
-        .lines()
-        .next()
-        .unwrap_or("")
-        .to_string();
+    let activity = [s(t, "last_error"), s(t, "action_needed"), s(t, "what_did_do")].into_iter().find(|x| !x.is_empty()).unwrap_or("").lines().next().unwrap_or("").to_string();
     Task {
         key: s(t, "id").to_string().into(),
         session: s(t, "session_id").to_string().into(),
@@ -560,12 +559,7 @@ pub fn task(t: &Value) -> Task {
 fn task_report(t: &Value) -> String {
     let active = s(t, "active_attempt_id");
     let attempts = t.get("attempts").and_then(Value::as_array).cloned().unwrap_or_default();
-    attempts
-        .iter()
-        .find(|a| s(a, "id") == active)
-        .or(attempts.last())
-        .map(|a| s(a, "summary").trim().to_string())
-        .unwrap_or_default()
+    attempts.iter().find(|a| s(a, "id") == active).or(attempts.last()).map(|a| s(a, "summary").trim().to_string()).unwrap_or_default()
 }
 
 /// The task's tracked state (`progress`, docs/task-progress.md). A Swarm
@@ -612,7 +606,8 @@ pub fn model_line(view: &Value) -> String {
     if s(&m, "model").is_empty() {
         return String::new();
     }
-    Assignment { provider: "".into(), model: s(&m, "model").to_string().into(), thinking: s(&m, "thinking").to_string().into(), tier: s(&m, "service_tier").to_string().into() }.short()
+    Assignment { provider: "".into(), model: s(&m, "model").to_string().into(), thinking: s(&m, "thinking").to_string().into(), tier: s(&m, "service_tier").to_string().into() }
+        .short()
 }
 
 fn uptime(ms: f64) -> String {
@@ -731,12 +726,7 @@ pub fn roles(settings: &Value) -> Vec<Role> {
         thinking: s(a, "thinking").to_string().into(),
         tier: s(a, "service_tier").to_string().into(),
     };
-    let role = |key: &str, a: &Value| Role {
-        key: key.to_string().into(),
-        label: role_label(key).to_string().into(),
-        purpose: role_purpose(key).into(),
-        default: assignment(a),
-    };
+    let role = |key: &str, a: &Value| Role { key: key.to_string().into(), label: role_label(key).to_string().into(), purpose: role_purpose(key).into(), default: assignment(a) };
     let mut out = Vec::new();
     let swarm = root.get("swarm").cloned().unwrap_or(Value::Null);
     for key in ["plan", "action"] {
@@ -828,8 +818,20 @@ pub fn plans(chatgpt: Result<&Value, &str>) -> Vec<Plan> {
     let window_label = |seconds: f64| -> Text {
         match seconds as u64 {
             0 => "window".into(),
-            s if s % 604_800 == 0 => if s == 604_800 { "week".into() } else { format!("{} weeks", s / 604_800).into() },
-            s if s % 86_400 == 0 => if s == 86_400 { "day".into() } else { format!("{} days", s / 86_400).into() },
+            s if s % 604_800 == 0 => {
+                if s == 604_800 {
+                    "week".into()
+                } else {
+                    format!("{} weeks", s / 604_800).into()
+                }
+            }
+            s if s % 86_400 == 0 => {
+                if s == 86_400 {
+                    "day".into()
+                } else {
+                    format!("{} days", s / 86_400).into()
+                }
+            }
             s if s % 3_600 == 0 => format!("{} hours", s / 3_600).into(),
             s => format!("{} min", s / 60).into(),
         }
@@ -875,7 +877,9 @@ mod tests {
             json!({"id": "n2", "role": "system", "content": "Wait ended: tasks settled.", "metadata": {"source": "task_wait_notice", "task_wait_notice": "ended"}}),
         ]);
         assert_eq!(got.len(), 3);
-        assert!(matches!(&got[1], Entry::Notice(t) if t.as_ref() == "This conversation is now waiting on 2 task(s) on forge: Fix login, Add docs. It wakes when they settle; a new message ends the wait."));
+        assert!(
+            matches!(&got[1], Entry::Notice(t) if t.as_ref() == "This conversation is now waiting on 2 task(s) on forge: Fix login, Add docs. It wakes when they settle; a new message ends the wait.")
+        );
         assert!(matches!(&got[2], Entry::Notice(t) if t.as_ref() == "Wait ended: tasks settled."));
     }
 
@@ -892,7 +896,11 @@ mod tests {
             json!({"id": "m3", "role": "user", "content": "and right", "metadata": {"feedback_note": true, "queued_note": true}}),
         ]);
         assert!(matches!(&got[1], Entry::Queued { id, text } if id.as_ref() == "m2" && text.as_ref() == "steer left"));
-        apply(&mut got, &json!({"role": "system", "content": "Feedback m2 delivered", "metadata": {"source": "feedback_delivery", "message_id": "m2", "delivery_status": "delivered"}}), false);
+        apply(
+            &mut got,
+            &json!({"role": "system", "content": "Feedback m2 delivered", "metadata": {"source": "feedback_delivery", "message_id": "m2", "delivery_status": "delivered"}}),
+            false,
+        );
         assert_eq!(got.len(), 3);
         assert!(matches!(&got[1], Entry::User(t) if t.as_ref() == "steer left"));
         assert!(matches!(&got[2], Entry::Queued { id, .. } if id.as_ref() == "m3"));
@@ -995,7 +1003,8 @@ mod tests {
 
         // The catalog envelope: the answer is data, and its machine (this
         // machine's own name) does not make it a linked call.
-        let envelope = |data: Value| json!({"tool": "manage_projects", "action": "propose_task", "machine": "home", "state": "ok", "data": data, "untrusted_content": false}).to_string();
+        let envelope =
+            |data: Value| json!({"tool": "manage_projects", "action": "propose_task", "machine": "home", "state": "ok", "data": data, "untrusted_content": false}).to_string();
         let task = media_card("manage_projects", &json!({"action": "propose_task", "agent": "image", "title": "Logo"}), &envelope(json!({"task": {"id": "task_i1"}})));
         assert!(matches!(task, Some(Entry::Media { task_id, kind: crate::data::MediaKind::Image, title }) if task_id.as_ref() == "task_i1" && title.as_ref() == "Logo"));
         let proposed = media_card("manage_projects", &json!({"action": "create_task"}), &envelope(json!({"proposal": {"task_id": "task_s1", "agent": "sound"}})));
@@ -1003,13 +1012,22 @@ mod tests {
         // Sent to a linked machine (its machine argument): no card.
         assert!(media_card("manage_projects", &json!({"action": "propose_task", "agent": "image", "machine": "box"}), &envelope(json!({"task": {"id": "r1"}}))).is_none());
         // A top-level task_id is no longer read from an envelope.
-        assert!(media_card("manage_projects", &json!({"action": "propose_task", "agent": "image"}), &json!({"tool": "manage_projects", "action": "propose_task", "machine": "home", "state": "ok", "data": {}, "task_id": "x"}).to_string()).is_none());
+        assert!(
+            media_card(
+                "manage_projects",
+                &json!({"action": "propose_task", "agent": "image"}),
+                &json!({"tool": "manage_projects", "action": "propose_task", "machine": "home", "state": "ok", "data": {}, "task_id": "x"}).to_string()
+            )
+            .is_none()
+        );
     }
 
     #[test]
     fn stored_tool_results_get_a_summary() {
         let output = json!({"exit_code": 0, "output": "built\nok  pkg 0.4s\n"}).to_string();
-        let record = json!({"type": "v3_provider_tool_result", "tool_name": "bash", "call_id": "c9", "arguments": "{\"command\":\"go test ./pkg\"}", "output": output, "duration_ms": 2400}).to_string();
+        let record =
+            json!({"type": "v3_provider_tool_result", "tool_name": "bash", "call_id": "c9", "arguments": "{\"command\":\"go test ./pkg\"}", "output": output, "duration_ms": 2400})
+                .to_string();
         let got = entry(&json!({"role": "tool", "content": record, "metadata": {"tool_name": "bash", "call_id": "c9"}}), false);
         let [Entry::Tool { detail, call_id, state, summary, duration_ms, .. }] = got.as_slice() else { panic!("one tool line") };
         assert_eq!((detail.as_ref(), call_id.as_ref(), *state, *duration_ms), ("go test ./pkg", "c9", ToolState::Done, Some(2400)));
@@ -1040,8 +1058,10 @@ mod tests {
         assert_eq!(got[0].state, RunState::Running);
         assert_eq!(session(&shells[0], &json!({}), true, &projects).unwrap().state, RunState::NeedsYou);
         let tasks = session_tasks(
-            &[json!({"id": "task_b4784618", "session_id": "77d9a980", "origin_session_id": "s1", "agent": "coder", "status": "pending_approval", "title": "Add MIT LICENSE"}),
-              json!({"id": "task_other", "origin_session_id": "s9", "status": "completed"})],
+            &[
+                json!({"id": "task_b4784618", "session_id": "77d9a980", "origin_session_id": "s1", "agent": "coder", "status": "pending_approval", "title": "Add MIT LICENSE"}),
+                json!({"id": "task_other", "origin_session_id": "s9", "status": "completed"}),
+            ],
             "s1",
         );
         assert_eq!(tasks.len(), 1);
@@ -1078,6 +1098,11 @@ mod tests {
         assert!(task_wait(&json!({"active": true, "status": "running"})).is_none());
         assert_eq!(session(&shell, &json!({"status": "running"}), false, &projects).unwrap().state, RunState::Running);
         assert_eq!(session(&shell, &json!({"status": "completed"}), false, &projects).unwrap().state, RunState::Idle);
+        // A task watch is shown, but the session stays idle (not Waiting).
+        let watching = json!({"status": "completed", "task_watches": [{"project_id": "proj_1", "task_ids": ["t1"]}]});
+        let got = session(&shell, &watching, false, &projects).unwrap();
+        assert_eq!(got.state, RunState::Idle);
+        assert_eq!(got.waiting_on.unwrap().tasks.len(), 1);
     }
 
     #[test]
@@ -1098,7 +1123,8 @@ mod tests {
         assert!(pending(&[json!({"id": "perm_9", "status": "pending", "tool_name": "ask-user", "tool_arguments": args})]).unwrap().question);
         let several = pending(&[json!({"id": "perm_3", "tool_name": "ask_user", "tool_arguments":
             {"questions": [{"id": "branch", "question": "Which branch?", "options": ["main", "dev"]},
-                           {"question": "Run tests?", "required": false, "options": ["yes", "no"]}]}})]).unwrap();
+                           {"question": "Run tests?", "required": false, "options": ["yes", "no"]}]}})])
+        .unwrap();
         assert!(several.structured);
         assert_eq!(several.questions[1].id.as_ref(), "q_2");
         let mut answers = std::collections::HashMap::new();
@@ -1130,11 +1156,14 @@ mod tests {
         assert_eq!(m.health, Health::Ok);
         assert_eq!(m.cost_today, Some(0.5));
         assert_eq!(m.sandbox.as_ref().map(ToString::to_string).as_deref(), Some("off"));
-        let r = roles(&json!({"agent_model_settings": {"swarm": {"plan": {"provider": "anthropic", "model": "opus"}}, "system_agents": {"coder": {"provider": "codex", "model": "gpt-6.1-sol", "thinking": "medium"}}}}));
+        let r = roles(
+            &json!({"agent_model_settings": {"swarm": {"plan": {"provider": "anthropic", "model": "opus"}}, "system_agents": {"coder": {"provider": "codex", "model": "gpt-6.1-sol", "thinking": "medium"}}}}),
+        );
         assert_eq!(r[0].label.as_ref(), "Orchestrator");
         assert_eq!(r[1].key.as_ref(), "system-coder");
         assert_eq!(r[1].default.short(), "gpt-6.1-sol · medium");
-        let chatgpt = json!({"plan_type": "pro", "rate_limit": {"limit_reached": false, "primary_window": {"used_percent": 8, "limit_window_seconds": 604800, "reset_at": 1793087152u64}}});
+        let chatgpt =
+            json!({"plan_type": "pro", "rate_limit": {"limit_reached": false, "primary_window": {"used_percent": 8, "limit_window_seconds": 604800, "reset_at": 1793087152u64}}});
         let u = usage(
             &json!({"summary": {"total_cost_usd": 0, "total_tokens": 63220}, "limits": {"daily_cost_limit_usd": 0, "daily_tokens_limit": 0, "enabled": false}}),
             &json!({"summary": {"total_cost_usd": 0, "codex_nominal_cost_usd": 8.22481, "total_tokens": 1611031, "cached_tokens": 1160704, "total_turns": 101, "total_sessions": 12},
@@ -1270,7 +1299,10 @@ pub fn providers(providers: &Value, credentials: &Value) -> Vec<Provider> {
 
 fn credential(c: &Value) -> Credential {
     let ms = |key: &str| c.get(key).and_then(Value::as_u64).unwrap_or(0);
-    let connection = c.get("connection").filter(|v| v.is_object()).map(|v| (v.get("connected").and_then(Value::as_bool).unwrap_or(false), s(v, "message").to_string().into(), v.get("verified_at").and_then(Value::as_u64).unwrap_or(0)));
+    let connection = c
+        .get("connection")
+        .filter(|v| v.is_object())
+        .map(|v| (v.get("connected").and_then(Value::as_bool).unwrap_or(false), s(v, "message").to_string().into(), v.get("verified_at").and_then(Value::as_u64).unwrap_or(0)));
     Credential {
         id: s(c, "id").to_string().into(),
         provider: s(c, "provider").to_string().into(),
@@ -1294,11 +1326,7 @@ pub fn found(answer: &Value, projects: &[Project]) -> Vec<Found> {
             let meta = item.get("metadata").cloned().unwrap_or(Value::Null);
             let project_id = if s(&meta, "project_id").is_empty() { s(&meta, "swarm_v3_project_id") } else { s(&meta, "project_id") }.to_string();
             let project = projects.iter().find(|p| p.id.as_ref() == project_id).map(|p| p.name.to_string()).unwrap_or_default();
-            let snippet = list(item, "snippets")
-                .iter()
-                .map(|sn| s(sn, "text").split_whitespace().collect::<Vec<_>>().join(" "))
-                .find(|text| !text.is_empty())
-                .unwrap_or_default();
+            let snippet = list(item, "snippets").iter().map(|sn| s(sn, "text").split_whitespace().collect::<Vec<_>>().join(" ")).find(|text| !text.is_empty()).unwrap_or_default();
             Found {
                 id: s(item, "id").to_string().into(),
                 title: if s(item, "title").is_empty() { "Untitled".into() } else { s(item, "title").to_string().into() },
@@ -1347,7 +1375,6 @@ mod project_context_tests {
         assert!(!missing[0].context_generation.updating());
         assert_eq!(missing[0].context_generation.label(), "Swarm has not written project.md yet.");
     }
-
 
     #[test]
     fn task_progress_from_swarm_and_without_it() {

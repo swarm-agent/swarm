@@ -19,7 +19,6 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-
 /// The native messaging host's name, as Chrome's manifest names it.
 pub const HOST_NAME: &str = "dev.swarmagent.console";
 /// The extension's id: fixed by the `key` in its manifest, so the host
@@ -307,10 +306,7 @@ pub fn extension_dir() -> PathBuf {
     if checkout.join("manifest.json").is_file() {
         return checkout;
     }
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().and_then(|d| d.parent()).map(|d| d.join("share/swarm-console/extension")))
-        .unwrap_or(checkout)
+    std::env::current_exe().ok().and_then(|exe| exe.parent().and_then(|d| d.parent()).map(|d| d.join("share/swarm-console/extension"))).unwrap_or(checkout)
 }
 
 /// Connects Chrome to this app: writes the host script (so Chrome runs this
@@ -323,7 +319,11 @@ pub fn connect_chrome() -> Result<Vec<PathBuf>, String> {
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let script = dir.join("browser-host");
     let sock = socket_path();
-    let text = format!("#!/bin/sh\n# Written by Swarm Console: Chrome runs this for its Swarm extension.\nSWARM_CONSOLE_BROWSER_SOCK={} exec {} --browser-host \"$@\"\n", shell_quote(&sock.display().to_string()), shell_quote(&exe.display().to_string()));
+    let text = format!(
+        "#!/bin/sh\n# Written by Swarm Console: Chrome runs this for its Swarm extension.\nSWARM_CONSOLE_BROWSER_SOCK={} exec {} --browser-host \"$@\"\n",
+        shell_quote(&sock.display().to_string()),
+        shell_quote(&exe.display().to_string())
+    );
     std::fs::write(&script, text).map_err(|e| format!("could not write {}: {e}", script.display()))?;
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
     let manifest = json!({

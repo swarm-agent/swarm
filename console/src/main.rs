@@ -6,22 +6,19 @@ mod console;
 mod data;
 mod fleet_config;
 mod icons;
-mod onboarding;
+mod layout;
 mod machine;
+mod onboarding;
 mod password_prompt;
 mod swarm;
 mod text_input;
-mod layout;
 mod theme;
 
 use console::{
-    ClosePane, Console, GoAgents, GoFleet, GoLive, GoMedia,
-    GoSessions, GoSettings, GoUsage, GoSearch, GoAutomations, SearchRun, NextPane, SplitDown, SplitRight, ToggleLeft, CycleIcons,
+    ClosePane, Console, CycleIcons, GoAgents, GoAutomations, GoFleet, GoLive, GoMedia, GoSearch, GoSessions, GoSettings, GoUsage, NextPane, SearchRun, SplitDown, SplitRight,
+    ToggleLeft,
 };
-use gpui::{
-    App, AppContext, Application, Bounds, Focusable, KeyBinding, TitlebarOptions, WindowBounds,
-    WindowOptions, px, size,
-};
+use gpui::{App, AppContext, Application, Bounds, Focusable, KeyBinding, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 
 fn main() {
     // Chrome starts this binary as the native messaging host for the Swarm
@@ -79,10 +76,7 @@ fn main() {
             .open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    titlebar: Some(TitlebarOptions {
-                        title: Some("Swarm Console".into()),
-                        ..Default::default()
-                    }),
+                    titlebar: Some(TitlebarOptions { title: Some("Swarm Console".into()), ..Default::default() }),
                     app_id: Some("swarm-console".into()),
                     ..Default::default()
                 },

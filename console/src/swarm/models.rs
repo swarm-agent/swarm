@@ -41,11 +41,7 @@ impl ModelOption {
     /// The thinking a choice starts with: the model's default, else the
     /// first it takes, else off.
     pub fn thinking(&self) -> String {
-        if !self.default_thinking.is_empty() {
-            self.default_thinking.clone()
-        } else {
-            self.thinking_options.first().cloned().unwrap_or_else(|| "off".into())
-        }
+        if !self.default_thinking.is_empty() { self.default_thinking.clone() } else { self.thinking_options.first().cloned().unwrap_or_else(|| "off".into()) }
     }
 
     pub fn assignment(&self, thinking: &str, tier: &str) -> Assignment {

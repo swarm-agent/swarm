@@ -85,9 +85,7 @@ fn plural(n: i64, one: &str, many: &str) -> String {
 /// The number of entries a result lists: its count, else the length of its
 /// first list.
 fn count(out: &Value, keys: &[&str]) -> Option<i64> {
-    number(out, "count")
-        .or_else(|| number(out, "total"))
-        .or_else(|| keys.iter().find_map(|k| out.get(*k).and_then(Value::as_array).map(|a| a.len() as i64)))
+    number(out, "count").or_else(|| number(out, "total")).or_else(|| keys.iter().find_map(|k| out.get(*k).and_then(Value::as_array).map(|a| a.len() as i64)))
 }
 
 /// A brief summary of a finished tool call: a failure's reason, else what
@@ -213,13 +211,14 @@ fn edited(args: &Value, out: &Value) -> Option<String> {
 
 /// The first id a result names.
 fn id_of(out: &Value) -> Option<&str> {
-    ["task_id", "project_id", "session_id", "run_id", "id"].iter().find_map(|k| text(out, k))
+    ["task_id", "project_id", "session_id", "run_id", "id"]
+        .iter()
+        .find_map(|k| text(out, k))
         .or_else(|| ["task", "project", "result"].iter().find_map(|k| out.get(*k).and_then(|o| text(o, "id"))))
 }
 
 fn status_of(out: &Value) -> Option<&str> {
-    ["status", "state"].iter().find_map(|k| text(out, k))
-        .or_else(|| ["task", "project", "result"].iter().find_map(|k| out.get(*k).and_then(|o| text(o, "status"))))
+    ["status", "state"].iter().find_map(|k| text(out, k)).or_else(|| ["task", "project", "result"].iter().find_map(|k| out.get(*k).and_then(|o| text(o, "status"))))
 }
 
 /// A management tool (projects, tasks, automations): its action, the
@@ -341,9 +340,7 @@ pub fn line(name: &str, detail: &str, summary: &str, time: &str) -> Line {
     let name = shorten(name, 40);
     let summary = shorten(summary, SUMMARY_MAX);
     let time = shorten(time, 12);
-    let fixed = name.chars().count()
-        + if summary.is_empty() { 0 } else { 3 + summary.chars().count() }
-        + if time.is_empty() { 0 } else { 3 + time.chars().count() };
+    let fixed = name.chars().count() + if summary.is_empty() { 0 } else { 3 + summary.chars().count() } + if time.is_empty() { 0 } else { 3 + time.chars().count() };
     let room = LINE_MAX.saturating_sub(fixed + 1).max(16);
     let detail = shorten(detail, room);
     joined(name, detail, summary, time)
@@ -376,14 +373,7 @@ pub fn stacked(name: &str, detail: &str, summary: &str, time: &str) -> Stacked {
         (true, false) => time,
         (false, false) => format!(" · {time}"),
     };
-    Stacked {
-        tail: format!("{summary}{time}"),
-        summary: summary.len(),
-        time: time.len(),
-        detail: shorten(&whole, DETAIL_MAX),
-        name,
-        copy,
-    }
+    Stacked { tail: format!("{summary}{time}"), summary: summary.len(), time: time.len(), detail: shorten(&whole, DETAIL_MAX), name, copy }
 }
 
 /// The parts on one line, separators only between parts that are there.
@@ -407,13 +397,7 @@ fn joined(name: String, detail: String, summary: String, time: String) -> Line {
         (false, true) => time,
         (false, false) => format!(" · {time}"),
     };
-    Line {
-        text: format!("{name}{detail}{summary}{time}"),
-        name: name.len(),
-        detail: detail.len(),
-        summary: summary.len(),
-        time: time.len(),
-    }
+    Line { text: format!("{name}{detail}{summary}{time}"), name: name.len(), detail: detail.len(), summary: summary.len(), time: time.len() }
 }
 
 #[cfg(test)]
@@ -427,7 +411,8 @@ mod tests {
 
     #[test]
     fn bash_shows_its_exit_code_and_last_line() {
-        let out = json!({"command": "go test ./...", "exit_code": 0, "timed_out": false, "output": "ok  pkg/a\t0.3s\nok  pkg/b\t1.1s\n\n", "summary": "Command succeeded"}).to_string();
+        let out =
+            json!({"command": "go test ./...", "exit_code": 0, "timed_out": false, "output": "ok  pkg/a\t0.3s\nok  pkg/b\t1.1s\n\n", "summary": "Command succeeded"}).to_string();
         assert_eq!(summarize("bash", &args(json!({"command": "go test ./..."})), &out, "", None), "exit 0 · ok pkg/b 1.1s");
     }
 
@@ -493,10 +478,33 @@ mod tests {
         assert_eq!(summarize("manage_projects", &args(json!({"action": "list", "machine": "build-box"})), &remote, "", None), "4 projects");
         // The catalog envelope: the summary is its data's, with its state
         // when the data has no status of its own.
-        let envelope = |action: &str, state: &str, data: Value| json!({"tool": "manage_projects", "action": action, "machine": "home", "state": state, "data": data, "untrusted_content": true}).to_string();
-        assert_eq!(summarize("manage_projects", &args(json!({"action": "propose_task"})), &envelope("propose_task", "ok", json!({"task": {"id": "task_8f2", "status": "queued"}})), "", None), "queued · task_8f2");
-        assert_eq!(summarize("manage_projects", &args(json!({"action": "list_machines"})), &envelope("list_machines", "ok", json!({"machines": [{"name": "a"}, {"name": "b"}]})), "", None), "2 machines");
-        assert_eq!(summarize("manage_projects", &args(json!({"action": "wait_tasks"})), &envelope("wait_tasks", "timed_out", json!({"tasks": [1, 2]})), "", None), "timed_out · 2 tasks");
+        let envelope = |action: &str, state: &str, data: Value| {
+            json!({"tool": "manage_projects", "action": action, "machine": "home", "state": state, "data": data, "untrusted_content": true}).to_string()
+        };
+        assert_eq!(
+            summarize(
+                "manage_projects",
+                &args(json!({"action": "propose_task"})),
+                &envelope("propose_task", "ok", json!({"task": {"id": "task_8f2", "status": "queued"}})),
+                "",
+                None
+            ),
+            "queued · task_8f2"
+        );
+        assert_eq!(
+            summarize(
+                "manage_projects",
+                &args(json!({"action": "list_machines"})),
+                &envelope("list_machines", "ok", json!({"machines": [{"name": "a"}, {"name": "b"}]})),
+                "",
+                None
+            ),
+            "2 machines"
+        );
+        assert_eq!(
+            summarize("manage_projects", &args(json!({"action": "wait_tasks"})), &envelope("wait_tasks", "timed_out", json!({"tasks": [1, 2]})), "", None),
+            "timed_out · 2 tasks"
+        );
     }
 
     #[test]

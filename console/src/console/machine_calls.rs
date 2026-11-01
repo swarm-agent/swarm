@@ -57,12 +57,9 @@ impl Console {
         }
         match call.tool.as_ref() {
             "manage_browser" => Some(Command::Browser { session_id: session_id.to_string(), permission_id: id, args: call.args.clone(), confirmed: true }),
-            "machine_read" | "machine_write" | "machine_run" => Some(Command::Client {
-                session_id: session_id.to_string(),
-                permission_id: id,
-                tool: call.tool.to_string(),
-                args: call.args.clone(),
-            }),
+            "machine_read" | "machine_write" | "machine_run" => {
+                Some(Command::Client { session_id: session_id.to_string(), permission_id: id, tool: call.tool.to_string(), args: call.args.clone() })
+            }
             _ => None,
         }
     }

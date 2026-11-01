@@ -315,31 +315,13 @@ impl Console {
     /// The search box (or, when saving a favorite, its name).
     fn picker_search(&self) -> Div {
         let t = &self.theme;
-        div()
-            .mx_1()
-            .px_2()
-            .py(px(4.))
-            .rounded(px(t.radius))
-            .border_1()
-            .border_color(alpha(t.accent, 0.5))
-            .bg(t.surface)
-            .text_color(t.text)
-            .children(self.picker_query.clone())
+        div().mx_1().px_2().py(px(4.)).rounded(px(t.radius)).border_1().border_color(alpha(t.accent, 0.5)).bg(t.surface).text_color(t.text).children(self.picker_query.clone())
     }
 
     /// The name box of a favorite being saved.
     fn picker_name_field(&self) -> Div {
         let t = &self.theme;
-        div()
-            .mx_1()
-            .px_2()
-            .py(px(4.))
-            .rounded(px(t.radius))
-            .border_1()
-            .border_color(alpha(t.warn, 0.5))
-            .bg(t.surface)
-            .text_color(t.text)
-            .children(self.picker_name.clone())
+        div().mx_1().px_2().py(px(4.)).rounded(px(t.radius)).border_1().border_color(alpha(t.warn, 0.5)).bg(t.surface).text_color(t.text).children(self.picker_name.clone())
     }
 
     fn render_picker(&self, scope: PickerScope, cx: &mut Context<Self>) -> Div {
@@ -389,8 +371,16 @@ impl Console {
                     .id(SharedString::from(format!("picker-step-{i}")))
                     .px_1()
                     .rounded(px(t.radius))
-                    .text_color(if i == here { t.text } else if done { t.accent } else { t.faint })
-                    .when(done, |d| d.cursor_pointer().hover(move |s| s.bg(hover)).on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.picker_go(stage2.clone(), window, cx))))
+                    .text_color(if i == here {
+                        t.text
+                    } else if done {
+                        t.accent
+                    } else {
+                        t.faint
+                    })
+                    .when(done, |d| {
+                        d.cursor_pointer().hover(move |s| s.bg(hover)).on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.picker_go(stage2.clone(), window, cx)))
+                    })
                     .child(format!("{shown} {}", label.to_uppercase()));
                 if shown > 1 {
                     path = path.child(div().text_color(t.faint).child("›"));
@@ -639,16 +629,21 @@ impl Console {
                             .into_any_element()
                     })
                     .collect();
-                div().flex().flex_col().gap(px(1.)).child(div().px_2().text_size(px(11.)).text_color(t.faint).child("Priority: the provider's service tier for this model")).children(rows)
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.))
+                    .child(div().px_2().text_size(px(11.)).text_color(t.faint).child("Priority: the provider's service tier for this model"))
+                    .children(rows)
             }
             Stage::Apply => {
                 let a = p.assignment().unwrap_or_else(|| Assignment { provider: "".into(), model: "".into(), thinking: "".into(), tier: "".into() });
                 let title = p.favorite.as_ref().map(|f| f.name.clone()).or_else(|| p.model.as_ref().map(|m| m.title().to_string())).unwrap_or_default();
-                let summary = div()
-                    .px_2()
-                    .py_1()
-                    .child(div().text_color(t.text).child(title))
-                    .child(div().text_size(px(10.5)).text_color(t.faint).child(format!("{} · {}", a.provider, a.short())));
+                let summary = div().px_2().py_1().child(div().text_color(t.text).child(title)).child(div().text_size(px(10.5)).text_color(t.faint).child(format!(
+                    "{} · {}",
+                    a.provider,
+                    a.short()
+                )));
                 let action = |id: &'static str, label: String, detail: &'static str, strong: bool, what: &'static str| {
                     div()
                         .id(id)
@@ -669,25 +664,22 @@ impl Console {
                 };
                 let mut actions = div().flex().flex_col().gap_1().px_1();
                 if p.saving {
-                    actions = actions
-                        .child(div().px_1().text_size(px(10.5)).text_color(t.faint).child("NAME THE FAVORITE"))
-                        .child(self.picker_name_field())
-                        .child(
-                            div()
-                                .id("picker-save-favorite")
-                                .mx_1()
-                                .px_2()
-                                .py(px(4.))
-                                .rounded(px(t.radius))
-                                .border_1()
-                                .border_color(alpha(t.warn, 0.6))
-                                .bg(alpha(t.warn, 0.08))
-                                .text_color(t.text)
-                                .cursor_pointer()
-                                .hover(move |s| s.bg(hover))
-                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.save_favorite(window, cx)))
-                                .child("★ Save favorite"),
-                        );
+                    actions = actions.child(div().px_1().text_size(px(10.5)).text_color(t.faint).child("NAME THE FAVORITE")).child(self.picker_name_field()).child(
+                        div()
+                            .id("picker-save-favorite")
+                            .mx_1()
+                            .px_2()
+                            .py(px(4.))
+                            .rounded(px(t.radius))
+                            .border_1()
+                            .border_color(alpha(t.warn, 0.6))
+                            .bg(alpha(t.warn, 0.08))
+                            .text_color(t.text)
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(hover))
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.save_favorite(window, cx)))
+                            .child("★ Save favorite"),
+                    );
                 } else {
                     match &scope {
                         PickerScope::Session { .. } => {
@@ -729,17 +721,6 @@ impl Console {
             }
         };
 
-        div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .p_1()
-            .mb_1()
-            .rounded(px(t.radius))
-            .border_1()
-            .border_color(alpha(t.accent, 0.4))
-            .bg(t.panel)
-            .child(header)
-            .child(body)
+        div().flex().flex_col().gap_1().p_1().mb_1().rounded(px(t.radius)).border_1().border_color(alpha(t.accent, 0.4)).bg(t.panel).child(header).child(body)
     }
 }

@@ -153,7 +153,15 @@ fn worker(w: &Value, page: &Value) -> Worker {
     // The page lists each worker's folders beside it; the record may carry them too.
     let folders_of = |v: Option<&Value>| -> Vec<String> {
         v.and_then(Value::as_object)
-            .map(|m| m.values().map(|f| { let n = text(f, "name"); if n.is_empty() { text(f, "path") } else { n } }).filter(|n| !n.is_empty()).collect())
+            .map(|m| {
+                m.values()
+                    .map(|f| {
+                        let n = text(f, "name");
+                        if n.is_empty() { text(f, "path") } else { n }
+                    })
+                    .filter(|n| !n.is_empty())
+                    .collect()
+            })
             .unwrap_or_default()
     };
     let mut folders = folders_of(page.get("workspaces").and_then(|ws| ws.get(&id)));
@@ -162,18 +170,18 @@ fn worker(w: &Value, page: &Value) -> Worker {
     }
     let automations_of = |w: &Value| -> Vec<WorkerAutomation> {
         w.get("automations")
-        .and_then(Value::as_array)
-        .map(|list| {
-            list.iter()
-                .map(|a| WorkerAutomation {
-                    id: text(a, "id"),
-                    name: text(a, "name"),
-                    when: when(a.get("schedule"), &text(a, "activation_mode")),
-                    enabled: a.get("enabled").and_then(Value::as_bool).unwrap_or(false),
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+            .and_then(Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .map(|a| WorkerAutomation {
+                        id: text(a, "id"),
+                        name: text(a, "name"),
+                        when: when(a.get("schedule"), &text(a, "activation_mode")),
+                        enabled: a.get("enabled").and_then(Value::as_bool).unwrap_or(false),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     };
     let automations = automations_of(w);
     let pending = w.get("pending_review").filter(|p| p.is_object()).map(automations_of);
@@ -315,11 +323,7 @@ fn run(r: &Value, w: &Worker) -> Run {
     let deliverables = r
         .get("deliverables")
         .and_then(Value::as_array)
-        .map(|list| {
-            list.iter()
-                .filter_map(|d| ["label", "title", "path", "url", "name"].iter().map(|k| text(d, k)).find(|v| !v.is_empty()))
-                .collect()
-        })
+        .map(|list| list.iter().filter_map(|d| ["label", "title", "path", "url", "name"].iter().map(|k| text(d, k)).find(|v| !v.is_empty())).collect())
         .unwrap_or_default();
     Run {
         id: text(r, "id"),
@@ -379,9 +383,25 @@ mod run_tests {
 
     #[test]
     fn a_failed_run() {
-        let w = Worker { id: "w1".into(), name: "Census".into(), description: String::new(), instructions: String::new(), revision: 1, source_session: String::new(), state: "active".into(), mode: String::new(), folders: vec![], automations: vec![], updated_at: 0, pending: None };
-        let r = run(&json!({"id": "r1", "status": "failed", "error": "workspace gone", "session_id": "s1", "started_at": 5, "completed_at": 9, "request_source": "direct",
-            "deliverables": [{"label": "report.md"}, {"url": "https://x"}]}), &w);
+        let w = Worker {
+            id: "w1".into(),
+            name: "Census".into(),
+            description: String::new(),
+            instructions: String::new(),
+            revision: 1,
+            source_session: String::new(),
+            state: "active".into(),
+            mode: String::new(),
+            folders: vec![],
+            automations: vec![],
+            updated_at: 0,
+            pending: None,
+        };
+        let r = run(
+            &json!({"id": "r1", "status": "failed", "error": "workspace gone", "session_id": "s1", "started_at": 5, "completed_at": 9, "request_source": "direct",
+            "deliverables": [{"label": "report.md"}, {"url": "https://x"}]}),
+            &w,
+        );
         assert_eq!(r.status, "failed");
         assert_eq!(r.error, "workspace gone");
         assert_eq!(r.source, "asked directly");
