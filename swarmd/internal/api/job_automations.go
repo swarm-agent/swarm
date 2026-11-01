@@ -1625,7 +1625,13 @@ func (s *Server) rebaseJobDelivery(ctx context.Context, account, id, onto string
 	}
 	switch outcome.Outcome {
 	case jobautomation.RebaseRebased:
-		out["next"] = "the delivery head and the job's branch are the rebased head; rerun the delivery's failed steps (manage_jobs rerun_failed_steps) to check and land it"
+		if rec := outcome.Record; rec != nil && rec.Branch != nil && !rec.Branch.Updated {
+			out["next"] = "the delivery head is the rebased head, but the job's branch was not moved (see rebase.branch); a merge or publish lands that branch, so clean the job's worktree or let its task go idle, then rerun the delivery's failed steps (manage_jobs rerun_failed_steps): the merge or publish moves the branch first"
+		} else {
+			out["next"] = "the delivery head and the job's branch are the rebased head; rerun the delivery's failed steps (manage_jobs rerun_failed_steps) to check and land it"
+		}
+	case jobautomation.RebaseSkipped:
+		out["next"] = "nothing moved: the job's branch could not be moved to the rebased head (see reason) and a merge or publish lands that branch; clean the job's worktree or let its task go idle, then rebase again or rerun the delivery's failed steps (manage_jobs rerun_failed_steps), which rebases again"
 	case jobautomation.RebaseConflicted:
 		out["next"] = "nothing moved: rerun the delivery (manage_jobs rerun_failed_steps) to rebase with a resolver agent, or have the job rebase itself"
 	case jobautomation.RebaseUpToDate:

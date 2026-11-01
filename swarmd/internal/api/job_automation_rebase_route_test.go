@@ -63,7 +63,9 @@ func rebaseRouteRepo(t *testing.T) (folder, base, head, tip string) {
 // delivery head and the job's branch and is recorded with its mapping and
 // range-diff in the delivery view; the second call answers up_to_date
 // through the MCP action; a running delivery is refused (409) and nothing
-// moves; the workflow view shows the rebase setting.
+// moves; the workflow view shows the rebase setting; next says the job's
+// branch moved only when it did (a dirty worktree's branch is left, and next
+// says it was not moved).
 // Threat: an on-demand path with its own rules (a second rebase), a rebase
 // of a delivery the runner is running, or the new fields missing from the
 // API views the SDK reads.
@@ -130,6 +132,7 @@ func TestRebaseDeliveryRouteAndManageJobsRebaseShareOneFunction(t *testing.T) {
 	var answer struct {
 		Outcome  string         `json:"outcome"`
 		Onto     string         `json:"onto"`
+		Next     string         `json:"next"`
 		Rebase   map[string]any `json:"rebase"`
 		Delivery map[string]any `json:"delivery"`
 	}
@@ -139,6 +142,9 @@ func TestRebaseDeliveryRouteAndManageJobsRebaseShareOneFunction(t *testing.T) {
 	stored, _ := store.GetDelivery(account, d.ID)
 	if answer.Outcome != jobautomation.RebaseRebased || answer.Onto != tip || stored.Head == head || stored.RebasedFrom != head || stored.State != jobautomation.StateFailed {
 		t.Fatalf("answer %+v; stored head %s rebased_from %s state %s", answer, stored.Head, stored.RebasedFrom, stored.State)
+	}
+	if !strings.HasPrefix(answer.Next, "the delivery head and the job's branch are the rebased head") {
+		t.Fatalf("next for a moved branch = %q", answer.Next)
 	}
 	if answer.Rebase["trigger"] != jobautomation.RebaseTriggerRequest || !strings.Contains(answer.Rebase["range_diff"].(string), "job: a") {
 		t.Fatalf("rebase record view = %v", answer.Rebase)
@@ -167,5 +173,39 @@ func TestRebaseDeliveryRouteAndManageJobsRebaseShareOneFunction(t *testing.T) {
 	}
 	if _, err := controlMCPRebaseJob(c, map[string]any{"job_id": "worker/wkr-1/none"}); err == nil || !strings.Contains(err.Error(), "no workflow delivery") {
 		t.Fatalf("a job without a delivery: %v", err)
+	}
+
+	// A job whose branch is checked out in its own worktree with uncommitted
+	// changes: the head is rebased (no merge or publish is left to land the
+	// branch) but the branch is not moved, and next says so instead of
+	// claiming it moved.
+	worktree := filepath.Join(t.TempDir(), "wt")
+	cmd := exec.Command("git", "worktree", "add", "-q", "-b", "agent/run-2", worktree, head)
+	cmd.Dir = folder
+	cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + folder, "GIT_CONFIG_NOSYSTEM=1"}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("worktree add: %v\n%s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "a.txt"), []byte("uncommitted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dirty, _, err := store.CreateDelivery(auto, jobautomation.Result{JobID: "worker/wkr-1/run-2", Kind: jobautomation.KindWorker, RunID: "run-2", Folder: folder, Status: jobautomation.StatusSucceeded,
+		Git: &jobautomation.ResultGit{Branch: "agent/run-2", BaseBranch: "main", BaseCommit: base, Head: head, Worktree: worktree, Commits: []jobautomation.ResultCommit{{SHA: head}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirty.State = jobautomation.StateFailed
+	if err := store.SaveDelivery(dirty); err != nil {
+		t.Fatal(err)
+	}
+	notMoved, err := server.rebaseJobDelivery(context.Background(), account, dirty.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next, _ := notMoved["next"].(string); notMoved["outcome"] != jobautomation.RebaseRebased || !strings.Contains(next, "the job's branch was not moved") {
+		t.Fatalf("rebase with a dirty worktree = %v", notMoved)
+	}
+	if branch, _ := JobAutomationRebaseGit(context.Background(), folder, nil, nil, "rev-parse", "refs/heads/agent/run-2"); strings.TrimSpace(string(branch)) != head {
+		t.Fatalf("the dirty worktree's branch moved to %s", branch)
 	}
 }

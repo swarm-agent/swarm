@@ -51,7 +51,8 @@ const (
 	RebaseConflicted = "conflict"
 	RebaseResolving  = "resolving"
 	RebaseError      = "error"
-	// RebaseSkipped: an automatic rebase replayed cleanly, but the job's
+	// RebaseSkipped: a rebase (automatic, a rebase step's, a request's)
+	// replayed cleanly, but the job's
 	// branch could not be moved to the new head while a deliver step to
 	// merge or publish (which lands that branch) is still to run: the
 	// delivery keeps its head, and the record says why.

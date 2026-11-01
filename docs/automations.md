@@ -975,12 +975,19 @@ request). It is Git in the folder, run by the daemon with hooks off:
    folder itself, another worktree) is not moved, and the record says why.
    The record keeps the old -> new commit mapping and a `git range-diff`. A
    `deliver` step to `merge` or `publish` lands the work's branch, so it lands
-   a rebased head once the branch names it (the usual case). When an
-   automatic rebase could not move the branch while such a step is still to
-   run, the rebase is not applied: its record ends `skipped` with the reason
-   (signal `automation.delivery.rebase_skipped`), the delivery keeps its head
-   and the merge or publish lands the branch as it is; it is tried again
-   once the target moves. A reviewer allowed to fix (`fixes`)
+   a rebased head once the branch names it (the usual case). When a rebase
+   (automatic, a `rebase` step or on request) could not move the branch while
+   such a step is still to run, the rebase is not applied: its record ends
+   `skipped` with the reason (signal `automation.delivery.rebase_skipped`),
+   the delivery keeps its head and the merge or publish lands the branch as
+   it is; it is tried again once the target moves or the delivery is rerun.
+   When the delivery head is a rebased head its branch still does not carry
+   (a rebase with no merge or publish left to run, or a delivery an older
+   daemon left), a merge or publish first moves the branch from the earlier
+   head of this delivery it is at (signal `automation.delivery.branch_moved`,
+   the step's `outcome.branch_moved`), so a rerun once the worktree is clean
+   or the task idle lands it; if it still cannot, the step is refused and
+   says why. A reviewer allowed to fix (`fixes`)
    runs on the rebased head as on the job's own: only a head an agent step
    moved keeps it from starting.
 4. Steps after a rebase run on the rebased head. Steps that already passed on
@@ -1037,7 +1044,8 @@ checks, described under `agent` steps.)
 
 **Explicit forms.** A step `{"type": "rebase", "onto": "dev"}` rebases at
 that point of the workflow, onto `onto` (default the job's target branch),
-even with `rebase: "off"`; it succeeds `up to date` or rebased, and a
+even with `rebase: "off"`; it succeeds `up to date`, rebased or not applied
+(`outcome.skipped`, the reason: the branch could not be moved), and a
 conflict nobody resolved fails it and ends the delivery `conflict`. Give it a
 `timeout_seconds` long enough for a resolver. On demand, `manage_jobs`
 `rebase` (`job_id`, optional `onto`), `POST /v3/job-deliveries/{id}/rebase`
@@ -1047,8 +1055,9 @@ rebases itself). While such a rebase works, the store holds the delivery: a
 rerun (`rerun_failed_steps`, the rerun route, a hand-over rerun) is refused
 with the reason that it is being rebased, and only that rebase may save the
 delivery, so neither overwrites the other (a hold a stopped daemon left
-lapses after an hour). They answer `outcome` (`up_to_date`, `rebased`, `conflict`
-or `error`), the record and the delivery; a conflict on request starts no
+lapses after an hour). They answer `outcome` (`up_to_date`, `rebased`,
+`skipped`, `conflict` or `error`), the record, the delivery and a `next` that
+says whether the job's branch moved; a conflict on request starts no
 resolver and moves nothing (a rerun rebases with one). No step re-runs.
 
 ```json
@@ -1082,8 +1091,9 @@ milestones name it. Signals: `automation.delivery.rebased`,
 `automation.delivery.rebase_conflict` (a resolver starts),
 `automation.delivery.resolver_started`,
 `automation.delivery.rebase_unresolved`, `automation.delivery.rebase_error`,
-`automation.delivery.rebase_limit`, `automation.delivery.rebase_skipped`, and
-`automation.delivery.finished` with
+`automation.delivery.rebase_limit`, `automation.delivery.rebase_skipped`,
+`automation.delivery.branch_moved` (a merge or publish moved the job's branch
+to the rebased head first), and `automation.delivery.finished` with
 state `conflict` (its `files`, `commit`, `resolver_jobs` and `next`).
 
 ## The result JSON

@@ -99,6 +99,8 @@ type rebaseOutcome struct {
 	moved, conflict, upToDate bool
 	// skipped: a clean replay not applied (skipRebase).
 	skipped bool
+	// reason: why a clean replay was skipped.
+	reason string
 	// inTarget: up to date because the target already contains the work.
 	inTarget bool
 	// err is why the rebase could not run.
@@ -236,6 +238,10 @@ func (r *Runner) rebaseDelivery(ctx context.Context, d *Delivery, trigger, stepI
 // old one kept as rebased_from), moves the job's own branch by
 // compare-and-swap (a task's checked-out branch through its branch
 // advancer, only when its worktree is clean and idle) and records it all.
+// Whatever asked for the rebase (automatic, a rebase step, a request), a
+// replay whose branch could not be moved while a merge or publish step is
+// still to land that branch is not applied (skipRebase): landing it would be
+// refused.
 func (r *Runner) finishRebase(ctx context.Context, d *Delivery, idx int, res ReplayResult) rebaseOutcome {
 	rec := &d.Rebases[idx]
 	prev := d.Head
@@ -252,7 +258,7 @@ func (r *Runner) finishRebase(ctx context.Context, d *Delivery, idx int, res Rep
 	if g := d.Result.Git; g != nil {
 		update := r.moveJobBranch(ctx, d, rec.Step, prev, res.To)
 		rec.Branch = &update
-		if !update.Updated && automaticRebase(rec.Trigger) && d.landsBranchLater() {
+		if !update.Updated && d.landsBranchLater() {
 			return r.skipRebase(d, idx, update)
 		}
 	}
@@ -325,13 +331,6 @@ func sameDir(a, b string) bool {
 	return errA == nil && errB == nil && ra == rb
 }
 
-// automaticRebase reports whether a rebase was Swarm's own (before the
-// first step, before a step, after a failed step), not one a rebase step,
-// an agent step or a request asked for.
-func automaticRebase(trigger string) bool {
-	return trigger == RebaseTriggerStart || trigger == RebaseTriggerStep || trigger == RebaseTriggerFailed
-}
-
 // landsBranchLater reports whether a deliver step to merge or publish (which
 // lands the job's own branch, BranchCarriesHead) has not succeeded yet.
 func (d Delivery) landsBranchLater() bool {
@@ -346,12 +345,13 @@ func (d Delivery) landsBranchLater() bool {
 	return false
 }
 
-// skipRebase undoes the move of a clean automatic replay whose job branch
-// could not be moved while a merge or publish is still to land that branch:
-// landing it would be refused (the branch does not carry the rebased head),
-// so the delivery keeps its head and its steps run on it as before. The
-// rebased head stays named under refs/swarm; the record (outcome skipped)
-// says why, and the tip counts as checked until the target moves again.
+// skipRebase undoes the move of a clean replay (automatic, a rebase step's
+// or a request's) whose job branch could not be moved while a merge or
+// publish is still to land that branch: landing it would be refused (the
+// branch does not carry the rebased head), so the delivery keeps its head and
+// its steps run on it as before. The rebased head stays named under
+// refs/swarm; the record (outcome skipped) says why, and the tip counts as
+// checked until the target moves again or the delivery is rerun.
 func (r *Runner) skipRebase(d *Delivery, idx int, update BranchUpdate) rebaseOutcome {
 	rec := &d.Rebases[idx]
 	why := update.Reason
@@ -366,7 +366,56 @@ func (r *Runner) skipRebase(d *Delivery, idx int, update BranchUpdate) rebaseOut
 		fmt.Sprintf("Automation %s did not rebase job %s onto %s: %s", d.AutomationName, d.JobID, rec.Target, rec.Reason),
 		rec.Step, map[string]string{"automation": d.AutomationName, "trigger": rec.Trigger, "target": rec.Target, "onto": rec.Onto, "head": rec.From,
 			"rebased": rec.To, "branch": update.Branch, "reason": rec.Reason, "rebase": strconv.Itoa(rec.N)}, strconv.Itoa(rec.N))
-	return rebaseOutcome{n: rec.N, branch: rec.Target, onto: rec.Onto, skipped: true}
+	return rebaseOutcome{n: rec.N, branch: rec.Target, onto: rec.Onto, skipped: true, reason: rec.Reason}
+}
+
+// carryRebasedHead moves the job's branch to the delivery head right before a
+// merge or publish lands that branch, when the head is one Swarm's own rebase
+// made and the branch was left at an earlier head of this delivery (the
+// job's own, or one a previous rebase made): the rebase could not move it then
+// (a dirty worktree, a busy task) or a daemon before this one left it. A rerun
+// once the worktree is clean or the task idle so lands the head the steps
+// checked. A branch at any other commit is left alone, and so is a head an
+// agent step moved. It reports whether it moved the branch (from where);
+// when it could not, the newest rebase record's branch says why and the
+// deliverer's own check (BranchCarriesHead) refuses the step.
+func (r *Runner) carryRebasedHead(ctx context.Context, d *Delivery, stepID string) (string, bool) {
+	g := d.Result.Git
+	if r.rebaser == nil || g == nil || strings.TrimSpace(g.Branch) == "" || !isCommitID(d.Head) || d.Head == g.Head {
+		return "", false
+	}
+	idx := -1
+	known := map[string]bool{g.Head: true}
+	for i, rec := range d.Rebases {
+		if rec.Outcome != RebaseRebased || rec.Trigger == RebaseTriggerAgent {
+			continue
+		}
+		known[rec.From] = true
+		if rec.To == d.Head {
+			idx = i
+		} else {
+			known[rec.To] = true
+		}
+	}
+	if idx < 0 {
+		return "", false
+	}
+	tip, err := r.rebaser.TargetTip(ctx, d.Folder, g.Branch)
+	if err != nil || tip == d.Head || !known[tip] {
+		return "", false
+	}
+	update := r.moveJobBranch(ctx, d, stepID, tip, d.Head)
+	d.Rebases[idx].Branch = &update
+	r.save(*d)
+	if !update.Updated {
+		return "", false
+	}
+	rec := d.Rebases[idx]
+	r.signal(*d, "automation.delivery.branch_moved", pebblestore.SignalSeverityInfo,
+		fmt.Sprintf("Automation %s moved job %s's branch %s to its rebased head %s (from %s) before %s", d.AutomationName, d.JobID, g.Branch, short(d.Head), short(tip), stepID),
+		stepID, map[string]string{"automation": d.AutomationName, "trigger": rec.Trigger, "target": rec.Target, "onto": rec.Onto, "from": rec.From, "to": rec.To,
+			"rebase": strconv.Itoa(rec.N), "branch": g.Branch, "branch_updated": "true", "branch_from": tip}, strconv.Itoa(rec.N)+".branch")
+	return tip, true
 }
 
 // resolveConflict gives the conflict of rebase idx to resolver agents, one
@@ -629,6 +678,9 @@ func (r *Runner) runRebaseStep(ctx context.Context, d *Delivery, record *StepRec
 		return stepFailure{reason: stepReason(ConflictReason(*d)), next: ConflictNext, refused: true}
 	case out.err != "":
 		return stepFailure{reason: stepReason("rebase: " + out.err), next: "rerun"}
+	case out.skipped:
+		record.Output = "rebase onto " + out.branch + " at " + short(out.onto) + " " + out.reason
+		record.Outcome = map[string]any{"rebase": out.n, "onto": out.onto, "target": out.branch, "skipped": true, "reason": out.reason}
 	case out.upToDate:
 		record.Output = "up to date with " + out.branch + " at " + short(out.onto)
 		record.Outcome = map[string]any{"up_to_date": true, "onto": out.onto, "target": out.branch}
@@ -769,7 +821,7 @@ func (r *Runner) save(d Delivery) {
 // RebaseRequestOutcome is what an on-demand rebase of a delivery did.
 type RebaseRequestOutcome struct {
 	Delivery Delivery
-	// Outcome is up_to_date, rebased, conflict or error; Record the
+	// Outcome is up_to_date, rebased, skipped, conflict or error; Record the
 	// rebase's record (nil when up to date).
 	Outcome string
 	Target  string
@@ -830,6 +882,8 @@ func (r *Runner) RebaseDelivery(ctx context.Context, account, id, branch string)
 		}
 	case out.conflict:
 		result.Outcome = RebaseConflicted
+	case out.skipped:
+		result.Outcome, result.Reason = RebaseSkipped, out.reason
 	case out.moved:
 		result.Outcome = RebaseRebased
 	default:

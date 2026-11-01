@@ -205,7 +205,7 @@ func BranchCarriesHead(ctx context.Context, tips interface {
 	if tip != req.Head {
 		why := moved + ", but the work's branch " + g.Branch + " is at " + tip + ": " + req.To + " lands that branch, so nothing is delivered"
 		if req.RebasedFrom != "" {
-			why += " (the rebase could not move the branch: see the delivery's rebases[].branch; rerun once the task is idle and its worktree clean)"
+			why += " (the rebase could not move the branch: see the delivery's rebases[].branch; rerun once the job's worktree is clean and its task idle: the step moves the branch first)"
 		} else {
 			why += "; deliver the moved head with a run step, or put this step before the step that commits"
 		}
@@ -357,6 +357,12 @@ func (r *Runner) runDeliver(ctx context.Context, d *Delivery, record *StepRecord
 	if why != "" {
 		return stepFailure{reason: stepReason(why), next: "fix the workflow or rerun once the work produced it", refused: true}
 	}
+	// A rebased head whose branch a rebase could not move: move it now (a
+	// rerun once the job's worktree is clean or its task idle).
+	branchFrom, branchMoved := "", false
+	if step.To == DeliverMerge || step.To == DeliverPublish {
+		branchFrom, branchMoved = r.carryRebasedHead(ctx, d, step.ID)
+	}
 	out, err := r.deliver.Deliver(ctx, DeliverRequest{Account: d.Account, DeliveryID: d.ID, StepID: step.ID, Folder: d.Folder, To: step.To, Path: step.Path,
 		Head: head, RebasedFrom: d.RebasedFrom, Result: d.Result, Deliverables: items})
 	if err != nil {
@@ -375,6 +381,9 @@ func (r *Runner) runDeliver(ctx context.Context, d *Delivery, record *StepRecord
 	}
 	record.Output = truncate(out.Where, 1000)
 	record.Outcome = map[string]any{"to": step.To, "where": out.Where, "delivered": out.Delivered}
+	if branchMoved {
+		record.Outcome["branch_moved"] = map[string]any{"branch": d.Result.Git.Branch, "from": branchFrom, "to": head}
+	}
 	return stepFailure{}
 }
 

@@ -696,7 +696,8 @@ export class SwarmJobAutomationsNamespace {
 
 /** What an on-demand rebase did. */
 export interface JobRebaseAnswer {
-  outcome: 'up_to_date' | 'rebased' | 'conflict' | 'error';
+  /** `skipped`: the job's branch could not be moved while a merge or publish still lands it, so nothing moved (see `reason`). */
+  outcome: 'up_to_date' | 'rebased' | 'skipped' | 'conflict' | 'error';
   /** The branch and the tip it was rebased onto. */
   target: string;
   onto: string;

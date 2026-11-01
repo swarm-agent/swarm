@@ -17,12 +17,24 @@ type mergingDeliverer struct {
 	repo    *conflictRepo
 	landed  []string
 	refused []string
+	// ffOnly lands only a branch that descends from the target (a target
+	// that keeps a linear history): a branch not on top of it is refused.
+	ffOnly bool
 }
 
 func (m *mergingDeliverer) Deliver(ctx context.Context, req DeliverRequest) (DeliverOutcome, error) {
 	if err := BranchCarriesHead(ctx, GitRebaser{Git: testGit}, req); err != nil {
 		m.refused = append(m.refused, err.Error())
 		return DeliverOutcome{}, err
+	}
+	if m.ffOnly {
+		if out, err := testGit(ctx, m.repo.dir, nil, nil, "merge", "-q", "--ff-only", req.Result.Git.Branch); err != nil {
+			refused := &RefusedError{Reason: "the branch " + req.Result.Git.Branch + " is not on top of the target: " + strings.TrimSpace(string(out))}
+			m.refused = append(m.refused, refused.Reason)
+			return DeliverOutcome{}, refused
+		}
+		m.landed = append(m.landed, req.Head)
+		return DeliverOutcome{Where: "merged " + req.Head, Delivered: []DeliveredItem{{Name: "branch", Kind: DeliverableBranch, Where: "merged"}}}, nil
 	}
 	m.repo.git("merge", "-q", "--no-ff", "-m", "land "+req.Result.Git.Branch, req.Result.Git.Branch)
 	m.landed = append(m.landed, req.Head)
@@ -261,4 +273,185 @@ func (h *harness) startTaskWithBranch(folder string, repo *conflictRepo) {
 	result.Deliverables = []Deliverable{{Name: "branch", Kind: DeliverableBranch}}
 	h.results.results["task-1"] = result
 	h.taskEnd("task-1", "", "succeeded", "task")
+}
+
+// workerWithDirtyWorktree is a worker job whose branch agent/task-1 is
+// checked out in its own worktree with an uncommitted change to j.txt, its
+// delivery merging into a target (main) that moved and keeps a linear
+// history; clean drops the change.
+func workerWithDirtyWorktree(t *testing.T, h *harness, folder string, repo *conflictRepo, steps ...Step) (worktree string, deliverer *mergingDeliverer, clean func()) {
+	t.Helper()
+	worktree = t.TempDir() + "/wt"
+	repo.git("worktree", "add", "-q", worktree, "agent/task-1")
+	if err := os.WriteFile(filepath.Join(worktree, "j.txt"), []byte("uncommitted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deliverer = &mergingDeliverer{repo: repo, ffOnly: true}
+	h.runner.deliver = deliverer
+	h.process()
+	h.automation(pushFlow(folder, "", steps...))
+	result := workerResult(folder, "run-1")
+	result.Git = &ResultGit{Branch: "agent/task-1", BaseBranch: "main", BaseCommit: repo.base, Head: repo.two, Worktree: worktree,
+		Commits: []ResultCommit{{SHA: repo.one}, {SHA: repo.two}}, Files: []string{"f.txt", "j.txt"}}
+	result.Deliverables = []Deliverable{{Name: "branch", Kind: DeliverableBranch}}
+	h.results.results["run-1"] = result
+	h.jobEnd("run-1", "", "succeeded", "direct")
+	h.process()
+	return worktree, deliverer, func() { repo.git("-C", worktree, "checkout", "-q", "--", "j.txt") }
+}
+
+// Requirement: a rebase a rebase step or a request asked for is, like an
+// automatic one, not applied while the job's branch cannot be moved (a worker
+// job's worktree with uncommitted changes) and a merge still lands that
+// branch: the record ends skipped with the reason, the delivery keeps its
+// head, the branch and the worktree's change are untouched, and the request
+// answers skipped. Once the worktree is clean, a rerun rebases again, moves
+// the branch and the merge lands the rebased head. A delivery whose head is a
+// rebased head the branch does not carry (what a daemon before this left:
+// head moved, branch not) is landed by a rerun too: the merge moves the
+// branch first (carryRebasedHead), and while the worktree is still dirty the
+// merge is refused with advice that a rerun then follows.
+// Threat: a rebase step or request moving the delivery head but not the
+// branch, so every merge is refused, a rerun keeps the rebased head, the next
+// rebase finds it up to date and nothing ever moves the branch (the delivery
+// can never land); or a dirty worktree's change lost by moving its branch.
+// Owners: Runner.finishRebase/skipRebase (every trigger), runRebaseStep and
+// RebaseDelivery (outcome skipped), Runner.carryRebasedHead (runDeliver),
+// moveJobBranch, GitRebaser.MoveCheckedOutBranch, BranchCarriesHead, over a
+// real repository and worktree; the merge is a real fast-forward-only merge.
+func TestRebasedHeadLandsOnceTheWorkerWorktreeIsClean(t *testing.T) {
+	merge := Step{ID: "merge", Type: StepDeliver, To: DeliverMerge}
+	landedRebased := func(t *testing.T, h *harness, repo *conflictRepo, deliverer *mergingDeliverer) Delivery {
+		t.Helper()
+		d := h.deliveries("worker/coder-1/run-1")[0]
+		last := d.LastRebase()
+		if d.State != StateSucceeded || last == nil || d.Head != last.To || d.RebasedFrom != repo.two || len(deliverer.landed) != 1 || deliverer.landed[0] != d.Head {
+			t.Fatalf("after the rerun: delivery %s head %s rebases %+v landed %v refused %v steps %+v", d.State, d.Head, d.Rebases, deliverer.landed, deliverer.refused, d.Steps)
+		}
+		if repo.git("rev-parse", "agent/task-1") != d.Head || repo.git("rev-parse", "main") != d.Head {
+			t.Fatalf("branch %s main %s, want both at the rebased head %s", repo.git("rev-parse", "agent/task-1"), repo.git("rev-parse", "main"), d.Head)
+		}
+		if _, err := testGit(context.Background(), repo.dir, nil, nil, "merge-base", "--is-ancestor", repo.tip, d.Head); err != nil {
+			t.Fatalf("the landed head %s is not on top of the target %s", d.Head, repo.tip)
+		}
+		return d
+	}
+	firstRunSkipped := func(t *testing.T, h *harness, repo *conflictRepo, deliverer *mergingDeliverer, worktree, trigger string) Delivery {
+		t.Helper()
+		d := h.deliveries("worker/coder-1/run-1")[0]
+		if d.State != StateFailed || d.Head != repo.two || d.RebasedFrom != "" || len(deliverer.landed) != 0 || len(deliverer.refused) != 1 {
+			t.Fatalf("first run: delivery %s head %s landed %v refused %v", d.State, d.Head, deliverer.landed, deliverer.refused)
+		}
+		last := d.LastRebase()
+		if last == nil || last.Trigger != trigger || last.Outcome != RebaseSkipped || !strings.Contains(last.Reason, "uncommitted changes") || last.Branch == nil || last.Branch.Updated {
+			t.Fatalf("first run: rebases %+v", d.Rebases)
+		}
+		if repo.git("rev-parse", "agent/task-1") != repo.two || readFile(t, filepath.Join(worktree, "j.txt")) != "uncommitted\n" {
+			t.Fatal("the dirty worktree's branch or change was touched")
+		}
+		return d
+	}
+
+	t.Run("rebase step", func(t *testing.T) {
+		h := newHarness(t)
+		h.withRebaser(t)
+		folder := t.TempDir()
+		repo := newConflictRepo(t, folder, false)
+		worktree, deliverer, clean := workerWithDirtyWorktree(t, h, folder, repo, Step{ID: "rebase", Type: StepRebase}, merge)
+		d := firstRunSkipped(t, h, repo, deliverer, worktree, RebaseTriggerExplicit)
+		if s := d.Steps[0]; s.State != StateSucceeded || s.Outcome["skipped"] != true || !strings.Contains(s.Output, "uncommitted changes") {
+			t.Fatalf("rebase step %+v", s)
+		}
+		if _, moved := d.Steps[0].Outcome["moved_head"]; moved || len(h.signalsOf("automation.delivery.rebase_skipped")) != 1 {
+			t.Fatalf("a skipped rebase step moved the head or signalled nothing: %+v", d.Steps[0].Outcome)
+		}
+
+		clean()
+		if out, err := h.store.Rerun(testAccount, d.ID); err != nil || !out.Rerun {
+			t.Fatalf("rerun: %+v %v", out, err)
+		}
+		h.process()
+		d = landedRebased(t, h, repo, deliverer)
+		if last := d.LastRebase(); last.Outcome != RebaseRebased || !last.Branch.Updated {
+			t.Fatalf("the rerun's rebase %+v", last)
+		}
+	})
+
+	t.Run("on-demand rebase and rerun", func(t *testing.T) {
+		h := newHarness(t)
+		h.withRebaser(t)
+		folder := t.TempDir()
+		repo := newConflictRepo(t, folder, false)
+		worktree, deliverer, clean := workerWithDirtyWorktree(t, h, folder, repo, merge)
+		d := firstRunSkipped(t, h, repo, deliverer, worktree, RebaseTriggerStart)
+
+		out, err := h.runner.RebaseDelivery(context.Background(), testAccount, d.ID, "")
+		if err != nil || out.Outcome != RebaseSkipped || !strings.Contains(out.Reason, "uncommitted changes") || out.Record == nil || out.Record.Trigger != RebaseTriggerRequest {
+			t.Fatalf("on-demand rebase with a dirty worktree: %+v %v", out, err)
+		}
+		if stored, _ := h.store.GetDelivery(testAccount, d.ID); stored.Head != repo.two || stored.RebasedFrom != "" || stored.State != StateFailed ||
+			repo.git("rev-parse", "agent/task-1") != repo.two || readFile(t, filepath.Join(worktree, "j.txt")) != "uncommitted\n" {
+			t.Fatalf("a skipped request moved something: head %s rebased_from %s state %s", stored.Head, stored.RebasedFrom, stored.State)
+		}
+
+		clean()
+		if out, err := h.store.Rerun(testAccount, d.ID); err != nil || !out.Rerun {
+			t.Fatalf("rerun: %+v %v", out, err)
+		}
+		h.process()
+		landedRebased(t, h, repo, deliverer)
+	})
+
+	t.Run("rebased head the branch does not carry", func(t *testing.T) {
+		h := newHarness(t)
+		h.withRebaser(t)
+		folder := t.TempDir()
+		repo := newConflictRepo(t, folder, false)
+		worktree, deliverer, clean := workerWithDirtyWorktree(t, h, folder, repo, merge)
+		d := h.deliveries("worker/coder-1/run-1")[0]
+		// The state a rebase that moved the head but not the branch left.
+		res, err := GitRebaser{Git: testGit}.Replay(context.Background(), folder, repo.two, repo.tip)
+		if err != nil || res.Status != RebaseRebased {
+			t.Fatalf("replay: %+v %v", res, err)
+		}
+		d.Head, d.RebasedFrom, d.RebasedOnto, d.TargetChecked = res.To, repo.two, repo.tip, repo.tip
+		d.Rebases = append(d.Rebases, RebaseRecord{N: 2, Trigger: RebaseTriggerRequest, Target: "main", Onto: repo.tip, From: repo.two, To: res.To,
+			Outcome: RebaseRebased, Commits: res.Commits, Branch: &BranchUpdate{Branch: "agent/task-1", Reason: "the worktree has uncommitted changes"}})
+		if err := h.store.SaveDelivery(d); err != nil {
+			t.Fatal(err)
+		}
+		deliverer.refused = nil
+
+		// Still dirty: the merge tries to move the branch, cannot, and is
+		// refused with advice; nothing moves.
+		if out, err := h.store.Rerun(testAccount, d.ID); err != nil || !out.Rerun {
+			t.Fatalf("rerun: %+v %v", out, err)
+		}
+		h.process()
+		d = h.deliveries("worker/coder-1/run-1")[0]
+		if d.State != StateFailed || d.Head != res.To || len(deliverer.landed) != 0 || len(deliverer.refused) != 1 ||
+			!strings.Contains(deliverer.refused[0], "rerun once the job's worktree is clean") {
+			t.Fatalf("dirty rerun: delivery %s head %s landed %v refused %v", d.State, d.Head, deliverer.landed, deliverer.refused)
+		}
+		if last := d.LastRebase(); last.Branch == nil || last.Branch.Updated || !strings.Contains(last.Branch.Reason, "uncommitted changes") {
+			t.Fatalf("dirty rerun: rebase record %+v", last)
+		}
+		if repo.git("rev-parse", "agent/task-1") != repo.two || readFile(t, filepath.Join(worktree, "j.txt")) != "uncommitted\n" {
+			t.Fatal("the dirty worktree's branch or change was touched")
+		}
+
+		clean()
+		if out, err := h.store.Rerun(testAccount, d.ID); err != nil || !out.Rerun {
+			t.Fatalf("rerun: %+v %v", out, err)
+		}
+		h.process()
+		d = landedRebased(t, h, repo, deliverer)
+		if d.Head != res.To || !d.LastRebase().Branch.Updated || len(h.signalsOf("automation.delivery.branch_moved")) != 1 {
+			t.Fatalf("clean rerun: head %s record %+v", d.Head, d.LastRebase())
+		}
+		moved, _ := d.Steps[0].Outcome["branch_moved"].(map[string]any)
+		if moved == nil || moved["from"] != repo.two || moved["to"] != res.To {
+			t.Fatalf("merge outcome %+v", d.Steps[0].Outcome)
+		}
+	})
 }
