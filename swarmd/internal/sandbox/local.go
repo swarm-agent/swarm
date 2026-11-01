@@ -152,6 +152,9 @@ func (m *Manager) localArgv(scope Scope, req ExecRequest) ([]string, error) {
 		args = append(args, "--setenv", k, req.Env[k])
 	}
 	args = append(args, "--chdir", wd, "--")
+	if req.gitUmask {
+		return append(args, withGitUmask(req.Command...)...), nil
+	}
 	return append(args, withSandboxUmask(req.Command...)...), nil
 }
 
@@ -433,7 +436,7 @@ func (m *Manager) routeLocalGit(ctx context.Context, cmd *exec.Cmd, target strin
 	if err != nil {
 		return err
 	}
-	args, err := m.localArgv(scope, ExecRequest{WorkingDir: target, Command: append([]string{"git", "-c", "safe.directory=" + target, "-c", "user.name=Swarm", "-c", "user.email=swarm@localhost", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "credential.helper="}, cmd.Args[1:]...), Env: values})
+	args, err := m.localArgv(scope, ExecRequest{WorkingDir: target, Command: append([]string{"git", "-c", "safe.directory=" + target, "-c", "user.name=Swarm", "-c", "user.email=swarm@localhost", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "credential.helper="}, cmd.Args[1:]...), Env: values, gitUmask: true})
 	if err != nil {
 		return err
 	}

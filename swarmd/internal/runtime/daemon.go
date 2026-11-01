@@ -911,6 +911,21 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 		Rebaser: jobautomation.GitRebaser{Git: api.JobAutomationRebaseGit},
 	})
 	apiServer.SetJobAutomations(jobAutomationRunner)
+	// Swarm's Git writes into folders' object stores under a restrictive
+	// umask and without setgid; make what it wrote readable to the users
+	// leases read those stores as (repository health records the result).
+	jobAutomationRunner.StartObjectStoreRepair(bgCtx, func() []string {
+		entries, err := workspaceSvc.ListKnown(100000)
+		if err != nil {
+			log.Printf("swarmd folder object store repair: list folders: %v", err)
+			return nil
+		}
+		folders := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			folders = append(folders, entry.Path)
+		}
+		return folders
+	}, jobautomation.ObjectStoreRepairInterval)
 	// Jobs in folders whose owner set a publish command (swarmctl workspace
 	// publish) are delivered as pull requests when swarm_deliver_job asks.
 	apiServer.SetPublishConfig(os.Getenv(publish.ConfigEnv))

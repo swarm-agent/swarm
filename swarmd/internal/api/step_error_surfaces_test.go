@@ -159,4 +159,60 @@ func TestFolderRepositoryHealthOnStatusAndEnvironment(t *testing.T) {
 	if err := json.Unmarshal([]byte(status()), &decoded); err != nil {
 		t.Fatal(err)
 	}
+
+	// A checkout git refused without naming an object: the failing git
+	// command and git's whole error, on both surfaces.
+	gitErr := "fatal: Could not read from remote repository. | Please make sure you have the correct access rights | and the repository exists."
+	if err := store.RecordRepositoryCheck(folder, &jobautomation.RepositoryCheck{Problem: jobautomation.RepositoryCheckoutFailed, Command: "git clone --no-checkout --shared " + folder, Detail: gitErr}); err != nil {
+		t.Fatal(err)
+	}
+	if got := status(); !strings.Contains(got, "could not be checked out by a run step: git clone --no-checkout --shared") || !strings.Contains(got, "and the repository exists.") {
+		t.Fatalf("status lacks the checkout failure:\n%s", got)
+	}
+	failedView := map[string]any{}
+	s.putRepositoryHealth(failedView, folder)
+	health, _ = failedView["repository_health"].(map[string]any)
+	if health == nil || health["problem"] != jobautomation.RepositoryCheckoutFailed || health["git_command"] != "git clone --no-checkout --shared "+folder || health["detail"] != gitErr {
+		t.Fatalf("environment view = %+v", failedView)
+	}
+	if _, ok := health["object"]; ok {
+		t.Fatalf("a checkout failure names an object: %+v", health)
+	}
+	if err := store.RecordRepositoryCheck(folder, &jobautomation.RepositoryCheck{Clean: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The object store permission repair: one that made entries readable
+	// shows as repository_health.permissions; one that left entries it
+	// could not repair is a status reason too, only for this account.
+	if err := store.RecordObjectStoreRepair(jobautomation.ObjectStoreRepair{Folder: folder, Checked: 9, Repaired: 4}); err != nil {
+		t.Fatal(err)
+	}
+	repairView := map[string]any{}
+	s.putRepositoryHealth(repairView, folder)
+	health, _ = repairView["repository_health"].(map[string]any)
+	permissions, _ := health["permissions"].(map[string]any)
+	if permissions == nil || permissions["repaired"] != 4 || permissions["unrepaired"] != 0 {
+		t.Fatalf("environment view = %+v", repairView)
+	}
+	if got := status(); strings.Contains(got, "could not repair") {
+		t.Fatalf("a successful repair is a status reason: %s", got)
+	}
+	if err := store.RecordObjectStoreRepair(jobautomation.ObjectStoreRepair{Folder: folder, Checked: 9, Unrepaired: 2, Sample: "objects/ab/cd: mode -r--r----- owner 1:2, not Swarm's to change"}); err != nil {
+		t.Fatal(err)
+	}
+	wantRepair := "folder repository " + folder + " has 2 object store entries run steps cannot read that Swarm could not repair"
+	if got := status(); !strings.Contains(got, wantRepair) {
+		t.Fatalf("status lacks %q:\n%s", wantRepair, got)
+	}
+	problemView := map[string]any{}
+	s.putRepositoryHealth(problemView, folder)
+	if health, _ := problemView["repository_health"].(map[string]any); health == nil || !strings.HasPrefix(health["message"].(string), wantRepair) {
+		t.Fatalf("environment view = %+v", problemView)
+	}
+	c.request = requestWithScopedToken(requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodPost, "/mcp", nil), "other-user", "other-account"), &otherToken)
+	if got := status(); strings.Contains(got, folder) {
+		t.Fatalf("cross-account disclosure of the repair: %s", got)
+	}
+	c.request = own
 }

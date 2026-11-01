@@ -111,18 +111,48 @@ const (
 // which fetch was used, or why none worked). The folder's repository is
 // mounted read-only and never written. A checkout that read every object
 // from the folder says swarm-step-checkout clean.
+//
+// git clone lists the folder's refs through upload-pack, which reads every
+// branch tip: one tip object the lease may not read failed the whole clone
+// (exit 10) before any fallback was tried. When the clone fails, the script
+// makes the same shared clone by hand (the folder's objects as alternates,
+// its branches as origin/*; swarm-step-clone by-hand, with the clone's own
+// error as swarm-step-clone-error lines), so the checkout reads only what
+// the head needs and the origin fallback covers an object it cannot read.
+// The git command that failed is named on exit (swarm-step-git).
 const prepareScript = `set -u
 src=$1 head=$2 script=$3
 dir="` + stepCheckoutDir + `"
 base=$(dirname -- "$dir")
 err="$base/prepare.err"
+gitcmd=""
+trap 'st=$?; if [ "$st" -ne 0 ] && [ -n "$gitcmd" ]; then printf "swarm-step-git %s\n" "$gitcmd" >&2; fi' EXIT
 rm -rf -- "$dir" "$base/origin" || exit 10
 mkdir -p -- "$base" || exit 10
-if ! git clone --quiet --no-checkout --shared -- "$src" "$dir" 2>"$err"; then cat -- "$err" >&2; exit 10; fi
+gitcmd="git clone --no-checkout --shared $src"
+if ! git clone --quiet --no-checkout --shared -- "$src" "$dir" 2>"$err"; then
+	sed 's/^/swarm-step-clone-error /' "$err" >&2
+	rm -rf -- "$dir"
+	gitcmd="git init with $src's objects as alternates and its branches as origin/*"
+	if common=$(git -C "$src" rev-parse --path-format=absolute --git-common-dir 2>"$err") &&
+		git -c init.defaultBranch=swarm-step init --quiet -- "$dir" 2>>"$err" &&
+		printf '%s\n' "$common/objects" >"$dir/.git/objects/info/alternates" &&
+		git -C "$src" for-each-ref --format='%(objectname) refs/remotes/origin/%(refname:lstrip=2)' refs/heads/ >"$dir/.git/packed-refs" 2>>"$err" &&
+		git -C "$dir" config remote.origin.url "$src" 2>>"$err" &&
+		git -C "$dir" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' 2>>"$err"; then
+		echo "swarm-step-clone by-hand" >&2
+	else
+		cat -- "$err" >&2
+		exit 10
+	fi
+fi
 cd -- "$dir" || exit 10
 attempt() {
+	gitcmd="git cat-file -e $head^{commit}"
 	git cat-file -e "$head^{commit}" || return 11
+	gitcmd="git ls-tree $head -- $script"
 	entry=$(git ls-tree "$head" -- "$script") || return 11
+	gitcmd=""
 	[ -n "$entry" ] || return 12
 	mode=${entry%% *}
 	case "$mode" in
@@ -130,8 +160,11 @@ attempt() {
 	100644) return 14 ;;
 	*) return 13 ;;
 	esac
+	gitcmd="git checkout --force --detach $head"
 	git -c advice.detachedHead=false checkout --quiet --force --detach "$head" || return 15
+	gitcmd="git rev-parse HEAD"
 	[ "$(git rev-parse HEAD)" = "$(git rev-parse "$head^{commit}")" ] || return 15
+	gitcmd=""
 }
 attempt 2>"$err"
 rc=$?
@@ -267,11 +300,19 @@ func (e EnvironmentExecutor) Run(ctx context.Context, req RunRequest) (RunOutcom
 	case err != nil:
 		return RunOutcome{Output: out.tail.bytes()}, &StartError{Kind: ErrorKindLease, Reason: "could not run the step's checkout in the lease: " + err.Error()}
 	}
+	if note := check.cloneNote(); note != "" {
+		fmt.Fprintf(out, "swarm: %s\n", note)
+	}
 	if prep.ExitCode != 0 {
 		if note := check.failureNote(); note != "" {
 			fmt.Fprintf(out, "swarm: %s\n", note)
 		}
-		return RunOutcome{Output: out.tail.bytes(), Repository: check.repository()}, prepareFailure(prep.ExitCode, req.Command, head, prepared.String(), check)
+		failure := prepareFailure(prep.ExitCode, req.Command, head, prepared.String(), check)
+		repo := check.repository()
+		if repo == nil {
+			repo = checkoutFailure(prep.ExitCode, prepared.String(), check)
+		}
+		return RunOutcome{Output: out.tail.bytes(), Repository: repo}, failure
 	}
 	if note := check.fallbackNote(); note != "" {
 		// The step's output says which fallback made its checkout.
@@ -314,6 +355,13 @@ type checkoutReport struct {
 	fallback string // origin-head, origin-branches
 	failed   string // why no fallback made the checkout
 	clean    bool
+	// gitCommand is the git command whose failure ended the prepare
+	// script (swarm-step-git).
+	gitCommand string
+	// byHand is a shared clone made by hand after git clone failed
+	// (cloneError is that clone's own error).
+	byHand     bool
+	cloneError []string
 }
 
 type checkoutObject struct {
@@ -324,6 +372,9 @@ type checkoutObject struct {
 const (
 	RepositoryObjectCorrupt    = "corrupt"
 	RepositoryObjectUnreadable = "unreadable"
+	// RepositoryCheckoutFailed is a checkout git refused without naming
+	// an object (git clone or checkout failed for another reason).
+	RepositoryCheckoutFailed = "checkout_failed"
 )
 
 func parseCheckout(output string) checkoutReport {
@@ -335,6 +386,14 @@ func parseCheckout(output string) checkoutReport {
 			r.clean = true
 		case line == "swarm-step-object missing":
 			r.missing = true
+		case line == "swarm-step-clone by-hand":
+			r.byHand = true
+		case strings.HasPrefix(line, "swarm-step-clone-error "):
+			if text := strings.TrimSpace(strings.TrimPrefix(line, "swarm-step-clone-error ")); text != "" {
+				r.cloneError = append(r.cloneError, text)
+			}
+		case strings.HasPrefix(line, "swarm-step-git "):
+			r.gitCommand = strings.TrimSpace(strings.TrimPrefix(line, "swarm-step-git "))
 		case strings.HasPrefix(line, "swarm-step-object "):
 			fields := strings.Fields(strings.TrimPrefix(line, "swarm-step-object "))
 			if len(fields) < 2 || !objectIDPattern.MatchString(fields[1]) {
@@ -422,6 +481,19 @@ func (r checkoutReport) fallbackNote() string {
 	return note
 }
 
+// cloneNote is the step output line for a shared clone made by hand after
+// git clone failed, with git clone's own error.
+func (r checkoutReport) cloneNote() string {
+	if !r.byHand {
+		return ""
+	}
+	note := "git clone of the folder's repository failed"
+	if text := gitErrorLines(r.cloneError); text != "" {
+		note += " (" + text + ")"
+	}
+	return note + "; the checkout was made from a shared clone set up by hand"
+}
+
 // failureNote is the step output line for a checkout no fallback made.
 func (r checkoutReport) failureNote() string {
 	p := r.problem()
@@ -440,7 +512,7 @@ func (r checkoutReport) failureNote() string {
 func (r checkoutReport) repository() *RepositoryCheck {
 	if len(r.objects) > 0 {
 		obj := r.objects[0]
-		return &RepositoryCheck{Object: obj.id, Problem: obj.problem, Detail: obj.detail, Fallback: r.fallback}
+		return &RepositoryCheck{Object: obj.id, Problem: obj.problem, Detail: obj.detail, Fallback: r.fallback, Command: r.gitCommand}
 	}
 	if r.clean {
 		return &RepositoryCheck{Clean: true}
@@ -505,7 +577,17 @@ func stepVariables(in map[string]string) map[string]string {
 // could not give is named with git's underlying cause (permission denied or
 // corrupt bytes) and the fallback that was tried.
 func prepareFailure(code int, command, head, output string, check checkoutReport) error {
-	detail := lastPrepareLine(output)
+	detail := prepareGitError(output)
+	if detail != "" && check.gitCommand != "" {
+		detail = check.gitCommand + " failed: " + detail
+	} else if check.gitCommand != "" {
+		detail = check.gitCommand + " failed"
+	}
+	if len(check.cloneError) > 0 && !check.byHand {
+		// Neither git clone nor the shared clone by hand worked: keep
+		// git clone's own error too.
+		detail = strings.TrimSuffix("git clone failed: "+gitErrorLines(check.cloneError)+"; "+detail, "; ")
+	}
 	switch code {
 	case prepareScriptMissing:
 		return &RefusedError{Kind: ErrorKindScriptMissing, Reason: fmt.Sprintf("%s does not exist in the job's head %s: commit the script to the branch, or fix the step's command", command, shortHead(head))}
@@ -530,17 +612,43 @@ func prepareFailure(code int, command, head, output string, check checkoutReport
 	return &StartError{Kind: ErrorKindCheckout, Reason: fmt.Sprintf("could not make the step's checkout in the environment (exit %d)", code)}
 }
 
-// lastPrepareLine is the prepare script's last line that is git's own
-// (its swarm-step-* report lines are read by parseCheckout).
-func lastPrepareLine(output string) string {
-	lines := strings.Split(output, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
+// checkoutFailure is the repository health record of a checkout that failed
+// without naming an object (a clone or checkout git refused): the failing
+// git command and git's error. Script refusals (missing, not executable)
+// and a head missing from the folder are the job's, not the repository's.
+func checkoutFailure(code int, output string, check checkoutReport) *RepositoryCheck {
+	if code != prepareCloneFailed && code != prepareCheckoutFail {
+		return nil
+	}
+	return &RepositoryCheck{Problem: RepositoryCheckoutFailed, Command: check.gitCommand, Detail: prepareGitError(output), Fallback: check.fallback}
+}
+
+// prepareGitError is git's own error from the prepare script's output (its
+// swarm-step-* report lines are read by parseCheckout): every line, joined
+// with " | ", never cut to a fragment. A long one keeps its first and last
+// maxGitErrorLines/2 lines with a marker saying how many were left out.
+func prepareGitError(output string) string {
+	var lines []string
+	for _, line := range strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n") {
+		line = strings.TrimSpace(line)
 		if line != "" && !strings.HasPrefix(line, "swarm-step-") {
-			return line
+			lines = append(lines, line)
 		}
 	}
-	return ""
+	return gitErrorLines(lines)
+}
+
+// maxGitErrorLines bounds the git error lines a step reason keeps.
+const maxGitErrorLines = 12
+
+func gitErrorLines(lines []string) string {
+	if len(lines) > maxGitErrorLines {
+		half := maxGitErrorLines / 2
+		kept := append([]string(nil), lines[:half]...)
+		kept = append(kept, fmt.Sprintf("[... %d lines of git's error left out ...]", len(lines)-2*half))
+		lines = append(kept, lines[len(lines)-half:]...)
+	}
+	return strings.Join(lines, " | ")
 }
 
 func shortHead(head string) string {

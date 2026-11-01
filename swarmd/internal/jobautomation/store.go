@@ -1575,15 +1575,24 @@ func (s *Store) SetStopped(stopped bool, by string) (StopState, error) {
 // stop switch: the folder's repository is the machine's).
 const keyRepositoryHealthPrefix = "job_automation_meta/repository_health/"
 
+// keyObjectStoreRepairPrefix keeps, per folder, the last object store
+// permission repair that changed something or left a problem
+// (ObjectStoreRepair).
+const keyObjectStoreRepairPrefix = "job_automation_meta/object_store_repair/"
+
 // RepositoryHealth is a folder whose repository had an object a run step's
 // checkout could not read: Problem is RepositoryObjectCorrupt or
-// RepositoryObjectUnreadable, Detail git's underlying cause. It stays until
-// a later checkout of that folder reads every object from it.
+// RepositoryObjectUnreadable, Detail git's underlying cause; or a checkout
+// git refused without naming an object (RepositoryCheckoutFailed, no
+// Object, Detail git's whole error). Command is the git command that
+// failed. It stays until a later checkout of that folder reads every object
+// from it.
 type RepositoryHealth struct {
 	Folder  string `json:"folder"`
-	Object  string `json:"object"`
+	Object  string `json:"object,omitempty"`
 	Problem string `json:"problem"`
 	Detail  string `json:"detail,omitempty"`
+	Command string `json:"git_command,omitempty"`
 	At      int64  `json:"at"`
 }
 
@@ -1591,8 +1600,14 @@ type RepositoryHealth struct {
 // <folder> has a corrupt object <id>" (or an object the step cannot read).
 func (h RepositoryHealth) Message() string {
 	what := "has a corrupt object " + h.Object
-	if h.Problem == RepositoryObjectUnreadable {
+	switch h.Problem {
+	case RepositoryObjectUnreadable:
 		what = "has an object run steps cannot read " + h.Object
+	case RepositoryCheckoutFailed:
+		what = "could not be checked out by a run step"
+		if h.Command != "" {
+			what += ": " + h.Command + " failed"
+		}
 	}
 	msg := "folder repository " + h.Folder + " " + what
 	if h.Detail != "" {
@@ -1616,11 +1631,11 @@ func (s *Store) RecordRepositoryCheck(folder string, check *RepositoryCheck) err
 	if check.Clean {
 		return s.db.Delete(repositoryHealthKey(folder))
 	}
-	if check.Object == "" {
+	if check.Object == "" && check.Problem != RepositoryCheckoutFailed {
 		return nil
 	}
 	return s.db.PutJSON(repositoryHealthKey(folder), RepositoryHealth{
-		Folder: filepath.Clean(folder), Object: check.Object, Problem: check.Problem, Detail: check.Detail, At: s.now().UnixMilli()})
+		Folder: filepath.Clean(folder), Object: check.Object, Problem: check.Problem, Detail: stepReason(check.Detail), Command: check.Command, At: s.now().UnixMilli()})
 }
 
 // RepositoryHealthOf is folder's recorded repository problem, if any.

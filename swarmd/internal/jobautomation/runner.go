@@ -74,8 +74,12 @@ type RepositoryCheck struct {
 	// Object is the first object it could not read, Problem why
 	// (RepositoryObjectCorrupt or RepositoryObjectUnreadable) and Detail
 	// git's underlying cause; Fallback is the origin fetch that made the
-	// checkout anyway ("" when none did).
+	// checkout anyway ("" when none did). A checkout git refused without
+	// naming an object has Problem RepositoryCheckoutFailed, no Object and
+	// git's whole error as Detail.
 	Object, Problem, Detail, Fallback string
+	// Command is the git command that failed ("" when none did).
+	Command string
 }
 
 // RunExecutor runs a run step's script (HostExecutor in the daemon).
@@ -1541,6 +1545,11 @@ func (r *Runner) runScript(ctx context.Context, d *Delivery, record *StepRecord,
 		failure := couldNotStart(ErrorKindCheckout, "the job has no head commit: a run step in the environment runs a script of the job's head", true)
 		failure.next = "use a host run step, or scope the workflow to jobs that commit"
 		return failure
+	}
+	if inEnvironment {
+		// The step's lease reads the folder's object store as another
+		// user: make what Swarm's Git wrote there readable first.
+		r.repairFolderObjects(d.Folder)
 	}
 	tail := &tailBuffer{max: MaxLogTailBytes}
 	outcome, err := executor.Run(ctx, RunRequest{

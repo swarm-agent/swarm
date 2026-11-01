@@ -18,6 +18,12 @@ import (
 
 // putRepositoryHealth adds root's repository_health to an environment view
 // when a run step's checkout recorded a problem for it.
+//
+// The daemon's object store permission repair (jobautomation.
+// RepairObjectStore: at startup, every ObjectStoreRepairInterval and before each
+// environment step) shows there too, as repository_health.permissions
+// when it made entries readable or left some it could not repair; the
+// latter is also a box summary reason.
 func (s *Server) putRepositoryHealth(view map[string]any, root string) {
 	store, err := s.jobAutomationStore()
 	if err != nil {
@@ -28,18 +34,94 @@ func (s *Server) putRepositoryHealth(view map[string]any, root string) {
 		log.Printf("swarmd read folder repository health: %v", err)
 		return
 	}
-	if !found {
+	repair, repaired, err := store.ObjectStoreRepairOf(root)
+	if err != nil {
+		log.Printf("swarmd read folder object store repair: %v", err)
+		repaired = false
+	}
+	if !found && !repaired {
 		return
 	}
-	view["repository_health"] = repositoryHealthView(h)
+	health := map[string]any{}
+	if found {
+		health = repositoryHealthView(h)
+	}
+	if repaired {
+		health["permissions"] = objectStoreRepairView(repair)
+		if !found && repair.Problem() {
+			health["message"] = repair.Message()
+		}
+	}
+	view["repository_health"] = health
 }
 
 func repositoryHealthView(h jobautomation.RepositoryHealth) map[string]any {
-	view := map[string]any{"message": h.Message(), "object": h.Object, "problem": h.Problem, "at": h.At}
+	view := map[string]any{"message": h.Message(), "problem": h.Problem, "at": h.At}
+	if h.Object != "" {
+		view["object"] = h.Object
+	}
 	if h.Detail != "" {
 		view["detail"] = h.Detail
 	}
+	if h.Command != "" {
+		view["git_command"] = h.Command
+	}
 	return view
+}
+
+func objectStoreRepairView(r jobautomation.ObjectStoreRepair) map[string]any {
+	view := map[string]any{"checked": r.Checked, "repaired": r.Repaired, "unrepaired": r.Unrepaired, "at": r.At}
+	if r.SetgidRefused > 0 {
+		view["setgid_refused"] = r.SetgidRefused
+	}
+	if r.Sample != "" {
+		view["sample"] = r.Sample
+	}
+	if r.Error != "" {
+		view["error"] = r.Error
+	}
+	return view
+}
+
+// visibleObjectStoreRepairProblems is every folder whose object store
+// repair left entries run steps cannot read, for the folders the principal
+// can see.
+func (s *Server) visibleObjectStoreRepairProblems(p identity.Principal) []jobautomation.ObjectStoreRepair {
+	store, err := s.jobAutomationStore()
+	if err != nil {
+		return nil
+	}
+	problems, err := store.ObjectStoreRepairProblems()
+	if err != nil {
+		log.Printf("swarmd read folder object store repair: %v", err)
+		return nil
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	visible := s.visibleFolders(p)
+	var out []jobautomation.ObjectStoreRepair
+	for _, r := range problems {
+		if visible[filepath.Clean(r.Folder)] {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func (s *Server) visibleFolders(p identity.Principal) map[string]bool {
+	if s.workspace == nil {
+		return nil
+	}
+	entries, err := s.workspace.ListKnownForPrincipal(p, 100000)
+	if err != nil {
+		return nil
+	}
+	visible := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		visible[filepath.Clean(entry.Path)] = true
+	}
+	return visible
 }
 
 // visibleRepositoryHealth is every recorded folder repository problem whose

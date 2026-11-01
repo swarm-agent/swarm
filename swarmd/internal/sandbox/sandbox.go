@@ -943,6 +943,9 @@ type ExecRequest struct {
 	MaxTimeout time.Duration
 	MaxOutput  int
 	OnOutput   func([]byte)
+	// gitUmask runs the command under gitUmaskScript (the daemon's routed
+	// Git) instead of sandboxUmaskScript.
+	gitUmask bool
 }
 
 // Exec runs req in the project's sandbox under the supervised exec contract.

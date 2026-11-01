@@ -116,6 +116,11 @@ func (s *Server) handleBoxSummary(w http.ResponseWriter, r *http.Request) {
 			raise(BoxStatusAttention, h.Message())
 		}
 	}
+	// A folder object store whose permission repair left entries run steps
+	// cannot read (ObjectStoreRepair), for the folders this principal sees.
+	for _, r := range s.visibleObjectStoreRepairProblems(principal) {
+		raise(BoxStatusAttention, r.Message())
+	}
 
 	machine := map[string]any{"uptime_ms": now.Sub(s.startedAt).Milliseconds(), "version": strings.TrimSpace(buildinfo.Version), "commit": strings.TrimSpace(buildinfo.Commit)}
 	if cfg, err := s.loadStartupConfig(); err == nil && strings.TrimSpace(cfg.SwarmName) != "" {

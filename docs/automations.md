@@ -370,6 +370,29 @@ is refused.
   has a corrupt object <id>", or an object run steps cannot read) and the
   machine's status (`swarm_status`, a linked machine's `machine_status`)
   lists it among its reasons.
+- When `git clone` of the folder fails (it reads every branch tip, so one
+  tip the lease may not read fails it), the step makes the same shared
+  clone by hand (the folder's objects as alternates, its branches as
+  `origin/*`) and goes on; its output says so with git clone's error. A
+  checkout git refuses ends `error` with `error_kind` `checkout` and a
+  reason that names the git command that failed and keeps git's whole
+  message (every line joined with ` | `; a long one keeps its first and
+  last lines with a marker saying how many were left out). It is recorded
+  as the folder's `repository_health` with `problem` `checkout_failed`,
+  `git_command` and `detail` (git's error), shown on the same surfaces.
+- Swarm's own Git writes into the folder's object store (commits, rebases,
+  worktrees) under a restrictive umask and without setgid, which can leave
+  loose objects mode 0440 or fan-out directories in Swarm's group. The
+  daemon's routed Git runs with umask 0002, and the daemon repairs every
+  registered folder's object store at startup, every 15 minutes and before
+  each environment step: entries it owns get the read bits the folder's
+  `.git/objects` grants its group and others, and that directory's group
+  (setgid too where the service allows it). `repository_health.permissions`
+  (`checked`, `repaired`, `unrepaired`, `setgid_refused`, `sample`) shows
+  the last repair that changed something; entries it could not repair
+  (another user's) are a machine status reason ("folder repository
+  <folder> has N object store entries run steps cannot read that Swarm
+  could not repair").
 - The script runs with the checkout as its working directory, the result
   JSON on stdin and the same `SWARM_*` variables a host step gets; nothing
   else of the daemon's environment is passed in.
