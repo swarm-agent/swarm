@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/fleet"
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -421,6 +423,76 @@ func TestFleetProxyWaitLongPollOutlastsHeaderBound(t *testing.T) {
 	elapsed := time.Since(start)
 	if code != http.StatusOK || out["signals"] == nil {
 		t.Fatalf("proxied wait long-poll: HTTP %d %v after %v", code, out, elapsed)
+	}
+	if elapsed < hold {
+		t.Fatalf("answered after %v, before the machine's %v hold", elapsed, hold)
+	}
+	if noted, _, _ := a.s.fleet.GetMachine("b"); noted.LastError != "" {
+		t.Fatalf("healthy machine recorded last_error %q", noted.LastError)
+	}
+}
+
+// Purpose: a linked catalog call (manage_jobs, manage_setup, media and
+// designs, manage_workers) that forwards wait_seconds gets the held-wait
+// header bound, so a linked get_job asked to wait longer than 30 s receives
+// the machine's held answer and leaves the machine's last_error empty.
+// Threat: callFleetCatalog sending the call with the plain 30 s header bound
+// while the machine holds its answer for wait_seconds; the call fails with
+// "no answer within 30s", noteFleetContact marks a healthy machine as failing
+// (the console shows it offline), and a give_job that already started there
+// reports an error, so the caller may retry and start it twice. Boundary:
+// Server.callFleetJobs, Server.callFleetCatalog, fleet.WithHeldWait,
+// fleet.Client.Do. A real TLS server holding b's node key that answers
+// /v3/jobs/get_job just after 30 s is the narrowest hermetic stand-in; the
+// test takes about 31 s.
+func TestFleetLinkedJobsWaitOutlastsHeaderBound(t *testing.T) {
+	a := newFleetTestSwarm(t, "home-a")
+	defer a.cleanup()
+	b := newFleetTestSwarm(t, "box-b")
+	defer b.cleanup()
+	body, _ := json.Marshal(map[string]string{"code": b.invite(t), "name": "b"})
+	if code, out := a.call(t, http.MethodPost, "/v3/fleet/machines", string(body), false); code != http.StatusCreated {
+		t.Fatalf("link: HTTP %d %v", code, out)
+	}
+
+	cert, _, err := b.s.fleetCertificate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hold := fleet.ResponseHeaderTimeout + 500*time.Millisecond
+	holding := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got map[string]any
+		if r.Method != http.MethodPost || r.URL.Path != JobsPath+"/get_job" || json.NewDecoder(r.Body).Decode(&got) != nil || got["wait_seconds"] != float64(31) {
+			http.Error(w, "unexpected call", http.StatusBadRequest)
+			return
+		}
+		select {
+		case <-time.After(hold):
+		case <-r.Context().Done():
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"job_id":"j1","status":"done"}`))
+	}))
+	holding.TLS = fleet.ServerTLS(cert)
+	holding.StartTLS()
+	defer holding.Close()
+	machine, _, _ := a.s.fleet.GetMachine("b")
+	machine.Address, machine.LastError = strings.TrimPrefix(holding.URL, "https://"), ""
+	if err := a.s.fleet.PutMachine(machine); err != nil {
+		t.Fatal(err)
+	}
+
+	var args map[string]any
+	if err := json.Unmarshal([]byte(`{"machine":"b","action":"get_job","job_id":"j1","wait_seconds":31}`), &args); err != nil {
+		t.Fatal(err)
+	}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: a.user, AccountScopeID: a.account}
+	start := time.Now()
+	result, err := a.s.callFleetJobs(context.Background(), principal, "b", "get_job", args)
+	elapsed := time.Since(start)
+	if err != nil || !strings.Contains(string(result), `"status":"done"`) {
+		t.Fatalf("linked get_job with wait_seconds 31: %s, %v after %v", result, err, elapsed)
 	}
 	if elapsed < hold {
 		t.Fatalf("answered after %v, before the machine's %v hold", elapsed, hold)

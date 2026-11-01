@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
+	"swarm/packages/swarmd/internal/fleet"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/tool"
 )
@@ -43,7 +45,12 @@ func (s *Server) callFleetCatalog(ctx context.Context, p identity.Principal, mac
 		return nil, errors.New("linked machine connection unavailable")
 	}
 	var result json.RawMessage
-	err = client.JSON(ctx, http.MethodPost, path+"/"+url.PathEscape(action), body, &result)
+	// The machine holds its answer for the call's wait_seconds (get_job,
+	// give_job, message_job, setup and media waits); the link's header bound
+	// must outlast that wait, as in CallFleetCatalog.
+	wait, _ := environmentArgInt(body, "wait_seconds")
+	callCtx := fleet.WithHeldWait(ctx, time.Duration(min(max(wait, 0), catalogLinkedMaxWait))*time.Second)
+	err = client.JSON(callCtx, http.MethodPost, path+"/"+url.PathEscape(action), body, &result)
 	s.noteFleetContact(linked, err)
 	if err != nil {
 		return nil, fmt.Errorf("linked machine %s refused %s: %w", machine, action, err)
