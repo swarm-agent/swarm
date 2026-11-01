@@ -1400,9 +1400,9 @@ func (s *Server) handleWorkerAccept(w http.ResponseWriter, r *http.Request, p id
 		workerHTTPError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"worker": worker,
-	})
+	answer := map[string]any{"worker": worker}
+	s.settleProposalRequestsAfter(p, proposalKindWorker, workerID, proposalAccept, answer)
+	writeJSON(w, http.StatusOK, answer)
 }
 
 func (s *Server) handleWorkerActivate(w http.ResponseWriter, r *http.Request, p identity.Principal, workerID string) {
@@ -1634,11 +1634,10 @@ func (s *Server) handleWorkerDelete(w http.ResponseWriter, r *http.Request, p id
 		workerHTTPError(w, err)
 		return
 	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":      true,
-		"deleted": true,
-	})
+	answer := map[string]any{"ok": true, "deleted": true}
+	// The worker is gone: a pending request for its proposal is discarded.
+	s.settleProposalRequestsAfter(p, proposalKindWorker, workerID, proposalDiscard, answer)
+	writeJSON(w, http.StatusOK, answer)
 }
 
 func (s *Server) handleWorkerAutomationEnable(w http.ResponseWriter, r *http.Request, p identity.Principal, workerID, automationID string) {

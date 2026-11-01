@@ -343,3 +343,127 @@ func TestProposalDecisionTriggerKeyShownOnce(t *testing.T) {
 		t.Fatalf("the key appears more than once: %s", raw)
 	}
 }
+
+// Purpose: every decision path answers the chat's pending request, not only
+// POST /v3/proposals/decide. Requirement: the console (and any owner client)
+// calls the machine's own routes directly for a local proposal: POST
+// /v3/workflows/{id}/accept, DELETE /v3/workflows/{id}, POST
+// /v3/workers/{id}/accept and DELETE /v3/workers/{id}. Each answers the
+// proposing conversation's request (accept approves, delete denies), so the
+// conversation stops waiting on the person and a later answer is not refused
+// as stale. A refused delete (stale revision) leaves the request pending, and
+// deleting an accepted, non-proposed workflow answers no request. Threat: a
+// decision on the Automations page leaving the chat's request pending and
+// the session counted as needing the person. Boundary: handleWorkflowAccept,
+// DeleteWorkflow (handleJobAutomations), handleWorkerAccept and
+// handleWorkerDelete (handleWorkers) -> settleProposalRequestsAfter over the
+// real permission service. Narrowest layer: the routes themselves, called
+// directly as the console calls them.
+func TestProposalRequestsAnsweredByDirectRoutes(t *testing.T) {
+	home := newProposalTestSwarm(t, "home")
+	enableProposalWorkers(t, home)
+	session := "home-orch"
+	fleetActivityTestSession(t, home.fleetTestSwarm, session)
+	route := func(method, path, body string, handle func(http.ResponseWriter, *http.Request)) (int, map[string]any) {
+		t.Helper()
+		r := requestWithTestPrincipalForAccount(httptest.NewRequest(method, path, strings.NewReader(body)), home.user, home.account)
+		w := httptest.NewRecorder()
+		handle(w, r)
+		var out map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		return w.Code, out
+	}
+	status := func(permissionID string) string {
+		t.Helper()
+		record, ok, err := home.perms.GetPermission(session, permissionID)
+		if err != nil || !ok {
+			t.Fatalf("request %s: %v %v", permissionID, ok, err)
+		}
+		return record.Status
+	}
+	proposeWorkflow := func(name string) (string, string) {
+		t.Helper()
+		out := home.propose(t, session, map[string]any{"name": name, "project": "Project home", "steps": proposalSteps("Review")})
+		id := out["automation"].(map[string]any)["id"].(string)
+		request, _ := out["decision_request"].(map[string]any)
+		permissionID, _ := request["permission_id"].(string)
+		if permissionID == "" || status(permissionID) != pebblestore.PermissionStatusPending {
+			t.Fatalf("propose made no pending request: %v", out)
+		}
+		return id, permissionID
+	}
+
+	// Workflow accepted through its own route.
+	accepted, acceptRequest := proposeWorkflow("direct-accept")
+	code, out := route(http.MethodPost, JobAutomationsPath+"/"+accepted+"/accept", `{"expected_revision":1}`, home.s.handleJobAutomations)
+	if code != http.StatusOK || out["requests_answered"] != float64(1) {
+		t.Fatalf("direct workflow accept: %d %v", code, out)
+	}
+	if got := status(acceptRequest); got != pebblestore.PermissionStatusApproved {
+		t.Fatalf("the request after a direct accept: %s", got)
+	}
+	// The answered request is no longer pending, so the person's answer is
+	// not taken as a decision (and not refused as stale).
+	if pending, _ := home.perms.ListPending(session, 100); len(pending) != 0 {
+		t.Fatalf("still pending after the accept: %+v", pending)
+	}
+
+	// Workflow discarded through its own route: a stale delete is refused
+	// and the request stays pending; the delete at the revision shown
+	// answers it.
+	discarded, discardRequest := proposeWorkflow("direct-discard")
+	if code, out := route(http.MethodDelete, JobAutomationsPath+"/"+discarded+"?expected_revision=7", "", home.s.handleJobAutomations); code != http.StatusConflict {
+		t.Fatalf("stale direct delete: %d %v", code, out)
+	}
+	if got := status(discardRequest); got != pebblestore.PermissionStatusPending {
+		t.Fatalf("a refused delete answered the request: %s", got)
+	}
+	code, out = route(http.MethodDelete, JobAutomationsPath+"/"+discarded+"?expected_revision=1", "", home.s.handleJobAutomations)
+	if code != http.StatusOK || out["requests_answered"] != float64(1) {
+		t.Fatalf("direct workflow delete: %d %v", code, out)
+	}
+	if got := status(discardRequest); got != pebblestore.PermissionStatusDenied {
+		t.Fatalf("the request after a direct delete: %s", got)
+	}
+	// Deleting the accepted (not proposed) workflow answers nothing.
+	acceptedNow, _ := home.workflow(t, accepted)
+	code, out = route(http.MethodDelete, fmt.Sprintf("%s/%s?expected_revision=%d", JobAutomationsPath, accepted, acceptedNow.Revision), "", home.s.handleJobAutomations)
+	if code != http.StatusOK || out["requests_answered"] != nil {
+		t.Fatalf("deleting an accepted workflow: %d %v", code, out)
+	}
+	if got := status(acceptRequest); got != pebblestore.PermissionStatusApproved {
+		t.Fatalf("deleting the accepted workflow changed its answered request: %s", got)
+	}
+
+	// Workers: a pending request per worker proposal, answered by the
+	// worker routes.
+	workerRequest := func(w pebblestore.WorkerRecord) string {
+		t.Helper()
+		record, err := home.perms.RequestProposalDecision(session, proposalRequestKey(proposalKindWorker, "", w.ID), "manage_workers", `{}`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return record.ID
+	}
+	nightly := home.pendingWorker(t, "nightly")
+	nightlyRequest := workerRequest(nightly)
+	code, out = route(http.MethodPost, WorkersPath+"/"+nightly.ID+"/accept", fmt.Sprintf(`{"expected_revision":%d}`, nightly.Revision), home.s.handleWorkers)
+	if code != http.StatusOK || out["requests_answered"] != float64(1) {
+		t.Fatalf("direct worker accept: %d %v", code, out)
+	}
+	if got := status(nightlyRequest); got != pebblestore.PermissionStatusApproved {
+		t.Fatalf("the worker request after a direct accept: %s", got)
+	}
+	other := home.pendingWorker(t, "other")
+	otherRequest := workerRequest(other)
+	code, out = route(http.MethodDelete, fmt.Sprintf("%s/%s?expected_revision=%d", WorkersPath, other.ID, other.Revision), "", home.s.handleWorkers)
+	if code != http.StatusOK || out["requests_answered"] != float64(1) {
+		t.Fatalf("direct worker delete: %d %v", code, out)
+	}
+	if got := status(otherRequest); got != pebblestore.PermissionStatusDenied {
+		t.Fatalf("the worker request after a direct delete: %s", got)
+	}
+	if _, ok := home.worker(t, other.ID); ok {
+		t.Fatal("the direct delete kept the worker")
+	}
+}

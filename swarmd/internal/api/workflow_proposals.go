@@ -573,6 +573,7 @@ func (s *Server) handleWorkflowAccept(w http.ResponseWriter, r *http.Request, id
 	if key != "" {
 		view["trigger_key"] = key
 	}
+	s.settleProposalRequestsAfter(p, proposalKindWorkflow, id, proposalAccept, view)
 	writeJSON(w, http.StatusOK, view)
 }
 

@@ -372,7 +372,22 @@ func (s *Server) DecideProposal(ctx context.Context, p identity.Principal, in Pr
 		answer["untrusted_content"] = true
 	}
 	hoistProposalTriggerKey(answer, applied)
+	// The machine's accept and delete routes answer their own machine's
+	// requests (settleProposalRequestsAfter); a local decision counts those.
+	var routeSettled uint64
+	var routeErr string
+	if result, ok := applied.(map[string]any); ok {
+		routeSettled, routeErr = mapUint(result, "requests_answered"), mapText(result, "requests_error")
+		delete(result, "requests_answered")
+		delete(result, "requests_error")
+	}
 	settled, settleErr := s.settleProposalRequests(p, in, "")
+	if in.Machine == "" {
+		settled += int(routeSettled)
+		if routeErr != "" {
+			settleErr = errors.Join(settleErr, errors.New(routeErr))
+		}
+	}
 	answer["requests_answered"] = settled
 	if settleErr != nil {
 		answer["requests_error"] = settleErr.Error()
@@ -491,18 +506,41 @@ func proposalRequestKey(kind, machine, id string) string {
 // proposal in the person's conversations, so a decision in the app also
 // clears the chat. skip names a request the caller answers itself.
 func (s *Server) settleProposalRequests(p identity.Principal, in ProposalDecision, skip string) (int, error) {
-	if s.perm == nil {
+	action, reason := permission.ActionAllowOnce, "accepted by the person"
+	if in.Decision == proposalDiscard {
+		action, reason = permission.ActionDenyOnce, "discarded by the person"
+	}
+	return s.settleProposalRequestsAs(p, proposalRequestKey(in.Kind, in.Machine, in.ID), action, reason, skip)
+}
+
+// settleProposalRequestsAfter answers this machine's pending requests for a
+// local proposal the accept or delete route just decided, whoever called it
+// (the proposals route, the console's or SDK's direct call, manage_workflows
+// delete), so no decision path leaves the chat waiting. It adds the count to
+// the route's answer (requests_answered, requests_error).
+func (s *Server) settleProposalRequestsAfter(p identity.Principal, kind, id, decision string, answer map[string]any) {
+	action, reason := permission.ActionAllowOnce, "accepted"
+	if decision == proposalDiscard {
+		action, reason = permission.ActionDenyOnce, "discarded: the proposal was deleted"
+	}
+	settled, err := s.settleProposalRequestsAs(p, proposalRequestKey(kind, "", id), action, reason, "")
+	if answer == nil {
+		return
+	}
+	answer["requests_answered"] = settled
+	if err != nil {
+		answer["requests_error"] = err.Error()
+	}
+}
+
+func (s *Server) settleProposalRequestsAs(p identity.Principal, key, action, reason, skip string) (int, error) {
+	if s.perm == nil || !p.Valid() {
 		return 0, nil
 	}
 	summaries, err := s.perm.ListPendingSummaries(p.AccountScopeID, p.UserID, 500)
 	if err != nil {
 		return 0, err
 	}
-	action, reason := permission.ActionAllowOnce, "accepted by the person"
-	if in.Decision == proposalDiscard {
-		action, reason = permission.ActionDenyOnce, "discarded by the person"
-	}
-	key := proposalRequestKey(in.Kind, in.Machine, in.ID)
 	answered := 0
 	var firstErr error
 	for _, summary := range summaries {

@@ -1073,7 +1073,11 @@ An AI never accepts its own proposal. A workflow proposed with
   `waiting_on: "person"`, `change: new|change`, `replaces`), the same shape
   as `pending_proposals` in `manage_workflows` `list`/`get` and
   `manage_workers` `list`/`review` (both newest first). A decision answers
-  every pending request for that proposal in the person's conversations.
+  every pending request for that proposal in the person's conversations,
+  whichever path made it: the machine's own accept and delete routes
+  (`POST /v3/workflows/{id}/accept`, `DELETE /v3/workflows/{id}` of a
+  proposal, `POST /v3/workers/{id}/accept`, `DELETE /v3/workers/{id}`) answer
+  that machine's requests too, as the console's local decisions use them.
   Reading proposals carries the caller's own scoped token (or, for a caller
   with none, a read-only one), so a key that cannot read automations cannot
   read them here either.

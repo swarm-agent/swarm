@@ -1649,7 +1649,12 @@ func (s *Server) DeleteWorkflow(caller WorkflowCaller, args map[string]any) (any
 			return nil, fmt.Errorf("workflow %s was deleted but its trigger key could not be removed: %w", id, err)
 		}
 	}
-	return map[string]any{"deleted": id, "name": a.Name}, nil
+	out := map[string]any{"deleted": id, "name": a.Name}
+	if a.Proposed {
+		// A deleted proposal is discarded: its chat requests are answered.
+		s.settleProposalRequestsAfter(caller.Principal, proposalKindWorkflow, id, proposalDiscard, out)
+	}
+	return out, nil
 }
 
 // controlMCPThen creates the automation of a `then` argument: the steps,
