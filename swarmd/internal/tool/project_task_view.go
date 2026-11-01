@@ -182,8 +182,8 @@ const ProjectTaskRerunFailedStepsAction = "rerun_failed_steps"
 // ProjectTaskView is the default get_task answer.
 type ProjectTaskView struct {
 	// State is where the task's work is (pebblestore.ProjectTaskState):
-	// running, waiting, needs_you, blocked_infra, workflow_failed,
-	// rebase_conflict, landed, done, not_integrated or stopped, with StateReason its one-line why. It
+	// running, waiting, needs_you, blocked_infra, workflow_failed, landed,
+	// done, not_integrated or stopped, with StateReason its one-line why. It
 	// is what a reader reports; only needs_you waits on the person.
 	State       string `json:"state"`
 	StateReason string `json:"state_reason,omitempty"`
@@ -710,8 +710,6 @@ func compactProjectTask(read projectTaskRead, remote bool) ProjectTaskView {
 		view.Progress.Stage = "Blocked: infrastructure"
 	case pebblestore.ProjectTaskStateWorkflowFailed:
 		view.Progress.Stage = "Workflow failed"
-	case pebblestore.ProjectTaskStateRebaseConflict:
-		view.Progress.Stage = "Rebase conflict"
 	}
 	view.Review = projectTaskLatestReview(p, remote)
 	cut := projectTaskReportCut{report: report, attempt: reportAttempt, projectID: t.ProjectID, taskID: t.ID, remote: remote}

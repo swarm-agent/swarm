@@ -64,8 +64,13 @@ export type JobDeliveryState = 'pending' | 'running' | 'succeeded' | 'failed' | 
  * `rebase` step still runs).
  */
 export type JobRebaseMode = 'auto' | 'off';
-/** How one rebase of a delivery head ended. */
-export type JobRebaseOutcome = 'rebased' | 'resolving' | 'conflict' | 'error';
+/**
+ * How one rebase of a delivery head ended. `skipped`: an automatic rebase
+ * replayed cleanly but the job's branch could not be moved while a deliver
+ * step to merge or publish (which lands that branch) is still to run, so the
+ * delivery kept its head; `reason` says why.
+ */
+export type JobRebaseOutcome = 'rebased' | 'resolving' | 'conflict' | 'error' | 'skipped';
 /** Why a rebase ran. */
 export type JobRebaseTrigger = 'start' | 'before_step' | 'step_failed' | 'rebase_step' | 'agent_step' | 'request';
 

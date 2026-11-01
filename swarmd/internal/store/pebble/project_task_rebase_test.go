@@ -45,6 +45,12 @@ func TestProjectTaskWatchMilestoneNamesRebaseAndConflict(t *testing.T) {
 		len([]rune(clipped.Files[0])) > 120 || clipped.Rebases != 0 {
 		t.Fatalf("clipped = %+v", clipped)
 	}
+	// A skipped rebase (the job's branch could not be moved before a merge)
+	// is kept, local and linked, and names itself.
+	skipped := ClipProjectTaskRebase(&ProjectTaskRebase{Outcome: ProjectTaskRebaseSkipped, Target: "dev", Reason: "the branch is checked out elsewhere"})
+	if skipped == nil || skipped.Reason == "" || skipped.Milestone() != "rebase onto dev not applied (the job's branch could not be moved)" {
+		t.Fatalf("skipped = %+v", skipped)
+	}
 	if ClipProjectTaskRebase(&ProjectTaskRebase{Outcome: "merged"}) != nil || ClipProjectTaskRebase(nil) != nil {
 		t.Fatal("an unknown outcome was kept")
 	}

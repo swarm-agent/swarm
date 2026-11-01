@@ -2,6 +2,8 @@ package jobautomation
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -36,11 +38,14 @@ func (m *mergingDeliverer) Locate(context.Context, string, ResultSpec, AgentOutc
 // rebased head: the job's branch was moved to it by compare-and-swap, so the
 // merge lands exactly the head the steps checked, and the target then holds
 // the job's commits on top of the commit that moved it. When the rebase could
-// not move the branch (it is checked out in another worktree), the merge is
-// refused with a reason naming the branch and nothing lands.
+// not move the branch (it is checked out in another worktree, not the job's
+// own), the automatic rebase is not applied (outcome skipped, its reason
+// naming the branch and where it is checked out): the delivery keeps its head
+// and the merge lands the branch as it is, the head the steps checked.
 // Threat: every delivery whose target moved failing at its merge step ("an
-// earlier step moved the delivery head"), the acceptance case; or a merge
-// landing a branch head the checks never saw.
+// earlier step moved the delivery head"), the acceptance case; a merge
+// landing a branch head the checks never saw; or a branch Swarm cannot move
+// breaking the delivery.
 // Owners: Runner.runDeliver (Head, RebasedFrom), BranchCarriesHead (the
 // daemon's toBranch rule), Runner.finishRebase, GitRebaser over a real
 // repository. The merge itself is a plain git merge of the branch, standing
@@ -66,18 +71,24 @@ func TestDeliverMergeLandsTheRebasedHead(t *testing.T) {
 			h.process()
 
 			d := h.deliveries("task/proj-1/task-1")[0]
-			if len(d.Rebases) != 1 || d.Rebases[0].Outcome != RebaseRebased || d.Head != d.Rebases[0].To || d.RebasedFrom != repo.two {
-				t.Fatalf("rebase: head %s rebases %+v", d.Head, d.Rebases)
-			}
 			if tc.branchOut {
-				if d.State != StateFailed || len(deliverer.landed) != 0 || len(deliverer.refused) == 0 ||
-					!strings.Contains(d.Steps[0].Reason, "Swarm rebased the delivery head") || !strings.Contains(d.Steps[0].Reason, "agent/task-1 is at "+repo.two) {
-					t.Fatalf("delivery %s landed %v step %+v", d.State, deliverer.landed, d.Steps[0])
+				if len(d.Rebases) != 1 || d.Rebases[0].Outcome != RebaseSkipped || d.Head != repo.two || d.RebasedFrom != "" ||
+					!strings.Contains(d.Rebases[0].Reason, "agent/task-1") || !strings.Contains(d.Rebases[0].Reason, "checked out") {
+					t.Fatalf("rebase: head %s rebases %+v", d.Head, d.Rebases)
 				}
-				if repo.git("rev-parse", "main") != repo.tip {
-					t.Fatal("the target moved although nothing was delivered")
+				if d.State != StateSucceeded || len(deliverer.landed) != 1 || deliverer.landed[0] != repo.two || len(deliverer.refused) != 0 {
+					t.Fatalf("delivery %s landed %v refused %v step %+v", d.State, deliverer.landed, deliverer.refused, d.Steps[0])
+				}
+				if repo.git("rev-parse", "agent/task-1") != repo.two || repo.git("rev-parse", "main^2") != repo.two {
+					t.Fatalf("main = %s, want a merge of the unmoved branch %s", repo.git("log", "--oneline", "-3", "main"), repo.two)
+				}
+				if len(h.signalsOf("automation.delivery.rebase_skipped")) != 1 {
+					t.Fatal("no rebase_skipped signal")
 				}
 				return
+			}
+			if len(d.Rebases) != 1 || d.Rebases[0].Outcome != RebaseRebased || d.Head != d.Rebases[0].To || d.RebasedFrom != repo.two {
+				t.Fatalf("rebase: head %s rebases %+v", d.Head, d.Rebases)
 			}
 			if d.State != StateSucceeded || len(deliverer.landed) != 1 || deliverer.landed[0] != d.Head {
 				t.Fatalf("delivery %s landed %v refused %v step %+v", d.State, deliverer.landed, deliverer.refused, d.Steps[0])
@@ -159,6 +170,83 @@ func TestFixingReviewerRunsAfterAnAutomaticRebase(t *testing.T) {
 		if got := headMovedOnlyByRebase(tc.d); got != tc.want {
 			t.Fatalf("%s: headMovedOnlyByRebase = %v", name, got)
 		}
+	}
+}
+
+// Requirement: a worker job's branch stays checked out in the job's own
+// worktree (the daemon makes it with git worktree add -b). An automatic
+// rebase moves that branch in that worktree (clean, at the old head: git
+// reset --keep) so a deliver step to merge lands the rebased head; while the
+// worktree has uncommitted changes the branch is not moved, the rebase is not
+// applied (outcome skipped, the reason naming the worktree) and the merge
+// lands the branch as it is, so the delivery succeeds either way.
+// Threat: every worker delivery that merges or publishes failing after a
+// rebase (the branch left at the old head, BranchCarriesHead refusing it, a
+// second rebase doing nothing); or a worktree's uncommitted work lost by
+// moving its branch.
+// Owners: Runner.finishRebase, Runner.moveJobBranch,
+// GitRebaser.MoveCheckedOutBranch, Runner.skipRebase, BranchCarriesHead,
+// over a real repository and worktree.
+func TestWorkerJobCheckedOutBranchRebasesAndMerges(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		dirty bool
+	}{{name: "clean worktree"}, {name: "dirty worktree", dirty: true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.withRebaser(t)
+			folder := t.TempDir()
+			repo := newConflictRepo(t, folder, false)
+			worktree := t.TempDir() + "/wt"
+			repo.git("worktree", "add", "-q", worktree, "agent/task-1")
+			if tc.dirty {
+				if err := os.WriteFile(filepath.Join(worktree, "j.txt"), []byte("uncommitted\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			deliverer := &mergingDeliverer{repo: repo}
+			h.runner.deliver = deliverer
+			h.process()
+			h.automation(pushFlow(folder, "", Step{ID: "merge", Type: StepDeliver, To: DeliverMerge}))
+			result := workerResult(folder, "run-1")
+			result.Git = &ResultGit{Branch: "agent/task-1", BaseBranch: "main", BaseCommit: repo.base, Head: repo.two, Worktree: worktree,
+				Commits: []ResultCommit{{SHA: repo.one}, {SHA: repo.two}}, Files: []string{"f.txt", "j.txt"}}
+			result.Deliverables = []Deliverable{{Name: "branch", Kind: DeliverableBranch}}
+			h.results.results["run-1"] = result
+			h.jobEnd("run-1", "", "succeeded", "direct")
+			h.process()
+
+			d := h.deliveries("worker/coder-1/run-1")[0]
+			if len(d.Rebases) != 1 || d.Rebases[0].Branch == nil || d.Rebases[0].Branch.CheckedOut == "" {
+				t.Fatalf("rebases %+v", d.Rebases)
+			}
+			if d.State != StateSucceeded || len(deliverer.landed) != 1 || len(deliverer.refused) != 0 {
+				t.Fatalf("delivery %s landed %v refused %v step %+v", d.State, deliverer.landed, deliverer.refused, d.Steps[0])
+			}
+			if tc.dirty {
+				if d.Rebases[0].Outcome != RebaseSkipped || d.Head != repo.two || !strings.Contains(d.Rebases[0].Reason, "uncommitted changes") {
+					t.Fatalf("head %s rebase %+v", d.Head, d.Rebases[0])
+				}
+				if repo.git("rev-parse", "agent/task-1") != repo.two || readFile(t, filepath.Join(worktree, "j.txt")) != "uncommitted\n" {
+					t.Fatal("the dirty worktree's branch or changes were touched")
+				}
+				if deliverer.landed[0] != repo.two || repo.git("rev-parse", "main^2") != repo.two {
+					t.Fatalf("main = %s, want a merge of %s", repo.git("log", "--oneline", "-3", "main"), repo.two)
+				}
+				return
+			}
+			rebased := d.Rebases[0].To
+			if d.Rebases[0].Outcome != RebaseRebased || !d.Rebases[0].Branch.Updated || d.Head != rebased || d.RebasedFrom != repo.two {
+				t.Fatalf("head %s rebase %+v branch %+v", d.Head, d.Rebases[0], d.Rebases[0].Branch)
+			}
+			if repo.git("rev-parse", "agent/task-1") != rebased || repo.git("-C", worktree, "rev-parse", "HEAD") != rebased ||
+				repo.git("-C", worktree, "symbolic-ref", "--short", "HEAD") != "agent/task-1" || repo.git("-C", worktree, "status", "--porcelain") != "" {
+				t.Fatal("the job's worktree and branch are not at the rebased head")
+			}
+			if deliverer.landed[0] != rebased || repo.git("rev-parse", "main^2") != rebased || repo.git("rev-parse", "main^1") != repo.tip {
+				t.Fatalf("main = %s, want a merge of %s onto %s", repo.git("log", "--oneline", "-3", "main"), rebased, repo.tip)
+			}
+		})
 	}
 }
 

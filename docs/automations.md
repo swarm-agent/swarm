@@ -968,13 +968,19 @@ request). It is Git in the folder, run by the daemon with hooks off:
    `refs/swarm/rebased/...` so it stays reachable, and the job's own branch is
    moved by compare-and-swap (`git update-ref <branch> <new> <old>`: only
    while it still points at the old head). A branch checked out in a worktree
-   is moved only for a project task, by its branch advancer, with `git reset
-   --keep` while the task is idle and its worktree clean; otherwise the
-   record says why it was not moved. The record keeps the old -> new commit
-   mapping and a `git range-diff`. A `deliver` step to `merge` or `publish`
-   lands the work's branch, so it lands a rebased head once the branch names
-   it (the usual case); while the branch could not be moved it is refused
-   with that reason and nothing lands. A reviewer allowed to fix (`fixes`)
+   is moved only in the job's own worktree, with `git reset --keep` while
+   that worktree is clean and still at the old head: a project task's by its
+   branch advancer (the task idle), a worker job's (its worktree keeps the
+   branch checked out) directly. A branch checked out anywhere else (the
+   folder itself, another worktree) is not moved, and the record says why.
+   The record keeps the old -> new commit mapping and a `git range-diff`. A
+   `deliver` step to `merge` or `publish` lands the work's branch, so it lands
+   a rebased head once the branch names it (the usual case). When an
+   automatic rebase could not move the branch while such a step is still to
+   run, the rebase is not applied: its record ends `skipped` with the reason
+   (signal `automation.delivery.rebase_skipped`), the delivery keeps its head
+   and the merge or publish lands the branch as it is; it is tried again
+   once the target moves. A reviewer allowed to fix (`fixes`)
    runs on the rebased head as on the job's own: only a head an agent step
    moved keeps it from starting.
 4. Steps after a rebase run on the rebased head. Steps that already passed on
@@ -1012,7 +1018,9 @@ delivery ends **`conflict`**: not `failed` (no check failed) and not a
 review's block. Nothing after it runs, the head and the job's branch stay,
 the step it stopped before records the reason (`next` says what to do), and
 the delivery's `conflict` keeps the files, the stopped commit, the target's
-commits, the resolver jobs and the kept conflicted state. A rerun of the
+commits, the resolver jobs and the kept conflicted state. Its task's state is
+`workflow_failed` (never `needs_you`, which is a pending request), its reason
+naming the conflict. A rerun of the
 delivery (`manage_jobs` `rerun_failed_steps`) checks the target anew and
 rebases again, with the resolver.
 
@@ -1060,7 +1068,7 @@ again on the rebased head), and a conflict goes to the resolver.
 **Visibility.** A delivery shows `rebase` (its setting), `target_checked`,
 `rebases` (each: `n`, `trigger` (`start`, `before_step`, `step_failed`,
 `rebase_step`, `agent_step`, `request`), `target`, `onto`, `from`, `to`,
-`outcome` (`rebased`, `resolving`, `conflict`, `error`), `commits`,
+`outcome` (`rebased`, `resolving`, `conflict`, `error`, `skipped`), `commits`,
 `added`, `rerun`, `branch`, `conflict`; a single-delivery read adds
 `range_diff` and the conflict's `target_diff` and `job_diff`), and, when it
 ended `conflict`, `conflict`, `conflict_reason` and `next`. Task progress
@@ -1074,7 +1082,8 @@ milestones name it. Signals: `automation.delivery.rebased`,
 `automation.delivery.rebase_conflict` (a resolver starts),
 `automation.delivery.resolver_started`,
 `automation.delivery.rebase_unresolved`, `automation.delivery.rebase_error`,
-`automation.delivery.rebase_limit`, and `automation.delivery.finished` with
+`automation.delivery.rebase_limit`, `automation.delivery.rebase_skipped`, and
+`automation.delivery.finished` with
 state `conflict` (its `files`, `commit`, `resolver_jobs` and `next`).
 
 ## The result JSON

@@ -11,6 +11,10 @@ const (
 	ProjectTaskRebaseResolving = "resolving"
 	ProjectTaskRebaseConflict  = "conflict"
 	ProjectTaskRebaseError     = "error"
+	// ProjectTaskRebaseSkipped: a clean automatic rebase not applied because
+	// the job's branch could not be moved while a merge or publish is to
+	// land it; the delivery kept its head (Reason says why).
+	ProjectTaskRebaseSkipped = "skipped"
 )
 
 // ProjectTaskWorkflowConflict is the workflow state of a task whose
@@ -49,7 +53,7 @@ func ClipProjectTaskRebase(r *ProjectTaskRebase) *ProjectTaskRebase {
 		return nil
 	}
 	switch r.Outcome {
-	case ProjectTaskRebaseRebased, ProjectTaskRebaseResolving, ProjectTaskRebaseConflict, ProjectTaskRebaseError:
+	case ProjectTaskRebaseRebased, ProjectTaskRebaseResolving, ProjectTaskRebaseConflict, ProjectTaskRebaseError, ProjectTaskRebaseSkipped:
 	default:
 		return nil
 	}
@@ -99,6 +103,8 @@ func (r ProjectTaskRebase) Milestone() string {
 		return "conflict on " + target + ": " + files + " (not resolved)"
 	case ProjectTaskRebaseError:
 		return "rebase onto " + target + " could not run"
+	case ProjectTaskRebaseSkipped:
+		return "rebase onto " + target + " not applied (the job's branch could not be moved)"
 	}
 	return ""
 }

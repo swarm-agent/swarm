@@ -51,7 +51,7 @@ const (
 	// ProjectTaskCountWorkflowFailed: its workflow delivery ended blocked or
 	// failed (a check or review ended it, including sent back until its
 	// rounds ran out), or conflict (Swarm's rebase onto the target conflicted
-	// and its resolver agents did not resolve it: state rebase_conflict),
+	// and its resolver agents did not resolve it),
 	// within the last 7 days. Nothing waits on the person.
 	ProjectTaskCountWorkflowFailed = "workflow_failed"
 	// ProjectTaskCountIdle: finished over 7 days ago (progress idle) with
@@ -186,16 +186,12 @@ const (
 	// ProjectTaskStateWorkflowFailed: the workflow delivery ended blocked or
 	// failed: a check or review ended it (including sent back until its
 	// rounds ran out). Nothing waits on the person; send the task back with
-	// the findings, or archive it. Count bucket workflow_failed (idle once 7
-	// days old, as not_integrated).
+	// the findings, or archive it. Also a delivery that ended conflict
+	// (Swarm's rebase onto its target conflicted and its resolver agents did
+	// not resolve it), its reason ProjectTaskRebaseConflictNext: the work is
+	// intact on its branch, and needs_you stays for a pending request. Count
+	// bucket workflow_failed (idle once 7 days old, as not_integrated).
 	ProjectTaskStateWorkflowFailed = "workflow_failed"
-	// ProjectTaskStateRebaseConflict: the workflow delivery ended conflict:
-	// Swarm's rebase of the work onto its target branch conflicted and its
-	// resolver agents did not resolve it. The work is intact on its branch;
-	// nothing waits on the person: send the task back to rebase onto the
-	// target, then the delivery is re-run (it rebases again). Count bucket
-	// workflow_failed (idle once 7 days old, as not_integrated).
-	ProjectTaskStateRebaseConflict = "rebase_conflict"
 	// ProjectTaskStateLanded: the work was handed over: pushed, delivered or
 	// integrated. Count bucket done.
 	ProjectTaskStateLanded = "landed"
@@ -225,7 +221,7 @@ const (
 // inputs and the same bucket as ProjectTaskBucket (the list counts), so a
 // state never disagrees with its count: landed and done count done, running
 // in_progress, waiting waiting, needs_you needs_attention, blocked_infra
-// blocked_infra, workflow_failed and rebase_conflict workflow_failed, stopped stopped,
+// blocked_infra, workflow_failed workflow_failed, stopped stopped,
 // not_integrated needs_attention (or idle once 7 days old).
 func ProjectTaskState(task ProjectTaskRecord, outcome string, stale, idle bool) (string, string) {
 	state, reason := projectTaskState(task, outcome, stale, idle)
@@ -291,7 +287,7 @@ func projectTaskState(task ProjectTaskRecord, outcome string, stale, idle bool) 
 		return ProjectTaskStateBlockedInfra, "workflow " + outcome + ": " + ProjectTaskBlockedInfraNext
 	case ProjectTaskCountWorkflowFailed:
 		if word == "conflict" {
-			return ProjectTaskStateRebaseConflict, "workflow " + outcome + "; " + ProjectTaskRebaseConflictNext
+			return ProjectTaskStateWorkflowFailed, "workflow " + outcome + "; " + ProjectTaskRebaseConflictNext
 		}
 		return ProjectTaskStateWorkflowFailed, "workflow " + outcome + "; " + ProjectTaskWorkflowFailedNext
 	}
@@ -314,8 +310,7 @@ func projectTaskState(task ProjectTaskRecord, outcome string, stale, idle bool) 
 		// attention any more; its work was never handed over.
 		return ProjectTaskStateNotIntegrated, "workflow " + outcome + ": an infrastructure problem, not the work; idle over 7 days"
 	case "blocked", "failed", "conflict":
-		// Only idle reaches here (workflow_failed or rebase_conflict
-		// above otherwise).
+		// Only idle reaches here (workflow_failed above otherwise).
 		return ProjectTaskStateNotIntegrated, "workflow " + outcome + "; idle over 7 days"
 	case "ready":
 		reason := "work not handed over"
@@ -479,8 +474,7 @@ func ProjectTaskMediaDeliverable(d ProjectTaskDeliverable) bool {
 // work, so while it carries that placeholder it reads from the task state:
 // running: in progress; waiting: not started; landed: delivered; done: ready;
 // not_integrated: on branch; needs_you: needs you; blocked_infra: blocked
-// (infrastructure); workflow_failed: workflow failed; rebase_conflict: rebase
-// conflict; stopped: stopped. A media
+// (infrastructure); workflow_failed: workflow failed; stopped: stopped. A media
 // deliverable, or one whose stored status was set explicitly (ready,
 // accepted, …), keeps its stored status. This is the one rule every surface
 // (get_task, the task routes, the Orchestrator's prompt block) uses.
@@ -504,8 +498,6 @@ func ProjectTaskDeliverableStatus(d ProjectTaskDeliverable, state string) string
 		return "blocked (infrastructure)"
 	case ProjectTaskStateWorkflowFailed:
 		return "workflow failed"
-	case ProjectTaskStateRebaseConflict:
-		return "rebase conflict"
 	case ProjectTaskStateDone:
 		return "ready"
 	case ProjectTaskStateStopped:

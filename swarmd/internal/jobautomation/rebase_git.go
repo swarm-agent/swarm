@@ -51,6 +51,11 @@ const (
 	RebaseConflicted = "conflict"
 	RebaseResolving  = "resolving"
 	RebaseError      = "error"
+	// RebaseSkipped: an automatic rebase replayed cleanly, but the job's
+	// branch could not be moved to the new head while a deliver step to
+	// merge or publish (which lands that branch) is still to run: the
+	// delivery keeps its head, and the record says why.
+	RebaseSkipped = "skipped"
 )
 
 // Bounds of one rebase.
@@ -152,7 +157,8 @@ type BranchUpdate struct {
 	Updated bool   `json:"updated"`
 	Reason  string `json:"reason,omitempty"`
 	// CheckedOut is the worktree the branch is checked out in (it is then
-	// moved only by the task's own branch advancer, never here).
+	// moved only in that worktree: a task's by its branch advancer, a
+	// worker job's own by MoveCheckedOutBranch; never by update-ref).
 	CheckedOut string `json:"checked_out,omitempty"`
 }
 
@@ -183,6 +189,7 @@ type Rebaser interface {
 	Resume(ctx context.Context, folder string, state ReplayState, conflict RebaseConflict, resolved string) (ReplayResult, error)
 	MapCommits(ctx context.Context, folder, oldHead, onto, newHead string) (CommitMapping, error)
 	UpdateBranch(ctx context.Context, folder, branch, from, to string) BranchUpdate
+	MoveCheckedOutBranch(ctx context.Context, worktree, branch, from, to string) (bool, string)
 	KeepRef(ctx context.Context, folder, name, commit string) error
 }
 
@@ -1018,6 +1025,50 @@ func (g GitRebaser) UpdateBranch(ctx context.Context, folder, branch, from, to s
 	}
 	out.Updated = true
 	return out
+}
+
+// MoveCheckedOutBranch moves branch, checked out in worktree (a job's own
+// checkout, made with git worktree add -b), from from to to: only while the
+// worktree is on branch, its HEAD is at from (the compare-and-swap) and it
+// has no uncommitted or untracked changes, by git reset --keep, which
+// refuses to lose anything. It reports whether the branch now names to,
+// else why not. The worktree is the job's, and the job has ended while its
+// delivery runs; a commit made there meanwhile moves HEAD off from and is
+// left alone.
+func (g GitRebaser) MoveCheckedOutBranch(ctx context.Context, worktree, branch, from, to string) (bool, string) {
+	if !ValidBranchName(branch) || !isCommitID(from) || !isCommitID(to) {
+		return false, "the branch or heads to move are not valid"
+	}
+	if worktree == "" || !filepath.IsAbs(worktree) {
+		return false, "the job has no worktree of its own"
+	}
+	if cur, err := g.gitLine(ctx, worktree, "symbolic-ref", "--quiet", "--short", "HEAD"); err != nil || cur != branch {
+		return false, "the job's worktree " + worktree + " is not on branch " + branch
+	}
+	head, err := g.gitLine(ctx, worktree, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return false, "the job's worktree head could not be read: " + truncate(err.Error(), 200)
+	}
+	if head == to {
+		return true, ""
+	}
+	if head != from {
+		return false, "the branch " + branch + " is at " + short(head) + ", not at the head that was rebased (" + short(from) + "): it is not moved"
+	}
+	status, err := g.gitLine(ctx, worktree, "status", "--porcelain", "--untracked-files=normal")
+	if err != nil {
+		return false, "the job's worktree status could not be read: " + truncate(err.Error(), 200)
+	}
+	if status != "" {
+		return false, "the job's worktree " + worktree + " has uncommitted changes"
+	}
+	if _, err := g.gitLine(ctx, worktree, "reset", "--keep", "--quiet", to); err != nil {
+		return false, "git reset --keep failed: " + truncate(err.Error(), 200)
+	}
+	if moved, err := g.gitLine(ctx, worktree, "rev-parse", "--verify", "HEAD^{commit}"); err != nil || moved != to {
+		return false, "the job's worktree did not reach the rebased head"
+	}
+	return true, ""
 }
 
 // KeepRef points refs/swarm/<name> at commit, so a rebased head or a kept
