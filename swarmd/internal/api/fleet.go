@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -436,6 +437,10 @@ func (s *Server) handleFleetCheck(w http.ResponseWriter, r *http.Request, accoun
 	writeJSON(w, http.StatusOK, map[string]any{"machine": machine, "reached": true, "hello": hello})
 }
 
+// fleetUnlinkTellTimeout bounds telling a machine its home leaves: a machine
+// that has gone away must not hold the unlink, which happens here anyway.
+var fleetUnlinkTellTimeout = 10 * time.Second
+
 // handleFleetUnlink tells the machine its home leaves (it revokes the
 // session), then forgets the machine here, told or not.
 func (s *Server) handleFleetUnlink(w http.ResponseWriter, r *http.Request, account, name string) {
@@ -446,7 +451,10 @@ func (s *Server) handleFleetUnlink(w http.ResponseWriter, r *http.Request, accou
 	}
 	told, detail := false, ""
 	if client != nil {
-		if err := client.JSON(r.Context(), http.MethodDelete, "/link/v1/link", nil, nil); err != nil {
+		tellCtx, cancel := context.WithTimeout(r.Context(), fleetUnlinkTellTimeout)
+		err := client.JSON(tellCtx, http.MethodDelete, "/link/v1/link", nil, nil)
+		cancel()
+		if err != nil {
 			detail = err.Error()
 		} else {
 			told = true

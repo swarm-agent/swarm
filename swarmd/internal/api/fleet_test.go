@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -222,5 +224,83 @@ func TestFleetLinkGoesOneWay(t *testing.T) {
 	}
 	if b.s.fleetListenAddress() != "" {
 		t.Fatal("B still listens after its only home left")
+	}
+}
+
+// Purpose: a linked machine that has gone away must not hold the home. The
+// per-machine proxy answers 502 with the reason within the link's bounds and
+// records the failure; unlink gives up telling the machine after its own
+// bound and unlinks here anyway, with machine_told false. Threat: a
+// blackholed address holding both for the kernel's SYN retries (minutes).
+// Boundary: Server.handleFleetForward, Server.handleFleetUnlink,
+// fleet.NewClient. A real link redirected to a TCP listener that accepts and
+// never answers is the narrowest hermetic stand-in for a gone machine.
+func TestFleetGoneMachineFailsFast(t *testing.T) {
+	a := newFleetTestSwarm(t, "home-a")
+	defer a.cleanup()
+	b := newFleetTestSwarm(t, "box-b")
+	defer b.cleanup()
+	body, _ := json.Marshal(map[string]string{"code": b.invite(t), "name": "b"})
+	if code, out := a.call(t, http.MethodPost, "/v3/fleet/machines", string(body), false); code != http.StatusCreated {
+		t.Fatalf("link: HTTP %d %v", code, out)
+	}
+
+	silent, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var held []net.Conn // accepted, never answered
+		for {
+			conn, err := silent.Accept()
+			if err != nil {
+				for _, c := range held {
+					c.Close()
+				}
+				return
+			}
+			held = append(held, conn)
+		}
+	}()
+	defer func() {
+		silent.Close()
+		<-done
+	}()
+	machine, _, _ := a.s.fleet.GetMachine("b")
+	machine.Address, machine.LastError = silent.Addr().String(), ""
+	if err := a.s.fleet.PutMachine(machine); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	code, out := a.call(t, http.MethodGet, "/v3/fleet/machines/b/api/v3/fleet", "", false)
+	if code != http.StatusBadGateway || !strings.Contains(fmt.Sprint(out), "could not reach b") {
+		t.Fatalf("proxy to a gone machine: HTTP %d %v", code, out)
+	}
+	if elapsed := time.Since(start); elapsed > fleet.TLSHandshakeTimeout+3*time.Second {
+		t.Fatalf("proxy held %v", elapsed)
+	}
+	if noted, _, _ := a.s.fleet.GetMachine("b"); noted.LastError == "" {
+		t.Fatal("proxy failure not recorded")
+	}
+
+	previous := fleetUnlinkTellTimeout
+	fleetUnlinkTellTimeout = 200 * time.Millisecond
+	defer func() { fleetUnlinkTellTimeout = previous }()
+	start = time.Now()
+	code, out = a.call(t, http.MethodDelete, "/v3/fleet/machines/b", "", false)
+	if code != http.StatusOK || out["unlinked"] != true || out["machine_told"] != false || out["detail"] == nil {
+		t.Fatalf("unlink a gone machine: HTTP %d %v", code, out)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("unlink held %v", elapsed)
+	}
+	if _, found, _ := a.s.fleet.GetMachine("b"); found {
+		t.Fatal("machine kept after unlink")
+	}
+	if _, found, _ := a.s.fleetTokens.GetFleetLinkToken(a.account, "b"); found {
+		t.Fatal("session kept after unlink")
 	}
 }

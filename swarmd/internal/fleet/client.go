@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -23,15 +24,29 @@ type Client struct {
 	http    *http.Client
 }
 
+// A machine that has gone away (its address now drops packets) must fail
+// fast rather than hold the caller for the kernel's SYN retries (minutes).
+// The header timeout bounds only the wait for the answer's headers, so
+// streamed answers and upgraded WebSockets stay open once they have begun.
+const (
+	DialTimeout           = 5 * time.Second
+	TLSHandshakeTimeout   = 5 * time.Second
+	ResponseHeaderTimeout = 30 * time.Second
+)
+
 // NewClient is a client for the Swarm at address whose key is fingerprint,
 // sending token (empty before the link exists).
 func NewClient(cert tls.Certificate, address, fingerprint, token string) *Client {
+	dialer := &net.Dialer{Timeout: DialTimeout, KeepAlive: 30 * time.Second}
 	return &Client{
 		address: address,
 		token:   token,
 		http: &http.Client{Transport: &http.Transport{
-			TLSClientConfig:   ClientTLS(cert, fingerprint),
-			ForceAttemptHTTP2: false,
+			DialContext:           dialer.DialContext,
+			TLSClientConfig:       ClientTLS(cert, fingerprint),
+			TLSHandshakeTimeout:   TLSHandshakeTimeout,
+			ResponseHeaderTimeout: ResponseHeaderTimeout,
+			ForceAttemptHTTP2:     false,
 		}},
 	}
 }

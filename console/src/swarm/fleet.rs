@@ -8,7 +8,10 @@
 //! home and on each machine (swarm::needs), all at once off the UI thread.
 //! The app never calls the other machines itself.
 //! A Swarm without the fleet routes yet has no machines.
+//! A tick publishes home's list as soon as it is read, then each machine as
+//! its read returns, so a machine that has gone away does not hold the rest.
 
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
@@ -19,6 +22,9 @@ use super::{map, needs};
 use crate::data::{Health, Machine};
 
 const EVERY: Duration = Duration::from_secs(20);
+
+/// Shown for a machine whose read this tick has not returned yet.
+const NOT_READ_YET: &str = "not read yet";
 
 /// A machine home controls, as home lists it.
 #[derive(Clone, Debug, PartialEq)]
@@ -109,28 +115,109 @@ fn read_home(home: &Client, recall: &needs::Recall) -> needs::Reading {
     needs::read(home, true, "", summary.as_ref().map_err(String::as_str), recall)
 }
 
-/// One fleet tick: home's machines (None when home's list could not be
-/// read; the last one stands) and what needs the person on home and on each.
+/// One fleet tick, as far as it has been read: home's machines (None when
+/// home's list could not be read; the last one stands) and what needs the
+/// person on home and on each.
+#[derive(Clone)]
 pub struct Reading {
     pub machines: Option<Vec<Machine>>,
     /// Home first, then each machine in home's order.
     pub needs: Vec<needs::Reading>,
 }
 
-/// Every machine, read at once so one slow machine does not hold the rest.
-pub fn read_all(home: &Client, found: &[Found], recall: &needs::Recall) -> (Vec<Machine>, Vec<needs::Reading>) {
+/// A machine home lists whose read this tick has not returned: what the last
+/// tick read of it while it answered; else, when home's last call to it
+/// failed, offline with home's reason; else not read yet, which is not
+/// offline (it counts as offline only once a read fails).
+fn pending(found: &Found, last: Option<&Reading>) -> (Machine, needs::Reading) {
+    let carried = last.and_then(|last| {
+        let m = last.machines.as_ref()?.iter().find(|m| m.name.as_ref() == found.name.as_str() && m.health != Health::Offline)?;
+        let n = last.needs.iter().find(|n| !n.home && n.machine == found.name)?;
+        Some((m.clone(), n.clone()))
+    });
+    if let Some(carried) = carried {
+        return carried;
+    }
+    let mut m = machine(found, Err(""), None);
+    let why = if found.last_error.is_empty() {
+        m.health = Health::Unknown;
+        m.reasons = vec![NOT_READ_YET.into()];
+        NOT_READ_YET.to_string()
+    } else {
+        found.last_error.clone()
+    };
+    (m, needs::Reading { machine: found.name.clone(), unread: vec![why], ..Default::default() })
+}
+
+fn failed_home() -> needs::Reading {
+    needs::Reading { home: true, unread: vec!["reading it failed".into()], ..Default::default() }
+}
+
+enum Step {
+    Home(needs::Reading),
+    Machine(usize, Machine, needs::Reading),
+}
+
+/// One fleet tick. Home's needs, home's list and then every machine are read
+/// at once; `publish` gets the whole reading as soon as home's list is read
+/// (machines not read yet: see `pending`) and again as each read returns, so
+/// one slow machine holds neither the list nor the rest. When home's list
+/// cannot be read, it gets one reading once home's needs are read. `last` is
+/// the previous tick's final reading.
+pub fn tick(
+    read_home: impl FnOnce() -> needs::Reading + Send,
+    read_list: impl FnOnce() -> Result<Vec<Found>, String>,
+    read_machine: impl Fn(&Found) -> (Machine, needs::Reading) + Sync,
+    last: Option<&Reading>,
+    publish: &mut dyn FnMut(Reading),
+) {
+    let read_machine = &read_machine;
     std::thread::scope(|scope| {
-        let reads: Vec<_> = found.iter().map(|f| scope.spawn(move || read_machine(home, f, recall))).collect();
-        reads
-            .into_iter()
-            .zip(found)
-            .map(|(r, f)| {
-                r.join().unwrap_or_else(|_| {
+        let (tx, rx) = mpsc::channel();
+        let home_tx = tx.clone();
+        scope.spawn(move || {
+            let here = catch_unwind(AssertUnwindSafe(read_home)).unwrap_or_else(|_| failed_home());
+            let _ = home_tx.send(Step::Home(here));
+        });
+        let found = match read_list() {
+            Ok(found) => found,
+            Err(_) => {
+                drop(tx);
+                let here = rx.iter().find_map(|s| if let Step::Home(h) = s { Some(h) } else { None }).unwrap_or_else(failed_home);
+                publish(Reading { machines: None, needs: vec![here] });
+                return;
+            }
+        };
+        for (i, f) in found.iter().enumerate() {
+            let (tx, f) = (tx.clone(), f.clone());
+            scope.spawn(move || {
+                let (m, n) = catch_unwind(AssertUnwindSafe(|| read_machine(&f))).unwrap_or_else(|_| {
                     let why = "reading it failed";
-                    (machine(f, Err(why), None), needs::Reading { machine: f.name.clone(), unread: vec![why.into()], ..Default::default() })
-                })
-            })
-            .unzip()
+                    (machine(&f, Err(why), None), needs::Reading { machine: f.name.clone(), unread: vec![why.into()], ..Default::default() })
+                });
+                let _ = tx.send(Step::Machine(i, m, n));
+            });
+        }
+        drop(tx);
+        let here = last.and_then(|l| l.needs.first()).filter(|n| n.home).cloned();
+        let mut needs = vec![here.unwrap_or_else(|| needs::Reading { home: true, unread: vec![NOT_READ_YET.into()], ..Default::default() })];
+        let mut machines = Vec::with_capacity(found.len());
+        for f in &found {
+            let (m, n) = pending(f, last);
+            machines.push(m);
+            needs.push(n);
+        }
+        publish(Reading { machines: Some(machines.clone()), needs: needs.clone() });
+        for step in rx {
+            match step {
+                Step::Home(here) => needs[0] = here,
+                Step::Machine(i, m, n) => {
+                    machines[i] = m;
+                    needs[i + 1] = n;
+                }
+            }
+            publish(Reading { machines: Some(machines.clone()), needs: needs.clone() });
+        }
     })
 }
 
@@ -144,25 +231,29 @@ impl Fleet {
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let mut recall = needs::Recall::default();
+            let mut last: Option<Reading> = None;
             loop {
-                let (here, fleet) = std::thread::scope(|scope| {
-                    let here = scope.spawn(|| read_home(&home, &recall));
-                    let fleet = read(&home).map(|found| read_all(&home, &found, &recall));
-                    let here = here.join().unwrap_or_else(|_| needs::Reading { home: true, unread: vec!["reading it failed".into()], ..Default::default() });
-                    (here, fleet)
-                });
-                recall.turn();
-                let mut needs = vec![here];
-                let machines = match fleet {
-                    Ok((machines, linked)) => {
-                        needs.extend(linked);
-                        Some(machines)
-                    }
-                    Err(_) => None,
-                };
-                if tx.send(Reading { machines, needs }).is_err() {
+                let (mut newest, mut gone) = (None, false);
+                tick(
+                    || read_home(&home, &recall),
+                    || read(&home),
+                    |f| read_machine(&home, f, &recall),
+                    last.as_ref(),
+                    &mut |reading| {
+                        if reading.machines.is_some() {
+                            newest = Some(reading.clone());
+                        }
+                        gone |= tx.send(reading).is_err();
+                    },
+                );
+                if gone {
                     return; // the console is gone
                 }
+                recall.turn();
+                if newest.is_some() {
+                    last = newest;
+                }
+                // EVERY counts from the end of a tick.
                 std::thread::sleep(EVERY);
             }
         });
@@ -253,6 +344,98 @@ mod tests {
         let never = machine(&found("new", 0, "connection refused"), Err(""), None);
         assert_eq!(never.contact_line(1792540800000), "never reached");
         assert_eq!(never.reasons[0].as_ref(), "connection refused");
+    }
+
+    /// Purpose: home's fleet list must show before the slowest machine's read
+    /// returns. Threat: a machine that has gone away holding the whole list
+    /// for a minute (the nav said "fleet 1/1 online"). Boundary: fleet::tick
+    /// and pending, with the reads as closures: the narrowest layer that
+    /// orders a slow read against what is published, without the network.
+    #[test]
+    fn list_shown_before_the_slow_read_returns() {
+        let online = |r: &Reading| r.machines.as_ref().unwrap().iter().filter(|m| m.health != Health::Offline).count();
+        let health = |r: &Reading, i: usize| r.machines.as_ref().unwrap()[i].health;
+        let reasons = |r: &Reading, i: usize| r.machines.as_ref().unwrap()[i].reasons.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let (release, wait) = mpsc::channel::<()>();
+        let (published, readings) = mpsc::channel::<Reading>();
+        let worker = std::thread::spawn(move || {
+            let wait = std::sync::Mutex::new(wait);
+            let list = vec![found("forge", 1, ""), found("gone", 1, ""), found("social", 1, "dial tcp: connect: connection timed out")];
+            tick(
+                || needs::Reading { home: true, ..Default::default() },
+                move || Ok(list),
+                |f: &Found| {
+                    let failed = |why: &str| (machine(f, Err(why), None), needs::Reading { machine: f.name.clone(), unread: vec![why.into()], ..Default::default() });
+                    match f.name.as_str() {
+                        "gone" => {
+                            let _ = wait.lock().unwrap().recv_timeout(Duration::from_secs(10));
+                            failed("connection timed out")
+                        }
+                        "social" => failed(""),
+                        _ => (machine(f, Ok(&summary()), None), needs::Reading { machine: f.name.clone(), ..Default::default() }),
+                    }
+                },
+                None,
+                &mut |r| {
+                    let _ = published.send(r);
+                },
+            );
+        });
+        let next = || readings.recv_timeout(Duration::from_secs(5)).expect("a reading");
+
+        // Home's list is shown at once: read-pending machines are not offline,
+        // and a machine whose last call failed stays offline with home's reason.
+        let first = next();
+        let names: Vec<String> = first.machines.as_ref().unwrap().iter().map(|m| m.name.to_string()).collect();
+        assert_eq!(names, vec!["forge", "gone", "social"]);
+        assert_eq!((health(&first, 0), health(&first, 1), health(&first, 2)), (Health::Unknown, Health::Unknown, Health::Offline));
+        assert_eq!(reasons(&first, 1), vec![NOT_READ_YET]);
+        assert_eq!(reasons(&first, 2), vec!["dial tcp: connect: connection timed out"]);
+        assert_eq!(online(&first), 2);
+        assert_eq!(first.needs.len(), 4);
+
+        // Home's needs, forge and social return while gone is still read.
+        let mut latest = first;
+        for _ in 0..3 {
+            latest = next();
+        }
+        assert_eq!((health(&latest, 0), health(&latest, 1), health(&latest, 2)), (Health::Attention, Health::Unknown, Health::Offline));
+        assert_eq!(reasons(&latest, 2), vec!["dial tcp: connect: connection timed out"], "home's reason when the read gave none");
+        assert_eq!(online(&latest), 2, "a machine still being read is not counted offline");
+
+        // Gone's read fails: only then is it offline.
+        release.send(()).unwrap();
+        let last = next();
+        assert_eq!(health(&last, 1), Health::Offline);
+        assert_eq!(reasons(&last, 1), vec!["connection timed out"]);
+        assert_eq!(online(&last), 1);
+        assert_eq!(last.needs[2].unread, vec!["connection timed out".to_string()]);
+        worker.join().unwrap();
+        assert!(readings.try_recv().is_err(), "one reading per read");
+
+        // Next tick: what answered last time stands while it is read again.
+        let (published, readings) = mpsc::channel::<Reading>();
+        let (release, wait) = mpsc::channel::<()>();
+        let worker = std::thread::spawn(move || {
+            let wait = std::sync::Mutex::new(wait);
+            tick(
+                || needs::Reading { home: true, ..Default::default() },
+                || Ok(vec![found("forge", 2, ""), found("gone", 1, "")]),
+                |f: &Found| {
+                    let _ = wait.lock().unwrap().recv_timeout(Duration::from_secs(10));
+                    (machine(f, Err("refused"), None), needs::Reading { machine: f.name.clone(), unread: vec!["refused".into()], ..Default::default() })
+                },
+                Some(&last),
+                &mut |r| {
+                    let _ = published.send(r);
+                },
+            );
+        });
+        let first = readings.recv_timeout(Duration::from_secs(5)).expect("a reading");
+        assert_eq!(health(&first, 0), Health::Attention, "forge's last reading stands");
+        assert_eq!(health(&first, 1), Health::Unknown, "a failed machine is read again, not carried");
+        drop(release);
+        worker.join().unwrap();
     }
 
     #[test]
