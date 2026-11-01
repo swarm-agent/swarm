@@ -40,7 +40,7 @@ else
   setup_fail "no base to diff against: refs/remotes/origin/dev is missing and SWARM_BASE is not set"
 fi
 
-changed="$(git diff --name-only "$base" HEAD)" || setup_fail "git diff --name-only ${base} HEAD failed (${base_from})"
+changed="$(git diff --name-only "$base" HEAD)"
 console_changed="$(grep -E '^(console/|Cargo\.(toml|lock)$|rust-toolchain(\.toml)?$)' <<<"$changed" || true)"
 if [ -z "$console_changed" ]; then
   echo "console: no changes; skipped"
