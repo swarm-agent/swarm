@@ -53,8 +53,17 @@ type agentStallCall struct {
 	// backgroundID and action are a bash call on a background command.
 	backgroundID string
 	action       string
-	start        int64
-	ended        bool
+	// background is a bash call asked to run its command in the background
+	// (background:true).
+	background bool
+	// resultBackgroundID and stillRunning are read from the call's end
+	// event (providerManagedV3ToolBackgroundFields): the background command
+	// it names (started, moved to the background, or read), and whether a
+	// wait returned with that command still running.
+	resultBackgroundID string
+	stillRunning       bool
+	start              int64
+	ended              bool
 }
 
 // target is what a stall row names for the call.
@@ -124,8 +133,11 @@ func agentStallCallsFromEvents(events []pebblestore.V3SessionEvent, runID string
 		Arguments string `json:"arguments"`
 		CallID    string `json:"call_id"`
 		Instance  string `json:"tool_instance_id"`
+		// End events of a bash call on a background command.
+		BackgroundID string `json:"background_id"`
+		StillRunning bool   `json:"still_running"`
 	}
-	ended := map[string]bool{}
+	ended := map[string]payload{}
 	// streaming is the in-flight calls seen only through deltas so far.
 	streaming := map[string]string{}
 	var calls []agentStallCall
@@ -146,16 +158,22 @@ func agentStallCallsFromEvents(events []pebblestore.V3SessionEvent, runID string
 			call := firstNonEmptyString(p.Instance, p.CallID)
 			switch ev.EventType {
 			case "session.tool.delta":
-				if call != "" && !ended[call] {
+				if _, done := ended[call]; call != "" && !done {
 					streaming[call] = p.ToolName
 				}
 			case "session.tool.started":
 				activity = true
 				delete(streaming, call)
-				calls = append(calls, agentStallCallOf(p.ToolName, p.Arguments, ev.TsUnixMs, ended[call]))
+				end, done := ended[call]
+				c := agentStallCallOf(p.ToolName, p.Arguments, ev.TsUnixMs, done)
+				c.resultBackgroundID = strings.TrimSpace(end.BackgroundID)
+				c.stillRunning = done && end.StillRunning
+				calls = append(calls, c)
 			default:
 				activity = true
-				ended[call] = true
+				if _, done := ended[call]; !done {
+					ended[call] = p
+				}
 			}
 		}
 		if activity && ev.TsUnixMs > lastActivity {
@@ -215,6 +233,7 @@ func agentStallCallOf(name, arguments string, start int64, ended bool) agentStal
 				c.action = "wait" // as the bash tool reads it
 			}
 		} else {
+			c.background, _ = args["background"].(bool)
 			line, _, _ := strings.Cut(str("command"), "\n")
 			c.command = fleetAgentsClip(strings.Join(strings.Fields(line), " "), 200)
 		}
@@ -276,30 +295,48 @@ func detectAgentStall(calls []agentStallCall, lastActivity, now int64, th agentS
 }
 
 // agentStallWaitStart reads, when the run's newest call is a bash wait on a
-// background command, since when that command has been waited on: back over
-// the unbroken run of calls on the same background_id (waits, status reads)
-// and sleeps, to the bash call before them that started it (its start, and
-// its command), else to the first call of that run. The command started at
-// or before that point, so the time is never longer than it really is, and
-// it stays the same while the waiting goes on (one episode).
+// background command that is still going (in flight, or ended with the
+// command still_running), since when that command has been waited on, and
+// the command:
+//
+//   - the bash call whose result names the same background_id started it
+//     (background:true, or a foreground command moved to the background):
+//     its start and its command;
+//   - else, back over the unbroken run of calls on the same background_id
+//     (waits, status reads) and sleeps, the bash call right before them
+//     when it asked for background:true and its result names no other id
+//     (an end event without the id);
+//   - else the first call of that run, and no command (the stall names the
+//     wait's own target).
+//
+// The command started at or before that point, so the time is never longer
+// than it really is, and it stays the same while the waiting goes on (one
+// episode). A wait that ended without still_running ended with its command:
+// no wait stall (the run goes on to the idle check).
 func agentStallWaitStart(calls []agentStallCall) (int64, string, bool) {
 	c := calls[0]
-	if c.tool != "bash" || c.backgroundID == "" || c.action != "wait" || c.start <= 0 {
+	if c.tool != "bash" || c.backgroundID == "" || c.action != "wait" || c.start <= 0 || (c.ended && !c.stillRunning) {
 		return 0, "", false
 	}
-	since := c.start
+	since, joined := c.start, true
 	for _, p := range calls[1:] {
-		if p.tool != "bash" || p.start <= 0 {
+		if p.start <= 0 {
 			break
 		}
-		if p.backgroundID == c.backgroundID || (p.backgroundID == "" && agentStallSleepCommand(p.command)) {
+		if p.tool == "bash" && p.backgroundID == "" && p.resultBackgroundID == c.backgroundID {
+			return p.start, p.command, true
+		}
+		if !joined {
+			continue // only the exact start can still be found
+		}
+		if p.tool == "bash" && (p.backgroundID == c.backgroundID || (p.backgroundID == "" && agentStallSleepCommand(p.command))) {
 			since = p.start
 			continue
 		}
-		if p.backgroundID == "" {
+		if p.tool == "bash" && p.backgroundID == "" && p.background && p.resultBackgroundID == "" {
 			return p.start, p.command, true
 		}
-		break
+		joined = false
 	}
 	return since, "", true
 }

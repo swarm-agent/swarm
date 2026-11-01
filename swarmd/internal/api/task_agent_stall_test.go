@@ -35,10 +35,22 @@ func (e *agentStallEvents) add(eventType string, at int64, payload map[string]an
 // call records one tool call starting at start and, when end > 0, ending.
 func (e *agentStallEvents) call(id, tool string, args map[string]any, start, end int64) {
 	e.t.Helper()
+	e.callResult(id, tool, args, start, end, nil)
+}
+
+// callResult is call whose end event also carries result fields, as
+// providerManagedV3ToolBackgroundFields copies them from a bash result
+// (background_id, still_running).
+func (e *agentStallEvents) callResult(id, tool string, args map[string]any, start, end int64, result map[string]any) {
+	e.t.Helper()
 	raw, _ := json.Marshal(args)
 	e.add("session.tool.started", start, map[string]any{"call_id": id, "tool_name": tool, "arguments": string(raw)})
 	if end > 0 {
-		e.add("session.tool.completed", end, map[string]any{"call_id": id, "tool_name": tool})
+		payload := map[string]any{"call_id": id, "tool_name": tool}
+		for k, v := range result {
+			payload[k] = v
+		}
+		e.add("session.tool.completed", end, payload)
 	}
 }
 
@@ -89,7 +101,7 @@ func TestAgentStallSleepPollingDetectedOncePerEpisode(t *testing.T) {
 	// A proper wait ends the poll streak: no stall from polling. The
 	// background command it waits on has run 23 min since its start (t0),
 	// which is a long command.
-	e.call("w", "bash", map[string]any{"background_id": "bg_1", "command": "wait", "wait_seconds": 600}, t0+21*m, t0+22*m)
+	e.callResult("w", "bash", map[string]any{"background_id": "bg_1", "command": "wait", "wait_seconds": 600}, t0+21*m, t0+22*m, map[string]any{"background_id": "bg_1", "still_running": true})
 	if got := agentStallDetect(t, e, t0, t0+23*m); got == nil || got.Kind != pebblestore.ProjectTaskAgentStallLongCommand || got.Since != t0 || got.BackgroundID != "bg_1" {
 		t.Fatalf("a bash wait counted as polling, or its command not timed: %+v", got)
 	}
@@ -302,7 +314,7 @@ func TestAgentStallRepeatedWaitsOnOneBackgroundCommandAreOneLongCommand(t *testi
 	wait := map[string]any{"background_id": "bg_1", "command": "wait", "wait_seconds": 600}
 	e := &agentStallEvents{t: t, runID: "run-1"}
 	e.call("start", "bash", map[string]any{"command": "make e2e", "background": true}, t0, t0+1000)
-	e.call("w1", "bash", wait, t0+2000, t0+10*m+2000)
+	e.callResult("w1", "bash", wait, t0+2000, t0+10*m+2000, map[string]any{"background_id": "bg_1", "still_running": true})
 	e.call("w2", "mcp__swarm__bash", wait, t0+10*m+5000, 0)
 	if got := agentStallDetect(t, e, t0, t0+16*m); got != nil {
 		t.Fatalf("16 min of waiting flagged: %+v", got)
@@ -311,9 +323,9 @@ func TestAgentStallRepeatedWaitsOnOneBackgroundCommandAreOneLongCommand(t *testi
 	if stall == nil || stall.Kind != pebblestore.ProjectTaskAgentStallLongCommand || stall.Since != t0 || stall.Command != "make e2e" || stall.BackgroundID != "bg_1" || stall.ForMs != 21*m {
 		t.Fatalf("hung background command not named from its start: %+v", stall)
 	}
-	// Between two waits (the newest one ended) and on the next wait it is the
-	// same episode.
-	e.add("session.tool.completed", t0+20*m+5000, map[string]any{"call_id": "w2", "tool_name": "bash"})
+	// Between two waits (the newest one ended at its bound, the command
+	// still running) and on the next wait it is the same episode.
+	e.add("session.tool.completed", t0+20*m+5000, map[string]any{"call_id": "w2", "tool_name": "bash", "background_id": "bg_1", "still_running": true})
 	if gap := agentStallDetect(t, e, t0, t0+21*m); gap == nil || gap.Episode() != stall.Episode() {
 		t.Fatalf("the gap between waits changed the episode: %+v", gap)
 	}
@@ -347,5 +359,106 @@ func TestAgentStallRepeatedWaitsOnOneBackgroundCommandAreOneLongCommand(t *testi
 	g.call("a3", "bash", wait, t0+12*m, 0)
 	if got := agentStallDetect(t, g, t0, t0+22*m); got == nil || got.Kind != pebblestore.ProjectTaskAgentStallLongCommand || got.Since != t0+m || got.BackgroundID != "bg_1" {
 		t.Fatalf("waits without their start not timed from the first: %+v", got)
+	}
+}
+
+// Purpose: a long_command stall on a bash wait names the command the wait
+// is on: the bash call whose result returned the same background_id (a
+// background:true start, or a foreground command moved to the background),
+// never another bash call that happens to come before the wait. Threat
+// (review finding): agentStallWaitStart took the nearest earlier non-sleep
+// bash call as the start, so a second background command (`make lint`,
+// bg_2), a foreground `ls`, or a foreground build moved to the background
+// with its own id was reported as the hung command. Without the exact start
+// in the read, the stall names the wait's own target, timed from the waits
+// (never longer than real). Authority: agentStallCallsFromEvents (the end
+// event's background_id, copied by providerManagedV3ToolBackgroundFields)
+// and agentStallWaitStart. Layer: the pure decision over recorded event
+// shapes.
+func TestAgentStallWaitNamesOnlyItsOwnBackgroundCommand(t *testing.T) {
+	t0 := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
+	m := time.Minute.Milliseconds()
+	wait := map[string]any{"background_id": "bg_1", "command": "wait", "wait_seconds": 600}
+	waitTarget := "bash background_id=bg_1 command=wait"
+
+	// Two background commands, then a wait on the first.
+	e := &agentStallEvents{t: t, runID: "run-1"}
+	e.callResult("e2e", "bash", map[string]any{"command": "make e2e", "background": true}, t0, t0+1000, map[string]any{"background_id": "bg_1"})
+	e.callResult("lint", "bash", map[string]any{"command": "make lint", "background": true}, t0+m, t0+m+1000, map[string]any{"background_id": "bg_2"})
+	e.call("w", "bash", wait, t0+2*m, 0)
+	got := agentStallDetect(t, e, t0, t0+21*m)
+	if got == nil || got.Kind != pebblestore.ProjectTaskAgentStallLongCommand || got.Command != "make e2e" || got.BackgroundID != "bg_1" || got.Since != t0 {
+		t.Fatalf("the wait on bg_1 named another command: %+v", got)
+	}
+
+	// Unrelated foreground calls between the start and the waits: an `ls`,
+	// and a build that reached its limit and moved to the background as bg_3.
+	f := &agentStallEvents{t: t, runID: "run-1"}
+	f.callResult("e2e", "bash", map[string]any{"command": "make e2e", "background": true}, t0, t0+1000, map[string]any{"background_id": "bg_1"})
+	f.call("ls", "bash", map[string]any{"command": "ls"}, t0+m, t0+m+500)
+	f.callResult("build", "bash", map[string]any{"command": "make build"}, t0+2*m, t0+7*m, map[string]any{"background_id": "bg_3"})
+	f.callResult("w1", "bash", wait, t0+8*m, t0+18*m, map[string]any{"background_id": "bg_1", "still_running": true})
+	f.call("w2", "bash", wait, t0+18*m, 0)
+	got = agentStallDetect(t, f, t0, t0+21*m)
+	if got == nil || got.Kind != pebblestore.ProjectTaskAgentStallLongCommand || got.Command != "make e2e" || got.BackgroundID != "bg_1" || got.Since != t0 {
+		t.Fatalf("an unrelated call between the start and the waits named: %+v", got)
+	}
+	// A wait on the moved build names the build, from its own start.
+	f.add("session.tool.completed", t0+19*m, map[string]any{"call_id": "w2", "tool_name": "bash", "background_id": "bg_1", "still_running": false})
+	f.call("w3", "bash", map[string]any{"background_id": "bg_3", "command": "wait"}, t0+19*m+1000, 0)
+	got = agentStallDetect(t, f, t0, t0+23*m)
+	if got == nil || got.Kind != pebblestore.ProjectTaskAgentStallLongCommand || got.Command != "make build" || got.BackgroundID != "bg_3" || got.Since != t0+2*m {
+		t.Fatalf("a wait on a moved foreground command not named from it: %+v", got)
+	}
+
+	// The start not known (its end event names no id) and a foreground `ls`
+	// before the wait: the stall names the wait itself, from the wait's start.
+	g := &agentStallEvents{t: t, runID: "run-1"}
+	g.call("e2e", "bash", map[string]any{"command": "make e2e", "background": true}, t0, t0+1000)
+	g.call("ls", "bash", map[string]any{"command": "ls"}, t0+m, t0+m+500)
+	g.call("w", "bash", wait, t0+2*m, 0)
+	if got := agentStallDetect(t, g, t0, t0+21*m); got != nil {
+		t.Fatalf("a wait timed past an unrelated call: %+v", got)
+	}
+	got = agentStallDetect(t, g, t0, t0+23*m)
+	if got == nil || got.Kind != pebblestore.ProjectTaskAgentStallLongCommand || got.Command != waitTarget || got.Since != t0+2*m {
+		t.Fatalf("the unrelated `ls` was named as the hung command: %+v", got)
+	}
+}
+
+// Purpose: a bash wait that returned because its background command ended
+// (no still_running in its end event) ends that command's long_command:
+// the run goes on to the idle check, so an agent that then hangs is
+// no_activity from the wait's end. Threat (review finding): detectAgentStall
+// kept reporting "`make e2e` running N min" after the command had exited,
+// until the agent's next tool call, and hid the real hang (no new episode,
+// no wake). Authority: agentStallWaitStart (still_running from the end
+// event) and detectAgentStall. Layer: the pure decision over recorded event
+// shapes.
+func TestAgentStallWaitThatEndedWithItsCommandIsNotALongCommand(t *testing.T) {
+	t0 := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
+	m := time.Minute.Milliseconds()
+	wait := map[string]any{"background_id": "bg_1", "command": "wait", "wait_seconds": 600}
+	e := &agentStallEvents{t: t, runID: "run-1"}
+	e.callResult("e2e", "bash", map[string]any{"command": "make e2e", "background": true}, t0, t0+1000, map[string]any{"background_id": "bg_1"})
+	e.callResult("w1", "bash", wait, t0+m, t0+11*m, map[string]any{"background_id": "bg_1", "still_running": true})
+	// The command finishes at 19 min; the wait returns its exit.
+	e.callResult("w2", "bash", wait, t0+11*m, t0+19*m, map[string]any{"background_id": "bg_1", "still_running": false, "exit_code": 0})
+	if got := agentStallDetect(t, e, t0, t0+20*m); got != nil {
+		t.Fatalf("an ended command still reported: %+v", got)
+	}
+	if got := agentStallDetect(t, e, t0, t0+33*m); got != nil {
+		t.Fatalf("14 min quiet after the wait flagged: %+v", got)
+	}
+	got := agentStallDetect(t, e, t0, t0+34*m)
+	if got == nil || got.Kind != pebblestore.ProjectTaskAgentStallNoActivity || got.Since != t0+19*m || got.ForMs != 15*m {
+		t.Fatalf("the hang after the command ended not no_activity: %+v", got)
+	}
+	// An end event without still_running (no result fields) is an ended wait too.
+	f := &agentStallEvents{t: t, runID: "run-1"}
+	f.call("e2e", "bash", map[string]any{"command": "make e2e", "background": true}, t0, t0+1000)
+	f.call("w", "bash", wait, t0+m, t0+19*m)
+	if got := agentStallDetect(t, f, t0, t0+21*m); got != nil {
+		t.Fatalf("a wait ended without still_running reported: %+v", got)
 	}
 }

@@ -139,7 +139,9 @@ changing the run.
   background command for `agent_poll_stall_minutes` (default 10; a bash
   `command=wait` is a real wait, not a poll), (b) has one tool call running
   for `agent_command_stall_minutes` (default 20; bash waits on one background
-  command count from that command's start, `agentStallWaitStart`), or (c) has
+  command count from that command's start, `agentStallWaitStart`; the command
+  named is the bash call whose result returned that `background_id`, else the
+  wait itself; a wait ended without `still_running` is no long command), or (c) has
   had no tool call
   or message for `agent_idle_stall_minutes` (default 15) wakes the
   conversation with milestone `stalled` and the row's `agent_stall`. The

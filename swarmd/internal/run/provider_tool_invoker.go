@@ -1590,6 +1590,7 @@ func providerManagedV3ToolEventPayload(eventType string, config providerToolInvo
 		if exitCode, ok := providerManagedV3ToolExitCode(result.Output); ok {
 			payload["exit_code"] = exitCode
 		}
+		providerManagedV3ToolBackgroundFields(payload, call, result)
 	}
 	if summary := formatProviderManagedToolCompletedOutput(call, result); summary != "" && summary != output {
 		payload["summary"] = summary
@@ -1625,6 +1626,33 @@ func providerManagedV3ToolExitCode(toolOutput string) (int, bool) {
 		return 0, false
 	}
 	return int(value), true
+}
+
+// providerManagedV3ToolBackgroundFields copies a bash call's background
+// command fields from its own structured result onto the terminal event:
+// background_id (the command it started, moved to the background or read)
+// and still_running (a wait that returned before the command ended). The
+// event's output is only the command's text, and the agent stall check
+// (api agentStallCallsFromEvents) reads these to tell which call started a
+// background command and whether a wait ended with it still running.
+func providerManagedV3ToolBackgroundFields(payload map[string]any, call tool.Call, result tool.Result) {
+	name := strings.TrimSpace(firstNonEmptyString(result.Name, call.Name))
+	if i := strings.LastIndex(name, "__"); i >= 0 {
+		name = name[i+2:] // a provider's namespaced name (mcp__swarm__bash)
+	}
+	if canonicalToolName(name) != "bash" {
+		return
+	}
+	fields := decodeToolPayload(strings.TrimSpace(result.Output))
+	if fields == nil {
+		return
+	}
+	if id, ok := fields["background_id"].(string); ok && strings.TrimSpace(id) != "" {
+		payload["background_id"] = strings.TrimSpace(id)
+	}
+	if running, ok := fields["still_running"].(bool); ok {
+		payload["still_running"] = running
+	}
 }
 
 const providerManagedV3ToolEventOutputMarker = "\n[tool output truncated]"
