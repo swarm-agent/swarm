@@ -46,7 +46,7 @@ import (
 // list route already read and its answers' workflow_tasks_hint names, and
 // exclude_status and worker_id, which the task list route reads (derived
 // from its source by the route-accepts parity check).
-const manageProjectsDefinitionSHA256 = "dcb0e9c49e2b399b8391dcbbec35b51972925c388226cbdb41edf30ca7afb564"
+const manageProjectsDefinitionSHA256 = "3791f90657f91450fa722b0c19512f4197f7e4a153a5b4aaa6888e7dfd8d22a0"
 
 // Purpose: the catalog is the only place manage_projects exists. The
 // Orchestrator's definition is generated from the declarations and stays the

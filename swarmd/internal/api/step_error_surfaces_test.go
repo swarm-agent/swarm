@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"swarm/packages/swarmd/internal/jobautomation"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 	"swarm/packages/swarmd/internal/workspace"
 )
 
@@ -63,6 +65,114 @@ func TestTaskProgressNamesAnInfrastructureError(t *testing.T) {
 	}
 	if state, reason := pebblestore.ProjectTaskState(task, fp.Outcome, false, false); state != pebblestore.ProjectTaskStateWorkflowFailed || strings.Contains(reason, "infrastructure") || !strings.Contains(reason, "send the task back") {
 		t.Fatalf("a failed check reads %q: %q", state, reason)
+	}
+}
+
+// landedAfterInfraErrorDelivery is the production shape of a delivery whose
+// environment check could not run while its push still ran: gate passed,
+// console (in the folder's environment, allowed to fail) ended error with
+// error_kind checkout, review passed with verdict ok and the host push step
+// succeeded, so the runner ended the delivery error.
+func landedAfterInfraErrorDelivery(push string) jobautomation.Delivery {
+	head := strings.Repeat("ab", 20)
+	return jobautomation.Delivery{ID: "jdel-landed", AutomationID: "auto-1", AutomationName: "review loop", State: jobautomation.StateError, Round: 1, Head: head, FinishedAt: 9000,
+		Steps: []jobautomation.StepRecord{
+			{ID: "gate", Type: jobautomation.StepRun, State: jobautomation.StateSucceeded, StartedAt: 1000, FinishedAt: 2000},
+			{ID: "console", Type: jobautomation.StepRun, State: jobautomation.StateError, ErrorKind: jobautomation.ErrorKindCheckout, StartedAt: 2000, FinishedAt: 3000,
+				Reason: "the script could not run: could not make the step's checkout in the environment"},
+			{ID: "review", Type: jobautomation.StepAgent, State: jobautomation.StateSucceeded, StartedAt: 3000, FinishedAt: 6000, Outcome: map[string]any{"verdict": "ok"}},
+			{ID: "push-clean", Type: jobautomation.StepRun, State: push, StartedAt: 6000, FinishedAt: 8000, Output: "PUSHED " + head},
+		},
+		Definition: []jobautomation.Step{{ID: "gate", Type: jobautomation.StepRun}, {ID: "console", Type: jobautomation.StepRun, In: jobautomation.RunInEnvironment, ContinueOnFailure: true}, {ID: "review", Type: jobautomation.StepAgent}, {ID: "push-clean", Type: jobautomation.StepRun}},
+	}
+}
+
+// Purpose: a delivery whose push step succeeded landed the work even though
+// an earlier environment step could not run (error, error_kind checkout):
+// task_state is landed with a state_reason naming the pushed sha and, after
+// it, the step that could not run; the workflow state is done (not failed),
+// the count bucket done and nothing asks for attention; a wait's milestone
+// reads landed. Every description of task states (the manage_projects
+// help, docs/task-progress.md) states this same rule.
+// Threat: a delivery that really landed reported blocked_infra / failed with
+// "rerun the failed steps", so an AI reruns work already on the target, and
+// descriptions of task_state that drift apart. Owners:
+// deliveryLandedAfterStepError (taskProgressOutcome, deliveryWorkflowState),
+// pebblestore.ProjectTaskState and pebblestore.ProjectTaskLandedOverStepError;
+// computeTaskProgress over a real delivery record is the narrowest layer
+// that derives outcome, workflow state and task state together, the same
+// values get_task, list_tasks, wait rows and linked machines read.
+func TestTaskStateLandedWhenPushSucceededAfterAnInfraError(t *testing.T) {
+	d := landedAfterInfraErrorDelivery(jobautomation.StateSucceeded)
+	task := pebblestore.ProjectTaskRecord{ID: "task", ProjectID: "project", Status: "needs_review", Agent: "coder"}
+	p := computeTaskProgress(task, []jobautomation.Delivery{d}, nil, 30000)
+	sha := shortCommit(d.Head)
+	if !strings.HasPrefix(p.Outcome, "pushed "+sha) || !strings.Contains(p.Outcome, "; run console could not run (infrastructure: checkout)") {
+		t.Fatalf("outcome = %q", p.Outcome)
+	}
+	if p.Workflow == nil || p.Workflow.State != workflowDone || len(p.Workflow.Deliveries) != 1 || p.Workflow.Deliveries[0].State != workflowDone {
+		t.Fatalf("workflow = %+v", p.Workflow)
+	}
+	if p.State == progressFailed {
+		t.Fatalf("progress state failed for a landed delivery: %q", p.Summary)
+	}
+	state, reason := pebblestore.ProjectTaskState(task, p.Outcome, false, false)
+	if state != pebblestore.ProjectTaskStateLanded || !strings.HasPrefix(reason, "pushed "+sha) || !strings.Contains(reason, "; run console could not run (infrastructure: checkout)") || strings.Contains(reason, "rerun the failed steps") {
+		t.Fatalf("task state %q reason %q", state, reason)
+	}
+	if bucket := pebblestore.ProjectTaskBucket(task, p.Outcome, false, false); bucket != pebblestore.ProjectTaskCountDone || pebblestore.ProjectTaskNeedsAttention(task, p.Outcome, false, false) {
+		t.Fatalf("landed delivery bucket %q", bucket)
+	}
+	// The step that could not run stays visible on the delivery's steps.
+	steps := deliveryStepsResult(d)
+	if len(steps) != 4 || steps[1].Status != jobautomation.StateError || steps[1].ErrorKind != jobautomation.ErrorKindCheckout {
+		t.Fatalf("steps_result = %+v", steps)
+	}
+
+	// The same rule, in the same words, on every description of task_state:
+	// the MCP/Orchestrator manage_projects help and the documented API
+	// (docs/task-progress.md). A wait's guidance is built from the same
+	// constant.
+	rule := pebblestore.ProjectTaskLandedOverStepError
+	manageProjects, ok := tool.CatalogToolNamed("manage_projects")
+	if !ok || !strings.Contains(manageProjects.Description, rule) {
+		t.Fatalf("manage_projects description lacks the landed rule %q", rule)
+	}
+	doc, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "task-progress.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(strings.Fields(string(doc)), " "), rule) {
+		t.Fatalf("docs/task-progress.md lacks the landed rule %q", rule)
+	}
+}
+
+// Purpose: the same environment step error with no push (the push step did
+// not run, or the step that could not run is the push itself) hands nothing
+// over: task_state stays blocked_infra with "rerun the failed steps", the
+// workflow state failed. Threat: the landed rule widening into calling an
+// unpushed delivery landed. Owners and layer as above.
+func TestTaskStateBlockedInfraWhenNothingLanded(t *testing.T) {
+	task := pebblestore.ProjectTaskRecord{ID: "task", ProjectID: "project", Status: "needs_review", Agent: "coder"}
+	notPushed := landedAfterInfraErrorDelivery(jobautomation.StateSkipped)
+	pushErrored := landedAfterInfraErrorDelivery(jobautomation.StateSucceeded)
+	pushErrored.Steps[1].State, pushErrored.Steps[1].ErrorKind = jobautomation.StateSucceeded, ""
+	pushErrored.Steps[3].State, pushErrored.Steps[3].ErrorKind = jobautomation.StateError, jobautomation.ErrorKindCheckout
+	for name, d := range map[string]jobautomation.Delivery{"no push": notPushed, "push could not run": pushErrored} {
+		p := computeTaskProgress(task, []jobautomation.Delivery{d}, nil, 30000)
+		if !strings.HasPrefix(p.Outcome, "error ") || !strings.Contains(p.Outcome, "(infrastructure: checkout)") {
+			t.Fatalf("%s: outcome = %q", name, p.Outcome)
+		}
+		if p.Workflow == nil || p.Workflow.State != workflowFailed {
+			t.Fatalf("%s: workflow = %+v", name, p.Workflow)
+		}
+		state, reason := pebblestore.ProjectTaskState(task, p.Outcome, false, false)
+		if state != pebblestore.ProjectTaskStateBlockedInfra || !strings.Contains(reason, "rerun the failed steps") {
+			t.Fatalf("%s: task state %q reason %q", name, state, reason)
+		}
+		if !pebblestore.ProjectTaskNeedsAttention(task, p.Outcome, false, false) {
+			t.Fatalf("%s: blocked_infra does not need attention", name)
+		}
 	}
 }
 

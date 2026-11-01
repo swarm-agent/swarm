@@ -105,7 +105,10 @@ changing the run.
     `pending_request`, or a blocked/failed agent run). A delivery a step
     could not run (`error` with `error_kind`) reads `blocked_infra`, its
     reason ending "next: fix the machine or folder, then rerun the failed
-    steps"; one a check or review ended (`blocked`/`failed`, including out
+    steps", only when it handed nothing over: one whose push or deliver step
+    still succeeded reads `landed` (workflow state `done`, milestone
+    `landed: pushed <sha>; <step> could not run (infrastructure: <kind>)`);
+    one a check or review ended (`blocked`/`failed`, including out
     of rounds) reads `workflow_failed`, "next: send the task back with the
     findings, or archive it". Local and linked rows carry the same word.
   - `delivery_id` and `workflow_steps_result` describe the shown delivery:

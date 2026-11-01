@@ -510,6 +510,16 @@ func deliveryProgressState(state string) string {
 	return workflowRunning
 }
 
+// deliveryWorkflowState is d's workflow state: deliveryProgressState of its
+// own state, except that a delivery that ended error yet handed the work
+// over (deliveryLandedAfterStepError) is done: the work landed.
+func deliveryWorkflowState(d jobautomation.Delivery) string {
+	if deliveryLandedAfterStepError(d) {
+		return workflowDone
+	}
+	return deliveryProgressState(d.State)
+}
+
 // deliveryStepsRecorded reports whether a succeeded delivery's steps have all
 // recorded a result. A step still pending, waiting or running means its
 // result (a push, a deliver) is not recorded yet, whatever the delivery's own
@@ -654,7 +664,7 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 			latest = append(latest, d)
 			continue
 		}
-		view := taskProgressDelivery{ID: d.ID, Workflow: d.AutomationName, AttemptID: attemptID, Run: d.Reruns + 1, PreviousAttempt: true, State: deliveryProgressState(d.State), Steps: len(d.Steps), Round: d.Round}
+		view := taskProgressDelivery{ID: d.ID, Workflow: d.AutomationName, AttemptID: attemptID, Run: d.Reruns + 1, PreviousAttempt: true, State: deliveryWorkflowState(d), Steps: len(d.Steps), Round: d.Round}
 		if len(d.Steps) > 0 {
 			step := currentStep(d)
 			view.Step, view.StepType = step+1, d.Steps[step].Type
@@ -672,7 +682,7 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 		anyFailed, anyBlocked, anySentBack, anyConflict := false, false, false, false
 		for i, d := range latest {
 			step := currentStep(d)
-			state := deliveryProgressState(d.State)
+			state := deliveryWorkflowState(d)
 			if state == workflowDone && !deliveryStepsRecorded(d) {
 				// The runner marked the delivery succeeded but a step (the
 				// push or deliver at its end) has not recorded its result
@@ -781,7 +791,7 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 			}
 		}
 		for i, step := range d.Steps {
-			if step.Type == jobautomation.StepRun && !d.EnvironmentRunStep(step.ID) && step.State == jobautomation.StateSucceeded && d.State == jobautomation.StateSucceeded && i > lastAgent && lastAgent >= 0 && deliveredWhere == "" {
+			if step.Type == jobautomation.StepRun && !d.EnvironmentRunStep(step.ID) && step.State == jobautomation.StateSucceeded && (d.State == jobautomation.StateSucceeded || deliveryLandedAfterStepError(d)) && i > lastAgent && lastAgent >= 0 && deliveredWhere == "" {
 				deliveredWhere = step.ID
 				if out := strings.TrimSpace(step.Output); out != "" {
 					deliveredWhere += ": " + out

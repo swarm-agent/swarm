@@ -180,8 +180,9 @@ const (
 	// step could not run (its checkout, the environment, the lease, a
 	// missing or unusable script): an infrastructure problem, not the work.
 	// Nothing waits on the person; fix the machine or folder, then rerun the
-	// failed steps. Count bucket blocked_infra (idle once 7 days old, as
-	// not_integrated).
+	// failed steps. Only when nothing landed: a delivery whose push or
+	// deliver step still succeeded is landed (ProjectTaskLandedOverStepError).
+	// Count bucket blocked_infra (idle once 7 days old, as not_integrated).
 	ProjectTaskStateBlockedInfra = "blocked_infra"
 	// ProjectTaskStateWorkflowFailed: the workflow delivery ended blocked or
 	// failed: a check or review ended it (including sent back until its
@@ -193,7 +194,9 @@ const (
 	// bucket workflow_failed (idle once 7 days old, as not_integrated).
 	ProjectTaskStateWorkflowFailed = "workflow_failed"
 	// ProjectTaskStateLanded: the work was handed over: pushed, delivered or
-	// integrated. Count bucket done.
+	// integrated, including by a delivery in which another step could not
+	// run (outcome "pushed <sha>; <step> could not run (infrastructure:
+	// <kind>)", ProjectTaskLandedOverStepError). Count bucket done.
 	ProjectTaskStateLanded = "landed"
 	// ProjectTaskStateDone: finished with nothing to hand over (finished,
 	// completed, rejected, superseded), archived, or a workflow step's own
@@ -216,6 +219,13 @@ const (
 	ProjectTaskWorkflowFailedNext = "a check or review ended it; nothing waits on the person; next: send the task back with the findings, or archive it"
 	ProjectTaskRebaseConflictNext = "Swarm's rebase onto the target conflicted and its resolver could not resolve it; the work is intact on its branch and nothing waits on the person; next: send the task back to rebase onto the target, then rerun the delivery (it rebases again)"
 )
+
+// ProjectTaskLandedOverStepError is the rule every description of task
+// states says the same way (manage_projects, a wait's guidance,
+// docs/task-progress.md): a delivery that pushed or delivered is landed even
+// when another of its steps could not run, and blocked_infra is only for a
+// delivery that handed nothing over.
+const ProjectTaskLandedOverStepError = "a delivery whose push or deliver step succeeded is landed even if another step could not run (its reason names that step after the pushed sha); blocked_infra only when nothing landed"
 
 // ProjectTaskState is the task's state and a one-line reason, from the same
 // inputs and the same bucket as ProjectTaskBucket (the list counts), so a

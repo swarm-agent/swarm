@@ -97,7 +97,15 @@ func taskProgressOutcome(class, state string, latest []jobautomation.Delivery, w
 			if step < len(d.Steps) {
 				kind = d.Steps[step].ErrorKind
 			}
-			return clipOutcome("error " + firstNonEmptyString(stepLabel(d, step), "workflow") + " (infrastructure: " + firstNonEmptyString(kind, "could not run") + ")")
+			label := firstNonEmptyString(stepLabel(d, step), "workflow")
+			infra := " (infrastructure: " + firstNonEmptyString(kind, "could not run") + ")"
+			if deliveryLandedAfterStepError(d) {
+				// The push or deliver step still handed the work over: it
+				// landed ("pushed <head12>" first, so the state is landed),
+				// and the step that could not run stays named after it.
+				return clipOutcome(deliveryHandover(d) + "; " + label + " could not run" + infra)
+			}
+			return clipOutcome("error " + label + infra)
 		default:
 			return clipOutcome("running " + firstNonEmptyString(stepLabel(d, step), "workflow"))
 		}
@@ -126,15 +134,10 @@ func taskProgressOutcome(class, state string, latest []jobautomation.Delivery, w
 // (the owner's script, such as a push: pushed <head12>). "" when it handed
 // nothing over.
 func deliveryHandover(d jobautomation.Delivery) string {
-	lastAgent := -1
-	for i, step := range d.Steps {
-		if step.Type == jobautomation.StepAgent && step.State == jobautomation.StateSucceeded {
-			lastAgent = i
-		}
-	}
+	lastAgent := deliveryLastAgent(d)
 	out := ""
 	for i, step := range d.Steps {
-		if step.State != jobautomation.StateSucceeded {
+		if step.State != jobautomation.StateSucceeded || !deliveryStepHandsOver(d, i, lastAgent) {
 			continue
 		}
 		switch {
@@ -149,7 +152,7 @@ func deliveryHandover(d jobautomation.Delivery) string {
 			default:
 				out = "delivered " + firstNonEmptyString(to, "result")
 			}
-		case step.Type == jobautomation.StepRun && !d.EnvironmentRunStep(step.ID) && lastAgent >= 0 && i > lastAgent:
+		default:
 			if isProgressCommit(d.Head) {
 				out = "pushed " + shortCommit(d.Head)
 			} else {
@@ -158,6 +161,53 @@ func deliveryHandover(d jobautomation.Delivery) string {
 		}
 	}
 	return out
+}
+
+// deliveryLastAgent is the index of d's last succeeded agent step (its
+// review), -1 when none succeeded.
+func deliveryLastAgent(d jobautomation.Delivery) int {
+	lastAgent := -1
+	for i, step := range d.Steps {
+		if step.Type == jobautomation.StepAgent && step.State == jobautomation.StateSucceeded {
+			lastAgent = i
+		}
+	}
+	return lastAgent
+}
+
+// deliveryStepHandsOver reports whether step i of d is one that hands the
+// work over: a deliver step, or a host run step after the last succeeded
+// agent step lastAgent (the owner's script, such as a push). A run step
+// before it, or one in the folder's environment, is a check.
+func deliveryStepHandsOver(d jobautomation.Delivery, i, lastAgent int) bool {
+	step := d.Steps[i]
+	switch step.Type {
+	case jobautomation.StepDeliver:
+		return true
+	case jobautomation.StepRun:
+		return !d.EnvironmentRunStep(step.ID) && lastAgent >= 0 && i > lastAgent
+	}
+	return false
+}
+
+// deliveryLandedAfterStepError reports whether a delivery that ended error
+// (a step allowed to fail could not run: its checkout, the environment, the
+// lease) still handed the work over: a push or deliver step succeeded and
+// none of its hand-over steps is one that could not run. Such a delivery
+// landed: its workflow state is done and the task's state landed, with the
+// step that could not run named after the landed part. This is the one
+// rule the outcome, the workflow state and the delivered-to read.
+func deliveryLandedAfterStepError(d jobautomation.Delivery) bool {
+	if d.State != jobautomation.StateError {
+		return false
+	}
+	lastAgent := deliveryLastAgent(d)
+	for i, step := range d.Steps {
+		if step.State == jobautomation.StateError && deliveryStepHandsOver(d, i, lastAgent) {
+			return false
+		}
+	}
+	return deliveryHandover(d) != ""
 }
 
 // projectTaskOutcomeCounts counts tasks by what happened to their work

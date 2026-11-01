@@ -133,12 +133,22 @@ and `idle`, using the same bucket as the list counts):
 | `running` | an agent or workflow still works on it | run status planning/in_progress/running/…; or outcome `running <step>`, `sent_back (round n)`, `workflow pending` | `in_progress` |
 | `waiting` | queued for capacity, or waiting for the provider's usage limit to reset | run status `queued`/`pending`, or `limit_waiting` (reason: "waiting for the provider's limit to reset (until …): provider …; continues by itself"; linked-machine `list_tasks` rows add it as `state_reason`, in the machine's own words when it gives them, unless a live or stall reason is already there) | `waiting` |
 | `needs_you` | the person must act | run status `pending_approval`, `needs_input` (a pending request), `failed`, `blocked` (and other run failures); an unknown outcome after the run ended | `needs_attention` |
-| `blocked_infra` | a workflow step could not run (its checkout, the environment, the lease, a missing or unusable script): an infrastructure problem, not the work; nothing waits on the person | outcome `error <step> (infrastructure: <kind>)`; reason ends "next: fix the machine or folder, then rerun the failed steps"; `get_task` `next_action: rerun_failed_steps` (`manage_jobs` with `job_id` `task/<project>/<task>`) | `blocked_infra` |
+| `blocked_infra` | a workflow step could not run (its checkout, the environment, the lease, a missing or unusable script): an infrastructure problem, not the work; nothing waits on the person | outcome `error <step> (infrastructure: <kind>)`, only when the delivery handed nothing over; reason ends "next: fix the machine or folder, then rerun the failed steps"; `get_task` `next_action: rerun_failed_steps` (`manage_jobs` with `job_id` `task/<project>/<task>`) | `blocked_infra` |
 | `workflow_failed` | a check or review ended the workflow delivery, or Swarm's rebase of the work onto its target conflicted and its resolver agents did not resolve it (see [Rebasing](automations.md#rebasing); the work is intact on its branch); nothing waits on the person | outcome `blocked …` (including sent back until its rounds ran out) or `failed …`, reason ending "next: send the task back with the findings, or archive it"; or outcome `conflict …`, reason ending "next: send the task back to rebase onto the target, then rerun the delivery (it rebases again)"; `get_task` `next_action: reopen_task` (`read_task_session` on a linked machine) | `workflow_failed` |
-| `landed` | the work was handed over | outcome `pushed <sha>`, `delivered <target>`, `integrated` (reason names the SHA or target) | `done` |
+| `landed` | the work was handed over | outcome `pushed <sha>`, `delivered <target>`, `integrated` (reason names the SHA or target); also `pushed <sha>; <step> could not run (infrastructure: <kind>)` when another step of a delivery that pushed or delivered could not run | `done` |
 | `done` | finished with nothing to hand over | outcome `finished`; run status `completed`, `rejected`, `superseded`; an archived task or a workflow step's own task | `done` |
 | `not_integrated` | finished with commits never handed over | outcome `ready to integrate` (reason names the branch); a blocked, failed or errored workflow or unknown outcome once idle | `needs_attention` within 7 days, `idle` after |
 | `stopped` | stopped by the person, or no active run for a day | run status `stopped`, outcome `stopped`, or `stale` | `stopped` |
+
+**Landed wins over a step that could not run.** A step allowed to fail
+(`continue_on_failure`) whose script never ran ends its delivery `error`, but
+the later steps still run. The rule, worded the same in `manage_projects` and
+in a wait's guidance: a delivery whose push or deliver step succeeded is landed even if another step could not run (its reason names that step after the pushed sha); blocked_infra only when nothing landed.
+Such a delivery's `workflow.state` is `done`, a wait's milestone is
+`landed: …`, and the step that could not run stays named in `state_reason`
+(and in the delivery's `steps_result`, status `error` with its `error_kind`).
+The rule holds only when none of the delivery's own hand-over steps (a deliver
+step, or a host run step after its last review) is the one that could not run.
 
 **A working run that is not moving.** A run status of `running` does not say
 the run moves: nothing writes the task record while its run waits. So the
