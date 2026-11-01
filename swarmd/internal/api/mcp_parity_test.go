@@ -156,6 +156,7 @@ var mcpParityLinkedElsewhere = map[string]string{
 	"manage_projects update_environment":      "linked folder environment service (TestHomeManagesLinkedFolderEnvironment, TestLinkedFolderEnvironmentAccessAndSecretRules)",
 	"manage_projects rebuild_environment":     "linked folder environment service (TestManageProjectsEnvironmentActionsLocalAndLinked)",
 	"manage_projects wait_environment":        "the home's environment watch (TestEnvironmentWatchWakesWithTheBuildOutcome)",
+	"manage_projects wait_machine":            "the home's durable machine update watch over the linked machine's status (tool.executeMachineWatch; TestMachineWatchWakesWhenALinkedMachineUpdates, TestMachineWatchWakesWhenAnUpdateIsStuckOrFails)",
 	"manage_projects cancel_watch":            "cancels the home's own watches; nothing is sent to the machine (TestEnvironmentWatchPausesAndEndsOnAMachineThatCannotHold)",
 }
 
@@ -814,7 +815,7 @@ var mcpHelpSelfDescribing = map[string]bool{
 // appear.
 var mcpHelpTextProse = func() map[string]string {
 	out := map[string]string{"swarm_workflow": "the portable workflow format's version key (export, import)"}
-	for _, word := range []string{"job_id", "next_cursor", "json_page", "retry_of", "pending_request", "pending_proposals", "waiting_on", "created_at", "steps_result", "workflow_steps_result", "reopen_failure", "summary_source", "result_truncated", "read_full_args", "task_progress", "durable_log"} {
+	for _, word := range []string{"job_id", "next_cursor", "json_page", "retry_of", "pending_request", "pending_proposals", "waiting_on", "created_at", "steps_result", "workflow_steps_result", "reopen_failure", "summary_source", "result_truncated", "read_full_args", "task_progress", "durable_log", "delivery_attempt_id", "delivery_run", "previous_run"} {
 		out[word] = "an answer field the help tells the caller to read"
 	}
 	for _, word := range []string{"needs_input", "needs_review", "needs_you", "blocked_infra", "workflow_failed", "timed_out", "agent_stall", "long_command", "no_activity", "sleep_polling"} {
