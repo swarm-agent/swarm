@@ -543,6 +543,8 @@ func boxDrainSummary(drain executioncapacity.DrainStatus, account string) map[st
 	}
 	reason := ""
 	switch {
+	case drain.EndReason == "expired" && drain.Forced:
+		reason = "forced update not taken: no installer claimed the restart within the grace after the deadline; nothing was interrupted and new runs start again"
 	case drain.EndReason == "expired":
 		reason = fmt.Sprintf("update refused: %d agent run(s) still ran at the deadline and would not resume after a restart; none was interrupted", len(drain.Blockers))
 	case drain.Draining && drain.Forced:

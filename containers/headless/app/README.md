@@ -439,8 +439,10 @@ reviews resume after the restart, so they do not hold it. An agent run in progre
 does not resume after a restart (startup records it interrupted), so at
 `max_seconds` the update is refused, nothing is interrupted and admission reopens,
 unless `force` was set: then the drain is ready over those runs and the restart
-interrupts them. With nothing to install (already current, blocked by a check or
-rolled back) the installer releases a requested drain. `GET /v3/box/drain` reports
+interrupts them. A forced drain the installer does not claim within 30 minutes
+after the deadline ends too (nothing is interrupted and admission reopens). With
+nothing to install (already current, blocked by a check, rolled back or a failed
+build) the installer releases a requested drain. `GET /v3/box/drain` reports
 readiness, start/deadline times, timeout and blocking runs/builds; the machine
 summary (`machine_status`, `manage_fleet status`) shows the drain with
 `requested`, `force`, `forced`, `reason`, the reader's own account's blocking runs

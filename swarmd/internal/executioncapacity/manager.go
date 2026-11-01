@@ -14,6 +14,10 @@ type ManagerConfig struct {
 	DefaultLimit    int
 	MaxQueueWaiters int
 	LimitResolver   func(accountScopeID string) (int, error)
+	// ForcedDrainClaimGrace is how long a forced drain waits after its
+	// deadline for the installer's claim (default
+	// DefaultForcedDrainClaimGrace).
+	ForcedDrainClaimGrace time.Duration
 }
 
 // Manager coordinates execution admission, per-session serialization,
@@ -22,6 +26,8 @@ type Manager struct {
 	defaultLimit    int
 	maxQueueWaiters int
 	limitResolver   func(accountScopeID string) (int, error)
+
+	forcedDrainGrace time.Duration
 
 	mu         sync.Mutex
 	accounts   map[string]*accountState
@@ -70,12 +76,17 @@ func NewManager(cfg ManagerConfig) *Manager {
 	if maxWaiters <= 0 {
 		maxWaiters = DefaultMaxQueueWaiters
 	}
+	grace := cfg.ForcedDrainClaimGrace
+	if grace <= 0 {
+		grace = DefaultForcedDrainClaimGrace
+	}
 	return &Manager{
-		defaultLimit:    defLimit,
-		maxQueueWaiters: maxWaiters,
-		limitResolver:   cfg.LimitResolver,
-		accounts:        make(map[string]*accountState),
-		changed:         make(chan struct{}),
+		forcedDrainGrace: grace,
+		defaultLimit:     defLimit,
+		maxQueueWaiters:  maxWaiters,
+		limitResolver:    cfg.LimitResolver,
+		accounts:         make(map[string]*accountState),
+		changed:          make(chan struct{}),
 	}
 }
 

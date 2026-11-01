@@ -12,6 +12,14 @@ import (
 
 const DefaultDrainTimeout = 2 * time.Hour
 
+// DefaultForcedDrainClaimGrace is how long a forced drain stays ready after
+// its deadline for the installer to claim the restart (ClaimRestart). An
+// unclaimed forced drain then ends (expired) and admission reopens, so a
+// forced drain never holds new runs without a time limit (automatic updates
+// off, the installer timer not running, a build that keeps failing). The
+// installer checks every few minutes and builds before it claims.
+const DefaultForcedDrainClaimGrace = 30 * time.Minute
+
 type DrainBlocker struct {
 	Account string `json:"account"`
 	Session string `json:"session"`
@@ -91,7 +99,11 @@ func (m *Manager) BeginDrainWith(opts DrainOptions, allow func(held, queued []st
 		if opts.Force && !m.drain.Force {
 			m.drain.Force = true
 			if !m.drain.Reserved && !time.Now().Before(m.drain.Deadline) {
+				// Past the deadline before the timer ended the drain:
+				// forced now, and the timer ends it unclaimed after the
+				// grace instead of refusing it.
 				m.drain.Forced = true
+				m.drainTimer.Reset(time.Until(m.drain.Deadline.Add(m.forcedDrainGrace)))
 			}
 			m.signalChangedLocked()
 		}
@@ -121,10 +133,13 @@ func (m *Manager) BeginDrainWith(opts DrainOptions, allow func(held, queued []st
 		if m.drain.Since != now || !m.drain.Draining || m.drain.Reserved {
 			return
 		}
-		if m.drain.Force {
+		if m.drain.Force && !m.drain.Forced {
 			// Forced: ready over the runs still running, which the
-			// restart records interrupted. New runs stay held.
+			// restart records interrupted. New runs stay held until
+			// the installer claims the restart, at most the grace;
+			// unclaimed then, the drain ends (expired).
 			m.drain.Forced = true
+			m.drainTimer.Reset(time.Until(m.drain.Deadline.Add(m.forcedDrainGrace)))
 			m.signalChangedLocked()
 			return
 		}
@@ -232,7 +247,10 @@ func (m *Manager) drainStatusLocked() DrainStatus {
 		// The timer may not have fired yet; the deadline decides.
 		out.Forced = true
 	}
-	out.TimedOut = out.EndReason == "expired" || (out.Draining && !out.Reserved && !out.Forced && !time.Now().Before(out.Deadline))
+	// A forced drain not claimed within the grace after its deadline is
+	// timed out (and no longer claimable) even before its timer ends it.
+	unclaimed := out.Draining && out.Forced && !out.Reserved && !time.Now().Before(out.Deadline.Add(m.forcedDrainGrace))
+	out.TimedOut = out.EndReason == "expired" || unclaimed || (out.Draining && !out.Reserved && !out.Forced && !time.Now().Before(out.Deadline))
 	out.Ready = out.Draining && !out.TimedOut && !m.closed && (len(out.Blockers) == 0 || out.Forced)
 	out.Reason = drainReason(out)
 	return out
@@ -255,6 +273,8 @@ func drainReason(s DrainStatus) string {
 		return fmt.Sprintf("%d agent run(s) (%s)", len(s.Blockers), strings.Join(parts, ", "))
 	}
 	switch {
+	case s.EndReason == "expired" && s.Forced:
+		return "the forced update was not taken: no installer claimed the restart within the grace after the deadline (automatic updates off, the installer not running, or its build failed), so nothing was interrupted and new runs start again"
 	case s.EndReason == "expired":
 		return "the update was refused: " + runs() + " still running at the deadline would not resume after a restart, so none was interrupted and new runs start again; request_update with force restarts over them"
 	case s.EndReason == "cancelled" && !s.Draining:

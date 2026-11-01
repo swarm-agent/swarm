@@ -1023,8 +1023,8 @@ update_requested() {
 }
 
 # Reopen admission held by a requested drain when there is nothing this
-# update can install (already current, the candidate failed a check or was
-# rolled back), so a request never holds work for nothing. A drain the
+# update can install (already current, the candidate failed a check, was
+# rolled back or failed to build), so a request never holds work for nothing. A drain the
 # installer reserved for its restart is never cancelled this way.
 release_requested_drain() {
   update_requested || return 0
@@ -1272,6 +1272,7 @@ finish_update() (
   # A separate process, so a failing step stops the build (errexit).
   if ! bash "$INSTALLER" build-release "$commit"; then
     update_state failed "building ${commit:0:9} failed; Swarm keeps running ${running:0:9} and tries again at the next update" "$commit"
+    release_requested_drain "building ${commit:0:9} failed"
     return 1
   fi
   # An automatic update drains only an idle machine: draining a busy machine

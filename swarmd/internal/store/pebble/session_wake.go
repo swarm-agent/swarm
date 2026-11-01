@@ -482,6 +482,10 @@ type V3MachineWatchRecord struct {
 	// CandidateSince when the watch first saw it waiting (Unix ms).
 	Candidate      string `json:"candidate,omitempty"`
 	CandidateSince int64  `json:"candidate_since,omitempty"`
+	// DrainSince is the start (Unix ms) of an update drain the watch saw
+	// still running, so its timing out wakes the watch even when the drain
+	// began before the watch (request_update, then wait_machine).
+	DrainSince int64 `json:"drain_since,omitempty"`
 	// StuckAfterMinutes: a candidate waiting this long wakes the watch.
 	StuckAfterMinutes int    `json:"stuck_after_minutes"`
 	RunID             string `json:"run_id,omitempty"`

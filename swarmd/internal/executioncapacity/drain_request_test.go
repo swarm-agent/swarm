@@ -161,3 +161,72 @@ func TestRequestedDrainRefusesAtDeadlineUnlessForced(t *testing.T) {
 		cancel()
 	}
 }
+
+// Purpose:
+//   - Requirement: a forced drain is bounded. Past its deadline it is ready
+//     for the installer's restart claim only for ForcedDrainClaimGrace; a
+//     forced drain no installer claims by then (automatic updates off, the
+//     installer timer not running, a build that keeps failing) ends
+//     (expired, Forced kept so the reason says the forced update was not
+//     taken), cannot be claimed, never releases the running run, and reopens
+//     admission so a held new run starts.
+//   - Threat: a forced drain that holds every new run on the machine without
+//     a time limit because nothing ever claims it.
+//   - Boundary: Manager.BeginDrainWith's deadline timer and its grace reset,
+//     drainStatusLocked (TimedOut, Ready), ClaimRestart, the admission fence;
+//     the manager owns all of them, so it is the narrowest layer.
+func TestForcedDrainEndsWhenNoInstallerClaimsIt(t *testing.T) {
+	m := NewManager(ManagerConfig{ForcedDrainClaimGrace: 100 * time.Millisecond})
+	defer m.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	running, err := m.Acquire(ctx, AcquireRequest{AccountScopeID: "a", SessionID: "s-long", RunID: "r-long"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ended := make(chan DrainStatus, 1)
+	m.SetDrainEndObserver(func(s DrainStatus) { ended <- s })
+	if _, err := m.BeginDrainWith(DrainOptions{Timeout: 50 * time.Millisecond, Requested: true, Force: true}, nil); err != nil {
+		t.Fatal(err)
+	}
+	// A new run arrives and is held by the drain.
+	admitted := make(chan error, 1)
+	go func() {
+		l, err := m.Acquire(ctx, AcquireRequest{AccountScopeID: "b", SessionID: "s-new", RunID: "r-new"})
+		if l != nil {
+			_ = l.Release()
+		}
+		admitted <- err
+	}()
+	var s DrainStatus
+	select {
+	case s = <-ended:
+	case <-ctx.Done():
+		t.Fatal("an unclaimed forced drain never ended")
+	}
+	if s.EndReason != "expired" || !s.Forced || !s.TimedOut || s.Ready {
+		t.Fatalf("unclaimed forced drain ended as: %+v", s)
+	}
+	if !time.Now().After(s.Deadline.Add(100 * time.Millisecond)) {
+		t.Fatalf("the forced drain ended before its grace: deadline %v", s.Deadline)
+	}
+	now := m.DrainStatus()
+	if now.Draining || now.Ready || !now.TimedOut || !strings.Contains(now.Reason, "forced update was not taken") {
+		t.Fatalf("status after the forced drain ended: %+v", now)
+	}
+	if _, err := m.ClaimRestart(now.Generation, strings.Repeat("c", 32)); err == nil {
+		t.Fatal("an ended forced drain was claimed for a restart")
+	}
+	select {
+	case err := <-admitted:
+		if err != nil {
+			t.Fatalf("the held run was not admitted after the drain ended: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("admission stayed closed after the forced drain ended")
+	}
+	if running.IsReleased() {
+		t.Fatal("the drain released the running run")
+	}
+	_ = running.Release()
+}

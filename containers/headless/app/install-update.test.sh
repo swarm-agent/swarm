@@ -423,6 +423,19 @@ run_update
 (finish_update) || true
 [[ $(state state) == failed && $(running_commit) == "$c3" ]] || fail "a failed build changed the running build: $(cat "$UPDATE_STATE")"
 [[ -d $OPT/releases/$old3 ]] && ! grep -q "builder prune" "$log" || fail "something was cleaned up after a failed build"
+# 6b. Purpose: a requested drain is released when the build fails, so a
+# request never holds new runs to its deadline (or, forced, to its claim
+# grace) with nothing to install. Threat: a build that keeps failing holds
+# every new run on a machine that asked for an update. finish_update owns the
+# build -> release order; requested_api is the daemon stand-in (3d).
+(
+  : >"$log"
+  local_api() { requested_api "$@"; }
+  (finish_update --automatic) >/dev/null 2>&1 || true
+  [[ $(state state) == failed && $(running_commit) == "$c3" ]] || fail "a failed requested build changed the running build: $(cat "$UPDATE_STATE")"
+  grep -q '^drain /v3/box/drain -X DELETE' "$log" || fail "a requested drain was held after a failed build: $(cat "$log")"
+  ! grep -q '^drain /v3/box/drain -X POST' "$log" || fail "a failed build took the drain: $(cat "$log")"
+)
 rm "$work/build-fails"
 
 # 7. A release merge that adds nothing to a reviewed dev commit counts as it;

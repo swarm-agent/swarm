@@ -192,6 +192,11 @@ func EvaluateMachineWatch(w *pebblestore.V3MachineWatchRecord, v MachineUpdateVi
 		}
 		return event, changed
 	}
+	// A drain seen still running is remembered: when it ends timed out the
+	// watch wakes, whether it began before the watch or after.
+	if d := v.Drain; d != nil && d.Draining && d.SinceMs != 0 && d.SinceMs != w.DrainSince {
+		w.DrainSince, changed = d.SinceMs, true
+	}
 	pending := u != nil && u.Candidate != "" && !sameCommit(u.Candidate, running) && u.State != "current" && u.State != "installed"
 	if !pending {
 		if w.Candidate != "" || w.CandidateSince != 0 {
@@ -202,7 +207,7 @@ func EvaluateMachineWatch(w *pebblestore.V3MachineWatchRecord, v MachineUpdateVi
 	if (u.State == "failed" || u.State == "rolled_back") && u.At >= w.CreatedAt {
 		return &MachineWatchEvent{Kind: MachineWatchFailed, From: running, To: u.Candidate, State: u.State, Why: "install error: " + u.Reason}, changed
 	}
-	if d := v.Drain; d != nil && d.EndReason == "expired" && d.SinceMs >= w.CreatedAt {
+	if d := v.Drain; d != nil && d.EndReason == "expired" && (d.SinceMs >= w.CreatedAt || (w.DrainSince != 0 && d.SinceMs == w.DrainSince)) {
 		why := "drain timed out"
 		if d.Reason != "" {
 			why += ": " + d.Reason

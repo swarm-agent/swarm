@@ -12,7 +12,9 @@ import (
 //   - Requirement: a machine watch wakes exactly when the machine runs
 //     another commit (full and short forms of one commit are the same), when
 //     an update failed after the watch began, when the drain for it timed out
-//     after the watch began, or when a candidate has waited longer than the
+//     after the watch began or after the watch saw it still running (the
+//     documented flow: request_update starts the drain, then wait_machine),
+//     or when a candidate has waited longer than the
 //     watch's stuck_minutes (measured from when the watch first saw it, kept
 //     in the record); a candidate that changes restarts that clock, and an
 //     update that is current clears it.
@@ -95,8 +97,31 @@ func TestEvaluateMachineWatch(t *testing.T) {
 	if event == nil || event.Kind != MachineWatchStuck || !strings.HasPrefix(event.Why, "drain timed out: update refused") {
 		t.Fatalf("timed-out drain: %+v", event)
 	}
-	timedOut.Drain.SinceMs = created - 1
+	// request_update, then wait_machine: the drain began before the watch,
+	// which saw it still running; its timing out wakes the watch.
+	before := created - 60_000
+	w = watch()
+	runningDrain := MachineUpdateView{Commit: "aaaaaaaaa1111", Update: update("draining", "ccccccccc3333", now.UnixMilli()), Drain: &MachineDrainState{Draining: true, Requested: true, BlockingRuns: 1, SinceMs: before}}
+	if event, changed := EvaluateMachineWatch(w, runningDrain, now); event != nil || !changed || w.DrainSince != before {
+		t.Fatalf("a running drain was not remembered: %+v %v %+v", event, changed, w)
+	}
+	if event, changed := EvaluateMachineWatch(w, runningDrain, now.Add(time.Minute)); event != nil || changed {
+		t.Fatalf("the same running drain woke or changed the record: %+v %v", event, changed)
+	}
+	timedOut.Drain.SinceMs = before
+	event, _ = EvaluateMachineWatch(w, timedOut, now.Add(2*time.Minute))
+	if event == nil || event.Kind != MachineWatchStuck || !strings.HasPrefix(event.Why, "drain timed out: update refused") {
+		t.Fatalf("a drain seen running then timed out did not wake: %+v", event)
+	}
+	// A drain that began before the watch and had already ended when the
+	// watch began (never seen running) does not wake it, nor does another
+	// drain that timed out.
 	if event, _ := EvaluateMachineWatch(watch(), timedOut, now); event != nil {
 		t.Fatalf("a drain that timed out before the watch woke it: %+v", event)
+	}
+	other := timedOut
+	other.Drain = &MachineDrainState{TimedOut: true, EndReason: "expired", SinceMs: before - 1, Reason: "update refused"}
+	if event, _ := EvaluateMachineWatch(w, other, now.Add(2*time.Minute)); event != nil {
+		t.Fatalf("an older drain the watch never saw woke it: %+v", event)
 	}
 }
