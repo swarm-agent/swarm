@@ -155,6 +155,7 @@ pub fn session(shell: &Value, run: &Value, pending: bool) -> Session {
         outbox: vec![],
         // A task watch keeps the Companion idle; its work shows beside it.
         waiting_on: map::task_wait(run),
+        earlier: Default::default(),
         run: Some(clock),
     }
 }

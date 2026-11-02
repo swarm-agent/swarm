@@ -231,6 +231,7 @@ pub fn session(shell: &Value, run: &Value, pending: bool, projects: &[Project]) 
         calls: vec![],
         outbox: vec![],
         waiting_on,
+        earlier: Default::default(),
         run: Some(clock),
     })
 }

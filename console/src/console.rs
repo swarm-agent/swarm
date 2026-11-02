@@ -23,6 +23,7 @@ mod background;
 mod commands;
 mod companion;
 mod context;
+mod earlier;
 mod fleet;
 mod fleet_keys;
 mod fleet_live;
@@ -225,6 +226,8 @@ struct Pane {
     /// The conversation's scroll position. While it sits at the bottom it
     /// follows new text; scrolled up, it stays where you put it.
     scroll: gpui::ScrollHandle,
+    /// What it drew last, for loading earlier messages (earlier.rs).
+    earlier: earlier::PaneEarlier,
 }
 
 pub struct Console {
@@ -240,6 +243,10 @@ pub struct Console {
     /// Every open pane: the main window's (those in `layout`) and those
     /// popped out into their own window (see popout.rs).
     panes: Vec<Pane>,
+    /// Earlier pages asked of Swarm and not answered yet, by session id,
+    /// with the session's paging as it was then (earlier.rs). Asked while
+    /// drawing, hence the cell.
+    older_asked: std::cell::RefCell<HashMap<data::Text, data::Earlier>>,
     /// The main window's split panes and focus; empty when none is open.
     layout: Layout,
     /// Collapsed: the left sidebar shrinks to an icon rail.
@@ -495,7 +502,8 @@ impl Console {
             projects: if demo { data::projects() } else { vec![live::placeholder_project()] },
             project: 0,
             project_menu: false,
-            panes: vec![Pane { id: PaneId(0), session: 0, tray: false, tab: background::BarTab::Tasks, scroll: gpui::ScrollHandle::new() }],
+            panes: vec![Pane { id: PaneId(0), session: 0, tray: false, tab: background::BarTab::Tasks, scroll: gpui::ScrollHandle::new(), earlier: Default::default() }],
+            older_asked: Default::default(),
             layout: Layout::single(),
             left_collapsed: false,
             fleet_open: false,
@@ -698,7 +706,7 @@ impl Console {
         let axis = if how == Open::Down { Axis::Column } else { Axis::Row };
         let id = self.layout.alloc();
         if self.layout.place(id, None, axis, false) {
-            self.panes.push(Pane { id, session, tray: false, tab: background::BarTab::Tasks, scroll: gpui::ScrollHandle::new() });
+            self.panes.push(Pane { id, session, tray: false, tab: background::BarTab::Tasks, scroll: gpui::ScrollHandle::new(), earlier: Default::default() });
         }
     }
 
@@ -1069,14 +1077,19 @@ impl Console {
         };
         let si = pane.session;
         let s = &self.sessions[si];
+        // A page of earlier messages arrived above since the last paint: the
+        // view holds on what it showed (earlier::marker), not on the bottom.
+        let hold = self.hold(pane, s);
         // Follow the tail: at the bottom at the last paint (or never scrolled),
         // the conversation stays at the bottom as text arrives. Scrolled up, it
         // stays put until you scroll back down.
-        {
+        if hold.is_none() {
             let (offset, max) = (pane.scroll.offset(), pane.scroll.max_offset());
             if max.height <= px(0.) || offset.y <= -(max.height - px(12.)) {
                 pane.scroll.scroll_to_bottom();
             }
+            // Near the top: the page before (at most one read at a time).
+            self.want_older(id);
         }
         // The Companion's pane (companion.rs) is outside the layout too, but
         // it is no pop-out: it has no close, split, pop-out or drag.
@@ -1166,13 +1179,20 @@ impl Console {
 
         // Consecutive tool calls read as one tight stack, not separate blocks.
         let mut entries: Vec<AnyElement> = Vec::new();
-        // The Companion's earlier history, a page at a time on request.
-        if companion && !s.entries.is_empty() {
-            entries.extend(self.companion_history_row(cx));
-        }
+        // Earlier messages loading, or why they did not come.
+        entries.extend(self.older_row(pid, s, cx));
+        let first = entries.len();
         let mut tools: Vec<AnyElement> = Vec::new();
         let stack = |tools: Vec<AnyElement>| div().flex().flex_col().gap(px(3.)).children(tools).into_any_element();
         for (ei, entry) in s.entries.iter().enumerate() {
+            // Where what was shown begins: the page above ends its own stack.
+            if let Some(h) = hold.as_ref().filter(|h| h.at == ei) {
+                if !tools.is_empty() {
+                    entries.push(stack(std::mem::take(&mut tools)));
+                }
+                pane.scroll.scroll_to_top_of_item(entries.len());
+                entries.push(earlier::marker(h.shift));
+            }
             let drawn = self.render_entry(pid, ei, entry, cx);
             if matches!(entry, Entry::Tool { .. }) {
                 tools.push(drawn);
@@ -1185,6 +1205,9 @@ impl Console {
         }
         if !tools.is_empty() {
             entries.push(stack(tools));
+        }
+        if self.drawing(pane, s, first, hold.is_some()) {
+            self.check_after_paint(id, cx);
         }
         // Sent, not in Swarm's record yet.
         let base = s.entries.len();
@@ -1456,11 +1479,17 @@ impl Console {
                     .min_h_0()
                     .overflow_y_scroll()
                     .track_scroll(&pane.scroll)
+                    // Scrolled near the top: the page before.
+                    .on_scroll_wheel(cx.listener(move |this, _: &gpui::ScrollWheelEvent, _, cx| {
+                        if this.want_older(PaneId(pid)) {
+                            cx.notify();
+                        }
+                    }))
                     .px_4()
                     .py_3()
                     .flex()
                     .flex_col()
-                    .gap_3()
+                    .gap(earlier::GAP)
                     .children(entries),
             )
             .children(background)

@@ -884,6 +884,24 @@ pub struct Session {
     pub outbox: Vec<(Text, usize)>,
     /// While the run is asleep on tasks: what it waits for.
     pub waiting_on: Option<TaskWait>,
+    /// Its history before what `entries` shows, read a page at a time as
+    /// the person scrolls up.
+    pub earlier: Earlier,
+}
+
+/// A conversation's earlier pages as the follow loop holds them (live.rs
+/// read_older). Default: nothing earlier.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct Earlier {
+    /// Swarm may hold messages before the first of `entries`.
+    pub more: bool,
+    /// How many of `entries`, at the front, came from earlier pages.
+    pub older: usize,
+    /// Page reads answered so far, read or failed: a read the console
+    /// asked for is over once this moves.
+    pub answers: u32,
+    /// Why the last page read failed.
+    pub error: Option<Text>,
 }
 
 /// A call to your machine (machine_run, machine_read, machine_write,
@@ -1055,6 +1073,7 @@ pub fn sessions() -> Vec<Session> {
             calls: vec![],
             outbox: vec![],
             waiting_on: None,
+            earlier: Default::default(),
             run: None,
             title: "Ship job automations".into(),
             project: 0,
@@ -1159,6 +1178,7 @@ pub fn sessions() -> Vec<Session> {
             calls: vec![],
             outbox: vec![],
             waiting_on: None,
+            earlier: Default::default(),
             run: None,
             title: "Fix flaky sandbox test".into(),
             project: 0,
@@ -1200,6 +1220,7 @@ pub fn sessions() -> Vec<Session> {
             calls: vec![],
             outbox: vec![],
             waiting_on: None,
+            earlier: Default::default(),
             run: None,
             title: "Where do retries live?".into(),
             project: 0,
@@ -1227,6 +1248,7 @@ pub fn sessions() -> Vec<Session> {
             calls: vec![],
             outbox: vec![],
             waiting_on: None,
+            earlier: Default::default(),
             run: None,
             title: "Landing page refresh".into(),
             project: 1,
@@ -1279,6 +1301,7 @@ pub fn sessions() -> Vec<Session> {
             calls: vec![],
             outbox: vec![],
             waiting_on: None,
+            earlier: Default::default(),
             run: None,
             title: "Release notes draft".into(),
             project: 1,
@@ -1302,6 +1325,7 @@ pub fn sessions() -> Vec<Session> {
             calls: vec![],
             outbox: vec![],
             waiting_on: None,
+            earlier: Default::default(),
             run: None,
             title: "Nightly dependency audit".into(),
             project: 2,

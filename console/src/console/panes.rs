@@ -165,7 +165,14 @@ impl Console {
                 let id = self.layout.alloc();
                 // Only beside a pane of this layout (place focuses it).
                 if self.layout.contains(target) && self.layout.place(id, Some(target), axis, before) {
-                    self.panes.push(Pane { id, session: d.session, tray: false, tab: super::background::BarTab::Tasks, scroll: gpui::ScrollHandle::new() });
+                    self.panes.push(Pane {
+                        id,
+                        session: d.session,
+                        tray: false,
+                        tab: super::background::BarTab::Tasks,
+                        scroll: gpui::ScrollHandle::new(),
+                        earlier: Default::default(),
+                    });
                 }
             }
         }

@@ -48,8 +48,8 @@ pub struct Snapshot {
     pub media: Vec<crate::data::Media>,
     /// Models to pick from, with favorites; None when not read this time.
     pub catalog: Option<Catalog>,
-    /// The Companion this reading followed: its session, the tasks it
-    /// started and whether earlier history may exist. None until the
+    /// The Companion this reading followed: its session and the tasks it
+    /// started (its history paging is on its Session). None until the
     /// console names one (Live::follow_companion) and Swarm lists it.
     pub companion: Option<CompanionFeed>,
 }
@@ -60,10 +60,6 @@ pub struct CompanionFeed {
     pub session_id: String,
     /// Its tasks in every project, grouped (companion::work).
     pub work: Vec<super::companion::Work>,
-    /// Earlier messages than those read may exist (Some(false): none).
-    pub more_older: Option<bool>,
-    /// Why the last read of an earlier page failed.
-    pub older_error: Option<String>,
 }
 
 /// The slow-changing facts about the machine, read on their own thread so
@@ -306,11 +302,13 @@ struct Detail {
     hydrated: bool,
     /// Earlier pages read on request (oldest first), shown before `entries`,
     /// the oldest message sequence read so far, whether Swarm may hold
-    /// earlier ones, and a page read under way.
+    /// earlier ones, why the last page read failed and how many page reads
+    /// were answered (Earlier::answers).
     older: Vec<Entry>,
     oldest_seq: u64,
     more_older: Option<bool>,
     older_error: Option<String>,
+    older_answers: u32,
 }
 
 impl Live {
@@ -1173,6 +1171,12 @@ impl Model<'_> {
             "include_active": true
         });
         let snap = self.client.post("/v3/sync/hydrate", body).map_err(err)?;
+        self.hydrated(&snap, ids);
+        Ok(())
+    }
+
+    /// Keeps what Swarm's hydrate answer says of each conversation.
+    fn hydrated(&mut self, snap: &Value, ids: &[String]) {
         for id in ids {
             let messages = snap.get("messages_by_session").and_then(|m| m.get(id)).and_then(Value::as_array).cloned().unwrap_or_default();
             let view = snap.get("session_views_by_id").and_then(|v| v.get(id)).cloned().unwrap_or(Value::Null);
@@ -1186,10 +1190,14 @@ impl Model<'_> {
             let d = self.details.entry(id.clone()).or_default();
             d.entries = map::entries(&messages);
             // Where an earlier page starts; a full tail may have more before it.
-            if d.older.is_empty() {
-                d.oldest_seq = messages.first().and_then(|m| m.get("global_seq")).and_then(Value::as_u64).unwrap_or(0);
-                d.more_older = Some(messages.len() >= HYDRATE_TAIL && d.oldest_seq > 0);
-            }
+            // Pages read before belong to the old tail: messages that arrived
+            // since would fall between them and this one (missing or twice),
+            // and entries carry no sequence to join them by. They go, and load
+            // again as the person scrolls up.
+            d.older.clear();
+            d.older_error = None;
+            d.oldest_seq = messages.first().and_then(|m| m.get("global_seq")).and_then(Value::as_u64).unwrap_or(0);
+            d.more_older = Some(messages.len() >= HYDRATE_TAIL && d.oldest_seq > 0);
             d.model = map::model_line(&view);
             d.pending = map::pending(&permissions);
             d.calls = map::client_calls(&permissions);
@@ -1200,7 +1208,6 @@ impl Model<'_> {
                 self.waiting.remove(id);
             }
         }
-        Ok(())
     }
 
     /// Follows the Companion the console named: on a new name (or a new
@@ -1259,6 +1266,7 @@ impl Model<'_> {
             }
             Err(e) => d.older_error = Some(e.to_string()),
         }
+        d.older_answers = d.older_answers.wrapping_add(1);
         true
     }
 
@@ -1582,6 +1590,8 @@ impl Model<'_> {
         if let Some(d) = self.details.get(id) {
             session.entries = d.older.clone();
             session.entries.extend(d.entries.iter().cloned());
+            session.earlier =
+                crate::data::Earlier { more: d.more_older == Some(true), older: d.older.len(), answers: d.older_answers, error: d.older_error.clone().map(Into::into) };
             if !d.live.is_empty() {
                 session.entries.push(Entry::Assistant(d.live.clone().into()));
             }
@@ -1605,15 +1615,11 @@ impl Model<'_> {
 
     fn snapshot(&self) -> Snapshot {
         let sessions: Vec<Session> = self.order.iter().filter_map(|id| self.session_of(id)).collect();
-        let companion = self.companion.as_ref().filter(|id| self.shells.contains_key(*id)).map(|id| {
-            let d = self.details.get(id);
-            CompanionFeed {
-                session_id: id.clone(),
-                work: super::companion::work(&self.tasks, &self.projects, id),
-                more_older: d.and_then(|d| d.more_older),
-                older_error: d.and_then(|d| d.older_error.clone()),
-            }
-        });
+        let companion = self
+            .companion
+            .as_ref()
+            .filter(|id| self.shells.contains_key(*id))
+            .map(|id| CompanionFeed { session_id: id.clone(), work: super::companion::work(&self.tasks, &self.projects, id) });
         Snapshot { projects: self.projects.clone(), sessions, machine: None, roles: None, usage: None, themes: None, media: self.media.clone(), catalog: None, companion }
     }
 }
@@ -2059,7 +2065,7 @@ mod tests {
     // unreachable, so every Swarm read fails like a lost connection.
     mod companion {
         use super::super::{Client, Detail, Model, older_page};
-        use crate::data::{Entry, RunState};
+        use crate::data::{Earlier, Entry, RunState};
         use serde_json::json;
         use std::collections::{HashMap, HashSet};
         use std::sync::{Mutex, mpsc};
@@ -2154,7 +2160,7 @@ mod tests {
 
             // A failed page read is reported and leaves what is shown alone.
             assert!(m.read_older("cmp"));
-            assert!(m.snapshot().companion.unwrap().older_error.is_some());
+            assert!(m.session_of("cmp").unwrap().earlier.error.is_some());
             assert_eq!(m.session_of("cmp").unwrap().entries.len(), 1);
 
             // A read page goes before the tail, oldest first.
@@ -2167,7 +2173,97 @@ mod tests {
             assert!(matches!(entries.last(), Some(Entry::User(t)) if t.as_ref() == "latest"));
             // Nothing earlier: no further read is made.
             assert!(!m.read_older("cmp"));
-            assert_eq!(m.snapshot().companion.unwrap().more_older, Some(false));
+            assert!(!m.session_of("cmp").unwrap().earlier.more);
+        }
+
+        /// A project conversation beside the Companion (not named here).
+        fn with_conversation(m: &mut Model<'_>) {
+            m.order.push("s1".into());
+            m.shells.insert("s1".into(), json!({"id": "s1", "title": "Ship it", "metadata": {"role": "project_orchestrator", "project_id": "p1"}}));
+        }
+
+        fn message(seq: u64, text: &str) -> serde_json::Value {
+            json!({"id": format!("m{seq}"), "role": "user", "content": text, "global_seq": seq})
+        }
+
+        // Purpose: every conversation pane loads earlier pages on scroll, so
+        // each Session (not only the Companion) must carry its paging state.
+        // Threat: a project conversation silently capped at its tail, or a
+        // failed read the pane cannot show or retry. Authority:
+        // Model::session_of and read_older over Detail; the client is
+        // unreachable, so the read fails like a lost connection.
+        #[test]
+        fn a_conversation_carries_its_paging_state() {
+            let client = Client::new("http://127.0.0.1:9", "unused");
+            let mut m = model(&client);
+            with_conversation(&mut m);
+            let tail = Detail { entries: vec![Entry::User("latest".into())], hydrated: true, oldest_seq: 40, more_older: Some(true), ..Default::default() };
+            m.details.insert("s1".into(), tail);
+            assert!(m.snapshot().companion.is_none(), "no Companion is named: s1 is a project conversation");
+            assert_eq!(m.session_of("s1").unwrap().earlier, Earlier { more: true, older: 0, answers: 0, error: None });
+
+            // A failed read is answered: its error shows, more may still exist,
+            // and what is shown stays.
+            assert!(m.read_older("s1"));
+            let s = m.session_of("s1").unwrap();
+            assert!(s.earlier.error.is_some());
+            assert_eq!((s.earlier.more, s.earlier.older, s.earlier.answers, s.entries.len()), (true, 0, 1, 1));
+
+            // A page read: it counts at the front, the error goes, and the
+            // snapshot's session says the same.
+            let d = m.details.get_mut("s1").unwrap();
+            d.older = vec![Entry::User("first".into()), Entry::User("second".into())];
+            d.more_older = Some(false);
+            d.older_error = None;
+            let s = m.snapshot().sessions.into_iter().find(|s| s.live.as_ref().is_some_and(|l| l.session_id.as_ref() == "s1")).unwrap();
+            assert_eq!(s.earlier, Earlier { more: false, older: 2, answers: 1, error: None });
+            assert_eq!(s.entries.len(), 3);
+            assert!(matches!(&s.entries[0], Entry::User(t) if t.as_ref() == "first"));
+        }
+
+        // Purpose: hydrating a conversation again replaces its tail; pages read
+        // before end where the old tail began, so kept they would leave a gap
+        // or repeat messages that arrived since. Requirement: they are
+        // dropped and the paging restarts from the new tail. Authority:
+        // Model::hydrated (hydrate's answer handling), session_of.
+        #[test]
+        fn hydrating_again_drops_earlier_pages() {
+            let client = Client::new("http://127.0.0.1:9", "unused");
+            let mut m = model(&client);
+            with_conversation(&mut m);
+            let read = Detail {
+                entries: vec![Entry::User("old tail".into())],
+                hydrated: true,
+                older: vec![Entry::User("first".into()), Entry::User("second".into())],
+                oldest_seq: 10,
+                more_older: Some(false),
+                older_error: Some("lost".into()),
+                older_answers: 3,
+                ..Default::default()
+            };
+            m.details.insert("s1".into(), read);
+            let ids = vec!["s1".to_string()];
+
+            // A short new tail: nothing before it.
+            m.hydrated(&json!({"messages_by_session": {"s1": [message(300, "newer"), message(301, "newest")]}}), &ids);
+            let d = &m.details["s1"];
+            assert!(d.older.is_empty());
+            assert_eq!((d.oldest_seq, d.more_older), (300, Some(false)));
+            let s = m.session_of("s1").unwrap();
+            assert_eq!(s.earlier, Earlier { more: false, older: 0, answers: 3, error: None });
+            assert_eq!(s.entries.len(), 2);
+            assert!(matches!(&s.entries[0], Entry::User(t) if t.as_ref() == "newer"));
+
+            // A full tail after pages were read: they go, and more may exist
+            // before its first message.
+            m.details.get_mut("s1").unwrap().older = vec![Entry::User("page".into())];
+            let full: Vec<serde_json::Value> = (0..super::super::HYDRATE_TAIL as u64).map(|i| message(500 + i, "m")).collect();
+            m.hydrated(&json!({"messages_by_session": {"s1": full}}), &ids);
+            let d = &m.details["s1"];
+            assert!(d.older.is_empty());
+            assert_eq!((d.oldest_seq, d.more_older), (500, Some(true)));
+            let s = m.session_of("s1").unwrap();
+            assert_eq!((s.earlier.more, s.earlier.older, s.entries.len()), (true, 0, super::super::HYDRATE_TAIL));
         }
     }
 }

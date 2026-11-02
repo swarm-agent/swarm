@@ -45,6 +45,7 @@ pub(super) fn draft(project: usize) -> Session {
         calls: vec![],
         outbox: vec![],
         waiting_on: None,
+        earlier: Default::default(),
         run: None,
     }
 }
@@ -204,11 +205,8 @@ impl Console {
         for update in updates {
             match update {
                 Update::Snapshot(mut s) => {
-                    // The Companion's work and history paging, as the follow
-                    // loop holds them; an earlier page asked for has come
-                    // (or failed) by now.
+                    // The Companion's work, as the follow loop holds it.
                     self.companion.feed = s.companion.take();
-                    self.companion.older_asked = false;
                     self.apply(s);
                     // Connected: learn whether Swarm has a Companion (a read;
                     // nothing is created until the person opens it), and
@@ -247,7 +245,10 @@ impl Console {
                     self.apply_facts(f);
                     self.follow_theme(cx);
                 }
-                Update::Lost(e) => self.link = Link::Lost(e.into()),
+                Update::Lost(e) => {
+                    self.link = Link::Lost(e.into());
+                    self.forget_older();
+                }
                 Update::Done { what: what @ ("permissions" | "permission"), result, .. } => self.permissions_done(what, result),
                 Update::Done { draft, what, result } => {
                     let linked = what == "link" && result.is_ok();
@@ -289,6 +290,8 @@ impl Console {
                 }
             }
         }
+        // Earlier pages asked for that came (or failed) by now.
+        self.settle_older();
         // The Companion's pane follows its session wherever the list put it.
         self.sync_companion_pane();
         if let Some(live) = &self.live {

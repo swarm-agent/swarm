@@ -40,10 +40,9 @@ pub(super) struct CompanionPage {
     pub ensuring: bool,
     /// The last failure, as Swarm (or the connection) worded it.
     pub error: Option<String>,
-    /// The follow loop's Companion: its tasks and history paging.
+    /// The follow loop's Companion: its tasks. Its earlier messages load as
+    /// in any pane (earlier.rs).
     pub feed: Option<CompanionFeed>,
-    /// An earlier page was asked for and the next snapshot has not come.
-    pub older_asked: bool,
     /// The work item whose detail is open (Work::key, or "watch:" + its
     /// machine/project/task for a watched task this machine cannot show).
     pub detail: Option<String>,
@@ -95,7 +94,14 @@ impl Console {
         match self.companion_index() {
             Some(si) => match self.panes.iter_mut().find(|p| p.id == PANE) {
                 Some(pane) => pane.session = si,
-                None => self.panes.push(super::Pane { id: PANE, session: si, tray: false, tab: super::background::BarTab::Tasks, scroll: gpui::ScrollHandle::new() }),
+                None => self.panes.push(super::Pane {
+                    id: PANE,
+                    session: si,
+                    tray: false,
+                    tab: super::background::BarTab::Tasks,
+                    scroll: gpui::ScrollHandle::new(),
+                    earlier: Default::default(),
+                }),
             },
             None => self.panes.retain(|p| p.id != PANE),
         }
@@ -193,14 +199,6 @@ impl Console {
         cx.notify();
     }
 
-    /// The person asked for earlier messages of the Companion.
-    fn companion_older(&mut self, cx: &mut Context<Self>) {
-        let (Some(live), Some(id)) = (&self.live, self.companion.session_id()) else { return };
-        live.read_older(id);
-        self.companion.older_asked = true;
-        cx.notify();
-    }
-
     /// Approve, reject or stop one of the Companion's tasks, in its own project.
     fn companion_task_act(&mut self, key: &str, act: Act, cx: &mut Context<Self>) {
         let Some(live) = &self.live else { return };
@@ -260,35 +258,6 @@ impl Console {
                 })))
             })
             .into_any_element()
-    }
-
-    /// Above the Companion's conversation: earlier messages on request.
-    pub(super) fn companion_history_row(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let t = &self.theme;
-        let feed = self.companion.feed.as_ref()?;
-        let error = feed.older_error.clone();
-        let label = if self.companion.older_asked {
-            "Reading earlier messages…".to_string()
-        } else if feed.more_older == Some(true) {
-            "Earlier messages".to_string()
-        } else if error.is_none() {
-            return None;
-        } else {
-            "Try reading earlier messages again".to_string()
-        };
-        Some(
-            div()
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap_1()
-                .child(
-                    self.button("companion-older", label, false)
-                        .when(!self.companion.older_asked, |d| d.on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.companion_older(cx)))),
-                )
-                .children(error.map(|e| div().text_size(px(11.)).text_color(t.err).child(format!("Swarm did not return them: {e}"))))
-                .into_any_element(),
-        )
     }
 
     /// The Companion's work, for the left sidebar: what needs the person,
