@@ -200,6 +200,8 @@ impl Group {
 /// Companion's tasks may be in any project).
 #[derive(Clone)]
 pub struct Work {
+    /// The linked machine the task is on; empty for this machine.
+    pub machine: String,
     pub project_id: String,
     pub project: String,
     pub task: Task,
@@ -210,8 +212,25 @@ pub struct Work {
 impl Work {
     /// Stable identity for selection across updates.
     pub fn key(&self) -> String {
-        format!("{}/{}", self.project_id, self.task.key)
+        if self.machine.is_empty() { format!("{}/{}", self.project_id, self.task.key) } else { format!("{}:{}/{}", self.machine, self.project_id, self.task.key) }
     }
+}
+
+/// The Companion's work with the tasks it sent to linked machines (the
+/// home's records), one item each, in the same order.
+pub fn with_linked(mut out: Vec<Work>, records: &[Value]) -> Vec<Work> {
+    let mut seen = std::collections::HashSet::new();
+    for r in records {
+        let (machine, project_id) = (s(r, "machine").to_string(), s(r, "project_id").to_string());
+        if !seen.insert((machine.clone(), project_id.clone(), s(r, "task_id").to_string())) {
+            continue;
+        }
+        let task = super::plan_review::linked_task(r);
+        let updated_at = task.progress.updated_at;
+        out.push(Work { project: format!("{project_id} on {machine}"), machine, project_id, group: Group::of(&task), task, updated_at });
+    }
+    out.sort_by(|a, b| a.group.cmp(&b.group).then(b.updated_at.cmp(&a.updated_at)).then(a.key().cmp(&b.key())));
+    out
 }
 
 /// The Companion's tasks on this machine, from every project's task list the
@@ -225,9 +244,12 @@ pub fn work(tasks: &HashMap<String, Vec<Value>>, projects: &[Project], session_i
     for (project_id, records) in tasks {
         let project = projects.iter().find(|p| p.id.as_ref() == project_id.as_str()).map(|p| p.name.to_string()).unwrap_or_else(|| project_id.clone());
         for t in records.iter().filter(|t| s(t, "origin_session_id") == session_id) {
-            let task = map::task(t);
+            let mut task = map::task(t);
+            if let Some(review) = task.review.as_mut().filter(|r| r.project_id.is_empty()) {
+                review.project_id = project_id.clone().into();
+            }
             let updated_at = ["updated_at", "created_at"].iter().find_map(|k| t.get(*k).and_then(Value::as_u64)).unwrap_or(0);
-            out.push(Work { project_id: project_id.clone(), project: project.clone(), group: Group::of(&task), task, updated_at });
+            out.push(Work { machine: String::new(), project_id: project_id.clone(), project: project.clone(), group: Group::of(&task), task, updated_at });
         }
     }
     out.sort_by(|a, b| a.group.cmp(&b.group).then(b.updated_at.cmp(&a.updated_at)).then(a.key().cmp(&b.key())));

@@ -425,6 +425,42 @@ which answers `{"message": ...}` with the same fields; over MCP,
 is that exact call. Everything from a machine is `untrusted_content`: show it as
 plain text.
 
+#### Reviewing a waiting task's plan
+
+A task waiting to start (`pending_approval`), on this Swarm or sent from here
+to a linked machine, is reviewed and decided with one route pair. Show linked
+tasks from the records above in the conversation that sent them (and the
+Companion's work), whichever project the window has selected.
+
+`GET /v3/task-plan-review?project_id=&task_id=[&machine=]` answers `review`:
+`machine` (absent for this Swarm), `project_id`, `task_id`, `title`,
+`run_status`, `plan_bound`, `plan_binding` (`session_id`, `plan_id`,
+`definition_revision`: the exact version), the task's structured
+`plan_document` unchanged, `plan_markdown` derived from that document field by
+field (objective, scope, decisions, constraints, requirements, checkpoints with
+tasks, acceptance criteria and validation), `decision` and `problem`. Show the
+plan document or its markdown; never the router's `plan_summary` or
+`full_plan_markdown` in its place. `decision` is `accept_plan` (accept exactly
+`plan_binding`), `start` (an ordinary task without a plan), `reload` (a plan
+task whose current plan could not be read whole, or that names another plan:
+nothing can be accepted) or `none` (nothing waits; `problem` says why). A
+linked task is read only when a session of the caller (or the account's Swarm
+Control caller) sent it and linked work on that machine is not off.
+
+`POST /v3/task-plan-review/decision` with `{"machine"?, "project_id",
+"task_id", "decision": "accept"|"revise", "plan_binding"?, "feedback"?}` is the
+person's decision; only a user principal decides. Accepting a plan names the
+`plan_binding` shown; an ordinary task names none; `revise` needs `feedback`
+and sends the plan back for a new version (nothing starts). Swarm reads the
+task again first: a missing, stale or other binding, a replaced plan, or a
+task that already started is refused with 409 and the current `review`, so
+show it and let the person decide again; a repeated click never starts a
+second run. The decision goes to the same approve and refine services as
+`manage_projects` `approve_task`/`refine_task` (through the link for a linked
+task, whose machine checks the binding again). Start tasks and linked-machine
+rules set to auto are not plan acceptance. The SDK's
+`client.projects.getTaskPlanReview` and `decideTaskPlan` call these routes.
+
 #### Fleet keys
 
 A provider key the whole fleet uses goes through the home's key manager, never

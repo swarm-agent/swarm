@@ -583,6 +583,7 @@ pub fn task(t: &Value) -> Task {
         runs: vec![],
         report: task_report(t).into(),
         progress: task_progress(t),
+        review: super::plan_review::home_review(t, ""),
     }
 }
 

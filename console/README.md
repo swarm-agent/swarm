@@ -222,6 +222,19 @@ a separate profile and the extension loaded, for trying it out.
   row's badge is the task's state and reason (`progress.task_state`, e.g.
   "landed · pushed 5711ae410abc"), not its run status; a Swarm that gives no
   state shows its progress summary or run status as before.
+- **Plan review:** tasks a conversation sent to a linked machine show in its
+  bar too (and in the Companion's work), from the home's records
+  (`GET /v3/fleet/linked-tasks?session_id=`), whichever project is selected,
+  one row per task. A task waiting to start that is bound to a plan, or any
+  waiting task on a linked machine, has **review plan** / **review** instead of
+  approve and reject: it opens a panel over the window with the whole plan
+  (Swarm's `plan_markdown` from the plan document), the machine, project,
+  task and plan version, **accept version N** (or **start task** for an
+  ordinary linked task), **request changes** with what to change, and
+  **read again** (`/v3/task-plan-review`). Accept sends that exact version; if
+  the plan changed, Swarm refuses and the panel shows the new version to
+  decide again. This Swarm's ordinary tasks keep approve and reject on the
+  card.
 - **Run states:** a session's glyph says how its run stands: `●` running,
   `◆` needs you, `○` idle, `✕` failed (`◷` waiting only for a run left by
   the retired pending `wait_tasks`, which Swarm converts at startup). An

@@ -202,8 +202,23 @@ impl Console {
 
     /// Approve, reject or stop one of the Companion's tasks, in its own project.
     fn companion_task_act(&mut self, key: &str, act: Act, cx: &mut Context<Self>) {
-        let Some(live) = &self.live else { return };
+        if self.live.is_none() {
+            return;
+        }
         let Some(w) = self.companion.feed.as_ref().and_then(|f| f.work.iter().find(|w| w.key() == key)).cloned() else { return };
+        // A plan task, or a task on a linked machine: its review decides
+        // (accept the version shown, or send it back with what to change).
+        if let Some(review) = w.task.review.clone().filter(|r| r.opens_review()) {
+            if !matches!(act, Act::Stop) {
+                self.open_plan_review(review, w.task.title.clone(), cx);
+                return;
+            }
+        }
+        // A linked task's session is on its machine: nothing here acts on it.
+        if !w.machine.is_empty() {
+            return;
+        }
+        let Some(live) = &self.live else { return };
         let (command, note) = match act {
             Act::Approve => (Command::Approve { project_id: w.project_id.clone(), task_id: w.task.key.to_string(), approve: true }, "Approving…"),
             Act::Reject => (Command::Approve { project_id: w.project_id.clone(), task_id: w.task.key.to_string(), approve: false }, "Rejecting…"),
@@ -397,8 +412,13 @@ impl Console {
             let actions = div()
                 .flex()
                 .gap_1()
-                .when(task.status.needs_you(), |d| d.child(act_button("approve", true, Act::Approve)).child(act_button("reject", false, Act::Reject)))
-                .when(task.status == crate::data::TaskStatus::Running && !task.session.is_empty(), |d| d.child(act_button("stop", false, Act::Stop)));
+                .when(task.status.needs_you() && task.review.as_ref().is_some_and(|r| r.opens_review()), |d| {
+                    d.child(act_button(if task.review.as_ref().is_some_and(|r| r.plan) { "review plan" } else { "review" }, true, Act::Approve))
+                })
+                .when(task.status.needs_you() && !task.review.as_ref().is_some_and(|r| r.opens_review()), |d| {
+                    d.child(act_button("approve", true, Act::Approve)).child(act_button("reject", false, Act::Reject))
+                })
+                .when(task.status == crate::data::TaskStatus::Running && !task.session.is_empty() && w.machine.is_empty(), |d| d.child(act_button("stop", false, Act::Stop)));
             let history = task.progress.history.iter().rev().map(|(at, what)| {
                 let when = if *at > 0 { super::ago(super::now_ms().saturating_sub(*at)) } else { String::new() };
                 div()

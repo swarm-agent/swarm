@@ -18,6 +18,7 @@ pub mod media;
 pub mod models;
 pub mod needs;
 pub mod permissions;
+pub mod plan_review;
 pub mod progress;
 pub mod proposals;
 pub mod realtime;

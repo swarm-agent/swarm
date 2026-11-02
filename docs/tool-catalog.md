@@ -42,7 +42,12 @@ after the Orchestrator showed the plan (`get_task detail=plan`):
 `approve_task` and `refine_task` take the exact `session_id`, `plan_id` and
 `definition_revision` of `get_task`'s plan binding, and the approve route
 refuses a missing, stale or other binding. The record still maps it to
-`approve_task`, the Orchestrator's own action.
+`approve_task`, the Orchestrator's own action. `get_task detail=plan` also
+carries `review_decision` (`accept_plan`, `start`, `reload`, `none`) and
+`review_problem`, the same rule (`tool.ProjectTaskPlanReviewDecision`) a
+client's plan review (`GET /v3/task-plan-review`, docs/frontends.md) shows,
+so the person's app, the Orchestrator and Swarm Control read one decision
+over the same `plan_document`.
 
 ### A catalog action accepts every input of the tool it replaced
 

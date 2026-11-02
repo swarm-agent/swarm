@@ -28,6 +28,9 @@ import type {
   PreviewProjectTaskParams,
   ProjectRecord,
   ProjectTaskApprovalGuards,
+  TaskPlanDecisionParams,
+  TaskPlanDecisionResult,
+  TaskPlanReview,
   ProjectTaskMediaRef,
   ProjectTaskModelPreviewResult,
   ProjectTaskPreviewResult,
@@ -591,6 +594,32 @@ export class SwarmProjectsNamespace {
       status: res.status,
       details: data,
     });
+  }
+
+  /**
+   * Reads a waiting task's plan review: its structured plan document, the
+   * markdown Swarm derives from it, the exact plan version and what can be
+   * decided now. `machine` names a linked machine a session of the caller sent
+   * the task to; omit it for this Swarm's own task.
+   */
+  async getTaskPlanReview(projectId: string, taskId: string, machine?: string, options?: RequestOptions): Promise<TaskPlanReview> {
+    const query = new URLSearchParams({ project_id: projectId.trim(), task_id: taskId.trim() });
+    if (machine && machine.trim()) query.set('machine', machine.trim());
+    const res = await this.transport.request<{ review: TaskPlanReview }>(`/v3/task-plan-review?${query.toString()}`, { method: 'GET', ...options });
+    if (res.data && typeof res.data === 'object' && res.data.review) return res.data.review;
+    throw new SwarmApiError('Malformed response: missing review', { status: res.status, details: res.data });
+  }
+
+  /**
+   * The person's decision on a task's plan: accept exactly the plan_binding
+   * read with getTaskPlanReview (an ordinary task names none), or revise with
+   * feedback. A plan that changed since it was read is refused with HTTP 409;
+   * the error's details carry the current review. Only a user decides.
+   */
+  async decideTaskPlan(params: TaskPlanDecisionParams, options?: RequestOptions): Promise<TaskPlanDecisionResult> {
+    const res = await this.transport.request<TaskPlanDecisionResult>('/v3/task-plan-review/decision', { method: 'POST', body: params, ...options });
+    if (res.data && typeof res.data === 'object' && res.data.review) return res.data;
+    throw new SwarmApiError('Malformed response: missing review in decision response', { status: res.status, details: res.data });
   }
 
   /**

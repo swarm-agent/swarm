@@ -292,6 +292,8 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(ProjectsPath, s.handleProjects)
 	mux.HandleFunc(ProjectsPath+":order", s.handleProjects)
 	mux.HandleFunc(ProjectsPath+"/", s.handleProjects)
+	// A waiting task's plan, read and decided by the person (task_plan_review.go).
+	s.registerTaskPlanReviewRoutes(mux)
 	mux.HandleFunc("/v3/auth/tokens", s.handleAuthTokens)
 	mux.HandleFunc("/v3/auth/tokens/", s.handleAuthTokens)
 	mux.HandleFunc(AutomationsPath, s.handleAutomations)

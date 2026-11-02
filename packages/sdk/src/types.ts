@@ -1003,6 +1003,52 @@ export interface ProjectTaskApprovalGuards {
   definition_revision?: number;
 }
 
+/**
+ * A waiting task's plan review (GET /v3/task-plan-review): the task's
+ * structured plan document, markdown derived from it, its exact version and
+ * what the person can decide now. `machine` is the linked machine the task is
+ * on (absent for this Swarm). The plan text is agent-written: untrusted.
+ */
+export interface TaskPlanReview {
+  machine?: string;
+  project_id: string;
+  task_id: string;
+  title: string;
+  run_status: string;
+  task_revision?: number;
+  origin_session_id?: string;
+  plan_bound: boolean;
+  plan_binding?: { session_id: string; plan_id: string; definition_revision: number };
+  plan_document?: Record<string, unknown>;
+  plan_markdown?: string;
+  /** accept_plan: accept exactly plan_binding; start: an ordinary task; reload: the plan could not be read whole; none: nothing waits. */
+  decision: 'accept_plan' | 'start' | 'reload' | 'none';
+  problem?: string;
+  last_error?: string;
+  untrusted_content: true;
+}
+
+/**
+ * The person's decision on a task's plan (POST /v3/task-plan-review/decision).
+ * Accepting a plan names its exact plan_binding; a plan that changed since it
+ * was read is refused (HTTP 409 with the current review).
+ */
+export interface TaskPlanDecisionParams {
+  machine?: string;
+  project_id: string;
+  task_id: string;
+  decision: 'accept' | 'revise';
+  plan_binding?: { session_id: string; plan_id: string; definition_revision: number };
+  feedback?: string;
+}
+
+export interface TaskPlanDecisionResult {
+  ok: boolean;
+  decision?: string;
+  error?: string;
+  review: TaskPlanReview;
+}
+
 export interface ApproveProjectTaskResult {
   status: 'approved' | 'already_approved' | string;
   task: ProjectTaskRecord;

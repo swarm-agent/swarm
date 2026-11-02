@@ -36,6 +36,7 @@ mod models;
 mod nav;
 mod panes;
 mod permissions;
+mod plan_review;
 mod popout;
 mod projects;
 mod providers;
@@ -350,6 +351,12 @@ pub struct Console {
     selecting: bool,
     /// The media shown large over the window (index into media).
     preview: Option<usize>,
+    /// A waiting task's plan review over the window (plan_review.rs).
+    plan_review: Option<plan_review::PlanReviewPanel>,
+    /// What to change in a plan sent back.
+    plan_feedback: Option<Entity<TextInput>>,
+    /// The decision in flight accepts (else it sends the plan back).
+    plan_accepting: bool,
     /// Files waiting in each pane's message box (pane id).
     attachments: HashMap<usize, Vec<data::Attachment>>,
     /// Calls to your machine already answered (by id), so none runs twice.
@@ -571,6 +578,9 @@ impl Console {
             run_entries: None,
             attachments: HashMap::new(),
             preview: None,
+            plan_review: None,
+            plan_feedback: None,
+            plan_accepting: false,
             selection: None,
             fleet: None,
             needs: Vec::new(),
@@ -1784,8 +1794,21 @@ impl Console {
 
     /// The decision a task waits on before it starts (Start tasks: approve),
     /// or stopping it while it runs. Live sessions ask Swarm; demo data changes in place.
+    /// A plan task, or any task on a linked machine, opens its review: the
+    /// whole plan and its exact version, decided there.
     fn task_actions(&self, si: usize, ti: usize, status: TaskStatus, key: &str, cx: &mut Context<Self>) -> Div {
         let live = self.sessions[si].live.is_some();
+        if let (TaskStatus::PendingApproval, true) = (status, live) {
+            if let Some(review) = self.sessions[si].tasks.get(ti).and_then(|t| t.review.clone()).filter(|r| r.opens_review()) {
+                let title = self.sessions[si].tasks[ti].title.clone();
+                let label = if review.plan { "review plan" } else { "review" };
+                return div().flex().flex_none().gap_1().child(self.button(SharedString::from(format!("{key}-review")), label, true).on_click(cx.listener(
+                    move |this, _: &ClickEvent, _, cx| {
+                        this.open_plan_review(review.clone(), title.clone(), cx);
+                    },
+                )));
+            }
+        }
         let button = |label: &'static str, strong: bool, act: Act, demo: TaskStatus| {
             self.button(SharedString::from(format!("{key}-{label}")), label, strong).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 if live {
@@ -1916,6 +1939,7 @@ impl Render for Console {
             .children(self.render_fleet_popover(cx))
             .children(self.render_project_menu(cx))
             .children(self.render_preview(cx))
+            .children(self.render_plan_review(cx))
             .child(self.password.clone())
     }
 }

@@ -981,6 +981,13 @@ func projectTaskPlanDetail(t pebblestore.ProjectTaskRecord) map[string]any {
 	if t.PlanDocument != nil {
 		out["plan_document"] = t.PlanDocument
 	}
+	// The same decision a client's plan review shows
+	// (ProjectTaskPlanReviewDecision): accept_plan, start, reload or none.
+	decision, problem := ProjectTaskPlanReviewDecision(t)
+	out["review_decision"] = decision
+	if problem != "" {
+		out["review_problem"] = problem
+	}
 	return out
 }
 

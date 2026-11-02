@@ -550,6 +550,30 @@ pub struct Task {
     /// Where the task is and what happened to it, as Swarm tracks it
     /// (docs/task-progress.md).
     pub progress: Progress,
+    /// Where its waiting decision is read and made (Swarm's
+    /// /v3/task-plan-review): Some only while it waits to start.
+    pub review: Option<ReviewRef>,
+}
+
+/// A task waiting on the person, as the plan review names it: the machine
+/// it is on ("" for this Swarm), its project and id there, and whether it is
+/// known to be bound to a plan (its card then opens the plan; a linked
+/// task's card always opens its review, which says).
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ReviewRef {
+    pub machine: Text,
+    pub project_id: Text,
+    pub task_id: Text,
+    pub plan: bool,
+}
+
+impl ReviewRef {
+    /// Opens the review before anything is decided: a plan task, or any
+    /// task on a linked machine. Only this Swarm's ordinary tasks keep the
+    /// card's direct approve.
+    pub fn opens_review(&self) -> bool {
+        self.plan || !self.machine.is_empty()
+    }
 }
 
 /// A task's tracked state (`progress` on Swarm's task record).
@@ -1111,6 +1135,7 @@ pub fn sessions() -> Vec<Session> {
                     activity: "editing automation/reopen.go · step 3 of 5".into(),
                     report: "".into(),
                     progress: Default::default(),
+                    review: None,
                     runs: vec![
                         run("coder".into(), 0, RunState::Running, "attempt 2".into(), "now".into(), 0.41),
                         run("coder".into(), 0, RunState::Failed, "attempt 1 · tests failed".into(), "9m".into(), 0.21),
@@ -1126,6 +1151,7 @@ pub fn sessions() -> Vec<Session> {
                     activity: "waiting for your approval · changes a stored schema".into(),
                     report: "".into(),
                     progress: Default::default(),
+                    review: None,
                     runs: vec![],
                 },
                 Task {
@@ -1138,6 +1164,7 @@ pub fn sessions() -> Vec<Session> {
                     activity: "ready to merge · 2 commits".into(),
                     report: "".into(),
                     progress: Default::default(),
+                    review: None,
                     runs: vec![
                         run("swarm".into(), 0, RunState::Idle, "docs pass".into(), "4m".into(), 0.22),
                         run("finder".into(), 0, RunState::Idle, "link check".into(), "3m".into(), 0.09),
@@ -1153,6 +1180,7 @@ pub fn sessions() -> Vec<Session> {
                     activity: "go test ./... · 212 of 640 packages".into(),
                     report: "".into(),
                     progress: Default::default(),
+                    review: None,
                     runs: vec![run("coder".into(), 1, RunState::Running, "test sweep".into(), "now".into(), 0.48)],
                 },
                 Task {
@@ -1165,6 +1193,7 @@ pub fn sessions() -> Vec<Session> {
                     activity: "starts when T-418 lands".into(),
                     report: "".into(),
                     progress: Default::default(),
+                    review: None,
                     runs: vec![],
                 },
             ],
@@ -1210,6 +1239,7 @@ pub fn sessions() -> Vec<Session> {
                 activity: "go test -run Scratch -count 50 · 31 passed".into(),
                 report: "".into(),
                 progress: Default::default(),
+                review: None,
                 runs: vec![
                     run("finder".into(), 0, RunState::Idle, "reproduce".into(), "5m".into(), 0.05),
                     run("coder".into(), 0, RunState::Running, "fix".into(), "now".into(), 0.16),
@@ -1281,6 +1311,7 @@ pub fn sessions() -> Vec<Session> {
                     activity: "rendering direction 3 of 3".into(),
                     report: "".into(),
                     progress: Default::default(),
+                    review: None,
                     runs: vec![run("designer".into(), 1, RunState::Running, "directions".into(), "now".into(), 0.55)],
                 },
                 Task {
@@ -1293,6 +1324,7 @@ pub fn sessions() -> Vec<Session> {
                     activity: "asks: which pages should it audit?".into(),
                     report: "".into(),
                     progress: Default::default(),
+                    review: None,
                     runs: vec![run("finder".into(), 2, RunState::NeedsYou, "lighthouse".into(), "2m".into(), 0.0)],
                 },
             ],
@@ -1358,6 +1390,7 @@ pub fn sessions() -> Vec<Session> {
                     activity: "merged · 1 commit".into(),
                     report: "".into(),
                     progress: Default::default(),
+                    review: None,
                     runs: vec![run("coder".into(), 2, RunState::Idle, "bump".into(), "2h".into(), 0.09)],
                 },
                 Task {
@@ -1370,6 +1403,7 @@ pub fn sessions() -> Vec<Session> {
                     activity: "advisory feed timed out".into(),
                     report: "".into(),
                     progress: Default::default(),
+                    review: None,
                     runs: vec![run("finder".into(), 2, RunState::Failed, "check".into(), "2h".into(), 0.01)],
                 },
             ],

@@ -219,6 +219,16 @@ pub enum Command {
         task_id: String,
         approve: bool,
     },
+    /// Read a waiting task's review: its plan and exact version, on this
+    /// Swarm or a linked machine (GET /v3/task-plan-review).
+    ReadPlanReview {
+        target: crate::data::ReviewRef,
+    },
+    /// The person's decision on a task's review (plan_review::decision_body):
+    /// accept the version shown, start an ordinary task, or ask for changes.
+    DecidePlan {
+        body: Value,
+    },
     /// Archive sessions (Swarm's batch route); each then leaves the list by
     /// its session.archived event.
     Archive {
@@ -605,6 +615,19 @@ fn perform(client: &Client, command: Command) -> (Option<u64>, &'static str, Res
             if approve { "approve" } else { "reject" },
             client.post(&format!("/v3/projects/{project_id}/tasks/{task_id}/{}", if approve { "approve" } else { "reject" }), json!({})).map_err(err),
         ),
+        Command::ReadPlanReview { target } => (None, "plan review", client.get(&super::plan_review::read_path(&target)).map_err(err)),
+        // A refusal with the task's current review (409: the plan changed,
+        // the task already started) comes back as an answer, so the person
+        // sees what is current and decides again.
+        Command::DecidePlan { body } => (
+            None,
+            "plan decision",
+            match client.post(super::plan_review::DECISION_PATH, body) {
+                Ok(answer) => Ok(answer),
+                Err(Refusal::Status(409, message, answer)) => Ok(json!({"ok": false, "error": message, "review": answer.get("review").cloned().unwrap_or(Value::Null)})),
+                Err(e) => Err(err(e)),
+            },
+        ),
         Command::Stop { session_id, waiting_run_id } => (None, "stop", stop(client, &session_id, &waiting_run_id)),
         // Both answers name their session, a failure included (as `error`).
         Command::ReadContext { session_id } => (None, "context", Ok(super::context::read(client, &session_id))),
@@ -828,6 +851,9 @@ struct Model<'a> {
     details: HashMap<String, Detail>,
     /// Each project's tasks, by project id.
     tasks: HashMap<String, Vec<Value>>,
+    /// The tasks each conversation sent to linked machines, by its session
+    /// id: the home's durable records (GET /v3/fleet/linked-tasks).
+    linked: HashMap<String, Vec<Value>>,
     /// What the media tasks made, and their files as last read.
     media: Vec<crate::data::Media>,
     media_reads: HashMap<String, super::media::Read>,
@@ -884,6 +910,7 @@ fn follow(
         waiting: HashSet::new(),
         details: HashMap::new(),
         tasks: HashMap::new(),
+        linked: HashMap::new(),
         media: Vec::new(),
         media_reads: HashMap::new(),
         media_fetching: HashSet::new(),
@@ -1234,7 +1261,27 @@ impl Model<'_> {
         });
         let snap = self.client.post("/v3/sync/hydrate", body).map_err(err)?;
         self.take_hydrated(ids, &snap);
+        for id in ids {
+            self.read_linked(id);
+        }
         Ok(())
+    }
+
+    /// Reads the tasks one conversation sent to linked machines (the home's
+    /// records). A failed read keeps what was read before and says so on
+    /// the trace; the records are Swarm's, so a reconnect reads them again.
+    fn read_linked(&mut self, id: &str) {
+        match self.client.get(&format!("/v3/fleet/linked-tasks?session_id={id}")) {
+            Ok(answer) => {
+                let records = super::plan_review::linked_records(&answer);
+                if records.is_empty() {
+                    self.linked.remove(id);
+                } else {
+                    self.linked.insert(id.to_string(), records);
+                }
+            }
+            Err(e) => trace(&format!("linked tasks of {id} not read: {e}")),
+        }
     }
 
     /// Takes in a hydrate answer for these conversations: each one's tail,
@@ -1301,6 +1348,9 @@ impl Model<'_> {
             return Ok(changed);
         }
         self.companion_read = Some(id.clone());
+        // The Companion's linked tasks show in its work without its
+        // conversation open.
+        self.read_linked(&id);
         match self.reread_session(&id) {
             Ok(read) => Ok(changed || read),
             // The console's own read of /v3/companion reports the failure;
@@ -1462,6 +1512,12 @@ impl Model<'_> {
             "console.kick" => {
                 if frame.get("command").and_then(Value::as_bool) == Some(true) {
                     let _ = self.facts_kick.send(());
+                    // A decision or a review read refreshes the home's
+                    // records of linked tasks: show what they say now.
+                    let ids: Vec<String> = self.linked.keys().cloned().collect();
+                    for id in ids {
+                        self.read_linked(&id);
+                    }
                 }
                 Ok(true)
             }
@@ -1582,6 +1638,15 @@ impl Model<'_> {
             // A watch's start/stop and its wake commit their message (the
             // watch line, the outcome) in the same event.
             "session.message.appended" | "session.run.waiting_tasks" | "session.run.tasks_ready" | "session.task_watch.started" | "session.task_watch.cancelled" => {
+                // A tool result (a task sent to a linked machine, a read of
+                // one) or a watch's change may move this conversation's
+                // linked tasks: read its records again, for the
+                // conversations shown and the Companion.
+                let shown = watched || self.companion.as_deref() == Some(sid);
+                let from_person = payload.get("message").is_some_and(|m| s(m, "role") == "user");
+                if shown && !from_person {
+                    self.read_linked(sid);
+                }
                 let Some(message) = payload.get("message").filter(|m| m.is_object()) else { return Ok(true) };
                 if watched {
                     let d = self.details.get_mut(sid).unwrap();
@@ -1718,8 +1783,20 @@ impl Model<'_> {
             }
         }
         if let Some(project) = self.projects.get(session.project).filter(|_| !companion) {
-            let tasks: Vec<Task> = self.tasks.get(project.id.as_ref()).map(|t| map::session_tasks(t, id)).unwrap_or_default();
+            let mut tasks: Vec<Task> = self.tasks.get(project.id.as_ref()).map(|t| map::session_tasks(t, id)).unwrap_or_default();
+            for task in tasks.iter_mut() {
+                if let Some(review) = task.review.as_mut().filter(|r| r.project_id.is_empty()) {
+                    review.project_id = project.id.clone();
+                }
+            }
             session.tasks = tasks;
+        }
+        // What this conversation sent to linked machines, from the home's
+        // records: shown here whichever project is selected.
+        if !companion {
+            if let Some(records) = self.linked.get(id) {
+                session.tasks.extend(super::plan_review::linked_tasks(records));
+            }
         }
         if let Some(wait) = session.waiting_on.as_mut() {
             let project: &[Value] = self.tasks.get(wait.project_id.as_ref()).map(Vec::as_slice).unwrap_or(&[]);
@@ -1730,11 +1807,10 @@ impl Model<'_> {
 
     fn snapshot(&self) -> Snapshot {
         let sessions: Vec<Session> = self.order.iter().filter_map(|id| self.session_of(id)).collect();
-        let companion = self
-            .companion
-            .as_ref()
-            .filter(|id| self.shells.contains_key(*id))
-            .map(|id| CompanionFeed { session_id: id.clone(), work: super::companion::work(&self.tasks, &self.projects, id) });
+        let companion = self.companion.as_ref().filter(|id| self.shells.contains_key(*id)).map(|id| CompanionFeed {
+            session_id: id.clone(),
+            work: super::companion::with_linked(super::companion::work(&self.tasks, &self.projects, id), self.linked.get(id).map(Vec::as_slice).unwrap_or(&[])),
+        });
         Snapshot { projects: self.projects.clone(), sessions, machine: None, roles: None, usage: None, themes: None, media: self.media.clone(), catalog: None, companion }
     }
 }
@@ -2206,6 +2282,7 @@ mod tests {
                 waiting: HashSet::new(),
                 details: HashMap::new(),
                 tasks: HashMap::new(),
+                linked: HashMap::new(),
                 media: Vec::new(),
                 media_reads: HashMap::new(),
                 media_fetching: HashSet::new(),
@@ -2220,6 +2297,56 @@ mod tests {
             m.tasks.insert("proj_1".into(), vec![json!({"id": "t1", "title": "Fix the build", "origin_session_id": "s1", "agent": "coder", "status": "running"})]);
             m.runs.insert("s1".into(), run);
             m
+        }
+
+        // Purpose: a plan a conversation sent to a linked machine shows in
+        // that conversation and, when the Companion sent it, in the
+        // Companion's work, from the home's records: whichever project the
+        // window has selected (the chat is in proj_1; the remote project is
+        // another machine's), once per task, with a review that names the
+        // machine, remote project and task. This Swarm's plan task opens its
+        // plan; its ordinary task keeps the card's approve. Threat: the
+        // person told of a plan card no surface shows (forge, 2026-11-02),
+        // or duplicate cards after repeated tool results. Authority:
+        // Model::session_of and snapshot over plan_review::linked_tasks and
+        // companion::with_linked. The client is never contacted.
+        #[test]
+        fn linked_plans_show_in_the_conversation_and_companion_work() {
+            let client = Client::new("http://127.0.0.1:9", "unused");
+            let mut m = model(&client, json!({"run_id": "run-1", "status": "completed"}));
+            m.tasks.insert(
+                "proj_1".into(),
+                vec![
+                    json!({"id": "home-plan", "title": "Home plan", "origin_session_id": "s1", "agent": "coder", "status": "pending_approval", "plan_binding": {"session_id": "x", "plan_id": "p", "definition_revision": 1}}),
+                    json!({"id": "home-plain", "title": "Home plain", "origin_session_id": "s1", "agent": "coder", "status": "pending_approval"}),
+                ],
+            );
+            let record = json!({"machine": "forge", "project_id": "remote-proj", "task_id": "remote-plan", "title": "Remote plan", "home_session_id": "s1", "status": "pending_approval", "created_at": 5});
+            // The same record twice, as repeated reads could list it.
+            m.linked.insert("s1".into(), vec![record.clone(), record.clone()]);
+            let s = m.session_of("s1").unwrap();
+            let titles: Vec<&str> = s.tasks.iter().map(|t| t.title.as_ref()).collect();
+            assert_eq!(titles, vec!["Home plan", "Home plain", "Remote plan"]);
+            let review = |i: usize| s.tasks[i].review.clone().unwrap();
+            assert_eq!((review(0).project_id.as_ref(), review(0).plan, review(0).opens_review()), ("proj_1", true, true));
+            assert!(!review(1).opens_review(), "an ordinary home task keeps the card's approve");
+            let remote = review(2);
+            assert_eq!((remote.machine.as_ref(), remote.project_id.as_ref(), remote.task_id.as_ref(), remote.opens_review()), ("forge", "remote-proj", "remote-plan", true));
+            assert!(s.tasks[2].session.is_empty(), "a linked task's session is not this machine's");
+
+            // The Companion's linked plan, in its work.
+            m.shells.insert("cmp".into(), json!({"id": "cmp", "title": "Companion", "metadata": {"swarm_v3_companion": {"generation": 1}}}));
+            m.companion = Some("cmp".into());
+            let mut companion_record = record.clone();
+            companion_record["home_session_id"] = json!("cmp");
+            m.linked.insert("cmp".into(), vec![companion_record.clone(), companion_record]);
+            let feed = m.snapshot().companion.expect("the Companion feed");
+            let linked: Vec<_> = feed.work.iter().filter(|w| w.machine == "forge").collect();
+            assert_eq!(linked.len(), 1, "one item per linked task");
+            assert_eq!(linked[0].key(), "forge:remote-proj/remote-plan");
+            assert_eq!(linked[0].group, super::super::super::companion::Group::Attention);
+            assert_eq!(linked[0].task.review.as_ref().map(|r| r.machine.as_ref()), Some("forge"));
+            assert!(m.session_of("cmp").unwrap().tasks.is_empty(), "the Companion's work shows on its page, not as cards");
         }
 
         fn waiting_state(machine: &str) -> Value {
@@ -2339,6 +2466,7 @@ mod tests {
                 waiting: HashSet::new(),
                 details: HashMap::new(),
                 tasks: HashMap::new(),
+                linked: HashMap::new(),
                 media: Vec::new(),
                 media_reads: HashMap::new(),
                 media_fetching: HashSet::new(),
@@ -2571,6 +2699,7 @@ mod tests {
                 waiting: HashSet::new(),
                 details: HashMap::new(),
                 tasks: HashMap::new(),
+                linked: HashMap::new(),
                 media: Vec::new(),
                 media_reads: HashMap::new(),
                 media_fetching: HashSet::new(),

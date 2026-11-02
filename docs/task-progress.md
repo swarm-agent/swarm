@@ -44,7 +44,7 @@ workflow deliveries and its integration.
 
 | state | meaning |
 |---|---|
-| `waiting` | not started: held by `Start tasks: approve` (`summary` "waiting for approval (Start tasks)"), or by its submitted plan waiting for the person to accept it (`summary` "waiting for the person to accept its plan", also when the task was sent with `auto_approve`, which passes only Start tasks), or queued for capacity; or its run stopped on the provider's usage limit and it continues by itself at the reset (task status `limit_waiting`, `summary` says until when) |
+| `waiting` | not started: held by `Start tasks: approve` (`summary` "waiting for approval (Start tasks)"), or by its submitted plan waiting for the person to accept it (`summary` "waiting for the person to accept its plan", also when the task was sent with `auto_approve`, which passes only Start tasks; a client shows and decides it with `/v3/task-plan-review`, docs/frontends.md), or queued for capacity; or its run stopped on the provider's usage limit and it continues by itself at the reset (task status `limit_waiting`, `summary` says until when) |
 | `working` | an agent is working on it (planning or running, a follow-up included) |
 | `workflow` | it finished and a workflow is taking it through its steps now, or a workflow sent it back to its agent (`summary`: "workflow <name> sent back by <step> · round <n>: <reason>") and the follow-up has not started yet |
 | `not_integrated` | it finished with commits that are not in its target branch, and no workflow is running on it (none applied, or the ones that ran did not merge it) |

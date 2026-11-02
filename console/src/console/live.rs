@@ -250,6 +250,7 @@ impl Console {
                     self.forget_older();
                 }
                 Update::Done { what: what @ ("permissions" | "permission"), result, .. } => self.permissions_done(what, result),
+                Update::Done { what: what @ ("plan review" | "plan decision"), result, .. } => self.plan_review_done(what, result),
                 Update::Done { draft, what, result } => {
                     let linked = what == "link" && result.is_ok();
                     self.done(draft, what, result);
@@ -656,6 +657,11 @@ impl Console {
             let field = cx.new(|cx| TextInput::new("What agents should know about this project", colors, cx));
             cx.observe(&field, |_, _, cx| cx.notify()).detach();
             self.context_input = Some(field);
+        }
+        if self.plan_feedback.is_none() {
+            let field = cx.new(|cx| TextInput::new("What to change in the plan", colors, cx));
+            cx.observe(&field, |_, _, cx| cx.notify()).detach();
+            self.plan_feedback = Some(field);
         }
         if self.link_code.is_none() {
             let field = cx.new(|cx| TextInput::new("Paste the machine's link code", colors, cx).one_line());

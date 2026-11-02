@@ -309,6 +309,13 @@ var mcpRouteParityNoMCPAction = []string{
 	`fleetActivityPagePath -> s.handleFleetActivity`,
 	`fleetActivityStreamPath -> s.handleFleetActivity`,
 	`fleetLinkedTaskSessionPath -> s.handleFleetLinkedTasks`,
+	// A client's task plan review (task_plan_review.go). The Orchestrator and
+	// Swarm Control read the same plan and decision rule with get_task
+	// detail=plan (review_decision) and decide with approve_task/refine_task,
+	// which call the same approve and refine services; no MCP tool reaches
+	// this client route.
+	`taskPlanReviewPath -> s.handleTaskPlanReview`,
+	`taskPlanReviewDecisionPath -> s.handleTaskPlanReview`,
 	`"/v1/memory" -> s.handleMemory`,
 	`"/v1/memory/workspace-map" -> s.handleWorkspaceMap`,
 	`"/healthz" -> s.handleHealth`,
