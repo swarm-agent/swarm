@@ -65,6 +65,9 @@ type CompanionRoutes struct {
 	Events   string `json:"events"`
 	// Context is the Companion's bounded, source-verified context bank.
 	Context string `json:"context"`
+	// State is the Companion's materialized state with its maintenance
+	// cursor (focus, commitments, topics, decisions, work, results).
+	State string `json:"state"`
 }
 
 type companionEnsureRequest struct {
@@ -220,7 +223,7 @@ func companionViewFor(identityRecord pebblestore.CompanionIdentity, session *peb
 		State:      companionStateUncreated,
 		CreatedAt:  identityRecord.CreatedAt,
 		UpdatedAt:  identityRecord.UpdatedAt,
-		Routes:     CompanionRoutes{Session: base, Messages: base + "/messages", Events: base + "/events", Context: CompanionContextPath},
+		Routes:     CompanionRoutes{Session: base, Messages: base + "/messages", Events: base + "/events", Context: CompanionContextPath, State: CompanionStatePath},
 	}
 	if session != nil {
 		view.State = companionStateReady

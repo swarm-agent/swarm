@@ -89,6 +89,10 @@ var mcpHomeActions = map[string]mcpHomeAction{
 	"manage_companion get":             {Reason: mcpCompanionShared},
 	"manage_companion list":            {Reason: mcpCompanionShared},
 	"manage_companion forget":          {Reason: mcpCompanionShared},
+	// manage_companion state and GET /v3/companion/state run one service
+	// function in-process (companionStateRead), compared by execution in
+	// TestCompanionStateSurfacesAgree.
+	"manage_companion state": {Reason: "the action and GET /v3/companion/state run one service (companionStateRead); compared by execution in TestCompanionStateSurfacesAgree"},
 }
 
 // mcpCompanionShared is the reason manage_companion's actions are not
@@ -286,6 +290,10 @@ var mcpRouteParityReached = map[string]string{
 	// dispatched to it. TestManageCompanionNativeMCPAndRouteAgree compares
 	// the three answers.
 	`CompanionContextPath -> s.handleCompanionContext`: "manage_companion; the shared service (ManageCompanionContext), compared in TestManageCompanionNativeMCPAndRouteAgree",
+	// The Companion's maintained state: manage_companion state (native and
+	// Swarm Control) and this route run companionStateRead in process;
+	// TestCompanionStateSurfacesAgree compares the three answers.
+	`CompanionStatePath -> s.handleCompanionState`: "manage_companion state; the shared service (companionStateRead), compared in TestCompanionStateSurfacesAgree",
 }
 
 // mcpRouteParityNoMCPAction are the route registrations no MCP action reaches

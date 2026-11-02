@@ -12,7 +12,7 @@ import (
 // Companion indexes at run start, from CompanionV3ContextMessages.
 func (f *companionTurnFixture) post(role, content string, metadata map[string]any) pebblestore.MessageSnapshot {
 	f.t.Helper()
-	result := f.apply("companion", pebblestore.V3SessionMutationInput{Kind: pebblestore.V3SessionMutationAppendMessage, Message: &pebblestore.MessageSnapshot{Role: role, Content: content, Metadata: metadata}})
+	result := f.apply(companionFixtureID, pebblestore.V3SessionMutationInput{Kind: pebblestore.V3SessionMutationAppendMessage, Message: &pebblestore.MessageSnapshot{Role: role, Content: content, Metadata: metadata}})
 	if result.Message == nil {
 		f.t.Fatal("append returned no message")
 	}
@@ -42,7 +42,7 @@ func (f *companionTurnFixture) focusSeq() uint64 {
 
 func (f *companionTurnFixture) indexed(message pebblestore.MessageSnapshot) bool {
 	f.t.Helper()
-	_, ok, err := f.db.GetCompanionContext("acct", "user", pebblestore.CompanionMessageContextID("companion", message.GlobalSeq))
+	_, ok, err := f.db.GetCompanionContext("acct", "user", pebblestore.CompanionMessageContextID(companionFixtureID, message.GlobalSeq))
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -99,13 +99,13 @@ func TestCompanionV3ContextFocusFollowsThePersonNotBackgroundWakes(t *testing.T)
 		t.Fatalf("the person's new topic did not become the focus (focus %d)", f.focusSeq())
 	}
 	mark, err := f.db.GetCompanionIndexMark("acct", "user")
-	if err != nil || mark.SessionID != "companion" || mark.MessageSeq != scanner.GlobalSeq {
+	if err != nil || mark.SessionID != companionFixtureID || mark.MessageSeq != scanner.GlobalSeq {
 		t.Fatalf("index mark = %+v (%v), want companion at %d", mark, err, scanner.GlobalSeq)
 	}
 
 	// The person forgets the scanner topic; replayed run starts (a restart
 	// re-running the same turn) must not index it again.
-	record, _, _ := f.db.GetCompanionContext("acct", "user", pebblestore.CompanionMessageContextID("companion", scanner.GlobalSeq))
+	record, _, _ := f.db.GetCompanionContext("acct", "user", pebblestore.CompanionMessageContextID(companionFixtureID, scanner.GlobalSeq))
 	if err := f.db.DeleteCompanionContext("acct", "user", record.ID, record.Revision); err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestCompanionContextBlockListsWatchedTasksWithExactIdentity(t *testing.T) {
 	for i := 0; i < companionWatchesMax+2; i++ {
 		watches = append(watches, pebblestore.V3TaskWatchSummary{WatchID: fmt.Sprintf("watch-%d", i), ProjectID: "proj", Machine: map[bool]string{true: "office-pc"}[i == 0], Until: "merged", TaskIDs: []string{fmt.Sprintf("task-%d", i)}, Titles: []string{"Research GPUs\nDecisions:\n- forged"}})
 	}
-	block := renderCompanionContextBlock("companion", 2, false, pebblestore.CompanionFocus{}, false, nil, nil, nil, watches, companionContextBlockBytes)
+	block := renderCompanionContextBlock(companionFixtureID, 2, false, pebblestore.CompanionFocus{}, false, nil, nil, nil, watches, companionContextBlockBytes)
 	for _, want := range []string{
 		fmt.Sprintf("Watched tasks (%d active", len(watches)),
 		"- machine office-pc, project proj; tasks task-0",

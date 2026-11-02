@@ -1761,8 +1761,8 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			s.startMemorySessionTitleFlow(sessionID, prompt, resolvedPreference.Preference, options.Principal, emit)
 		}
 		if isCompanionSession(sessionSnapshot) {
-			if err := indexCompanionUserMessage(s.companionContextStore(), sessionSnapshot, userMessage, time.Now().UnixMilli()); err != nil {
-				return RunResult{}, fmt.Errorf("index companion context: %w", err)
+			if err := s.recordCompanionRunMessage(sessionSnapshot, userMessage, options.ApplySessionMutation != nil); err != nil {
+				return RunResult{}, err
 			}
 		}
 	}

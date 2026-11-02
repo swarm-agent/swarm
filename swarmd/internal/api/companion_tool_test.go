@@ -85,6 +85,11 @@ func manageCompanionParityCases() map[string][]catalogParityCase {
 		"get":    same(parityExact, parityArgs("action", "get", "id", "seed-decision")),
 		"list":   same(parityExact, parityArgs("action", "list", "limit", float64(3))),
 		"forget": twin(parityArgs("action", "forget", "id", "forget-a", "expected_revision", float64(1)), parityArgs("action", "forget", "id", "forget-b", "expected_revision", float64(1)), map[string]string{"forget-b": "forget-a"}),
+		// Background maintenance of the harness's seeded events may still
+		// move the state between the two calls, so only the answer's shape
+		// is compared here; TestCompanionStateSurfacesAgree compares the
+		// exact state on all three surfaces once maintenance is idle.
+		"state": same(parityShape, parityArgs("action", "state")),
 	}
 }
 

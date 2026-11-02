@@ -157,37 +157,6 @@ type companionTurnContext struct {
 	TailMore  bool
 }
 
-// indexCompanionUserMessage records a substantive user message as a topic of
-// the context bank and makes it the current focus. It is idempotent per
-// message, writes only the separate context bank and never account memory.
-func indexCompanionUserMessage(store *pebblestore.SessionStore, session pebblestore.SessionSnapshot, message pebblestore.MessageSnapshot, now int64) error {
-	if store == nil {
-		return errors.New("companion context store unavailable")
-	}
-	if message.GlobalSeq == 0 || !CompanionPersonMessage(message) || shouldDropSensitiveConversationMessage(message) {
-		return nil
-	}
-	keywords := pebblestore.CompanionContextKeywords(message.Content)
-	if len(keywords) < companionIndexMinKeywords {
-		return nil
-	}
-	title, _, _ := strings.Cut(strings.TrimSpace(message.Content), "\n")
-	record, _, err := store.PutCompanionContext(pebblestore.CompanionContextRecord{
-		ID:             pebblestore.CompanionMessageContextID(session.ID, message.GlobalSeq),
-		AccountScopeID: session.AccountScopeID,
-		UserID:         session.UserID,
-		Kind:           pebblestore.CompanionContextKindTopic,
-		Title:          truncateUTF8Bytes(title, companionIndexTitleBytes),
-		Summary:        truncateUTF8Bytes(strings.TrimSpace(message.Content), companionIndexSummaryBytes),
-		Keywords:       keywords,
-		Source:         pebblestore.CompanionContextSource{Kind: pebblestore.CompanionContextSourceMessage, SessionID: session.ID, MessageSeq: message.GlobalSeq},
-	}, 0, now)
-	if err != nil {
-		return err
-	}
-	return store.SetCompanionFocus(session.AccountScopeID, session.UserID, pebblestore.CompanionFocus{RecordID: record.ID, Keywords: keywords, MessageSeq: message.GlobalSeq, UpdatedAt: now})
-}
-
 // assembleCompanionTurnContext builds one Companion turn's provider history
 // from bounded reads only. prompt is the current user text (empty for wake
 // turns); roots are the run's authorized workspace roots.
@@ -211,10 +180,11 @@ func assembleCompanionTurnContext(store *pebblestore.SessionStore, session pebbl
 // CompanionV3ContextMessages is the provider history of a Companion run on
 // the V3 executor: the bounded recent tail plus the context bank block,
 // replacing the full execution-epoch transcript. fromSeq (a context-clear
-// boundary) drops older tail messages. Before assembling, the person's own
-// messages after the index mark are indexed, so the focus follows the person
-// and never a background wake; the retrieval query is the latest user
-// message when it is the person's, otherwise the current focus.
+// boundary) drops older tail messages. Before assembling, the Companion's
+// durable events after its state cursor are folded into its state
+// (MaintainCompanionState), so the focus follows the person and never a
+// background wake; the retrieval query is the latest user message when it is
+// the person's, otherwise the current focus.
 func CompanionV3ContextMessages(store *pebblestore.SessionStore, session pebblestore.SessionSnapshot, roots []string, fromSeq uint64, now int64) ([]pebblestore.MessageSnapshot, error) {
 	return CompanionV3ContextMessagesAtLevel(store, session, roots, fromSeq, now, 0)
 }
@@ -249,8 +219,11 @@ func CompanionV3ContextMessagesAtLevel(store *pebblestore.SessionStore, session 
 		}
 		tail = kept
 	}
-	if err := indexCompanionPersonMessages(store, session, tail, now); err != nil {
-		return nil, fmt.Errorf("index companion context: %w", err)
+	// Fold the durable events since the state's cursor in first, so topics,
+	// focus, commitments and work follow every event, not only those that
+	// happen to be in the tail.
+	if _, err := MaintainCompanionState(store, session, CompanionMaintainRunStartEvents, now); err != nil {
+		return nil, fmt.Errorf("maintain companion state: %w", err)
 	}
 	prompt := ""
 	for i := len(tail) - 1; i >= 0; i-- {
@@ -266,33 +239,6 @@ func CompanionV3ContextMessagesAtLevel(store *pebblestore.SessionStore, session 
 		return nil, err
 	}
 	return turn.Messages, nil
-}
-
-// indexCompanionPersonMessages indexes the person's messages in tail that are
-// after the index mark, in order, then advances the mark past the tail.
-func indexCompanionPersonMessages(store *pebblestore.SessionStore, session pebblestore.SessionSnapshot, tail []pebblestore.MessageSnapshot, now int64) error {
-	mark, err := store.GetCompanionIndexMark(session.AccountScopeID, session.UserID)
-	if err != nil {
-		return err
-	}
-	from := uint64(0)
-	if mark.SessionID == session.ID {
-		from = mark.MessageSeq
-	}
-	last := from
-	for _, message := range tail {
-		if message.GlobalSeq <= from {
-			continue
-		}
-		if err := indexCompanionUserMessage(store, session, message, now); err != nil {
-			return err
-		}
-		last = max(last, message.GlobalSeq)
-	}
-	if last > from {
-		_, err = store.AdvanceCompanionIndexMark(session.AccountScopeID, session.UserID, session.ID, last)
-	}
-	return err
 }
 
 func assembleCompanionTurnFromTail(store *pebblestore.SessionStore, session pebblestore.SessionSnapshot, prompt string, tail []pebblestore.MessageSnapshot, more bool, roots []string, now int64, budget CompanionContextBudget, summarizeTools bool) (companionTurnContext, error) {
@@ -500,6 +446,30 @@ func (s *Service) companionContextStore() *pebblestore.SessionStore {
 		return nil
 	}
 	return s.sessions.Store()
+}
+
+// recordCompanionRunMessage brings the Companion's state up to the run's
+// user message. A message written through the V3 mutation boundary is an
+// event of the Companion's log, so the state maintainer folds it in with
+// everything before it; a message appended outside V3 (no event) is only
+// indexed as a topic and made the focus, as it is not in the log.
+func (s *Service) recordCompanionRunMessage(session pebblestore.SessionSnapshot, message pebblestore.MessageSnapshot, viaV3 bool) error {
+	store := s.companionContextStore()
+	now := time.Now().UnixMilli()
+	if viaV3 {
+		if _, err := MaintainCompanionState(store, session, CompanionMaintainRunStartEvents, now); err != nil && !errors.Is(err, ErrCompanionNotCurrent) {
+			return fmt.Errorf("maintain companion state: %w", err)
+		}
+		return nil
+	}
+	if store == nil {
+		return errors.New("companion context store unavailable")
+	}
+	record, indexed, err := indexCompanionTopic(store, session, message, now)
+	if err != nil || !indexed {
+		return err
+	}
+	return store.SetCompanionFocus(session.AccountScopeID, session.UserID, pebblestore.CompanionFocus{RecordID: record.ID, Keywords: record.Keywords, MessageSeq: message.GlobalSeq, UpdatedAt: now})
 }
 
 func (s *Service) assembleCompanionTurn(session pebblestore.SessionSnapshot, prompt string, roots []string) (companionTurnContext, error) {

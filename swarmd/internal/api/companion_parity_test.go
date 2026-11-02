@@ -64,6 +64,10 @@ func TestCompanionSurfaceParityAndCoverageBoundaries(t *testing.T) {
 		reflect.TypeOf(pebblestore.CompanionContextRecord{}), reflect.TypeOf(pebblestore.CompanionContextSource{}),
 		reflect.TypeOf(pebblestore.CompanionContextReadStats{}), reflect.TypeOf(companionContextPutRequest{}),
 		reflect.TypeOf(companionContextResult{}), reflect.TypeOf(companionDeleteRequest{}), reflect.TypeOf(companionEnsureRequest{}),
+		reflect.TypeOf(CompanionStateView{}), reflect.TypeOf(pebblestore.CompanionState{}), reflect.TypeOf(pebblestore.CompanionStateCursor{}),
+		reflect.TypeOf(pebblestore.CompanionEventSource{}), reflect.TypeOf(pebblestore.CompanionStateRef{}), reflect.TypeOf(pebblestore.CompanionCommitment{}),
+		reflect.TypeOf(pebblestore.CompanionWorkRef{}), reflect.TypeOf(pebblestore.CompanionResultRef{}), reflect.TypeOf(pebblestore.CompanionStateCounters{}),
+		reflect.TypeOf(pebblestore.CompanionFocus{}),
 	} {
 		for _, name := range companionJSONFields(typ) {
 			if _, ok := notTyped[name]; ok {
@@ -80,7 +84,7 @@ func TestCompanionSurfaceParityAndCoverageBoundaries(t *testing.T) {
 		t.Fatal("SDK calls no Companion route")
 	}
 	for _, route := range routes {
-		if route[1] != CompanionPath && route[1] != CompanionContextPath {
+		if route[1] != CompanionPath && route[1] != CompanionContextPath && route[1] != CompanionStatePath {
 			t.Errorf("SDK calls %s, which the daemon does not serve", route[1])
 		}
 	}
@@ -90,7 +94,7 @@ func TestCompanionSurfaceParityAndCoverageBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	doc := string(docRaw)
-	for _, want := range []string{CompanionPath, CompanionContextPath, "companion.activity", "queued_inputs", "pending_permissions", "task_watches", "waiting_next_turn"} {
+	for _, want := range []string{CompanionPath, CompanionContextPath, CompanionStatePath, "companion.activity", "queued_inputs", "pending_permissions", "task_watches", "waiting_next_turn", "companion_state", "commitments", "pending"} {
 		if !strings.Contains(doc, want) {
 			t.Errorf("docs/frontends.md does not document %q", want)
 		}
@@ -100,7 +104,7 @@ func TestCompanionSurfaceParityAndCoverageBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for entry, viaCatalog := range map[string]bool{`CompanionPath -> s.handleCompanion`: false, `CompanionContextPath -> s.handleCompanionContext`: true} {
+	for entry, viaCatalog := range map[string]bool{`CompanionPath -> s.handleCompanion`: false, `CompanionContextPath -> s.handleCompanionContext`: true, `CompanionStatePath -> s.handleCompanionState`: true} {
 		handler := strings.TrimSpace(strings.Split(entry, "->")[1])
 		path := strings.TrimSpace(strings.Split(entry, "->")[0])
 		if !strings.Contains(string(registered), "mux.HandleFunc("+path+", "+handler+")") {

@@ -16,7 +16,7 @@ export interface CompanionView {
   created_at: number;
   updated_at: number;
   /** Canonical V3 routes carrying the Companion's history and live events. */
-  routes: { session: string; messages: string; events: string; context: string };
+  routes: { session: string; messages: string; events: string; context: string; state: string };
   /** Live work state, read when `get` answers (absent from `ensure`). */
   activity?: CompanionActivity;
 }
@@ -193,6 +193,127 @@ export class SwarmCompanionContextNamespace {
   }
 }
 
+/** The exact durable event of the Companion session a state entry derives from. */
+export interface CompanionEventSource {
+  session_id: string;
+  event_seq: number;
+  event_id?: string;
+  event_type: string;
+  message_id?: string;
+  /** The message's sequence, which is the event's own. */
+  message_seq?: number;
+  at?: number;
+}
+
+/** A topic or decision record of the context bank and the event it came from. */
+export interface CompanionStateRef {
+  record_id: string;
+  kind: 'topic' | 'decision';
+  title?: string;
+  source: CompanionEventSource;
+}
+
+/** Something unresolved between the person and the Companion, opened and resolved by exact events. */
+export interface CompanionCommitment {
+  /** `kind:key`. */
+  id: string;
+  kind: 'reply' | 'approval' | 'confirmation' | 'task_watch';
+  /** The message, permission, confirmation or watch it is about. */
+  key: string;
+  title?: string;
+  state: 'open' | 'resolved';
+  /** e.g. `answered`, `approved`, `denied`, `rejected`, `settled`, `ended`. */
+  resolution?: string;
+  opened: CompanionEventSource;
+  resolved?: CompanionEventSource;
+}
+
+/**
+ * Delegated work the Companion follows. `status` is the last reported status
+ * (never a live read); `revision` advances only when the report changes.
+ * Fields from a linked machine are untrusted.
+ */
+export interface CompanionWorkRef {
+  id: string;
+  kind: 'task' | 'session';
+  machine?: string;
+  project_id?: string;
+  task_id?: string;
+  attempt_id?: string;
+  session_id?: string;
+  record_id?: string;
+  watch_id?: string;
+  objective?: string;
+  status?: string;
+  untrusted?: boolean;
+  revision: number;
+  origin: CompanionEventSource;
+  source: CompanionEventSource;
+}
+
+/** A recent device/tool result or wake that reached the Companion. */
+export interface CompanionResultRef {
+  kind: string;
+  name?: string;
+  call_id?: string;
+  status: string;
+  detail?: string;
+  source: CompanionEventSource;
+}
+
+/**
+ * The Companion's state, maintained from its durable event log. `cursor` is
+ * the last event it reflects; lists are oldest first and bounded, and
+ * `counters` say what bounds evicted.
+ */
+export interface CompanionState {
+  version: number;
+  session_id: string;
+  generation: number;
+  revision: number;
+  cursor: { session_id: string; event_seq: number; event_id?: string; updated_at?: number };
+  topics: CompanionStateRef[];
+  decisions: CompanionStateRef[];
+  commitments: CompanionCommitment[];
+  work: CompanionWorkRef[];
+  results: CompanionResultRef[];
+  counters: {
+    events: number;
+    applied: number;
+    evicted_topics?: number;
+    evicted_decisions?: number;
+    evicted_commitments?: number;
+    evicted_work?: number;
+    unmatched_resolutions?: number;
+  };
+  created_at: number;
+  updated_at: number;
+}
+
+/** The current conversational focus, set by the state revision that followed the person's message. */
+export interface CompanionFocus {
+  record_id: string;
+  keywords: string[];
+  message_seq?: number;
+  updated_at: number;
+  revision?: number;
+  source?: CompanionEventSource;
+}
+
+/**
+ * A read of the Companion's state. `state` is null before its first
+ * maintenance; `pending` counts committed events after its cursor (nonzero:
+ * the state does not reflect them yet).
+ */
+export interface CompanionStateView {
+  session_id: string;
+  state: CompanionState | null;
+  focus?: CompanionFocus;
+  latest_seq: number;
+  pending: number;
+  read_at: number;
+}
+
 export interface CompanionEnsureResult {
   ok: boolean;
   created: boolean;
@@ -229,6 +350,11 @@ export class SwarmCompanionNamespace {
   /** Get-or-create; idempotent. `workspace_path` is used only on first creation; without it the Companion is checkout-free (it never defaults to the current workspace and needs none). */
   async ensure(params: { workspace_path?: string } = {}): Promise<CompanionEnsureResult> {
     return (await this.transport.request<CompanionEnsureResult>('/v3/companion', { method: 'POST', body: params })).data;
+  }
+
+  /** The Companion's maintained state (focus, commitments, topics, decisions, work, results) with its cursor. Read only. */
+  async state(signal?: AbortSignal): Promise<CompanionStateView> {
+    return (await this.transport.request<{ companion_state: CompanionStateView }>('/v3/companion/state', { method: 'GET', signal })).data.companion_state;
   }
 
   /** Deliberately deletes the Companion, its history and its context bank; the next `ensure` starts an empty one. */

@@ -846,6 +846,9 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 	apiServer.ConfigureAutomationRealtime(store)
 	apiServer.ConfigureEnvironmentRealtime(store)
 	apiServer.ConfigureProjectRealtime(store)
+	// Every committed event of a Companion session nudges its state
+	// maintenance, which reads the durable log itself.
+	apiServer.ConfigureCompanionMaintenance(store)
 	// Keep the legacy catalog read-only. Do not install V1 approval, dispatch,
 	// tool execution, or run-context authorities alongside plan-native V2.
 	apiServer.ConfigureAutomations(automationSvc, nil, nil, nil)

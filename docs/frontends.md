@@ -232,6 +232,23 @@ moves onto it, keeping its history and model, the next time it is opened:
   outcomes and other background wakes never become topics or the focus. A
   record whose source message or session is deleted or changed becomes
   `invalidated` and is no longer retrieved.
+- **Its state follows its event log** (`routes.state`, `GET
+  /v3/companion/state`, read only): the Companion session's own durable V3
+  events (the person's messages and queued notes, task-watch starts, outcomes,
+  milestones and cancellations, tool and device results, permission and
+  confirmation decisions, background wakes, failed runs) are folded, in
+  order and once each, into `companion_state.state`: open and recently
+  resolved `commitments` (`reply`, `approval`, `confirmation`, `task_watch`),
+  `topics` and `decisions` (context bank record IDs), followed `work` (task
+  identity, last reported status and a `revision` that advances only when the
+  report changes), recent `results`, and the `focus`. Every entry names its
+  exact source event (`event_seq`, `event_id`, `event_type`, `message_seq`).
+  `cursor` is the last event reflected and `pending` the committed events
+  after it; maintenance runs at each Companion run start and after each
+  commit to the Companion session, a bounded page at a time, committing state,
+  cursor and focus together, so a restart resumes from the cursor. Statuses
+  are reported, not live: read a task or session itself for live truth. Lists
+  are bounded; `counters` say what was evicted.
 - **It stays responsive while it works:** let the person send while a run is
   busy. The message route answers `queued: true` (retries with the same
   `client_request_id` replay it), and the running model reads it after its
@@ -258,7 +275,8 @@ moves onto it, keeping its history and model, the next time it is opened:
   (`client.companion`); Swarm Control (MCP) reaches the Companion's
   conversation through the ordinary session actions. Its context bank is a
   catalog tool, `manage_companion` (`record_decision`, `record_work`,
-  `search`, `get`, `list`, `forget`): the Companion calls it natively, Swarm
+  `search`, `get`, `list`, `forget`, and `state`, which runs the same read as
+  `/v3/companion/state`): the Companion calls it natively, Swarm
   Control serves it to an AI key holding `sessions:read` (reads) or
   `sessions:write` (changes), and no other agent or conversation gets it (a
   call from any other session is refused). Linked machines do not forward the

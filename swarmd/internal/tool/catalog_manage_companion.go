@@ -12,7 +12,8 @@ import (
 
 // manage_companion is the Companion's context bank in the catalog: its
 // decisions and work pointers (with their original sources), searched and
-// read with their sources verified, and forgotten at an expected revision.
+// read with their sources verified, and forgotten at an expected revision;
+// and its maintained state (state), read from the Companion's event log.
 // One service function (CompanionContextService, the API server's
 // ManageCompanionContext) holds every rule; the Companion's native call, Swarm
 // Control's call and the HTTP route /v3/companion/context all run it. It never
@@ -93,6 +94,8 @@ func manageCompanionCatalog() CatalogTool {
 			Description: "Every record, newest first, a page at a time (next_cursor)."},
 		{Action: "forget", Inputs: []string{"machine", "id", "expected_revision"}, Level: CatalogLevelWrite, APIScopes: write,
 			Description: "Forget one record for good, at its current revision; recording the same id again is refused."},
+		{Action: "state", Inputs: []string{"machine"}, Level: CatalogLevelRead, APIScopes: read,
+			Description: "The Companion's maintained state from its event log: focus, open commitments (replies, approvals, confirmations, task watches), topic and decision references, followed work with its last reported status, recent device and wake results, each with its source event, and how many events are still pending."},
 	}
 	profiles := []CatalogProfile{CatalogProfileEssentials, CatalogProfileFull, CatalogProfileOrchestrator}
 	for i := range actions {

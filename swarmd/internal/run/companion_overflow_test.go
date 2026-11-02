@@ -108,12 +108,12 @@ func TestCompanionOverflowBudgetsStayBoundedAtEveryLevel(t *testing.T) {
 		seqs = append(seqs, f.say("tool", content).GlobalSeq)
 	}
 	lastSeq := seqs[len(seqs)-1]
-	session, _, _ := f.db.GetSession("companion")
+	session, _, _ := f.db.GetSession(companionFixtureID)
 	if session.MessageCount < 2000 {
 		t.Fatalf("fixture has %d messages, want thousands", session.MessageCount)
 	}
 
-	reads := observeCompanionMessageReads(t, "companion")
+	reads := observeCompanionMessageReads(t, companionFixtureID)
 	for level := 0; level < CompanionContextBudgetLevels; level++ {
 		budget := companionContextBudgets[level]
 		reads.take()
@@ -185,20 +185,20 @@ func TestCompanionCompactionIsRefusedWithoutHistoryReads(t *testing.T) {
 	}
 	svc := NewService(sessionruntime.NewService(f.db, nil), nil, nil, tool.NewRuntime(1), nil, nil, nil, nil)
 
-	reads := observeCompanionMessageReads(t, "companion")
+	reads := observeCompanionMessageReads(t, companionFixtureID)
 	for _, origin := range []string{"overflow", "manual", ""} {
-		_, err := svc.RunTurn(context.Background(), "companion", RunRequest{Prompt: "compact", Compact: true, CompactOrigin: origin}, RunStartMeta{RunID: "compact-" + origin})
+		_, err := svc.RunTurn(context.Background(), companionFixtureID, RunRequest{Prompt: "compact", Compact: true, CompactOrigin: origin}, RunStartMeta{RunID: "compact-" + origin})
 		if !errors.Is(err, ErrCompanionCompactionRefused) {
 			t.Fatalf("compact (origin %q) on a Companion = %v, want ErrCompanionCompactionRefused", origin, err)
 		}
 	}
-	if _, err := svc.listMessagesForMemoryCompaction("companion", true); !errors.Is(err, ErrCompanionCompactionRefused) {
+	if _, err := svc.listMessagesForMemoryCompaction(companionFixtureID, true); !errors.Is(err, ErrCompanionCompactionRefused) {
 		t.Fatalf("full-history compaction read of a Companion = %v, want refused", err)
 	}
 	if records, _ := reads.take(); records != 0 {
 		t.Fatalf("refused Companion compaction read %d message records", records)
 	}
-	if session, _, _ := f.db.GetSession("companion"); session.Lifecycle != nil && session.Lifecycle.Active {
+	if session, _, _ := f.db.GetSession(companionFixtureID); session.Lifecycle != nil && session.Lifecycle.Active {
 		t.Fatalf("refused compaction left the lifecycle active: %+v", session.Lifecycle)
 	}
 

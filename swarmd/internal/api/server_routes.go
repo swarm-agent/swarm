@@ -328,6 +328,7 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v3/application-agents/", s.handleApplicationAgents)
 	mux.HandleFunc(CompanionPath, s.handleCompanion)
 	mux.HandleFunc(CompanionContextPath, s.handleCompanionContext)
+	mux.HandleFunc(CompanionStatePath, s.handleCompanionState)
 	mux.HandleFunc("/v3/activity", s.handleActivity)
 	mux.HandleFunc("/v3/activity/stream", s.handleActivity)
 	mux.HandleFunc("/v3/sessions", s.handleSessionsV3Primary)

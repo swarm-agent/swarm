@@ -346,6 +346,8 @@ func (s *Server) ManageCompanionContext(_ context.Context, call tool.CompanionCo
 	args := call.Args
 	text := func(key string) string { value, _ := args[key].(string); return strings.TrimSpace(value) }
 	switch call.Action {
+	case "state":
+		return s.companionStateRead(p)
 	case "search":
 		limit, _, err := companionIntArg(args, "limit", 1)
 		if err != nil {

@@ -9,6 +9,10 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+// companionFixtureID is the fixture's Companion session: generation 1 of the
+// acct/user identity, so the session is that principal's current Companion.
+var companionFixtureID = pebblestore.CompanionSessionID("acct", "user", 1)
+
 type companionTurnFixture struct {
 	t        *testing.T
 	db       *pebblestore.SessionStore
@@ -24,8 +28,11 @@ func newCompanionTurnFixture(t *testing.T) *companionTurnFixture {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	f := &companionTurnFixture{t: t, db: pebblestore.NewSessionStore(store)}
-	f.apply("companion", pebblestore.V3SessionMutationInput{Kind: pebblestore.V3SessionMutationCreateSession, Session: &pebblestore.SessionSnapshot{ID: "companion", Mode: "auto", Metadata: map[string]any{pebblestore.SessionCompanionMetadataKey: map[string]any{"generation": 1}}}})
-	session, ok, err := f.db.GetSession("companion")
+	if identity, _, err := f.db.EnsureCompanion("acct", "user", 1); err != nil || identity.SessionID != companionFixtureID {
+		t.Fatalf("companion identity: %+v %v", identity, err)
+	}
+	f.apply(companionFixtureID, pebblestore.V3SessionMutationInput{Kind: pebblestore.V3SessionMutationCreateSession, Session: &pebblestore.SessionSnapshot{ID: companionFixtureID, Mode: "auto", Metadata: map[string]any{pebblestore.SessionCompanionMetadataKey: map[string]any{"generation": 1}}}})
+	session, ok, err := f.db.GetSession(companionFixtureID)
 	if err != nil || !ok {
 		t.Fatalf("companion session: %v %v", ok, err)
 	}
@@ -46,15 +53,15 @@ func (f *companionTurnFixture) apply(session string, in pebblestore.V3SessionMut
 	return result
 }
 
-// say appends one message and, for user messages, indexes it the way a
-// Companion turn does.
+// say appends one message and brings the Companion state up to it, the way a
+// Companion turn's start does.
 func (f *companionTurnFixture) say(role, content string) pebblestore.MessageSnapshot {
 	f.t.Helper()
-	result := f.apply("companion", pebblestore.V3SessionMutationInput{Kind: pebblestore.V3SessionMutationAppendMessage, Message: &pebblestore.MessageSnapshot{Role: role, Content: content}})
+	result := f.apply(companionFixtureID, pebblestore.V3SessionMutationInput{Kind: pebblestore.V3SessionMutationAppendMessage, Message: &pebblestore.MessageSnapshot{Role: role, Content: content}})
 	if result.Message == nil {
 		f.t.Fatal("append returned no message")
 	}
-	if err := indexCompanionUserMessage(f.db, f.session, *result.Message, int64(result.Message.GlobalSeq)); err != nil {
+	if _, err := MaintainCompanionState(f.db, f.session, 0, int64(result.Message.GlobalSeq)); err != nil {
 		f.t.Fatal(err)
 	}
 	return *result.Message
@@ -71,7 +78,7 @@ func (f *companionTurnFixture) say(role, content string) pebblestore.MessageSnap
 // stored text cannot forge block sections; assembly is deterministic; a work
 // pointer is shown with its live status. Threat: an ever-growing prompt or
 // per-turn full-history read, a forgotten earlier topic, or stored content
-// posing as instructions. Boundary: indexCompanionUserMessage,
+// posing as instructions. Boundary: MaintainCompanionState (topic indexing),
 // assembleCompanionTurnContext, renderCompanionContextBlock over the real V3
 // message store and context bank. Narrowest layer: the pure assembly function
 // the run loop calls, over a real Pebble store (a provider-backed run is not
@@ -87,10 +94,10 @@ func TestCompanionTurnContextStaysBoundedOverLargeHistory(t *testing.T) {
 		f.say("user", fmt.Sprintf("Research battery chemistry question %d: %s", i, long))
 		f.say("assistant", fmt.Sprintf("Answer %d: %s", i, long))
 	}
-	if _, _, err := f.db.PutCompanionContext(pebblestore.CompanionContextRecord{ID: "decision-1", AccountScopeID: "acct", UserID: "user", Kind: pebblestore.CompanionContextKindDecision, Title: "Use the vendor driver, not the generic one", Source: pebblestore.CompanionContextSource{Kind: pebblestore.CompanionContextSourceMessage, SessionID: "companion", MessageSeq: printer.GlobalSeq}}, 0, 1); err != nil {
+	if _, _, err := f.db.PutCompanionContext(pebblestore.CompanionContextRecord{ID: "decision-1", AccountScopeID: "acct", UserID: "user", Kind: pebblestore.CompanionContextKindDecision, Title: "Use the vendor driver, not the generic one", Source: pebblestore.CompanionContextSource{Kind: pebblestore.CompanionContextSourceMessage, SessionID: companionFixtureID, MessageSeq: printer.GlobalSeq}}, 0, 1); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := f.db.PutCompanionContext(pebblestore.CompanionContextRecord{ID: "work-1", AccountScopeID: "acct", UserID: "user", Kind: pebblestore.CompanionContextKindWork, Title: "Battery research task", Source: pebblestore.CompanionContextSource{Kind: pebblestore.CompanionContextSourceSession, SessionID: "companion"}}, 0, 1); err != nil {
+	if _, _, err := f.db.PutCompanionContext(pebblestore.CompanionContextRecord{ID: "work-1", AccountScopeID: "acct", UserID: "user", Kind: pebblestore.CompanionContextKindWork, Title: "Battery research task", Source: pebblestore.CompanionContextSource{Kind: pebblestore.CompanionContextSourceSession, SessionID: companionFixtureID}}, 0, 1); err != nil {
 		t.Fatal(err)
 	}
 
@@ -152,7 +159,7 @@ func TestCompanionTurnContextStaysBoundedOverLargeHistory(t *testing.T) {
 	if focusAfter.MessageSeq != focusBefore.MessageSeq || focusAfter.MessageSeq != back.GlobalSeq {
 		t.Fatalf("short follow-up moved focus: %d -> %d", focusBefore.MessageSeq, focusAfter.MessageSeq)
 	}
-	if _, ok, _ := f.db.GetCompanionContext("acct", "user", pebblestore.CompanionMessageContextID("companion", short.GlobalSeq)); ok {
+	if _, ok, _ := f.db.GetCompanionContext("acct", "user", pebblestore.CompanionMessageContextID(companionFixtureID, short.GlobalSeq)); ok {
 		t.Fatal("short follow-up was indexed as a topic")
 	}
 	followUp, err := assembleCompanionTurnContext(f.db, f.session, short.Content, nil, 100)

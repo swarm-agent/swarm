@@ -68,6 +68,9 @@ type Store struct {
 	workerBudgetPublisher    func(NotificationRecord)
 	schedulingObserver       atomic.Pointer[func(SchedulingSignal)]
 	budgetReadObserver       atomic.Pointer[func(string)]
+	// sessionCommitObserver is told after each durable V3 session mutation
+	// (SetSessionCommitObserver, companion_state.go).
+	sessionCommitObserver atomic.Pointer[func(sessionID string, lastSeq uint64)]
 }
 
 // storeBlockCacheBytes sizes the shared sstable block cache. Pebble's 8 MiB

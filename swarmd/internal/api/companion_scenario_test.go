@@ -303,6 +303,78 @@ func (s *companionScenario) personSeq(t *testing.T, content string) uint64 {
 	return 0
 }
 
+// companionStateNow waits for background state maintenance (the commit
+// nudges of every event so far) and reads GET /v3/companion/state. It checks
+// the invariants every read must hold: nothing pending, every event consumed
+// exactly once (the log starts at 1, so consumed events equal the cursor),
+// the cursor at the session's projection head, and no duplicate commitment
+// or work identity.
+//
+// A run's trailing events (its lifecycle settling) may commit just after the
+// test saw the run end; each such commit nudges its own pass, so the read is
+// retried until it is caught up. A commit whose nudge was lost would stay
+// pending and fail at the deadline.
+func companionStateNow(t *testing.T, f *confirmationFixture, sessionID string) CompanionStateView {
+	t.Helper()
+	var view CompanionStateView
+	var head uint64
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		f.server.waitCompanionMaintenance()
+		code, body := f.do(http.MethodGet, CompanionStatePath, "")
+		var out struct {
+			State CompanionStateView `json:"companion_state"`
+		}
+		if code != http.StatusOK || json.Unmarshal([]byte(body), &out) != nil || out.State.State == nil {
+			t.Fatalf("companion state: %d %s", code, body)
+		}
+		view = out.State
+		projection, _, err := f.sessions.Store().GetV3SessionProjection(sessionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		head = projection.LastEventSeq
+		if (view.Pending == 0 && view.State.Cursor.EventSeq == head) || time.Now().After(deadline) {
+			break
+		}
+	}
+	state := view.State
+	if view.SessionID != sessionID || state.SessionID != sessionID || view.Pending != 0 || state.Cursor.EventSeq != head || state.Counters.Events != state.Cursor.EventSeq {
+		t.Fatalf("state is not caught up exactly once: pending %d, cursor %d, head %d, consumed %d", view.Pending, state.Cursor.EventSeq, head, state.Counters.Events)
+	}
+	seen := map[string]bool{}
+	for _, c := range state.Commitments {
+		if seen[c.ID] {
+			t.Fatalf("duplicate commitment %s", c.ID)
+		}
+		seen[c.ID] = true
+	}
+	for _, w := range state.Work {
+		if seen[w.ID] {
+			t.Fatalf("duplicate work reference %s", w.ID)
+		}
+		seen[w.ID] = true
+	}
+	return view
+}
+
+func companionCommitmentNamed(state *pebblestore.CompanionState, id string) (pebblestore.CompanionCommitment, bool) {
+	for _, c := range state.Commitments {
+		if c.ID == id {
+			return c, true
+		}
+	}
+	return pebblestore.CompanionCommitment{}, false
+}
+
+func companionWorkNamed(state *pebblestore.CompanionState, id string) (pebblestore.CompanionWorkRef, bool) {
+	for _, w := range state.Work {
+		if w.ID == id {
+			return w, true
+		}
+	}
+	return pebblestore.CompanionWorkRef{}, false
+}
+
 func (s *companionScenario) watch(t *testing.T, i int) string {
 	t.Helper()
 	s.mu.Lock()
@@ -326,7 +398,16 @@ func (s *companionScenario) watch(t *testing.T, i int) string {
 // source, not by reloading history); another pass is sent and then stopped
 // with stop_task and cancel_watch, after which no outcome arrives; after a
 // daemon restart over the same store the same Companion has the same task,
-// context bank and idle activity. Each watch delivers its outcome exactly
+// context bank and idle activity. The Companion's materialized state
+// (GET /v3/companion/state, maintained by run starts and commit nudges as on
+// the daemon) follows those same real events: the research message is a
+// topic and an answered reply, each watch an open then settled or ended
+// commitment citing its start, outcome or cancellation event, the task a
+// work reference whose revision advances with its reported status, the
+// focus the person's message with its event; every event is consumed exactly
+// once, nothing is pending once maintenance is idle, and across the restart
+// the committed revision and cursor are kept and maintenance resumes from
+// them. Each watch delivers its outcome exactly
 // once even when reconciled again, before and after the restart; a retried
 // client_request_id replays instead of starting a turn; every turn carries
 // one bounded context block and at most the recent tail; the ordinary chat
@@ -339,7 +420,8 @@ func (s *companionScenario) watch(t *testing.T, i int) string {
 // handleCompanion, the V3 executor and run loop, the provider tool invoker and
 // permission gate, Runtime.executeManageProjects (propose_task, wait_tasks,
 // message_task, stop_task, cancel_watch) over Server.CreateProjectTask and
-// the watch store, reconcileProjectTaskWaits, CompanionV3ContextMessages.
+// the watch store, reconcileProjectTaskWaits, CompanionV3ContextMessages,
+// the session commit observer, MaintainCompanionState and companionStateRead.
 // Narrowest layer: the daemon's HTTP routes, executor, run loop, task runs and
 // store over a real Pebble path reopened for the restart, with a scripted
 // provider for both the Companion and the Finder task (no live model). The
@@ -358,6 +440,10 @@ func TestCompanionResearchPCHelpRevisionAndRestartScenario(t *testing.T) {
 	scenario.f, scenario.companion = f, f.sessionID
 	account, user := testPrincipal().AccountScopeID, testPrincipal().UserID
 	store := f.sessions.Store()
+	// As on the daemon: every commit to the Companion session nudges its
+	// state maintenance.
+	f.server.ConfigureCompanionMaintenance(store.Underlying())
+	t.Cleanup(f.server.waitCompanionMaintenance)
 	ctx := identity.ContextWithPrincipal(context.Background(), testPrincipal())
 	if _, err := f.server.agentModelSettings.UpdateSystemAgent(ctx, "finder", pebblestore.AgentModelAssignment{Provider: "test-provider", Model: "test-model", Thinking: "low"}); err != nil {
 		t.Fatal(err)
@@ -417,6 +503,29 @@ func TestCompanionResearchPCHelpRevisionAndRestartScenario(t *testing.T) {
 	if activity := f.companionActivity(); activity.Run.Active || len(activity.TaskWatches) != 1 || activity.TaskWatches[0].WatchID != firstWatch {
 		t.Fatalf("activity after delegating = %+v, want idle with the research watch", activity)
 	}
+	// The state followed the real events: the person's message is a topic
+	// and an answered reply, the watch an open commitment, the task a
+	// followed work reference, each citing its exact event.
+	researchMsg := scenario.personSeq(t, scenarioResearch)
+	workID := "task:/" + scenarioProject + "/" + scenarioTask
+	state := companionStateNow(t, f.confirmationFixture, scenario.companion).State
+	if watch, ok := companionCommitmentNamed(state, "task_watch:"+firstWatch); !ok || watch.State != pebblestore.CompanionCommitmentOpen || watch.Opened.EventType != "session.task_watch.started" {
+		t.Fatalf("watch commitment = %+v %v", watch, ok)
+	}
+	firstWork, ok := companionWorkNamed(state, workID)
+	if !ok || firstWork.WatchID != firstWatch || firstWork.Status != "watching" || firstWork.Origin.EventType != "session.task_watch.started" || firstWork.TaskID != scenarioTask {
+		t.Fatalf("work reference = %+v %v", firstWork, ok)
+	}
+	topicFound, replied := false, false
+	for _, topic := range state.Topics {
+		topicFound = topicFound || (topic.RecordID == pebblestore.CompanionMessageContextID(scenario.companion, researchMsg) && topic.Source.EventSeq == researchMsg && topic.Source.MessageSeq == researchMsg)
+	}
+	for _, c := range state.Commitments {
+		replied = replied || (c.Kind == pebblestore.CompanionCommitmentReply && c.Opened.MessageSeq == researchMsg && c.State == pebblestore.CompanionCommitmentResolved && c.Resolution == "answered" && c.Resolved != nil && c.Resolved.EventType == "session.assistant.completed")
+	}
+	if !topicFound || !replied {
+		t.Fatalf("research message: topic %v, answered reply %v in %+v", topicFound, replied, state)
+	}
 
 	// 2. Foreground PC troubleshooting while the research runs.
 	companionSay(t, f, "pc-1", scenarioWifi)
@@ -436,6 +545,19 @@ func TestCompanionResearchPCHelpRevisionAndRestartScenario(t *testing.T) {
 	}
 	if focus, _, _ := store.GetCompanionFocus(account, user); focus.MessageSeq != wifiSeq {
 		t.Fatalf("focus after the outcome = %d, want the wifi message %d", focus.MessageSeq, wifiSeq)
+	}
+	// The outcome settled the watch and reported the task's status (a new
+	// work revision) from its own event; the focus stayed on the person.
+	outcome := scenario.outcomes(t, firstWatch)[0]
+	view := companionStateNow(t, f.confirmationFixture, scenario.companion)
+	if watch, _ := companionCommitmentNamed(view.State, "task_watch:"+firstWatch); watch.State != pebblestore.CompanionCommitmentResolved || watch.Resolution != "settled" || watch.Resolved == nil || watch.Resolved.EventType != "session.run.tasks_ready" || watch.Resolved.MessageSeq != outcome.GlobalSeq {
+		t.Fatalf("watch after its outcome = %+v", watch)
+	}
+	if work, _ := companionWorkNamed(view.State, workID); work.WatchID != "" || work.Status == "" || work.Status == "watching" || work.Revision <= firstWork.Revision || work.AttemptID == "" {
+		t.Fatalf("work after the outcome = %+v (was revision %d)", work, firstWork.Revision)
+	}
+	if view.Focus == nil || view.Focus.MessageSeq != wifiSeq || view.Focus.Source == nil || view.Focus.Source.EventSeq != wifiSeq || view.Focus.Revision == 0 {
+		t.Fatalf("state focus = %+v, want the wifi message %d with its event and revision", view.Focus, wifiSeq)
 	}
 
 	// A long conversation in between: the earlier messages leave the tail.
@@ -540,12 +662,25 @@ func TestCompanionResearchPCHelpRevisionAndRestartScenario(t *testing.T) {
 	if watches, err := store.ListV3SessionTaskWatches(scenario.companion); err != nil || len(watches) != 0 {
 		t.Fatalf("a watch came back after the stop: %+v %v", watches, err)
 	}
+	stopped := companionStateNow(t, f.confirmationFixture, scenario.companion).State
+	if watch, _ := companionCommitmentNamed(stopped, "task_watch:"+thirdWatch); watch.State != pebblestore.CompanionCommitmentResolved || watch.Resolution != "ended" || watch.Resolved == nil || watch.Resolved.EventType != "session.task_watch.cancelled" {
+		t.Fatalf("cancelled watch = %+v", watch)
+	}
+	if watch, _ := companionCommitmentNamed(stopped, "task_watch:"+secondWatch); watch.Resolution != "settled" {
+		t.Fatalf("revised watch = %+v", watch)
+	}
 	before, _ := json.Marshal(scenario.outcomes(t, firstWatch))
 	// Daemon shutdown: in-flight work (task runs, watch followers) ends
 	// before the store closes.
 	f.server.CancelInFlightRuns()
 	if !f.server.WaitForInFlightRuns(10 * time.Second) {
 		t.Fatal("runs did not stop on shutdown")
+	}
+	// Once shutdown began no maintenance pass starts, so events of the
+	// shutdown itself may still be pending: read the durable state as is.
+	beforeRestart, stored, err := store.GetCompanionState(account, user)
+	if err != nil || !stored || beforeRestart.Cursor.EventSeq == 0 {
+		t.Fatalf("state before restart: %+v %v %v", beforeRestart.Cursor, stored, err)
 	}
 
 	// 7. Restart over the same store: same Companion, work and context.
@@ -555,6 +690,12 @@ func TestCompanionResearchPCHelpRevisionAndRestartScenario(t *testing.T) {
 		if _, err := g.server.agentModelSettings.UpdateSwarmSlot(ctx, slot, pebblestore.AgentModelAssignment{Provider: "test-provider", Model: "test-model", Thinking: "low"}); err != nil {
 			t.Fatal(err)
 		}
+	}
+	g.server.ConfigureCompanionMaintenance(g.sessions.Store().Underlying())
+	t.Cleanup(g.server.waitCompanionMaintenance)
+	// The state survived the restart as committed: same revision and cursor.
+	if reopenedState, ok, err := g.sessions.Store().GetCompanionState(account, user); err != nil || !ok || reopenedState.Revision != beforeRestart.Revision || reopenedState.Cursor != beforeRestart.Cursor {
+		t.Fatalf("state after restart = rev %d cursor %+v (%v %v), want rev %d cursor %+v", reopenedState.Revision, reopenedState.Cursor, ok, err, beforeRestart.Revision, beforeRestart.Cursor)
 	}
 	after := &queuedNoteFixture{confirmationFixture: g, sessionID: scenario.companion}
 	scenario.f = after
@@ -593,6 +734,16 @@ func TestCompanionResearchPCHelpRevisionAndRestartScenario(t *testing.T) {
 	g.say(scenario.companion, "after-1", scenarioAfter)
 	if block := contextBlock(t, scenario.input(t, "after-restart")); !strings.Contains(block, "Older messages are not loaded") {
 		t.Fatalf("turn after restart is not bounded:\n%s", block)
+	}
+	// Maintenance resumed from the durable cursor: every event still
+	// consumed exactly once (checked by companionStateNow), the earlier
+	// commitments kept, and the new turn's message folded in.
+	resumed := companionStateNow(t, g, scenario.companion).State
+	if resumed.Revision <= beforeRestart.Revision || resumed.Cursor.EventSeq <= beforeRestart.Cursor.EventSeq {
+		t.Fatalf("state did not resume after restart: rev %d -> %d, cursor %d -> %d", beforeRestart.Revision, resumed.Revision, beforeRestart.Cursor.EventSeq, resumed.Cursor.EventSeq)
+	}
+	if watch, _ := companionCommitmentNamed(resumed, "task_watch:"+firstWatch); watch.Resolution != "settled" {
+		t.Fatalf("first watch after restart = %+v", watch)
 	}
 
 	// The ordinary chat beside the Companion is unchanged.

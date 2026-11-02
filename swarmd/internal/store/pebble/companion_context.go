@@ -89,11 +89,17 @@ type CompanionContextRecord struct {
 
 // CompanionFocus is the current conversational focus: the latest substantive
 // topic, so short follow-ups ("yes, do that") keep retrieving its context.
+//
+// The Companion state maintainer writes it in the same batch as the state and
+// its cursor (CommitCompanionState): Revision is the state revision that set
+// it and Source the person's message event it follows.
 type CompanionFocus struct {
-	RecordID   string   `json:"record_id"`
-	Keywords   []string `json:"keywords"`
-	MessageSeq uint64   `json:"message_seq,omitempty"`
-	UpdatedAt  int64    `json:"updated_at"`
+	RecordID   string                `json:"record_id"`
+	Keywords   []string              `json:"keywords"`
+	MessageSeq uint64                `json:"message_seq,omitempty"`
+	UpdatedAt  int64                 `json:"updated_at"`
+	Revision   int64                 `json:"revision,omitempty"`
+	Source     *CompanionEventSource `json:"source,omitempty"`
 }
 
 // CompanionContextReadStats counts the Pebble keys one query read, so callers

@@ -735,6 +735,13 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 			return V3SessionMutationResult{}, err
 		}
 	}
+	// Derived maintenance (the Companion state) follows the durable log; this
+	// only tells it there is something new to read.
+	notified := strings.TrimSpace(result.SessionID)
+	if notified == "" {
+		notified = strings.TrimSpace(input.SessionID)
+	}
+	s.notifySessionCommit(notified, max(result.LastSeq, result.Event.Seq))
 	if end := completion.taskWaitEnded; end != nil {
 		// The committed mutation stands; the end line is information for the
 		// person, so its own failure is reported, not turned into this one's.
