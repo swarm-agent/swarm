@@ -211,14 +211,24 @@ pub fn linked_task(r: &Value) -> Task {
     let status_text = s(r, "status");
     let missing = r.get("missing").and_then(Value::as_bool).unwrap_or(false);
     let archived = r.get("archived").and_then(Value::as_bool).unwrap_or(false);
-    let status = if missing { TaskStatus::Failed } else { map::task_status(status_text) };
+    let waiting = status_text == "pending_approval" && !missing && !archived;
+    // Only a task still waiting on its machine shows as waiting: an archived
+    // one is not, so no card offers this Swarm's approve/reject for it.
+    let status = if missing {
+        TaskStatus::Failed
+    } else if archived {
+        map::task_status("archived")
+    } else {
+        map::task_status(status_text)
+    };
     let machine = s(r, "machine").to_string();
     let activity = if missing {
         format!("{machine} answered that this task no longer exists")
+    } else if archived {
+        format!("archived on {machine}")
     } else {
         [s(r, "last_error"), s(r, "action_needed"), s(r, "progress")].into_iter().find(|x| !x.trim().is_empty()).unwrap_or("").lines().next().unwrap_or("").to_string()
     };
-    let waiting = status_text == "pending_approval" && !missing && !archived;
     let title = if s(r, "title").trim().is_empty() { format!("task {}", s(r, "task_id")) } else { s(r, "title").trim().to_string() };
     let updated = r.get("observed_at").and_then(Value::as_u64).unwrap_or(0).max(r.get("created_at").and_then(Value::as_u64).unwrap_or(0));
     Task {
@@ -387,5 +397,34 @@ mod tests {
         let gone = cards.iter().find(|t| t.key.as_ref() == "gone").unwrap();
         assert!(gone.review.is_none(), "a task its machine says is gone has nothing to decide");
         assert!(gone.activity.contains("no longer exists"));
+    }
+
+    // Purpose: a linked task's card never offers this Swarm's approve/reject.
+    // Invariant: a linked card is PendingApproval only while its review is
+    // attached, so an archived record that still says pending_approval (the
+    // home keeps archived linked records) is not waiting and has no review.
+    // Threat: generic approve/reject that posts an empty-body approve to the
+    // home project with the remote task id, or a Companion button that does
+    // nothing. Owner: linked_task. Narrowest layer: the pure record mapping
+    // that task_actions and the Companion card read.
+    #[test]
+    fn an_archived_linked_task_offers_no_decision() {
+        let records = linked_records(&json!({"linked_tasks": [
+            {"machine": "box", "project_id": "bp", "task_id": "old", "title": "Old plan", "status": "pending_approval", "archived": true, "created_at": 3},
+            {"machine": "box", "project_id": "bp", "task_id": "gone", "status": "pending_approval", "missing": true, "archived": true, "created_at": 2},
+            {"machine": "box", "project_id": "bp", "task_id": "live", "status": "pending_approval", "created_at": 1}
+        ]}));
+        let cards = linked_tasks(&records);
+        assert_eq!(cards.len(), 3);
+        for card in &cards {
+            assert_eq!(card.status == TaskStatus::PendingApproval, card.review.is_some(), "{}: waiting only with its review", card.key);
+        }
+        let old = cards.iter().find(|t| t.key.as_ref() == "old").unwrap();
+        assert_eq!((old.status, old.review.is_none()), (TaskStatus::Rejected, true));
+        assert!(!old.status.needs_you());
+        assert_eq!(old.progress.task_state, TaskState::Unknown);
+        assert!(old.activity.contains("archived"));
+        let live = cards.iter().find(|t| t.key.as_ref() == "live").unwrap();
+        assert!(live.review.as_ref().is_some_and(|r| r.opens_review()), "a waiting linked task still opens its review");
     }
 }

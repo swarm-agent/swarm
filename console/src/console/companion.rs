@@ -415,7 +415,9 @@ impl Console {
                 .when(task.status.needs_you() && task.review.as_ref().is_some_and(|r| r.opens_review()), |d| {
                     d.child(act_button(if task.review.as_ref().is_some_and(|r| r.plan) { "review plan" } else { "review" }, true, Act::Approve))
                 })
-                .when(task.status.needs_you() && !task.review.as_ref().is_some_and(|r| r.opens_review()), |d| {
+                // This Swarm's approve/reject only for its own tasks: a linked
+                // task is decided through its review on its machine.
+                .when(task.status.needs_you() && w.machine.is_empty() && !task.review.as_ref().is_some_and(|r| r.opens_review()), |d| {
                     d.child(act_button("approve", true, Act::Approve)).child(act_button("reject", false, Act::Reject))
                 })
                 .when(task.status == crate::data::TaskStatus::Running && !task.session.is_empty() && w.machine.is_empty(), |d| d.child(act_button("stop", false, Act::Stop)));
