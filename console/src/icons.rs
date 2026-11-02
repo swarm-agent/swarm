@@ -60,6 +60,8 @@ pub enum Icon {
     Copy,
     Shield,
     Live,
+    /// The person's one persistent Companion.
+    Companion,
 }
 
 impl Icon {
@@ -86,6 +88,7 @@ impl Icon {
             Icon::Copy => "copy",
             Icon::Shield => "shield",
             Icon::Live => "live",
+            Icon::Companion => "companion",
         }
     }
 
@@ -113,6 +116,7 @@ impl Icon {
             Icon::Copy => "⧉",
             Icon::Shield => "⛨",
             Icon::Live => "∿",
+            Icon::Companion => "☺",
         }
     }
 
@@ -153,6 +157,7 @@ static ICONS: &[(&str, &[u8])] = icon_table!(
     "shield",
     "live",
     "pop-out",
+    "companion",
 );
 
 /// Swarm's mark, the brand SVG as it is (its nested squares and their
@@ -203,6 +208,7 @@ mod tests {
             Icon::Shield,
             Icon::Live,
             Icon::PopOut,
+            Icon::Companion,
         ];
         for icon in all {
             for style in [IconStyle::Line, IconStyle::Solid, IconStyle::Pixel] {

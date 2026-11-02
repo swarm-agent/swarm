@@ -15,6 +15,7 @@ impl Console {
     fn nav_badge(&self, page: Page) -> Option<(String, Hsla, bool)> {
         let t = &self.theme;
         match page {
+            Page::Companion => self.companion_badge(),
             Page::Sessions => {
                 let needs = self.needs_you_total();
                 (needs > 0).then(|| (needs.to_string(), t.warn, true))
@@ -98,7 +99,7 @@ impl Console {
 
         let project = &self.projects[self.project];
         let initial = project.name.chars().next().unwrap_or('?').to_ascii_uppercase().to_string();
-        let sessions = self.sessions.iter().enumerate().filter(|(_, s)| s.project == self.project).map(|(i, s)| {
+        let sessions = self.sessions.iter().enumerate().filter(|(i, s)| s.project == self.project && !self.is_companion(*i)).map(|(i, s)| {
             let (glyph, color) = self.state_glyph(s.state);
             let selected = i == self.active_session() && self.page == Page::Sessions;
             square(SharedString::from(format!("rail-session-{i}")))

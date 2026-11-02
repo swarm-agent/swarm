@@ -5,6 +5,7 @@
 pub mod agents;
 pub mod automations;
 pub mod client;
+pub mod companion;
 pub mod context;
 pub mod fleet;
 pub mod fleet_keys;

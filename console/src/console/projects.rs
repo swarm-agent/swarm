@@ -75,6 +75,7 @@ impl Console {
         let needs = self.needs_in(self.project);
         let focus: Option<SharedString> = match self.page {
             Page::Sessions => self.active_session_title(),
+            Page::Companion => self.companion_focus_title(),
             _ => None,
         };
         div()
@@ -149,7 +150,7 @@ impl Console {
             .enumerate()
             .map(|(pi, p)| {
                 let id = p.id.to_string();
-                let count = self.sessions.iter().filter(|s| s.project == pi).count();
+                let count = (0..self.sessions.len()).filter(|si| self.sessions[*si].project == pi && !self.is_companion(*si)).count();
                 let needs = self.needs_in(pi);
                 let on = pi == self.project;
                 div()

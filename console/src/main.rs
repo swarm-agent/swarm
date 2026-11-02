@@ -15,8 +15,8 @@ mod text_input;
 mod theme;
 
 use console::{
-    ClosePane, Console, CycleIcons, GoAgents, GoAutomations, GoFleet, GoLive, GoMedia, GoSearch, GoSessions, GoSettings, GoUsage, NextPane, SearchRun, SplitDown, SplitRight,
-    ToggleLeft,
+    ClosePane, Console, CycleIcons, GoAgents, GoAutomations, GoCompanion, GoFleet, GoLive, GoMedia, GoSearch, GoSessions, GoSettings, GoUsage, NextPane, SearchRun, SplitDown,
+    SplitRight, ToggleLeft,
 };
 use gpui::{App, AppContext, Application, Bounds, Focusable, KeyBinding, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 
@@ -67,6 +67,7 @@ fn main() {
             KeyBinding::new("alt-7", GoAutomations, None),
             KeyBinding::new("alt-8", GoFleet, None),
             KeyBinding::new("alt-9", GoLive, None),
+            KeyBinding::new("alt-0", GoCompanion, None),
             KeyBinding::new("ctrl-k", GoSearch, None),
             KeyBinding::new("enter", SearchRun, Some("Search")),
         ]);

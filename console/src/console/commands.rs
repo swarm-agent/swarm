@@ -152,7 +152,9 @@ impl Console {
         if let Some(pid) = pid {
             self.layout.focus(PaneId(pid));
         }
-        let project = pid.and_then(|pid| self.panes.iter().find(|p| p.id.0 == pid)).map(|p| self.sessions[p.session].project).unwrap_or(self.project);
+        // From the Companion (in no project): a new session of the open project.
+        let project =
+            pid.and_then(|pid| self.panes.iter().find(|p| p.id.0 == pid && p.id != super::companion::PANE)).map(|p| self.sessions[p.session].project).unwrap_or(self.project);
         let unused = (0..self.sessions.len()).find(|i| {
             let s = &self.sessions[*i];
             s.live.is_none() && s.entries.is_empty() && s.project == project && !self.is_open(*i)

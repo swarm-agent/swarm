@@ -203,8 +203,19 @@ impl Console {
         }
         for update in updates {
             match update {
-                Update::Snapshot(s) => {
+                Update::Snapshot(mut s) => {
+                    // The Companion's work and history paging, as the follow
+                    // loop holds them; an earlier page asked for has come
+                    // (or failed) by now.
+                    self.companion.feed = s.companion.take();
+                    self.companion.older_asked = false;
                     self.apply(s);
+                    // Connected: learn whether Swarm has a Companion (a read;
+                    // nothing is created until the person opens it), and
+                    // keep its activity current while its page shows.
+                    if (!self.companion.read && !self.companion.busy) || self.page == Page::Companion {
+                        self.read_companion(cx);
+                    }
                     // Runs are read once connected, so a failure shows on any page.
                     if self.automations.is_none() && !self.automations_busy {
                         self.load_automations(cx);
@@ -223,8 +234,14 @@ impl Console {
                     self.follow_theme(cx);
                 }
                 Update::Session(s) => {
+                    // The Companion moved (a message, a run, an approval):
+                    // its activity is read again while its page shows.
+                    let companion = s.live.as_ref().is_some_and(|l| Some(l.session_id.as_ref()) == self.companion.session_id());
                     self.apply_session(s);
                     self.answer_calls(cx);
+                    if companion && self.page == Page::Companion {
+                        self.read_companion(cx);
+                    }
                 }
                 Update::Facts(f) => {
                     self.apply_facts(f);
@@ -272,6 +289,8 @@ impl Console {
                 }
             }
         }
+        // The Companion's pane follows its session wherever the list put it.
+        self.sync_companion_pane();
         if let Some(live) = &self.live {
             live.watch(self.panes.iter().filter_map(|p| self.sessions[p.session].live.as_ref()).map(|l| l.session_id.to_string()));
         }
@@ -571,7 +590,9 @@ impl Console {
             .filter(|i| {
                 let s = &self.sessions[*i];
                 // An empty new session shows only while a pane has it open.
+                // The Companion is in no project's list (its own page).
                 s.project == project
+                    && !self.is_companion(*i)
                     && !s.live.as_ref().is_some_and(|l| self.gone.contains(l.session_id.as_ref()))
                     && (s.live.is_some() || !s.entries.is_empty() || self.is_open(*i))
             })
@@ -653,8 +674,9 @@ impl Console {
         }
         for p in &self.panes {
             let pid = p.id.0;
+            let placeholder = if p.id == super::companion::PANE { super::companion::PLACEHOLDER } else { "Tell Swarm what you want done…" };
             self.composers.entry(pid).or_insert_with(|| {
-                let input = cx.new(|cx| TextInput::new("Tell Swarm what you want done…", colors, cx));
+                let input = cx.new(|cx| TextInput::new(placeholder, colors, cx));
                 cx.observe(&input, |_, _, cx| cx.notify()).detach();
                 cx.subscribe(&input, move |this, _, pasted: &Pasted, cx| match pasted {
                     Pasted::Image(image) => this.attach_image(pid, image, cx),

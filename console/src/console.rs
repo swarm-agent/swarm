@@ -21,6 +21,7 @@ mod attach;
 mod automations;
 mod background;
 mod commands;
+mod companion;
 mod context;
 mod fleet;
 mod fleet_keys;
@@ -63,6 +64,9 @@ enum Link {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Page {
+    /// The person's one persistent Companion and its work, beside the
+    /// project Chats (Sessions).
+    Companion,
     Sessions,
     Media,
     Usage,
@@ -81,10 +85,12 @@ pub enum Page {
 }
 
 impl Page {
-    const ALL: [Page; 10] = [Page::Sessions, Page::Media, Page::Usage, Page::Fleet, Page::Live, Page::Agents, Page::Permissions, Page::Automations, Page::Settings, Page::Search];
+    const ALL: [Page; 11] =
+        [Page::Companion, Page::Sessions, Page::Media, Page::Usage, Page::Fleet, Page::Live, Page::Agents, Page::Permissions, Page::Automations, Page::Settings, Page::Search];
 
     fn label(self) -> &'static str {
         match self {
+            Page::Companion => "Companion",
             Page::Sessions => "Sessions",
             Page::Media => "Media",
             Page::Usage => "Usage",
@@ -101,6 +107,7 @@ impl Page {
 
     fn icon(self) -> Icon {
         match self {
+            Page::Companion => Icon::Companion,
             Page::Sessions => Icon::Sessions,
             Page::Media => Icon::Media,
             Page::Usage => Icon::Usage,
@@ -149,6 +156,7 @@ actions!(
         GoSearch,
         SearchRun,
         GoAutomations,
+        GoCompanion,
     ]
 );
 
@@ -355,6 +363,11 @@ pub struct Console {
     password: Entity<PasswordPrompt>,
     /// Each conversation's context as Swarm last reported it, and compactions.
     contexts: context::Contexts,
+    /// The Companion page: Swarm's answer about the Companion, its work and
+    /// what the person has open there (companion.rs).
+    companion: companion::CompanionPage,
+    /// Put the keyboard in the Companion's message box on the next render.
+    pending_focus_companion: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -527,6 +540,8 @@ impl Console {
             model_apply: Default::default(),
             password: cx.new(|cx| PasswordPrompt::new(Theme::for_concept(concept), cx)),
             contexts: Default::default(),
+            companion: Default::default(),
+            pending_focus_companion: false,
         };
         if demo {
             // Three panes: one beside a stack of two, to show both split directions.
@@ -670,6 +685,10 @@ impl Console {
         cx.notify();
     }
     fn go(&mut self, page: Page, cx: &mut Context<Self>) {
+        if page == Page::Companion {
+            self.open_companion(cx);
+            return;
+        }
         self.page = page;
         if page == Page::Settings {
             self.load_providers(cx);
@@ -690,6 +709,9 @@ impl Console {
     }
     fn go_sessions(&mut self, _: &GoSessions, _: &mut Window, cx: &mut Context<Self>) {
         self.go(Page::Sessions, cx);
+    }
+    fn go_companion(&mut self, _: &GoCompanion, _: &mut Window, cx: &mut Context<Self>) {
+        self.go(Page::Companion, cx);
     }
     fn go_media(&mut self, _: &GoMedia, _: &mut Window, cx: &mut Context<Self>) {
         self.go(Page::Media, cx);
@@ -972,10 +994,13 @@ impl Console {
                 pane.scroll.scroll_to_bottom();
             }
         }
+        // The Companion's pane (companion.rs) is outside the layout too, but
+        // it is no pop-out: it has no close, split, pop-out or drag.
+        let companion = id == companion::PANE;
         // A pane in its own window (popout.rs): the main window's layout
         // does not hold it, so it has no splits and no focus there.
-        let popped = !self.layout.contains(id);
-        let active = popped || self.layout.active() == Some(id);
+        let popped = !companion && !self.layout.contains(id);
+        let active = companion || popped || self.layout.active() == Some(id);
         let (glyph, color) = self.state_glyph(s.state);
         let machine = self.machines[s.machine].name.clone();
         let pid = id.0;
@@ -983,7 +1008,7 @@ impl Console {
         let ghost = self.ghost(s.title.clone());
         let header = div()
             .id(SharedString::from(format!("pane-head-{pid}")))
-            .when(!popped, |d| d.on_drag(panes::Dragged { session: si, pane: Some(pid) }, move |_, _, _, cx| cx.new(|_| ghost.clone())).cursor_grab())
+            .when(!popped && !companion, |d| d.on_drag(panes::Dragged { session: si, pane: Some(pid) }, move |_, _, _, cx| cx.new(|_| ghost.clone())).cursor_grab())
             .flex_none()
             .h(px(32.))
             .flex()
@@ -997,7 +1022,7 @@ impl Console {
             .child(div().flex_1().min_w(px(72.)).truncate().text_color(if active { t.text } else { t.muted }).child(s.title.clone()))
             .child(div().flex_shrink().min_w_0().truncate().text_size(px(11.)).text_color(t.faint).child({
                 let mut parts: Vec<String> = Vec::new();
-                if s.project != self.project {
+                if s.project != self.project && !companion {
                     parts.push(self.projects[s.project].name.to_string());
                 }
                 parts.push(machine.to_string());
@@ -1024,7 +1049,7 @@ impl Console {
             }))
             .children(self.context_meter(si, pid, cx))
             .children(self.session_actions(si, pid, cx))
-            .when(!popped, |d| {
+            .when(!popped && !companion, |d| {
                 d.child(self.icon_button_tip(SharedString::from(format!("pane-right-{pid}")), Icon::SplitRight, "Split right").on_click(cx.listener(
                     move |this, _: &ClickEvent, _, cx| {
                         this.new_pane(Some(pid), Open::Right, cx);
@@ -1041,20 +1066,26 @@ impl Console {
                     },
                 )))
             })
-            .child(self.icon_button_tip(SharedString::from(format!("pane-close-{pid}")), Icon::Close, if popped { "Close window" } else { "Close" }).on_click(cx.listener(
-                move |this, _: &ClickEvent, window, cx| {
-                    if popped {
-                        // Its window goes; the pane goes with it (popout.rs).
-                        window.remove_window();
-                    } else {
-                        this.close(PaneId(pid));
-                        cx.notify();
-                    }
-                },
-            )));
+            .when(!companion, |d| {
+                d.child(self.icon_button_tip(SharedString::from(format!("pane-close-{pid}")), Icon::Close, if popped { "Close window" } else { "Close" }).on_click(cx.listener(
+                    move |this, _: &ClickEvent, window, cx| {
+                        if popped {
+                            // Its window goes; the pane goes with it (popout.rs).
+                            window.remove_window();
+                        } else {
+                            this.close(PaneId(pid));
+                            cx.notify();
+                        }
+                    },
+                )))
+            });
 
         // Consecutive tool calls read as one tight stack, not separate blocks.
         let mut entries: Vec<AnyElement> = Vec::new();
+        // The Companion's earlier history, a page at a time on request.
+        if companion && !s.entries.is_empty() {
+            entries.extend(self.companion_history_row(cx));
+        }
         let mut tools: Vec<AnyElement> = Vec::new();
         let stack = |tools: Vec<AnyElement>| div().flex().flex_col().gap(px(3.)).children(tools).into_any_element();
         for (ei, entry) in s.entries.iter().enumerate() {
@@ -1076,6 +1107,7 @@ impl Console {
         entries.extend(s.outbox.iter().enumerate().map(|(i, (text, _))| self.render_entry(pid, base + i, &Entry::User(text.clone()), cx)));
         if s.entries.is_empty() && s.outbox.is_empty() {
             let empty = match (&s.live, &self.link) {
+                (Some(_), _) if companion && s.state != RunState::Running => companion::empty_line().to_string(),
                 (Some(_), _) => "Reading the conversation…".to_string(),
                 (None, Link::Live) => {
                     let p = &self.projects[s.project];
@@ -1300,7 +1332,8 @@ impl Console {
                                     .items_center()
                                     .gap_3()
                                     .when(fit.permissions, |d| d.child(self.permissions_chip(pid, cx)))
-                                    .child(self.model_button(si, pid, cx))
+                                    // The Companion runs on the account's model; it has no picker here.
+                                    .when(!companion, |d| d.child(self.model_button(si, pid, cx)))
                                     // Holds the rest to the right when the hint is dropped.
                                     .child(div().flex_1().min_w_0().truncate().when(fit.hint, |d| d.child(hint)))
                                     .when(fit.commands, |d| d.child(div().flex_none().whitespace_nowrap().child("/ commands")))
@@ -1369,7 +1402,7 @@ impl Console {
                     })))
             }))
             .child(composer)
-            .when(!popped && cx.has_active_drag(), |d| d.child(self.drop_zones(pid, cx)))
+            .when(!popped && !companion && cx.has_active_drag(), |d| d.child(self.drop_zones(pid, cx)))
             .into_any_element()
     }
 
@@ -1671,6 +1704,7 @@ impl Focusable for Console {
 impl Render for Console {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _timed = Timed::new("render");
+        self.sync_companion_pane();
         self.ensure_composers(cx);
         self.sync_live_page(cx);
         self.sync_fleet_keys(cx);
@@ -1679,6 +1713,12 @@ impl Render for Console {
         // they open (watch sends nothing when the set is unchanged).
         if let Some(live) = &self.live {
             live.watch(self.panes.iter().filter_map(|p| self.sessions.get(p.session)).filter_map(|s| s.live.as_ref()).map(|l| l.session_id.to_string()));
+        }
+        if self.pending_focus_companion && self.page == Page::Companion {
+            if let Some(input) = self.composers.get(&companion::PANE.0) {
+                self.pending_focus_companion = false;
+                window.focus(&input.focus_handle(cx));
+            }
         }
         if self.pending_focus {
             self.pending_focus = false;
@@ -1710,6 +1750,7 @@ impl Render for Console {
             .on_action(cx.listener(Self::toggle_left))
             .on_action(cx.listener(Self::cycle_icons))
             .on_action(cx.listener(Self::go_sessions))
+            .on_action(cx.listener(Self::go_companion))
             .on_action(cx.listener(Self::go_media))
             .on_action(cx.listener(Self::go_usage))
             .on_action(cx.listener(Self::go_agents))
@@ -1733,6 +1774,7 @@ impl Render for Console {
                     .flex()
                     .child(if rail { self.render_rail(cx) } else { self.render_left(cx) })
                     .child(match self.page {
+                        Page::Companion => div().flex_1().min_w_0().flex().child(self.render_companion(cx)),
                         Page::Sessions => div().flex_1().min_w_0().flex().p(px(6.)).child(match layout.root() {
                             Some(root) => self.render_node(root, vec![], cx),
                             None => self.render_no_pane(cx),

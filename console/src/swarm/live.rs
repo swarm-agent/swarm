@@ -27,6 +27,9 @@ const SLOW_EVERY: Duration = Duration::from_secs(30);
 const COALESCE: Duration = Duration::from_millis(16);
 /// Swarm hydrates at most this many sessions per request with their views.
 const HYDRATE_CHUNK: usize = 8;
+/// The tail asked of hydrate per conversation: Swarm's own maximum (older
+/// messages are read a page at a time on request).
+const HYDRATE_TAIL: usize = 200;
 /// How long to wait before reconnecting after the stream fails, at first
 /// and at most.
 const RETRY_FIRST: Duration = Duration::from_secs(2);
@@ -45,6 +48,22 @@ pub struct Snapshot {
     pub media: Vec<crate::data::Media>,
     /// Models to pick from, with favorites; None when not read this time.
     pub catalog: Option<Catalog>,
+    /// The Companion this reading followed: its session, the tasks it
+    /// started and whether earlier history may exist. None until the
+    /// console names one (Live::follow_companion) and Swarm lists it.
+    pub companion: Option<CompanionFeed>,
+}
+
+/// The Companion as the follow loop holds it.
+#[derive(Clone)]
+pub struct CompanionFeed {
+    pub session_id: String,
+    /// Its tasks in every project, grouped (companion::work).
+    pub work: Vec<super::companion::Work>,
+    /// Earlier messages than those read may exist (Some(false): none).
+    pub more_older: Option<bool>,
+    /// Why the last read of an earlier page failed.
+    pub older_error: Option<String>,
 }
 
 /// The slow-changing facts about the machine, read on their own thread so
@@ -270,6 +289,9 @@ pub struct Live {
     /// The worker run whose session the Automations page shows: subscribed
     /// to, so its actions arrive live.
     run_watch: Arc<Mutex<Option<String>>>,
+    /// The Companion's session id, once Swarm named it: listed and mapped
+    /// as the Companion, never as a project conversation.
+    companion: Arc<Mutex<Option<String>>>,
 }
 
 /// One conversation as the model holds it.
@@ -282,6 +304,13 @@ struct Detail {
     pending: Option<Pending>,
     calls: Vec<ClientCall>,
     hydrated: bool,
+    /// Earlier pages read on request (oldest first), shown before `entries`,
+    /// the oldest message sequence read so far, whether Swarm may hold
+    /// earlier ones, and a page read under way.
+    older: Vec<Entry>,
+    oldest_seq: u64,
+    more_older: Option<bool>,
+    older_error: Option<String>,
 }
 
 impl Live {
@@ -305,12 +334,13 @@ impl Live {
             std::thread::spawn(move || facts_loop(c, kind, t, facts_kicked, dirty));
         }
         let run_watch: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-        let (c, w, t, fk, frames_tx, rw) = (client.clone(), watched.clone(), tx.clone(), facts_kick.clone(), kick.clone(), run_watch.clone());
+        let companion: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let (c, w, t, fk, frames_tx, rw, cmp) = (client.clone(), watched.clone(), tx.clone(), facts_kick.clone(), kick.clone(), run_watch.clone(), companion.clone());
         std::thread::spawn(move || {
             let mut wait = RETRY_FIRST;
             loop {
                 let started = Instant::now();
-                let why = match follow(&c, &w, &t, &kicked, &frames_tx, kind, &fk, &rw) {
+                let why = match follow(&c, &w, &t, &kicked, &frames_tx, kind, &fk, &rw, &cmp) {
                     Ok(()) => return, // the console is gone
                     Err(e) => e,
                 };
@@ -328,7 +358,23 @@ impl Live {
                 wait = (wait * 2).min(RETRY_MOST);
             }
         });
-        Live { client, watched, kick, tx, rx: Some(rx), models_dirty, facts_kick, run_watch }
+        Live { client, watched, kick, tx, rx: Some(rx), models_dirty, facts_kick, run_watch, companion }
+    }
+
+    /// Follows the Companion session Swarm named (GET/POST /v3/companion);
+    /// None stops. The same id again changes nothing.
+    pub fn follow_companion(&self, session_id: Option<String>) {
+        let mut c = self.companion.lock().unwrap();
+        if *c != session_id {
+            *c = session_id;
+            let _ = self.kick.send(json!({"kind": "console.kick", "command": false}));
+        }
+    }
+
+    /// Reads the page of messages before the oldest one read of a
+    /// conversation (Swarm's default page size), on the follow thread.
+    pub fn read_older(&self, session_id: &str) {
+        let _ = self.kick.send(json!({"kind": "console.older", "session_id": session_id}));
     }
 
     /// The updates, to wait on from a background task; once.
@@ -757,6 +803,10 @@ struct Model<'a> {
     assessed: HashMap<String, (i64, Value)>,
     /// Asks the facts thread to read again (usage changed, a command ran).
     facts_kick: Sender<()>,
+    /// The Companion's session id, as the console last named it, and the id
+    /// whose record was last read for it (read once per name and connection).
+    companion: Option<String>,
+    companion_read: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -769,6 +819,7 @@ fn follow(
     kind: &'static str,
     facts_kick: &Sender<()>,
     run_watch: &Mutex<Option<String>>,
+    companion: &Mutex<Option<String>>,
 ) -> Result<(), String> {
     // The run session subscribed to on this connection.
     let mut run_sub: Option<String> = None;
@@ -802,9 +853,14 @@ fn follow(
         media_fetch,
         assessed: HashMap::new(),
         facts_kick: facts_kick.clone(),
+        companion: None,
+        companion_read: None,
     };
     let t0 = Instant::now();
     let boot = m.bootstrap()?;
+    // The Companion is hidden from the recent list: read it on its own, on
+    // every (re)connect, before the first snapshot.
+    m.follow_companion(companion)?;
     trace(&format!("bootstrap {:?} ({} sessions, {} projects)", t0.elapsed(), m.order.len(), m.projects.len()));
     let cursor = s(&boot, "snapshot_endpoint_cursor").to_string();
     let stream = Stream::open(client.base(), client.token(), &cursor)?;
@@ -883,6 +939,7 @@ fn follow(
                 Err(RecvTimeoutError::Disconnected) => return Err("the stream ended".into()),
             };
         }
+        whole |= m.follow_companion(companion)?;
         // A command finished: models, roles and usage may have changed.
         whole |= m.hydrate_watched(watched, &mut subscribed, &commands)?;
         if automations_changed && tx.send(Update::AutomationsChanged).is_err() {
@@ -1110,7 +1167,7 @@ impl Model<'_> {
             "surface": "desktop",
             "session_ids": ids,
             // Swarm's tail is at most 200 messages per session; older ones are in its history chunks.
-            "history": {"mode": "tail", "max_messages_per_session": 200, "max_events_per_session": 0, "manifest_policy": "manifest"},
+            "history": {"mode": "tail", "max_messages_per_session": HYDRATE_TAIL, "max_events_per_session": 0, "manifest_policy": "manifest"},
             "resources": {"messages": true, "events": false, "run_intents": false, "current_run_state": true, "session_view": true,
                           "active_plan": false, "plan_revisions": false, "permission_summaries": false},
             "include_active": true
@@ -1128,6 +1185,11 @@ impl Model<'_> {
             }
             let d = self.details.entry(id.clone()).or_default();
             d.entries = map::entries(&messages);
+            // Where an earlier page starts; a full tail may have more before it.
+            if d.older.is_empty() {
+                d.oldest_seq = messages.first().and_then(|m| m.get("global_seq")).and_then(Value::as_u64).unwrap_or(0);
+                d.more_older = Some(messages.len() >= HYDRATE_TAIL && d.oldest_seq > 0);
+            }
             d.model = map::model_line(&view);
             d.pending = map::pending(&permissions);
             d.calls = map::client_calls(&permissions);
@@ -1139,6 +1201,65 @@ impl Model<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Follows the Companion the console named: on a new name (or a new
+    /// connection) its record is read once, since the recent list never
+    /// carries it. True when the list changed.
+    fn follow_companion(&mut self, named: &Mutex<Option<String>>) -> Result<bool, String> {
+        let wanted = named.lock().map(|c| c.clone()).unwrap_or(None);
+        let mut changed = false;
+        if wanted != self.companion {
+            // A Companion deleted and started anew: the old one leaves.
+            if let Some(old) = self.companion.take() {
+                self.shells.remove(&old);
+                self.order.retain(|x| x != &old);
+                self.details.remove(&old);
+            }
+            self.companion = wanted;
+            changed = true;
+        }
+        let Some(id) = self.companion.clone() else { return Ok(changed) };
+        if self.shells.contains_key(&id) || self.companion_read.as_deref() == Some(id.as_str()) {
+            return Ok(changed);
+        }
+        self.companion_read = Some(id.clone());
+        match self.reread_session(&id) {
+            Ok(read) => Ok(changed || read),
+            // The console's own read of /v3/companion reports the failure;
+            // the stream stays up.
+            Err(e) => {
+                trace(&format!("companion session read failed: {e}"));
+                Ok(changed)
+            }
+        }
+    }
+
+    /// Reads the page before the oldest message read of a conversation
+    /// (GET /v3/sessions/{id}/messages?before_seq=, Swarm's page size) and
+    /// keeps it before what is shown. True when the conversation changed.
+    fn read_older(&mut self, id: &str) -> bool {
+        let Some(d) = self.details.get(id) else { return false };
+        if !d.hydrated || d.oldest_seq == 0 || d.more_older == Some(false) {
+            return false;
+        }
+        let answer = self.client.get(&format!("/v3/sessions/{id}/messages?before_seq={}", d.oldest_seq));
+        let d = self.details.get_mut(id).expect("read above");
+        match answer {
+            Ok(answer) => {
+                let (page, next, more) = older_page(&answer);
+                let mut older = page;
+                older.extend(std::mem::take(&mut d.older));
+                d.older = older;
+                if next > 0 {
+                    d.oldest_seq = next;
+                }
+                d.more_older = Some(more && next > 0);
+                d.older_error = None;
+            }
+            Err(e) => d.older_error = Some(e.to_string()),
+        }
+        true
     }
 
     /// Re-reads one conversation's view: its model (and pending requests),
@@ -1237,6 +1358,8 @@ impl Model<'_> {
             }
             // A session whose record changed without an event (a pin): read again.
             "console.session" => self.reread_session(&sid),
+            // The person asked for earlier messages of a conversation.
+            "console.older" => Ok(self.read_older(&sid)),
             "cursor.error" => Err(format!("the stream lost its place ({})", s(frame, "error_code"))),
             "slow_consumer.reconnect_required" => Err("Swarm asked this app to reconnect".into()),
             "auth.denied" => Err(format!("Swarm refused the stream ({})", s(frame, "error_code"))),
@@ -1327,7 +1450,7 @@ impl Model<'_> {
             }
         }
         if let Some(shell) = payload.get("session").filter(|x| x.is_object()) {
-            if map::orchestrator_project(shell).is_some() {
+            if map::orchestrator_project(shell).is_some() || self.companion.as_deref() == Some(sid) {
                 if !self.shells.contains_key(sid) {
                     self.order.insert(0, sid.to_string());
                 }
@@ -1452,9 +1575,13 @@ impl Model<'_> {
     fn session_of(&self, id: &str) -> Option<Session> {
         let shell = self.shells.get(id)?;
         let run = self.runs.get(id).cloned().unwrap_or(Value::Null);
-        let mut session = map::session(shell, &run, self.waiting.contains(id), &self.projects)?;
+        // The Companion belongs to no project; its tasks show on its page.
+        let companion = self.companion.as_deref() == Some(id);
+        let mut session =
+            if companion { super::companion::session(shell, &run, self.waiting.contains(id)) } else { map::session(shell, &run, self.waiting.contains(id), &self.projects)? };
         if let Some(d) = self.details.get(id) {
-            session.entries = d.entries.clone();
+            session.entries = d.older.clone();
+            session.entries.extend(d.entries.iter().cloned());
             if !d.live.is_empty() {
                 session.entries.push(Entry::Assistant(d.live.clone().into()));
             }
@@ -1465,7 +1592,7 @@ impl Model<'_> {
                 session.state = RunState::NeedsYou;
             }
         }
-        if let Some(project) = self.projects.get(session.project) {
+        if let Some(project) = self.projects.get(session.project).filter(|_| !companion) {
             let tasks: Vec<Task> = self.tasks.get(project.id.as_ref()).map(|t| map::session_tasks(t, id)).unwrap_or_default();
             session.tasks = tasks;
         }
@@ -1478,8 +1605,27 @@ impl Model<'_> {
 
     fn snapshot(&self) -> Snapshot {
         let sessions: Vec<Session> = self.order.iter().filter_map(|id| self.session_of(id)).collect();
-        Snapshot { projects: self.projects.clone(), sessions, machine: None, roles: None, usage: None, themes: None, media: self.media.clone(), catalog: None }
+        let companion = self.companion.as_ref().filter(|id| self.shells.contains_key(*id)).map(|id| {
+            let d = self.details.get(id);
+            CompanionFeed {
+                session_id: id.clone(),
+                work: super::companion::work(&self.tasks, &self.projects, id),
+                more_older: d.and_then(|d| d.more_older),
+                older_error: d.and_then(|d| d.older_error.clone()),
+            }
+        });
+        Snapshot { projects: self.projects.clone(), sessions, machine: None, roles: None, usage: None, themes: None, media: self.media.clone(), catalog: None, companion }
     }
+}
+
+/// A page of earlier messages (GET /v3/sessions/{id}/messages?before_seq=):
+/// its entries, oldest first, where the next earlier page starts (0: none
+/// given) and whether Swarm holds more before it.
+fn older_page(answer: &Value) -> (Vec<Entry>, u64, bool) {
+    let messages = list(answer, "messages").to_vec();
+    let next = answer.get("next_before_seq").and_then(Value::as_u64).unwrap_or(0);
+    let more = answer.get("has_more_older").and_then(Value::as_bool).unwrap_or(false);
+    (map::entries(&messages), next, more)
 }
 
 /// Titles for the tasks a conversation waits on, from its own tasks or its
@@ -1806,6 +1952,8 @@ mod tests {
                 media_fetch: mpsc::channel().0,
                 assessed: HashMap::new(),
                 facts_kick: mpsc::channel().0,
+                companion: None,
+                companion_read: None,
             };
             m.shells.insert("s1".into(), json!({"id": "s1", "title": "Ship it", "metadata": {"role": "project_orchestrator", "project_id": "proj_1"}}));
             m.tasks.insert("proj_1".into(), vec![json!({"id": "t1", "title": "Fix the build", "origin_session_id": "s1", "agent": "coder", "status": "running"})]);
@@ -1895,6 +2043,131 @@ mod tests {
             let done = json!({"run_id": "run-1:resume", "status": "completed", "created_at": 2000});
             assert!(m.event("s1", "session.run.completed", json!({"run_intent": done})).unwrap());
             assert_eq!(m.session_of("s1").unwrap().state, RunState::Idle);
+        }
+    }
+
+    // Purpose: the Companion is one Swarm session the follow loop lists by
+    // the id the console names, maps as the Companion (not a project
+    // conversation), streams like any session and pages its history.
+    // Requirement: a named Companion appears in the snapshot with its tasks
+    // from every project; an unnamed hidden session never does; renaming
+    // drops the old one; a failed record read neither ends the stream nor is
+    // retried in a loop (no polling); earlier pages are kept before the tail.
+    // Authority: Model::follow_companion, session_of, snapshot, event,
+    // read_older/older_page. The model is the narrowest layer joining the
+    // named id, shells, details and task lists; the client below is
+    // unreachable, so every Swarm read fails like a lost connection.
+    mod companion {
+        use super::super::{Client, Detail, Model, older_page};
+        use crate::data::{Entry, RunState};
+        use serde_json::json;
+        use std::collections::{HashMap, HashSet};
+        use std::sync::{Mutex, mpsc};
+
+        fn model(client: &Client) -> Model<'_> {
+            let projects = super::super::map::projects(&json!({"projects": [
+                {"id": "p1", "name": "Alpha", "workspaces": [{"path": "/p/a"}]},
+                {"id": "p2", "name": "Beta", "workspaces": [{"path": "/p/b"}]}]}));
+            let mut m = Model {
+                client,
+                kind: "home",
+                projects,
+                order: vec!["cmp".into()],
+                shells: HashMap::new(),
+                runs: HashMap::new(),
+                waiting: HashSet::new(),
+                details: HashMap::new(),
+                tasks: HashMap::new(),
+                media: Vec::new(),
+                media_reads: HashMap::new(),
+                media_fetching: HashSet::new(),
+                media_fetch: mpsc::channel().0,
+                assessed: HashMap::new(),
+                facts_kick: mpsc::channel().0,
+                companion: None,
+                companion_read: None,
+            };
+            m.shells.insert("cmp".into(), json!({"id": "cmp", "title": "Companion", "metadata": {"swarm_v3_companion": {"generation": 1}, "navigation_hidden": true}}));
+            m.tasks.insert("p1".into(), vec![json!({"id": "t1", "title": "Research", "status": "in_progress", "origin_session_id": "cmp", "updated_at": 2})]);
+            m.tasks.insert("p2".into(), vec![json!({"id": "t2", "title": "Approve", "status": "pending_approval", "origin_session_id": "cmp", "updated_at": 1})]);
+            m
+        }
+
+        #[test]
+        fn companion_is_listed_only_once_named() {
+            let client = Client::new("http://127.0.0.1:9", "unused");
+            let mut m = model(&client);
+            // Not named: a hidden non-Orchestrator session is no conversation here.
+            assert!(m.session_of("cmp").is_none());
+            assert!(m.snapshot().companion.is_none());
+
+            let named = Mutex::new(Some("cmp".to_string()));
+            assert!(m.follow_companion(&named).unwrap(), "naming it changes the list");
+            assert!(!m.follow_companion(&named).unwrap(), "the same name again changes nothing");
+            let s = m.session_of("cmp").expect("the Companion session");
+            assert_eq!(s.title.as_ref(), "Companion");
+            assert!(s.tasks.is_empty(), "its tasks show on its page, not as a project's cards");
+            let snap = m.snapshot();
+            assert_eq!(snap.sessions.len(), 1);
+            let feed = snap.companion.expect("the Companion feed");
+            assert_eq!(feed.session_id, "cmp");
+            let keys: Vec<String> = feed.work.iter().map(|w| w.key()).collect();
+            assert_eq!(keys, vec!["p2/t2", "p1/t1"], "attention first, across projects");
+
+            // A live event carrying its record keeps it listed and current.
+            assert!(
+                m.event(
+                    "cmp",
+                    "session.updated",
+                    json!({"session": {"id": "cmp", "title": "Renamed", "metadata": {"swarm_v3_companion": {}}}, "run_intent": {"status": "running"}})
+                )
+                .unwrap()
+            );
+            assert_eq!(m.session_of("cmp").unwrap().state, RunState::Running);
+
+            // A new Companion (deleted and started anew): the old one leaves at once.
+            let next = Mutex::new(Some("cmp2".to_string()));
+            assert!(m.follow_companion(&next).unwrap());
+            assert!(m.session_of("cmp").is_none());
+            assert!(!m.order.contains(&"cmp".to_string()));
+            // Its record cannot be read (no Swarm here): the stream stays up,
+            // nothing is listed, and the read is not repeated on every frame.
+            assert!(m.snapshot().companion.is_none());
+            assert_eq!(m.companion_read.as_deref(), Some("cmp2"));
+            assert!(!m.follow_companion(&next).unwrap());
+        }
+
+        #[test]
+        fn companion_history_pages_stay_before_the_tail() {
+            let client = Client::new("http://127.0.0.1:9", "unused");
+            let mut m = model(&client);
+            m.follow_companion(&Mutex::new(Some("cmp".to_string()))).unwrap();
+            let tail = Detail { entries: vec![Entry::User("latest".into())], hydrated: true, oldest_seq: 40, more_older: Some(true), ..Default::default() };
+            m.details.insert("cmp".into(), tail);
+
+            // Swarm's page answer: oldest first, where the next page starts.
+            let (page, next, more) = older_page(&json!({"messages": [
+                {"id": "m1", "role": "user", "content": "first", "global_seq": 10},
+                {"id": "m2", "role": "assistant", "content": "reply", "global_seq": 12}],
+                "next_before_seq": 10, "has_more_older": false}));
+            assert_eq!((page.len(), next, more), (2, 10, false));
+
+            // A failed page read is reported and leaves what is shown alone.
+            assert!(m.read_older("cmp"));
+            assert!(m.snapshot().companion.unwrap().older_error.is_some());
+            assert_eq!(m.session_of("cmp").unwrap().entries.len(), 1);
+
+            // A read page goes before the tail, oldest first.
+            let d = m.details.get_mut("cmp").unwrap();
+            d.older = page;
+            d.oldest_seq = next;
+            d.more_older = Some(false);
+            let entries = m.session_of("cmp").unwrap().entries;
+            assert!(matches!(&entries[0], Entry::User(t) if t.as_ref() == "first"));
+            assert!(matches!(entries.last(), Some(Entry::User(t)) if t.as_ref() == "latest"));
+            // Nothing earlier: no further read is made.
+            assert!(!m.read_older("cmp"));
+            assert_eq!(m.snapshot().companion.unwrap().more_older, Some(false));
         }
     }
 }

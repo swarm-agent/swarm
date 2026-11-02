@@ -110,6 +110,11 @@ impl Console {
     /// does not (older than the recent list) is read from Swarm first, then
     /// opened when it arrives.
     pub(super) fn open_found(&mut self, id: String, cx: &mut Context<Self>) {
+        // The Companion opens on its own page, never in a Chats pane.
+        if self.companion.session_id() == Some(id.as_str()) {
+            self.open_companion(cx);
+            return;
+        }
         if let Some(i) = self.sessions.iter().position(|s| s.live.as_ref().is_some_and(|l| l.session_id.as_ref() == id)) {
             self.open(i, Open::Here);
             self.page = Page::Sessions;
@@ -124,6 +129,11 @@ impl Console {
     /// is in the list.
     pub(super) fn open_pending(&mut self) {
         let Some(id) = self.pending_open.clone() else { return };
+        if self.companion.session_id() == Some(id.as_str()) {
+            self.pending_open = None;
+            self.page = Page::Companion;
+            return;
+        }
         if let Some(i) = self.sessions.iter().position(|s| s.live.as_ref().is_some_and(|l| l.session_id.as_ref() == id)) {
             self.pending_open = None;
             self.open(i, Open::Here);
