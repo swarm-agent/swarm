@@ -21,17 +21,12 @@ import type {
   DeployProjectTaskProgramResult,
   GetProjectTaskProgramResult,
   GetProjectTaskResult,
-  InspectProjectFilesParams,
-  InspectProjectFilesResult,
-  InspectProjectSourceResult,
   IntegrateProjectTaskOptions,
   IntegrateProjectTaskResult,
   IntegrateProjectTaskSelection,
-  ListProjectSourcesResult,
   ListProjectsParams,
   PreviewProjectTaskParams,
   ProjectRecord,
-  ProjectSourceSelector,
   ProjectTaskApprovalGuards,
   ProjectTaskMediaRef,
   ProjectTaskModelPreviewResult,
@@ -352,59 +347,6 @@ export class SwarmProjectsNamespace {
       { method: 'DELETE', ...options }
     );
     return res.data ?? { removed: true, media_id: mediaId.trim(), uploaded_media: [] };
-  }
-
-  // ==========================================================================
-  // Project Sources (read-only discovery and committed-file inspection)
-  // ==========================================================================
-
-  /**
-   * Lists the project's sources this daemon resolves from its own account
-   * workspace catalog, and the ones it cannot.
-   */
-  async listSources(projectId: string, options?: RequestOptions): Promise<ListProjectSourcesResult> {
-    const id = encodeURIComponent(projectId.trim());
-    const res = await this.transport.request<ListProjectSourcesResult>(`/v3/projects/${id}/sources`, { method: 'GET', ...options });
-    if (!res.data || !Array.isArray(res.data.sources)) {
-      throw new SwarmApiError('Malformed response: missing project sources', { status: res.status, details: res.data });
-    }
-    return res.data;
-  }
-
-  /**
-   * Inspects one registered source: its repository state, branch, HEAD and
-   * whether tracked files are clean. A stale workspace_generation is refused.
-   */
-  async inspectSource(projectId: string, selector: ProjectSourceSelector = {}, options?: RequestOptions): Promise<InspectProjectSourceResult> {
-    const id = encodeURIComponent(projectId.trim());
-    const q = new URLSearchParams();
-    if (selector.workspace_path) q.set('workspace_path', selector.workspace_path);
-    if (selector.workspace_id) q.set('workspace_id', selector.workspace_id);
-    if (typeof selector.workspace_generation === 'number' && selector.workspace_generation > 0) {
-      q.set('workspace_generation', String(selector.workspace_generation));
-    }
-    const path = `/v3/projects/${id}/sources/inspect`;
-    const query = q.toString();
-    const res = await this.transport.request<InspectProjectSourceResult>(query ? `${path}?${query}` : path, { method: 'GET', ...options });
-    if (!res.data?.source) {
-      throw new SwarmApiError('Malformed response: missing inspected source', { status: res.status, details: res.data });
-    }
-    return res.data;
-  }
-
-  /**
-   * Reads a registered source or one exact task result with one read-only
-   * operation (read, list, search or find) confined to it. Reuse the
-   * returned target.reference (with its head_commit) for further reads.
-   */
-  async inspectFiles(projectId: string, params: InspectProjectFilesParams, options?: RequestOptions): Promise<InspectProjectFilesResult> {
-    const id = encodeURIComponent(projectId.trim());
-    const res = await this.transport.request<InspectProjectFilesResult>(`/v3/projects/${id}/sources/inspect-files`, { ...options, method: 'POST', body: params });
-    const reference = res.data?.target?.reference;
-    if (!reference || reference.project_id !== projectId.trim() || (params.task_id && reference.task_id !== params.task_id) || (params.head_commit && reference.head_commit !== params.head_commit)) {
-      throw new SwarmApiError('Malformed response: inspection target identity mismatch', { status: res.status, details: res.data });
-    }
-    return res.data;
   }
 
   // ==========================================================================

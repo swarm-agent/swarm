@@ -91,7 +91,7 @@ before a task is sent or started there: `manage_projects` with `machine` and
 `refine_task`, and before a folder environment there is changed or rebuilt
 (`update_environment`, `rebuild_environment`), which runs its setup commands
 on the machine. Every other linked action runs without asking: reads
-(including `list_environments`, `get_environment`, `wait_environment`, `wait_machine`, and source discovery and inspection: `list_sources`, `inspect_source` and `inspect_files`, which read only that machine's own registered sources and exact task results through its project source routes), task archive, workflow
+(including `list_environments`, `get_environment`, `wait_environment`, `wait_machine`, and source discovery and inspection: `list_sources`, `inspect_source` and `inspect_files`, which read only that machine's own registered sources and exact task results through its project source routes; the machine answers those routes only to its linked home over the link, the home calls them only for its own Orchestrator (not a task conversation) or, for `list_sources` and `inspect_source` only, Swarm Control, as at home, and the home's raw machine proxy refuses them), task archive, workflow
 propose/enable/disable/delete and worker pause/resume/archive/delete. `auto` runs everything. A task sent to a linked
 machine under `ask` (once approved) or `auto` starts there at once; it does not
 wait on the machine as a card. Watching a linked machine's tasks

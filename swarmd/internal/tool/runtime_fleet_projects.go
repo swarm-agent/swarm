@@ -292,6 +292,11 @@ func (r *Runtime) executeFleetProjects(ctx context.Context, scope WorkspaceScope
 	if machine != "" && !fleetProjectServedLinked(action) {
 		return "", FleetActionUnavailableError(action)
 	}
+	// inspect_files is the Orchestrator's here (a bound conversation), so it
+	// is on a linked machine too: Swarm Control never reads files through it.
+	if machine != "" && action == "inspect_files" && scope.ControlCaller {
+		return "", errors.New("inspect_files is only available to the home's Orchestrator, here or on a linked machine; Swarm Control does not serve it")
+	}
 	machines, err := service.ListFleetMachines(ctx, scope.Principal)
 	if err != nil {
 		return "", err

@@ -791,7 +791,12 @@ that are deliberate and tested:
   `list_sources`, `inspect_source` and `inspect_files` read that machine's own
   sources through its project source routes (`/v3/projects/{id}/sources…`);
   the home refuses a linked answer that names another source, task, attempt,
-  session or `head_commit` than was asked.
+  session or `head_commit` than was asked. Those routes answer only the
+  machine's linked home over the link (a project or session read token, an
+  owner client or any other local caller is refused), the home sends them only
+  for its own Orchestrator or, for `list_sources` and `inspect_source`, Swarm
+  Control, as at home (`inspect_files` stays Orchestrator-only with `machine`
+  too), and its raw machine proxy refuses them.
 - A task sent to a linked machine is recorded at home with the caller's AI
   key as its sender (`home_sender`, `key:ID`) instead of a session, so
   `list_linked_tasks` (without `project_id`: the caller's own sends),

@@ -494,6 +494,10 @@ func (s *Server) handleFleetForward(w http.ResponseWriter, r *http.Request, acco
 		writeError(w, http.StatusForbidden, errors.New("fleet keys reach a machine only from this home's key manager (/v3/fleet/keys), never through the proxy"))
 		return
 	}
+	if fleetSourceProxyRefused(path) {
+		writeError(w, http.StatusForbidden, errors.New("a machine's project sources are read only through manage_projects list_sources, inspect_source or inspect_files with machine, never through the proxy"))
+		return
+	}
 	client, machine, status, err := s.fleetMachineClient(account, name)
 	if err != nil {
 		writeError(w, status, err)

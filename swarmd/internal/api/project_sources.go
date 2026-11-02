@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	pathpkg "path"
 	"strconv"
 	"strings"
 
@@ -12,11 +13,27 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 )
 
-// Project source routes: the one HTTP surface of manage_projects list_sources,
-// inspect_source and inspect_files. They are read-only and resolve only the
-// caller account's own registered sources and exact task results; a linked
-// home reaches them over its link (Server.CallFleetProject), so a linked
-// machine answers with its own sources, never the home's.
+// Project source routes: the linked-machine side of manage_projects
+// list_sources, inspect_source and inspect_files. They are read-only and
+// resolve only this machine's own registered sources and exact task results;
+// a linked home reaches them over its link (Server.CallFleetProject), so a
+// linked machine answers with its own sources, never the home's.
+//
+// They answer only this Swarm's linked home over the link (linkedSourceCaller):
+// the request came through the TLS-pinned link listener with that home's own
+// session, which only the listener can attest. The home's side of that
+// authority is what CallFleetProject's callers require
+// (tool.Runtime.homeConversation: the home's own Orchestrator conversation,
+// never a task's, or a Swarm Control key for list_sources and inspect_source
+// as at home; inspect_files is never served to Swarm Control), and the home's
+// raw machine proxy refuses
+// these routes (fleetSourceProxyRefused), so nothing else of the home reaches
+// them. Locally the same service stays where it was: the native
+// manage_projects actions (inspect_files only in a bound project or task
+// conversation, ResolveProjectInspection) and Swarm Control's catalog
+// list_sources and inspect_source. A project or session read scope, an
+// owner client or any other local caller is refused here, so the route never
+// widens who may inspect sources.
 //
 //	GET  /v3/projects/{id}/sources                list_sources
 //	GET  /v3/projects/{id}/sources/inspect        inspect_source (workspace_path, workspace_id, workspace_generation)
@@ -51,7 +68,8 @@ type projectInspectionRunner interface {
 
 // handleProjectSources serves the project source routes.
 func (s *Server) handleProjectSources(w http.ResponseWriter, r *http.Request, p identity.Principal, projectID string, rest []string) {
-	if !s.requireScopeAny(w, r, "projects:read", "sessions:read") {
+	if err := linkedSourceCaller(r, p); err != nil {
+		writeError(w, http.StatusForbidden, err)
 		return
 	}
 	projectID = strings.TrimSpace(projectID)
@@ -133,6 +151,36 @@ func (s *Server) handleProjectSources(w http.ResponseWriter, r *http.Request, p 
 		return
 	}
 	writeError(w, http.StatusNotFound, errors.New("no such project source route"))
+}
+
+// errProjectSourcesLinkedOnly refuses a project source route caller that is
+// not this Swarm's linked home over the link.
+var errProjectSourcesLinkedOnly = errors.New("project source routes answer only this Swarm's linked home over the link; here, use manage_projects list_sources, inspect_source or inspect_files (inspect_files in a project or task conversation)")
+
+// linkedSourceCaller admits a project source route caller only when the link
+// listener attested it: the request came over the TLS-pinned link from a
+// linked home (fleetHomeFromRequest, set only by fleetLinkHandler) and its
+// principal is that home's own session here. No header, argument or token
+// scope can stand in for it.
+func linkedSourceCaller(r *http.Request, p identity.Principal) error {
+	home, overLink := fleetHomeFromRequest(r)
+	if !overLink || strings.TrimSpace(home.Fingerprint) == "" || strings.TrimSpace(home.SessionID) == "" {
+		return errProjectSourcesLinkedOnly
+	}
+	if !p.Valid() || p.Type != identity.PrincipalTypeUser || p.SessionID != home.SessionID {
+		return errors.New("project source routes: the caller is not the linked home's own session here")
+	}
+	return nil
+}
+
+// fleetSourceProxyRefused keeps the home's raw machine proxy
+// (/v3/fleet/machines/{name}/api/...) away from a machine's project source
+// routes (/v3/projects/{id}/sources..., the path cleaned as the machine's
+// router would): the home reaches them only through CallFleetProject, behind
+// its bound-conversation check, never as a bare owner request.
+func fleetSourceProxyRefused(path string) bool {
+	segments := strings.Split(strings.Trim(pathpkg.Clean("/"+path), "/"), "/")
+	return len(segments) >= 4 && segments[0] == "v3" && segments[1] == "projects" && segments[3] == projectSourcesSegment
 }
 
 // projectSourceGeneration reads workspace_generation: omitted or a

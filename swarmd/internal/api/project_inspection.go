@@ -32,10 +32,11 @@ func (s *Server) ResolveProjectInspection(ctx context.Context, p identity.Princi
 }
 
 // ResolveProjectInspectionForPrincipal is the project source route's resolver
-// (POST /v3/projects/{id}/sources/inspect-files), which a linked home reaches
-// over its link. The caller is an authenticated user principal holding the
-// project read scope, as for every project route; it has no conversation to
-// bind. Every source catalog, task attempt, quiescence, ownership, Git and
+// (POST /v3/projects/{id}/sources/inspect-files), which only this Swarm's
+// linked home reaches, over its link. The route admits it only after the link
+// listener attested that home's own session (linkedSourceCaller); the home's
+// bound Orchestrator conversation stands for the conversation this machine has
+// none of. Every source catalog, task attempt, quiescence, ownership, Git and
 // head_commit check is the same as ResolveProjectInspection's.
 func (s *Server) ResolveProjectInspectionForPrincipal(ctx context.Context, p identity.Principal, req tool.ProjectInspectionRequest) (tool.ProjectInspectionTarget, error) {
 	if err := ctx.Err(); err != nil {

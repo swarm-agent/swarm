@@ -240,16 +240,20 @@ func TestVerifyFleetSourceAnswerRefusesAnotherIdentity(t *testing.T) {
 //     input), the linked dispatch and the permission gate (they reach a
 //     linked machine), the read-only permission classification, the linked
 //     forwarder's route (a project source route bound in mcpRouteSpecs), the
-//     MCP home-action list (no home-only entry) and the TypeScript SDK (the
-//     same routes).
+//     home proxy's refusal of that route, the MCP home-action list (no
+//     home-only entry), and the TypeScript SDK, which must not call the
+//     routes: they answer only a linked home over the link, so a client
+//     method could only ever be refused.
 //   - Threat/regression: a surface adding, dropping or reclassifying one of
 //     them, so a linked call is refused before dispatch (the reported
-//     defect), treated as work, or forwarded where no route serves it.
+//     defect), treated as work, forwarded where no route serves it, reachable
+//     through the home's raw proxy, or advertised to SDK clients as if they
+//     could call it.
 //   - Boundary/authority: tool.FleetSourceInspectionActions, tool.Catalog,
 //     tool.FleetProjectActionAllowed, tool.FleetWorkActionAllowed,
 //     tool.FleetTaskStart, permission.IsManageProjectsReadOnlyAction,
-//     fleetSourceRequest, mcpRouteSpecs, mcpHomeActions and the SDK's
-//     projects namespace.
+//     fleetSourceRequest, fleetSourceProxyRefused, mcpRouteSpecs,
+//     mcpHomeActions and the SDK's projects namespace.
 //   - Narrowest layer: the declarations and dispatch functions; no daemon
 //     runs.
 func TestProjectSourceActionsMatchAcrossSurfaces(t *testing.T) {
@@ -293,10 +297,13 @@ func TestProjectSourceActionsMatchAcrossSurfaces(t *testing.T) {
 		if spec, ok := mcpRouteSpecs[shape]; !ok || spec.Func != "handleProjectSources" {
 			t.Fatalf("%s: forwarded to %s, which no project source route spec binds", name, shape)
 		}
-		routes[name] = strings.TrimPrefix(path, ProjectsPath+"/pf-p")
-		if !strings.Contains(string(sdk), "/"+projectSourcesSegment+strings.TrimPrefix(routes[name], "/"+projectSourcesSegment)+"`") {
-			t.Fatalf("%s: the SDK does not call %s", name, routes[name])
+		if !fleetSourceProxyRefused(strings.SplitN(path, "?", 2)[0]) {
+			t.Fatalf("%s: the home proxy does not refuse %s", name, path)
 		}
+		routes[name] = strings.TrimPrefix(path, ProjectsPath+"/pf-p")
+	}
+	if strings.Contains(string(sdk), "/"+projectSourcesSegment) {
+		t.Fatal("the SDK calls a project source route, which answers only a linked home over the link")
 	}
 	if len(routes) != 3 || routes["list_sources"] == routes["inspect_source"] || routes["inspect_source"] == routes["inspect_files"] {
 		t.Fatalf("source routes: %v", routes)
