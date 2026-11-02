@@ -18,6 +18,7 @@ The catalog holds every tool below:
 | `manage_fleet` | 6 | `catalog_manage_fleet.go` |
 | `manage_media` | 6 | `catalog_manage_media.go` |
 | `manage_custom_agents`, `manage_themes`, `manage_designs` | 6 | `catalog_custom_agents_theme_design.go` |
+| `manage_companion` | Companion | `catalog_manage_companion.go` |
 
 Stage 6 was the last stage that moved tools. Stage 7b removed the 87
 hand-written `swarm_*` MCP tools: Swarm Control lists and runs only the
@@ -568,6 +569,53 @@ run the `swarm_*` handlers for both.
   named `manage_design`, the retired tool `swarm_design` replaced. The
   Designer keeps its own `swarm_design` tool, which the run service executes
   inside its run.
+
+## manage_companion
+
+The Companion's context bank (docs/frontends.md, "The Companion"): its
+decisions and work pointers, each with its original source, found and read
+again with that source verified, and forgotten. One handler
+(`tool.Runtime.executeManageCompanion`) serves the Companion and Swarm
+Control; every action runs one service function,
+`api.Server.ManageCompanionContext`, whose functions also serve
+`/v3/companion/context`, so the route, the native tool and MCP share one rule
+set: workspace scope (`companionContextScope`), source verification, revision
+guards and forgetting. It never reads or writes account memory
+(`manage_memory` keeps its explicit consent).
+
+| Action | Level | API scopes | Reach |
+| --- | --- | --- | --- |
+| `search`, `get`, `list` | read | `sessions:read` or `sessions:write` | home |
+| `record_decision`, `record_work`, `forget` | write | `sessions:write` | home |
+
+- **Who calls it.** In a conversation only the account user's current
+  Companion: the executor adds the tool to the Companion's Orchestrator
+  contract (`withCompanionContextTool`), `run.resolveAgentToolStates` refuses
+  it to every other agent, and the service refuses any session that is not
+  the caller's current Companion. A Swarm Control caller (an AI key with the
+  scopes above) works on its user's own bank, like the route.
+- **Sources.** `record_decision` cites a person message: `session_id` and
+  `message_seq` when given, else the latest person message of the calling
+  Companion (a Swarm Control caller's own Companion), found in one bounded
+  read. `record_work` cites a session: `session_id`, or the current session
+  of `project_id`/`task_id`. Without `id`, the id is derived from the call
+  itself (kind, the session it cites, title and summary), never from state
+  that moves on such as the latest message, so a repeated or replayed call
+  names the same record.
+- **Forgetting.** `forget` needs `expected_revision`. The store keeps a
+  tombstone of the id, so a replayed write of it (a re-executed call, a
+  re-indexed message) is refused and never recreates the record; recording it
+  again on purpose takes a new id.
+- **Linked machines.** Each machine has its own Companion, so the tool never
+  crosses a link: with `machine` both surfaces refuse with one reason
+  (`tool.ManageCompanionMachineRefusal`). The Companion's `manage_projects`
+  task actions keep `machine`.
+- **Permission.** Reads are allowed; `record_decision`, `record_work` and
+  `forget` are allowed by default like `manage_todos` (the Companion keeping
+  its own source-verified, revision-guarded notes) and refused in a read-only
+  session; an explicit deny rule still wins. Account memory keeps its own ask.
+- Every answer is untrusted content. In the Orchestrator's and Swarm
+  Control's default listings.
 
 ## Task work in manage_projects
 

@@ -730,6 +730,8 @@ func (r *Runtime) ExecuteControlCatalog(ctx context.Context, call ControlCatalog
 		return r.executeManageMediaCatalog(identity.ContextWithPrincipal(ctx, p), scope, args)
 	case manageCustomAgentsToolName:
 		return r.executeManageCustomAgentsCatalog(scope, args)
+	case manageCompanionToolName:
+		return r.executeManageCompanion(identity.ContextWithPrincipal(ctx, p), scope, args)
 	case manageThemeToolName:
 		return r.executeCatalogServiceTool(identity.ContextWithPrincipal(ctx, p), scope, manageThemeToolName, args)
 	case manageDesignToolName:

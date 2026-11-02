@@ -334,6 +334,11 @@ func resolveAgentToolStates(profile pebblestore.AgentProfile, knownTools map[str
 	}
 	if !agentruntime.IsSwarmOrchestratorAgentName(profile.Name) {
 		resolved.Tools["manage_custom_agents"] = ResolvedAgentTool{Enabled: false, Source: "runtime.orchestrator_only"}
+		// The Companion's context bank is the Companion's own (it runs as the
+		// Orchestrator); no other agent's contract can enable it.
+		if _, implemented := knownTools[tool.ManageCompanionToolName]; implemented {
+			resolved.Tools[tool.ManageCompanionToolName] = ResolvedAgentTool{Enabled: false, Source: "runtime.companion_only"}
+		}
 	}
 	if !accountMemoryAgentAllowed(profile) {
 		// Stale snapshots, permissive presets and custom agents cannot expose

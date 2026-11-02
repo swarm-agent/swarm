@@ -15,9 +15,12 @@ import (
 // source excerpts marked untrusted; POST records only decision/work items
 // whose source belongs to this user (idempotently, revision-guarded) and
 // refuses a workspace outside the Companion's current scope; DELETE needs the
-// current revision; deleting the Companion purges its context bank. Threat: a
-// client recording another user's message as evidence, binding context to a
-// workspace it cannot access, a lost update, or deleted Companion data
+// current revision and forgets for good (re-posting the same id is refused
+// with 409 and records nothing; a new id records it again); GET ?id= reads
+// one record with its verified source; deleting the Companion purges its
+// context bank. Threat: a client recording another user's message as
+// evidence, binding context to a workspace it cannot access, a lost update, a
+// replayed write resurrecting a forgotten record, or deleted Companion data
 // lingering in the bank. Boundary: handleCompanionContext over
 // SessionStore.Put/Retrieve/List/DeleteCompanionContext and
 // handleCompanionDelete's purge. Narrowest layer: the HTTP handlers over a
@@ -99,8 +102,24 @@ func TestCompanionContextRouteIsScopedVerifiedAndPurgedWithTheCompanion(t *testi
 	if code, _ = companionTestCall(t, server, http.MethodDelete, CompanionContextPath, map[string]any{"id": "printer-driver", "expected_revision": 1}); code != http.StatusOK {
 		t.Fatalf("delete: %d", code)
 	}
-	if code, body = companionTestCall(t, server, http.MethodPost, CompanionContextPath, decision); code != http.StatusOK {
-		t.Fatalf("re-record: %d %v", code, body)
+	if code, body = companionTestCall(t, server, http.MethodGet, CompanionContextPath+"?id=printer-driver", nil); code != http.StatusNotFound {
+		t.Fatalf("forgotten record still read: %d %v", code, body)
+	}
+	if code, body = companionTestCall(t, server, http.MethodPost, CompanionContextPath, decision); code != http.StatusConflict {
+		t.Fatalf("replayed record of a forgotten id: %d %v, want 409", code, body)
+	}
+	if _, found, err := store.GetCompanionContext(principal.AccountScopeID, principal.UserID, "printer-driver"); err != nil || found {
+		t.Fatalf("replay recreated the forgotten record: %v %v", found, err)
+	}
+	again := map[string]any{"id": "printer-driver-2", "kind": "decision", "title": "Keep the vendor printer driver", "source": source}
+	if code, body = companionTestCall(t, server, http.MethodPost, CompanionContextPath, again); code != http.StatusOK || body["changed"] != true {
+		t.Fatalf("re-record with a new id: %d %v", code, body)
+	}
+	if code, body = companionTestCall(t, server, http.MethodGet, CompanionContextPath+"?id=printer-driver-2", nil); code != http.StatusOK || body["source_text"] != "We decided to keep the vendor printer driver" || body["content_trust"] != "untrusted" {
+		t.Fatalf("get one record: %d %v", code, body)
+	}
+	if code, _ = companionTestCall(t, server, http.MethodGet, CompanionContextPath+"?id=printer-driver-2&q=printer", nil); code != http.StatusBadRequest {
+		t.Fatalf("id with search: %d", code)
 	}
 
 	// Deleting the Companion purges its context bank; account memory is untouched.

@@ -1032,6 +1032,12 @@ func (s *Server) createSessionsV3Primary(w http.ResponseWriter, r *http.Request,
 			rolePreference, err = s.accountDefaultSwarmPreference(principal.AccountScopeID)
 		}
 	}
+	if _, companion := r.Context().Value(companionCreateContextKey{}).(companionCreateBinding); err == nil && companion {
+		// The Companion runs as the Orchestrator but keeps the model a
+		// conversation gets: the account's Swarm Action assignment, the one
+		// selection the Orchestrator's slot rule then reads (companionModelProfile).
+		modelProfileSnapshot = companionModelProfile(modelProfileSnapshot)
+	}
 	if err == nil && req.ModelProfile != nil && strings.EqualFold(strings.TrimSpace(resolvedAgent.Profile.Name), agentruntime.SwarmOrchestratorAgentID) {
 		if modelProfileSnapshot != nil && modelProfileSnapshot.Plan == nil {
 			modelProfileSnapshot.Plan = pebblestore.CloneModelProfileSelection(&modelProfileSnapshot.Action)
@@ -2274,7 +2280,8 @@ func (s *Server) handleSessionV3PrimaryAgent(w http.ResponseWriter, r *http.Requ
 	if s.rejectSystemSidechatMutation(w, current) {
 		return
 	}
-	// The Companion keeps the Swarm agent's tools and permissions.
+	// The Companion's agent is code-owned (the Orchestrator's tools and
+	// permissions, plus its own context bank); chat controls cannot switch it.
 	if rejectCompanionLifecycleMutation(w, r, current, "switched to another agent") {
 		return
 	}
@@ -2359,6 +2366,9 @@ func (s *Server) handleSessionV3PrimarySettings(w http.ResponseWriter, r *http.R
 	}
 	next := current
 	payload := map[string]any{"session_id": sessionID}
+	if req.AgentName != nil && rejectCompanionLifecycleMutation(w, r, current, "switched to another agent") {
+		return
+	}
 	if req.AgentName != nil {
 		resolvedAgent, err := s.resolveSessionsV3PrimaryCreateAgent(principal, *req.AgentName)
 		if err != nil {

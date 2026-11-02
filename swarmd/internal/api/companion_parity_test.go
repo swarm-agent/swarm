@@ -34,16 +34,18 @@ func companionJSONFields(t reflect.Type) []string {
 // queued input and task-watch rows, context bank records, sources, read stats
 // and the record request) is typed in the SDK (packages/sdk/src/companion.ts),
 // which calls exactly the two Companion routes; docs/frontends.md documents
-// both routes and the activity fields; both routes are registered and listed
-// in mcpRouteParityNoMCPAction (MCP reaches the Companion's conversation as an
-// ordinary session; an outside AI has no Companion of its own); and the
-// native task action the Companion contract tells the model to use
-// (watch_tasks) is a real manage_projects action. Threat: a field added on
+// both routes and the activity fields; both routes are registered; the
+// lifecycle route has a recorded no-MCP decision (MCP reaches the Companion's
+// conversation as an ordinary session) while the context bank route is
+// recorded as reached by the supported manage_companion catalog tool (never
+// both); and the native task action the Companion contract tells the model to
+// use (watch_tasks) is a real manage_projects action. Threat: a field added on
 // the daemon but missing from the SDK or docs, an SDK route the daemon does
 // not serve, a silent MCP gap, or a Companion contract naming a tool action
 // that does not exist. Boundary: CompanionView/CompanionActivity and the
 // context DTOs, server_routes.go registration, mcpRouteParityNoMCPAction,
-// companionInstructions, tool.ProjectTaskWatchAction. Narrowest layer: the
+// mcpRouteParityReached, companionInstructions, tool.ProjectTaskWatchAction.
+// Narrowest layer: the
 // types and checked-in files themselves (no SDK compiler exists in this test
 // environment, so the TypeScript is checked textually, not type-checked).
 func TestCompanionSurfaceParityAndCoverageBoundaries(t *testing.T) {
@@ -98,15 +100,23 @@ func TestCompanionSurfaceParityAndCoverageBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, entry := range []string{`CompanionPath -> s.handleCompanion`, `CompanionContextPath -> s.handleCompanionContext`} {
+	for entry, viaCatalog := range map[string]bool{`CompanionPath -> s.handleCompanion`: false, `CompanionContextPath -> s.handleCompanionContext`: true} {
 		handler := strings.TrimSpace(strings.Split(entry, "->")[1])
 		path := strings.TrimSpace(strings.Split(entry, "->")[0])
 		if !strings.Contains(string(registered), "mux.HandleFunc("+path+", "+handler+")") {
 			t.Errorf("route %s is not registered", entry)
 		}
-		if !slices.Contains(mcpRouteParityNoMCPAction, entry) {
-			t.Errorf("route %s has no recorded MCP decision in mcpRouteParityNoMCPAction", entry)
+		_, reached := mcpRouteParityReached[entry]
+		none := slices.Contains(mcpRouteParityNoMCPAction, entry)
+		switch {
+		case viaCatalog && (!reached || none || !strings.Contains(mcpRouteParityReached[entry], tool.ManageCompanionToolName)):
+			t.Errorf("route %s must be recorded as reached by %s (reached=%v, no-MCP=%v)", entry, tool.ManageCompanionToolName, reached, none)
+		case !viaCatalog && (!none || reached):
+			t.Errorf("route %s has no recorded no-MCP decision in mcpRouteParityNoMCPAction", entry)
 		}
+	}
+	if _, ok := tool.CatalogToolNamed(tool.ManageCompanionToolName); !ok {
+		t.Fatal("the Companion context bank has no catalog tool")
 	}
 
 	contract := companionInstructions(pebblestore.SessionSnapshot{Metadata: map[string]any{pebblestore.SessionCompanionMetadataKey: true}})
@@ -115,5 +125,8 @@ func TestCompanionSurfaceParityAndCoverageBoundaries(t *testing.T) {
 	}
 	if cancel, ok := tool.ProjectTaskWatchAction("watch_tasks"); !ok || cancel {
 		t.Fatal("the Companion contract names watch_tasks, which manage_projects does not accept")
+	}
+	if strings.Contains(doc, "Swarm Control (MCP) has no Companion action") || !strings.Contains(doc, tool.ManageCompanionToolName) {
+		t.Fatal("docs/frontends.md must describe manage_companion and no longer say MCP has no Companion action")
 	}
 }

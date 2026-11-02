@@ -64,6 +64,12 @@ var catalogRequired = map[string]map[string][]string{
 		"define":  {"name", "instructions", "tools"},
 		"disable": {"name"},
 	},
+	manageCompanionToolName: {
+		"record_decision": {"title"},
+		"record_work":     {"title"},
+		"get":             {"id"},
+		"forget":          {"id", "expected_revision"},
+	},
 	manageDesignToolName: {
 		"create": {"brief"},
 		"edit":   {"brief", "edit_path"},

@@ -1699,6 +1699,27 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 			return PolicyDecisionAllow
 		}
 		return PolicyDecisionAsk
+	case "manage_companion":
+		// The Companion's own context bank (decisions and work pointers it
+		// records with verified sources, revision-guarded and forgettable by
+		// the person). It is reachable only from the account user's current
+		// Companion (the service refuses every other session) and never reads
+		// or writes account memory, which keeps its own ask below. A read-only
+		// session may search and read it but not change it.
+		var args struct {
+			Action string `json:"action"`
+		}
+		if json.Unmarshal([]byte(toolArguments), &args) != nil {
+			return PolicyDecisionDeny
+		}
+		switch strings.ToLower(strings.TrimSpace(args.Action)) {
+		case "search", "get", "list":
+			return PolicyDecisionAllow
+		}
+		if mode == "read" {
+			return PolicyDecisionDeny
+		}
+		return PolicyDecisionAllow
 	case "manage_memory":
 		var args struct {
 			Action string `json:"action"`

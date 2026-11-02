@@ -111,6 +111,9 @@ type catalogParityHarness struct {
 	// catalogTokens are values cases name by token (ws:..., maprev:...),
 	// resolved as they are (numbers stay numbers).
 	catalogTokens map[string]any
+	// companionSession is the home owner's Companion (seedCompanion): the
+	// one conversation manage_companion runs in natively.
+	companionSession string
 }
 
 func newCatalogParityHarness(t *testing.T) *catalogParityHarness {
@@ -172,6 +175,7 @@ func newCatalogParityHarness(t *testing.T) *catalogParityHarness {
 	parity.seedStage6(t)
 	parity.seedSessions(t)
 	parity.seedWorkspaces(t)
+	parity.seedCompanion(t)
 	return parity
 }
 
@@ -189,11 +193,15 @@ func (h *catalogParityHarness) orchestratorTool(t *testing.T, name string, args 
 	if machine, _ := args["machine"].(string); args["action"] == "wait_tasks" && machine == "" {
 		session = "home-project-orch"
 	}
+	if name == tool.ManageCompanionToolName {
+		// manage_companion runs natively only in the owner's Companion.
+		session = h.companionSession
+	}
 	// The run service passes the session's agent (manage_jobs grants name
 	// it; manage_workers is the Orchestrator's only), as
 	// Service.executeManageJobsTool and executeManageWorkersCatalogTool do.
 	agent := catalogParityAgent
-	if name == "manage_workers" || name == "manage_setup" || catalogStage6OrchestratorCall(name, args) {
+	if name == "manage_workers" || name == "manage_setup" || name == tool.ManageCompanionToolName || catalogStage6OrchestratorCall(name, args) {
 		agent = agentruntime.SwarmOrchestratorAgentID
 	}
 	base := tool.WithVideoRunContext(context.Background(), tool.VideoRunContext{SessionID: session, RunID: "run-1"})
@@ -301,7 +309,7 @@ func catalogParityCases() map[string]map[string][]catalogParityCase {
 		projects[action] = cases
 	}
 	return map[string]map[string][]catalogParityCase{"manage_projects": projects, "manage_workflows": manageWorkflowsParityCases(), "manage_jobs": manageJobsParityCases(), "manage_workers": manageWorkersParityCases(), "manage_setup": manageSetupParityCases(),
-		"manage_fleet": manageFleetParityCases(), "manage_media": manageMediaParityCases(), "manage_custom_agents": manageCustomAgentsParityCases(), "manage_themes": manageThemeParityCases(), "manage_designs": manageDesignsParityCases(), "manage_sessions": manageSessionsParityCases(), "manage_workspace": manageWorkspaceParityCases()}
+		"manage_fleet": manageFleetParityCases(), "manage_media": manageMediaParityCases(), "manage_custom_agents": manageCustomAgentsParityCases(), "manage_themes": manageThemeParityCases(), "manage_designs": manageDesignsParityCases(), "manage_sessions": manageSessionsParityCases(), "manage_workspace": manageWorkspaceParityCases(), tool.ManageCompanionToolName: manageCompanionParityCases()}
 }
 
 // catalogParityToolNames are the tools with parity cases, sorted.

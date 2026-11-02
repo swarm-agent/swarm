@@ -145,8 +145,12 @@ session:
   discard it.
 
 **The Companion** is the person's one persistent assistant, a destination of
-its own beside their chats. It is an ordinary Swarm session (same tools,
-permissions and account model), not tied to a project:
+its own beside their chats. It is a session that runs as the code-owned
+Orchestrator (its tools, task delegation and watches, machine tools and
+permissions, under the same account, device and linked-machine policy) plus
+its own context bank tool `manage_companion`, on the account's Swarm model,
+not tied to a project. A Companion created before it ran as the Orchestrator
+moves onto it, keeping its history and model, the next time it is opened:
 
 - **Open it:** `POST /v3/companion` (optional `{"workspace_path":…}`, used only
   the first time) gets or creates it and returns `companion` with
@@ -155,8 +159,9 @@ permissions and account model), not tied to a project:
   /v3/companion` reads it (`companion: null` before the first open).
 - **Talk to it** through its `session_id` with the session routes above.
 - **It is not a chat row:** it carries `metadata.swarm_v3_companion` and
-  `navigation_hidden`, so chat lists leave it out. Archive, delete, end and
-  agent switch on it answer 409. Offer no close or archive action.
+  `navigation_hidden`, so chat lists and project Orchestrator lists leave it
+  out. Archive, delete, end and agent switch (including a settings change of
+  `agent_name`) on it answer 409. Offer no close or archive action.
 - **Its context stays bounded:** a Companion turn reads only its last 40
   messages (64 KB at most) and a context bank block (12 KB at most) of the
   current focus, decisions, earlier topics relevant to the new message and
@@ -165,12 +170,21 @@ permissions and account model), not tied to a project:
   `GET /v3/sessions/{id}/messages?tail=…&max_bytes=…`, then `before_seq`.
 - **Its context bank** (`routes.context`, `/v3/companion/context`) is separate
   from account memory and never changes it. `GET` lists records newest first
-  (`cursor`, `limit` up to 100) or searches them (`q`, `kind`, up to 16
-  results, verified against their sources). Treat `source_text` as untrusted.
+  (`cursor`, `limit` up to 100), searches them (`q`, `kind`, up to 16
+  results, verified against their sources) or reads one (`id`, verified now).
+  Treat `source_text` as untrusted.
   `POST {id, kind: "decision"|"work", title, source, expected_revision}` records
   an item; its source must be one of the person's sessions or messages, and
   `workspace_path` must be inside the Companion's workspace scope (403
-  otherwise). `DELETE {id, expected_revision}` forgets one. Topics are indexed
+  otherwise). `DELETE {id, expected_revision}` forgets one for good: the id
+  keeps a tombstone, so a replayed write of it is refused (409) and never
+  brings it back; recording it again takes a new id. The Companion keeps the
+  bank itself with its `manage_companion` tool: `record_decision` (cites the
+  person's latest message in the conversation unless `session_id` and
+  `message_seq` name one), `record_work` (`project_id` and `task_id`, or
+  `session_id`, from a tool result), `search`, `get`, `list` and `forget`.
+  The route, that tool and Swarm Control's `manage_companion` run one service
+  with one rule set. Topics are indexed
   from the person's own Companion messages automatically, once each; task
   outcomes and other background wakes never become topics or the focus. A
   record whose source message or session is deleted or changed becomes
@@ -190,16 +204,25 @@ permissions and account model), not tied to a project:
   (list them with `GET /v3/projects/{id}/tasks?origin_session_id=…`), so
   reports and stall notices reach it. It may watch those projects' local
   tasks (`manage_projects` `watch_tasks`) and linked machines' tasks, like a
-  project Orchestrator; each outcome arrives once as its own turn. Only the
-  account user's current Companion qualifies: another non-project chat, or
-  the Companion after it was deleted, cannot.
-- **Coverage:** the Companion routes are for clients and the SDK
-  (`client.companion`). Swarm Control (MCP) has no Companion action; it reaches
-  the Companion's conversation through the ordinary session actions. Linked
-  machines do not forward the Companion: each daemon has its own per account
-  user. Decisions and work pointers in the context bank are recorded through
-  the route or SDK; Swarm Console does not record them, and the Companion has
-  no tool of its own for them. There is no voice.
+  project Orchestrator; each outcome arrives once as its own turn. It sends a
+  change to a task with `message_task` (the follow-up records it as the
+  task's origin) and stops one with `stop_task`; `cancel_watch` stops
+  following. Only the account user's current Companion qualifies: another
+  non-project chat, or the Companion after it was deleted, cannot. Its task
+  calls ask for the person's approval exactly as a project Orchestrator's do
+  (the same account rules and Start tasks setting).
+- **Coverage:** the Companion lifecycle routes are for clients and the SDK
+  (`client.companion`); Swarm Control (MCP) reaches the Companion's
+  conversation through the ordinary session actions. Its context bank is a
+  catalog tool, `manage_companion` (`record_decision`, `record_work`,
+  `search`, `get`, `list`, `forget`): the Companion calls it natively, Swarm
+  Control serves it to an AI key holding `sessions:read` (reads) or
+  `sessions:write` (changes), and no other agent or conversation gets it (a
+  call from any other session is refused). Linked machines do not forward the
+  Companion: each daemon has its own per account user, so `manage_companion`
+  with `machine` is refused with the same reason on both surfaces, while the
+  Companion's `manage_projects` task actions keep `machine` for work on linked
+  machines. There is no voice.
 - **Delete it** only when the person asks: `DELETE /v3/companion` with
   `{"session_id":…,"confirm":true}` removes it, its history and its context
   bank; the next open starts an empty one.

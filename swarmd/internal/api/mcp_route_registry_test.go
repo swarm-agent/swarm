@@ -79,7 +79,21 @@ var mcpHomeActions = map[string]mcpHomeAction{
 	"manage_custom_agents define":       {Reason: mcpHomeTODO},
 	"manage_custom_agents disable":      {Reason: mcpHomeTODO},
 	"manage_themes get":                 {Reason: mcpHomeTODO},
+	// manage_companion and /v3/companion/context run the same service
+	// functions in-process (Server.ManageCompanionContext); the answers of
+	// the route, the native tool and Swarm Control are compared by
+	// execution in TestManageCompanionNativeMCPAndRouteAgree.
+	"manage_companion record_decision": {Reason: mcpCompanionShared},
+	"manage_companion record_work":     {Reason: mcpCompanionShared},
+	"manage_companion search":          {Reason: mcpCompanionShared},
+	"manage_companion get":             {Reason: mcpCompanionShared},
+	"manage_companion list":            {Reason: mcpCompanionShared},
+	"manage_companion forget":          {Reason: mcpCompanionShared},
 }
+
+// mcpCompanionShared is the reason manage_companion's actions are not
+// compared with /v3/companion/context by source: both run the same service.
+const mcpCompanionShared = "the action and GET/POST/DELETE /v3/companion/context run one service (Server.ManageCompanionContext and its companionContext* functions); compared by execution in TestManageCompanionNativeMCPAndRouteAgree"
 
 // mcpHomeRouteParityAllow are known differences between a compared home
 // action and its route, by "tool action field kind" (input_unread: the
@@ -266,6 +280,12 @@ var mcpRouteParityReached = map[string]string{
 	`fleetKeysPath -> s.handleFleetKeys`:                                          "Swarm Control; mcpControlRoutes",
 	`fleetKeysPath + "/" -> s.handleFleetKeys`:                                    "Swarm Control; mcpControlRoutes",
 	`fleetLinkedTasksPath -> s.handleFleetLinkedTasks`:                            "Swarm Control; mcpControlRoutes",
+	// The Companion's context bank: manage_companion (native and Swarm
+	// Control) and this route run the same in-process service functions
+	// (Server.ManageCompanionContext); no HTTP round trip, so nothing is
+	// dispatched to it. TestManageCompanionNativeMCPAndRouteAgree compares
+	// the three answers.
+	`CompanionContextPath -> s.handleCompanionContext`: "manage_companion; the shared service (ManageCompanionContext), compared in TestManageCompanionNativeMCPAndRouteAgree",
 }
 
 // mcpRouteParityNoMCPAction are the route registrations no MCP action reaches
@@ -507,9 +527,6 @@ var mcpRouteParityNoMCPAction = []string{
 	// delete). Its conversation is an ordinary V3 session, which MCP already
 	// reaches through the session actions; an outside AI has no Companion.
 	`CompanionPath -> s.handleCompanion`,
-	// The Companion's context bank (its topics, decisions and work pointers)
-	// belongs to that client destination; an outside AI has no Companion.
-	`CompanionContextPath -> s.handleCompanionContext`,
 	`"/v3/activity/stream" -> s.handleActivity`,
 	`"/v1/sessions" -> s.handleSessions`,
 	`"/v1/sessions/" -> s.handleSessionByID`,

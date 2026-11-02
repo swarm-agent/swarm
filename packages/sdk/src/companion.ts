@@ -1,6 +1,11 @@
 import type { SwarmTransport } from './transport.js';
 
-/** Lifecycle state of the account user's one Companion. */
+/**
+ * Lifecycle state of the account user's one Companion. The Companion runs as
+ * the code-owned Orchestrator (its tools, task delegation and watches, machine
+ * tools and permissions) plus its own context bank tool `manage_companion`,
+ * on the account's Swarm model.
+ */
 export interface CompanionView {
   session_id: string;
   generation: number;
@@ -71,8 +76,11 @@ export interface CompanionContextSource {
 export interface CompanionContextRecord {
   id: string;
   kind: 'topic' | 'decision' | 'work';
-  /** `invalidated` when its source was deleted or changed (see `invalid_reason`). */
-  state: 'active' | 'invalidated';
+  /**
+   * `invalidated` when its source was deleted or changed (see `invalid_reason`).
+   * `forgotten` is never stored: a write to a forgotten id is refused instead.
+   */
+  state: 'active' | 'invalidated' | 'forgotten';
   invalid_reason?: string;
   title: string;
   summary?: string;
@@ -110,6 +118,21 @@ export interface CompanionContextSearchResult {
   content_trust: 'untrusted';
 }
 
+export interface CompanionContextGetResult {
+  ok: boolean;
+  record: CompanionContextRecord;
+  /** Untrusted excerpt of the verified original source (absent when it was invalidated). */
+  source_text?: string;
+  content_trust: 'untrusted';
+}
+
+export interface CompanionContextForgetResult {
+  ok: boolean;
+  deleted_id: string;
+  /** Always true: the id stays forgotten. */
+  forgotten: boolean;
+}
+
 export interface CompanionContextPut {
   id: string;
   /** Topics are indexed automatically from Companion messages. */
@@ -141,6 +164,12 @@ export class SwarmCompanionContextNamespace {
     return (await this.transport.request<CompanionContextPage>(`/v3/companion/context${suffix}`, { method: 'GET', signal })).data;
   }
 
+  /** One record with its source verified now; not found when forgotten or outside the current workspace scope. */
+  async get(id: string, signal?: AbortSignal): Promise<CompanionContextGetResult> {
+    const query = new URLSearchParams({ id });
+    return (await this.transport.request<CompanionContextGetResult>(`/v3/companion/context?${query}`, { method: 'GET', signal })).data;
+  }
+
   /** Bounded keyword search (and/or one kind), verified against sources; at most 16 results. */
   async search(params: { q?: string; kind?: 'topic' | 'decision' | 'work'; limit?: number }, signal?: AbortSignal): Promise<CompanionContextSearchResult> {
     const query = new URLSearchParams();
@@ -150,14 +179,17 @@ export class SwarmCompanionContextNamespace {
     return (await this.transport.request<CompanionContextSearchResult>(`/v3/companion/context?${query}`, { method: 'GET', signal })).data;
   }
 
-  /** Records a decision or work pointer; repeating an identical write changes nothing. */
+  /**
+   * Records a decision or work pointer; repeating an identical write changes
+   * nothing. A forgotten id is refused (409): record it again with a new id.
+   */
   async put(record: CompanionContextPut): Promise<{ ok: boolean; changed: boolean; record: CompanionContextRecord }> {
     return (await this.transport.request<{ ok: boolean; changed: boolean; record: CompanionContextRecord }>('/v3/companion/context', { method: 'POST', body: record })).data;
   }
 
-  /** Forgets one record at its current revision. */
-  async delete(id: string, expectedRevision: number): Promise<{ ok: boolean; deleted_id: string }> {
-    return (await this.transport.request<{ ok: boolean; deleted_id: string }>('/v3/companion/context', { method: 'DELETE', body: { id, expected_revision: expectedRevision } })).data;
+  /** Forgets one record at its current revision, for good: its id is never recorded again. */
+  async delete(id: string, expectedRevision: number): Promise<CompanionContextForgetResult> {
+    return (await this.transport.request<CompanionContextForgetResult>('/v3/companion/context', { method: 'DELETE', body: { id, expected_revision: expectedRevision } })).data;
   }
 }
 
@@ -174,10 +206,12 @@ export interface CompanionDeleteResult {
 }
 
 /**
- * The account user's one persistent Companion: an ordinary Swarm session
- * (same tools, permissions and account model) that is not tied to a project
- * and cannot be archived, ended or deleted through chat controls. Use the
- * sessions/realtime namespaces with `companion.session_id` for messages.
+ * The account user's one persistent Companion: a canonical V3 session running
+ * as the Orchestrator (its tools and permissions, plus `manage_companion`, on
+ * the account's Swarm model) that is not tied to a project and cannot be
+ * archived, ended, switched to another agent or deleted through chat
+ * controls. Use the sessions/realtime namespaces with `companion.session_id`
+ * for messages.
  */
 export class SwarmCompanionNamespace {
   /** The Companion's bounded, source-verified context bank. */

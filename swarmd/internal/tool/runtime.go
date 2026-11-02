@@ -229,6 +229,8 @@ type Runtime struct {
 	// workflowLifecycle serves manage_workflows (runtime_manage_workflows.go).
 	workflowLifecycle    WorkflowLifecycleService
 	customAgentLifecycle CustomAgentLifecycleService
+	// companionContext is the Companion context bank (manage_companion).
+	companionContext CompanionContextService
 	// workspaceCatalog serves manage_workspace for Swarm Control
 	// (runtime_manage_workspace_catalog.go).
 	workspaceCatalog WorkspaceCatalogService
@@ -1542,6 +1544,7 @@ func (r *Runtime) Definitions() []Definition {
 		leaseEnvironmentDefinition(),
 		manageWorkersV2Definition(),
 		manageCustomAgentsDefinition(),
+		manageCompanionDefinition(),
 		manageWorkflowsDefinition(),
 		manageJobsDefinition(),
 		manageSetupDefinition(),
@@ -2248,6 +2251,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return executeManageSkill(scope, args)
 	case "manage_custom_agents":
 		return r.executeManageCustomAgentsCatalog(scope, args)
+	case manageCompanionToolName:
+		return r.executeManageCompanion(ctx, scope, args)
 	case "manage-agent", "manage_agent":
 		return r.executeManageAgent(scope, args)
 	case "manage-theme", "manage_theme":

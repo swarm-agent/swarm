@@ -31,6 +31,10 @@ const (
 
 	CompanionContextStateActive      = "active"
 	CompanionContextStateInvalidated = "invalidated"
+	// CompanionContextStateForgotten is never stored on a record: it is the
+	// answer of a write to an id the person forgot (its tombstone), which
+	// writes nothing.
+	CompanionContextStateForgotten = "forgotten"
 
 	CompanionContextSourceMessage = "message"
 	CompanionContextSourceSession = "session"
@@ -216,6 +220,20 @@ func companionKeywordKey(prefix, keyword string, rec CompanionContextRecord) []b
 	return []byte(prefix + "k/" + keyword + "/" + companionInvertedTime(rec.UpdatedAt) + "/" + rec.ID)
 }
 func companionFocusKey(prefix string) []byte { return []byte(prefix + "f") }
+
+// companionForgottenKey is the durable tombstone of a forgotten record id. It
+// is outside the recency, kind and keyword indexes, so it is never listed or
+// retrieved; it only stops a replayed write of the same id (a re-executed
+// tool call, a re-indexed message) from bringing the record back.
+func companionForgottenKey(prefix, id string) []byte { return []byte(prefix + "x/" + id) }
+
+// companionForgotten is the tombstone payload: what was forgotten and when.
+type companionForgotten struct {
+	ID          string                 `json:"id"`
+	Kind        string                 `json:"kind"`
+	Source      CompanionContextSource `json:"source"`
+	ForgottenAt int64                  `json:"forgotten_at"`
+}
 
 func validCompanionContextID(id string) bool {
 	if id == "" || len(id) > companionContextMaxIDBytes {
@@ -420,6 +438,16 @@ func (s *SessionStore) PutCompanionContext(rec CompanionContextRecord, expectedR
 	if err != nil {
 		return CompanionContextRecord{}, false, err
 	}
+	if !found {
+		// A forgotten id stays forgotten: replaying its write is a no-op
+		// that says so (state forgotten) and stores nothing. Recording it
+		// again on purpose takes a new id.
+		if forgotten, err := getJSONFromReader(s.store.db, string(companionForgottenKey(prefix, rec.ID)), &companionForgotten{}); err != nil {
+			return CompanionContextRecord{}, false, err
+		} else if forgotten {
+			return CompanionContextRecord{ID: rec.ID, AccountScopeID: account, UserID: user, Kind: rec.Kind, State: CompanionContextStateForgotten, Title: rec.Title, Source: rec.Source}, false, nil
+		}
+	}
 	if found {
 		rec.Revision, rec.CreatedAt, rec.UpdatedAt = current.Revision, current.CreatedAt, current.UpdatedAt
 		if sameCompanionContextContent(current, rec) {
@@ -446,7 +474,9 @@ func (s *SessionStore) PutCompanionContext(rec CompanionContextRecord, expectedR
 }
 
 // DeleteCompanionContext removes one record and its index entries at the
-// expected revision; the user's explicit forgetting of a context item.
+// expected revision; the user's explicit forgetting of a context item. It
+// leaves a durable tombstone of the id in the same batch, so replaying the
+// record's write never brings it back (PutCompanionContext).
 func (s *SessionStore) DeleteCompanionContext(account, user, id string, expectedRevision int64) error {
 	account, user, id = strings.TrimSpace(account), strings.TrimSpace(user), strings.TrimSpace(id)
 	if !validCompanionPrincipal(account, user) || !validCompanionContextID(id) {
@@ -465,7 +495,22 @@ func (s *SessionStore) DeleteCompanionContext(account, user, id string, expected
 	if current.Revision != expectedRevision {
 		return ErrCompanionContextConflict
 	}
-	if err := s.commitCompanionContext(prefix, &current, nil); err != nil {
+	tombstone, err := json.Marshal(companionForgotten{ID: current.ID, Kind: current.Kind, Source: current.Source, ForgottenAt: max(current.UpdatedAt, 0)})
+	if err != nil {
+		return err
+	}
+	batch := s.store.db.NewBatch()
+	defer batch.Close()
+	if err := deleteCompanionContextIndexes(batch, prefix, current); err != nil {
+		return err
+	}
+	if err := batch.Delete(companionRecordKey(prefix, current.ID), nil); err != nil {
+		return err
+	}
+	if err := batch.Set(companionForgottenKey(prefix, current.ID), tombstone, nil); err != nil {
+		return err
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
 		return err
 	}
 	focus, ok, err := s.GetCompanionFocus(account, user)
@@ -736,6 +781,44 @@ func (s *SessionStore) RetrieveCompanionContext(account, user string, q Companio
 		hits = append(hits, hit)
 	}
 	return hits, stats, nil
+}
+
+// GetVerifiedCompanionContext reads one record with its source verified now:
+// an active record whose source was deleted, changed or became foreign is
+// invalidated (and returned so), as retrieval does. It reads one record and
+// at most one source. found is false for an unknown or forgotten id.
+func (s *SessionStore) GetVerifiedCompanionContext(account, user, id string, now int64) (CompanionContextHit, bool, error) {
+	account, user, id = strings.TrimSpace(account), strings.TrimSpace(user), strings.TrimSpace(id)
+	if !validCompanionPrincipal(account, user) || !validCompanionContextID(id) {
+		return CompanionContextHit{}, false, fmt.Errorf("%w: id ([A-Za-z0-9._:-], at most %d bytes) required", ErrCompanionContextInvalid, companionContextMaxIDBytes)
+	}
+	prefix := companionContextPrefix(account, user)
+	rec, found, err := s.getCompanionContextRecord(prefix, id)
+	if err != nil || !found {
+		return CompanionContextHit{}, false, err
+	}
+	if rec.State != CompanionContextStateActive {
+		return CompanionContextHit{Record: rec}, true, nil
+	}
+	_, text, session, err := s.verifyCompanionContextSource(account, user, rec.Source)
+	if err != nil {
+		if !errors.Is(err, ErrCompanionContextSource) {
+			return CompanionContextHit{}, false, err
+		}
+		if invErr := s.invalidateCompanionContext(prefix, rec, err.Error(), now); invErr != nil {
+			return CompanionContextHit{}, false, invErr
+		}
+		updated, ok, readErr := s.getCompanionContextRecord(prefix, id)
+		if readErr != nil || !ok {
+			return CompanionContextHit{}, false, readErr
+		}
+		return CompanionContextHit{Record: updated}, true, nil
+	}
+	hit := CompanionContextHit{Record: rec, SourceText: text}
+	if rec.Kind == CompanionContextKindWork {
+		hit.SourceSession = session
+	}
+	return hit, true, nil
 }
 
 // CompanionWorkspaceScope is the one permission rule for workspace-bound

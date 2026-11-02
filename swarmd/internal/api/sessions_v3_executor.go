@@ -5482,6 +5482,9 @@ func (e *sessionV3Executor) resolveSessionV3CurrentAgentToolContract(accountScop
 		if err != nil {
 			return pebblestore.AgentProfile{}, err
 		}
+		if companionAgentProfile(metadata, reconciled) {
+			return withCompanionContextTool(reconciled), nil
+		}
 		workerID := sessionsV3MetadataString(metadata, "worker_id")
 		// Automation v2 also uses worker_id, but is not worker execution.
 		// Only pinned worker execution sessions may load a worker revision.

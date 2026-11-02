@@ -41,6 +41,8 @@ export type {
   CompanionContextReadStats,
   CompanionContextPage,
   CompanionContextSearchResult,
+  CompanionContextGetResult,
+  CompanionContextForgetResult,
   CompanionContextPut,
 } from './companion.js';
 export * from './settings.js';

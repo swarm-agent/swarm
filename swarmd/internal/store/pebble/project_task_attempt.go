@@ -250,10 +250,21 @@ func (s *SessionStore) ReserveTaskFollowupWithRepositories(account, project, tas
 		if err != nil {
 			return nil, err
 		}
-		if !found || ProjectConversationID(parent) != project {
+		if !found {
 			return nil, errors.New("follow-up origin conversation unavailable")
 		}
-		if err := s.ValidateProjectConversation(parent, account, user); err != nil {
+		if ProjectConversationID(parent) != project {
+			// The account user's current Companion sends follow-ups to the
+			// tasks it delegates in any of the account's projects, by the
+			// same rule as its task watches (companionWatchesProject).
+			companion, err := s.companionWatchesProject(parent, account, user, project)
+			if err != nil {
+				return nil, err
+			}
+			if !companion {
+				return nil, errors.New("follow-up origin conversation unavailable")
+			}
+		} else if err := s.ValidateProjectConversation(parent, account, user); err != nil {
 			return nil, err
 		}
 	}

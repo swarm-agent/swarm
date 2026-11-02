@@ -129,7 +129,8 @@ func TestCompanionEnsureIsSingleProjectFreeAndSurvivesRestart(t *testing.T) {
 		if err != nil || !ok {
 			t.Fatalf("companion session: %v %v", ok, err)
 		}
-		if !sessionsV3IsCompanion(session) || session.Metadata["navigation_hidden"] != true || session.Metadata["agent_name"] != agentruntime.SwarmAgentID || session.Metadata["project_id"] != nil || session.Metadata["swarm_v3_project_id"] != nil {
+		// The Companion runs as the code-owned Orchestrator, with no project.
+		if !sessionsV3IsCompanion(session) || session.Metadata["navigation_hidden"] != true || session.Metadata["agent_name"] != agentruntime.SwarmOrchestratorAgentID || session.Metadata["resolved_agent_name"] != agentruntime.SwarmOrchestratorAgentID || session.Metadata["project_id"] != nil || session.Metadata["swarm_v3_project_id"] != nil {
 			t.Fatalf("companion metadata %v", session.Metadata)
 		}
 		if session.AccountScopeID != testPrincipal().AccountScopeID || session.UserID != testPrincipal().UserID {
@@ -197,6 +198,7 @@ func TestCompanionRefusesChatLifecycleControlsButAllowsExplicitDelete(t *testing
 		{"delete", http.MethodDelete, sessionPath, nil},
 		{"end", http.MethodPost, sessionPath + "/end", map[string]any{"client_request_id": "end-1"}},
 		{"agent switch", http.MethodPost, sessionPath + "/agent", map[string]any{"agent_name": agentruntime.SwarmAgentID, "client_request_id": "agent-1"}},
+		{"settings agent switch", http.MethodPatch, sessionPath + "/settings", map[string]any{"agent_name": agentruntime.SwarmAgentID, "client_request_id": "settings-1"}},
 		{"batch archive", http.MethodPost, "/v3/sessions:archive", map[string]any{"session_ids": []string{id}}},
 	}
 	for _, refusal := range refusals {
@@ -267,10 +269,15 @@ func TestCompanionRefusesChatLifecycleControlsButAllowsExplicitDelete(t *testing
 // Purpose: the Companion operating contract is added only to the Companion.
 // Requirement: companionInstructions is empty for every other session, so the
 // existing orchestrator prompt is unchanged, and for the Companion it allows
-// direct help without mandatory task/project creation while stating that it
-// never widens policy. Threat: Companion policy leaking into ordinary chats or
-// project orchestrators. Boundary: companionInstructions, appended in
-// composeSessionV3ResolvedInstructions. Narrowest layer: the pure composer.
+// direct help without mandatory task/project creation (help on the person's
+// own computer through the machine tools, not delegated repository work),
+// names the delegation and context bank tools it really has, and states that
+// it never widens policy. Threat: Companion policy leaking into ordinary chats
+// or project orchestrators, or a contract promising tools the Companion does
+// not get. Boundary: companionInstructions, appended in
+// composeSessionV3ResolvedInstructions. Narrowest layer: the pure composer
+// (the tool names it uses are checked against the catalog in
+// TestManageCompanionNativeMCPAndRouteAgree).
 func TestCompanionInstructionsApplyOnlyToTheCompanion(t *testing.T) {
 	plain := pebblestore.SessionSnapshot{Metadata: map[string]any{"agent_name": agentruntime.SwarmAgentID}}
 	project := pebblestore.SessionSnapshot{Metadata: map[string]any{"agent_name": agentruntime.SwarmOrchestratorAgentID, "project_id": "p1"}}
@@ -281,7 +288,7 @@ func TestCompanionInstructionsApplyOnlyToTheCompanion(t *testing.T) {
 	}
 	companion := pebblestore.SessionSnapshot{Metadata: map[string]any{pebblestore.SessionCompanionMetadataKey: map[string]any{"generation": 1}}}
 	got := companionInstructions(companion)
-	for _, want := range []string{"never overrides system policy or permissions", "do not need a task, project or plan", "device tools you already have", "retrieved context bank", "Never save it to account memory unless the person explicitly asks", "follow delegated tasks with watch_tasks", "a running command or device action is not interrupted", "When it could mean more than one task, ask which"} {
+	for _, want := range []string{"never overrides system policy or permissions", "do not need a task, project or plan", "use your machine tools", "not delegated repository work", "manage_projects propose_task", "manage_companion", "record_decision", "retrieved context bank", "Never save it to account memory unless the person explicitly asks", "follow delegated tasks with watch_tasks", "a running command or device action is not interrupted", "When it could mean more than one task, ask which"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("Companion instructions missing %q: %q", want, got)
 		}

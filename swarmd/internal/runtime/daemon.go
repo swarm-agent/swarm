@@ -837,6 +837,7 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 	}
 	toolRuntime.SetProjectTaskLifecycleService(apiServer)
 	toolRuntime.SetCustomAgentLifecycleService(apiServer)
+	toolRuntime.SetCompanionContextService(apiServer)
 	// Swarm Control serves the tool catalog through the same handlers.
 	apiServer.SetToolCatalogRuntime(toolRuntime)
 	runSvc.SetWorkflowLifecycleService(apiServer)
