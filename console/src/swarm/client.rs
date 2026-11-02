@@ -22,7 +22,9 @@ pub enum Refusal {
     /// 403: the owner may not do this (never expected for a client session).
     Forbidden(String),
     /// Any other HTTP status with Swarm's message and its whole answer
-    /// (some refusals carry the state that explains them).
+    /// (some refusals carry the state that explains them). A 2xx here means
+    /// Swarm took the request but its answer could not be read
+    /// (`answer_of`): not a refusal, its outcome is unknown.
     Status(u16, String, Value),
     /// Nothing answered.
     Unreachable,
@@ -84,8 +86,10 @@ impl Client {
         for (name, value) in headers {
             request = request.set(name, value);
         }
-        let text = request.send_bytes(data).map_err(refusal)?.into_string().map_err(|_| Refusal::Unreachable)?;
-        serde_json::from_str(&text).map_err(|_| Refusal::Status(200, "unreadable answer from Swarm".into(), Value::Null))
+        let resp = request.send_bytes(data).map_err(refusal)?;
+        let status = resp.status();
+        let text = resp.into_string().map_err(|_| Refusal::Unreachable)?;
+        serde_json::from_str(&text).map_err(|_| unreadable(status))
     }
 
     /// GET that returns the raw bytes and content type (media files).
@@ -104,12 +108,24 @@ impl Client {
             None => request.call(),
         }
         .map_err(refusal)?;
+        let status = resp.status();
         let text = resp.into_string().map_err(|_| Refusal::Unreachable)?;
-        if text.trim().is_empty() {
-            return Ok(Value::Null);
-        }
-        serde_json::from_str(&text).map_err(|_| Refusal::Status(200, "unreadable answer from Swarm".into(), Value::Null))
+        answer_of(status, &text)
     }
+}
+
+/// A successful (2xx) answer's body: empty is no answer (Null); a body that
+/// is not JSON keeps the status Swarm answered with, so a caller can tell
+/// that Swarm took the request and only its answer was unreadable.
+pub(crate) fn answer_of(status: u16, text: &str) -> Result<Value, Refusal> {
+    if text.trim().is_empty() {
+        return Ok(Value::Null);
+    }
+    serde_json::from_str(text).map_err(|_| unreadable(status))
+}
+
+fn unreadable(status: u16) -> Refusal {
+    Refusal::Status(status, "unreadable answer from Swarm".into(), Value::Null)
 }
 
 fn refusal(err: ureq::Error) -> Refusal {
@@ -152,5 +168,20 @@ mod tests {
         let c = Client::new("http://127.0.0.1:1", "t");
         assert_eq!(c.get("/v3/projects"), Err(Refusal::Unreachable));
         assert!(!running("http://127.0.0.1:1"));
+    }
+
+    // Purpose: a successful answer whose body cannot be read keeps the 2xx
+    // status Swarm sent (not a fixed 200), and an empty body is no answer.
+    // Threat: an unreadable 201 shown as 200, or any 2xx shown as a refusal
+    // by callers that sort by status (plan_review::decision_outcome). Owner:
+    // answer_of, the body step of Client::send. Narrowest layer: the pure
+    // parse of a 2xx body.
+    #[test]
+    fn an_unreadable_success_keeps_its_status() {
+        for status in [200, 201, 204] {
+            assert_eq!(answer_of(status, "<html>proxy</html>"), Err(Refusal::Status(status, "unreadable answer from Swarm".into(), Value::Null)));
+            assert_eq!(answer_of(status, "  "), Ok(Value::Null));
+        }
+        assert_eq!(answer_of(200, r#"{"ok": true}"#), Ok(serde_json::json!({"ok": true})));
     }
 }

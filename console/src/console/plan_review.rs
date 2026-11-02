@@ -608,6 +608,37 @@ mod tests {
         assert_eq!(p.review.as_ref().unwrap().decision, Decision::Reload);
     }
 
+    // Purpose: an accept Swarm answered 2xx with an unreadable body is shown
+    // as an unknown outcome: never "Refused ... Nothing was done", never
+    // resent, the task's state unknown, and nothing decidable until a fresh
+    // read; after that read the person decides on what Swarm then says.
+    // Threat (review of 38cdd9b): the person told nothing happened while the
+    // task may have started, then accepting again. Owner:
+    // plan_review::decision_outcome, PlanReviewPanel::decided. Narrowest
+    // layer: the panel state fed the real response mapping.
+    #[test]
+    fn an_unreadable_accept_answer_is_unknown_not_refused() {
+        let mut r = PlanReviews::default();
+        let open = r.open(target(), "Remote plan".into());
+        r.answer(read_op(&open), &target(), Answer::Read(Ok(review(2))));
+        let (op, _) = decide_op(&r.decide(true, "").unwrap());
+        let outcome = plan_review::decision_outcome(crate::swarm::client::answer_of(200, "not json"));
+        assert!(r.answer(op, &target(), Answer::Decided(outcome)).is_none(), "nothing is sent again");
+        let p = r.panel.as_ref().unwrap();
+        let error = p.error.as_deref().unwrap();
+        assert!(!error.contains("Refused") && !error.contains("Nothing was done"), "{error}");
+        assert!(error.contains("did not say whether") && error.contains("HTTP 200"), "{error}");
+        let shown = p.review.as_ref().unwrap();
+        assert_eq!((shown.decision, shown.run_status.as_str()), (Decision::Reload, "unknown"));
+        assert!(r.decide(true, "").is_err(), "no second accept before a fresh read");
+
+        // A fresh read decides what is offered: here the task started.
+        let reread = r.reload().unwrap();
+        r.answer(read_op(&reread), &target(), Answer::Read(Ok(review_for("rt", 2, "in_progress", "none"))));
+        assert_eq!(r.panel.as_ref().unwrap().review.as_ref().unwrap().decision, Decision::None);
+        assert!(r.decide(true, "").is_err(), "an accepted plan is not accepted twice");
+    }
+
     // Purpose: a read or decision answers only the panel and request that
     // asked. Requirements: (1) review A's read answering after B opened
     // changes nothing in B; (2) an older read of the same panel answering

@@ -201,7 +201,8 @@ pub enum Decided {
     /// nothing was done.
     Denied { status: u16, error: String },
     /// Sent, and no answer says whether it was carried out (the link or
-    /// Swarm did not answer). Never retried: the task is read again.
+    /// Swarm did not answer, Swarm failed, or Swarm answered 2xx with a body
+    /// that could not be read). Never retried: the task is read again.
     Unknown { error: String },
 }
 
@@ -224,6 +225,9 @@ pub fn decision_outcome(result: Result<Value, Refusal>) -> Decided {
         }
         // A 2xx that does not say ok is not a known outcome.
         Ok(_) => Decided::Unknown { error: "Swarm's answer did not say whether the decision was carried out.".into() },
+        // A 2xx whose body could not be read (client::answer_of): Swarm took
+        // the decision and may have carried it out. Never a refusal.
+        Err(Refusal::Status(code, _, _)) if (200..300).contains(&code) => Decided::Unknown { error: format!("Swarm answered HTTP {code}, but its answer could not be read.") },
         Err(Refusal::Status(409, error, answer)) => {
             let current = answer.get("review_current").and_then(Value::as_bool).unwrap_or(false);
             Decided::Refused { error, review: if current { parse(&answer) } else { None } }
@@ -451,6 +455,40 @@ mod tests {
         assert!(matches!(decision_outcome(Err(Refusal::Status(500, String::new(), Value::Null))), Decided::Unknown { .. }));
         assert!(matches!(decision_outcome(Err(Refusal::Unreachable)), Decided::Unknown { .. }));
         assert!(matches!(decision_outcome(Ok(json!({"review": answer("accept_plan", 2)["review"]}))), Decided::Unknown { .. }));
+    }
+
+    // Purpose: a decision Swarm answered with 2xx but whose body could not
+    // be read is Unknown (Swarm took it and may have started work), never
+    // Denied/"nothing was done". Genuine refusals keep their meaning: 403,
+    // 404 and 401 stay Denied, 409 stays Refused, and no answer at all stays
+    // Unknown. Threat (review of 38cdd9b): an unreadable HTTP 200 shown as
+    // "Refused (HTTP 200) ... Nothing was done" after the task may have
+    // started. Owner: client::answer_of (the body step of Client::send) and
+    // decision_outcome. Narrowest layer: the pure parse and mapping the
+    // decision command applies to the route's response.
+    #[test]
+    fn an_unreadable_success_is_an_unknown_outcome() {
+        for status in [200u16, 201, 204] {
+            let parsed = super::super::client::answer_of(status, "<html>gateway</html>");
+            match decision_outcome(parsed) {
+                Decided::Unknown { error } => {
+                    assert!(error.contains(&format!("HTTP {status}")) && error.contains("could not be read"), "{status}: {error}")
+                }
+                other => panic!("an unreadable {status} is not a refusal: {other:?}"),
+            }
+            // An empty 2xx says nothing either.
+            assert!(matches!(decision_outcome(super::super::client::answer_of(status, "")), Decided::Unknown { .. }));
+        }
+        // Known refusals: nothing done, status kept.
+        assert_eq!(decision_outcome(Err(Refusal::Forbidden("not allowed".into()))), Decided::Denied { status: 403, error: "not allowed".into() });
+        assert_eq!(decision_outcome(Err(Refusal::Status(404, "no task".into(), Value::Null))), Decided::Denied { status: 404, error: "no task".into() });
+        assert!(matches!(decision_outcome(Err(Refusal::SignedOut)), Decided::Denied { status: 401, .. }));
+        assert_eq!(
+            decision_outcome(Err(Refusal::Status(409, "the plan changed".into(), json!({"ok": false})))),
+            Decided::Refused { error: "the plan changed".into(), review: None }
+        );
+        // No answer: unknown, as before.
+        assert!(matches!(decision_outcome(Err(Refusal::Unreachable)), Decided::Unknown { .. }));
     }
 
     // Purpose: an ordinary task keeps its start decision (no plan named) and

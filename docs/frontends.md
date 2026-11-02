@@ -475,6 +475,10 @@ auto are not plan acceptance. The answer says only what is known:
 - **502** `{"ok": false, "outcome_unknown": true, "error", "decided"}`: sent,
   and no answer says whether it was carried out (the link timed out, the
   machine failed). Do not resend; read the task again.
+- Any 2xx whose body is empty or cannot be read, or without `ok: true`, is
+  not a refusal: Swarm took the decision and may have carried it out. Treat
+  the outcome as unknown, do not resend, and read the task again before
+  offering another decision.
 
 Bind each read and decision answer to the request and the task it was for:
 a review closed, switched to another task or reopened must not take an older
