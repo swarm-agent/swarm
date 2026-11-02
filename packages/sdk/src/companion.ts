@@ -49,7 +49,44 @@ export interface CompanionActivity {
     delivery_status: 'queued' | 'waiting_next_turn';
   }>;
   queued_inputs_more?: boolean;
+  /**
+   * When a message sent now reaches the Companion: `starts_turn` (nothing
+   * runs), `next_step` (a model step runs) or `after_tool_calls` (the calls in
+   * `tool_calls` run first; new input does not interrupt them).
+   */
+  input_delivery: 'starts_turn' | 'next_step' | 'after_tool_calls';
+  /** The active run's tool calls in flight, oldest first. `device`: runs on the person's device or a linked machine. */
+  tool_calls: Array<{
+    call_id: string;
+    tool_name: string;
+    started_at: number;
+    device?: boolean;
+  }>;
+  tool_calls_more?: boolean;
+  /**
+   * Background results (task outcomes and milestones, background commands,
+   * environment and machine watches) handed to a run that no model step has
+   * read yet, oldest first. `waiting_for_run`: the active run reads it at its
+   * next step. `redelivering`: its run ended unread; it comes again as its own turn.
+   */
+  background_deliveries: Array<{
+    wake_id: string;
+    source: string;
+    run_id: string;
+    status: 'waiting_for_run' | 'redelivering';
+    created_at?: number;
+  }>;
+  background_deliveries_more?: boolean;
   pending_permissions: number;
+  /** How far the maintained context (state, continuity) has followed the event log. */
+  context?: {
+    cursor: number;
+    latest_seq: number;
+    pending: number;
+    freshness: 'current' | 'pending';
+    running: boolean;
+    last_failure?: { at: number; error: string };
+  };
   /** Delegated tasks the Companion follows; titles from linked machines are untrusted. */
   task_watches: Array<{
     watch_id: string;

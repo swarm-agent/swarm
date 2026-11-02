@@ -51,8 +51,23 @@ type CompanionActivity struct {
 	// provider step has received yet, oldest first.
 	QueuedInputs     []CompanionQueuedInput `json:"queued_inputs"`
 	QueuedInputsMore bool                   `json:"queued_inputs_more,omitempty"`
+	// InputDelivery says when a message the person sends now reaches the
+	// Companion: starts_turn (nothing runs), next_step (a model step runs) or
+	// after_tool_calls (ToolCalls run; they are not interrupted by it).
+	InputDelivery string `json:"input_delivery"`
+	// ToolCalls are the active run's tool calls in flight, oldest first.
+	ToolCalls     []CompanionToolCall `json:"tool_calls"`
+	ToolCallsMore bool                `json:"tool_calls_more,omitempty"`
+	// BackgroundDeliveries are background results handed to a run that no
+	// provider step has read yet, oldest first: waiting_for_run (the active
+	// run reads it at its next step) or redelivering (its run ended unread; it
+	// comes again as its own turn).
+	BackgroundDeliveries     []CompanionBackgroundDelivery `json:"background_deliveries"`
+	BackgroundDeliveriesMore bool                          `json:"background_deliveries_more,omitempty"`
 	// PendingPermissions counts tool approvals the run is waiting on.
 	PendingPermissions int `json:"pending_permissions"`
+	// Context is how far the maintained context has followed the event log.
+	Context *CompanionContextFreshness `json:"context,omitempty"`
 	// TaskWatches are the delegated tasks the Companion follows, with exact
 	// machine/project/task identity.
 	TaskWatches []pebblestore.V3TaskWatchSummary `json:"task_watches"`
@@ -81,9 +96,11 @@ type CompanionQueuedInput struct {
 
 // companionActivity reads the Companion session's live work state. Every read
 // is bounded: one active run intent, a fixed message tail, the session's
-// watches and one pending-permission count.
+// watches, its wake notes with one receipt read per listed note, the state
+// cursor and projection head, the executor's in-memory tool calls and one
+// pending-permission count.
 func (s *Server) companionActivity(session pebblestore.SessionSnapshot) (*CompanionActivity, error) {
-	out := &CompanionActivity{QueuedInputs: []CompanionQueuedInput{}, TaskWatches: []pebblestore.V3TaskWatchSummary{}, ReadAt: time.Now().UnixMilli()}
+	out := &CompanionActivity{QueuedInputs: []CompanionQueuedInput{}, ToolCalls: []CompanionToolCall{}, BackgroundDeliveries: []CompanionBackgroundDelivery{}, TaskWatches: []pebblestore.V3TaskWatchSummary{}, ReadAt: time.Now().UnixMilli()}
 	activeRunID := ""
 	intent, found, err := s.sessions.GetSessionActiveRunIntent(session.ID)
 	if err != nil {
@@ -109,6 +126,13 @@ func (s *Server) companionActivity(session pebblestore.SessionSnapshot) (*Compan
 		return nil, err
 	}
 	out.QueuedInputs, out.QueuedInputsMore = companionUndeliveredInputs(messages, activeRunID)
+	out.ToolCalls, out.ToolCallsMore, out.InputDelivery = s.companionToolCallsActivity(session.ID, activeRunID)
+	if out.BackgroundDeliveries, out.BackgroundDeliveriesMore, err = s.companionBackgroundDeliveries(session.ID, activeRunID); err != nil {
+		return nil, err
+	}
+	if out.Context, err = s.companionContextFreshness(session); err != nil {
+		return nil, err
+	}
 	watches, err := s.sessions.Store().ListV3SessionTaskWatches(session.ID)
 	if err != nil {
 		return nil, err

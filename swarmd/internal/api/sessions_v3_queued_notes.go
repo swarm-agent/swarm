@@ -230,7 +230,11 @@ func (e *sessionV3Executor) closeQueuedNotes(job sessionV3ExecutorJob) {
 		return
 	}
 	if intent.Status != sessionruntime.RunIntentCompleted && intent.Status != sessionruntime.RunIntentFailed {
-		return
+		// A Companion's run the daemon ended (shutdown) without the person
+		// stopping it hands its notes on too (companion_foreground.go).
+		if !companionRunEndLeavesQueuedInput(intent, e.server.shuttingDown.Load()) || !e.isCompanionSession(job.SessionID) {
+			return
+		}
 	}
 	// The session's message lock is held, so no note can land after this read.
 	cursor := entry.tracker.Cursor()

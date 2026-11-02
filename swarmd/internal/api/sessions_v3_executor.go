@@ -246,6 +246,9 @@ type sessionV3Executor struct {
 	// notes. Opened when a run becomes the session's active run; closed (under
 	// the session's message lock) when it finishes.
 	queuedNoteRuns map[string]sessionV3QueuedNoteRun
+	// inFlightTools holds, per session, the tool calls of its active run that
+	// started and have not recorded their terminal event (companion_foreground.go).
+	inFlightTools map[string]map[string]sessionV3InFlightTool
 
 	refillCh          chan struct{}
 	refillMu          sync.Mutex
@@ -469,6 +472,7 @@ func (e *sessionV3Executor) clearWorkerFollowupTaskOutcome(job sessionV3Executor
 }
 
 func (e *sessionV3Executor) finish(job sessionV3ExecutorJob) {
+	e.clearToolCalls(job)
 	e.closeQueuedNotes(job)
 	if strings.HasPrefix(job.SessionID, "worker-execution-") {
 		if snap, ok, err := e.server.sessions.GetSession(job.SessionID); err == nil && ok {
@@ -1092,6 +1096,10 @@ func (e *sessionV3Executor) recoverDurableRuns(ctx context.Context) {
 			}
 			if err := e.failStaleRunningRunForRecovery(job); err != nil {
 				log.Printf("warning: session capacity recovery reconciliation failed: %v", err)
+			} else {
+				// The daemon ended this run, not the person: a Companion's
+				// queued messages for it start its next turn.
+				e.resumeCompanionQueuedInputLogged(job)
 			}
 		}
 		if nextKey == "" {
@@ -4711,7 +4719,11 @@ func (e *sessionV3Executor) applySessionV3ProviderToolMutation(job sessionV3Exec
 		// preserving the canonical parent run ID carried by the run intent.
 		input.ClientRequestID = sessionV3ExecutorEpochScopedID(input.ClientRequestID, job.EpochID)
 		input.IdempotencyKey = sessionV3ExecutorEpochScopedID(input.IdempotencyKey, job.EpochID)
-		return e.server.applySessionV3PrimaryMutation(input)
+		result, err := e.server.applySessionV3PrimaryMutation(input)
+		if err == nil {
+			e.noteToolEnded(job, input)
+		}
+		return result, err
 	}
 }
 
@@ -4749,6 +4761,9 @@ func (e *sessionV3Executor) emitSessionV3ProviderToolEvent(job sessionV3Executor
 		if err := e.recordProviderToolEvent(job, event, eventType, eventDeltaIndex); err != nil {
 			log.Printf("warning: failed to record v3 provider tool event session=%q run=%q type=%q call=%q: %v", job.SessionID, job.RunID, eventType, event.CallID, err)
 			return
+		}
+		if eventType == "session.tool.started" {
+			e.noteToolStarted(job, event, time.Now().UnixMilli())
 		}
 	}
 }

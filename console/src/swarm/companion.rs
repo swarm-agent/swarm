@@ -52,6 +52,26 @@ pub struct Activity {
     pub pending_permissions: u64,
     /// The delegated tasks the Companion follows, with exact identity.
     pub watches: Vec<Watch>,
+    /// When a message sent now reaches the Companion: "starts_turn",
+    /// "next_step" or "after_tool_calls" ("" from an older Swarm).
+    pub input_delivery: String,
+    /// The active run's tool calls in flight: (tool name, on a device).
+    /// New input waits for them; it does not interrupt them.
+    pub tool_calls: Vec<(String, bool)>,
+    /// Background results handed to a run and not read yet: their status,
+    /// "waiting_for_run" or "redelivering".
+    pub deliveries: Vec<String>,
+    /// Committed events the maintained context has not folded in yet, and
+    /// its last maintenance failure (None from an older Swarm).
+    pub context: Option<ContextFreshness>,
+}
+
+/// How far the Companion's maintained context follows its event log.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct ContextFreshness {
+    pub pending: u64,
+    pub running: bool,
+    pub last_failure: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -94,6 +114,14 @@ pub fn view(answer: &Value) -> Option<View> {
                     titles: list(w, "titles").iter().filter_map(Value::as_str).map(str::to_string).collect(),
                 })
                 .collect(),
+            input_delivery: s(a, "input_delivery").to_string(),
+            tool_calls: list(a, "tool_calls").iter().map(|c| (s(c, "tool_name").to_string(), c.get("device").and_then(Value::as_bool).unwrap_or(false))).collect(),
+            deliveries: list(a, "background_deliveries").iter().map(|d| s(d, "status").to_string()).collect(),
+            context: a.get("context").filter(|c| c.is_object()).map(|c| ContextFreshness {
+                pending: c.get("pending").and_then(Value::as_u64).unwrap_or(0),
+                running: c.get("running").and_then(Value::as_bool).unwrap_or(false),
+                last_failure: c.get("last_failure").map(|f| s(f, "error").to_string()).unwrap_or_default(),
+            }),
         }
     });
     Some(View { session_id: s(c, "session_id").to_string(), generation: c.get("generation").and_then(Value::as_u64).unwrap_or(0), state: s(c, "state").to_string(), activity })
@@ -276,6 +304,11 @@ pub fn activity_line(a: &Activity) -> String {
     let mut parts: Vec<String> = Vec::new();
     if a.run_active {
         parts.push(if a.run_phase.is_empty() { "working".to_string() } else { format!("working ({})", a.run_phase) });
+        if let Some((name, device)) = a.tool_calls.first() {
+            let more = if a.tool_calls.len() > 1 { format!(" +{}", a.tool_calls.len() - 1) } else { String::new() };
+            let place = if *device { " on the device" } else { "" };
+            parts.push(format!("running {name}{place}{more}; new messages wait for it"));
+        }
     } else if !a.stop_reason.is_empty() {
         parts.push(format!("last turn: {}", a.stop_reason));
     }
@@ -288,12 +321,27 @@ pub fn activity_line(a: &Activity) -> String {
     if next > 0 {
         parts.push(format!("{next}{more} message(s) wait for the next turn"));
     }
+    let waiting = a.deliveries.iter().filter(|d| d.as_str() == "waiting_for_run").count();
+    let again = a.deliveries.len() - waiting;
+    if waiting > 0 {
+        parts.push(format!("{waiting} background result(s) for this turn"));
+    }
+    if again > 0 {
+        parts.push(format!("{again} background result(s) coming as their own turn"));
+    }
     if a.pending_permissions > 0 {
         parts.push(format!("{} approval(s) waiting", a.pending_permissions));
     }
     let watched: usize = a.watches.iter().map(|w| w.task_ids.len()).sum();
     if watched > 0 {
         parts.push(format!("watching {watched} task(s)"));
+    }
+    if let Some(c) = &a.context {
+        if !c.last_failure.is_empty() {
+            parts.push("context may be stale (maintenance failed)".to_string());
+        } else if c.pending > 0 {
+            parts.push(format!("context catching up ({} event(s))", c.pending));
+        }
     }
     parts.join(" · ")
 }
@@ -344,6 +392,42 @@ mod tests {
         let uncreated = view(&json!({"companion": {"session_id": "cmp_2", "generation": 3, "state": "uncreated"}})).unwrap();
         assert!(!uncreated.ready());
         assert!(uncreated.activity.is_none());
+    }
+
+    /// Requirement: the activity line tells the truth about a busy turn: a
+    /// tool call in flight (on the device) that new input waits for, background
+    /// results waiting for this turn or coming as their own, and a context that
+    /// is catching up or may be stale. An answer from an older Swarm without
+    /// those fields reads as before. Threat: a line claiming a message reaches
+    /// the model at once while a device command runs, or hiding that the
+    /// maintained context failed.
+    #[test]
+    fn companion_activity_line_reports_tool_calls_deliveries_and_freshness() {
+        let answer = json!({"companion": {"session_id": "cmp", "generation": 1, "state": "ready",
+            "activity": {"run": {"active": true, "phase": "provider_first_event"},
+                "input_delivery": "after_tool_calls",
+                "tool_calls": [{"call_id": "c1", "tool_name": "machine_run", "started_at": 3, "device": true}, {"call_id": "c2", "tool_name": "read", "started_at": 4}],
+                "background_deliveries": [{"wake_id": "w1", "source": "task_watch", "run_id": "r1", "status": "waiting_for_run"},
+                                          {"wake_id": "w2", "source": "background_command", "run_id": "r0", "status": "redelivering"}],
+                "queued_inputs": [{"message_id": "m1", "delivery_status": "queued"}], "pending_permissions": 0, "task_watches": [],
+                "context": {"cursor": 10, "latest_seq": 12, "pending": 2, "freshness": "pending", "running": true}}}});
+        let a = view(&answer).unwrap().activity.unwrap();
+        assert_eq!(a.input_delivery, "after_tool_calls");
+        assert_eq!(a.tool_calls, vec![("machine_run".to_string(), true), ("read".to_string(), false)]);
+        assert_eq!(a.context, Some(ContextFreshness { pending: 2, running: true, last_failure: String::new() }));
+        assert_eq!(
+            activity_line(&a),
+            "working (provider_first_event) · running machine_run on the device +1; new messages wait for it · 1 message(s) queued for this turn · 1 background result(s) for this turn · 1 background result(s) coming as their own turn · context catching up (2 event(s))"
+        );
+        let failed = view(&json!({"companion": {"session_id": "cmp", "state": "ready", "activity": {"run": {"active": false},
+            "context": {"pending": 0, "last_failure": {"at": 1, "error": "boom"}}}}}))
+        .unwrap()
+        .activity
+        .unwrap();
+        assert_eq!(activity_line(&failed), "context may be stale (maintenance failed)");
+        let older = view(&json!({"companion": {"session_id": "cmp", "state": "ready", "activity": {"run": {"active": false}}}})).unwrap().activity.unwrap();
+        assert!(older.context.is_none() && older.tool_calls.is_empty() && older.input_delivery.is_empty());
+        assert_eq!(activity_line(&older), "");
     }
 
     /// Requirement: only Swarm's protected marker makes a session the

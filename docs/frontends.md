@@ -286,9 +286,20 @@ moves onto it, keeping its history and model, the next time it is opened:
   Delegated work is followed with task watches whose outcomes arrive as their
   own turns. `GET /v3/companion` adds `companion.activity`: the run
   (`active`, `phase`), `queued_inputs` (`queued`, or `waiting_next_turn` when
-  the run was stopped), `pending_permissions` and `task_watches` with exact
-  machine/project/task IDs. Refresh it on the Companion session's events;
-  ordering and reconnect replay are the session's `/v3/sync` cursors.
+  the person stopped the run), `input_delivery` (`starts_turn`, `next_step`,
+  or `after_tool_calls` while the `tool_calls` it lists run; `device` marks a
+  call on the person's device or a linked machine), `background_deliveries`
+  (task outcomes and other wakes handed to a run but not read yet:
+  `waiting_for_run`, or `redelivering` as their own turn),
+  `pending_permissions`, `task_watches` with exact machine/project/task IDs
+  and `context` (the state cursor against the event head, `freshness`,
+  whether a maintenance pass runs and its last failure). If the daemon ends
+  a Companion run that the person did not stop (a restart interrupted it,
+  or shutdown cancelled it), the messages queued for that run start the
+  Companion's next turn. The interrupted run itself is not replayed, because
+  its tools may already have acted. Refresh activity on the Companion
+  session's events; ordering and reconnect replay are the session's
+  `/v3/sync` cursors.
 - **Its delegated work comes back to it:** a task the Companion creates in any
   of the person's projects records the Companion as its `origin_session_id`
   (list them with `GET /v3/projects/{id}/tasks?origin_session_id=…`), so
