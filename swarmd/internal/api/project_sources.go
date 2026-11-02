@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	pathpkg "path"
 	"strconv"
 	"strings"
@@ -173,12 +174,51 @@ func linkedSourceCaller(r *http.Request, p identity.Principal) error {
 	return nil
 }
 
+// fleetSourceProxyDecodeRounds bounds how many further percent-decodings
+// fleetSourceProxyRefused tries; a path still encoded after them is refused.
+const fleetSourceProxyDecodeRounds = 8
+
 // fleetSourceProxyRefused keeps the home's raw machine proxy
 // (/v3/fleet/machines/{name}/api/...) away from a machine's project source
-// routes (/v3/projects/{id}/sources..., the path cleaned as the machine's
-// router would): the home reaches them only through CallFleetProject, behind
-// its bound-conversation check, never as a bare owner request.
+// routes (/v3/projects/{id}/sources...): the home reaches them only through
+// CallFleetProject, behind its bound-conversation check, never as a bare
+// owner request.
+//
+// path is the home's already-decoded path, which the proxy sends on as it is
+// (fleet.Client.Do), so the machine parses and decodes it again. The check is
+// made on that machine-side path: parsed the way the request is sent (a ?
+// or # ends the path there), then at every further percent-decoding, each
+// cleaned as the machine's router would. A path that cannot be sent, or is
+// still encoded after the bounded decodings, is refused.
 func fleetSourceProxyRefused(path string) bool {
+	sent, err := url.Parse("https://machine/" + strings.TrimLeft(path, "/"))
+	if err != nil {
+		return true
+	}
+	decoded := sent.Path
+	for round := 0; ; round++ {
+		if fleetSourceRoute(decoded) {
+			return true
+		}
+		if !strings.Contains(decoded, "%") {
+			return false
+		}
+		if round == fleetSourceProxyDecodeRounds {
+			return true
+		}
+		next, err := url.PathUnescape(decoded)
+		if err != nil {
+			// Not decodable again: the machine's router sees it as it is,
+			// which was checked above.
+			return false
+		}
+		decoded = next
+	}
+}
+
+// fleetSourceRoute reports whether a decoded path, cleaned as the machine's
+// router would, is a project source route (/v3/projects/{id}/sources...).
+func fleetSourceRoute(path string) bool {
 	segments := strings.Split(strings.Trim(pathpkg.Clean("/"+path), "/"), "/")
 	return len(segments) >= 4 && segments[0] == "v3" && segments[1] == "projects" && segments[3] == projectSourcesSegment
 }

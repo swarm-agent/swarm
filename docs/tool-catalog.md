@@ -796,7 +796,9 @@ that are deliberate and tested:
   owner client or any other local caller is refused), the home sends them only
   for its own Orchestrator or, for `list_sources` and `inspect_source`, Swarm
   Control, as at home (`inspect_files` stays Orchestrator-only with `machine`
-  too), and its raw machine proxy refuses them.
+  too), and its raw machine proxy refuses any path the machine would route
+  to them, judged on the path as it is sent and decoded again on the machine
+  (percent-encoded spellings such as `%252F` included).
 - A task sent to a linked machine is recorded at home with the caller's AI
   key as its sender (`home_sender`, `key:ID`) instead of a session, so
   `list_linked_tasks` (without `project_id`: the caller's own sends),

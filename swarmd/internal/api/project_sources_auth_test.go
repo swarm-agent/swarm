@@ -116,11 +116,15 @@ func TestProjectSourceRoutesAnswerOnlyTheLinkedHome(t *testing.T) {
 // Purpose:
 //   - Requirement: a home reaches a machine's project source routes only
 //     through CallFleetProject, behind its bound-conversation check; its raw
-//     machine proxy (/v3/fleet/machines/{name}/api/...) refuses them, however
-//     the path is spelled, while other proxied routes still work.
+//     machine proxy (/v3/fleet/machines/{name}/api/...) refuses every path
+//     the machine would route to them, judged on the path as it is sent and
+//     decoded again on the machine, while other proxied routes still work.
 //   - Threat/regression: a home owner client or admin token reading a
 //     machine's sources and committed task files as a bare owner request
-//     through the proxy, around the Orchestrator-only gate.
+//     through the proxy, around the Orchestrator-only gate. That includes
+//     percent-encoded spellings the home decodes into one segment but the
+//     machine decodes into a source route (%252F, %252e), and ? or #
+//     spelled %3F / %23 that end the path once the request is sent.
 //   - Boundary/authority: handleFleet -> handleFleetForward ->
 //     fleetSourceProxyRefused.
 //   - Narrowest layer: the home's fleet route over the real link.
@@ -133,6 +137,17 @@ func TestHomeProxyRefusesMachineSourceRoutes(t *testing.T) {
 		"/v3/fleet/machines/box/api/v3/projects/remote-project/x/../sources",
 		"/v3/fleet/machines/box/api/v3//projects/remote-project/sources/inspect",
 		"/v3/fleet/machines/box/api/v3/projects/remote-project/./sources/inspect-files",
+		"/v3/fleet/machines/box/api/v3/projects/remote-project%2Fsources%2Finspect",
+		"/v3/fleet/machines/box/api/v3/projects/remote-project%252Fsources",
+		"/v3/fleet/machines/box/api/v3/projects/remote-project%252Fsources%252Finspect?workspace_id=" + f.workspace,
+		"/v3/fleet/machines/box/api/v3/projects/remote-project%252Fsources%252Finspect-files",
+		"/v3/fleet/machines/box/api/v3%252Fprojects%252Fremote-project%252Fsources",
+		"/v3/fleet/machines/box/api/v3/projects/remote-project/x/%2e%2e/sources",
+		"/v3/fleet/machines/box/api/v3/projects/remote-project/x%252F%252e%252e%252Fsources",
+		"/v3/fleet/machines/box/api/v3/projects/remote-project/%2573ources",
+		"/v3/fleet/machines/box/api/v3/projects/remote-project%25252Fsources",
+		"/v3/fleet/machines/box/api/v3/projects/remote-project/sources%3Fx",
+		"/v3/fleet/machines/box/api/v3/projects/remote-project/sources%23x",
 	} {
 		method := http.MethodGet
 		if strings.HasSuffix(path, "inspect-files") {
