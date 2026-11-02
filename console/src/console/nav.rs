@@ -101,7 +101,9 @@ impl Console {
         let initial = project.name.chars().next().unwrap_or('?').to_ascii_uppercase().to_string();
         let companion_page = self.page.left_body() == LeftBody::CompanionWork;
         // On the Companion page the rail lists its work (all projects), not
-        // the project's sessions; a press opens that item's detail.
+        // the project's sessions; a press opens that item's detail over the
+        // conversation beside the rail (LeftLayout::RailWithCompanionDetail),
+        // and a second press closes it. The person's collapse choice stays.
         let work: Vec<_> = if companion_page { self.companion.feed.as_ref().map(|f| f.work.clone()).unwrap_or_default() } else { Vec::new() };
         let work = work.into_iter().map(|w| {
             let (glyph, color) = self.task_glyph(w.task.status);
@@ -113,8 +115,7 @@ impl Console {
                 .text_color(color)
                 .text_size(px(11.))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.companion.detail = Some(key.clone());
-                    this.left_collapsed = false;
+                    this.companion.detail = if this.companion.detail.as_deref() == Some(key.as_str()) { None } else { Some(key.clone()) };
                     cx.notify();
                 }))
                 .child(glyph)

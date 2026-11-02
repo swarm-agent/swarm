@@ -140,7 +140,9 @@ a separate profile and the extension loaded, for trying it out.
   work (needs you, running, results, across every project; a row opens its
   detail with approve, reject or stop over the list) and the conversation
   takes the rest of the window; there is no work column on the right. The
-  rail lists the same work. Back on Sessions the sidebar shows the project's
+  rail (always used below 760px wide) lists the same work; pressing an item
+  there opens its detail and actions over the conversation beside the rail,
+  and pressing it again or `‹ all work` closes it. Back on Sessions the sidebar shows the project's
   sessions again; the Companion's draft, focus and open detail are kept. The
   Companion needs no workspace: it opens with none selected or registered.
 - **Fleet:** the one place to see the whole fleet. The top line counts it

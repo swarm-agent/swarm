@@ -143,6 +143,42 @@ pub(super) enum LeftBody {
     CompanionWork,
 }
 
+/// Below this window width the left sidebar is always the rail.
+pub(super) const NARROW_WIDTH: f32 = 760.;
+
+/// How wide the Companion's work detail is when it opens over the
+/// conversation from the rail (never wider than the room beside the rail).
+pub(super) const RAIL_DETAIL_WIDTH: f32 = 300.;
+
+/// What the left of the main area shows (Console::left_layout).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum LeftLayout {
+    /// The full sidebar: navigation and the page's list (LeftBody).
+    Sidebar,
+    /// The icon rail alone.
+    Rail,
+    /// The rail, with the Companion's open work item (its detail and
+    /// approve/reject/stop) drawn over the conversation beside it, so a
+    /// collapsed or narrow window can still act on it.
+    RailWithCompanionDetail,
+}
+
+impl Console {
+    /// The left layout for a page, the person's collapse choice, the window
+    /// width and whether a Companion work item is open. Below NARROW_WIDTH
+    /// the sidebar is always the rail; on the Companion page an open item
+    /// then shows over the conversation instead of being unreachable.
+    pub(super) fn left_layout(page: Page, collapsed: bool, width: f32, detail_open: bool) -> LeftLayout {
+        if !collapsed && width >= NARROW_WIDTH {
+            LeftLayout::Sidebar
+        } else if page.left_body() == LeftBody::CompanionWork && detail_open {
+            LeftLayout::RailWithCompanionDetail
+        } else {
+            LeftLayout::Rail
+        }
+    }
+}
+
 /// What the Agents inspector shows.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AgentsFocus {
@@ -963,6 +999,30 @@ impl Console {
         )
     }
 
+    /// The Companion's open work item over the conversation, beside the rail
+    /// (LeftLayout::RailWithCompanionDetail): its detail and actions, with
+    /// "‹ all work" closing it. Overlaid so the conversation keeps its width.
+    fn render_rail_companion_detail(&self, width: f32, cx: &mut Context<Self>) -> AnyElement {
+        let t = &self.theme;
+        let rail = 48.;
+        let w = RAIL_DETAIL_WIDTH.min((width - rail).max(0.));
+        div()
+            .id("rail-companion-detail")
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left(px(rail))
+            .w(px(w))
+            .flex()
+            .flex_col()
+            .bg(t.panel)
+            .border_r_1()
+            .border_color(t.border)
+            .occlude()
+            .child(self.render_companion_work(cx))
+            .into_any_element()
+    }
+
     // Session panes
 
     /// The main window with every pane closed: a line saying so and the
@@ -1757,8 +1817,9 @@ impl Render for Console {
         let t = self.theme.clone();
         // Narrow windows (tiling managers, half screens) drop sidebars before panes.
         let width = window.viewport_size().width;
-        // Below 760px the sidebar is always the rail.
-        let rail = self.left_collapsed || width < px(760.);
+        // Below NARROW_WIDTH the sidebar is always the rail; an open Companion
+        // work item then shows over the conversation (left_layout).
+        let left_layout = Self::left_layout(self.page, self.left_collapsed, f32::from(width), self.companion.detail.is_some());
         let right = width >= px(1100.);
         let hints = width >= px(1240.);
         let layout = self.layout.clone();
@@ -1796,7 +1857,11 @@ impl Render for Console {
                     .flex_1()
                     .min_h_0()
                     .flex()
-                    .child(if rail { self.render_rail(cx) } else { self.render_left(cx) })
+                    .relative()
+                    .child(match left_layout {
+                        LeftLayout::Sidebar => self.render_left(cx),
+                        LeftLayout::Rail | LeftLayout::RailWithCompanionDetail => self.render_rail(cx),
+                    })
                     .child(match self.page {
                         Page::Companion => div().flex_1().min_w_0().flex().child(self.render_companion(cx)),
                         Page::Sessions => div().flex_1().min_w_0().flex().p(px(6.)).child(match layout.root() {
@@ -1814,7 +1879,8 @@ impl Render for Console {
                         Page::Search => div().flex_1().min_w_0().child(self.render_search(cx)),
                         Page::Projects => div().flex_1().min_w_0().child(self.render_projects(cx)),
                     })
-                    .when(right && matches!(self.page, Page::Agents | Page::Fleet), |d| d.child(self.render_agents_inspector(cx))),
+                    .when(right && matches!(self.page, Page::Agents | Page::Fleet), |d| d.child(self.render_agents_inspector(cx)))
+                    .when(left_layout == LeftLayout::RailWithCompanionDetail, |d| d.child(self.render_rail_companion_detail(f32::from(width), cx))),
             )
             .child(self.render_statusbar(hints, cx))
             .children(self.render_fleet_popover(cx))

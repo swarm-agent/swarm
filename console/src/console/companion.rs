@@ -552,6 +552,41 @@ mod tests {
         assert_eq!(Page::ALL.iter().filter(|p| p.left_body() == super::super::LeftBody::CompanionWork).count(), 1, "only one page shows the Companion's work");
     }
 
+    /// Requirement: with the right-hand Work column gone, the Companion's
+    /// open work item (its detail and approve/reject/stop) stays reachable in
+    /// a narrow or collapsed window: below NARROW_WIDTH, or collapsed, the
+    /// left is the rail, and on the Companion page an open item then shows
+    /// over the conversation beside it. Wide and expanded is the sidebar
+    /// whatever the page; other pages never show the Companion's detail.
+    /// Threat: a rail press that selects an item no layout can draw (the
+    /// blocked regression), or the detail leaking onto Chats. Boundary:
+    /// Console::left_layout, the one choice render branches on. Narrowest
+    /// layer: that pure choice (no GPUI render harness in this crate; the
+    /// drawn overlay itself is unverified here).
+    #[test]
+    fn narrow_companion_shows_open_work_detail_beside_the_rail() {
+        use super::super::{LeftLayout, NARROW_WIDTH};
+        let layout = Console::left_layout;
+        let narrow = NARROW_WIDTH - 1.;
+        let wide = NARROW_WIDTH;
+        // Narrow Companion: an open item shows; none open is the bare rail.
+        assert_eq!(layout(Page::Companion, false, narrow, true), LeftLayout::RailWithCompanionDetail);
+        assert_eq!(layout(Page::Companion, false, narrow, false), LeftLayout::Rail);
+        assert_eq!(layout(Page::Companion, false, 320., true), LeftLayout::RailWithCompanionDetail);
+        // Collapsed by choice, wide window: same, without un-collapsing.
+        assert_eq!(layout(Page::Companion, true, 1400., true), LeftLayout::RailWithCompanionDetail);
+        assert_eq!(layout(Page::Companion, true, 1400., false), LeftLayout::Rail);
+        // Wide and expanded: the sidebar, which holds the detail itself.
+        assert_eq!(layout(Page::Companion, false, wide, true), LeftLayout::Sidebar);
+        assert_eq!(layout(Page::Companion, false, wide, false), LeftLayout::Sidebar);
+        // Every other page (Chats first): never the Companion's detail.
+        for page in Page::ALL.into_iter().chain([Page::Projects]).filter(|p| *p != Page::Companion) {
+            assert_eq!(layout(page, false, narrow, true), LeftLayout::Rail, "{page:?} narrow");
+            assert_eq!(layout(page, true, 1400., true), LeftLayout::Rail, "{page:?} collapsed");
+            assert_eq!(layout(page, false, wide, true), LeftLayout::Sidebar, "{page:?} wide");
+        }
+    }
+
     /// Requirement: the page follows only the session Swarm named, and only
     /// once it is ready; its badge counts the work that needs the person.
     #[test]
