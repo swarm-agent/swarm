@@ -681,6 +681,20 @@ page continues inside its window (never as an open `after` read), and a cut
 message's last chunk names the rest of its page, so no later message on that
 page is skipped. `list`'s opaque cursor carries over as `next`.
 
+`search` with `search_mode` `durable_log` reads one owned session's event
+log, newest first, within `limit` and `max_chars`; it pages by an exclusive
+`before_seq`, and `next` is the exact call that reads on. A matching event
+larger than the remaining budget is never skipped or retried whole: when it
+is a page's first match, it comes back as `event_chunk` (its exact JSON,
+`encoding` `json`, with `content_start`, `content_offset`, `total_bytes` and
+`truncated`), cut on a character boundary, and `next` names `event_seq` and
+`content_offset` for its following chunk. The chunks concatenate to the
+event's JSON; after the last one, `next` continues before that event. A
+continuation must name a matching event the caller may read (a conversation's
+own context clear still bounds it). There is no HTTP route or SDK method for
+`durable_log`; it is this catalog action only, on every surface and with
+`machine`.
+
 | Action | Level | API scopes | Reach |
 | --- | --- | --- | --- |
 | `inspect`, `list`, `list_by_state`, `search`, `get`, `read_messages` | read | `sessions:read` or `sessions:write` | any |

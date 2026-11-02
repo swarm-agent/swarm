@@ -130,7 +130,9 @@ func manageSessionsParityCases() map[string][]catalogParityCase {
 		"inspect":       both("inspect"),
 		"list":          both("list", "limit", float64(5)),
 		"list_by_state": both("list_by_state", "state", "running"),
-		"search":        both("search", "query", "Fleet"),
+		// durable_log over the long message: its event is larger than
+		// max_chars, so the answer is a chunk with an event_seq next.
+		"search":        append(both("search", "query", "Fleet"), both("search", "search_mode", "durable_log", "session_id", "ms-read", "query", "Long report", "max_chars", float64(400))...),
 		"get":           both("get", "session_id", "ms-read"),
 		"read_messages": both("read_messages", "session_id", "ms-read", "limit", float64(3), "max_chars", float64(300)),
 		"archive":       twin("archive", "ms-arc-1", "ms-arc-2"),

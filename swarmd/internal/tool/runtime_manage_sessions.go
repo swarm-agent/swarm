@@ -54,7 +54,8 @@ func manageSessionsDefinition() Definition {
 			"all":                       map[string]any{"type": "boolean", "description": "For archive: archive all unarchived sessions (or all in specified category)"},
 			"stop_active":               map[string]any{"type": "boolean", "description": "For archive: stop active execution run if in flight before archiving"},
 			"query":                     map[string]any{"type": "string"},
-			"search_mode":               map[string]any{"type": "string", "enum": []string{"visible", "durable_log"}},
+			"queries":                   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "search: more texts; a session or event matching any of them matches"},
+			"search_mode":               map[string]any{"type": "string", "enum": []string{"visible", "durable_log"}, "description": "durable_log: an event larger than max_chars comes in chunks; follow next exactly"},
 			"state":                     map[string]any{"type": "string"},
 			"workspace_path":            map[string]any{"type": "string"},
 			"recovery":                  map[string]any{"type": "boolean", "description": "commit or git_status: explicit account-authorized repository recovery, independent of target session attribution. commit requires workspace_path, files, expected_branch, expected_head, message and stable request_id. Optional session_id records inspected Git evidence afterward, never completes a task."},
@@ -65,7 +66,7 @@ func manageSessionsDefinition() Definition {
 			"request_id":                map[string]any{"type": "string"},
 			"cursor":                    map[string]any{"type": "string"},
 			"limit":                     map[string]any{"type": "integer"},
-			"max_chars":                 map[string]any{"type": "integer", "minimum": 1, "maximum": manageSessionsMaxChars, "description": "read_messages: content budget"},
+			"max_chars":                 map[string]any{"type": "integer", "minimum": 1, "maximum": manageSessionsMaxChars, "description": "read_messages and durable_log search: content budget"},
 			"role":                      map[string]any{"type": "string", "description": "read_messages: only this role"},
 			"mode":                      map[string]any{"type": "string", "description": "read_messages: tail|before|after|around (*_seq)"},
 			"message_id":                map[string]any{"type": "string", "description": "read_messages: a cut message's next"},
@@ -74,6 +75,7 @@ func manageSessionsDefinition() Definition {
 			"before_seq":                map[string]any{"type": "integer"},
 			"after_seq":                 map[string]any{"type": "integer"},
 			"around_seq":                map[string]any{"type": "integer"},
+			"event_seq":                 map[string]any{"type": "integer", "minimum": 1, "description": "durable_log search: the event whose next chunk to read, with content_offset, from a cut event's next"},
 			"expected_updated_at_by_id": map[string]any{"type": "object", "maxProperties": manageSessionsMaxMutationBatch, "additionalProperties": map[string]any{"type": "integer"}},
 		},
 	}}
@@ -381,12 +383,31 @@ func (r *Runtime) manageSessionsDurableLogSearch(scope WorkspaceScope, args map[
 	}
 	resultLimit := boundedInt(args["limit"], 20, manageSessionsMaxLimit)
 	charLimit := boundedInt(args["max_chars"], 12000, manageSessionsMaxChars)
-	beforeSeq := uint64Value(args["before_seq"])
-	events, err := r.sessions.ListSessionEventsBefore(id, beforeSeq, manageSessionsMaxEventScan+1)
+	log := durableLogSearch{session: session, id: id, args: args, needles: needles, resultLimit: resultLimit, charLimit: charLimit}
+	continued, hasContinuation, err := durableLogEventContinuationFromArgs(args)
 	if err != nil {
 		return "", err
 	}
 	boundary, err := r.selfReadContextBoundary(scope, id)
+	if err != nil {
+		return "", err
+	}
+	log.boundary = boundary
+	if hasContinuation {
+		// The next chunk of one exact matching event, read on from a
+		// previous answer's next. The event must still be one this search
+		// returns: visible after a context clear and matching the query.
+		events, listErr := r.sessions.ListSessionEventsBefore(id, continued.seq+1, 1)
+		if listErr != nil {
+			return "", listErr
+		}
+		if len(events) == 0 || events[0].Seq != continued.seq || (boundary > 0 && events[0].Seq < boundary) || !durableLogEventMatches(events[0], needles) {
+			return "", fmt.Errorf("durable_log event_seq %d is not a matching event of session %s; pass the event_seq a search's next returned", continued.seq, id)
+		}
+		return log.eventChunk(events[0], continued.offset, 0, false)
+	}
+	beforeSeq := uint64Value(args["before_seq"])
+	events, err := r.sessions.ListSessionEventsBefore(id, beforeSeq, manageSessionsMaxEventScan+1)
 	if err != nil {
 		return "", err
 	}
@@ -411,15 +432,7 @@ func (r *Runtime) manageSessionsDurableLogSearch(scope WorkspaceScope, args map[
 	}
 	for _, event := range events {
 		scanned++
-		haystack := strings.ToLower(event.EventType + "\n" + string(event.Payload))
-		matched := false
-		for _, needle := range needles {
-			if strings.Contains(haystack, needle) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
+		if !durableLogEventMatches(event, needles) {
 			nextBeforeSeq = event.Seq
 			continue
 		}
@@ -433,6 +446,13 @@ func (r *Runtime) manageSessionsDurableLogSearch(scope WorkspaceScope, args map[
 			return "", marshalErr
 		}
 		if characters+len(encoded) > charLimit {
+			if len(matches) == 0 {
+				// The page's first match alone is larger than the budget:
+				// return it in chunks rather than an empty page whose
+				// before_seq would name the same event again.
+				return log.eventChunk(event, 0, scanned, scanTruncated)
+			}
+			// The next page starts at this event, with the whole budget.
 			characterTruncated = true
 			nextBeforeSeq = event.Seq + 1
 			break
@@ -445,15 +465,147 @@ func (r *Runtime) manageSessionsDurableLogSearch(scope WorkspaceScope, args map[
 	if !hasMore {
 		nextBeforeSeq = 0
 	}
-	return marshalManageSessions(map[string]any{
+	response := log.response(scanned, scanTruncated)
+	response["events"], response["characters"] = matches, characters
+	response["result_truncated"], response["character_truncated"] = resultTruncated, characterTruncated
+	response["has_more"], response["complete"], response["next_before_seq"] = hasMore, !hasMore, nextBeforeSeq
+	if hasMore {
+		response["next"] = log.call(map[string]any{"before_seq": nextBeforeSeq})
+	}
+	return marshalManageSessions(response)
+}
+
+// durableLogSearchContinuation tells the caller how a durable_log answer reads
+// on.
+const durableLogSearchContinuation = "follow next (before_seq) only when more technical event-log results are needed; a matching event larger than max_chars comes back as event_chunk, whose content chunks concatenate to the event's exact JSON, and next (event_seq, content_offset) reads its following chunk before the search moves past it"
+
+// durableLogSearch is one durable_log search call: the owned session, its
+// query and its bounds, with the caller's context-clear boundary.
+type durableLogSearch struct {
+	session     pebblestore.SessionSnapshot
+	id          string
+	args        map[string]any
+	needles     []string
+	resultLimit int
+	charLimit   int
+	boundary    uint64
+}
+
+// durableLogEventContinuation names the next chunk of one oversized matching
+// event: its seq and the UTF-8 byte offset of its encoded JSON to read from.
+type durableLogEventContinuation struct {
+	seq    uint64
+	offset int
+}
+
+// durableLogEventContinuationFromArgs reads event_seq and content_offset. ok
+// is false when no event continuation was asked for; a partial or invalid one
+// is refused, as is one mixed with before_seq (a chunk continuation names one
+// event, not a page).
+func durableLogEventContinuationFromArgs(args map[string]any) (durableLogEventContinuation, bool, error) {
+	_, hasSeq := args["event_seq"]
+	_, hasOffset := args["content_offset"]
+	if !hasSeq && !hasOffset {
+		return durableLogEventContinuation{}, false, nil
+	}
+	if !hasSeq {
+		return durableLogEventContinuation{}, false, errors.New("durable_log content_offset needs the event_seq from the search's next")
+	}
+	if uint64Value(args["before_seq"]) != 0 {
+		return durableLogEventContinuation{}, false, errors.New("durable_log event_seq continues one event; omit before_seq")
+	}
+	seq, err := nonNegativeArg(args["event_seq"], "event_seq")
+	if err != nil {
+		return durableLogEventContinuation{}, false, err
+	}
+	if seq < 1 {
+		return durableLogEventContinuation{}, false, errors.New("event_seq must be positive")
+	}
+	offset := int64(0)
+	if hasOffset {
+		if offset, err = nonNegativeArg(args["content_offset"], "content_offset"); err != nil {
+			return durableLogEventContinuation{}, false, err
+		}
+	}
+	return durableLogEventContinuation{seq: uint64(seq), offset: int(offset)}, true, nil
+}
+
+// durableLogEventMatches reports whether any lower-case needle occurs in the
+// event's type or payload.
+func durableLogEventMatches(event pebblestore.V3SessionEvent, needles []string) bool {
+	haystack := strings.ToLower(event.EventType + "\n" + string(event.Payload))
+	for _, needle := range needles {
+		if strings.Contains(haystack, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// call is the exact durable_log search call that reads on: the same session,
+// query and bounds, with the continuation's arguments.
+func (s durableLogSearch) call(continuation map[string]any) map[string]any {
+	call := map[string]any{"action": "search", "search_mode": "durable_log", "session_id": s.id, "limit": s.resultLimit, "max_chars": s.charLimit}
+	if query := stringValue(s.args["query"]); strings.TrimSpace(query) != "" {
+		call["query"] = query
+	}
+	if queries := stringSliceValue(s.args["queries"]); len(queries) > 0 {
+		call["queries"] = queries
+	}
+	for key, value := range continuation {
+		call[key] = value
+	}
+	return call
+}
+
+// response is the fields every durable_log answer carries.
+func (s durableLogSearch) response(scanned int, scanTruncated bool) map[string]any {
+	return map[string]any{
 		"action": "search", "search_mode": "durable_log", "source": "durable_v3_session_events",
-		"session_id": id, "title": session.Title, "events": matches, "query_count": len(needles),
-		"scanned_events": scanned, "scan_limit": manageSessionsMaxEventScan, "result_limit": resultLimit,
-		"characters": characters, "character_limit": charLimit, "result_truncated": resultTruncated,
-		"scan_truncated": scanTruncated, "character_truncated": characterTruncated,
-		"has_more": hasMore, "complete": !hasMore, "next_before_seq": nextBeforeSeq,
-		"content_trust": "untrusted", "continuation": "pass next_before_seq as before_seq only when more technical event-log results are needed",
-	})
+		"session_id": s.id, "title": s.session.Title, "events": []pebblestore.V3SessionEvent{}, "query_count": len(s.needles),
+		"scanned_events": scanned, "scan_limit": manageSessionsMaxEventScan, "result_limit": s.resultLimit,
+		"characters": 0, "character_limit": s.charLimit, "result_truncated": false,
+		"scan_truncated": scanTruncated, "character_truncated": false,
+		"has_more": false, "complete": true, "next_before_seq": uint64(0),
+		"content_trust": "untrusted", "continuation": durableLogSearchContinuation,
+	}
+}
+
+// eventChunk answers one chunk of a matching event larger than the budget:
+// the event's exact JSON encoding, from offset, cut on a character boundary
+// so the chunk fits max_chars (ChunkMessageContent, the read_messages rule).
+// While the event has more, next reads its following chunk; after its last
+// chunk, next continues the search before the event, so every matching event
+// is returned once and the search always moves on.
+func (s durableLogSearch) eventChunk(event pebblestore.V3SessionEvent, offset, scanned int, scanTruncated bool) (string, error) {
+	encoded, err := json.Marshal(event)
+	if err != nil {
+		return "", err
+	}
+	chunk, err := ChunkMessageContent(string(encoded), offset, s.charLimit)
+	if err != nil {
+		return "", fmt.Errorf("durable_log event_seq %d: %w", event.Seq, err)
+	}
+	item := map[string]any{
+		"seq": event.Seq, "id": event.ID, "event_type": event.EventType, "ts_unix_ms": event.TsUnixMs,
+		"encoding": "json", "content": chunk.Content, "content_start": chunk.Start, "content_offset": chunk.End,
+		"total_bytes": chunk.TotalBytes, "truncated": chunk.Truncated,
+	}
+	response := s.response(scanned, scanTruncated)
+	response["event_chunk"], response["characters"], response["character_truncated"] = item, chunk.EncodedLen(), chunk.Truncated
+	if chunk.Truncated {
+		next := s.call(map[string]any{"event_seq": event.Seq, "content_offset": chunk.End})
+		item["next"] = next
+		response["has_more"], response["complete"], response["next"] = true, false, next
+		return marshalManageSessions(response)
+	}
+	// The event is whole: older events remain unless it is the first one
+	// visible (seq 1, or the caller's context-clear boundary).
+	if event.Seq > 1 && (s.boundary == 0 || event.Seq > s.boundary) {
+		response["has_more"], response["complete"], response["next_before_seq"] = true, false, event.Seq
+		response["next"] = s.call(map[string]any{"before_seq": event.Seq})
+	}
+	return marshalManageSessions(response)
 }
 
 func (r *Runtime) manageSessionsReviewWorktrees(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
