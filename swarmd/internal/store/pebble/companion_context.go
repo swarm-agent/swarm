@@ -520,6 +520,53 @@ func (s *SessionStore) SetCompanionFocus(account, user string, focus CompanionFo
 	return s.store.db.Set(companionFocusKey(companionContextPrefix(account, user)), payload, pebble.Sync)
 }
 
+// CompanionIndexMark is how far the Companion session's own messages have been
+// considered for the context bank. Indexing only moves forward from it, so a
+// message is indexed at most once and a topic the person explicitly forgot is
+// never indexed again from its source message.
+type CompanionIndexMark struct {
+	SessionID  string `json:"session_id"`
+	MessageSeq uint64 `json:"message_seq"`
+}
+
+func companionIndexMarkKey(prefix string) []byte { return []byte(prefix + "w") }
+
+// GetCompanionIndexMark reads the index mark (zero when nothing was indexed).
+func (s *SessionStore) GetCompanionIndexMark(account, user string) (CompanionIndexMark, error) {
+	var mark CompanionIndexMark
+	account, user = strings.TrimSpace(account), strings.TrimSpace(user)
+	if !validCompanionPrincipal(account, user) {
+		return mark, ErrCompanionContextInvalid
+	}
+	_, err := getJSONFromReader(s.store.db, string(companionIndexMarkKey(companionContextPrefix(account, user))), &mark)
+	return mark, err
+}
+
+// AdvanceCompanionIndexMark moves the mark of sessionID forward to seq. It
+// never moves backward, and a mark of another session (a deleted Companion's)
+// is replaced. It reports whether the mark moved.
+func (s *SessionStore) AdvanceCompanionIndexMark(account, user, sessionID string, seq uint64) (bool, error) {
+	account, user, sessionID = strings.TrimSpace(account), strings.TrimSpace(user), strings.TrimSpace(sessionID)
+	if !validCompanionPrincipal(account, user) || sessionID == "" {
+		return false, ErrCompanionContextInvalid
+	}
+	s.store.companionContextMu.Lock()
+	defer s.store.companionContextMu.Unlock()
+	key := companionIndexMarkKey(companionContextPrefix(account, user))
+	var current CompanionIndexMark
+	if _, err := getJSONFromReader(s.store.db, string(key), &current); err != nil {
+		return false, err
+	}
+	if current.SessionID == sessionID && current.MessageSeq >= seq {
+		return false, nil
+	}
+	payload, err := json.Marshal(CompanionIndexMark{SessionID: sessionID, MessageSeq: seq})
+	if err != nil {
+		return false, err
+	}
+	return true, s.store.db.Set(key, payload, pebble.Sync)
+}
+
 func (s *SessionStore) GetCompanionFocus(account, user string) (CompanionFocus, bool, error) {
 	var focus CompanionFocus
 	account, user = strings.TrimSpace(account), strings.TrimSpace(user)

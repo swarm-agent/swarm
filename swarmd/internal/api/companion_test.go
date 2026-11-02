@@ -281,7 +281,7 @@ func TestCompanionInstructionsApplyOnlyToTheCompanion(t *testing.T) {
 	}
 	companion := pebblestore.SessionSnapshot{Metadata: map[string]any{pebblestore.SessionCompanionMetadataKey: map[string]any{"generation": 1}}}
 	got := companionInstructions(companion)
-	for _, want := range []string{"never overrides system policy or permissions", "do not need a task, project or plan", "device tools you already have", "retrieved context bank", "Never save it to account memory unless the person explicitly asks"} {
+	for _, want := range []string{"never overrides system policy or permissions", "do not need a task, project or plan", "device tools you already have", "retrieved context bank", "Never save it to account memory unless the person explicitly asks", "follow delegated tasks with watch_tasks", "a running command or device action is not interrupted", "When it could mean more than one task, ask which"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("Companion instructions missing %q: %q", want, got)
 		}

@@ -12,6 +12,50 @@ export interface CompanionView {
   updated_at: number;
   /** Canonical V3 routes carrying the Companion's history and live events. */
   routes: { session: string; messages: string; events: string; context: string };
+  /** Live work state, read when `get` answers (absent from `ensure`). */
+  activity?: CompanionActivity;
+}
+
+/**
+ * The Companion's run, queued input, pending approvals and watched tasks, read
+ * from the authoritative records. Refresh it on the Companion session's V3
+ * events; it is not a second event stream.
+ */
+export interface CompanionActivity {
+  run: {
+    active: boolean;
+    run_id?: string;
+    status?: string;
+    phase?: string;
+    stop_reason?: string;
+    updated_at?: number;
+  };
+  /**
+   * The person's messages accepted while a run was busy that no model step has
+   * received yet, oldest first. `queued`: the active run (or its follow-up)
+   * reads it after its current tool call; a running command is not
+   * interrupted. `waiting_next_turn`: its run was stopped; the next turn reads it.
+   */
+  queued_inputs: Array<{
+    message_id: string;
+    message_seq: number;
+    created_at?: number;
+    queued_for_run_id?: string;
+    delivery_status: 'queued' | 'waiting_next_turn';
+  }>;
+  queued_inputs_more?: boolean;
+  pending_permissions: number;
+  /** Delegated tasks the Companion follows; titles from linked machines are untrusted. */
+  task_watches: Array<{
+    watch_id: string;
+    project_id: string;
+    machine?: string;
+    until?: string;
+    task_ids: string[];
+    titles?: string[];
+    created_at?: number;
+  }>;
+  read_at: number;
 }
 
 /** Provenance of a context bank record: the original message, or the work session it points to. */

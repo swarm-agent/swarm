@@ -5040,6 +5040,9 @@ func (e *sessionV3Executor) sessionV3ProviderContextMessages(job sessionV3Execut
 	if epochID == "" {
 		return nil, errors.New("v3 executor run has no execution epoch")
 	}
+	if messages, ok, err := e.sessionV3CompanionContextMessages(job, epochID); err != nil || ok {
+		return messages, err
+	}
 	epoch, messages, err := e.server.sessions.ListExecutionEpochMessages(job.SessionID, epochID, 0)
 	if err != nil {
 		return nil, err

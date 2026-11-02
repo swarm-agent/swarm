@@ -33,6 +33,7 @@ export type { ApplicationAgent, ApplicationAgentWrite, ApplicationConversationPa
 export { SwarmCompanionNamespace, SwarmCompanionContextNamespace } from './companion.js';
 export type {
   CompanionView,
+  CompanionActivity,
   CompanionEnsureResult,
   CompanionDeleteResult,
   CompanionContextSource,

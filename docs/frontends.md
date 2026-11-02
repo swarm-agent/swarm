@@ -171,9 +171,20 @@ permissions and account model), not tied to a project:
   an item; its source must be one of the person's sessions or messages, and
   `workspace_path` must be inside the Companion's workspace scope (403
   otherwise). `DELETE {id, expected_revision}` forgets one. Topics are indexed
-  from substantive Companion messages automatically. A record whose source
-  message or session is deleted or changed becomes `invalidated` and is no
-  longer retrieved.
+  from the person's own Companion messages automatically, once each; task
+  outcomes and other background wakes never become topics or the focus. A
+  record whose source message or session is deleted or changed becomes
+  `invalidated` and is no longer retrieved.
+- **It stays responsive while it works:** let the person send while a run is
+  busy. The message route answers `queued: true` (retries with the same
+  `client_request_id` replay it), and the running model reads it after its
+  current tool call; a running command or device action is not interrupted.
+  Delegated work is followed with task watches whose outcomes arrive as their
+  own turns. `GET /v3/companion` adds `companion.activity`: the run
+  (`active`, `phase`), `queued_inputs` (`queued`, or `waiting_next_turn` when
+  the run was stopped), `pending_permissions` and `task_watches` with exact
+  machine/project/task IDs. Refresh it on the Companion session's events;
+  ordering and reconnect replay are the session's `/v3/sync` cursors.
 - **Delete it** only when the person asks: `DELETE /v3/companion` with
   `{"session_id":…,"confirm":true}` removes it, its history and its context
   bank; the next open starts an empty one.
