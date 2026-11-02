@@ -52,7 +52,7 @@ import (
 // routes; list_sources takes only project_id (it never read a workspace
 // selector), inspect_files requires project_id, and their descriptions say
 // what a linked answer pins.
-const manageProjectsDefinitionSHA256 = "a0af1e4d8e43240591147d45cfb2170f436c0df8683a19d0ac86884d2b10612d"
+const manageProjectsDefinitionSHA256 = "640b36b707e528ec97a4114be6426f5e0d58196a3a75ff8654bcdef991322c5f"
 
 // Purpose: the catalog is the only place manage_projects exists. The
 // Orchestrator's definition is generated from the declarations and stays the

@@ -396,6 +396,19 @@ func projectTaskStatusClass(status string) string {
 	return "finished"
 }
 
+// ProjectTaskPlanAcceptanceNext is what comes next for a task waiting for its
+// plan to be accepted: the person reads the exact plan in this conversation
+// and accepts it in their own words; approve_task then names the binding. A
+// linked task's plan waits on that machine, so the sending conversation is
+// where the person sees it.
+func ProjectTaskPlanAcceptanceNext(remote bool) string {
+	read, with := "get_task detail=plan", ""
+	if remote {
+		read, with = "get_task with this task's machine and detail=plan", " and machine"
+	}
+	return "show the person its plan (" + read + "); only on their explicit acceptance, approve_task with plan_binding's session_id, plan_id and definition_revision" + with + "; refine_task sends their changes"
+}
+
 // projectTaskNext is the action the Orchestrator can take next and what
 // comes next for the task. remote tasks are on a linked machine, where
 // integration is the machine's own.
@@ -405,6 +418,9 @@ func projectTaskNext(t *pebblestore.ProjectTaskRecord, progress *projectTaskProg
 	}
 	switch projectTaskStatusClass(t.Status) {
 	case "approval":
+		if pebblestore.ProjectTaskWaitsForPlanAcceptance(*t) {
+			return "approve_task", ProjectTaskPlanAcceptanceNext(remote)
+		}
 		return "approve_task", "starts when approved"
 	case "waiting":
 		if t.Status == pebblestore.ProjectTaskStatusLimitWaiting {

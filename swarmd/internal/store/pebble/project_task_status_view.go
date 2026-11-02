@@ -15,6 +15,18 @@ const (
 	ProjectTaskStopReason = "user stopped task"
 )
 
+// ProjectTaskPlanAcceptanceReason is why a task bound to a submitted plan
+// waits: the person accepts that exact plan. It is never the account's Start
+// tasks rule, which a task sent with auto_approve has already passed: plan
+// acceptance is its own step that auto_approve does not take.
+const ProjectTaskPlanAcceptanceReason = "waiting for the person to accept its plan"
+
+// ProjectTaskWaitsForPlanAcceptance reports whether a task waits for the
+// person to accept the structured plan it is bound to.
+func ProjectTaskWaitsForPlanAcceptance(task ProjectTaskRecord) bool {
+	return task.Status == "pending_approval" && task.PlanBinding != nil && strings.TrimSpace(task.PlanBinding.PlanID) != ""
+}
+
 // ProjectTaskRunStoppedByPerson reports whether a run with this terminal
 // status and reason was stopped by the person (stop_task or the session's
 // stop), not cancelled by quota, shutdown or deletion.
@@ -304,6 +316,9 @@ func projectTaskState(task ProjectTaskRecord, outcome string, stale, idle bool) 
 	// needs_attention or idle.
 	switch task.Status {
 	case "pending_approval":
+		if ProjectTaskWaitsForPlanAcceptance(task) {
+			return ProjectTaskStateNeedsYou, ProjectTaskPlanAcceptanceReason
+		}
 		return ProjectTaskStateNeedsYou, "waiting for approval"
 	case "needs_input":
 		return ProjectTaskStateNeedsYou, "waiting for an answer"

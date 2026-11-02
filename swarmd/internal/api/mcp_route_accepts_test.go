@@ -817,18 +817,12 @@ var mcpRouteParityRouteOnly = map[string][]mcpRouteOnlyGroup{
 		{Fields: "speech operation aspect_ratio resolution duration_seconds video_type enhance_prompt variant_count deliverable_count scenes scenes_count soundtrack", Reason: "media-task settings of the Desktop's media create form; MCP media requests are manage_media's"},
 		{Fields: "model provider thinking service_tier context_mode", Reason: "TODO: a per-task model override the Desktop sends; create_task declares none (propose_task declares model), so a linked create_task always runs on the account's agent-model settings"},
 	},
-	"POST /v3/projects/{id}/tasks/{id}/accept": {
-		{Fields: "definition_revision plan_id session_id", Reason: "TODO: plan-approval guards (tool.ProjectTaskApprovalGuards) the Desktop sends to approve one exact plan revision; accept_task declares none"},
-	},
-	"POST /v3/projects/{id}/tasks/{id}/approve": {
-		{Fields: "definition_revision plan_id session_id", Reason: "TODO: plan-approval guards (tool.ProjectTaskApprovalGuards) the Desktop sends to approve one exact plan revision; approve_task declares none"},
-	},
 	"POST /v3/projects/{id}/tasks/{id}/reopen": {
 		{Fields: "definition_revision plan_id session_id", Reason: "TODO: plan guards the Desktop's reopen sends; reopen_task declares none"},
 		{Fields: "cursor limit", Reason: "the attempt-history page of the history route, which the same handler branch serves (segments[3] == \"history\"); reopen takes no page"},
 	},
 	"POST /v3/projects/{id}/tasks/{id}/refine": {
-		{Fields: "agent definition_revision error_summary feature_size model outcome_type plan_id session_id tier", Reason: "the Desktop re-plan form (plan guards and re-plan settings); refine_task sends feedback and expected_revision, and a plan document is refused on a linked machine"},
+		{Fields: "agent error_summary feature_size model outcome_type tier", Reason: "the Desktop re-plan form's re-plan settings; refine_task sends feedback, expected_revision and the plan guards, and a plan document is refused on a linked machine"},
 	},
 	"GET /v3/projects": {
 		{Fields: "limit", Reason: "TODO: list declares no limit; the linked list is bounded by compactFleetList"},

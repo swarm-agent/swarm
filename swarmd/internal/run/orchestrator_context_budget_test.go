@@ -78,12 +78,14 @@ func TestOrchestratorIsShownNoDuplicateDeadOrOtherAgentTooling(t *testing.T) {
 		}
 	}
 	projects := encode(byName["manage_projects"])
-	for _, banned := range []string{"approve_task", "accept_task", "deploy_task", "refine_task", "edit_requirements", "reconcile_tasks", "report_task", "aspect_ratio", "soundtrack", "variant_count", "theme_id", "icon", "synthesize_context", "list_media", "plan_document", "task_program", "coder_assignments"} {
+	for _, banned := range []string{"accept_task", "deploy_task", "edit_requirements", "reconcile_tasks", "report_task", "aspect_ratio", "soundtrack", "variant_count", "theme_id", "icon", "synthesize_context", "list_media", "plan_document", "task_program", "coder_assignments"} {
 		if strings.Contains(projects, banned) {
 			t.Fatalf("Orchestrator manage_projects still shows %q", banned)
 		}
 	}
-	for _, required := range []string{"propose_task", "wait_tasks", "get_task", "list_tasks", "list_machines", "list_linked_tasks", "read_task_session", "integrate_task"} {
+	// approve_task and refine_task with their plan guards: a plan waiting on
+	// a linked machine is accepted or revised from the sending conversation.
+	for _, required := range []string{"propose_task", "wait_tasks", "get_task", "list_tasks", "list_machines", "list_linked_tasks", "read_task_session", "integrate_task", "approve_task", "refine_task", "plan_id", "definition_revision"} {
 		if !strings.Contains(projects, required) {
 			t.Fatalf("Orchestrator manage_projects lacks %q", required)
 		}

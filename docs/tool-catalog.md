@@ -32,10 +32,16 @@ drop tables below. Retired: `swarm_set_session_access`, `swarm_run_plan`
 (plans are not the default) and `swarm_accept_review` (it closed a plan
 checkpoint's review). `swarm_approve_task` has no Swarm Control replacement:
 its home, `manage_projects approve_task`, is not listed to Swarm Control
-(`Profiles: unlisted`) and Swarm Control refuses it, so approving or
-rejecting a task in `pending_approval` is now the person's step in their
-Swarm app. The record still maps it to `approve_task`, the Orchestrator's
-own action.
+(Orchestrator profile only) and Swarm Control refuses it, so approving or
+rejecting a task in `pending_approval` is the person's step: in their Swarm
+app, or in the Orchestrator conversation that sent it. A task bound to a plan
+(including one waiting on a linked machine, whose card is that machine's,
+not the home app's) is accepted only on the person's explicit word in that conversation,
+after the Orchestrator showed the plan (`get_task detail=plan`):
+`approve_task` and `refine_task` take the exact `session_id`, `plan_id` and
+`definition_revision` of `get_task`'s plan binding, and the approve route
+refuses a missing, stale or other binding. The record still maps it to
+`approve_task`, the Orchestrator's own action.
 
 ### A catalog action accepts every input of the tool it replaced
 

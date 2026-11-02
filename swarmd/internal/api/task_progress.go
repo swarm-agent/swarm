@@ -854,7 +854,9 @@ func computeTaskProgress(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 	switch {
 	case class == progressWaiting:
 		out.State = progressWaiting
-		if task.Status == "pending_approval" {
+		if pebblestore.ProjectTaskWaitsForPlanAcceptance(task) {
+			out.Summary = pebblestore.ProjectTaskPlanAcceptanceReason
+		} else if task.Status == "pending_approval" {
 			out.Summary = "waiting for approval (Start tasks)"
 		} else if task.Status == pebblestore.ProjectTaskStatusLimitWaiting {
 			out.Summary = firstNonEmptyString(task.LimitReason, "waiting for the provider's limit to reset")
@@ -997,7 +999,9 @@ func taskProgressHistory(task pebblestore.ProjectTaskRecord, deliveries []jobaut
 		}
 	}
 	created := "created"
-	if task.Status == "pending_approval" {
+	if pebblestore.ProjectTaskWaitsForPlanAcceptance(task) {
+		created = "created · " + pebblestore.ProjectTaskPlanAcceptanceReason
+	} else if task.Status == "pending_approval" {
 		created = "created · waiting for approval (Start tasks)"
 	}
 	add(task.CreatedAt, created)
