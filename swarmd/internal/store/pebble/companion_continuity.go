@@ -519,11 +519,29 @@ type CompanionSegmentReadStats struct {
 	Sources   int `json:"sources"`
 }
 
+// companionSegmentScope is the permission scope of a segment read for a
+// turn: an item whose context record is bound to a workspace is kept only
+// when allow admits that workspace (nil admits none), the same rule as
+// RetrieveCompanionContext. An unscoped read (the owner's state view) keeps
+// every item.
+type companionSegmentScope struct {
+	scoped bool
+	allow  func(string) bool
+}
+
+func (scope companionSegmentScope) admits(view companionRecordView) bool {
+	if !scope.scoped || !view.found || view.record.WorkspacePath == "" {
+		return true
+	}
+	return scope.allow != nil && scope.allow(view.record.WorkspacePath)
+}
+
 // verifyCompanionSegment re-checks a segment's items now: each item's record
 // (dropped when gone or inactive, its text refreshed when corrected), the
-// requests a reply answered (dropped when one was forgotten) and each item's
-// source message when it cites one (dropped when deleted or changed).
-func (s *SessionStore) verifyCompanionSegment(prefix string, seg CompanionSegment, stats *CompanionSegmentReadStats) (CompanionSegmentView, error) {
+// requests a reply answered (dropped when one was forgotten), each item's
+// source message when it cites one (dropped when deleted or changed) and,
+// for a scoped read, each record's workspace against the caller's scope.
+func (s *SessionStore) verifyCompanionSegment(prefix string, seg CompanionSegment, stats *CompanionSegmentReadStats, scope companionSegmentScope) (CompanionSegmentView, error) {
 	cache := map[string]companionRecordView{}
 	view := CompanionSegmentView{CompanionSegment: seg}
 	items, _, _, err := s.reconcileCompanionItems(prefix, seg.Items, cache)
@@ -533,6 +551,9 @@ func (s *SessionStore) verifyCompanionSegment(prefix string, seg CompanionSegmen
 	stats.Records += len(cache)
 	kept := make([]CompanionSegmentItem, 0, len(items))
 	for _, item := range items {
+		if item.RecordID != "" && !scope.admits(cache[item.RecordID]) {
+			continue
+		}
 		if item.ContentSHA256 != "" && item.Source.MessageSeq > 0 && item.RecordID == "" {
 			stats.Sources++
 			messages, err := listV3SessionMessagesRangeFromReader(s.store.db, item.Source.SessionID, item.Source.MessageSeq, item.Source.MessageSeq, 1)
@@ -554,6 +575,22 @@ func (s *SessionStore) verifyCompanionSegment(prefix string, seg CompanionSegmen
 // user's Companion session, verified now: at most limit (bounded by
 // CompanionSegmentMaxRead) segments and their items' records and sources.
 func (s *SessionStore) ListCompanionSegments(account, user, sessionID string, limit int) ([]CompanionSegmentView, CompanionSegmentReadStats, error) {
+	return s.listCompanionSegments(account, user, sessionID, limit, 0, companionSegmentScope{})
+}
+
+// ListCompanionSegmentsInScope reads, for one turn, the newest sealed
+// segments that start before beforeSeq (0: any), verified now and limited to
+// the caller's workspace scope. It reads at most 2*limit+companionSegmentTailSkip
+// recency keys and limit segments, whatever the history size.
+func (s *SessionStore) ListCompanionSegmentsInScope(account, user, sessionID string, limit int, beforeSeq uint64, allow func(string) bool) ([]CompanionSegmentView, CompanionSegmentReadStats, error) {
+	return s.listCompanionSegments(account, user, sessionID, limit, beforeSeq, companionSegmentScope{scoped: true, allow: allow})
+}
+
+// companionSegmentTailSkip bounds the extra recency keys a turn's read may
+// pass over for segments that lie wholly inside its recent-message tail.
+const companionSegmentTailSkip = 8
+
+func (s *SessionStore) listCompanionSegments(account, user, sessionID string, limit int, beforeSeq uint64, scope companionSegmentScope) ([]CompanionSegmentView, CompanionSegmentReadStats, error) {
 	var stats CompanionSegmentReadStats
 	account, user, sessionID = strings.TrimSpace(account), strings.TrimSpace(user), strings.TrimSpace(sessionID)
 	if !validCompanionPrincipal(account, user) || sessionID == "" {
@@ -565,8 +602,13 @@ func (s *SessionStore) ListCompanionSegments(account, user, sessionID string, li
 	prefix := companionContextPrefix(account, user)
 	ids := make([]string, 0, limit)
 	// Segments of an earlier Companion generation are skipped; each costs
-	// one index key, and the scan reads at most twice the limit.
-	if err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix + "gt/", Limit: limit * 2}, func(_ string, value []byte) (bool, error) {
+	// one index key, and the scan reads at most twice the limit (plus the
+	// segments inside a turn's tail when beforeSeq is set).
+	scanLimit := limit * 2
+	if beforeSeq > 0 {
+		scanLimit += companionSegmentTailSkip
+	}
+	if err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix + "gt/", Limit: scanLimit}, func(_ string, value []byte) (bool, error) {
 		stats.IndexKeys++
 		ids = append(ids, string(value))
 		return true, nil
@@ -583,12 +625,15 @@ func (s *SessionStore) ListCompanionSegments(account, user, sessionID string, li
 		if err != nil {
 			return nil, stats, err
 		}
-		if !found || seg.SessionID != sessionID {
+		if !found || seg.SessionID != sessionID || (beforeSeq > 0 && seg.StartEventSeq >= beforeSeq) {
 			continue
 		}
-		view, err := s.verifyCompanionSegment(prefix, seg, &stats)
+		view, err := s.verifyCompanionSegment(prefix, seg, &stats, scope)
 		if err != nil {
 			return nil, stats, err
+		}
+		if scope.scoped && len(view.Items) == 0 {
+			continue
 		}
 		out = append(out, view)
 	}
@@ -602,6 +647,17 @@ func (s *SessionStore) ListCompanionSegments(account, user, sessionID string, li
 // whatever the history size. There is no semantic search: matching is the
 // same deterministic keyword extraction as the context bank.
 func (s *SessionStore) RetrieveCompanionSegments(account, user, sessionID string, keywords []string, limit int) ([]CompanionSegmentView, CompanionSegmentReadStats, error) {
+	return s.retrieveCompanionSegments(account, user, sessionID, keywords, limit, companionSegmentScope{})
+}
+
+// RetrieveCompanionSegmentsInScope is RetrieveCompanionSegments for one turn:
+// items whose context record is bound to a workspace outside allow are left
+// out (nil allows none), as RetrieveCompanionContext leaves such records out.
+func (s *SessionStore) RetrieveCompanionSegmentsInScope(account, user, sessionID string, keywords []string, limit int, allow func(string) bool) ([]CompanionSegmentView, CompanionSegmentReadStats, error) {
+	return s.retrieveCompanionSegments(account, user, sessionID, keywords, limit, companionSegmentScope{scoped: true, allow: allow})
+}
+
+func (s *SessionStore) retrieveCompanionSegments(account, user, sessionID string, keywords []string, limit int, scope companionSegmentScope) ([]CompanionSegmentView, CompanionSegmentReadStats, error) {
 	var stats CompanionSegmentReadStats
 	account, user, sessionID = strings.TrimSpace(account), strings.TrimSpace(user), strings.TrimSpace(sessionID)
 	if !validCompanionPrincipal(account, user) || sessionID == "" {
@@ -661,7 +717,7 @@ func (s *SessionStore) RetrieveCompanionSegments(account, user, sessionID string
 		if !found || seg.SessionID != sessionID {
 			continue
 		}
-		view, err := s.verifyCompanionSegment(prefix, seg, &stats)
+		view, err := s.verifyCompanionSegment(prefix, seg, &stats, scope)
 		if err != nil {
 			return nil, stats, err
 		}
@@ -670,6 +726,35 @@ func (s *SessionStore) RetrieveCompanionSegments(account, user, sessionID string
 		}
 	}
 	return out, stats, nil
+}
+
+// FilterCompanionItemsInScope re-checks continuity items held in the state's
+// open draft for one turn: an item whose record is gone, inactive or answers
+// a forgotten request is dropped (as a sealed segment read drops it), a
+// corrected record's text is refreshed, and an item whose record is bound to
+// a workspace outside allow (nil allows none) is left out. It reads at most
+// one record per distinct record ID among items, so a draft's bound
+// (CompanionSegmentMaxItems) bounds it.
+func (s *SessionStore) FilterCompanionItemsInScope(account, user string, items []CompanionSegmentItem, allow func(string) bool) ([]CompanionSegmentItem, int, error) {
+	account, user = strings.TrimSpace(account), strings.TrimSpace(user)
+	if !validCompanionPrincipal(account, user) {
+		return nil, 0, ErrCompanionContextInvalid
+	}
+	prefix := companionContextPrefix(account, user)
+	cache := map[string]companionRecordView{}
+	kept, _, _, err := s.reconcileCompanionItems(prefix, items, cache)
+	if err != nil {
+		return nil, len(cache), err
+	}
+	scope := companionSegmentScope{scoped: true, allow: allow}
+	out := kept[:0]
+	for _, item := range kept {
+		if item.RecordID != "" && !scope.admits(cache[item.RecordID]) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out, len(cache), nil
 }
 
 // validateCompanionSegment checks a segment the maintainer seals.

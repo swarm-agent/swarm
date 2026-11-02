@@ -28,6 +28,13 @@ func companionStateData(t *testing.T, raw []byte) string {
 		t.Fatalf("state view: %v (%s)", err, raw)
 	}
 	delete(view, "read_at")
+	// Whether a background pass happens to be running at the instant of a
+	// read is a live process flag, like read_at, not part of the state the
+	// surfaces must agree on (a commit nudge can start a pass between two
+	// reads); freshness and the last failure are still compared.
+	if maintenance, ok := view["maintenance"].(map[string]any); ok {
+		delete(maintenance, "running")
+	}
 	out, _ := json.Marshal(view)
 	return string(out)
 }

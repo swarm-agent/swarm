@@ -184,10 +184,21 @@ moves onto it, keeping its history and model, the next time it is opened:
   out. Archive, delete, end and agent switch (including a settings change of
   `agent_name`) on it answer 409. Offer no close or archive action.
 - **Its context stays bounded:** a Companion turn reads only its last 40
-  messages (64 KB at most) and a context bank block (12 KB at most) of the
-  current focus, decisions, earlier topics relevant to the new message and
-  work pointers with live status, each with its source message. Older history
-  is never loaded per turn, and a Companion is never compacted (compaction
+  messages (64 KB at most; one message larger than half of that is cut to its
+  start with a pointer to the original, and an oversized tool result is
+  summarized or left out) and a context block (12 KB at most). The block holds,
+  each within its own share: how current continuity is (the exact event range
+  before the recent messages that is not folded yet, with the newest of the
+  person's messages in it quoted, so nothing they said is silently dropped), the
+  current focus, open commitments (owed replies, waiting approvals and
+  confirmations), decisions, earlier topics relevant to the new message with an
+  excerpt of their source, continuity items from earlier in the conversation
+  (re-checked against their records and sources, within the run's workspace
+  scope), work pointers and delegated tasks with their status read live, and
+  task watches. Selection is by keyword index only (no semantic search), and
+  the person's recent messages take precedence over every entry. If background
+  maintenance fails, the turn still runs and is told continuity may be stale.
+  Older history is never loaded per turn, and a Companion is never compacted (compaction
   summarizes the whole conversation; a compact request on it is refused). When
   the model rejects a Companion request as too long, the run retries once at
   each smaller fixed budget (16 messages / 28 KB with a 4 KB block, then 6

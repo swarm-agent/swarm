@@ -331,3 +331,91 @@ func (f *queuedNoteFixture) latest(sessionID, role string) string {
 	}
 	return best.Content
 }
+
+// Purpose: one oversized message cannot push a Companion request past its
+// budget, on the ordinary turn or on any overflow retry. Requirement: after
+// a long history, the person pastes a message several times larger than the
+// whole tail budget; the V3 executor's request at each attempt stays within
+// that level's bound, carries the start of the message with a pointer to the
+// original (never the whole message), keeps the context block and tool
+// pairing, and the turn completes; with a small provider window the ladder
+// still recovers at a smaller level instead of failing on the pasted text.
+// Threat: the bounded tail read always admitting its newest record whole, so
+// a pasted log overflows every attempt. Simulated parts: the provider is the
+// deterministic double of TestCompanionOverflowRecoveryStaysBoundedAndNeverCompacts.
+// Boundary: sessionV3CompanionContextMessages → CompanionV3ContextMessagesAtLevel
+// (boundCompanionTail) and the executor's overflow ladder. Narrowest layer:
+// the real HTTP route, executor and store, since the bound must hold on the
+// request the provider actually receives.
+func TestCompanionOversizedMessageStaysWithinRequestBudget(t *testing.T) {
+	const reply = "got the log"
+	f := newCompanionRunFixture(t, func(*queuedNoteFixture, provideriface.Request) provideriface.Response {
+		return provideriface.Response{Text: reply, StopReason: "stop"}
+	})
+	companionID := f.sessionID
+	var windowMu sync.Mutex
+	window := 1 << 30
+	setWindow := func(bytes int) { windowMu.Lock(); window = bytes; windowMu.Unlock() }
+	f.stepErr = func(req provideriface.Request) error {
+		windowMu.Lock()
+		limit := window
+		windowMu.Unlock()
+		if size := providerInputBytes(req); size > limit {
+			return fmt.Errorf("prompt is too long: %d tokens > %d maximum", size/4, limit/4)
+		}
+		return nil
+	}
+	seedCompanionHistory(t, f, 600)
+	pasted := "Here is the whole build log: " + strings.Repeat("ERROR cache miss at layer 42; ", 12000)
+	companionRequests := func(from int) []provideriface.Request {
+		var out []provideriface.Request
+		for _, req := range f.requests()[from:] {
+			if req.SessionID == companionID {
+				out = append(out, req)
+			}
+		}
+		return out
+	}
+	check := func(label string, requests []provideriface.Request) {
+		t.Helper()
+		for i, req := range requests {
+			budget, _ := runruntime.CompanionContextBudgetAt(i)
+			size := providerInputBytes(req)
+			if maxBytes := budget.TailBytes + budget.ContextBlockBytes + budget.TailMessages*1024; size > maxBytes || size >= len(pasted) {
+				t.Fatalf("%s attempt %d sent %d input bytes (bound %d, pasted %d)", label, i, size, maxBytes, len(pasted))
+			}
+			if _, n := countInInput(req.Input, "only its start is shown"); n != 1 {
+				t.Fatalf("%s attempt %d does not point to the truncated original", label, i)
+			}
+			if _, n := countInInput(req.Input, "Companion context bank"); n != 1 {
+				t.Fatalf("%s attempt %d lacks the context block", label, i)
+			}
+			assertProviderToolPairing(t, fmt.Sprintf("%s attempt %d", label, i), req.Input)
+		}
+	}
+
+	f.say(companionID, "paste-1", pasted)
+	requests := companionRequests(0)
+	if len(requests) != 1 {
+		t.Fatalf("ordinary turn made %d requests", len(requests))
+	}
+	check("ordinary", requests)
+	if got := f.latest(companionID, "assistant"); got != reply {
+		t.Fatalf("reply = %q", got)
+	}
+
+	setWindow(16 * 1024)
+	before := len(f.requests())
+	f.say(companionID, "paste-2", pasted)
+	requests = companionRequests(before)
+	if len(requests) != runruntime.CompanionContextBudgetLevels {
+		t.Fatalf("pressured turn made %d requests, want one per level", len(requests))
+	}
+	check("pressured", requests)
+	if last := providerInputBytes(requests[len(requests)-1]); last > 16*1024 {
+		t.Fatalf("smallest attempt %d bytes still over the window", last)
+	}
+	if got := f.latest(companionID, "assistant"); got != reply {
+		t.Fatalf("pressured reply = %q", got)
+	}
+}

@@ -370,3 +370,11 @@ func (s *SessionStore) notifySessionCommit(sessionID string, lastSeq uint64) {
 		(*fn)(sessionID, lastSeq)
 	}
 }
+
+// GetCompanionLiveTask reads a local project task's current record for a
+// Companion turn's work snapshot: one key read, without hydrating attempt
+// outcomes or the bound plan, so a turn's live work reads stay bounded by the
+// number of tasks it lists.
+func (s *SessionStore) GetCompanionLiveTask(account, projectID, taskID string) (*ProjectTaskRecord, bool, error) {
+	return s.getProjectTask(account, projectID, taskID, false)
+}
