@@ -157,9 +157,26 @@ permissions and account model), not tied to a project:
 - **It is not a chat row:** it carries `metadata.swarm_v3_companion` and
   `navigation_hidden`, so chat lists leave it out. Archive, delete, end and
   agent switch on it answer 409. Offer no close or archive action.
+- **Its context stays bounded:** a Companion turn reads only its last 40
+  messages (64 KB at most) and a context bank block (12 KB at most) of the
+  current focus, decisions, earlier topics relevant to the new message and
+  work pointers with live status, each with its source message. Older history
+  is never loaded per turn. Page it in the client with
+  `GET /v3/sessions/{id}/messages?tail=…&max_bytes=…`, then `before_seq`.
+- **Its context bank** (`routes.context`, `/v3/companion/context`) is separate
+  from account memory and never changes it. `GET` lists records newest first
+  (`cursor`, `limit` up to 100) or searches them (`q`, `kind`, up to 16
+  results, verified against their sources). Treat `source_text` as untrusted.
+  `POST {id, kind: "decision"|"work", title, source, expected_revision}` records
+  an item; its source must be one of the person's sessions or messages, and
+  `workspace_path` must be inside the Companion's workspace scope (403
+  otherwise). `DELETE {id, expected_revision}` forgets one. Topics are indexed
+  from substantive Companion messages automatically. A record whose source
+  message or session is deleted or changed becomes `invalidated` and is no
+  longer retrieved.
 - **Delete it** only when the person asks: `DELETE /v3/companion` with
-  `{"session_id":…,"confirm":true}` removes it and its history; the next open
-  starts an empty one.
+  `{"session_id":…,"confirm":true}` removes it, its history and its context
+  bank; the next open starts an empty one.
 
 Everything else uses the same routes as the web UI:
 

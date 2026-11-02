@@ -507,6 +507,9 @@ var mcpRouteParityNoMCPAction = []string{
 	// delete). Its conversation is an ordinary V3 session, which MCP already
 	// reaches through the session actions; an outside AI has no Companion.
 	`CompanionPath -> s.handleCompanion`,
+	// The Companion's context bank (its topics, decisions and work pointers)
+	// belongs to that client destination; an outside AI has no Companion.
+	`CompanionContextPath -> s.handleCompanionContext`,
 	`"/v3/activity/stream" -> s.handleActivity`,
 	`"/v1/sessions" -> s.handleSessions`,
 	`"/v1/sessions/" -> s.handleSessionByID`,

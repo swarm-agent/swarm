@@ -1753,6 +1753,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		if titleEligible {
 			s.startMemorySessionTitleFlow(sessionID, prompt, resolvedPreference.Preference, options.Principal, emit)
 		}
+		if isCompanionSession(sessionSnapshot) {
+			if err := indexCompanionUserMessage(s.companionContextStore(), sessionSnapshot, userMessage, time.Now().UnixMilli()); err != nil {
+				return RunResult{}, fmt.Errorf("index companion context: %w", err)
+			}
+		}
 	}
 	if targetedSubagentViaTask {
 		var result RunResult
@@ -1793,12 +1798,23 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	if err != nil {
 		return RunResult{}, err
 	}
-	historyLimit := sessionContextHistoryFetchLimit(sessionSnapshot, defaultHistoryLimit)
-	messages, err = s.listRunMessages(sessionID, 0, historyLimit, options.ApplySessionMutation != nil)
-	if err != nil {
-		return RunResult{}, err
+	// A Companion turn reads a bounded tail plus retrieved context, never the
+	// whole conversation (companion_context.go).
+	companionTurn := isCompanionSession(sessionSnapshot) && !checkpointRunContext
+	if companionTurn {
+		turnContext, companionErr := s.assembleCompanionTurn(sessionSnapshot, prompt, workspaceCtx.WorkspaceRoots)
+		if companionErr != nil {
+			return RunResult{}, companionErr
+		}
+		messages = turnContext.Messages
+	} else {
+		historyLimit := sessionContextHistoryFetchLimit(sessionSnapshot, defaultHistoryLimit)
+		messages, err = s.listRunMessages(sessionID, 0, historyLimit, options.ApplySessionMutation != nil)
+		if err != nil {
+			return RunResult{}, err
+		}
+		messages = compactMessagesForProviderContext(messages, defaultHistoryLimit)
 	}
-	messages = compactMessagesForProviderContext(messages, defaultHistoryLimit)
 	input := buildInput(messages)
 	if checkpointRunContext {
 		input = append(input, checkpointRunInput...)
@@ -1868,7 +1884,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		turnUsageRecord   *pebblestore.SessionTurnUsageSnapshot
 		usageSummaryState *pebblestore.SessionUsageSummary
 	)
-	if !manualCompact {
+	// Threshold auto-compaction summarizes the whole session history; a
+	// Companion turn is already bounded by its context bank, so it is skipped.
+	if !manualCompact && !companionTurn {
 		if compactedInput, resetSummary, compactEvents, compactErr := s.maybeAutoCompactRunContext(
 			ctx,
 			sessionID,
@@ -2758,6 +2776,12 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			}
 			if checkpointRunContext {
 				input = append([]map[string]any(nil), checkpointRunInput...)
+			} else if companionTurn {
+				turnContext, companionErr := s.assembleCompanionTurn(sessionSnapshot, prompt, workspaceCtx.WorkspaceRoots)
+				if companionErr != nil {
+					return RunResult{}, companionErr
+				}
+				input = buildInput(turnContext.Messages)
 			} else {
 				messages, err = s.sessions.ListMessages(sessionID, 0, defaultHistoryLimit)
 				if err != nil {

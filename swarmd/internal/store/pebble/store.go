@@ -43,6 +43,7 @@ type Store struct {
 	designWake                 chan struct{}
 	projectsMu                 sync.Mutex
 	companionMu                sync.Mutex // Companion identity get-or-create/retire (companion.go)
+	companionContextMu         sync.Mutex // Companion context bank record/index writes (companion_context.go)
 	projectPublisherMu         sync.RWMutex
 	projectPublisher           func(V3RealtimeOutboxRecord)
 	projectTaskStatusObserver  func(ProjectTaskStatusTransition)
