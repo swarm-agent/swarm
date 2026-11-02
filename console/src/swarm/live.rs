@@ -28,8 +28,16 @@ const COALESCE: Duration = Duration::from_millis(16);
 /// Swarm hydrates at most this many sessions per request with their views.
 const HYDRATE_CHUNK: usize = 8;
 /// The tail asked of hydrate per conversation: Swarm's own maximum (older
-/// messages are read a page at a time on request).
+/// messages are read a page at a time on request). Swarm may return fewer
+/// (its byte budget); what lies before is in its omission cursor.
 const HYDRATE_TAIL: usize = 200;
+/// The byte budget asked of each earlier page (Swarm's own maximum for
+/// `max_bytes`), so one page read stays bounded.
+const PAGE_BYTES: usize = 262_144;
+/// After a reconnect, at most this many pages are read to join history
+/// already shown to a new, shorter tail; past that the shown history is
+/// dropped rather than shown with a hole in it.
+const BRIDGE_PAGES: usize = 2;
 /// How long to wait before reconnecting after the stream fails, at first
 /// and at most.
 const RETRY_FIRST: Duration = Duration::from_secs(2);
@@ -58,7 +66,8 @@ pub struct Snapshot {
 #[derive(Clone)]
 pub struct CompanionFeed {
     pub session_id: String,
-    /// Its tasks in every project, grouped (companion::work).
+    /// Its tasks in every project, grouped (companion::work). Its history
+    /// paging is on its Session, like every conversation's.
     pub work: Vec<super::companion::Work>,
 }
 
@@ -300,15 +309,36 @@ struct Detail {
     pending: Option<Pending>,
     calls: Vec<ClientCall>,
     hydrated: bool,
-    /// Earlier pages read on request (oldest first), shown before `entries`,
-    /// the oldest message sequence read so far, whether Swarm may hold
-    /// earlier ones, why the last page read failed and how many page reads
+    /// Earlier messages (oldest first) as Swarm returned them, and as shown
+    /// before `entries`: pages read on request, and history kept across a
+    /// reconnect. `oldest_seq` is the exclusive boundary of the next earlier
+    /// page; `more_older` whether Swarm may hold earlier ones; `older_error`
+    /// why the last page read failed and `older_answers` how many page reads
     /// were answered (Earlier::answers).
+    older_raw: Vec<Value>,
     older: Vec<Entry>,
+    /// The messages of the last hydrate (oldest first). With `older_raw`
+    /// they are a run of history read from Swarm without a hole; messages
+    /// that arrived live since are only in `entries`.
+    tail_raw: Vec<Value>,
     oldest_seq: u64,
     more_older: Option<bool>,
     older_error: Option<String>,
     older_answers: u32,
+}
+
+impl Detail {
+    /// The history read from Swarm without a hole, oldest first.
+    fn verified(&self) -> Vec<Value> {
+        let mut all = self.older_raw.clone();
+        all.extend(self.tail_raw.iter().cloned());
+        all
+    }
+
+    fn set_older(&mut self, older_raw: Vec<Value>) {
+        self.older = map::entries(&older_raw);
+        self.older_raw = older_raw;
+    }
 }
 
 impl Live {
@@ -336,9 +366,13 @@ impl Live {
         let (c, w, t, fk, frames_tx, rw, cmp) = (client.clone(), watched.clone(), tx.clone(), facts_kick.clone(), kick.clone(), run_watch.clone(), companion.clone());
         std::thread::spawn(move || {
             let mut wait = RETRY_FIRST;
+            // The conversations as shown when the stream failed: the next
+            // connection joins their history to its own reads rather than
+            // replacing it with only a recent tail.
+            let mut kept: HashMap<String, Detail> = HashMap::new();
             loop {
                 let started = Instant::now();
-                let why = match follow(&c, &w, &t, &kicked, &frames_tx, kind, &fk, &rw, &cmp) {
+                let why = match follow(&c, &w, &t, &kicked, &frames_tx, kind, &fk, &rw, &cmp, &mut kept) {
                     Ok(()) => return, // the console is gone
                     Err(e) => e,
                 };
@@ -805,6 +839,9 @@ struct Model<'a> {
     /// whose record was last read for it (read once per name and connection).
     companion: Option<String>,
     companion_read: Option<String>,
+    /// Conversations as shown before this connection, not read again yet:
+    /// their history is joined to the next hydrate (Model::hydrate).
+    carried: HashMap<String, Detail>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -818,9 +855,8 @@ fn follow(
     facts_kick: &Sender<()>,
     run_watch: &Mutex<Option<String>>,
     companion: &Mutex<Option<String>>,
+    kept: &mut HashMap<String, Detail>,
 ) -> Result<(), String> {
-    // The run session subscribed to on this connection.
-    let mut run_sub: Option<String> = None;
     // Media files download on their own thread; each one wakes the model,
     // whose next read finds it in the cache.
     let (media_fetch, media_wanted) = mpsc::channel::<(String, String)>();
@@ -853,7 +889,28 @@ fn follow(
         facts_kick: facts_kick.clone(),
         companion: None,
         companion_read: None,
+        carried: std::mem::take(kept),
     };
+    let out = follow_model(&mut m, client, watched, tx, frames, frames_tx, companion, run_watch);
+    // Whatever ended this connection, what it showed is kept for the next.
+    *kept = m.handoff();
+    out
+}
+
+/// One connection: the snapshot, then its stream, until it fails.
+#[allow(clippy::too_many_arguments)]
+fn follow_model(
+    m: &mut Model<'_>,
+    client: &Client,
+    watched: &Mutex<HashSet<String>>,
+    tx: &Sender<Update>,
+    frames: &Receiver<Value>,
+    frames_tx: &Sender<Value>,
+    companion: &Mutex<Option<String>>,
+    run_watch: &Mutex<Option<String>>,
+) -> Result<(), String> {
+    // The run session subscribed to on this connection.
+    let mut run_sub: Option<String> = None;
     let t0 = Instant::now();
     let boot = m.bootstrap()?;
     // The Companion is hidden from the recent list: read it on its own, on
@@ -1026,6 +1083,8 @@ impl Model<'_> {
             .and_then(Value::as_object)
             .map(|t| t.iter().filter(|(_, v)| matches!(s(v, "kind"), "archived" | "deleted")).map(|(id, _)| id.clone()).collect())
             .unwrap_or_default();
+        // Nor is what they showed before kept for them.
+        self.carried.retain(|id, _| !gone.contains(id));
         for id in list(&boot, "session_order").iter().filter_map(Value::as_str).filter(|id| !gone.contains(*id)) {
             self.order.push(id.to_string());
         }
@@ -1171,12 +1230,13 @@ impl Model<'_> {
             "include_active": true
         });
         let snap = self.client.post("/v3/sync/hydrate", body).map_err(err)?;
-        self.hydrated(&snap, ids);
+        self.take_hydrated(ids, &snap);
         Ok(())
     }
 
-    /// Keeps what Swarm's hydrate answer says of each conversation.
-    fn hydrated(&mut self, snap: &Value, ids: &[String]) {
+    /// Takes in a hydrate answer for these conversations: each one's tail,
+    /// joined to what it showed before (join_history), with its view.
+    fn take_hydrated(&mut self, ids: &[String], snap: &Value) {
         for id in ids {
             let messages = snap.get("messages_by_session").and_then(|m| m.get(id)).and_then(Value::as_array).cloned().unwrap_or_default();
             let view = snap.get("session_views_by_id").and_then(|v| v.get(id)).cloned().unwrap_or(Value::Null);
@@ -1187,17 +1247,23 @@ impl Model<'_> {
             if let Some(shell) = snap.get("sessions_by_id").and_then(|x| x.get(id)) {
                 self.shells.insert(id.clone(), shell.clone());
             }
+            // What Swarm says lies before the tail (its omission cursor),
+            // joined to what this conversation showed before, if anything.
+            let tail = tail_of(snap, id, messages);
+            let prior = self.carried.remove(id).or_else(|| self.details.get(id).filter(|d| d.hydrated).cloned());
+            let bridge = match &prior {
+                Some(p) => self.bridge(id, &p.verified(), &tail),
+                None => Bridge::default(),
+            };
+            let joined = join_history(id, prior.as_ref().map(|p| (p.verified(), p.oldest_seq, p.more_older)), &tail, bridge);
             let d = self.details.entry(id.clone()).or_default();
-            d.entries = map::entries(&messages);
-            // Where an earlier page starts; a full tail may have more before it.
-            // Pages read before belong to the old tail: messages that arrived
-            // since would fall between them and this one (missing or twice),
-            // and entries carry no sequence to join them by. They go, and load
-            // again as the person scrolls up.
-            d.older.clear();
+            d.live.clear();
+            d.entries = map::entries(&tail.messages);
+            d.tail_raw = tail.messages;
+            d.set_older(joined.older_raw);
+            d.oldest_seq = joined.oldest_seq;
+            d.more_older = joined.more_older;
             d.older_error = None;
-            d.oldest_seq = messages.first().and_then(|m| m.get("global_seq")).and_then(Value::as_u64).unwrap_or(0);
-            d.more_older = Some(messages.len() >= HYDRATE_TAIL && d.oldest_seq > 0);
             d.model = map::model_line(&view);
             d.pending = map::pending(&permissions);
             d.calls = map::client_calls(&permissions);
@@ -1219,9 +1285,7 @@ impl Model<'_> {
         if wanted != self.companion {
             // A Companion deleted and started anew: the old one leaves.
             if let Some(old) = self.companion.take() {
-                self.shells.remove(&old);
-                self.order.retain(|x| x != &old);
-                self.details.remove(&old);
+                self.forget(&old);
             }
             self.companion = wanted;
             changed = true;
@@ -1243,31 +1307,71 @@ impl Model<'_> {
     }
 
     /// Reads the page before the oldest message read of a conversation
-    /// (GET /v3/sessions/{id}/messages?before_seq=, Swarm's page size) and
-    /// keeps it before what is shown. True when the conversation changed.
+    /// (GET /v3/sessions/{id}/messages?before_seq=, Swarm's page size within
+    /// a byte budget) and keeps it before what is shown. True when the
+    /// conversation changed.
     fn read_older(&mut self, id: &str) -> bool {
         let Some(d) = self.details.get(id) else { return false };
         if !d.hydrated || d.oldest_seq == 0 || d.more_older == Some(false) {
             return false;
         }
-        let answer = self.client.get(&format!("/v3/sessions/{id}/messages?before_seq={}", d.oldest_seq));
+        let answer = self.client.get(&page_path(id, d.oldest_seq));
         let d = self.details.get_mut(id).expect("read above");
         match answer {
-            Ok(answer) => {
-                let (page, next, more) = older_page(&answer);
-                let mut older = page;
-                older.extend(std::mem::take(&mut d.older));
-                d.older = older;
-                if next > 0 {
-                    d.oldest_seq = next;
-                }
-                d.more_older = Some(more && next > 0);
-                d.older_error = None;
-            }
+            Ok(answer) => add_older_page(id, d, &answer),
             Err(e) => d.older_error = Some(e.to_string()),
         }
         d.older_answers = d.older_answers.wrapping_add(1);
         true
+    }
+
+    /// After a reconnect, when the new tail starts after the end of the
+    /// history shown before (messages came while disconnected), reads the
+    /// pages between them, at most BRIDGE_PAGES. A failed read joins nothing.
+    fn bridge(&self, id: &str, prior: &[Value], tail: &Tail) -> Bridge {
+        let newest = prior.iter().map(seq).max().unwrap_or(0);
+        let mut bridge = Bridge::default();
+        if !tail.more_older || newest == 0 || newest >= tail.before_seq {
+            return bridge;
+        }
+        let mut before = tail.before_seq;
+        for _ in 0..BRIDGE_PAGES {
+            let Ok(answer) = self.client.get(&page_path(id, before)) else { return Bridge::default() };
+            let mut page = own_messages(id, list(&answer, "messages"));
+            page.retain(|m| seq(m) > 0 && seq(m) < before);
+            page.sort_by_key(seq);
+            let more = answer.get("has_more_older").and_then(Value::as_bool).unwrap_or(false);
+            let oldest = page.first().map(seq).unwrap_or(0);
+            page.extend(std::mem::take(&mut bridge.messages));
+            bridge.messages = page;
+            bridge.more = more;
+            if oldest == 0 || oldest <= newest || !more {
+                break;
+            }
+            before = oldest;
+        }
+        bridge
+    }
+
+    /// What this connection showed, for the next one: the conversations
+    /// read in full, and those kept from before and not read again.
+    fn handoff(&mut self) -> HashMap<String, Detail> {
+        let mut out = std::mem::take(&mut self.carried);
+        for (id, d) in self.details.drain() {
+            if d.hydrated {
+                out.insert(id, d);
+            }
+        }
+        out
+    }
+
+    /// A conversation archived, deleted or gone from Swarm's list: nothing
+    /// of it is shown or kept for a later connection.
+    fn forget(&mut self, id: &str) {
+        self.shells.remove(id);
+        self.order.retain(|x| x != id);
+        self.details.remove(id);
+        self.carried.remove(id);
     }
 
     /// Re-reads one conversation's view: its model (and pending requests),
@@ -1366,8 +1470,12 @@ impl Model<'_> {
             }
             // A session whose record changed without an event (a pin): read again.
             "console.session" => self.reread_session(&sid),
-            // The person asked for earlier messages of a conversation.
-            "console.older" => Ok(self.read_older(&sid)),
+            // The person asked for earlier messages of a conversation. The
+            // console hears back either way, so its "reading" state ends.
+            "console.older" => {
+                self.read_older(&sid);
+                Ok(true)
+            }
             "cursor.error" => Err(format!("the stream lost its place ({})", s(frame, "error_code"))),
             "slow_consumer.reconnect_required" => Err("Swarm asked this app to reconnect".into()),
             "auth.denied" => Err(format!("Swarm refused the stream ({})", s(frame, "error_code"))),
@@ -1388,9 +1496,7 @@ impl Model<'_> {
                     return Ok(false);
                 }
                 if s(frame, "kind") == "workset.session.removed" {
-                    self.shells.remove(&sid);
-                    self.order.retain(|x| x != &sid);
-                    self.details.remove(&sid);
+                    self.forget(&sid);
                     return Ok(true);
                 }
                 if let Some(shell) = frame.get("session").filter(|x| !x.is_null()) {
@@ -1570,9 +1676,7 @@ impl Model<'_> {
             "session.metadata.updated" => Ok(true),
             "session.reactivated" => self.reread_session(sid),
             "session.archived" | "session.deleted" => {
-                self.shells.remove(sid);
-                self.order.retain(|x| x != sid);
-                self.details.remove(sid);
+                self.forget(sid);
                 Ok(true)
             }
             _ => Ok(payload.get("run_intent").is_some()),
@@ -1624,14 +1728,153 @@ impl Model<'_> {
     }
 }
 
-/// A page of earlier messages (GET /v3/sessions/{id}/messages?before_seq=):
-/// its entries, oldest first, where the next earlier page starts (0: none
-/// given) and whether Swarm holds more before it.
-fn older_page(answer: &Value) -> (Vec<Entry>, u64, bool) {
-    let messages = list(answer, "messages").to_vec();
-    let next = answer.get("next_before_seq").and_then(Value::as_u64).unwrap_or(0);
+/// A message's sequence in its session (0: none given).
+fn seq(m: &Value) -> u64 {
+    m.get("global_seq").and_then(Value::as_u64).unwrap_or(0)
+}
+
+/// The messages of an answer that belong to this conversation: a record
+/// naming another session is never shown in this one.
+fn own_messages(id: &str, messages: &[Value]) -> Vec<Value> {
+    messages.iter().filter(|m| m.is_object() && (s(m, "session_id").is_empty() || s(m, "session_id") == id)).cloned().collect()
+}
+
+/// The page of messages before `before` (exclusive), within a byte budget.
+fn page_path(id: &str, before: u64) -> String {
+    format!("/v3/sessions/{id}/messages?before_seq={before}&max_bytes={PAGE_BYTES}")
+}
+
+/// Hydrate's tail of one conversation and what Swarm says lies before it.
+#[derive(Debug, Default)]
+struct Tail {
+    /// Oldest first.
+    messages: Vec<Value>,
+    /// The exclusive boundary of the page before the tail.
+    before_seq: u64,
+    /// Swarm holds messages before the tail.
+    more_older: bool,
+    /// How many messages Swarm holds for the session, when it says.
+    message_count: Option<usize>,
+}
+
+/// Reads one conversation's tail from a hydrate answer with its history
+/// metadata. Swarm's tail is capped by count and by bytes, so its length
+/// says nothing: a capped tail comes with an omission whose cursor
+/// (`{id}:messages:before:{seq}`) is the boundary, a manifest descriptor,
+/// and the session's message_count. A cursor naming another session is not
+/// this one's.
+fn tail_of(snap: &Value, id: &str, messages: Vec<Value>) -> Tail {
+    let mut messages = own_messages(id, &messages);
+    messages.sort_by_key(seq);
+    let omitted: Vec<&Value> = list(snap, "omissions").iter().filter(|o| s(o, "session_id") == id && s(o, "resource") == "messages").collect();
+    let prefix = format!("{id}:messages:before:");
+    let cursor = omitted.iter().filter_map(|o| s(o, "next_cursor").strip_prefix(prefix.as_str()).and_then(|n| n.parse::<u64>().ok())).find(|n| *n > 0);
+    let manifest = snap.get("history_manifests_by_session").and_then(|m| m.get(id)).and_then(Value::as_array).is_some_and(|d| d.iter().any(|d| s(d, "resource") == "messages"));
+    let message_count = snap.get("sessions_by_id").and_then(|x| x.get(id)).and_then(|x| x.get("message_count")).and_then(Value::as_u64).map(|c| c as usize);
+    let before_seq = cursor.unwrap_or_else(|| messages.first().map(seq).unwrap_or(0));
+    let more = !omitted.is_empty() || manifest || message_count.is_some_and(|c| c > messages.len());
+    Tail { messages, before_seq, more_older: more && before_seq > 0, message_count }
+}
+
+/// Pages read after a reconnect between the history shown before and a new
+/// tail (oldest first), and whether Swarm holds more before them.
+#[derive(Debug, Default)]
+struct Bridge {
+    messages: Vec<Value>,
+    more: bool,
+}
+
+/// What a conversation shows before its tail after a hydrate.
+#[derive(Debug)]
+struct Joined {
+    older_raw: Vec<Value>,
+    oldest_seq: u64,
+    more_older: Option<bool>,
+}
+
+/// Joins the history a conversation showed before (`prior`: its messages
+/// read without a hole, oldest first, with the boundary and more-older flag
+/// it had) to a new tail, so a reconnect or a capped reload never replaces
+/// shown history with only the recent tail. Swarm stays the authority:
+/// - the tail replaces every earlier copy of its messages (refreshed), and
+///   a prior message at or after the tail's boundary that the tail lacks is
+///   gone;
+/// - nothing is kept when Swarm holds nothing before the tail, or when it
+///   holds fewer messages than would be shown (history removed is not
+///   brought back);
+/// - prior history is kept only when it reaches the tail, directly or
+///   through the bridge pages, so nothing is shown with a hole in it.
+///
+/// Otherwise the tail stands alone with Swarm's cursor (and any bridge
+/// pages, which were read right before it), and earlier pages read again.
+fn join_history(id: &str, prior: Option<(Vec<Value>, u64, Option<bool>)>, tail: &Tail, bridge: Bridge) -> Joined {
+    let alone = Joined { older_raw: Vec::new(), oldest_seq: tail.before_seq, more_older: Some(tail.more_older) };
+    if !tail.more_older {
+        return alone;
+    }
+    let f = tail.before_seq;
+    let fresh: HashSet<String> = tail.messages.iter().map(|m| s(m, "id").to_string()).filter(|i| !i.is_empty()).collect();
+    let usable = |m: &Value| seq(m) > 0 && seq(m) < f && !fresh.contains(s(m, "id"));
+    let mut bridged: Vec<Value> = own_messages(id, &bridge.messages).into_iter().filter(|m| usable(m)).collect();
+    bridged.sort_by_key(seq);
+    bridged.dedup_by_key(|m| seq(m));
+    let bridged_alone = match bridged.first() {
+        Some(first) => Joined { oldest_seq: seq(first), older_raw: bridged.clone(), more_older: Some(bridge.more) },
+        None => alone,
+    };
+    let Some((verified, prior_oldest, prior_more)) = prior else { return bridged_alone };
+    let verified = own_messages(id, &verified);
+    let Some(newest) = verified.iter().map(seq).max().filter(|n| *n > 0) else { return bridged_alone };
+    let reaches = newest >= f || bridged.first().is_some_and(|m| seq(m) <= newest);
+    if !reaches {
+        return bridged_alone;
+    }
+    let mut by_seq: std::collections::BTreeMap<u64, Value> = std::collections::BTreeMap::new();
+    for m in verified.into_iter().filter(|m| usable(m)) {
+        by_seq.insert(seq(&m), m);
+    }
+    // The bridge was read later: its copy of a message wins.
+    for m in bridged {
+        by_seq.insert(seq(&m), m);
+    }
+    let older: Vec<Value> = by_seq.into_values().collect();
+    if tail.message_count.is_some_and(|c| older.len() + tail.messages.len() > c) {
+        return bridged_alone;
+    }
+    let Some(first) = older.first() else { return bridged_alone };
+    let oldest_seq = seq(first);
+    // Before the prior's oldest message, Swarm said then whether more exist.
+    let more_older = if prior_oldest == 0 || oldest_seq <= prior_oldest { prior_more.or(Some(true)) } else { Some(true) };
+    Joined { older_raw: older, oldest_seq, more_older }
+}
+
+/// Puts a page of earlier messages (GET /v3/sessions/{id}/messages?
+/// before_seq=) before what a conversation shows: only this session's
+/// messages strictly before the boundary, each once, oldest first. The
+/// boundary moves to Swarm's next_before_seq; when it cannot move, no
+/// further page is read (no loop on a page already read).
+fn add_older_page(id: &str, d: &mut Detail, answer: &Value) {
+    let boundary = d.oldest_seq;
+    let known: HashSet<u64> = d.older_raw.iter().chain(d.tail_raw.iter()).map(seq).collect();
+    let mut page = own_messages(id, list(answer, "messages"));
+    page.retain(|m| seq(m) > 0 && seq(m) < boundary && !known.contains(&seq(m)));
+    page.sort_by_key(seq);
+    page.dedup_by_key(|m| seq(m));
     let more = answer.get("has_more_older").and_then(Value::as_bool).unwrap_or(false);
-    (map::entries(&messages), next, more)
+    let next = answer.get("next_before_seq").and_then(Value::as_u64).filter(|n| *n > 0 && *n < boundary).or_else(|| page.first().map(seq));
+    if !page.is_empty() {
+        let mut older = page;
+        older.extend(std::mem::take(&mut d.older_raw));
+        d.set_older(older);
+    }
+    match next {
+        Some(next) => {
+            d.oldest_seq = next;
+            d.more_older = Some(more);
+        }
+        None => d.more_older = Some(false),
+    }
+    d.older_error = None;
 }
 
 /// Titles for the tasks a conversation waits on, from its own tasks or its
@@ -1960,6 +2203,7 @@ mod tests {
                 facts_kick: mpsc::channel().0,
                 companion: None,
                 companion_read: None,
+                carried: HashMap::new(),
             };
             m.shells.insert("s1".into(), json!({"id": "s1", "title": "Ship it", "metadata": {"role": "project_orchestrator", "project_id": "proj_1"}}));
             m.tasks.insert("proj_1".into(), vec![json!({"id": "t1", "title": "Fix the build", "origin_session_id": "s1", "agent": "coder", "status": "running"})]);
@@ -2064,7 +2308,7 @@ mod tests {
     // named id, shells, details and task lists; the client below is
     // unreachable, so every Swarm read fails like a lost connection.
     mod companion {
-        use super::super::{Client, Detail, Model, older_page};
+        use super::super::{Client, Detail, Model, add_older_page, map};
         use crate::data::{Earlier, Entry, RunState};
         use serde_json::json;
         use std::collections::{HashMap, HashSet};
@@ -2092,6 +2336,7 @@ mod tests {
                 facts_kick: mpsc::channel().0,
                 companion: None,
                 companion_read: None,
+                carried: HashMap::new(),
             };
             m.shells.insert("cmp".into(), json!({"id": "cmp", "title": "Companion", "metadata": {"swarm_v3_companion": {"generation": 1}, "navigation_hidden": true}}));
             m.tasks.insert("p1".into(), vec![json!({"id": "t1", "title": "Research", "status": "in_progress", "origin_session_id": "cmp", "updated_at": 2})]);
@@ -2148,29 +2393,32 @@ mod tests {
             let client = Client::new("http://127.0.0.1:9", "unused");
             let mut m = model(&client);
             m.follow_companion(&Mutex::new(Some("cmp".to_string()))).unwrap();
-            let tail = Detail { entries: vec![Entry::User("latest".into())], hydrated: true, oldest_seq: 40, more_older: Some(true), ..Default::default() };
+            let latest = json!({"id": "m3", "session_id": "cmp", "role": "user", "content": "latest", "global_seq": 40});
+            let tail = Detail {
+                entries: map::entries(std::slice::from_ref(&latest)),
+                tail_raw: vec![latest],
+                hydrated: true,
+                oldest_seq: 40,
+                more_older: Some(true),
+                ..Default::default()
+            };
             m.details.insert("cmp".into(), tail);
-
-            // Swarm's page answer: oldest first, where the next page starts.
-            let (page, next, more) = older_page(&json!({"messages": [
-                {"id": "m1", "role": "user", "content": "first", "global_seq": 10},
-                {"id": "m2", "role": "assistant", "content": "reply", "global_seq": 12}],
-                "next_before_seq": 10, "has_more_older": false}));
-            assert_eq!((page.len(), next, more), (2, 10, false));
 
             // A failed page read is reported and leaves what is shown alone.
             assert!(m.read_older("cmp"));
             assert!(m.session_of("cmp").unwrap().earlier.error.is_some());
             assert_eq!(m.session_of("cmp").unwrap().entries.len(), 1);
 
-            // A read page goes before the tail, oldest first.
-            let d = m.details.get_mut("cmp").unwrap();
-            d.older = page;
-            d.oldest_seq = next;
-            d.more_older = Some(false);
-            let entries = m.session_of("cmp").unwrap().entries;
-            assert!(matches!(&entries[0], Entry::User(t) if t.as_ref() == "first"));
-            assert!(matches!(entries.last(), Some(Entry::User(t)) if t.as_ref() == "latest"));
+            // Swarm's page answer: oldest first, where the next page starts.
+            let page = json!({"messages": [
+                {"id": "m1", "session_id": "cmp", "role": "user", "content": "first", "global_seq": 10},
+                {"id": "m2", "session_id": "cmp", "role": "assistant", "content": "reply", "global_seq": 12}],
+                "next_before_seq": 10, "has_more_older": false});
+            add_older_page("cmp", m.details.get_mut("cmp").unwrap(), &page);
+            let s = m.session_of("cmp").unwrap();
+            assert!(matches!(&s.entries[0], Entry::User(t) if t.as_ref() == "first"));
+            assert!(matches!(s.entries.last(), Some(Entry::User(t)) if t.as_ref() == "latest"));
+            assert_eq!(s.earlier.error, None, "a page read clears the failure");
             // Nothing earlier: no further read is made.
             assert!(!m.read_older("cmp"));
             assert!(!m.session_of("cmp").unwrap().earlier.more);
@@ -2222,12 +2470,15 @@ mod tests {
         }
 
         // Purpose: hydrating a conversation again replaces its tail; pages read
-        // before end where the old tail began, so kept they would leave a gap
-        // or repeat messages that arrived since. Requirement: they are
-        // dropped and the paging restarts from the new tail. Authority:
-        // Model::hydrated (hydrate's answer handling), session_of.
+        // before that cannot be joined to it without a hole (here: nothing
+        // read from Swarm reaches the new tail) are dropped and the paging
+        // restarts from the new tail, with Swarm's metadata (not the tail's
+        // length) saying whether more exist. The answer count carries on, so
+        // a read the console asked for still settles. Authority:
+        // Model::take_hydrated (hydrate's answer handling, join_history),
+        // session_of. Joining shown history is covered in mod history.
         #[test]
-        fn hydrating_again_drops_earlier_pages() {
+        fn hydrating_again_without_a_join_restarts_paging() {
             let client = Client::new("http://127.0.0.1:9", "unused");
             let mut m = model(&client);
             with_conversation(&mut m);
@@ -2245,7 +2496,7 @@ mod tests {
             let ids = vec!["s1".to_string()];
 
             // A short new tail: nothing before it.
-            m.hydrated(&json!({"messages_by_session": {"s1": [message(300, "newer"), message(301, "newest")]}}), &ids);
+            m.take_hydrated(&ids, &json!({"messages_by_session": {"s1": [message(300, "newer"), message(301, "newest")]}}));
             let d = &m.details["s1"];
             assert!(d.older.is_empty());
             assert_eq!((d.oldest_seq, d.more_older), (300, Some(false)));
@@ -2254,16 +2505,304 @@ mod tests {
             assert_eq!(s.entries.len(), 2);
             assert!(matches!(&s.entries[0], Entry::User(t) if t.as_ref() == "newer"));
 
-            // A full tail after pages were read: they go, and more may exist
-            // before its first message.
+            // A capped tail after pages were read that do not reach it: they
+            // go, and Swarm's omission cursor says more exist before it.
             m.details.get_mut("s1").unwrap().older = vec![Entry::User("page".into())];
             let full: Vec<serde_json::Value> = (0..super::super::HYDRATE_TAIL as u64).map(|i| message(500 + i, "m")).collect();
-            m.hydrated(&json!({"messages_by_session": {"s1": full}}), &ids);
+            m.take_hydrated(
+                &ids,
+                &json!({"messages_by_session": {"s1": full},
+                        "omissions": [{"session_id": "s1", "resource": "messages", "reason": "requires_manifest", "next_cursor": "s1:messages:before:500"}]}),
+            );
             let d = &m.details["s1"];
             assert!(d.older.is_empty());
             assert_eq!((d.oldest_seq, d.more_older), (500, Some(true)));
             let s = m.session_of("s1").unwrap();
             assert_eq!((s.earlier.more, s.earlier.older, s.entries.len()), (true, 0, super::super::HYDRATE_TAIL));
+        }
+    }
+
+    // Purpose: every conversation's history stays reachable and shown when
+    // Swarm's hydrate tail is capped (by count or by its byte budget) and
+    // across a reconnect, with Swarm's records as the only authority.
+    // Requirement: a capped tail exposes the earlier-history boundary from
+    // Swarm's omission cursor (exclusive), not from the tail's length, for
+    // project chats as well as the Companion; earlier pages are merged once
+    // each, in order, and only this session's; a reconnect whose new tail is
+    // shorter keeps the history already shown, the refreshed tail replacing
+    // its old copies, without a hole; history Swarm no longer holds (nothing
+    // before the tail, fewer messages than shown, a deleted or archived
+    // session) is never brought back; one session's history never shows in
+    // another. Threat: a long conversation suddenly showing as one message,
+    // with no way to page back, after a capped reload or a reconnect.
+    // Authority: tail_of, join_history, add_older_page, Model::take_hydrated,
+    // handoff, forget, read_older and session_of. The model is the narrowest
+    // layer that joins hydrate answers, kept history and page answers; the
+    // client is unreachable, so a page read here fails like a lost
+    // connection and no test needs Swarm. Rendering is checked separately
+    // (console/earlier.rs); runtime behaviour against a live Swarm is not.
+    mod history {
+        use super::super::{Bridge, Client, Detail, Model, add_older_page, join_history, map, tail_of};
+        use crate::data::Entry;
+        use serde_json::{Value, json};
+        use std::collections::{HashMap, HashSet};
+        use std::sync::mpsc;
+
+        fn model(client: &Client) -> Model<'_> {
+            let projects = map::projects(&json!({"projects": [{"id": "proj_1", "name": "App", "workspaces": [{"path": "/p/app"}]}]}));
+            let mut m = Model {
+                client,
+                kind: "home",
+                projects,
+                order: vec!["s1".into(), "s2".into()],
+                shells: HashMap::new(),
+                runs: HashMap::new(),
+                waiting: HashSet::new(),
+                details: HashMap::new(),
+                tasks: HashMap::new(),
+                media: Vec::new(),
+                media_reads: HashMap::new(),
+                media_fetching: HashSet::new(),
+                media_fetch: mpsc::channel().0,
+                assessed: HashMap::new(),
+                facts_kick: mpsc::channel().0,
+                companion: None,
+                companion_read: None,
+                carried: HashMap::new(),
+            };
+            for id in ["s1", "s2"] {
+                m.shells.insert(id.into(), json!({"id": id, "title": id, "metadata": {"role": "project_orchestrator", "project_id": "proj_1"}}));
+            }
+            m
+        }
+
+        fn msg(sid: &str, seq: u64) -> Value {
+            json!({"id": format!("{sid}-m{seq}"), "session_id": sid, "role": "user", "content": format!("{sid} message {seq}"), "global_seq": seq})
+        }
+
+        fn msgs(sid: &str, seqs: impl IntoIterator<Item = u64>) -> Vec<Value> {
+            seqs.into_iter().map(|n| msg(sid, n)).collect()
+        }
+
+        /// A hydrate answer for one session: its tail, and when capped,
+        /// Swarm's omission with its cursor and manifest descriptor.
+        fn hydrate(sid: &str, tail: &[Value], message_count: usize, capped: bool) -> Value {
+            let first = tail.first().map(|m| m["global_seq"].as_u64().unwrap()).unwrap_or(0);
+            let mut snap = json!({
+                "messages_by_session": {sid: tail},
+                "sessions_by_id": {sid: {"id": sid, "title": sid, "message_count": message_count, "metadata": {"role": "project_orchestrator", "project_id": "proj_1"}}},
+                "omissions": [], "history_manifests_by_session": {}
+            });
+            if capped {
+                snap["omissions"] = json!([{"session_id": sid, "resource": "messages", "reason": "requires_manifest",
+                    "next_cursor": format!("{sid}:messages:before:{first}"), "manifest_ref": format!("{sid}:messages")}]);
+                snap["history_manifests_by_session"] = json!({sid: [{"resource": "messages", "from_seq": first, "message_count": tail.len(), "complete": true}]});
+            }
+            snap
+        }
+
+        /// The text of each message entry, in order.
+        fn texts(entries: &[Entry]) -> Vec<String> {
+            entries.iter().filter_map(|e| if let Entry::User(t) = e { Some(t.to_string()) } else { None }).collect()
+        }
+
+        fn shown(m: &Model<'_>, sid: &str) -> Vec<String> {
+            texts(&m.session_of(sid).expect("listed").entries)
+        }
+
+        #[test]
+        fn history_capped_tail_of_one_message_pages_from_the_cursor() {
+            // Swarm's byte budget left one message of 219: the cursor, not
+            // the tail's length, says what lies before.
+            let snap = hydrate("s1", &msgs("s1", [500]), 219, true);
+            let tail = tail_of(&snap, "s1", msgs("s1", [500]));
+            assert_eq!((tail.messages.len(), tail.before_seq, tail.more_older, tail.message_count), (1, 500, true, Some(219)));
+            let joined = join_history("s1", None, &tail, Bridge::default());
+            assert_eq!((joined.older_raw.len(), joined.oldest_seq, joined.more_older), (0, 500, Some(true)));
+
+            // In the model: an ordinary project chat (not the Companion)
+            // offers earlier history and its read is attempted, not refused.
+            let client = Client::new("http://127.0.0.1:9", "unused");
+            let mut m = model(&client);
+            m.take_hydrated(&["s1".to_string()], &snap);
+            let s = m.session_of("s1").unwrap();
+            assert_eq!(texts(&s.entries), vec!["s1 message 500"]);
+            assert!(s.earlier.more);
+            assert!(m.read_older("s1"), "a project chat pages its history");
+            assert!(m.session_of("s1").unwrap().earlier.error.is_some(), "the unreachable read reports, shown text stays");
+            assert_eq!(shown(&m, "s1"), vec!["s1 message 500"]);
+
+            // Another session's omission or cursor is not this one's.
+            let mut other = hydrate("s1", &msgs("s1", [500]), 1, false);
+            other["omissions"] = json!([{"session_id": "s2", "resource": "messages", "next_cursor": "s2:messages:before:7"},
+                                        {"session_id": "s1", "resource": "events", "next_cursor": "s1:events:1"}]);
+            let tail = tail_of(&other, "s1", msgs("s1", [500]));
+            assert!(!tail.more_older, "nothing says s1 holds more");
+            let mut forged = hydrate("s1", &msgs("s1", [500]), 219, true);
+            forged["omissions"][0]["next_cursor"] = json!("s2:messages:before:7");
+            assert_eq!(tail_of(&forged, "s1", msgs("s1", [500])).before_seq, 500, "a cursor naming s2 is ignored");
+        }
+
+        #[test]
+        fn history_full_tail_of_200_of_219_pages_once_in_order() {
+            let client = Client::new("http://127.0.0.1:9", "unused");
+            let mut m = model(&client);
+            let tail = msgs("s1", 20..=219);
+            m.take_hydrated(&["s1".to_string()], &hydrate("s1", &tail, 219, true));
+            assert!(m.session_of("s1").unwrap().earlier.more, "200 of 219 has earlier history");
+            assert_eq!(m.details["s1"].oldest_seq, 20);
+
+            // The page: 1..=19, plus a copy of the tail's oldest (at the
+            // exclusive boundary), a duplicate, another session's message and
+            // the page out of order. Only s1's 1..=19 are kept, once each.
+            let mut page = msgs("s1", (1..=19).rev());
+            page.push(msg("s1", 20));
+            page.push(msg("s1", 5));
+            page.push(msg("s2", 3));
+            add_older_page("s1", m.details.get_mut("s1").unwrap(), &json!({"messages": page, "next_before_seq": 1, "has_more_older": false}));
+            let want: Vec<String> = (1..=219).map(|n| format!("s1 message {n}")).collect();
+            assert_eq!(shown(&m, "s1"), want);
+            assert!(!m.session_of("s1").unwrap().earlier.more);
+            assert!(!m.read_older("s1"), "nothing earlier: no read");
+
+            // A page that cannot move the boundary ends paging (no loop).
+            let mut d = Detail { tail_raw: msgs("s1", [50]), hydrated: true, oldest_seq: 50, more_older: Some(true), ..Default::default() };
+            add_older_page("s1", &mut d, &json!({"messages": msgs("s1", [50, 60]), "next_before_seq": 50, "has_more_older": true}));
+            assert_eq!((d.older_raw.len(), d.more_older), (0, Some(false)));
+        }
+
+        #[test]
+        fn history_reconnect_200_to_1_keeps_shown_history_and_refreshes_overlap() {
+            let client = Client::new("http://127.0.0.1:9", "unused");
+            let mut m = model(&client);
+            m.take_hydrated(&["s1".to_string(), "s2".to_string()], &{
+                let mut snap = hydrate("s1", &msgs("s1", 20..=219), 219, true);
+                let s2 = hydrate("s2", &msgs("s2", [7, 8]), 2, false);
+                snap["messages_by_session"]["s2"] = s2["messages_by_session"]["s2"].clone();
+                snap["sessions_by_id"]["s2"] = s2["sessions_by_id"]["s2"].clone();
+                snap
+            });
+            add_older_page("s1", m.details.get_mut("s1").unwrap(), &json!({"messages": msgs("s1", 1..=19), "next_before_seq": 1, "has_more_older": false}));
+            // A message arrives live, then the stream fails: what was shown is
+            // kept for the next connection.
+            assert!(m.event("s1", "session.message.appended", json!({"message": msg("s1", 220)})).unwrap());
+            let kept = m.handoff();
+            assert_eq!(kept.len(), 2);
+
+            // Reconnect: a fresh model, and Swarm's capped tail is one message
+            // (the newest, its content refreshed since).
+            let mut m = model(&client);
+            m.carried = kept;
+            let mut refreshed = msg("s1", 220);
+            refreshed["content"] = json!("s1 message 220 (refreshed)");
+            m.take_hydrated(&["s1".to_string()], &hydrate("s1", std::slice::from_ref(&refreshed), 220, true));
+            let mut want: Vec<String> = (1..=219).map(|n| format!("s1 message {n}")).collect();
+            want.push("s1 message 220 (refreshed)".into());
+            // The new tail (220) starts after the history read from Swarm
+            // before the failure (up to 219; 220 only arrived live, so it is
+            // not known to be free of a hole). Joining needs the bridge page,
+            // which this unreachable client cannot read: rather than show a
+            // possible hole, the tail stands alone with Swarm's cursor.
+            assert_eq!(shown(&m, "s1"), vec!["s1 message 220 (refreshed)"]);
+            assert_eq!((m.details["s1"].oldest_seq, m.session_of("s1").unwrap().earlier.more), (220, true));
+
+            // With the history read up to the tail's boundary (no message
+            // came while away), the join is direct: nothing is lost, the
+            // refreshed copy replaces the old one, nothing repeats.
+            let mut prior = Detail { tail_raw: msgs("s1", 20..=220), hydrated: true, oldest_seq: 1, more_older: Some(false), ..Default::default() };
+            prior.set_older(msgs("s1", 1..=19));
+            let mut m = model(&client);
+            m.carried.insert("s1".into(), prior);
+            m.take_hydrated(&["s1".to_string()], &hydrate("s1", std::slice::from_ref(&refreshed), 220, true));
+            assert_eq!(shown(&m, "s1"), want);
+            assert_eq!((m.details["s1"].oldest_seq, m.session_of("s1").unwrap().earlier.more), (1, false));
+            assert!(m.carried.is_empty(), "taken once");
+
+            // Messages that came while away are joined through the bridge
+            // pages; the bridge's copy of an overlapping message wins.
+            let tail = tail_of(&hydrate("s1", &msgs("s1", [230]), 230, true), "s1", msgs("s1", [230]));
+            let mut bridge_msgs = msgs("s1", 219..=229);
+            bridge_msgs[0]["content"] = json!("s1 message 219 (bridge)");
+            let prior: Vec<Value> = msgs("s1", 1..=219);
+            let joined = join_history("s1", Some((prior.clone(), 1, Some(false))), &tail, Bridge { messages: bridge_msgs, more: true });
+            let seqs: Vec<u64> = joined.older_raw.iter().map(|m| m["global_seq"].as_u64().unwrap()).collect();
+            assert_eq!(seqs, (1..=229).collect::<Vec<u64>>());
+            assert_eq!(joined.older_raw[218]["content"], json!("s1 message 219 (bridge)"));
+            assert_eq!((joined.oldest_seq, joined.more_older), (1, Some(false)));
+            // A bridge that does not reach the prior history leaves a hole:
+            // the prior is dropped, the bridge and the cursor stay.
+            let joined = join_history("s1", Some((prior, 1, Some(false))), &tail, Bridge { messages: msgs("s1", 225..=229), more: true });
+            assert_eq!((joined.older_raw.len(), joined.oldest_seq, joined.more_older), (5, 225, Some(true)));
+
+            // s2 was not hydrated on this connection: its kept history is
+            // still kept for it, and none of s1's shows there.
+            assert!(!shown(&m, "s1").iter().any(|t| t.starts_with("s2")));
+        }
+
+        #[test]
+        fn history_removed_or_cleared_by_swarm_is_not_brought_back() {
+            let client = Client::new("http://127.0.0.1:9", "unused");
+            let prior = || {
+                let mut d = Detail { tail_raw: msgs("s1", 20..=219), hydrated: true, oldest_seq: 1, more_older: Some(false), ..Default::default() };
+                d.set_older(msgs("s1", 1..=19));
+                d
+            };
+            // Swarm now holds only the tail (no omission, count 1): the old
+            // history is not shown and no earlier page is offered.
+            let mut m = model(&client);
+            m.carried.insert("s1".into(), prior());
+            m.take_hydrated(&["s1".to_string()], &hydrate("s1", &msgs("s1", [300]), 1, false));
+            assert_eq!(shown(&m, "s1"), vec!["s1 message 300"]);
+            assert!(!m.session_of("s1").unwrap().earlier.more);
+
+            // Swarm holds fewer messages than would be shown: the kept
+            // history is dropped; the cursor still pages what Swarm holds.
+            let mut m = model(&client);
+            m.carried.insert("s1".into(), prior());
+            m.take_hydrated(&["s1".to_string()], &hydrate("s1", &msgs("s1", [219]), 50, true));
+            assert_eq!(shown(&m, "s1"), vec!["s1 message 219"]);
+            assert_eq!((m.details["s1"].oldest_seq, m.session_of("s1").unwrap().earlier.more), (219, true));
+
+            // A prior message at or after the tail's boundary that the tail
+            // lacks is gone in Swarm: not shown again.
+            let mut m = model(&client);
+            m.carried.insert("s1".into(), prior());
+            let tail: Vec<Value> = msgs("s1", (200..=219).filter(|n| *n != 210));
+            m.take_hydrated(&["s1".to_string()], &hydrate("s1", &tail, 218, true));
+            assert!(!shown(&m, "s1").contains(&"s1 message 210".to_string()));
+            assert_eq!(shown(&m, "s1").len(), 218);
+
+            // A deleted or archived conversation keeps nothing for later.
+            let mut m = model(&client);
+            m.carried.insert("s1".into(), prior());
+            m.carried.insert("s2".into(), prior());
+            m.details.insert("s2".into(), prior());
+            assert!(m.event("s1", "session.deleted", json!({})).unwrap());
+            assert!(m.event("s2", "session.archived", json!({})).unwrap());
+            assert!(m.carried.is_empty() && m.details.is_empty());
+            assert!(m.session_of("s1").is_none() && m.session_of("s2").is_none());
+            assert!(m.handoff().is_empty());
+        }
+
+        #[test]
+        fn history_stays_with_its_own_conversation() {
+            let client = Client::new("http://127.0.0.1:9", "unused");
+            let mut m = model(&client);
+            let mut d = Detail { tail_raw: msgs("s1", 20..=219), hydrated: true, oldest_seq: 20, more_older: Some(true), ..Default::default() };
+            d.set_older(Vec::new());
+            m.carried.insert("s1".into(), d);
+            // s2 is read: s1's kept history is not its own.
+            m.take_hydrated(&["s2".to_string()], &hydrate("s2", &msgs("s2", [7]), 1, false));
+            assert_eq!(shown(&m, "s2"), vec!["s2 message 7"]);
+            assert!(m.carried.contains_key("s1"), "still kept for s1");
+            // A kept or answered record naming another session never shows.
+            let tail = tail_of(&hydrate("s1", &msgs("s1", [219]), 219, true), "s1", vec![msg("s1", 219), msg("s2", 218)]);
+            assert_eq!(tail.messages.len(), 1);
+            let mut prior = msgs("s1", 20..=219);
+            prior.push(msg("s2", 100));
+            let joined = join_history("s1", Some((prior, 20, Some(true))), &tail, Bridge::default());
+            assert!(joined.older_raw.iter().all(|m| m["session_id"] == json!("s1")));
+            assert_eq!(joined.older_raw.len(), 199);
         }
     }
 }

@@ -41,7 +41,8 @@ pub(super) struct CompanionPage {
     /// The last failure, as Swarm (or the connection) worded it.
     pub error: Option<String>,
     /// The follow loop's Companion: its tasks. Its earlier messages load as
-    /// in any pane (earlier.rs).
+    /// in any pane, their paging on its session like every conversation's
+    /// (earlier.rs).
     pub feed: Option<CompanionFeed>,
     /// The work item whose detail is open (Work::key, or "watch:" + its
     /// machine/project/task for a watched task this machine cannot show).

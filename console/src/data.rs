@@ -885,7 +885,8 @@ pub struct Session {
     /// While the run is asleep on tasks: what it waits for.
     pub waiting_on: Option<TaskWait>,
     /// Its history before what `entries` shows, read a page at a time as
-    /// the person scrolls up.
+    /// the person scrolls up (every live conversation, not only the
+    /// Companion).
     pub earlier: Earlier,
 }
 
@@ -895,7 +896,8 @@ pub struct Session {
 pub struct Earlier {
     /// Swarm may hold messages before the first of `entries`.
     pub more: bool,
-    /// How many of `entries`, at the front, came from earlier pages.
+    /// How many of `entries`, at the front, came from earlier pages (or
+    /// were kept from before a reconnect).
     pub older: usize,
     /// Page reads answered so far, read or failed: a read the console
     /// asked for is over once this moves.

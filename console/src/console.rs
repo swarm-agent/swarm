@@ -1179,7 +1179,8 @@ impl Console {
 
         // Consecutive tool calls read as one tight stack, not separate blocks.
         let mut entries: Vec<AnyElement> = Vec::new();
-        // Earlier messages loading, or why they did not come.
+        // Earlier messages loading, or why they did not come: every live
+        // conversation, the Companion's as well (earlier.rs).
         entries.extend(self.older_row(pid, s, cx));
         let first = entries.len();
         let mut tools: Vec<AnyElement> = Vec::new();

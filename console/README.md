@@ -377,6 +377,18 @@ a separate profile and the extension loaded, for trying it out.
   same tick what needs the person on home and each machine
   (`src/swarm/needs.rs`).
   `src/swarm/map.rs` turns the answers into what the console shows.
+- Earlier history: every conversation (project chats and the Companion)
+  shows "Earlier messages" above its first message while Swarm holds more.
+  Each click reads one page before the oldest message shown
+  (`GET /v3/sessions/{id}/messages?before_seq=`, within a 256 KiB budget).
+  Whether more exists comes from the hydrate answer's omission cursor and
+  `message_count`, not from the tail's length: Swarm's byte budget can return
+  a single message of a long conversation. After a reconnect, history already
+  shown is joined to the new tail, reading at most two pages between them,
+  instead of being replaced by it. The tail's copies win. Nothing is kept
+  when Swarm holds nothing before the tail, holds fewer messages than would
+  be shown, or the session was archived or deleted. Kept history that cannot
+  be joined without a hole is dropped, and the button reads it again.
 
 ### Project folders and project.md
 

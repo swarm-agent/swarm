@@ -103,7 +103,19 @@ metadata-only activity stream (`/v3/fleet/activity`, below) is for clients.
 
    Keep `snapshot_endpoint_cursor` from the answer.
 2. **Full conversations.** `POST /v3/sync/hydrate` with the session ids the
-   person opens.
+   person opens. A `tail` read is capped by count and by bytes (256 KiB), so
+   it can hold a single message of a long conversation. The tail's length
+   tells you nothing. A capped tail comes with an `omissions` entry for
+   `messages` whose `next_cursor` is `{session_id}:messages:before:{seq}`
+   (with `manifest_policy: "manifest"`, also a `history_manifests_by_session`
+   descriptor), and the session's `message_count`. Read earlier pages with
+   `GET /v3/sessions/{id}/messages?before_seq={seq}` (exclusive, optionally
+   `max_bytes`), following `next_before_seq` while `has_more_older` is set,
+   one page per request from the person. After a reconnect, do not replace
+   history already shown with a shorter tail. Keep it only where it joins
+   the new tail (read the pages between them if needed), let the tail's
+   copies win, and drop it when Swarm holds nothing before the tail or fewer
+   messages than you would show.
 3. **Live.** Open the WebSocket
    `/v3/realtime/stream?endpoint_cursor=CURSOR`, with `X-Swarm-Token`.
    - **Frames:** `hello`, `event`, `replay.*`, `keepalive`,
