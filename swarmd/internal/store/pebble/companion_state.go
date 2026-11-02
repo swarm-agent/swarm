@@ -154,21 +154,25 @@ type CompanionStateCounters struct {
 // current Companion. Lists are ordered oldest first and bounded by the
 // CompanionStateMax* limits.
 type CompanionState struct {
-	Version        int                    `json:"version"`
-	AccountScopeID string                 `json:"account_scope_id"`
-	UserID         string                 `json:"user_id"`
-	SessionID      string                 `json:"session_id"`
-	Generation     uint64                 `json:"generation"`
-	Revision       int64                  `json:"revision"`
-	Cursor         CompanionStateCursor   `json:"cursor"`
-	Topics         []CompanionStateRef    `json:"topics"`
-	Decisions      []CompanionStateRef    `json:"decisions"`
-	Commitments    []CompanionCommitment  `json:"commitments"`
-	Work           []CompanionWorkRef     `json:"work"`
-	Results        []CompanionResultRef   `json:"results"`
-	Counters       CompanionStateCounters `json:"counters"`
-	CreatedAt      int64                  `json:"created_at"`
-	UpdatedAt      int64                  `json:"updated_at"`
+	Version        int                   `json:"version"`
+	AccountScopeID string                `json:"account_scope_id"`
+	UserID         string                `json:"user_id"`
+	SessionID      string                `json:"session_id"`
+	Generation     uint64                `json:"generation"`
+	Revision       int64                 `json:"revision"`
+	Cursor         CompanionStateCursor  `json:"cursor"`
+	Topics         []CompanionStateRef   `json:"topics"`
+	Decisions      []CompanionStateRef   `json:"decisions"`
+	Commitments    []CompanionCommitment `json:"commitments"`
+	Work           []CompanionWorkRef    `json:"work"`
+	Results        []CompanionResultRef  `json:"results"`
+	// Continuity is the open continuity draft and what was sealed
+	// (companion_continuity.go). A state written before continuity existed
+	// has none and starts its draft at the next event.
+	Continuity CompanionContinuity    `json:"continuity"`
+	Counters   CompanionStateCounters `json:"counters"`
+	CreatedAt  int64                  `json:"created_at"`
+	UpdatedAt  int64                  `json:"updated_at"`
 }
 
 // NewCompanionState is the empty state of one Companion generation, before
@@ -179,7 +183,8 @@ func NewCompanionState(identity CompanionIdentity, now int64) CompanionState {
 		SessionID: identity.SessionID, Generation: identity.Generation,
 		Cursor: CompanionStateCursor{SessionID: identity.SessionID},
 		Topics: []CompanionStateRef{}, Decisions: []CompanionStateRef{}, Commitments: []CompanionCommitment{},
-		Work: []CompanionWorkRef{}, Results: []CompanionResultRef{}, CreatedAt: now, UpdatedAt: now,
+		Work: []CompanionWorkRef{}, Results: []CompanionResultRef{}, Continuity: CompanionContinuity{Open: []CompanionSegmentItem{}},
+		CreatedAt: now, UpdatedAt: now,
 	}
 }
 
@@ -214,6 +219,9 @@ type CompanionStateCommit struct {
 	// IndexMark, when set, moves the topic index mark forward in the same
 	// batch (never backward).
 	IndexMark *CompanionIndexMark
+	// Segments are the continuity segments this step sealed, written in the
+	// same batch.
+	Segments []CompanionSegment
 }
 
 // CommitCompanionState writes one maintenance step atomically. It refuses a
@@ -256,14 +264,55 @@ func (s *SessionStore) CommitCompanionState(commit CompanionStateCommit) (Compan
 	}
 	next.AccountScopeID, next.UserID = account, user
 	next.Revision = currentRevision + 1
-	payload, err := json.Marshal(next)
-	if err != nil {
+	// The records are the authority for what the state and its segments may
+	// say about them: under this lock no forget or correction can land
+	// between this check and the commit, so a maintainer that read a record
+	// before it was forgotten or corrected cannot write the old text back.
+	cache := map[string]companionRecordView{}
+	since := uint64(0)
+	if stored && current.SessionID == next.SessionID && current.Generation == next.Generation {
+		since = current.Cursor.EventSeq
+	}
+	if err := s.reconcileCompanionStateRecords(prefix, &next, cache, since); err != nil {
 		return CompanionState{}, err
 	}
 	batch := s.store.db.NewBatch()
 	defer batch.Close()
+	for _, seg := range commit.Segments {
+		if err := validateCompanionSegment(seg, next.SessionID, next.Generation); err != nil {
+			return CompanionState{}, err
+		}
+		items, removed, _, err := s.reconcileCompanionItems(prefix, seg.Items, cache)
+		if err != nil {
+			return CompanionState{}, err
+		}
+		seg.Items, seg.Removed, seg.Keywords = items, seg.Removed+removed, CompanionSegmentKeywords(items)
+		next.Continuity.Removed += removed
+		previous, found, err := s.getCompanionSegment(prefix, seg.ID)
+		if err != nil {
+			return CompanionState{}, err
+		}
+		var prev *CompanionSegment
+		if found {
+			prev = &previous
+		}
+		if err := writeCompanionSegment(batch, prefix, prev, &seg); err != nil {
+			return CompanionState{}, err
+		}
+	}
+	payload, err := json.Marshal(next)
+	if err != nil {
+		return CompanionState{}, err
+	}
 	if err := batch.Set(companionStateKey(prefix), payload, nil); err != nil {
 		return CompanionState{}, err
+	}
+	if commit.Focus != nil && commit.Focus.RecordID != "" {
+		if view, err := s.companionRecordView(prefix, commit.Focus.RecordID, cache); err != nil {
+			return CompanionState{}, err
+		} else if !view.found || !view.active {
+			commit.Focus = nil // a forgotten topic is never the focus
+		}
 	}
 	if commit.Focus != nil {
 		focus := *commit.Focus

@@ -369,8 +369,19 @@ func deleteCompanionContextIndexes(batch *pebble.Batch, prefix string, rec Compa
 }
 
 func (s *SessionStore) commitCompanionContext(prefix string, previous *CompanionContextRecord, next *CompanionContextRecord) error {
+	return s.commitCompanionContextWith(prefix, previous, next, nil)
+}
+
+// commitCompanionContextWith writes a record change and, in the same batch,
+// whatever also adds (the change's propagation to state and segments).
+func (s *SessionStore) commitCompanionContextWith(prefix string, previous *CompanionContextRecord, next *CompanionContextRecord, also func(*pebble.Batch) error) error {
 	batch := s.store.db.NewBatch()
 	defer batch.Close()
+	if also != nil {
+		if err := also(batch); err != nil {
+			return err
+		}
+	}
 	if previous != nil {
 		if err := deleteCompanionContextIndexes(batch, prefix, *previous); err != nil {
 			return err
@@ -464,7 +475,11 @@ func (s *SessionStore) PutCompanionContext(rec CompanionContextRecord, expectedR
 		}
 		rec.Revision = current.Revision + 1
 		rec.UpdatedAt = max(now, current.UpdatedAt)
-		if err := s.commitCompanionContext(prefix, &current, &rec); err != nil {
+		// A correction: continuity items and state references that are this
+		// record take its new text in the same batch.
+		if err := s.commitCompanionContextWith(prefix, &current, &rec, func(batch *pebble.Batch) error {
+			return s.propagateCompanionRecordChange(batch, prefix, account, user, rec.ID, &rec)
+		}); err != nil {
 			return CompanionContextRecord{}, false, err
 		}
 		return rec, true, nil
@@ -507,6 +522,12 @@ func (s *SessionStore) DeleteCompanionContext(account, user, id string, expected
 	}
 	batch := s.store.db.NewBatch()
 	defer batch.Close()
+	// The forget reaches every derived view in the same batch: the state's
+	// references and continuity draft, every sealed segment holding the
+	// record or a reply about it, and the focus.
+	if err := s.propagateCompanionRecordChange(batch, prefix, account, user, current.ID, nil); err != nil {
+		return err
+	}
 	if err := deleteCompanionContextIndexes(batch, prefix, current); err != nil {
 		return err
 	}
@@ -516,14 +537,7 @@ func (s *SessionStore) DeleteCompanionContext(account, user, id string, expected
 	if err := batch.Set(companionForgottenKey(prefix, current.ID), tombstone, nil); err != nil {
 		return err
 	}
-	if err := batch.Commit(pebble.Sync); err != nil {
-		return err
-	}
-	focus, ok, err := s.GetCompanionFocus(account, user)
-	if err == nil && ok && focus.RecordID == id {
-		return s.store.db.Delete(companionFocusKey(prefix), pebble.Sync)
-	}
-	return err
+	return batch.Commit(pebble.Sync)
 }
 
 // invalidateCompanionContext marks a record whose source was deleted, changed
@@ -541,7 +555,11 @@ func (s *SessionStore) invalidateCompanionContext(prefix string, rec CompanionCo
 	next.InvalidReason = companionTruncate(reason, 200)
 	next.Revision++
 	next.UpdatedAt = max(now, current.UpdatedAt)
-	return s.commitCompanionContext(prefix, &current, &next)
+	// A revoked source revokes what was derived from it.
+	return s.commitCompanionContextWith(prefix, &current, &next, func(batch *pebble.Batch) error {
+		account, user := current.AccountScopeID, current.UserID
+		return s.propagateCompanionRecordChange(batch, prefix, account, user, current.ID, &next)
+	})
 }
 
 // PurgeCompanionContext removes the account user's whole context bank. It is

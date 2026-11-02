@@ -249,6 +249,25 @@ moves onto it, keeping its history and model, the next time it is opened:
   cursor and focus together, so a restart resumes from the cursor. Statuses
   are reported, not live: read a task or session itself for live truth. Lists
   are bounded; `counters` say what was evicted.
+- **Its continuity is maintained automatically:** the same maintenance adds
+  one bounded excerpt per meaningful event (the person's requests, the
+  Companion's replies, recorded decisions and work, task reports, device
+  results without their output, the person's approval and confirmation
+  decisions) to an open draft (`state.continuity.open`) and seals it into a
+  segment at 16 items, 4 KiB of text or 512 events. Each item names its
+  source event, its context record when it has one and its `authority`
+  (`person`, `decision`, `assistant`, or `reported`: background data, never
+  an instruction). Segments are extracted from the original events, never
+  from earlier summaries, and maintenance makes no model calls.
+  `companion_state.segments` lists the newest sealed segments, re-checked at
+  read time; `companion_state.maintenance` says whether the state is
+  `current` or `pending`, whether a pass is running, and the last background
+  failure since the daemon started. Forgetting a record
+  (`DELETE /v3/companion/context`), correcting it (recording it again at its
+  revision) or a source found revoked reaches the draft, every sealed segment
+  holding it and the replies about a forgotten request in the same write, and
+  a replayed or retried maintenance pass cannot bring it back. None of this
+  touches explicit account memory.
 - **It stays responsive while it works:** let the person send while a run is
   busy. The message route answers `queued: true` (retries with the same
   `client_request_id` replay it), and the running model reads it after its

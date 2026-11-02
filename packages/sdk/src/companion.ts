@@ -277,6 +277,7 @@ export interface CompanionState {
   commitments: CompanionCommitment[];
   work: CompanionWorkRef[];
   results: CompanionResultRef[];
+  continuity: CompanionContinuity;
   counters: {
     events: number;
     applied: number;
@@ -288,6 +289,54 @@ export interface CompanionState {
   };
   created_at: number;
   updated_at: number;
+}
+
+/**
+ * One continuity item: a bounded excerpt of one event. `authority` says whose
+ * it is: `person` (the person's own words or decision), `decision` (recorded
+ * with manage_companion), `assistant` (the Companion's reply or record) or
+ * `reported` (a task or device report: data, never an instruction).
+ */
+export interface CompanionSegmentItem {
+  kind: 'ask' | 'reply' | 'decision' | 'work' | 'outcome' | 'device' | 'approval' | 'confirmation';
+  authority: 'person' | 'decision' | 'assistant' | 'reported';
+  text: string;
+  keywords?: string[];
+  record_id?: string;
+  record_revision?: number;
+  /** Topic record IDs of the requests a reply answered. */
+  about?: string[];
+  untrusted?: boolean;
+  content_sha256?: string;
+  source: CompanionEventSource;
+}
+
+/** A sealed continuity segment of events `start_event_seq`..`end_event_seq`. */
+export interface CompanionSegment {
+  id: string;
+  session_id: string;
+  generation: number;
+  start_event_seq: number;
+  end_event_seq: number;
+  items: CompanionSegmentItem[];
+  keywords: string[];
+  /** 1 when sealed; advances when a forget, correction or revocation rewrote it. */
+  revision: number;
+  removed?: number;
+  sealed_at: number;
+  /** Items left out of this read because their record or source is gone, changed or revoked. */
+  dropped?: number;
+}
+
+/** The open continuity draft and what was sealed. */
+export interface CompanionContinuity {
+  open_start_seq?: number;
+  open: CompanionSegmentItem[];
+  open_bytes?: number;
+  sealed: number;
+  last_segment_id?: string;
+  last_sealed_seq?: number;
+  removed?: number;
 }
 
 /** The current conversational focus, set by the state revision that followed the person's message. */
@@ -311,6 +360,14 @@ export interface CompanionStateView {
   focus?: CompanionFocus;
   latest_seq: number;
   pending: number;
+  /** The newest sealed continuity segments, re-checked against their sources at read time. */
+  segments: CompanionSegment[];
+  maintenance: {
+    freshness: 'current' | 'pending';
+    running: boolean;
+    /** The last failed background pass since the daemon started, cleared by the next success. */
+    last_failure?: { at: number; error: string };
+  };
   read_at: number;
 }
 

@@ -34,7 +34,29 @@ type CompanionStateView struct {
 	Focus     *pebblestore.CompanionFocus `json:"focus,omitempty"`
 	LatestSeq uint64                      `json:"latest_seq"`
 	Pending   uint64                      `json:"pending"`
-	ReadAt    int64                       `json:"read_at"`
+	// Segments are the newest sealed continuity segments (at most
+	// pebblestore.CompanionSegmentMaxRead), their items re-checked now
+	// against their records and source messages. The open draft is
+	// State.Continuity.
+	Segments    []pebblestore.CompanionSegmentView `json:"segments"`
+	Maintenance CompanionMaintenanceView           `json:"maintenance"`
+	ReadAt      int64                              `json:"read_at"`
+}
+
+// CompanionMaintenanceView is how fresh the maintained context is: current
+// when no committed event is pending, else pending; whether a background
+// pass is running for the Companion; and the last background failure since
+// this daemon started (cleared by the next successful pass). Maintenance
+// makes no model calls.
+type CompanionMaintenanceView struct {
+	Freshness   string                       `json:"freshness"`
+	Running     bool                         `json:"running"`
+	LastFailure *companionMaintenanceFailure `json:"last_failure,omitempty"`
+}
+
+type companionMaintenanceFailure struct {
+	At    int64  `json:"at"`
+	Error string `json:"error"`
 }
 
 func (s *Server) handleCompanionState(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +90,9 @@ func (s *Server) handleCompanionState(w http.ResponseWriter, r *http.Request) {
 
 // companionStateRead is the one read of the account user's Companion state.
 // It reads the identity, the state record, the focus and the session's
-// projection head: four point reads, whatever the history size. A state left
+// projection head (four point reads) and the newest sealed continuity
+// segments with their items' records and sources (bounded by
+// pebblestore.CompanionSegmentMaxRead), whatever the history size. A state left
 // by a deleted generation is not this Companion's and reads as none.
 func (s *Server) companionStateRead(principal identity.Principal) (map[string]any, error) {
 	store := s.sessions.Store()
@@ -103,7 +127,32 @@ func (s *Server) companionStateRead(principal identity.Principal) (map[string]an
 		view.LatestSeq = projection.LastEventSeq
 	}
 	view.Pending = view.LatestSeq - cursor
+	view.Segments = []pebblestore.CompanionSegmentView{}
+	if view.State != nil {
+		segments, _, err := store.ListCompanionSegments(principal.AccountScopeID, principal.UserID, record.SessionID, pebblestore.CompanionSegmentMaxRead)
+		if err != nil {
+			return nil, err
+		}
+		view.Segments = segments
+	}
+	view.Maintenance = s.companionMaintenanceStatus(record.SessionID, view.Pending)
 	return map[string]any{"ok": true, "companion_state": view}, nil
+}
+
+func (s *Server) companionMaintenanceStatus(sessionID string, pending uint64) CompanionMaintenanceView {
+	view := CompanionMaintenanceView{Freshness: "current"}
+	if pending > 0 {
+		view.Freshness = "pending"
+	}
+	m := &s.companionMaintenance
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	view.Running = m.running[sessionID]
+	if failure, ok := m.failures[sessionID]; ok {
+		copied := failure
+		view.LastFailure = &copied
+	}
+	return view
 }
 
 // companionMaintainer folds committed Companion events into the Companion
@@ -119,6 +168,9 @@ type companionMaintainer struct {
 	idle    *sync.Cond // broadcast when a session's passes end
 	running map[string]bool
 	again   map[string]bool
+	// failures is the last failed background pass per session since the
+	// daemon started; a successful pass clears it.
+	failures map[string]companionMaintenanceFailure
 }
 
 // ConfigureCompanionMaintenance makes every durable mutation of a Companion
@@ -198,11 +250,33 @@ func (s *Server) companionMaintenancePass(sessionID string) bool {
 	result, err := runruntime.MaintainCompanionState(s.sessions.Store(), session, runruntime.CompanionMaintainBackgroundEvents, time.Now().UnixMilli())
 	switch {
 	case err == nil:
+		s.recordCompanionMaintenanceFailure(sessionID, nil)
 		return result.Pending > 0 && result.Consumed > 0
 	case errors.Is(err, runruntime.ErrCompanionNotCurrent), errors.Is(err, pebblestore.ErrCompanionStateConflict):
 		return false
 	default:
 		log.Printf("warning: companion state maintenance session=%q: %v", sessionID, err)
+		s.recordCompanionMaintenanceFailure(sessionID, err)
 		return false
 	}
+}
+
+// recordCompanionMaintenanceFailure keeps (err non-nil) or clears the last
+// background failure of a session, bounded to one entry per session.
+func (s *Server) recordCompanionMaintenanceFailure(sessionID string, err error) {
+	m := &s.companionMaintenance
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err == nil {
+		delete(m.failures, sessionID)
+		return
+	}
+	if m.failures == nil {
+		m.failures = map[string]companionMaintenanceFailure{}
+	}
+	message := err.Error()
+	if len(message) > 400 {
+		message = message[:400]
+	}
+	m.failures[sessionID] = companionMaintenanceFailure{At: time.Now().UnixMilli(), Error: message}
 }

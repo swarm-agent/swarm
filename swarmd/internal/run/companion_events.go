@@ -282,9 +282,12 @@ func companionTaskReports(content, machine string) (string, []CompanionTaskRepor
 }
 
 // companionStateMutation collects one maintenance page's changes beyond the
-// state itself: the focus to commit with it.
+// state itself: the focus and the continuity segments to commit with it, and
+// the continuity items of the event being applied.
 type companionStateMutation struct {
-	focus *pebblestore.CompanionFocus
+	focus    *pebblestore.CompanionFocus
+	segments []pebblestore.CompanionSegment
+	items    []pebblestore.CompanionSegmentItem
 }
 
 func companionStateTitle(text string) string {
@@ -479,6 +482,7 @@ func companionAppendRef(list []pebblestore.CompanionStateRef, ref pebblestore.Co
 // applyCompanionEvent folds one classified event into state. topic is the
 // topic record indexed from a person's message (nil when it made none).
 func applyCompanionEvent(state *pebblestore.CompanionState, ev CompanionEvent, topic *pebblestore.CompanionContextRecord, mutation *companionStateMutation) {
+	var answered []string
 	switch ev.Kind {
 	case CompanionEventPersonMessage:
 		title := ""
@@ -494,7 +498,13 @@ func applyCompanionEvent(state *pebblestore.CompanionState, ev CompanionEvent, t
 	case CompanionEventReply:
 		seq := ev.Source.EventSeq
 		companionResolveCommitments(state, func(c pebblestore.CompanionCommitment) bool {
-			return c.Kind == pebblestore.CompanionCommitmentReply && c.Opened.EventSeq < seq
+			if c.Kind != pebblestore.CompanionCommitmentReply || c.Opened.EventSeq >= seq {
+				return false
+			}
+			// The topic record a request would have: forgetting it also
+			// removes this reply from continuity.
+			answered = append(answered, pebblestore.CompanionMessageContextID(c.Opened.SessionID, c.Opened.MessageSeq))
+			return true
 		}, "answered", ev.Source)
 	case CompanionEventApprovalRequested:
 		companionOpenCommitment(state, pebblestore.CompanionCommitmentApproval, ev.ID, companionOneLine(ev.Name, pebblestore.CompanionStateMaxTitleBytes), ev.Source)
@@ -554,6 +564,7 @@ func applyCompanionEvent(state *pebblestore.CompanionState, ev CompanionEvent, t
 	}
 	companionReconcileWatches(state, ev)
 	boundCompanionState(state)
+	mutation.items = companionContinuityItems(ev, topic, answered)
 }
 
 // boundCompanionState keeps every list within its fixed limit, oldest first
@@ -638,7 +649,32 @@ var companionMaintainHook func(page int) error
 // maxEvents whatever the history size. Calls for one principal are
 // serialized; a concurrent writer outside this process loses on the
 // revision check and leaves the state as it was.
+//
+// A forget, correction or revocation of a context record moves the state's
+// revision under the maintainer (its propagation rewrites the state), so a
+// refused commit is retried from the new state, at most
+// companionMaintainConflictRetries times; Consumed counts only committed
+// events.
 func MaintainCompanionState(store *pebblestore.SessionStore, session pebblestore.SessionSnapshot, maxEvents int, now int64) (CompanionMaintenance, error) {
+	if maxEvents <= 0 {
+		maxEvents = CompanionMaintainRunStartEvents
+	}
+	consumed := 0
+	for attempt := 0; ; attempt++ {
+		out, err := maintainCompanionStateOnce(store, session, maxEvents-consumed, now)
+		consumed += out.Consumed
+		out.Consumed = consumed
+		if err == nil || !errors.Is(err, pebblestore.ErrCompanionStateConflict) || attempt == companionMaintainConflictRetries || consumed >= maxEvents {
+			return out, err
+		}
+	}
+}
+
+// companionMaintainConflictRetries bounds the retries of a maintenance call
+// whose commit lost to a concurrent record change.
+const companionMaintainConflictRetries = 2
+
+func maintainCompanionStateOnce(store *pebblestore.SessionStore, session pebblestore.SessionSnapshot, maxEvents int, now int64) (CompanionMaintenance, error) {
 	var out CompanionMaintenance
 	if store == nil {
 		return out, errors.New("companion state store unavailable")
@@ -699,6 +735,7 @@ func MaintainCompanionState(store *pebblestore.SessionStore, session pebblestore
 		next.Commitments = append([]pebblestore.CompanionCommitment(nil), state.Commitments...)
 		next.Work = append([]pebblestore.CompanionWorkRef(nil), state.Work...)
 		next.Results = append([]pebblestore.CompanionResultRef(nil), state.Results...)
+		next.Continuity.Open = append([]pebblestore.CompanionSegmentItem(nil), state.Continuity.Open...)
 		mutation := companionStateMutation{}
 		for _, event := range events {
 			if event.SessionID != session.ID || event.Seq != next.Cursor.EventSeq+1 {
@@ -719,8 +756,9 @@ func MaintainCompanionState(store *pebblestore.SessionStore, session pebblestore
 				applyCompanionEvent(&next, ev, topic, &mutation)
 				next.Counters.Applied++
 			}
+			mutation.segments = append(mutation.segments, companionContinuityStep(&next, event.Seq, mutation.items)...)
+			mutation.items = nil
 			next.Cursor = pebblestore.CompanionStateCursor{SessionID: session.ID, EventSeq: event.Seq, EventID: event.ID, UpdatedAt: now}
-			out.Consumed++
 		}
 		if companionMaintainHook != nil {
 			if err := companionMaintainHook(page); err != nil {
@@ -732,12 +770,13 @@ func MaintainCompanionState(store *pebblestore.SessionStore, session pebblestore
 			mutation.focus.Revision = expected + 1
 		}
 		committed, err := store.CommitCompanionState(pebblestore.CompanionStateCommit{
-			Next: next, ExpectedRevision: expected, Focus: mutation.focus,
+			Next: next, ExpectedRevision: expected, Focus: mutation.focus, Segments: mutation.segments,
 			IndexMark: &pebblestore.CompanionIndexMark{SessionID: session.ID, MessageSeq: max(floor, next.Cursor.EventSeq)},
 		})
 		if err != nil {
 			return out, err
 		}
+		out.Consumed += len(events)
 		state, expected = committed, committed.Revision
 		floor = max(floor, committed.Cursor.EventSeq)
 		if len(events) < companionMaintainPage {
