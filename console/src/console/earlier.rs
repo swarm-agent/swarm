@@ -4,7 +4,7 @@
 //! top of the transcript, and the view held still when a page arrives above.
 
 use super::{Console, Pane};
-use crate::data::{Session, Text};
+use crate::data::{Earlier, Session, Text};
 use crate::layout::PaneId;
 use gpui::{AnyElement, ClickEvent, Context, Pixels, SharedString, div, prelude::*, px};
 use std::cell::RefCell;
@@ -19,6 +19,9 @@ const ROW: Pixels = px(20.);
 #[derive(Clone)]
 struct Drawn {
     session: Text,
+    /// Its hydrate count (Earlier::joins): another count is a conversation
+    /// read whole again, whose kept history is no page that arrived.
+    joins: u32,
     /// Its entries from earlier pages, and all of them.
     older: usize,
     entries: usize,
@@ -46,7 +49,7 @@ impl Console {
     /// scroll's measures (offset, size, rows) are of it.
     fn drew(pane: &Pane, s: &Session) -> Option<Drawn> {
         let id = &s.live.as_ref()?.session_id;
-        pane.earlier.drawn.borrow().as_ref().filter(|d| d.session == *id && d.entries > 0).cloned()
+        pane.earlier.drawn.borrow().as_ref().filter(|d| d.session == *id && d.joins == s.earlier.joins && d.entries > 0).cloned()
     }
 
     /// Asks for the page before what a pane shows when its view is within a
@@ -108,7 +111,7 @@ impl Console {
     /// it last drew the conversation. Read before `drawn` is updated.
     pub(super) fn hold(&self, pane: &Pane, s: &Session) -> Option<Hold> {
         let d = Self::drew(pane, s)?;
-        let at = s.earlier.older.checked_sub(d.older).filter(|at| *at > 0 && *at < s.entries.len())?;
+        let at = arrived(&d, &s.earlier, s.entries.len())?;
         // The last paint's rows: the viewport's top against the old first entry's.
         let first = pane.scroll.bounds_for_item(d.first)?;
         let shift = (pane.scroll.bounds().top() - pane.scroll.offset().y) - first.top();
@@ -124,7 +127,7 @@ impl Console {
             return false;
         };
         let fresh = Self::drew(pane, s).is_none();
-        pane.earlier.drawn.replace(Some(Drawn { session: l.session_id.clone(), older: s.earlier.older, entries: s.entries.len(), first }));
+        pane.earlier.drawn.replace(Some(Drawn { session: l.session_id.clone(), joins: s.earlier.joins, older: s.earlier.older, entries: s.entries.len(), first }));
         s.earlier.more && (fresh || held)
     }
 
@@ -169,6 +172,16 @@ impl Console {
     }
 }
 
+/// How many entries a page put at the front since the pane drew `d`, of a
+/// conversation now `earlier` with `entries`: none when it was hydrated
+/// again since (kept history is no page), or nothing came above.
+fn arrived(d: &Drawn, earlier: &Earlier, entries: usize) -> Option<usize> {
+    if d.joins != earlier.joins {
+        return None;
+    }
+    earlier.older.checked_sub(d.older).filter(|at| *at > 0 && *at < entries)
+}
+
 /// A zero-height row at the boundary between a page that arrived and what
 /// was shown, `shift` below the top of the latter. Scrolled to its top
 /// (ScrollHandle::scroll_to_top_of_item, applied with this paint's layout,
@@ -176,4 +189,41 @@ impl Console {
 /// and the gap after it cancel, so nothing else moves.
 pub(super) fn marker(shift: Pixels) -> AnyElement {
     div().flex_none().h(px(0.)).mt(shift).mb(-(shift + GAP)).into_any_element()
+}
+
+// Purpose: a pane holds its view still only for a page that arrived above
+// what it drew, never for history kept across a reconnect. Requirement: when
+// the conversation was hydrated again since the last paint (Earlier::joins
+// moved), the entries kept in `older` are not a new page, so no hold is made
+// and the pane follows its ordinary scroll rules. Threat: a person scrolled up
+// in a long chat jumped about 200 messages on the first paint after a
+// reconnect, the kept tail mistaken for an arrived page. Authority: arrived
+// (Console::hold's decision; Console::drew applies the same count). The pure
+// decision is the narrowest layer: rendering and scroll measures need a GPUI
+// window, which tests here do not have.
+#[cfg(test)]
+mod tests {
+    use super::{Drawn, arrived};
+    use crate::data::Earlier;
+
+    fn drawn(joins: u32, older: usize, entries: usize) -> Drawn {
+        Drawn { session: "s1".into(), joins, older, entries, first: 1 }
+    }
+
+    fn earlier(joins: u32, older: usize) -> Earlier {
+        Earlier { more: true, older, joins, ..Default::default() }
+    }
+
+    #[test]
+    fn earlier_hold_ignores_history_kept_across_a_reconnect() {
+        // 19 paged + 200 tail + 1 live drawn; after the reconnect 219 kept + 1 tail.
+        assert_eq!(arrived(&drawn(1, 19, 220), &earlier(2, 219), 220), None);
+        // The same counts without a reconnect: a page of 200 arrived above.
+        assert_eq!(arrived(&drawn(1, 19, 220), &earlier(1, 219), 420), Some(200));
+        // After the reconnect's first paint, a page that arrives is held.
+        assert_eq!(arrived(&drawn(2, 219, 220), &earlier(2, 249), 250), Some(30));
+        // Nothing came above, or fewer kept: no hold.
+        assert_eq!(arrived(&drawn(2, 219, 220), &earlier(2, 219), 221), None);
+        assert_eq!(arrived(&drawn(2, 219, 220), &earlier(2, 0), 1), None);
+    }
 }

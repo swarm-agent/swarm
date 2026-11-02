@@ -325,6 +325,9 @@ struct Detail {
     more_older: Option<bool>,
     older_error: Option<String>,
     older_answers: u32,
+    /// Times the conversation was hydrated, carried across a reconnect
+    /// (Earlier::joins).
+    joins: u32,
 }
 
 impl Detail {
@@ -1257,6 +1260,9 @@ impl Model<'_> {
             };
             let joined = join_history(id, prior.as_ref().map(|p| (p.verified(), p.oldest_seq, p.more_older)), &tail, bridge);
             let d = self.details.entry(id.clone()).or_default();
+            // Counted on from the history kept, so a fresh connection's
+            // count never matches what a pane drew before it.
+            d.joins = prior.as_ref().map_or(d.joins, |p| p.joins).wrapping_add(1);
             d.live.clear();
             d.entries = map::entries(&tail.messages);
             d.tail_raw = tail.messages;
@@ -1694,8 +1700,13 @@ impl Model<'_> {
         if let Some(d) = self.details.get(id) {
             session.entries = d.older.clone();
             session.entries.extend(d.entries.iter().cloned());
-            session.earlier =
-                crate::data::Earlier { more: d.more_older == Some(true), older: d.older.len(), answers: d.older_answers, error: d.older_error.clone().map(Into::into) };
+            session.earlier = crate::data::Earlier {
+                more: d.more_older == Some(true),
+                older: d.older.len(),
+                answers: d.older_answers,
+                error: d.older_error.clone().map(Into::into),
+                joins: d.joins,
+            };
             if !d.live.is_empty() {
                 session.entries.push(Entry::Assistant(d.live.clone().into()));
             }
@@ -2448,7 +2459,7 @@ mod tests {
             let tail = Detail { entries: vec![Entry::User("latest".into())], hydrated: true, oldest_seq: 40, more_older: Some(true), ..Default::default() };
             m.details.insert("s1".into(), tail);
             assert!(m.snapshot().companion.is_none(), "no Companion is named: s1 is a project conversation");
-            assert_eq!(m.session_of("s1").unwrap().earlier, Earlier { more: true, older: 0, answers: 0, error: None });
+            assert_eq!(m.session_of("s1").unwrap().earlier, Earlier { more: true, older: 0, answers: 0, error: None, joins: 0 });
 
             // A failed read is answered: its error shows, more may still exist,
             // and what is shown stays.
@@ -2464,7 +2475,7 @@ mod tests {
             d.more_older = Some(false);
             d.older_error = None;
             let s = m.snapshot().sessions.into_iter().find(|s| s.live.as_ref().is_some_and(|l| l.session_id.as_ref() == "s1")).unwrap();
-            assert_eq!(s.earlier, Earlier { more: false, older: 2, answers: 1, error: None });
+            assert_eq!(s.earlier, Earlier { more: false, older: 2, answers: 1, error: None, joins: 0 });
             assert_eq!(s.entries.len(), 3);
             assert!(matches!(&s.entries[0], Entry::User(t) if t.as_ref() == "first"));
         }
@@ -2501,7 +2512,7 @@ mod tests {
             assert!(d.older.is_empty());
             assert_eq!((d.oldest_seq, d.more_older), (300, Some(false)));
             let s = m.session_of("s1").unwrap();
-            assert_eq!(s.earlier, Earlier { more: false, older: 0, answers: 3, error: None });
+            assert_eq!(s.earlier, Earlier { more: false, older: 0, answers: 3, error: None, joins: 1 });
             assert_eq!(s.entries.len(), 2);
             assert!(matches!(&s.entries[0], Entry::User(t) if t.as_ref() == "newer"));
 
@@ -2686,6 +2697,7 @@ mod tests {
             // A message arrives live, then the stream fails: what was shown is
             // kept for the next connection.
             assert!(m.event("s1", "session.message.appended", json!({"message": msg("s1", 220)})).unwrap());
+            assert_eq!(m.session_of("s1").unwrap().earlier.joins, 1);
             let kept = m.handoff();
             assert_eq!(kept.len(), 2);
 
@@ -2705,17 +2717,23 @@ mod tests {
             // possible hole, the tail stands alone with Swarm's cursor.
             assert_eq!(shown(&m, "s1"), vec!["s1 message 220 (refreshed)"]);
             assert_eq!((m.details["s1"].oldest_seq, m.session_of("s1").unwrap().earlier.more), (220, true));
+            // The hydrate count carries on from the kept history, so a pane
+            // that drew it before the failure draws it afresh (console/earlier.rs).
+            assert_eq!(m.session_of("s1").unwrap().earlier.joins, 2);
 
             // With the history read up to the tail's boundary (no message
             // came while away), the join is direct: nothing is lost, the
             // refreshed copy replaces the old one, nothing repeats.
-            let mut prior = Detail { tail_raw: msgs("s1", 20..=220), hydrated: true, oldest_seq: 1, more_older: Some(false), ..Default::default() };
+            let mut prior = Detail { tail_raw: msgs("s1", 20..=220), hydrated: true, oldest_seq: 1, more_older: Some(false), joins: 5, ..Default::default() };
             prior.set_older(msgs("s1", 1..=19));
             let mut m = model(&client);
             m.carried.insert("s1".into(), prior);
             m.take_hydrated(&["s1".to_string()], &hydrate("s1", std::slice::from_ref(&refreshed), 220, true));
             assert_eq!(shown(&m, "s1"), want);
             assert_eq!((m.details["s1"].oldest_seq, m.session_of("s1").unwrap().earlier.more), (1, false));
+            // Kept history counts in `older`, under a new hydrate count.
+            let e = m.session_of("s1").unwrap().earlier;
+            assert_eq!((e.older, e.joins), (219, 6));
             assert!(m.carried.is_empty(), "taken once");
 
             // Messages that came while away are joined through the bridge

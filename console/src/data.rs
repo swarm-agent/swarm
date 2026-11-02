@@ -904,6 +904,11 @@ pub struct Earlier {
     pub answers: u32,
     /// Why the last page read failed.
     pub error: Option<Text>,
+    /// Times the conversation was hydrated (read whole again, as on a
+    /// reconnect), counted on across connections. Within one count `older`
+    /// grows only by pages arriving above; across counts it may hold kept
+    /// history, so a pane treats a new count as a conversation drawn afresh.
+    pub joins: u32,
 }
 
 /// A call to your machine (machine_run, machine_read, machine_write,

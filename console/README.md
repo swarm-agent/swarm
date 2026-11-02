@@ -377,10 +377,14 @@ a separate profile and the extension loaded, for trying it out.
   same tick what needs the person on home and each machine
   (`src/swarm/needs.rs`).
   `src/swarm/map.rs` turns the answers into what the console shows.
-- Earlier history: every conversation (project chats and the Companion)
-  shows "Earlier messages" above its first message while Swarm holds more.
-  Each click reads one page before the oldest message shown
-  (`GET /v3/sessions/{id}/messages?before_seq=`, within a 256 KiB budget).
+- Earlier history: in every conversation pane (project chats and the
+  Companion), scrolling to within a screen of the top reads one page before
+  the oldest message shown while Swarm holds more
+  (`GET /v3/sessions/{id}/messages?before_seq=`, within a 256 KiB budget),
+  one read per conversation at a time, and the view stays where it was as the
+  page arrives above. The row above the first message shows "Loading earlier
+  messages…" while a page is read, or why it failed with Try again; there is
+  no button to click per page.
   Whether more exists comes from the hydrate answer's omission cursor and
   `message_count`, not from the tail's length: Swarm's byte budget can return
   a single message of a long conversation. After a reconnect, history already
@@ -388,7 +392,9 @@ a separate profile and the extension loaded, for trying it out.
   instead of being replaced by it. The tail's copies win. Nothing is kept
   when Swarm holds nothing before the tail, holds fewer messages than would
   be shown, or the session was archived or deleted. Kept history that cannot
-  be joined without a hole is dropped, and the button reads it again.
+  be joined without a hole is dropped, and scrolling up reads it again. History
+  kept across a reconnect is drawn as the conversation afresh, not as a page
+  that arrived, so the view does not jump.
 
 ### Project folders and project.md
 
