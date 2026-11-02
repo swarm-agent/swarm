@@ -287,8 +287,10 @@ moves onto it, keeping its history and model, the next time it is opened:
   own turns. `GET /v3/companion` adds `companion.activity`: the run
   (`active`, `phase`), `queued_inputs` (`queued`, or `waiting_next_turn` when
   the person stopped the run), `input_delivery` (`starts_turn`, `next_step`,
-  or `after_tool_calls` while the `tool_calls` it lists run; `device` marks a
-  call on the person's device or a linked machine), `background_deliveries`
+  or `after_tool_calls` while the `tool_calls` it lists run, including a call
+  still waiting at the permission gate such as a device command waiting for
+  the person's app; `device` marks a call on the person's device or a linked
+  machine), `background_deliveries`
   (task outcomes and other wakes handed to a run but not read yet:
   `waiting_for_run`, or `redelivering` as their own turn),
   `pending_permissions`, `task_watches` with exact machine/project/task IDs

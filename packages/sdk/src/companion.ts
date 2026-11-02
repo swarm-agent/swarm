@@ -55,7 +55,7 @@ export interface CompanionActivity {
    * `tool_calls` run first; new input does not interrupt them).
    */
   input_delivery: 'starts_turn' | 'next_step' | 'after_tool_calls';
-  /** The active run's tool calls in flight, oldest first. `device`: runs on the person's device or a linked machine. */
+  /** The active run's tool calls in flight, oldest first, including calls still waiting for approval or for the person's app. `device`: runs on the person's device or a linked machine. */
   tool_calls: Array<{
     call_id: string;
     tool_name: string;
