@@ -51,8 +51,25 @@ type DrainStatus struct {
 	// Reason says, in one line, what the drain waits on or why it ended.
 	Reason string `json:"reason,omitempty"`
 	// WorkflowSteps is how many workflow run step scripts run now (set by
-	// the API, like EnvironmentBuilds); the restart is not ready over them.
+	// the API with EnvironmentBuilds, AddHolds); the restart waits for them
+	// until a forced drain's deadline, then goes ahead over them (they run
+	// again after the restart, their interrupted attempt in their history).
 	WorkflowSteps int `json:"workflow_steps"`
+}
+
+// AddHolds adds what the API counts beside agent runs: environment builds
+// (the restart always waits for them) and workflow run step scripts (the
+// restart waits for them until a forced drain is Forced). Ready and Reason
+// are recomputed, so the reason names what the drain waits on.
+func (s *DrainStatus) AddHolds(builds, steps int) {
+	s.EnvironmentBuilds, s.WorkflowSteps = builds, steps
+	if builds > 0 {
+		s.Ready = false
+	}
+	if steps > 0 && !s.Forced {
+		s.Ready = false
+	}
+	s.Reason = drainReason(*s)
 }
 
 // DrainOptions are what a drain request asks for.
@@ -275,7 +292,26 @@ func drainReason(s DrainStatus) string {
 		}
 		return fmt.Sprintf("%d agent run(s) (%s)", len(s.Blockers), strings.Join(parts, ", "))
 	}
+	// waits is everything a drain not ready waits on.
+	waits := func() string {
+		parts := []string{}
+		if len(s.Blockers) > 0 {
+			parts = append(parts, runs())
+		}
+		if s.WorkflowSteps > 0 {
+			parts = append(parts, fmt.Sprintf("%d workflow step script(s)", s.WorkflowSteps))
+		}
+		if s.EnvironmentBuilds > 0 {
+			parts = append(parts, fmt.Sprintf("%d environment build(s)", s.EnvironmentBuilds))
+		}
+		if len(parts) == 0 {
+			return runs()
+		}
+		return strings.Join(parts, " and ")
+	}
 	switch {
+	case s.EndReason == "expired" && !s.Forced && len(s.Blockers) == 0:
+		return "the update was refused: no agent run held it, but the restart was not taken by the deadline (workflow step scripts or environment builds still ran, or no installer claimed it), so nothing was interrupted and new runs start again"
 	case s.EndReason == "expired" && s.Forced:
 		return "the forced update was not taken: no installer claimed the restart within the grace after the deadline (automatic updates off, the installer not running, or its build failed), so nothing was interrupted and new runs start again"
 	case s.EndReason == "expired":
@@ -285,11 +321,19 @@ func drainReason(s DrainStatus) string {
 	case !s.Draining:
 		return ""
 	case s.Forced:
-		return "forced: the deadline passed; the restart interrupts " + runs()
+		reason := "forced: the deadline passed; "
+		if s.EnvironmentBuilds > 0 {
+			reason += fmt.Sprintf("waiting for %d environment build(s) to finish, then ", s.EnvironmentBuilds)
+		}
+		reason += "the restart interrupts " + runs()
+		if s.WorkflowSteps > 0 {
+			reason += fmt.Sprintf(" and %d workflow step script(s) (their steps run again after the restart, or are reported interrupted)", s.WorkflowSteps)
+		}
+		return reason
 	case s.Ready:
 		return "ready: no agent run is running; new runs are held until the restart"
 	}
-	return "new runs are held; waiting for " + runs() + " to finish"
+	return "new runs are held; waiting for " + waits() + " to finish"
 }
 
 // SetDrainEndObserver installs a lifecycle sink. It must not call the manager.

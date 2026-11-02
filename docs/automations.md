@@ -470,7 +470,11 @@ attempt's log starts with the interrupted attempt's output, and the step
 runs again once. `GET /v3/box/busy` counts run step scripts running now
 (`workflow_steps`): the machine is busy and not `restart_resumable`, an
 automatic update (`if_idle`) does not drain or restart over them, and a
-drain (`GET /v3/box/drain` `workflow_steps`) is not ready until they end.
+drain (`GET /v3/box/drain` `workflow_steps`) is not ready until they end,
+and its `reason` names them. A forced drain (`request_update` with `force`)
+goes ahead over them at its deadline: the restart interrupts them, and their
+steps run again after it (or are reported `interrupted`). New run steps are
+not held during a drain.
 - A check in the environment never hands the work over: a successful one
   after the review is not reported as a push.
 

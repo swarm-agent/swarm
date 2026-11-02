@@ -57,13 +57,18 @@ func getBoxDrain(t *testing.T, server *Server) executioncapacity.DrainStatus {
 // runs now (workflow_steps): busy, not restart_resumable, and an if_idle
 // drain is refused. A drain someone asked for is not ready while one runs
 // (GET /v3/box/drain workflow_steps), so the installer does not claim the
-// restart over it. Once the script ends the machine is idle again and the
-// drain is ready.
+// restart over it, and its reason names the workflow step script it waits
+// on (never "ready"). A forced drain past its deadline goes ahead over the
+// script: ready, with a reason naming the script the restart interrupts.
+// Once the script ends the machine is idle again and the drain is ready.
 // Threat (seen on a forge: a gate killed with exit 143 shortly before an
 // automatic update installed): a restart killing a running gate or push
 // because nothing counted it, so the step is reported as its own failure
-// and its output is lost.
-// Owners: Server.boxBusyFrom and Server.addDrainBuildBlockers over
+// and its output is lost; a drain reporting ready:false with a "ready"
+// reason; a forced update held by workflow steps until its claim grace
+// ends it with a false "no installer claimed the restart" reason.
+// Owners: Server.boxBusyFrom and Server.addDrainBuildBlockers
+// (executioncapacity.DrainStatus.AddHolds, drainReason) over
 // jobautomation.Runner.RunningScripts, with the real capacity manager.
 // Layer: the HTTP handlers the installer calls, over a real runner running
 // a real delivery whose step blocks until released.
@@ -121,8 +126,37 @@ func TestBoxBusyAndDrainCountRunningWorkflowStepScripts(t *testing.T) {
 	if w := postBoxDrain(t, server, `{"max_seconds":60}`); w.Code != http.StatusOK {
 		t.Fatalf("requested drain: %d %s", w.Code, w.Body.String())
 	}
-	if status := getBoxDrain(t, server); status.Ready || status.WorkflowSteps != 1 {
-		t.Fatalf("drain while a gate runs = %+v, want not ready, workflow_steps 1", status)
+	if status := getBoxDrain(t, server); status.Ready || status.WorkflowSteps != 1 ||
+		strings.HasPrefix(status.Reason, "ready") || !strings.Contains(status.Reason, "waiting for 1 workflow step script(s) to finish") {
+		t.Fatalf("drain while a gate runs = %+v, want not ready, workflow_steps 1, a reason naming the script", status)
+	}
+	claim := httptest.NewRecorder()
+	server.handleBoxDrain(claim, withTestPrincipal(httptest.NewRequest(http.MethodPut, "/v3/box/drain", strings.NewReader(`{"generation":"x","claim":"`+strings.Repeat("c", 32)+`"}`))))
+	if claim.Code != http.StatusConflict || !strings.Contains(claim.Body.String(), "drain not ready") {
+		t.Fatalf("restart claim while a gate runs: %d %s", claim.Code, claim.Body.String())
+	}
+
+	// A forced drain past its deadline goes ahead over the running script.
+	manager := permissionSvc.ExecutionCapacity()
+	manager.CancelDrain("")
+	if _, err := manager.BeginDrainWith(executioncapacity.DrainOptions{Timeout: 50 * time.Millisecond, Requested: true, Force: true}, nil); err != nil {
+		t.Fatal(err)
+	}
+	forced := getBoxDrain(t, server)
+	for !forced.Forced {
+		if ctx.Err() != nil {
+			t.Fatalf("the forced drain never passed its deadline: %+v", forced)
+		}
+		time.Sleep(10 * time.Millisecond)
+		forced = getBoxDrain(t, server)
+	}
+	if !forced.Ready || forced.TimedOut || forced.WorkflowSteps != 1 ||
+		!strings.Contains(forced.Reason, "the restart interrupts no agent run and 1 workflow step script(s)") {
+		t.Fatalf("forced drain while a gate runs = %+v, want ready over the script with a reason naming it", forced)
+	}
+	manager.CancelDrain("")
+	if w := postBoxDrain(t, server, `{"max_seconds":60}`); w.Code != http.StatusOK {
+		t.Fatalf("requested drain: %d %s", w.Code, w.Body.String())
 	}
 
 	close(script.release)
@@ -132,7 +166,7 @@ func TestBoxBusyAndDrainCountRunningWorkflowStepScripts(t *testing.T) {
 	if idle := getBoxBusy(t, server); idle.Busy || idle.WorkflowSteps != 0 || !idle.RestartResumable {
 		t.Fatalf("after the step: %+v", idle)
 	}
-	if status := getBoxDrain(t, server); !status.Ready || status.WorkflowSteps != 0 {
+	if status := getBoxDrain(t, server); !status.Ready || status.WorkflowSteps != 0 || !strings.HasPrefix(status.Reason, "ready:") {
 		t.Fatalf("drain after the gate = %+v, want ready", status)
 	}
 	permissionSvc.ExecutionCapacity().CancelDrain("")

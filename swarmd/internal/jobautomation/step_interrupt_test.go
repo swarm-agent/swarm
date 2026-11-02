@@ -317,3 +317,78 @@ func TestStepLogWriterSavesWhileRunningAtMostEveryFlush(t *testing.T) {
 		t.Fatalf("tail = %q", got)
 	}
 }
+
+// Requirement: a resumed run step whose earlier attempt's saved log fills
+// the whole tail (MaxLogTailBytes) still logs the new attempt's output
+// exactly once, and when the new attempt is killed by a stop signal its
+// reason keeps "last output: ..." from the new attempt's own output.
+// Threat (review of the resume change): runScript compared the tail's
+// length with its length after the resumed log; a full tail never changes
+// length, so the executor's copy of the output was written again (output
+// twice in the log) and the interrupted reason lost its last output — the
+// case of a long gate interrupted twice.
+// Owners: Runner.runScript (stepLogWriter.written, scriptLast) and
+// Runner.runStep (resumedLog).
+// Layer: the real runner and store, reopened as a daemon start does, with
+// a real script killed by a real signal.
+func TestRunnerResumedStepWithFullSavedLogLogsOutputOnceAndKeepsLastOutput(t *testing.T) {
+	h := newHarness(t)
+	folder := t.TempDir()
+	writeScript(t, folder, "gate.sh", "echo \"second attempt line\"\necho \"pid=$$\"\nexec sleep 30\n")
+	h.process()
+	h.automation(Automation{Name: "gate", Scope: Scope{Folder: folder}, Enabled: true,
+		Steps: []Step{{ID: "gate", Type: StepRun, Command: "gate.sh", TimeoutSeconds: 20}}})
+	h.results.results["run-1"] = workerResult(folder, "run-1")
+	h.jobEnd("run-1", "", "succeeded", "direct")
+
+	// The first attempt streams more than the whole tail, then the daemon
+	// stops under it.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	big := strings.Repeat("first attempt filler line\n", MaxLogTailBytes/26+100)
+	h.host.before = func(req RunRequest) error {
+		req.OnOutput([]byte(big))
+		cancel()
+		return context.Canceled
+	}
+	if err := h.runner.Scan(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.runner.dispatch(ctx, true)
+	d := h.deliveries("worker/coder-1/run-1")[0]
+	if saved := h.store.StepLog(d.ID, "gate"); len(saved) != MaxLogTailBytes {
+		t.Fatalf("the first attempt's saved log is %d bytes, want the full tail %d", len(saved), MaxLogTailBytes)
+	}
+
+	h.host.before = nil
+	h.restart()
+	killer := &killingHost{store: h.store, kill: true}
+	h.useExecutor(killer)
+	killer.runner = h.runner
+	h.process()
+
+	if killer.killed != 1 {
+		t.Fatalf("the resumed gate was not killed (killed=%d)", killer.killed)
+	}
+	d = h.deliveries("worker/coder-1/run-1")[0]
+	gate := d.Steps[0]
+	if gate.Attempts != 2 || gate.State != StateError || gate.ErrorKind != ErrorKindInterrupted {
+		t.Fatalf("gate = %s/%s attempts %d (%s), want error/interrupted on attempt 2", gate.State, gate.ErrorKind, gate.Attempts, gate.Reason)
+	}
+	if !strings.Contains(gate.Reason, "last output: pid=") {
+		t.Fatalf("the resumed attempt's reason lost its last output: %q", gate.Reason)
+	}
+	logTail := h.store.StepLog(d.ID, "gate")
+	if n := strings.Count(logTail, "second attempt line"); n != 1 {
+		t.Fatalf("the resumed attempt's output is in its log %d times, want 1: %q", n, logTail[max(0, len(logTail)-400):])
+	}
+	marker := strings.Index(logTail, "attempt 2 starts here")
+	line := strings.Index(logTail, "second attempt line")
+	note := strings.Index(logTail, "swarm: the script was killed by SIGTERM")
+	if marker < 0 || line < marker || note < line {
+		t.Fatalf("gate log order wrong (marker %d, output %d, note %d)", marker, line, note)
+	}
+	if len(logTail) > MaxLogTailBytes {
+		t.Fatalf("gate log is %d bytes, over the tail bound %d", len(logTail), MaxLogTailBytes)
+	}
+}

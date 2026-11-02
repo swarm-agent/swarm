@@ -1229,11 +1229,13 @@ drain_ended() {
 # update.reason during a drain: how much still runs and since when new runs
 # are held, from the daemon's drain status DRAIN (GET/POST /v3/box/drain).
 drain_reason() {
-  local drain=$1 running builds since
+  local drain=$1 running builds steps since
   running=$(json_get blockers.length <<<"$drain" || true)
   builds=$(json_get environment_builds <<<"$drain" || true)
+  steps=$(json_get workflow_steps <<<"$drain" || true)
   [[ $running =~ ^[0-9]+$ ]] || running=0
   [[ $builds =~ ^[0-9]+$ ]] && running=$((running + builds))
+  [[ $steps =~ ^[0-9]+$ ]] && running=$((running + steps))
   since=$(json_get since <<<"$drain" || true)
   since=${since%%.*}
   [[ -z $since || $since == *Z ]] || since+=Z

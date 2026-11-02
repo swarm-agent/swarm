@@ -183,32 +183,30 @@ func controlMCPRequestUpdate(c *controlMCPCall, args map[string]any) (any, error
 	}
 	force, _ := body["force"].(bool)
 	if force {
-		out["at_deadline"] = "restart: agent runs still running are interrupted (recorded interrupted, not resumed)"
+		out["at_deadline"] = "restart: agent runs still running are interrupted (recorded interrupted, not resumed); workflow step scripts still running are interrupted too (their step runs again after the restart, or is reported interrupted, never as the script's failure)"
 	} else {
-		out["at_deadline"] = "refuse: agent runs still running are never interrupted; the drain ends and new runs start again"
+		out["at_deadline"] = "refuse: agent runs and workflow step scripts still running are never interrupted; the drain ends and new runs start again"
 	}
-	out["resumes_after_restart"] = "queued runs, worker runs, follow-ups and reviews; agent runs in progress do not"
+	out["resumes_after_restart"] = "queued runs, worker runs, follow-ups and reviews, and (after a forced restart) interrupted workflow step scripts; agent runs in progress do not"
 	out["next_action"] = "manage_projects wait_machine wakes you when this machine runs the new commit or its update is stuck; machine_status shows the drain (blocking runs) meanwhile."
 	return out, nil
 }
 
 func (s *Server) addDrainBuildBlockers(w http.ResponseWriter, status *executioncapacity.DrainStatus) bool {
+	builds := 0
 	if s.sandboxEnvironments != nil {
 		count, err := s.sandboxEnvironments.CountBuilding()
 		if err != nil {
 			writeError(w, http.StatusServiceUnavailable, err)
 			return false
 		}
-		status.EnvironmentBuilds = count
-		status.Ready = status.Ready && count == 0
+		builds = count
 	}
-	// A running workflow script (a gate, a push) is killed by the restart
-	// and would be reported as its own failure: the restart waits for it,
-	// as for an environment build (a step's time limit bounds the wait).
-	if steps := s.runningWorkflowSteps(); steps > 0 {
-		status.WorkflowSteps = steps
-		status.Ready = false
-	}
+	// A running workflow script (a gate, a push) is killed by the restart:
+	// the restart waits for it (a step's time limit bounds the wait) until
+	// a forced drain's deadline, which goes ahead over it (the step runs
+	// again after the restart). AddHolds keeps ready and reason agreeing.
+	status.AddHolds(builds, s.runningWorkflowSteps())
 	return true
 }
 

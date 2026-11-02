@@ -1591,7 +1591,6 @@ func (r *Runner) runScript(ctx context.Context, d *Delivery, record *StepRecord,
 		tail.write([]byte(prev))
 		tail.write([]byte(fmt.Sprintf("\nswarm: attempt %d did not finish (the daemon stopped while it ran); attempt %d starts here\n", record.Attempts-1, record.Attempts)))
 	}
-	prefix := tail.len()
 	// The log tail is saved while the script runs (at most once per
 	// stepLogFlush), so a daemon that crashes or is killed mid-step still
 	// leaves what the script printed.
@@ -1603,14 +1602,25 @@ func (r *Runner) runScript(ctx context.Context, d *Delivery, record *StepRecord,
 		Owner: stepOwner(*d, step.ID, record.Attempts),
 	})
 	r.scripts.Add(-1)
-	if tail.len() == prefix && len(outcome.Output) > 0 {
+	// Whether this attempt printed is what the writer counted, never the
+	// tail's length: a resumed earlier attempt's log can fill the tail, so
+	// its length stops changing.
+	printed := logs.written()
+	if printed == 0 && len(outcome.Output) > 0 {
+		// An executor that does not stream: its own copy of the output.
 		tail.write(outcome.Output)
+		printed = len(outcome.Output)
 	}
 	interrupted := err == nil && interruptSignal(outcome.Signal)
-	// The script's own last line, before any note of Swarm's.
+	// The script's own last line, before any note of Swarm's, read from
+	// this attempt's bytes only (the end of the tail).
 	scriptLast := ""
-	if tail.len() > prefix {
-		scriptLast = lastLine(tail.bytes())
+	if printed > 0 {
+		all := tail.bytes()
+		if printed < len(all) {
+			all = all[len(all)-printed:]
+		}
+		scriptLast = lastLine(all)
 	}
 	if interrupted {
 		tail.write([]byte(fmt.Sprintf("\nswarm: the script was killed by %s (exit code %d); its time limit did not send it\n", outcome.Signal, outcome.ExitCode)))
@@ -2421,12 +2431,15 @@ type stepLogWriter struct {
 	now   func() time.Time
 	mu    sync.Mutex
 	saved time.Time
+	// n counts the bytes the script streamed through write.
+	n int
 }
 
 func (w *stepLogWriter) write(p []byte) {
 	w.tail.write(p)
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.n += len(p)
 	now := w.now()
 	if !w.saved.IsZero() && now.Sub(w.saved) < stepLogFlush {
 		return
@@ -2435,6 +2448,13 @@ func (w *stepLogWriter) write(p []byte) {
 	if err := w.save(w.tail.bytes()); err != nil {
 		log.Printf("swarmd job automations: save a running step's log: %v", err)
 	}
+}
+
+// written is how many bytes the script streamed.
+func (w *stepLogWriter) written() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.n
 }
 
 // interruptedResumeReason is the failure history entry of a run step's
