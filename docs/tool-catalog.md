@@ -583,14 +583,15 @@ again with that source verified, and forgotten. One handler
 (`tool.Runtime.executeManageCompanion`) serves the Companion and Swarm
 Control; every action runs one service function,
 `api.Server.ManageCompanionContext`, whose functions also serve
-`/v3/companion/context`, so the route, the native tool and MCP share one rule
+`/v3/companion/context` (and, for `state`, `/v3/companion/state`), so the
+route, the native tool and MCP share one rule
 set: workspace scope (`companionContextScope`), source verification, revision
 guards and forgetting. It never reads or writes account memory
 (`manage_memory` keeps its explicit consent).
 
 | Action | Level | API scopes | Reach |
 | --- | --- | --- | --- |
-| `search`, `get`, `list` | read | `sessions:read` or `sessions:write` | home |
+| `search`, `get`, `list`, `state` | read | `sessions:read` or `sessions:write` | home |
 | `record_decision`, `record_work`, `forget` | write | `sessions:write` | home |
 
 - **Who calls it.** In a conversation only the account user's current
