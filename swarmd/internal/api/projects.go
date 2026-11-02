@@ -1743,6 +1743,12 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectConversations(w, r, p, projectID, segments[2:])
 		return
 	}
+	// Source discovery and inspection: /v3/projects/{id}/sources...
+	// (project_sources.go).
+	if len(segments) >= 2 && segments[1] == projectSourcesSegment {
+		s.handleProjectSources(w, r, p, projectID, segments[2:])
+		return
+	}
 
 	// 3. Single project resource: /v3/projects/{id}
 	if len(segments) == 1 {

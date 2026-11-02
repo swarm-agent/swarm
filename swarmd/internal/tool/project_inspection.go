@@ -54,8 +54,30 @@ func (r *Runtime) inspectProjectFiles(ctx context.Context, scope WorkspaceScope,
 	if err != nil {
 		return "", err
 	}
+	return r.runProjectInspection(ctx, scope.Principal, scope.SessionID, target, args["inspection"])
+}
+
+// RunProjectInspection runs at most one read-only inspection operation
+// (read, list, search or find) confined to an already resolved and
+// reauthorized target. It is the one runner behind inspect_files here, on the
+// project source route (POST /v3/projects/{id}/sources/inspect-files) and so on
+// a linked machine; it grants no checkout and resolves nothing itself.
+func (r *Runtime) RunProjectInspection(ctx context.Context, p identity.Principal, target ProjectInspectionTarget, inspection any) (string, error) {
+	if r == nil {
+		return "", errors.New("project inspection runtime unavailable")
+	}
+	if !p.Valid() || p.Type != identity.PrincipalTypeUser {
+		return "", errors.New("project inspection requires an authenticated user")
+	}
+	if strings.TrimSpace(target.Root) == "" {
+		return "", errors.New("project inspection target is unresolved")
+	}
+	return r.runProjectInspection(ctx, p, "", target, inspection)
+}
+
+func (r *Runtime) runProjectInspection(ctx context.Context, p identity.Principal, sessionID string, target ProjectInspectionTarget, rawOperation any) (string, error) {
 	response := map[string]any{"target": target, "inspection_only": true, "guidance": "Inspection is not testing, acceptance or integration. Never validate against the source checkout instead."}
-	if rawOperation, present := args["inspection"]; present && rawOperation != nil {
+	if rawOperation != nil {
 		// Models sometimes JSON-encode nested objects. Decode an encoded object
 		// here instead of failing, or silently skipping, the requested read.
 		operation, err := parseJSONObjectInput(rawOperation, "inspection")
@@ -78,7 +100,7 @@ func (r *Runtime) inspectProjectFiles(ctx context.Context, scope WorkspaceScope,
 		}
 		// This scope lasts only for the selected read. It is never persisted as
 		// ambient authority, nor passed to arbitrary/custom tools.
-		selected := WorkspaceScope{PrimaryPath: target.Root, ReadOnlyRoots: []string{target.Root}, RejectScopeExpansion: true, Principal: scope.Principal, SessionID: scope.SessionID}
+		selected := WorkspaceScope{PrimaryPath: target.Root, ReadOnlyRoots: []string{target.Root}, RejectScopeExpansion: true, Principal: p, SessionID: sessionID}
 		out, err := r.executeOne(ctx, selected, Call{Name: name, Arguments: string(raw)}, nil)
 		if err != nil {
 			return "", err

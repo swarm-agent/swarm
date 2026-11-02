@@ -98,6 +98,11 @@ var mcpRouteParityAllow = map[string]string{
 	"manage_projects list_tasks parity_probe answer_drops": "bounded linked task page (compactFleetTaskList): page facts and list-row fields only",
 	"manage_workflows list parity_probe answer_drops":      "bounded linked list (compactFleetList): whitelisted fields only",
 	"manage_workers list parity_probe answer_drops":        "bounded linked worker summary (compactFleetWorkers); inspect reads one worker",
+	// Identity-checked linked source answers: the home refuses an answer
+	// that does not name the selected source or exact task result
+	// (verifyFleetSourceAnswer), and a probe answer names none.
+	"manage_projects inspect_source * answer_drops": "the home refuses a linked inspect_source answer without the selected source (verifyFleetSourceAnswer); a real answer is returned whole",
+	"manage_projects inspect_files * answer_drops":  "the home refuses a linked inspect_files answer whose target.reference is not the requested project, source and exact task result (verifyFleetSourceAnswer); a real answer is returned whole",
 	// Home-side inputs the projects forwarder passes in the body (it sends
 	// every input but the ids) and the task routes never read
 	// (route_ignores, derived from the handler source).

@@ -181,9 +181,26 @@ type FleetMachineStatusReader interface {
 	FleetMachineStatusLine(ctx context.Context, p identity.Principal, machine string) (*FleetMachineStatusLine, error)
 }
 
+// FleetSourceInspectionActions are the read-only source discovery and
+// committed-file inspection actions. Here and on a linked machine they run the
+// same service (the machine's project source routes, project_sources.go):
+// list_sources, inspect_source and inspect_files resolve only that machine's
+// own registered sources and exact task results for its account.
+var FleetSourceInspectionActions = []string{"list_sources", "inspect_source", "inspect_files"}
+
+// FleetSourceInspectionAction reports a source discovery or inspection action.
+func FleetSourceInspectionAction(action string) bool {
+	for _, candidate := range FleetSourceInspectionActions {
+		if action == candidate {
+			return true
+		}
+	}
+	return false
+}
+
 // fleetProjectActions are the project actions a linked machine serves through
 // CallFleetProject.
-var fleetProjectActions = []string{"list", "get", "list_tasks", "get_task", "propose_task", "create_task", "approve_task", "accept_task", "reopen_task", "refine_task", "archive_task", "message_task", "stop_task"}
+var fleetProjectActions = append([]string{"list", "get", "list_tasks", "get_task", "propose_task", "create_task", "approve_task", "accept_task", "reopen_task", "refine_task", "archive_task", "message_task", "stop_task"}, FleetSourceInspectionActions...)
 
 func FleetProjectActionAllowed(action string) bool {
 	for _, allowed := range fleetProjectActions {

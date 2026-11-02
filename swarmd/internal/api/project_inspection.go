@@ -28,6 +28,30 @@ func (s *Server) ResolveProjectInspection(ctx context.Context, p identity.Princi
 	if err := s.validateProjectInspectionCaller(p, parent, req.ProjectID); err != nil {
 		return result, err
 	}
+	return s.resolveProjectInspectionTarget(ctx, p, req)
+}
+
+// ResolveProjectInspectionForPrincipal is the project source route's resolver
+// (POST /v3/projects/{id}/sources/inspect-files), which a linked home reaches
+// over its link. The caller is an authenticated user principal holding the
+// project read scope, as for every project route; it has no conversation to
+// bind. Every source catalog, task attempt, quiescence, ownership, Git and
+// head_commit check is the same as ResolveProjectInspection's.
+func (s *Server) ResolveProjectInspectionForPrincipal(ctx context.Context, p identity.Principal, req tool.ProjectInspectionRequest) (tool.ProjectInspectionTarget, error) {
+	if err := ctx.Err(); err != nil {
+		return tool.ProjectInspectionTarget{}, err
+	}
+	if !p.Valid() || p.Type != identity.PrincipalTypeUser || strings.TrimSpace(req.ProjectID) == "" {
+		return tool.ProjectInspectionTarget{}, errors.New("project inspection requires an authenticated user and project_id")
+	}
+	return s.resolveProjectInspectionTarget(ctx, p, req)
+}
+
+// resolveProjectInspectionTarget selects a catalog source or one exact
+// quiescent task result of the principal's account. Workspace and head
+// arguments only constrain; they never authorize a path.
+func (s *Server) resolveProjectInspectionTarget(ctx context.Context, p identity.Principal, req tool.ProjectInspectionRequest) (tool.ProjectInspectionTarget, error) {
+	var result tool.ProjectInspectionTarget
 	proj, found, err := s.sessions.Store().GetProject(p.AccountScopeID, req.ProjectID)
 	if err != nil || !found {
 		return result, errors.New("inspection project unavailable")

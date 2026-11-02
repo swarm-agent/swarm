@@ -46,7 +46,13 @@ import (
 // list route already read and its answers' workflow_tasks_hint names, and
 // exclude_status and worker_id, which the task list route reads (derived
 // from its source by the route-accepts parity check).
-const manageProjectsDefinitionSHA256 = "3791f90657f91450fa722b0c19512f4197f7e4a153a5b4aaa6888e7dfd8d22a0"
+// Linked source inspection changed it on purpose: list_sources,
+// inspect_source and inspect_files take machine (reach any) and read a linked
+// machine's own sources and exact task results through its project source
+// routes; list_sources takes only project_id (it never read a workspace
+// selector), inspect_files requires project_id, and their descriptions say
+// what a linked answer pins.
+const manageProjectsDefinitionSHA256 = "a0af1e4d8e43240591147d45cfb2170f436c0df8683a19d0ac86884d2b10612d"
 
 // Purpose: the catalog is the only place manage_projects exists. The
 // Orchestrator's definition is generated from the declarations and stays the

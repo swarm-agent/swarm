@@ -143,7 +143,9 @@ func manageProjectsCatalog() CatalogTool {
 		return append(append([]string(nil), base...), more...)
 	}
 	proposeInputs := []string{"machine", "detail", "project_id", "task_id", "title", "prompt", "agent", "feature_size", "description", "attached_media", "workspace_path", "workspace_id", "workspace_generation", "client_request_id", "brief", "workspace", "files"}
-	sourceInputs := []string{"project_id", "workspace_path", "workspace_id", "workspace_generation"}
+	// The source actions run here or, with machine, on a linked machine's
+	// own source routes for its own registered sources (project_sources.go).
+	sourceInputs := []string{"machine", "project_id", "workspace_path", "workspace_id", "workspace_generation"}
 	actions := []CatalogAction{
 		{Action: "propose_task", Inputs: proposeInputs, ControlInputs: []string{"model", "wait_seconds"}, Level: write, Reach: anyM, Profiles: core,
 			Description: "Send a self-contained brief to an agent (coder, finder, designer or swarm); under Start tasks auto it starts at once."},
@@ -205,12 +207,12 @@ func manageProjectsCatalog() CatalogTool {
 			Description: "Change a project's name, description, folders or project.md; with nothing to change, write its project.md again from its folders."},
 		{Action: "delete", Inputs: []string{"id"}, Level: manage, Reach: home, Profiles: full,
 			Description: "Delete a project."},
-		{Action: "list_sources", Inputs: sourceInputs, Level: read, Reach: home, Profiles: full,
-			Description: "List a project's source folders and whether agents can work in them."},
-		{Action: "inspect_source", Inputs: sourceInputs, Level: read, Reach: home, Profiles: full,
-			Description: "Inspect one source folder's readiness."},
-		{Action: "inspect_files", Inputs: with(sourceInputs, "task_id", "attempt_id", "source_session_id", "head_commit", "inspection"), Level: read, Reach: home, Profiles: orchestrator, Untrusted: true,
-			Description: "Read a source folder or a task result's files (read, list, search, find)."},
+		{Action: "list_sources", Inputs: []string{"machine", "project_id"}, Level: read, Reach: anyM, Profiles: full,
+			Description: "List a project's source folders and whether agents can work in them (machine: that machine's own sources)."},
+		{Action: "inspect_source", Inputs: sourceInputs, Level: read, Reach: anyM, Profiles: full,
+			Description: "Inspect one source folder's readiness: branch, HEAD and whether it is clean (machine: a source of that machine)."},
+		{Action: "inspect_files", Inputs: with(sourceInputs, "task_id", "attempt_id", "source_session_id", "head_commit", "inspection"), Level: read, Reach: anyM, Profiles: orchestrator, Untrusted: true,
+			Description: "Read a source folder or a task result's files (read, list, search, find); machine reads a source or task result of that machine, and target.reference with head_commit pins further reads."},
 		{Action: FolderEnvironmentList, Inputs: []string{"machine"}, Level: read, Reach: anyM, Profiles: full,
 			Description: "List folder environments."},
 		{Action: FolderEnvironmentGet, Inputs: []string{"machine", "workspace_path", "project", "workspace", "include_log", "log_offset"}, ControlInputs: []string{"wait_seconds"}, Level: read, Reach: anyM, Profiles: full,
@@ -313,7 +315,7 @@ func manageProjectsCatalog() CatalogTool {
 		"propose_task": {"project_id"}, "create_task": {"project_id"}, "reconcile_tasks": {"project_id"},
 		"list_media": {"project_id"}, "get_media": {"project_id", "id"},
 		"create": {"name", "client_request_id"}, "delete": {"id"},
-		"list_sources": {"project_id"}, "inspect_source": {"project_id"},
+		"list_sources": {"project_id"}, "inspect_source": {"project_id"}, "inspect_files": {"project_id"},
 		FolderEnvironmentRebuild: {"workspace_path"}, FolderEnvironmentWait: {"workspace_path"},
 	}
 	for i := range actions {

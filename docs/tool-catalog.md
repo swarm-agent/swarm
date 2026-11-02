@@ -787,7 +787,11 @@ that are deliberate and tested:
   `for_ms` (docs/task-progress.md).
   It wakes on the sources a watch uses (committed realtime records here, the
   machine's activity feed for a linked machine) and records nothing.
-  `cancel_watch` and `inspect_files` are Orchestrator-only.
+  `cancel_watch` and `inspect_files` are Orchestrator-only. With `machine`,
+  `list_sources`, `inspect_source` and `inspect_files` read that machine's own
+  sources through its project source routes (`/v3/projects/{id}/sources…`);
+  the home refuses a linked answer that names another source, task, attempt,
+  session or `head_commit` than was asked.
 - A task sent to a linked machine is recorded at home with the caller's AI
   key as its sender (`home_sender`, `key:ID`) instead of a session, so
   `list_linked_tasks` (without `project_id`: the caller's own sends),

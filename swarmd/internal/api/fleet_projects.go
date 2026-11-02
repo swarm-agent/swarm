@@ -61,17 +61,35 @@ func (s *Server) CallFleetProject(ctx context.Context, p identity.Principal, mac
 	}
 	path, method := ProjectsPath, http.MethodGet
 	body := make(map[string]any, len(args))
-	for key, value := range args {
-		switch key {
-		case "action", "machine", "project_id", "task_id", "origin_session_id":
-			continue
+	if tool.FleetSourceInspectionAction(action) {
+		// Source discovery and inspection read the machine's own project
+		// source routes (project_sources.go) with only their declared
+		// selectors: never a path of this home, never another key.
+		id, err := segment(str("project_id"))
+		if err != nil {
+			return nil, err
 		}
-		body[key] = value
+		var query url.Values
+		path, method, query, body, err = fleetSourceRequest(action, ProjectsPath+"/"+id+"/"+projectSourcesSegment, args)
+		if err != nil {
+			return nil, err
+		}
+		if encoded := query.Encode(); encoded != "" {
+			path += "?" + encoded
+		}
+	} else {
+		for key, value := range args {
+			switch key {
+			case "action", "machine", "project_id", "task_id", "origin_session_id":
+				continue
+			}
+			body[key] = value
+		}
+		if err := mapFleetTaskBody(action, args, body); err != nil {
+			return nil, err
+		}
 	}
-	if err := mapFleetTaskBody(action, args, body); err != nil {
-		return nil, err
-	}
-	if action != "list" {
+	if action != "list" && !tool.FleetSourceInspectionAction(action) {
 		id := str("project_id")
 		if action == "get" {
 			// get names its project by id, or by project_id as on this
@@ -123,7 +141,10 @@ func (s *Server) CallFleetProject(ctx context.Context, p identity.Principal, mac
 	s.noteFleetContact(linked, err)
 	// What the link answered about tasks refreshes the home's linked-task
 	// records (fleet_linked_tasks.go); the linked wait reads through here too.
-	s.observeFleetLinkedTasks(p.AccountScopeID, machine, action, args, result, err)
+	// Source reads name no task record.
+	if !tool.FleetSourceInspectionAction(action) {
+		s.observeFleetLinkedTasks(p.AccountScopeID, machine, action, args, result, err)
+	}
 	if err != nil {
 		// The machine's own refusal (its status and message) tells the agent
 		// what to change; a call that never got an answer says only that.
@@ -139,7 +160,174 @@ func (s *Server) CallFleetProject(ctx context.Context, p identity.Principal, mac
 	if action == "list_tasks" {
 		return compactFleetTaskList(result)
 	}
+	if err := verifyFleetSourceAnswer(machine, action, args, result); err != nil {
+		return nil, err
+	}
 	return result, nil
+}
+
+// fleetSourceRequest maps list_sources, inspect_source and inspect_files to
+// the machine's project source route under base (/v3/projects/{id}/sources):
+// the method, path, query and body, from the action's declared selectors
+// only. Selectors are checked here as the route checks them, so a malformed
+// one never crosses the link.
+func fleetSourceRequest(action, base string, args map[string]any) (string, string, url.Values, map[string]any, error) {
+	text := func(key string) (string, error) {
+		switch v := args[key].(type) {
+		case nil:
+			return "", nil
+		case string:
+			return strings.TrimSpace(v), nil
+		}
+		return "", fmt.Errorf("%s must be text", key)
+	}
+	generation, err := fleetSourceGeneration(args)
+	if err != nil {
+		return "", "", nil, nil, err
+	}
+	query := url.Values{}
+	switch action {
+	case "list_sources":
+		return base, http.MethodGet, query, nil, nil
+	case "inspect_source":
+		for _, key := range []string{"workspace_path", "workspace_id"} {
+			value, err := text(key)
+			if err != nil {
+				return "", "", nil, nil, err
+			}
+			if value != "" {
+				query.Set(key, value)
+			}
+		}
+		if generation > 0 {
+			query.Set("workspace_generation", strconv.FormatInt(generation, 10))
+		}
+		return base + "/" + projectSourceInspectSegment, http.MethodGet, query, nil, nil
+	case "inspect_files":
+		body := map[string]any{}
+		for _, key := range []string{"workspace_path", "workspace_id", "task_id", "attempt_id", "source_session_id", "head_commit"} {
+			value, err := text(key)
+			if err != nil {
+				return "", "", nil, nil, err
+			}
+			if value != "" {
+				body[key] = value
+			}
+		}
+		if generation > 0 {
+			body["workspace_generation"] = generation
+		}
+		if inspection, ok := args["inspection"]; ok && inspection != nil {
+			body["inspection"] = inspection
+		}
+		return base + "/" + projectSourceInspectFilesSegmt, http.MethodPost, query, body, nil
+	}
+	return "", "", nil, nil, tool.FleetActionUnavailableError(action)
+}
+
+// fleetSourceGeneration reads workspace_generation: omitted, or a
+// non-negative integer.
+func fleetSourceGeneration(args map[string]any) (int64, error) {
+	const key = "workspace_generation"
+	switch v := args[key].(type) {
+	case nil:
+		return 0, nil
+	case int:
+		if v >= 0 {
+			return int64(v), nil
+		}
+	case int64:
+		if v >= 0 {
+			return v, nil
+		}
+	case float64:
+		if v >= 0 && v == float64(int64(v)) {
+			return int64(v), nil
+		}
+	case json.Number:
+		if n, err := v.Int64(); err == nil && n >= 0 {
+			return n, nil
+		}
+	}
+	return 0, fmt.Errorf("%s must be a non-negative integer", key)
+}
+
+// verifyFleetSourceAnswer refuses a linked source answer that does not name
+// exactly what was asked: inspect_source's source must be the selected one,
+// and inspect_files' target.reference must keep the requested project,
+// source and (for a task result) the exact task, attempt, session and
+// head_commit. A machine can therefore never stand in its current branch
+// for a pinned committed result, or another source for the selected one.
+func verifyFleetSourceAnswer(machine, action string, args map[string]any, raw json.RawMessage) error {
+	if action != "inspect_source" && action != "inspect_files" {
+		return nil
+	}
+	asked := func(key string) string { value, _ := args[key].(string); return strings.TrimSpace(value) }
+	generation, _ := fleetSourceGeneration(args)
+	mismatch := func(what string) error {
+		return fmt.Errorf("%s answered %s for another %s than was asked; nothing was read from it", machine, action, what)
+	}
+	if action == "inspect_source" {
+		var answer struct {
+			Source *struct {
+				Path                string `json:"path"`
+				WorkspaceID         string `json:"workspace_id"`
+				WorkspaceGeneration int64  `json:"workspace_generation"`
+			} `json:"source"`
+		}
+		if err := json.Unmarshal(raw, &answer); err != nil || answer.Source == nil || answer.Source.Path == "" || answer.Source.WorkspaceID == "" {
+			return fmt.Errorf("%s returned an inspect_source answer without its source", machine)
+		}
+		if path := asked("workspace_path"); path != "" && path != answer.Source.Path {
+			return mismatch("workspace_path")
+		}
+		if id := asked("workspace_id"); id != "" && id != answer.Source.WorkspaceID {
+			return mismatch("workspace_id")
+		}
+		if generation > 0 && generation != answer.Source.WorkspaceGeneration {
+			return mismatch("workspace_generation")
+		}
+		return nil
+	}
+	var answer struct {
+		Target *struct {
+			Reference tool.ProjectInspectionRequest `json:"reference"`
+		} `json:"target"`
+	}
+	if err := json.Unmarshal(raw, &answer); err != nil || answer.Target == nil {
+		return fmt.Errorf("%s returned an inspect_files answer without its target", machine)
+	}
+	ref := answer.Target.Reference
+	if ref.ProjectID != asked("project_id") {
+		return mismatch("project")
+	}
+	if path := asked("workspace_path"); path != "" && path != ref.WorkspacePath {
+		return mismatch("workspace_path")
+	}
+	if id := asked("workspace_id"); id != "" && id != ref.WorkspaceID {
+		return mismatch("workspace_id")
+	}
+	if generation > 0 && generation != ref.WorkspaceGeneration {
+		return mismatch("workspace_generation")
+	}
+	if ref.WorkspacePath == "" || ref.WorkspaceID == "" || ref.WorkspaceGeneration <= 0 {
+		return fmt.Errorf("%s returned an inspect_files target without its source identity", machine)
+	}
+	task := asked("task_id")
+	if ref.TaskID != task || ref.AttemptID != asked("attempt_id") || ref.SessionID != asked("source_session_id") {
+		return mismatch("task, attempt or session")
+	}
+	if task != "" {
+		if ref.HeadCommit == "" {
+			return fmt.Errorf("%s returned a task result without its head_commit", machine)
+		}
+		if head := asked("head_commit"); head != "" && head != ref.HeadCommit {
+			return mismatch("head_commit")
+		}
+	} else if ref.HeadCommit != "" {
+		return mismatch("head_commit")
+	}
+	return nil
 }
 
 // mapFleetTaskBody renames the tool's arguments to the fields the machine's

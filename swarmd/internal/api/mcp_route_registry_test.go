@@ -58,8 +58,6 @@ var mcpHomeActions = map[string]mcpHomeAction{
 	"manage_projects unarchive_task":    {Reason: mcpHomeTODO},
 	"manage_projects delete_task":       {Reason: mcpHomeTODO},
 	"manage_projects delete":            {Reason: mcpHomeTODO},
-	"manage_projects list_sources":      {Reason: mcpHomeTODO},
-	"manage_projects inspect_source":    {Reason: mcpHomeTODO},
 	"manage_workflows help":             {Reason: "static guide text: no inputs and no route"},
 	"manage_setup permissions":          {Reason: "compared with GET /v3/permissions, the route it dispatches to, in mcpControlRoutes"},
 	"manage_setup list_keys":            {Reason: mcpHomeTODO},

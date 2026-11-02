@@ -1093,6 +1093,93 @@ export interface DeleteProjectMediaResult {
   uploaded_media: ProjectTaskMediaRef[];
 }
 
+/** A project source the daemon resolved from its own account workspace catalog. */
+export interface ProjectSource {
+  workspace_id: string;
+  workspace_generation: number;
+  path: string;
+  provenance: string;
+}
+
+/** `GET /v3/projects/{id}/sources`: the project's resolvable sources. */
+export interface ListProjectSourcesResult {
+  project_id: string;
+  sources: ProjectSource[];
+  unavailable_sources: Array<{ workspace_path?: string; error: string }>;
+}
+
+/** Selects one registered source; generation refuses a stale registration. */
+export interface ProjectSourceSelector {
+  workspace_path?: string;
+  workspace_id?: string;
+  workspace_generation?: number;
+}
+
+/** `GET /v3/projects/{id}/sources/inspect`: one source's readiness. */
+export interface InspectProjectSourceResult {
+  project_id: string;
+  source: ProjectSource;
+  repository: {
+    state: string;
+    path: string;
+    repository_root?: string;
+    head_commit?: string;
+    content_ready: boolean;
+    [key: string]: unknown;
+  };
+  ready: boolean;
+  inspection_only: boolean;
+  /** Present when the repository is ready. */
+  branch?: string;
+  clean?: boolean;
+  untracked?: string[];
+  [key: string]: unknown;
+}
+
+/** One read-only operation confined to the selected source or task result. */
+export interface ProjectInspectionOperation {
+  tool: 'read' | 'list' | 'search' | 'find';
+  arguments: Record<string, unknown>;
+}
+
+/**
+ * `POST /v3/projects/{id}/sources/inspect-files`: a registered source, or one
+ * exact quiescent task result (task_id with attempt_id and source_session_id,
+ * optionally pinned by head_commit).
+ */
+export interface InspectProjectFilesParams extends ProjectSourceSelector {
+  task_id?: string;
+  attempt_id?: string;
+  source_session_id?: string;
+  head_commit?: string;
+  inspection?: ProjectInspectionOperation;
+}
+
+/** The exact selector to reuse for further reads of the same target. */
+export interface ProjectInspectionReference {
+  project_id: string;
+  workspace_path?: string;
+  workspace_id?: string;
+  workspace_generation?: number;
+  task_id?: string;
+  attempt_id?: string;
+  source_session_id?: string;
+  head_commit?: string;
+}
+
+export interface InspectProjectFilesResult {
+  target: {
+    reference: ProjectInspectionReference;
+    workspace_path: string;
+    base_commit?: string;
+    branch?: string;
+  };
+  inspection_only: boolean;
+  guidance?: string;
+  /** The operation's own answer (bounded, with its own continuation). */
+  inspection?: unknown;
+}
+
 export interface SyncStreamParams {
   endpoint_cursor: string;
   session_ids?: string[];
