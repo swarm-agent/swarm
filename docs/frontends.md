@@ -166,8 +166,16 @@ moves onto it, keeping its history and model, the next time it is opened:
   messages (64 KB at most) and a context bank block (12 KB at most) of the
   current focus, decisions, earlier topics relevant to the new message and
   work pointers with live status, each with its source message. Older history
-  is never loaded per turn. Page it in the client with
-  `GET /v3/sessions/{id}/messages?tail=…&max_bytes=…`, then `before_seq`.
+  is never loaded per turn, and a Companion is never compacted (compaction
+  summarizes the whole conversation; a compact request on it is refused). When
+  the model rejects a Companion request as too long, the run retries once at
+  each smaller fixed budget (16 messages / 28 KB with a 4 KB block, then 6
+  messages / 6 KB with a 2 KB block, leaving room for the turn's own tool
+  results), keeping each tool call with its result and the same instructions;
+  if the smallest still does not fit, the run fails with that reason. The next
+  turn, or a restarted run, starts again at the ordinary budget. Page history
+  in the client with `GET /v3/sessions/{id}/messages?tail=…&max_bytes=…`, then
+  `before_seq`.
 - **Its context bank** (`routes.context`, `/v3/companion/context`) is separate
   from account memory and never changes it. `GET` lists records newest first
   (`cursor`, `limit` up to 100), searches them (`q`, `kind`, up to 16

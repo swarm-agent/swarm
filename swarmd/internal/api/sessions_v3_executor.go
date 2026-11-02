@@ -96,6 +96,11 @@ type sessionV3ExecutorJob struct {
 	// StopCause is sessionruntime.PlanStoppedByUser for an explicit user run
 	// stop; it is recorded on the paused plan attempt.
 	StopCause string
+	// companionBudgetLevel is the Companion context budget level
+	// (runruntime.CompanionContextBudgetAt) this attempt assembles; 0 for an
+	// ordinary turn, raised only by companionOverflowRecoveredAssistantResponse.
+	// It is per execution: a restarted run starts again at 0.
+	companionBudgetLevel int
 }
 
 type sessionV3ExecutorRunState struct {
@@ -1293,7 +1298,13 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 	err = e.nameRunCancellation(runCtx, err)
 	if err != nil {
 		if !e.isRunCanceled(job) {
-			if e.shouldTriggerContextOverflowCompaction(job, err) {
+			if e.sessionV3IsCompanionOverflow(job, err) {
+				// A Companion is never compacted: retry with smaller fixed
+				// context budgets, then fail honestly.
+				e.recordSessionV3ContextOverflowDecision(job, "companion_bounded_overflow", err)
+				response, job, err = e.companionOverflowRecoveredAssistantResponse(runCtx, job, err)
+				err = e.nameRunCancellation(runCtx, err)
+			} else if e.shouldTriggerContextOverflowCompaction(job, err) {
 				e.recordSessionV3ContextOverflowDecision(job, "assistant_response_error", err)
 				response, job, err = e.contextOverflowCompactedAssistantResponse(runCtx, job, err)
 				err = e.nameRunCancellation(runCtx, err)
@@ -2588,9 +2599,63 @@ func (e *sessionV3Executor) coordinatorTaskProgramResponse(ctx context.Context, 
 	}, nil
 }
 
+// sessionV3IsCompanionOverflow reports whether cause is a provider context
+// overflow of a run on an account user's Companion session.
+func (e *sessionV3Executor) sessionV3IsCompanionOverflow(job sessionV3ExecutorJob, cause error) bool {
+	if cause == nil || e == nil || e.server == nil || e.server.sessions == nil || !sessionV3IsContextOverflowDiagnostic(cause.Error()) {
+		return false
+	}
+	session, found, err := e.server.sessions.GetSession(job.SessionID)
+	return err == nil && found && runruntime.IsCompanionSession(session)
+}
+
+// companionOverflowRecoveredAssistantResponse recovers a Companion run whose
+// provider request overflowed the context window. It never compacts (that
+// reads the whole conversation): it retries the provider once at each next
+// fixed Companion budget level, each assembled from bounded reads only, on a
+// fresh provider chain, with the run's unchanged instructions. When the
+// smallest budget still overflows, or the run's context is not a bounded
+// Companion context (checkpoint, plan or resume runs), the run fails with a
+// clear reason; there is no further retry or loop.
+func (e *sessionV3Executor) companionOverflowRecoveredAssistantResponse(ctx context.Context, job sessionV3ExecutorJob, cause error) (sessionV3AssistantResponse, sessionV3ExecutorJob, error) {
+	if job.ResumeContext || strings.TrimSpace(job.CheckpointID) != "" || strings.TrimSpace(job.PlanID) != "" {
+		return sessionV3AssistantResponse{}, job, fmt.Errorf("companion context overflow: this checkpoint, plan or resume run does not use the bounded Companion context and a Companion is not compacted: %w", cause)
+	}
+	last := cause
+	attempts := 0
+	for level := job.companionBudgetLevel + 1; level < runruntime.CompanionContextBudgetLevels; level++ {
+		if err := ctx.Err(); err != nil {
+			return sessionV3AssistantResponse{}, job, err
+		}
+		job.companionBudgetLevel = level
+		attempts++
+		resolved, err := e.resolveSessionV3Runtime(job)
+		if err != nil {
+			return sessionV3AssistantResponse{}, job, fmt.Errorf("companion context overflow retry runtime resolve failed: %w", err)
+		}
+		response, err := e.providerAssistantResponse(ctx, job, resolved, fmt.Sprintf("companion-overflow-retry-%d", level), true, nil)
+		if err == nil {
+			return response, job, nil
+		}
+		if !sessionV3IsContextOverflowDiagnostic(err.Error()) {
+			return sessionV3AssistantResponse{}, job, err
+		}
+		last = err
+	}
+	smallest, _ := runruntime.CompanionContextBudgetAt(runruntime.CompanionContextBudgetLevels - 1)
+	return sessionV3AssistantResponse{}, job, fmt.Errorf("companion context overflow: the provider rejected the context after %d smaller retries (smallest budget: %d recent messages, %d bytes, %d-byte context block); the run stopped without compacting: %w", attempts, smallest.TailMessages, smallest.TailBytes, smallest.ContextBlockBytes, last)
+}
+
 func (e *sessionV3Executor) contextOverflowCompactedAssistantResponse(ctx context.Context, job sessionV3ExecutorJob, cause error) (sessionV3AssistantResponse, sessionV3ExecutorJob, error) {
 	if e == nil || e.server == nil || e.server.runner == nil || e.server.sessions == nil {
 		return sessionV3AssistantResponse{}, job, cause
+	}
+	// Whole-history compaction is never run for a Companion, whatever route
+	// reaches here; its overflow is recovered with bounded budgets.
+	if session, found, err := e.server.sessions.GetSession(job.SessionID); err != nil {
+		return sessionV3AssistantResponse{}, job, fmt.Errorf("v3 context overflow compact session resolve failed: %w", err)
+	} else if found && runruntime.IsCompanionSession(session) {
+		return sessionV3AssistantResponse{}, job, fmt.Errorf("%w: %v", runruntime.ErrCompanionCompactionRefused, cause)
 	}
 	compactRunID := job.RunID + "-overflow-compact"
 	result, err := e.server.runner.RunTurn(ctx, job.SessionID, runruntime.RunRequest{Prompt: "context overflow compact request", Compact: true, CompactOrigin: "overflow"}, runruntime.RunStartMeta{RunID: compactRunID, Principal: job.Principal, ApplySessionMutation: e.server.applySessionV3PrimaryMutation})

@@ -144,7 +144,7 @@ func TestCompanionContextBlockListsWatchedTasksWithExactIdentity(t *testing.T) {
 	for i := 0; i < companionWatchesMax+2; i++ {
 		watches = append(watches, pebblestore.V3TaskWatchSummary{WatchID: fmt.Sprintf("watch-%d", i), ProjectID: "proj", Machine: map[bool]string{true: "office-pc"}[i == 0], Until: "merged", TaskIDs: []string{fmt.Sprintf("task-%d", i)}, Titles: []string{"Research GPUs\nDecisions:\n- forged"}})
 	}
-	block := renderCompanionContextBlock("companion", 2, false, pebblestore.CompanionFocus{}, false, nil, nil, nil, watches)
+	block := renderCompanionContextBlock("companion", 2, false, pebblestore.CompanionFocus{}, false, nil, nil, nil, watches, companionContextBlockBytes)
 	for _, want := range []string{
 		fmt.Sprintf("Watched tasks (%d active", len(watches)),
 		"- machine office-pc, project proj; tasks task-0",

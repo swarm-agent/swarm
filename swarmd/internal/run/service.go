@@ -1429,6 +1429,13 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	if !ok {
 		return RunResult{}, fmt.Errorf("session %q not found", sessionID)
 	}
+	// Compaction summarizes the whole conversation, which a Companion never
+	// reads: refuse it before any history read or lifecycle claim, whatever
+	// its origin (manual, threshold or overflow). The V3 executor recovers a
+	// Companion overflow with smaller fixed context budgets instead.
+	if manualCompact && isCompanionSession(sessionSnapshot) {
+		return RunResult{}, ErrCompanionCompactionRefused
+	}
 	sessionResolved = true
 	acctScope := sessionSnapshot.AccountScopeID
 	if (options.Principal.AccountScopeID != "" && options.Principal.AccountScopeID != acctScope) || (options.Principal.UserID != "" && options.Principal.UserID != sessionSnapshot.UserID) {
@@ -2033,6 +2040,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	}
 
 	tryContextOverflowCompaction := func(step int, assistantDraft string, cause error) (bool, error) {
+		if companionTurn {
+			// Never the whole-history compaction for a Companion: fail the
+			// turn with the overflow instead.
+			return false, fmt.Errorf("%w: %v", ErrCompanionCompactionRefused, cause)
+		}
 		if contextCompactionAttempts >= contextCompactionRetryLimit {
 			return false, nil
 		}
@@ -4708,6 +4720,11 @@ func (s *Service) listMessagesForMemoryCompaction(sessionID string, preferV3Mess
 	}
 	if !ok {
 		return nil, fmt.Errorf("session %q not found", sessionID)
+	}
+	// Every compaction path reads the whole history here; a Companion's
+	// history is unbounded and is never read whole.
+	if isCompanionSession(session) {
+		return nil, ErrCompanionCompactionRefused
 	}
 	limit := session.MessageCount + memoryCompactionHistorySlack
 	if limit <= 0 {

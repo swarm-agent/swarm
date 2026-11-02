@@ -390,6 +390,7 @@ func scanRangeFromReader(reader pebble.Reader, opts scanRangeOptions, visit func
 		}
 		key := string(append([]byte(nil), iter.Key()...))
 		value := append([]byte(nil), iter.Value()...)
+		observeScanRead(key, len(value))
 		cont, err := visit(key, value)
 		if err != nil {
 			return err

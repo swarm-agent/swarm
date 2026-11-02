@@ -164,8 +164,9 @@ func companionUndeliveredInputs(messages []pebblestore.MessageSnapshot, activeRu
 
 // sessionV3CompanionContextMessages is the Companion's provider history on the
 // V3 executor: its bounded tail and context bank instead of the full epoch
-// transcript. ok is false for any other session and for checkpoint or resume
-// runs, which keep their canonical context.
+// transcript, at the job's fixed budget level (smaller levels are used only
+// by overflow recovery). ok is false for any other session and for
+// checkpoint or resume runs, which keep their canonical context.
 func (e *sessionV3Executor) sessionV3CompanionContextMessages(job sessionV3ExecutorJob, epochID string) ([]pebblestore.MessageSnapshot, bool, error) {
 	if job.ResumeContext || strings.TrimSpace(job.CheckpointID) != "" || strings.TrimSpace(job.PlanID) != "" {
 		return nil, false, nil
@@ -190,7 +191,7 @@ func (e *sessionV3Executor) sessionV3CompanionContextMessages(job sessionV3Execu
 	if len(roots) == 0 && strings.TrimSpace(scope.PrimaryPath) != "" {
 		roots = []string{scope.PrimaryPath}
 	}
-	messages, err := runruntime.CompanionV3ContextMessages(e.server.sessions.Store(), session, roots, fromSeq, time.Now().UnixMilli())
+	messages, err := runruntime.CompanionV3ContextMessagesAtLevel(e.server.sessions.Store(), session, roots, fromSeq, time.Now().UnixMilli(), job.companionBudgetLevel)
 	if err != nil {
 		return nil, false, err
 	}
