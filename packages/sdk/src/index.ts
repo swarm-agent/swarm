@@ -30,6 +30,8 @@ export type { UsageScope, UsageScopeTotal, UsageScopeUpdatedPayload, UsageScopeR
 
 export { SwarmAppsNamespace } from './apps.js';
 export type { ApplicationAgent, ApplicationAgentWrite, ApplicationConversationParams, ApplicationConversationSnapshot } from './apps.js';
+export { SwarmCompanionNamespace } from './companion.js';
+export type { CompanionView, CompanionEnsureResult, CompanionDeleteResult } from './companion.js';
 export * from './settings.js';
 export * from './provider-auth.js';
 export * from './realtime.js';

@@ -1,6 +1,7 @@
 import { SwarmLimitsNamespace } from './limits.js';
 import { SwarmAgentsNamespace } from './agents.js';
 import { SwarmAppsNamespace } from './apps.js';
+import { SwarmCompanionNamespace } from './companion.js';
 import { SwarmChatNamespace } from './chat.js';
 import { SwarmPermissionsNamespace } from './permissions.js';
 import { SwarmSettingsNamespace } from './settings.js';
@@ -59,6 +60,8 @@ export class SwarmClient {
   /** Account and session permission policy, bypass/permissionless mode, and pending approvals */
   readonly permissions: SwarmPermissionsNamespace;
   readonly apps: SwarmAppsNamespace;
+  /** The account user's one persistent Companion (get-or-create, explicit delete) */
+  readonly companion: SwarmCompanionNamespace;
   readonly system: SwarmSystemNamespace;
   readonly deploy: SwarmDeployNamespace;
   readonly notifications: SwarmNotificationsNamespace;
@@ -119,6 +122,7 @@ export class SwarmClient {
     this.chat = new SwarmChatNamespace(this.transport);
     this.permissions = new SwarmPermissionsNamespace(this.transport);
     this.apps = new SwarmAppsNamespace(this.transport);
+    this.companion = new SwarmCompanionNamespace(this.transport);
     this.system = new SwarmSystemNamespace(this.transport);
     this.deploy = new SwarmDeployNamespace(this.transport);
     this.notifications = new SwarmNotificationsNamespace(this.transport);

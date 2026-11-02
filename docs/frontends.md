@@ -144,6 +144,23 @@ session:
   it: `POST /v3/workers/{id}/accept` at the revision shown, or `DELETE` to
   discard it.
 
+**The Companion** is the person's one persistent assistant, a destination of
+its own beside their chats. It is an ordinary Swarm session (same tools,
+permissions and account model), not tied to a project:
+
+- **Open it:** `POST /v3/companion` (optional `{"workspace_path":…}`, used only
+  the first time) gets or creates it and returns `companion` with
+  `session_id`, `state` and the canonical `routes`. It is idempotent: every
+  client, project switch and restart gets the same session. `GET
+  /v3/companion` reads it (`companion: null` before the first open).
+- **Talk to it** through its `session_id` with the session routes above.
+- **It is not a chat row:** it carries `metadata.swarm_v3_companion` and
+  `navigation_hidden`, so chat lists leave it out. Archive, delete, end and
+  agent switch on it answer 409. Offer no close or archive action.
+- **Delete it** only when the person asks: `DELETE /v3/companion` with
+  `{"session_id":…,"confirm":true}` removes it and its history; the next open
+  starts an empty one.
+
 Everything else uses the same routes as the web UI:
 
 | What | Routes |

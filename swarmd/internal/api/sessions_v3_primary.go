@@ -1070,6 +1070,12 @@ func (s *Server) createSessionsV3Primary(w http.ResponseWriter, r *http.Request,
 	if appBinding, ok := r.Context().Value(applicationAgentContextKey{}).(applicationAgentBinding); ok {
 		session.Metadata[applicationAgentBindingKey] = appBinding
 	}
+	// Only the Companion service sets this protected marker (companion.go);
+	// it keeps the Companion out of ordinary chat lists.
+	if companionBinding, ok := r.Context().Value(companionCreateContextKey{}).(companionCreateBinding); ok {
+		session.Metadata[pebblestore.SessionCompanionMetadataKey] = companionBinding
+		session.Metadata["navigation_hidden"] = true
+	}
 	if req.EndUser != "" || len(req.Labels) > 0 {
 		binding, err := sessionsV3EndUserBinding(r, resolvedAgent.Name, req.EndUser, req.Labels)
 		if err != nil {
@@ -1542,6 +1548,9 @@ func (s *Server) handleSessionsV3PrimaryArchiveBatch(w http.ResponseWriter, r *h
 			writeSessionNotFound(w)
 			return
 		}
+		if rejectCompanionLifecycleMutation(w, r, session, "archived") {
+			return
+		}
 		sessions = append(sessions, session)
 	}
 	if len(sessions) == 0 {
@@ -1590,6 +1599,9 @@ func (s *Server) handleSessionV3PrimaryTombstone(w http.ResponseWriter, r *http.
 	}
 	kind = strings.TrimSpace(strings.ToLower(kind))
 	if kind != "archived" && s.rejectSystemSidechatMutation(w, session) {
+		return
+	}
+	if rejectCompanionLifecycleMutation(w, r, session, kind) {
 		return
 	}
 	if kind == "deleted" {
@@ -2260,6 +2272,10 @@ func (s *Server) handleSessionV3PrimaryAgent(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if s.rejectSystemSidechatMutation(w, current) {
+		return
+	}
+	// The Companion keeps the Swarm agent's tools and permissions.
+	if rejectCompanionLifecycleMutation(w, r, current, "switched to another agent") {
 		return
 	}
 	next := current
@@ -4398,6 +4414,9 @@ func mergeSessionsV3MetadataUpdate(current map[string]any, requested map[string]
 		metadata["project_id"] = projectID
 		metadata["role"] = "project_orchestrator"
 	}
+	if _, companion := current[pebblestore.SessionCompanionMetadataKey]; companion {
+		metadata["navigation_hidden"] = true
+	}
 	return metadata
 }
 
@@ -4702,6 +4721,7 @@ func sessionsV3AuthorityInt(authority map[string]any, keys ...string) int {
 func isProtectedSessionsV3MetadataKey(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
 	case applicationAgentBindingKey,
+		pebblestore.SessionCompanionMetadataKey,
 		pebblestore.SessionEndUserMetadataKey,
 		pebblestore.SessionAccessMetadataKey,
 		pebblestore.SessionPurposeMetadataKey,

@@ -122,6 +122,9 @@ func (s *Server) handleSessionV3End(w http.ResponseWriter, r *http.Request, prin
 		writeSessionNotFound(w)
 		return
 	}
+	if rejectCompanionLifecycleMutation(w, r, session, "ended") {
+		return
+	}
 	response := map[string]any{"ok": true, "session_id": sessionID}
 	if state := sessionEndedState(session); state != nil {
 		response["ended"] = state

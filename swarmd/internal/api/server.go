@@ -127,6 +127,7 @@ type Server struct {
 	taskWatchChecks         map[string]bool              // pending milestone re-checks, one per watch
 	remoteTaskWaitGrace     time.Duration                // unreachable grace; zero means the default
 	remoteTaskWaitRules     time.Duration                // work-rule re-read period; zero means the default
+	companionMu             sync.Mutex                   // Companion get-or-create and explicit delete (companion.go)
 	taskRunEndMu            sync.Mutex                   // task run ends in flight (project_task_wait_progress.go)
 	taskRunEnds             map[string]*taskRunEndWindow // by task session id; in memory only
 	taskLimitMu             sync.Mutex                   // provider-limit task waits (project_task_limit_wait.go)

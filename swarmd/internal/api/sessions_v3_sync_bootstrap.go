@@ -1164,6 +1164,7 @@ func sessionsV3SyncShellMetadataKeyAllowed(key string) bool {
 		"parent_session_id",
 		pebblestore.SessionPurposeMetadataKey,
 		pebblestore.SessionPurposeWorkspaceMetadataKey,
+		pebblestore.SessionCompanionMetadataKey,
 		"navigation_hidden",
 		"system_session",
 		"system_sidechat",

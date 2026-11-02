@@ -503,6 +503,10 @@ var mcpRouteParityNoMCPAction = []string{
 	`"/v3/tui/sessions/" -> s.handleSessionV3TUIByID`,
 	`"/v3/application-agents" -> s.handleApplicationAgents`,
 	`"/v3/application-agents/" -> s.handleApplicationAgents`,
+	// A client's top-level Companion destination (get-or-create, explicit
+	// delete). Its conversation is an ordinary V3 session, which MCP already
+	// reaches through the session actions; an outside AI has no Companion.
+	`CompanionPath -> s.handleCompanion`,
 	`"/v3/activity/stream" -> s.handleActivity`,
 	`"/v1/sessions" -> s.handleSessions`,
 	`"/v1/sessions/" -> s.handleSessionByID`,
