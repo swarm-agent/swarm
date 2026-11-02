@@ -1,11 +1,13 @@
 package run
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 )
 
 // post appends one message without indexing it: on the V3 executor the
@@ -163,5 +165,55 @@ func TestCompanionContextBlockListsWatchedTasksWithExactIdentity(t *testing.T) {
 		if strings.HasPrefix(line, "- forged") || line == "Decisions:" {
 			t.Fatalf("a task title forged a block line:\n%s", block)
 		}
+	}
+}
+
+// Purpose: the Companion's state follows tool results as the provider tool
+// invoker really writes them. Requirement: a terminal tool event whose
+// payload is built by providerManagedV3ToolEventPayload (a flat payload; the
+// tool message is stored beside the event, not inside it) classifies as a
+// tool result with the tool name, call id and status; a manage_companion
+// answer keeps its whole output, so its record is read; a device call keeps
+// no output; a failed tool call is a failed tool result, never a run
+// failure; a started event classifies as nothing. Threat (found by the
+// end-to-end acceptance test): a classifier written against a nested
+// message shape no writer produces, so decisions the model records and
+// device results never reach the state, and a refused tool call shown as a
+// failed run. Boundary: ClassifyCompanionEvent over the invoker's own
+// payload writer. Narrowest layer: the pure classifier fed the production
+// writer's bytes.
+func TestClassifyCompanionEventReadsTheInvokersFlatToolPayload(t *testing.T) {
+	record := pebblestore.CompanionContextRecord{ID: "decision-db", Kind: pebblestore.CompanionContextKindDecision, Title: "Inventory uses MySQL", State: pebblestore.CompanionContextStateActive}
+	answer, err := json.Marshal(map[string]any{"data": map[string]any{"record": record}, "padding": strings.Repeat("x", maxToolInputBytes)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := func(eventType string, call tool.Call, result tool.Result) pebblestore.V3SessionEvent {
+		t.Helper()
+		payload, err := providerManagedV3ToolEventPayload(eventType, providerToolInvokerConfig{sessionID: "cmp", runID: "run-1", step: 1}, call, nil, result, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pebblestore.V3SessionEvent{SessionID: "cmp", Seq: 7, ID: "ev-7", EventType: eventType, Payload: payload}
+	}
+	recorded := tool.Call{CallID: "c1", Name: "manage_companion", Arguments: `{"action":"record_decision"}`}
+	ev, ok := ClassifyCompanionEvent(event("session.tool.completed", recorded, tool.Result{CallID: "c1", Name: "manage_companion", Output: string(answer)}))
+	if !ok || ev.Kind != CompanionEventToolResult || ev.Name != "manage_companion" || ev.ID != "c1" || ev.Status != "completed" {
+		t.Fatalf("manage_companion result = %+v %v", ev, ok)
+	}
+	if got, ok := companionRecordedContext(ev.Output); !ok || got.ID != record.ID {
+		t.Fatalf("the record was not read from an answer past the event output bound: %+v %v", got, ok)
+	}
+	device := tool.Call{CallID: "c2", Name: pebblestore.MachineToolRun, Arguments: `{"command":"df -h"}`}
+	ev, ok = ClassifyCompanionEvent(event("session.tool.completed", device, tool.Result{CallID: "c2", Name: pebblestore.MachineToolRun, Output: "SECRET-DEVICE-OUTPUT"}))
+	if !ok || ev.Kind != CompanionEventToolResult || ev.Name != pebblestore.MachineToolRun || ev.Status != "completed" || strings.Contains(ev.Output, "SECRET") {
+		t.Fatalf("device result = %+v %v", ev, ok)
+	}
+	ev, ok = ClassifyCompanionEvent(event("session.tool.failed", device, tool.Result{CallID: "c2", Name: pebblestore.MachineToolRun, Error: "machine access is off"}))
+	if !ok || ev.Kind != CompanionEventToolResult || ev.Status != "failed" || ev.Detail != "machine access is off" {
+		t.Fatalf("failed tool call = %+v %v, want a failed tool result, not a run failure", ev, ok)
+	}
+	if ev, ok := ClassifyCompanionEvent(event("session.tool.started", device, tool.Result{})); ok {
+		t.Fatalf("a started event classified as %+v", ev)
 	}
 }

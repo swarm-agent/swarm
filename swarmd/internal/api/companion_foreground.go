@@ -252,6 +252,29 @@ func (s *Server) companionToolCallsActivity(sessionID, activeRunID string) ([]Co
 		return []CompanionToolCall{}, false, CompanionInputStartsTurn
 	}
 	calls := s.v3SessionExecutor.inFlightToolCalls(sessionID, activeRunID)
+	// A call still waiting at the permission gate (an approval, or a client
+	// tool such as a device command waiting for the person's app) has no
+	// started event yet: its pending permission record is the run's own
+	// durable record of it. One bounded read of the session's pending
+	// records.
+	seen := make(map[string]bool, len(calls))
+	for _, call := range calls {
+		seen[call.CallID] = true
+	}
+	if s.perm != nil {
+		pending, err := s.perm.ListPending(sessionID, companionActivityToolCallsMax+1)
+		if err != nil {
+			log.Printf("warning: companion activity could not list pending calls for session %q: %v", sessionID, err)
+		}
+		for _, record := range pending {
+			callID := strings.TrimSpace(record.CallID)
+			if record.RunID != activeRunID || callID == "" || seen[callID] {
+				continue
+			}
+			seen[callID] = true
+			calls = append(calls, sessionV3InFlightTool{RunID: activeRunID, CallID: callID, ToolName: record.ToolName, StartedAt: firstNonZeroInt64(record.PermissionRequested, record.CreatedAt)})
+		}
+	}
 	out := make([]CompanionToolCall, 0, min(len(calls), companionActivityToolCallsMax))
 	for _, call := range calls {
 		if len(out) == companionActivityToolCallsMax {
@@ -263,6 +286,15 @@ func (s *Server) companionToolCallsActivity(sessionID, activeRunID string) ([]Co
 		return out, len(calls) > len(out), CompanionInputAfterToolCalls
 	}
 	return out, false, CompanionInputNextStep
+}
+
+func firstNonZeroInt64(values ...int64) int64 {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 // companionBackgroundDeliveries lists the session's wake notes no run has read

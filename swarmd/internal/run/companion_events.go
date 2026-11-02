@@ -120,7 +120,15 @@ type companionEventPayload struct {
 		Status   string `json:"status"`
 		Reason   string `json:"reason"`
 	} `json:"permission"`
-	ToolName     string `json:"tool_name"`
+	ToolName string `json:"tool_name"`
+	// CallID, Output, RawOutput and Arguments are the flat terminal tool
+	// payload the provider tool invoker writes
+	// (providerManagedV3ToolEventPayload); its tool message is stored beside
+	// the event, never inside the payload.
+	CallID       string `json:"call_id"`
+	Output       string `json:"output"`
+	RawOutput    string `json:"raw_output"`
+	Arguments    string `json:"arguments"`
 	Confirmation *struct {
 		ID                    string `json:"id"`
 		Status                string `json:"status"`
@@ -230,6 +238,25 @@ func ClassifyCompanionEvent(event pebblestore.V3SessionEvent) (CompanionEvent, b
 			}
 			return out, true
 		}
+	}
+	if strings.HasPrefix(eventType, "session.tool.") {
+		// A terminal tool event as the invoker writes it: a flat payload.
+		// Its status is the call's, never the run's, so a tool event is a
+		// tool result or nothing, and never a run failure.
+		out.Status = providerManagedV3ToolTerminalStatusForEventType(eventType)
+		out.Kind = CompanionEventToolResult
+		out.Name, out.ID = strings.TrimSpace(payload.ToolName), strings.TrimSpace(payload.CallID)
+		out.Detail, out.Arguments = strings.TrimSpace(payload.Error), payload.Arguments
+		// Only a manage_companion answer is read (its record); no other
+		// tool's output, a device's included, is kept. The whole output
+		// when the event carries it: the bounded "output" can cut the record.
+		if out.Name == "manage_companion" {
+			out.Output = firstNonEmptyString(payload.RawOutput, payload.Output)
+		}
+		if out.Status == "" || out.Name == "" {
+			return CompanionEvent{}, false
+		}
+		return out, true
 	}
 	runStatus := strings.TrimSpace(payload.Status)
 	runID := strings.TrimSpace(payload.RunID)
