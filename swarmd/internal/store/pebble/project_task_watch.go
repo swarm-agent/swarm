@@ -458,7 +458,15 @@ func (s *SessionStore) prepareProjectTaskWatchWake(input *V3SessionMutationInput
 		body, rows, ready, err = projectTaskWatchRemoteOutcome(op, watch.Wait)
 	} else {
 		if watch.Wait.ProjectID != ProjectConversationID(parent) {
-			return ErrProjectTaskWaitStale
+			// A Companion's watch stays deliverable only while it is still
+			// the account user's current Companion and the project exists.
+			companion, err := s.companionWatchesProject(parent, input.AccountScopeID, input.UserID, watch.Wait.ProjectID)
+			if err != nil {
+				return err
+			}
+			if !companion {
+				return ErrProjectTaskWaitStale
+			}
 		}
 		body, rows, ready, err = s.projectTaskWatchLocalOutcome(input, watch.owner())
 	}

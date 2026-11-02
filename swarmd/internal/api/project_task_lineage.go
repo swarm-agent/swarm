@@ -25,13 +25,23 @@ func (s *Server) projectTaskOrigin(ctx context.Context, p identity.Principal, pr
 		return "", errors.New("task origin session ownership mismatch")
 	}
 	if pebblestore.ProjectConversationID(parent) == "" {
-		return "", nil
-	}
-	if err := db.ValidateProjectConversation(parent, p.AccountScopeID, p.UserID); err != nil {
-		return "", err
-	}
-	if pebblestore.ProjectConversationID(parent) != projectID {
-		return "", errors.New("task origin project mismatch")
+		// The account user's Companion delegates into any of their projects;
+		// its tasks record it as their origin so reports, stall wakes and
+		// its work list reach it. Other non-project sessions record none.
+		companion, err := db.IsCurrentCompanion(parent, p.AccountScopeID, p.UserID)
+		if err != nil {
+			return "", err
+		}
+		if !companion {
+			return "", nil
+		}
+	} else {
+		if err := db.ValidateProjectConversation(parent, p.AccountScopeID, p.UserID); err != nil {
+			return "", err
+		}
+		if pebblestore.ProjectConversationID(parent) != projectID {
+			return "", errors.New("task origin project mismatch")
+		}
 	}
 	tomb, found, err := db.GetV3SessionTombstone(parent.ID)
 	if err != nil {

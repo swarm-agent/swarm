@@ -185,6 +185,21 @@ permissions and account model), not tied to a project:
   the run was stopped), `pending_permissions` and `task_watches` with exact
   machine/project/task IDs. Refresh it on the Companion session's events;
   ordering and reconnect replay are the session's `/v3/sync` cursors.
+- **Its delegated work comes back to it:** a task the Companion creates in any
+  of the person's projects records the Companion as its `origin_session_id`
+  (list them with `GET /v3/projects/{id}/tasks?origin_session_id=…`), so
+  reports and stall notices reach it. It may watch those projects' local
+  tasks (`manage_projects` `watch_tasks`) and linked machines' tasks, like a
+  project Orchestrator; each outcome arrives once as its own turn. Only the
+  account user's current Companion qualifies: another non-project chat, or
+  the Companion after it was deleted, cannot.
+- **Coverage:** the Companion routes are for clients and the SDK
+  (`client.companion`). Swarm Control (MCP) has no Companion action; it reaches
+  the Companion's conversation through the ordinary session actions. Linked
+  machines do not forward the Companion: each daemon has its own per account
+  user. Decisions and work pointers in the context bank are recorded through
+  the route or SDK; Swarm Console does not record them, and the Companion has
+  no tool of its own for them. There is no voice.
 - **Delete it** only when the person asks: `DELETE /v3/companion` with
   `{"session_id":…,"confirm":true}` removes it, its history and its context
   bank; the next open starts an empty one.

@@ -536,6 +536,7 @@ func (s *SessionStore) prepareProjectTaskWait(input *V3SessionMutationInput) err
 		return s.prepareProjectTaskWatchWake(input, parent)
 	}
 	// Registration: only the conversation's running run records a watch.
+	watchProject := ProjectConversationID(parent)
 	if op.Machine != "" {
 		// A linked-machine wait belongs to the home's Orchestrator: an owned
 		// session that is not itself a delegated task. Its project lives on
@@ -544,7 +545,16 @@ func (s *SessionStore) prepareProjectTaskWait(input *V3SessionMutationInput) err
 			return errors.New("waiting on a linked machine's tasks is only available to the home's Orchestrator")
 		}
 	} else if err := s.ValidateProjectConversation(parent, input.AccountScopeID, input.UserID); err != nil {
-		return err
+		// The account user's Companion is not a project conversation but
+		// watches the tasks of any of the account's projects.
+		companion, cerr := s.companionWatchesProject(parent, input.AccountScopeID, input.UserID, op.ProjectID)
+		if cerr != nil {
+			return cerr
+		}
+		if !companion {
+			return err
+		}
+		watchProject = op.ProjectID
 	}
 	if tomb, ok, err := s.GetV3SessionTombstone(input.SessionID); err != nil {
 		return err
@@ -581,7 +591,7 @@ func (s *SessionStore) prepareProjectTaskWait(input *V3SessionMutationInput) err
 		return s.prepareRemoteProjectTaskWait(input, owner, until)
 	}
 	{
-		if owner.Status != V3RunIntentRunning || op.ProjectID != ProjectConversationID(parent) || len(op.TaskIDs) < 1 || len(op.TaskIDs) > 16 {
+		if owner.Status != V3RunIntentRunning || op.ProjectID == "" || op.ProjectID != watchProject || len(op.TaskIDs) < 1 || len(op.TaskIDs) > 16 {
 			return errors.New("wait_tasks requires the running project orchestrator and 1-16 project tasks")
 		}
 		wait := &V3ProjectTaskWait{ProjectID: op.ProjectID, Until: until}

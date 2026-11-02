@@ -122,6 +122,41 @@ func (s *SessionStore) RetireCompanion(account, user, expectedSessionID string, 
 	return current, nil
 }
 
+// IsCurrentCompanion reports whether session is the account user's current
+// Companion: it carries the protected Companion marker, belongs to them, and
+// their durable identity names it. The marker alone is not enough, so a
+// deleted generation or a copied snapshot never qualifies.
+func (s *SessionStore) IsCurrentCompanion(session SessionSnapshot, account, user string) (bool, error) {
+	account, user = strings.TrimSpace(account), strings.TrimSpace(user)
+	if _, marked := session.Metadata[SessionCompanionMetadataKey]; !marked || !validCompanionPrincipal(account, user) || session.AccountScopeID != account || session.UserID != user {
+		return false, nil
+	}
+	record, found, err := s.GetCompanion(account, user)
+	if err != nil || !found {
+		return false, err
+	}
+	return record.SessionID == session.ID, nil
+}
+
+// companionWatchesProject reports whether parent may watch the local tasks of
+// projectID as the account user's Companion. The Companion is not a project
+// conversation: it follows the tasks it delegates in any of the account's
+// projects with the same watches a project Orchestrator uses.
+func (s *SessionStore) companionWatchesProject(parent SessionSnapshot, account, user, projectID string) (bool, error) {
+	if strings.TrimSpace(projectID) == "" {
+		return false, nil
+	}
+	companion, err := s.IsCurrentCompanion(parent, account, user)
+	if err != nil || !companion {
+		return false, err
+	}
+	project, found, err := s.GetProject(account, projectID)
+	if err != nil {
+		return false, err
+	}
+	return found && project != nil, nil
+}
+
 func (s *SessionStore) putCompanion(record CompanionIdentity) error {
 	b, err := json.Marshal(record)
 	if err != nil {
