@@ -139,8 +139,12 @@ export interface JobDeliveryRebase {
   at: number;
   finished_at?: number;
 }
-/** Why a run step in state `error` never started its script. */
-export type JobStepErrorKind = 'checkout' | 'environment' | 'lease' | 'script_missing' | 'script_unusable' | 'start_timeout';
+/**
+ * Why a run step in state `error` never started its script, or
+ * (`interrupted`) why its script was stopped from outside the step by a
+ * stop signal its time limit did not send: an infrastructure problem.
+ */
+export type JobStepErrorKind = 'checkout' | 'environment' | 'lease' | 'script_missing' | 'script_unusable' | 'start_timeout' | 'interrupted';
 export type JobReviewVerdict = 'ok' | 'block';
 /**
  * An agent step's `fixes` option (reviewer workers only; the only value).

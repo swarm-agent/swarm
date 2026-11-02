@@ -58,8 +58,9 @@ type ProjectTaskStepResult struct {
 	ExitCode   *int   `json:"exit_code,omitempty"`
 	// ErrorKind is why a run step whose status is error never started its
 	// script (checkout, environment, lease, script_missing,
-	// script_unusable, start_timeout): an infrastructure problem, not the
-	// script's result (status failed is).
+	// script_unusable, start_timeout) or was stopped from outside the step
+	// (interrupted): an infrastructure problem, not the script's result
+	// (status failed is).
 	ErrorKind string `json:"error_kind,omitempty"`
 	// Error is the step's failure reason, head and tail kept when long.
 	Error          string `json:"error,omitempty"`

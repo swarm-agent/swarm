@@ -284,8 +284,9 @@ record keeps its placeholder.
 - `steps_result` (task route and `get_task`, not the board): each finished
   step of the delivery with `id`, `type`, `status` (`error` for a run step
   whose script never started, with `error_kind`: `checkout`, `environment`,
-  `lease`, `script_missing`, `script_unusable` or `start_timeout`; `failed`
-  only for a script that ran), `verdict` (agent steps),
+  `lease`, `script_missing`, `script_unusable` or `start_timeout`, or whose
+  host script was stopped from outside the step, `interrupted`; `failed`
+  only for a script that ran and ended by itself), `verdict` (agent steps),
   `duration_ms`, `exit_code`, `error` (head and tail kept past 2000
   characters; the step records it whole up to 8000, which `more` reads),
   `output_tail` (a run step's last 30 lines of its saved log, at most 4000

@@ -202,6 +202,13 @@ func (s *Server) addDrainBuildBlockers(w http.ResponseWriter, status *executionc
 		status.EnvironmentBuilds = count
 		status.Ready = status.Ready && count == 0
 	}
+	// A running workflow script (a gate, a push) is killed by the restart
+	// and would be reported as its own failure: the restart waits for it,
+	// as for an environment build (a step's time limit bounds the wait).
+	if steps := s.runningWorkflowSteps(); steps > 0 {
+		status.WorkflowSteps = steps
+		status.Ready = false
+	}
 	return true
 }
 

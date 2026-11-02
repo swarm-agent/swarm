@@ -53,7 +53,14 @@ export interface BoxSummary {
     };
   };
   /** What a restart of Swarm would interrupt now, across the machine. */
-  busy: { busy: boolean; sessions: number; worker_runs: number; environment_builds: number };
+  busy: {
+    busy: boolean;
+    sessions: number;
+    worker_runs: number;
+    environment_builds: number;
+    /** Workflow run step scripts running now (a restart would kill them). */
+    workflow_steps?: number;
+  };
   sandbox: { mode: string; active: boolean; runtime?: string; reason?: string };
   secrets_gateway: boolean;
   permissions: { bypass: boolean; bypass_blocked_reason?: string };

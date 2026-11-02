@@ -121,10 +121,15 @@ func (HostExecutor) Run(ctx context.Context, req RunRequest) (RunOutcome, error)
 	var exit *exec.ExitError
 	if errors.As(runErr, &exit) {
 		code := exit.ExitCode()
+		signal := ""
 		if status, ok := exit.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+			// Killed by a signal, not by its time limit (handled above):
+			// keep which one, so a stop from outside the step is never read
+			// as the script's own exit code 128+N.
 			code = 128 + int(status.Signal())
+			signal = signalName(status.Signal())
 		}
-		return RunOutcome{ExitCode: code, Output: out.tail.bytes()}, nil
+		return RunOutcome{ExitCode: code, Output: out.tail.bytes(), Signal: signal}, nil
 	}
 	if runErr != nil && state != nil {
 		// The script ran and exited, but Run still reported an error: a
@@ -145,6 +150,36 @@ func (HostExecutor) Run(ctx context.Context, req RunRequest) (RunOutcome, error)
 		return RunOutcome{Output: out.tail.bytes()}, &StartError{Kind: kind, Reason: "could not start " + req.Command + ": " + runErr.Error()}
 	}
 	return RunOutcome{Output: out.tail.bytes()}, nil
+}
+
+// signalName is a signal's conventional name (SIGTERM), or SIG plus its
+// number for one without a name here.
+func signalName(sig syscall.Signal) string {
+	switch sig {
+	case syscall.SIGHUP:
+		return "SIGHUP"
+	case syscall.SIGINT:
+		return "SIGINT"
+	case syscall.SIGQUIT:
+		return "SIGQUIT"
+	case syscall.SIGILL:
+		return "SIGILL"
+	case syscall.SIGABRT:
+		return "SIGABRT"
+	case syscall.SIGBUS:
+		return "SIGBUS"
+	case syscall.SIGFPE:
+		return "SIGFPE"
+	case syscall.SIGKILL:
+		return "SIGKILL"
+	case syscall.SIGSEGV:
+		return "SIGSEGV"
+	case syscall.SIGPIPE:
+		return "SIGPIPE"
+	case syscall.SIGTERM:
+		return "SIGTERM"
+	}
+	return fmt.Sprintf("SIG%d", int(sig))
 }
 
 // copyChecked copies the checked script (an open file) into a new private

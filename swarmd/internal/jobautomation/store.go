@@ -304,6 +304,10 @@ type StepRecord struct {
 	// maxStepFailures). A rerun keeps them, so an attempt that failed
 	// before the rerun still says why.
 	Failures []AttemptFailure `json:"failures,omitempty"`
+	// resumedLog is the log an interrupted earlier attempt of this run step
+	// streamed (Runner.runStep found it still running at its next start);
+	// the new attempt's log starts with it. Never stored in the record.
+	resumedLog string
 }
 
 // AttemptFailure is one failed attempt of a step.

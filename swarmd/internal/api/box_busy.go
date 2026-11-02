@@ -28,6 +28,13 @@ import (
 // they do not make Busy true and are not in WorkerRuns or Reviews. A drain
 // does not wait on them.
 //
+// WorkflowSteps counts workflow run steps whose script runs now (a gate,
+// a push, a check in the folder's environment). They hold no agent turn or
+// capacity, but a restart kills the script, which runs again from the start
+// afterwards and is reported as a failure if the kill wins the race with
+// the daemon's own stop; so they make Busy true, a drain waits for them
+// (bounded by a step's time limit) and they are not RestartResumable.
+//
 // RestartResumable says whether every item counted resumes after a restart.
 // Durable worker runs, follow-ups and reviews without a live agent turn do
 // (ReconcileWorker picks them up at startup). Agent runs in progress do not:
@@ -43,6 +50,7 @@ type boxBusy struct {
 	WorkerRuns        int  `json:"worker_runs"`
 	LimitWaiting      int  `json:"limit_waiting"`
 	EnvironmentBuilds int  `json:"environment_builds"`
+	WorkflowSteps     int  `json:"workflow_steps"`
 	RestartResumable  bool `json:"restart_resumable"`
 }
 
@@ -94,9 +102,19 @@ func (s *Server) boxBusyFrom(held, queued []string) (boxBusy, error) {
 		}
 		out.EnvironmentBuilds = building
 	}
-	out.Busy = out.Sessions+out.Queued+out.WorkerRuns+out.EnvironmentBuilds+out.Followups+out.Reviews > 0
-	out.RestartResumable = out.Sessions == 0 && out.EnvironmentBuilds == 0
+	out.WorkflowSteps = s.runningWorkflowSteps()
+	out.Busy = out.Sessions+out.Queued+out.WorkerRuns+out.EnvironmentBuilds+out.Followups+out.Reviews+out.WorkflowSteps > 0
+	out.RestartResumable = out.Sessions == 0 && out.EnvironmentBuilds == 0 && out.WorkflowSteps == 0
 	return out, nil
+}
+
+// runningWorkflowSteps is how many workflow run steps have a script running
+// on this daemon now (0 without a workflow runner).
+func (s *Server) runningWorkflowSteps() int {
+	if s == nil || s.jobAutomations == nil {
+		return 0
+	}
+	return s.jobAutomations.RunningScripts()
 }
 
 // handleBoxBusy answers "may this machine restart Swarm now?" (GET

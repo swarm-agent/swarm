@@ -50,6 +50,9 @@ type DrainStatus struct {
 	Forced bool `json:"forced"`
 	// Reason says, in one line, what the drain waits on or why it ended.
 	Reason string `json:"reason,omitempty"`
+	// WorkflowSteps is how many workflow run step scripts run now (set by
+	// the API, like EnvironmentBuilds); the restart is not ready over them.
+	WorkflowSteps int `json:"workflow_steps"`
 }
 
 // DrainOptions are what a drain request asks for.

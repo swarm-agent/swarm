@@ -115,14 +115,14 @@ func (s *Server) ManageJobs(ctx context.Context, p identity.Principal, sessionID
 			}
 		}
 		if s.perm == nil {
-			return nil, fmt.Errorf("owner must allow manage_jobs.%s.%s in account permission rules", agent, action)
+			return nil, &JobGrantRequiredError{Agent: agent, Action: action, Machine: machine}
 		}
 		policy, err := s.perm.CurrentPolicyForAccount(p.AccountScopeID)
 		if err != nil {
 			return nil, err
 		}
-		if !nativeJobActionGranted(policy, agent, action) {
-			return nil, fmt.Errorf("owner must allow manage_jobs.%s.%s in account permission rules", agent, action)
+		if granted, denied := nativeJobActionGrant(policy, agent, action); !granted {
+			return nil, &JobGrantRequiredError{Agent: agent, Action: action, Machine: machine, Denied: denied}
 		}
 	}
 	return s.manageJobsAs(ctx, p, nil, false, current, action, machine, args)
@@ -321,20 +321,66 @@ func manageJobsAction(name string) (tool.CatalogAction, bool) {
 }
 
 func nativeJobActionGranted(policy permission.Policy, agent, action string) bool {
-	key := "manage_jobs." + agent + "." + action
+	granted, _ := nativeJobActionGrant(policy, agent, action)
+	return granted
+}
+
+// nativeJobActionGrant reads the owner's grant for agent's job action:
+// granted with an exact allow rule and no matching deny; denied when a deny
+// rule (the exact key, or manage_jobs) refuses it.
+func nativeJobActionGrant(policy permission.Policy, agent, action string) (granted, denied bool) {
+	key := JobGrantRule(agent, action)
 	allowed := false
 	for _, r := range policy.Rules {
 		if r.Kind != permission.PolicyRuleKindTool {
 			continue
 		}
 		if r.Decision == permission.PolicyDecisionDeny && (r.Tool == key || r.Tool == "manage_jobs") {
-			return false
+			return false, true
 		}
 		if r.Tool == key && r.Decision == permission.PolicyDecisionAllow {
 			allowed = true
 		}
 	}
-	return allowed
+	return allowed, false
+}
+
+// JobGrantRule is the exact account permission rule (kind tool, decision
+// allow) that lets agent run the job action through manage_jobs.
+func JobGrantRule(agent, action string) string {
+	return "manage_jobs." + agent + "." + action
+}
+
+// JobGrantRequiredError is a session agent's manage_jobs action refused
+// because the account owner has not granted it (or a deny rule refuses it).
+// It is checked on this machine, the one the conversation runs on, before
+// anything is forwarded to a linked machine (Machine): nothing ran or
+// changed anywhere. Only the owner can grant it, on this machine's
+// Permissions page or with the owner permission-rule API; start-task
+// approval, linked work rules, permission bypass, a generic manage_jobs
+// allow and another agent's grant never satisfy it, and no tool or agent can
+// grant it. The message names the exact rule so the owner can act on it.
+type JobGrantRequiredError struct {
+	Agent, Action string
+	// Machine is the linked machine the action was for ("": this one).
+	Machine string
+	// Denied: a deny rule refuses it, rather than a missing allow rule.
+	Denied bool
+}
+
+func (e *JobGrantRequiredError) Error() string {
+	rule := JobGrantRule(e.Agent, e.Action)
+	where := "refused on this machine (where the conversation runs)"
+	if e.Machine != "" {
+		where = fmt.Sprintf("refused on this machine (where the conversation runs) before anything was sent to linked machine %s", e.Machine)
+	}
+	why := fmt.Sprintf("the account has no permission rule allowing it for agent %s", e.Agent)
+	next := fmt.Sprintf("the owner adds a rule of kind tool, decision allow, tool %s on this machine's Permissions page (or with the owner permission-rule API), then the action can be asked again", rule)
+	if e.Denied {
+		why = fmt.Sprintf("an owner deny rule (%s or manage_jobs) refuses it for agent %s", rule, e.Agent)
+		next = fmt.Sprintf("only the owner can remove that deny rule and add the allow rule %s on this machine's Permissions page", rule)
+	}
+	return fmt.Sprintf("owner must allow %s in account permission rules: manage_jobs %s was %s: %s; nothing ran or changed. Next: %s. Start-task approval, linked work rules, permission bypass, a generic manage_jobs allow or another agent's grant do not grant it, and no agent or tool can grant it.", rule, e.Action, where, why, next)
 }
 
 func (s *Server) refuseNativeJobSelfTarget(c *controlMCPCall, current store.SessionSnapshot, action string, args map[string]any) error {

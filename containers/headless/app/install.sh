@@ -1003,7 +1003,7 @@ swarm_busy() {
   systemctl is-active -q "$DAEMON_UNIT" || return 1
   if out=$(local_api /v3/box/busy 2>/dev/null); then
     [[ $(json_get busy <<<"$out") == false ]] && return 1
-    echo "$(json_get sessions <<<"$out") agent runs, $(json_get worker_runs <<<"$out") worker runs and $(json_get environment_builds <<<"$out") environment builds are in progress"
+    echo "$(json_get sessions <<<"$out") agent runs, $(json_get worker_runs <<<"$out") worker runs, $(json_get workflow_steps <<<"$out") workflow step scripts and $(json_get environment_builds <<<"$out") environment builds are in progress"
     return 0
   fi
   echo "daemon status unavailable; refusing to assume idle"

@@ -198,7 +198,8 @@ to run:
   script that ran and exited non-zero (or an agent step that failed);
   `error` is a `run` step whose script **never started** (its `error_kind`:
   `checkout`, `environment`, `lease`, `script_missing`, `script_unusable`,
-  `start_timeout`), an infrastructure problem that `failed` never matches,
+  `start_timeout`) or a host script Swarm saw killed from outside the step
+  (`interrupted`), an infrastructure problem that `failed` never matches,
   so a step that fixes a failed check is not sent when the check could not
   run. `status: error` is only for a `run` step.
 - `{"step": "<id>", "verdict": "ok|block"}`: for an `agent` step, the verdict
@@ -443,6 +444,33 @@ delivery ends `error` unless another step `failed`. The task's outcome is
 `error <step> (infrastructure: <kind>)` and its state reason says it is an
 infrastructure problem, not the work's. Retries apply as for a failure,
 except for `script_missing`, `script_unusable` and a refused lease.
+
+#### Scripts stopped from outside the step (`interrupted`)
+
+A host `run` step whose script Swarm saw end by `SIGTERM`, `SIGKILL`,
+`SIGINT` or `SIGHUP` that its own time limit did not send (a service stop,
+an operator, the OOM killer) ends `error` with `error_kind` `interrupted`.
+Its exit code (128 plus the signal, 143 for `SIGTERM`) is kept, the reason
+names the signal and the script's last output, the log tail ends with a
+`swarm:` line saying so, and `next` says there is nothing to fix in the
+work. Swarm does not know who sent the signal; find that in the machine's
+logs. Configured retries apply. A script that crashes on a signal of its
+own (`SIGSEGV`, `SIGABRT`, ...) stays `failed` ("killed by SIGSEGV (exit
+code 139)"). A script that exits with code 129, 130, 137 or 143 by itself,
+and an environment step (whose lease returns only an exit code), stay
+`failed`, and the reason says that code is also what a process killed by
+that signal returns, so Swarm cannot tell the two apart.
+
+A step's log tail is saved while its script runs (at most every two
+seconds, on output), not only when it ends. When the daemon stops, the
+running step is resumed at its next start rather than recorded; if it
+stopped or crashed during an attempt, the step's `failures` gains "attempt
+N did not finish ... (interrupted ...)" with its last saved output, the new
+attempt's log starts with the interrupted attempt's output, and the step
+runs again once. `GET /v3/box/busy` counts run step scripts running now
+(`workflow_steps`): the machine is busy and not `restart_resumable`, an
+automatic update (`if_idle`) does not drain or restart over them, and a
+drain (`GET /v3/box/drain` `workflow_steps`) is not ready until they end.
 - A check in the environment never hands the work over: a successful one
   after the review is not reported as a push.
 

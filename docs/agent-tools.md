@@ -68,8 +68,14 @@ Non-worker sessions use their session agent name.
 For example, `manage_jobs.daily-watch.message_job` permits that action for
 workers using custom agent `daily-watch`. For a worker without a custom agent
 whose ID is `example-worker`, use `manage_jobs.worker_example-worker.give_job`.
-The refusal message gives the exact required key. A generic `manage_jobs` allow, permission bypass, or an
-allow for another agent does not substitute for this grant. A matching deny
+The refusal message gives the exact required key and agent, says it was
+refused on this machine (the one the conversation runs on) and, with
+`machine`, before anything was sent to that linked machine, that nothing ran
+or changed, and the owner's next step: add the allow rule on this machine's
+Permissions page (or remove a deny rule that refuses it). A generic
+`manage_jobs` allow, permission bypass, start-task approval, a linked work
+rule, or an allow for another agent does not substitute for this grant, and
+an agent must not try to reach the action another way. A matching deny
 (or a `manage_jobs` deny) wins. Use the existing owner permission-rule API;
 this tool cannot change grants. Normal tool permission checks still apply.
 

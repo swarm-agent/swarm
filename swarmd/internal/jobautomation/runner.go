@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"swarm/packages/swarmd/internal/providerlimit"
@@ -61,6 +62,12 @@ type RunRequest struct {
 type RunOutcome struct {
 	ExitCode int
 	Output   []byte
+	// Signal names the signal that killed the script ("SIGTERM"), when the
+	// executor saw the process end by a signal its time limit did not send;
+	// ExitCode is then 128 plus the signal's number. "" when the script
+	// exited by itself, or the executor cannot tell (an environment step
+	// reports only the exit code its lease returned).
+	Signal string
 	// Repository is what an environment step's checkout found in the
 	// folder's repository: an object it could not read, or that every
 	// object read (nil: it did not get that far, or a host step).
@@ -132,10 +139,15 @@ const (
 	// ErrorKindStartTimeout: the step's time limit ended before its script
 	// started (waiting for a lease, making the checkout).
 	ErrorKindStartTimeout = "start_timeout"
+	// ErrorKindInterrupted: the script started but was killed from outside
+	// the step by a stop signal (SIGTERM, SIGKILL, SIGINT, SIGHUP) its time
+	// limit did not send: the daemon or machine stopping, an operator, the
+	// OOM killer. Its exit code is not the script's verdict on the work.
+	ErrorKindInterrupted = "interrupted"
 )
 
 // ErrorKinds lists every ErrorKind*, for the surfaces that name them.
-var ErrorKinds = []string{ErrorKindCheckout, ErrorKindEnvironment, ErrorKindLease, ErrorKindScriptMissing, ErrorKindScriptUnusable, ErrorKindStartTimeout}
+var ErrorKinds = []string{ErrorKindCheckout, ErrorKindEnvironment, ErrorKindLease, ErrorKindScriptMissing, ErrorKindScriptUnusable, ErrorKindStartTimeout, ErrorKindInterrupted}
 
 // AgentRequest is an agent step's job.
 type AgentRequest struct {
@@ -331,6 +343,19 @@ type Runner struct {
 	attempts map[uint64]int
 	failures int
 	wake     chan struct{}
+	// scripts counts run steps whose script runs now (RunningScripts).
+	scripts atomic.Int64
+}
+
+// RunningScripts is how many workflow run steps have a script running now
+// on this daemon (host or environment). A restart kills each of them, and
+// it runs again from the start afterwards, so machine busy and an update
+// drain count them (GET /v3/box/busy workflow_steps).
+func (r *Runner) RunningScripts() int {
+	if r == nil {
+		return 0
+	}
+	return int(r.scripts.Load())
 }
 
 // Options wires a Runner.
@@ -1267,6 +1292,15 @@ func (r *Runner) finish(d *Delivery, state string) {
 // with its next attempt time.
 func (r *Runner) runStep(ctx context.Context, d *Delivery, i int, step Step) bool {
 	record := &d.Steps[i]
+	if step.Type == StepRun && record.State == StateRunning && record.StartedAt > 0 && record.Attempts > 0 {
+		// The attempt before never ended here: the daemon stopped or
+		// crashed while its script ran (a stopping daemon resumes the step
+		// instead of recording it). Say so in its history and keep the
+		// output it streamed, so the new attempt does not erase why.
+		prev := r.store.StepLog(d.ID, record.ID)
+		record.recordFailure(d.Reruns, r.now().UnixMilli(), interruptedResumeReason(record.Attempts, prev))
+		record.resumedLog = prev
+	}
 	record.State, record.StartedAt, record.FinishedAt, record.NextAttemptAt = StateRunning, r.now().UnixMilli(), 0, 0
 	record.Attempts++
 	record.ExitCode, record.Output, record.Reason, record.Next, record.ErrorKind = nil, "", "", "", ""
@@ -1552,13 +1586,34 @@ func (r *Runner) runScript(ctx context.Context, d *Delivery, record *StepRecord,
 		r.repairFolderObjects(d.Folder)
 	}
 	tail := &tailBuffer{max: MaxLogTailBytes}
+	if prev := record.resumedLog; prev != "" {
+		record.resumedLog = ""
+		tail.write([]byte(prev))
+		tail.write([]byte(fmt.Sprintf("\nswarm: attempt %d did not finish (the daemon stopped while it ran); attempt %d starts here\n", record.Attempts-1, record.Attempts)))
+	}
+	prefix := tail.len()
+	// The log tail is saved while the script runs (at most once per
+	// stepLogFlush), so a daemon that crashes or is killed mid-step still
+	// leaves what the script printed.
+	logs := &stepLogWriter{tail: tail, save: func(p []byte) error { return r.store.PutStepLog(d.ID, step.ID, p) }, now: r.now}
+	r.scripts.Add(1)
 	outcome, err := executor.Run(ctx, RunRequest{
 		Folder: d.Folder, Command: step.Command, Args: append([]string(nil), step.Args...), Env: env, Stdin: stdin,
-		Timeout: time.Duration(step.TimeoutSeconds) * time.Second, OnOutput: tail.write,
+		Timeout: time.Duration(step.TimeoutSeconds) * time.Second, OnOutput: logs.write,
 		Owner: stepOwner(*d, step.ID, record.Attempts),
 	})
-	if tail.len() == 0 && len(outcome.Output) > 0 {
+	r.scripts.Add(-1)
+	if tail.len() == prefix && len(outcome.Output) > 0 {
 		tail.write(outcome.Output)
+	}
+	interrupted := err == nil && interruptSignal(outcome.Signal)
+	// The script's own last line, before any note of Swarm's.
+	scriptLast := ""
+	if tail.len() > prefix {
+		scriptLast = lastLine(tail.bytes())
+	}
+	if interrupted {
+		tail.write([]byte(fmt.Sprintf("\nswarm: the script was killed by %s (exit code %d); its time limit did not send it\n", outcome.Signal, outcome.ExitCode)))
 	}
 	logTail := tail.bytes()
 	if err := r.store.PutStepLog(d.ID, step.ID, logTail); err != nil {
@@ -1589,14 +1644,56 @@ func (r *Runner) runScript(ctx context.Context, d *Delivery, record *StepRecord,
 	}
 	code := outcome.ExitCode
 	record.ExitCode = &code
+	if interrupted {
+		// Seen ending by a stop signal its time limit did not send: the
+		// exit code is not the script's verdict on the work. A stopping
+		// daemon never gets here (runStep resumes the step instead).
+		reason := fmt.Sprintf("the script was killed by %s (exit code %d) while it ran: stopped from outside the step, not by its time limit (the daemon or machine stopping, an operator, the OOM killer); Swarm did not see who sent it", outcome.Signal, code)
+		if last := scriptLast; last != "" {
+			reason += "; last output: " + last
+		}
+		return stepFailure{reason: stepReason(reason), next: interruptedNext, errorKind: ErrorKindInterrupted}
+	}
 	if code != 0 {
 		reason := fmt.Sprintf("exited with code %d", code)
+		if outcome.Signal != "" {
+			// The script's own crash (SIGSEGV, SIGABRT, ...): its result.
+			reason = fmt.Sprintf("killed by %s (exit code %d)", outcome.Signal, code)
+		} else if hint := signalExitHint(code); hint != "" {
+			reason += " (" + hint + ")"
+		}
 		if record.Output != "" {
 			reason += ": " + record.Output
 		}
 		return stepFailure{reason: stepReason(reason), next: "fix the script"}
 	}
 	return stepFailure{}
+}
+
+// interruptedNext is an interrupted run step's next action.
+const interruptedNext = "nothing to fix in the work: the script was stopped from outside the step (an infrastructure interruption); find what stopped it in the machine's logs (a daemon restart or update, an operator, the OOM killer), then rerun"
+
+// interruptSignal reports a signal that stops a process from outside (a
+// service stop, an operator, the OOM killer), as opposed to a crash of the
+// script's own (SIGSEGV, SIGABRT, SIGBUS, ...), which is its result.
+func interruptSignal(signal string) bool {
+	switch signal {
+	case "SIGTERM", "SIGKILL", "SIGINT", "SIGHUP":
+		return true
+	}
+	return false
+}
+
+// signalExitHint says, for an exit code a process killed by a stop signal
+// also returns (128 + the signal), that Swarm saw an ordinary exit and so
+// cannot tell the script's own code from a signal a child or shell turned
+// into it; "" for any other code.
+func signalExitHint(code int) string {
+	name := map[int]string{129: "SIGHUP", 130: "SIGINT", 137: "SIGKILL", 143: "SIGTERM"}[code]
+	if name == "" {
+		return ""
+	}
+	return fmt.Sprintf("%d is also what a process killed by %s returns; Swarm saw the script exit normally, so it cannot tell whether the script chose this code or something stopped it", code, name)
 }
 
 func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, step Step) stepFailure {
@@ -2308,6 +2405,48 @@ func (t *tailBuffer) bytes() []byte {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return append([]byte(nil), t.buf...)
+}
+
+// stepLogFlush is how often, at most, a running step's log tail is saved.
+const stepLogFlush = 2 * time.Second
+
+// stepLogWriter is a running run step's output: every write goes to its tail,
+// and the tail is saved when stepLogFlush has passed since the last save
+// (checked on write, so a quiet script costs nothing). runScript saves the
+// final tail when the script ends; this keeps what it printed when the daemon
+// dies first.
+type stepLogWriter struct {
+	tail  *tailBuffer
+	save  func([]byte) error
+	now   func() time.Time
+	mu    sync.Mutex
+	saved time.Time
+}
+
+func (w *stepLogWriter) write(p []byte) {
+	w.tail.write(p)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	now := w.now()
+	if !w.saved.IsZero() && now.Sub(w.saved) < stepLogFlush {
+		return
+	}
+	w.saved = now
+	if err := w.save(w.tail.bytes()); err != nil {
+		log.Printf("swarmd job automations: save a running step's log: %v", err)
+	}
+}
+
+// interruptedResumeReason is the failure history entry of a run step's
+// attempt that never ended because the daemon stopped or crashed under it.
+func interruptedResumeReason(attempt int, saved string) string {
+	reason := fmt.Sprintf("attempt %d did not finish: the daemon stopped or crashed during it (%s, an infrastructure interruption, not the script's result); the step runs again", attempt, ErrorKindInterrupted)
+	if last := lastLine([]byte(saved)); last != "" {
+		reason += "; its last saved output: " + last
+	} else {
+		reason += "; it saved no output"
+	}
+	return reason
 }
 
 // isCommitID reports whether s is a full SHA-1 or SHA-256 commit id.
