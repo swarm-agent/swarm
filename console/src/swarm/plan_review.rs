@@ -16,6 +16,7 @@
 
 use serde_json::{Value, json};
 
+use super::client::Refusal;
 use super::map::{self, list, s};
 use crate::data::{Progress, ProgressState, ReviewRef, Task, TaskState, TaskStatus};
 
@@ -135,7 +136,7 @@ pub fn parse(answer: &Value) -> Option<Review> {
 }
 
 /// Percent-encodes a query value.
-fn query_value(v: &str) -> String {
+pub(crate) fn query_value(v: &str) -> String {
     let mut out = String::new();
     for b in v.bytes() {
         if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
@@ -185,17 +186,63 @@ pub fn decision_body(review: &Review, accept: bool, feedback: &str) -> Result<Va
     Ok(body)
 }
 
-/// A decision's answer: Swarm's refusal (409 carries the current review),
-/// or the review after it was carried out.
+/// What a decision's answer says is known (the decision route's answers,
+/// task_plan_review.go). Only `Done` says the decision was carried out.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Decided {
-    pub ok: bool,
-    pub error: String,
-    pub review: Option<Review>,
+pub enum Decided {
+    /// Carried out on exactly `binding` (None: an ordinary task started).
+    /// `review` is the task read after it; None when that read failed
+    /// (`refresh_error`): its state is then unknown, never the one before.
+    Done { binding: Option<Binding>, review: Option<Review>, refresh_error: String },
+    /// Refused because of the task's state (409): the plan changed, the task
+    /// started. `review` is the current one, when Swarm could read it.
+    Refused { error: String, review: Option<Review> },
+    /// Refused for another reason (not allowed, not found, a bad request):
+    /// nothing was done.
+    Denied { status: u16, error: String },
+    /// Sent, and no answer says whether it was carried out (the link or
+    /// Swarm did not answer). Never retried: the task is read again.
+    Unknown { error: String },
 }
 
-pub fn decided(answer: &Value) -> Decided {
-    Decided { ok: answer.get("ok").and_then(Value::as_bool).unwrap_or(false), error: s(answer, "error").to_string(), review: parse(answer) }
+fn binding_of(v: Option<&Value>) -> Option<Binding> {
+    let b = v.filter(|b| b.is_object())?;
+    let revision = b.get("definition_revision").and_then(Value::as_u64).unwrap_or(0);
+    (!s(b, "plan_id").is_empty() && revision > 0).then(|| Binding { session_id: s(b, "session_id").to_string(), plan_id: s(b, "plan_id").to_string(), revision })
+}
+
+/// Sorts the decision route's answer.
+pub fn decision_outcome(result: Result<Value, Refusal>) -> Decided {
+    match result {
+        Ok(answer) if answer.get("ok").and_then(Value::as_bool) == Some(true) => {
+            let current = answer.get("review_current").and_then(Value::as_bool).unwrap_or(false);
+            Decided::Done {
+                binding: binding_of(answer.get("decided").and_then(|d| d.get("plan_binding"))),
+                review: if current { parse(&answer) } else { None },
+                refresh_error: if current { String::new() } else { s(&answer, "refresh_error").to_string() },
+            }
+        }
+        // A 2xx that does not say ok is not a known outcome.
+        Ok(_) => Decided::Unknown { error: "Swarm's answer did not say whether the decision was carried out.".into() },
+        Err(Refusal::Status(409, error, answer)) => {
+            let current = answer.get("review_current").and_then(Value::as_bool).unwrap_or(false);
+            Decided::Refused { error, review: if current { parse(&answer) } else { None } }
+        }
+        Err(Refusal::Status(code, error, answer)) if code >= 500 || answer.get("outcome_unknown").and_then(Value::as_bool) == Some(true) => {
+            Decided::Unknown { error: if error.is_empty() { format!("Swarm answered HTTP {code}.") } else { error } }
+        }
+        Err(Refusal::Status(code, error, _)) => Decided::Denied { status: code, error },
+        Err(Refusal::Forbidden(error)) => Decided::Denied { status: 403, error: if error.is_empty() { "Swarm refused that.".into() } else { error } },
+        Err(e @ Refusal::SignedOut) => Decided::Denied { status: 401, error: e.to_string() },
+        Err(e @ Refusal::Unreachable) => Decided::Unknown { error: e.to_string() },
+    }
+}
+
+/// A review read's or decision's answer, for the request that asked it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Answer {
+    Read(Result<Value, String>),
+    Decided(Decided),
 }
 
 /// The linked-task records of one conversation
@@ -341,15 +388,69 @@ mod tests {
         assert!(decision_body(&parse(&unversioned).unwrap(), true, "").is_err());
 
         // A refusal (409) keeps the current review: the new version to decide on.
-        let refused = json!({"ok": false, "error": "the plan changed: ... (current definition_revision 3)", "review": answer("accept_plan", 3)["review"]});
-        let d = decided(&refused);
-        assert!(!d.ok);
-        assert!(d.error.contains("plan changed"));
-        assert_eq!(d.review.unwrap().binding.unwrap().revision, 3);
+        let refused = json!({"ok": false, "error": "the plan changed: ... (current definition_revision 3)", "review_current": true, "review": answer("accept_plan", 3)["review"]});
+        match decision_outcome(Err(Refusal::Status(409, "the plan changed: ... (current definition_revision 3)".into(), refused))) {
+            Decided::Refused { error, review } => {
+                assert!(error.contains("plan changed"));
+                assert_eq!(review.unwrap().binding.unwrap().revision, 3);
+            }
+            other => panic!("a 409 is a refusal: {other:?}"),
+        }
         // Nothing left to decide.
         let started =
             parse(&json!({"review": {"project_id": "p", "task_id": "t", "run_status": "in_progress", "decision": "none", "problem": "the task is in_progress"}})).unwrap();
         assert_eq!(decision_body(&started, true, "").unwrap_err(), "the task is in_progress");
+    }
+
+    // Purpose: the console tells the person only what Swarm's decision
+    // answer says. Requirements: ok with review_current is Done with the
+    // review after it and the exact version decided; ok without
+    // review_current is Done with no review (the state is unknown, never the
+    // pending one before); 409 is a refusal carrying the current review only
+    // when Swarm says it is current; 403/404/400 are refusals that did
+    // nothing; 502 outcome_unknown, any 5xx, no answer, or a 2xx without ok
+    // are Unknown. Threat: "Accepted ... pending approval" with accept
+    // offered again, a lost answer taken as success or as failure, every
+    // failure shown as a plan change. Owner: decision_outcome. Narrowest
+    // layer: the pure mapping of the route's answers.
+    #[test]
+    fn a_decision_answer_says_only_what_is_known() {
+        let done = decision_outcome(Ok(json!({"ok": true, "decision": "accept", "review_current": true,
+            "decided": {"machine": "forge", "project_id": "proj 1", "task_id": "t/1", "plan_binding": {"session_id": "s1", "plan_id": "plan-a", "definition_revision": 2}},
+            "review": {"machine": "forge", "project_id": "proj 1", "task_id": "t/1", "run_status": "in_progress", "decision": "none"}})));
+        match done {
+            Decided::Done { binding: Some(b), review: Some(r), refresh_error } => {
+                assert_eq!((b.plan_id.as_str(), b.revision, r.run_status.as_str(), refresh_error.as_str()), ("plan-a", 2, "in_progress", ""));
+            }
+            other => panic!("done: {other:?}"),
+        }
+        // Decided, the read after it failed: no review, even if one is sent.
+        let stale = decision_outcome(Ok(json!({"ok": true, "review_current": false, "refresh_error": "box did not answer",
+            "decided": {"project_id": "p", "task_id": "t", "plan_binding": {"session_id": "s", "plan_id": "p", "definition_revision": 4}},
+            "review": answer("accept_plan", 4)["review"]})));
+        assert_eq!(
+            stale,
+            Decided::Done { binding: Some(Binding { session_id: "s".into(), plan_id: "p".into(), revision: 4 }), review: None, refresh_error: "box did not answer".into() }
+        );
+        // A 409 whose review Swarm could not read again carries none.
+        assert_eq!(
+            decision_outcome(Err(Refusal::Status(409, "accept refused".into(), json!({"ok": false, "review_current": false})))),
+            Decided::Refused { error: "accept refused".into(), review: None }
+        );
+        // Refused for permission or a missing task: nothing done, status kept.
+        assert_eq!(decision_outcome(Err(Refusal::Forbidden("linked work on forge is off".into()))), Decided::Denied { status: 403, error: "linked work on forge is off".into() });
+        assert_eq!(
+            decision_outcome(Err(Refusal::Status(404, "no task t sent to forge from here".into(), Value::Null))),
+            Decided::Denied { status: 404, error: "no task t sent to forge from here".into() }
+        );
+        // Unknown: the link timed out, Swarm failed, nothing answered.
+        assert!(matches!(
+            decision_outcome(Err(Refusal::Status(502, "the accept was sent but its outcome is unknown".into(), json!({"outcome_unknown": true})))),
+            Decided::Unknown { .. }
+        ));
+        assert!(matches!(decision_outcome(Err(Refusal::Status(500, String::new(), Value::Null))), Decided::Unknown { .. }));
+        assert!(matches!(decision_outcome(Err(Refusal::Unreachable)), Decided::Unknown { .. }));
+        assert!(matches!(decision_outcome(Ok(json!({"review": answer("accept_plan", 2)["review"]}))), Decided::Unknown { .. }));
     }
 
     // Purpose: an ordinary task keeps its start decision (no plan named) and

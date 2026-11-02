@@ -192,6 +192,7 @@ impl Console {
                     Update::Facts(_) => "facts",
                     Update::Lost(_) => "lost",
                     Update::Done { .. } => "done",
+                    Update::PlanReview { .. } => "plan review",
                     Update::Review { .. } => "review",
                     Update::Hold { .. } => "hold",
                     Update::AutomationsChanged => "automations",
@@ -250,7 +251,7 @@ impl Console {
                     self.forget_older();
                 }
                 Update::Done { what: what @ ("permissions" | "permission"), result, .. } => self.permissions_done(what, result),
-                Update::Done { what: what @ ("plan review" | "plan decision"), result, .. } => self.plan_review_done(what, result),
+                Update::PlanReview { op, target, answer } => self.plan_review_answer(op, &target, answer),
                 Update::Done { draft, what, result } => {
                     let linked = what == "link" && result.is_ok();
                     self.done(draft, what, result);

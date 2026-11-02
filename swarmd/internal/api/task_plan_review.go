@@ -35,6 +35,21 @@ import (
 // starts a second run. Only a user decides; the route reads the task with
 // the caller's own account, and a linked task only when a session of the
 // caller (or the account's Swarm Control caller) sent it.
+//
+// The answers say exactly what is known (TaskPlanDecisionResult):
+//
+//   - 200 ok: the decision was carried out. "decided" names the task and the
+//     exact version decided on. review_current true: "review" is the task as
+//     read after it. review_current false: that read failed
+//     ("refresh_error"); no review is sent, never the one from before the
+//     decision, and the client reads again before anything else.
+//   - 409 ok false: refused because of the task's state (the plan changed,
+//     the task started); "review" is the current one when review_current.
+//   - 400/403/404: refused for that reason (linked work off, not found, not
+//     sent from here); nothing was done.
+//   - 502 outcome_unknown: the decision was sent but no answer says whether
+//     it was carried out (the link timed out, the machine failed). It is
+//     never retried; the client reads the task again.
 
 const (
 	taskPlanReviewPath         = "/v3/task-plan-review"
@@ -52,9 +67,12 @@ type TaskPlanDecision struct {
 }
 
 // taskPlanReviewConflict carries the current review with a refused decision.
+// current is false when the task could not be read after the refusal: then
+// no review is answered.
 type taskPlanReviewConflict struct {
-	err    error
-	review tool.ProjectTaskPlanReview
+	err     error
+	review  tool.ProjectTaskPlanReview
+	current bool
 }
 
 func (e *taskPlanReviewConflict) Error() string { return e.err.Error() }
@@ -158,17 +176,86 @@ func (s *Server) readLinkedTaskPlanReview(ctx context.Context, p identity.Princi
 	return tool.BuildProjectTaskPlanReview(machine, *answer.Task), nil
 }
 
+// TaskPlanDecided names the task and the exact plan version a carried-out
+// (or possibly carried-out) decision was on. PlanBinding is nil for an
+// ordinary task started without a plan.
+type TaskPlanDecided struct {
+	Machine     string                           `json:"machine,omitempty"`
+	ProjectID   string                           `json:"project_id"`
+	TaskID      string                           `json:"task_id"`
+	PlanBinding *tool.ProjectTaskPlanBindingView `json:"plan_binding,omitempty"`
+}
+
+// TaskPlanDecisionResult is a carried-out decision. Review is the task read
+// after it, or nil with RefreshError when that read failed: the decision
+// stands, and its state is unknown until read again.
+type TaskPlanDecisionResult struct {
+	Decision     string
+	Decided      TaskPlanDecided
+	Review       *tool.ProjectTaskPlanReview
+	RefreshError string
+}
+
+// taskPlanDecisionUnknown: the decision was sent and no answer says whether
+// it was carried out.
+type taskPlanDecisionUnknown struct {
+	err     error
+	decided TaskPlanDecided
+}
+
+func (e *taskPlanDecisionUnknown) Error() string { return e.err.Error() }
+
+// taskPlanDecisionFailure sorts a refused or failed approve/refine call:
+// a refusal because of the task's state is a conflict (409, with the current
+// review); a permission, not-found or request refusal keeps its status; a
+// linked call with no definite answer (no reply, a timeout, the machine's
+// own failure) is outcome-unknown. This Swarm's own services answer
+// definitely: their refusals happen before anything is changed.
+func taskPlanDecisionFailure(machine string, err error) (status int, unknown bool) {
+	if machine == "" {
+		var typed *linkedTaskError
+		if errors.As(err, &typed) {
+			return typed.status, false
+		}
+		switch msg := err.Error(); {
+		case strings.Contains(msg, "forbidden"):
+			return http.StatusForbidden, false
+		case strings.Contains(msg, "not found"):
+			return http.StatusNotFound, false
+		}
+		return http.StatusConflict, false
+	}
+	var refused *fleet.Error
+	if !errors.As(err, &refused) {
+		return http.StatusBadGateway, true
+	}
+	switch {
+	case refused.Status == http.StatusForbidden:
+		return http.StatusForbidden, false
+	case refused.Status == http.StatusNotFound:
+		return http.StatusNotFound, false
+	case refused.Status == http.StatusUnauthorized:
+		// The machine refused the link's own session: nothing ran there.
+		return http.StatusBadGateway, false
+	case refused.Status >= 400 && refused.Status < 500:
+		// The machine's approve/refine refuses a stale binding or a task
+		// that is not waiting with 400 or 409.
+		return http.StatusConflict, false
+	}
+	return http.StatusBadGateway, true
+}
+
 // DecideTaskPlan carries out a person's decision on a task's plan, after a
-// fresh read shows it still names the current version. It answers the task's
-// review as read after the decision.
-func (s *Server) DecideTaskPlan(ctx context.Context, p identity.Principal, d TaskPlanDecision) (tool.ProjectTaskPlanReview, error) {
+// fresh read shows it still names the current version. It answers what was
+// decided and the task as read after it.
+func (s *Server) DecideTaskPlan(ctx context.Context, p identity.Principal, d TaskPlanDecision) (TaskPlanDecisionResult, error) {
 	if !p.Valid() || p.Type != identity.PrincipalTypeUser || strings.TrimSpace(p.UserID) == "" {
-		return tool.ProjectTaskPlanReview{}, linkedTaskFail(http.StatusForbidden, "only a person decides on a task's plan")
+		return TaskPlanDecisionResult{}, linkedTaskFail(http.StatusForbidden, "only a person decides on a task's plan")
 	}
 	d.Machine, d.ProjectID, d.TaskID = strings.TrimSpace(d.Machine), strings.TrimSpace(d.ProjectID), strings.TrimSpace(d.TaskID)
 	decision := strings.TrimSpace(d.Decision)
 	if decision != "accept" && decision != "revise" {
-		return tool.ProjectTaskPlanReview{}, linkedTaskFail(http.StatusBadRequest, `decision must be "accept" or "revise"`)
+		return TaskPlanDecisionResult{}, linkedTaskFail(http.StatusBadRequest, `decision must be "accept" or "revise"`)
 	}
 	var guard tool.ProjectTaskApprovalGuards
 	if b := d.PlanBinding; b != nil {
@@ -176,19 +263,23 @@ func (s *Server) DecideTaskPlan(ctx context.Context, p identity.Principal, d Tas
 	}
 	current, err := s.ReadTaskPlanReview(ctx, p, d.Machine, d.ProjectID, d.TaskID)
 	if err != nil {
-		return tool.ProjectTaskPlanReview{}, err
+		return TaskPlanDecisionResult{}, err
 	}
 	if err := tool.ProjectTaskPlanReviewMatches(current, guard); err != nil {
-		return current, &taskPlanReviewConflict{err: err, review: current}
+		return TaskPlanDecisionResult{}, &taskPlanReviewConflict{err: err, review: current, current: true}
 	}
 	feedback := strings.TrimSpace(d.Feedback)
 	if decision == "revise" {
 		if current.Decision != tool.ProjectTaskReviewAcceptPlan {
-			return current, &taskPlanReviewConflict{err: errors.New("only a plan waiting for acceptance can be sent back for changes"), review: current}
+			return TaskPlanDecisionResult{}, &taskPlanReviewConflict{err: errors.New("only a plan waiting for acceptance can be sent back for changes"), review: current, current: true}
 		}
 		if feedback == "" {
-			return current, linkedTaskFail(http.StatusBadRequest, "say what to change in feedback")
+			return TaskPlanDecisionResult{}, linkedTaskFail(http.StatusBadRequest, "say what to change in feedback")
 		}
+	}
+	decided := TaskPlanDecided{Machine: d.Machine, ProjectID: d.ProjectID, TaskID: d.TaskID}
+	if current.Decision == tool.ProjectTaskReviewAcceptPlan {
+		decided.PlanBinding = &tool.ProjectTaskPlanBindingView{SessionID: guard.SessionID, PlanID: guard.PlanID, DefinitionRevision: guard.DefinitionRevision}
 	}
 	if d.Machine == "" {
 		switch decision {
@@ -214,19 +305,37 @@ func (s *Server) DecideTaskPlan(ctx context.Context, p identity.Principal, d Tas
 		_, err = s.CallFleetProject(ctx, p, d.Machine, action, args)
 	}
 	if err != nil {
-		// The task as it is now, so the person sees what changed.
-		fresh, readErr := s.ReadTaskPlanReview(ctx, p, d.Machine, d.ProjectID, d.TaskID)
-		if readErr != nil {
-			fresh = current
+		status, unknown := taskPlanDecisionFailure(d.Machine, err)
+		if unknown {
+			return TaskPlanDecisionResult{}, &taskPlanDecisionUnknown{err: fmt.Errorf("the %s was sent but its outcome is unknown: %w; read the task again before deciding (it is not retried)", decision, err), decided: decided}
 		}
-		return fresh, &taskPlanReviewConflict{err: fmt.Errorf("%s refused: %w", decision, err), review: fresh}
+		if status != http.StatusConflict {
+			return TaskPlanDecisionResult{}, linkedTaskFail(status, "%s refused: %v", decision, err)
+		}
+		// The task as it is now, so the person sees what changed. When that
+		// read fails too, no review is sent: the one from before is not
+		// current.
+		conflict := &taskPlanReviewConflict{err: fmt.Errorf("%s refused: %w", decision, err)}
+		if fresh, readErr := s.ReadTaskPlanReview(ctx, p, d.Machine, d.ProjectID, d.TaskID); readErr == nil {
+			conflict.review = fresh
+			conflict.current = true
+		}
+		return TaskPlanDecisionResult{}, conflict
 	}
-	after, err := s.ReadTaskPlanReview(ctx, p, d.Machine, d.ProjectID, d.TaskID)
+	result := TaskPlanDecisionResult{Decision: decision, Decided: decided}
+	refresh := s.ReadTaskPlanReview
+	if s.taskPlanRefresh != nil {
+		refresh = s.taskPlanRefresh
+	}
+	after, err := refresh(ctx, p, d.Machine, d.ProjectID, d.TaskID)
 	if err != nil {
-		// Decided; only the read after it failed.
-		return current, nil
+		// Decided; only the read after it failed. The state is unknown,
+		// never the review from before the decision.
+		result.RefreshError = err.Error()
+		return result, nil
 	}
-	return after, nil
+	result.Review = &after
+	return result, nil
 }
 
 func (s *Server) handleTaskPlanReview(w http.ResponseWriter, r *http.Request) {
@@ -267,15 +376,30 @@ func (s *Server) handleTaskPlanReview(w http.ResponseWriter, r *http.Request) {
 	if !readProjectTaskJSON(w, r, &d) {
 		return
 	}
-	review, err := s.DecideTaskPlan(r.Context(), principal, d)
+	result, err := s.DecideTaskPlan(r.Context(), principal, d)
 	if err != nil {
 		var conflict *taskPlanReviewConflict
 		if errors.As(err, &conflict) {
-			writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": conflict.Error(), "review": conflict.review})
+			out := map[string]any{"ok": false, "error": conflict.Error(), "review_current": conflict.current}
+			if conflict.current {
+				out["review"] = conflict.review
+			}
+			writeJSON(w, http.StatusConflict, out)
+			return
+		}
+		var unknown *taskPlanDecisionUnknown
+		if errors.As(err, &unknown) {
+			writeJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "outcome_unknown": true, "error": unknown.Error(), "decision": strings.TrimSpace(d.Decision), "decided": unknown.decided})
 			return
 		}
 		writeError(w, linkedTaskStatus(err), err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "decision": strings.TrimSpace(d.Decision), "review": review})
+	out := map[string]any{"ok": true, "decision": result.Decision, "decided": result.Decided, "review_current": result.Review != nil}
+	if result.Review != nil {
+		out["review"] = result.Review
+	} else {
+		out["refresh_error"] = result.RefreshError
+	}
+	writeJSON(w, http.StatusOK, out)
 }

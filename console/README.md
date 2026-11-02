@@ -233,8 +233,13 @@ a separate profile and the extension loaded, for trying it out.
   ordinary linked task), **request changes** with what to change, and
   **read again** (`/v3/task-plan-review`). Accept sends that exact version; if
   the plan changed, Swarm refuses and the panel shows the new version to
-  decide again. This Swarm's ordinary tasks keep approve and reject on the
-  card.
+  decide again. Each read and decision answers only the panel and request
+  that asked: closing, switching or reopening a review never takes an older
+  answer, and a decision still on its way blocks another on the same task.
+  When Swarm confirms a decision but cannot read the task after it, or no
+  answer says whether it was carried out, the panel says so, shows the state
+  as unknown and offers nothing until the task is read again; nothing is
+  resent. This Swarm's ordinary tasks keep approve and reject on the card.
 - **Run states:** a session's glyph says how its run stands: `●` running,
   `◆` needs you, `○` idle, `✕` failed (`◷` waiting only for a run left by
   the retired pending `wait_tasks`, which Swarm converts at startup). An

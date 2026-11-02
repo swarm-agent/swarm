@@ -96,6 +96,14 @@ pub enum Update {
         what: &'static str,
         result: Result<Value, String>,
     },
+    /// A plan review read or decision answered, for the request `op` about
+    /// `target` (Command::ReadPlanReview / DecidePlan): only that request's
+    /// panel takes it.
+    PlanReview {
+        op: u64,
+        target: crate::data::ReviewRef,
+        answer: super::plan_review::Answer,
+    },
     /// A folder the Orchestrator asked to ready has files: the person picks
     /// its first commit (the request stays open until then).
     Review {
@@ -220,13 +228,18 @@ pub enum Command {
         approve: bool,
     },
     /// Read a waiting task's review: its plan and exact version, on this
-    /// Swarm or a linked machine (GET /v3/task-plan-review).
+    /// Swarm or a linked machine (GET /v3/task-plan-review). `op` names the
+    /// request; its answer comes back with it (Update::PlanReview).
     ReadPlanReview {
+        op: u64,
         target: crate::data::ReviewRef,
     },
     /// The person's decision on a task's review (plan_review::decision_body):
     /// accept the version shown, start an ordinary task, or ask for changes.
+    /// Sent once; an answer that is not definite is never retried.
     DecidePlan {
+        op: u64,
+        target: crate::data::ReviewRef,
         body: Value,
     },
     /// Archive sessions (Swarm's batch route); each then leaves the list by
@@ -503,6 +516,20 @@ impl Live {
                 let _ = kick.send(json!({"kind": "console.kick", "command": true}));
                 return;
             }
+            // A plan review read or decision answers its own request: the
+            // console binds it to the panel that asked (plan_review.rs). A
+            // decision moves the home's linked-task records: read them again.
+            if let Command::ReadPlanReview { op, target } | Command::DecidePlan { op, target, .. } = &command {
+                let answer = match &command {
+                    Command::DecidePlan { body, .. } => {
+                        super::plan_review::Answer::Decided(super::plan_review::decision_outcome(client.post(super::plan_review::DECISION_PATH, body.clone())))
+                    }
+                    _ => super::plan_review::Answer::Read(client.get(&super::plan_review::read_path(target)).map_err(err)),
+                };
+                let _ = tx.send(Update::PlanReview { op: *op, target: target.clone(), answer });
+                let _ = kick.send(json!({"kind": "console.kick", "command": true}));
+                return;
+            }
             // A pin changes the session's record without an event: the follow
             // thread reads that session again once the change is in.
             let reread = match &command {
@@ -615,19 +642,8 @@ fn perform(client: &Client, command: Command) -> (Option<u64>, &'static str, Res
             if approve { "approve" } else { "reject" },
             client.post(&format!("/v3/projects/{project_id}/tasks/{task_id}/{}", if approve { "approve" } else { "reject" }), json!({})).map_err(err),
         ),
-        Command::ReadPlanReview { target } => (None, "plan review", client.get(&super::plan_review::read_path(&target)).map_err(err)),
-        // A refusal with the task's current review (409: the plan changed,
-        // the task already started) comes back as an answer, so the person
-        // sees what is current and decides again.
-        Command::DecidePlan { body } => (
-            None,
-            "plan decision",
-            match client.post(super::plan_review::DECISION_PATH, body) {
-                Ok(answer) => Ok(answer),
-                Err(Refusal::Status(409, message, answer)) => Ok(json!({"ok": false, "error": message, "review": answer.get("review").cloned().unwrap_or(Value::Null)})),
-                Err(e) => Err(err(e)),
-            },
-        ),
+        // Answered in Live::run, bound to their request (Update::PlanReview).
+        Command::ReadPlanReview { .. } | Command::DecidePlan { .. } => (None, "plan review", Err("plan review requests answer their own request".into())),
         Command::Stop { session_id, waiting_run_id } => (None, "stop", stop(client, &session_id, &waiting_run_id)),
         // Both answers name their session, a failure included (as `error`).
         Command::ReadContext { session_id } => (None, "context", Ok(super::context::read(client, &session_id))),
@@ -1271,7 +1287,7 @@ impl Model<'_> {
     /// records). A failed read keeps what was read before and says so on
     /// the trace; the records are Swarm's, so a reconnect reads them again.
     fn read_linked(&mut self, id: &str) {
-        match self.client.get(&format!("/v3/fleet/linked-tasks?session_id={id}")) {
+        match self.client.get(&format!("/v3/fleet/linked-tasks?session_id={}", super::plan_review::query_value(id))) {
             Ok(answer) => {
                 let records = super::plan_review::linked_records(&answer);
                 if records.is_empty() {

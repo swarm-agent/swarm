@@ -1030,8 +1030,11 @@ export interface TaskPlanReview {
 
 /**
  * The person's decision on a task's plan (POST /v3/task-plan-review/decision).
- * Accepting a plan names its exact plan_binding; a plan that changed since it
- * was read is refused (HTTP 409 with the current review).
+ * Accepting a plan names its exact plan_binding. Answers: 200 carried out;
+ * 409 refused because of the task's state (the plan changed, the task
+ * started), with the current review when `review_current`; 400/403/404
+ * refused, nothing done; 502 with `outcome_unknown`: sent, and no answer says
+ * whether it was carried out (read the task again; never resend blindly).
  */
 export interface TaskPlanDecisionParams {
   machine?: string;
@@ -1042,11 +1045,26 @@ export interface TaskPlanDecisionParams {
   feedback?: string;
 }
 
+/** The task and exact plan version a decision was on (no plan_binding: an ordinary task). */
+export interface TaskPlanDecided {
+  machine?: string;
+  project_id: string;
+  task_id: string;
+  plan_binding?: { session_id: string; plan_id: string; definition_revision: number };
+}
+
+/**
+ * A carried-out decision (HTTP 200). `review_current` true: `review` is the
+ * task as read after it. False: that read failed (`refresh_error`); no review
+ * is sent and the task's state is unknown until read again.
+ */
 export interface TaskPlanDecisionResult {
-  ok: boolean;
-  decision?: string;
-  error?: string;
-  review: TaskPlanReview;
+  ok: true;
+  decision: 'accept' | 'revise';
+  decided: TaskPlanDecided;
+  review_current: boolean;
+  review?: TaskPlanReview;
+  refresh_error?: string;
 }
 
 export interface ApproveProjectTaskResult {

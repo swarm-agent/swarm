@@ -1128,6 +1128,17 @@ func (s *Server) redeployTaskProgramJob(p identity.Principal, projectID, taskID,
 
 // ApproveProjectTask implements the single canonical authenticated approval lifecycle for project tasks.
 func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, projectID, taskID string, guards ...tool.ProjectTaskApprovalGuards) (*pebblestore.ProjectTaskRecord, error) {
+	if s.beforeProjectTaskApprove != nil {
+		s.beforeProjectTaskApprove(strings.TrimSpace(taskID))
+	}
+	task, err := s.approveProjectTask(ctx, p, projectID, taskID, guards...)
+	if s.afterProjectTaskApprove != nil {
+		s.afterProjectTaskApprove(strings.TrimSpace(taskID), err)
+	}
+	return task, err
+}
+
+func (s *Server) approveProjectTask(ctx context.Context, p identity.Principal, projectID, taskID string, guards ...tool.ProjectTaskApprovalGuards) (*pebblestore.ProjectTaskRecord, error) {
 	s.projectTaskApproveMu.Lock()
 	defer s.projectTaskApproveMu.Unlock()
 

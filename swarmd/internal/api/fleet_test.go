@@ -26,6 +26,8 @@ type fleetTestSwarm struct {
 	account string
 	user    string
 	fp      string
+	// fleetDB holds its node key, links and linked-task records.
+	fleetDB *pebblestore.Store
 	cleanup func()
 }
 
@@ -56,7 +58,7 @@ func newFleetTestSwarm(t *testing.T, name string) *fleetTestSwarm {
 	}
 	s.SetSwarmStore(swarmStore)
 	s.SetFleet(pebblestore.NewFleetStore(store), pebblestore.NewAuthStore(store))
-	return &fleetTestSwarm{s: s, account: actor.AccountScopeID, user: actor.UserID, fp: node.Fingerprint, cleanup: func() {
+	return &fleetTestSwarm{s: s, account: actor.AccountScopeID, user: actor.UserID, fp: node.Fingerprint, fleetDB: store, cleanup: func() {
 		s.CloseFleetListener()
 		_ = store.Close()
 		cleanup()

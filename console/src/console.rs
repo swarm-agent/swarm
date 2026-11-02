@@ -351,12 +351,11 @@ pub struct Console {
     selecting: bool,
     /// The media shown large over the window (index into media).
     preview: Option<usize>,
-    /// A waiting task's plan review over the window (plan_review.rs).
-    plan_review: Option<plan_review::PlanReviewPanel>,
+    /// A waiting task's plan review over the window, and its requests in
+    /// flight (plan_review.rs).
+    plan_reviews: plan_review::PlanReviews,
     /// What to change in a plan sent back.
     plan_feedback: Option<Entity<TextInput>>,
-    /// The decision in flight accepts (else it sends the plan back).
-    plan_accepting: bool,
     /// Files waiting in each pane's message box (pane id).
     attachments: HashMap<usize, Vec<data::Attachment>>,
     /// Calls to your machine already answered (by id), so none runs twice.
@@ -578,9 +577,8 @@ impl Console {
             run_entries: None,
             attachments: HashMap::new(),
             preview: None,
-            plan_review: None,
+            plan_reviews: plan_review::PlanReviews::default(),
             plan_feedback: None,
-            plan_accepting: false,
             selection: None,
             fleet: None,
             needs: Vec::new(),

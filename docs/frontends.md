@@ -453,13 +453,35 @@ person's decision; only a user principal decides. Accepting a plan names the
 `plan_binding` shown; an ordinary task names none; `revise` needs `feedback`
 and sends the plan back for a new version (nothing starts). Swarm reads the
 task again first: a missing, stale or other binding, a replaced plan, or a
-task that already started is refused with 409 and the current `review`, so
-show it and let the person decide again; a repeated click never starts a
-second run. The decision goes to the same approve and refine services as
-`manage_projects` `approve_task`/`refine_task` (through the link for a linked
-task, whose machine checks the binding again). Start tasks and linked-machine
-rules set to auto are not plan acceptance. The SDK's
-`client.projects.getTaskPlanReview` and `decideTaskPlan` call these routes.
+task that already started is refused, so show the current review and let the
+person decide again; a repeated click never starts a second run. The decision
+goes to the same approve and refine services as `manage_projects`
+`approve_task`/`refine_task` (through the link for a linked task, whose
+machine checks the binding again). Start tasks and linked-machine rules set to
+auto are not plan acceptance. The answer says only what is known:
+
+- **200** `{"ok": true, "decision", "decided", "review_current"}`: carried out
+  on `decided` (`machine`, `project_id`, `task_id` and the exact
+  `plan_binding` decided on; none for an ordinary start). With
+  `review_current: true`, `review` is the task read after it. With
+  `review_current: false` that read failed (`refresh_error`): no review is
+  sent, never the one from before the decision. Say what was decided, show
+  the state as unknown and read the task again before offering anything.
+- **409** `{"ok": false, "error", "review_current"}`: refused because of the
+  task's state. `review` is the current one when `review_current` is true;
+  otherwise read again.
+- **400/403/404**: refused (bad request, linked work off, not sent from here
+  or not found); nothing was done.
+- **502** `{"ok": false, "outcome_unknown": true, "error", "decided"}`: sent,
+  and no answer says whether it was carried out (the link timed out, the
+  machine failed). Do not resend; read the task again.
+
+Bind each read and decision answer to the request and the task it was for:
+a review closed, switched to another task or reopened must not take an older
+request's answer, and a decision still on its way blocks another decision on
+the same task. The SDK's `client.projects.getTaskPlanReview` and
+`decideTaskPlan` call these routes (`decideTaskPlan` resolves only on 200;
+the others throw with the answer in the error's details).
 
 #### Fleet keys
 

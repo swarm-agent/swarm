@@ -267,6 +267,15 @@ type Server struct {
 	beforeProjectTaskFollowupMutation func(sessionruntime.SessionMutationInput) error
 	projectTaskApproveMu              sync.Mutex
 
+	// Reads a task's review after a plan decision (task_plan_review.go).
+	// Test seam; production leaves it nil (ReadTaskPlanReview).
+	taskPlanRefresh func(ctx context.Context, p identity.Principal, machine, projectID, taskID string) (tool.ProjectTaskPlanReview, error)
+	// Test seams around ApproveProjectTask: called before it starts and
+	// after it returns (the task's transition done or refused). Production
+	// leaves them nil.
+	beforeProjectTaskApprove func(taskID string)
+	afterProjectTaskApprove  func(taskID string, err error)
+
 	connections          manageConnectionStore
 	environments         manageEnvironmentStore
 	deployments          manageDeploymentLifecycleService

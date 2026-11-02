@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 	"swarm/packages/swarmd/internal/workspace"
@@ -23,6 +26,40 @@ type planReviewPair struct {
 	hp           identity.Principal
 	binding      pebblestore.ProjectTaskPlanBinding
 	document     *pebblestore.SessionPlanDocument
+	// source is the remote project's folder, as its tasks record it.
+	source pebblestore.ProjectTaskSource
+}
+
+// newRemoteTaskSession makes a task's session on remote as task allocation
+// leaves it: created through the canonical V3 mutation (so it has its initial
+// execution epoch), its checkout a real worktree of the project folder on
+// its own branch, and the worktree identity a started run verifies. It
+// returns the worktree path.
+func newRemoteTaskSession(t *testing.T, remote *fleetTestSwarm, source pebblestore.ProjectTaskSource, sessionID, taskID, branch, mode string) string {
+	t.Helper()
+	db := remote.s.sessions.Store()
+	worktree := t.TempDir()
+	outboxPinGit(t, source.Path, "worktree", "add", "-q", "-b", branch, worktree)
+	base := outboxPinGit(t, source.Path, "rev-parse", "HEAD")
+	if _, err := remote.s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{Kind: sessionruntime.SessionMutationCreateSession, SessionID: sessionID, UserID: remote.user, AccountScopeID: remote.account,
+		Session:         &pebblestore.SessionSnapshot{ID: sessionID, UserID: remote.user, AccountScopeID: remote.account, WorkspacePath: worktree, Mode: mode},
+		ClientRequestID: sessionID, IdempotencyKey: sessionID, PayloadHash: sessionID, NowUnixMs: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	created, _, err := db.GetSession(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created.WorktreeEnabled, created.WorktreeRootPath, created.WorktreeBranch = true, worktree, branch
+	created.Metadata = map[string]any{
+		"project_id": planReviewProject, "task_id": taskID,
+		"swarm_v3_source_workspace_path": source.Path, "swarm_v3_source_workspace_id": source.WorkspaceID, "swarm_v3_source_workspace_generation": source.WorkspaceGeneration,
+		"swarm_v3_worktree_owner_session_id": sessionID, "swarm_v3_runtime_workspace_path": worktree, "swarm_v3_worktree_base_commit": base,
+	}
+	if err := db.UpdateSession(created); err != nil {
+		t.Fatal(err)
+	}
+	return worktree
 }
 
 const (
@@ -60,17 +97,8 @@ func newPlanReviewPair(t *testing.T) *planReviewPair {
 	if err := db.PutProject(remote.account, &pebblestore.ProjectRecord{ID: planReviewProject, Name: "Remote project", Workspaces: []pebblestore.ProjectWorkspaceRef{{WorkspaceID: entry.WorkspaceID, Path: folder, Role: "primary_code"}}}); err != nil {
 		t.Fatal(err)
 	}
-	worktree := t.TempDir()
-	if err := db.CreateSession(pebblestore.SessionSnapshot{
-		ID: planReviewSession, UserID: remote.user, AccountScopeID: remote.account, WorkspacePath: worktree, WorktreeEnabled: true, WorktreeRootPath: worktree, WorktreeBranch: "agent/plan-task",
-		Metadata: map[string]any{
-			"project_id": planReviewProject, "task_id": planReviewTask,
-			"swarm_v3_source_workspace_path": folder, "swarm_v3_source_workspace_id": entry.WorkspaceID, "swarm_v3_source_workspace_generation": entry.WorkspaceGeneration,
-			"swarm_v3_worktree_owner_session_id": planReviewSession, "swarm_v3_runtime_workspace_path": worktree,
-		},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	source := pebblestore.ProjectTaskSource{WorkspaceID: entry.WorkspaceID, WorkspaceGeneration: entry.WorkspaceGeneration, Path: folder, Provenance: "task"}
+	worktree := newRemoteTaskSession(t, remote, source, planReviewSession, planReviewTask, "agent/plan-task", "plan")
 	document := &pebblestore.SessionPlanDocument{
 		ID: planReviewPlan, Title: "Synthetic review plan",
 		Info: pebblestore.SessionPlanInfo{
@@ -85,11 +113,19 @@ func newPlanReviewPair(t *testing.T) *planReviewPair {
 	if err := db.PutPlan(pebblestore.SessionPlanSnapshot{ID: planReviewPlan, SessionID: planReviewSession, UserID: remote.user, AccountScopeID: remote.account, Title: document.Title, Document: document, Status: "draft", ApprovalState: "pending", Active: true, Version: 2}); err != nil {
 		t.Fatal(err)
 	}
-	binding := pebblestore.ProjectTaskPlanBinding{SessionID: planReviewSession, PlanID: planReviewPlan, DefinitionRevision: 2, Receipt: "synthetic-receipt"}
+	// The binding's receipt is the stored definition's digest, as a plan
+	// submission records it (session.CommitV3PlanAcceptance checks it).
+	stored, _, err := db.GetPlan(planReviewSession, planReviewPlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawDocument, _ := json.Marshal(stored.Document)
+	digest := sha256.Sum256(rawDocument)
+	binding := pebblestore.ProjectTaskPlanBinding{SessionID: planReviewSession, PlanID: planReviewPlan, DefinitionRevision: 2, Receipt: hex.EncodeToString(digest[:])}
 	if err := db.PutProjectTask(remote.account, &pebblestore.ProjectTaskRecord{
 		ID: planReviewTask, ProjectID: planReviewProject, AccountID: remote.account, Title: "Plan task", Agent: "coder", OutcomeType: "code_pr",
 		Status: "pending_approval", AutoApprove: true, SessionID: planReviewSession, WorkspacePath: worktree,
-		SourceWorkspace: pebblestore.ProjectTaskSource{WorkspaceID: entry.WorkspaceID, WorkspaceGeneration: entry.WorkspaceGeneration, Path: folder, Provenance: "task"},
+		SourceWorkspace: source,
 		PlanBinding:     &binding, PlanSummary: planReviewCanned, FullPlanMarkdown: "# " + planReviewCanned + "\n\nSwarm Execution\n\nVerification",
 	}); err != nil {
 		t.Fatal(err)
@@ -109,7 +145,7 @@ func newPlanReviewPair(t *testing.T) *planReviewPair {
 	if _, err := home.s.RecordFleetLinkedTask(ctx, hp, tool.FleetLinkedTaskOrigin{SessionID: planReviewOrigin}, "box", planReviewProject, raw); err != nil {
 		t.Fatal(err)
 	}
-	return &planReviewPair{home: home, remote: remote, hp: hp, binding: binding, document: document}
+	return &planReviewPair{home: home, remote: remote, hp: hp, binding: binding, document: document, source: source}
 }
 
 // route calls a task plan review route on the home as user.
@@ -173,11 +209,11 @@ const planReviewReadPath = "/v3/task-plan-review?machine=box&project_id=" + plan
 // tool.BuildProjectTaskPlanReview, tool.ProjectTaskPlanReviewMatches,
 // Server.CallFleetProject, Server.ApproveProjectTask. Narrowest layer: two
 // in-process daemons over the real pinned link, since only the machine's own
-// routes show what crossed. A successful acceptance's run needs a configured
-// execution model and agent service on the machine, which this harness does
-// not provide; the test asserts the exact binding is past every guard (the
-// refusal is the machine's missing execution service, not a guard) and that
-// no run started.
+// routes show what crossed. Here the machine has no execution model or agent
+// service: (6) asserts the exact binding is past every guard and that the
+// machine's refusal comes back as a refusal with the current review, nothing
+// started. A successful acceptance starting its run is
+// TestTaskPlanReviewLinkedAcceptStartsOneRun.
 func TestTaskPlanReviewLinkedExactPlanAndBinding(t *testing.T) {
 	p := newPlanReviewPair(t)
 
@@ -212,7 +248,7 @@ func TestTaskPlanReviewLinkedExactPlanAndBinding(t *testing.T) {
 	if _, has := out["review"].(map[string]any)["full_plan_markdown"]; has {
 		t.Fatal("the review carries full_plan_markdown")
 	}
-	if strings.Contains(string(planReviewJSON(t, out)), "synthetic-receipt") {
+	if strings.Contains(string(planReviewJSON(t, out)), p.binding.Receipt) {
 		t.Fatal("the binding receipt left the machine")
 	}
 	p.remoteUnchanged(t, "reading the review")
@@ -271,25 +307,19 @@ func TestTaskPlanReviewLinkedExactPlanAndBinding(t *testing.T) {
 	p.remoteUnchanged(t, "a non-person's decision")
 
 	// (6) The exact binding passes the home's check and every guard of the
-	// machine's approve service; this harness has no execution model there.
+	// machine's approve service; this machine has no execution model, and
+	// its refusal comes back as one (409, the current review), nothing run.
 	status, out, after := decide(exact, "accept", "")
-	if status == http.StatusOK {
-		if after.RunStatus == "pending_approval" {
-			t.Fatalf("accepted but still waiting: %+v", after)
+	msg := asStringValue(out["error"])
+	for _, guard := range []string{"guards are required", "mismatch", "stale", "the plan changed", "not found"} {
+		if strings.Contains(msg, guard) {
+			t.Fatalf("the exact binding was refused by a guard: %s", msg)
 		}
-	} else {
-		msg := asStringValue(out["error"])
-		t.Logf("exact accept reached the machine's approve service, which answered: %s", msg)
-		for _, guard := range []string{"guards are required", "mismatch", "stale", "the plan changed", "not found"} {
-			if strings.Contains(msg, guard) {
-				t.Fatalf("the exact binding was refused by a guard: %s", msg)
-			}
-		}
-		if status != http.StatusConflict || !strings.Contains(msg, "box refused approve_task") || after.Decision != tool.ProjectTaskReviewAcceptPlan {
-			t.Fatalf("exact accept: %d %v", status, out)
-		}
-		p.remoteUnchanged(t, "an accept the machine could not run")
 	}
+	if status != http.StatusConflict || !strings.Contains(msg, "execution model and agent service are required") || out["review_current"] != true || after.Decision != tool.ProjectTaskReviewAcceptPlan {
+		t.Fatalf("exact accept on a machine that cannot run it: %d %v", status, out)
+	}
+	p.remoteUnchanged(t, "an accept the machine could not run")
 }
 
 // Purpose: a plan replaced on its machine after the person read it is never

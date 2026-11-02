@@ -613,13 +613,19 @@ export class SwarmProjectsNamespace {
   /**
    * The person's decision on a task's plan: accept exactly the plan_binding
    * read with getTaskPlanReview (an ordinary task names none), or revise with
-   * feedback. A plan that changed since it was read is refused with HTTP 409;
-   * the error's details carry the current review. Only a user decides.
+   * feedback. Resolves only when Swarm carried it out; `review_current` says
+   * whether `review` is the task read after it (false: its state is unknown,
+   * read it again). A plan that changed since it was read is refused with
+   * HTTP 409 (the error's details carry the current review when
+   * `review_current`); 403/404 refuse with nothing done; HTTP 502 with
+   * `outcome_unknown` in the details means it was sent and its outcome is
+   * unknown: read the task again, do not resend. Only a user decides.
    */
   async decideTaskPlan(params: TaskPlanDecisionParams, options?: RequestOptions): Promise<TaskPlanDecisionResult> {
     const res = await this.transport.request<TaskPlanDecisionResult>('/v3/task-plan-review/decision', { method: 'POST', body: params, ...options });
-    if (res.data && typeof res.data === 'object' && res.data.review) return res.data;
-    throw new SwarmApiError('Malformed response: missing review in decision response', { status: res.status, details: res.data });
+    const data = res.data;
+    if (data && typeof data === 'object' && data.ok === true && data.decided && (data.review_current ? !!data.review : true)) return data;
+    throw new SwarmApiError('Malformed response: decision answer without ok, decided or its review', { status: res.status, details: res.data });
   }
 
   /**
