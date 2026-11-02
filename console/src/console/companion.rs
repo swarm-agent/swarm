@@ -6,10 +6,11 @@
 //! conversation, but in a pane of its own that the main window's layout
 //! never holds: it has no close, split or pop-out, never appears in a
 //! project's session list and is never picked from one. Swarm names the
-//! session (GET/POST /v3/companion); the console only follows it. Beside it,
-//! the work list shows the tasks the Companion started, grouped needs
-//! attention / running / results, and a detail view that opens over the list
-//! without touching the conversation, its draft or its focus.
+//! session (GET/POST /v3/companion); the console only follows it. The left
+//! sidebar, in place of the sessions list, shows the tasks the Companion
+//! started, grouped needs attention / running / results, and a detail view
+//! that opens over the list without touching the conversation, its draft or
+//! its focus; the conversation takes the rest of the window.
 
 use gpui::{AnyElement, ClickEvent, Context, SharedString, div, prelude::*, px};
 
@@ -209,37 +210,15 @@ impl Console {
         cx.notify();
     }
 
-    /// The Companion page: its conversation, and its work beside it.
+    /// The Companion page: its conversation, over the whole main area. Its
+    /// work is in the left sidebar, in place of the sessions list
+    /// (Page::left_body), so there is no column on the right.
     pub(super) fn render_companion(&self, cx: &mut Context<Self>) -> AnyElement {
-        let t = &self.theme;
         let conversation = match self.companion_index().filter(|_| self.panes.iter().any(|p| p.id == PANE)) {
             Some(_) => self.render_pane(PANE, cx),
             None => self.render_companion_placeholder(cx),
         };
-        div()
-            .id("companion-page")
-            .flex_1()
-            .min_w_0()
-            .h_full()
-            .flex()
-            .gap(px(6.))
-            .p(px(6.))
-            .child(div().flex_1().min_w_0().h_full().flex().child(conversation))
-            .child(
-                div()
-                    .w(px(300.))
-                    .flex_none()
-                    .h_full()
-                    .flex()
-                    .flex_col()
-                    .rounded(px(t.radius + 2.))
-                    .border_1()
-                    .border_color(t.border)
-                    .bg(t.panel)
-                    .overflow_hidden()
-                    .child(self.render_companion_work(cx)),
-            )
-            .into_any_element()
+        div().id("companion-page").flex_1().min_w_0().h_full().flex().p(px(6.)).child(div().flex_1().min_w_0().h_full().flex().child(conversation)).into_any_element()
     }
 
     /// Before the Companion's session is listed: why, and what to do.
@@ -305,7 +284,9 @@ impl Console {
         )
     }
 
-    fn render_companion_work(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The Companion's work, for the left sidebar: what needs the person,
+    /// what runs and the results, and one item's detail over the list.
+    pub(super) fn render_companion_work(&self, cx: &mut Context<Self>) -> AnyElement {
         let t = &self.theme;
         let feed = self.companion.feed.as_ref();
         let work: &[Work] = feed.map(|f| f.work.as_slice()).unwrap_or(&[]);
@@ -529,7 +510,7 @@ pub(super) const PLACEHOLDER: &str = "Talk to your Companion…";
 
 /// The Companion's empty conversation, before its first message.
 pub(super) fn empty_line() -> Text {
-    "Your Companion: one conversation that stays with you across projects. Ask anything, get help on this computer, or hand it work; what it starts shows on the right while you keep talking.".into()
+    "Your Companion: one conversation that stays with you across projects. Ask anything, get help on this computer, or hand it work; what it starts shows on the left while you keep talking.".into()
 }
 
 #[cfg(test)]
@@ -551,6 +532,24 @@ mod tests {
         assert!(!layout.contains(PANE));
         assert!(!layout.focus(PANE), "the layout cannot focus the Companion's pane");
         assert!(!layout.close(PANE), "nor close it");
+    }
+
+    /// Requirement: on the Companion page the left sidebar (and its rail)
+    /// holds the Companion's work in place of the sessions list, and every
+    /// other page, Chats (Sessions) first, keeps the sessions list; the
+    /// Companion page renders no right-hand work column. Threat: the work
+    /// list shown beside an ordinary sessions column (two sidebars), or the
+    /// sessions list lost on the Chats page. Boundary: Page::left_body, the
+    /// one selector render_left and render_rail branch on. Narrowest layer:
+    /// that selector (no GPUI render harness in this crate; the rendered
+    /// layout itself is unverified here).
+    #[test]
+    fn left_sidebar_holds_companion_work_only_on_the_companion_page() {
+        assert_eq!(Page::Companion.left_body(), super::super::LeftBody::CompanionWork);
+        for page in Page::ALL.into_iter().chain([Page::Projects]).filter(|p| *p != Page::Companion) {
+            assert_eq!(page.left_body(), super::super::LeftBody::Sessions, "{page:?} must keep the sessions list");
+        }
+        assert_eq!(Page::ALL.iter().filter(|p| p.left_body() == super::super::LeftBody::CompanionWork).count(), 1, "only one page shows the Companion's work");
     }
 
     /// Requirement: the page follows only the session Swarm named, and only

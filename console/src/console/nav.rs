@@ -2,7 +2,7 @@
 
 use gpui::{ClickEvent, Context, Div, Hsla, SharedString, div, prelude::*, px};
 
-use super::{AgentsFocus, Console, Open, Page, alpha};
+use super::{AgentsFocus, Console, LeftBody, Open, Page, alpha};
 use crate::data::Health;
 use crate::icons::Icon;
 
@@ -99,7 +99,27 @@ impl Console {
 
         let project = &self.projects[self.project];
         let initial = project.name.chars().next().unwrap_or('?').to_ascii_uppercase().to_string();
-        let sessions = self.sessions.iter().enumerate().filter(|(i, s)| s.project == self.project && !self.is_companion(*i)).map(|(i, s)| {
+        let companion_page = self.page.left_body() == LeftBody::CompanionWork;
+        // On the Companion page the rail lists its work (all projects), not
+        // the project's sessions; a press opens that item's detail.
+        let work: Vec<_> = if companion_page { self.companion.feed.as_ref().map(|f| f.work.clone()).unwrap_or_default() } else { Vec::new() };
+        let work = work.into_iter().map(|w| {
+            let (glyph, color) = self.task_glyph(w.task.status);
+            let key = w.key();
+            let selected = self.companion.detail.as_deref() == Some(key.as_str());
+            square(SharedString::from(format!("rail-companion-work-{key}")))
+                .h(px(24.))
+                .when(selected, |d| d.bg(t.raised))
+                .text_color(color)
+                .text_size(px(11.))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.companion.detail = Some(key.clone());
+                    this.left_collapsed = false;
+                    cx.notify();
+                }))
+                .child(glyph)
+        });
+        let sessions = self.sessions.iter().enumerate().filter(|(i, s)| !companion_page && s.project == self.project && !self.is_companion(*i)).map(|(i, s)| {
             let (glyph, color) = self.state_glyph(s.state);
             let selected = i == self.active_session() && self.page == Page::Sessions;
             square(SharedString::from(format!("rail-session-{i}")))
@@ -151,18 +171,21 @@ impl Console {
             .child(div().w(px(24.)).h(px(1.)).my_1().bg(t.border))
             .children(nav)
             .child(div().w(px(24.)).h(px(1.)).my_1().bg(t.border))
-            .child(
-                square("rail-project".into())
-                    .border_1()
-                    .border_color(alpha(t.accent, 0.5))
-                    .text_color(t.accent)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.left_collapsed = false;
-                        this.project_menu = true;
-                        cx.notify();
-                    }))
-                    .child(initial),
-            )
+            .when(!companion_page, |d| {
+                d.child(
+                    square("rail-project".into())
+                        .border_1()
+                        .border_color(alpha(t.accent, 0.5))
+                        .text_color(t.accent)
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.left_collapsed = false;
+                            this.project_menu = true;
+                            cx.notify();
+                        }))
+                        .child(initial),
+                )
+            })
+            .children(work)
             .children(sessions)
             .child(div().flex_1())
             .children(fleet)

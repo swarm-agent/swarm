@@ -121,6 +121,26 @@ impl Page {
             Page::Projects => Icon::Project,
         }
     }
+
+    /// What the left sidebar (and its collapsed rail) holds under the
+    /// navigation: the Companion's work in place of the project's sessions on
+    /// the Companion page, the sessions everywhere else. One sidebar, never
+    /// both lists, and no work column on the right.
+    pub(super) fn left_body(self) -> LeftBody {
+        match self {
+            Page::Companion => LeftBody::CompanionWork,
+            _ => LeftBody::Sessions,
+        }
+    }
+}
+
+/// The left sidebar's list under the navigation (Page::left_body).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum LeftBody {
+    /// The current project's sessions, with new session and pick/pin/archive.
+    Sessions,
+    /// The Companion's work (needs you, running, results) and its details.
+    CompanionWork,
 }
 
 /// What the Agents inspector shows.
@@ -893,10 +913,7 @@ impl Console {
             return self.render_rail(cx);
         }
         let t = &self.theme;
-        let active_session = self.active_session();
-        let sessions = self.session_rows(active_session, cx);
-
-        div()
+        let left = div()
             .w(px(272.))
             .flex_none()
             .flex()
@@ -911,32 +928,39 @@ impl Console {
                     cx.notify();
                 },
             ))))
-            .child(self.render_nav(cx))
-            .child(
-                div().px_2().pt_2().child(
-                    self.button("new-session", "", false)
-                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.new_session(window, cx)))
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(self.icon(Icon::Plus, 12., t.muted))
-                        .child("new session")
-                        .w_full()
-                        .py(px(4.))
-                        .flex()
-                        .justify_center(),
-                ),
-            )
-            .child(
-                div()
-                    .id("left-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(self.section("SESSIONS", Some(sessions.len())))
-                    .children(self.render_picked_bar(cx))
-                    .children(sessions),
-            )
+            .child(self.render_nav(cx));
+        if self.page.left_body() == LeftBody::CompanionWork {
+            // The Companion's work replaces the sessions list; its own scroll.
+            return left
+                .child(div().id("left-companion-work").mt_2().flex_1().min_h_0().flex().flex_col().border_t_1().border_color(t.border).child(self.render_companion_work(cx)));
+        }
+        let active_session = self.active_session();
+        let sessions = self.session_rows(active_session, cx);
+        left.child(
+            div().px_2().pt_2().child(
+                self.button("new-session", "", false)
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.new_session(window, cx)))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(self.icon(Icon::Plus, 12., t.muted))
+                    .child("new session")
+                    .w_full()
+                    .py(px(4.))
+                    .flex()
+                    .justify_center(),
+            ),
+        )
+        .child(
+            div()
+                .id("left-scroll")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .child(self.section("SESSIONS", Some(sessions.len())))
+                .children(self.render_picked_bar(cx))
+                .children(sessions),
+        )
     }
 
     // Session panes

@@ -226,7 +226,7 @@ export class SwarmCompanionNamespace {
     return (await this.transport.request<{ companion: CompanionView | null }>('/v3/companion', { method: 'GET', signal })).data.companion;
   }
 
-  /** Get-or-create; idempotent. `workspace_path` is used only on first creation. */
+  /** Get-or-create; idempotent. `workspace_path` is used only on first creation; without it the Companion is checkout-free (it never defaults to the current workspace and needs none). */
   async ensure(params: { workspace_path?: string } = {}): Promise<CompanionEnsureResult> {
     return (await this.transport.request<CompanionEnsureResult>('/v3/companion', { method: 'POST', body: params })).data;
   }

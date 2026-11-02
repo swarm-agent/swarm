@@ -5398,7 +5398,7 @@ func (e *sessionV3Executor) resolveSessionV3Capabilities(job sessionV3ExecutorJo
 	if err != nil {
 		return sessionV3ResolvedRuntime{}, err
 	}
-	if strings.TrimSpace(scope.PrimaryPath) == "" && pebblestore.ProjectConversationID(session) == "" {
+	if strings.TrimSpace(scope.PrimaryPath) == "" && pebblestore.ProjectConversationID(session) == "" && !pebblestore.CheckoutFreeCompanion(session) {
 		return sessionV3ResolvedRuntime{}, errors.New("session workspace path is empty")
 	}
 	resolved := sessionV3ResolvedRuntime{Session: session, AgentProfile: agentProfile, Preference: pref, ContextWindow: contextWindow, ModelCatalog: catalogRecord, CatalogMeta: catalogMeta, Scope: scope}

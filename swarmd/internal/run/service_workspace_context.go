@@ -48,6 +48,18 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 		}
 		return tool.WorkspaceScope{Principal: principal, SessionID: session.ID, RejectScopeExpansion: true, ExplicitRepositoryRecovery: true}, nil
 	}
+	// A checkout-free Companion is a conversation with runtime identity only:
+	// an empty, non-expandable scope with no working directory or repository
+	// authority. It is admitted only as the principal's current Companion.
+	if pebblestore.CheckoutFreeCompanion(session) {
+		if s == nil || s.sessions == nil || s.sessions.Store() == nil {
+			return tool.WorkspaceScope{}, errors.New("companion authority unavailable")
+		}
+		if err := s.sessions.Store().ValidateCheckoutFreeCompanion(session, principal.AccountScopeID, principal.UserID); err != nil {
+			return tool.WorkspaceScope{}, err
+		}
+		return tool.WorkspaceScope{Principal: principal, SessionID: session.ID, RejectScopeExpansion: true}, nil
+	}
 	if sessionMetadataBool(session.Metadata, "workspace_onboarding") {
 		return s.resolveWorkspaceOnboardingRunScope(session, principal)
 	}

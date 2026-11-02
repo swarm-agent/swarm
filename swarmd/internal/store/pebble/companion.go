@@ -138,6 +138,44 @@ func (s *SessionStore) IsCurrentCompanion(session SessionSnapshot, account, user
 	return record.SessionID == session.ID, nil
 }
 
+// CheckoutFreeCompanion reports whether session is marked as a Companion and
+// carries no source checkout: no workspace, worktree, grants or project. Such a
+// Companion is a conversation with runtime identity only; it has no implicit
+// working directory or repository authority. Callers must still confirm it
+// with ValidateCheckoutFreeCompanion before treating it as authorized.
+func CheckoutFreeCompanion(session SessionSnapshot) bool {
+	if _, marked := session.Metadata[SessionCompanionMetadataKey]; !marked {
+		return false
+	}
+	return strings.TrimSpace(session.WorkspacePath) == "" && ProjectConversationID(session) == ""
+}
+
+// ValidateCheckoutFreeCompanion keeps a checkout-free Companion's conversation
+// authority separate from every filesystem grant, like a project
+// conversation: it must be the principal's current Companion and carry no
+// workspace, worktree, grant or task metadata.
+func (s *SessionStore) ValidateCheckoutFreeCompanion(session SessionSnapshot, account, user string) error {
+	if !CheckoutFreeCompanion(session) {
+		return errors.New("session is not a checkout-free Companion")
+	}
+	current, err := s.IsCurrentCompanion(session, account, user)
+	if err != nil {
+		return err
+	}
+	if !current {
+		return errors.New("companion ownership mismatch")
+	}
+	if session.WorkspaceName != "" || session.WorktreeEnabled || session.WorktreeRootPath != "" || session.WorktreeBranch != "" || session.WorktreeBaseBranch != "" || len(session.WorkspaceGrants) != 0 || len(session.TemporaryWorkspaceRoots) != 0 {
+		return errors.New("checkout-free Companion cannot carry filesystem authority")
+	}
+	for _, key := range []string{"project_id", "task_id", "task_attempt_id", "parent_session_id", "workspace_path", "worktree_root_path", "worktree_enabled"} {
+		if value, supplied := session.Metadata[key]; supplied && value != nil && value != "" {
+			return errors.New("checkout-free Companion cannot carry task or workspace metadata")
+		}
+	}
+	return nil
+}
+
 // companionWatchesProject reports whether parent may watch the local tasks of
 // projectID as the account user's Companion. The Companion is not a project
 // conversation: it follows the tasks it delegates in any of the account's

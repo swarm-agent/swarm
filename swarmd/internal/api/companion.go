@@ -68,9 +68,40 @@ type CompanionRoutes struct {
 }
 
 type companionEnsureRequest struct {
-	// WorkspacePath is used only when the Companion session is first created;
-	// it defaults to the account user's current workspace.
+	// WorkspacePath optionally binds a registered workspace when the Companion
+	// session is first created. Without it the Companion is checkout-free: it
+	// never defaults to the current workspace, and it opens and runs when the
+	// account has no current or registered workspace.
 	WorkspacePath string `json:"workspace_path,omitempty"`
+}
+
+// companionCreateIsCheckoutFree reports whether a Companion create request
+// names no source checkout, so the Companion is created as a conversation with
+// runtime identity only (no workspace, worktree or grants).
+func companionCreateIsCheckoutFree(req sessionsV3CreateRequest) bool {
+	return strings.TrimSpace(req.ProjectID) == "" && strings.TrimSpace(req.WorkspacePath) == "" && strings.TrimSpace(req.HostWorkspacePath) == "" &&
+		strings.TrimSpace(req.WorkspaceID) == "" && strings.TrimSpace(req.WorkspaceBindingID) == "" && strings.TrimSpace(req.RuntimeWorkspacePath) == ""
+}
+
+// resolveCompanionConversationBinding is the checkout-free Companion's
+// placement: the local runtime identity and nothing else. Like a project
+// conversation, it carries no filesystem authority; repository work is
+// delegated to tasks that name an explicitly authorized source.
+func (s *Server) resolveCompanionConversationBinding(req sessionsV3CreateRequest) (sessionsV3PrimaryBinding, error) {
+	if strings.TrimSpace(req.WorkspaceName) != "" || req.WorktreeMode != "" || req.WorktreeUseCurrentBranch != nil || req.WorktreeBaseBranch != "" || req.WorktreeBranchName != "" || req.WorktreeExistingPath != "" || len(req.LegacyManagedWorktreeRequested) != 0 || req.Purpose != "" {
+		return sessionsV3PrimaryBinding{}, errors.New("a checkout-free Companion cannot bind a workspace or worktree")
+	}
+	local, found, err := s.swarmLocalNode()
+	if err != nil {
+		return sessionsV3PrimaryBinding{}, err
+	}
+	if !found || strings.TrimSpace(local.SwarmID) == "" {
+		return sessionsV3PrimaryBinding{}, errors.New("companion local runtime unavailable")
+	}
+	if swarmID := strings.TrimSpace(req.SwarmID); swarmID != "" && swarmID != strings.TrimSpace(local.SwarmID) {
+		return sessionsV3PrimaryBinding{}, errors.New("the Companion requires the local runtime")
+	}
+	return sessionsV3PrimaryBinding{RuntimeSwarmID: strings.TrimSpace(local.SwarmID)}, nil
 }
 
 type companionDeleteRequest struct {

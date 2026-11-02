@@ -80,6 +80,15 @@ func (s *Service) executeManageWorkspaceTool(sessionID, arguments string, princi
 			return "", fmt.Errorf("manage_workspace %s is unavailable in a checkout-free project conversation; select an explicit authorized source for delegation instead", args.Action)
 		}
 	}
+	if pebblestore.CheckoutFreeCompanion(ownedSession) {
+		if err := s.sessions.Store().ValidateCheckoutFreeCompanion(ownedSession, principal.AccountScopeID, principal.UserID); err != nil {
+			return "", err
+		}
+		switch args.Action {
+		case "set_session", "adopt_worktree", "reclaim_worktree", "copy_worktree", "cancel_worktree_recovery":
+			return "", fmt.Errorf("manage_workspace %s is unavailable in the checkout-free Companion; delegate repository work to a task that names an explicit authorized source instead", args.Action)
+		}
+	}
 	if args.Action == "inspect_map" || args.Action == "get_map" {
 		return s.inspectWorkspaceMap(strings.TrimSpace(sessionID), principal, args)
 	}
@@ -663,6 +672,10 @@ func (s *Service) ensureCreatedWorkspaceGrant(sessionID string, principal identi
 	// Ordinary workspace sessions retain their existing additional-grant behavior.
 	if pebblestore.ProjectConversationID(session) != "" {
 		return s.sessions.Store().ValidateProjectConversation(session, principal.AccountScopeID, principal.UserID)
+	}
+	// Nor is it filesystem authority for the checkout-free Companion.
+	if pebblestore.CheckoutFreeCompanion(session) {
+		return s.sessions.Store().ValidateCheckoutFreeCompanion(session, principal.AccountScopeID, principal.UserID)
 	}
 	for _, grant := range pebblestore.NormalizeSessionWorkspaceGrants(session) {
 		if grant.WorkspaceID == workspaceID {

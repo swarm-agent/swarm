@@ -466,9 +466,9 @@ func (s *Service) resolveRunExecutionContext(session pebblestore.SessionSnapshot
 	if requested.WorktreeMode == "" {
 		return resolvedRunExecutionContext{}, fmt.Errorf("unsupported worktree_mode %q", strings.TrimSpace(requested.WorktreeMode))
 	}
-	if pebblestore.ProjectConversationID(session) != "" {
+	if pebblestore.ProjectConversationID(session) != "" || pebblestore.CheckoutFreeCompanion(session) {
 		if requested.WorkspacePath != "" || requested.CWD != "" || requested.WorktreeRootPath != "" || requested.WorktreeBranch != "" || requested.WorktreeBaseBranch != "" || requested.WorktreeMode == RunWorktreeModeOn {
-			return resolvedRunExecutionContext{}, errors.New("project conversation cannot override execution workspace")
+			return resolvedRunExecutionContext{}, errors.New("a checkout-free conversation cannot override execution workspace")
 		}
 		scope, err := s.resolveRunWorkspaceScope(session, principal)
 		if err != nil {

@@ -155,8 +155,17 @@ moves onto it, keeping its history and model, the next time it is opened:
 - **Open it:** `POST /v3/companion` (optional `{"workspace_path":…}`, used only
   the first time) gets or creates it and returns `companion` with
   `session_id`, `state` and the canonical `routes`. It is idempotent: every
-  client, project switch and restart gets the same session. `GET
-  /v3/companion` reads it (`companion: null` before the first open).
+  client, project switch, workspace change and restart gets the same session.
+  `GET /v3/companion` reads it (`companion: null` before the first open).
+- **It needs no workspace:** without `workspace_path` it is created
+  checkout-free, never from the current workspace, so it opens and runs with
+  no current or registered workspace. A checkout-free Companion has no working
+  directory, workspace grants or repository authority: it talks, uses its
+  machine tools on the person's device and delegates repository work with
+  `manage_projects` `propose_task` in a project that names the source; a
+  direct source-bound child task, a cwd/workspace override and
+  `manage_workspace` `set_session` are refused. Ordinary chats still need a
+  workspace.
 - **Talk to it** through its `session_id` with the session routes above.
 - **It is not a chat row:** it carries `metadata.swarm_v3_companion` and
   `navigation_hidden`, so chat lists and project Orchestrator lists leave it

@@ -3819,6 +3819,11 @@ func (s *Service) resolveTaskTargetWorkspace(parentSession pebblestore.SessionSn
 	if err != nil {
 		return "", "", fmt.Errorf("resolve parent shared workspace roots: %w", err)
 	}
+	// The checkout-free Companion has no source to lend a direct child task.
+	// Repository work goes through a project task with an explicit source.
+	if pebblestore.CheckoutFreeCompanion(parentSession) {
+		return "", "", errors.New("the Companion has no source checkout: delegate repository work with manage_projects propose_task in a project that names the source")
+	}
 	if projectID := pebblestore.ProjectConversationID(parentSession); projectID != "" {
 		if requested == "" || !filepath.IsAbs(requested) || filepath.Clean(requested) != requested || s.workspace == nil {
 			return "", "", errors.New("project delegation requires an explicit canonical workspace_path")

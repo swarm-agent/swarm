@@ -964,8 +964,14 @@ func (s *Server) createSessionsV3Primary(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	var binding sessionsV3PrimaryBinding
+	// Only the Companion service sets this context value (companion.go); no
+	// request field can select the checkout-free binding.
+	_, companionCreate := r.Context().Value(companionCreateContextKey{}).(companionCreateBinding)
+	checkoutFree := companionCreate && companionCreateIsCheckoutFree(req)
 	if strings.TrimSpace(req.ProjectID) != "" {
 		binding, err = s.resolveProjectConversationBinding(principal, &req)
+	} else if checkoutFree {
+		binding, err = s.resolveCompanionConversationBinding(req)
 	} else {
 		binding, err = s.resolveSessionsV3PrimaryBinding(principal, req)
 	}
@@ -986,7 +992,7 @@ func (s *Server) createSessionsV3Primary(w http.ResponseWriter, r *http.Request,
 	}
 	workspacePath := binding.SourceWorkspacePath
 	workspaceName := binding.SourceWorkspaceName
-	if workspaceName == "" && req.ProjectID == "" {
+	if workspaceName == "" && req.ProjectID == "" && !checkoutFree {
 		workspaceName = filepath.Base(workspacePath)
 		if workspaceName == "." || workspaceName == string(filepath.Separator) {
 			workspaceName = "workspace"
@@ -1050,7 +1056,7 @@ func (s *Server) createSessionsV3Primary(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	var initialWorkspaceGrants []pebblestore.WorkspaceGrant
-	if req.ProjectID == "" {
+	if req.ProjectID == "" && !checkoutFree {
 		initialWorkspaceGrants, err = s.sessionsV3InitialWorkspaceGrants(principal, binding)
 	}
 	if err != nil {
@@ -1149,7 +1155,7 @@ func (s *Server) createSessionsV3Primary(w http.ResponseWriter, r *http.Request,
 			Kind: pebblestore.WorkspaceGrantWorktree, Path: strings.TrimSpace(allocation.WorkspacePath), Available: &available,
 		})
 		session.WorkspaceUsage = pebblestore.WorkspaceUsageFromGrants(session.WorkspaceGrants)
-	} else if req.ProjectID == "" {
+	} else if req.ProjectID == "" && !checkoutFree {
 		session.WorktreeBranch = sessionruntime.DetectCurrentBranch(session.WorkspacePath)
 	}
 	admission, err := sessionsV3AllocatedLaneAdmission(session)

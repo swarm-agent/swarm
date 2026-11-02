@@ -136,6 +136,13 @@ a separate profile and the extension loaded, for trying it out.
   top of the left sidebar. `«` (or ctrl-b) collapses the sidebar to an icon
   rail with the pages, the current project's sessions and fleet health; `»`
   expands it.
+- **Companion:** the sidebar's sessions list is replaced by the Companion's
+  work (needs you, running, results, across every project; a row opens its
+  detail with approve, reject or stop over the list) and the conversation
+  takes the rest of the window; there is no work column on the right. The
+  rail lists the same work. Back on Sessions the sidebar shows the project's
+  sessions again; the Companion's draft, focus and open detail are kept. The
+  Companion needs no workspace: it opens with none selected or registered.
 - **Fleet:** the one place to see the whole fleet. The top line counts it
   ("4 machines · 1 needs attention · 3 waiting on you · 2 failed today"; a
   count with `+?` has a machine that was not read). Then the machine cards,
