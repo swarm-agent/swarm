@@ -4,6 +4,7 @@
 
 use gpui::{AnyElement, ClickEvent, Context, Div, SharedString, div, prelude::*, px};
 
+use super::context::{COMPANION_NO_COMPACT, Mode};
 use super::{Console, Open, Page, PaneId, alpha, live::Act};
 
 /// Every command with what it does, in the order the list shows them.
@@ -37,7 +38,28 @@ pub(super) enum Slash {
     /// Open or close the conversation's context panel.
     Context,
     Go(Page),
+    /// A command this conversation does not take, and why (the Companion
+    /// is never compacted). Nothing is sent to Swarm.
+    NotHere(&'static str),
     Unknown,
+}
+
+/// A parsed command for a conversation's context mode: `/compact` in the
+/// Companion becomes its explanation, never a compaction request.
+pub(super) fn for_mode(slash: Slash, mode: Mode) -> Slash {
+    match slash {
+        Slash::Compact { .. } if !mode.compacts() => Slash::NotHere(COMPANION_NO_COMPACT),
+        other => other,
+    }
+}
+
+/// A command's line in the list, for the conversation's mode.
+pub(super) fn help(name: &str, help: &'static str, mode: Mode) -> &'static str {
+    match (name, mode) {
+        ("/compact", Mode::Companion) => "not for the Companion: each turn reads a bounded context; /context shows it",
+        ("/context", Mode::Companion) => "the Companion's last request and how each turn is built",
+        _ => help,
+    }
 }
 
 /// A leading number the way JavaScript's parseFloat reads one ("5", "2.5",
@@ -172,7 +194,7 @@ impl Console {
     /// Runs a slash command typed in pane `pid`.
     pub(super) fn slash(&mut self, pid: usize, text: &str, cx: &mut Context<Self>) {
         let Some(si) = self.panes.iter().find(|p| p.id.0 == pid).map(|p| p.session) else { return };
-        match parse(text) {
+        match for_mode(parse(text), self.context_mode(si)) {
             Slash::New(how) => self.new_pane(Some(pid), how, cx),
             Slash::Stop => {
                 if self.sessions[si].live.is_some() {
@@ -193,6 +215,13 @@ impl Console {
                 return;
             }
             Slash::Go(page) => self.page = page,
+            Slash::NotHere(why) => {
+                // Say why, and show what the context is instead.
+                self.notice = Some((why.into(), false));
+                if !self.contexts_open(pid) {
+                    self.toggle_context(pid, cx);
+                }
+            }
             Slash::Unknown => {
                 self.notice = Some((format!("No command {}. Type / to see them.", text.split_whitespace().next().unwrap_or("")).into(), true));
                 cx.notify();
@@ -222,6 +251,7 @@ impl Console {
         if hits.is_empty() {
             return None;
         }
+        let mode = self.panes.iter().find(|p| p.id.0 == pid).map(|p| self.context_mode(p.session)).unwrap_or(Mode::Chat);
         let t = &self.theme;
         let hover = t.hover;
         Some(div().flex().flex_col().py_1().mb_1().rounded(px(t.radius)).border_1().border_color(t.border).bg(t.panel).children(hits.into_iter().enumerate().map(
@@ -237,7 +267,7 @@ impl Console {
                     .when(i == 0, |d| d.bg(alpha(t.accent, 0.12)))
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.slash(pid, name, cx)))
                     .child(div().w(px(96.)).flex_none().text_color(t.accent).child(name))
-                    .child(div().flex_1().min_w_0().truncate().text_size(px(11.)).text_color(t.faint).child(help))
+                    .child(div().flex_1().min_w_0().truncate().text_size(px(11.)).text_color(t.faint).child(self::help(name, help, mode)))
                     .into_any_element()
             },
         )))
@@ -292,6 +322,39 @@ mod tests {
         assert_eq!(names, vec!["/compact"]);
         let names: Vec<&str> = matching("/co").into_iter().map(|(n, _)| n).collect();
         assert_eq!(names, vec!["/compact", "/context"]);
+    }
+
+    /// Requirement: `/compact` in the Companion (by Swarm's identity, see
+    /// context::mode_of) never becomes a compaction request: Console::slash
+    /// gets Slash::NotHere with the Companion's explanation and opens its
+    /// context panel instead, and the list describes both commands for the
+    /// Companion without auto-compact advice. In an ordinary chat, every
+    /// `/compact` form and its list line are unchanged. Threat: a typed or
+    /// clicked `/compact` reaching POST /v3/sessions/{id}/compact (and the
+    /// threshold metadata write before it) for a Companion, or the chat
+    /// losing compaction. Boundary: for_mode and help, the pure choices
+    /// slash and render_commands branch on (Console::compact refuses a
+    /// Companion as well). Narrowest layer: those choices (no GPUI harness).
+    #[test]
+    fn companion_slash_compact_explains_instead_of_compacting() {
+        for typed in ["/compact", "/compact 5%", "/compact 0%", "/compact threshold 5% keep ids", "/com keep task ids"] {
+            assert_eq!(for_mode(parse(typed), Mode::Companion), Slash::NotHere(COMPANION_NO_COMPACT), "{typed}");
+            assert!(matches!(for_mode(parse(typed), Mode::Chat), Slash::Compact { .. }), "{typed} in a chat");
+        }
+        assert_eq!(for_mode(parse("/compact 5% keep"), Mode::Chat), Slash::Compact { threshold: Some(5.), note: "keep".into() });
+        assert_eq!(for_mode(parse("/context"), Mode::Companion), Slash::Context);
+        assert_eq!(for_mode(parse("/stop"), Mode::Companion), Slash::Stop);
+        assert!(COMPANION_NO_COMPACT.contains("not compacted") && COMPANION_NO_COMPACT.contains("/context"));
+        for (name, line) in COMMANDS.iter().copied() {
+            assert_eq!(help(name, line, Mode::Chat), line, "{name}: a chat's list is unchanged");
+            if name == "/compact" || name == "/context" {
+                let companion = help(name, line, Mode::Companion);
+                assert_ne!(companion, line, "{name}");
+                assert!(!companion.contains("auto-compact") && !companion.contains('%'), "{name}: {companion}");
+            } else {
+                assert_eq!(help(name, line, Mode::Companion), line, "{name}");
+            }
+        }
     }
 
     #[test]

@@ -62,6 +62,14 @@ impl CompanionPage {
     }
 }
 
+/// Is `live` the session Swarm named as the Companion? By session id only:
+/// a title (every Companion row is titled "Companion", and any chat may be)
+/// or the pane showing it never decides.
+pub(super) fn names_companion(companion_id: Option<&str>, live: Option<&crate::data::LiveRef>) -> bool {
+    let Some(id) = companion_id.filter(|id| !id.is_empty()) else { return false };
+    live.is_some_and(|l| l.session_id.as_ref() == id)
+}
+
 /// A watched task's detail key.
 fn watch_key(machine: &str, project: &str, task: &str) -> String {
     format!("watch:{machine}/{project}/{task}")
@@ -77,8 +85,7 @@ impl Console {
 
     /// Is this session the Companion? It belongs to no project list.
     pub(super) fn is_companion(&self, si: usize) -> bool {
-        let Some(id) = self.companion.session_id() else { return false };
-        self.sessions.get(si).and_then(|s| s.live.as_ref()).is_some_and(|l| l.session_id.as_ref() == id)
+        names_companion(self.companion.session_id(), self.sessions.get(si).and_then(|s| s.live.as_ref()))
     }
 
     /// Keeps the Companion's pane on its session: present once the session

@@ -277,6 +277,27 @@ a separate profile and the extension loaded, for trying it out.
   shows above the composer and in the status bar ("Compacted: 62% of
   context before; Swarm measures the new size on the next turn."), or
   Swarm's refusal (for example while a run is active).
+- **Companion context:** the Companion is not compacted: each turn is built
+  from a bounded tail of recent messages plus a bounded block retrieved from
+  its context bank (docs/frontends.md, "Its context stays bounded"). Wherever
+  its conversation shows, the console picks this panel by Swarm's identity
+  (the session `GET /v3/companion` names, or the `swarm_v3_companion`
+  marker on the session detail), never by its title or the page. Its meter
+  reads `last req 62% · 124k / 200k` (`last req — / 200k` before a
+  measurement), and the panel, titled "Companion context: last request",
+  shows: **last request** (tokens of the window in the latest measured
+  request, or unknown), **its tokens** (input, cache read and write, output,
+  thinking), **measured** (model, age), **next request** (unknown until it is
+  sent; built afresh, not added to the last one), **each turn** (how a turn
+  is built) and **parts** (totals only). There is no **Compact now**, no
+  auto-compact threshold, no last-compaction row and no compaction outcome
+  line, and the meter never takes the threshold's warning color, even if the
+  session detail carries a threshold or checkpoint. `/compact` in the
+  Companion sends nothing: it says why and opens the panel; the command list
+  describes `/compact` and `/context` for the Companion accordingly. The
+  panel uses only the reading the console already holds (the same session
+  detail, read once per finished turn); it reads no history or context bank
+  to show it.
 - **Live** (`/live`, in the home's window): **Agents at work** above the
   fleet's event stream. Its header counts the agents working, tool calls per
   minute, and the tasks that landed and failed today (from local midnight);

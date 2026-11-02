@@ -184,7 +184,21 @@ moves onto it, keeping its history and model, the next time it is opened:
   if the smallest still does not fit, the run fails with that reason. The next
   turn, or a restarted run, starts again at the ordinary budget. Page history
   in the client with `GET /v3/sessions/{id}/messages?tail=…&max_bytes=…`, then
-  `before_seq`.
+  `before_seq`. These limits apply to the history and context bank parts of a
+  request; the system prompt, tool definitions and the turn's own tool results
+  come on top.
+- **Showing its context:** the session detail's `usage_summary` is the last
+  measured provider request, not a window the conversation fills: the next
+  turn is rebuilt, not appended. Label it as the last request, and show the
+  next request as unknown rather than estimating it. Decide this by Swarm's
+  identity (the session `GET /v3/companion` names, or the protected
+  `swarm_v3_companion` metadata marker on the session), never by a title or
+  the page showing it. Offer no compaction, no
+  `context_compaction_threshold_percent` and no compaction checkpoint for it,
+  even if the session detail carries them. Swarm reports request totals only:
+  how much the recent messages, the context bank, the prompt or the tool
+  definitions take is not reported, so do not derive it from stored history or
+  bank sizes.
 - **Its context bank** (`routes.context`, `/v3/companion/context`) is separate
   from account memory and never changes it. `GET` lists records newest first
   (`cursor`, `limit` up to 100), searches them (`q`, `kind`, up to 16

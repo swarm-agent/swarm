@@ -68,6 +68,10 @@ pub struct Reading {
     pub threshold: Option<f64>,
     /// The newest checkpoint among the recent messages read.
     pub checkpoint: Option<Checkpoint>,
+    /// The session carries Swarm's protected Companion marker
+    /// (`swarm_v3_companion` in its metadata). A Companion is never
+    /// compacted: each turn is assembled from a bounded context.
+    pub companion: bool,
 }
 
 impl Reading {
@@ -146,6 +150,7 @@ pub fn reading(detail: &Value) -> Reading {
         updated_at: u(&usage, "updated_at"),
         threshold: metadata.get(THRESHOLD_KEY).and_then(threshold),
         checkpoint: checkpoint(list(detail, "messages")),
+        companion: detail.get("session").is_some_and(super::companion::is_companion),
     }
 }
 
@@ -264,6 +269,29 @@ mod tests {
         let mut d = fixture();
         d["usage_summary"]["source"] = json!(SETTINGS_SOURCE);
         assert_eq!(reading(&d).used, None);
+    }
+
+    /// Requirement: the reading carries Swarm's protected Companion marker
+    /// from the session detail it already reads (no extra request), and only
+    /// the marker sets it: an ordinary chat's detail, its title or a null
+    /// marker never does. Threat: the console showing chat compaction for
+    /// the Companion, or Companion wording for a chat. Boundary: reading
+    /// and companion::is_companion.
+    #[test]
+    fn the_companion_marker_is_read_from_the_detail() {
+        assert!(!reading(&fixture()).companion);
+        let mut d = fixture();
+        d["session"]["metadata"][super::super::companion::METADATA_KEY] = json!({"generation": 1});
+        let r = reading(&d);
+        assert!(r.companion);
+        // The generic fields are still read as Swarm reported them; the
+        // console decides what a Companion shows of them.
+        assert_eq!((r.used, r.threshold), (Some(124000), Some(5.)));
+        let mut d = fixture();
+        d["session"]["title"] = json!("Companion");
+        assert!(!reading(&d).companion, "a title is not the marker");
+        d["session"]["metadata"][super::super::companion::METADATA_KEY] = Value::Null;
+        assert!(!reading(&d).companion, "a null marker is not the marker");
     }
 
     #[test]
