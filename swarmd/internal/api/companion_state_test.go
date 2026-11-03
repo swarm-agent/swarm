@@ -75,13 +75,29 @@ func TestCompanionStateFollowsApprovalsAndSurfacesAgree(t *testing.T) {
 	f.say(f.sessionID, "q-1", "Help me pick a backup drive for my laptop photos")
 	companionStateNow(t, f.confirmationFixture, f.sessionID)
 
-	// A tool call waits on the person's approval in a running turn.
+	// A tool call waits on the person's approval in a running turn. This test
+	// is the executor for approval-run, so it claims the run in the daemon's
+	// executor before recording it pending, as the executor's own start does.
+	// Unclaimed, a pending run is the executor's to start: the refill that a
+	// finishing run triggers (finish -> refillPendingBacklog) runs it with the
+	// scripted model and completes it, a second writer the person's answer
+	// then cannot reach (the route skips permission.updated for a run that is
+	// no longer running), so the approval stayed open.
 	executor := &sessionV3Executor{server: f.server}
 	job := sessionV3ExecutorJob{Principal: principal, SessionID: f.sessionID, RunID: "approval-run"}
-	for _, step := range []struct{ status, event string }{{sessionruntime.RunIntentPendingExecutor, "session.run_intent.recorded"}, {sessionruntime.RunIntentRunning, "session.assistant.started"}} {
-		if _, err := executor.recordRunStatus(job, step.status, "", step.event); err != nil {
-			t.Fatalf("run %s: %v", step.status, err)
-		}
+	release := claimSessionV3ExecutorRunForTest(t, f.server.v3SessionExecutor, job)
+	defer release()
+	if _, err := executor.recordRunStatus(job, sessionruntime.RunIntentPendingExecutor, "", "session.run_intent.recorded"); err != nil {
+		t.Fatalf("run %s: %v", sessionruntime.RunIntentPendingExecutor, err)
+	}
+	// The refill pass while the run is pending, deterministically: the
+	// interleaving that used to start a second writer.
+	f.server.v3SessionExecutor.drainRefillPasses(context.Background())
+	if sessionV3ExecutorStartedRunForTest(f.server.v3SessionExecutor, job) {
+		t.Fatal("the daemon's executor started the run this test owns")
+	}
+	if _, err := executor.recordRunStatus(job, sessionruntime.RunIntentRunning, "", "session.assistant.started"); err != nil {
+		t.Fatalf("run %s: %v", sessionruntime.RunIntentRunning, err)
 	}
 	record, err := f.permissions.CreatePending(permission.CreateInput{SessionID: f.sessionID, RunID: job.RunID, Step: 1, CallID: "call-approve", ToolName: "bash", ToolArguments: `{"command":"ls"}`, Mode: sessionruntime.ModeAuto})
 	if err != nil {
