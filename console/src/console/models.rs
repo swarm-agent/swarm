@@ -9,7 +9,7 @@
 use gpui::{AnyElement, ClickEvent, Context, Div, Focusable, SharedString, div, prelude::*, px};
 
 use super::{Console, alpha};
-use crate::data::Assignment;
+use crate::data::{Assignment, Session};
 use crate::swarm::live::Command;
 use crate::swarm::models::{Choice, Favorite, ModelOption};
 
@@ -45,9 +45,78 @@ pub(super) struct Picker {
     pub favorite: Option<Favorite>,
     /// Making a favorite: the Apply step saves instead.
     pub saving: bool,
+    /// The live conversation it was opened for, by Swarm's id. The choice is
+    /// applied to that conversation, found again when applied, never to
+    /// whatever sits at the index it had when opened.
+    pub session: Option<String>,
+}
+
+/// Is `b` the picker `a` already has open? A session picker by its pane,
+/// whatever index its conversation has now; a role picker by its role.
+fn same_scope(a: &PickerScope, b: &PickerScope) -> bool {
+    match (a, b) {
+        (PickerScope::Session { pid: x, .. }, PickerScope::Session { pid: y, .. }) => x == y,
+        _ => a == b,
+    }
+}
+
+/// The conversation a session picker applies to now. A picker opened on a
+/// live conversation follows it by Swarm's id (the session list can be
+/// re-ordered or de-duplicated while it is open) and applies to nothing once
+/// it is gone; one opened on a draft applies to the pane's draft while it is
+/// still one.
+pub(super) fn picker_target(sessions: &[Session], pane_session: Option<usize>, bound: Option<&str>) -> Option<usize> {
+    match bound {
+        Some(id) => sessions.iter().position(|s| s.live.as_ref().is_some_and(|l| l.session_id.as_ref() == id)),
+        None => pane_session.filter(|si| sessions.get(*si).is_some_and(|s| s.live.is_none())),
+    }
+}
+
+/// Where a session picker's choice can go: (id, label, detail, strong,
+/// what). The Companion's model is its own: it never becomes a role default
+/// (that would change every conversation), and "back to the Orchestrator
+/// default" is offered beside the models instead.
+pub(super) fn session_apply_options(companion: bool) -> &'static [(&'static str, &'static str, &'static str, bool, &'static str)] {
+    if companion {
+        &[("apply-chat", "The Companion only", "its history, context and work stay; nothing else changes", true, "chat")]
+    } else {
+        &[
+            ("apply-chat", "This chat only", "nothing else changes", true, "chat"),
+            ("apply-default", "New default for the Orchestrator", "every conversation from now on", false, "default"),
+            ("apply-both", "Both", "this chat, and the default", false, "both"),
+        ]
+    }
+}
+
+/// The model shown in a composer's footer. The Companion always shows it,
+/// with the role it runs as: before Swarm's record names its model it runs
+/// on the account's default, as every Orchestrator starts. An ordinary live
+/// chat without a model shows nothing, as before.
+pub(super) fn model_label(model: &str, live: bool, companion: bool) -> String {
+    let model = if !model.is_empty() {
+        model.to_string()
+    } else if !live || companion {
+        "default model".to_string()
+    } else {
+        return String::new();
+    };
+    if companion { format!("Orchestrator · {model}") } else { model }
 }
 
 impl Picker {
+    /// The pane a session picker belongs to.
+    fn pane(&self) -> Option<usize> {
+        match self.scope {
+            PickerScope::Session { pid, .. } => Some(pid),
+            PickerScope::Role(_) => None,
+        }
+    }
+
+    /// Opened in the Companion's composer.
+    fn companion(&self) -> bool {
+        self.pane() == Some(super::companion::PANE.0)
+    }
+
     fn assignment(&self) -> Option<Assignment> {
         if let Some(f) = &self.favorite {
             return Some(f.assignment.clone());
@@ -66,13 +135,17 @@ impl Picker {
 
 impl Console {
     pub(super) fn open_picker(&mut self, scope: PickerScope, window: &mut gpui::Window, cx: &mut Context<Self>) {
-        let same = self.picker.as_ref().is_some_and(|p| p.scope == scope);
+        let same = self.picker.as_ref().is_some_and(|p| same_scope(&p.scope, &scope));
         self.picker = if same {
             None
         } else {
             // Favorites first when there are any; the catalog otherwise.
             let stage = if self.catalog.favorites.is_empty() { Stage::Model } else { Stage::Favorites };
-            Some(Picker { scope, stage, provider: None, model: None, thinking: None, tier: None, favorite: None, saving: false })
+            let session = match scope {
+                PickerScope::Session { si, .. } => self.sessions.get(si).and_then(|s| s.live.as_ref()).map(|l| l.session_id.to_string()),
+                PickerScope::Role(_) => None,
+            };
+            Some(Picker { scope, stage, provider: None, model: None, thinking: None, tier: None, favorite: None, saving: false, session })
         };
         if let Some(q) = &self.picker_query {
             q.update(cx, |q, cx| q.set_text("", cx));
@@ -150,6 +223,13 @@ impl Console {
         self.picker_go(Stage::Apply, window, cx);
     }
 
+    /// The conversation an open session picker applies to now (picker_target).
+    fn picker_session(&self, p: &Picker) -> Option<usize> {
+        let pid = p.pane()?;
+        let pane = self.panes.iter().find(|x| x.id.0 == pid).map(|x| x.session);
+        picker_target(&self.sessions, pane, p.session.as_deref())
+    }
+
     /// Applies the choice to this chat.
     fn apply_to_chat(&mut self, si: usize) {
         let Some(p) = self.picker.clone() else { return };
@@ -161,7 +241,8 @@ impl Console {
                 live.run(Command::SetModel { session_id: l.session_id.to_string(), choice });
                 // Shown at once; Swarm's own record follows on its event.
                 self.sessions[si].model = a.short().into();
-                self.notice = Some(("Setting the model for this chat…".into(), false));
+                let note = if p.companion() { "Setting the Companion's model…" } else { "Setting the model for this chat…" };
+                self.notice = Some((note.into(), false));
             }
             (None, _) => {
                 self.sessions[si].model = a.short().into();
@@ -171,6 +252,17 @@ impl Console {
             }
             (Some(_), None) => {}
         }
+    }
+
+    /// Puts a live conversation back on the account's Swarm model (Swarm's
+    /// account-default choice), clearing its own pick. The label follows
+    /// Swarm's record when its event arrives.
+    fn reset_chat_model(&mut self, si: usize) {
+        let (Some(l), Some(live)) = (&self.sessions[si].live, &self.live) else { return };
+        self.acting = Some(si);
+        self.failure = None;
+        live.run(Command::SetModel { session_id: l.session_id.to_string(), choice: crate::swarm::models::Choice::AccountDefault });
+        self.notice = Some(("Returning to the Orchestrator default…".into(), false));
     }
 
     /// Applies the choice as a role's default for every conversation.
@@ -186,20 +278,34 @@ impl Console {
     fn apply_pick(&mut self, what: &'static str, cx: &mut Context<Self>) {
         let Some(p) = self.picker.clone() else { return };
         let plan = self.roles.iter().position(|r| r.key.as_ref() == "plan");
-        match (&p.scope, what) {
-            (PickerScope::Session { si, .. }, "chat") => self.apply_to_chat(*si),
-            (PickerScope::Session { si, .. }, "both") => {
-                self.apply_to_chat(*si);
+        let target = self.picker_session(&p);
+        // Only what this picker offers (session_apply_options): the
+        // Companion's choice never reaches a role default.
+        let offered = matches!(p.scope, PickerScope::Role(_)) || what == "reset" || session_apply_options(p.companion()).iter().any(|o| o.4 == what);
+        if !offered || (what == "reset" && !p.companion()) {
+            self.picker = None;
+            cx.notify();
+            return;
+        }
+        match (&p.scope, what, target) {
+            // The conversation it was opened for is gone: nothing changes.
+            (PickerScope::Session { .. }, "chat" | "both" | "reset", None) => {
+                self.notice = Some(("That conversation is no longer listed; nothing was changed.".into(), true));
+            }
+            (PickerScope::Session { .. }, "chat", Some(si)) => self.apply_to_chat(si),
+            (PickerScope::Session { .. }, "reset", Some(si)) => self.reset_chat_model(si),
+            (PickerScope::Session { .. }, "both", Some(si)) => {
+                self.apply_to_chat(si);
                 if let Some(ri) = plan {
                     self.apply_to_role(ri);
                 }
             }
-            (PickerScope::Session { .. }, "default") => {
+            (PickerScope::Session { .. }, "default", _) => {
                 if let Some(ri) = plan {
                     self.apply_to_role(ri);
                 }
             }
-            (PickerScope::Role(ri), _) => self.apply_to_role(*ri),
+            (PickerScope::Role(ri), _, _) => self.apply_to_role(*ri),
             _ => {}
         }
         self.picker = None;
@@ -236,20 +342,27 @@ impl Console {
     pub(super) fn model_button(&self, si: usize, pid: usize, cx: &mut Context<Self>) -> AnyElement {
         let t = &self.theme;
         let s = &self.sessions[si];
-        let label = if !s.model.is_empty() {
-            s.model.to_string()
-        } else if s.live.is_none() {
-            "default model".to_string()
-        } else {
-            String::new()
-        };
+        let companion = pid == super::companion::PANE.0;
+        let label = model_label(&s.model, s.live.is_some(), companion);
         if label.is_empty() {
             return div().into_any_element();
         }
         let hover = t.hover;
-        let open = self.picker.as_ref().is_some_and(|p| p.scope == PickerScope::Session { si, pid });
+        let open = self.picker.as_ref().is_some_and(|p| p.pane() == Some(pid));
+        let (bg, fg, border) = (t.surface, t.text, t.border);
         div()
             .id(SharedString::from(format!("model-{pid}")))
+            .when(companion, |d| {
+                d.tooltip(move |_, cx| {
+                    cx.new(|_| super::TextTooltip {
+                        text: "The Companion runs as the Orchestrator (its tools and context stay). Click to pick its model, thinking and priority.".into(),
+                        bg,
+                        fg,
+                        border,
+                    })
+                    .into()
+                })
+            })
             .flex()
             // On a pane too narrow for the rest of the composer's row, the
             // label truncates rather than pushing send/stop out.
@@ -271,11 +384,10 @@ impl Console {
 
     /// The picker for a pane's composer, above it while open.
     pub(super) fn render_model_picker_for_pane(&self, si: usize, pid: usize, cx: &mut Context<Self>) -> Option<Div> {
-        let scope = PickerScope::Session { si, pid };
-        if self.picker.as_ref().map(|p| &p.scope) != Some(&scope) {
+        if !self.picker.as_ref().is_some_and(|p| p.pane() == Some(pid)) {
             return None;
         }
-        Some(self.render_picker(scope, cx))
+        Some(self.render_picker(PickerScope::Session { si, pid }, cx))
     }
 
     /// The picker for a role, in the Agents inspector while open.
@@ -327,6 +439,7 @@ impl Console {
     fn render_picker(&self, scope: PickerScope, cx: &mut Context<Self>) -> Div {
         let t = &self.theme;
         let p = self.picker.clone().unwrap();
+        let companion = p.companion();
         let hover = t.hover;
         let query = self.picker_query.as_ref().map(|q| q.read(cx).text()).unwrap_or_default();
         let role_key: Option<String> = match &scope {
@@ -336,15 +449,15 @@ impl Console {
         // What is in use now, to mark it.
         let current: Option<Assignment> = match &scope {
             PickerScope::Role(ri) => self.roles.get(*ri).map(|r| r.default.clone()),
-            PickerScope::Session { si, .. } => {
-                let s = &self.sessions[*si];
+            PickerScope::Session { .. } => self.picker_session(&p).and_then(|si| {
+                let s = &self.sessions[si];
                 s.model_choice.clone().or_else(|| {
                     let mut parts = s.model.split(" · ");
                     let model = parts.next().unwrap_or("").to_string();
                     let o = self.catalog.options.iter().find(|o| o.model == model)?;
                     Some(o.assignment(parts.next().unwrap_or(""), parts.next().unwrap_or("")))
                 })
-            }
+            }),
         };
 
         // The steps, as a path; a done step is a link back to it.
@@ -683,10 +796,9 @@ impl Console {
                 } else {
                     match &scope {
                         PickerScope::Session { .. } => {
-                            actions = actions
-                                .child(action("apply-chat", "This chat only".into(), "nothing else changes", true, "chat"))
-                                .child(action("apply-default", "New default for the Orchestrator".into(), "every conversation from now on", false, "default"))
-                                .child(action("apply-both", "Both".into(), "this chat, and the default", false, "both"));
+                            for &(id, label, detail, strong, what) in session_apply_options(companion) {
+                                actions = actions.child(action(id, label.into(), detail, strong, what));
+                            }
                         }
                         PickerScope::Role(ri) => {
                             let label = self.roles.get(*ri).map(|r| r.label.to_string()).unwrap_or_default();
@@ -721,6 +833,110 @@ impl Console {
             }
         };
 
-        div().flex().flex_col().gap_1().p_1().mb_1().rounded(px(t.radius)).border_1().border_color(alpha(t.accent, 0.4)).bg(t.panel).child(header).child(body)
+        // The Companion: the role it runs as (fixed), and the way back to
+        // the Orchestrator default beside the models.
+        let role = companion.then(|| {
+            div()
+                .px_2()
+                .text_size(px(10.5))
+                .line_height(px(15.))
+                .text_color(t.faint)
+                .child("THE COMPANION · runs as the Orchestrator (fixed, so its tools and context stay); pick its model here")
+        });
+        let reset = (companion && !p.saving && matches!(p.stage, Stage::Favorites | Stage::Model)).then(|| {
+            self.picker_row(
+                SharedString::from("picker-companion-default"),
+                "↺ Orchestrator default".to_string(),
+                "the account's Swarm model, as every Orchestrator starts; clears the Companion's own pick".to_string(),
+                false,
+                None,
+            )
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.apply_pick("reset", cx)))
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p_1()
+            .mb_1()
+            .rounded(px(t.radius))
+            .border_1()
+            .border_color(alpha(t.accent, 0.4))
+            .bg(t.panel)
+            .child(header)
+            .children(role)
+            .children(reset)
+            .child(body)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    fn live(id: &str) -> Session {
+        crate::swarm::companion::session(&json!({"id": id}), &Value::Null, false)
+    }
+
+    /// Requirement: a model picked in a pane goes to the conversation the
+    /// picker was opened for, by Swarm's id, even when the session list was
+    /// re-ordered or de-duplicated while it was open (Console::apply shifts
+    /// indices and repoints panes, not an open picker); a conversation that
+    /// is gone gets nothing, and a draft only while the pane still shows a
+    /// draft. Threat: a stale index sending the Companion's choice to another
+    /// chat (or another chat's to the Companion). Boundary: picker_target,
+    /// which apply_pick and the picker's "in use" mark resolve through.
+    /// Narrowest layer: that pure choice over real Session values.
+    #[test]
+    fn picker_follows_its_conversation_not_an_index() {
+        let mut sessions = vec![live("chat-a"), live("cmp"), live("chat-b")];
+        assert_eq!(picker_target(&sessions, Some(1), Some("cmp")), Some(1));
+        // The list moved under the open picker: the Companion is now at 2,
+        // and index 1 is another chat. The choice still goes to the Companion.
+        sessions.swap(1, 2);
+        assert_eq!(picker_target(&sessions, Some(2), Some("cmp")), Some(2));
+        assert_eq!(picker_target(&sessions, Some(1), Some("cmp")), Some(2), "a stale pane index never retargets");
+        // Gone from Swarm's list: nothing is changed.
+        sessions.remove(2);
+        assert_eq!(picker_target(&sessions, Some(1), Some("cmp")), None);
+        // A draft: the pane's draft while it is one; never a live chat.
+        sessions.push(super::super::live::draft(0));
+        assert_eq!(picker_target(&sessions, Some(2), None), Some(2));
+        assert_eq!(picker_target(&sessions, Some(0), None), None, "an unbound picker never reaches a live chat");
+        assert_eq!(picker_target(&sessions, Some(9), None), None);
+    }
+
+    /// Requirement: the Companion's picker applies only to the Companion
+    /// (its history, context and work stay) and offers no role default;
+    /// ordinary chats keep their three choices. Threat: picking the
+    /// Companion's model silently changing the Orchestrator default for every
+    /// conversation, or ordinary chats losing their options. Boundary:
+    /// session_apply_options, which both the Apply step and apply_pick's
+    /// "offered" check read. Narrowest layer: that pure choice.
+    #[test]
+    fn companion_choice_never_reaches_a_role_default() {
+        let companion: Vec<&str> = session_apply_options(true).iter().map(|o| o.4).collect();
+        assert_eq!(companion, vec!["chat"]);
+        assert!(session_apply_options(true)[0].1.contains("Companion"));
+        let chat: Vec<&str> = session_apply_options(false).iter().map(|o| o.4).collect();
+        assert_eq!(chat, vec!["chat", "default", "both"]);
+    }
+
+    /// Requirement: the Companion's composer always shows what it runs as
+    /// and on: the Orchestrator, on its model once Swarm names it, else the
+    /// account's default (before its record is read); an ordinary chat is
+    /// unchanged (a live one without a model shows nothing, a draft the
+    /// default). Threat: the Companion's model control hidden while Swarm's
+    /// record has no model yet (the reported missing control). Boundary:
+    /// model_label, used by model_button and the composer's fit. Narrowest
+    /// layer: that pure choice.
+    #[test]
+    fn companion_model_label_is_always_shown_with_its_role() {
+        assert_eq!(model_label("", true, true), "Orchestrator · default model");
+        assert_eq!(model_label("fixture-model · high", true, true), "Orchestrator · fixture-model · high");
+        assert_eq!(model_label("", true, false), "");
+        assert_eq!(model_label("", false, false), "default model");
+        assert_eq!(model_label("fixture-model · low", true, false), "fixture-model · low");
     }
 }

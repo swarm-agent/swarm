@@ -161,7 +161,11 @@ its own beside their chats. It is a session that runs as the code-owned
 Orchestrator (its tools, task delegation and watches, machine tools and
 permissions, under the same account, device and linked-machine policy) plus
 its own context bank tool `manage_companion`, on the account's Swarm model,
-not tied to a project. A Companion created before it ran as the Orchestrator
+not tied to a project. Its model can be changed like any conversation's with
+`PUT /v3/sessions/{id}/model-profile` (`temporary`, `saved_profile_id`, or
+`use_account_default: true` to return to the account's Swarm model); the
+choice is the Companion's only, survives `POST /v3/companion`, and is
+refused during an active run. Its agent cannot be switched. A Companion created before it ran as the Orchestrator
 moves onto it, keeping its history and model, the next time it is opened:
 
 - **Open it:** `POST /v3/companion` (optional `{"workspace_path":…}`, used only

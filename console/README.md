@@ -145,6 +145,14 @@ a separate profile and the extension loaded, for trying it out.
   and pressing it again or `‹ all work` closes it. Back on Sessions the sidebar shows the project's
   sessions again; the Companion's draft, focus and open detail are kept. The
   Companion needs no workspace: it opens with none selected or registered.
+  Its composer shows `◆ Orchestrator · <model>` (`default model` until
+  Swarm's record names one); clicking it opens the same model picker as a
+  chat (favorites, model, thinking, priority). A choice applies to the
+  Companion only (never a role default), and `↺ Orchestrator default` puts it
+  back on the account's Swarm model. Its role stays the Orchestrator. The
+  work sidebar stays within its width (long names shorten, whole on hover;
+  details wrap), its status line keeps two lines' height through a send and
+  a stream, and a task's progress never reorders the list.
 - **Fleet:** the one place to see the whole fleet. The top line counts it
   ("4 machines · 1 needs attention · 3 waiting on you · 2 failed today"; a
   count with `+?` has a machine that was not read). Then the machine cards,

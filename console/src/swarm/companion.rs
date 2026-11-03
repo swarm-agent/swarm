@@ -234,7 +234,17 @@ pub struct Work {
     pub project: String,
     pub task: Task,
     pub group: Group,
-    pub updated_at: u64,
+    /// When the task was created (its last update when Swarm gives none):
+    /// the list's order inside a group, which progress never changes.
+    pub created_at: u64,
+}
+
+/// The work list's order: attention, running, results; newest created first
+/// inside each, by identity on a tie. A task's progress (its updated_at)
+/// never moves it, so a running task reporting does not reorder the list
+/// under the person; new work arrives at the top of its group.
+fn order(out: &mut [Work]) {
+    out.sort_by(|a, b| a.group.cmp(&b.group).then(b.created_at.cmp(&a.created_at)).then(a.key().cmp(&b.key())));
 }
 
 impl Work {
@@ -255,9 +265,10 @@ pub fn with_linked(mut out: Vec<Work>, records: &[Value]) -> Vec<Work> {
         }
         let task = super::plan_review::linked_task(r);
         let updated_at = task.progress.updated_at;
-        out.push(Work { project: format!("{project_id} on {machine}"), machine, project_id, group: Group::of(&task), task, updated_at });
+        let created_at = r.get("created_at").and_then(Value::as_u64).unwrap_or(updated_at);
+        out.push(Work { project: format!("{project_id} on {machine}"), machine, project_id, group: Group::of(&task), task, created_at });
     }
-    out.sort_by(|a, b| a.group.cmp(&b.group).then(b.updated_at.cmp(&a.updated_at)).then(a.key().cmp(&b.key())));
+    order(&mut out);
     out
 }
 
@@ -277,10 +288,11 @@ pub fn work(tasks: &HashMap<String, Vec<Value>>, projects: &[Project], session_i
                 review.project_id = project_id.clone().into();
             }
             let updated_at = ["updated_at", "created_at"].iter().find_map(|k| t.get(*k).and_then(Value::as_u64)).unwrap_or(0);
-            out.push(Work { machine: String::new(), project_id: project_id.clone(), project: project.clone(), group: Group::of(&task), task, updated_at });
+            let created_at = t.get("created_at").and_then(Value::as_u64).unwrap_or(updated_at);
+            out.push(Work { machine: String::new(), project_id: project_id.clone(), project: project.clone(), group: Group::of(&task), task, created_at });
         }
     }
-    out.sort_by(|a, b| a.group.cmp(&b.group).then(b.updated_at.cmp(&a.updated_at)).then(a.key().cmp(&b.key())));
+    order(&mut out);
     out
 }
 
@@ -479,6 +491,44 @@ mod tests {
         assert_eq!(w[1].project, "Beta");
         assert!(work(&tasks, &projects, "").is_empty());
         assert!(work(&tasks, &projects, "nobody").is_empty());
+    }
+
+    /// Requirement: the Companion's work list keeps its order while its
+    /// tasks report progress: a running task's newer updated_at never moves
+    /// it above another, and new work arrives at the top of its group
+    /// without changing the order of the items already there; a task that
+    /// changes group moves to that group (Swarm's state decides). Threat: the
+    /// sidebar reshuffling on every progress update while the person sends
+    /// or reads (the reported jitter), or a click landing on another task.
+    /// Boundary: work (the follow loop's CompanionFeed.work), its order.
+    /// Narrowest layer: that pure mapping over Swarm's task records.
+    #[test]
+    fn companion_work_order_holds_through_progress_and_new_work() {
+        let rec = |id: &str, status: &str, created: u64, updated: u64| json!({"id": id, "title": id, "status": status, "origin_session_id": "cmp", "created_at": created, "updated_at": updated});
+        let projects = [project("p1", "Alpha")];
+        let keys = |tasks: &HashMap<String, Vec<Value>>| work(tasks, &projects, "cmp").iter().map(Work::key).collect::<Vec<_>>();
+        let mut tasks: HashMap<String, Vec<Value>> = HashMap::new();
+        tasks.insert("p1".into(), vec![rec("old", "in_progress", 10, 10), rec("mid", "in_progress", 20, 20), rec("new", "in_progress", 30, 30)]);
+        let before = keys(&tasks);
+        assert_eq!(before, vec!["p1/new", "p1/mid", "p1/old"]);
+        // The oldest reports progress (newest update): nothing moves.
+        tasks.get_mut("p1").unwrap()[0] = rec("old", "in_progress", 10, 999);
+        assert_eq!(keys(&tasks), before, "progress must not reorder the list");
+        // New work: at the top of its group, the rest in the same order.
+        tasks.get_mut("p1").unwrap().push(rec("fresh", "in_progress", 40, 40));
+        let after = keys(&tasks);
+        assert_eq!(after[0], "p1/fresh");
+        assert_eq!(&after[1..], before.as_slice());
+        // A task that needs the person moves to that group, by Swarm's state.
+        tasks.get_mut("p1").unwrap()[1] = rec("mid", "pending_approval", 20, 1000);
+        assert_eq!(keys(&tasks), vec!["p1/mid", "p1/fresh", "p1/new", "p1/old"]);
+        // A linked task orders by its own creation, not its progress.
+        let linked = with_linked(
+            work(&tasks, &projects, "cmp"),
+            &[json!({"machine": "lab", "project_id": "p9", "task_id": "t9", "status": "in_progress", "created_at": 1, "observed_at": 5000})],
+        );
+        let running: Vec<String> = linked.iter().filter(|w| w.group == Group::Running).map(Work::key).collect();
+        assert_eq!(running.last().map(String::as_str), Some("lab:p9/t9"), "{running:?}");
     }
 
     /// Requirement: watched tasks this machine cannot show (a linked

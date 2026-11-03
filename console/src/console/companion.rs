@@ -12,7 +12,7 @@
 //! that opens over the list without touching the conversation, its draft or
 //! its focus; the conversation takes the rest of the window.
 
-use gpui::{AnyElement, ClickEvent, Context, SharedString, div, prelude::*, px};
+use gpui::{AnyElement, ClickEvent, Context, Div, ScrollHandle, SharedString, Stateful, div, prelude::*, px};
 
 use super::{Console, Link, Page, PaneId, live::Act};
 use crate::data::Text;
@@ -47,6 +47,31 @@ pub(super) struct CompanionPage {
     /// The work item whose detail is open (Work::key, or "watch:" + its
     /// machine/project/task for a watched task this machine cannot show).
     pub detail: Option<String>,
+    /// Where the work list is scrolled, kept by the page (not by the
+    /// element tree) so updates, the rail's overlay and "‹ all work" never
+    /// move it.
+    pub list_scroll: ScrollHandle,
+    /// The open detail's scroll; a new one (at the top) for each item opened.
+    pub detail_scroll: ScrollHandle,
+}
+
+/// The work header's status line is always this many lines tall, whatever
+/// it says: idle, a queued message, a tool call, a stream, or nothing yet.
+/// Text longer than that ends in an ellipsis, the whole of it on hover.
+pub(super) const STATUS_LINES: usize = 2;
+const STATUS_LINE_HEIGHT: f32 = 16.;
+/// The "reading…" slot beside the heading: reserved whether or not a read
+/// is under way, so it never moves the heading.
+const BUSY_SLOT_WIDTH: f32 = 56.;
+
+/// What the work header's status line says: Swarm's activity for the
+/// Companion's turn, else that it is idle once it exists, else nothing.
+pub(super) fn status_line(activity: Option<String>, ready: bool) -> String {
+    match activity.filter(|l| !l.trim().is_empty()) {
+        Some(line) => line,
+        None if ready => "Idle. Background work keeps running while you talk.".to_string(),
+        None => String::new(),
+    }
 }
 
 impl CompanionPage {
@@ -76,6 +101,20 @@ fn watch_key(machine: &str, project: &str, task: &str) -> String {
 }
 
 impl Console {
+    /// A tooltip with the whole of a value shown shortened.
+    fn full_text(&self, d: Stateful<Div>, text: String) -> Stateful<Div> {
+        let (bg, fg, border) = (self.theme.surface, self.theme.text, self.theme.border);
+        d.tooltip(move |_, cx| cx.new(|_| super::TextTooltip { text: text.clone().into(), bg, fg, border }).into())
+    }
+
+    /// Opens one work item's detail, at its top.
+    fn open_companion_detail(&mut self, key: String) {
+        if self.companion.detail.as_deref() != Some(key.as_str()) {
+            self.companion.detail_scroll = ScrollHandle::new();
+        }
+        self.companion.detail = Some(key);
+    }
+
     /// The Companion session's index in `sessions`, once Swarm named it and
     /// the follow loop listed it.
     pub(super) fn companion_index(&self) -> Option<usize> {
@@ -278,16 +317,23 @@ impl Console {
 
     /// The Companion's work, for the left sidebar: what needs the person,
     /// what runs and the results, and one item's detail over the list.
+    /// Everything in it is held to the sidebar's width: long names and ids
+    /// shorten (whole on hover) or wrap, and never paint past it. The header
+    /// keeps one height through a send, a stream and back to idle
+    /// (STATUS_LINES, BUSY_SLOT_WIDTH), so the list below never jumps.
     pub(super) fn render_companion_work(&self, cx: &mut Context<Self>) -> AnyElement {
         let t = &self.theme;
         let feed = self.companion.feed.as_ref();
         let work: &[Work] = feed.map(|f| f.work.as_slice()).unwrap_or(&[]);
         let activity = self.companion.view.as_ref().and_then(|v| v.activity.as_ref());
         let elsewhere = activity.map(|a| companion::watched_elsewhere(a, work)).unwrap_or_default();
-        let line = activity.map(companion::activity_line).filter(|l| !l.is_empty());
+        let status = status_line(activity.map(companion::activity_line), self.companion.session_id().is_some());
 
         let head = div()
             .flex_none()
+            .w_full()
+            .min_w_0()
+            .overflow_hidden()
             .px_3()
             .py_2()
             .flex()
@@ -300,52 +346,87 @@ impl Console {
                     .flex()
                     .items_center()
                     .gap_2()
+                    .min_w_0()
                     .child(self.icon(Icon::Tasks, 13., t.faint))
-                    .child(div().flex_1().text_color(t.text).child("Work"))
-                    .children((self.companion.busy).then(|| div().text_size(px(10.5)).text_color(t.faint).child("reading…"))),
+                    .child(div().flex_1().min_w_0().truncate().text_color(t.text).child("Work"))
+                    .child(div().flex_none().w(px(BUSY_SLOT_WIDTH)).text_right().truncate().text_size(px(10.5)).text_color(t.faint).child(if self.companion.busy {
+                        "reading…"
+                    } else {
+                        ""
+                    })),
             )
-            .child(div().text_size(px(11.)).text_color(t.faint).line_height(px(16.)).child(
-                line.unwrap_or_else(|| if self.companion.session_id().is_some() { "Idle. Background work keeps running while you talk.".to_string() } else { String::new() }),
-            ));
+            .child(
+                self.full_text(
+                    div()
+                        .id("companion-work-status")
+                        .h(px(STATUS_LINE_HEIGHT * STATUS_LINES as f32))
+                        .min_w_0()
+                        .text_size(px(11.))
+                        .text_color(t.faint)
+                        .line_height(px(STATUS_LINE_HEIGHT))
+                        .line_clamp(STATUS_LINES)
+                        .text_ellipsis()
+                        .child(status.clone()),
+                    status,
+                ),
+            );
 
-        let body = match self.companion.detail.as_deref() {
-            Some(key) => self.render_companion_detail(key, work, &elsewhere, cx),
-            None => self.render_companion_list(work, &elsewhere, cx),
+        // The list and a detail each keep their own scroll (CompanionPage).
+        let (id, scroll, body) = match self.companion.detail.as_deref() {
+            Some(key) => ("companion-detail-scroll", &self.companion.detail_scroll, self.render_companion_detail(key, work, &elsewhere, cx)),
+            None => ("companion-work-scroll", &self.companion.list_scroll, self.render_companion_list(work, &elsewhere, cx)),
         };
-        div().size_full().flex().flex_col().child(head).child(div().id("companion-work-scroll").flex_1().min_h_0().overflow_y_scroll().pb_2().child(body)).into_any_element()
+        div()
+            .size_full()
+            .min_w_0()
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .child(head)
+            .child(div().id(id).flex_1().min_h_0().w_full().min_w_0().overflow_y_scroll().overflow_x_hidden().track_scroll(scroll).pb_2().child(body))
+            .into_any_element()
     }
 
     fn render_companion_list(&self, work: &[Work], elsewhere: &[(String, String, String, String)], cx: &mut Context<Self>) -> AnyElement {
         let t = &self.theme;
         let hover = t.hover;
+        // Keyed by the work's own identity (Work::key), so an update that
+        // changes a task's state redraws its row in place.
         let row = |id: String, key: String, glyph: (&'static str, gpui::Hsla), title: String, sub: String| {
-            div()
-                .id(SharedString::from(id))
-                .mx_1()
-                .px_2()
-                .py(px(5.))
-                .flex()
-                .items_start()
-                .gap_2()
-                .rounded(px(t.radius))
-                .cursor_pointer()
-                .hover(move |s| s.bg(hover))
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.companion.detail = Some(key.clone());
-                    cx.notify();
-                }))
-                .child(div().flex_none().text_color(glyph.1).child(glyph.0))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(div().truncate().text_color(t.text).child(title))
-                        .child(div().truncate().text_size(px(10.5)).text_color(t.faint).child(sub)),
-                )
+            let full = format!("{title}\n{sub}");
+            self.full_text(
+                div()
+                    .id(SharedString::from(id))
+                    .mx_1()
+                    .px_2()
+                    .py(px(5.))
+                    .min_w_0()
+                    .overflow_hidden()
+                    .flex()
+                    .items_start()
+                    .gap_2()
+                    .rounded(px(t.radius))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.open_companion_detail(key.clone());
+                        cx.notify();
+                    }))
+                    .child(div().flex_none().text_color(glyph.1).child(glyph.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .flex()
+                            .flex_col()
+                            .child(div().min_w_0().truncate().text_color(t.text).child(title))
+                            .child(div().min_w_0().truncate().text_size(px(10.5)).text_color(t.faint).child(sub)),
+                    ),
+                full,
+            )
         };
-        let mut out = div().flex().flex_col();
+        let mut out = div().w_full().min_w_0().overflow_hidden().flex().flex_col();
         for group in Group::ALL {
             let items: Vec<&Work> = work.iter().filter(|w| w.group == group).collect();
             if items.is_empty() {
@@ -388,17 +469,20 @@ impl Console {
             this.companion.detail = None;
             cx.notify();
         })));
+        // A value wraps inside the sidebar's width (a long id breaks between
+        // characters), so all of it stays readable.
         let field = |label: &'static str, value: String| {
             (!value.trim().is_empty()).then(|| {
                 div()
+                    .min_w_0()
                     .flex()
                     .flex_col()
                     .gap(px(2.))
                     .child(div().text_size(px(10.5)).text_color(t.faint).child(label))
-                    .child(div().text_size(px(11.5)).line_height(px(17.)).text_color(t.text).child(value))
+                    .child(div().min_w_0().text_size(px(11.5)).line_height(px(17.)).text_color(t.text).child(value))
             })
         };
-        let body = div().px_3().pt_2().flex().flex_col().gap_3();
+        let body = div().w_full().min_w_0().overflow_hidden().px_3().pt_2().flex().flex_col().gap_3();
         if let Some(w) = work.iter().find(|w| w.key() == key) {
             let task = &w.task;
             let state = if task.progress.task_state.label().is_empty() { task.status.label().to_string() } else { task.progress.task_state.label().to_string() };
@@ -409,8 +493,11 @@ impl Console {
                 self.button(SharedString::from(format!("companion-act-{label}")), label, strong)
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.companion_task_act(&key, act, cx)))
             };
+            // Wraps rather than running past a narrow sidebar or the rail's
+            // overlay: every action stays in reach.
             let actions = div()
                 .flex()
+                .flex_wrap()
                 .gap_1()
                 .when(task.status.needs_you() && task.review.as_ref().is_some_and(|r| r.opens_review()), |d| {
                     d.child(act_button(if task.review.as_ref().is_some_and(|r| r.plan) { "review plan" } else { "review" }, true, Act::Approve))
@@ -443,7 +530,7 @@ impl Console {
                             .child(div().text_color(color).child(glyph))
                             .child(div().flex_1().min_w_0().text_color(t.text).line_height(px(19.)).child(task.title.clone())),
                     )
-                    .child(div().text_size(px(11.)).text_color(t.faint).child(format!("{} · {} · {state}", w.project, task.role)))
+                    .child(div().min_w_0().text_size(px(11.)).text_color(t.faint).child(format!("{} · {} · {state}", w.project, task.role)))
                     .child(actions)
                     .children(field("WHERE IT STANDS", task.progress.summary.to_string()))
                     .children(field("WHY", task.progress.task_state_reason.to_string()))
@@ -461,7 +548,7 @@ impl Console {
                 .flex_col()
                 .child(back)
                 .child(
-                    body.child(div().text_color(t.text).child(if title.is_empty() { task.clone() } else { title.clone() }))
+                    body.child(div().min_w_0().text_color(t.text).child(if title.is_empty() { task.clone() } else { title.clone() }))
                         .children(field("MACHINE", if machine.is_empty() { "this machine".into() } else { machine.clone() }))
                         .children(field("PROJECT", project.clone()))
                         .children(field("TASK", task.clone()))
@@ -475,7 +562,14 @@ impl Console {
                 )
                 .into_any_element();
         }
-        div().flex().flex_col().child(back).child(body.child(div().text_size(px(11.5)).text_color(t.faint).child("Swarm no longer lists this work."))).into_any_element()
+        div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .child(back)
+            .child(body.child(div().text_size(px(11.5)).text_color(t.faint).child("Swarm no longer lists this work.")))
+            .into_any_element()
     }
 
     /// The nav's figure for the Companion: what needs you, else what runs.
@@ -584,6 +678,42 @@ mod tests {
             assert_eq!(layout(page, true, 1400., true), LeftLayout::Rail, "{page:?} collapsed");
             assert_eq!(layout(page, false, wide, true), LeftLayout::Sidebar, "{page:?} wide");
         }
+    }
+
+    /// Requirement: through a send (queued input), a running turn with a
+    /// device tool call, background results, a context catch-up and back to
+    /// idle, the work header's status says what Swarm's activity says, in
+    /// full (shown whole on hover), and is never blank once the Companion
+    /// exists (blank would collapse it); its box is always STATUS_LINES tall,
+    /// so no transition moves the list below. Threat: the header growing and
+    /// shrinking with each activity answer (the reported jitter on send), or
+    /// the live status hidden to avoid it. Boundary: status_line over the
+    /// real activity_line of parsed CompanionView answers; the fixed box is
+    /// render_companion_work's (STATUS_LINES). Narrowest layer: those pure
+    /// parts (no GPUI render harness here; the painted geometry is unverified).
+    #[test]
+    fn work_header_status_keeps_its_place_through_a_turn() {
+        let activity = |a: serde_json::Value| companion::view(&serde_json::json!({"companion": {"session_id": "cmp", "state": "ready", "activity": a}})).unwrap().activity.unwrap();
+        let turn = [
+            serde_json::json!({"run": {"active": false}}),
+            serde_json::json!({"run": {"active": false}, "queued_inputs": [{"message_id": "m1", "delivery_status": "queued"}]}),
+            serde_json::json!({"run": {"active": true, "phase": "provider_first_event"}}),
+            serde_json::json!({"run": {"active": true, "phase": "tool"}, "tool_calls": [{"call_id": "c", "tool_name": "machine_run", "device": true}],
+                "background_deliveries": [{"wake_id": "w", "status": "waiting_for_run"}], "context": {"pending": 3}}),
+            serde_json::json!({"run": {"active": false, "stop_reason": "completed"}}),
+            serde_json::json!({"run": {"active": false}}),
+        ];
+        assert_eq!(STATUS_LINES, 2);
+        for a in turn {
+            let line = companion::activity_line(&activity(a.clone()));
+            let shown = status_line(Some(line.clone()), true);
+            assert!(!shown.is_empty(), "blank status for {a}");
+            if !line.is_empty() {
+                assert_eq!(shown, line, "the whole of Swarm's line is kept for its tooltip");
+            }
+        }
+        assert_eq!(status_line(Some("  ".into()), true), status_line(None, true));
+        assert_eq!(status_line(None, false), "", "no Companion yet: nothing claimed");
     }
 
     /// Requirement: the page follows only the session Swarm named, and only

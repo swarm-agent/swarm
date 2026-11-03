@@ -188,11 +188,13 @@ pub fn default_body(role: &str, a: &Assignment) -> Value {
     }
 }
 
-/// What a conversation runs on: a choice of its own, or a favorite.
+/// What a conversation runs on: a choice of its own, a favorite, or back to
+/// the account's Swarm model (the default every Orchestrator starts on).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Choice {
     Temporary(Assignment),
     Favorite(String),
+    AccountDefault,
 }
 
 impl Choice {
@@ -204,6 +206,7 @@ impl Choice {
                 json!({"temporary": t})
             }
             Choice::Favorite(id) => json!({"saved_profile_id": id}),
+            Choice::AccountDefault => json!({"use_account_default": true}),
         }
     }
 }
@@ -250,5 +253,18 @@ mod tests {
         let a = cat.find("codex", "gpt-6-astra").unwrap().assignment("high", "priority");
         assert_eq!(Choice::Temporary(a).wire()["temporary"]["service_tier"], "priority");
         assert_eq!(Choice::Favorite("mp_1".into()).wire()["saved_profile_id"], "mp_1");
+    }
+
+    /// Requirement: "back to the Orchestrator default" is the session model
+    /// route's own account-default choice (exactly one choice field, the one
+    /// PUT /v3/sessions/{id}/model-profile resolves from the account's Swarm
+    /// settings), never a model name the console picked. Threat: a reset that
+    /// writes a guessed or stale model into the conversation, or sends a body
+    /// Swarm refuses (more than one choice).
+    #[test]
+    fn account_default_choice_is_the_routes_own_reset() {
+        let wire = Choice::AccountDefault.wire();
+        assert_eq!(wire, json!({"use_account_default": true}));
+        assert_eq!(wire.as_object().map(|o| o.len()), Some(1), "exactly one choice");
     }
 }

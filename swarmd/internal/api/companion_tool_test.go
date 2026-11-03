@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"sort"
@@ -18,6 +19,7 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/modelprofile"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -436,6 +438,107 @@ func TestCompanionResolvesTheOrchestratorRuntime(t *testing.T) {
 	}
 	if companion.Preference.Model != "test-model" || swarmChat.Preference.Model != "test-model" {
 		t.Fatalf("Companion model = %s (chat %s), want the Swarm Action assignment test-model", companion.Preference.Model, swarmChat.Preference.Model)
+	}
+}
+
+// Purpose: the person can change the model the Companion runs on, as in any
+// Orchestrator chat, without changing what the Companion is. Requirement: PUT
+// /v3/sessions/{companion}/model-profile (the console's Companion picker)
+// with a synthetic temporary choice makes the executor resolve that model for
+// the Companion, which still runs as the primary Orchestrator with
+// manage_companion; the choice survives POST /v3/companion (ensure) and a
+// further GET; another chat's model, the account's Swarm defaults and the
+// Companion marker are unchanged; use_account_default returns it to the
+// account's Swarm Action model; an agent switch is still refused. Threat: a
+// picker that changes every conversation or the account default, an ensure
+// that silently resets the person's pick, or a model change that moves the
+// Companion off its protected runtime. Boundary: handleSessionV3PrimaryModelProfile
+// (mergeSessionsV3ModelProfileChoice), handleCompanionEnsure
+// (companionRunsAsOrchestrator), resolveSessionV3Runtime. Narrowest layer:
+// the HTTP routes over the real session service and store, resolved by the
+// executor itself.
+func TestCompanionModelChoiceIsItsOwnAndSurvivesEnsure(t *testing.T) {
+	f, _ := companionToolFixture(t, func(*queuedNoteFixture, provideriface.Request) provideriface.Response {
+		return provideriface.Response{Text: "ok", StopReason: "stop"}
+	})
+	// The model profile service the daemon registers (the route resolves
+	// choices through it).
+	f.server.SetModelProfileService(modelprofile.NewService(pebblestore.NewModelProfileStore(f.sessions.Store().Underlying())))
+	ctx := identity.ContextWithPrincipal(context.Background(), testPrincipal())
+	defaultsBefore, err := f.server.agentModelSettings.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chatWorkspace := t.TempDir()
+	binding := seedSessionsV3PrimaryAuthority(t, f.server, chatWorkspace)
+	code, body := f.do(http.MethodPost, "/v3/sessions", mustJSON(t, map[string]any{"client_request_id": "model-chat", "workspace_path": chatWorkspace, "workspace_name": filepath.Base(chatWorkspace), "swarm_id": "host-swarm-id", "workspace_binding_id": binding, "target_kind": "host", "target_relationship": "self", "title": "Chat", "mode": sessionruntime.ModeAuto, "agent_name": agentruntime.SwarmAgentID}))
+	var chat struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if code != http.StatusOK || json.Unmarshal([]byte(body), &chat) != nil {
+		t.Fatalf("chat: %d %s", code, body)
+	}
+	resolve := func(sessionID string) sessionV3ResolvedRuntime {
+		t.Helper()
+		resolved, err := f.server.v3SessionExecutor.resolveSessionV3Runtime(sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: sessionID, RunID: "model-" + sessionID})
+		if err != nil {
+			t.Fatalf("resolve %s: %v", sessionID, err)
+		}
+		return resolved
+	}
+	before := resolve(f.sessionID)
+	if before.Preference.Model != "test-model" {
+		t.Fatalf("Companion starts on %s, want the account's Swarm model test-model", before.Preference.Model)
+	}
+
+	pick := map[string]any{"provider": "test-provider", "model": "fixture-companion-model", "thinking": "low", "name": "This chat"}
+	if code, body := f.do(http.MethodPut, "/v3/sessions/"+f.sessionID+"/model-profile", mustJSON(t, map[string]any{"client_request_id": "companion-pick", "choice": map[string]any{"temporary": pick}})); code != http.StatusOK {
+		t.Fatalf("pick: %d %s", code, body)
+	}
+	// Ensure (what the console does on opening) and a read keep the pick.
+	if code, body := f.do(http.MethodPost, CompanionPath, ""); code != http.StatusOK || !strings.Contains(body, f.sessionID) || strings.Contains(body, `"created":true`) {
+		t.Fatalf("ensure: %d %s", code, body)
+	}
+	if code, body := f.do(http.MethodGet, CompanionPath, ""); code != http.StatusOK || !strings.Contains(body, f.sessionID) {
+		t.Fatalf("get: %d %s", code, body)
+	}
+	picked := resolve(f.sessionID)
+	if picked.Preference.Model != "fixture-companion-model" || picked.Preference.Thinking != "low" {
+		t.Fatalf("Companion resolves %s/%s, want the picked fixture-companion-model/low", picked.Preference.Model, picked.Preference.Thinking)
+	}
+	if picked.AgentProfile.Name != agentruntime.SwarmOrchestratorAgentID || picked.AgentProfile.Mode != agentruntime.ModePrimary || !slices.Contains(toolNames(picked.Tools), tool.ManageCompanionToolName) {
+		t.Fatalf("the pick moved the Companion off its runtime: %s/%s tools %v", picked.AgentProfile.Name, picked.AgentProfile.Mode, toolNames(picked.Tools))
+	}
+	if strings.Join(toolNames(picked.Tools), ",") != strings.Join(toolNames(before.Tools), ",") {
+		t.Fatalf("the pick changed the Companion's tools:\nbefore %v\nafter  %v", toolNames(before.Tools), toolNames(picked.Tools))
+	}
+	stored, _, _ := f.sessions.GetSession(f.sessionID)
+	if !sessionsV3IsCompanion(stored) || stored.Metadata["navigation_hidden"] != true {
+		t.Fatalf("the pick unmarked the Companion: %v", stored.Metadata)
+	}
+	if other := resolve(chat.Session.ID); other.Preference.Model != "test-model" {
+		t.Fatalf("another chat changed to %s", other.Preference.Model)
+	}
+	defaultsAfter, err := f.server.agentModelSettings.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(defaultsAfter.Swarm, defaultsBefore.Swarm) {
+		t.Fatalf("the account's Swarm defaults changed: %+v -> %+v", defaultsBefore.Swarm, defaultsAfter.Swarm)
+	}
+	if code, body := f.do(http.MethodPost, "/v3/sessions/"+f.sessionID+"/agent", mustJSON(t, map[string]any{"agent_name": agentruntime.SwarmAgentID, "client_request_id": "switch-after-pick"})); code != http.StatusConflict {
+		t.Fatalf("agent switch: %d %s", code, body)
+	}
+
+	// Back to the Orchestrator default: the account's Swarm Action model.
+	if code, body := f.do(http.MethodPut, "/v3/sessions/"+f.sessionID+"/model-profile", mustJSON(t, map[string]any{"client_request_id": "companion-reset", "choice": map[string]any{"use_account_default": true}})); code != http.StatusOK {
+		t.Fatalf("reset: %d %s", code, body)
+	}
+	if code, body := f.do(http.MethodPost, CompanionPath, ""); code != http.StatusOK {
+		t.Fatalf("ensure after reset: %d %s", code, body)
+	}
+	if reset := resolve(f.sessionID); reset.Preference.Model != "test-model" || reset.AgentProfile.Name != agentruntime.SwarmOrchestratorAgentID {
+		t.Fatalf("after reset the Companion resolves %s as %s", reset.Preference.Model, reset.AgentProfile.Name)
 	}
 }
 

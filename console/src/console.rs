@@ -982,9 +982,24 @@ impl Console {
             ))))
             .child(self.render_nav(cx));
         if self.page.left_body() == LeftBody::CompanionWork {
-            // The Companion's work replaces the sessions list; its own scroll.
-            return left
-                .child(div().id("left-companion-work").mt_2().flex_1().min_h_0().flex().flex_col().border_t_1().border_color(t.border).child(self.render_companion_work(cx)));
+            // The Companion's work replaces the sessions list; its own scroll,
+            // held to the sidebar's width (nothing in it paints over the
+            // conversation).
+            return left.child(
+                div()
+                    .id("left-companion-work")
+                    .mt_2()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .border_t_1()
+                    .border_color(t.border)
+                    .child(self.render_companion_work(cx)),
+            );
         }
         let active_session = self.active_session();
         let sessions = self.session_rows(active_session, cx);
@@ -1034,6 +1049,7 @@ impl Console {
             .bg(t.panel)
             .border_r_1()
             .border_color(t.border)
+            .overflow_hidden()
             .occlude()
             .child(self.render_companion_work(cx))
             .into_any_element()
@@ -1311,13 +1327,7 @@ impl Console {
             // Text plus a button's padding and border.
             const PAD: f32 = 18.;
             let w = |text: &str| data::text_width(text, FONT);
-            let model = if !s.model.is_empty() {
-                s.model.to_string()
-            } else if s.live.is_none() {
-                "default model".to_string()
-            } else {
-                String::new()
-            };
+            let model = models::model_label(&s.model, s.live.is_some(), companion);
             let actions = |stop: &str, send: &str| {
                 if running {
                     w(stop) + PAD
@@ -1448,8 +1458,9 @@ impl Console {
                                     .items_center()
                                     .gap_3()
                                     .when(fit.permissions, |d| d.child(self.permissions_chip(pid, cx)))
-                                    // The Companion runs on the account's model; it has no picker here.
-                                    .when(!companion, |d| d.child(self.model_button(si, pid, cx)))
+                                    // The Companion's too: it runs as the Orchestrator, on the
+                                    // model picked for it or the account's default.
+                                    .child(self.model_button(si, pid, cx))
                                     // Holds the rest to the right when the hint is dropped.
                                     .child(div().flex_1().min_w_0().truncate().when(fit.hint, |d| d.child(hint)))
                                     .when(fit.commands, |d| d.child(div().flex_none().whitespace_nowrap().child("/ commands")))
