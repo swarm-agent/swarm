@@ -148,6 +148,10 @@ impl Console {
                     let (sa, sb) = (self.panes[a].session, self.panes[b].session);
                     self.panes[a].session = sb;
                     self.panes[b].session = sa;
+                    if sa != sb {
+                        self.pane_switched(from);
+                        self.pane_switched(pid);
+                    }
                 }
                 self.layout.focus(target);
             }
@@ -157,7 +161,11 @@ impl Console {
             }
             (None, None) => {
                 if let Some(p) = self.panes.iter_mut().find(|p| p.id == target) {
+                    let switched = p.session != d.session;
                     p.session = d.session;
+                    if switched {
+                        self.pane_switched(pid);
+                    }
                 }
                 self.layout.focus(target);
             }

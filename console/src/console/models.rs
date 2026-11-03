@@ -60,16 +60,22 @@ fn same_scope(a: &PickerScope, b: &PickerScope) -> bool {
     }
 }
 
-/// The conversation a session picker applies to now. A picker opened on a
-/// live conversation follows it by Swarm's id (the session list can be
-/// re-ordered or de-duplicated while it is open) and applies to nothing once
-/// it is gone; one opened on a draft applies to the pane's draft while it is
-/// still one.
+/// The conversation a session picker applies to now: the one its pane
+/// shows, and only while that is still the conversation it was opened for.
+/// A picker opened on a live conversation needs the pane to show that
+/// conversation (by Swarm's id; panes are repointed when the session list
+/// is re-ordered or de-duplicated); one opened on a draft needs the pane to
+/// still show a draft (the pane switching conversation closes the picker,
+/// Console::pane_switched). Otherwise nothing: a picker never applies to a
+/// conversation other than the one in front of the person.
 pub(super) fn picker_target(sessions: &[Session], pane_session: Option<usize>, bound: Option<&str>) -> Option<usize> {
-    match bound {
-        Some(id) => sessions.iter().position(|s| s.live.as_ref().is_some_and(|l| l.session_id.as_ref() == id)),
-        None => pane_session.filter(|si| sessions.get(*si).is_some_and(|s| s.live.is_none())),
-    }
+    let si = pane_session?;
+    let s = sessions.get(si)?;
+    let same = match bound {
+        Some(id) => s.live.as_ref().is_some_and(|l| l.session_id.as_ref() == id),
+        None => s.live.is_none(),
+    };
+    same.then_some(si)
 }
 
 /// Where a session picker's choice can go: (id, label, detail, strong,
@@ -135,7 +141,15 @@ impl Picker {
 
 impl Console {
     pub(super) fn open_picker(&mut self, scope: PickerScope, window: &mut gpui::Window, cx: &mut Context<Self>) {
-        let same = self.picker.as_ref().is_some_and(|p| same_scope(&p.scope, &scope));
+        // The same picker toggles closed; a session picker only while it
+        // still targets the conversation this button belongs to.
+        let same = self.picker.as_ref().is_some_and(|p| {
+            same_scope(&p.scope, &scope)
+                && match scope {
+                    PickerScope::Session { si, .. } => self.picker_session(p) == Some(si),
+                    PickerScope::Role(_) => true,
+                }
+        });
         self.picker = if same {
             None
         } else {
@@ -154,6 +168,20 @@ impl Console {
             }
         }
         cx.notify();
+    }
+
+    /// A pane now shows another conversation: a picker opened on it is for
+    /// the conversation it showed, so it closes rather than applying to (or
+    /// drawing above) the new one.
+    pub(super) fn pane_switched(&mut self, pid: usize) {
+        if self.picker.as_ref().is_some_and(|p| p.pane() == Some(pid)) {
+            self.picker = None;
+        }
+    }
+
+    /// Is the open picker this pane's, for the conversation it shows now?
+    fn picker_open_on(&self, si: usize, pid: usize) -> bool {
+        self.picker.as_ref().is_some_and(|p| p.pane() == Some(pid) && self.picker_session(p) == Some(si))
     }
 
     pub(super) fn close_picker(&mut self, cx: &mut Context<Self>) {
@@ -348,7 +376,7 @@ impl Console {
             return div().into_any_element();
         }
         let hover = t.hover;
-        let open = self.picker.as_ref().is_some_and(|p| p.pane() == Some(pid));
+        let open = self.picker_open_on(si, pid);
         let (bg, fg, border) = (t.surface, t.text, t.border);
         div()
             .id(SharedString::from(format!("model-{pid}")))
@@ -384,7 +412,7 @@ impl Console {
 
     /// The picker for a pane's composer, above it while open.
     pub(super) fn render_model_picker_for_pane(&self, si: usize, pid: usize, cx: &mut Context<Self>) -> Option<Div> {
-        if !self.picker.as_ref().is_some_and(|p| p.pane() == Some(pid)) {
+        if !self.picker_open_on(si, pid) {
             return None;
         }
         Some(self.render_picker(PickerScope::Session { si, pid }, cx))
@@ -896,7 +924,7 @@ mod tests {
         // and index 1 is another chat. The choice still goes to the Companion.
         sessions.swap(1, 2);
         assert_eq!(picker_target(&sessions, Some(2), Some("cmp")), Some(2));
-        assert_eq!(picker_target(&sessions, Some(1), Some("cmp")), Some(2), "a stale pane index never retargets");
+        assert_eq!(picker_target(&sessions, Some(1), Some("cmp")), None, "a stale pane index never retargets");
         // Gone from Swarm's list: nothing is changed.
         sessions.remove(2);
         assert_eq!(picker_target(&sessions, Some(1), Some("cmp")), None);
@@ -905,6 +933,35 @@ mod tests {
         assert_eq!(picker_target(&sessions, Some(2), None), Some(2));
         assert_eq!(picker_target(&sessions, Some(0), None), None, "an unbound picker never reaches a live chat");
         assert_eq!(picker_target(&sessions, Some(9), None), None);
+    }
+
+    /// Requirement: a picker opened on chat A in a pane applies to, draws
+    /// above and marks "in use" only chat A, and only while that pane still
+    /// shows A. Threat: the person opens the picker on A, then shows chat B
+    /// in the same pane (sidebar click, pane drop or swap); the picker draws
+    /// above B and "This chat only" changes A while they look at B.
+    /// Boundary: picker_target, through which apply_pick, the picker's
+    /// render and the model button's "open" state resolve; and
+    /// Console::pane_switched, which closes the picker on the user-driven
+    /// pane switches. Narrowest layer: the pure choice over real Session
+    /// values (Console needs a GPUI window).
+    #[test]
+    fn picker_closes_to_a_pane_that_switched_to_another_chat() {
+        let mut sessions = vec![live("chat-a"), live("chat-b")];
+        // Opened on A in a pane showing A.
+        assert_eq!(picker_target(&sessions, Some(0), Some("chat-a")), Some(0));
+        // The pane now shows B: nothing is targeted, so nothing changes and
+        // the picker is not drawn above B.
+        assert_eq!(picker_target(&sessions, Some(1), Some("chat-a")), None);
+        // Nor is A, though it is still listed and the picker still bound to it.
+        assert_ne!(picker_target(&sessions, Some(1), Some("chat-a")), Some(0));
+        // A picker opened on a draft never reaches a live chat the pane
+        // switched to.
+        sessions.push(super::super::live::draft(0));
+        assert_eq!(picker_target(&sessions, Some(2), None), Some(2));
+        assert_eq!(picker_target(&sessions, Some(1), None), None);
+        // Back on A, the picker for A targets A again.
+        assert_eq!(picker_target(&sessions, Some(0), Some("chat-a")), Some(0));
     }
 
     /// Requirement: the Companion's picker applies only to the Companion

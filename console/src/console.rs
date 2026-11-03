@@ -706,7 +706,11 @@ impl Console {
         if how == Open::Here {
             if let Some(active) = self.layout.active() {
                 if let Some(pane) = self.panes.iter_mut().find(|p| p.id == active) {
+                    let switched = pane.session != session;
                     pane.session = session;
+                    if switched {
+                        self.pane_switched(active.0);
+                    }
                 }
                 return;
             }
