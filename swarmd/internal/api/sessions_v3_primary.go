@@ -3006,8 +3006,8 @@ func (s *Server) handleSessionV3PrimaryRunStop(w http.ResponseWriter, r *http.Re
 		writeError(w, status, err)
 		return
 	}
-	if s.perm != nil {
-		_, _ = s.perm.CancelRunPending(sessionID, runID, reason)
+	if err := s.cancelSessionV3RunPendingPermissions(principal, sessionID, runID, reason); err != nil {
+		log.Printf("warning: cancel pending permissions of stopped run session=%q run=%q: %v", sessionID, runID, err)
 	}
 	status := sessionruntime.RunIntentCancelled
 	if result.RunIntent != nil && strings.TrimSpace(result.RunIntent.Status) != "" {
@@ -3129,12 +3129,18 @@ func (s *Server) handleSessionV3PrimaryPermissionResolve(w http.ResponseWriter, 
 		return
 	}
 	actor, _ := productActorFromRequest(r)
+	before, found, err := s.perm.GetPermission(sessionID, permissionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	record, savedRule, err := s.perm.ResolveFromClient(sessionID, permissionID, req.Action, req.Reason, string(req.ApprovedArguments), actor.ClientSessionID)
 	if err != nil {
 		writePermissionPolicyError(w, err)
 		return
 	}
-	mutation, published, err := s.publishSessionV3PermissionUpdatedFromRecord(principal, sessionID, record)
+	decided := found && strings.EqualFold(strings.TrimSpace(before.Status), pebblestore.PermissionStatusPending) && !strings.EqualFold(strings.TrimSpace(record.Status), pebblestore.PermissionStatusPending)
+	mutation, published, err := s.publishSessionV3PermissionDecision(principal, sessionID, record, decided)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -3179,7 +3185,8 @@ func (s *Server) handleSessionV3PrimaryPermissionResolveAll(w http.ResponseWrite
 	}
 	mutations := make([]sessionruntime.SessionMutationResult, 0, len(resolved))
 	for _, record := range resolved {
-		mutation, published, err := s.publishSessionV3PermissionUpdatedFromRecord(principal, sessionID, record)
+		// ResolveAll returns only the requests it moved off pending.
+		mutation, published, err := s.publishSessionV3PermissionDecision(principal, sessionID, record, true)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -197,8 +198,10 @@ func (s *Server) cancelRunForTakeover(principal identity.Principal, sessionID st
 		return
 	}
 	const reason = "a person took over the conversation"
-	if _, cancelled, err := s.v3SessionExecutor.CancelRun(sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: runID, StopCause: sessionruntime.PlanStoppedByUser}, reason); err == nil && cancelled && s.perm != nil {
-		_, _ = s.perm.CancelRunPending(sessionID, runID, reason)
+	if _, cancelled, err := s.v3SessionExecutor.CancelRun(sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: runID, StopCause: sessionruntime.PlanStoppedByUser}, reason); err == nil && cancelled {
+		if err := s.cancelSessionV3RunPendingPermissions(principal, sessionID, runID, reason); err != nil {
+			log.Printf("warning: cancel pending permissions of run session=%q run=%q after takeover: %v", sessionID, runID, err)
+		}
 	}
 }
 

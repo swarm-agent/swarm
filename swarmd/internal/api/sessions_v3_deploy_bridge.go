@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -186,8 +187,8 @@ func (s *Server) CancelSessionRun(principal identity.Principal, sessionID, runID
 	if err != nil {
 		return false, err
 	}
-	if s.perm != nil {
-		_, _ = s.perm.CancelRunPending(sessionID, runID, reason)
+	if err := s.cancelSessionV3RunPendingPermissions(principal, sessionID, runID, reason); err != nil {
+		log.Printf("warning: cancel pending permissions of stopped run session=%q run=%q: %v", sessionID, runID, err)
 	}
 	_ = result
 	return cancelled, nil

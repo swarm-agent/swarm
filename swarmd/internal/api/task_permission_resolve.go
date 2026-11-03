@@ -111,7 +111,8 @@ func (s *Server) resolveLocalTaskPermission(p identity.Principal, projectID, tas
 	if err != nil {
 		return nil, linkedTaskFail(http.StatusConflict, "%v", err)
 	}
-	if _, _, err := s.publishSessionV3PermissionUpdatedFromRecord(p, sessionID, resolved); err != nil {
+	// The request was pending (checked above), so a decided record is this call's decision.
+	if _, _, err := s.publishSessionV3PermissionDecision(p, sessionID, resolved, resolved.Status != pebblestore.PermissionStatusPending); err != nil {
 		return nil, linkedTaskFail(http.StatusInternalServerError, "the request was answered, but publishing it failed: %v", err)
 	}
 	s.settleClientToolConfirmationAfterAnswer(sessionID, resolved)
