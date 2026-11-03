@@ -252,7 +252,7 @@ func (d *deadHandedOffTask) taskRecord(t *testing.T) pebblestore.ProjectTaskReco
 
 // requireFinalized checks the postconditions of a handed-off run's
 // finalization: completed in its own epoch, no active writer, the task
-// settled out of in_progress with exactly one succeeded job-end signal, and
+// settled as needs_review with exactly one succeeded job-end signal, and
 // the plan (the person's review) unchanged.
 func (d *deadHandedOffTask) requireFinalized(t *testing.T) {
 	t.Helper()
@@ -266,8 +266,10 @@ func (d *deadHandedOffTask) requireFinalized(t *testing.T) {
 	}
 	requireActiveEpoch(t, sessions, d.session.ID, d.handoff.Epoch.EpochID)
 	task := d.taskRecord(t)
-	if task.Status == "in_progress" || task.Status == pebblestore.ProjectTaskStatusStopped || task.Status == "failed" {
-		t.Fatalf("task after finalization = %q (%s), want settled as a completed run", task.Status, task.ActionNeeded)
+	// No commits are integrated (the fixture has no repository), so the
+	// completed run's task waits for review, exactly.
+	if task.Status != "needs_review" || task.ActionNeeded != "Action Needed: Review agent deliverables and verify outcomes" || task.IsIntegrated {
+		t.Fatalf("task after finalization = %q (%q) integrated=%v, want needs_review", task.Status, task.ActionNeeded, task.IsIntegrated)
 	}
 	got := d.signals(t)
 	if len(got) != 1 || got[0].Kind != "task.run.succeeded" {
