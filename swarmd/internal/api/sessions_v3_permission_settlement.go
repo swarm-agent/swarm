@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -18,11 +19,19 @@ import (
 // permission.updated event is normally that run's own write
 // (publishSessionV3PermissionUpdatedFromRecord), which the store accepts only
 // while the run is running. A request can still be decided after its run
-// ended: the person stops the run (its pending requests are cancelled after
-// the run is recorded cancelled), or answers a request the ended run left
-// pending. The permission store has the decision, but the session's event
-// log, which the Companion state, the agent feed and the clients follow,
-// would keep the request waiting forever.
+// ended: its pending requests are cancelled when the run is stopped, when the
+// run itself ends by failure, cancellation or timeout (run.Service.runTurn),
+// and for every waiting run at daemon start (ReconcilePendingRuns); or the
+// person answers a request the ended run left pending. The permission store
+// has the decision, but the session's event log, which the Companion state,
+// the agent feed and the clients follow, would keep the request waiting
+// forever.
+//
+// Every run cancellation goes through permission.Service.CancelRunPending,
+// which tells its observer (publishSessionV3RunPendingCancelled, installed by
+// NewServer) of exactly the requests that call cancelled, whichever caller
+// won; a cancellation made before the server exists (the restart
+// reconciliation) is delivered when the observer is installed.
 //
 // settleSessionV3PermissionAfterRun closes that gap with one session-level
 // permission.updated event per request: no run intent, so it neither revives
@@ -39,29 +48,52 @@ import (
 // record and must not publish it again).
 func (s *Server) publishSessionV3PermissionDecision(principal identity.Principal, sessionID string, record pebblestore.PermissionRecord, decided bool) (sessionruntime.SessionMutationResult, bool, error) {
 	result, published, err := s.publishSessionV3PermissionUpdatedFromRecord(principal, sessionID, record)
-	if err != nil || published || !decided {
+	if published || !decided {
 		return result, published, err
+	}
+	if err != nil {
+		// The run may have stopped running between the run-owned writer's
+		// check and its write (a stop racing the run's own end). Settle
+		// only when it no longer runs; otherwise the error stands.
+		intent, found, readErr := s.sessions.GetSessionRunIntent(strings.TrimSpace(sessionID), strings.TrimSpace(record.RunID))
+		if readErr != nil || !found || strings.TrimSpace(intent.Status) == sessionruntime.RunIntentRunning {
+			return result, false, err
+		}
+		settled, ok, settleErr := s.settleSessionV3PermissionAfterRun(principal, sessionID, record)
+		if settleErr != nil || ok {
+			return settled, ok, settleErr
+		}
+		return result, false, err
 	}
 	return s.settleSessionV3PermissionAfterRun(principal, sessionID, record)
 }
 
+// publishSessionV3RunPendingCancelled is permission.Service's
+// RunPendingCancelledObserver: it publishes each request one CancelRunPending
+// call cancelled, as the run's own write while the run still runs (the run's
+// deferred cancellation), else as the settlement. The session's owner is the
+// writer; a failure is logged, the cancellation itself already happened.
+func (s *Server) publishSessionV3RunPendingCancelled(sessionID, runID string, cancelled []pebblestore.PermissionRecord) {
+	if s == nil || s.sessions == nil {
+		return
+	}
+	for _, record := range cancelled {
+		if _, _, err := s.publishSessionV3PermissionDecision(identity.Principal{}, sessionID, record, true); err != nil {
+			log.Printf("warning: publish cancelled permission %s of run %s in session %s: %v", strings.TrimSpace(record.ID), runID, sessionID, err)
+		}
+	}
+}
+
 // cancelSessionV3RunPendingPermissions cancels the pending requests of a run
-// that was just stopped and publishes each cancellation.
-func (s *Server) cancelSessionV3RunPendingPermissions(principal identity.Principal, sessionID, runID, reason string) error {
+// that was just stopped. The cancellations are published by the permission
+// service's observer (publishSessionV3RunPendingCancelled), for whichever of
+// this call and the run's own deferred cancellation moved them off pending.
+func (s *Server) cancelSessionV3RunPendingPermissions(sessionID, runID, reason string) error {
 	if s == nil || s.perm == nil {
 		return nil
 	}
-	cancelled, err := s.perm.CancelRunPending(sessionID, runID, reason)
-	if err != nil {
-		return err
-	}
-	var firstErr error
-	for _, record := range cancelled {
-		if _, _, err := s.publishSessionV3PermissionDecision(principal, sessionID, record, true); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
+	_, err := s.perm.CancelRunPending(sessionID, runID, reason)
+	return err
 }
 
 func sessionV3PermissionSettledClientRequestID(permissionID string) string {

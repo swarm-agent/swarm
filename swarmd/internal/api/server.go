@@ -456,6 +456,9 @@ func NewCoreServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelS
 			_, _, err := server.publishSessionV3PermissionUpdatedFromRecord(identity.Principal{}, sessionID, record)
 			return err
 		})
+		// Every run cancellation of pending requests (a stop, the run's own
+		// end, the restart reconciliation) closes them in the session.
+		permissionSvc.SetRunPendingCancelledObserver(server.publishSessionV3RunPendingCancelled)
 	}
 	if notificationSvc, ok := notificationSvc.(*notification.Service); ok {
 		notificationSvc.SetRealtimePublisher(server.publishNotificationV3Realtime)

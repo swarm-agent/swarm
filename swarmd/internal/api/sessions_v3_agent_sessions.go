@@ -208,7 +208,7 @@ func (s *Server) stopActiveSessionRun(principal identity.Principal, sessionID, r
 	if _, _, err := s.v3SessionExecutor.CancelRun(sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: runID, StopCause: sessionruntime.PlanStoppedByUser}, reason); err != nil {
 		return runID, err
 	}
-	if err := s.cancelSessionV3RunPendingPermissions(principal, sessionID, runID, reason); err != nil {
+	if err := s.cancelSessionV3RunPendingPermissions(sessionID, runID, reason); err != nil {
 		return runID, err
 	}
 	return runID, nil

@@ -199,7 +199,7 @@ func (s *Server) cancelRunForTakeover(principal identity.Principal, sessionID st
 	}
 	const reason = "a person took over the conversation"
 	if _, cancelled, err := s.v3SessionExecutor.CancelRun(sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: runID, StopCause: sessionruntime.PlanStoppedByUser}, reason); err == nil && cancelled {
-		if err := s.cancelSessionV3RunPendingPermissions(principal, sessionID, runID, reason); err != nil {
+		if err := s.cancelSessionV3RunPendingPermissions(sessionID, runID, reason); err != nil {
 			log.Printf("warning: cancel pending permissions of run session=%q run=%q after takeover: %v", sessionID, runID, err)
 		}
 	}

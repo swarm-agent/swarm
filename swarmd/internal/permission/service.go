@@ -71,6 +71,23 @@ type Service struct {
 	proposalDecisionUnlocked bool
 	policyLocked             atomic.Bool
 	bypassGate               atomic.Pointer[BypassGate]
+
+	// runCancelMu guards the run-cancellation observer and the cancellations
+	// made before it was installed (see SetRunPendingCancelledObserver).
+	runCancelMu       sync.Mutex
+	runCancelObserver RunPendingCancelledObserver
+	runCancelBacklog  []runPendingCancellation
+}
+
+// RunPendingCancelledObserver is told, after the fact and outside the
+// service's lock, of the requests one CancelRunPending call moved from
+// pending to cancelled.
+type RunPendingCancelledObserver func(sessionID, runID string, cancelled []pebblestore.PermissionRecord)
+
+type runPendingCancellation struct {
+	sessionID string
+	runID     string
+	records   []pebblestore.PermissionRecord
 }
 
 // BypassGate reports whether permission bypass may take effect right now and,
@@ -305,6 +322,44 @@ func (s *Service) SetPermissionRealtimePublisher(publish func(sessionID string, 
 		return
 	}
 	s.permissionRealtimePublish = publish
+}
+
+// SetRunPendingCancelledObserver installs the observer of every run
+// cancellation of pending requests, whoever cancels them: a stop, the run's
+// own end on failure, cancellation or timeout, or the restart reconciliation.
+// Cancellations made before an observer is installed (the restart
+// reconciliation runs before the API server exists) are kept and delivered to
+// it when it is installed.
+func (s *Service) SetRunPendingCancelledObserver(observer RunPendingCancelledObserver) {
+	if s == nil {
+		return
+	}
+	s.runCancelMu.Lock()
+	s.runCancelObserver = observer
+	var backlog []runPendingCancellation
+	if observer != nil {
+		backlog, s.runCancelBacklog = s.runCancelBacklog, nil
+	}
+	s.runCancelMu.Unlock()
+	for _, item := range backlog {
+		observer(item.sessionID, item.runID, item.records)
+	}
+}
+
+func (s *Service) notifyRunPendingCancelled(sessionID, runID string, cancelled []pebblestore.PermissionRecord) {
+	if s == nil || len(cancelled) == 0 {
+		return
+	}
+	records := append([]pebblestore.PermissionRecord(nil), cancelled...)
+	s.runCancelMu.Lock()
+	observer := s.runCancelObserver
+	if observer == nil {
+		s.runCancelBacklog = append(s.runCancelBacklog, runPendingCancellation{sessionID: sessionID, runID: runID, records: records})
+		s.runCancelMu.Unlock()
+		return
+	}
+	s.runCancelMu.Unlock()
+	observer(sessionID, runID, records)
 }
 
 func (s *Service) SetSummaryRealtimePublisher(publish func(sessionID string, summary pebblestore.PermissionSummary) error) {
@@ -1196,12 +1251,24 @@ func (s *Service) WaitForResolution(ctx context.Context, sessionID, permissionID
 	}
 }
 
+// CancelRunPending cancels the run's pending requests and returns the ones
+// this call cancelled. The installed RunPendingCancelledObserver is told of
+// them (also of those cancelled before an error), after the lock is released.
 func (s *Service) CancelRunPending(sessionID, runID, reason string) ([]pebblestore.PermissionRecord, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	runID = strings.TrimSpace(runID)
 	if sessionID == "" || runID == "" {
 		return nil, nil
 	}
+	cancelled, err := s.cancelRunPending(sessionID, runID, reason)
+	s.notifyRunPendingCancelled(sessionID, runID, cancelled)
+	if err != nil {
+		return nil, err
+	}
+	return cancelled, nil
+}
+
+func (s *Service) cancelRunPending(sessionID, runID, reason string) ([]pebblestore.PermissionRecord, error) {
 	if strings.TrimSpace(reason) == "" {
 		reason = "run terminated before permission resolution"
 	}
@@ -1238,10 +1305,10 @@ func (s *Service) CancelRunPending(sessionID, runID, reason string) ([]pebblesto
 		updated.DurationMS = permissionDurationMS(updated)
 		summary, err := s.summaryForMutationLocked(sessionID, &record, updated, now)
 		if err != nil {
-			return nil, err
+			return cancelled, err
 		}
 		if err := s.store.PutPermissionWithSummary(updated, &record, summary); err != nil {
-			return nil, err
+			return cancelled, err
 		}
 		s.detachRunWaitLocked(updated, now)
 		s.notifyWaitersLocked(updated)
@@ -1256,7 +1323,7 @@ func (s *Service) CancelRunPending(sessionID, runID, reason string) ([]pebblesto
 	if len(cancelled) > 0 {
 		summary, err := s.refreshSummaryLocked(sessionID, now)
 		if err != nil {
-			return nil, err
+			return cancelled, err
 		}
 		s.publishPermissionSummaryUpdatedLocked(sessionID, summary)
 	}

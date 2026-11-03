@@ -3006,7 +3006,7 @@ func (s *Server) handleSessionV3PrimaryRunStop(w http.ResponseWriter, r *http.Re
 		writeError(w, status, err)
 		return
 	}
-	if err := s.cancelSessionV3RunPendingPermissions(principal, sessionID, runID, reason); err != nil {
+	if err := s.cancelSessionV3RunPendingPermissions(sessionID, runID, reason); err != nil {
 		log.Printf("warning: cancel pending permissions of stopped run session=%q run=%q: %v", sessionID, runID, err)
 	}
 	status := sessionruntime.RunIntentCancelled

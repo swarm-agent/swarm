@@ -187,7 +187,7 @@ func (s *Server) CancelSessionRun(principal identity.Principal, sessionID, runID
 	if err != nil {
 		return false, err
 	}
-	if err := s.cancelSessionV3RunPendingPermissions(principal, sessionID, runID, reason); err != nil {
+	if err := s.cancelSessionV3RunPendingPermissions(sessionID, runID, reason); err != nil {
 		log.Printf("warning: cancel pending permissions of stopped run session=%q run=%q: %v", sessionID, runID, err)
 	}
 	_ = result
