@@ -100,6 +100,17 @@ type ExecutionProviderLifecycleState struct {
 	UpdatedAt                     int64    `json:"updated_at"`
 }
 
+// ExecutionEpochNotActiveError is a V3 session mutation fenced by an epoch
+// that is missing or sealed. Its text is unchanged; callers use errors.As to
+// report the fence as a conflict instead of an internal failure.
+type ExecutionEpochNotActiveError struct {
+	EpochID string
+}
+
+func (e *ExecutionEpochNotActiveError) Error() string {
+	return fmt.Sprintf("execution epoch %q is not active", e.EpochID)
+}
+
 type BeginExecutionEpochInput struct {
 	ExpectedLastEventSeq *uint64                 `json:"expected_last_event_seq,omitempty"`
 	SessionID            string                  `json:"session_id"`

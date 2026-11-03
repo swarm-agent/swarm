@@ -56,6 +56,18 @@ workflow deliveries and its integration.
 
 `summary` is one short line for a client to show as is.
 
+A plan task's run that completes the last checkpoint keeps running briefly
+after the plan's final handoff starts a fresh execution epoch; its remaining
+writes commit in that epoch, and the run ends as completed. If its executor is
+gone (a daemon restart, or a run left over from an older Swarm), the restart's
+recovery or a `stop_task` finalizes it as `completed` rather than stopped or
+failed, but only when the handed-off plan has every checkpoint completed and
+waits for review. `stop_task` then answers `status: completed`. The task then
+settles from that completion and its workflows see one job end. The plan's own
+review (`waiting_review`) is untouched and still needs the person. A run whose
+epoch was replaced by any other boundary is not finalized; its `stop_task`
+answers 409.
+
 ### `outcome` and `stale`
 
 `outcome` is what happened to the task's work, read from its latest workflow

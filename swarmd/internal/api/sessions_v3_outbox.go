@@ -26,6 +26,15 @@ func (s *Server) applySessionV3PrimaryMutation(input sessionruntime.SessionMutat
 	if strings.TrimSpace(input.EpochID) == "" && input.RunIntent != nil {
 		input.EpochID = strings.TrimSpace(input.RunIntent.EpochID)
 	}
+	if input.RunIntent != nil {
+		// A run outliving its epoch's final plan handoff writes in the
+		// successor; every other sealed epoch stays refused by the store.
+		epochID, err := s.sessionV3RunWriteEpoch(input.SessionID, input.RunIntent.RunID, input.EpochID)
+		if err != nil {
+			return sessionruntime.SessionMutationResult{}, err
+		}
+		input.EpochID = epochID
+	}
 	s.recordV3StoreInputDiagnostic(input)
 	result, err := s.sessions.ApplySessionMutation(input)
 	if err != nil {

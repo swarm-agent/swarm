@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"unicode/utf8"
@@ -140,10 +141,22 @@ func (s *Server) StopProjectTask(_ context.Context, p identity.Principal, projec
 	}
 	runID, err := s.stopActiveSessionRun(p, sessionID, projectTaskStopReason)
 	if err != nil {
+		// The run's writes are fenced by an epoch it no longer owns (not a
+		// final plan handoff, which commits in the successor): a conflict
+		// with the session's execution state, never forced through.
+		var fenced *pebblestore.ExecutionEpochNotActiveError
+		if errors.As(err, &fenced) {
+			return tool.ProjectTaskStopResult{}, &projectTaskFollowupError{http.StatusConflict, fmt.Errorf("task run %s cannot be stopped: its execution epoch was superseded by a boundary it does not own: %w", runID, err)}
+		}
 		return tool.ProjectTaskStopResult{}, &projectTaskFollowupError{http.StatusInternalServerError, err}
 	}
 	if runID == "" {
 		return tool.ProjectTaskStopResult{}, &projectTaskFollowupError{http.StatusConflict, errors.New("task has no active run")}
+	}
+	// A run with no executor whose work had already ended in its final plan
+	// handoff is finalized as completed, not stopped: report what happened.
+	if intent, ok, err := s.sessions.GetSessionRunIntent(sessionID, runID); err == nil && ok && intent.Status == pebblestore.V3RunIntentCompleted {
+		return tool.ProjectTaskStopResult{TaskID: task.ID, RunID: runID, Status: "completed", Next: "the run had already handed off its final plan; get_task shows the settled task and the plan's review"}, nil
 	}
 	return tool.ProjectTaskStopResult{TaskID: task.ID, RunID: runID, Status: "stopped", Next: "message_task resumes it"}, nil
 }

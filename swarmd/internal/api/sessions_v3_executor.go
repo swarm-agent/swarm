@@ -847,6 +847,19 @@ func (e *sessionV3Executor) CancelRun(job sessionV3ExecutorJob, reason string) (
 		}
 		switch intent.Status {
 		case sessionruntime.RunIntentPendingExecutor, sessionruntime.RunIntentRunning, pebblestore.V3RunIntentWaitingTasks:
+			if !tracked {
+				// No executor holds this run. When its work already ended in a
+				// persisted final plan handoff there is nothing to stop: it is
+				// finalized as the completed run it was, not as a person's stop.
+				handedOff, err := e.sessionV3RunHandedOffByFinalPlan(job.SessionID, intent)
+				if err != nil {
+					return sessionruntime.SessionMutationResult{}, false, err
+				}
+				if handedOff {
+					result, err := e.finalizeHandedOffRun(job, "stop of a run with no executor")
+					return result, true, err
+				}
+			}
 			result, err := e.recordCancelledRunAndReconcilePlan(job, reason)
 			if err != nil && intent.Status == pebblestore.V3RunIntentWaitingTasks {
 				// Outcome publication can win after the read above. Retry only the
@@ -1112,6 +1125,18 @@ func (e *sessionV3Executor) recoverDurableRuns(ctx context.Context) {
 }
 
 func (e *sessionV3Executor) failStaleRunningRunForRecovery(job sessionV3ExecutorJob) error {
+	if intent, ok, err := e.server.sessions.GetSessionRunIntent(job.SessionID, job.RunID); err != nil {
+		return err
+	} else if ok {
+		handedOff, err := e.sessionV3RunHandedOffByFinalPlan(job.SessionID, intent)
+		if err != nil {
+			return err
+		}
+		if handedOff {
+			_, err := e.finalizeHandedOffRun(job, "daemon restart")
+			return err
+		}
+	}
 	result, err := e.recordRunStatus(job, sessionruntime.RunIntentInterrupted, "executor interrupted during daemon restart", "session.run.interrupted")
 	if err != nil {
 		return err

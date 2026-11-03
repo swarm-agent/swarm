@@ -1077,7 +1077,7 @@ func (s *SessionStore) applyFreshV3SessionMutationWithReader(input V3SessionMuta
 			return V3SessionMutationResult{}, readErr
 		}
 		if !ok || epoch.Status != ExecutionEpochStatusActive {
-			return V3SessionMutationResult{}, fmt.Errorf("execution epoch %q is not active", epochID)
+			return V3SessionMutationResult{}, &ExecutionEpochNotActiveError{EpochID: epochID}
 		}
 		activeEpoch = &epoch
 	}
@@ -1495,7 +1495,7 @@ func (s *SessionStore) applyFreshV3SessionMutationWithReader(input V3SessionMuta
 		}
 	} else if activeEpoch != nil {
 		if activeEpoch.Status != ExecutionEpochStatusActive {
-			return V3SessionMutationResult{}, fmt.Errorf("execution epoch %q is not active", activeEpoch.EpochID)
+			return V3SessionMutationResult{}, &ExecutionEpochNotActiveError{EpochID: activeEpoch.EpochID}
 		}
 		activeEpoch.LastRootSeq = seq
 		activeEpoch.UpdatedAt = now
