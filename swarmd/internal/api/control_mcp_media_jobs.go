@@ -247,10 +247,10 @@ func controlMCPMediaJobGuidance(out map[string]any, files []controlMCPMediaFile)
 }
 
 // saveMediaFiles writes a job's files into a folder inside a registered
-// workspace: an absolute path below one, or a path relative to the job's own
-// workspace. Existing files are never overwritten.
-func (c *controlMCPCall) saveMediaFiles(task *pebblestore.ProjectTaskRecord, files []controlMCPMediaFile, saveTo string) ([]map[string]any, error) {
-	dir, err := c.mediaSaveDir(task, saveTo)
+// workspace: an absolute path below one, or a path relative to the named
+// workspace (else the job's own). Existing files are never overwritten.
+func (c *controlMCPCall) saveMediaFiles(task *pebblestore.ProjectTaskRecord, files []controlMCPMediaFile, saveTo, workspace string) ([]map[string]any, error) {
+	dir, err := c.mediaSaveDir(task, saveTo, workspace)
 	if err != nil {
 		return nil, err
 	}
@@ -300,8 +300,17 @@ func saveMediaFiles(task *pebblestore.ProjectTaskRecord, files []controlMCPMedia
 }
 
 // mediaSaveDir resolves a folder inside a registered workspace, refusing any
-// path that leaves it (also through a symlink).
-func (c *controlMCPCall) mediaSaveDir(task *pebblestore.ProjectTaskRecord, saveTo string) (string, error) {
+// path that leaves it (also through a symlink). A named workspace must be a
+// folder of the job's project; the folder then resolves inside it, so a
+// relative folder never lands in another repository than the one named.
+func (c *controlMCPCall) mediaSaveDir(task *pebblestore.ProjectTaskRecord, saveTo, workspace string) (string, error) {
+	if strings.TrimSpace(workspace) != "" {
+		place, err := c.place(task.ProjectID, workspace)
+		if err != nil {
+			return "", err
+		}
+		return mediaSaveDir([]string{filepath.Clean(place.path)}, place.path, saveTo, mcpMediaErrors)
+	}
 	roots, err := c.workspaceRoots()
 	if err != nil {
 		return "", err
@@ -634,7 +643,7 @@ func controlMCPSaveMedia(c *controlMCPCall, args map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	saved, err := c.saveMediaFiles(task, mediaTaskFiles(task), controlMCPString(args, "folder"))
+	saved, err := c.saveMediaFiles(task, mediaTaskFiles(task), controlMCPString(args, "folder"), controlMCPString(args, "workspace"))
 	if err != nil {
 		return nil, controlMCPToolFailure("%s", controlMCPTruncate(err.Error(), 300))
 	}

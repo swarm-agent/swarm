@@ -109,6 +109,44 @@ func projectTaskFolders(proj *pebblestore.ProjectRecord) []string {
 	return folders
 }
 
+// directMediaOutputFolder is the folder a direct media task keeps as its output
+// context. Media carries no source execution authority: the folder is never
+// bound as a repository or worktree, but a named folder must be one of the
+// project's own folders. Without one named, a project with several folders is
+// refused when the media kind needs a folder (video and sound); the folder is
+// never guessed.
+func directMediaOutputFolder(proj *pebblestore.ProjectRecord, requestedPath, requestedID string, requireFolder bool) (string, error) {
+	folders := projectTaskFolders(proj)
+	path, id := strings.TrimSpace(requestedPath), strings.TrimSpace(requestedID)
+	if path == "" && id == "" {
+		if requireFolder && len(folders) > 1 {
+			return "", fmt.Errorf("media output folder required: the project has %d folders, so name one as workspace_path: %s", len(folders), strings.Join(folders, ", "))
+		}
+		return "", nil
+	}
+	if path != "" {
+		if !filepath.IsAbs(path) {
+			return "", fmt.Errorf("media workspace %q must be an absolute folder of the project: %s", path, strings.Join(folders, ", "))
+		}
+		path = filepath.Clean(path)
+	}
+	for _, ref := range proj.Workspaces {
+		root := strings.TrimSpace(ref.Path)
+		if root == "" || !filepath.IsAbs(root) {
+			continue
+		}
+		if path != "" && filepath.Clean(root) != path || id != "" && ref.WorkspaceID != id {
+			continue
+		}
+		return filepath.Clean(root), nil
+	}
+	named := path
+	if named == "" {
+		named = id
+	}
+	return "", fmt.Errorf("media workspace %s is not a folder of this project; name one of its folders: %s", named, strings.Join(folders, ", "))
+}
+
 // defaultProjectTaskSource is the source of a coding task proposed without
 // workspace_path or workspace_id (a Swarm Control caller usually names none):
 // the project's only folder, bound exactly as if it were named. A project

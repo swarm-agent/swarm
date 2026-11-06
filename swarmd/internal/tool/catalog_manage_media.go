@@ -73,7 +73,7 @@ func manageMediaCatalog() CatalogTool {
 			Description: "A new media job from an earlier one (job_id), optionally overriding model, brief or generation options (swarm_request_media retry_of)."},
 		{Action: "get", Inputs: []string{"machine", "job_id", "wait_seconds"}, Level: CatalogLevelRead, Reach: CatalogReachAny, Profiles: core, APIScopes: []string{"sessions:read"}, Untrusted: true,
 			Description: "A media job's status, retry_of, files and costs, optionally waiting (swarm_get_job)."},
-		{Action: "save", Inputs: []string{"machine", "job_id", "folder"}, Level: CatalogLevelWrite, Reach: CatalogReachAny, Profiles: core, APIScopes: []string{"sessions:write"},
+		{Action: "save", Inputs: []string{"machine", "job_id", "folder"}, ControlInputs: []string{"workspace"}, Level: CatalogLevelWrite, Reach: CatalogReachAny, Profiles: core, APIScopes: []string{"sessions:write"},
 			Description: "Write a media job's files into a folder of its workspace, never overwriting (swarm_save_media)."},
 		{Action: "transcribe", Inputs: []string{"inputs", "focus"}, Level: CatalogLevelWrite, Reach: CatalogReachHome, Profiles: orchestrator, APIScopes: []string{"sessions:write"},
 			Description: "Transcribe one audio or video input: its text with timed segments."},

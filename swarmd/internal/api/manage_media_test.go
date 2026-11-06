@@ -172,7 +172,9 @@ func TestManageMediaGenerateOrigin(t *testing.T) {
 	if err := store.CreateSessionForAccount(pebblestore.SessionSnapshot{ID: "session", WorkspacePath: root, Metadata: map[string]any{"project_id": "project", pebblestore.SessionAccessMetadataKey: map[string]any{"tasks": "free"}}}, p.UserID, p.AccountScopeID); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutProject(p.AccountScopeID, &pebblestore.ProjectRecord{ID: "project", Name: "Media project", AccountID: p.AccountScopeID}); err != nil {
+	// root is the project's folder, as the Swarm Control project listing below
+	// reports it: a Swarm Control media job names it as its workspace.
+	if err := store.PutProject(p.AccountScopeID, &pebblestore.ProjectRecord{ID: "project", Name: "Media project", AccountID: p.AccountScopeID, Workspaces: []pebblestore.ProjectWorkspaceRef{{Path: root}}}); err != nil {
 		t.Fatal(err)
 	}
 	var rec pebblestore.ModelCatalogRecord

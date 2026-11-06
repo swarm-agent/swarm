@@ -272,10 +272,14 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		a.SourceWorkspace = bound
 	}
 	wsPath := source.Path
-	if isDirectSimpleMedia && input.ManageMediaSource {
+	if isDirectSimpleMedia {
 		// Media carries no source execution authority; retain the caller's
 		// workspace as output context rather than a repository binding.
-		wsPath = strings.TrimSpace(input.WorkspacePath)
+		if input.ManageMediaSource {
+			wsPath = strings.TrimSpace(input.WorkspacePath)
+		} else if wsPath, err = directMediaOutputFolder(proj, input.WorkspacePath, input.WorkspaceID, !isImage); err != nil {
+			return nil, err
+		}
 	}
 	agentName := strings.TrimSpace(input.Agent)
 	if isDirectVideo {
