@@ -4,6 +4,12 @@
 
 # Swarm
 
+> **Status (November 2026): Swarm is no longer maintained.**
+>
+> Development has stopped and Swarm's hosted services are shut down. swarmagent.dev, its docs, the install command that downloads from it and the model catalog at models.swarmagent.dev no longer work. Past releases stay available on this page under Releases, and the code stays here under its Apache-2.0 license for anyone who wants to read it, fork it or run it themselves. Issues and pull requests are no longer reviewed.
+>
+> Thank you to everyone who tried Swarm.
+
 **Swarm is a headless AI agent platform you self-host on Linux. It runs coding, research, design and media agents, workflows, schedules and monitoring across your machines. Drive it from your AI over MCP, or from your own code with the SDK, HTTP API or CLI.**
 
 [Website](https://swarmagent.dev) · [Docs](https://swarmagent.dev/docs) · [AI setup playbook](https://swarmagent.dev/llms.txt)
